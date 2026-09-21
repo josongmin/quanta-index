@@ -77,6 +77,19 @@ migration_fixture = "error_authority_inventory_source_digest_changes"
 notes = "Source-bound discovery inventory only. It always records closed=false; regex matches cannot become semantic completion authority. P01A must land independent enum/table/mapping/SDK validators and owner proof."
 
 [[tool_artifact]]
+id = "search-plane-error-codes-v2"
+owner = "crates/quanta-index-contract/src/ipc/error.rs"
+path = "tools/ci/inventory/search-plane-error-codes.json"
+producer = "tools/ci/check-search-plane-error-codes.py --write"
+consumers = ["tools/ci/check-error-authority-closure.py", "P01A and downstream proof authority"]
+version = 2
+schema_file = "tools/ci/search-plane-error-code-table.schema.json"
+decoder = "tools/ci/check-search-plane-error-codes.py"
+compatibility = "Only the exact sorted closed enum-source table with the frozen domain-separated source digest is accepted. Unknown and retired wire codes fail decode."
+migration_fixture = "search_plane_error_table_stale_content_refused"
+notes = "P01A-owned accepted error-code authority. The P00 regex discovery inventory cannot certify closure."
+
+[[tool_artifact]]
 id = "verification-receipt-v1-legacy"
 owner = "tools/ci/write-verification-receipt.py"
 path = "artifacts/test-authority/receipt.json"
@@ -390,15 +403,64 @@ reproduction = "offline-importer"
 notes = "Tables `idempotency_v1` + `catalog_sequence_v1` (batch-digest dedup receipts and the global durable sequence; not reproducible) and `auxiliary_rows_v1` + `auxiliary_tracks_v1` (history / runtime / structural authority rows across the 14 `AuxiliaryRowFamilyV1` families Commit, Ref, Tag, DiffHunk, DirtyDoc, ChangedDoc, DocFacet, Snapshot, AffectedDocs, InvalidatedByDocs, Chunk, ParseTree, StateMeta, Epoch). Runtime dirty overlays and the Epoch family are not reproducible; history/structural rows could be replayed from producer batches but plan §11 item 3 keeps them under the importer with the dedup state. Schema is versioned by table-name suffix; no `user_version` pragma."
 
 [[artifact]]
-id = "repo-map-store"
+id = "catalog-repomap-candidate-activation"
+owner = "quanta-index-catalog"
+path = "state_root/catalog/catalog-v1.sqlite (repomap_candidate_v1, repomap_activation_v1, repomap_quarantine_event_v1)"
+reproduction = "offline-importer"
+notes = "P03 sealed-candidate/activation/quarantine authority: logical-key-UNIQUE candidate rows (commitment, object address, content digest, projection meta, closed state 1..=4, terminal sequence), one activation row per repo/revision (epoch CAS, stable activation_sequence + latest terminal_sequence, invalidation reason) and quarantine incident rows (evidence digest PK, exact envelope bytes, payload/envelope digests, record + discard sequences, tombstone). Not reproducible; every mutation allocates through the P02B global sequence ledger in one transaction."
+
+[[artifact]]
+id = "repo-map-legacy-snapshots"
 owner = "quanta-index-repomap"
-path = "state_root/repo-map/{snapshots/<identity>.json,activations/<identity>.json,quarantine/<name>{,.reason}}"
+path = "state_root/repo-map/snapshots/<identity>.json"
 reproduction = "producer-rebuild"
-notes = "Snapshots are `{format_version, sha256, snapshot}` envelopes rebuilt from RepoMap bundles; the activation records (which generation is active) are operator state and need the importer like the search-corpus activation catalog."
+notes = "Legacy live V2 layout until P03. The P03 cutover deleted the runtime writer; the files themselves are untouched and P10 owns offline import."
+
+[[artifact]]
+id = "repo-map-legacy-activations"
+owner = "quanta-index-repomap"
+path = "state_root/repo-map/activations/<identity>.json"
+reproduction = "offline-importer"
+notes = "Legacy operator activation choices are not rebuildable from snapshots. P03 rejects old roots without mutation; P10 owns offline import and cutover."
+
+[[artifact]]
+id = "repo-map-legacy-quarantine"
+owner = "quanta-index-repomap"
+path = "state_root/repo-map/quarantine/<name>{,.reason}"
+reproduction = "offline-importer"
+notes = "Legacy observed corruption and reason sidecars are evidence, not derivable from a producer rebuild. P03 does not mutate them; P10 owns offline import or explicit refusal."
+
+[[artifact]]
+id = "repo-map-candidate-object-v1"
+owner = "quanta-index-contract"
+path = "state_root/repo-map/objects/sha256/<hex[0:2]>/<hex[2:4]>/<hex[4:64]>.cbor"
+reproduction = "producer-rebuild"
+notes = "P03 cutover live: the immutable sealed-candidate object store (strict canonical CBOR envelope, content address = P01A object digest, create-new/no-clobber/fsync, lstat/fstat security verification). Rebuildable by republishing the same producer bundle."
+
+[[artifact]]
+id = "repo-map-quarantine-incident-v1"
+owner = "quanta-index-contract"
+path = "state_root/repo-map/quarantine/incidents/sha256/<hex[0:2]>/<hex[2:4]>/<hex[4:64]>.cbor"
+reproduction = "offline-importer"
+notes = "P03 cutover live: canonical incident envelope bytes projected create-new with exact-byte replay after the catalog incident row commits; timestamp and global sequence come from the catalog and are reused on retry; not reproducible from the raw payload alone."
+
+[[artifact]]
+id = "repo-map-quarantine-payload-v1"
+owner = "quanta-index-repomap"
+path = "state_root/repo-map/quarantine/payloads/sha256/<hex[0:2]>/<hex[2:4]>/<hex[4:64]>.bin"
+reproduction = "offline-importer"
+notes = "P03 cutover live: readable raw bytes of a failed candidate object, projected after the catalog incident commits; reclaimed only by the journaled tombstone discard; a corrupted payload cannot be assumed rebuildable."
+
+[[artifact]]
+id = "operation-journal-receipt"
+owner = "quanta-index-catalog"
+path = "state_root/catalog/catalog-v1.sqlite (idempotency_v2.receipt_cbor)"
+reproduction = "offline-importer"
+notes = "P02B operation journal: persisted BatchPublishReceipt bytes are canonical CBOR behind an explicit format tag (SEP-21-002). A runtime that finds another version refuses typed before any mutation; receipts of another version are offline-migration input only (no boot-time dual decoder, no live migration). The journal's dedup state cannot be re-derived from producers, so a new state root needs an explicit importer."
 [[artifact.version_constants]]
-file = "crates/quanta-index-repomap/src/persistence.rs"
-name = "SNAPSHOT_FILE_FORMAT_VERSION"
-value = 2
+file = "crates/quanta-index-contract/src/ipc/ingest.rs"
+name = "BATCH_PUBLISH_RECEIPT_FORMAT_VERSION"
+value = 1
 
 [[artifact]]
 id = "legacy-semantic-journal"

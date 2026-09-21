@@ -10,7 +10,7 @@
 
 use core::fmt;
 
-use quanta_index_contract::GenerationPin;
+use quanta_index_contract::{GenerationPin, SearchPlaneErrorCodeV2};
 
 use super::domain::{ReadDomainV1, RepoMetadataAuthorityV1};
 use crate::domains::auxiliary::AuxiliaryGenerationKeyV1;
@@ -18,46 +18,54 @@ use crate::error::CoreError;
 
 /// Wire code for a runtime-metadata read on a generation whose runtime
 /// authority is not materialized.
-pub const RUNTIME_NOT_READY_CODE: &str = "RUNTIME_NOT_READY";
+pub const RUNTIME_NOT_READY_CODE: SearchPlaneErrorCodeV2 = SearchPlaneErrorCodeV2::RuntimeNotReady;
 
 /// Wire code for a view whose auxiliary snapshot belongs to another
 /// generation than the pin: the view refuses to serve a mix rather than
 /// claim the parts are one dependency vector.
-pub const READ_VIEW_GENERATION_MIX_CODE: &str = "READ_VIEW_GENERATION_MIX";
+pub const READ_VIEW_GENERATION_MIX_CODE: SearchPlaneErrorCodeV2 =
+    SearchPlaneErrorCodeV2::ReadViewGenerationMix;
 
 /// Wire code for a route that reached for a domain its plan did not
 /// declare: a search-plane defect, refused rather than acquired late.
-pub const READ_VIEW_DOMAIN_UNDECLARED_CODE: &str = "READ_VIEW_DOMAIN_UNDECLARED";
+pub const READ_VIEW_DOMAIN_UNDECLARED_CODE: SearchPlaneErrorCodeV2 =
+    SearchPlaneErrorCodeV2::ReadViewDomainUndeclared;
 
 /// Wire code for `repo.has.commit.after(...)` on a generation without a
 /// commit-recency authority.
-pub const REPO_COMMIT_RECENCY_UNAVAILABLE_CODE: &str = "HISTORY_REPO_COMMIT_RECENCY_UNAVAILABLE";
+pub const REPO_COMMIT_RECENCY_UNAVAILABLE_CODE: SearchPlaneErrorCodeV2 =
+    SearchPlaneErrorCodeV2::HistoryRepoCommitRecencyUnavailable;
 
 /// Wire code for `repo.has.meta(...)` on a generation without a repo-meta
 /// authority.
-pub const REPO_META_UNAVAILABLE_CODE: &str = "REPO_META_UNAVAILABLE";
+pub const REPO_META_UNAVAILABLE_CODE: SearchPlaneErrorCodeV2 =
+    SearchPlaneErrorCodeV2::RepoMetaUnavailable;
 
 /// Wire code for `repo.has.topic(...)` on a generation without a
 /// repo-topic authority.
-pub const REPO_TOPIC_UNAVAILABLE_CODE: &str = "REPO_TOPIC_UNAVAILABLE";
+pub const REPO_TOPIC_UNAVAILABLE_CODE: SearchPlaneErrorCodeV2 =
+    SearchPlaneErrorCodeV2::RepoTopicUnavailable;
 
 /// Wire code for `repo.has.description(...)` on a generation without a
 /// repo-description authority.
-pub const REPO_DESCRIPTION_UNAVAILABLE_CODE: &str = "REPO_DESCRIPTION_UNAVAILABLE";
+pub const REPO_DESCRIPTION_UNAVAILABLE_CODE: SearchPlaneErrorCodeV2 =
+    SearchPlaneErrorCodeV2::RepoDescriptionUnavailable;
 
 /// Wire code for `file.has.owner(...)` / `select:file.owners` on a
 /// generation without a file-ownership authority.
-pub const FILE_OWNERSHIP_UNAVAILABLE_CODE: &str = "FILE_OWNERSHIP_UNAVAILABLE";
+pub const FILE_OWNERSHIP_UNAVAILABLE_CODE: SearchPlaneErrorCodeV2 =
+    SearchPlaneErrorCodeV2::FileOwnershipUnavailable;
 
 /// Wire code for `file.has.contributor(...)` on a generation without a
 /// file-contributor authority.
-pub const FILE_CONTRIBUTOR_UNAVAILABLE_CODE: &str = "FILE_CONTRIBUTOR_UNAVAILABLE";
+pub const FILE_CONTRIBUTOR_UNAVAILABLE_CODE: SearchPlaneErrorCodeV2 =
+    SearchPlaneErrorCodeV2::FileContributorUnavailable;
 
 impl RepoMetadataAuthorityV1 {
     /// The wire code raised when the authority is required but the
     /// generation did not materialize it.
     #[must_use]
-    pub const fn unavailable_code(self) -> &'static str {
+    pub const fn unavailable_code(self) -> SearchPlaneErrorCodeV2 {
         match self {
             Self::CommitRecency => REPO_COMMIT_RECENCY_UNAVAILABLE_CODE,
             Self::Meta => REPO_META_UNAVAILABLE_CODE,
@@ -124,7 +132,7 @@ pub enum ReadViewRefusedError {
 impl ReadViewRefusedError {
     /// The wire code of the refusal.
     #[must_use]
-    pub const fn code(&self) -> &'static str {
+    pub const fn code(&self) -> SearchPlaneErrorCodeV2 {
         match self {
             Self::RepoMetadataUnavailable { authority, .. } => authority.unavailable_code(),
             Self::RuntimeNotReady { .. } => RUNTIME_NOT_READY_CODE,
@@ -183,7 +191,7 @@ impl std::error::Error for ReadViewRefusedError {}
 impl From<ReadViewRefusedError> for CoreError {
     fn from(refused: ReadViewRefusedError) -> Self {
         Self::Typed {
-            code: refused.code().to_string(),
+            code: refused.code(),
             message: refused.to_string(),
         }
     }
@@ -200,8 +208,8 @@ mod tests {
 
     fn pin() -> GenerationPin {
         GenerationPin::new(
-            RepoId::new("repo"),
-            RevisionId::new("rev"),
+            RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+            RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
             ManifestGeneration::new(4),
         )
     }
@@ -234,8 +242,9 @@ mod tests {
             domain: ReadDomainV1::History,
             pin: pin(),
             offered: AuxiliaryGenerationKeyV1 {
-                repo_id: RepoId::new("repo"),
-                revision_id: RevisionId::new("rev"),
+                repo_id: RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+                revision_id: RevisionId::new("rev")
+                    .expect("static fixture ID satisfies canonical policy"),
                 generation: ManifestGeneration::new(3),
             },
         };

@@ -20,8 +20,8 @@
   ],
   "properties": {
     "schema_version": { "const": 1 },
-    "lane": { "type": "string", "pattern": "^P(?:0[013-9]|02[ABI]|1[0-2])$" },
-    "ticket": { "type": "string", "pattern": "^(?:S21-(?:0[0-9]|1[0-3])|S21-00\\+S21-13A|S21-03\\+S21-04)$" },
+    "lane": { "type": "string", "pattern": "^P(?:0[013-9]|02[ABI]|1[0-2]|12A)$" },
+    "ticket": { "type": "string", "pattern": "^(?:S21-(?:0[0-9]|1[0-3])|S21-00\\+S21-13A|S21-01\\+S21-02|S21-03\\+S21-04)$" },
     "status": {
       "enum": ["IMPLEMENTATION_DONE", "OWNER_PROOF_GREEN", "RELEASE_PROOF_PENDING", "BLOCKED"]
     },
@@ -29,7 +29,15 @@
     "result_sha": { "$ref": "#/$defs/sha" },
     "dirty_digest": { "$ref": "#/$defs/digest" },
     "write_set": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
-    "exported_contracts": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+    "exported_contracts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "pattern": "^[^@]+@sha256:[0-9a-f]{64}$"
+      },
+      "uniqueItems": true
+    },
     "proofs": {
       "type": "array",
       "minItems": 1,
@@ -42,15 +50,18 @@
           "properties": {
             "id": { "type": "string", "minLength": 1 },
             "status": { "const": "RECORDED" },
-            "manifest": { "type": "string", "minLength": 1 },
+            "manifest": {
+              "type": "string",
+              "pattern": "^artifacts/proof-authority/archive/[a-z0-9][a-z0-9-]+/[0-9a-f]{64}/[0-9a-f]{64}\\.json$"
+            },
             "manifest_sha256": { "$ref": "#/$defs/digest" },
             "command": { "type": "string", "minLength": 1 },
             "required_host": { "type": "string", "minLength": 1 },
-            "selected": { "type": "integer", "minimum": 0 },
-            "executed": { "type": "integer", "minimum": 0 },
-            "passed": { "type": "integer", "minimum": 0 },
-            "failed": { "type": "integer", "minimum": 0 },
-            "ignored": { "type": "integer", "minimum": 0 }
+            "selected": { "type": "integer", "minimum": 1 },
+            "executed": { "type": "integer", "minimum": 1 },
+            "passed": { "type": "integer", "minimum": 1 },
+            "failed": { "const": 0 },
+            "ignored": { "const": 0 }
           }
         },
         {
@@ -67,10 +78,178 @@
       }
     },
     "not_run": { "type": "array", "items": { "type": "string", "minLength": 1 } },
-    "blockers": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+    "blockers": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "paired_repositories": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "uniqueItems": true,
+      "prefixItems": [
+        {
+          "allOf": [
+            { "$ref": "#/$defs/repository_state" },
+            { "properties": { "identity": { "const": "github:josongmin/quanta-index" } } }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/repository_state" },
+            { "properties": { "identity": { "const": "github:josongmin/semantica-codegraph-v2" } } }
+          ]
+        }
+      ],
+      "items": false
+    },
+    "integration_commits": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "prefixItems": [
+        {
+          "allOf": [
+            { "$ref": "#/$defs/integration_commit" },
+            { "properties": { "lane": { "const": "P02A" } } }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/integration_commit" },
+            { "properties": { "lane": { "const": "P02B" } } }
+          ]
+        }
+      ],
+      "items": false
+    }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "lane": { "enum": ["P11", "P12A", "P12"] },
+          "status": { "not": { "const": "BLOCKED" } }
+        },
+        "required": ["lane", "status"]
+      },
+      "then": { "required": ["paired_repositories"] }
+    },
+    {
+      "if": {
+        "properties": { "lane": { "const": "P02I" } },
+        "required": ["lane"]
+      },
+      "then": { "required": ["integration_commits"] }
+    },
+    {
+      "if": {
+        "properties": { "status": { "enum": ["OWNER_PROOF_GREEN", "RELEASE_PROOF_PENDING"] } },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "blockers": { "maxItems": 0 },
+          "proofs": {
+            "contains": {
+              "type": "object",
+              "properties": { "status": { "const": "RECORDED" } },
+              "required": ["status"]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "status": { "const": "RELEASE_PROOF_PENDING" } },
+        "required": ["status"]
+      },
+      "then": { "properties": { "not_run": { "minItems": 1 } } }
+    },
+    {
+      "if": {
+        "properties": { "status": { "const": "BLOCKED" } },
+        "required": ["status"]
+      },
+      "then": { "properties": { "blockers": { "minItems": 1 } } }
+    }
+  ],
   "$defs": {
     "sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
-    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "integration_commit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lane", "original_sha", "applied_sha", "integration_mode"],
+      "properties": {
+        "lane": { "enum": ["P02A", "P02B"] },
+        "original_sha": { "$ref": "#/$defs/sha" },
+        "applied_sha": { "$ref": "#/$defs/sha" },
+        "integration_mode": { "enum": ["MERGE", "CHERRY_PICK"] }
+      }
+    },
+    "repository_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "identity",
+        "root",
+        "base_sha",
+        "result_sha",
+        "dirty_digest",
+        "write_set",
+        "branch",
+        "upstream",
+        "dependency_root_digest",
+        "approvals",
+        "push"
+      ],
+      "properties": {
+        "identity": { "type": "string", "minLength": 1 },
+        "root": { "type": "string", "pattern": "^/" },
+        "base_sha": { "$ref": "#/$defs/sha" },
+        "result_sha": { "$ref": "#/$defs/sha" },
+        "dirty_digest": { "$ref": "#/$defs/digest" },
+        "write_set": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+        "branch": { "type": ["string", "null"] },
+        "upstream": { "type": ["string", "null"] },
+        "dependency_root_digest": { "$ref": "#/$defs/digest" },
+        "approvals": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["read", "edit", "commit", "push"],
+          "properties": {
+            "read": { "enum": ["AUTHORIZED", "NOT_AUTHORIZED", "NOT_REQUIRED"] },
+            "edit": { "enum": ["AUTHORIZED", "NOT_AUTHORIZED", "NOT_REQUIRED"] },
+            "commit": { "enum": ["AUTHORIZED", "NOT_AUTHORIZED", "NOT_REQUIRED"] },
+            "push": { "enum": ["AUTHORIZED", "NOT_AUTHORIZED", "NOT_REQUIRED"] }
+          }
+        },
+        "push": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["attempted", "result", "remote_ref", "remote_sha"],
+          "properties": {
+            "attempted": { "type": "boolean" },
+            "result": { "enum": ["PUSHED", "NOT_RUN", "FAILED"] },
+            "remote_ref": { "type": ["string", "null"] },
+            "remote_sha": { "oneOf": [{ "$ref": "#/$defs/sha" }, { "type": "null" }] }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": { "result": { "const": "PUSHED" } },
+                "required": ["result"]
+              },
+              "then": {
+                "properties": {
+                  "attempted": { "const": true },
+                  "remote_ref": { "type": "string", "minLength": 1 },
+                  "remote_sha": { "$ref": "#/$defs/sha" }
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
   }
 }

@@ -90,8 +90,9 @@ mod tests {
 
     fn dirty_batch(doc: &str) -> DirtyIngestBatch {
         DirtyIngestBatch {
-            repo_id: RepoId::new("repo"),
-            revision_id: RevisionId::new("rev"),
+            repo_id: RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+            revision_id: RevisionId::new("rev")
+                .expect("static fixture ID satisfies canonical policy"),
             generation: ManifestGeneration::new(3),
             overlay_epoch_ms: 7,
             batch_digest: "whatever the producer wrote".to_string(),
@@ -130,8 +131,9 @@ mod tests {
     fn the_route_is_part_of_the_domain() {
         let mut dirty = dirty_batch("src/a.rs");
         let mut runtime = RuntimeCatalogIngestBatch {
-            repo_id: RepoId::new("repo"),
-            revision_id: RevisionId::new("rev"),
+            repo_id: RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+            revision_id: RevisionId::new("rev")
+                .expect("static fixture ID satisfies canonical policy"),
             generation: ManifestGeneration::new(3),
             overlay_epoch_ms: 7,
             batch_digest: String::new(),

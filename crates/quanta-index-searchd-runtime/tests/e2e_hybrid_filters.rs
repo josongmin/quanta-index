@@ -16,7 +16,7 @@ use std::error::Error;
 use crate::e2e_harness;
 use quanta_index_contract::{
     CandidateCountV1, HybridSeedQueryRequest, PlannerStage, QueryConstraintSetV1,
-    QueryResultWindowV1, SearchExplanation, SearchPlaneQueryIpcRequest,
+    QueryResultWindowV1, SearchExplanation, SearchPlaneErrorCodeV2, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcResponse, TextQueryRequest, TextQuerySyntax,
 };
 
@@ -74,23 +74,7 @@ fn hybrid_page_in(
     syntax: TextQuerySyntax,
     text_query: &str,
 ) -> Result<HybridPage, Box<dyn Error>> {
-    let response = rt.query_once(|pin| {
-        SearchPlaneQueryIpcRequest::Hybrid(quanta_index_contract::HybridQueryRequest {
-            text_query: TextQueryRequest {
-                syntax,
-                query_text: text_query.to_string(),
-                constraints: QueryConstraintSetV1::unconstrained(),
-                generation: pin.clone(),
-                generation_selector: None,
-                top_k: 50,
-                cursor: None,
-            },
-            semantic_query_text: DENSE_QUERY.to_string(),
-            generation: pin,
-            generation_selector: None,
-            top_k: 10,
-        })
-    })?;
+    let response = hybrid_response(rt, syntax, text_query)?;
     match response {
         SearchPlaneQueryIpcResponse::Hybrid(hybrid) => Ok(HybridPage {
             ids: hybrid
@@ -110,22 +94,44 @@ fn hybrid_page_in(
     }
 }
 
+fn hybrid_response(
+    rt: &mut E2eRuntime,
+    syntax: TextQuerySyntax,
+    text_query: &str,
+) -> Result<SearchPlaneQueryIpcResponse, Box<dyn Error>> {
+    let response = rt.query_once(|pin| {
+        SearchPlaneQueryIpcRequest::Hybrid(quanta_index_contract::HybridQueryRequest {
+            text_query: TextQueryRequest {
+                syntax,
+                query_text: text_query.to_string(),
+                constraints: QueryConstraintSetV1::unconstrained(),
+                generation: pin.clone(),
+                generation_selector: None,
+                top_k: 50,
+                cursor: None,
+            },
+            semantic_query_text: DENSE_QUERY.to_string(),
+            generation: pin,
+            generation_selector: None,
+            top_k: 10,
+        })
+    })?;
+    Ok(response)
+}
+
 /// The typed code a hybrid query is refused with, or `Err` when it serves.
 fn hybrid_refusal(
     rt: &mut E2eRuntime,
     syntax: TextQuerySyntax,
     text_query: &str,
-) -> Result<String, Box<dyn Error>> {
-    match hybrid_page_in(rt, syntax, text_query) {
-        Ok(page) => Err(format!("hybrid `{text_query}` served {:?}", page.ids).into()),
-        Err(err) => {
-            let message = err.to_string();
-            message
-                .strip_prefix(&format!("hybrid `{text_query}` refused: "))
-                .and_then(|rest| rest.split(' ').next())
-                .map(str::to_owned)
-                .ok_or_else(|| message.into())
-        }
+) -> Result<SearchPlaneErrorCodeV2, Box<dyn Error>> {
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "any served response variant is the same refusal-expectation failure"
+    )]
+    match hybrid_response(rt, syntax, text_query)? {
+        SearchPlaneQueryIpcResponse::Error(error) => Ok(error.code),
+        other => Err(format!("hybrid `{text_query}` served or returned {other:?}").into()),
     }
 }
 
@@ -318,7 +324,7 @@ fn verify_lang_and_type_filters(rt: &mut E2eRuntime, fixture: &Fixture) -> TestR
 fn verify_refusals(rt: &mut E2eRuntime, _fixture: &Fixture) -> TestResult {
     for query in ["select:file needle", "count:2 needle", "type:path needle"] {
         let code = hybrid_refusal(rt, TextQuerySyntax::Sourcegraph, query)?;
-        if code != "HYBRID_FILTER_UNSUPPORTED" {
+        if code.as_wire_str() != "HYBRID_FILTER_UNSUPPORTED" {
             return Err(
                 format!("`{query}` must refuse HYBRID_FILTER_UNSUPPORTED, got {code}").into(),
             );
@@ -328,7 +334,7 @@ fn verify_refusals(rt: &mut E2eRuntime, _fixture: &Fixture) -> TestResult {
     // (`NOT/- without expression`): a negated filter is not a filter either
     // lane could apply, and the refusal is the parser's.
     let code = hybrid_refusal(rt, TextQuerySyntax::Native, "-file:src/lib.rs needle")?;
-    if code != "PARSE_FAIL" {
+    if code.as_wire_str() != "PARSE_FAIL" {
         return Err(format!("a negated filter must be refused by the grammar, got {code}").into());
     }
     Ok(())
@@ -393,11 +399,9 @@ fn hybrid_filters_share_one_indexed_fixture() -> TestResult {
     let fixture = ingest_fixture(&mut rt)?;
     assert_dense_lane_ranks_all_three(&mut rt, &fixture)?;
 
+    let verify_file_filter_fn: fn(&mut E2eRuntime, &Fixture) -> TestResult = verify_file_filter;
     for (name, verify) in [
-        (
-            "file_filter",
-            verify_file_filter as fn(&mut E2eRuntime, &Fixture) -> TestResult,
-        ),
+        ("file_filter", verify_file_filter_fn),
         ("repo_filter", verify_repo_filter),
         ("lang_and_type_filters", verify_lang_and_type_filters),
         ("typed_refusals", verify_refusals),

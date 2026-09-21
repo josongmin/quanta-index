@@ -56,7 +56,11 @@ pub(super) fn rebind_lexical_query_at_time(
             force_empty: true,
         });
     };
-    let rebound_revision = RevisionId::new(selected_commit_sha.to_hex());
+    let rebound_revision = RevisionId::new(selected_commit_sha.to_hex()).map_err(|error| {
+        CoreError::Storage(format!(
+            "rev:at.time selected commit is not a canonical revision ID: {error}"
+        ))
+    })?;
     let rebound_pin = activation_catalog.resolve(
         &base_pin.repo_id,
         &rebound_revision,

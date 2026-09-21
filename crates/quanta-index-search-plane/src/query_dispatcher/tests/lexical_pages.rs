@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 
 use quanta_index_contract::{
     ERR_RESULT_TOO_LARGE, LexicalCandidate, LexicalCursor, ManifestGeneration,
-    QUERY_CURSOR_GENERATION_MISMATCH_CODE, QueryConstraintSetV1, SearchPlaneQueryIpcRequest,
-    SearchPlaneQueryIpcResponse, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
+    QueryConstraintSetV1, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
+    TextQueryRequest, TextQueryResponse, TextQuerySyntax,
 };
 use quanta_index_core::RequestBudgetV1;
 
@@ -163,7 +163,7 @@ fn the_cursor_reaches_the_searcher_and_another_generations_is_refused_first() ->
     let (code, _message) = ipc_error_from(
         dispatcher.dispatch(request(2, Some(foreign)), &RequestBudgetV1::unbounded()),
     )?;
-    if code != QUERY_CURSOR_GENERATION_MISMATCH_CODE {
+    if code != quanta_index_contract::SearchPlaneErrorCodeV2::QueryCursorGenerationMismatch {
         return Err(format!("a foreign cursor answered `{code}`").into());
     }
     let searches = state
@@ -242,7 +242,7 @@ fn a_cursor_on_a_route_that_does_not_page_is_refused() -> TestResult {
         SearchPlaneQueryIpcRequest::RuntimeMetadata(runtime),
         &RequestBudgetV1::unbounded(),
     ))?;
-    if code != quanta_index_contract::QUERY_CURSOR_UNSUPPORTED_CODE {
+    if code != quanta_index_contract::SearchPlaneErrorCodeV2::QueryCursorUnsupported {
         return Err(format!("a text-leaf cursor answered `{code}`").into());
     }
     Ok(())

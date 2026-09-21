@@ -135,8 +135,8 @@ fn hybrid_dispatch_embeds_semantic_query_text() -> TestResult {
     );
 
     let pin = make_pin(
-        RepoId::new("repo-map-ipc"),
-        RevisionId::new("rev-map-ipc"),
+        RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
+        RevisionId::new("rev-map-ipc").expect("static fixture ID satisfies canonical policy"),
         ManifestGeneration::new(9),
     );
     let response = dispatcher.dispatch(
@@ -229,8 +229,10 @@ fn hybrid_dispatch_embeds_semantic_query_text() -> TestResult {
 #[test]
 fn hybrid_dispatch_rejects_unsealed_semantic_generation_with_exact_code() -> TestResult {
     let mut ledger = Ledger::default();
-    let repo_id = RepoId::new("repo-map-ipc");
-    let revision_id = RevisionId::new("rev-map-ipc");
+    let repo_id =
+        RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy");
+    let revision_id =
+        RevisionId::new("rev-map-ipc").expect("static fixture ID satisfies canonical policy");
     ledger.record_track_materialized(
         &repo_id,
         &revision_id,
@@ -286,7 +288,7 @@ fn hybrid_dispatch_rejects_unsealed_semantic_generation_with_exact_code() -> Tes
     );
 
     let (code, _message) = ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
-    if code != crate::readiness::ERR_SEMANTIC_GENERATION_NOT_SEALED {
+    if code != quanta_index_contract::SearchPlaneErrorCodeV2::SemanticGenerationNotSealed {
         return Err(format!("unexpected hybrid unsealed code: {code}").into());
     }
     Ok(())

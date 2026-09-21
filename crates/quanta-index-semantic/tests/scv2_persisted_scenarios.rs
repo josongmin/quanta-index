@@ -35,12 +35,20 @@ const DIMENSION: u32 = 3;
 const MANIFEST_DIGEST: &str = "manifest:scv2-product-scenarios";
 const CORPUS_POLICY_DIGEST: &str = "policy:semantic-source-v1";
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn repo_id() -> RepoId {
-    RepoId::new("repo-scv2-scenarios")
+    RepoId::new("repo-scv2-scenarios").expect("static fixture ID satisfies canonical policy")
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn revision_id() -> RevisionId {
-    RevisionId::new("rev-scv2-scenarios")
+    RevisionId::new("rev-scv2-scenarios").expect("static fixture ID satisfies canonical policy")
 }
 
 fn symbol_embedding(

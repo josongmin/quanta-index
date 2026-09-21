@@ -10,10 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use quanta_index_contract::AuxEpochV1;
-use quanta_index_core::{
-    CoreError, HISTORY_TEXT_INDEX_CORRUPT_CODE, HistoryTextEpochStatusV1, HistoryTextKindV1,
-    sha256_of_file,
-};
+use quanta_index_core::{CoreError, HistoryTextEpochStatusV1, HistoryTextKindV1, sha256_of_file};
 
 use crate::history_text_index::layout::{fsync_parent, kind_dir};
 use crate::normalize::{TEXT_NORMALIZER_VERSION, TextNormalizerVersion};
@@ -43,7 +40,7 @@ fn manifest_path(epoch_dir: &Path) -> PathBuf {
 
 fn corrupt(message: String) -> CoreError {
     CoreError::Typed {
-        code: HISTORY_TEXT_INDEX_CORRUPT_CODE.to_string(),
+        code: quanta_index_contract::SearchPlaneErrorCodeV2::HistoryTextIndexCorrupt,
         message,
     }
 }

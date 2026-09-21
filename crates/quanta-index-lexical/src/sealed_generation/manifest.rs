@@ -42,9 +42,7 @@ use quanta_index_core::domains::generation::SealedArtifactCommitmentV1;
 
 use crate::normalize::{TEXT_NORMALIZER_VERSION, TextNormalizerVersion};
 use crate::overlay_codec::OverlayFamily;
-use crate::text_authority::{
-    TEXT_AUTHORITY_DIR_NAME, TEXT_AUTHORITY_FORMAT_UNSUPPORTED_CODE, leading_format_version,
-};
+use crate::text_authority::{TEXT_AUTHORITY_DIR_NAME, leading_format_version};
 
 /// File name of the sealed manifest.
 pub(crate) const LEXICAL_SEALED_MANIFEST_FILE_NAME: &str = "search-corpus-generation-manifest.cbor";
@@ -55,15 +53,6 @@ pub(crate) const LEXICAL_SEALED_MANIFEST_FORMAT_VERSION: u32 = 6;
 /// index, no doc ids in the index. Refused by that name so the operator
 /// learns why a rebuild is needed.
 pub(crate) const LEXICAL_SEALED_MANIFEST_WHOLE_CORPUS_TEXT_AUTHORITY_VERSION: u32 = 2;
-/// Typed refusal for a manifest format this build does not serve.
-pub(crate) const GENERATION_MANIFEST_FORMAT_UNSUPPORTED_CODE: &str =
-    "GENERATION_MANIFEST_FORMAT_UNSUPPORTED";
-/// Typed refusal for a sealed identity without a manifest.
-pub(crate) const GENERATION_MANIFEST_MISSING_CODE: &str = "GENERATION_MANIFEST_MISSING";
-/// Typed refusal for an identity and a manifest sealed for different digests.
-pub(crate) const GENERATION_IDENTITY_DIGEST_MISMATCH_CODE: &str =
-    "GENERATION_IDENTITY_DIGEST_MISMATCH";
-
 /// How a door proves the index segment files, stamped into the manifest so
 /// the policy the seal committed to is readable from the bytes alone.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -144,7 +133,7 @@ pub(crate) fn manifest_path(generation_dir: &Path) -> PathBuf {
 
 fn manifest_corrupt(path: &Path, reason: &str) -> CoreError {
     CoreError::Typed {
-        code: quanta_index_core::GENERATION_SIDECAR_CORRUPT_CODE.to_string(),
+        code: quanta_index_core::GENERATION_SIDECAR_CORRUPT_CODE,
         message: format!(
             "lexical: sealed generation manifest {} is structurally invalid: {reason}",
             path.display()
@@ -217,7 +206,7 @@ impl LexicalSealedManifest {
         let format_version = leading_format_version(&value, "sealed generation manifest", path)?;
         if format_version == LEXICAL_SEALED_MANIFEST_WHOLE_CORPUS_TEXT_AUTHORITY_VERSION {
             return Err(CoreError::Typed {
-                code: TEXT_AUTHORITY_FORMAT_UNSUPPORTED_CODE.to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationTextAuthorityFormatUnsupported,
                 message: format!(
                     "lexical: sealed generation manifest {} has format {format_version}, the whole-corpus text-authority layout; this build serves format {LEXICAL_SEALED_MANIFEST_FORMAT_VERSION} with the sharded text authority, and the generation must be rebuilt",
                     path.display()
@@ -226,7 +215,7 @@ impl LexicalSealedManifest {
         }
         if format_version != LEXICAL_SEALED_MANIFEST_FORMAT_VERSION {
             return Err(CoreError::Typed {
-                code: GENERATION_MANIFEST_FORMAT_UNSUPPORTED_CODE.to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported,
                 message: format!(
                     "lexical: sealed generation manifest {} has format {format_version} (this build serves {LEXICAL_SEALED_MANIFEST_FORMAT_VERSION}: index-segment and overlay commitments over an index carrying the text-authority doc id and the ranked page order as fast columns); the generation must be rebuilt",
                     path.display()
@@ -256,7 +245,7 @@ impl LexicalSealedManifest {
             IndexSegmentVerificationV1::from_code(segment_verification)
         else {
             return Err(CoreError::Typed {
-                code: GENERATION_MANIFEST_FORMAT_UNSUPPORTED_CODE.to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported,
                 message: format!(
                     "lexical: sealed generation manifest {} stamps index-segment verification policy {segment_verification}, which this build does not know",
                     path.display()
@@ -372,7 +361,7 @@ pub(crate) fn read_manifest(generation_dir: &Path) -> Result<LexicalSealedManife
     let bytes = std::fs::read(&path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             CoreError::Typed {
-                code: GENERATION_MANIFEST_MISSING_CODE.to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestMissing,
                 message: format!(
                     "lexical: sealed generation has no content manifest at {}; it predates the sealed-manifest format and requires explicit migration",
                     path.display()
@@ -396,7 +385,7 @@ pub(crate) fn read_bound_manifest(
     let manifest = read_manifest(generation_dir)?;
     if manifest.manifest_digest != manifest_digest {
         return Err(CoreError::Typed {
-            code: GENERATION_IDENTITY_DIGEST_MISMATCH_CODE.to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch,
             message: format!(
                 "lexical: sealed manifest under {} was written for digest {} but the identity says {manifest_digest}",
                 generation_dir.display(),
@@ -429,8 +418,8 @@ mod tests {
     use quanta_index_core::domains::generation::SealedArtifactCommitmentV1;
 
     use super::{
-        GENERATION_MANIFEST_FORMAT_UNSUPPORTED_CODE, IndexSegmentVerificationV1,
-        LEXICAL_SEALED_MANIFEST_FORMAT_VERSION, LexicalSealedManifest, SealedManifestRow,
+        IndexSegmentVerificationV1, LEXICAL_SEALED_MANIFEST_FORMAT_VERSION, LexicalSealedManifest,
+        SealedManifestRow,
     };
     use crate::normalize::TEXT_NORMALIZER_VERSION;
 
@@ -458,9 +447,11 @@ mod tests {
         }
     }
 
-    fn typed_code(result: Result<LexicalSealedManifest, CoreError>) -> Option<String> {
+    fn typed_code(
+        result: &Result<LexicalSealedManifest, CoreError>,
+    ) -> Option<quanta_index_contract::SearchPlaneErrorCodeV2> {
         match result {
-            Err(CoreError::Typed { code, .. }) => Some(code),
+            Err(CoreError::Typed { code, .. }) => Some(*code),
             _ => None,
         }
     }
@@ -535,7 +526,7 @@ mod tests {
         for (label, manifest) in cases {
             let bytes = manifest.encode().expect("encode");
             assert_eq!(
-                typed_code(LexicalSealedManifest::decode(&bytes, Path::new("/g1/m"))).as_deref(),
+                typed_code(&LexicalSealedManifest::decode(&bytes, Path::new("/g1/m"))),
                 Some(quanta_index_core::GENERATION_SIDECAR_CORRUPT_CODE),
                 "{label}"
             );
@@ -563,8 +554,8 @@ mod tests {
             let bytes =
                 crate::channel_payloads::encode_cbor(&other_format, "test").expect("encode");
             assert_eq!(
-                typed_code(LexicalSealedManifest::decode(&bytes, Path::new("/g1/m"))).as_deref(),
-                Some(GENERATION_MANIFEST_FORMAT_UNSUPPORTED_CODE),
+                typed_code(&LexicalSealedManifest::decode(&bytes, Path::new("/g1/m"))),
+                Some(quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported),
                 "format {format}"
             );
         }
@@ -580,8 +571,10 @@ mod tests {
         );
         let bytes = crate::channel_payloads::encode_cbor(&other_policy, "test").expect("encode");
         assert_eq!(
-            typed_code(LexicalSealedManifest::decode(&bytes, Path::new("/g1/m"))).as_deref(),
-            Some(GENERATION_MANIFEST_FORMAT_UNSUPPORTED_CODE)
+            typed_code(&LexicalSealedManifest::decode(&bytes, Path::new("/g1/m"))),
+            Some(
+                quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported
+            )
         );
     }
 }

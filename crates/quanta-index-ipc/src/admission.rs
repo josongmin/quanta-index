@@ -213,7 +213,7 @@ impl SlotRefusal {
                 repo,
                 per_repo,
             } => SearchPlaneIpcError {
-                code: ERR_SERVER_OVERLOADED.to_string(),
+                code: ERR_SERVER_OVERLOADED,
                 message: format!(
                     "repository `{repo}` held its {per_repo} in-flight dispatch slot(s) for {} ms; retry with backoff",
                     waited.as_millis()

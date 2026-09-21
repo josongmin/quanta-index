@@ -55,8 +55,9 @@ mod tests {
 
     fn base_request() -> RepoMapQueryRequest {
         RepoMapQueryRequest {
-            repo_id: RepoId::new("repo"),
-            revision_id: RevisionId::new("rev"),
+            repo_id: RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+            revision_id: RevisionId::new("rev")
+                .expect("static fixture ID satisfies canonical policy"),
             manifest_generation: ManifestGeneration::new(1),
             query_text: "needle".to_string(),
             top_k: 5,
@@ -78,7 +79,9 @@ mod tests {
             assert!(
                 matches!(
                     RepoMapPolicy::validate_query(&req),
-                    Err(CoreError::Typed { code, .. }) if code == TOP_K_OUT_OF_RANGE_CODE
+                    Err(CoreError::Typed { code, .. }) if code == quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+                        quanta_index_contract::lex::LexicalErrorCode::QueryTopKOutOfRange
+                    )
                 ),
                 "top_k={refused} must be refused with {TOP_K_OUT_OF_RANGE_CODE}"
             );

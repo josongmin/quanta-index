@@ -248,7 +248,7 @@ impl TantivySearcher {
     ) -> Result<BTreeSet<String>, CoreError> {
         let Some(boundary_ms) = parse_search_timeref_ms(timeref) else {
             return Err(CoreError::Typed {
-                code: "HISTORY_INVALID_TIMEREF".to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::HistoryInvalidTimeref,
                 message: format!(
                     "history: timeref `{timeref}` is not a valid RFC3339 timestamp, date-only value, duration, or supported human timeref"
                 ),
@@ -301,7 +301,7 @@ impl TantivySearcher {
         RegexExecutor::compile(source)
             .map(Some)
             .map_err(|err| CoreError::Typed {
-                code: format!("LEX_REGEX_{}", err.code.as_code_str()),
+                code: crate::query_errors::regex_wire_code(err.code),
                 message: format!(
                     "lexical: repo.has.meta {field_name} regex {source:?} failed to compile: {err}"
                 ),
@@ -422,7 +422,7 @@ impl TantivySearcher {
         // engine is linear-time with no backtracking, so the bounded compile is
         // the only cost and the fixed ceiling is sufficient here.
         let executor = RegexExecutor::compile(&arg.pattern).map_err(|err| CoreError::Typed {
-            code: format!("LEX_REGEX_{}", err.code.as_code_str()),
+            code: crate::query_errors::regex_wire_code(err.code),
             message: format!(
                 "lexical: repo.has.description pattern {:?} failed to compile: {err}",
                 arg.pattern
@@ -577,7 +577,7 @@ impl TantivySearcher {
         let contributor_regex = match &arg.contributor {
             ContributorPattern::Regex(source) => Some(RegexExecutor::compile(source).map_err(
                 |err| CoreError::Typed {
-                    code: format!("LEX_REGEX_{}", err.code.as_code_str()),
+                    code: crate::query_errors::regex_wire_code(err.code),
                     message: format!(
                         "lexical: file.has.contributor regex {source:?} failed to compile: {err}"
                     ),

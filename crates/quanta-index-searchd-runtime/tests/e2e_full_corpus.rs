@@ -1246,6 +1246,10 @@ fn encode_repo_metadata_payload(metadata: &FixtureRepoMetadata) -> AnyResult<Vec
     Ok(buf)
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn ingest_fixture(rt: &mut E2eRuntime, fixture: &LoadedFixture) -> AnyResult<FixtureRuntimeState> {
     let mut docs_by_path: BTreeMap<String, Vec<&FixtureDoc>> = BTreeMap::new();
     for doc in &fixture.docs {
@@ -1348,7 +1352,8 @@ fn ingest_fixture(rt: &mut E2eRuntime, fixture: &LoadedFixture) -> AnyResult<Fix
                 .repo_commit_recency
                 .iter()
                 .map(|entry| RepoCommitRecencyEntry {
-                    source_repo_id: RepoId::new(&entry.source_repo_id),
+                    source_repo_id: RepoId::new(&entry.source_repo_id)
+                        .expect("test fixture ID satisfies canonical policy"),
                     latest_committer_time_ms: entry.latest_committer_time_ms,
                 })
                 .collect(),
@@ -1365,7 +1370,8 @@ fn ingest_fixture(rt: &mut E2eRuntime, fixture: &LoadedFixture) -> AnyResult<Fix
                 .repo_meta
                 .iter()
                 .map(|entry| RepoMetaEntry {
-                    source_repo_id: RepoId::new(&entry.source_repo_id),
+                    source_repo_id: RepoId::new(&entry.source_repo_id)
+                        .expect("test fixture ID satisfies canonical policy"),
                     key: entry.key.clone(),
                     value: entry.value.clone(),
                 })
@@ -1383,7 +1389,8 @@ fn ingest_fixture(rt: &mut E2eRuntime, fixture: &LoadedFixture) -> AnyResult<Fix
                 .repo_topic
                 .iter()
                 .map(|entry| RepoTopicEntry {
-                    source_repo_id: RepoId::new(&entry.source_repo_id),
+                    source_repo_id: RepoId::new(&entry.source_repo_id)
+                        .expect("test fixture ID satisfies canonical policy"),
                     topic: entry.topic.clone(),
                 })
                 .collect(),
@@ -1400,7 +1407,8 @@ fn ingest_fixture(rt: &mut E2eRuntime, fixture: &LoadedFixture) -> AnyResult<Fix
                 .file_ownership
                 .iter()
                 .map(|entry| FileOwnershipEntry {
-                    source_repo_id: RepoId::new(&entry.source_repo_id),
+                    source_repo_id: RepoId::new(&entry.source_repo_id)
+                        .expect("test fixture ID satisfies canonical policy"),
                     repo_relative_path: RepoRelativePath::new(&entry.repo_relative_path),
                     owners: entry.owners.clone(),
                 })
@@ -1418,7 +1426,8 @@ fn ingest_fixture(rt: &mut E2eRuntime, fixture: &LoadedFixture) -> AnyResult<Fix
                 .file_contributor
                 .iter()
                 .map(|entry| FileContributorEntry {
-                    source_repo_id: RepoId::new(&entry.source_repo_id),
+                    source_repo_id: RepoId::new(&entry.source_repo_id)
+                        .expect("test fixture ID satisfies canonical policy"),
                     repo_relative_path: RepoRelativePath::new(&entry.repo_relative_path),
                     contributors: entry
                         .contributors
@@ -1840,7 +1849,7 @@ fn assess_runtime_row(
                         )),
                     };
                 };
-                if err.code != expected_code {
+                if err.code.as_str() != expected_code {
                     return RowReport {
                         id: row.id.clone(),
                         failure: Some(format!(
@@ -1956,7 +1965,7 @@ fn assess_runtime_row(
                         )),
                     };
                 };
-                if err.code != expected_code {
+                if err.code.as_str() != expected_code {
                     return RowReport {
                         id: row.id.clone(),
                         failure: Some(format!(
@@ -2055,7 +2064,7 @@ fn assess_runtime_row(
                         )),
                     };
                 };
-                if err.code != expected_code {
+                if err.code.as_str() != expected_code {
                     return RowReport {
                         id: row.id.clone(),
                         failure: Some(format!(
@@ -2147,7 +2156,7 @@ fn assess_runtime_row(
                         )),
                     };
                 };
-                if err.code != expected_code {
+                if err.code.as_str() != expected_code {
                     return RowReport {
                         id: row.id.clone(),
                         failure: Some(format!(

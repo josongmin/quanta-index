@@ -210,7 +210,7 @@ impl SearchPlaneDispatcher {
             latency,
         );
         let outcome = if let SearchPlaneQueryIpcResponse::Error(error) = &response {
-            if let Some(suffix) = interruption_route_suffix(&error.code) {
+            if let Some(suffix) = interruption_route_suffix(error.code) {
                 self.emit_metric(
                     requested_pin,
                     &route.metric_name(suffix),

@@ -16,11 +16,16 @@ owner files:
 - `crates/quanta-index-ipc/src/{socket_access,server}.rs`
 - `crates/quanta-index-search-plane/src/control_dispatcher.rs`
 - `crates/quanta-index-searchd/src/app/{socket_access,runtime}.rs`
-- `crates/quanta-index-contract/src/ipc/{control,metrics}.rs`
+- `crates/quanta-index-contract/src/ipc/{control,metrics,split,mod}.rs`
 - `crates/quanta-index-sdk/src/{client,config,observability,runtime}.rs`
 - `crates/quanta-index-searchctl/src/{lib,main}.rs`
 - `crates/quanta-index-search-plane/src/readiness/`와 bounded diagnostics/metrics owner
+- `crates/quanta-index-searchd/src/app/config.rs`
 - control/readiness/process negative tests and suite modules, `tools/ci/{test-authority,proof-authority}.toml`, Just recipe
+- public API baselines와 `tools/ci/inventory/wire-surface.toml`
+
+위 디렉터리/개념 표현은 wildcard 권한이 아니다. common contract의 owner-freeze table에서 exact path/symbol/base blob과
+목적을 확정한 뒤에만 편집한다.
 
 구현 요구:
 
@@ -53,8 +58,12 @@ DoD:
 - active repository 0개이고 required process/provider가 healthy이면 `ready=true`; candidate integrity gate는 active
   candidate가 있을 때만 적용
 
-proof node는 `p09-control-readiness`다. `test_authority_targets`가 비어 있거나 capability/readiness/credential-spoof/
-component-kill scenarios를 선택하지 않으면 패치 전에 `BLOCKED`다. canonical release command는
+owner node expected tuple은 `id=p09-control-readiness-owner`, `family=U`, `required_host=any`,
+`dependencies=[p08-runtime-supervisor-owner]`다. release node는 `id=p09-control-readiness`, `family=P`,
+`required_host=linux-production-like`, `dependencies=[p09-control-readiness-owner,p08-runtime-supervisor]`다. transitive
+P02B contract는 current source digest로 소비하며 redundant direct dependency를 추가하지 않는다. `test_authority_targets`가
+비어 있으면 production implementation 전에 same lane에서 exact tests/suite/target/recipe/selector를 bootstrap한다.
+capability/readiness/credential-spoof/component-kill scenarios를 dry-run에서 실제 선택할 수 없을 때 `BLOCKED`다. canonical release command는
 Cargo test binary가 아니라 `release-daemon-fresh`의 exact path/hash를 process harness에 주입하는 dedicated recipe여야
 한다. registry의 `just rust-profile test-daemon`이 이를 보장하지 않으면 recipe/registry를 먼저 고친다. Linux
 production-like/release-daemon proof가 필요하다. component kill/corruption은 disposable local process/state-root에서만

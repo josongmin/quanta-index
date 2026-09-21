@@ -1,6 +1,5 @@
-use quanta_index_core::{CoreError, REQUEST_CANCELLED_CODE, REQUEST_DEADLINE_EXCEEDED_CODE};
+use quanta_index_core::CoreError;
 
-use crate::query_dispatcher::errors::ERR_RUNTIME_DIRTY_ONLY_UNSUPPORTED;
 use crate::query_dispatcher::metrics::classify_error_metric_name;
 
 #[test]
@@ -8,49 +7,55 @@ fn classify_error_metric_name_uses_closed_taxonomy() {
     let cases = [
         (
             CoreError::Typed {
-                code: "PARSE_FAIL".to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+                    quanta_index_contract::lex::LexicalErrorCode::ParseFail,
+                ),
                 message: "parse".to_string(),
             },
             "lq_typed_error_parse_total",
         ),
         (
             CoreError::Typed {
-                code: "BRIDGE_TRANSLATE_FAIL".to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+                    quanta_index_contract::lex::LexicalErrorCode::BridgeTranslateFail,
+                ),
                 message: "bridge".to_string(),
             },
             "lq_typed_error_parse_total",
         ),
         (
             CoreError::Typed {
-                code: "HISTORY_PRODUCER_UNAVAILABLE".to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::HistoryProducerUnavailable,
                 message: "history".to_string(),
             },
             "lq_typed_error_unavailable_total",
         ),
         (
             CoreError::Typed {
-                code: "LEX_TRIGRAM_PLAN_LIMIT_EXCEEDED".to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::LexTrigramPlanLimitExceeded,
                 message: "plan".to_string(),
             },
             "lq_typed_error_plan_limit_total",
         ),
         (
             CoreError::Typed {
-                code: REQUEST_DEADLINE_EXCEEDED_CODE.to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::RequestDeadlineExceeded,
                 message: "deadline".to_string(),
             },
             "lq_typed_error_deadline_exceeded_total",
         ),
         (
             CoreError::Typed {
-                code: REQUEST_CANCELLED_CODE.to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::RequestCancelled,
                 message: "cancelled".to_string(),
             },
             "lq_typed_error_cancelled_total",
         ),
         (
             CoreError::Typed {
-                code: "QUERY_TIMEOUT".to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+                    quanta_index_contract::lex::LexicalErrorCode::QueryTimeout,
+                ),
                 message: "timeout".to_string(),
             },
             "lq_typed_error_plan_limit_total",
@@ -61,7 +66,7 @@ fn classify_error_metric_name_uses_closed_taxonomy() {
         ),
         (
             CoreError::Typed {
-                code: "STR_GENERATION_NOT_READY".to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::StrGenerationNotReady,
                 message: "structural".to_string(),
             },
             "lq_typed_error_not_ready_total",
@@ -76,14 +81,14 @@ fn classify_error_metric_name_uses_closed_taxonomy() {
         ),
         (
             CoreError::Typed {
-                code: ERR_RUNTIME_DIRTY_ONLY_UNSUPPORTED.to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::RuntimeDirtyOnlyUnsupported,
                 message: "dirty".to_string(),
             },
             "lq_typed_error_invalid_request_total",
         ),
         (
             CoreError::Typed {
-                code: "SEM_EXECUTION_ODDITY".to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::AnnIndexIncompatible,
                 message: "other".to_string(),
             },
             "lq_typed_error_other_total",

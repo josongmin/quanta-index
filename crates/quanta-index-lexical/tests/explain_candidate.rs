@@ -28,12 +28,20 @@ type TestResult = Result<(), Box<dyn Error>>;
 
 const SCORE_TOLERANCE: f32 = 1e-5;
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn repo() -> RepoId {
-    RepoId::new("explain-repo")
+    RepoId::new("explain-repo").expect("static fixture ID satisfies canonical policy")
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn revision() -> RevisionId {
-    RevisionId::new("explain-rev")
+    RevisionId::new("explain-rev").expect("static fixture ID satisfies canonical policy")
 }
 
 fn generation() -> ManifestGeneration {

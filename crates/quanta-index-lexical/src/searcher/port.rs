@@ -189,7 +189,11 @@ impl LexicalSearcher for TantivySearcher {
                 .unwrap_or_default();
             rows.push(FileOwnerProjectionRow {
                 candidate_id: candidate.candidate_id.clone(),
-                repo_id: RepoId::new(source_repo_id),
+                repo_id: RepoId::new(source_repo_id).map_err(|error| {
+                    CoreError::Storage(format!(
+                        "lexical: file owner projection has invalid source repo ID: {error}"
+                    ))
+                })?,
                 revision_id: candidate.revision_id.clone(),
                 manifest_generation: candidate.manifest_generation,
                 repo_relative_path: candidate.repo_relative_path.clone(),

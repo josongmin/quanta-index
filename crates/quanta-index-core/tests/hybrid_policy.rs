@@ -13,11 +13,15 @@ use quanta_index_core::{CoreError, HybridOrchestratorPolicy};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn candidate(id: &str) -> LexicalCandidate {
     LexicalCandidate {
         candidate_id: id.to_string(),
-        repo_id: RepoId::new("r"),
-        revision_id: RevisionId::new("v"),
+        repo_id: RepoId::new("r").expect("static fixture ID satisfies canonical policy"),
+        revision_id: RevisionId::new("v").expect("static fixture ID satisfies canonical policy"),
         manifest_generation: ManifestGeneration::new(1),
         repo_relative_path: RepoRelativePath::new(""),
         start_line: 0,
@@ -35,7 +39,7 @@ fn g(n: u64) -> ManifestGeneration {
 
 fn typed_code_or_debug(result: Result<(), CoreError>) -> String {
     match result {
-        Err(CoreError::Typed { code, .. }) => code,
+        Err(CoreError::Typed { code, .. }) => code.to_string(),
         other => format!("unexpected result: {other:?}"),
     }
 }

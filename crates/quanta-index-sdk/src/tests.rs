@@ -14,7 +14,7 @@ use quanta_index_contract::{
     RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapMutationAck,
     RepoMapRedactionState, RepoRelativePath, RevisionId, RuntimeMetadataQueryRequest,
     SearchCorpusGenerationIdentityV1, SearchExplanation, SearchPlaneControlIpcRequestEnvelope,
-    SearchPlaneControlIpcResponseEnvelope, SearchPlaneHistoryQueryResponse,
+    SearchPlaneControlIpcResponseEnvelope, SearchPlaneErrorCodeV2, SearchPlaneHistoryQueryResponse,
     SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneIpcError, SearchPlaneQueryIpcRequestEnvelope,
     SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope,
@@ -253,11 +253,11 @@ fn sample_generation_pin() -> quanta_index_contract::GenerationPin {
 }
 
 fn repo_id() -> RepoId {
-    RepoId::new("repo-1")
+    RepoId::new("repo-1").expect("static fixture ID satisfies canonical policy")
 }
 
 fn revision_id() -> RevisionId {
-    RevisionId::new("rev-1")
+    RevisionId::new("rev-1").expect("static fixture ID satisfies canonical policy")
 }
 
 fn sample_cluster_membership_request() -> quanta_index_contract::ClusterMembershipReadRequestV1 {
@@ -673,7 +673,7 @@ fn unused_query() -> Arc<StubQueryTransport> {
 fn unused_control() -> Arc<StubControlTransport> {
     Arc::new(StubControlTransport::new(
         quanta_index_contract::SearchPlaneControlIpcResponse::Error(SearchPlaneIpcError {
-            code: "UNUSED_CONTROL".to_string(),
+            code: SearchPlaneErrorCodeV2::Internal,
             message: "test must install an explicit control response".to_string(),
             repair: None,
         }),
@@ -2148,9 +2148,11 @@ fn producer_client_rejects_activation_ack_identity_mismatches_v1() {
     let candidate = search_corpus_identity(7, "manifest:activate");
     let previous = search_corpus_identity(6, "manifest:previous");
     let mut wrong_repo = candidate.clone();
-    wrong_repo.lexical.repo_id = RepoId::new("other-repo");
+    wrong_repo.lexical.repo_id =
+        RepoId::new("other-repo").expect("static fixture ID satisfies canonical policy");
     let mut wrong_revision = candidate.clone();
-    wrong_revision.semantic.revision_id = RevisionId::new("other-revision");
+    wrong_revision.semantic.revision_id =
+        RevisionId::new("other-revision").expect("static fixture ID satisfies canonical policy");
     let wrong_generation = search_corpus_identity(8, "manifest:activate");
     let wrong_digest = search_corpus_identity(7, "manifest:other");
     // Same tracks, other semantic content roots: a different identity
@@ -2595,8 +2597,14 @@ fn history_publish_repo_commit_recency_routes_through_ingest_transport() {
     let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
     let batch =
         crate::RepoCommitRecencyBatch::new(repo_id(), revision_id(), ManifestGeneration::new(3))
-            .entry(RepoId::new("corp-a"), 1_717_171_717_000)
-            .entry(RepoId::new("corp-b"), 1_617_171_717_000);
+            .entry(
+                RepoId::new("corp-a").expect("static fixture ID satisfies canonical policy"),
+                1_717_171_717_000,
+            )
+            .entry(
+                RepoId::new("corp-b").expect("static fixture ID satisfies canonical policy"),
+                1_617_171_717_000,
+            );
     let observed = ok_or_fail!(client.history().publish_repo_commit_recency(&batch));
     let expected = BatchPublishReceipt {
         batch_digest: ok_or_fail!(batch.batch_digest()),
@@ -2651,8 +2659,16 @@ fn history_publish_repo_meta_routes_through_ingest_transport() {
     ));
     let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
     let batch = crate::RepoMetaBatch::new(repo_id(), revision_id(), ManifestGeneration::new(4))
-        .entry(RepoId::new("corp-a"), "license", "apache-2.0")
-        .entry(RepoId::new("corp-b"), "license", "gpl-3.0");
+        .entry(
+            RepoId::new("corp-a").expect("static fixture ID satisfies canonical policy"),
+            "license",
+            "apache-2.0",
+        )
+        .entry(
+            RepoId::new("corp-b").expect("static fixture ID satisfies canonical policy"),
+            "license",
+            "gpl-3.0",
+        );
     let observed = ok_or_fail!(client.history().publish_repo_meta(&batch));
     let expected = BatchPublishReceipt {
         batch_digest: ok_or_fail!(batch.batch_digest()),
@@ -2709,9 +2725,18 @@ fn history_publish_repo_topic_routes_through_ingest_transport() {
     ));
     let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
     let batch = crate::RepoTopicBatch::new(repo_id(), revision_id(), ManifestGeneration::new(5))
-        .entry(RepoId::new("corp-a"), "security")
-        .entry(RepoId::new("corp-a"), "platform")
-        .entry(RepoId::new("corp-b"), "ml");
+        .entry(
+            RepoId::new("corp-a").expect("static fixture ID satisfies canonical policy"),
+            "security",
+        )
+        .entry(
+            RepoId::new("corp-a").expect("static fixture ID satisfies canonical policy"),
+            "platform",
+        )
+        .entry(
+            RepoId::new("corp-b").expect("static fixture ID satisfies canonical policy"),
+            "ml",
+        );
     let observed = ok_or_fail!(client.history().publish_repo_topic(&batch));
     let expected = BatchPublishReceipt {
         batch_digest: ok_or_fail!(batch.batch_digest()),
@@ -2770,12 +2795,12 @@ fn history_publish_file_ownership_routes_through_ingest_transport() {
     let batch =
         crate::FileOwnershipBatch::new(repo_id(), revision_id(), ManifestGeneration::new(5))
             .entry(
-                RepoId::new("corp-a"),
+                RepoId::new("corp-a").expect("static fixture ID satisfies canonical policy"),
                 RepoRelativePath::new("src/gate-a.rs"),
                 vec!["@alice".to_string(), "@acme/platform".to_string()],
             )
             .entry(
-                RepoId::new("corp-b"),
+                RepoId::new("corp-b").expect("static fixture ID satisfies canonical policy"),
                 RepoRelativePath::new("src/gate-b.rs"),
                 Vec::new(),
             );
@@ -2837,12 +2862,12 @@ fn history_publish_file_contributor_routes_through_ingest_transport() {
     let batch =
         crate::FileContributorBatch::new(repo_id(), revision_id(), ManifestGeneration::new(6))
             .entry(
-                RepoId::new("corp-a"),
+                RepoId::new("corp-a").expect("static fixture ID satisfies canonical policy"),
                 RepoRelativePath::new("src/gate-a.rs"),
                 vec!["alice".to_string(), "carol".to_string()],
             )
             .entry(
-                RepoId::new("corp-b"),
+                RepoId::new("corp-b").expect("static fixture ID satisfies canonical policy"),
                 RepoRelativePath::new("src/gate-b.rs"),
                 vec!["bob".to_string()],
             );
@@ -2972,6 +2997,11 @@ fn structural_publish_routes_through_ingest_transport_and_carries_parse_trees() 
 #[test]
 fn repomap_publish_routes_through_ingest_transport() {
     let ack = RepoMapMutationAck {
+        prior_candidate_commitment: None,
+        new_candidate_commitment: format!("sha256:{}", "ab".repeat(32)),
+        activation_epoch: 1,
+        terminal_sequence: 1,
+        replayed: false,
         repo_id: repo_id(),
         revision_id: revision_id(),
         manifest_generation: ManifestGeneration::new(1),
@@ -3082,6 +3112,11 @@ fn repomap_query_routes_through_query_transport() {
 #[test]
 fn repomap_activate_routes_through_control_transport() {
     let ack = RepoMapMutationAck {
+        prior_candidate_commitment: None,
+        new_candidate_commitment: format!("sha256:{}", "ab".repeat(32)),
+        activation_epoch: 1,
+        terminal_sequence: 1,
+        replayed: false,
         repo_id: repo_id(),
         revision_id: revision_id(),
         manifest_generation: ManifestGeneration::new(9),
@@ -3491,7 +3526,7 @@ fn structural_sourcegraph_query_preserves_syntax() {
 fn lexical_publish_propagates_ingest_error_as_typed_remote() {
     let ingest = Arc::new(StubIngestTransport::new(
         SearchPlaneIngestIpcResponse::Error(quanta_index_contract::SearchPlaneIpcError {
-            code: "INVALID_REQUEST".to_string(),
+            code: SearchPlaneErrorCodeV2::InvalidRequest,
             message: "channel rejected".to_string(),
             repair: None,
         }),
@@ -3511,7 +3546,7 @@ fn lexical_publish_propagates_ingest_error_as_typed_remote() {
     let Some(crate::SdkError::Remote { code, message, .. }) = err else {
         return;
     };
-    assert_eq!(code, "INVALID_REQUEST");
+    assert_eq!(code, SearchPlaneErrorCodeV2::InvalidRequest);
     assert!(message.contains("channel rejected"));
 }
 
@@ -3596,8 +3631,10 @@ fn generations_rollback_rejects_invalid_composite_request_before_transport_v1() 
     let mut malformed_target = search_corpus_identity(10, "manifest:10");
     malformed_target.semantic.track = Track::Lexical;
     let mut other_repo_target = search_corpus_identity(10, "manifest:10");
-    other_repo_target.lexical.repo_id = RepoId::new("other-repo");
-    other_repo_target.semantic.repo_id = RepoId::new("other-repo");
+    other_repo_target.lexical.repo_id =
+        RepoId::new("other-repo").expect("static fixture ID satisfies canonical policy");
+    other_repo_target.semantic.repo_id =
+        RepoId::new("other-repo").expect("static fixture ID satisfies canonical policy");
     let requests = [
         SearchPlaneRollbackSearchCorpusGenerationCasRequest {
             expected_active: search_corpus_identity(11, "manifest:11"),
@@ -3765,7 +3802,7 @@ fn generations_current_propagates_not_ready_as_typed_remote() {
     use quanta_index_contract::{SearchPlaneControlIpcResponse, SearchPlaneIpcError};
     let control = Arc::new(StubControlTransport::new(
         SearchPlaneControlIpcResponse::Error(SearchPlaneIpcError {
-            code: "NOT_READY".to_string(),
+            code: SearchPlaneErrorCodeV2::NotReady,
             message: "no active Lexical generation for repo=r revision=rev".to_string(),
             repair: None,
         }),
@@ -3782,7 +3819,7 @@ fn generations_current_propagates_not_ready_as_typed_remote() {
     let Some(crate::SdkError::Remote { code, .. }) = err else {
         return;
     };
-    assert_eq!(code, "NOT_READY");
+    assert_eq!(code, SearchPlaneErrorCodeV2::NotReady);
 }
 
 #[test]
@@ -3925,7 +3962,7 @@ fn observability_metrics_snapshot_refuses_wrong_kind_and_surfaces_remote_errors(
     }
     let refused = Arc::new(StubControlTransport::new(
         SearchPlaneControlIpcResponse::Error(SearchPlaneIpcError {
-            code: "METRICS_SOURCE_DEFECT".to_string(),
+            code: SearchPlaneErrorCodeV2::MetricsSourceDefect,
             message: "metrics scrape: source point name `Bad` is not [a-z][a-z0-9_]*".to_string(),
             repair: None,
         }),
@@ -3933,7 +3970,7 @@ fn observability_metrics_snapshot_refuses_wrong_kind_and_surfaces_remote_errors(
     let client = QuantaIndex::from_transports(unused_query(), refused, unused_ingest());
     match client.observability().metrics_snapshot() {
         Err(crate::SdkError::Remote { code, message, .. }) => {
-            assert_eq!(code, "METRICS_SOURCE_DEFECT");
+            assert_eq!(code, SearchPlaneErrorCodeV2::MetricsSourceDefect);
             assert!(message.contains("`Bad`"), "{message}");
         }
         other => panic!("expected the daemon's typed refusal, got {other:?}"),
@@ -4070,7 +4107,7 @@ fn quarantine_discard_refuses_mismatched_acks_wrong_kinds_and_surfaces_refusals(
     }
     let refused = Arc::new(StubControlTransport::new(
         SearchPlaneControlIpcResponse::Error(SearchPlaneIpcError {
-            code: "QUARANTINE_TARGET_NOT_QUARANTINED".to_string(),
+            code: SearchPlaneErrorCodeV2::QuarantineTargetNotQuarantined,
             message: "semantic: refusing to discard /state/indexes/semantic/repo/rev/g5: it is quarantined as GENERATION_QUARANTINE_IDENTITY_UNREADABLE now".to_string(),
             repair: None,
         }),
@@ -4078,7 +4115,7 @@ fn quarantine_discard_refuses_mismatched_acks_wrong_kinds_and_surfaces_refusals(
     let client = QuantaIndex::from_transports(unused_query(), refused, unused_ingest());
     match client.quarantine().discard(&sent) {
         Err(crate::SdkError::Remote { code, message, .. }) => {
-            assert_eq!(code, "QUARANTINE_TARGET_NOT_QUARANTINED");
+            assert_eq!(code, SearchPlaneErrorCodeV2::QuarantineTargetNotQuarantined);
             assert!(
                 message.contains("list again") || message.contains("now"),
                 "{message}"
@@ -4179,12 +4216,15 @@ fn text_query_builder_refuses_out_of_range_top_k_before_any_round_trip() {
             .lexical()
             .query()
             .native("needle")
-            .active(RepoId::new("repo"), RevisionId::new("rev"))
+            .active(
+                RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+                RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
+            )
             .top_k(top_k)
             .execute();
         match outcome {
             Err(crate::SdkError::Remote { code, .. }) => assert_eq!(
-                code,
+                code.as_wire_str(),
                 quanta_index_contract::TOP_K_OUT_OF_RANGE_CODE,
                 "top_k={top_k}"
             ),
@@ -4204,7 +4244,10 @@ fn text_query_builder_accepts_the_public_maximum_top_k() {
             .lexical()
             .query()
             .native("needle")
-            .active(RepoId::new("repo"), RevisionId::new("rev"))
+            .active(
+                RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+                RevisionId::new("rev").expect("static fixture ID satisfies canonical policy")
+            )
             .top_k(quanta_index_contract::PUBLIC_TOP_K_MAX)
             .execute()
     );
@@ -4236,7 +4279,7 @@ fn hybrid_seed_builder_refuses_out_of_range_top_k_before_any_round_trip() {
             .execute();
         match outcome {
             Err(crate::SdkError::Remote { code, .. }) => assert_eq!(
-                code,
+                code.as_wire_str(),
                 quanta_index_contract::TOP_K_OUT_OF_RANGE_CODE,
                 "top_k={top_k}"
             ),
@@ -4441,7 +4484,7 @@ fn hybrid_builder_refuses_out_of_range_top_k_before_any_round_trip() {
             .execute();
         match outcome {
             Err(crate::SdkError::Remote { code, .. }) => assert_eq!(
-                code,
+                code.as_wire_str(),
                 quanta_index_contract::TOP_K_OUT_OF_RANGE_CODE,
                 "top_k={top_k}"
             ),

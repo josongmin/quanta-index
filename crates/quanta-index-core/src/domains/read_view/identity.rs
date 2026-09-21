@@ -137,8 +137,8 @@ mod tests {
         };
         let identity = ReadIdentityV1 {
             pin: GenerationPin::new(
-                RepoId::new("repo"),
-                RevisionId::new("rev"),
+                RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+                RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
                 ManifestGeneration::new(7),
             ),
             domains: RequiredDomainsV1::of(ReadDomainV1::LexicalTrack)
@@ -171,8 +171,8 @@ mod tests {
     fn an_identity_without_auxiliary_reads_says_so() {
         let identity = ReadIdentityV1 {
             pin: GenerationPin::new(
-                RepoId::new("repo"),
-                RevisionId::new("rev"),
+                RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+                RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
                 ManifestGeneration::new(1),
             ),
             domains: RequiredDomainsV1::of(ReadDomainV1::RepoMap),

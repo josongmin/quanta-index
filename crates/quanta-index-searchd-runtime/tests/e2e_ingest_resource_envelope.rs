@@ -43,7 +43,7 @@ fn pair_dir(rt: &E2eRuntime, track_root: &str) -> PathBuf {
 
 fn typed_code(response: &SearchPlaneIngestIpcResponse) -> Option<&str> {
     match response {
-        SearchPlaneIngestIpcResponse::Error(error) => Some(error.code.as_str()),
+        SearchPlaneIngestIpcResponse::Error(error) => Some(error.code.as_wire_str()),
         SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
         | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
@@ -98,7 +98,7 @@ fn a_batch_past_the_vector_envelope_is_refused_before_any_track_writes() -> Test
     let refused = rt.ingest_once(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(
         oversized,
     ))?;
-    if typed_code(&refused) != Some(INGEST_RESOURCE_BUDGET_EXCEEDED_CODE) {
+    if typed_code(&refused) != Some(INGEST_RESOURCE_BUDGET_EXCEEDED_CODE.as_wire_str()) {
         return Err(format!(
             "a two-record batch under a one-record envelope must be refused typed, got {refused:?}"
         )
@@ -178,7 +178,7 @@ fn the_record_ceiling_counts_every_carried_row() -> TestResult {
         return Err(format!("the fixture must carry two rows, carries {carried}").into());
     }
     let refused = rt.ingest_once(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch))?;
-    if typed_code(&refused) != Some(INGEST_RESOURCE_BUDGET_EXCEEDED_CODE) {
+    if typed_code(&refused) != Some(INGEST_RESOURCE_BUDGET_EXCEEDED_CODE.as_wire_str()) {
         return Err(format!(
             "two carried rows under a one-row envelope must be refused typed, got {refused:?}"
         )

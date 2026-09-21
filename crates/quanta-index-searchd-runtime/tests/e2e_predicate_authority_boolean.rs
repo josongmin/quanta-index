@@ -50,7 +50,10 @@ fn chunk(id: &str, path: &str, text: &str, source_repo_id: &str) -> AnyResult<Ch
         text: text.to_string().into_boxed_str(),
         structural: None,
         parent_chunk_id: None,
-        source_repo_id: Some(RepoId::new(source_repo_id)),
+        source_repo_id: Some(
+            RepoId::new(source_repo_id)
+                .map_err(|error| anyhow::anyhow!("invalid fixture repo id: {error}"))?,
+        ),
     })
 }
 
@@ -119,6 +122,10 @@ fn require_ids(
     Ok(())
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn boot_fixture() -> AnyResult<(E2eRuntime, FixtureIds)> {
     let mut rt = E2eRuntime::boot()?;
     let alpha_shared = "predicate-boolean-alpha".to_string();
@@ -183,17 +190,20 @@ fn boot_fixture() -> AnyResult<(E2eRuntime, FixtureIds)> {
         batch_digest: "predicate-boolean-meta".to_string(),
         entries: vec![
             RepoMetaEntry {
-                source_repo_id: RepoId::new("corp-alpha"),
+                source_repo_id: RepoId::new("corp-alpha")
+                    .expect("static fixture ID satisfies canonical policy"),
                 key: "tier".to_string(),
                 value: "prod".to_string(),
             },
             RepoMetaEntry {
-                source_repo_id: RepoId::new("corp-beta"),
+                source_repo_id: RepoId::new("corp-beta")
+                    .expect("static fixture ID satisfies canonical policy"),
                 key: "tier".to_string(),
                 value: "dev".to_string(),
             },
             RepoMetaEntry {
-                source_repo_id: RepoId::new("corp-gamma"),
+                source_repo_id: RepoId::new("corp-gamma")
+                    .expect("static fixture ID satisfies canonical policy"),
                 key: "tier".to_string(),
                 value: "prod".to_string(),
             },
@@ -206,15 +216,18 @@ fn boot_fixture() -> AnyResult<(E2eRuntime, FixtureIds)> {
         batch_digest: "predicate-boolean-topics".to_string(),
         entries: vec![
             RepoTopicEntry {
-                source_repo_id: RepoId::new("corp-alpha"),
+                source_repo_id: RepoId::new("corp-alpha")
+                    .expect("static fixture ID satisfies canonical policy"),
                 topic: "platform".to_string(),
             },
             RepoTopicEntry {
-                source_repo_id: RepoId::new("corp-beta"),
+                source_repo_id: RepoId::new("corp-beta")
+                    .expect("static fixture ID satisfies canonical policy"),
                 topic: "security".to_string(),
             },
             RepoTopicEntry {
-                source_repo_id: RepoId::new("corp-gamma"),
+                source_repo_id: RepoId::new("corp-gamma")
+                    .expect("static fixture ID satisfies canonical policy"),
                 topic: "security".to_string(),
             },
         ],
@@ -226,15 +239,18 @@ fn boot_fixture() -> AnyResult<(E2eRuntime, FixtureIds)> {
         batch_digest: "predicate-boolean-description".to_string(),
         entries: vec![
             RepoDescriptionEntry {
-                source_repo_id: RepoId::new("corp-alpha"),
+                source_repo_id: RepoId::new("corp-alpha")
+                    .expect("static fixture ID satisfies canonical policy"),
                 description: "platform ownership".to_string(),
             },
             RepoDescriptionEntry {
-                source_repo_id: RepoId::new("corp-beta"),
+                source_repo_id: RepoId::new("corp-beta")
+                    .expect("static fixture ID satisfies canonical policy"),
                 description: "security experiments".to_string(),
             },
             RepoDescriptionEntry {
-                source_repo_id: RepoId::new("corp-gamma"),
+                source_repo_id: RepoId::new("corp-gamma")
+                    .expect("static fixture ID satisfies canonical policy"),
                 description: "security production service".to_string(),
             },
         ],
@@ -246,17 +262,20 @@ fn boot_fixture() -> AnyResult<(E2eRuntime, FixtureIds)> {
         batch_digest: "predicate-boolean-owners".to_string(),
         entries: vec![
             FileOwnershipEntry {
-                source_repo_id: RepoId::new("corp-alpha"),
+                source_repo_id: RepoId::new("corp-alpha")
+                    .expect("static fixture ID satisfies canonical policy"),
                 repo_relative_path: RepoRelativePath::new("src/shared.rs"),
                 owners: vec!["@alice".to_string()],
             },
             FileOwnershipEntry {
-                source_repo_id: RepoId::new("corp-beta"),
+                source_repo_id: RepoId::new("corp-beta")
+                    .expect("static fixture ID satisfies canonical policy"),
                 repo_relative_path: RepoRelativePath::new("src/shared.rs"),
                 owners: vec!["@bob".to_string()],
             },
             FileOwnershipEntry {
-                source_repo_id: RepoId::new("corp-gamma"),
+                source_repo_id: RepoId::new("corp-gamma")
+                    .expect("static fixture ID satisfies canonical policy"),
                 repo_relative_path: RepoRelativePath::new("src/target.rs"),
                 owners: vec!["@alice".to_string()],
             },
@@ -269,7 +288,8 @@ fn boot_fixture() -> AnyResult<(E2eRuntime, FixtureIds)> {
         batch_digest: "predicate-boolean-contributors".to_string(),
         entries: vec![
             FileContributorEntry {
-                source_repo_id: RepoId::new("corp-alpha"),
+                source_repo_id: RepoId::new("corp-alpha")
+                    .expect("static fixture ID satisfies canonical policy"),
                 repo_relative_path: RepoRelativePath::new("src/shared.rs"),
                 contributors: vec![FileContributorIdentityEntry {
                     canonical: "carol".to_string(),
@@ -278,7 +298,8 @@ fn boot_fixture() -> AnyResult<(E2eRuntime, FixtureIds)> {
                 }],
             },
             FileContributorEntry {
-                source_repo_id: RepoId::new("corp-beta"),
+                source_repo_id: RepoId::new("corp-beta")
+                    .expect("static fixture ID satisfies canonical policy"),
                 repo_relative_path: RepoRelativePath::new("src/shared.rs"),
                 contributors: vec![FileContributorIdentityEntry {
                     canonical: "alice".to_string(),
@@ -287,7 +308,8 @@ fn boot_fixture() -> AnyResult<(E2eRuntime, FixtureIds)> {
                 }],
             },
             FileContributorEntry {
-                source_repo_id: RepoId::new("corp-gamma"),
+                source_repo_id: RepoId::new("corp-gamma")
+                    .expect("static fixture ID satisfies canonical policy"),
                 repo_relative_path: RepoRelativePath::new("src/target.rs"),
                 contributors: vec![FileContributorIdentityEntry {
                     canonical: "alice".to_string(),

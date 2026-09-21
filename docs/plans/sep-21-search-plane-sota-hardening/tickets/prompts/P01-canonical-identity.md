@@ -18,24 +18,32 @@ lane은 live persistence를 바꾸지 않으며 S21-01 전체 closure가 아니�
 ## owner scope
 
 - `crates/quanta-index-contract-base/{Cargo.toml,src/macros.rs,src/ids.rs}`와 identity property tests
+- fallible `RepoId`/`RevisionId` cutover에 필요한 모든 production/test constructor callsite. 시작 전에
+  `rg -l -e 'RepoId::new' -e 'RevisionId::new' crates --glob '*.rs'` 결과를 exact allowlist로 동결하고, 각
+  untrusted ingress는 오류를 전파한다. compatibility/panicking constructor나 unchecked test-only public path를 남기지 않는다.
 - `crates/quanta-index-contract/{Cargo.toml,src/ipc/error.rs,src/repomap.rs}`의 allocated canonical schema/error section
 - `crates/quanta-index-core/src/{error.rs,domains/generation.rs}`
 - query/ingest/control error converter, query repair/metrics classification
 - `crates/quanta-index-sdk/src/{error.rs,client.rs}`
+- typed IPC/SDK 전환에 직접 결속된 `quanta-index-ipc/src/admission.rs`, `quanta-index-searchctl/src/lib.rs`,
+  `quanta-index-searchd-harness/src/{ambiguity,harness,concurrency,bench_support}.rs`와 해당 fixture/test section
 - production `CoreError::Typed` producer sites와 dynamic error-code helper. preflight에서 exact generated allowlist를
   만들고 8 producer crate의 path를 기록한다. allowlist 밖 owner 변경이 필요하면 패치 전에 `BLOCKED`다.
 - 신규 pure `crates/quanta-index-repomap/src/layout_v3.rs`와 lib export
 - Cargo manifests/lockfile, identity/error/layout owner tests, dedicated Just/profile/test-authority/proof registry delta
 - `tools/ci/search-plane-error-code-table.schema.json` 규약에 따른 committed
   `tools/ci/inventory/search-plane-error-codes.json` producer/validator
-- shared public API baseline/wire inventory는 P02I single writer가 적용할 exact delta만 handoff한다.
+- P01A 자체 public surface 변경으로 발생한 public API baseline/wire inventory는 이 lane이 같은 checkpoint에서
+  갱신한다. P02I에는 P02A/P02B 후속 delta의 single-writer 경계만 handoff한다.
 
 ## 구현 순서
 
 1. `RepoId`/`RevisionId`의 public unchecked construction과 serde bypass를 제거한다. 하나의 validator를
    constructor/TryFrom/FromStr/serde가 공유하고 decode 후 normalize하지 않는다.
 2. `RepositoryRevisionIdentityV1`, `LogicalGenerationIdentityV1`, `ArtifactIdentityV1`를 amended ADR의 exact distinct
-   domain framing으로 구현한다. 기존 `GenerationStorageKeyV1` duplicate authority는 delegate/remove한다.
+   domain framing으로 구현한다. 기존 `GenerationStorageKeyV1`는 현재 live lexical/semantic layout의 legacy key이므로
+   P01A에서 digest/path semantics를 바꾸거나 제거하지 않는다. P03 live cutover 후 P10 importer 외 runtime consumer를
+   제거한다. 새 canonical identity가 기존 key로 delegate하는 역방향 권한도 금지한다.
 3. `CandidateCommitmentV1`, `CandidateObjectDigestV1`, `CandidateObjectAddressV1`, canonical candidate envelope와 fixed
    fanout grammar를 pure type/codec/path function으로 구현한다. human identity는 path component가 아니다.
 4. `QuarantineIncidentV1` codec/address 함수를 구현한다. caller-supplied positive state-root-global sequence가
@@ -52,7 +60,9 @@ lane은 live persistence를 바꾸지 않으며 S21-01 전체 closure가 아니�
 
 ## 금지
 
-- `persistence.rs`, `store.rs`, live `model.rs`, activation filename/codec, runtime boot/open, catalog schema 수정
+- `persistence.rs`, `store.rs`, live `model.rs`, activation filename/codec, runtime boot/open, catalog schema의
+  동작·layout·durability 변경. 다만 closed-error 타입 전환 때문에 필수인 기존 `CoreError::Typed` producer 표현만
+  `persistence.rs`/`store.rs`에서 바꿀 수 있으며, 경로/파일 I/O/activation 동작은 byte-for-byte 동일하게 유지한다.
 - object/quarantine filesystem write, legacy reader 제거, filesystem activation 제거
 - local/timestamp/random incident sequence, temporary hashed activation pointer
 - separator escape 보강, version prefix만 추가, silent normalization, compatibility constructor
@@ -72,7 +82,7 @@ lane은 live persistence를 바꾸지 않으며 S21-01 전체 closure가 아니�
 - production RepoMap filesystem mutation 0; live cutover symbols는 의도적으로 P03에 남음
 - `rust-public-api`, wire inventory, fuzz smoke와 owner-local tests가 same source를 가리킴
 
-proof node는 `p01-canonical-identity`다. 현재 staged row를 이 lane이 dedicated recipe와 non-empty
+proof expected tuple은 `id=p01-canonical-identity`, `family=U`, `dependencies=[p00-authority-freeze]`다. 현재 staged row를 이 lane이 dedicated recipe와 non-empty
 test-authority scope/targets로 교체하고 executable로 전환한다. generic `test-fast`나 compile-only를
 OWNER_PROOF_GREEN으로 승격하지 않는다.
 

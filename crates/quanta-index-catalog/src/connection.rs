@@ -13,7 +13,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use quanta_index_contract::ManifestGeneration;
-use quanta_index_core::{CATALOG_BUSY_CODE, CATALOG_ROW_CORRUPT_CODE, CoreError};
+use quanta_index_core::CoreError;
 use rusqlite::{Connection, OpenFlags};
 
 /// The catalog database file, under `state_root/catalog/`.
@@ -55,7 +55,7 @@ pub(crate) fn engine_error(action: &str, path: &Path, error: &rusqlite::Error) -
         )
     {
         return CoreError::Typed {
-            code: CATALOG_BUSY_CODE.to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogBusy,
             message: format!(
                 "catalog: {action} {} met a held lock past the busy budget: {error}",
                 path.display()
@@ -76,7 +76,7 @@ pub(crate) fn generation_i64(generation: ManifestGeneration) -> Result<i64, Core
 
 pub(crate) fn blob32(label: &str, bytes: &[u8]) -> Result<[u8; 32], CoreError> {
     <[u8; 32]>::try_from(bytes).map_err(|_wrong_length| CoreError::Typed {
-        code: CATALOG_ROW_CORRUPT_CODE.to_string(),
+        code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
         message: format!("catalog: {label} is {} bytes, expected 32", bytes.len()),
     })
 }
@@ -129,6 +129,19 @@ pub(crate) fn open_connection(
     if !journal_mode.eq_ignore_ascii_case("wal") || synchronous != 2 {
         return Err(CoreError::Storage(format!(
             "catalog: {} runs journal_mode={journal_mode} synchronous={synchronous}; the catalog requires wal/FULL",
+            path.display()
+        )));
+    }
+    // `fullfsync` is read back too (SEP-21 P02B): on the platforms that
+    // honor it, a silent `OFF` would ack directory entries the engine
+    // never forced. A platform that reports 0 because it cannot honor
+    // the flag is a storage error, not a degraded mode to run in.
+    let fullfsync: i64 = connection
+        .pragma_query_value(None, "fullfsync", |row| row.get(0))
+        .map_err(|error| engine_error("read fullfsync", &path, &error))?;
+    if fullfsync != 1 {
+        return Err(CoreError::Storage(format!(
+            "catalog: {} runs fullfsync={fullfsync}; the catalog requires fullfsync=ON where the platform honors it",
             path.display()
         )));
     }

@@ -112,7 +112,7 @@ impl TantivySearcher {
             // same typed code for callers that bypass the planner (today
             // there are none on the live rail).
             LqType::Commit | LqType::Diff => Err(CoreError::Typed {
-                code: crate::filters::codes::HISTORY_PRODUCER_UNAVAILABLE.to_string(),
+                code: crate::filters::codes::HISTORY_PRODUCER_UNAVAILABLE,
                 message: format!(
                     "lexical: type filter `{}` targets a surface with no producer on the lexical rail",
                     kind.as_str()
@@ -219,7 +219,7 @@ impl TantivySearcher {
                     // typed code as a defense-in-depth for any future caller
                     // that bypasses the planner.
                     return Err(CoreError::Typed {
-                        code: crate::filters::codes::REV_UNAVAILABLE.to_string(),
+                        code: crate::filters::codes::REV_UNAVAILABLE,
                         message: if is_rev_at_time_spec(spec) {
                             "lexical: rev:at.time(...) requires revision-selection and pin rebinding before lexical execution".to_string()
                         } else {
@@ -229,7 +229,7 @@ impl TantivySearcher {
                 }
                 LqFilter::Author { .. } => {
                     return Err(CoreError::Typed {
-                        code: crate::filters::codes::AUTHOR_UNAVAILABLE.to_string(),
+                        code: crate::filters::codes::AUTHOR_UNAVAILABLE,
                         message:
                             "lexical: author filter is not executable on the current adapter set"
                                 .to_string(),
@@ -237,7 +237,7 @@ impl TantivySearcher {
                 }
                 LqFilter::Committer { .. } => {
                     return Err(CoreError::Typed {
-                        code: crate::filters::codes::COMMITTER_UNAVAILABLE.to_string(),
+                        code: crate::filters::codes::COMMITTER_UNAVAILABLE,
                         message:
                             "lexical: committer filter is not executable on the current adapter set"
                                 .to_string(),
@@ -245,7 +245,7 @@ impl TantivySearcher {
                 }
                 LqFilter::Message { .. } => {
                     return Err(CoreError::Typed {
-                        code: crate::filters::codes::MESSAGE_UNAVAILABLE.to_string(),
+                        code: crate::filters::codes::MESSAGE_UNAVAILABLE,
                         message:
                             "lexical: message filter is not executable on the current adapter set"
                                 .to_string(),
@@ -253,7 +253,7 @@ impl TantivySearcher {
                 }
                 LqFilter::Dirty { .. } => {
                     return Err(CoreError::Typed {
-                        code: crate::filters::codes::DIRTY_UNAVAILABLE.to_string(),
+                        code: crate::filters::codes::DIRTY_UNAVAILABLE,
                         message:
                             "lexical: dirty filter is not executable on the current adapter set"
                                 .to_string(),
@@ -269,7 +269,7 @@ impl TantivySearcher {
                 | LqFilter::Affected { .. }
                 | LqFilter::InvalidatedBy { .. } => {
                     return Err(CoreError::Typed {
-                        code: crate::filters::codes::RUNTIME_CATALOG_UNAVAILABLE.to_string(),
+                        code: crate::filters::codes::RUNTIME_CATALOG_UNAVAILABLE,
                         message:
                             "lexical: runtime catalog filters are not executable on the current adapter set"
                                 .to_string(),
@@ -283,7 +283,7 @@ impl TantivySearcher {
                 | LqFilter::DiffRemoved { .. }
                 | LqFilter::DiffTouched { .. } => {
                     return Err(CoreError::Typed {
-                        code: crate::filters::codes::HISTORY_PRODUCER_UNAVAILABLE.to_string(),
+                        code: crate::filters::codes::HISTORY_PRODUCER_UNAVAILABLE,
                         message: "lexical: history date/diff filters require history producer"
                             .to_string(),
                     });

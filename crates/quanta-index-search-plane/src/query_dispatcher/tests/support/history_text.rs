@@ -6,7 +6,7 @@
 //! phrase, or an `All` of those (scores add) — with a raw string beside a
 //! scored clause dropped from the scoring the way the real adapter drops
 //! it (the route's predicate filters it). Everything else is refused
-//! [`HISTORY_TEXT_QUERY_UNSCORABLE_CODE`], as the real adapter refuses it.
+//! [`quanta_index_core::HISTORY_TEXT_QUERY_UNSCORABLE_CODE`], as the real adapter refuses it.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -15,8 +15,7 @@ use quanta_index_contract::{
     AuxEpochV1, HistoryScoreV1, LqExpr, LqLeaf, ManifestGeneration, RepoId, RevisionId,
 };
 use quanta_index_core::{
-    AuxiliaryGenerationKeyV1, CoreError, HISTORY_TEXT_INDEX_NOT_READY_CODE,
-    HISTORY_TEXT_QUERY_UNSCORABLE_CODE, HistoryTextAdmitFn, HistoryTextBuildV1,
+    AuxiliaryGenerationKeyV1, CoreError, HistoryTextAdmitFn, HistoryTextBuildV1,
     HistoryTextDiscardOutcomeV1, HistoryTextDocKeyV1, HistoryTextDocV1, HistoryTextEpochReceiptV1,
     HistoryTextEpochStatusV1, HistoryTextHitV1, HistoryTextIndexPort, HistoryTextPageV1,
     HistoryTextQueryV1, HistoryTextSearcher, RequestBudgetV1,
@@ -145,7 +144,8 @@ impl HistoryTextIndexPort for MemoryHistoryTextIndex {
                     .get(&(generation.clone(), base))
                     .cloned()
                     .ok_or_else(|| CoreError::Typed {
-                        code: HISTORY_TEXT_INDEX_NOT_READY_CODE.to_string(),
+                        code:
+                            quanta_index_contract::SearchPlaneErrorCodeV2::HistoryTextIndexNotReady,
                         message: format!("memory history text index: base epoch {base} is absent"),
                     })?;
                 (base_docs, upserts, "incremental")
@@ -173,7 +173,7 @@ impl HistoryTextIndexPort for MemoryHistoryTextIndex {
         let docs = epochs.get(&(generation.clone(), epoch)).cloned();
         drop(epochs);
         let docs = docs.ok_or_else(|| CoreError::Typed {
-            code: HISTORY_TEXT_INDEX_NOT_READY_CODE.to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::HistoryTextIndexNotReady,
             message: format!("memory history text index: epoch {epoch} is absent"),
         })?;
         Ok(Box::new(MemoryEpochSearcher { docs }))
@@ -200,7 +200,7 @@ impl HistoryTextIndexPort for MemoryHistoryTextIndex {
             .swap(false, std::sync::atomic::Ordering::SeqCst)
         {
             return Err(CoreError::Typed {
-                code: "HISTORY_TEXT_INDEX_FOREIGN_ENTRY".to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::HistoryTextIndexForeignEntry,
                 message: "memory history text index: injected foreign entry".to_string(),
             });
         }
@@ -267,7 +267,7 @@ pub(crate) fn tokens(text: &str) -> Vec<String> {
 
 fn unscorable() -> CoreError {
     CoreError::Typed {
-        code: HISTORY_TEXT_QUERY_UNSCORABLE_CODE.to_string(),
+        code: quanta_index_contract::SearchPlaneErrorCodeV2::HistoryTextQueryUnscorable,
         message: "memory history text index: only keyword / phrase conjunctions are scorable"
             .to_string(),
     }

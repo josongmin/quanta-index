@@ -19,7 +19,6 @@ use quanta_index_contract::{
 use quanta_index_core::RequestBudgetV1;
 
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
-use crate::query_dispatcher::errors::ERR_INVALID;
 use crate::query_dispatcher::tests::support::common::{
     TestResult, candidate, ipc_error_from, ready_ledger, ready_pin, test_activation_catalog,
 };
@@ -422,7 +421,9 @@ fn a_hybrid_row_without_either_query_is_refused() -> TestResult {
         );
         let (code, message) =
             ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
-        if code != ERR_INVALID || !message.contains(fragment) {
+        if code != quanta_index_contract::SearchPlaneErrorCodeV2::InvalidRequest
+            || !message.contains(fragment)
+        {
             return Err(format!("unexpected refusal: {code} {message}").into());
         }
     }
@@ -466,7 +467,9 @@ fn a_lexical_row_still_explains_as_a_lexical_score_trace() -> TestResult {
         Some(DENSE_QUERY),
     );
     let (code, message) = ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
-    if code != ERR_INVALID || !message.contains("semantic_query_text must be absent") {
+    if code != quanta_index_contract::SearchPlaneErrorCodeV2::InvalidRequest
+        || !message.contains("semantic_query_text must be absent")
+    {
         return Err(format!("unexpected refusal: {code} {message}").into());
     }
     Ok(())

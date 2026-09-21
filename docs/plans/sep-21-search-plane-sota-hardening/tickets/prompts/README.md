@@ -22,25 +22,36 @@
 | 9 | S21-10 | [P09](P09-control-readiness.md) | P08 exact handoff; current journal contract | M3 closure / `p09-control-readiness` |
 | 10 | S21-11 | [P10](P10-state-migration.md) | P09 exact handoff; current state-root contracts | M4 state workflow / `p10-state-migration` |
 | 11 | S21-12 | [P11](P11-cross-repo-cutover.md) | P10 exact handoff; current SDK/receipt contracts | M4 source-pair handoff / four independent P11 proofs |
-| 12 | S21-13B | [P12](P12-final-qualification.md) | all current handoffs | M5 aggregate / `p12-final-qualification` |
+| 12A | S21-13B | [P12A](P12A-final-proof-infrastructure.md) | P11 source-pair handoff | aggregate handoff-DAG producer checkpoint |
+| 12Q | S21-13B | [P12Q](P12-final-qualification.md) | P12A clean checkpoint + all current handoffs | M5 aggregate / `p12-final-qualification` |
 
 ## 복붙 큐
 
 각 새 task에는 해당 step의 prompt 파일 전체를 그대로 붙여넣는다. 여러 lane prompt를 한 task에 합치지 않는다.
 다음 큐 순서를 바꾸지 않는다.
 
+handoff artifact ID는 실행 label과 대부분 같지만 `P01A`는 `P01.json`/`lane=P01`, `P12Q`는
+`P12.json`/`lane=P12`를 사용한다. 이 둘을 `P01A.json`/`P12Q.json`으로 임의 변경하지 않는다.
+
 1. P00을 붙여넣고 checkpoint commit, source-bound proof, handoff, lane branch push를 받는다.
-2. P00 result SHA에서 P01A를 실행하고 같은 산출물을 받는다.
+1b. P00C contract-refresh: 이미 발급된 P00 receipt가 있어도 prompt/registry/문구 정합성 교정이 필요하면
+    P00 prompt를 재실행해 새 P00 result commit과 source-bound P00 handoff를 재발행한다. 기존 receipt는
+    immutable archive DAG로 보존하고 새 handoff가 current authority가 된다.
+2. P01R(=P01A)는 직전 P00/P00C 재발행 handoff의 result SHA에서만 실행하고 같은 산출물을 받는다.
 3. P01A result SHA를 exact base로 두 개의 격리 worktree/task에 P02A와 P02B를 동시에 붙여넣는다.
 4. 두 task가 모두 끝난 뒤 P02I를 새 integration task에 붙여넣는다.
-5. P02I 이후는 P03, P04, P05, P06, P07, P08, P09, P10, P11, P12를 한 번에 하나씩
+5. P02I 이후는 P03, P04, P05, P06, P07, P08, P09, P10, P11, P12A, P12Q를 한 번에 하나씩
    순차 실행한다.
 
-각 다음 task는 immediate predecessor의 checkpoint commit, handoff JSON, proof manifest digest와 push 결과를
-입력으로 받아야 한다. 산출물이 없거나 current source binding이 틀리면 시작하지 않고 `BLOCKED`로
-종료한다.
+각 다음 task는 immediate predecessor의 checkpoint commit, handoff JSON, required implementation-opening proof manifest digest와
+push 결과를 입력으로 받아야 한다. release-only proof가 승인/host 부재로 `NOT_RUN`이면 handoff status를
+`RELEASE_PROOF_PENDING`으로 유지하고 P12Q release closure에서 다시 요구한다. 산출물이 없거나 current source binding이
+틀리면 시작하지 않고 `BLOCKED`로 종료한다.
 
-현재 source에서는 P01A를 먼저 실행하면 안 된다. P00이 canonical encoding, current free-form error
+implementation-opening proof는 P03~P10의 `*-owner` node다. P11→P12A는 `p11-cross-repo-cutover`,
+P12A→P12Q는 `p12a-proof-infrastructure`가 gate다.
+
+어떤 source에서도 P01A를 먼저 실행하면 안 된다. P00이 canonical encoding, current free-form error
 authority inventory/digest, 닫힌 enum으로의 migration rule, phase ownership, quarantine sequence source와 proof selector를
 corrected handoff로 재동결해야 한다. final accepted error-code table/cardinality/digest의 owner는 P01A다.
 
@@ -76,3 +87,6 @@ re-export/baseline, wire inventory, generated docs는 P02I 단일 writer다.
 P02A와 P02B는 각각 exact source SHA/dirty digest, 변경 파일과 owner symbol, frozen types/invariants, command와
 selected/executed/passed/failed/ignored counts, NOT_RUN/blocker, P03 소비 API/fixture를 남긴다. P02I가 두 checkpoint를
 같은 clean integration HEAD에 합치고 양쪽 proof를 재실행하기 전 P03을 시작하지 않는다.
+
+P02I 통합 순서는 `P02A → P02B`로 고정한다. P12A는 final aggregate infrastructure만 고치고 checkpoint를 만든다.
+P12Q는 그 clean result에서 qualification만 수행하며 product/proof source를 고치지 않는다.

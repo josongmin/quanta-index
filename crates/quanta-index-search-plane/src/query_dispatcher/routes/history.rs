@@ -535,8 +535,9 @@ mod history_page_tests {
         let mut ledger = Ledger::new();
         ledger.apply_history_batch(
             &HistoryIngestBatch {
-                repo_id: RepoId::new("r"),
-                revision_id: RevisionId::new("rev"),
+                repo_id: RepoId::new("r").expect("static fixture ID satisfies canonical policy"),
+                revision_id: RevisionId::new("rev")
+                    .expect("static fixture ID satisfies canonical policy"),
                 generation: ManifestGeneration::new(1),
                 manifest_digest: None,
                 batch_digest: "history-order".to_string(),
@@ -549,8 +550,8 @@ mod history_page_tests {
         )?;
         ledger
             .history_state(
-                &RepoId::new("r"),
-                &RevisionId::new("rev"),
+                &RepoId::new("r").expect("static fixture ID satisfies canonical policy"),
+                &RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
                 ManifestGeneration::new(1),
             )
             .cloned()
@@ -779,8 +780,8 @@ mod history_page_tests {
         use quanta_index_core::{AUX_EPOCH_EXPIRED_CODE, AUX_EPOCH_RETAIN};
 
         let now = Instant::now();
-        let repo = RepoId::new("r");
-        let rev = RevisionId::new("rev");
+        let repo = RepoId::new("r").expect("static fixture ID satisfies canonical policy");
+        let rev = RevisionId::new("rev").expect("static fixture ID satisfies canonical policy");
         let generation = ManifestGeneration::new(1);
         let pin = GenerationPin::new(repo.clone(), rev.clone(), generation);
         let batch = |digest: &str, commits: Vec<CommitRecord>| HistoryIngestBatch {

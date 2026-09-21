@@ -26,8 +26,7 @@ use std::path::Path;
 
 use quanta_index_contract::AuxEpochV1;
 use quanta_index_core::{
-    AuxiliaryGenerationKeyV1, CoreError, HISTORY_TEXT_INDEX_NORMALIZER_UNSUPPORTED_CODE,
-    HISTORY_TEXT_INDEX_NOT_READY_CODE, HistoryTextBuildV1, HistoryTextDocV1,
+    AuxiliaryGenerationKeyV1, CoreError, HistoryTextBuildV1, HistoryTextDocV1,
     HistoryTextEpochReceiptV1, HistoryTextEpochStatusV1, HistoryTextKindV1,
 };
 use tantivy::{Index, IndexWriter, TantivyDocument};
@@ -128,13 +127,14 @@ fn require_servable_base(
     match manifest::epoch_status(&base_dir, base)? {
         HistoryTextEpochStatusV1::Servable => Ok(base_dir),
         HistoryTextEpochStatusV1::Absent => Err(CoreError::Typed {
-            code: HISTORY_TEXT_INDEX_NOT_READY_CODE.to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::HistoryTextIndexNotReady,
             message: format!(
                 "history text index: incremental build over epoch {base}, which has no index; a full build is required"
             ),
         }),
         HistoryTextEpochStatusV1::Unsupported { built_with } => Err(CoreError::Typed {
-            code: HISTORY_TEXT_INDEX_NORMALIZER_UNSUPPORTED_CODE.to_string(),
+            code:
+                quanta_index_contract::SearchPlaneErrorCodeV2::HistoryTextIndexNormalizerUnsupported,
             message: format!(
                 "history text index: incremental build over epoch {base}, built under text normalizer {built_with}; a full build is required"
             ),

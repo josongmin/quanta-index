@@ -39,7 +39,7 @@ use quanta_index_contract::{
     SearchCorpusTombstoneScope, SearchExplanation,
     SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
     SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponse,
-    SearchPlaneControlIpcResponseEnvelope, SearchPlaneExplainQueryRequest,
+    SearchPlaneControlIpcResponseEnvelope, SearchPlaneErrorCodeV2, SearchPlaneExplainQueryRequest,
     SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneIpcError, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
@@ -320,8 +320,49 @@ pub struct E2eHistoryResult {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct E2eTypedError {
-    pub code: String,
+    pub code: E2eErrorCode,
     pub message: String,
+}
+
+/// Harness failures are distinct from refusals decoded from the daemon wire.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum E2eErrorCode {
+    Remote(SearchPlaneErrorCodeV2),
+    HarnessStart,
+    HarnessRouteMismatch,
+    IpcTransport,
+    UnexpectedResponse,
+}
+
+impl E2eErrorCode {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Remote(code) => code.as_wire_str(),
+            Self::HarnessStart => "HARNESS_START",
+            Self::HarnessRouteMismatch => "HARNESS_ROUTE_MISMATCH",
+            Self::IpcTransport => "IPC_TRANSPORT",
+            Self::UnexpectedResponse => "UNEXPECTED_RESPONSE",
+        }
+    }
+
+    /// Exact decoder for the child-process benchmark artifact boundary.
+    #[must_use]
+    pub fn from_code_str(value: &str) -> Option<Self> {
+        match value {
+            "HARNESS_START" => Some(Self::HarnessStart),
+            "HARNESS_ROUTE_MISMATCH" => Some(Self::HarnessRouteMismatch),
+            "IPC_TRANSPORT" => Some(Self::IpcTransport),
+            "UNEXPECTED_RESPONSE" => Some(Self::UnexpectedResponse),
+            _ => SearchPlaneErrorCodeV2::from_wire_str(value).map(Self::Remote),
+        }
+    }
+}
+
+impl fmt::Display for E2eErrorCode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
 }
 
 impl fmt::Display for E2eTypedError {
@@ -766,12 +807,20 @@ impl E2eRuntime {
             })
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "fixed e2e harness identity is an in-source validated fixture"
+    )]
     pub fn repo(&self) -> RepoId {
-        RepoId::new("repo-e2e")
+        RepoId::new("repo-e2e").expect("static fixture ID satisfies canonical policy")
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "fixed e2e harness identity is an in-source validated fixture"
+    )]
     pub fn revision(&self) -> RevisionId {
-        RevisionId::new("rev-e2e")
+        RevisionId::new("rev-e2e").expect("static fixture ID satisfies canonical policy")
     }
 
     /// Current generation pin. Stable until `seal()` is called, then
@@ -983,7 +1032,9 @@ impl E2eRuntime {
                         }
                         Ok(Some(snapshot))
                     }
-                    SearchPlaneControlIpcResponse::Error(error) if error.code == "NOT_READY" => {
+                    SearchPlaneControlIpcResponse::Error(error)
+                        if error.code == SearchPlaneErrorCodeV2::NotReady =>
+                    {
                         Ok(None)
                     }
                     SearchPlaneControlIpcResponse::Error(error) => Err(anyhow::anyhow!(
@@ -1131,7 +1182,14 @@ impl E2eRuntime {
                     "e2e-{}-{path}",
                     self.request_id_counter.fetch_add(1, Ordering::Relaxed)
                 ));
-                let source_repo_id = chunk.source_repo_id.map(RepoId::new);
+                let source_repo_id =
+                    chunk
+                        .source_repo_id
+                        .map(RepoId::new)
+                        .transpose()
+                        .map_err(|error| {
+                            anyhow::anyhow!("e2e harness source repo ID is invalid: {error}")
+                        })?;
                 let record = ChunkRecord {
                     chunk_id,
                     repo_relative_path: RepoRelativePath::new(path),
@@ -1226,7 +1284,13 @@ impl E2eRuntime {
                         "e2e-{}-{path}",
                         self.request_id_counter.fetch_add(1, Ordering::Relaxed)
                     ));
-                    let source_repo_id = chunk.source_repo_id.map(RepoId::new);
+                    let source_repo_id = chunk
+                        .source_repo_id
+                        .map(RepoId::new)
+                        .transpose()
+                        .map_err(|error| {
+                            anyhow::anyhow!("e2e harness source repo ID is invalid: {error}")
+                        })?;
                     Ok::<ChunkRecord, anyhow::Error>(ChunkRecord {
                         chunk_id,
                         repo_relative_path: RepoRelativePath::new(*path),
@@ -2075,7 +2139,7 @@ impl E2eRuntime {
                     examined: 0,
                     next_cursor: None,
                     typed_error: Some(E2eTypedError {
-                        code: "HARNESS_START".to_string(),
+                        code: E2eErrorCode::HarnessStart,
                         message: err.to_string(),
                     }),
                 };
@@ -2135,7 +2199,7 @@ impl E2eRuntime {
                 examined: 0,
                 next_cursor: None,
                 typed_error: Some(E2eTypedError {
-                    code: err.code,
+                    code: E2eErrorCode::Remote(err.code),
                     message: err.message,
                 }),
             },
@@ -2181,7 +2245,7 @@ impl E2eRuntime {
             },
             Ok(E2eRoutePage::Refused(error)) => refused_query_result(error),
             Err(err) => refused_query_result(E2eTypedError {
-                code: "HARNESS_START".to_string(),
+                code: E2eErrorCode::HarnessStart,
                 message: err.to_string(),
             }),
         }
@@ -2348,7 +2412,7 @@ impl E2eRuntime {
         };
         match response.payload {
             SearchPlaneQueryIpcResponse::Error(err) => Ok(E2eRoutePage::Refused(E2eTypedError {
-                code: err.code,
+                code: E2eErrorCode::Remote(err.code),
                 message: err.message,
             })),
             payload @ (SearchPlaneQueryIpcResponse::Text(_)
@@ -2403,7 +2467,7 @@ impl E2eRuntime {
                     engines_touched: Vec::new(),
                     explanation: None,
                     typed_error: Some(E2eTypedError {
-                        code: "HARNESS_START".to_string(),
+                        code: E2eErrorCode::HarnessStart,
                         message: err.to_string(),
                     }),
                 };
@@ -2448,7 +2512,7 @@ impl E2eRuntime {
                 engines_touched: Vec::new(),
                 explanation: None,
                 typed_error: Some(E2eTypedError {
-                    code: err.code,
+                    code: E2eErrorCode::Remote(err.code),
                     message: err.message,
                 }),
             },
@@ -2495,7 +2559,7 @@ impl E2eRuntime {
             }
             Ok(E2eRoutePage::Refused(error)) => refused_query_result(error),
             Err(err) => refused_query_result(E2eTypedError {
-                code: "HARNESS_START".to_string(),
+                code: E2eErrorCode::HarnessStart,
                 message: err.to_string(),
             }),
         }
@@ -2563,7 +2627,7 @@ impl E2eRuntime {
                     engines_touched: Vec::new(),
                     explanation: None,
                     typed_error: Some(E2eTypedError {
-                        code: "HARNESS_START".to_string(),
+                        code: E2eErrorCode::HarnessStart,
                         message: err.to_string(),
                     }),
                 };
@@ -2599,7 +2663,7 @@ impl E2eRuntime {
                 engines_touched: Vec::new(),
                 explanation: None,
                 typed_error: Some(E2eTypedError {
-                    code: err.code,
+                    code: E2eErrorCode::Remote(err.code),
                     message: err.message,
                 }),
             },
@@ -2659,7 +2723,7 @@ impl E2eRuntime {
                     engines_touched: Vec::new(),
                     explanation: None,
                     typed_error: Some(E2eTypedError {
-                        code: "HARNESS_START".to_string(),
+                        code: E2eErrorCode::HarnessStart,
                         message: err.to_string(),
                     }),
                 };
@@ -2699,7 +2763,7 @@ impl E2eRuntime {
                 engines_touched: Vec::new(),
                 explanation: None,
                 typed_error: Some(E2eTypedError {
-                    code: err.code,
+                    code: E2eErrorCode::Remote(err.code),
                     message: err.message,
                 }),
             },
@@ -2822,7 +2886,7 @@ impl E2eRuntime {
             engines_touched: Vec::new(),
             explanation: None,
             typed_error: Some(E2eTypedError {
-                code: "IPC_TRANSPORT".to_string(),
+                code: E2eErrorCode::IpcTransport,
                 message,
             }),
         }
@@ -2914,7 +2978,7 @@ impl E2eRuntime {
                     presence: None,
                     explanation: None,
                     typed_error: Some(E2eTypedError {
-                        code: "HARNESS_START".to_string(),
+                        code: E2eErrorCode::HarnessStart,
                         message: err.to_string(),
                     }),
                 };
@@ -2936,7 +3000,7 @@ impl E2eRuntime {
                 presence: None,
                 explanation: None,
                 typed_error: Some(E2eTypedError {
-                    code: err.code,
+                    code: E2eErrorCode::Remote(err.code),
                     message: err.message,
                 }),
             },
@@ -3169,7 +3233,7 @@ fn unexpected_explain_response(kind: &str) -> E2eExplainResult {
         presence: None,
         explanation: None,
         typed_error: Some(E2eTypedError {
-            code: "UNEXPECTED_RESPONSE".to_string(),
+            code: E2eErrorCode::UnexpectedResponse,
             message: format!("expected Explain, got {kind}"),
         }),
     }
@@ -3186,7 +3250,7 @@ fn unexpected_history_response(kind: &str) -> E2eHistoryResult {
         examined: 0,
         next_cursor: None,
         typed_error: Some(E2eTypedError {
-            code: "UNEXPECTED_RESPONSE".to_string(),
+            code: E2eErrorCode::UnexpectedResponse,
             message: format!("expected History, got {kind}"),
         }),
     }
@@ -3214,7 +3278,7 @@ impl Drop for E2eRuntime {
 
 fn query_response_ready(response: &SearchPlaneQueryIpcResponseEnvelope) -> bool {
     match &response.payload {
-        SearchPlaneQueryIpcResponse::Error(err) => err.code != "NOT_READY",
+        SearchPlaneQueryIpcResponse::Error(err) => err.code != SearchPlaneErrorCodeV2::NotReady,
         SearchPlaneQueryIpcResponse::Text(_)
         | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::Semantic(_)
@@ -3234,7 +3298,8 @@ fn query_response_ready_allow_structural_not_ready(
 ) -> bool {
     match &response.payload {
         SearchPlaneQueryIpcResponse::Error(err) => {
-            err.code != "NOT_READY" && err.code != "STR_GENERATION_NOT_READY"
+            err.code != SearchPlaneErrorCodeV2::NotReady
+                && err.code != SearchPlaneErrorCodeV2::StrGenerationNotReady
         }
         SearchPlaneQueryIpcResponse::Text(_)
         | SearchPlaneQueryIpcResponse::Symbol(_)
@@ -3293,7 +3358,7 @@ fn explain_transport_error(
         presence: None,
         explanation: None,
         typed_error: Some(E2eTypedError {
-            code: "IPC_TRANSPORT".to_string(),
+            code: E2eErrorCode::IpcTransport,
             message,
         }),
     }
@@ -3396,7 +3461,7 @@ fn route_window_probe_from_response(
         SearchPlaneQueryIpcResponse::Error(err) => {
             return Ok(E2eRouteWindowProbe {
                 typed_error: Some(E2eTypedError {
-                    code: err.code,
+                    code: E2eErrorCode::Remote(err.code),
                     message: err.message,
                 }),
                 returned_rows: 0,
@@ -3480,7 +3545,7 @@ fn unexpected_response(kind: &str) -> E2eQueryResult {
         engines_touched: Vec::new(),
         explanation: None,
         typed_error: Some(E2eTypedError {
-            code: "UNEXPECTED_RESPONSE".to_string(),
+            code: E2eErrorCode::UnexpectedResponse,
             message: format!("expected Text, got {kind}"),
         }),
     }

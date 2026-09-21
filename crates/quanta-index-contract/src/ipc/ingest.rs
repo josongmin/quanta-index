@@ -4174,6 +4174,17 @@ impl<'de> Deserialize<'de> for StructuralIngestBatch {
 // BatchPublishReceipt
 // =============================================================================
 
+/// The canonical-CBOR format version of a persisted
+/// [`BatchPublishReceipt`] in the operation journal (SEP-21 P02B).
+///
+/// A journal-persisted receipt is stored as this version tag followed by
+/// the receipt's canonical CBOR. A reader that finds any other version
+/// refuses before any mutation (typed refusal — old receipt / new runtime
+/// and new receipt / old runtime are incompatible by design); there is no
+/// boot-time dual decoder and no live migration. Receipts of another
+/// version are offline-migration input only.
+pub const BATCH_PUBLISH_RECEIPT_FORMAT_VERSION: u32 = 1;
+
 /// Server-side receipt for a successful batch publish.
 ///
 /// Receipt truth is generation/materialization scoped, not channel-sequence
@@ -5086,11 +5097,11 @@ mod tests {
     }
 
     fn fixture_repo_id() -> RepoId {
-        RepoId::new("repo")
+        RepoId::new("repo").expect("static fixture ID satisfies canonical policy")
     }
 
     fn fixture_revision_id() -> RevisionId {
-        RevisionId::new("rev")
+        RevisionId::new("rev").expect("static fixture ID satisfies canonical policy")
     }
 
     fn fixture_generation() -> ManifestGeneration {
@@ -5337,11 +5348,13 @@ mod tests {
             batch_digest: "batch:repo-commit-recency".to_string(),
             entries: vec![
                 RepoCommitRecencyEntry {
-                    source_repo_id: RepoId::new("corp-a"),
+                    source_repo_id: RepoId::new("corp-a")
+                        .expect("static fixture ID satisfies canonical policy"),
                     latest_committer_time_ms: 1_717_171_717_000,
                 },
                 RepoCommitRecencyEntry {
-                    source_repo_id: RepoId::new("corp-b"),
+                    source_repo_id: RepoId::new("corp-b")
+                        .expect("static fixture ID satisfies canonical policy"),
                     latest_committer_time_ms: 1_617_171_717_000,
                 },
             ],
@@ -5356,12 +5369,14 @@ mod tests {
             batch_digest: "batch:repo-meta".to_string(),
             entries: vec![
                 RepoMetaEntry {
-                    source_repo_id: RepoId::new("corp-a"),
+                    source_repo_id: RepoId::new("corp-a")
+                        .expect("static fixture ID satisfies canonical policy"),
                     key: "license".to_string(),
                     value: "apache-2.0".to_string(),
                 },
                 RepoMetaEntry {
-                    source_repo_id: RepoId::new("corp-b"),
+                    source_repo_id: RepoId::new("corp-b")
+                        .expect("static fixture ID satisfies canonical policy"),
                     key: "license".to_string(),
                     value: "gpl-3.0".to_string(),
                 },
@@ -5377,11 +5392,13 @@ mod tests {
             batch_digest: "batch:repo-topic".to_string(),
             entries: vec![
                 RepoTopicEntry {
-                    source_repo_id: RepoId::new("corp-a"),
+                    source_repo_id: RepoId::new("corp-a")
+                        .expect("static fixture ID satisfies canonical policy"),
                     topic: "security".to_string(),
                 },
                 RepoTopicEntry {
-                    source_repo_id: RepoId::new("corp-b"),
+                    source_repo_id: RepoId::new("corp-b")
+                        .expect("static fixture ID satisfies canonical policy"),
                     topic: "ml".to_string(),
                 },
             ],
@@ -5396,11 +5413,13 @@ mod tests {
             batch_digest: "batch:repo-description".to_string(),
             entries: vec![
                 RepoDescriptionEntry {
-                    source_repo_id: RepoId::new("corp-a"),
+                    source_repo_id: RepoId::new("corp-a")
+                        .expect("static fixture ID satisfies canonical policy"),
                     description: "Apache distributed systems toolkit".to_string(),
                 },
                 RepoDescriptionEntry {
-                    source_repo_id: RepoId::new("corp-b"),
+                    source_repo_id: RepoId::new("corp-b")
+                        .expect("static fixture ID satisfies canonical policy"),
                     description: "Machine-learning training pipelines".to_string(),
                 },
             ],
@@ -5415,7 +5434,8 @@ mod tests {
             batch_digest: "batch:file-contributor".to_string(),
             entries: vec![
                 FileContributorEntry {
-                    source_repo_id: RepoId::new("corp-a"),
+                    source_repo_id: RepoId::new("corp-a")
+                        .expect("static fixture ID satisfies canonical policy"),
                     repo_relative_path: RepoRelativePath::new("src/gate-a.rs"),
                     contributors: vec![
                         FileContributorIdentityEntry {
@@ -5431,7 +5451,8 @@ mod tests {
                     ],
                 },
                 FileContributorEntry {
-                    source_repo_id: RepoId::new("corp-b"),
+                    source_repo_id: RepoId::new("corp-b")
+                        .expect("static fixture ID satisfies canonical policy"),
                     repo_relative_path: RepoRelativePath::new("src/gate-b.rs"),
                     contributors: vec![FileContributorIdentityEntry {
                         canonical: "bob".to_string(),
@@ -5900,7 +5921,7 @@ mod tests {
         let envelope = SearchPlaneIngestIpcResponseEnvelope {
             request_id: 4,
             payload: SearchPlaneIngestIpcResponse::Error(SearchPlaneIpcError {
-                code: "lexical_publish_failed".to_string(),
+                code: crate::SearchPlaneErrorCodeV2::Internal,
                 message: "channel write rejected".to_string(),
                 repair: None,
             }),

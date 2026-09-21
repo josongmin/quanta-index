@@ -21,8 +21,16 @@ fn g(value: u64) -> ManifestGeneration {
     ManifestGeneration::new(value)
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn pin(generation: u64) -> GenerationPin {
-    GenerationPin::new(RepoId::new("repo"), RevisionId::new("rev"), g(generation))
+    GenerationPin::new(
+        RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+        RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
+        g(generation),
+    )
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

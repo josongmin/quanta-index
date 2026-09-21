@@ -30,8 +30,8 @@ type TestRes = Result<(), Box<dyn std::error::Error>>;
 
 fn generation() -> AuxiliaryGenerationKeyV1 {
     AuxiliaryGenerationKeyV1 {
-        repo_id: RepoId::new("repo"),
-        revision_id: RevisionId::new("rev"),
+        repo_id: RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+        revision_id: RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
         generation: ManifestGeneration::new(3),
     }
 }
@@ -556,12 +556,15 @@ fn the_admit_predicate_bounds_the_page_and_counts_exactly() -> TestRes {
     // An error from the predicate aborts the search with that error.
     let failing: Arc<quanta_index_core::HistoryTextAdmitFn> = Arc::new(|_hit| {
         Err(CoreError::Typed {
-            code: "ROW_MISSING".to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::NotFound,
             message: "the row is not in the snapshot".to_string(),
         })
     });
     match searcher.search(&query, None, 2, failing, &RequestBudgetV1::unbounded()) {
-        Err(CoreError::Typed { code, .. }) if code == "ROW_MISSING" => Ok(()),
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::NotFound,
+            ..
+        }) => Ok(()),
         other => Err(format!("the predicate's error propagates, got {other:?}").into()),
     }
 }
@@ -985,7 +988,10 @@ fn unscorable_expressions_are_refused_typed() -> TestRes {
         None,
         10,
     ) {
-        Err(CoreError::Typed { code, .. }) if code == "LEX_TEXT_QUERY_NO_TOKENS" => Ok(()),
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::LexTextQueryNoTokens,
+            ..
+        }) => Ok(()),
         other => Err(format!("a token-less literal is refused typed, got {other:?}").into()),
     }
 }
@@ -1061,8 +1067,8 @@ fn durable_generations_list_the_pairs_index_directories_and_refuse_a_foreign_ent
     let root = tempfile::tempdir()?;
     let port = adapter(root.path())?;
     let key = |repo: &str, generation: u64| AuxiliaryGenerationKeyV1 {
-        repo_id: RepoId::new(repo),
-        revision_id: RevisionId::new("rev"),
+        repo_id: RepoId::new(repo).expect("history text test fixture repo ID is canonical"),
+        revision_id: RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
         generation: ManifestGeneration::new(generation),
     };
     for (repo, generation) in [("repo", 7), ("repo", 2), ("repo", 11), ("other", 5)] {
@@ -1074,18 +1080,27 @@ fn durable_generations_list_the_pairs_index_directories_and_refuse_a_foreign_ent
             },
         )?;
     }
-    let listed = port.durable_generations(&RepoId::new("repo"), &RevisionId::new("rev"))?;
+    let listed = port.durable_generations(
+        &RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+        &RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
+    )?;
     if listed != [2, 7, 11].map(ManifestGeneration::new) {
         return Err(format!("the pair's generations ascending: {listed:?}").into());
     }
     if !port
-        .durable_generations(&RepoId::new("absent"), &RevisionId::new("rev"))?
+        .durable_generations(
+            &RepoId::new("absent").expect("static fixture ID satisfies canonical policy"),
+            &RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
+        )?
         .is_empty()
     {
         return Err("a pair with no directory lists nothing".into());
     }
     let _discarded = port.discard_generation(&key("repo", 7))?;
-    let listed = port.durable_generations(&RepoId::new("repo"), &RevisionId::new("rev"))?;
+    let listed = port.durable_generations(
+        &RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+        &RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
+    )?;
     if listed != [2, 11].map(ManifestGeneration::new) {
         return Err(format!("the discarded generation drops out: {listed:?}").into());
     }
@@ -1095,7 +1110,10 @@ fn durable_generations_list_the_pairs_index_directories_and_refuse_a_foreign_ent
         .ok_or("the pair directory")?
         .to_path_buf();
     std::fs::create_dir(pair_dir.join("g07"))?;
-    match port.durable_generations(&RepoId::new("repo"), &RevisionId::new("rev")) {
+    match port.durable_generations(
+        &RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+        &RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
+    ) {
         Err(CoreError::Typed { code, message })
             if code == HISTORY_TEXT_INDEX_CORRUPT_CODE && message.contains("g07") =>
         {

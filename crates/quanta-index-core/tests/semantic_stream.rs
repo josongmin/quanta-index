@@ -110,10 +110,14 @@ fn model_contract() -> EmbeddingModelContract {
     }
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn batch(replace_scopes: Vec<SemanticReplaceScope>) -> SemanticIngestBatch {
     SemanticIngestBatch {
-        repo_id: RepoId::new("repo"),
-        revision_id: RevisionId::new("rev"),
+        repo_id: RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+        revision_id: RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
         generation: ManifestGeneration::new(3),
         base_generation: None,
         manifest_digest: "manifest:3".to_string(),
@@ -142,9 +146,11 @@ fn ids(window: &SemanticScopeWindowV1) -> Vec<String> {
         .collect()
 }
 
-fn typed_code(result: Result<Option<SemanticScopeWindowV1>, CoreError>) -> Option<String> {
+fn typed_code(
+    result: &Result<Option<SemanticScopeWindowV1>, CoreError>,
+) -> Option<quanta_index_contract::SearchPlaneErrorCodeV2> {
     match result {
-        Err(CoreError::Typed { code, .. }) => Some(code),
+        Err(CoreError::Typed { code, .. }) => Some(*code),
         Err(
             CoreError::InvalidContract(_)
             | CoreError::NotReady(_)
@@ -376,9 +382,7 @@ fn owners_travel_whole_with_their_memberships_and_an_oversize_owner_is_refused()
     // One row per window by bytes: cluster-a's two rows fit no window.
     let one_row = SemanticStreamWindowPolicy::new(SEMANTIC_STREAM_WINDOW_SCOPES, ROW_BYTES)?;
     let mut source = ResidentScopeSource::new(&scopes, one_row)?;
-    if typed_code(source.next_window()).as_deref()
-        != Some(SEMANTIC_STREAM_OWNER_SCOPE_OVER_WINDOW_CODE)
-    {
+    if typed_code(&source.next_window()) != Some(SEMANTIC_STREAM_OWNER_SCOPE_OVER_WINDOW_CODE) {
         return Err("an owner over the byte ceiling is refused typed".into());
     }
     Ok(())
@@ -398,9 +402,7 @@ fn a_resident_window_blocks_the_next_and_admission_refuses_over_policy() -> Test
     let first = source
         .next_window()?
         .ok_or("two owners issue a first window")?;
-    if typed_code(source.next_window()).as_deref()
-        != Some(SEMANTIC_STREAM_WINDOW_STILL_RESIDENT_CODE)
-    {
+    if typed_code(&source.next_window()) != Some(SEMANTIC_STREAM_WINDOW_STILL_RESIDENT_CODE) {
         return Err("a second window while one is resident is refused typed".into());
     }
     drop(first);

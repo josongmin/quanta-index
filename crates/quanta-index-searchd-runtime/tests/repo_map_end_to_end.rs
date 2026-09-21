@@ -50,11 +50,11 @@ static NEXT_SOCKET_ID: AtomicU64 = AtomicU64::new(0);
 const READINESS_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn repo() -> RepoId {
-    RepoId::new("repo-repomap-e2e")
+    RepoId::new("repo-repomap-e2e").expect("static fixture ID satisfies canonical policy")
 }
 
 fn revision() -> RevisionId {
-    RevisionId::new("rev-repomap-e2e")
+    RevisionId::new("rev-repomap-e2e").expect("static fixture ID satisfies canonical policy")
 }
 
 fn generation() -> ManifestGeneration {
@@ -149,7 +149,7 @@ fn repo_map_bundle() -> Result<RepoMapSourceBundle, Box<dyn Error>> {
         repo(),
         revision(),
         generation(),
-        "manifest-digest-11",
+        "1".repeat(64),
         "repomap-snapshot-11",
         1,
         "d".repeat(64),
@@ -190,6 +190,15 @@ fn repo_map_bundle() -> Result<RepoMapSourceBundle, Box<dyn Error>> {
             owner_path: RepoRelativePath::new("src/service/mod.rs"),
             local_name: "Beta".to_string(),
             qualified_name: "src::service::Beta".to_string(),
+            symbol_kind: symbol_kind("struct")?,
+        },
+    ))
+    .with_node(RepoMapNode::Symbol(
+        quanta_index_contract::RepoMapSymbolNode {
+            symbol_id: SymbolId::new("symbol://gamma"),
+            owner_path: RepoRelativePath::new("tests/repo_map.rs"),
+            local_name: "Gamma".to_string(),
+            qualified_name: "tests::repo_map::Gamma".to_string(),
             symbol_kind: symbol_kind("struct")?,
         },
     ))
@@ -256,7 +265,7 @@ fn repo_map_bundle() -> Result<RepoMapSourceBundle, Box<dyn Error>> {
     .with_edge(quanta_index_contract::RepoMapEdge::Call(
         quanta_index_contract::RepoMapCallEdge {
             caller: RepoMapNodeRef::Symbol(SymbolId::new("symbol://beta")),
-            callee: RepoMapNodeRef::File(FileId::new("file://tests/repo_map.rs")),
+            callee: RepoMapNodeRef::Symbol(SymbolId::new("symbol://gamma")),
         },
     ))
     .with_edge(quanta_index_contract::RepoMapEdge::Import(
@@ -321,7 +330,7 @@ fn repo_map_activate_request() -> SearchPlaneControlIpcRequestEnvelope {
             repo_id: repo(),
             revision_id: revision(),
             manifest_generation: generation(),
-            manifest_digest: "manifest-digest-11".to_string(),
+            manifest_digest: "1".repeat(64).to_string(),
         }),
     }
 }
@@ -563,7 +572,7 @@ fn repo_map_query_without_materialized_snapshot_fails_closed() -> TestResult {
             return Err(format!("expected error response, got {other:?}").into());
         }
     };
-    assert_eq!(err.code, "NOT_FOUND");
+    assert_eq!(err.code.as_wire_str(), "NOT_FOUND");
     assert!(err.message.contains("no activated generation"));
 
     shutdown.store(true, Ordering::Release);

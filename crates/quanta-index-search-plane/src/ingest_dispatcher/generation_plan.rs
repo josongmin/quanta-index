@@ -14,9 +14,6 @@ use quanta_index_core::{
     SemanticStreamTallyV1,
 };
 
-use crate::ingest_dispatcher::errors::{
-    ERR_SEARCH_CORPUS_GENERATION_CONFLICT, ERR_SEARCH_CORPUS_GENERATION_REPAIR_REQUIRED,
-};
 use crate::{SnapshotKey, SnapshotRegistries, SnapshotRetireOutcome};
 
 /// What one physical reclaim pass did, per track and generation.
@@ -90,7 +87,7 @@ pub(super) enum PhysicalGenerationStateV1 {
     /// `code` is the validator's typed refusal, kept so the repair refusal
     /// can name it.
     Corrupt {
-        code: String,
+        code: quanta_index_contract::SearchPlaneErrorCodeV2,
     },
 }
 
@@ -119,13 +116,18 @@ impl SealedGenerationBuildPlanV1 {
     }
 
     /// The tracks that are sealed but not exact, with the validator's code.
-    fn corrupt_tracks(&self) -> Vec<(&GenerationSnapshot, &str)> {
+    fn corrupt_tracks(
+        &self,
+    ) -> Vec<(
+        &GenerationSnapshot,
+        quanta_index_contract::SearchPlaneErrorCodeV2,
+    )> {
         let mut tracks = Vec::new();
         if let PhysicalGenerationStateV1::Corrupt { code } = &self.lexical_state {
-            tracks.push((&self.lexical, code.as_str()));
+            tracks.push((&self.lexical, *code));
         }
         if let PhysicalGenerationStateV1::Corrupt { code } = &self.semantic_state {
-            tracks.push((&self.semantic, code.as_str()));
+            tracks.push((&self.semantic, *code));
         }
         tracks
     }
@@ -156,7 +158,7 @@ impl SealedGenerationBuildPlanV1 {
         for (track, code) in self.corrupt_tracks() {
             if mode != BatchIngestMode::ReplaceGeneration {
                 return Err(CoreError::Typed {
-                    code: ERR_SEARCH_CORPUS_GENERATION_REPAIR_REQUIRED.to_string(),
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationRepairRequired,
                     message: format!(
                         "direct search-corpus materialize: {:?} track of repo={} revision={} generation={} is sealed but fails exact validation ({code}); a Delta batch cannot rebuild it — publish a ReplaceGeneration seal batch for generation {} to rebuild the damaged track",
                         track.track,
@@ -186,7 +188,7 @@ impl SealedGenerationBuildPlanV1 {
             };
             if let SnapshotRetireOutcome::StillReferenced { holders } = fence {
                 return Err(CoreError::Typed {
-                    code: ERR_SEARCH_CORPUS_GENERATION_CONFLICT.to_string(),
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationConflict,
                     message: format!(
                         "direct search-corpus materialize: {:?} track of generation {} fails exact validation ({code}) but {holders} reader(s) still hold its handle; the rebuild is refused rather than deleting under them — retry once they release",
                         track.track,
@@ -198,7 +200,7 @@ impl SealedGenerationBuildPlanV1 {
                 Ok(SealedGenerationReclaimOutcomeV1::Reclaimed { .. }) => {}
                 Ok(SealedGenerationReclaimOutcomeV1::Absent) => {
                     return Err(CoreError::Typed {
-                        code: ERR_SEARCH_CORPUS_GENERATION_CONFLICT.to_string(),
+                        code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationConflict,
                         message: format!(
                             "direct search-corpus materialize: {:?} track of generation {} failed validation ({code}) but vanished before it could be reclaimed for rebuild",
                             track.track,
@@ -208,7 +210,7 @@ impl SealedGenerationBuildPlanV1 {
                 }
                 Err(refused) => {
                     return Err(CoreError::Typed {
-                        code: ERR_SEARCH_CORPUS_GENERATION_REPAIR_REQUIRED.to_string(),
+                        code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationRepairRequired,
                         message: format!(
                             "direct search-corpus materialize: {:?} track of repo={} revision={} generation={} is sealed but fails exact validation ({code}) and its sealed identity cannot be reclaimed for rebuild ({refused}); discard it through the quarantine surface, then publish a ReplaceGeneration seal batch for generation {}",
                             track.track,
@@ -268,9 +270,10 @@ pub(super) fn inspect_physical_generation_v1(
     match validator.validate_generation_identity(candidate) {
         Ok(()) => Ok(PhysicalGenerationStateV1::Exact),
         Err(CoreError::NotFound(_)) => Ok(PhysicalGenerationStateV1::Absent),
-        Err(CoreError::Typed { code, .. }) if code == "GENERATION_IDENTITY_INCOMPLETE" => {
-            Ok(PhysicalGenerationStateV1::InProgress)
-        }
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityIncomplete,
+            ..
+        }) => Ok(PhysicalGenerationStateV1::InProgress),
         Err(CoreError::Typed { code, .. }) => Ok(PhysicalGenerationStateV1::Corrupt { code }),
         Err(source) => Err(CoreError::Storage(format!(
             "direct search-corpus materialize: {label} generation could not be inspected for repo={} revision={} generation={}: {source}",
@@ -295,7 +298,7 @@ pub(super) fn ensure_generation_is_mutable_v1(
     match inspect_physical_generation_v1(validator, candidate, label)? {
         PhysicalGenerationStateV1::Absent | PhysicalGenerationStateV1::InProgress => Ok(()),
         PhysicalGenerationStateV1::Exact => Err(CoreError::Typed {
-            code: "GENERATION_IMMUTABLE".to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationImmutable,
             message: format!(
                 "direct search-corpus materialize: {label} generation is already sealed; refusing non-seal mutation for repo={} revision={} generation={}",
                 candidate.repo_id.as_str(),
@@ -304,7 +307,8 @@ pub(super) fn ensure_generation_is_mutable_v1(
             ),
         }),
         PhysicalGenerationStateV1::Corrupt { code } => Err(CoreError::Typed {
-            code: ERR_SEARCH_CORPUS_GENERATION_REPAIR_REQUIRED.to_string(),
+            code:
+                quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationRepairRequired,
             message: format!(
                 "direct search-corpus materialize: {label} generation is sealed but fails exact validation ({code}) for repo={} revision={} generation={}; a non-seal batch cannot rebuild it — publish a ReplaceGeneration seal batch for generation {} to rebuild the damaged track",
                 candidate.repo_id.as_str(),
@@ -324,7 +328,7 @@ pub(super) fn validate_physical_generation_v1(
     validator
         .validate_generation_identity(candidate)
         .map_err(|source| CoreError::Typed {
-            code: ERR_SEARCH_CORPUS_GENERATION_CONFLICT.to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationConflict,
             message: format!(
                 "direct search-corpus materialize: {label} generation failed exact validation for repo={} revision={} generation={}: {source:?}",
                 candidate.repo_id.as_str(),
@@ -347,7 +351,8 @@ pub(super) fn validate_delta_base_v1(
     match inspect_physical_generation_v1(validator, base, label)? {
         PhysicalGenerationStateV1::Exact => Ok(()),
         PhysicalGenerationStateV1::Corrupt { code } => Err(CoreError::Typed {
-            code: ERR_SEARCH_CORPUS_GENERATION_REPAIR_REQUIRED.to_string(),
+            code:
+                quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationRepairRequired,
             message: format!(
                 "direct search-corpus materialize: {label} generation {} for repo={} revision={} is sealed but fails exact validation ({code}); a delta cannot build on a damaged base — publish a ReplaceGeneration seal batch for generation {} to rebuild it, then retry the delta",
                 base.manifest_generation.get(),
@@ -358,7 +363,7 @@ pub(super) fn validate_delta_base_v1(
         }),
         state @ (PhysicalGenerationStateV1::Absent | PhysicalGenerationStateV1::InProgress) => {
             Err(CoreError::Typed {
-                code: ERR_SEARCH_CORPUS_GENERATION_CONFLICT.to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationConflict,
                 message: format!(
                     "direct search-corpus materialize: {label} generation {} for repo={} revision={} is {state:?} on disk although the ledger recorded it sealed; refusing before any mutation",
                     base.manifest_generation.get(),

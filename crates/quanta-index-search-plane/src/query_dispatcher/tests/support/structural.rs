@@ -288,8 +288,10 @@ where
 
 pub(crate) fn ready_ledger_with_structural_boolean_chunks() -> Arc<RwLock<Ledger>> {
     let mut ledger = Ledger::default();
-    let repo_id = RepoId::new("repo-map-ipc");
-    let revision_id = RevisionId::new("rev-map-ipc");
+    let repo_id =
+        RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy");
+    let revision_id =
+        RevisionId::new("rev-map-ipc").expect("static fixture ID satisfies canonical policy");
     let generation = ManifestGeneration::new(9);
     ledger.lexical_seal(generation);
     ledger.semantic_seal_with_digest(generation, "manifest-digest-9");
@@ -346,8 +348,9 @@ pub(crate) fn install_structural_test_chunk(
     let mut record = structural_test_chunk_record(path, text);
     record.chunk_id = ChunkId::new(chunk_id);
     let op = LexicalChannelOp::UpsertChunk(UpsertChunk {
-        repo_id: RepoId::new("repo-map-ipc"),
-        revision_id: RevisionId::new("rev-map-ipc"),
+        repo_id: RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
+        revision_id: RevisionId::new("rev-map-ipc")
+            .expect("static fixture ID satisfies canonical policy"),
         generation: ManifestGeneration::new(9),
         chunk_id: ChunkId::new(chunk_id),
         payload: encode_cbor(&record)?,
@@ -394,8 +397,8 @@ pub(crate) fn structural_state_for_test_chunks(
     let guard = ledger.read().expect("structural test ledger poisoned");
     guard
         .structural_state(
-            &RepoId::new("repo-map-ipc"),
-            &RevisionId::new("rev-map-ipc"),
+            &RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
+            &RevisionId::new("rev-map-ipc").expect("static fixture ID satisfies canonical policy"),
             ManifestGeneration::new(9),
         )
         .cloned()

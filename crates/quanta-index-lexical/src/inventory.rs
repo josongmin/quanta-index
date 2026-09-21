@@ -13,10 +13,7 @@ use quanta_index_core::domains::generation::{
     GenerationQuarantineReasonV1, GenerationStorageKeyV1, InventoriedSealedGenerationV1,
     QuarantinedGenerationV1, SealedGenerationInventoryV1,
 };
-use quanta_index_core::{
-    CoreError, QUARANTINE_TARGET_NOT_QUARANTINED_CODE, QuarantineDiscardOutcomeV1,
-    RECLAIM_AREA_DIR_NAME,
-};
+use quanta_index_core::{CoreError, QuarantineDiscardOutcomeV1, RECLAIM_AREA_DIR_NAME};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
@@ -126,7 +123,7 @@ pub(crate) fn discard_quarantined_directory(
     entry: &QuarantinedGenerationV1,
 ) -> Result<QuarantineDiscardOutcomeV1, CoreError> {
     let not_quarantined = |why: String| CoreError::Typed {
-        code: QUARANTINE_TARGET_NOT_QUARANTINED_CODE.to_string(),
+        code: quanta_index_contract::SearchPlaneErrorCodeV2::QuarantineTargetNotQuarantined,
         message: format!(
             "lexical: refusing to discard {}: {why}",
             entry.path.display()

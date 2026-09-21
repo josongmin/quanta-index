@@ -58,11 +58,11 @@ fn unbounded_watch() -> DenseLaneBudgetV1<'static> {
 }
 
 fn repo_id() -> RepoId {
-    RepoId::new("repo-build")
+    RepoId::new("repo-build").expect("static fixture ID satisfies canonical policy")
 }
 
 fn revision_id() -> RevisionId {
-    RevisionId::new("rev-build")
+    RevisionId::new("rev-build").expect("static fixture ID satisfies canonical policy")
 }
 
 fn model_contract() -> EmbeddingModelContract {
@@ -1627,7 +1627,8 @@ fn sealed_manifest_rejects_same_row_count_content_mutation() -> TestResult {
     assert!(
         matches!(
             error,
-            CoreError::Typed { ref code, .. } if code == "GENERATION_SIDECAR_CORRUPT"
+            CoreError::Typed { ref code, .. }
+                if *code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt
         ),
         "{error:?}"
     );

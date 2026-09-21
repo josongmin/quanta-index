@@ -4,6 +4,9 @@ Status: `Accepted`
 
 Decided: 2026-09-21
 
+Amended: 2026-09-21 — proof receipts gained immutable source-pair-aware archive identity and transitive dependency
+archive edges; lane handoffs gained a semantic validator. Current aliases remain operational conveniences only.
+
 Gate owner: S21-00; blocks S21-09, S21-10, S21-11, S21-12 and S21-13
 
 ## Supervision and shutdown
@@ -61,14 +64,42 @@ attested V2 daemon, handshake/canary, switch producer, then activate. Mismatched
 - validator: `tools/ci/lint/check-proof-authority.py`;
 - proof families: `S/U/A/D/P/F/Q/X`;
 - source SHA is exactly 40 lowercase hex;
-- dirty digest hashes `git diff --binary` plus sorted untracked paths and content digests;
+- dirty digest domain-separately hashes staged index bytes, unstaged worktree bytes, scoped untracked bytes and file
+  metadata; proof outputs and declared terminal artifacts are excluded;
 - host identity is a SHA-256 digest over stable OS/arch/CPU/memory/runner identity inputs;
 - `selected = executed + ignored`; `executed = passed + failed`;
 - mandatory pass requires selected/executed/passed > 0, failed=0 and ignored=0;
 - non-test proof uses assertion counts `1/1/1/0/0`;
 - timestamps are UTC RFC3339 and end cannot precede start;
-- validator re-hashes daemon and every artifact from disk;
+- passed receipts require clean primary and paired sources;
+- writer copies the executed daemon and every terminal artifact into immutable content-addressed binary/evidence
+  archives; historical validation re-hashes those archive objects rather than mutable raw/current paths;
 - process/external/release proofs require one pinned `linux-production-like` host profile and the same attested daemon binary.
+
+Every manifest is published both as a mutable current alias and as an immutable archive leaf. The archive key is:
+
+```text
+source-binding-digest = SHA256(canonical-json({
+  "domain": "quanta-proof-source-binding-v1",
+  "source": source,
+  "source_pair": source_pair_or_null
+}))
+archive/<proof-id>/<source-binding-digest>/<manifest-sha256>.json
+```
+
+Canonical JSON uses UTF-8, sorted keys, no insignificant whitespace and no ASCII escaping. `manifest-sha256` is the
+SHA-256 of the final manifest bytes. Exact-byte retry is idempotent; a different byte sequence can never replace an
+existing leaf. `dependency_receipts` records the dependency's exact archive path and digest, never its current alias.
+Historical validation follows this archive DAG without requiring registry-alias equality, so a later run may advance
+the alias without invalidating earlier evidence. Each source-binding namespace has an issuance index; an indexed leaf
+that is missing or modified fails closed rather than being silently recreated. Archive directories must be real
+repo-contained directories, not symlinks. Missing, renamed or mutated archive/evidence/binary bytes fail closed.
+
+Lane handoffs are schema-validated and then semantically checked by `tools/ci/lint/check-lane-handoff.py`. It binds
+the canonical lane/ticket/proof/status tuple, exact `base..result` Git write set, recorded proof counts and current-clean
+source identity to the result commit. It requires immutable archive paths, checks base/result ancestry, cross-binds
+paired-repository state to exact-pair manifests, validates paired push identity, and verifies P02I merge/cherry-pick
+provenance. Handoff prose or schema validity alone is not authority.
 
 Verdicts remain separate: `CODE_QUALIFIED`, `DEPLOYED`, `ACTIVATED`, `ROLLBACK_PROVEN`. None implies another.
 

@@ -34,12 +34,20 @@ use quanta_index_lexical::LexicalAdapter;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn repo() -> RepoId {
-    RepoId::new("regex-alternation-repo")
+    RepoId::new("regex-alternation-repo").expect("static fixture ID satisfies canonical policy")
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn revision() -> RevisionId {
-    RevisionId::new("regex-alternation-rev")
+    RevisionId::new("regex-alternation-rev").expect("static fixture ID satisfies canonical policy")
 }
 
 fn chunk(path: &str, chunk_id: &str, body: &str) -> Result<ChunkRecord, Box<dyn Error>> {

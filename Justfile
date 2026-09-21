@@ -24,6 +24,10 @@ rust-profile-list:
         'dev-all-targets     widest compile rail; all targets across the workspace' \
         'validate-shared-surface contract/core/sdk/search-plane shared-surface validation rail' \
         'test-fast           default local test loop; workspace lib/bin tests, excludes daemon e2e' \
+        'test-canonical-identity P01A identity, codec, layout-security, and error-authority proof' \
+        'test-p02a-repomap-compiler P02A whole-bundle graph compiler owner proof' \
+        'test-p02b-operation-journal P02B global sequence authority and operation journal proof' \
+        'test-candidate-activation-owner P03 sealed-candidate activation, recovery, and quarantine owner proof' \
         'test-integration-fast bounded integration loop; excludes slow text/Lance storage' \
         'test-integration-storage text-authority shard persistence slice' \
         'test-integration-semantic semantic storage integration slice' \
@@ -52,6 +56,10 @@ rust-profile profile:
         dev-all-targets) ./scripts/run-rust-profile.sh "{{profile}}" rust-check ;; \
         validate-shared-surface) ./scripts/run-rust-profile.sh "{{profile}}" rust-validate-shared-surface ;; \
         test-fast) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-fast ;; \
+        test-canonical-identity) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-canonical-identity ;; \
+        test-p02a-repomap-compiler) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-p02a-repomap-compiler ;; \
+        test-p02b-operation-journal) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-p02b-operation-journal ;; \
+        test-candidate-activation-owner) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-candidate-activation-owner ;; \
         test-integration-fast) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-integration-fast ;; \
         test-integration-storage) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-integration-storage ;; \
         test-integration-semantic) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-integration-semantic ;; \
@@ -200,6 +208,18 @@ rust-test-fast:
 
 rust-test-unit:
     {{cargo}} --lane test-fast-lane test --workspace --lib --bins --all-features --locked --exclude quanta-index-searchd-runtime
+
+rust-test-canonical-identity lane="test-canonical-identity-lane":
+    python3 tools/ci/run-local-test-scope.py canonical-identity --lane {{lane}}
+
+rust-test-p02a-repomap-compiler lane="test-p02a-repomap-compiler-lane":
+    python3 tools/ci/run-local-test-scope.py p02a-repomap-compiler --lane {{lane}}
+
+rust-test-p02b-operation-journal lane="test-p02b-operation-journal-lane":
+    python3 tools/ci/run-local-test-scope.py p02b-operation-journal --lane {{lane}}
+
+rust-test-candidate-activation-owner lane="test-candidate-activation-owner-lane":
+    python3 tools/ci/run-local-test-scope.py candidate-activation-owner --lane {{lane}}
 
 rust-test-integration-fast lane="test-integration-lane":
     python3 tools/ci/run-local-test-scope.py integration-fast --lane {{lane}}
@@ -610,18 +630,49 @@ proof-authority-current-gate:
         --manifest artifacts/proof-authority/p00-authority-freeze.json \
         --bind-source
 
+lane-handoff-check handoff:
+    python3 tools/ci/lint/check-lane-handoff.py --require-result-head "{{handoff}}"
+
+lane-handoff-check-historical handoff:
+    python3 tools/ci/lint/check-lane-handoff.py "{{handoff}}"
+
 proof-error-authority-inventory:
     python3 tools/ci/write-error-authority-inventory.py
 
-# Intentionally fail closed until P01A replaces this staged rail with the
-# enum/table/mapping/SDK semantic validators and registered owner-local tests.
 proof-error-authority-closed:
-    @echo "REFUSED: P01A semantic error-authority closure rail is not implemented" >&2
-    @exit 1
+    python3 tools/ci/check-error-authority-closure.py
+
+proof-p01-canonical-identity:
+    @just proof-error-authority-closed
+    @just rust-profile test-canonical-identity
+    @just rust-public-api
+    @just rust-wire-inventory
+    @just rust-fuzz-smoke
+    @just rust-hexagonal
+    @just rust-cargo-modules
+    @just rust-profile validate-shared-surface
+    @just rust-profile test-daemon
+
+# P02B: the global sequence authority and operation journal proof. The
+# journal touches the ingest IPC receipt surface, so the wire inventory and
+# the IPC decoder fuzz smoke run alongside the scoped journal tests and
+# the hexagonal boundary guards.
+proof-p02b-operation-journal:
+    @just rust-profile test-p02b-operation-journal
+    @just rust-hexagonal
+    @just rust-wire-inventory
+    @just rust-fuzz-smoke
 
 proof-p00-authority-freeze:
     python3 tools/ci/write-error-authority-inventory.py
     python3 tools/ci/lint/check-proof-authority.py
+    python3 -m pytest \
+        tools/ci/tests/test_write_error_authority_inventory.py \
+        tools/ci/tests/test_write_proof_aggregate.py \
+        tools/ci/tests/test_write_proof_manifest.py \
+        tools/ci/tests/test_check_proof_authority.py \
+        tools/ci/tests/test_check_lane_handoff.py \
+        -q
 
 # P12 records this dependency aggregate as its own terminal evidence. It must
 # exclude p12-final-qualification itself; the release gate below validates the
@@ -729,3 +780,20 @@ verify-prompts:
 
 precommit-run:
     source scripts/quanta-index-env.sh && python3 -m pre_commit run --all-files --show-diff-on-failure
+
+# P02A whole-bundle RepoMap graph compiler owner proof. The scoped rail runs
+# the compiler owner target plus the repomap bounded/owner surfaces bound to
+# the same source; structural rails guard the contract surface the compiler
+# DTO section touched. RSS/production-host benchmark stays a separate
+# release-only rail and is NOT_RUN here.
+proof-p02a-repomap-compiler:
+    @just rust-profile test-p02a-repomap-compiler
+    @just rust-hexagonal
+    @just rust-wire-inventory
+
+proof-p03-candidate-activation-owner:
+    @just rust-profile test-candidate-activation-owner
+    @just rust-hexagonal
+    @just rust-wire-inventory
+    @just rust-public-api
+    @just rust-fuzz-smoke

@@ -118,11 +118,11 @@ impl Drop for RunningRuntime {
 }
 
 fn repo() -> RepoId {
-    RepoId::new(REPO)
+    RepoId::new(REPO).expect("test fixture ID satisfies canonical policy")
 }
 
 fn revision() -> RevisionId {
-    RevisionId::new(REVISION)
+    RevisionId::new(REVISION).expect("test fixture ID satisfies canonical policy")
 }
 
 fn generation(raw: u64) -> ManifestGeneration {
@@ -174,6 +174,7 @@ fn label(raw_generation: u64) -> String {
 
 fn source_repo(raw_generation: u64, index: usize) -> RepoId {
     RepoId::new(format!("generation-{raw_generation}-source-{index:02}"))
+        .expect("test fixture ID satisfies canonical policy")
 }
 
 fn expected_ids(raw_generation: u64) -> Vec<String> {

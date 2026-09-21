@@ -96,7 +96,10 @@ fn replacement_chunk(id: &str, path: &str, source_repo_id: &str) -> AnyResult<Ch
         text: text.into_boxed_str(),
         structural: None,
         parent_chunk_id: None,
-        source_repo_id: Some(RepoId::new(source_repo_id)),
+        source_repo_id: Some(
+            RepoId::new(source_repo_id)
+                .map_err(|error| anyhow::anyhow!("invalid fixture repo id: {error}"))?,
+        ),
     })
 }
 
@@ -232,8 +235,10 @@ fn observe_generation(rt: &mut E2eRuntime, label: &str) -> AnyResult<AuthorityOb
 }
 
 fn publish_generation(rt: &mut E2eRuntime, label: &str, recent_at_ms: u64) -> AnyResult<()> {
-    let source_repo_alpha = RepoId::new("authority-alpha");
-    let source_repo_beta = RepoId::new("authority-beta");
+    let source_repo_alpha = RepoId::new("authority-alpha")
+        .map_err(|error| anyhow::anyhow!("static fixture repo id: {error}"))?;
+    let source_repo_beta = RepoId::new("authority-beta")
+        .map_err(|error| anyhow::anyhow!("static fixture repo id: {error}"))?;
 
     rt.publish_repo_commit_recency_batch(RepoCommitRecencyIngestBatch {
         repo_id: rt.repo(),

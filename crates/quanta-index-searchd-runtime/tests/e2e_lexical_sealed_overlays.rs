@@ -95,9 +95,9 @@ fn pinned_meta_query(pin: GenerationPin, value: &str) -> SearchPlaneQueryIpcRequ
     })
 }
 
-fn typed_query_code(response: &SearchPlaneQueryIpcResponse) -> Option<String> {
+fn typed_query_code(response: &SearchPlaneQueryIpcResponse) -> Option<&'static str> {
     match response {
-        SearchPlaneQueryIpcResponse::Error(error) => Some(error.code.clone()),
+        SearchPlaneQueryIpcResponse::Error(error) => Some(error.code.as_wire_str()),
         SearchPlaneQueryIpcResponse::Text(_)
         | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::Semantic(_)
@@ -157,7 +157,7 @@ fn an_overlay_publish_into_a_sealed_generation_is_refused_typed() -> TestResult 
         )
         .into());
     };
-    if error.code != "GENERATION_IMMUTABLE" {
+    if error.code.as_wire_str() != "GENERATION_IMMUTABLE" {
         return Err(format!(
             "an overlay publish into a sealed generation must be refused typed GENERATION_IMMUTABLE, got {}: {}",
             error.code, error.message
@@ -206,7 +206,7 @@ fn a_torn_overlay_is_refused_by_restart_and_by_the_query_door() -> TestResult {
     let pinned = GenerationPin::new(rt.repo(), rt.revision(), first);
     let answer = rt.query_once(|_| pinned_meta_query(pinned.clone(), "first"))?;
     let code = typed_query_code(&answer);
-    if code.as_deref() != Some("GENERATION_SIDECAR_CORRUPT") {
+    if code != Some("GENERATION_SIDECAR_CORRUPT") {
         return Err(format!(
             "a query pinned to the generation with the torn overlay must be refused typed GENERATION_SIDECAR_CORRUPT, got {code:?}"
         )

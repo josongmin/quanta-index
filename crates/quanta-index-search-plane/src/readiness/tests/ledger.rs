@@ -69,7 +69,13 @@ fn a_refused_auxiliary_mutation_leaves_the_ledger_as_it_was() -> TestResult {
     });
     // On a generation that does not exist yet: nothing is created.
     match ledger.apply_lexical_authority_op(&dangling_ref, now) {
-        Err(CoreError::Typed { code, .. }) if code == "HISTORY_REF_NOT_FOUND" => {}
+        Err(CoreError::Typed {
+            code:
+                quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+                    quanta_index_contract::lex::LexicalErrorCode::HistoryRefNotFound,
+                ),
+            ..
+        }) => {}
         other => {
             return Err(
                 format!("a ref to an unknown commit is refused typed, got {other:?}").into(),

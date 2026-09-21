@@ -1897,7 +1897,7 @@ mod tests {
         assert!(
             too_low
                 .to_string()
-                .contains(quanta_index_core::PROCESS_MEMORY_ENVELOPE_EXCEEDED_CODE),
+                .contains(quanta_index_core::PROCESS_MEMORY_ENVELOPE_EXCEEDED_CODE.as_wire_str()),
             "{too_low}"
         );
         // The chain refuses it too, naming the family.
@@ -1912,7 +1912,7 @@ mod tests {
         assert!(
             refused
                 .to_string()
-                .contains(quanta_index_core::PROCESS_MEMORY_ENVELOPE_EXCEEDED_CODE),
+                .contains(quanta_index_core::PROCESS_MEMORY_ENVELOPE_EXCEEDED_CODE.as_wire_str()),
             "{refused}"
         );
         // An OpenAI profile with the cache declares the ledger's bound.

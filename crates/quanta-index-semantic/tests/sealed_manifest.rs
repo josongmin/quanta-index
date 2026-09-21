@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 
 use quanta_index_contract::{
     EmbeddingRecord, GenerationSnapshot, ManifestGeneration, RepoId, RevisionId,
-    SearchPlaneTrackKind,
+    SearchPlaneErrorCodeV2, SearchPlaneTrackKind,
 };
 use quanta_index_core::{
     CoreError, DoorFindingOutcome, DoorFindingQuarantinePort, FinishedReclaims,
@@ -56,12 +56,20 @@ const SCOPE_MANIFEST: &str = "semantic-manifest.cbor";
 const BUILD_CONTRACT: &str = "semantic-build-contract.cbor";
 const DATASET: &str = "dataset";
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn repo() -> RepoId {
-    RepoId::new("sealed-repo")
+    RepoId::new("sealed-repo").expect("static fixture ID satisfies canonical policy")
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn revision() -> RevisionId {
-    RevisionId::new("sealed-rev")
+    RevisionId::new("sealed-rev").expect("static fixture ID satisfies canonical policy")
 }
 
 fn embedding(id: &str, path: &str, vector: Vec<f32>) -> Result<EmbeddingRecord, Box<dyn Error>> {
@@ -146,9 +154,9 @@ fn knock(adapter: &SemanticAdapter, generation: ManifestGeneration) -> Doors {
     }
 }
 
-fn typed_code<T>(result: &Result<T, CoreError>) -> Option<String> {
+fn typed_code<T>(result: &Result<T, CoreError>) -> Option<SearchPlaneErrorCodeV2> {
     match result {
-        Err(CoreError::Typed { code, .. }) => Some(code.clone()),
+        Err(CoreError::Typed { code, .. }) => Some(*code),
         _ => None,
     }
 }
@@ -190,8 +198,8 @@ fn expect_doors_open(doors: &Doors, what: &str) -> TestResult {
     Ok(())
 }
 
-fn expect_refused(doors: &Doors, what: &str, code: &str) -> TestResult {
-    if typed_code(&doors.validate).as_deref() != Some(code) {
+fn expect_refused(doors: &Doors, what: &str, code: SearchPlaneErrorCodeV2) -> TestResult {
+    if typed_code(&doors.validate) != Some(code) {
         return Err(format!(
             "{what}: validator answered {:?}, expected typed {code}",
             doors.validate
@@ -199,7 +207,7 @@ fn expect_refused(doors: &Doors, what: &str, code: &str) -> TestResult {
         .into());
     }
     for (door, result) in [("open", &doors.open), ("proven open", &doors.proven)] {
-        if typed_code(result).as_deref() != Some(code) {
+        if typed_code(result) != Some(code) {
             return Err(format!(
                 "{what}: {door} answered {:?}, expected typed {code}",
                 result.as_ref().map(|_| "served")
@@ -271,7 +279,7 @@ fn shape_defects_are_refused_at_the_doors_and_byte_defects_by_the_scrub() -> Tes
         expect_refused(
             &knock(&adapter, generation),
             &format!("{name} truncated"),
-            "GENERATION_SIDECAR_CORRUPT",
+            SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
         )?;
         std::fs::write(file, &original)?;
 
@@ -280,7 +288,7 @@ fn shape_defects_are_refused_at_the_doors_and_byte_defects_by_the_scrub() -> Tes
         expect_refused(
             &knock(&adapter, generation),
             &format!("{name} removed"),
-            "GENERATION_SIDECAR_CORRUPT",
+            SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
         )?;
         std::fs::write(file, &original)?;
         expect_admitted(&knock(&adapter, generation), &format!("{name} restored"))?;
@@ -297,7 +305,7 @@ fn shape_defects_are_refused_at_the_doors_and_byte_defects_by_the_scrub() -> Tes
     expect_refused(
         &knock(&adapter, generation),
         "foreign file",
-        "GENERATION_SIDECAR_CORRUPT",
+        SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
     )?;
     std::fs::remove_file(&foreign)?;
     expect_admitted(&knock(&adapter, generation), "foreign file removed")?;
@@ -352,20 +360,20 @@ fn shape_defects_are_refused_at_the_doors_and_byte_defects_by_the_scrub() -> Tes
         expect_refused(
             &knock(&adapter, generation),
             &format!("{name} bit-flipped and quarantined"),
-            "GENERATION_QUARANTINED",
+            SearchPlaneErrorCodeV2::GenerationQuarantined,
         )?;
         let restarted = SemanticAdapter::with_state_root(root.clone())?;
         expect_refused(
             &knock(&restarted, generation),
             &format!("{name} bit-flipped and quarantined, after a restart"),
-            "GENERATION_QUARANTINED",
+            SearchPlaneErrorCodeV2::GenerationQuarantined,
         )?;
         std::fs::write(file, &original)?;
         // The quarantine is durable: restoring the bytes does not lift it.
         expect_refused(
             &knock(&adapter, generation),
             &format!("{name} restored while quarantined"),
-            "GENERATION_QUARANTINED",
+            SearchPlaneErrorCodeV2::GenerationQuarantined,
         )?;
         let inventory = inventory_persisted_generations(&root)?;
         let Some(entry) = inventory
@@ -493,13 +501,13 @@ fn both_doors_refuse_forged_or_missing_sidecars() -> TestResult {
         expect_refused(
             &knock(&adapter, generation),
             &format!("{sidecar} bit-flipped"),
-            "GENERATION_SIDECAR_CORRUPT",
+            SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
         )?;
         std::fs::remove_file(&path)?;
         expect_refused(
             &knock(&adapter, generation),
             &format!("{sidecar} removed"),
-            "GENERATION_SIDECAR_CORRUPT",
+            SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
         )?;
         std::fs::write(&path, &original)?;
         expect_admitted(&knock(&adapter, generation), &format!("{sidecar} restored"))?;
@@ -512,7 +520,7 @@ fn both_doors_refuse_forged_or_missing_sidecars() -> TestResult {
     expect_refused(
         &knock(&adapter, generation),
         "sealed manifest missing",
-        "GENERATION_MANIFEST_MISSING",
+        SearchPlaneErrorCodeV2::GenerationManifestMissing,
     )?;
     std::fs::write(&sealed_manifest, &original)?;
     expect_admitted(&knock(&adapter, generation), "sealed manifest restored")
@@ -574,8 +582,10 @@ fn a_door_finding_is_quarantined_only_by_the_adapters_re_proof() -> TestResult {
         let mut foreign = identity(generation);
         foreign.manifest_digest = "manifest:another-seal".to_string();
         match adapter.quarantine_door_finding(&foreign) {
-            Err(CoreError::Typed { code, .. }) if code == "GENERATION_IDENTITY_DIGEST_MISMATCH" => {
-            }
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch,
+                ..
+            }) => {}
             other => {
                 return Err(format!("{what}: a foreign identity answered {other:?}").into());
             }
@@ -586,7 +596,7 @@ fn a_door_finding_is_quarantined_only_by_the_adapters_re_proof() -> TestResult {
         expect_refused(
             &knock(&adapter, generation),
             &format!("{what}: damaged"),
-            "GENERATION_SIDECAR_CORRUPT",
+            SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
         )?;
         // No door wrote: once the bytes are back the generation is sealed
         // and admitted, which a receipt would forbid.
@@ -616,7 +626,7 @@ fn a_door_finding_is_quarantined_only_by_the_adapters_re_proof() -> TestResult {
         expect_refused(
             &knock(&adapter, generation),
             &format!("{what}: quarantined, bytes restored"),
-            "GENERATION_QUARANTINED",
+            SearchPlaneErrorCodeV2::GenerationQuarantined,
         )?;
         let inventory = inventory_persisted_generations(&root)?;
         let [entry] = inventory.quarantined.as_slice() else {
@@ -670,7 +680,7 @@ fn the_sealed_manifest_binds_the_identity_digest() -> TestResult {
     expect_refused(
         &knock(&adapter, second),
         "sealed manifest from another generation",
-        "GENERATION_IDENTITY_DIGEST_MISMATCH",
+        SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch,
     )
 }
 

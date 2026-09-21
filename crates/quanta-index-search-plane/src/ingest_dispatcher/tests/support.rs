@@ -15,12 +15,13 @@ use quanta_index_contract::{
     SourceRoleV1,
 };
 use quanta_index_core::{
-    CoreError, FinishedReclaims, GenerationIdentityValidatePort, IdempotencyBeginV1,
+    ClaimOutcomeV1, CoreError, FinishedReclaims, GenerationIdentityValidatePort,
     IdempotencyCatalogPort, IdempotencyKeyV1, IncompleteGenerationDiscardOutcomeV1,
-    IncompleteGenerationDiscardPort, IngestResourcePolicy, RequestBudgetV1,
-    SealedGenerationBytesV1, SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort,
-    SemanticIngestHeaderV1, SemanticIngestPort, SemanticScopeSource, SemanticScopeStreamBuildPort,
-    SemanticStreamTallyV1, SemanticStreamWindowPolicy, TextEmbeddingProvider,
+    IncompleteGenerationDiscardPort, IngestResourcePolicy, OperationInspectV1,
+    OperationJournalStateV1, PreparedMutationV1, RequestBudgetV1, SealedGenerationBytesV1,
+    SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort, SemanticIngestHeaderV1,
+    SemanticIngestPort, SemanticScopeSource, SemanticScopeStreamBuildPort, SemanticStreamTallyV1,
+    SemanticStreamWindowPolicy, TextEmbeddingProvider,
 };
 
 use quanta_index_ipc::stamp_batch_digest_v1;
@@ -44,9 +45,13 @@ use crate::{
 
 pub(super) type TestRes = Result<(), Box<dyn std::error::Error>>;
 
-/// One in-memory record: the body hash and, once finalized, the receipt
-/// and its sequence.
-pub(super) type MemoryRecord = ([u8; 32], Option<(BatchPublishReceipt, u64)>);
+/// One in-memory record: the body hash, the live claim (owner, fence,
+/// deadline, state) and, once terminal, the receipt and its sequence.
+pub(super) type MemoryRecord = (
+    [u8; 32],
+    Option<(String, u64, u64, OperationJournalStateV1)>,
+    Option<(BatchPublishReceipt, u64)>,
+);
 
 /// An in-memory idempotency catalog with the port's exact semantics, for
 /// tests that need the protocol without the storage engine.
@@ -124,73 +129,256 @@ impl MemoryIdempotencyCatalog {
             .records
             .lock()
             .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?;
-        let _prior = records.insert(key, (body_sha256, None));
+        let _prior = records.insert(
+            key,
+            (
+                body_sha256,
+                Some((
+                    "crashed-worker".to_string(),
+                    0,
+                    0,
+                    OperationJournalStateV1::Applying,
+                )),
+                None,
+            ),
+        );
         drop(records);
         Ok(())
     }
 }
 
+impl MemoryIdempotencyCatalog {
+    fn next_sequence_value(&self) -> Result<u64, CoreError> {
+        u64::try_from(self.next_sequence.fetch_add(1, Ordering::SeqCst))
+            .map_err(|err| CoreError::Storage(err.to_string()))
+            .map(|value| value.saturating_add(1))
+    }
+}
+
 impl IdempotencyCatalogPort for MemoryIdempotencyCatalog {
-    fn begin(
+    fn inspect(&self, key: &IdempotencyKeyV1) -> Result<OperationInspectV1, CoreError> {
+        let records = self
+            .records
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?;
+        Ok(match records.get(key) {
+            None | Some((_, None, _)) => OperationInspectV1::Absent,
+            Some((_, _, Some((receipt, durable_sequence)))) => OperationInspectV1::Committed {
+                receipt: receipt.clone(),
+                durable_sequence: *durable_sequence,
+            },
+            Some((_, Some((owner, fence, deadline, state)), _)) => match state {
+                OperationJournalStateV1::Uncertain => OperationInspectV1::Uncertain {
+                    owner: owner.clone(),
+                },
+                state @ (OperationJournalStateV1::Prepared
+                | OperationJournalStateV1::Claimed
+                | OperationJournalStateV1::Applying
+                | OperationJournalStateV1::Committed
+                | OperationJournalStateV1::Refused
+                | OperationJournalStateV1::Aborted) => OperationInspectV1::InFlight {
+                    state: *state,
+                    owner: owner.clone(),
+                    fence_token: *fence,
+                    lease_deadline_ms: *deadline,
+                },
+            },
+        })
+    }
+
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "test fake: the mutex guard must span the whole fenced mutation"
+    )]
+    fn claim_prepared(
         &self,
         key: &IdempotencyKeyV1,
         body_sha256: &[u8; 32],
-    ) -> Result<IdempotencyBeginV1, CoreError> {
+        owner: &str,
+        lease_deadline_ms: u64,
+        epoch_commitment: &[u8; 32],
+    ) -> Result<ClaimOutcomeV1, CoreError> {
         let mut records = self
             .records
             .lock()
             .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?;
-        let outcome = match records.get(key) {
+        let fence = quanta_index_core::now_unix_ms().saturating_add(1);
+        match records.get_mut(key) {
             None => {
-                let _new = records.insert(key.clone(), (*body_sha256, None));
-                Ok(IdempotencyBeginV1::Fresh)
+                let _new = records.insert(
+                    key.clone(),
+                    (
+                        *body_sha256,
+                        Some((
+                            owner.to_string(),
+                            fence,
+                            lease_deadline_ms,
+                            OperationJournalStateV1::Claimed,
+                        )),
+                        None,
+                    ),
+                );
+                Ok(ClaimOutcomeV1::Claimed(PreparedMutationV1 {
+                    key: key.clone(),
+                    body_sha256: *body_sha256,
+                    owner: owner.to_string(),
+                    fence_token: fence,
+                    lease_deadline_ms,
+                    epoch_commitment: *epoch_commitment,
+                }))
             }
-            Some((stored, _)) if stored != body_sha256 => Err(CoreError::Typed {
-                code: quanta_index_core::BATCH_DIGEST_CONFLICT_CODE.to_string(),
+            Some((stored, _, _)) if *stored != *body_sha256 => Err(CoreError::Typed {
+                code: quanta_index_core::BATCH_DIGEST_CONFLICT_CODE,
                 message: format!(
                     "{} batch_digest={} body differs",
                     key.kind, key.batch_digest
                 ),
             }),
-            Some((_, Some((receipt, durable_sequence)))) => Ok(IdempotencyBeginV1::Replay {
+            Some((_, _, Some((receipt, durable_sequence)))) => Ok(ClaimOutcomeV1::Replay {
                 receipt: receipt.clone(),
                 durable_sequence: *durable_sequence,
             }),
-            Some((_, None)) => Ok(IdempotencyBeginV1::Resume),
-        };
-        drop(records);
-        outcome
+            Some((_, claim, None)) => {
+                *claim = Some((
+                    owner.to_string(),
+                    fence,
+                    lease_deadline_ms,
+                    OperationJournalStateV1::Claimed,
+                ));
+                Ok(ClaimOutcomeV1::Claimed(PreparedMutationV1 {
+                    key: key.clone(),
+                    body_sha256: *body_sha256,
+                    owner: owner.to_string(),
+                    fence_token: fence,
+                    lease_deadline_ms,
+                    epoch_commitment: *epoch_commitment,
+                }))
+            }
+        }
     }
 
-    fn finalize(
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "test fake: the mutex guard must span the whole fenced mutation"
+    )]
+    fn mark_applying(&self, claim: &PreparedMutationV1) -> Result<(), CoreError> {
+        let mut records = self
+            .records
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?;
+        let Some((_, Some((owner, fence, _, state)), _)) = records.get_mut(&claim.key) else {
+            return Err(CoreError::InvalidContract(
+                "mark_applying before claim".into(),
+            ));
+        };
+        if *owner != claim.owner || *fence != claim.fence_token {
+            return Err(CoreError::InvalidContract(
+                "mark_applying under a stale fence".into(),
+            ));
+        }
+        *state = OperationJournalStateV1::Applying;
+        Ok(())
+    }
+
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "test fake: the mutex guard must span the whole fenced mutation"
+    )]
+    fn record_refused(
         &self,
-        key: &IdempotencyKeyV1,
-        body_sha256: &[u8; 32],
+        claim: &PreparedMutationV1,
+        _refusal: &CoreError,
+    ) -> Result<u64, CoreError> {
+        let mut records = self
+            .records
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?;
+        let Some((_, Some((owner, fence, _, state)), _)) = records.get_mut(&claim.key) else {
+            return Err(CoreError::InvalidContract(
+                "record_refused before claim".into(),
+            ));
+        };
+        if *owner != claim.owner || *fence != claim.fence_token {
+            return Err(CoreError::InvalidContract(
+                "record_refused under a stale fence".into(),
+            ));
+        }
+        *state = OperationJournalStateV1::Refused;
+        self.next_sequence_value()
+    }
+
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "test fake: the mutex guard must span the whole fenced mutation"
+    )]
+    fn commit(
+        &self,
+        claim: &PreparedMutationV1,
         receipt: &BatchPublishReceipt,
     ) -> Result<u64, CoreError> {
         let mut records = self
             .records
             .lock()
             .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?;
-        let Some(record) = records.get_mut(key) else {
+        let Some((body, Some((owner, fence, _, state)), committed)) = records.get_mut(&claim.key)
+        else {
+            return Err(CoreError::InvalidContract("commit before claim".into()));
+        };
+        if *body != claim.body_sha256 || *owner != claim.owner || *fence != claim.fence_token {
             return Err(CoreError::InvalidContract(
-                "finalize before begin".to_string(),
+                "commit under a stale fence".into(),
+            ));
+        }
+        if committed.is_some() {
+            return Err(CoreError::InvalidContract("commit twice".into()));
+        }
+        *state = OperationJournalStateV1::Committed;
+        let sequence = self.next_sequence_value()?;
+        *committed = Some((receipt.clone(), sequence));
+        Ok(sequence)
+    }
+
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "test fake: the mutex guard must span the whole fenced mutation"
+    )]
+    fn mark_uncertain(&self, claim: &PreparedMutationV1) -> Result<(), CoreError> {
+        let mut records = self
+            .records
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?;
+        let Some((_, Some((owner, fence, _, state)), _)) = records.get_mut(&claim.key) else {
+            return Err(CoreError::InvalidContract(
+                "mark_uncertain before claim".into(),
             ));
         };
-        if record.0 != *body_sha256 {
+        if *owner != claim.owner || *fence != claim.fence_token {
             return Err(CoreError::InvalidContract(
-                "finalize under another body".to_string(),
+                "mark_uncertain under a stale fence".into(),
             ));
         }
-        if record.1.is_some() {
-            return Err(CoreError::InvalidContract("finalize twice".to_string()));
+        *state = OperationJournalStateV1::Uncertain;
+        Ok(())
+    }
+
+    fn recover(&self, key: &IdempotencyKeyV1) -> Result<OperationInspectV1, CoreError> {
+        let mut records = self
+            .records
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?;
+        match records.get_mut(key) {
+            None | Some((_, None, _)) => Ok(OperationInspectV1::Absent),
+            Some((_, Some((_owner, _fence, _deadline, _state)), Some((receipt, sequence)))) => {
+                Ok(OperationInspectV1::Committed {
+                    receipt: receipt.clone(),
+                    durable_sequence: *sequence,
+                })
+            }
+            Some((_, Some((_owner, _fence, _deadline, state)), None)) => {
+                *state = OperationJournalStateV1::Aborted;
+                Ok(OperationInspectV1::Absent)
+            }
         }
-        let sequence = u64::try_from(self.next_sequence.fetch_add(1, Ordering::SeqCst))
-            .map_err(|err| CoreError::Storage(err.to_string()))?
-            .saturating_add(1);
-        record.1 = Some((receipt.clone(), sequence));
-        drop(records);
-        Ok(sequence)
     }
 
     fn generations_for_pair(
@@ -436,7 +624,7 @@ impl GenerationIdentityValidatePort for IncompleteThenValidGeneration {
     ) -> Result<(), CoreError> {
         if self.validations.fetch_add(1, Ordering::SeqCst) == 0 {
             return Err(CoreError::Typed {
-                code: "GENERATION_IDENTITY_INCOMPLETE".to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityIncomplete,
                 message: "injected incomplete generation".to_string(),
             });
         }
@@ -664,7 +852,8 @@ impl SealedGenerationReclaimPort for ScriptedSealedReclaim {
     ) -> Result<Vec<GenerationSnapshot>, CoreError> {
         if self.refuse_next_listing.swap(false, Ordering::SeqCst) {
             return Err(CoreError::Typed {
-                code: "GENERATION_IDENTITY_SCOPE_MISMATCH".to_string(),
+                code:
+                    quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityScopeMismatch,
                 message: "scripted reclaim: injected identity contradicting its path".to_string(),
             });
         }
@@ -894,7 +1083,7 @@ impl ZeroMutationProbe {
 /// (identity present, content failing validation) and the other as exact.
 pub(super) struct CorruptTrackGeneration {
     pub(super) corrupt: SearchPlaneTrackKind,
-    pub(super) code: &'static str,
+    pub(super) code: quanta_index_contract::SearchPlaneErrorCodeV2,
 }
 
 impl GenerationIdentityValidatePort for CorruptTrackGeneration {
@@ -904,7 +1093,7 @@ impl GenerationIdentityValidatePort for CorruptTrackGeneration {
     ) -> Result<(), CoreError> {
         if candidate.track == self.corrupt {
             return Err(CoreError::Typed {
-                code: self.code.to_string(),
+                code: self.code,
                 message: format!(
                     "injected damage on {:?} generation {}",
                     candidate.track,
@@ -925,7 +1114,7 @@ impl GenerationIdentityValidatePort for MismatchedGeneration {
         candidate: &GenerationSnapshot,
     ) -> Result<(), CoreError> {
         Err(CoreError::Typed {
-            code: "GENERATION_IDENTITY_DIGEST_MISMATCH".to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch,
             message: format!(
                 "injected digest mismatch for {:?} generation {}",
                 candidate.track,
@@ -1099,8 +1288,8 @@ pub(super) fn fixture_embedding_record() -> Result<EmbeddingRecord, Box<dyn std:
 
 pub(super) fn fixture_semantic_batch() -> Result<SemanticIngestBatch, Box<dyn std::error::Error>> {
     Ok(SemanticIngestBatch {
-        repo_id: RepoId::new("r"),
-        revision_id: RevisionId::new("rev"),
+        repo_id: RepoId::new("r").expect("static fixture ID satisfies canonical policy"),
+        revision_id: RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
         generation: ManifestGeneration::new(1),
         base_generation: None,
         manifest_digest: "manifest:sem".to_string(),
@@ -1145,8 +1334,8 @@ pub(super) fn fixture_chunk_record() -> Result<ChunkRecord, Box<dyn std::error::
 pub(super) fn fixture_search_corpus_batch()
 -> Result<SearchCorpusIngestBatch, Box<dyn std::error::Error>> {
     let mut batch = SearchCorpusIngestBatch {
-        repo_id: RepoId::new("r"),
-        revision_id: RevisionId::new("rev"),
+        repo_id: RepoId::new("r").expect("static fixture ID satisfies canonical policy"),
+        revision_id: RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
         generation: ManifestGeneration::new(7),
         base_generation: None,
         manifest_digest: "manifest:lex".to_string(),
@@ -1171,8 +1360,8 @@ pub(super) fn fixture_search_corpus_batch()
 
 pub(super) fn fixture_dirty_batch() -> DirtyIngestBatch {
     DirtyIngestBatch {
-        repo_id: RepoId::new("r"),
-        revision_id: RevisionId::new("rev"),
+        repo_id: RepoId::new("r").expect("static fixture ID satisfies canonical policy"),
+        revision_id: RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
         generation: ManifestGeneration::new(9),
         overlay_epoch_ms: 123,
         batch_digest: "batch:dirty".to_string(),
@@ -1218,8 +1407,8 @@ pub(super) fn fixture_history_batch(
     commits: Vec<quanta_index_contract::lex::CommitRecord>,
 ) -> HistoryIngestBatch {
     HistoryIngestBatch {
-        repo_id: RepoId::new("r"),
-        revision_id: RevisionId::new("rev"),
+        repo_id: RepoId::new("r").expect("static fixture ID satisfies canonical policy"),
+        revision_id: RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
         generation: ManifestGeneration::new(generation),
         manifest_digest: None,
         batch_digest: format!("batch:history:{generation}"),
@@ -1317,8 +1506,8 @@ pub(super) fn scope_with_chunks(
 pub(super) fn multi_scope_corpus_batch()
 -> Result<SearchCorpusIngestBatch, Box<dyn std::error::Error>> {
     let mut batch = SearchCorpusIngestBatch {
-        repo_id: RepoId::new("r"),
-        revision_id: RevisionId::new("rev"),
+        repo_id: RepoId::new("r").expect("static fixture ID satisfies canonical policy"),
+        revision_id: RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
         generation: ManifestGeneration::new(7),
         base_generation: None,
         manifest_digest: "manifest:lex".to_string(),

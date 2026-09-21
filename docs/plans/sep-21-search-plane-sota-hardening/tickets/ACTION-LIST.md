@@ -4,7 +4,7 @@ Status: implementation checklist; no item is complete from this document alone.
 
 Copy/paste execution prompts: [prompt runbook](prompts/README.md)
 
-Execution rule: `P00 → P01A → (P02A ∥ P02B) → P02I → P03 → P04 → … → P12`. Only P02A/P02B may run in
+Execution rule: `P00 → P01A → (P02A ∥ P02B) → P02I → P03 → P04 → … → P11 → P12A → P12Q`. Only P02A/P02B may run in
 parallel. A checked item requires code plus the listed DoD evidence.
 
 ## W0 — authority and proof freeze
@@ -193,6 +193,9 @@ principal/capability/readiness를 순차로 수행한다. Shared runtime composi
   validator/final recipe produces the aggregate receipt and P12 manifest after validating the transitive handoff DAG.
 - [ ] DoD: all mandatory nodes pass; no `NOT_RUN`/`BLOCKED` P0/P1; Linux production-like host and real-provider
   opt-in proof present; verdicts separately state code qualified, deployed, activated and rollback proven.
+
+S21-13B는 P12A/P12Q 두 직렬 lane이다. P12A가 aggregate handoff-DAG schema/writer/validator/final recipe를 구현해
+checkpoint를 만들고, P12Q는 그 clean result에서 source 수정 없이 전체 qualification과 P12 manifest를 발급한다.
 
 ## Stop and re-plan triggers
 

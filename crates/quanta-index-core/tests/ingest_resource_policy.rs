@@ -67,6 +67,10 @@ fn source(index: usize, text: &str) -> SemanticSourceRecordV1 {
 }
 
 /// A batch of `chunk_texts` legacy chunks and `source_texts` typed sources.
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn batch(
     chunk_texts: &[&str],
     source_texts: &[&str],
@@ -104,8 +108,8 @@ fn batch(
         })
         .collect();
     Ok(SearchCorpusIngestBatch {
-        repo_id: RepoId::new("repo"),
-        revision_id: RevisionId::new("rev"),
+        repo_id: RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+        revision_id: RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
         generation: ManifestGeneration::new(1),
         base_generation: None,
         manifest_digest: "manifest:1".to_string(),
@@ -122,7 +126,7 @@ fn batch(
 }
 
 fn is_envelope_refusal(err: &CoreError) -> bool {
-    matches!(err, CoreError::Typed { code, .. } if code == INGEST_RESOURCE_BUDGET_EXCEEDED_CODE)
+    matches!(err, CoreError::Typed { code, .. } if *code == INGEST_RESOURCE_BUDGET_EXCEEDED_CODE)
 }
 
 fn expect_refusal(outcome: Result<impl std::fmt::Debug, CoreError>, what: &str) -> TestResult {

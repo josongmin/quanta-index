@@ -48,12 +48,20 @@ const OVERLAY_FILES: [&str; 7] = [
     "file-contributor.cbor",
 ];
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn repo() -> RepoId {
-    RepoId::new("cost-repo")
+    RepoId::new("cost-repo").expect("static fixture ID satisfies canonical policy")
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn revision() -> RevisionId {
-    RevisionId::new("cost-rev")
+    RevisionId::new("cost-rev").expect("static fixture ID satisfies canonical policy")
 }
 
 fn scope_path(index: usize) -> String {
@@ -141,6 +149,10 @@ fn generation_dir(root: &Path, generation: ManifestGeneration) -> PathBuf {
 }
 
 /// One overlay so the delta has an overlay to inherit.
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn publish_repo_meta(adapter: &LexicalAdapter, generation: ManifestGeneration) -> TestResult {
     let _receipt = adapter.publish_batch(&RepoMetaIngestBatch {
         repo_id: repo(),
@@ -148,7 +160,8 @@ fn publish_repo_meta(adapter: &LexicalAdapter, generation: ManifestGeneration) -
         generation,
         batch_digest: format!("cost-meta:{}", generation.get()),
         entries: vec![RepoMetaEntry {
-            source_repo_id: RepoId::new("cost-source"),
+            source_repo_id: RepoId::new("cost-source")
+                .expect("static fixture ID satisfies canonical policy"),
             key: "lifecycle".to_string(),
             value: "cost".to_string(),
         }],

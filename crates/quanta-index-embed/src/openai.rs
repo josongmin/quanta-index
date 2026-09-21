@@ -804,7 +804,7 @@ fn preview(body: &str) -> String {
 
 fn typed(code: LexicalErrorCode, message: &str) -> CoreError {
     CoreError::Typed {
-        code: code.as_code_str().to_string(),
+        code: code.into(),
         message: message.to_string(),
     }
 }
@@ -1169,7 +1169,12 @@ mod tests {
         let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
         match provider.embed_batch(&refs) {
             Err(CoreError::Typed { code, .. }) => {
-                assert_eq!(code, LexicalErrorCode::SemProviderTransport.as_code_str());
+                assert_eq!(
+                    code,
+                    quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+                        LexicalErrorCode::SemProviderTransport
+                    )
+                );
             }
             other => panic!("a fatal batch must fail the whole concurrent call, got {other:?}"),
         }
@@ -1231,7 +1236,9 @@ mod tests {
             Err(CoreError::Typed { code, .. }) => {
                 assert_eq!(
                     code,
-                    LexicalErrorCode::SemProviderTransport.as_code_str(),
+                    quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+                        LexicalErrorCode::SemProviderTransport
+                    ),
                     "one failing batch among successes must fail the whole call"
                 );
             }
@@ -1264,7 +1271,12 @@ mod tests {
         let provider = provider_with(cfg(2).with_max_retries(3), transport);
         match provider.embed_batch(&["a"]) {
             Err(CoreError::Typed { code, .. }) => {
-                assert_eq!(code, LexicalErrorCode::SemProviderAuth.as_code_str());
+                assert_eq!(
+                    code,
+                    quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+                        LexicalErrorCode::SemProviderAuth
+                    )
+                );
             }
             other => panic!("auth must fail closed with SEM_PROVIDER_AUTH, got {other:?}"),
         }
@@ -1310,7 +1322,12 @@ mod tests {
         let provider = provider_with(cfg(2).with_max_retries(1), transport);
         match provider.embed_batch(&["a"]) {
             Err(CoreError::Typed { code, .. }) => {
-                assert_eq!(code, LexicalErrorCode::SemProviderTransport.as_code_str());
+                assert_eq!(
+                    code,
+                    quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+                        LexicalErrorCode::SemProviderTransport
+                    )
+                );
             }
             other => panic!("exhausted retries must be SEM_PROVIDER_TRANSPORT, got {other:?}"),
         }
@@ -1547,7 +1564,12 @@ mod tests {
         );
         match result {
             Err(CoreError::Typed { code, .. }) => {
-                assert_eq!(code, LexicalErrorCode::SemProviderAuth.as_code_str());
+                assert_eq!(
+                    code,
+                    quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+                        LexicalErrorCode::SemProviderAuth
+                    )
+                );
             }
             Err(other) => panic!("empty key wrong error variant: {other:?}"),
             Ok(_) => panic!("empty key must be rejected at construction"),

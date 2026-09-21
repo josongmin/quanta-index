@@ -32,8 +32,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result as AnyResult;
 use quanta_index_contract::{
-    GenerationPin, HybridQueryRequest, QueryConstraintSetV1, SearchPlaneQueryIpcRequest,
-    SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
+    GenerationPin, HybridQueryRequest, QueryConstraintSetV1, SearchPlaneErrorCodeV2,
+    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope, SemanticQueryRequest, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_ipc::{ClientIoPolicy, IpcError, send_request};
@@ -154,7 +154,7 @@ fn slow_request(pin: &GenerationPin) -> SearchPlaneQueryIpcRequest {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum RequestOutcome {
     Served { result_count: u64 },
-    TypedError { code: String },
+    TypedError { code: SearchPlaneErrorCodeV2 },
     Timeout,
 }
 
@@ -203,9 +203,7 @@ fn timed_request(
     let outcome = match answer {
         Ok(response) => {
             if let SearchPlaneQueryIpcResponse::Error(error) = &response.payload {
-                RequestOutcome::TypedError {
-                    code: error.code.clone(),
-                }
+                RequestOutcome::TypedError { code: error.code }
             } else {
                 RequestOutcome::Served {
                     result_count: result_count_of(&response.payload).ok_or_else(|| {
@@ -243,7 +241,7 @@ pub struct GroupSummary {
     /// Over every answered request (served or typed error).
     pub latency: Option<LatencySummary>,
     /// The typed codes seen, deduplicated.
-    pub error_codes: Vec<String>,
+    pub error_codes: Vec<SearchPlaneErrorCodeV2>,
     /// The result count of the last served request in the group.
     pub last_result_count: Option<u64>,
 }
@@ -266,10 +264,10 @@ fn summarize(label: &str, samples: &[RequestSample], window_secs: f64) -> AnyRes
         .filter(|sample| sample.outcome != RequestOutcome::Timeout)
         .map(|sample| sample.wall_ms)
         .collect();
-    let mut error_codes: Vec<String> = samples
+    let mut error_codes: Vec<SearchPlaneErrorCodeV2> = samples
         .iter()
         .filter_map(|sample| match &sample.outcome {
-            RequestOutcome::TypedError { code } => Some(code.clone()),
+            RequestOutcome::TypedError { code } => Some(*code),
             RequestOutcome::Served { .. } | RequestOutcome::Timeout => None,
         })
         .collect();
@@ -510,7 +508,7 @@ fn group_json(group: &GroupSummary) -> Value {
         "timeout_count": group.timeout_count,
         "qps": group.qps,
         "latency": group.latency,
-        "error_codes": group.error_codes,
+        "error_codes": group.error_codes.iter().map(|code| code.as_wire_str()).collect::<Vec<_>>(),
         "last_result_count": group.last_result_count,
     })
 }
@@ -592,7 +590,10 @@ fn row(
         error_count: group.error_count,
         timeout_count: group.timeout_count,
         result_count: group.last_result_count,
-        typed_error_code: group.error_codes.first().cloned(),
+        typed_error_code: group
+            .error_codes
+            .first()
+            .map(|code| code.as_wire_str().to_owned()),
         engine_touched: Vec::new(),
         early_stop_reason: None,
     }
@@ -708,7 +709,7 @@ mod tests {
                 Some(MixedRoute::Lexical),
                 2.0,
                 RequestOutcome::TypedError {
-                    code: "OVERLOADED".to_string(),
+                    code: SearchPlaneErrorCodeV2::ServerOverloaded,
                 },
             ),
             sample(Some(MixedRoute::Lexical), 30_000.0, RequestOutcome::Timeout),
@@ -729,7 +730,10 @@ mod tests {
             Some(3),
             "timeouts are not latencies"
         );
-        assert_eq!(summary.error_codes, vec!["OVERLOADED".to_string()]);
+        assert_eq!(
+            summary.error_codes,
+            vec![SearchPlaneErrorCodeV2::ServerOverloaded]
+        );
         assert_eq!(summary.last_result_count, Some(5));
         assert!(
             summarize("fast", &samples, 0.0).is_err(),

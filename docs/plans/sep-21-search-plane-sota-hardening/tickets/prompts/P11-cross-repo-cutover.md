@@ -9,6 +9,19 @@ exact match하고 current tracked source의 candidate/journal/SDK terminal-recei
 `docs/plans/sep-21-search-plane-sota-hardening/tickets/S21-12-cross-repo-terminal-receipt-cutover.md`, P10 handoff,
 current Semantica repo instructions/producer owner.
 
+## REQUIRED INPUTS
+
+- `SEMANTICA_ROOT=/Users/songmin/Documents/code-new/semantica-codegraph-v2`; 이 절대경로가 canonical repo identity
+  `github:josongmin/semantica-codegraph-v2`로 resolve되는지 검증한다. 다르면 추정 탐색하지 말고 `BLOCKED`다.
+- `SEMANTICA_START_SHA`: 작업 시작 시 위 checkout에서 재-freeze한 full clean SHA. 과거 값 사용 금지.
+- Semantica `read`, `edit`, `commit`, `push` 승인: 네 권한을 각각 명시적으로 확인한다. clean source-pair proof에는 coherent
+  Semantica commit이 필수이므로 edit만 승인되고 commit이 승인되지 않으면 closure는 `BLOCKED`다.
+- Linux production-like host 사용 승인.
+- deployment, activation, rollback 승인: 각각 독립 값. 누락된 동작은 실행하지 않고 해당 proof를 `NOT_RUN`으로 둔다.
+
+값을 대화나 과거 artifact에서 추론하지 않는다. 필수 구현 입력이 없으면 product shim이나 quanta-only partial closure를
+만들지 않는다.
+
 시작 freeze:
 
 - quanta-index and Semantica full HEAD, branch/upstream/merge-base
@@ -34,6 +47,9 @@ Semantica owner surfaces:
 - handoff SDK request context
 - aggregate terminal closeout validator
 
+위 surface 이름은 write permission이 아니다. 패치 전 두 repo 각각에 exact path/symbol/base blob/purpose를 가진
+owner-freeze table을 만들고, root allowlist 밖 경로 또는 기존 dirty overlap이 필요하면 `BLOCKED`다.
+
 구현 요구:
 
 - producer HEAD+dirty digest+payload digest → operation key/body digest+terminal sequence → candidate commitment →
@@ -44,6 +60,10 @@ Semantica owner surfaces:
 - receipt retention과 replay window/floor 결속
 - query-only와 mutation-capable SDK profile evidence 분리
 - cutover order, deployment freeze, rollback boundary 문서화
+
+구현과 두 repo coherent checkpoint commit이 끝난 뒤 quanta result SHA에서 `release-daemon-fresh`를 빌드한다. 그때
+생성된 absolute path/SHA-256을 `QUANTA_RELEASE_DAEMON`으로 freeze하고 cross-repo/process proof에 주입한다. 시작 HEAD의
+binary나 source 변경 전 binary는 stale이므로 사용하지 않는다.
 
 negative matrix: same identity/different payload, same generation/different candidate, dependency-root mismatch,
 wrong daemon binary, dirty source, missing/zero/reordered commitment, stale activation epoch, unsupported legacy producer.
@@ -56,7 +76,19 @@ positive/negative wire matrix, aggregate closeout를 실행한다. query-only pr
 proof로 남긴다. test/disposable activation을 production `ACTIVATED`로 승격하지 않는다. external checkout/build
 불가면 product shim을 만들지 말고 `BLOCKED`로 남긴다.
 
-proof node는 독립적인 `p11-cross-repo-cutover`, `p11-deployment`, `p11-activation`, `p11-rollback` 네 개다.
+checkpoint/proof 순서는 두 repo에 대해 원자적으로 고정한다.
+
+1. 두 repo에서 provisional owner checks를 수행한다.
+2. 각 repo explicit allowlist만 stage하고 cached diff를 검토한 뒤 coherent checkpoint commits를 만든다. 아직 push하지 않는다.
+3. clean quanta result SHA에서 `release-daemon-fresh`를 build하고 path/SHA-256을 freeze한다.
+4. clean source pair와 그 binary로 protocol proof를 실행하고 manifests를 발급한다.
+5. provisional P11 handoff를 schema validation한다.
+6. 승인된 repo branch만 non-force push하고 remote SHA를 확인한다.
+7. handoff의 push fields를 실제 결과로 finalize하고 schema/semantic validation과 digest를 다시 수행한다.
+
+proof node는 독립적인 `p11-cross-repo-cutover`, `p11-deployment`, `p11-activation`, `p11-rollback` 네 개다. expected
+family는 모두 `X`이며 dependency chain은 `p10-state-migration → p11-cross-repo-cutover → p11-deployment →
+p11-activation → p11-rollback`이다. transitive proof를 각 node의 direct dependency로 중복 열거하지 않는다.
 첫 node의 pass로 나머지 세 verdict를 암시하지 않는다. quanta와 Semantica 양쪽 exact target/fixture가 registry에
 없거나 command가 둘 중 하나를 선택하지 않으면 product shim 없이 `BLOCKED`다. protocol recipe는 producer root를
 필수 인자로 받고,
@@ -68,5 +100,6 @@ production-like/release-daemon proof가 필요하다. Semantica 수정/commit/pu
 각각 별도 명시 승인 없이는 수행하지 않는다. 최종 보고에 source-pair freeze, dependency roots, receipt chain,
 compatibility matrix, 네 proof별 commands/counts/NOT_RUN/BLOCKED, P12 artifact paths/digests와
 `artifacts/sep-21/handoffs/P11.json`을
-남겨라. quanta-index explicit owner path는 checkpoint commit하고 current lane branch에 non-force push한다.
+남겨라. handoff의 `paired_repositories`에는 quanta/Semantica identity, absolute root, base/result SHA, dirty digest,
+dependency-root digest, exact write set, branch/upstream, edit/commit/push approval과 실제 push 결과를 각각 기록한다.
 Semantica는 별도 승인이 있을 때만 commit/push한다. 두 repo의 권한과 결과를 분리 기록한다.

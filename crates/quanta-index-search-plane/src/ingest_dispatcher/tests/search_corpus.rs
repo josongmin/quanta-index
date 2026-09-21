@@ -18,10 +18,6 @@ use quanta_index_core::{
 };
 
 use crate::ingest_dispatcher::auxiliary::AuxiliaryMutationCoordinator;
-use crate::ingest_dispatcher::errors::{
-    ERR_SEARCH_CORPUS_BATCH_SHAPE, ERR_SEARCH_CORPUS_DELTA_BASE_NOT_SEALED,
-    ERR_SEARCH_CORPUS_GENERATION_REPAIR_REQUIRED,
-};
 use crate::ingest_dispatcher::generation_plan::{
     batch_publish_receipt_v1, generation_pair_from_batch_v1,
 };
@@ -83,7 +79,10 @@ fn malformed_or_baseless_batches_change_zero_bytes() -> TestRes {
     let mut malformed = fixture_search_corpus_batch()?;
     malformed.base_generation = Some(ManifestGeneration::new(3));
     match probe.materializer.publish_batch(&malformed) {
-        Err(CoreError::Typed { code, .. }) if code == ERR_SEARCH_CORPUS_BATCH_SHAPE => {}
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusBatchShapeInvalid,
+            ..
+        }) => {}
         other => return Err(format!("mode/base mismatch answered {other:?}").into()),
     }
     probe.assert_nothing_touched("mode/base mismatch")?;
@@ -91,7 +90,10 @@ fn malformed_or_baseless_batches_change_zero_bytes() -> TestRes {
     let mut empty_digest = fixture_search_corpus_batch()?;
     empty_digest.manifest_digest = String::new();
     match probe.materializer.publish_batch(&empty_digest) {
-        Err(CoreError::Typed { code, .. }) if code == ERR_SEARCH_CORPUS_BATCH_SHAPE => {}
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusBatchShapeInvalid,
+            ..
+        }) => {}
         other => return Err(format!("empty digest answered {other:?}").into()),
     }
     probe.assert_nothing_touched("empty digest")?;
@@ -100,7 +102,10 @@ fn malformed_or_baseless_batches_change_zero_bytes() -> TestRes {
     unsealed_base.mode = BatchIngestMode::Delta;
     unsealed_base.base_generation = Some(ManifestGeneration::new(3));
     match probe.materializer.publish_batch(&unsealed_base) {
-        Err(CoreError::Typed { code, .. }) if code == ERR_SEARCH_CORPUS_DELTA_BASE_NOT_SEALED => {}
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusDeltaBaseNotSealed,
+            ..
+        }) => {}
         other => return Err(format!("unsealed base answered {other:?}").into()),
     }
     probe.assert_nothing_touched("base never sealed")?;
@@ -120,8 +125,11 @@ fn malformed_or_baseless_batches_change_zero_bytes() -> TestRes {
             "manifest:base",
         );
     match mismatched.materializer.publish_batch(&unsealed_base) {
-        Err(CoreError::Typed { code, .. })
-            if code == ERR_SEARCH_CORPUS_GENERATION_REPAIR_REQUIRED => {}
+        Err(CoreError::Typed {
+            code:
+                quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationRepairRequired,
+            ..
+        }) => {}
         other => return Err(format!("mismatched base answered {other:?}").into()),
     }
     mismatched.assert_nothing_touched("base identity mismatch")
@@ -210,13 +218,18 @@ fn seed_records(
                 batch_digest: format!("{kind}:{generation}"),
             };
             let body = [u8::try_from(*generation)?; 32];
-            let _fresh = catalog.begin(&key, &body)?;
+            let claim = match catalog.claim_prepared(&key, &body, "test-seed", u64::MAX, &body)? {
+                quanta_index_core::ClaimOutcomeV1::Claimed(claim) => claim,
+                quanta_index_core::ClaimOutcomeV1::Replay { .. } => {
+                    return Err("seed claim unexpectedly replayed".into());
+                }
+            };
             let receipt = quanta_index_contract::BatchPublishReceipt::empty_for(
                 ManifestGeneration::new(*generation),
                 None,
                 key.batch_digest.clone(),
             );
-            let _sequence = catalog.finalize(&key, &body, &receipt)?;
+            let _sequence = catalog.commit(&claim, &receipt)?;
         }
     }
     Ok(())
@@ -353,7 +366,8 @@ fn a_refusal_met_by_the_reclaim_pass_fails_it_closed() -> TestRes {
 
     lexical_reclaim.refuse_next_listing();
     let refused = materializer.finalize_generation_v1(&batch, Some(&retention));
-    if !matches!(&refused, Err(CoreError::Typed { code, .. }) if code == "GENERATION_IDENTITY_SCOPE_MISMATCH")
+    if !matches!(&refused, Err(CoreError::Typed { code, .. })
+        if *code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityScopeMismatch)
     {
         return Err(format!("the refusal fails the pass closed, got {refused:?}").into());
     }
@@ -689,7 +703,7 @@ impl GenerationIdentityValidatePort for CorruptUntilReclaimed {
                 .contains(&candidate.manifest_generation.get())
         {
             return Err(CoreError::Typed {
-                code: "GENERATION_SIDECAR_CORRUPT".to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
                 message: format!(
                     "injected sidecar damage on {:?} generation {}",
                     candidate.track,
@@ -766,7 +780,7 @@ fn a_sealed_but_corrupt_track_is_rebuilt_by_a_replace_seal_and_refused_for_a_del
         );
     match materializer.publish_batch(&delta) {
         Err(CoreError::Typed { code, message })
-            if code == ERR_SEARCH_CORPUS_GENERATION_REPAIR_REQUIRED
+            if code == quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationRepairRequired
                 && message.contains("publish a ReplaceGeneration seal batch") => {}
         other => return Err(format!("delta over a corrupt track answered {other:?}").into()),
     }
@@ -812,7 +826,7 @@ fn a_sealed_but_corrupt_track_is_rebuilt_by_a_replace_seal_and_refused_for_a_del
 fn a_delta_over_a_corrupt_base_is_refused_with_the_repair() -> TestRes {
     let probe = ZeroMutationProbe::new(Arc::new(CorruptTrackGeneration {
         corrupt: SearchPlaneTrackKind::Semantic,
-        code: "GENERATION_IDENTITY_DIGEST_MISMATCH",
+        code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch,
     }));
     let mut delta = fixture_search_corpus_batch()?;
     delta.mode = BatchIngestMode::Delta;
@@ -836,7 +850,7 @@ fn a_delta_over_a_corrupt_base_is_refused_with_the_repair() -> TestRes {
     ] {
         match outcome {
             Err(CoreError::Typed { code, message })
-                if code == ERR_SEARCH_CORPUS_GENERATION_REPAIR_REQUIRED
+                if code == quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationRepairRequired
                     && message.contains("publish a ReplaceGeneration seal batch") => {}
             other => return Err(format!("{label} over a corrupt base answered {other:?}").into()),
         }
@@ -1100,7 +1114,10 @@ fn non_seal_batch_cannot_mutate_an_already_sealed_generation() -> TestRes {
     let Err(CoreError::Typed { code, .. }) = result else {
         return Err("non-seal mutation of sealed generation unexpectedly succeeded".into());
     };
-    assert_eq!(code, "GENERATION_IMMUTABLE");
+    assert_eq!(
+        code,
+        quanta_index_contract::SearchPlaneErrorCodeV2::GenerationImmutable
+    );
     assert!(
         lexical_builder
             .batches

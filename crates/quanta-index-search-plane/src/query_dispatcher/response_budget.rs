@@ -11,8 +11,8 @@
 //! continuation keep the transport's typed refusal as their bound.
 
 use quanta_index_contract::{
-    CandidateCountV1, ERR_RESULT_TOO_LARGE, LexicalCursor, LexicalRowOrderKey, QueryResultWindowV1,
-    SymbolCandidate, SymbolQueryResponse, TextQueryResponse,
+    CandidateCountV1, LexicalCursor, LexicalRowOrderKey, QueryResultWindowV1, SymbolCandidate,
+    SymbolQueryResponse, TextQueryResponse,
 };
 use quanta_index_core::CoreError;
 use quanta_index_ipc::{MAX_FRAME_BODY_BYTES, cbor_payload_len};
@@ -162,7 +162,7 @@ pub(super) fn fit_ranked_page<P: RankedPage>(
 
 fn too_large(encoded: u64, limit: u64) -> CoreError {
     CoreError::Typed {
-        code: ERR_RESULT_TOO_LARGE.to_string(),
+        code: quanta_index_contract::SearchPlaneErrorCodeV2::ResultTooLarge,
         message: format!(
             "the page's first row alone does not fit the {limit}-byte response budget (the whole page encodes to {encoded} bytes); narrow the query or the projection"
         ),

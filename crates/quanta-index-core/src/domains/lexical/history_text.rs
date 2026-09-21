@@ -37,24 +37,28 @@ use crate::request_budget::RequestBudgetV1;
 /// a raw string is a filter only where a scored clause bounds it (a
 /// conjunct of a keyword, or negated), and nothing else has a BM25 score
 /// or is ever given a heuristic one.
-pub const HISTORY_TEXT_QUERY_UNSCORABLE_CODE: &str = "HISTORY_TEXT_QUERY_UNSCORABLE";
+pub const HISTORY_TEXT_QUERY_UNSCORABLE_CODE: quanta_index_contract::SearchPlaneErrorCodeV2 =
+    quanta_index_contract::SearchPlaneErrorCodeV2::HistoryTextQueryUnscorable;
 
 /// Wire code for a relevance read at an epoch that has no text index.
 ///
 /// The generation predates the index or the epoch's index was never
 /// published; the next history batch of the generation builds it.
-pub const HISTORY_TEXT_INDEX_NOT_READY_CODE: &str = "HISTORY_TEXT_INDEX_NOT_READY";
+pub const HISTORY_TEXT_INDEX_NOT_READY_CODE: quanta_index_contract::SearchPlaneErrorCodeV2 =
+    quanta_index_contract::SearchPlaneErrorCodeV2::HistoryTextIndexNotReady;
 
 /// Wire code for an epoch index built under another text normalizer.
 ///
 /// It is never served with mismatched text semantics; the next history
 /// batch rebuilds it.
-pub const HISTORY_TEXT_INDEX_NORMALIZER_UNSUPPORTED_CODE: &str =
-    "HISTORY_TEXT_INDEX_NORMALIZER_UNSUPPORTED";
+pub const HISTORY_TEXT_INDEX_NORMALIZER_UNSUPPORTED_CODE:
+    quanta_index_contract::SearchPlaneErrorCodeV2 =
+    quanta_index_contract::SearchPlaneErrorCodeV2::HistoryTextIndexNormalizerUnsupported;
 
 /// Wire code for an epoch index whose manifest does not describe the
 /// files on disk.
-pub const HISTORY_TEXT_INDEX_CORRUPT_CODE: &str = "HISTORY_TEXT_INDEX_CORRUPT";
+pub const HISTORY_TEXT_INDEX_CORRUPT_CODE: quanta_index_contract::SearchPlaneErrorCodeV2 =
+    quanta_index_contract::SearchPlaneErrorCodeV2::HistoryTextIndexCorrupt;
 
 /// Which history rows a text index holds.
 ///

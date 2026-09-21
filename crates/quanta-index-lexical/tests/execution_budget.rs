@@ -37,12 +37,20 @@ const BUDGET: usize = 4;
 /// One more than the budget: exact-set executions over all of them must refuse.
 const DOCS: u32 = 5;
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn repo() -> RepoId {
-    RepoId::new("budget-repo")
+    RepoId::new("budget-repo").expect("static fixture ID satisfies canonical policy")
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn revision() -> RevisionId {
-    RevisionId::new("budget-rev")
+    RevisionId::new("budget-rev").expect("static fixture ID satisfies canonical policy")
 }
 
 fn generation() -> ManifestGeneration {
@@ -126,7 +134,7 @@ fn adapter_with_budget(
 }
 
 fn is_budget_refusal(err: &CoreError) -> bool {
-    matches!(err, CoreError::Typed { code, .. } if code == LEXICAL_EXAMINED_BUDGET_EXCEEDED_CODE)
+    matches!(err, CoreError::Typed { code, .. } if *code == LEXICAL_EXAMINED_BUDGET_EXCEEDED_CODE)
 }
 
 fn seeded(budget: usize) -> Result<(tempfile::TempDir, LexicalAdapter), Box<dyn Error>> {

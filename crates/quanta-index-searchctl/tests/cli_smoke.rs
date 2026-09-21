@@ -27,8 +27,8 @@ use quanta_index_contract::{
     RepoMapDocType, RepoMapEntryDto, RepoMapExactnessSummary, RepoMapFocusSubjectDto,
     RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapQueryResponse,
     RepoMapRedactionState, RepoMapSnapshotMeta, RepoRelativePath, RevisionId, SearchExplanation,
-    SearchPlaneExplainQueryResponse, SearchPlaneIpcError, SearchPlaneQueryIpcRequest,
-    SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
+    SearchPlaneErrorCodeV2, SearchPlaneExplainQueryResponse, SearchPlaneIpcError,
+    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope, SemanticQueryResponse, TextQueryResponse, TextQuerySyntax,
 };
 use quanta_index_ipc::{IpcDispatcher, RequestBudgetV1, UdsServer};
@@ -579,11 +579,18 @@ impl ControlScenarioDispatcher {
         }
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "static fixture IDs provably satisfy the canonical ID policy"
+    )]
     fn generation_status(&self, req: &GenerationStatusRequest) -> SearchPlaneControlIpcResponse {
-        if req.repo_id != RepoId::new(DOCTOR_REPO) || req.revision_id != RevisionId::new(DOCTOR_REV)
+        if req.repo_id
+            != RepoId::new(DOCTOR_REPO).expect("test fixture ID satisfies canonical policy")
+            || req.revision_id
+                != RevisionId::new(DOCTOR_REV).expect("test fixture ID satisfies canonical policy")
         {
             return control_error_response(
-                "TEST_BAD_REPO_REV",
+                SearchPlaneErrorCodeV2::Internal,
                 format!("unexpected status request: {req:?}"),
             );
         }
@@ -615,11 +622,12 @@ impl ControlScenarioDispatcher {
                     manifest_digest: "DIVERGENT-digest".to_string(),
                 })
             }
-            ControlScenario::NotReadyResolver => {
-                control_error_response("NOT_READY", "resolver not ready for the listed track")
-            }
+            ControlScenario::NotReadyResolver => control_error_response(
+                SearchPlaneErrorCodeV2::NotReady,
+                "resolver not ready for the listed track",
+            ),
             ControlScenario::EmptyTracks => {
-                control_error_response("NOT_READY", "no activated generation")
+                control_error_response(SearchPlaneErrorCodeV2::NotReady, "no activated generation")
             }
         }
     }
@@ -646,7 +654,7 @@ impl IpcDispatcher<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>
             other @ (SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(_)
             | SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(_)
             | SearchPlaneControlIpcRequest::RepoMapActivate(_)) => control_error_response(
-                "TEST_UNEXPECTED_CONTROL_REQUEST",
+                SearchPlaneErrorCodeV2::Internal,
                 format!("doctor mock received unexpected control request: {other:?}"),
             ),
         }
@@ -824,7 +832,7 @@ fn quarantine_discard(request: QuarantineDiscardRequest) -> SearchPlaneControlIp
         })
     } else {
         control_error_response(
-            "QUARANTINE_TARGET_NOT_QUARANTINED",
+            SearchPlaneErrorCodeV2::QuarantineTargetNotQuarantined,
             format!("not quarantined now: {:?}", request.target),
         )
     }
@@ -1026,9 +1034,12 @@ fn quarantine_discard_refusals_are_typed_and_usage_errors_stay_local_impl()
     Ok(())
 }
 
-fn control_error_response(code: &str, message: impl Into<String>) -> SearchPlaneControlIpcResponse {
+fn control_error_response(
+    code: SearchPlaneErrorCodeV2,
+    message: impl Into<String>,
+) -> SearchPlaneControlIpcResponse {
     SearchPlaneControlIpcResponse::Error(SearchPlaneIpcError {
-        code: code.to_string(),
+        code,
         message: message.into(),
         repair: None,
     })
@@ -1273,13 +1284,13 @@ fn unique_socket_path() -> std::path::PathBuf {
 fn dispatch_lexical_request(request: SearchPlaneQueryIpcRequest) -> SearchPlaneQueryIpcResponse {
     let SearchPlaneQueryIpcRequest::Text(payload) = request else {
         return error_response(
-            "TEST_UNEXPECTED_REQUEST",
+            SearchPlaneErrorCodeV2::Internal,
             format!("expected lexical request, got {request:?}"),
         );
     };
     let Some(generation) = payload.generation else {
         return error_response(
-            "TEST_MISSING_GENERATION",
+            SearchPlaneErrorCodeV2::Internal,
             "lexical request must carry generation",
         );
     };
@@ -1295,7 +1306,7 @@ fn dispatch_lexical_request(request: SearchPlaneQueryIpcRequest) -> SearchPlaneQ
 fn dispatch_explain_request(request: SearchPlaneQueryIpcRequest) -> SearchPlaneQueryIpcResponse {
     let SearchPlaneQueryIpcRequest::Explain(payload) = request else {
         return error_response(
-            "TEST_UNEXPECTED_REQUEST",
+            SearchPlaneErrorCodeV2::Internal,
             format!("expected explain request, got {request:?}"),
         );
     };
@@ -1314,20 +1325,20 @@ fn dispatch_explain_hybrid_request(
 ) -> SearchPlaneQueryIpcResponse {
     let SearchPlaneQueryIpcRequest::Explain(payload) = request else {
         return error_response(
-            "TEST_UNEXPECTED_REQUEST",
+            SearchPlaneErrorCodeV2::Internal,
             format!("expected explain request, got {request:?}"),
         );
     };
     let expected = ExplainCandidateV1::Hybrid(stub_hybrid_candidate(stub_generation()));
     if payload.candidate != expected {
         return error_response(
-            "TEST_BAD_CANDIDATE",
+            SearchPlaneErrorCodeV2::Internal,
             format!("unexpected explain candidate: {:?}", payload.candidate),
         );
     }
     let Some(text_query) = payload.text_query.as_ref() else {
         return error_response(
-            "TEST_MISSING_QUERY",
+            SearchPlaneErrorCodeV2::Internal,
             "a hybrid candidate explains under its query",
         );
     };
@@ -1336,13 +1347,13 @@ fn dispatch_explain_hybrid_request(
         || text_query.top_k != 7
     {
         return error_response(
-            "TEST_BAD_QUERY",
+            SearchPlaneErrorCodeV2::Internal,
             format!("unexpected explain query: {text_query:?}"),
         );
     }
     if payload.semantic_query_text.as_deref() != Some("where main lives") {
         return error_response(
-            "TEST_BAD_SEMANTIC_QUERY",
+            SearchPlaneErrorCodeV2::Internal,
             format!(
                 "unexpected explain dense query: {:?}",
                 payload.semantic_query_text
@@ -1361,26 +1372,26 @@ fn dispatch_explain_hybrid_request(
 fn dispatch_semantic_request(request: SearchPlaneQueryIpcRequest) -> SearchPlaneQueryIpcResponse {
     let SearchPlaneQueryIpcRequest::Semantic(payload) = request else {
         return error_response(
-            "TEST_UNEXPECTED_REQUEST",
+            SearchPlaneErrorCodeV2::Internal,
             format!("expected semantic request, got {request:?}"),
         );
     };
     let expected_generation = stub_generation();
     if payload.generation.as_ref() != Some(&expected_generation) {
         return error_response(
-            "TEST_BAD_GENERATION",
+            SearchPlaneErrorCodeV2::Internal,
             format!("unexpected semantic generation: {:?}", payload.generation),
         );
     }
     if payload.query_text.as_str() != "0.25 0.5 -0.75" {
         return error_response(
-            "TEST_BAD_QUERY_TEXT",
+            SearchPlaneErrorCodeV2::Internal,
             format!("unexpected semantic query_text: {:?}", payload.query_text),
         );
     }
     let Some(scope) = payload.lexical_scope.as_ref() else {
         return error_response(
-            "TEST_MISSING_SCOPE",
+            SearchPlaneErrorCodeV2::Internal,
             "semantic request should carry lexical scope",
         );
     };
@@ -1390,13 +1401,13 @@ fn dispatch_semantic_request(request: SearchPlaneQueryIpcRequest) -> SearchPlane
         || scope.generation.as_ref() != Some(&expected_generation)
     {
         return error_response(
-            "TEST_BAD_SCOPE",
+            SearchPlaneErrorCodeV2::Internal,
             format!("unexpected semantic lexical scope: {scope:?}"),
         );
     }
     if payload.top_k != 10 {
         return error_response(
-            "TEST_BAD_TOP_K",
+            SearchPlaneErrorCodeV2::Internal,
             format!("unexpected semantic top_k: {}", payload.top_k),
         );
     }
@@ -1411,7 +1422,7 @@ fn dispatch_semantic_request(request: SearchPlaneQueryIpcRequest) -> SearchPlane
 fn dispatch_hybrid_request(request: SearchPlaneQueryIpcRequest) -> SearchPlaneQueryIpcResponse {
     let SearchPlaneQueryIpcRequest::Hybrid(payload) = request else {
         return error_response(
-            "TEST_UNEXPECTED_REQUEST",
+            SearchPlaneErrorCodeV2::Internal,
             format!("expected hybrid request, got {request:?}"),
         );
     };
@@ -1424,7 +1435,7 @@ fn dispatch_hybrid_request(request: SearchPlaneQueryIpcRequest) -> SearchPlaneQu
         || payload.top_k != 7
     {
         return error_response(
-            "TEST_BAD_HYBRID_REQUEST",
+            SearchPlaneErrorCodeV2::Internal,
             format!("unexpected hybrid request: {payload:?}"),
         );
     }
@@ -1443,14 +1454,14 @@ fn dispatch_hybrid_seed_request(
 ) -> SearchPlaneQueryIpcResponse {
     let SearchPlaneQueryIpcRequest::HybridSeed(payload) = request else {
         return error_response(
-            "TEST_UNEXPECTED_REQUEST",
+            SearchPlaneErrorCodeV2::Internal,
             format!("expected hybrid-seed request, got {request:?}"),
         );
     };
     let expected_generation = stub_generation();
     if payload.generation.as_ref() != Some(&expected_generation) {
         return error_response(
-            "TEST_BAD_GENERATION",
+            SearchPlaneErrorCodeV2::Internal,
             format!("unexpected hybrid generation: {:?}", payload.generation),
         );
     }
@@ -1460,13 +1471,13 @@ fn dispatch_hybrid_seed_request(
         || payload.text_query.generation.as_ref() != Some(&expected_generation)
     {
         return error_response(
-            "TEST_BAD_TEXT_QUERY",
+            SearchPlaneErrorCodeV2::Internal,
             format!("unexpected hybrid text query: {:?}", payload.text_query),
         );
     }
     if payload.semantic_query_text.as_str() != "0.25 0.5 -0.75" {
         return error_response(
-            "TEST_BAD_SEMANTIC_QUERY_TEXT",
+            SearchPlaneErrorCodeV2::Internal,
             format!(
                 "unexpected hybrid semantic query text: {:?}",
                 payload.semantic_query_text
@@ -1475,7 +1486,7 @@ fn dispatch_hybrid_seed_request(
     }
     if payload.top_k != 3 {
         return error_response(
-            "TEST_BAD_TOP_K",
+            SearchPlaneErrorCodeV2::Internal,
             format!("unexpected hybrid top_k: {}", payload.top_k),
         );
     }
@@ -1515,15 +1526,21 @@ fn dispatch_hybrid_seed_request(
     })
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn dispatch_repomap_request(request: SearchPlaneQueryIpcRequest) -> SearchPlaneQueryIpcResponse {
     let SearchPlaneQueryIpcRequest::RepoMapQuery(payload) = request else {
         return error_response(
-            "TEST_UNEXPECTED_REQUEST",
+            SearchPlaneErrorCodeV2::Internal,
             format!("expected repomap request, got {request:?}"),
         );
     };
-    if payload.repo_id != RepoId::new("repo-1")
-        || payload.revision_id != RevisionId::new("rev-1")
+    if payload.repo_id
+        != RepoId::new("repo-1").expect("static fixture ID satisfies canonical policy")
+        || payload.revision_id
+            != RevisionId::new("rev-1").expect("static fixture ID satisfies canonical policy")
         || payload.manifest_generation != ManifestGeneration::new(11)
         || payload.query_text != "repo map focus"
         || payload.top_k != 5
@@ -1531,25 +1548,32 @@ fn dispatch_repomap_request(request: SearchPlaneQueryIpcRequest) -> SearchPlaneQ
         || payload.focus_subjects != vec![stub_repomap_focus_subject()]
     {
         return error_response(
-            "TEST_BAD_REPOMAP_REQUEST",
+            SearchPlaneErrorCodeV2::Internal,
             format!("unexpected repomap request: {payload:?}"),
         );
     }
     SearchPlaneQueryIpcResponse::RepoMapQuery(stub_repomap_response())
 }
 
-fn error_response(code: &str, message: impl Into<String>) -> SearchPlaneQueryIpcResponse {
+fn error_response(
+    code: SearchPlaneErrorCodeV2,
+    message: impl Into<String>,
+) -> SearchPlaneQueryIpcResponse {
     SearchPlaneQueryIpcResponse::Error(SearchPlaneIpcError {
-        code: code.to_string(),
+        code,
         message: message.into(),
         repair: None,
     })
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn stub_generation() -> GenerationPin {
     GenerationPin::new(
-        RepoId::new("repo-1"),
-        RevisionId::new("rev-1"),
+        RepoId::new("repo-1").expect("static fixture ID satisfies canonical policy"),
+        RevisionId::new("rev-1").expect("static fixture ID satisfies canonical policy"),
         ManifestGeneration::new(11),
     )
 }
@@ -1656,10 +1680,15 @@ fn stub_repomap_entry() -> RepoMapEntryDto {
     }
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn stub_repomap_response() -> RepoMapQueryResponse {
     RepoMapQueryResponse {
-        repo_id: RepoId::new("repo-1"),
-        revision_id: RevisionId::new("rev-1"),
+        repo_id: RepoId::new("repo-1").expect("static fixture ID satisfies canonical policy"),
+        revision_id: RevisionId::new("rev-1")
+            .expect("static fixture ID satisfies canonical policy"),
         manifest_generation: ManifestGeneration::new(11),
         snapshot_meta: stub_repomap_snapshot_meta(),
         entries: vec![stub_repomap_entry()],

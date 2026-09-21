@@ -7,7 +7,7 @@ use quanta_index_contract::{
 use quanta_index_core::RequestBudgetV1;
 
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
-use crate::query_dispatcher::errors::{ERR_HISTORY_INVALID_TIMEREF, ERR_NOT_READY};
+use crate::query_dispatcher::errors::ERR_HISTORY_INVALID_TIMEREF;
 use crate::query_dispatcher::tests::support::common::{
     TestResult, activation_catalog_with_generations, candidate, corpus_generation, ipc_error_from,
     test_activation_catalog,
@@ -25,14 +25,16 @@ fn lexical_dispatch_rebinds_rev_at_time_to_reachable_ancestor() -> TestResult {
     let state = Arc::new(Mutex::new(RecordingLexicalState::default()));
     let activation_catalog = activation_catalog_with_generations(&[
         corpus_generation(
-            RepoId::new("repo-map-ipc"),
-            RevisionId::new("1111111111111111111111111111111111111111"),
+            RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
+            RevisionId::new("1111111111111111111111111111111111111111")
+                .expect("static fixture ID satisfies canonical policy"),
             ManifestGeneration::new(7),
             "ancestor-lex",
         )?,
         corpus_generation(
-            RepoId::new("repo-map-ipc"),
-            RevisionId::new("2222222222222222222222222222222222222222"),
+            RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
+            RevisionId::new("2222222222222222222222222222222222222222")
+                .expect("static fixture ID satisfies canonical policy"),
             ManifestGeneration::new(9),
             "head-lex",
         )?,
@@ -55,8 +57,9 @@ fn lexical_dispatch_rebinds_rev_at_time_to_reachable_ancestor() -> TestResult {
             query_text: "rev:at.time(1970-01-01T00:00:00.150Z) foo".to_string(),
             constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             generation: Some(GenerationPin::new(
-                RepoId::new("repo-map-ipc"),
-                RevisionId::new("2222222222222222222222222222222222222222"),
+                RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
+                RevisionId::new("2222222222222222222222222222222222222222")
+                    .expect("static fixture ID satisfies canonical policy"),
                 ManifestGeneration::new(9),
             )),
             generation_selector: None,
@@ -70,8 +73,10 @@ fn lexical_dispatch_rebinds_rev_at_time_to_reachable_ancestor() -> TestResult {
         SearchPlaneQueryIpcResponse::Text(text) => {
             if text.generation
                 != GenerationPin::new(
-                    RepoId::new("repo-map-ipc"),
-                    RevisionId::new("1111111111111111111111111111111111111111"),
+                    RepoId::new("repo-map-ipc")
+                        .expect("static fixture ID satisfies canonical policy"),
+                    RevisionId::new("1111111111111111111111111111111111111111")
+                        .expect("static fixture ID satisfies canonical policy"),
                     ManifestGeneration::new(7),
                 )
             {
@@ -98,8 +103,9 @@ fn lexical_dispatch_rebinds_rev_at_time_to_reachable_ancestor() -> TestResult {
         .map_err(|err| format!("lexical state poisoned: {err}"))?;
     if guard.opened_pins.as_slice()
         != [(
-            RepoId::new("repo-map-ipc"),
-            RevisionId::new("1111111111111111111111111111111111111111"),
+            RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
+            RevisionId::new("1111111111111111111111111111111111111111")
+                .expect("static fixture ID satisfies canonical policy"),
             ManifestGeneration::new(7),
         )]
     {
@@ -141,8 +147,9 @@ fn lexical_dispatch_rejects_rev_at_time_invalid_timeref() -> TestResult {
             query_text: "rev:at.time(definitely-not-a-timeref) foo".to_string(),
             constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             generation: Some(GenerationPin::new(
-                RepoId::new("repo-map-ipc"),
-                RevisionId::new("2222222222222222222222222222222222222222"),
+                RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
+                RevisionId::new("2222222222222222222222222222222222222222")
+                    .expect("static fixture ID satisfies canonical policy"),
                 ManifestGeneration::new(9),
             )),
             generation_selector: None,
@@ -170,8 +177,9 @@ fn lexical_dispatch_rejects_rev_at_time_when_rebound_generation_is_unactivated()
         Arc::new(FailClosedStructuralProducer),
         ledger_with_rev_at_time_history()?,
         activation_catalog_with_generations(&[corpus_generation(
-            RepoId::new("repo-map-ipc"),
-            RevisionId::new("2222222222222222222222222222222222222222"),
+            RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
+            RevisionId::new("2222222222222222222222222222222222222222")
+                .expect("static fixture ID satisfies canonical policy"),
             ManifestGeneration::new(9),
             "head-lex",
         )?])?,
@@ -183,8 +191,9 @@ fn lexical_dispatch_rejects_rev_at_time_when_rebound_generation_is_unactivated()
             query_text: "rev:at.time(1970-01-01T00:00:00.150Z) foo".to_string(),
             constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             generation: Some(GenerationPin::new(
-                RepoId::new("repo-map-ipc"),
-                RevisionId::new("2222222222222222222222222222222222222222"),
+                RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
+                RevisionId::new("2222222222222222222222222222222222222222")
+                    .expect("static fixture ID satisfies canonical policy"),
                 ManifestGeneration::new(9),
             )),
             generation_selector: None,
@@ -195,8 +204,8 @@ fn lexical_dispatch_rejects_rev_at_time_when_rebound_generation_is_unactivated()
     );
 
     let (code, message) = ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
-    if code != ERR_NOT_READY {
-        return Err(format!("expected {ERR_NOT_READY}, got {code}").into());
+    if code != quanta_index_contract::SearchPlaneErrorCodeV2::NotReady {
+        return Err(format!("expected NOT_READY, got {code}").into());
     }
     if !message.contains("no active Lexical generation") {
         return Err(format!("unexpected rev:at.time not-ready message: {message}").into());

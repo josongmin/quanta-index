@@ -1,44 +1,74 @@
+//! S21-02/P03 — the `RepoMap` bootstrap flow under SQLite-catalog
+//! authority: opening a fresh root bootstraps empty, publishing alone
+//! never activates, the open report reflects the catalog reconcile, and
+//! independent repo/revision pairs stay isolated.
+
+#![forbid(unsafe_code)]
 #![expect(
     clippy::unreachable,
-    reason = "test fixtures use invariant literal constructors for language and symbol kinds"
+    reason = "test fixtures use invariant literal constructors for repo and revision IDs"
+)]
+#![expect(
+    clippy::panic_in_result_fn,
+    reason = "integration tests use Result-returning setup with assertion-style validation"
 )]
 
-use std::fs;
+use std::error::Error;
+use std::sync::Arc;
+use std::time::Duration;
 
-use quanta_index_contract::lex::{LanguageCode, SymbolKindCode};
+use quanta_index_catalog::SqliteCatalog;
 use quanta_index_contract::{
-    FileId, ManifestGeneration, RepoId, RepoMapActivateGenerationRequest, RepoMapChunkExactness,
-    RepoMapDocType, RepoMapExactnessSummary, RepoMapFocusSubjectDto, RepoMapGraphCoverage,
-    RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapNode, RepoMapNodeRef,
-    RepoMapQueryRequest, RepoMapRedactionState, RepoMapSourceBundle, RepoRelativePath, RevisionId,
-    SymbolId,
+    FileId, ManifestGeneration, RepoId, RepoMapActivateGenerationRequest, RepoMapExactnessSummary,
+    RepoMapFileNode, RepoMapGraphCoverage, RepoMapGraphCoverageClass, RepoMapItemIndexAvailability,
+    RepoMapNode, RepoMapQueryRequest, RepoMapRedactionState, RepoMapSourceBundle, RepoRelativePath,
+    RevisionId,
 };
 use quanta_index_core::CoreError;
-use quanta_index_repomap::RepoMapGenerationStore;
+use quanta_index_repomap::{OpenedRepoMapStore, RepoMapGenerationStore};
 
-fn rust_language() -> LanguageCode {
-    match LanguageCode::new("rust") {
-        Ok(language) => language,
-        Err(err) => unreachable!("valid language: {err}"),
+type TestResult = Result<(), Box<dyn Error>>;
+
+/// A distinct valid 64-hex producer digest per fixture marker.
+fn producer_hex(marker: &str) -> String {
+    let hash = marker
+        .bytes()
+        .fold(0_u16, |acc, byte| acc.wrapping_add(u16::from(byte)));
+    format!("{}{:04x}", "ab".repeat(30), hash)
+}
+
+const CATALOG_BUSY_BUDGET: Duration = Duration::from_secs(5);
+
+fn repo() -> RepoId {
+    match RepoId::new("repo-bootstrap") {
+        Ok(repo) => repo,
+        Err(err) => unreachable!("static fixture ID satisfies canonical policy: {err}"),
     }
 }
 
-fn symbol_kind(name: &str) -> SymbolKindCode {
-    match SymbolKindCode::new(name) {
-        Ok(symbol_kind) => symbol_kind,
-        Err(err) => unreachable!("valid symbol kind `{name}`: {err}"),
+fn other_repo() -> RepoId {
+    match RepoId::new("repo-other") {
+        Ok(repo) => repo,
+        Err(err) => unreachable!("static fixture ID satisfies canonical policy: {err}"),
     }
 }
 
-fn sample_bundle() -> RepoMapSourceBundle {
+fn revision() -> RevisionId {
+    match RevisionId::new("rev-bootstrap") {
+        Ok(revision) => revision,
+        Err(err) => unreachable!("static fixture ID satisfies canonical policy: {err}"),
+    }
+}
+
+fn bundle(repo_id: &RepoId, generation: u64, marker: &str) -> RepoMapSourceBundle {
     RepoMapSourceBundle::new(
-        RepoId::new("repo-a"),
-        RevisionId::new("rev-a"),
-        ManifestGeneration::new(7),
-        "manifest-digest-7",
-        "snap-7",
+        repo_id.clone(),
+        revision(),
+        ManifestGeneration::new(generation),
+        producer_hex(marker),
+        format!("snap-{marker}"),
         1,
-        "digest-7",
+        "d".repeat(64),
         RepoMapGraphCoverage {
             item_index_availability: RepoMapItemIndexAvailability::Available,
             graph_coverage_class: RepoMapGraphCoverageClass::Complete,
@@ -46,568 +76,174 @@ fn sample_bundle() -> RepoMapSourceBundle {
         RepoMapExactnessSummary::Exact,
         RepoMapRedactionState::Unredacted,
     )
-    .with_node(RepoMapNode::File(quanta_index_contract::RepoMapFileNode {
-        file_id: FileId::new("src/lib.rs"),
+    .with_node(RepoMapNode::File(RepoMapFileNode {
+        file_id: FileId::new("file://src/lib.rs"),
         repo_relative_path: RepoRelativePath::new("src/lib.rs"),
-        line_count: 140,
+        line_count: 90,
     }))
-    .with_node(RepoMapNode::File(quanta_index_contract::RepoMapFileNode {
-        file_id: FileId::new("src/runtime/mod.rs"),
-        repo_relative_path: RepoRelativePath::new("src/runtime/mod.rs"),
-        line_count: 96,
-    }))
-    .with_node(RepoMapNode::File(quanta_index_contract::RepoMapFileNode {
-        file_id: FileId::new("tests/repomap.rs"),
-        repo_relative_path: RepoRelativePath::new("tests/repomap.rs"),
-        line_count: 64,
-    }))
-    .with_node(RepoMapNode::Symbol(
-        quanta_index_contract::RepoMapSymbolNode {
-            symbol_id: SymbolId::new("src/lib.rs::OwnerAlpha"),
-            owner_path: RepoRelativePath::new("src/lib.rs"),
-            local_name: "OwnerAlpha".to_string(),
-            qualified_name: "src::lib::OwnerAlpha".to_string(),
-            symbol_kind: symbol_kind("struct"),
-        },
-    ))
-    .with_node(RepoMapNode::Symbol(
-        quanta_index_contract::RepoMapSymbolNode {
-            symbol_id: SymbolId::new("src/lib.rs::OwnerBeta"),
-            owner_path: RepoRelativePath::new("src/lib.rs"),
-            local_name: "OwnerBeta".to_string(),
-            qualified_name: "src::lib::OwnerBeta".to_string(),
-            symbol_kind: symbol_kind("struct"),
-        },
-    ))
-    .with_node(RepoMapNode::Chunk(
-        quanta_index_contract::RepoMapChunkNode {
-            chunk_id: quanta_index_contract::ChunkId::new("chunk://alpha"),
-            owner_path: RepoRelativePath::new("src/lib.rs"),
-            language: rust_language(),
-            start_byte: 0,
-            end_byte: 90,
-            start_line: 1,
-            end_line: 9,
-            token_count: 80,
-            preview_text: "OwnerAlpha coordinates repo map ownership".to_string(),
-            exactness: RepoMapChunkExactness::Exact,
-        },
-    ))
-    .with_node(RepoMapNode::Chunk(
-        quanta_index_contract::RepoMapChunkNode {
-            chunk_id: quanta_index_contract::ChunkId::new("chunk://beta"),
-            owner_path: RepoRelativePath::new("src/lib.rs"),
-            language: rust_language(),
-            start_byte: 91,
-            end_byte: 150,
-            start_line: 10,
-            end_line: 16,
-            token_count: 56,
-            preview_text: "OwnerBeta carries owner surface metadata".to_string(),
-            exactness: RepoMapChunkExactness::Exact,
-        },
-    ))
-    .with_node(RepoMapNode::Chunk(
-        quanta_index_contract::RepoMapChunkNode {
-            chunk_id: quanta_index_contract::ChunkId::new("chunk://runtime"),
-            owner_path: RepoRelativePath::new("src/runtime/mod.rs"),
-            language: rust_language(),
-            start_byte: 151,
-            end_byte: 200,
-            start_line: 17,
-            end_line: 22,
-            token_count: 40,
-            preview_text: "runtime module activation path".to_string(),
-            exactness: RepoMapChunkExactness::Approximate,
-        },
-    ))
-    .with_edge(quanta_index_contract::RepoMapEdge::Contains(
-        quanta_index_contract::RepoMapContainsEdge {
-            container: RepoMapNodeRef::File(FileId::new("src/lib.rs")),
-            contained: RepoMapNodeRef::Symbol(SymbolId::new("src/lib.rs::OwnerAlpha")),
-        },
-    ))
-    .with_edge(quanta_index_contract::RepoMapEdge::Contains(
-        quanta_index_contract::RepoMapContainsEdge {
-            container: RepoMapNodeRef::File(FileId::new("src/lib.rs")),
-            contained: RepoMapNodeRef::Symbol(SymbolId::new("src/lib.rs::OwnerBeta")),
-        },
-    ))
-    .with_edge(quanta_index_contract::RepoMapEdge::Call(
-        quanta_index_contract::RepoMapCallEdge {
-            caller: RepoMapNodeRef::Symbol(SymbolId::new("src/lib.rs::OwnerAlpha")),
-            callee: RepoMapNodeRef::Symbol(SymbolId::new("src/lib.rs::OwnerBeta")),
-        },
-    ))
-    .with_edge(quanta_index_contract::RepoMapEdge::Call(
-        quanta_index_contract::RepoMapCallEdge {
-            caller: RepoMapNodeRef::Symbol(SymbolId::new("src/lib.rs::OwnerAlpha")),
-            callee: RepoMapNodeRef::File(FileId::new("src/runtime/mod.rs")),
-        },
-    ))
-    .with_edge(quanta_index_contract::RepoMapEdge::Import(
-        quanta_index_contract::RepoMapImportEdge {
-            importer: RepoMapNodeRef::File(FileId::new("src/runtime/mod.rs")),
-            imported: RepoMapNodeRef::File(FileId::new("src/lib.rs")),
-        },
-    ))
-    .with_edge(quanta_index_contract::RepoMapEdge::Import(
-        quanta_index_contract::RepoMapImportEdge {
-            importer: RepoMapNodeRef::File(FileId::new("tests/repomap.rs")),
-            imported: RepoMapNodeRef::File(FileId::new("src/runtime/mod.rs")),
-        },
-    ))
-    .with_edge(quanta_index_contract::RepoMapEdge::OwnsChunk(
-        quanta_index_contract::RepoMapOwnsChunkEdge {
-            owner: RepoMapNodeRef::Symbol(SymbolId::new("src/lib.rs::OwnerAlpha")),
-            chunk: RepoMapNodeRef::Chunk(quanta_index_contract::ChunkId::new("chunk://alpha")),
-        },
-    ))
-    .with_edge(quanta_index_contract::RepoMapEdge::OwnsChunk(
-        quanta_index_contract::RepoMapOwnsChunkEdge {
-            owner: RepoMapNodeRef::Symbol(SymbolId::new("src/lib.rs::OwnerBeta")),
-            chunk: RepoMapNodeRef::Chunk(quanta_index_contract::ChunkId::new("chunk://beta")),
-        },
-    ))
-    .with_edge(quanta_index_contract::RepoMapEdge::OwnsChunk(
-        quanta_index_contract::RepoMapOwnsChunkEdge {
-            owner: RepoMapNodeRef::File(FileId::new("src/runtime/mod.rs")),
-            chunk: RepoMapNodeRef::Chunk(quanta_index_contract::ChunkId::new("chunk://runtime")),
-        },
-    ))
 }
 
-fn activate(store: &RepoMapGenerationStore, bundle: &RepoMapSourceBundle) -> Result<(), CoreError> {
-    store.activate_generation(&RepoMapActivateGenerationRequest {
-        repo_id: bundle.repo_id.clone(),
-        revision_id: bundle.revision_id.clone(),
-        manifest_generation: bundle.manifest_generation,
-        manifest_digest: "manifest-digest-7".to_string(),
-    })
-}
-
-fn assert_not_found_contains(error: CoreError, needle: &str) {
-    match error {
-        CoreError::NotFound(message) => assert!(message.contains(needle)),
-        CoreError::InvalidContract(message) => {
-            assert!(false, "expected NotFound, got InvalidContract({message})");
-        }
-        CoreError::Typed { code, message } => {
-            assert!(false, "expected NotFound, got Typed({code}, {message})");
-        }
-        CoreError::NotReady(message) => {
-            assert!(false, "expected NotFound, got NotReady({message})");
-        }
-        CoreError::NotImplemented(message) => {
-            assert!(false, "expected NotFound, got NotImplemented({message})");
-        }
-        CoreError::Storage(message) => {
-            assert!(false, "expected NotFound, got Storage({message})");
-        }
+fn activate_request(repo_id: &RepoId, generation: u64) -> RepoMapActivateGenerationRequest {
+    RepoMapActivateGenerationRequest {
+        repo_id: repo_id.clone(),
+        revision_id: revision(),
+        manifest_generation: ManifestGeneration::new(generation),
+        manifest_digest: producer_hex(&format!("g{generation}")),
     }
 }
 
-fn assert_invalid_contract_contains(error: CoreError, needle: &str) {
-    match error {
-        CoreError::InvalidContract(message) => assert!(message.contains(needle)),
-        CoreError::Typed { code, message } => {
-            assert!(
-                false,
-                "expected InvalidContract, got Typed({code}, {message})"
-            );
-        }
-        CoreError::NotReady(message) => {
-            assert!(false, "expected InvalidContract, got NotReady({message})");
-        }
-        CoreError::NotImplemented(message) => {
-            assert!(
-                false,
-                "expected InvalidContract, got NotImplemented({message})"
-            );
-        }
-        CoreError::NotFound(message) => {
-            assert!(false, "expected InvalidContract, got NotFound({message})");
-        }
-        CoreError::Storage(message) => {
-            assert!(false, "expected InvalidContract, got Storage({message})");
-        }
-    }
-}
-
-#[test]
-fn ingest_and_query_returns_ranked_entries() {
-    let store = RepoMapGenerationStore::default();
-    let bundle = sample_bundle();
-
-    let ingest_result = store.ingest_bundle(&bundle);
-    assert!(
-        ingest_result.is_ok(),
-        "bundle ingest should succeed: {ingest_result:?}"
-    );
-
-    let activation_result = activate(&store, &bundle);
-    assert!(
-        activation_result.is_ok(),
-        "activate should succeed: {activation_result:?}"
-    );
-
-    let response_result = store.read_query_snapshot(&RepoMapQueryRequest {
-        repo_id: bundle.repo_id.clone(),
-        revision_id: bundle.revision_id.clone(),
-        manifest_generation: bundle.manifest_generation,
-        query_text: "owner runtime".to_string(),
-        top_k: 2,
-        token_budget: 256,
-        focus_subjects: Vec::new(),
-    });
-    assert!(
-        response_result.is_ok(),
-        "query should succeed: {response_result:?}"
-    );
-    let Ok(response) = response_result else {
-        return;
-    };
-
-    assert_eq!(response.repo_id, bundle.repo_id);
-    assert_eq!(response.revision_id, bundle.revision_id);
-    assert_eq!(response.manifest_generation, bundle.manifest_generation);
-    assert_eq!(response.snapshot_meta.snapshot_id, "snap-7");
-    // `top_k=2` returns two rows; the other three are a count, not rows
-    // (QI-BB-008).
-    assert_eq!(response.entries.len(), 2);
-    assert_eq!(
-        response
-            .entries
-            .first()
-            .map(|entry| entry.subject_identity.as_str()),
-        Some("src/lib.rs::OwnerAlpha")
-    );
-    assert_eq!(
-        response
-            .entries
-            .iter()
-            .map(|entry| entry.rank)
-            .collect::<Vec<_>>(),
-        vec![1, 2]
-    );
-    assert_eq!(response.dropped_entries_count, 3);
-    assert!(
-        response
-            .drop_reason_codes
-            .iter()
-            .any(|code| code == "top_k_exhausted")
-    );
-}
-
-#[test]
-fn query_honors_focus_subjects() {
-    let store = RepoMapGenerationStore::default();
-    let bundle = sample_bundle();
-
-    let ingest_result = store.ingest_bundle(&bundle);
-    assert!(
-        ingest_result.is_ok(),
-        "bundle ingest should succeed: {ingest_result:?}"
-    );
-
-    let activation_result = activate(&store, &bundle);
-    assert!(
-        activation_result.is_ok(),
-        "activate should succeed: {activation_result:?}"
-    );
-
-    let response_result = store.read_query_snapshot(&RepoMapQueryRequest {
-        repo_id: bundle.repo_id.clone(),
-        revision_id: bundle.revision_id.clone(),
-        manifest_generation: bundle.manifest_generation,
-        query_text: "runtime activation".to_string(),
+fn query_request(repo_id: &RepoId, generation: u64) -> RepoMapQueryRequest {
+    RepoMapQueryRequest {
+        repo_id: repo_id.clone(),
+        revision_id: revision(),
+        manifest_generation: ManifestGeneration::new(generation),
+        query_text: "lib".to_string(),
         top_k: 10,
-        token_budget: 512,
-        focus_subjects: vec![RepoMapFocusSubjectDto {
-            subject_identity: "src/runtime/mod.rs".to_string(),
-            subject_doc_type: RepoMapDocType::File,
-        }],
-    });
-    assert!(
-        response_result.is_ok(),
-        "focused query should succeed: {response_result:?}"
-    );
-    let Ok(response) = response_result else {
-        return;
-    };
+        token_budget: 1_000,
+        focus_subjects: Vec::new(),
+    }
+}
 
-    assert_eq!(response.entries.len(), 1);
+fn open(
+    root: &std::path::Path,
+) -> Result<(Arc<SqliteCatalog>, OpenedRepoMapStore), Box<dyn Error>> {
+    let catalog = Arc::new(SqliteCatalog::open(root, CATALOG_BUSY_BUDGET)?);
+    let opened = RepoMapGenerationStore::open(root.join("repo-map"), Arc::clone(&catalog))?;
+    Ok((catalog, opened))
+}
+
+#[test]
+fn a_fresh_root_bootstraps_empty_and_serves_nothing() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let (_catalog, opened) = open(dir.path())?;
+    assert_eq!(opened.report.snapshots_loaded, 0);
+    assert_eq!(opened.report.activations_loaded, 0);
+    assert!(opened.report.quarantined.is_empty());
+    assert!(opened.report.activations_without_snapshot.is_empty());
+    match opened.store.read_query_snapshot(&query_request(&repo(), 1)) {
+        Err(CoreError::NotFound(_)) => {}
+        other => unreachable!("expected typed NOT_FOUND, got {other:?}"),
+    }
+    Ok(())
+}
+
+#[test]
+fn a_published_generation_is_visible_only_after_activation() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().to_path_buf();
+    let (_catalog, opened) = open(&root)?;
+    let store = &opened.store;
+    let _receipt = store.ingest_bundle(&bundle(&repo(), 1, "g1"))?;
+    assert!(
+        store
+            .read_query_snapshot(&query_request(&repo(), 1))
+            .is_err()
+    );
+    let _activation = store.activate_generation(&activate_request(&repo(), 1))?;
+    assert!(
+        store
+            .read_query_snapshot(&query_request(&repo(), 1))
+            .is_ok()
+    );
+
+    // After a restart, the same rules hold from the catalog alone.
+    let (_catalog, opened) = open(&root)?;
+    let store = &opened.store;
+    assert_eq!(opened.report.snapshots_loaded, 1);
+    assert_eq!(opened.report.activations_loaded, 1);
+    assert!(
+        store
+            .read_query_snapshot(&query_request(&repo(), 1))
+            .is_ok()
+    );
+
+    // A sealed-but-not-activated second generation stays invisible.
+    let _receipt = store.ingest_bundle(&bundle(&repo(), 2, "g2"))?;
+    let (_catalog, opened) = open(&root)?;
+    assert_eq!(opened.report.snapshots_loaded, 2);
+    assert_eq!(opened.report.activations_loaded, 1);
+    assert!(
+        opened
+            .store
+            .read_query_snapshot(&query_request(&repo(), 2))
+            .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn repo_revisions_are_isolated_activation_keys() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().to_path_buf();
+    let (_catalog, opened) = open(&root)?;
+    let store = &opened.store;
+    let _first = store.ingest_bundle(&bundle(&repo(), 1, "a1"))?;
+    let _second = store.ingest_bundle(&bundle(&other_repo(), 5, "b5"))?;
+    let _activated = store.activate_generation(&activate_request(&other_repo(), 5))?;
+    // Only the other repo's generation is active.
+    assert!(
+        store
+            .read_query_snapshot(&query_request(&repo(), 1))
+            .is_err()
+    );
+    assert!(
+        store
+            .read_query_snapshot(&query_request(&other_repo(), 5))
+            .is_ok()
+    );
     assert_eq!(
-        response
-            .entries
-            .first()
-            .map(|entry| entry.subject_identity.as_str()),
-        Some("src/runtime/mod.rs")
+        store.activated_generation_for(&repo(), &revision())?,
+        None,
+        "the first repo has no activation of its own"
     );
-    assert_eq!(
-        response
-            .entries
-            .first()
-            .map(|entry| entry.subject_doc_type.as_code_str()),
-        Some("File")
-    );
-    assert_eq!(response.entries.first().map(|entry| entry.rank), Some(1));
+    Ok(())
 }
 
 #[test]
-fn query_before_activate_fails_closed() {
-    let store = RepoMapGenerationStore::default();
-    let bundle = sample_bundle();
-    let ingest_result = store.ingest_bundle(&bundle);
-    assert!(
-        ingest_result.is_ok(),
-        "bundle ingest should succeed: {ingest_result:?}"
-    );
+fn an_activation_for_a_missing_candidate_object_reports_and_fail_closes() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().to_path_buf();
+    {
+        let (_catalog, opened) = open(&root)?;
+        let store = &opened.store;
+        let _sealed = store.ingest_bundle(&bundle(&repo(), 1, "g1"))?;
+        let _activated = store.activate_generation(&activate_request(&repo(), 1))?;
+    }
+    // The object disappears without the catalog knowing.
+    let object_root = root.join("repo-map").join("objects");
+    let mut removed = 0_usize;
+    remove_files(&object_root, &mut removed)?;
+    assert_eq!(removed, 1);
 
-    let query_result = store.read_query_snapshot(&RepoMapQueryRequest {
-        repo_id: bundle.repo_id.clone(),
-        revision_id: bundle.revision_id.clone(),
-        manifest_generation: bundle.manifest_generation,
-        query_text: "repo map".to_string(),
-        top_k: 1,
-        token_budget: 64,
-        focus_subjects: Vec::new(),
-    });
+    let (_catalog, opened) = open(&root)?;
     assert!(
-        query_result.is_err(),
-        "query before activate should fail: {query_result:?}"
+        !opened.report.activations_without_snapshot.is_empty(),
+        "the open report names the activation whose object is gone"
     );
-    let Err(error) = query_result else {
-        return;
-    };
-    assert_not_found_contains(error, "no activated generation");
+    assert!(
+        !opened.report.quarantined.is_empty(),
+        "the loss is a durable quarantine incident"
+    );
+    match opened.store.read_query_snapshot(&query_request(&repo(), 1)) {
+        Err(CoreError::NotFound(_)) => {}
+        other => unreachable!("expected typed NOT_FOUND, got {other:?}"),
+    }
+    Ok(())
 }
 
-#[test]
-fn missing_snapshot_fails_closed() {
-    let store = RepoMapGenerationStore::default();
-    let query_result = store.read_query_snapshot(&RepoMapQueryRequest {
-        repo_id: RepoId::new("repo-missing"),
-        revision_id: RevisionId::new("rev-missing"),
-        manifest_generation: ManifestGeneration::new(42),
-        query_text: "repo map".to_string(),
-        top_k: 1,
-        token_budget: 64,
-        focus_subjects: Vec::new(),
-    });
-    assert!(
-        query_result.is_err(),
-        "missing snapshot should fail: {query_result:?}"
-    );
-    let Err(error) = query_result else {
-        return;
-    };
-    assert_not_found_contains(error, "no activated generation");
-}
-
-#[test]
-fn activate_generation_tracks_latest_owner_state() {
-    let store = RepoMapGenerationStore::default();
-    let bundle = sample_bundle();
-    let ingest_result = store.ingest_bundle(&bundle);
-    assert!(
-        ingest_result.is_ok(),
-        "bundle ingest should succeed: {ingest_result:?}"
-    );
-
-    let activation_result = activate(&store, &bundle);
-    assert!(
-        activation_result.is_ok(),
-        "activate should succeed: {activation_result:?}"
-    );
-
-    let activated = store.activated_generation_for(&bundle.repo_id, &bundle.revision_id);
-    assert!(
-        activated.is_ok(),
-        "activated_generation_for should succeed: {activated:?}"
-    );
-    let Ok(activated) = activated else {
-        return;
-    };
-    assert_eq!(activated, Some(7));
-}
-
-#[test]
-fn activate_generation_rejects_empty_manifest_digest() {
-    let store = RepoMapGenerationStore::default();
-    let bundle = sample_bundle();
-    let ingest_result = store.ingest_bundle(&bundle);
-    assert!(
-        ingest_result.is_ok(),
-        "bundle ingest should succeed: {ingest_result:?}"
-    );
-
-    let activation_result = store.activate_generation(&RepoMapActivateGenerationRequest {
-        repo_id: bundle.repo_id.clone(),
-        revision_id: bundle.revision_id.clone(),
-        manifest_generation: bundle.manifest_generation,
-        manifest_digest: String::new(),
-    });
-    assert!(
-        activation_result.is_err(),
-        "empty manifest digest should fail: {activation_result:?}"
-    );
-    let Err(error) = activation_result else {
-        return;
-    };
-    assert_invalid_contract_contains(error, "manifest_digest must not be empty");
-}
-
-#[test]
-fn activate_generation_requires_materialized_snapshot() {
-    let store = RepoMapGenerationStore::default();
-    let activation_result = store.activate_generation(&RepoMapActivateGenerationRequest {
-        repo_id: RepoId::new("repo-missing"),
-        revision_id: RevisionId::new("rev-missing"),
-        manifest_generation: ManifestGeneration::new(99),
-        manifest_digest: "manifest-digest-99".to_string(),
-    });
-    assert!(
-        activation_result.is_err(),
-        "activation without snapshot should fail: {activation_result:?}"
-    );
-    let Err(error) = activation_result else {
-        return;
-    };
-    assert_not_found_contains(error, "repomap activate: no snapshot");
-}
-
-#[test]
-fn persistent_store_reloads_snapshot_and_activation() {
-    let dir_result = tempfile::tempdir();
-    assert!(dir_result.is_ok(), "tempdir should succeed: {dir_result:?}");
-    let Ok(dir) = dir_result else {
-        return;
-    };
-
-    let bundle = sample_bundle();
-    let store_result = RepoMapGenerationStore::open(dir.path());
-    assert!(
-        store_result.is_ok(),
-        "persistent store open should succeed: {store_result:?}"
-    );
-    let Ok(opened) = store_result else {
-        return;
-    };
-    let store = opened.store;
-
-    let ingest_result = store.ingest_bundle(&bundle);
-    assert!(
-        ingest_result.is_ok(),
-        "bundle ingest should succeed: {ingest_result:?}"
-    );
-    let activation_result = activate(&store, &bundle);
-    assert!(
-        activation_result.is_ok(),
-        "activate should succeed: {activation_result:?}"
-    );
-    drop(store);
-
-    let reload_result = RepoMapGenerationStore::open(dir.path());
-    assert!(
-        reload_result.is_ok(),
-        "reloaded store open should succeed: {reload_result:?}"
-    );
-    let Ok(reopened) = reload_result else {
-        return;
-    };
-    assert_eq!(reopened.report.snapshots_loaded, 1);
-    assert_eq!(reopened.report.activations_loaded, 1);
-    assert!(reopened.report.quarantined.is_empty());
-    let reloaded = reopened.store;
-
-    let response_result = reloaded.read_query_snapshot(&RepoMapQueryRequest {
-        repo_id: bundle.repo_id.clone(),
-        revision_id: bundle.revision_id.clone(),
-        manifest_generation: bundle.manifest_generation,
-        query_text: "owner runtime".to_string(),
-        top_k: 2,
-        token_budget: 256,
-        focus_subjects: Vec::new(),
-    });
-    assert!(
-        response_result.is_ok(),
-        "reloaded query should succeed: {response_result:?}"
-    );
-    let Ok(response) = response_result else {
-        return;
-    };
-
-    assert_eq!(response.snapshot_meta.snapshot_id, "snap-7");
-    assert_eq!(response.entries.len(), 2);
-    let activated = reloaded.activated_generation_for(&bundle.repo_id, &bundle.revision_id);
-    assert!(
-        activated.is_ok(),
-        "activated_generation_for should succeed: {activated:?}"
-    );
-    let Ok(activated) = activated else {
-        return;
-    };
-    assert_eq!(activated, Some(7));
-}
-
-/// An activation whose snapshot is gone is reported and answers `NOT_FOUND`
-/// for its repo; it no longer fails the whole store open (QI-BB-008).
-#[test]
-fn persistent_store_reports_an_orphaned_activation_and_fails_closed_for_its_repo() {
-    let dir_result = tempfile::tempdir();
-    assert!(dir_result.is_ok(), "tempdir should succeed: {dir_result:?}");
-    let Ok(dir) = dir_result else {
-        return;
-    };
-
-    let activations_dir = dir.path().join("activations");
-    let mkdir_result = fs::create_dir_all(&activations_dir);
-    assert!(
-        mkdir_result.is_ok(),
-        "activations dir create should succeed: {mkdir_result:?}"
-    );
-
-    let write_result = fs::write(
-        activations_dir.join("repo-missing--rev-missing.json"),
-        r#"{
-  "repo_id": "repo-missing",
-  "revision_id": "rev-missing",
-  "manifest_generation": 99
-}"#,
-    );
-    assert!(
-        write_result.is_ok(),
-        "orphan activation write should succeed: {write_result:?}"
-    );
-
-    let store_result = RepoMapGenerationStore::open(dir.path());
-    assert!(
-        store_result.is_ok(),
-        "an orphaned activation must not fail the open: {store_result:?}"
-    );
-    let Ok(opened) = store_result else {
-        return;
-    };
-    assert_eq!(
-        opened.report.activations_without_snapshot,
-        vec!["repo=repo-missing revision=rev-missing generation=99".to_string()]
-    );
-    let query_result = opened.store.read_query_snapshot(&RepoMapQueryRequest {
-        repo_id: RepoId::new("repo-missing"),
-        revision_id: RevisionId::new("rev-missing"),
-        manifest_generation: ManifestGeneration::new(99),
-        query_text: "anything".to_string(),
-        top_k: 1,
-        token_budget: 16,
-        focus_subjects: Vec::new(),
-    });
-    assert!(
-        query_result.is_err(),
-        "the orphaned repo answers fail-closed: {query_result:?}"
-    );
-    let Err(error) = query_result else {
-        return;
-    };
-    assert_not_found_contains(error, "no activated generation");
+fn remove_files(dir: &std::path::Path, removed: &mut usize) -> Result<(), Box<dyn Error>> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            remove_files(&path, removed)?;
+        } else {
+            std::fs::remove_file(&path)?;
+            *removed = removed.saturating_add(1);
+        }
+    }
+    Ok(())
 }

@@ -4,44 +4,36 @@
 use quanta_index_contract::lex::LexicalErrorCode;
 use quanta_index_contract::{
     GenerationPin, HistoryOrderV1, ManifestGeneration, QueryErrorRepair, RepairClass,
-    SearchPlaneIpcError,
+    SearchPlaneErrorCodeV2, SearchPlaneIpcError,
 };
-use quanta_index_core::{
-    AUX_EPOCH_EXPIRED_CODE, AUX_EPOCH_UNKNOWN_CODE, CoreError, HISTORY_TEXT_QUERY_UNSCORABLE_CODE,
-};
+use quanta_index_core::CoreError;
 
-pub(super) const ERR_INVALID: &str = "INVALID_REQUEST";
-pub(super) const ERR_NOT_READY: &str = "NOT_READY";
-pub(super) const ERR_NOT_FOUND: &str = "NOT_FOUND";
-pub(super) const ERR_NOT_IMPLEMENTED: &str = "NOT_IMPLEMENTED";
-pub(super) const ERR_INTERNAL: &str = "INTERNAL";
-pub(super) const ERR_HISTORY_PRODUCER_UNAVAILABLE: &str = "HISTORY_PRODUCER_UNAVAILABLE";
-pub(super) const ERR_HISTORY_GENERATION_NOT_READY: &str = "HISTORY_GENERATION_NOT_READY";
-pub(super) const ERR_HISTORY_SHARD_UNAVAILABLE: &str = "HISTORY_SHARD_UNAVAILABLE";
-pub(super) const ERR_HISTORY_INVALID_TIMEREF: &str = "HISTORY_INVALID_TIMEREF";
+pub(super) const ERR_HISTORY_PRODUCER_UNAVAILABLE: SearchPlaneErrorCodeV2 =
+    SearchPlaneErrorCodeV2::HistoryProducerUnavailable;
+pub(super) const ERR_HISTORY_GENERATION_NOT_READY: SearchPlaneErrorCodeV2 =
+    SearchPlaneErrorCodeV2::HistoryGenerationNotReady;
+pub(super) const ERR_HISTORY_SHARD_UNAVAILABLE: SearchPlaneErrorCodeV2 =
+    SearchPlaneErrorCodeV2::HistoryShardUnavailable;
+pub(super) const ERR_HISTORY_INVALID_TIMEREF: SearchPlaneErrorCodeV2 =
+    SearchPlaneErrorCodeV2::HistoryInvalidTimeref;
 /// A cursor issued under one history order was sent to continue a walk of
 /// the other (QI-BB-023 follow-up #1).
-pub(super) const ERR_HISTORY_CURSOR_ORDER_MISMATCH: &str = "HISTORY_CURSOR_ORDER_MISMATCH";
+pub(super) const ERR_HISTORY_CURSOR_ORDER_MISMATCH: SearchPlaneErrorCodeV2 =
+    SearchPlaneErrorCodeV2::HistoryCursorOrderMismatch;
 /// The composition root wired no history text index, so the relevance
 /// order has nothing to score with.
-pub(super) const ERR_HISTORY_RELEVANCE_UNAVAILABLE: &str = "HISTORY_RELEVANCE_UNAVAILABLE";
-pub(super) const ERR_RUNTIME_CATALOG_NOT_READY: &str = "RUNTIME_CATALOG_NOT_READY";
-pub(super) const ERR_RUNTIME_CATALOG_HEAD_MISSING: &str = "RUNTIME_CATALOG_HEAD_MISSING";
-pub(super) const ERR_RUNTIME_INVALID_SCOPE: &str = "RUNTIME_INVALID_SCOPE";
-#[cfg(test)]
-pub(super) const ERR_RUNTIME_DIRTY_ONLY_UNSUPPORTED: &str = "RUNTIME_DIRTY_ONLY_UNSUPPORTED";
-pub(super) const ERR_SNAPSHOT_UNKNOWN: &str = "SNAPSHOT_UNKNOWN";
+pub(super) const ERR_HISTORY_RELEVANCE_UNAVAILABLE: SearchPlaneErrorCodeV2 =
+    SearchPlaneErrorCodeV2::HistoryRelevanceUnavailable;
+pub(super) const ERR_RUNTIME_CATALOG_HEAD_MISSING: SearchPlaneErrorCodeV2 =
+    SearchPlaneErrorCodeV2::RuntimeCatalogHeadMissing;
+pub(super) const ERR_RUNTIME_INVALID_SCOPE: SearchPlaneErrorCodeV2 =
+    SearchPlaneErrorCodeV2::RuntimeInvalidScope;
+pub(super) const ERR_SNAPSHOT_UNKNOWN: SearchPlaneErrorCodeV2 =
+    SearchPlaneErrorCodeV2::SnapshotUnknown;
 
 pub(super) fn core_error_to_ipc(err: CoreError) -> SearchPlaneIpcError {
-    let (code, message) = match err {
-        CoreError::InvalidContract(msg) => (ERR_INVALID.to_string(), msg),
-        CoreError::Typed { code, message } => (code, message),
-        CoreError::NotReady(msg) => (ERR_NOT_READY.to_string(), msg),
-        CoreError::NotImplemented(msg) => (ERR_NOT_IMPLEMENTED.to_string(), msg),
-        CoreError::NotFound(msg) => (ERR_NOT_FOUND.to_string(), msg),
-        CoreError::Storage(msg) => (ERR_INTERNAL.to_string(), msg),
-    };
-    let repair = repair_for_code(&code);
+    let (code, message) = err.into_search_plane_wire();
+    let repair = repair_for_code(code);
     SearchPlaneIpcError {
         code,
         message,
@@ -67,40 +59,44 @@ pub(super) fn core_error_to_ipc(err: CoreError) -> SearchPlaneIpcError {
 /// `pub` so the J7Q-06 ambiguity rail can snapshot the exact payloads the wire
 /// boundary emits without re-deriving the policy.
 #[must_use]
-pub fn repair_for_code(code: &str) -> Option<QueryErrorRepair> {
+pub fn repair_for_code(code: SearchPlaneErrorCodeV2) -> Option<QueryErrorRepair> {
     const DOCS_ANCHOR: &str = "docs/analysis/jun-4-dsl-capabilty.md";
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "codes without a confirmed repair must return `None`, including future codes; a wildcard is the only maintainable form for this contract-sized enum"
+    )]
     let (class, alternatives): (RepairClass, &[&str]) = match code {
-        c if c == LexicalErrorCode::BridgeAmbiguousFilter.as_code_str() => (
+        SearchPlaneErrorCodeV2::Lexical(LexicalErrorCode::BridgeAmbiguousFilter) => (
             RepairClass::Ambiguous,
             &["repo:<value>", "file:<value>", "path:<value>"],
         ),
-        c if c == LexicalErrorCode::BridgeUnsupportedFilter.as_code_str() => (
+        SearchPlaneErrorCodeV2::Lexical(LexicalErrorCode::BridgeUnsupportedFilter) => (
             RepairClass::Unsupported,
             &["repo:<name>", "file:<glob>", "path:<glob>", "lang:<name>"],
         ),
-        c if c == LexicalErrorCode::BridgeUnsupportedDirective.as_code_str() => (
+        SearchPlaneErrorCodeV2::Lexical(LexicalErrorCode::BridgeUnsupportedDirective) => (
             RepairClass::Unsupported,
             &["remove the directive", "use an explicit filter shape"],
         ),
-        c if c == LexicalErrorCode::BridgeVersionPin.as_code_str() => (
+        SearchPlaneErrorCodeV2::Lexical(LexicalErrorCode::BridgeVersionPin) => (
             RepairClass::Malformed,
             &["rev:<git-ref>", "remove the version pin"],
         ),
         // A continuation named an auxiliary epoch the plane no longer
         // retains (QI-BB-020 W2): resuming is impossible without mixing
         // epochs, so the caller starts the walk over.
-        AUX_EPOCH_EXPIRED_CODE => (
+        SearchPlaneErrorCodeV2::AuxEpochExpired => (
             RepairClass::Expired,
             &["restart the page walk without a cursor"],
         ),
         // A cursor naming an epoch this state root never produced cannot
         // have come from a page it served.
-        AUX_EPOCH_UNKNOWN_CODE => (
+        SearchPlaneErrorCodeV2::AuxEpochUnknown => (
             RepairClass::Malformed,
             &["restart the page walk without a cursor"],
         ),
         // A cursor of one order cannot position a walk of the other.
-        ERR_HISTORY_CURSOR_ORDER_MISMATCH => (
+        SearchPlaneErrorCodeV2::HistoryCursorOrderMismatch => (
             RepairClass::Malformed,
             &[
                 "continue with the order the cursor was issued under",
@@ -109,7 +105,7 @@ pub fn repair_for_code(code: &str) -> Option<QueryErrorRepair> {
         ),
         // Relevance scores keyword and phrase leaves; anything else has no
         // score and runs as a filter under recency.
-        HISTORY_TEXT_QUERY_UNSCORABLE_CODE => (
+        SearchPlaneErrorCodeV2::HistoryTextQueryUnscorable => (
             RepairClass::Unsupported,
             &["order: recency", "use keyword or phrase leaves"],
         ),
@@ -129,7 +125,7 @@ pub(super) fn history_absent_error(
     match lexical_materialized {
         Some(materialized) if materialized.get() >= pin.manifest_generation.get() => {
             CoreError::Typed {
-                code: ERR_HISTORY_PRODUCER_UNAVAILABLE.to_string(),
+                code: ERR_HISTORY_PRODUCER_UNAVAILABLE,
                 message: format!(
                     "history: producer data is unavailable for generation {}",
                     pin.manifest_generation.get()
@@ -137,7 +133,7 @@ pub(super) fn history_absent_error(
             }
         }
         _ => CoreError::Typed {
-            code: ERR_HISTORY_GENERATION_NOT_READY.to_string(),
+            code: ERR_HISTORY_GENERATION_NOT_READY,
             message: format!(
                 "history: generation {} is not yet materialized",
                 pin.manifest_generation.get()
@@ -148,7 +144,7 @@ pub(super) fn history_absent_error(
 
 pub(super) fn history_shard_unavailable(message: impl Into<String>) -> CoreError {
     CoreError::Typed {
-        code: ERR_HISTORY_SHARD_UNAVAILABLE.to_string(),
+        code: ERR_HISTORY_SHARD_UNAVAILABLE,
         message: message.into(),
     }
 }
@@ -162,7 +158,7 @@ pub(super) fn history_cursor_order_mismatch(
     requested: HistoryOrderV1,
 ) -> CoreError {
     CoreError::Typed {
-        code: ERR_HISTORY_CURSOR_ORDER_MISMATCH.to_string(),
+        code: ERR_HISTORY_CURSOR_ORDER_MISMATCH,
         message: format!(
             "history: a {cursor_order} cursor cannot continue a {requested} walk; continue with `order: {cursor_order}` or restart without a cursor"
         ),
@@ -171,7 +167,7 @@ pub(super) fn history_cursor_order_mismatch(
 
 pub(super) fn history_relevance_unavailable() -> CoreError {
     CoreError::Typed {
-        code: ERR_HISTORY_RELEVANCE_UNAVAILABLE.to_string(),
+        code: ERR_HISTORY_RELEVANCE_UNAVAILABLE,
         message: "history: this search plane has no history text index wired; the relevance order cannot be served, use `order: recency`"
             .to_string(),
     }
@@ -179,35 +175,35 @@ pub(super) fn history_relevance_unavailable() -> CoreError {
 
 pub(super) fn runtime_invalid_scope(message: impl Into<String>) -> CoreError {
     CoreError::Typed {
-        code: ERR_RUNTIME_INVALID_SCOPE.to_string(),
+        code: ERR_RUNTIME_INVALID_SCOPE,
         message: message.into(),
     }
 }
 
 pub(super) fn runtime_catalog_head_missing(field: &str) -> CoreError {
     CoreError::Typed {
-        code: ERR_RUNTIME_CATALOG_HEAD_MISSING.to_string(),
+        code: ERR_RUNTIME_CATALOG_HEAD_MISSING,
         message: format!("runtime metadata: catalog field `{field}` is not materialized"),
     }
 }
 
 pub(super) fn runtime_snapshot_unknown(name: &str) -> CoreError {
     CoreError::Typed {
-        code: ERR_SNAPSHOT_UNKNOWN.to_string(),
+        code: ERR_SNAPSHOT_UNKNOWN,
         message: format!("runtime metadata: snapshot `{name}` is unknown in the pinned catalog"),
     }
 }
 
 pub(super) fn structural_invalid_request(message: impl Into<String>) -> CoreError {
     CoreError::Typed {
-        code: "STR_INVALID_REQUEST".to_string(),
+        code: SearchPlaneErrorCodeV2::StrInvalidRequest,
         message: format!("structural: {}", message.into()),
     }
 }
 
 pub(super) fn history_invalid_timeref(message: impl Into<String>) -> CoreError {
     CoreError::Typed {
-        code: ERR_HISTORY_INVALID_TIMEREF.to_string(),
+        code: ERR_HISTORY_INVALID_TIMEREF,
         message: message.into(),
     }
 }
@@ -220,7 +216,7 @@ mod repair_for_code_tests {
 
     #[test]
     fn ambiguous_filter_maps_to_ambiguous_class() {
-        let repair = repair_for_code(LexicalErrorCode::BridgeAmbiguousFilter.as_code_str())
+        let repair = repair_for_code(LexicalErrorCode::BridgeAmbiguousFilter.into())
             .expect("ambiguous filter is repairable");
         assert_eq!(repair.class, RepairClass::Ambiguous);
         assert!(!repair.supported_alternatives.is_empty());
@@ -233,7 +229,7 @@ mod repair_for_code_tests {
             LexicalErrorCode::BridgeUnsupportedFilter,
             LexicalErrorCode::BridgeUnsupportedDirective,
         ] {
-            let repair = repair_for_code(code.as_code_str())
+            let repair = repair_for_code(code.into())
                 .unwrap_or_else(|| panic!("{} should be repairable", code.as_code_str()));
             assert_eq!(repair.class, RepairClass::Unsupported);
         }
@@ -241,7 +237,7 @@ mod repair_for_code_tests {
 
     #[test]
     fn version_pin_maps_to_malformed() {
-        let repair = repair_for_code(LexicalErrorCode::BridgeVersionPin.as_code_str())
+        let repair = repair_for_code(LexicalErrorCode::BridgeVersionPin.into())
             .expect("version pin is repairable");
         assert_eq!(repair.class, RepairClass::Malformed);
     }
@@ -269,18 +265,17 @@ mod repair_for_code_tests {
     #[test]
     fn internal_and_unknown_codes_have_no_repair() {
         // Translator invariant breaks are not user-repairable: no misleading hint.
-        assert!(repair_for_code(LexicalErrorCode::BridgeTranslateFail.as_code_str()).is_none());
-        assert!(repair_for_code("NOT_READY").is_none());
-        assert!(repair_for_code("INTERNAL").is_none());
-        assert!(repair_for_code("").is_none());
+        assert!(repair_for_code(LexicalErrorCode::BridgeTranslateFail.into()).is_none());
+        assert!(repair_for_code(super::SearchPlaneErrorCodeV2::NotReady).is_none());
+        assert!(repair_for_code(super::SearchPlaneErrorCodeV2::Internal).is_none());
     }
 
     #[test]
     fn unsupported_filter_alternatives_are_confirmed_filter_families() {
         // Guard against drift into filter names this plane does not actually ship.
         let confirmed = ["repo:", "file:", "path:", "lang:", "rev:"];
-        let repair = repair_for_code(LexicalErrorCode::BridgeUnsupportedFilter.as_code_str())
-            .expect("repairable");
+        let repair =
+            repair_for_code(LexicalErrorCode::BridgeUnsupportedFilter.into()).expect("repairable");
         for alt in &repair.supported_alternatives {
             assert!(
                 confirmed.iter().any(|c| alt.starts_with(c)),

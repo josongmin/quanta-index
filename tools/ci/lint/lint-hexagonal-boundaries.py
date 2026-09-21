@@ -105,7 +105,21 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
     "quanta-index-lq-structural": frozenset({"quanta-index-contract", "quanta-index-lq-regex"}),
     # LQ history index (in-progress). Peer of the lq-* family.
     # RepoMap projection / query store (in-progress). Consumed by searchd.
-    "quanta-index-repomap": frozenset({"quanta-index-contract", "quanta-index-core"}),
+    # P02A: the compiler and query engine reuse the one shared Unicode
+    # tokenizer (QI-BB-011 leaf crate); there is no route-local tokenizer.
+    "quanta-index-repomap": frozenset(
+        {
+            "quanta-index-contract",
+            "quanta-index-core",
+            "quanta-index-lq-text-normalizer",
+            # P03 (SEP-21 S21-01B/S21-02): the store's candidate/activation/
+            # quarantine visibility authority is the durable catalog; the
+            # composition root shares its one `SqliteCatalog` connection
+            # with the store, exactly as it shares the idempotency and
+            # auxiliary ports.
+            "quanta-index-catalog",
+        }
+    ),
     # Corpus parser/runner smoke helpers. No production deps; tests in
     # other crates consume it via dev-dependencies only.
     "quanta-index-corpus-smoke": frozenset(),

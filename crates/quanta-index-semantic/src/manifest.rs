@@ -857,8 +857,8 @@ mod tests {
 
     fn validate(manifest: &SemanticManifest) -> Result<(), CoreError> {
         manifest.validate_scope(
-            &RepoId::new("repo"),
-            &RevisionId::new("rev"),
+            &RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+            &RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
             ManifestGeneration::new(GENERATION),
         )
     }

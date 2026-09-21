@@ -44,10 +44,14 @@ where
     Ok(ciborium::de::from_reader(bytes)?)
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn generation_pin() -> GenerationPin {
     GenerationPin::new(
-        RepoId::new("repo-lxe"),
-        RevisionId::new("rev-lxe"),
+        RepoId::new("repo-lxe").expect("static fixture ID satisfies canonical policy"),
+        RevisionId::new("rev-lxe").expect("static fixture ID satisfies canonical policy"),
         ManifestGeneration::new(42),
     )
 }

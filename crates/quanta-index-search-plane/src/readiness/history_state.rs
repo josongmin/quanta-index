@@ -21,7 +21,9 @@ use crate::readiness::serde_support::impl_struct_serde;
 
 fn history_ref_not_found(message: String) -> CoreError {
     CoreError::Typed {
-        code: "HISTORY_REF_NOT_FOUND".to_string(),
+        code: quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+            quanta_index_contract::lex::LexicalErrorCode::HistoryRefNotFound,
+        ),
         message,
     }
 }
@@ -94,7 +96,9 @@ impl HistoryAuthorityState {
         for parent in &record.parents {
             if !self.commits.contains_key(parent) {
                 return Err(CoreError::Typed {
-                    code: "HISTORY_COMMIT_PARENT_UNKNOWN".to_string(),
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+                        quanta_index_contract::lex::LexicalErrorCode::HistoryCommitParentUnknown,
+                    ),
                     message: format!(
                         "history ingest: parent {} missing before child {}",
                         parent, record.sha

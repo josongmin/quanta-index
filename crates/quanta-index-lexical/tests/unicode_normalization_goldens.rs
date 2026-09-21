@@ -728,12 +728,20 @@ const GOLDENS: &[Golden] = &[
     ),
 ];
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn repo() -> RepoId {
-    RepoId::new("unicode-golden-repo")
+    RepoId::new("unicode-golden-repo").expect("static fixture ID satisfies canonical policy")
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn revision() -> RevisionId {
-    RevisionId::new("unicode-golden-rev")
+    RevisionId::new("unicode-golden-rev").expect("static fixture ID satisfies canonical policy")
 }
 
 fn generation() -> ManifestGeneration {
@@ -1009,7 +1017,7 @@ fn keyword_index_and_phrase_sidecar_agree_on_every_corpus_token() -> TestResult 
 
 fn typed_code(result: &Result<BTreeSet<String>, CoreError>) -> Option<&str> {
     match result {
-        Err(CoreError::Typed { code, .. }) => Some(code.as_str()),
+        Err(CoreError::Typed { code, .. }) => Some(code.as_wire_str()),
         Ok(_) | Err(_) => None,
     }
 }
@@ -1146,11 +1154,11 @@ fn knock(
 ) -> (Option<String>, Option<String>) {
     use quanta_index_core::GenerationIdentityValidatePort as _;
     let validate = match adapter.validate_generation_identity(&identity(generation)) {
-        Err(CoreError::Typed { code, .. }) => Some(code),
+        Err(CoreError::Typed { code, .. }) => Some(code.to_string()),
         Ok(()) | Err(_) => None,
     };
     let open = match adapter.open(&repo(), &revision(), generation) {
-        Err(CoreError::Typed { code, .. }) => Some(code),
+        Err(CoreError::Typed { code, .. }) => Some(code.to_string()),
         Ok(_) | Err(_) => None,
     };
     (validate, open)
@@ -1298,7 +1306,7 @@ fn a_delta_over_a_previous_format_base_is_refused_typed() -> TestResult {
     delta.manifest_digest = "unicode-golden-manifest:2".to_string();
     delta.batch_digest = "unicode-golden-batch:2".to_string();
     match adapter.build_batch(&delta) {
-        Err(CoreError::Typed { code, .. }) if code == FORMAT_UNSUPPORTED => Ok(()),
+        Err(CoreError::Typed { code, .. }) if code.as_wire_str() == FORMAT_UNSUPPORTED => Ok(()),
         other => Err(format!("delta over a format-1 base answered {other:?}").into()),
     }
 }

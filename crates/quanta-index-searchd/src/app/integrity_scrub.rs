@@ -398,8 +398,9 @@ mod tests {
 
     fn identity(generation: u64) -> GenerationSnapshot {
         GenerationSnapshot {
-            repo_id: RepoId::new("repo"),
-            revision_id: RevisionId::new("rev"),
+            repo_id: RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+            revision_id: RevisionId::new("rev")
+                .expect("static fixture ID satisfies canonical policy"),
             track: SearchPlaneTrackKind::Semantic,
             manifest_generation: ManifestGeneration::new(generation),
             manifest_digest: format!("manifest:{generation}"),
@@ -550,7 +551,7 @@ mod tests {
                     },
                 }),
                 Err(CoreError::Typed {
-                    code: "GENERATION_QUARANTINED".to_string(),
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationQuarantined,
                     message: "quarantined".to_string(),
                 }),
                 Ok(IntegrityScrubOutcomeV1::Completed),
@@ -560,8 +561,8 @@ mod tests {
         let (mut scheduler, tallies, snapshots) = scheduler(Arc::clone(&port));
         // A handle for g5 is resident, as a query before the scrub leaves it.
         let key = SnapshotKey::new(
-            &RepoId::new("repo"),
-            &RevisionId::new("rev"),
+            &RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+            &RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
             ManifestGeneration::new(5),
         );
         let acquired = snapshots

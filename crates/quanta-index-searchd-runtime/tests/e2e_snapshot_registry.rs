@@ -189,7 +189,8 @@ fn an_auxiliary_publish_into_a_sealed_generation_is_refused_and_keeps_residency(
             generation,
             batch_digest: "e2e-snapshot-invalidate".to_string(),
             entries: vec![RepoMetaEntry {
-                source_repo_id: RepoId::new("repo"),
+                source_repo_id: RepoId::new("repo")
+                    .expect("static fixture ID satisfies canonical policy"),
                 key: "license".to_string(),
                 value: "apache-2.0".to_string(),
             }],
@@ -201,7 +202,7 @@ fn an_auxiliary_publish_into_a_sealed_generation_is_refused_and_keeps_residency(
         )
         .into());
     };
-    if error.code != "GENERATION_IMMUTABLE" {
+    if error.code.as_wire_str() != "GENERATION_IMMUTABLE" {
         return Err(format!(
             "an auxiliary publish into a sealed generation must be refused typed GENERATION_IMMUTABLE, got {}: {}",
             error.code, error.message

@@ -2,7 +2,7 @@
 
 Status: `planned`
 
-Depends on: S21-00, S21-01
+Depends on: S21-00, S21-01 Phase A (P01A checkpoint); full S21-01 closure is not required
 
 ## Goal
 

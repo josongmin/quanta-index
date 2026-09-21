@@ -20,8 +20,20 @@ impl SqliteCatalog {
             .execute_batch(crate::idempotency::SCHEMA)
             .map_err(|error| engine_error("create idempotency schema", &path, &error))?;
         connection
+            .execute_batch(crate::sequence::SCHEMA)
+            .map_err(|error| engine_error("create sequence schema", &path, &error))?;
+        connection
             .execute_batch(crate::auxiliary::SCHEMA)
             .map_err(|error| engine_error("create auxiliary schema", &path, &error))?;
+        connection
+            .execute_batch(crate::candidate::SCHEMA)
+            .map_err(|error| engine_error("create repomap candidate schema", &path, &error))?;
+        // Seed the allocator row (self-digested), then reconcile it from
+        // the generic ledger and verify the event↔domain pairs
+        // (SEP-21-002).
+        crate::sequence::seed_allocator(&connection, &path)?;
+        let mut connection = connection;
+        crate::sequence::reconcile(&mut connection, &path)?;
         Ok(Self {
             connection: Mutex::new(connection),
             path,

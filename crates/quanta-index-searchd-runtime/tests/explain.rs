@@ -1,4 +1,5 @@
 //! Explain query path: a presence-only explain reports whether a candidate
+//!
 //! previously returned by a lexical query is in the index, as a typed field
 //! decided by exact lookup (QI-BB-022); the scored explain is covered by
 //! `e2e_explain_score_trace.rs`.
@@ -52,11 +53,11 @@ const READINESS_TIMEOUT: Duration = Duration::from_secs(5);
 const SOCKET_APPEAR_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn repo() -> RepoId {
-    RepoId::new("repo-exp")
+    RepoId::new("repo-exp").expect("static fixture ID satisfies canonical policy")
 }
 
 fn revision() -> RevisionId {
-    RevisionId::new("rev-exp")
+    RevisionId::new("rev-exp").expect("static fixture ID satisfies canonical policy")
 }
 
 fn generation() -> ManifestGeneration {
@@ -404,7 +405,7 @@ fn explain_rejects_generation_mismatch() -> TestResult {
             return Err(format!("expected Error, got {other:?}").into());
         }
     };
-    if err.code != "INVALID_REQUEST" {
+    if err.code.as_wire_str() != "INVALID_REQUEST" {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
         return Err(format!("expected INVALID_REQUEST, got {}", err.code).into());

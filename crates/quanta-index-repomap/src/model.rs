@@ -450,7 +450,9 @@ impl RepoMapSnapshotIndex {
         for (position, entry) in entries.iter().enumerate() {
             index
                 .folded_search_text
-                .push(entry.search_text.to_ascii_lowercase());
+                .push(quanta_index_lq_text_normalizer::fold(
+                    entry.search_text.as_str(),
+                ));
             let _prior = index
                 .by_subject
                 .entry(entry.subject_identity.clone())
@@ -607,8 +609,9 @@ mod tests {
 
     fn fixture_snapshot() -> RepoMapSnapshot {
         RepoMapSnapshot {
-            repo_id: RepoId::new("repo-1"),
-            revision_id: RevisionId::new("rev-1"),
+            repo_id: RepoId::new("repo-1").expect("static fixture ID satisfies canonical policy"),
+            revision_id: RevisionId::new("rev-1")
+                .expect("static fixture ID satisfies canonical policy"),
             manifest_generation: ManifestGeneration::new(11),
             snapshot_meta: RepoMapSnapshotMeta {
                 snapshot_id: "snapshot-1".to_string(),

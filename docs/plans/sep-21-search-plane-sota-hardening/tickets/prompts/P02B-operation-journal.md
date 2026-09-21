@@ -27,8 +27,16 @@ target flow:
 - `crates/quanta-index-search-plane/src/ingest_dispatcher/`
 - `crates/quanta-index-search-plane/src/auxiliary_authority.rs`
 - `crates/quanta-index-contract/src/ipc/ingest.rs`의 operation journal/status/terminal receipt section만
+- `crates/quanta-index-searchd-runtime/src/lib.rs`의 `build_runtime_with_memory_probe` composition section만:
+  SqliteCatalog/idempotency/auxiliary port 조립 라인. 함수 전체 재작성이나 파일 wildcard 권한이 아니다
+- `crates/quanta-index-searchd/src/app/runtime.rs`의 `SearchdRuntimeParts` 중 idempotency/auxiliary_catalog field
+  section만. 파일 전체가 아니다; provider/supervisor/socket section은 각 owner lane이다
 - SDK facade/re-export/public baseline/wire inventory는 수정하지 않고 exact integration delta를 P02I에 handoff
 - owner-local transaction/fault tests와 P02B proof/test-authority delta
+- `tools/ci/proof-authority.toml`의 `p02b-operation-journal` row,
+  `tools/ci/test-authority.toml`의 `[[integration_targets]] id="operation-journal-owner-v1"`와
+  `[local_scopes.p02b-operation-journal]`, `Justfile`의 `rust-proof-p02b-operation-journal` recipe section만.
+  공통 profile/CI/다른 lane row는 수정하지 않고 P02I에 exact delta를 넘김
 
 RepoMap persistence/store/activation/quarantine filesystem, compiler owner, shared public/wire baseline은 수정하지 않는다.
 
@@ -56,12 +64,16 @@ RepoMap persistence/store/activation/quarantine filesystem, compiler owner, shar
 - `begin/finalize`를 `inspect`, `claim_prepared`, `record_refused`, `commit`, `recover`로 대체한다.
 - `PreparedMutationV1`에 validated epoch/input commitment를 담고 apply 시 drift를 검출한다.
 - catalog row에 typed state, owner, lease, fence, body/result/receipt digest, row digest를 둔다.
+- state graph는 `Prepared → Claimed → Applying → Committed | Refused | Aborted | Uncertain`의 closed transition
+  table이며 timeout, caller disconnect, cancellation, crash를 서로 다른 terminal/recovery 의미로 보존한다.
 - stale owner/fence 교체 뒤 과거 worker commit을 막는다.
 - `Committed`와 frozen-policy `Refused`를 exact replay한다.
 - replay floor 아래 요청은 `SearchPlaneErrorCodeV2::OperationReplayFloor`로 거부한다.
 - state-root 전역 `MutationCoordinatorV1`을 ingest/control/background durable mutation에 machine-enforce한다.
 - status 조회는 authorization-ready context를 요구한다.
 - SQLite durability pragma는 effective read-back과 crash fixture로 검증한다.
+- persisted `BatchPublishReceipt`는 canonical-CBOR version을 명시하고 old/new incompatibility refusal fixture와
+  offline-only migration class를 가진다. boot-time dual decoder/live migration은 금지한다.
 
 금지: mutable preflight 뒤 replay lookup, claim 뒤 최초 semantic validation, in-progress bool, ACK loss 재실행,
 indefinite intent, caller-only sequence validation, domain별 allocator, future-domain hard-coded UNION, free-form error code,
@@ -70,6 +82,8 @@ RepoMap filesystem/activation 수정.
 ## DoD/proof
 
 - ACK loss/base GC/config change replay, invalid auxiliary restart/retry, same-key different-body
+- 모든 state transition과 `Uncertain` recovery, timeout/caller-disconnect/cancellation 분리
+- old receipt/new runtime 및 new receipt/old runtime의 mutation-before typed refusal
 - crash at inspect/claim/apply/terminal boundaries, stale worker commit, retention floor
 - operation committed/refused와 synthetic future event를 interleave해 global positive unique monotonic sequence 증명
 - transaction rollback 시 allocator/event/domain row 모두 0
@@ -77,7 +91,7 @@ RepoMap filesystem/activation 수정.
 - same-body replay가 sequence/storage/provider work를 추가하지 않음
 - 신규 refusal은 P01A enum variant이며 raw string code 추가 0
 
-proof node는 `p02b-operation-journal`이다. final handoff `artifacts/sep-21/handoffs/P02B.json`에 source/dirty digest,
+proof expected tuple은 `id=p02b-operation-journal`, `family=F`, `dependencies=[p01-canonical-identity]`다. final handoff `artifacts/sep-21/handoffs/P02B.json`에 source/dirty digest,
 schema/API, closed event-kind table/digest, migration impact, refusal/terminal matrix, command/counts, NOT_RUN, P03이
 소비할 transaction-coupled sequence API/fixtures를 남긴다. explicit owner path만 단일 checkpoint commit으로 만들고
 current lane branch에 non-force push한다.

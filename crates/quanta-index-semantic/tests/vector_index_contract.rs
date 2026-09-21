@@ -41,12 +41,20 @@ const INDEX_NAME: &str = "vector_ivf_hnsw_sq";
 const SCOPE_MANIFEST: &str = "semantic-manifest.cbor";
 const SEALED_MANIFEST: &str = "semantic-sealed-manifest.cbor";
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn repo() -> RepoId {
-    RepoId::new("ann-contract-repo")
+    RepoId::new("ann-contract-repo").expect("static fixture ID satisfies canonical policy")
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn revision() -> RevisionId {
-    RevisionId::new("ann-contract-rev")
+    RevisionId::new("ann-contract-rev").expect("static fixture ID satisfies canonical policy")
 }
 
 fn dimension_u32() -> Result<u32, Box<dyn Error>> {
@@ -151,7 +159,7 @@ fn identity(generation: ManifestGeneration) -> GenerationSnapshot {
 
 fn typed_code<T>(result: &Result<T, CoreError>) -> Option<String> {
     match result {
-        Err(CoreError::Typed { code, .. }) => Some(code.clone()),
+        Err(CoreError::Typed { code, .. }) => Some(code.to_string()),
         _ => None,
     }
 }
@@ -950,7 +958,7 @@ fn a_generation_sealed_under_an_earlier_format_is_refused_typed_at_every_door() 
         for (door, outcome) in [("validate", validated), ("open", opened)] {
             match outcome {
                 Err(CoreError::Typed { code, message })
-                    if code == "GENERATION_MANIFEST_FORMAT_UNSUPPORTED"
+                    if code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported
                         && message.contains(&format!("format version {format}"))
                         && message.contains("rebuild") => {}
                 other => {

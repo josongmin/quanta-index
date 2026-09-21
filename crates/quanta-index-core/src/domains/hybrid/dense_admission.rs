@@ -44,7 +44,8 @@ use crate::error::CoreError;
 
 /// Wire code for a hybrid query carrying a filter or option no lane can
 /// apply to dense rows.
-pub const HYBRID_FILTER_UNSUPPORTED_CODE: &str = "HYBRID_FILTER_UNSUPPORTED";
+pub const HYBRID_FILTER_UNSUPPORTED_CODE: quanta_index_contract::SearchPlaneErrorCodeV2 =
+    quanta_index_contract::SearchPlaneErrorCodeV2::HybridFilterUnsupported;
 
 /// How the dense lane applies one DSL filter.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -275,7 +276,7 @@ fn push_unique(names: &mut Vec<&'static str>, name: &'static str) {
 
 fn unsupported(name: &str, kind: &str) -> CoreError {
     CoreError::Typed {
-        code: HYBRID_FILTER_UNSUPPORTED_CODE.to_string(),
+        code: HYBRID_FILTER_UNSUPPORTED_CODE,
         message: format!(
             "hybrid: the `{name}` {kind} has no dense-lane semantics; no lane can apply it to dense rows, so the query is refused rather than served lexical-only"
         ),

@@ -1,5 +1,7 @@
 use thiserror::Error;
 
+use quanta_index_contract::{SearchPlaneErrorCodeV2, lex::LexicalErrorCode};
+
 /// The one error every port speaks.
 ///
 /// `Clone` is deliberate: a failure observed once can be owed to several
@@ -10,7 +12,10 @@ pub enum CoreError {
     #[error("invalid contract: {0}")]
     InvalidContract(String),
     #[error("typed failure {code}: {message}")]
-    Typed { code: String, message: String },
+    Typed {
+        code: SearchPlaneErrorCodeV2,
+        message: String,
+    },
     #[error("not ready: {0}")]
     NotReady(String),
     #[error("not implemented: {0}")]
@@ -22,6 +27,22 @@ pub enum CoreError {
 }
 
 impl CoreError {
+    /// Consume this domain error into the one closed search-plane wire taxonomy.
+    ///
+    /// This is the sole generic mapping owner. Query, ingest and control
+    /// dispatchers may attach route-specific metadata, but must not remap codes.
+    #[must_use]
+    pub fn into_search_plane_wire(self) -> (SearchPlaneErrorCodeV2, String) {
+        match self {
+            Self::InvalidContract(message) => (SearchPlaneErrorCodeV2::InvalidRequest, message),
+            Self::Typed { code, message } => (code, message),
+            Self::NotReady(message) => (SearchPlaneErrorCodeV2::NotReady, message),
+            Self::NotImplemented(message) => (SearchPlaneErrorCodeV2::NotImplemented, message),
+            Self::NotFound(message) => (SearchPlaneErrorCodeV2::NotFound, message),
+            Self::Storage(message) => (SearchPlaneErrorCodeV2::Internal, message),
+        }
+    }
+
     /// The storage's own failure message, or the error itself when it is
     /// anything else.
     ///
@@ -46,7 +67,7 @@ impl From<quanta_index_contract::TopKOutOfRangeV1> for CoreError {
     /// A refused `top_k` is the same typed failure on every query route.
     fn from(refused: quanta_index_contract::TopKOutOfRangeV1) -> Self {
         Self::Typed {
-            code: refused.code().to_string(),
+            code: SearchPlaneErrorCodeV2::Lexical(LexicalErrorCode::QueryTopKOutOfRange),
             message: refused.to_string(),
         }
     }

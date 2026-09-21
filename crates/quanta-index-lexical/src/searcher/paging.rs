@@ -13,9 +13,7 @@ use crate::ranked_page::{
     GroupedPageCollector, ProjectionGroup, RankedPageCollector, RankedPageFruit, RankedRow,
     RankedRowView,
 };
-use quanta_index_contract::{
-    LexicalCursor, LqOptions, LqQuery, LqYesNoOnly, QUERY_CURSOR_GENERATION_MISMATCH_CODE,
-};
+use quanta_index_contract::{LexicalCursor, LqOptions, LqQuery, LqYesNoOnly};
 use quanta_index_core::{CoreError, LexicalPageSpec, RequestBudgetV1};
 use std::sync::Arc;
 use tantivy::query::Query;
@@ -88,7 +86,7 @@ impl TantivySearcher {
                 Ok(Some(Arc::new(cursor.clone())))
             }
             Some(cursor) => Err(CoreError::Typed {
-                code: QUERY_CURSOR_GENERATION_MISMATCH_CODE.to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::QueryCursorGenerationMismatch,
                 message: format!(
                     "lexical: the cursor was cut from generation {} but this page reads generation {}",
                     cursor.manifest_generation.get(),

@@ -12,8 +12,6 @@ use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
-use crate::readiness::errors::ERR_COMPOSITE_ACTIVATION_CAS_CONFLICT;
-
 /// One immutable, query-visible lexical plus semantic generation identity,
 /// with the content roots the semantic generation sealed (QI-BB-028).
 ///
@@ -311,7 +309,7 @@ pub(super) fn validate_prepared_search_corpus_expectation(
         )
     };
     Err(CoreError::Typed {
-        code: ERR_COMPOSITE_ACTIVATION_CAS_CONFLICT.to_string(),
+        code: quanta_index_contract::SearchPlaneErrorCodeV2::CompositeActivationCasConflict,
         message: format!(
             "search-corpus activation: active composite root changed for repo={} revision={}: expected={}, observed={}",
             prepared.candidate().repo_id().as_str(),

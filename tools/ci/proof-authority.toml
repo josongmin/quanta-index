@@ -15,7 +15,7 @@ schema = "tools/ci/proof-aggregate.schema.json"
 artifact = "artifacts/proof-authority/p12-release-aggregate.json"
 
 [aggregate.verdicts]
-CODE_QUALIFIED = ["p00-authority-freeze", "p01-canonical-identity", "p02a-repomap-compiler", "p02b-operation-journal", "p03-candidate-activation", "p04-read-view-lifetime", "p05-query-truth", "p06-sdk-binding", "p07-provider-boundary", "p08-runtime-supervisor", "p09-control-readiness", "p10-state-migration", "p11-cross-repo-cutover"]
+CODE_QUALIFIED = ["p00-authority-freeze", "p01-canonical-identity", "p02a-repomap-compiler", "p02b-operation-journal", "p03-candidate-activation-owner", "p03-candidate-activation", "p04-read-view-lifetime-owner", "p04-read-view-lifetime", "p05-query-truth-owner", "p05-query-truth", "p06-sdk-binding-owner", "p06-sdk-binding", "p07-provider-boundary-owner", "p07-provider-boundary", "p08-runtime-supervisor-owner", "p08-runtime-supervisor", "p09-control-readiness-owner", "p09-control-readiness", "p10-state-migration-owner", "p10-state-migration", "p11-cross-repo-cutover"]
 DEPLOYED = ["p11-deployment"]
 ACTIVATED = ["p11-activation"]
 ROLLBACK_PROVEN = ["p10-state-migration", "p11-rollback"]
@@ -75,68 +75,95 @@ required_host = "any"
 
 [[proofs]]
 id = "p01-canonical-identity"
-authority_state = "staged"
+authority_state = "executable"
 execution_mode = "test-authority"
-staged_reason = "P01A must land canonical identity/error-code owners and a dedicated executable test-authority scope."
 ticket = "S21-01"
 family = "U"
 checkpoint = "M1"
 owner = "crates/quanta-index-contract-base/src/ids.rs"
-command = "just rust-profile test-fast"
+command = "just proof-p01-canonical-identity"
 gate = "release"
-profile = "test-fast"
+profile = "test-canonical-identity"
 target = "canonical-identity-owner"
 filter = "none"
 source_binding = "exact"
 binary_binding = "none"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
-test_authority_targets = []
+test_authority_scopes = ["canonical-identity"]
+test_authority_targets = ["contract-base-canonical-identity-v1", "contract-repomap-layout-v3-contract", "contract-search-plane-error-code-v2", "repomap-layout-v3-security"]
 dependencies = ["p00-authority-freeze"]
 artifact = "artifacts/proof-authority/p01-canonical-identity.json"
 required_host = "any"
 
 [[proofs]]
 id = "p02a-repomap-compiler"
-authority_state = "staged"
+authority_state = "executable"
 execution_mode = "test-authority"
-staged_reason = "P02A must land the final compiler owner and bind its completed owner-local target set."
 ticket = "S21-03"
 family = "A"
 checkpoint = "M1"
 owner = "crates/quanta-index-repomap/src/materializer.rs"
-command = "just rust-profile test-integration-fast"
+command = "just proof-p02a-repomap-compiler"
 gate = "release"
-profile = "test-integration-fast"
+profile = "p02a-repomap-compiler"
 target = "repomap-compiler-owner"
 filter = "none"
 source_binding = "exact"
 binary_binding = "none"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
-test_authority_targets = ["repomap-bounded-query", "repomap-owner-surface"]
+test_authority_scopes = ["p02a-repomap-compiler"]
+test_authority_targets = ["repomap-compiler-owner-v1", "repomap-bounded-query", "repomap-owner-surface"]
 dependencies = ["p01-canonical-identity"]
 artifact = "artifacts/proof-authority/p02a-repomap-compiler.json"
 required_host = "any"
 
 [[proofs]]
 id = "p02b-operation-journal"
-authority_state = "staged"
+authority_state = "executable"
 execution_mode = "test-authority"
-staged_reason = "P02B must land the global sequence/journal owner and its recovery/concurrency targets."
 ticket = "S21-04"
 family = "F"
 checkpoint = "M1"
 owner = "crates/quanta-index-core/src/domains/idempotency.rs"
-command = "just rust-profile test-integration-fast"
+command = "just proof-p02b-operation-journal"
 gate = "release"
-profile = "test-integration-fast"
+profile = "test-p02b-operation-journal"
 target = "operation-journal-owner"
 filter = "none"
 source_binding = "exact"
 binary_binding = "none"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
-test_authority_targets = ["catalog-idempotency"]
+test_authority_scopes = ["p02b-operation-journal"]
+test_authority_targets = ["operation-journal-owner-v1", "catalog-idempotency"]
 dependencies = ["p01-canonical-identity"]
 artifact = "artifacts/proof-authority/p02b-operation-journal.json"
+required_host = "any"
+
+[[proofs]]
+id = "p03-candidate-activation-owner"
+authority_state = "executable"
+execution_mode = "test-authority"
+ticket = "S21-02"
+family = "U"
+checkpoint = "M1"
+owner = "crates/quanta-index-repomap/src/store.rs"
+command = "just proof-p03-candidate-activation-owner"
+gate = "correctness"
+profile = "test-candidate-activation-owner"
+target = "candidate-activation-owner"
+filter = "none"
+source_binding = "exact"
+binary_binding = "none"
+artifact_schema = "tools/ci/proof-manifest.schema.json"
+test_authority_scopes = ["candidate-activation-owner"]
+test_authority_targets = [
+  "candidate-activation-owner-v1",
+  "repomap-store-durability",
+  "repomap-bootstrap-owner-flow",
+  "repomap-owner-surface",
+]
+dependencies = ["p02a-repomap-compiler", "p02b-operation-journal"]
+artifact = "artifacts/proof-authority/p03-candidate-activation-owner.json"
 required_host = "any"
 
 [[proofs]]
@@ -157,9 +184,31 @@ source_binding = "exact"
 binary_binding = "release-daemon"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
 test_authority_targets = ["repomap-store-durability", "searchd-runtime-generation-activation-concurrency"]
-dependencies = ["p02a-repomap-compiler", "p02b-operation-journal"]
+dependencies = ["p03-candidate-activation-owner"]
 artifact = "artifacts/proof-authority/p03-candidate-activation.json"
 required_host = "linux-production-like"
+
+[[proofs]]
+id = "p04-read-view-lifetime-owner"
+authority_state = "staged"
+execution_mode = "test-authority"
+staged_reason = "P04 must land host-independent read-view lifetime, pin and GC owner targets."
+ticket = "S21-05"
+family = "U"
+checkpoint = "M2"
+owner = "crates/quanta-index-search-plane/src/query_dispatcher/read_view/view.rs"
+command = "just proof-p04-read-view-lifetime-owner"
+gate = "correctness"
+profile = "read-view-lifetime-owner"
+target = "read-view-lifetime-owner"
+filter = "none"
+source_binding = "exact"
+binary_binding = "none"
+artifact_schema = "tools/ci/proof-manifest.schema.json"
+test_authority_targets = []
+dependencies = ["p03-candidate-activation-owner"]
+artifact = "artifacts/proof-authority/p04-read-view-lifetime-owner.json"
+required_host = "any"
 
 [[proofs]]
 id = "p04-read-view-lifetime"
@@ -179,9 +228,31 @@ source_binding = "exact"
 binary_binding = "release-daemon"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
 test_authority_targets = ["searchd-runtime-e2e-read-view"]
-dependencies = ["p03-candidate-activation", "p02b-operation-journal"]
+dependencies = ["p04-read-view-lifetime-owner", "p03-candidate-activation"]
 artifact = "artifacts/proof-authority/p04-read-view-lifetime.json"
 required_host = "linux-production-like"
+
+[[proofs]]
+id = "p05-query-truth-owner"
+authority_state = "staged"
+execution_mode = "test-authority"
+staged_reason = "P05 must land host-independent query outcome, cursor and independent-oracle owner targets."
+ticket = "S21-06"
+family = "U"
+checkpoint = "M2"
+owner = "crates/quanta-index-contract-base/src/results/query_window.rs"
+command = "just proof-p05-query-truth-owner"
+gate = "correctness"
+profile = "query-truth-owner"
+target = "query-truth-owner"
+filter = "none"
+source_binding = "exact"
+binary_binding = "none"
+artifact_schema = "tools/ci/proof-manifest.schema.json"
+test_authority_targets = []
+dependencies = ["p04-read-view-lifetime-owner"]
+artifact = "artifacts/proof-authority/p05-query-truth-owner.json"
+required_host = "any"
 
 [[proofs]]
 id = "p05-query-truth"
@@ -201,9 +272,31 @@ source_binding = "exact"
 binary_binding = "release-daemon"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
 test_authority_targets = ["searchd-runtime-e2e-keyset-cursors"]
-dependencies = ["p04-read-view-lifetime"]
+dependencies = ["p05-query-truth-owner", "p04-read-view-lifetime"]
 artifact = "artifacts/proof-authority/p05-query-truth.json"
 required_host = "linux-production-like"
+
+[[proofs]]
+id = "p06-sdk-binding-owner"
+authority_state = "staged"
+execution_mode = "test-authority"
+staged_reason = "P06 must land host-independent SDK contextual binding and negative-matrix owner targets."
+ticket = "S21-07"
+family = "U"
+checkpoint = "M2"
+owner = "crates/quanta-index-sdk/src/client.rs"
+command = "just proof-p06-sdk-binding-owner"
+gate = "correctness"
+profile = "sdk-binding-owner"
+target = "sdk-binding-owner"
+filter = "none"
+source_binding = "exact"
+binary_binding = "none"
+artifact_schema = "tools/ci/proof-manifest.schema.json"
+test_authority_targets = []
+dependencies = ["p05-query-truth-owner"]
+artifact = "artifacts/proof-authority/p06-sdk-binding-owner.json"
+required_host = "any"
 
 [[proofs]]
 id = "p06-sdk-binding"
@@ -223,9 +316,31 @@ source_binding = "exact"
 binary_binding = "release-daemon"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
 test_authority_targets = ["searchd-runtime-sdk-frontdoor"]
-dependencies = ["p03-candidate-activation", "p02b-operation-journal", "p05-query-truth"]
+dependencies = ["p06-sdk-binding-owner", "p05-query-truth"]
 artifact = "artifacts/proof-authority/p06-sdk-binding.json"
 required_host = "linux-production-like"
+
+[[proofs]]
+id = "p07-provider-boundary-owner"
+authority_state = "staged"
+execution_mode = "test-authority"
+staged_reason = "P07 must land host-independent admission, reservation and loopback-provider owner targets."
+ticket = "S21-08"
+family = "U"
+checkpoint = "M3"
+owner = "crates/quanta-index-search-plane/src/query_embedder.rs"
+command = "just proof-p07-provider-boundary-owner"
+gate = "correctness"
+profile = "provider-boundary-owner"
+target = "provider-boundary-owner"
+filter = "none"
+source_binding = "exact"
+binary_binding = "none"
+artifact_schema = "tools/ci/proof-manifest.schema.json"
+test_authority_targets = []
+dependencies = ["p06-sdk-binding-owner"]
+artifact = "artifacts/proof-authority/p07-provider-boundary-owner.json"
+required_host = "any"
 
 [[proofs]]
 id = "p07-provider-boundary"
@@ -245,9 +360,31 @@ source_binding = "exact"
 binary_binding = "release-daemon"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
 test_authority_targets = []
-dependencies = ["p06-sdk-binding"]
+dependencies = ["p07-provider-boundary-owner", "p06-sdk-binding"]
 artifact = "artifacts/proof-authority/p07-provider-boundary.json"
 required_host = "linux-production-like"
+
+[[proofs]]
+id = "p08-runtime-supervisor-owner"
+authority_state = "staged"
+execution_mode = "test-authority"
+staged_reason = "P08 must land host-independent supervisor ownership and deterministic lifecycle owner targets."
+ticket = "S21-09"
+family = "U"
+checkpoint = "M3"
+owner = "crates/quanta-index-searchd-runtime/src/lib.rs"
+command = "just proof-p08-runtime-supervisor-owner"
+gate = "correctness"
+profile = "runtime-supervisor-owner"
+target = "runtime-supervisor-owner"
+filter = "none"
+source_binding = "exact"
+binary_binding = "none"
+artifact_schema = "tools/ci/proof-manifest.schema.json"
+test_authority_targets = []
+dependencies = ["p07-provider-boundary-owner"]
+artifact = "artifacts/proof-authority/p08-runtime-supervisor-owner.json"
+required_host = "any"
 
 [[proofs]]
 id = "p08-runtime-supervisor"
@@ -267,9 +404,31 @@ source_binding = "exact"
 binary_binding = "release-daemon"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
 test_authority_targets = []
-dependencies = ["p07-provider-boundary"]
+dependencies = ["p08-runtime-supervisor-owner", "p07-provider-boundary"]
 artifact = "artifacts/proof-authority/p08-runtime-supervisor.json"
 required_host = "linux-production-like"
+
+[[proofs]]
+id = "p09-control-readiness-owner"
+authority_state = "staged"
+execution_mode = "test-authority"
+staged_reason = "P09 must land host-independent authorization and readiness owner targets."
+ticket = "S21-10"
+family = "U"
+checkpoint = "M3"
+owner = "crates/quanta-index-search-plane/src/control_dispatcher.rs"
+command = "just proof-p09-control-readiness-owner"
+gate = "correctness"
+profile = "control-readiness-owner"
+target = "control-readiness-owner"
+filter = "none"
+source_binding = "exact"
+binary_binding = "none"
+artifact_schema = "tools/ci/proof-manifest.schema.json"
+test_authority_targets = []
+dependencies = ["p08-runtime-supervisor-owner"]
+artifact = "artifacts/proof-authority/p09-control-readiness-owner.json"
+required_host = "any"
 
 [[proofs]]
 id = "p09-control-readiness"
@@ -289,9 +448,31 @@ source_binding = "exact"
 binary_binding = "release-daemon"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
 test_authority_targets = []
-dependencies = ["p08-runtime-supervisor", "p02b-operation-journal"]
+dependencies = ["p09-control-readiness-owner", "p08-runtime-supervisor"]
 artifact = "artifacts/proof-authority/p09-control-readiness.json"
 required_host = "linux-production-like"
+
+[[proofs]]
+id = "p10-state-migration-owner"
+authority_state = "staged"
+execution_mode = "test-authority"
+staged_reason = "P10 must land host-independent migration schema, refusal and disposable-root owner targets."
+ticket = "S21-11"
+family = "U"
+checkpoint = "M4"
+owner = "crates/quanta-index-searchd/src/cli/command.rs"
+command = "just proof-p10-state-migration-owner"
+gate = "correctness"
+profile = "state-migration-owner"
+target = "state-migration-owner"
+filter = "none"
+source_binding = "exact"
+binary_binding = "none"
+artifact_schema = "tools/ci/proof-manifest.schema.json"
+test_authority_targets = []
+dependencies = ["p09-control-readiness-owner"]
+artifact = "artifacts/proof-authority/p10-state-migration-owner.json"
+required_host = "any"
 
 [[proofs]]
 id = "p10-state-migration"
@@ -311,7 +492,7 @@ source_binding = "exact"
 binary_binding = "release-daemon"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
 test_authority_targets = []
-dependencies = ["p01-canonical-identity", "p03-candidate-activation", "p02b-operation-journal", "p08-runtime-supervisor", "p09-control-readiness"]
+dependencies = ["p10-state-migration-owner", "p09-control-readiness"]
 artifact = "artifacts/proof-authority/p10-state-migration.json"
 required_host = "linux-production-like"
 
@@ -335,7 +516,7 @@ paired_dependency_lock = "Cargo.lock"
 binary_binding = "release-daemon"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
 test_authority_targets = []
-dependencies = ["p03-candidate-activation", "p02b-operation-journal", "p06-sdk-binding", "p10-state-migration"]
+dependencies = ["p10-state-migration"]
 artifact = "artifacts/proof-authority/p11-cross-repo-cutover.json"
 required_host = "linux-production-like"
 
@@ -412,9 +593,34 @@ artifact = "artifacts/proof-authority/p11-rollback.json"
 required_host = "linux-production-like"
 
 [[proofs]]
+id = "p12a-proof-infrastructure"
+authority_state = "staged"
+execution_mode = "test-authority"
+staged_reason = "P12A must land the aggregate handoff-DAG schema, writer, validator and canonical recipe owner scope."
+ticket = "S21-13"
+family = "S"
+checkpoint = "M5"
+owner = "tools/ci/write-proof-aggregate.py"
+command = "just proof-p12a-proof-infrastructure"
+gate = "correctness"
+profile = "p12a-proof-infrastructure"
+target = "p12a-proof-infrastructure"
+filter = "none"
+source_binding = "exact-pair"
+paired_repository = "github:josongmin/semantica-codegraph-v2"
+paired_dependency_lock = "Cargo.lock"
+binary_binding = "none"
+artifact_schema = "tools/ci/proof-manifest.schema.json"
+test_authority_targets = []
+dependencies = ["p11-cross-repo-cutover"]
+artifact = "artifacts/proof-authority/p12a-proof-infrastructure.json"
+required_host = "any"
+
+[[proofs]]
 id = "p12-final-qualification"
-authority_state = "executable"
+authority_state = "staged"
 execution_mode = "aggregate"
+staged_reason = "P12Q becomes executable only after P12A lands aggregate handoff-DAG infrastructure and the final-source recipe."
 ticket = "S21-13"
 family = "S"
 checkpoint = "M5"
@@ -430,6 +636,6 @@ paired_dependency_lock = "Cargo.lock"
 binary_binding = "release-daemon"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
 test_authority_targets = []
-dependencies = ["p01-canonical-identity", "p02a-repomap-compiler", "p02b-operation-journal", "p03-candidate-activation", "p04-read-view-lifetime", "p05-query-truth", "p06-sdk-binding", "p07-provider-boundary", "p08-runtime-supervisor", "p09-control-readiness", "p10-state-migration", "p11-cross-repo-cutover", "p11-deployment", "p11-activation", "p11-rollback"]
+dependencies = ["p12a-proof-infrastructure"]
 artifact = "artifacts/proof-authority/p12-final-qualification.json"
 required_host = "linux-production-like"

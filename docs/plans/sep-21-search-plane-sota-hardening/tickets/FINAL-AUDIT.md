@@ -155,8 +155,8 @@ Required structural correction:
 | P01 owns live layout and quarantine | P01A owns pure codec/error/security only; P03 owns S21-01B live cutover |
 | quarantine can mint a local incident ID | P02B global event sequence plus P03 catalog-first crash protocol |
 | runtime removes legacy activation bytes | P03 refuses without mutation; P10 offline importer alone transforms/deletes |
-| every lane validates all old handoffs | immediate predecessor only; P02I validates fork; P12 validates transitive DAG |
-| dependency validation is P12 evidence | registered aggregate writer/verdict producer must emit receipt plus P12 manifest |
+| every lane validates all old handoffs | immediate predecessor only; P02I validates fork; P12A builds and P12Q validates transitive DAG |
+| dependency validation is P12 evidence | P12A aggregate writer/verdict producer must emit receipt; P12Q issues the P12 manifest |
 
 ## 4. Coverage judgment
 
@@ -177,7 +177,7 @@ The amended ADR/registry now freezes:
 - exact candidate/artifact/quarantine integer-key schemas and digest inputs;
 - `%`/slash/dot logical-byte policy with zero path projection;
 - P01A/P03/P10 ownership, generic global event ledger and quarantine crash order;
-- only-P02A/P02B parallelism, immediate/transitive handoff validation and a real P12 aggregate producer.
+- only-P02A/P02B parallelism, immediate/transitive handoff validation and a real P12A aggregate producer plus P12Q qualifier.
 
 P00 does not falsely claim a final error-code table while source remains free-form. It freezes a source-bound baseline
 inventory and the migration rules. P01A owns the final closed table/cardinality/digest and cannot hand off until

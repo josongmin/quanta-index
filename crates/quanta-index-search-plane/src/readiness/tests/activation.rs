@@ -43,16 +43,16 @@ fn activation_catalog_persists_composite_root_and_rolls_back_both_tracks_v1() ->
     );
 
     let pin = catalog.resolve(
-        &RepoId::new("repo-corpus"),
-        &RevisionId::new("rev-corpus"),
+        &RepoId::new("repo-corpus").expect("static fixture ID satisfies canonical policy"),
+        &RevisionId::new("rev-corpus").expect("static fixture ID satisfies canonical policy"),
         SearchPlaneTrackKind::Lexical,
     )?;
     assert_eq!(pin.manifest_generation, ManifestGeneration::new(17));
 
     let reopened = ActivationCatalog::open(dir.path())?;
     let reopened_pin = reopened.resolve(
-        &RepoId::new("repo-corpus"),
-        &RevisionId::new("rev-corpus"),
+        &RepoId::new("repo-corpus").expect("static fixture ID satisfies canonical policy"),
+        &RevisionId::new("rev-corpus").expect("static fixture ID satisfies canonical policy"),
         SearchPlaneTrackKind::Lexical,
     )?;
     assert_eq!(
@@ -61,8 +61,8 @@ fn activation_catalog_persists_composite_root_and_rolls_back_both_tracks_v1() ->
     );
 
     let semantic_before = reopened.resolve_record(
-        &RepoId::new("repo-corpus"),
-        &RevisionId::new("rev-corpus"),
+        &RepoId::new("repo-corpus").expect("static fixture ID satisfies canonical policy"),
+        &RevisionId::new("rev-corpus").expect("static fixture ID satisfies canonical policy"),
         SearchPlaneTrackKind::Semantic,
     )?;
     assert_eq!(
@@ -89,13 +89,13 @@ fn activation_catalog_persists_composite_root_and_rolls_back_both_tracks_v1() ->
     );
     let reopened = ActivationCatalog::open(dir.path())?;
     let lexical_after = reopened.resolve_record(
-        &RepoId::new("repo-corpus"),
-        &RevisionId::new("rev-corpus"),
+        &RepoId::new("repo-corpus").expect("static fixture ID satisfies canonical policy"),
+        &RevisionId::new("rev-corpus").expect("static fixture ID satisfies canonical policy"),
         SearchPlaneTrackKind::Lexical,
     )?;
     let semantic_after = reopened.resolve_record(
-        &RepoId::new("repo-corpus"),
-        &RevisionId::new("rev-corpus"),
+        &RepoId::new("repo-corpus").expect("static fixture ID satisfies canonical policy"),
+        &RevisionId::new("rev-corpus").expect("static fixture ID satisfies canonical policy"),
         SearchPlaneTrackKind::Semantic,
     )?;
     assert_eq!(
@@ -135,15 +135,19 @@ fn prepared_search_corpus_generation_rejects_single_track_and_mixed_identity() -
 
     let foreign_expected = SearchCorpusGenerationV1::new(
         GenerationSnapshot {
-            repo_id: RepoId::new("repo-other"),
-            revision_id: RevisionId::new("rev-corpus"),
+            repo_id: RepoId::new("repo-other")
+                .expect("static fixture ID satisfies canonical policy"),
+            revision_id: RevisionId::new("rev-corpus")
+                .expect("static fixture ID satisfies canonical policy"),
             track: SearchPlaneTrackKind::Lexical,
             manifest_generation: ManifestGeneration::new(17),
             manifest_digest: "digest-17".to_string(),
         },
         GenerationSnapshot {
-            repo_id: RepoId::new("repo-other"),
-            revision_id: RevisionId::new("rev-corpus"),
+            repo_id: RepoId::new("repo-other")
+                .expect("static fixture ID satisfies canonical policy"),
+            revision_id: RevisionId::new("rev-corpus")
+                .expect("static fixture ID satisfies canonical policy"),
             track: SearchPlaneTrackKind::Semantic,
             manifest_generation: ManifestGeneration::new(17),
             manifest_digest: "digest-17".to_string(),
@@ -205,18 +209,18 @@ fn prepared_search_corpus_activation_is_durable_before_reopen_and_rejects_stale_
     };
     assert_eq!(
         code,
-        crate::readiness::errors::ERR_COMPOSITE_ACTIVATION_CAS_CONFLICT
+        quanta_index_contract::SearchPlaneErrorCodeV2::CompositeActivationCasConflict
     );
 
     let reopened = ActivationCatalog::open(dir.path())?;
     let lexical = reopened.resolve_record(
-        &RepoId::new("repo-corpus"),
-        &RevisionId::new("rev-corpus"),
+        &RepoId::new("repo-corpus").expect("static fixture ID satisfies canonical policy"),
+        &RevisionId::new("rev-corpus").expect("static fixture ID satisfies canonical policy"),
         SearchPlaneTrackKind::Lexical,
     )?;
     let semantic = reopened.resolve_record(
-        &RepoId::new("repo-corpus"),
-        &RevisionId::new("rev-corpus"),
+        &RepoId::new("repo-corpus").expect("static fixture ID satisfies canonical policy"),
+        &RevisionId::new("rev-corpus").expect("static fixture ID satisfies canonical policy"),
         SearchPlaneTrackKind::Semantic,
     )?;
     assert_eq!(lexical.manifest_generation, ManifestGeneration::new(18));
@@ -280,7 +284,7 @@ fn activation_catalog_concurrent_cas_promotions_select_one_composite_winner() ->
             Err(CoreError::Typed { code, .. }) => {
                 assert_eq!(
                     code,
-                    crate::readiness::errors::ERR_COMPOSITE_ACTIVATION_CAS_CONFLICT
+                    quanta_index_contract::SearchPlaneErrorCodeV2::CompositeActivationCasConflict
                 );
             }
             Err(error) => {

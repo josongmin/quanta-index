@@ -115,12 +115,13 @@ pub(crate) fn decode<T: DeserializeOwned>(bytes: &[u8], label: &str) -> Result<T
 
 /// Wire code for a manifest, contract or sealed manifest written under a
 /// format this adapter does not serve.
-pub(crate) const FORMAT_UNSUPPORTED_CODE: &str = "GENERATION_MANIFEST_FORMAT_UNSUPPORTED";
+pub(crate) const FORMAT_UNSUPPORTED_CODE: quanta_index_contract::SearchPlaneErrorCodeV2 =
+    quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported;
 
 /// The typed refusal for `format_version` of `what`.
 pub(crate) fn format_unsupported(what: &str, format_version: u32, supported: u32) -> CoreError {
     CoreError::Typed {
-        code: FORMAT_UNSUPPORTED_CODE.to_string(),
+        code: FORMAT_UNSUPPORTED_CODE,
         message: format!(
             "semantic: {what} has format version {format_version}; this adapter serves format {supported} only — rebuild the generation from its producer"
         ),

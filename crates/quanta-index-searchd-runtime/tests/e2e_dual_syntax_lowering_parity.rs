@@ -1751,6 +1751,10 @@ fn ingest_corpus(rt: &mut E2eRuntime) -> AnyResult<()> {
     Ok(())
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn ingest_authority_fixtures(rt: &mut E2eRuntime) -> AnyResult<()> {
     ingest_corpus(rt)?;
     rt.ingest_history_fixture_spec(&E2eHistoryFixtureSpec {
@@ -1790,7 +1794,8 @@ fn ingest_authority_fixtures(rt: &mut E2eRuntime) -> AnyResult<()> {
         generation: rt.current_generation(),
         batch_digest: "repo-commit-recency:parity".to_string(),
         entries: vec![RepoCommitRecencyEntry {
-            source_repo_id: RepoId::new(PARITY_SOURCE_REPO_ID),
+            source_repo_id: RepoId::new(PARITY_SOURCE_REPO_ID)
+                .expect("test fixture ID satisfies canonical policy"),
             latest_committer_time_ms: now_epoch_ms()?,
         }],
     })?;
@@ -1800,7 +1805,8 @@ fn ingest_authority_fixtures(rt: &mut E2eRuntime) -> AnyResult<()> {
         generation: rt.current_generation(),
         batch_digest: "repo-meta:parity".to_string(),
         entries: vec![RepoMetaEntry {
-            source_repo_id: RepoId::new(PARITY_SOURCE_REPO_ID),
+            source_repo_id: RepoId::new(PARITY_SOURCE_REPO_ID)
+                .expect("test fixture ID satisfies canonical policy"),
             key: "license".to_string(),
             value: "apache-2.0".to_string(),
         }],
@@ -1812,11 +1818,13 @@ fn ingest_authority_fixtures(rt: &mut E2eRuntime) -> AnyResult<()> {
         batch_digest: "repo-topic:parity".to_string(),
         entries: vec![
             RepoTopicEntry {
-                source_repo_id: RepoId::new(PARITY_SOURCE_REPO_ID),
+                source_repo_id: RepoId::new(PARITY_SOURCE_REPO_ID)
+                    .expect("test fixture ID satisfies canonical policy"),
                 topic: "security".to_string(),
             },
             RepoTopicEntry {
-                source_repo_id: RepoId::new(PARITY_SOURCE_REPO_ID),
+                source_repo_id: RepoId::new(PARITY_SOURCE_REPO_ID)
+                    .expect("test fixture ID satisfies canonical policy"),
                 topic: "platform".to_string(),
             },
         ],
@@ -1828,12 +1836,14 @@ fn ingest_authority_fixtures(rt: &mut E2eRuntime) -> AnyResult<()> {
         batch_digest: "file-ownership:parity".to_string(),
         entries: vec![
             FileOwnershipEntry {
-                source_repo_id: RepoId::new(PARITY_SOURCE_REPO_ID),
+                source_repo_id: RepoId::new(PARITY_SOURCE_REPO_ID)
+                    .expect("test fixture ID satisfies canonical policy"),
                 repo_relative_path: RepoRelativePath::new("src/repo-commit-after-a.rs"),
                 owners: vec!["@alice".to_string(), "@acme/platform".to_string()],
             },
             FileOwnershipEntry {
-                source_repo_id: RepoId::new(PARITY_SOURCE_REPO_ID),
+                source_repo_id: RepoId::new(PARITY_SOURCE_REPO_ID)
+                    .expect("test fixture ID satisfies canonical policy"),
                 repo_relative_path: RepoRelativePath::new("src/repo-commit-after-b.py"),
                 owners: vec!["@bob".to_string()],
             },
@@ -1846,7 +1856,8 @@ fn ingest_authority_fixtures(rt: &mut E2eRuntime) -> AnyResult<()> {
         batch_digest: "file-contributor:parity".to_string(),
         entries: vec![
             FileContributorEntry {
-                source_repo_id: RepoId::new(PARITY_SOURCE_REPO_ID),
+                source_repo_id: RepoId::new(PARITY_SOURCE_REPO_ID)
+                    .expect("test fixture ID satisfies canonical policy"),
                 repo_relative_path: RepoRelativePath::new("src/repo-commit-after-a.rs"),
                 contributors: vec![
                     FileContributorIdentityEntry {
@@ -1862,7 +1873,8 @@ fn ingest_authority_fixtures(rt: &mut E2eRuntime) -> AnyResult<()> {
                 ],
             },
             FileContributorEntry {
-                source_repo_id: RepoId::new(PARITY_SOURCE_REPO_ID),
+                source_repo_id: RepoId::new(PARITY_SOURCE_REPO_ID)
+                    .expect("test fixture ID satisfies canonical policy"),
                 repo_relative_path: RepoRelativePath::new("src/repo-commit-after-b.py"),
                 contributors: vec![FileContributorIdentityEntry {
                     canonical: "bob".to_string(),
@@ -2032,7 +2044,7 @@ fn sorted_file_owner_projection_rows(result: &E2eQueryResult) -> Vec<(String, Ve
 struct Observation {
     corpus_ids: Vec<&'static str>,
     unmapped_candidate_ids: Vec<String>,
-    typed_error_code: Option<String>,
+    typed_error_code: Option<e2e_harness::E2eErrorCode>,
 }
 
 fn observe(result: &E2eQueryResult) -> Observation {
@@ -2040,12 +2052,12 @@ fn observe(result: &E2eQueryResult) -> Observation {
         Ok(corpus_ids) => Observation {
             corpus_ids,
             unmapped_candidate_ids: Vec::new(),
-            typed_error_code: result.typed_error.as_ref().map(|e| e.code.clone()),
+            typed_error_code: result.typed_error.as_ref().map(|e| e.code),
         },
         Err(unmapped_candidate_ids) => Observation {
             corpus_ids: Vec::new(),
             unmapped_candidate_ids,
-            typed_error_code: result.typed_error.as_ref().map(|e| e.code.clone()),
+            typed_error_code: result.typed_error.as_ref().map(|e| e.code),
         },
     }
 }
@@ -2059,14 +2071,14 @@ struct RowReport {
 struct HistoryObservation {
     commit_ids: Vec<String>,
     diff_paths: Vec<String>,
-    typed_error_code: Option<String>,
+    typed_error_code: Option<e2e_harness::E2eErrorCode>,
 }
 
 fn observe_history(result: &E2eHistoryResult) -> HistoryObservation {
     HistoryObservation {
         commit_ids: result.commit_ids.clone(),
         diff_paths: result.diff_paths.clone(),
-        typed_error_code: result.typed_error.as_ref().map(|e| e.code.clone()),
+        typed_error_code: result.typed_error.as_ref().map(|e| e.code),
     }
 }
 
@@ -2090,7 +2102,7 @@ fn execute_text_or_structural(
                 engines_touched: Vec::new(),
                 explanation: None,
                 typed_error: Some(crate::e2e_harness::E2eTypedError {
-                    code: "HARNESS_ROUTE_MISMATCH".to_string(),
+                    code: e2e_harness::E2eErrorCode::HarnessRouteMismatch,
                     message: format!("text/structural execute called for {route:?}"),
                 }),
             }
@@ -2143,7 +2155,11 @@ fn assess_text(
         };
     }
 
-    assess_expected(scenario, &sg.corpus_ids, sg.typed_error_code.as_deref())
+    assess_expected(
+        scenario,
+        &sg.corpus_ids,
+        sg.typed_error_code.map(e2e_harness::E2eErrorCode::as_str),
+    )
 }
 
 fn assess_history(
@@ -2174,7 +2190,7 @@ fn assess_history(
 
     match &scenario.expected {
         ExpectedOutcome::HistoryCommits { shas } => {
-            if let Some(code) = sg.typed_error_code.as_deref() {
+            if let Some(code) = sg.typed_error_code {
                 RowReport {
                     id: scenario.id,
                     failure: Some(format!(
@@ -2197,7 +2213,7 @@ fn assess_history(
             }
         }
         ExpectedOutcome::HistoryDiffPaths { paths } => {
-            if let Some(code) = sg.typed_error_code.as_deref() {
+            if let Some(code) = sg.typed_error_code {
                 RowReport {
                     id: scenario.id,
                     failure: Some(format!(

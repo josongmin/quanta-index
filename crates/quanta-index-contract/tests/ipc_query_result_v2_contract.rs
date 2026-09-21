@@ -164,10 +164,14 @@ where
     }
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn generation_pin() -> GenerationPin {
     GenerationPin::new(
-        RepoId::new("repo-1"),
-        RevisionId::new("rev-1"),
+        RepoId::new("repo-1").expect("static fixture ID satisfies canonical policy"),
+        RevisionId::new("rev-1").expect("static fixture ID satisfies canonical policy"),
         ManifestGeneration::new(7),
     )
 }
@@ -198,11 +202,16 @@ fn semantic_scope() -> TextQueryRequest {
     }
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn lexical_candidate() -> LexicalCandidate {
     LexicalCandidate {
         candidate_id: "cand-1".to_owned(),
-        repo_id: RepoId::new("repo-1"),
-        revision_id: RevisionId::new("rev-1"),
+        repo_id: RepoId::new("repo-1").expect("static fixture ID satisfies canonical policy"),
+        revision_id: RevisionId::new("rev-1")
+            .expect("static fixture ID satisfies canonical policy"),
         manifest_generation: ManifestGeneration::new(7),
         repo_relative_path: RepoRelativePath::new("src/search.rs"),
         start_line: 10,
@@ -241,8 +250,8 @@ fn hybrid_candidate() -> HybridCandidateV1 {
 fn symbol_candidate() -> Result<SymbolCandidate, Box<dyn std::error::Error>> {
     Ok(SymbolCandidate {
         candidate_id: "sym-1".to_owned(),
-        repo_id: RepoId::new("repo-1"),
-        revision_id: RevisionId::new("rev-1"),
+        repo_id: RepoId::new("repo-1")?,
+        revision_id: RevisionId::new("rev-1")?,
         manifest_generation: ManifestGeneration::new(7),
         repo_relative_path: RepoRelativePath::new("src/search.rs"),
         start_line: 10,
@@ -1313,8 +1322,9 @@ fn search_plane_ipc_response_v2_roundtrips_file_owner_projection_rows() -> TestR
         window: QueryResultWindowV1::exact(1),
         file_owner_rows: Some(vec![quanta_index_contract::FileOwnerProjectionRow {
             candidate_id: "lex-1".to_string(),
-            repo_id: RepoId::new("repo-a"),
-            revision_id: RevisionId::new("rev-a"),
+            repo_id: RepoId::new("repo-a").expect("static fixture ID satisfies canonical policy"),
+            revision_id: RevisionId::new("rev-a")
+                .expect("static fixture ID satisfies canonical policy"),
             manifest_generation: ManifestGeneration::new(7),
             repo_relative_path: RepoRelativePath::new("src/lib.rs"),
             owners: vec!["@alice".to_string(), "@acme/platform".to_string()],
@@ -2258,6 +2268,10 @@ fn keyset_pages_reject_inconsistent_shapes() -> TestRes {
 // `text_query`, a semantic scope, or a hybrid-seed corpus budget — refuses
 // to encode out of range, and raw bytes carrying an out-of-range value that
 // no encoder would have produced are refused at decode, under the one code.
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn top_k_bearing_requests(top_k: u32) -> Vec<(&'static str, SearchPlaneQueryIpcRequest)> {
     let text = TextQueryRequest {
         top_k,
@@ -2346,8 +2360,10 @@ fn top_k_bearing_requests(top_k: u32) -> Vec<(&'static str, SearchPlaneQueryIpcR
         (
             "repo-map",
             SearchPlaneQueryIpcRequest::RepoMapQuery(quanta_index_contract::RepoMapQueryRequest {
-                repo_id: RepoId::new("repo-x"),
-                revision_id: RevisionId::new("rev-y"),
+                repo_id: RepoId::new("repo-x")
+                    .expect("static fixture ID satisfies canonical policy"),
+                revision_id: RevisionId::new("rev-y")
+                    .expect("static fixture ID satisfies canonical policy"),
                 manifest_generation: ManifestGeneration::new(1),
                 query_text: "needle".to_owned(),
                 top_k,

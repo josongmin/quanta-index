@@ -268,8 +268,8 @@ mod tests {
         let language = LanguageCode::new("rust")
             .map_err(|err| format!("valid language code fixture required: {err}"))?;
         Ok(SearchCorpusBatch::replace_generation(
-            RepoId::new("repo"),
-            RevisionId::new("rev"),
+            RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+            RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
             ManifestGeneration::new(1),
             "manifest:digest",
         )

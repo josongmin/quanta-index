@@ -19,7 +19,7 @@ use quanta_index_core::{
     AuxiliaryAuthorityCatalogPort, DoorFindingQuarantinePort, FileContributorIngestPort,
     FileOwnershipIngestPort, GenerationIdentityValidatePort, HistoryTextIndexPort,
     IdempotencyCatalogPort, IncompleteGenerationDiscardPort, IntegrityScrubPort,
-    LexicalIndexOpenPort, MetricSourcePort, ProcessMemoryProbePort,
+    LexicalIndexOpenPort, MetricSourcePort, MutationCoordinatorPort, ProcessMemoryProbePort,
     QuarantinedGenerationDiscardPort, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
     RepoMapBundleIngestPort, RepoMapGenerationActivatePort, RepoMapQuarantinePort,
     RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort, ResidentMemoryWriterAdmission,
@@ -96,10 +96,6 @@ pub fn build_runtime_with_memory_probe(
         HistoryTextIndexAdapter::with_root(state_root.join("authorities/history-text"))
             .map_err(anyhow::Error::from)?,
     );
-    let opened_repo_map =
-        RepoMapGenerationStore::open(state_root.join("repo-map")).map_err(anyhow::Error::from)?;
-    let repo_map_store = Arc::new(opened_repo_map.store);
-    let repo_map_open_report = opened_repo_map.report;
     // Retention measures its byte limits over the index bytes the two
     // adapters know how to measure (QI-BB-003), never over record sizes.
     let index_bytes: Arc<dyn SearchCorpusIndexBytesPort> = Arc::new(PairIndexBytesMeasurer::new(
@@ -121,8 +117,19 @@ pub fn build_runtime_with_memory_probe(
         SqliteCatalog::open(&state_root, CATALOG_BUSY_BUDGET).map_err(anyhow::Error::from)?,
     );
     let shared_catalog = Arc::clone(&catalog);
-    let idempotency: Arc<dyn IdempotencyCatalogPort + Send + Sync> = shared_catalog;
+    let idempotency: Arc<dyn IdempotencyCatalogPort + Send + Sync> = shared_catalog.clone();
+    let mutation_coordinator: Arc<dyn MutationCoordinatorPort + Send + Sync> = shared_catalog;
+
+    // The RepoMap store shares the same durable catalog: its candidate,
+    // activation, invalidation and quarantine rows are the sole visibility
+    // authority, with the filesystem under `repo-map/` holding immutable
+    // content-addressed object projections only (SEP-21 P03).
+    let opened_repo_map =
+        RepoMapGenerationStore::open(state_root.join("repo-map"), Arc::clone(&catalog))
+            .map_err(anyhow::Error::from)?;
     let auxiliary_catalog: Arc<dyn AuxiliaryAuthorityCatalogPort + Send + Sync> = catalog;
+    let repo_map_store = Arc::new(opened_repo_map.store);
+    let repo_map_open_report = opened_repo_map.report;
 
     let search_corpus_build_port: Arc<dyn SearchCorpusBatchBuildPort + Send + Sync> =
         lex_adapter.clone();
@@ -221,6 +228,7 @@ pub fn build_runtime_with_memory_probe(
             search_corpus_lifecycle,
             legacy_semantic_journal_store,
             idempotency,
+            mutation_coordinator,
             auxiliary_catalog,
             history_text_index,
             adapter_metric_sources: vec![

@@ -75,15 +75,22 @@ impl StructuralError {
     /// These strings are part of the search-plane contract; do not rename
     /// without coordinating with `query_dispatcher.rs`.
     #[must_use]
-    pub fn code(&self) -> &'static str {
+    pub fn code(&self) -> quanta_index_contract::SearchPlaneErrorCodeV2 {
+        use quanta_index_contract::{SearchPlaneErrorCodeV2, lex::LexicalErrorCode};
         match self {
-            Self::ParseTreeProducerUnavailable => "STR_PRODUCER_PARSE_TREE_UNAVAILABLE",
-            Self::GenerationNotReady => "STR_GENERATION_NOT_READY",
-            Self::ShardUnavailable => "STR_SHARD_UNAVAILABLE",
-            Self::LangNotSupported(_) => "STR_LANG_NOT_SUPPORTED",
-            Self::HoleKindUnsupported(_) => "STR_HOLE_KIND_UNSUPPORTED",
-            Self::InvalidRequest(_) => "STR_INVALID_REQUEST",
-            Self::ProducerExecution(_) => "STR_PRODUCER_EXECUTION_FAILED",
+            Self::ParseTreeProducerUnavailable => {
+                SearchPlaneErrorCodeV2::Lexical(LexicalErrorCode::StrProducerParseTreeUnavailable)
+            }
+            Self::GenerationNotReady => SearchPlaneErrorCodeV2::StrGenerationNotReady,
+            Self::ShardUnavailable => SearchPlaneErrorCodeV2::StrShardUnavailable,
+            Self::LangNotSupported(_) => {
+                SearchPlaneErrorCodeV2::Lexical(LexicalErrorCode::StrLangNotSupported)
+            }
+            Self::HoleKindUnsupported(_) => {
+                SearchPlaneErrorCodeV2::Lexical(LexicalErrorCode::StrHoleKindUnsupported)
+            }
+            Self::InvalidRequest(_) => SearchPlaneErrorCodeV2::StrInvalidRequest,
+            Self::ProducerExecution(_) => SearchPlaneErrorCodeV2::StrProducerExecutionFailed,
             Self::AuxEpochExpired(_) => crate::domains::auxiliary::AUX_EPOCH_EXPIRED_CODE,
             Self::AuxEpochUnknown(_) => crate::domains::auxiliary::AUX_EPOCH_UNKNOWN_CODE,
         }

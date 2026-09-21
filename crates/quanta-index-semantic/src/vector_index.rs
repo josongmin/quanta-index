@@ -832,14 +832,14 @@ impl LoadedVectorIndexV1 {
 
 fn ann_missing(detail: &str) -> CoreError {
     CoreError::Typed {
-        code: "ANN_INDEX_MISSING".to_string(),
+        code: quanta_index_contract::SearchPlaneErrorCodeV2::AnnIndexMissing,
         message: format!("semantic: {detail}"),
     }
 }
 
 fn ann_incompatible(detail: &str) -> CoreError {
     CoreError::Typed {
-        code: "ANN_INDEX_INCOMPATIBLE".to_string(),
+        code: quanta_index_contract::SearchPlaneErrorCodeV2::AnnIndexIncompatible,
         message: format!("semantic: {detail}"),
     }
 }
@@ -1175,9 +1175,11 @@ mod tests {
         crate::run_blocking(&runtime, body)
     }
 
-    fn typed_code(result: &Result<LoadedVectorIndexV1, CoreError>) -> Option<&str> {
+    fn typed_code(
+        result: &Result<LoadedVectorIndexV1, CoreError>,
+    ) -> Option<quanta_index_contract::SearchPlaneErrorCodeV2> {
         match result {
-            Err(CoreError::Typed { code, .. }) => Some(code.as_str()),
+            Err(CoreError::Typed { code, .. }) => Some(*code),
             _ => None,
         }
     }
@@ -1289,7 +1291,10 @@ mod tests {
             other_library.library = "faiss".to_string();
             let refused =
                 verify_vector_index_v1(&table, &other_library, VECTOR_INDEX_MIN_ROWS).await;
-            assert_eq!(typed_code(&refused), Some("ANN_INDEX_INCOMPATIBLE"));
+            assert_eq!(
+                typed_code(&refused),
+                Some(quanta_index_contract::SearchPlaneErrorCodeV2::AnnIndexIncompatible)
+            );
 
             // An exact seal over an indexed dataset: the served mode would not
             // be the sealed one.
@@ -1297,7 +1302,7 @@ mod tests {
                 verify_vector_index_v1(&table, &exact_seal(), VECTOR_INDEX_MIN_ROWS).await;
             assert_eq!(
                 typed_code(&indexed_but_exact),
-                Some("ANN_INDEX_INCOMPATIBLE")
+                Some(quanta_index_contract::SearchPlaneErrorCodeV2::AnnIndexIncompatible)
             );
 
             // A seal whose coverage or segment count the library contradicts.
@@ -1306,14 +1311,20 @@ mod tests {
                 record.indexed_rows = record.indexed_rows.saturating_sub(1);
             }
             let coverage = verify_vector_index_v1(&table, &fewer_rows, VECTOR_INDEX_MIN_ROWS).await;
-            assert_eq!(typed_code(&coverage), Some("ANN_INDEX_INCOMPATIBLE"));
+            assert_eq!(
+                typed_code(&coverage),
+                Some(quanta_index_contract::SearchPlaneErrorCodeV2::AnnIndexIncompatible)
+            );
             let mut more_segments = sealed.clone();
             if let Some(record) = more_segments.ann.as_mut() {
                 record.index_segments = record.index_segments.saturating_add(1);
             }
             let segments =
                 verify_vector_index_v1(&table, &more_segments, VECTOR_INDEX_MIN_ROWS).await;
-            assert_eq!(typed_code(&segments), Some("ANN_INDEX_INCOMPATIBLE"));
+            assert_eq!(
+                typed_code(&segments),
+                Some(quanta_index_contract::SearchPlaneErrorCodeV2::AnnIndexIncompatible)
+            );
 
             // A seal naming an index the dataset does not list.
             let mut renamed = sealed.clone();
@@ -1322,12 +1333,18 @@ mod tests {
             }
             let missing_name =
                 verify_vector_index_v1(&table, &renamed, VECTOR_INDEX_MIN_ROWS).await;
-            assert_eq!(typed_code(&missing_name), Some("ANN_INDEX_MISSING"));
+            assert_eq!(
+                typed_code(&missing_name),
+                Some(quanta_index_contract::SearchPlaneErrorCodeV2::AnnIndexMissing)
+            );
 
             // The index gone from the dataset while the seal still records it.
             table.drop_index(&ann.index_name).await?;
             let dropped = verify_vector_index_v1(&table, &sealed, VECTOR_INDEX_MIN_ROWS).await;
-            assert_eq!(typed_code(&dropped), Some("ANN_INDEX_MISSING"));
+            assert_eq!(
+                typed_code(&dropped),
+                Some(quanta_index_contract::SearchPlaneErrorCodeV2::AnnIndexMissing)
+            );
             // ... and the same dataset agrees with an exact seal again.
             let exact =
                 verify_vector_index_v1(&table, &exact_seal(), VECTOR_INDEX_MIN_ROWS).await?;
@@ -1710,7 +1727,10 @@ mod tests {
             // … it is self-consistent, so it is the open that catches it
             // against the dataset.
             let refused = verify_vector_index_v1(&table, &claimed, 460).await;
-            assert_eq!(typed_code(&refused), Some("ANN_INDEX_INCOMPATIBLE"));
+            assert_eq!(
+                typed_code(&refused),
+                Some(quanta_index_contract::SearchPlaneErrorCodeV2::AnnIndexIncompatible)
+            );
             // A record with a segment the dataset does not have is refused too.
             let mut foreign = delta.clone();
             if let Some(ann) = foreign.ann.as_mut()
@@ -1719,7 +1739,10 @@ mod tests {
                 segment.uuid = "not-a-segment".to_string();
             }
             let refused = verify_vector_index_v1(&table, &foreign, 460).await;
-            assert_eq!(typed_code(&refused), Some("ANN_INDEX_INCOMPATIBLE"));
+            assert_eq!(
+                typed_code(&refused),
+                Some(quanta_index_contract::SearchPlaneErrorCodeV2::AnnIndexIncompatible)
+            );
             // The honest record opens, and the attestation names the appended
             // segment's actual construction beam width.
             let loaded = verify_vector_index_v1(&table, &delta, 460).await?;

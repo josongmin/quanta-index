@@ -103,10 +103,10 @@ fn semantic_query(pin: Option<GenerationPin>) -> SearchPlaneQueryIpcRequest {
     })
 }
 
-fn typed_code(response: &SearchPlaneQueryIpcResponse) -> Option<(String, String)> {
+fn typed_code(response: &SearchPlaneQueryIpcResponse) -> Option<(&'static str, String)> {
     match response {
         SearchPlaneQueryIpcResponse::Error(error) => {
-            Some((error.code.clone(), error.message.clone()))
+            Some((error.code.as_wire_str(), error.message.clone()))
         }
         SearchPlaneQueryIpcResponse::Text(_)
         | SearchPlaneQueryIpcResponse::Symbol(_)
@@ -271,7 +271,7 @@ fn a_byte_defect_survives_the_doors_and_is_quarantined_by_the_scrub() -> TestRes
     // The next query is refused typed: the resident handle was fenced.
     let after = rt.query_once(semantic_query)?;
     match typed_code(&after) {
-        Some((code, message)) if code == "GENERATION_QUARANTINED" => {
+        Some(("GENERATION_QUARANTINED", message)) => {
             if !message.contains("GENERATION_QUARANTINE_CONTENT_CORRUPT") {
                 return Err(format!("the refusal names the quarantine reason: {message}").into());
             }
@@ -425,7 +425,7 @@ fn a_generation_of_an_earlier_format_is_quarantined_at_boot_with_the_format_reas
     let pin = GenerationPin::new(rt.repo(), rt.revision(), inactive);
     let pinned = rt.query_once(|_| semantic_query(Some(pin)))?;
     match typed_code(&pinned) {
-        Some((code, _)) if code == "SEMANTIC_GENERATION_NOT_MATERIALIZED" => {}
+        Some(("SEMANTIC_GENERATION_NOT_MATERIALIZED", _)) => {}
         other => {
             return Err(format!(
                 "a query pinned to a quarantined generation is refused as not materialized, got {other:?}"
@@ -479,7 +479,7 @@ fn activation_refuses_semantic_content_roots_the_generation_did_not_seal() -> Te
         )
         .into());
     };
-    if error.code != "SEMANTIC_ROW_ROOT_MISMATCH" {
+    if error.code.as_wire_str() != "SEMANTIC_ROW_ROOT_MISMATCH" {
         return Err(format!(
             "foreign roots must be refused typed as SEMANTIC_ROW_ROOT_MISMATCH, got {}: {}",
             error.code, error.message

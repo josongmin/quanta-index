@@ -38,12 +38,20 @@ const IDENTITY: &str = "search-corpus-generation-identity.cbor";
 /// files the seal commits to and the inventory must not read.
 const TEXT_AUTHORITY_MANIFEST: &str = "text-authority/manifest.cbor";
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn repo() -> RepoId {
-    RepoId::new("inventory-repo")
+    RepoId::new("inventory-repo").expect("static fixture ID satisfies canonical policy")
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn revision() -> RevisionId {
-    RevisionId::new("inventory-rev")
+    RevisionId::new("inventory-rev").expect("static fixture ID satisfies canonical policy")
 }
 
 fn scope(body: &str) -> Result<SearchCorpusReplaceScope, Box<dyn Error>> {
@@ -116,7 +124,7 @@ fn flip_last_byte(path: &Path) -> TestResult {
 
 fn typed_code(result: &Result<(), CoreError>) -> Option<String> {
     match result {
-        Err(CoreError::Typed { code, .. }) => Some(code.clone()),
+        Err(CoreError::Typed { code, .. }) => Some(code.to_string()),
         _ => None,
     }
 }

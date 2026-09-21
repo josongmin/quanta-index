@@ -25,7 +25,7 @@ use quanta_index_contract::{
 use quanta_index_core::{AUX_EPOCH_EXPIRED_CODE, AUX_EPOCH_RETAIN};
 use quanta_index_searchd_harness as e2e_harness;
 
-use e2e_harness::{E2eRoutePage, E2eRuntime};
+use e2e_harness::{E2eErrorCode, E2eRoutePage, E2eRuntime};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -321,7 +321,11 @@ fn runtime_metadata_pages_walk_the_dirty_overlay_once_and_pin_their_epochs() -> 
         PAGE,
         Some(cursor),
     )? {
-        E2eRoutePage::Refused(error) if error.code == AUX_EPOCH_EXPIRED_CODE => Ok(()),
+        E2eRoutePage::Refused(error)
+            if error.code == E2eErrorCode::Remote(AUX_EPOCH_EXPIRED_CODE) =>
+        {
+            Ok(())
+        }
         E2eRoutePage::Refused(error) => {
             Err(format!("a pruned epoch is refused {AUX_EPOCH_EXPIRED_CODE}, got {error}").into())
         }
@@ -502,7 +506,11 @@ fn structural_pages_walk_the_match_set_once_and_pin_their_epoch() -> TestResult 
         PAGE,
         Some(cursor),
     )? {
-        E2eRoutePage::Refused(error) if error.code == AUX_EPOCH_EXPIRED_CODE => Ok(()),
+        E2eRoutePage::Refused(error)
+            if error.code == E2eErrorCode::Remote(AUX_EPOCH_EXPIRED_CODE) =>
+        {
+            Ok(())
+        }
         E2eRoutePage::Refused(error) => {
             Err(format!("a pruned epoch is refused {AUX_EPOCH_EXPIRED_CODE}, got {error}").into())
         }

@@ -185,11 +185,11 @@ fn utf8_key<'a>(label: &str, bytes: &'a [u8]) -> Result<&'a str, CoreError> {
     })
 }
 
-fn history_typed(code: &str, message: String) -> CoreError {
-    CoreError::Typed {
-        code: code.to_string(),
-        message,
-    }
+fn history_typed(
+    code: quanta_index_contract::SearchPlaneErrorCodeV2,
+    message: String,
+) -> CoreError {
+    CoreError::Typed { code, message }
 }
 
 /// Validate `batch` against `current` and name what it changes; the
@@ -212,7 +212,9 @@ pub(crate) fn history_transition(
         for parent in &record.parents {
             if !is_known(&known, parent) {
                 return Err(history_typed(
-                    "HISTORY_COMMIT_PARENT_UNKNOWN",
+                    quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+                        quanta_index_contract::lex::LexicalErrorCode::HistoryCommitParentUnknown,
+                    ),
                     format!(
                         "history ingest: parent {} missing before child {}",
                         parent, record.sha
@@ -234,7 +236,9 @@ pub(crate) fn history_transition(
                 HistoryRefMutation::Upsert(payload) => {
                     if !is_known(&known, &payload.sha) {
                         return Err(history_typed(
-                            "HISTORY_REF_NOT_FOUND",
+                            quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+                                quanta_index_contract::lex::LexicalErrorCode::HistoryRefNotFound,
+                            ),
                             format!(
                                 "history ingest: {label} `{}` points to unknown commit {}",
                                 payload.name, payload.sha
@@ -257,7 +261,9 @@ pub(crate) fn history_transition(
         meta.diff_hunks_materialized = true;
         if !is_known(&known, &hunk.commit_sha) {
             return Err(history_typed(
-                "HISTORY_REF_NOT_FOUND",
+                quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+                    quanta_index_contract::lex::LexicalErrorCode::HistoryRefNotFound,
+                ),
                 format!(
                     "history ingest: diff hunk for unknown commit {}",
                     hunk.commit_sha
@@ -323,7 +329,7 @@ pub(crate) fn runtime_catalog_transition(
     let chunk_universe = structural
         .map(|state| state.chunks().keys().cloned().collect::<BTreeSet<_>>())
         .ok_or_else(|| CoreError::Typed {
-            code: crate::readiness::ERR_RUNTIME_CATALOG_CHUNK_UNIVERSE_UNAVAILABLE.to_string(),
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::RuntimeCatalogChunkUniverseUnavailable,
             message: "runtime catalog ingest: lexical chunk authority is not materialized for the pinned generation".to_string(),
         })?;
     validate_runtime_catalog_doc_ids(batch, &chunk_universe)?;

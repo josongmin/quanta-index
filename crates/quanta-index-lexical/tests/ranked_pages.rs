@@ -23,9 +23,8 @@ use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
     BatchIngestMode, ChunkId, ChunkRecord, LQ_VERSION_TAG, LexicalCandidate, LexicalCursor,
     LqCountBound, LqExpr, LqFilter, LqLeaf, LqOptions, LqQuery, LqSelect, LqSpan,
-    ManifestGeneration, QUERY_CURSOR_GENERATION_MISMATCH_CODE, QueryConstraintSetV1, RepoId,
-    RepoRelativePath, RevisionId, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
-    SearchScopeKey, SearchScopeSurface,
+    ManifestGeneration, QueryConstraintSetV1, RepoId, RepoRelativePath, RevisionId,
+    SearchCorpusIngestBatch, SearchCorpusReplaceScope, SearchScopeKey, SearchScopeSurface,
 };
 use quanta_index_core::{
     CoreError, LexicalIndexOpenPort, LexicalPageSpec, LexicalSearcher, RequestBudgetV1,
@@ -39,12 +38,20 @@ type TestResult = Result<(), Box<dyn Error>>;
 const FILES: u32 = 12;
 const CHUNKS_PER_FILE: u32 = 3;
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn repo() -> RepoId {
-    RepoId::new("ranked-repo")
+    RepoId::new("ranked-repo").expect("static fixture ID satisfies canonical policy")
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn revision() -> RevisionId {
-    RevisionId::new("ranked-rev")
+    RevisionId::new("ranked-rev").expect("static fixture ID satisfies canonical policy")
 }
 
 fn generation() -> ManifestGeneration {
@@ -364,9 +371,10 @@ fn a_cursor_from_another_generation_is_refused() -> TestResult {
     let mut foreign = cursor_at(first);
     foreign.manifest_generation = ManifestGeneration::new(2);
     match page(searcher.as_ref(), &query(Vec::new()), 3, Some(foreign)) {
-        Err(CoreError::Typed { code, .. }) if code == QUERY_CURSOR_GENERATION_MISMATCH_CODE => {
-            Ok(())
-        }
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::QueryCursorGenerationMismatch,
+            ..
+        }) => Ok(()),
         other => Err(format!("a foreign cursor must be refused typed: {other:?}").into()),
     }
 }

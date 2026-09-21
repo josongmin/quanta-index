@@ -135,7 +135,10 @@ pub(crate) fn window_snippet(
 /// The `HISTORY_PRODUCER_UNAVAILABLE` and `REV_UNAVAILABLE` codes are
 /// never suppressed: no commit/diff/repo producer or history producer is
 /// wired on any current configuration of the lexical rail.
-pub(crate) fn is_unavailable_suppressed_by_metadata(code: &str, has_repo_metadata: bool) -> bool {
+pub(crate) fn is_unavailable_suppressed_by_metadata(
+    code: quanta_index_contract::SearchPlaneErrorCodeV2,
+    has_repo_metadata: bool,
+) -> bool {
     if !has_repo_metadata {
         return false;
     }

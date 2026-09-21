@@ -18,15 +18,13 @@ use crate::readiness::durable_fs::{
     AtomicFileWriteOutcomeV1, atomic_replace_file_from_staging_v1, ensure_durable_directory_v1,
     read_regular_file_nofollow_v1, sync_existing_file_parent_v1,
 };
-use crate::readiness::errors::ERR_SEARCH_CORPUS_AUTHORITY_CONFLICT;
 use crate::readiness::ledger::Ledger;
 use crate::readiness::pair_digest::search_corpus_pair_digest;
 use crate::readiness::retention_receipt::SearchCorpusHistoryRetentionReceiptV1;
 use crate::readiness::search_corpus_generation::SearchCorpusGenerationV1;
 use crate::readiness::serde_support::impl_struct_serde;
 use crate::search_corpus_retention::{
-    ERR_SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED, SearchCorpusHistoryRetentionItemV1,
-    SearchCorpusHistoryRetentionPlanV1,
+    SearchCorpusHistoryRetentionItemV1, SearchCorpusHistoryRetentionPlanV1,
 };
 
 impl AuxiliaryAuthorityStore {
@@ -97,7 +95,7 @@ impl AuxiliaryAuthorityStore {
                 );
             }
             return Err(CoreError::Typed {
-                code: ERR_SEARCH_CORPUS_AUTHORITY_CONFLICT.to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusAuthorityConflict,
                 message: format!(
                     "search-corpus authority: conflicting digest for repo={} revision={} generation={}: expected={}, observed={}",
                     repo_id.as_str(),
@@ -166,7 +164,8 @@ impl AuxiliaryAuthorityStore {
             return Ok(enforced.receipt);
         }
         Err(CoreError::Typed {
-            code: ERR_SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED.to_string(),
+            code:
+                quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted,
             message: format!(
                 "search-corpus history retention: generation {} has been reaped for repo={} revision={}",
                 generation.get(),
@@ -272,7 +271,7 @@ impl AuxiliaryAuthorityStore {
         record.validate_identity(repo_id, revision_id, generation, &path)?;
         if record.manifest_digest != manifest_digest {
             return Err(CoreError::Typed {
-                code: ERR_SEARCH_CORPUS_AUTHORITY_CONFLICT.to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusAuthorityConflict,
                 message: format!(
                     "search-corpus authority: conflicting digest for repo={} revision={} generation={}",
                     repo_id.as_str(),
@@ -518,7 +517,7 @@ impl AuxiliaryAuthorityStore {
             || projected_total_bytes > self.search_corpus_history_retention.max_total_bytes()
         {
             return Err(CoreError::Typed {
-                code: ERR_SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED.to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted,
                 message: format!(
                     "search-corpus history retention: state-root admission requires revision_pairs={projected_pairs} index_total_bytes={projected_total_bytes}, limits are max_revision_pairs={} max_total_bytes={}; cross-pair deletion is unavailable without product-active pin authority",
                     self.search_corpus_history_retention.max_revision_pairs(),
@@ -619,7 +618,7 @@ impl AuxiliaryAuthorityStore {
             > self.search_corpus_history_retention.max_revision_pairs()
         {
             return Err(CoreError::Typed {
-                code: ERR_SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED.to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted,
                 message: format!(
                     "search-corpus history retention: restore observed {} revision pairs, exceeding max_revision_pairs={}; cross-pair deletion is unavailable without product-active pin authority",
                     snapshot.pair_directories.len(),
@@ -659,7 +658,7 @@ impl AuxiliaryAuthorityStore {
         }
         if projected_total_bytes > self.search_corpus_history_retention.max_total_bytes() {
             return Err(CoreError::Typed {
-                code: ERR_SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED.to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted,
                 message: format!(
                     "search-corpus history retention: restore requires index_total_bytes={projected_total_bytes}, exceeding max_total_bytes={}; cross-pair deletion is unavailable without product-active pin authority",
                     self.search_corpus_history_retention.max_total_bytes(),

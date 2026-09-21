@@ -53,10 +53,14 @@ DoD:
 - available-empty, filtered-empty, zero-hit executed는 서로 다른 provenance; unavailable는 typed refusal
 - explain mismatch는 typed fail-closed
 
-proof node는 `p05-query-truth`다. registry command가 `searchd-runtime-e2e-keyset-cursors`, independent RRF/window
-oracle/cursor negative targets와 `just rust-verify-quality-all`을 모두 실행하는 composite recipe여야 한다. 현재 command가
-quality rail만 실행하면 구현 전에 recipe/registry를 이 lane에서 고치고 source-bound proof를 다시 만든다. target이
-비어 있거나 실제 선택되지 않으면 `BLOCKED`다. public DTO/decoder 변경에는 `just rust-public-api`,
+owner node expected tuple은 `id=p05-query-truth-owner`, `family=U`, `required_host=any`,
+`dependencies=[p04-read-view-lifetime-owner]`다. release node는 `id=p05-query-truth`, `family=Q`,
+`required_host=linux-production-like`, `dependencies=[p05-query-truth-owner,p04-read-view-lifetime]`다. dedicated `just rust-proof-p05-query-truth`는 최소
+`searchd-runtime-e2e-keyset-cursors`, `searchd-runtime-e2e-exact-count-window`,
+`searchd-runtime-e2e-semantic-scope-cap`, `searchd-runtime-explain`, independent RRF/window oracle, full-field cursor
+tamper target과 `just rust-verify-quality-all`을 모두 실행한다. dry-run selection artifact와 command별 counts를 분리한다.
+현재 command가 quality rail만 실행하면 구현 전에 recipe/registry를 이 lane에서 고치고 source-bound proof를 다시
+만든다. target이 비어 있거나 실제 선택되지 않으면 `BLOCKED`다. public DTO/decoder 변경에는 `just rust-public-api`,
 `just rust-wire-inventory`, `just rust-fuzz-smoke`를 추가한다. Linux production-like/release-daemon proof가 필요하다.
 최종 보고에 source freeze, route capability matrix, schema bump, oracle independence, command별 covered/excluded surface와
 counts, NOT_RUN, P06 expected response context inputs와 `artifacts/sep-21/handoffs/P05.json`을 남겨라. explicit owner

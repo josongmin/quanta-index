@@ -2,7 +2,7 @@
 
 Status: `planned`
 
-Depends on: S21-00, S21-01, S21-03, S21-04
+Depends on: S21-00, S21-01 Phase A (P01A checkpoint), S21-03, S21-04; closes atomically with S21-01 Phase B in P03
 
 ## Goal
 

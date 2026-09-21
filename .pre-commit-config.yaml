@@ -198,7 +198,7 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
-        files: ^(tools/ci/(proof-authority\.toml|proof-manifest\.schema\.json|write-proof-manifest\.py|lint/check-proof-authority\.py|tests/test_check_proof_authority\.py|tests/test_write_proof_manifest\.py)|docs/adr/SEP-21-.*\.md)$
+        files: ^(tools/ci/(proof-authority\.toml|proof-(?:manifest|aggregate)\.schema\.json|write-proof-(?:manifest|aggregate)\.py|lint/check-(?:proof-authority|lane-handoff)\.py|tests/test_check_(?:proof_authority|lane_handoff)\.py|tests/test_write_proof_(?:manifest|aggregate)\.py)|docs/(?:adr/SEP-21-.*\.md|plans/sep-21-search-plane-sota-hardening/tickets/handoffs/lane-handoff\.schema\.json))$
         stages: [pre-commit, pre-push]
 
       - id: rust-digest-fallibility

@@ -31,7 +31,6 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use anyhow::Result as AnyResult;
-use quanta_index_searchd_harness::E2eRuntime;
 use quanta_index_searchd_harness::artifact::{
     BenchArtifactV1, BenchMode, BenchProvenanceV1, GitHeadV1, HostV1, LatencySummary,
     PhaseDurationsV1, ResourceUsageV1, ResultShape, config_digest, corpus_digest,
@@ -41,6 +40,7 @@ use quanta_index_searchd_harness::bench_support::{
     QueryOutcome, bench_row, fixture_corpus_files, prepare_cold_runtime, run_scenario_query,
 };
 use quanta_index_searchd_harness::scenarios::{DslBenchScenario, SCENARIOS, scenario_by_id};
+use quanta_index_searchd_harness::{E2eErrorCode, E2eRuntime};
 
 const DIMENSION: &str = "dsl-cold";
 
@@ -111,7 +111,7 @@ fn measured_sample(runtime: &mut E2eRuntime, scenario: &DslBenchScenario) -> ser
         "result_shape": outcome.result_shape.as_str(),
         "first_query_ms": first_query_ms,
         "result_count": outcome.result_count,
-        "typed_error_code": outcome.typed_error_code,
+        "typed_error_code": outcome.typed_error_code.map(E2eErrorCode::as_str),
         "engine_touched": outcome.engine_touched,
         "early_stop_reason": outcome.early_stop_reason,
         "model_revision": model_revision_of(runtime.embedder_profile()),
@@ -140,6 +140,18 @@ fn optional_string_field(sample: &serde_json::Value, key: &str) -> AnyResult<Opt
         Some(serde_json::Value::String(text)) => Ok(Some(text.clone())),
         Some(other) => Err(anyhow::anyhow!("sample `{key}` is not a string: {other}")),
     }
+}
+
+fn optional_error_code_field(
+    sample: &serde_json::Value,
+    key: &str,
+) -> AnyResult<Option<E2eErrorCode>> {
+    optional_string_field(sample, key)?
+        .map(|value| {
+            E2eErrorCode::from_code_str(&value)
+                .ok_or_else(|| anyhow::anyhow!("sample `{key}` has unknown error code {value:?}"))
+        })
+        .transpose()
 }
 
 fn result_shape_of(text: &str) -> AnyResult<ResultShape> {
@@ -191,7 +203,7 @@ fn parse_sample(sample: &serde_json::Value) -> AnyResult<ColdSample> {
         outcome: QueryOutcome {
             result_shape: result_shape_of(&string_field(sample, "result_shape")?)?,
             result_count,
-            typed_error_code: optional_string_field(sample, "typed_error_code")?,
+            typed_error_code: optional_error_code_field(sample, "typed_error_code")?,
             engine_touched,
             early_stop_reason: optional_string_field(sample, "early_stop_reason")?,
         },
@@ -308,7 +320,7 @@ fn clone_outcome(outcome: &QueryOutcome) -> QueryOutcome {
     QueryOutcome {
         result_shape: outcome.result_shape,
         result_count: outcome.result_count,
-        typed_error_code: outcome.typed_error_code.clone(),
+        typed_error_code: outcome.typed_error_code,
         engine_touched: outcome.engine_touched.clone(),
         early_stop_reason: outcome.early_stop_reason.clone(),
     }
@@ -381,6 +393,41 @@ fn main() -> ExitCode {
                 "usage: dsl_cold_matrix (--list | --scenario <id> | --assemble --out <path> --samples <n>)",
             );
             ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quanta_index_contract::SearchPlaneErrorCodeV2;
+
+    #[test]
+    fn child_sample_error_code_decoder_rejects_unknown_and_retired_codes() {
+        for local in [
+            "HARNESS_START",
+            "HARNESS_ROUTE_MISMATCH",
+            "IPC_TRANSPORT",
+            "UNEXPECTED_RESPONSE",
+        ] {
+            assert!(
+                SearchPlaneErrorCodeV2::from_wire_str(local).is_none(),
+                "harness and daemon code namespaces must remain disjoint"
+            );
+        }
+        let wire = serde_json::json!({"typed_error_code": "NOT_READY"});
+        assert_eq!(
+            optional_error_code_field(&wire, "typed_error_code").expect("closed wire code"),
+            Some(E2eErrorCode::Remote(SearchPlaneErrorCodeV2::NotReady))
+        );
+        let harness = serde_json::json!({"typed_error_code": "HARNESS_START"});
+        assert_eq!(
+            optional_error_code_field(&harness, "typed_error_code").expect("harness code"),
+            Some(E2eErrorCode::HarnessStart)
+        );
+        for stale in ["BAD_REQUEST", "UNREGISTERED_ERROR"] {
+            let sample = serde_json::json!({"typed_error_code": stale});
+            assert!(optional_error_code_field(&sample, "typed_error_code").is_err());
         }
     }
 }

@@ -84,6 +84,7 @@ crate quanta_index_contract
 │   │   ├── struct QueryErrorRepairVisitor: pub(self)
 │   │   │   └── type Value: pub(self)
 │   │   ├── enum RepairClass: pub
+│   │   ├── enum SearchPlaneErrorCodeV2: pub
 │   │   ├── struct SearchPlaneIpcError: pub
 │   │   └── struct SearchPlaneIpcErrorVisitor: pub(self)
 │   │       └── type Value: pub(self)
@@ -511,8 +512,43 @@ crate quanta_index_contract
 │   ├── struct RepoMapSourceBundleV1Visitor: pub(self)
 │   │   └── type Value: pub(self)
 │   ├── struct RepoMapSymbolNode: pub
-│   └── struct RepoMapSymbolNodeVisitor: pub(self)
-│       └── type Value: pub(self)
+│   ├── struct RepoMapSymbolNodeVisitor: pub(self)
+│   │   └── type Value: pub(self)
+│   ├── mod canonical_v3: pub(self)
+│   │   ├── struct ArtifactContentDigestV1: pub
+│   │   ├── struct ArtifactIdentityCommitmentV1: pub
+│   │   ├── struct ArtifactIdentityV1: pub
+│   │   ├── struct CandidateCommitmentV1: pub
+│   │   ├── struct CandidateObjectDigestV1: pub
+│   │   ├── enum CanonicalRepoMapCodecErrorV1: pub
+│   │   ├── struct QuarantineIncidentDigestV1: pub
+│   │   ├── struct QuarantineIncidentV1: pub
+│   │   ├── struct QuarantineObservationDigestV1: pub
+│   │   ├── struct QuarantineObservationEvidenceV1: pub
+│   │   ├── struct QuarantinePayloadDigestV1: pub
+│   │   ├── enum QuarantineReasonCodeV1: pub
+│   │   ├── struct RepoMapCandidateCommitmentsV1: pub
+│   │   ├── struct RepoMapCandidateEnvelopeV1: pub
+│   │   ├── struct StateRootUuidCommitmentV1: pub
+│   │   └── mod cbor: pub(self)
+│   │       └── struct Decoder: pub(super)
+│   └── mod compile: pub(self)
+│       ├── struct CompiledRepoMapCandidateV1: pub
+│       ├── struct CompiledRepoMapEdgeV1: pub
+│       ├── struct CompiledRepoMapGraphV1: pub
+│       ├── struct CompiledRepoMapNodeV1: pub
+│       ├── struct CompiledRepoMapProjectionEntryV1: pub
+│       ├── enum RepoMapCompileRefusalCodeV1: pub
+│       ├── struct RepoMapCompileRefusalV1: pub
+│       ├── struct RepoMapCompileRefusalVisitor: pub(self)
+│       │   └── type Value: pub(self)
+│       ├── enum RepoMapCompileStageV1: pub
+│       ├── struct RepoMapCompilerBudgetV1: pub
+│       ├── struct RepoMapCompilerBudgetVisitor: pub(self)
+│       │   └── type Value: pub(self)
+│       ├── struct RepoMapResourceReceiptV1: pub
+│       └── struct RepoMapResourceReceiptVisitor: pub(self)
+│           └── type Value: pub(self)
 ├── mod results: pub
 │   ├── mod cluster_membership: pub(self)
 │   │   ├── struct ClusterMembershipBatchReadResponseV1: pub

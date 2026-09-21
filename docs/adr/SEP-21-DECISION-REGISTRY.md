@@ -30,9 +30,10 @@ full semantics.
 | D-ROOT-01 | state-root format 2; offline-only migration; manifest-last atomic cutover | runtime/migration | S21-11 |
 | D-XREPO-01 | protocol v2+contract digest handshake; breaking producer cutover | contract/deployment | S21-12 |
 | D-PROOF-01 | strict registered proof graph, same binary/host/source binding | CI/release | S21-13 |
-| D-LANE-01 | `P00 → P01A → (P02A ∥ P02B) → P02I → P03 → P04…P12`; no other implementation parallelism | plan owner | all |
-| D-HANDOFF-01 | each lane validates its immediate predecessor; P02I validates both parallel parents; P12 validates the transitive chain | plan/release | all |
-| D-AGG-01 | P12 has a registered aggregate receipt schema, producer/writer, validator and final recipe; dependency validation alone cannot issue P12 proof | CI/release | S21-13 |
+| D-PROOF-02 | source/source-pair domain digest plus manifest digest address indexed immutable receipt leaves; evidence/binaries are content-addressed; dependency edges reference exact archive leaves and never current aliases | CI/release | S21-00/13 |
+| D-LANE-01 | `P00 → P01A → (P02A ∥ P02B) → P02I → P03 → P04…P11 → P12A → P12Q`; no other implementation parallelism | plan owner | all |
+| D-HANDOFF-01 | each lane handoff binds canonical lane/ticket/proof/status, exact Git write set and current-clean source; P02I validates both parallel parents; P12A implements and P12Q executes transitive validation | plan/release | all |
+| D-AGG-01 | P12A owns aggregate schema/writer/validator/final recipe; P12Q is source-read-only qualification and alone may issue terminal P12 proof | CI/release | S21-13 |
 
 ## Canonical type names
 

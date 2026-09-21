@@ -591,7 +591,7 @@ fn every_route_refuses_out_of_range_top_k_with_one_code_from_typed_and_raw_calle
             >(&query_socket, &wire, ClientIoPolicy::default());
             match answer.map(|response| response.payload) {
                 Ok(quanta_index_contract::SearchPlaneQueryIpcResponse::Error(error))
-                    if error.code == TOP_K_OUT_OF_RANGE_CODE => {}
+                    if error.code.as_wire_str() == TOP_K_OUT_OF_RANGE_CODE => {}
                 Ok(other) => failures.push(format!(
                     "{}: top_k={top_k} raw bytes must be answered typed {TOP_K_OUT_OF_RANGE_CODE}, got {other:?}",
                     route.name
@@ -640,7 +640,7 @@ fn every_route_accepts_the_public_range_including_the_maximum() -> TestResult {
                 }
             };
             match observed.typed_error {
-                Some(error) if error.code == TOP_K_OUT_OF_RANGE_CODE => {
+                Some(error) if error.code.as_str() == TOP_K_OUT_OF_RANGE_CODE => {
                     failures.push(format!(
                         "{}: top_k={top_k} is inside the public range but was refused: {}",
                         route.name, error.message

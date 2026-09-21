@@ -58,17 +58,20 @@ pub const SEMANTIC_STREAM_WINDOW_SCOPES: usize = 1_024;
 pub const SEMANTIC_STREAM_WINDOW_VECTOR_BYTES: u64 = 32 * 1024 * 1024;
 
 /// Wire code for a window the sink received that exceeds the policy.
-pub const SEMANTIC_STREAM_WINDOW_EXCEEDED_CODE: &str = "SEMANTIC_STREAM_WINDOW_EXCEEDED";
+pub const SEMANTIC_STREAM_WINDOW_EXCEEDED_CODE: quanta_index_contract::SearchPlaneErrorCodeV2 =
+    quanta_index_contract::SearchPlaneErrorCodeV2::SemanticStreamWindowExceeded;
 
 /// Wire code for an owner scope whose vectors alone exceed the window byte
 /// bound: no window can carry it.
-pub const SEMANTIC_STREAM_OWNER_SCOPE_OVER_WINDOW_CODE: &str =
-    "SEMANTIC_STREAM_OWNER_SCOPE_OVER_WINDOW";
+pub const SEMANTIC_STREAM_OWNER_SCOPE_OVER_WINDOW_CODE:
+    quanta_index_contract::SearchPlaneErrorCodeV2 =
+    quanta_index_contract::SearchPlaneErrorCodeV2::SemanticStreamOwnerScopeOverWindow;
 
 /// Wire code for a source asked for the next window while the previous one
 /// is still resident.
-pub const SEMANTIC_STREAM_WINDOW_STILL_RESIDENT_CODE: &str =
-    "SEMANTIC_STREAM_WINDOW_STILL_RESIDENT";
+pub const SEMANTIC_STREAM_WINDOW_STILL_RESIDENT_CODE:
+    quanta_index_contract::SearchPlaneErrorCodeV2 =
+    quanta_index_contract::SearchPlaneErrorCodeV2::SemanticStreamWindowStillResident;
 
 /// Bytes of one `f32` vector component.
 const VECTOR_COMPONENT_BYTES: u64 = 4;
@@ -145,7 +148,7 @@ impl SemanticStreamWindowPolicy {
     ) -> Result<SemanticWindowPlacementV1, CoreError> {
         if owner_bytes > self.vector_bytes {
             return Err(CoreError::Typed {
-                code: SEMANTIC_STREAM_OWNER_SCOPE_OVER_WINDOW_CODE.to_string(),
+                code: SEMANTIC_STREAM_OWNER_SCOPE_OVER_WINDOW_CODE,
                 message: format!(
                     "semantic stream window: one owner scope expands to {owner_bytes} bytes of vectors, the window ceiling is {}",
                     self.vector_bytes
@@ -195,7 +198,7 @@ impl SemanticStreamWindowPolicy {
         };
         if fill.owner_scopes > self.owner_scopes || fill.vector_bytes > self.vector_bytes {
             return Err(CoreError::Typed {
-                code: SEMANTIC_STREAM_WINDOW_EXCEEDED_CODE.to_string(),
+                code: SEMANTIC_STREAM_WINDOW_EXCEEDED_CODE,
                 message: format!(
                     "semantic stream window: window carries {} owner scopes and {} bytes of vectors, the ceilings are {} and {}",
                     fill.owner_scopes, fill.vector_bytes, self.owner_scopes, self.vector_bytes
@@ -454,7 +457,7 @@ impl SemanticWindowIssuerV1 {
         let outstanding = self.residency.outstanding_windows();
         if outstanding != 0 {
             return Err(CoreError::Typed {
-                code: SEMANTIC_STREAM_WINDOW_STILL_RESIDENT_CODE.to_string(),
+                code: SEMANTIC_STREAM_WINDOW_STILL_RESIDENT_CODE,
                 message: format!(
                     "semantic stream: {outstanding} window(s) still resident; the sink drops a window before asking for the next"
                 ),

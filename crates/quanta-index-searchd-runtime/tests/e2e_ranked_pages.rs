@@ -1,4 +1,5 @@
 //! QI-BB-005 — ranked text pages at the daemon front door: cut in the one
+//!
 //! total order, continued by their cursor, cut by the response byte budget
 //! with an explicit continuation, and never continued in another
 //! generation.
@@ -178,7 +179,9 @@ fn a_cursor_does_not_continue_in_another_generation() -> TestResult {
         Some(next_pin),
         Some(cursor),
     )? {
-        E2eRoutePage::Refused(error) if error.code == QUERY_CURSOR_GENERATION_MISMATCH_CODE => {
+        E2eRoutePage::Refused(error)
+            if error.code.as_str() == QUERY_CURSOR_GENERATION_MISMATCH_CODE =>
+        {
             Ok(())
         }
         other @ (E2eRoutePage::Served(_) | E2eRoutePage::Refused(_)) => {

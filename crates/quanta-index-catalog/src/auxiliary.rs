@@ -20,8 +20,7 @@ use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId, SearchPlaneT
 use quanta_index_core::{
     AuxiliaryAuthorityCatalogPort, AuxiliaryDomainV1, AuxiliaryGenerationKeyV1,
     AuxiliaryMutationBatchV1, AuxiliaryMutationReceiptV1, AuxiliaryRowFamilyV1, AuxiliaryRowKeyV1,
-    AuxiliaryRowMutationV1, AuxiliaryRowV1, AuxiliaryTrackRowV1, CATALOG_ROW_CORRUPT_CODE,
-    CoreError,
+    AuxiliaryRowMutationV1, AuxiliaryRowV1, AuxiliaryTrackRowV1, CoreError,
 };
 use rusqlite::{Connection, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
@@ -95,7 +94,7 @@ fn track_digest(row: &AuxiliaryTrackRowV1) -> [u8; 32] {
 
 fn corrupt(message: String) -> CoreError {
     CoreError::Typed {
-        code: CATALOG_ROW_CORRUPT_CODE.to_string(),
+        code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
         message,
     }
 }
@@ -252,8 +251,10 @@ fn verified_row(raw: RawRow) -> Result<AuxiliaryRowV1, CoreError> {
     let key = AuxiliaryRowKeyV1 {
         domain,
         generation: AuxiliaryGenerationKeyV1 {
-            repo_id: RepoId::new(raw.repo_id),
-            revision_id: RevisionId::new(raw.revision_id),
+            repo_id: RepoId::new(raw.repo_id)
+                .map_err(|error| corrupt(format!("catalog: auxiliary row repo ID: {error}")))?,
+            revision_id: RevisionId::new(raw.revision_id)
+                .map_err(|error| corrupt(format!("catalog: auxiliary row revision ID: {error}")))?,
             generation: ManifestGeneration::new(generation),
         },
         family,
@@ -336,8 +337,11 @@ fn scan_tracks(
         let (repo_id, revision_id, track, value, row_sha256) =
             raw.map_err(|error| engine_error("read auxiliary track row", path, &error))?;
         let row = AuxiliaryTrackRowV1 {
-            repo_id: RepoId::new(repo_id),
-            revision_id: RevisionId::new(revision_id),
+            repo_id: RepoId::new(repo_id)
+                .map_err(|error| corrupt(format!("catalog: auxiliary track repo ID: {error}")))?,
+            revision_id: RevisionId::new(revision_id).map_err(|error| {
+                corrupt(format!("catalog: auxiliary track revision ID: {error}"))
+            })?,
             track: track_from_code(&track)?,
             value,
         };

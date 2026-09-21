@@ -16,7 +16,8 @@
 use quanta_index_contract::{LqExpr, LqFilter, LqLeaf, LqOptions, LqQuery, LqType};
 use quanta_index_core::CoreError;
 use quanta_index_lq_text_normalizer::{
-    CaseMode, Token, contains_phrase, contains_substring, nfc, query_tokens, tokenize,
+    CaseMode, TextQueryError, Token, contains_phrase, contains_substring, nfc, query_tokens,
+    tokenize,
 };
 
 use crate::query_dispatcher::timeref::{
@@ -238,7 +239,14 @@ fn validate_leaf_surface(
 /// express.
 fn literal_tokens(plane: &str, literal: &str, case: CaseMode) -> Result<Vec<Token>, CoreError> {
     query_tokens(literal, case).map_err(|err| CoreError::Typed {
-        code: err.code().to_string(),
+        code: match err {
+            TextQueryError::NoTokens => {
+                quanta_index_contract::SearchPlaneErrorCodeV2::LexTextQueryNoTokens
+            }
+            TextQueryError::TokenTooLong { .. } => {
+                quanta_index_contract::SearchPlaneErrorCodeV2::LexTextQueryTokenTooLong
+            }
+        },
         message: format!("{plane}: {err}"),
     })
 }
@@ -374,7 +382,10 @@ mod tests {
             "👍",
             &options(None),
         ) {
-            Err(CoreError::Typed { code, .. }) if code == "LEX_TEXT_QUERY_NO_TOKENS" => Ok(()),
+            Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::LexTextQueryNoTokens,
+                ..
+            }) => Ok(()),
             other => Err(format!("expected the shared typed refusal, got {other:?}").into()),
         }
     }

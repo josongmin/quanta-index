@@ -7,7 +7,7 @@ checkpoint이며 P08 lifecycle integration 전 S21-08을 단독 `done`으로 닫
 
 읽을 문서: repo instructions, `docs/plans/sep-21-search-plane-sota-hardening/tickets/FINAL-AUDIT.md`,
 `docs/plans/sep-21-search-plane-sota-hardening/tickets/S21-08-semantic-admission-and-provider-boundary.md`,
-S21-00 provider policy ADR, P05/P06 handoff.
+S21-00 provider policy ADR, P06 handoff. P05 의미는 current tracked schema/API digest로 소비한다.
 
 목표: provider I/O 전에 가능한 모든 validation/policy를 끝내고 admitted provider work를 process-global로
 reserve/cancel/account할 interface를 만든다. S21-08은 admission/interface를 소유하고 S21-09는 task lifecycle/join을
@@ -52,10 +52,16 @@ DoD:
 - controlled HTTP spy와 budgeted opt-in real-provider proof는 구분 기록
 - provider network/credential/cost 승인이 없으면 real-provider proof는 NOT_RUN이며 hash/stub evidence로 대체 금지
 
-proof node는 `p07-provider-boundary`다. `test_authority_targets`가 비어 있거나 mandatory admission/egress/reservation/
-settlement/leak scenario를 선택하지 않으면 패치 전에 `BLOCKED`다. canonical release command는
-`just rust-profile test-integration-semantic`이며
-Linux production-like/release-daemon/승인된 real-provider proof가 필요하다. 최종 handoff
+owner node expected tuple은 `id=p07-provider-boundary-owner`, `family=U`, `required_host=any`,
+`dependencies=[p06-sdk-binding-owner]`이며 loopback/stub만 허용한다. release node는
+`id=p07-provider-boundary`, `family=X`, `required_host=linux-production-like`,
+`dependencies=[p07-provider-boundary-owner,p06-sdk-binding]`다. `test_authority_targets`가 비어 있으면 production implementation 전에 같은
+lane에서 proof bootstrap을 먼저 수행한다. exact test file/suite, target ID, dedicated recipe, selector를 실제 선택 가능한
+상태로 등록한다. placeholder/ignored-only/zero-test target은 금지하며 dry-run selection이 mandatory scenario를 포함하지
+못할 때 `BLOCKED`다. canonical `just rust-proof-p07-provider-boundary`는 core admission, query/source path,
+embed adapter의 loopback-only controlled HTTP, reservation/settlement, leak scan을 실행한다. `test-integration-semantic`은
+subordinate storage rail이다. 비-loopback endpoint/credential/cost를 쓰는 real-provider subrail은 별도 승인과 fixed budget이
+있을 때만 실행하고 별도 count/artifact로 기록한다. Linux production-like/release-daemon/승인된 real-provider proof가 필요하다. 최종 handoff
 `artifacts/sep-21/handoffs/P07.json`에 source freeze, admission order, reservation/executor API, config caps, egress matrix,
 commands/counts, NOT_RUN real-provider proof, P08 lifecycle invariants를 남겨라. explicit owner path만 checkpoint
 commit하고 current lane branch에 non-force push한다.

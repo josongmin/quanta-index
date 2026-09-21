@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 
 use quanta_index_contract::{
     ERR_SERVER_OVERLOADED, GenerationPin, ManifestGeneration, QueryConstraintSetV1, RepoId,
-    RevisionId, SearchPlaneIpcError, SearchPlaneQueryIpcRequest,
+    RevisionId, SearchPlaneErrorCodeV2, SearchPlaneIpcError, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope, TextQueryRequest, TextQuerySyntax,
 };
@@ -47,7 +47,7 @@ const ACCEPT_IDLE: Duration = Duration::from_millis(1);
 const QUEUE_WAIT: Duration = Duration::from_millis(120);
 /// The repository whose requests park on the test's barrier.
 const HOLD_REPO: &str = "hold";
-const SERVED_CODE: &str = "TEST_SERVED";
+const SERVED_CODE: SearchPlaneErrorCodeV2 = SearchPlaneErrorCodeV2::Internal;
 
 /// A dispatcher that parks every request for [`HOLD_REPO`] on a barrier
 /// until the test releases it and answers every other request at once.
@@ -67,7 +67,7 @@ impl IpcDispatcher<SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse> for 
         budget: &RequestBudgetV1,
     ) -> SearchPlaneQueryIpcResponse {
         let SearchPlaneQueryIpcRequest::Text(text) = request else {
-            return error_response("TEST_UNEXPECTED_REQUEST", "only Text is stubbed");
+            return error_response(SearchPlaneErrorCodeV2::Internal, "only Text is stubbed");
         };
         let repo = text
             .generation
@@ -76,7 +76,7 @@ impl IpcDispatcher<SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse> for 
             .to_string();
         if repo == HOLD_REPO {
             if self.entered.send(()).is_err() {
-                return error_response("TEST_OBSERVER_GONE", "test side went away");
+                return error_response(SearchPlaneErrorCodeV2::Internal, "test side went away");
             }
             let _wait = self.release.wait();
             if budget.is_cancelled() {
@@ -88,9 +88,12 @@ impl IpcDispatcher<SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse> for 
     }
 }
 
-fn error_response(code: &str, message: impl Into<String>) -> SearchPlaneQueryIpcResponse {
+fn error_response(
+    code: SearchPlaneErrorCodeV2,
+    message: impl Into<String>,
+) -> SearchPlaneQueryIpcResponse {
     SearchPlaneQueryIpcResponse::Error(SearchPlaneIpcError {
-        code: code.to_string(),
+        code,
         message: message.into(),
         repair: None,
     })
@@ -168,6 +171,10 @@ impl Harness {
     }
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "test fixture IDs provably satisfy the canonical ID policy"
+)]
 fn text_query(request_id: u64, repo: &str) -> SearchPlaneQueryIpcRequestEnvelope {
     SearchPlaneQueryIpcRequestEnvelope {
         request_id,
@@ -176,8 +183,8 @@ fn text_query(request_id: u64, repo: &str) -> SearchPlaneQueryIpcRequestEnvelope
             query_text: "needle".to_string(),
             constraints: QueryConstraintSetV1::unconstrained(),
             generation: Some(GenerationPin::new(
-                RepoId::new(repo),
-                RevisionId::new("rev"),
+                RepoId::new(repo).expect("test fixture ID satisfies canonical policy"),
+                RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
                 ManifestGeneration::new(1),
             )),
             generation_selector: None,

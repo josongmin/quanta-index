@@ -30,11 +30,16 @@ where
     Ok(ciborium::de::from_reader(bytes)?)
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn lexical_row(id: &str, score: f32) -> LexicalCandidate {
     LexicalCandidate {
         candidate_id: id.to_owned(),
-        repo_id: RepoId::new("repo-1"),
-        revision_id: RevisionId::new("rev-1"),
+        repo_id: RepoId::new("repo-1").expect("static fixture ID satisfies canonical policy"),
+        revision_id: RevisionId::new("rev-1")
+            .expect("static fixture ID satisfies canonical policy"),
         manifest_generation: ManifestGeneration::new(7),
         repo_relative_path: RepoRelativePath::new("src/search.rs"),
         start_line: 10,
@@ -89,12 +94,16 @@ fn lexical_only(id: &str, lexical_rank: u32) -> HybridCandidateV1 {
     }
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture IDs provably satisfy the canonical ID policy"
+)]
 fn response(results: Vec<HybridCandidateV1>) -> SearchPlaneQueryIpcResponse {
     let returned = u32::try_from(results.len()).map_or(u32::MAX, |n| n);
     SearchPlaneQueryIpcResponse::Hybrid(HybridQueryResponse {
         generation: GenerationPin::new(
-            RepoId::new("repo-1"),
-            RevisionId::new("rev-1"),
+            RepoId::new("repo-1").expect("static fixture ID satisfies canonical policy"),
+            RevisionId::new("rev-1").expect("static fixture ID satisfies canonical policy"),
             ManifestGeneration::new(7),
         ),
         results,

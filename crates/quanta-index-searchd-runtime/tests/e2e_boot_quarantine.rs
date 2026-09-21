@@ -142,10 +142,10 @@ fn pinned_semantic(pin: GenerationPin) -> SearchPlaneQueryIpcRequest {
     })
 }
 
-fn typed_code(response: &SearchPlaneQueryIpcResponse) -> Option<(String, String)> {
+fn typed_code(response: &SearchPlaneQueryIpcResponse) -> Option<(&'static str, String)> {
     match response {
         SearchPlaneQueryIpcResponse::Error(error) => {
-            Some((error.code.clone(), error.message.clone()))
+            Some((error.code.as_wire_str(), error.message.clone()))
         }
         SearchPlaneQueryIpcResponse::Text(_)
         | SearchPlaneQueryIpcResponse::Symbol(_)
@@ -251,7 +251,7 @@ fn damage_to_an_inactive_generation_does_not_stop_the_daemon() -> TestResult {
     let inactive_pin = GenerationPin::new(rt.repo(), rt.revision(), inactive);
     let lexical_answer = rt.query_once(|_| pinned_text(inactive_pin.clone(), "needle_first"))?;
     match typed_code(&lexical_answer) {
-        Some((code, _)) if code == "GENERATION_SIDECAR_CORRUPT" => {}
+        Some(("GENERATION_SIDECAR_CORRUPT", _)) => {}
         other => {
             return Err(format!(
                 "lexical query pinned to the damaged generation must be refused typed, got {other:?}"
@@ -274,7 +274,7 @@ fn damage_to_an_inactive_generation_does_not_stop_the_daemon() -> TestResult {
     let quarantined_pin = GenerationPin::new(rt.repo(), rt.revision(), ManifestGeneration::new(9));
     let quarantined_answer = rt.query_once(|_| pinned_text(quarantined_pin, "needle"))?;
     match typed_code(&quarantined_answer) {
-        Some((code, _)) if code == "NOT_READY" => Ok(()),
+        Some(("NOT_READY", _)) => Ok(()),
         other => Err(format!(
             "query pinned to a quarantined generation must be NOT_READY, got {other:?}"
         )
@@ -427,7 +427,7 @@ fn quarantine_is_listed_discarded_as_named_and_gone_after_a_reboot() -> TestResu
     let mut stale = listed_garbage.clone();
     stale.reason = "GENERATION_QUARANTINE_SCOPE_MISMATCH".to_string();
     match rt.discard_quarantined(QuarantineTargetV1::Generation(stale))? {
-        Err(error) if error.code == "QUARANTINE_TARGET_NOT_QUARANTINED" => {}
+        Err(error) if error.code.as_wire_str() == "QUARANTINE_TARGET_NOT_QUARANTINED" => {}
         other => return Err(format!("a stale entry must be refused typed: {other:?}").into()),
     }
     if !lexical_garbage.is_dir() {
@@ -443,7 +443,7 @@ fn quarantine_is_listed_discarded_as_named_and_gone_after_a_reboot() -> TestResu
         detail: String::new(),
     };
     match rt.discard_quarantined(QuarantineTargetV1::Generation(sealed))? {
-        Err(error) if error.code == "QUARANTINE_TARGET_NOT_QUARANTINED" => {}
+        Err(error) if error.code.as_wire_str() == "QUARANTINE_TARGET_NOT_QUARANTINED" => {}
         other => {
             return Err(
                 format!("a sealed generation must never be discarded here: {other:?}").into(),
@@ -480,7 +480,7 @@ fn quarantine_is_listed_discarded_as_named_and_gone_after_a_reboot() -> TestResu
     let mut stale_file = repo_map_entry.clone();
     stale_file.reason = "some other reason".to_string();
     match rt.discard_quarantined(QuarantineTargetV1::RepoMapFile(stale_file))? {
-        Err(error) if error.code == "QUARANTINE_TARGET_NOT_QUARANTINED" => {}
+        Err(error) if error.code.as_wire_str() == "QUARANTINE_TARGET_NOT_QUARANTINED" => {}
         other => return Err(format!("a stale repo-map reason is refused typed: {other:?}").into()),
     }
     if !state_root
@@ -565,10 +565,10 @@ fn seal_three_identities(
     Ok(identities)
 }
 
-fn control_refusal(response: &SearchPlaneControlIpcResponse) -> Option<(String, String)> {
+fn control_refusal(response: &SearchPlaneControlIpcResponse) -> Option<(&'static str, String)> {
     match response {
         SearchPlaneControlIpcResponse::Error(error) => {
-            Some((error.code.clone(), error.message.clone()))
+            Some((error.code.as_wire_str(), error.message.clone()))
         }
         SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
         | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
@@ -585,7 +585,7 @@ fn rollback_to(
     rt: &mut E2eRuntime,
     active: &SearchCorpusGenerationIdentityV1,
     target: &SearchCorpusGenerationIdentityV1,
-) -> Result<Option<(String, String)>, Box<dyn Error>> {
+) -> Result<Option<(&'static str, String)>, Box<dyn Error>> {
     let answer =
         rt.rollback_search_corpus_cas_raw(SearchPlaneRollbackSearchCorpusGenerationCasRequest {
             expected_active: active.clone(),
@@ -674,7 +674,7 @@ fn a_rollback_that_proves_inactive_damage_quarantines_it() -> TestResult {
     // A query door meets the damage, answers typed, and records nothing.
     let first_pin = GenerationPin::new(rt.repo(), rt.revision(), first.lexical.manifest_generation);
     match typed_code(&rt.query_once(|_| pinned_text(first_pin.clone(), "needle_first"))?) {
-        Some((code, _)) if code == "GENERATION_SIDECAR_CORRUPT" => {}
+        Some(("GENERATION_SIDECAR_CORRUPT", _)) => {}
         other => {
             return Err(
                 format!("the pinned query must meet the damage typed, got {other:?}").into(),
@@ -732,7 +732,7 @@ fn a_rollback_that_proves_inactive_damage_quarantines_it() -> TestResult {
         }
     }
     match typed_code(&rt.query_once(|_| pinned_text(first_pin.clone(), "needle_first"))?) {
-        Some((code, _)) if code == "GENERATION_QUARANTINED" => {}
+        Some(("GENERATION_QUARANTINED", _)) => {}
         other => {
             return Err(
                 format!("a pinned query must be refused as quarantined, got {other:?}").into(),

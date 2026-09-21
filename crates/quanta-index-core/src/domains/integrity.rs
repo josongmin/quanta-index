@@ -65,7 +65,8 @@ pub struct IntegrityScrubCandidateV1 {
 }
 
 /// Wire code for a door that meets a generation the scrub quarantined.
-pub const GENERATION_QUARANTINED_CODE: &str = "GENERATION_QUARANTINED";
+pub const GENERATION_QUARANTINED_CODE: quanta_index_contract::SearchPlaneErrorCodeV2 =
+    quanta_index_contract::SearchPlaneErrorCodeV2::GenerationQuarantined;
 
 /// Wire code for a door that proved a sealed generation is not what its
 /// seal committed to.
@@ -74,7 +75,8 @@ pub const GENERATION_QUARANTINED_CODE: &str = "GENERATION_QUARANTINED";
 /// hash to its commitment, a file the seal never listed: a verdict about
 /// content, never an I/O failure, answered by every adapter's door under
 /// this one code.
-pub const GENERATION_SIDECAR_CORRUPT_CODE: &str = "GENERATION_SIDECAR_CORRUPT";
+pub const GENERATION_SIDECAR_CORRUPT_CODE: quanta_index_contract::SearchPlaneErrorCodeV2 =
+    quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt;
 
 /// How the composition root paces the scrub as quota'd maintenance: one
 /// step every `interval_millis`, each reading at most `max_bytes_per_step`

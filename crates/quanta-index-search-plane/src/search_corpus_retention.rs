@@ -17,11 +17,6 @@ use std::sync::Arc;
 use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId};
 use quanta_index_core::{CoreError, SealedGenerationReclaimPort};
 
-pub(crate) const ERR_SEARCH_CORPUS_HISTORY_RETENTION_POLICY_INVALID: &str =
-    "SEARCH_CORPUS_HISTORY_RETENTION_POLICY_INVALID";
-pub(crate) const ERR_SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED: &str =
-    "SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED";
-
 /// Measures the bytes a set of sealed generations of one pair occupies on
 /// disk across both tracks: what `du` would report for those directories
 /// together, hard links counted once.
@@ -114,7 +109,7 @@ impl SearchCorpusHistoryRetentionPolicyV1 {
     ) -> Result<Self, CoreError> {
         if max_generations < 2 {
             return Err(CoreError::Typed {
-                code: ERR_SEARCH_CORPUS_HISTORY_RETENTION_POLICY_INVALID.to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionPolicyInvalid,
                 message: format!(
                     "search-corpus history retention: max_generations must be at least 2, observed {max_generations}"
                 ),
@@ -122,20 +117,20 @@ impl SearchCorpusHistoryRetentionPolicyV1 {
         }
         if max_bytes == 0 {
             return Err(CoreError::Typed {
-                code: ERR_SEARCH_CORPUS_HISTORY_RETENTION_POLICY_INVALID.to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionPolicyInvalid,
                 message: "search-corpus history retention: max_bytes must be non-zero".to_string(),
             });
         }
         if max_revision_pairs == 0 {
             return Err(CoreError::Typed {
-                code: ERR_SEARCH_CORPUS_HISTORY_RETENTION_POLICY_INVALID.to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionPolicyInvalid,
                 message: "search-corpus history retention: max_revision_pairs must be non-zero"
                     .to_string(),
             });
         }
         if max_total_bytes == 0 {
             return Err(CoreError::Typed {
-                code: ERR_SEARCH_CORPUS_HISTORY_RETENTION_POLICY_INVALID.to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionPolicyInvalid,
                 message: "search-corpus history retention: max_total_bytes must be non-zero"
                     .to_string(),
             });
@@ -210,7 +205,7 @@ impl SearchCorpusHistoryRetentionPolicyV1 {
         let required_bytes = measure(&required_generations)?;
         if required_generations.len() > self.max_generations || required_bytes > self.max_bytes {
             return Err(CoreError::Typed {
-                code: ERR_SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED.to_string(),
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted,
                 message: format!(
                     "search-corpus history retention: required active/candidate set needs generations={} index_bytes={required_bytes}, limits are max_generations={} max_bytes={}",
                     required_generations.len(),
