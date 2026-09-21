@@ -49,12 +49,9 @@ pub(super) fn resolve_optional_selection(
     plane: &str,
 ) -> Result<Option<GenerationPin>, CoreError> {
     let selector_pin = match generation_selector {
-        Some(selector) => Some(resolve_generation_selector_pin(
-            activation_catalog,
-            selector,
-            track,
-            plane,
-        )?),
+        Some(selector) => {
+            Some(resolve_generation_selector_pin(activation_catalog, selector, track, plane)?)
+        }
         None => None,
     };
     match (generation, selector_pin) {

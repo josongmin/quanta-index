@@ -304,9 +304,7 @@ mod tests {
     fn a_set_reads_back_what_was_inserted_in_declaration_order() {
         let set = RequiredDomainsV1::of(ReadDomainV1::History)
             .with(ReadDomainV1::LexicalTrack)
-            .with(ReadDomainV1::RepoMetadata(
-                RepoMetadataAuthorityV1::FileOwnership,
-            ));
+            .with(ReadDomainV1::RepoMetadata(RepoMetadataAuthorityV1::FileOwnership));
         assert_eq!(
             set.iter().collect::<Vec<_>>(),
             vec![
@@ -319,10 +317,7 @@ mod tests {
             set.repo_metadata().collect::<Vec<_>>(),
             vec![RepoMetadataAuthorityV1::FileOwnership]
         );
-        assert_eq!(
-            set.to_string(),
-            "lexical,history,repo-metadata:file-ownership"
-        );
+        assert_eq!(set.to_string(), "lexical,history,repo-metadata:file-ownership");
         assert_eq!(RequiredDomainsV1::NONE.to_string(), "-");
         assert!(!set.contains(ReadDomainV1::SemanticTrack));
         assert_eq!(

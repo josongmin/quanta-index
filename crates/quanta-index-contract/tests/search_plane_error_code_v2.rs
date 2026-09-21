@@ -24,10 +24,7 @@ fn lexical_codes_are_nested_in_memory_and_flat_on_wire() {
     for lexical in LexicalErrorCode::ALL {
         let code = SearchPlaneErrorCodeV2::Lexical(*lexical);
         assert_eq!(code.as_wire_str(), lexical.as_code_str());
-        assert_eq!(
-            SearchPlaneErrorCodeV2::from_wire_str(lexical.as_code_str()),
-            Some(code)
-        );
+        assert_eq!(SearchPlaneErrorCodeV2::from_wire_str(lexical.as_code_str()), Some(code));
     }
 }
 

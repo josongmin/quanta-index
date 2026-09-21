@@ -64,16 +64,10 @@ pub fn compile_authoritative_pattern(
                 );
             }
             LqStructuralExpr::Inside(block) => {
-                inside.push(compile_authoritative_pattern(
-                    block,
-                    lang.as_language_code_str(),
-                )?);
+                inside.push(compile_authoritative_pattern(block, lang.as_language_code_str())?);
             }
             LqStructuralExpr::Outside(block) => {
-                outside.push(compile_authoritative_pattern(
-                    block,
-                    lang.as_language_code_str(),
-                )?);
+                outside.push(compile_authoritative_pattern(block, lang.as_language_code_str())?);
             }
         }
     }
@@ -278,9 +272,9 @@ fn lower_authority_pattern_kind(node: &PatternNode) -> Option<StructuralAuthorit
             Some(StructuralAuthorityPatternKind::RootKind(expected_kind))
         }
         (None, Some(metavar), None) => Some(StructuralAuthorityPatternKind::RootCapture(metavar)),
-        (Some(expected_kind), Some(metavar), None) => Some(
-            StructuralAuthorityPatternKind::RootKindCapture(expected_kind, metavar),
-        ),
+        (Some(expected_kind), Some(metavar), None) => {
+            Some(StructuralAuthorityPatternKind::RootKindCapture(expected_kind, metavar))
+        }
         (_, _, Some(_)) => Some(StructuralAuthorityPatternKind::Tree),
         (None, None, None) => None,
     }
@@ -434,9 +428,7 @@ fn validate_authority(
     authority: StructuralAuthorityView<'_>,
 ) -> Result<(), StructuralError> {
     let Some(tree_lang) = LangId::from_language_code_str(authority.tree.lang.as_str()) else {
-        return Err(StructuralError::lang_not_supported(
-            authority.tree.lang.as_str(),
-        ));
+        return Err(StructuralError::lang_not_supported(authority.tree.lang.as_str()));
     };
     if tree_lang != pattern.lang() {
         return Err(StructuralError::new(
@@ -612,14 +604,9 @@ fn collect_authority_candidates<'a>(
     regex_cache: &mut StructuralRegexCache,
     out: &mut Vec<StructuralAuthorityCandidate>,
 ) -> Result<(), StructuralError> {
-    if let Some(binding) = match_pattern_at_node(
-        pattern,
-        node,
-        ancestors.as_slice(),
-        tree,
-        source,
-        regex_cache,
-    )? {
+    if let Some(binding) =
+        match_pattern_at_node(pattern, node, ancestors.as_slice(), tree, source, regex_cache)?
+    {
         out.push(StructuralAuthorityCandidate::new(
             ByteSpan::new(node.byte_start, node.byte_end)?,
             binding,

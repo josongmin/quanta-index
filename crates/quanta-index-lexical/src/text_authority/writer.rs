@@ -360,9 +360,6 @@ fn fsync_directory(dir: &Path) -> Result<(), CoreError> {
     File::open(dir)
         .and_then(|directory| directory.sync_all())
         .map_err(|error| {
-            CoreError::Storage(format!(
-                "lexical: fsync directory {}: {error}",
-                dir.display()
-            ))
+            CoreError::Storage(format!("lexical: fsync directory {}: {error}", dir.display()))
         })
 }

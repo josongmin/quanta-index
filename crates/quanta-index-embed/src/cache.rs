@@ -1130,9 +1130,7 @@ fn unix_nanos_now() -> u64 {
 
 fn unix_nanos_of(time: SystemTime) -> u64 {
     time.duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            u64::try_from(elapsed.as_nanos()).map_or(u64::MAX, |nanos| nanos)
-        })
+        .map_or(0, |elapsed| u64::try_from(elapsed.as_nanos()).map_or(u64::MAX, |nanos| nanos))
 }
 
 /// Whether `name` is exactly `len` lowercase hex digits, as every
@@ -1145,10 +1143,7 @@ fn is_hex_name(name: &str, len: usize) -> bool {
 }
 
 fn storage_error(action: &str, path: &Path, err: &std::io::Error) -> CoreError {
-    CoreError::Storage(format!(
-        "embedding cache: {action} {} failed: {err}",
-        path.display()
-    ))
+    CoreError::Storage(format!("embedding cache: {action} {} failed: {err}", path.display()))
 }
 
 /// Remove pre-namespace (format v1) shard directories directly under the
@@ -1289,11 +1284,8 @@ fn trim_namespace_to_policy(
     for key in &removed {
         remove_entry_file(&entry_path(namespace_dir, key));
     }
-    write_atomic(
-        &namespace_dir.join(MANIFEST_FILE),
-        &encode_manifest(&ledger.manifest_records()),
-    )
-    .map_err(|err| storage_error("write manifest in", namespace_dir, &err))?;
+    write_atomic(&namespace_dir.join(MANIFEST_FILE), &encode_manifest(&ledger.manifest_records()))
+        .map_err(|err| storage_error("write manifest in", namespace_dir, &err))?;
     Ok(NamespaceTrim {
         removed: count_u64(removed.len()),
         retained_bytes: ledger.stats().resident_bytes,
@@ -1743,17 +1735,9 @@ mod tests {
         );
         let out = provider.embed_batch(&["a", "a", "bb"]).expect("dedup ok");
         assert_eq!(out.len(), 3);
-        assert_eq!(
-            out.first(),
-            out.get(1),
-            "duplicate positions must share a vector"
-        );
+        assert_eq!(out.first(), out.get(1), "duplicate positions must share a vector");
         assert_ne!(out.first(), out.get(2));
-        assert_eq!(
-            embedded.load(Ordering::SeqCst),
-            2,
-            "duplicate text must not be embedded twice"
-        );
+        assert_eq!(embedded.load(Ordering::SeqCst), 2, "duplicate text must not be embedded twice");
     }
 
     #[test]
@@ -1814,11 +1798,7 @@ mod tests {
         }
         let embedded_revision = Arc::new(AtomicUsize::new(0));
         let provider_revision = CachingEmbeddingProvider::new(
-            Box::new(counting_at(
-                "m-1",
-                "2024-02",
-                Arc::clone(&embedded_revision),
-            )),
+            Box::new(counting_at("m-1", "2024-02", Arc::clone(&embedded_revision))),
             Box::new(SharedCache(Arc::clone(&cache))),
         );
         let _r = provider_revision.embed_batch(&["a"]).expect("revision ok");
@@ -1900,10 +1880,7 @@ mod tests {
         );
         let key = provider.identity().key("a");
         assert!(provider.embed_batch(&["a"]).is_err());
-        assert!(
-            cache.get(&key).is_none(),
-            "a refused vector must not be cached"
-        );
+        assert!(cache.get(&key).is_none(), "a refused vector must not be cached");
     }
 
     #[test]
@@ -1935,11 +1912,7 @@ mod tests {
             .join(identity.namespace())
             .join(shard)
             .join(format!("{hex}.vec"));
-        assert!(
-            sharded.exists(),
-            "entry must be written under {}",
-            sharded.display()
-        );
+        assert!(sharded.exists(), "entry must be written under {}", sharded.display());
         assert_eq!(cache.get(&key), Some(vec![1.0, -0.5]));
         assert!(
             std::fs::read_dir(sharded.parent().expect("shard"))
@@ -1961,17 +1934,12 @@ mod tests {
     #[test]
     fn file_cache_refuses_and_removes_damaged_entries() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let cache = file_cache(
-            &dir.path().join("embed-cache"),
-            EmbeddingCacheRetentionPolicy::DEFAULT,
-        );
+        let cache =
+            file_cache(&dir.path().join("embed-cache"), EmbeddingCacheRetentionPolicy::DEFAULT);
         let key = key("damaged");
         let path = cache.path_for(&key);
         let cases: Vec<(&str, Damage)> = vec![
-            (
-                "truncated",
-                Box::new(|bytes| bytes[..bytes.len() - 1].to_vec()),
-            ),
+            ("truncated", Box::new(|bytes| bytes[..bytes.len() - 1].to_vec())),
             (
                 "payload bit flip",
                 Box::new(|bytes| {
@@ -1997,10 +1965,7 @@ mod tests {
                     out
                 }),
             ),
-            (
-                "legacy raw floats",
-                Box::new(|_| 1.0_f32.to_le_bytes().to_vec()),
-            ),
+            ("legacy raw floats", Box::new(|_| 1.0_f32.to_le_bytes().to_vec())),
             ("empty", Box::new(|_| Vec::new())),
         ];
         let case_count = u64::try_from(cases.len()).expect("fits");
@@ -2008,10 +1973,7 @@ mod tests {
             cache.put(&key, &[0.6, 0.8]);
             let good = std::fs::read(&path).expect("entry written");
             std::fs::write(&path, damage(&good)).expect("damage");
-            assert!(
-                cache.get(&key).is_none(),
-                "{label}: damaged entry must miss"
-            );
+            assert!(cache.get(&key).is_none(), "{label}: damaged entry must miss");
             assert!(!path.exists(), "{label}: damaged entry must be removed");
             assert_ledger_matches_disk(&cache);
         }
@@ -2049,10 +2011,7 @@ mod tests {
                         cache.put(&key, &[value, 1.0 - value]);
                         let read = cache.get(&key).expect("an entry is always readable");
                         assert_eq!(read.len(), 2);
-                        assert!(
-                            (read[0] + read[1] - 1.0).abs() < 1e-6,
-                            "torn entry: {read:?}"
-                        );
+                        assert!((read[0] + read[1] - 1.0).abs() < 1e-6, "torn entry: {read:?}");
                     }
                 })
             })
@@ -2249,14 +2208,8 @@ mod tests {
         cache.put(&second, &[0.0, 1.0]);
         assert!(cache.get(&first).is_some(), "first is resident");
         cache.put(&third, &[0.0, 1.0]);
-        assert!(
-            cache.get(&first).is_some(),
-            "the recently read entry survives"
-        );
-        assert!(
-            cache.get(&second).is_none(),
-            "the least recently used entry was evicted"
-        );
+        assert!(cache.get(&first).is_some(), "the recently read entry survives");
+        assert!(cache.get(&second).is_none(), "the least recently used entry was evicted");
         assert!(cache.get(&third).is_some());
         assert_ledger_matches_disk(&cache);
     }
@@ -2360,11 +2313,8 @@ mod tests {
         let shard = root.join(current.namespace()).join("00");
         std::fs::create_dir_all(&shard).expect("shard");
         std::fs::write(shard.join(".x.vec.tmp-1-1"), b"partial").expect("staging");
-        std::fs::write(
-            root.join(current.namespace()).join("..opened.tmp-1-2"),
-            b"partial",
-        )
-        .expect("staging marker");
+        std::fs::write(root.join(current.namespace()).join("..opened.tmp-1-2"), b"partial")
+            .expect("staging marker");
 
         // Room for the current namespace and two others.
         let cache = FileEmbeddingCache::new(
@@ -2401,10 +2351,7 @@ mod tests {
         use std::sync::atomic::AtomicBool;
 
         let dir = tempfile::tempdir().expect("tempdir");
-        let cache = Arc::new(file_cache(
-            &dir.path().join("embed-cache"),
-            policy(4, u64::MAX),
-        ));
+        let cache = Arc::new(file_cache(&dir.path().join("embed-cache"), policy(4, u64::MAX)));
         let expected = |index: u8| -> Vec<f32> {
             let x = f32::from(index) / 32.0;
             vec![x, (1.0 - x * x).sqrt()]
@@ -2531,29 +2478,17 @@ mod tests {
         assert!(matches!(ledger.touch(&old, nanos(1_099)), Touch::Hit(1)));
         assert!(matches!(ledger.touch(&fresh, nanos(1_099)), Touch::Hit(2)));
         // Past it for `old` only: expired on lookup, counted once, gone.
-        assert!(matches!(
-            ledger.touch(&old, nanos(1_101)),
-            Touch::Expired(Some(1))
-        ));
+        assert!(matches!(ledger.touch(&old, nanos(1_101)), Touch::Expired(Some(1))));
         assert!(matches!(ledger.touch(&old, nanos(1_101)), Touch::Miss));
         let stats = ledger.stats();
-        assert_eq!(
-            (stats.expirations, stats.misses, stats.hits, stats.entries),
-            (1, 2, 2, 1)
-        );
+        assert_eq!((stats.expirations, stats.misses, stats.hits, stats.entries), (1, 2, 2, 1));
         // A write at a time past `fresh`'s age expires it before the insert.
         let expired = ledger.expire_to_policy(nanos(1_151));
         assert_eq!(expired, vec![(fresh, 2)]);
         let _inserted = ledger.insert(key("newest"), 8, nanos(1_151), 3);
         let stats = ledger.stats();
-        assert_eq!(
-            (stats.expirations, stats.entries, stats.resident_bytes),
-            (2, 1, 8)
-        );
-        assert!(matches!(
-            ledger.touch(&key("newest"), nanos(1_200)),
-            Touch::Hit(3)
-        ));
+        assert_eq!((stats.expirations, stats.entries, stats.resident_bytes), (2, 1, 8));
+        assert!(matches!(ledger.touch(&key("newest"), nanos(1_200)), Touch::Hit(3)));
     }
 
     /// The file store expires on open what the manifest says is too old,
@@ -2581,11 +2516,8 @@ mod tests {
         for key in keys.iter().take(2) {
             records.get_mut(key).expect("manifested").written_nanos = ten_days_ago;
         }
-        write_atomic(
-            &namespace_dir.join(MANIFEST_FILE),
-            &encode_manifest(&records),
-        )
-        .expect("manifest");
+        write_atomic(&namespace_dir.join(MANIFEST_FILE), &encode_manifest(&records))
+            .expect("manifest");
 
         let reopened = FileEmbeddingCache::new(
             &root,
@@ -2658,19 +2590,13 @@ mod tests {
                 written_nanos: base,
             },
         );
-        write_atomic(
-            &namespace_dir.join(MANIFEST_FILE),
-            &encode_manifest(&records),
-        )
-        .expect("manifest");
+        write_atomic(&namespace_dir.join(MANIFEST_FILE), &encode_manifest(&records))
+            .expect("manifest");
         // The uncovered entries' file times are the newest of all.
         let reopened = file_cache(&root, policy(64, u64::MAX));
         let report = reopened.open_report();
         assert!(report.manifest_present);
-        assert_eq!(
-            report.stat_calls_at_open, 2,
-            "only the uncovered entries were read"
-        );
+        assert_eq!(report.stat_calls_at_open, 2, "only the uncovered entries were read");
         assert_eq!(report.manifest_stale_records, 1);
         assert_eq!(report.scanned_entries, 6);
         assert_ledger_matches_disk(&reopened);
@@ -2682,11 +2608,7 @@ mod tests {
         let tightened = file_cache(&root, policy(3, u64::MAX));
         assert_eq!(tightened.open_report().evicted_at_open, 3);
         for (index, key) in keys.iter().enumerate() {
-            assert_eq!(
-                tightened.path_for(key).exists(),
-                index == 0 || index >= 4,
-                "entry {index}"
-            );
+            assert_eq!(tightened.path_for(key).exists(), index == 0 || index >= 4, "entry {index}");
         }
         assert_ledger_matches_disk(&tightened);
     }
@@ -2711,11 +2633,7 @@ mod tests {
         assert_eq!(reopened.stats().entries, 2);
         assert!(reopened.get(&key("a")).is_some());
         assert_ledger_matches_disk(&reopened);
-        assert_eq!(
-            reopened.manifest_flushes(),
-            1,
-            "the open rewrote the manifest"
-        );
+        assert_eq!(reopened.manifest_flushes(), 1, "the open rewrote the manifest");
     }
 
     /// Every `.vec` byte under a cache root, over every namespace.
@@ -2787,10 +2705,7 @@ mod tests {
         )
         .expect("cache");
         let report = cache.open_report();
-        assert_eq!(
-            (report.retired_namespaces, report.trimmed_foreign_entries),
-            (0, 4)
-        );
+        assert_eq!((report.retired_namespaces, report.trimmed_foreign_entries), (0, 4));
         assert_eq!(report.retained_foreign_bytes, entry_len() * 4);
         for other in &others {
             let disk = on_disk_entries(&root.join(other.namespace()));
@@ -2827,15 +2742,9 @@ mod tests {
         )
         .expect("cache");
         let report = cache.open_report();
-        assert_eq!(
-            (report.retired_namespaces, report.trimmed_foreign_entries),
-            (1, 0)
-        );
+        assert_eq!((report.retired_namespaces, report.trimmed_foreign_entries), (1, 0));
         assert_eq!(report.retained_foreign_bytes, entry_len() * 2);
-        assert!(
-            !root.join(others[0].namespace()).is_dir(),
-            "the older namespace went"
-        );
+        assert!(!root.join(others[0].namespace()).is_dir(), "the older namespace went");
         assert!(root.join(others[1].namespace()).is_dir());
         // Filling the current namespace to its own ceiling never takes the
         // root past the total ceiling.

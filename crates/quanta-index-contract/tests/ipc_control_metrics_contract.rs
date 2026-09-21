@@ -226,10 +226,7 @@ fn every_lying_shape_is_refused_at_decode() -> TestRes {
         (
             "gauge not a number",
             "expected float",
-            forged(set(
-                &[Field("gauges"), Item(0), Field("value")],
-                Value::Null,
-            )),
+            forged(set(&[Field("gauges"), Item(0), Field("value")], Value::Null)),
         ),
         (
             "buckets not ascending",

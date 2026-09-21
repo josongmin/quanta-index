@@ -82,22 +82,15 @@ fn prop_commit_sha() -> impl Strategy<Value = CommitSha> {
 }
 
 fn prop_symbol_span() -> impl Strategy<Value = SymbolSpan> {
-    (
-        ".{0,32}",
-        any::<u32>(),
-        any::<u32>(),
-        any::<u32>(),
-        any::<u32>(),
+    (".{0,32}", any::<u32>(), any::<u32>(), any::<u32>(), any::<u32>()).prop_map(
+        |(path, byte_start, byte_end, line_start, line_end)| SymbolSpan {
+            path: path.into_boxed_str(),
+            byte_start,
+            byte_end,
+            line_start,
+            line_end,
+        },
     )
-        .prop_map(
-            |(path, byte_start, byte_end, line_start, line_end)| SymbolSpan {
-                path: path.into_boxed_str(),
-                byte_start,
-                byte_end,
-                line_start,
-                line_end,
-            },
-        )
 }
 
 fn prop_symbol_record() -> impl Strategy<Value = SymbolRecord> {
@@ -230,13 +223,8 @@ fn prop_parse_node() -> impl Strategy<Value = ParseNode> {
 }
 
 fn prop_parse_tree_record() -> impl Strategy<Value = ParseTreeRecord> {
-    (
-        any::<u32>(),
-        prop_language_code(),
-        prop_parse_node(),
-        any::<[u8; 32]>(),
-    )
-        .prop_map(|(wire_version, lang, root, source_hash)| ParseTreeRecord {
+    (any::<u32>(), prop_language_code(), prop_parse_node(), any::<[u8; 32]>()).prop_map(
+        |(wire_version, lang, root, source_hash)| ParseTreeRecord {
             wire_version,
             lang,
             root,
@@ -246,26 +234,21 @@ fn prop_parse_tree_record() -> impl Strategy<Value = ParseTreeRecord> {
             // role-tag-specific tests cover the populated case.
             role_tag_schema_version: 0,
             role_tags: Vec::new(),
-        })
+        },
+    )
 }
 
 fn prop_explanation_row() -> impl Strategy<Value = ExplanationRow> {
     // Restrict floats to finite values; NaN does not round-trip equality.
     let finite_f32 = (-1.0e6_f32..1.0e6_f32).prop_filter("finite", |v| v.is_finite());
-    (
-        ".{0,16}",
-        finite_f32.clone(),
-        finite_f32.clone(),
-        finite_f32,
+    (".{0,16}", finite_f32.clone(), finite_f32.clone(), finite_f32).prop_map(
+        |(signal_name, signal_value, weight, contribution)| ExplanationRow {
+            signal_name: signal_name.into_boxed_str(),
+            signal_value,
+            weight,
+            contribution,
+        },
     )
-        .prop_map(
-            |(signal_name, signal_value, weight, contribution)| ExplanationRow {
-                signal_name: signal_name.into_boxed_str(),
-                signal_value,
-                weight,
-                contribution,
-            },
-        )
 }
 
 fn prop_planner_stage() -> impl Strategy<Value = PlannerStage> {

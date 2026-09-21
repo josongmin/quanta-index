@@ -232,10 +232,7 @@ impl<'de> Visitor<'de> for QueryResultWindowV1Visitor {
                     has_more = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        QUERY_RESULT_WINDOW_V1_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, QUERY_RESULT_WINDOW_V1_FIELDS));
                 }
             }
         }

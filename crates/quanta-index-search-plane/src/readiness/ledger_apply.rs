@@ -339,9 +339,7 @@ where
     T: for<'de> serde::Deserialize<'de>,
 {
     decode_cbor_payload(payload).map_err(|err| {
-        CoreError::InvalidContract(format!(
-            "search-plane authority ledger: decode {label}: {err}"
-        ))
+        CoreError::InvalidContract(format!("search-plane authority ledger: decode {label}: {err}"))
     })
 }
 

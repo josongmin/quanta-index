@@ -469,12 +469,7 @@ impl Ledger {
         generation: ManifestGeneration,
     ) -> Option<String> {
         self.sealed_search_track_identities
-            .get(&Self::track_generation_key(
-                repo_id,
-                revision_id,
-                track,
-                generation,
-            ))
+            .get(&Self::track_generation_key(repo_id, revision_id, track, generation))
             .cloned()
     }
 

@@ -134,11 +134,8 @@ pub(crate) fn quarantined_by_scrub(
     generation_dir: &Path,
 ) -> Result<Option<QuarantinedGenerationV1>, CoreError> {
     let path = quarantine_receipt_path(generation_dir);
-    let Some(value) = read_receipt_value(
-        &path,
-        "quarantine receipt",
-        LEXICAL_QUARANTINE_RECEIPT_FORMAT_VERSION,
-    )?
+    let Some(value) =
+        read_receipt_value(&path, "quarantine receipt", LEXICAL_QUARANTINE_RECEIPT_FORMAT_VERSION)?
     else {
         return Ok(None);
     };
@@ -295,17 +292,14 @@ pub(crate) fn scrub_step(
         budget.max_bytes,
     )
     .map_err(|error| {
-        CoreError::Storage(format!(
-            "lexical: scrub {}: {error}",
-            generation_dir.display()
-        ))
+        CoreError::Storage(format!("lexical: scrub {}: {error}", generation_dir.display()))
     })?;
     let outcome = match step.verdict {
         TreeScrubVerdictV1::Completed => {
             let files = crate::channel_payloads::count_from_len(committed.len())?;
-            let bytes = committed.iter().fold(0_u64, |total, artifact| {
-                total.saturating_add(artifact.bytes)
-            });
+            let bytes = committed
+                .iter()
+                .fold(0_u64, |total, artifact| total.saturating_add(artifact.bytes));
             let row: ScrubReceiptRow = (
                 LEXICAL_SCRUB_RECEIPT_FORMAT_VERSION,
                 identity.manifest_digest.clone(),

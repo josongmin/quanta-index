@@ -139,11 +139,9 @@ fn the_envelope_bounds_open_writers_and_their_heap_and_releases_the_oldest_commi
     )?;
     let adapter = adapter(dir.path().to_path_buf(), policy);
     if policy.max_writers() != 3 {
-        return Err(format!(
-            "the envelope holds three writers, not {}",
-            policy.max_writers()
-        )
-        .into());
+        return Err(
+            format!("the envelope holds three writers, not {}", policy.max_writers()).into()
+        );
     }
     for generation in 0..5 {
         build(&adapter, generation)?;
@@ -153,14 +151,14 @@ fn the_envelope_bounds_open_writers_and_their_heap_and_releases_the_oldest_commi
             || stats.max_writers != 3
         {
             return Err(
-                format!("the envelope must hold after generation {generation}: {stats:?}").into(),
+                format!("the envelope must hold after generation {generation}: {stats:?}").into()
             );
         }
     }
     let stats = adapter.writer_cache_stats()?;
     if stats.open_writers != 3 || stats.lru_releases != 2 || stats.idle_releases != 0 {
         return Err(
-            format!("five builds through a three-writer envelope release two: {stats:?}").into(),
+            format!("five builds through a three-writer envelope release two: {stats:?}").into()
         );
     }
     // A released generation keeps its committed rows; dropping the writer
@@ -231,9 +229,7 @@ fn an_idle_writer_is_committed_and_released_on_the_next_sweep() -> TestResult {
     build(&adapter, 4)?;
     let stats = adapter.writer_cache_stats()?;
     if stats.open_writers != 1 || stats.idle_releases != 3 {
-        return Err(
-            format!("the build-time sweep releases only the idle writer: {stats:?}").into(),
-        );
+        return Err(format!("the build-time sweep releases only the idle writer: {stats:?}").into());
     }
     Ok(())
 }

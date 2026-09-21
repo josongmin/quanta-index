@@ -508,9 +508,8 @@ fn dispatch_search_corpus_publish_v1<const SEALED: bool>(
         SdkError::Protocol(format!("invalid search corpus surface mutation: {err}"))
     })?;
     let batch_digest = wire_batch.batch_digest.clone();
-    let response = client.dispatch_ingest(
-        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(wire_batch),
-    )?;
+    let response = client
+        .dispatch_ingest(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(wire_batch))?;
     match response {
         SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt) => {
             validate_search_corpus_publish_receipt_v1(batch, &batch_digest, &receipt)?;
@@ -639,9 +638,7 @@ fn validate_search_corpus_publish_receipt_v1<const SEALED: bool>(
         SdkError::Protocol(format!("search corpus replace scope count overflow: {err}"))
     })?;
     let expected_tombstone_scopes = u32::try_from(batch.tombstone_scopes.len()).map_err(|err| {
-        SdkError::Protocol(format!(
-            "search corpus tombstone scope count overflow: {err}"
-        ))
+        SdkError::Protocol(format!("search corpus tombstone scope count overflow: {err}"))
     })?;
     let expected_clear_surfaces = u32::try_from(batch.clear_surfaces.len()).map_err(|err| {
         SdkError::Protocol(format!("search corpus clear surface count overflow: {err}"))
@@ -654,27 +651,13 @@ fn validate_search_corpus_publish_receipt_v1<const SEALED: bool>(
         })?;
     let expected_semantic_tombstone_scopes = u32::try_from(batch.semantic_tombstone_scopes.len())
         .map_err(|err| {
-        SdkError::Protocol(format!(
-            "search corpus semantic tombstone scope count overflow: {err}"
-        ))
+        SdkError::Protocol(format!("search corpus semantic tombstone scope count overflow: {err}"))
     })?;
 
     for (label, expected, observed) in [
-        (
-            "replace scope",
-            expected_replace_scopes,
-            receipt.accepted_replace_scopes,
-        ),
-        (
-            "tombstone scope",
-            expected_tombstone_scopes,
-            receipt.accepted_tombstone_scopes,
-        ),
-        (
-            "clear surface",
-            expected_clear_surfaces,
-            receipt.accepted_clear_surfaces,
-        ),
+        ("replace scope", expected_replace_scopes, receipt.accepted_replace_scopes),
+        ("tombstone scope", expected_tombstone_scopes, receipt.accepted_tombstone_scopes),
+        ("clear surface", expected_clear_surfaces, receipt.accepted_clear_surfaces),
         (
             "semantic replace scope",
             expected_semantic_replace_scopes,
@@ -834,9 +817,8 @@ fn dispatch_text_query_request_v1(
     client: &QuantaIndex,
     request: TextQueryRequest,
 ) -> Result<TextQueryResponse, SdkError> {
-    let response = client.dispatch_query(
-        quanta_index_contract::SearchPlaneQueryIpcRequest::Text(request),
-    )?;
+    let response =
+        client.dispatch_query(quanta_index_contract::SearchPlaneQueryIpcRequest::Text(request))?;
     match response {
         quanta_index_contract::SearchPlaneQueryIpcResponse::Text(results) => Ok(results),
         other @ (quanta_index_contract::SearchPlaneQueryIpcResponse::Symbol(_)

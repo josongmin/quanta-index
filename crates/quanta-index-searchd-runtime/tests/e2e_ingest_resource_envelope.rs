@@ -95,9 +95,8 @@ fn a_batch_past_the_vector_envelope_is_refused_before_any_track_writes() -> Test
     // producer does last (QI-BB-032), so the envelope is what refuses it.
     stamp_batch_digest_v1(&mut oversized)?;
 
-    let refused = rt.ingest_once(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(
-        oversized,
-    ))?;
+    let refused =
+        rt.ingest_once(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(oversized))?;
     if typed_code(&refused) != Some(INGEST_RESOURCE_BUDGET_EXCEEDED_CODE.as_wire_str()) {
         return Err(format!(
             "a two-record batch under a one-record envelope must be refused typed, got {refused:?}"

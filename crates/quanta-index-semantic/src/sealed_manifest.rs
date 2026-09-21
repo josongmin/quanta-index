@@ -55,13 +55,8 @@ pub(crate) struct SemanticSealedManifestV1 {
 
 /// Wire shape: a fixed-order CBOR array so the encoding is auditable without
 /// a derive.
-type SealedManifestRowV1 = (
-    u32,
-    String,
-    (u64, [u8; 32]),
-    (u64, [u8; 32]),
-    Vec<(String, u64, [u8; 32])>,
-);
+type SealedManifestRowV1 =
+    (u32, String, (u64, [u8; 32]), (u64, [u8; 32]), Vec<(String, u64, [u8; 32])>);
 
 impl SemanticSealedManifestV1 {
     fn to_row(&self) -> SealedManifestRowV1 {
@@ -98,9 +93,9 @@ impl SemanticSealedManifestV1 {
     /// Total committed dataset bytes; the resident-size estimate an open
     /// reports without walking the tree a second time.
     pub(crate) fn dataset_bytes(&self) -> u64 {
-        self.artifacts.iter().fold(0_u64, |total, artifact| {
-            total.saturating_add(artifact.bytes)
-        })
+        self.artifacts
+            .iter()
+            .fold(0_u64, |total, artifact| total.saturating_add(artifact.bytes))
     }
 
     /// Committed dataset files.
@@ -168,10 +163,7 @@ pub(crate) fn build_sealed_manifest_bytes(
     base_generation_dir: Option<&Path>,
 ) -> Result<(Vec<u8>, SealMeasurementV1), CoreError> {
     let scope_manifest = measure(&layout::manifest_path(generation_dir), "scope manifest")?;
-    let build_contract = measure(
-        &layout::build_contract_path(generation_dir),
-        "build contract",
-    )?;
+    let build_contract = measure(&layout::build_contract_path(generation_dir), "build contract")?;
     let base = base_generation_dir.map(inheritable_base_v1).transpose()?;
     let commitment = commit_tree_inheriting_v1(
         &layout::dataset_dir(generation_dir),
@@ -205,9 +197,7 @@ pub(crate) fn build_sealed_manifest_bytes(
     };
     let mut bytes = Vec::new();
     ciborium::into_writer(&manifest.to_row(), &mut bytes).map_err(|error| {
-        CoreError::Storage(format!(
-            "semantic: encode sealed generation manifest: {error}"
-        ))
+        CoreError::Storage(format!("semantic: encode sealed generation manifest: {error}"))
     })?;
     Ok((bytes, measurement))
 }
@@ -295,10 +285,7 @@ fn verify_sidecars(
         ),
     ] {
         if !path.is_file() {
-            return Err(sidecar_corrupt(
-                generation_dir,
-                &format!("{label}: missing"),
-            ));
+            return Err(sidecar_corrupt(generation_dir, &format!("{label}: missing")));
         }
         let (bytes, sha256) = measure(&path, label)?;
         if bytes != committed.0 {

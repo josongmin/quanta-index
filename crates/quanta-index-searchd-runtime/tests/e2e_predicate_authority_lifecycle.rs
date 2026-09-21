@@ -65,11 +65,7 @@ fn sorted_owner_rows(result: &E2eQueryResult) -> Vec<(String, Vec<String>)> {
 fn query_paths(rt: &mut E2eRuntime, query: &str) -> AnyResult<Vec<String>> {
     let result = rt.query_text(TextQuerySyntax::Sourcegraph, query, 10);
     if let Some(error) = result.typed_error {
-        anyhow::bail!(
-            "query {query:?} returned typed error {}: {}",
-            error.code,
-            error.message
-        );
+        anyhow::bail!("query {query:?} returned typed error {}: {}", error.code, error.message);
     }
     Ok(sorted_paths(&result))
 }
@@ -201,17 +197,10 @@ fn observe_generation(rt: &mut E2eRuntime, label: &str) -> AnyResult<AuthorityOb
         predicate_paths.push(paths);
     }
 
-    let select = rt.query_text(
-        TextQuerySyntax::Sourcegraph,
-        &format!("select:file.owners {NEEDLE}"),
-        10,
-    );
+    let select =
+        rt.query_text(TextQuerySyntax::Sourcegraph, &format!("select:file.owners {NEEDLE}"), 10);
     if let Some(error) = select.typed_error {
-        anyhow::bail!(
-            "select:file.owners returned typed error {}: {}",
-            error.code,
-            error.message
-        );
+        anyhow::bail!("select:file.owners returned typed error {}: {}", error.code, error.message);
     }
     let select_paths = sorted_paths(&select);
     ensure!(
@@ -361,10 +350,7 @@ fn uds_predicate_authority_lifecycle_survives_reopen() -> AnyResult<()> {
     publish_initial_text_generation(&mut runtime)?;
     publish_generation(&mut runtime, "g1", now_ms.saturating_sub(1_000))?;
     let sealed_g1 = runtime.seal()?;
-    ensure!(
-        sealed_g1.get() == 1,
-        "expected initial generation 1, got {sealed_g1:?}"
-    );
+    ensure!(sealed_g1.get() == 1, "expected initial generation 1, got {sealed_g1:?}");
     runtime.activate_last_sealed_generation()?;
     let g1_before_reopen = observe_generation(&mut runtime, "g1")?;
 

@@ -122,11 +122,7 @@ fn base_batch_with_filler(
 ) -> Result<SearchCorpusIngestBatch, Box<dyn Error>> {
     let mut replace_scopes = vec![
         scope(ALPHA_PATH, "chunk-alpha", ALPHA_MARKER)?,
-        scope(
-            BETA_PATH,
-            "chunk-beta",
-            &format!("{BETA_MARKER} {BETA_RETIRED_WORD}"),
-        )?,
+        scope(BETA_PATH, "chunk-beta", &format!("{BETA_MARKER} {BETA_RETIRED_WORD}"))?,
     ];
     for index in 0..filler_scopes {
         replace_scopes.push(scope(
@@ -288,20 +284,8 @@ fn delta_generation_inherits_base_when_a_sidecar_authority_lands_first() -> Test
     let _receipt = adapter.publish_batch(&recency_batch(g2))?;
     adapter.build_batch(&delta_batch(g2, g1)?)?;
 
-    assert_hits(
-        &adapter,
-        g2,
-        ALPHA_MARKER,
-        &["chunk-alpha"],
-        "sidecar-first delta",
-    )?;
-    assert_hits(
-        &adapter,
-        g2,
-        BETA_MARKER_V2,
-        &["chunk-beta"],
-        "sidecar-first delta",
-    )?;
+    assert_hits(&adapter, g2, ALPHA_MARKER, &["chunk-alpha"], "sidecar-first delta")?;
+    assert_hits(&adapter, g2, BETA_MARKER_V2, &["chunk-beta"], "sidecar-first delta")?;
     Ok(())
 }
 
@@ -422,20 +406,8 @@ fn delta_generation_does_not_rewrite_unchanged_base_bytes() -> TestResult {
     let (fresh_bytes, fresh_entries) = bytes_not_shared_with(&delta_dir, &base_inodes)?;
 
     // The base must still be intact and serving.
-    assert_hits(
-        &adapter,
-        g1,
-        ALPHA_MARKER,
-        &["chunk-alpha"],
-        "base after delta",
-    )?;
-    assert_hits(
-        &adapter,
-        g1,
-        BETA_MARKER,
-        &["chunk-beta"],
-        "base after delta",
-    )?;
+    assert_hits(&adapter, g1, ALPHA_MARKER, &["chunk-alpha"], "base after delta")?;
+    assert_hits(&adapter, g1, BETA_MARKER, &["chunk-beta"], "base after delta")?;
     // The delta must be correct.
     assert_hits(&adapter, g2, ALPHA_MARKER, &["chunk-alpha"], "delta")?;
     assert_hits(&adapter, g2, BETA_MARKER_V2, &["chunk-beta"], "delta")?;
@@ -545,13 +517,7 @@ fn delta_generation_does_not_mutate_base_text_authority_sidecars() -> TestResult
     }
 
     // The base must still answer from those sidecars exactly as it did.
-    assert_hits(
-        &adapter,
-        g1,
-        BETA_MARKER,
-        &["chunk-beta"],
-        "base after delta rebuild",
-    )?;
+    assert_hits(&adapter, g1, BETA_MARKER, &["chunk-beta"], "base after delta rebuild")?;
     Ok(())
 }
 
@@ -663,37 +629,16 @@ fn delta_generation_text_authority_matches_independent_full_rebuild() -> TestRes
     adapter.build_batch(&oracle)?;
 
     let probes: Vec<(&str, LqLeaf)> = vec![
-        (
-            "regex retired",
-            LqLeaf::Regex(BETA_RETIRED_WORD.to_string()),
-        ),
+        ("regex retired", LqLeaf::Regex(BETA_RETIRED_WORD.to_string())),
         ("regex fresh", LqLeaf::Regex(BETA_FRESH_WORD.to_string())),
         ("regex alpha", LqLeaf::Regex(ALPHA_MARKER.to_string())),
         ("regex novel", LqLeaf::Regex("novelword".to_string())),
-        (
-            "regex filler prefix",
-            LqLeaf::Regex("quartz_0000.".to_string()),
-        ),
-        (
-            "regex tombstoned filler",
-            LqLeaf::Regex("quartz_00007".to_string()),
-        ),
-        (
-            "regex all fillers",
-            LqLeaf::Regex("filler_[0-9]+".to_string()),
-        ),
-        (
-            "phrase fresh",
-            LqLeaf::Phrase(format!("{BETA_MARKER_V2} {BETA_FRESH_WORD}")),
-        ),
-        (
-            "phrase retired",
-            LqLeaf::Phrase(format!("{BETA_MARKER} {BETA_RETIRED_WORD}")),
-        ),
-        (
-            "phrase novel",
-            LqLeaf::Phrase("novelword appears".to_string()),
-        ),
+        ("regex filler prefix", LqLeaf::Regex("quartz_0000.".to_string())),
+        ("regex tombstoned filler", LqLeaf::Regex("quartz_00007".to_string())),
+        ("regex all fillers", LqLeaf::Regex("filler_[0-9]+".to_string())),
+        ("phrase fresh", LqLeaf::Phrase(format!("{BETA_MARKER_V2} {BETA_FRESH_WORD}"))),
+        ("phrase retired", LqLeaf::Phrase(format!("{BETA_MARKER} {BETA_RETIRED_WORD}"))),
+        ("phrase novel", LqLeaf::Phrase("novelword appears".to_string())),
         ("keyword novel", LqLeaf::Keyword("novelword".to_string())),
     ];
 
@@ -702,9 +647,7 @@ fn delta_generation_text_authority_matches_independent_full_rebuild() -> TestRes
         let incremental = leaf_hit_ids(&adapter, g2, leaf.clone())?;
         let rebuilt = leaf_hit_ids(&adapter, g9, leaf)?;
         if incremental != rebuilt {
-            divergences.push(format!(
-                "{label}: incremental={incremental:?} rebuild={rebuilt:?}"
-            ));
+            divergences.push(format!("{label}: incremental={incremental:?} rebuild={rebuilt:?}"));
         }
     }
     if !divergences.is_empty() {

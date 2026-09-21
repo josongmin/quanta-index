@@ -50,10 +50,7 @@ impl<'de> Visitor<'de> for QuarantineInventoryRequestVisitor {
         A: MapAccess<'de>,
     {
         if let Some(key) = map.next_key::<String>()? {
-            return Err(de::Error::unknown_field(
-                &key,
-                QUARANTINE_INVENTORY_REQUEST_FIELDS,
-            ));
+            return Err(de::Error::unknown_field(&key, QUARANTINE_INVENTORY_REQUEST_FIELDS));
         }
         Ok(QuarantineInventoryRequest)
     }
@@ -441,10 +438,7 @@ impl<'de> Visitor<'de> for QuarantineDiscardOutcomeVisitor {
                     bytes = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        QUARANTINE_DISCARD_OUTCOME_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, QUARANTINE_DISCARD_OUTCOME_FIELDS));
                 }
             }
         }
@@ -454,10 +448,9 @@ impl<'de> Visitor<'de> for QuarantineDiscardOutcomeVisitor {
             ("Discarded", None) => Err(de::Error::missing_field("bytes")),
             ("Absent", None) => Ok(QuarantineDiscardOutcomeDtoV1::Absent),
             ("Absent", Some(_)) => Err(de::Error::custom("`Absent` carries no `bytes`")),
-            (other, _) => Err(de::Error::unknown_variant(
-                other,
-                QUARANTINE_DISCARD_OUTCOME_VARIANTS,
-            )),
+            (other, _) => {
+                Err(de::Error::unknown_variant(other, QUARANTINE_DISCARD_OUTCOME_VARIANTS))
+            }
         }
     }
 }

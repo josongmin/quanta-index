@@ -142,16 +142,10 @@ impl HistoryTextManifest {
     pub(super) fn read(epoch_dir: &Path) -> Result<Self, CoreError> {
         let path = manifest_path(epoch_dir);
         let bytes = std::fs::read(&path).map_err(|err| {
-            corrupt(format!(
-                "history text index: read manifest {}: {err}",
-                path.display()
-            ))
+            corrupt(format!("history text index: read manifest {}: {err}", path.display()))
         })?;
         let row: ManifestRow = ciborium::de::from_reader(bytes.as_slice()).map_err(|err| {
-            corrupt(format!(
-                "history text index: decode manifest {}: {err}",
-                path.display()
-            ))
+            corrupt(format!("history text index: decode manifest {}: {err}", path.display()))
         })?;
         Self::from_row(row)
     }

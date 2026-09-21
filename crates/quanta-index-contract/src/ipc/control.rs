@@ -54,10 +54,7 @@ impl Visitor<'_> for SearchPlaneTrackKindVisitor {
             "Lexical" => Ok(SearchPlaneTrackKind::Lexical),
             "Semantic" => Ok(SearchPlaneTrackKind::Semantic),
             "Structural" => Ok(SearchPlaneTrackKind::Structural),
-            other => Err(de::Error::unknown_variant(
-                other,
-                SearchPlaneTrackKind::VARIANTS,
-            )),
+            other => Err(de::Error::unknown_variant(other, SearchPlaneTrackKind::VARIANTS)),
         }
     }
 
@@ -197,10 +194,7 @@ impl<'de> Visitor<'de> for SemanticContentRootsV1Visitor {
                     membership_root_digest = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        SEMANTIC_CONTENT_ROOTS_V1_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, SEMANTIC_CONTENT_ROOTS_V1_FIELDS));
                 }
             }
         }
@@ -919,10 +913,7 @@ impl<'de> Visitor<'de> for CurrentGenerationRequestVisitor {
                     track = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        CURRENT_GENERATION_REQUEST_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, CURRENT_GENERATION_REQUEST_FIELDS));
                 }
             }
         }
@@ -1112,10 +1103,7 @@ impl<'de> Visitor<'de> for GenerationStatusRequestVisitor {
                     revision_id = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        GENERATION_STATUS_REQUEST_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, GENERATION_STATUS_REQUEST_FIELDS));
                 }
             }
         }
@@ -1199,10 +1187,7 @@ impl<'de> Visitor<'de> for TrackReadinessRecordVisitor {
                     manifest_digest = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        TRACK_READINESS_RECORD_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, TRACK_READINESS_RECORD_FIELDS));
                 }
             }
         }
@@ -1306,10 +1291,7 @@ impl<'de> Visitor<'de> for GenerationStatusReportVisitor {
                     semantic_content = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        GENERATION_STATUS_REPORT_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, GENERATION_STATUS_REPORT_FIELDS));
                 }
             }
         }
@@ -1561,11 +1543,9 @@ mod qi_act_01_tests {
                 expected_active: Some(malformed_expected),
             }
             .validate_v1(),
-            Err(
-                SearchCorpusActivationValidationErrorV1::ExpectedActiveIdentity(
-                    SearchCorpusGenerationIdentityValidationErrorV1::SemanticTrackRequired,
-                ),
-            )
+            Err(SearchCorpusActivationValidationErrorV1::ExpectedActiveIdentity(
+                SearchCorpusGenerationIdentityValidationErrorV1::SemanticTrackRequired,
+            ),)
         );
 
         let mut cross_repo = corpus_identity(11, "digest-11");
@@ -1629,18 +1609,12 @@ mod qi_act_01_tests {
         };
         assert_eq!(request.validate_v1(), Ok(()));
         let Ok(bytes) = encode(&request) else {
-            assert!(
-                false,
-                "failed to encode SearchPlaneRollbackSearchCorpusGenerationCasRequest"
-            );
+            assert!(false, "failed to encode SearchPlaneRollbackSearchCorpusGenerationCasRequest");
             return;
         };
         let Ok(decoded) = decode::<SearchPlaneRollbackSearchCorpusGenerationCasRequest>(&bytes)
         else {
-            assert!(
-                false,
-                "failed to decode SearchPlaneRollbackSearchCorpusGenerationCasRequest"
-            );
+            assert!(false, "failed to decode SearchPlaneRollbackSearchCorpusGenerationCasRequest");
             return;
         };
         assert_eq!(decoded, request);
@@ -1650,17 +1624,11 @@ mod qi_act_01_tests {
             previous_sealed_active: expected_active,
         };
         let Ok(bytes) = encode(&ack) else {
-            assert!(
-                false,
-                "failed to encode SearchPlaneSearchCorpusRollbackCasAck"
-            );
+            assert!(false, "failed to encode SearchPlaneSearchCorpusRollbackCasAck");
             return;
         };
         let Ok(decoded) = decode::<SearchPlaneSearchCorpusRollbackCasAck>(&bytes) else {
-            assert!(
-                false,
-                "failed to decode SearchPlaneSearchCorpusRollbackCasAck"
-            );
+            assert!(false, "failed to decode SearchPlaneSearchCorpusRollbackCasAck");
             return;
         };
         assert_eq!(decoded, ack);

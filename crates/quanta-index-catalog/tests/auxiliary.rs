@@ -186,20 +186,8 @@ fn a_batch_applies_in_order_and_reads_back_verified_in_key_order() -> TestResult
     }
     let rows = all_rows(&catalog)?;
     let expected = vec![
-        row(
-            AuxiliaryDomainV1::History,
-            1,
-            AuxiliaryRowFamilyV1::Commit,
-            "a",
-            "commit-a-v2",
-        ),
-        row(
-            AuxiliaryDomainV1::History,
-            1,
-            AuxiliaryRowFamilyV1::Commit,
-            "b",
-            "commit-b",
-        ),
+        row(AuxiliaryDomainV1::History, 1, AuxiliaryRowFamilyV1::Commit, "a", "commit-a-v2"),
+        row(AuxiliaryDomainV1::History, 1, AuxiliaryRowFamilyV1::Commit, "b", "commit-b"),
     ];
     if rows != expected {
         return Err(format!("stored rows drifted: {rows:?}").into());
@@ -345,10 +333,8 @@ fn a_row_that_does_not_match_its_digest_is_refused_typed() -> TestResult {
         "UPDATE auxiliary_rows_v1 SET value = CAST('chunk-bytez' AS BLOB) WHERE row_key = CAST('chunk-1' AS BLOB)",
         [],
     )?;
-    let changed_tracks = connection.execute(
-        "UPDATE auxiliary_tracks_v1 SET value = CAST('track-bytez' AS BLOB)",
-        [],
-    )?;
+    let changed_tracks = connection
+        .execute("UPDATE auxiliary_tracks_v1 SET value = CAST('track-bytez' AS BLOB)", [])?;
     if changed != 1 || changed_tracks != 1 {
         return Err(format!(
             "expected to corrupt one row each, changed {changed}/{changed_tracks}"
@@ -457,20 +443,8 @@ fn forgetting_a_generation_drops_exactly_its_rows_across_domains() -> TestResult
     }
     let rows = all_rows(&catalog)?;
     let survivors = vec![
-        row(
-            AuxiliaryDomainV1::History,
-            2,
-            AuxiliaryRowFamilyV1::Commit,
-            "a",
-            "g2",
-        ),
-        row(
-            AuxiliaryDomainV1::Structural,
-            3,
-            AuxiliaryRowFamilyV1::Chunk,
-            "c",
-            "g3",
-        ),
+        row(AuxiliaryDomainV1::History, 2, AuxiliaryRowFamilyV1::Commit, "a", "g2"),
+        row(AuxiliaryDomainV1::Structural, 3, AuxiliaryRowFamilyV1::Chunk, "c", "g3"),
     ];
     if rows != survivors {
         return Err(format!("only generation 1's rows may go: {rows:?}").into());
@@ -478,7 +452,7 @@ fn forgetting_a_generation_drops_exactly_its_rows_across_domains() -> TestResult
     let tracks = catalog.track_rows()?;
     if tracks.len() != 1 || tracks.first().map(|track| track.value.as_slice()) != Some(b"track") {
         return Err(
-            format!("track rows are not generation-scoped and must survive: {tracks:?}").into(),
+            format!("track rows are not generation-scoped and must survive: {tracks:?}").into()
         );
     }
     Ok(())

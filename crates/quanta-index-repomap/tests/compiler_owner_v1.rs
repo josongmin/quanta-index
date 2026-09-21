@@ -134,11 +134,7 @@ fn a_valid_bundle_compiles_with_commitments_and_receipt() {
 
 #[test]
 fn an_empty_bundle_is_refused() {
-    assert_refusal(
-        compile(&bundle()),
-        Stage::BundleValidation,
-        Code::EmptyBundle,
-    );
+    assert_refusal(compile(&bundle()), Stage::BundleValidation, Code::EmptyBundle);
 }
 
 #[test]
@@ -146,11 +142,7 @@ fn an_invalid_producer_digest_is_refused() {
     let source = bundle().with_node(file("src/lib.rs", 10));
     let mut bad = source;
     bad.manifest_digest = "not-a-digest".to_string();
-    assert_refusal(
-        compile(&bad),
-        Stage::BundleValidation,
-        Code::ProducerDigestInvalid,
-    );
+    assert_refusal(compile(&bad), Stage::BundleValidation, Code::ProducerDigestInvalid);
 }
 
 #[test]
@@ -158,11 +150,7 @@ fn duplicate_typed_nodes_are_refused() {
     let source = bundle()
         .with_node(file("src/lib.rs", 10))
         .with_node(file("src/lib.rs", 20));
-    assert_refusal(
-        compile(&source),
-        Stage::GraphValidation,
-        Code::DuplicateNode,
-    );
+    assert_refusal(compile(&source), Stage::GraphValidation, Code::DuplicateNode);
 }
 
 #[test]
@@ -172,11 +160,7 @@ fn cross_variant_identity_collision_is_refused() {
         "src/lib.rs",
         "Owner",
     ));
-    assert_refusal(
-        compile(&source),
-        Stage::GraphValidation,
-        Code::CrossVariantIdentityCollision,
-    );
+    assert_refusal(compile(&source), Stage::GraphValidation, Code::CrossVariantIdentityCollision);
 }
 
 #[test]
@@ -187,11 +171,7 @@ fn dangling_edge_endpoints_are_refused() {
             callee: RepoMapNodeRef::File(FileId::new("src/lib.rs")),
         }),
     );
-    assert_refusal(
-        compile(&source),
-        Stage::GraphValidation,
-        Code::DanglingEdgeEndpoint,
-    );
+    assert_refusal(compile(&source), Stage::GraphValidation, Code::DanglingEdgeEndpoint);
 }
 
 #[test]
@@ -206,11 +186,7 @@ fn illegal_edge_variants_are_refused() {
                 callee: RepoMapNodeRef::File(FileId::new("src/main.rs")),
             },
         ));
-    assert_refusal(
-        compile(&source),
-        Stage::GraphValidation,
-        Code::IllegalEdgeVariant,
-    );
+    assert_refusal(compile(&source), Stage::GraphValidation, Code::IllegalEdgeVariant);
 }
 
 #[test]
@@ -267,14 +243,8 @@ fn commitment_is_independent_of_input_order() {
         .with_edge(edge);
     let forward_candidate = compile(&forward).expect("forward bundle compiles");
     let reverse_candidate = compile(&reverse).expect("reverse bundle compiles");
-    assert_eq!(
-        forward_candidate.commitments(),
-        reverse_candidate.commitments()
-    );
-    assert_eq!(
-        forward_candidate.compiled_payload(),
-        reverse_candidate.compiled_payload()
-    );
+    assert_eq!(forward_candidate.commitments(), reverse_candidate.commitments());
+    assert_eq!(forward_candidate.compiled_payload(), reverse_candidate.compiled_payload());
 }
 
 #[test]
@@ -291,10 +261,7 @@ fn golden_compiled_graph_commitment_is_stable() {
         use std::fmt::Write as _;
         let _written = write!(hex, "{byte:02x}");
     }
-    assert_eq!(
-        hex,
-        "7820937c0e7474a7fc412239557df9ee7f468c6aaebf9bd5db6cd53c4437113a"
-    );
+    assert_eq!(hex, "7820937c0e7474a7fc412239557df9ee7f468c6aaebf9bd5db6cd53c4437113a");
 }
 
 #[test]

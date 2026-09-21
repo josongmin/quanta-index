@@ -347,12 +347,7 @@ impl LexicalSearcher for TantivySearcher {
         )?;
         rows.truncate(limit);
         let center_terms = snippet_center_terms(&effective_query);
-        self.rows_to_candidates(
-            &searcher,
-            rows,
-            &center_terms,
-            Self::document_to_symbol_candidate,
-        )
+        self.rows_to_candidates(&searcher, rows, &center_terms, Self::document_to_symbol_candidate)
     }
 
     fn search_all(
@@ -424,12 +419,10 @@ impl LexicalSearcher for TantivySearcher {
 
     fn candidate_presence(&self, candidate_id: &str) -> Result<CandidatePresenceV1, CoreError> {
         let searcher = self.reader.searcher();
-        Ok(
-            match self.locate_candidate(&searcher, candidate_id, TEXT_DOC_KIND)? {
-                Some(_) => CandidatePresenceV1::Indexed,
-                None => CandidatePresenceV1::NotIndexed,
-            },
-        )
+        Ok(match self.locate_candidate(&searcher, candidate_id, TEXT_DOC_KIND)? {
+            Some(_) => CandidatePresenceV1::Indexed,
+            None => CandidatePresenceV1::NotIndexed,
+        })
     }
 
     fn explain_candidate(
@@ -483,14 +476,12 @@ impl LexicalSearcher for TantivySearcher {
             )? {
                 return not_matched("the unindexed scan does not match the document");
             }
-            return Ok(LexicalCandidateExplanationV1::Matched(
-                LexicalScoreTraceV1 {
-                    engine: LexicalScoreEngineV1::UnindexedScan,
-                    engine_score: 1.0,
-                    boost_factor,
-                    emitted_score: Self::apply_query_boost_score(1.0, &effective_query.options),
-                },
-            ));
+            return Ok(LexicalCandidateExplanationV1::Matched(LexicalScoreTraceV1 {
+                engine: LexicalScoreEngineV1::UnindexedScan,
+                engine_score: 1.0,
+                boost_factor,
+                emitted_score: Self::apply_query_boost_score(1.0, &effective_query.options),
+            }));
         }
         let Some(base) = self.compile_query_with_constraints(
             &prepared_query.query,
@@ -506,17 +497,12 @@ impl LexicalSearcher for TantivySearcher {
         else {
             return not_matched("the plan does not match the document");
         };
-        Ok(LexicalCandidateExplanationV1::Matched(
-            LexicalScoreTraceV1 {
-                engine: LexicalScoreEngineV1::Bm25,
-                engine_score,
-                boost_factor,
-                emitted_score: Self::apply_query_boost_score(
-                    engine_score,
-                    &effective_query.options,
-                ),
-            },
-        ))
+        Ok(LexicalCandidateExplanationV1::Matched(LexicalScoreTraceV1 {
+            engine: LexicalScoreEngineV1::Bm25,
+            engine_score,
+            boost_factor,
+            emitted_score: Self::apply_query_boost_score(engine_score, &effective_query.options),
+        }))
     }
 
     fn admitted_candidates(

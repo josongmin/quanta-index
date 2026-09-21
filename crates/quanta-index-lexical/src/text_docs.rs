@@ -98,9 +98,7 @@ pub(crate) fn text_candidates_at_path(
     let mut candidates = Vec::with_capacity(hits.len());
     for (_score, doc_address) in hits {
         let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
-            CoreError::Storage(format!(
-                "lexical: fetch scope candidate doc {doc_address:?}: {err}"
-            ))
+            CoreError::Storage(format!("lexical: fetch scope candidate doc {doc_address:?}: {err}"))
         })?;
         if stored_text(&doc, fields.doc_kind).as_deref() != Some(TEXT_DOC_KIND) {
             continue;
@@ -148,9 +146,7 @@ pub(crate) fn collect_text_authority_docs(
     let mut docs: Vec<AddedTextDoc> = Vec::new();
     for (_score, doc_address) in hits {
         let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
-            CoreError::Storage(format!(
-                "lexical: fetch text authority doc {doc_address:?}: {err}"
-            ))
+            CoreError::Storage(format!("lexical: fetch text authority doc {doc_address:?}: {err}"))
         })?;
         if stored_text(&doc, fields.doc_kind).as_deref() != Some(TEXT_DOC_KIND) {
             continue;

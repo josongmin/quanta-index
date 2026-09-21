@@ -29,20 +29,14 @@ impl TantivySearcher {
             LqExpr::All(parts) => {
                 let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::with_capacity(parts.len());
                 for part in parts {
-                    clauses.push((
-                        Occur::Must,
-                        self.compile_expr(part, options, false, budget)?,
-                    ));
+                    clauses.push((Occur::Must, self.compile_expr(part, options, false, budget)?));
                 }
                 Ok(Box::new(BooleanQuery::new(clauses)))
             }
             LqExpr::Any(parts) => {
                 let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::with_capacity(parts.len());
                 for part in parts {
-                    clauses.push((
-                        Occur::Should,
-                        self.compile_expr(part, options, false, budget)?,
-                    ));
+                    clauses.push((Occur::Should, self.compile_expr(part, options, false, budget)?));
                 }
                 Ok(Box::new(BooleanQuery::new(clauses)))
             }
@@ -288,9 +282,7 @@ impl TantivySearcher {
                             .to_string(),
                     });
                 }
-                Ok(Some(
-                    self.regex_text_query(self.fields.repo_id, pattern.as_str())?,
-                ))
+                Ok(Some(self.regex_text_query(self.fields.repo_id, pattern.as_str())?))
             }
             LqFilter::File { pattern, scope } => {
                 Ok(Some(self.compile_file_filter(pattern.as_str(), *scope)?))

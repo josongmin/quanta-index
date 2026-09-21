@@ -192,12 +192,12 @@ impl Lowering {
                 token_sequence_query(self.field, &tokens).map(Approximation::Query)
             }
             LqLeaf::RawString(_) => Ok(side.unscored()),
-            LqLeaf::Regex(_) => Err(unscorable(
-                "a regex has no BM25 score; use a keyword or `order: recency`",
-            )),
-            LqLeaf::StructuralBlock(_) => Err(unscorable(
-                "a structural block is not executable on the history route",
-            )),
+            LqLeaf::Regex(_) => {
+                Err(unscorable("a regex has no BM25 score; use a keyword or `order: recency`"))
+            }
+            LqLeaf::StructuralBlock(_) => {
+                Err(unscorable("a structural block is not executable on the history route"))
+            }
             LqLeaf::Predicate { name, .. } => Err(unscorable(format!(
                 "predicate `{name}` is not executable on the history route"
             ))),
@@ -269,10 +269,7 @@ fn token_sequence_query(field: Field, tokens: &[Token]) -> Result<Box<dyn Query>
         .collect();
     match terms.as_slice() {
         [] => Err(map_text_query_error(&TextQueryError::NoTokens)),
-        [single] => Ok(Box::new(TermQuery::new(
-            single.clone(),
-            IndexRecordOption::WithFreqs,
-        ))),
+        [single] => Ok(Box::new(TermQuery::new(single.clone(), IndexRecordOption::WithFreqs))),
         _ => Ok(Box::new(PhraseQuery::new(terms))),
     }
 }

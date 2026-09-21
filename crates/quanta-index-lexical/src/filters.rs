@@ -228,10 +228,7 @@ impl fmt::Display for FilterPlannerError {
                 write!(f, "filter planner: invalid count ({detail})")
             }
             Self::UnsupportedFilterCombo { detail } => {
-                write!(
-                    f,
-                    "filter planner: unsupported filter combination ({detail})"
-                )
+                write!(f, "filter planner: unsupported filter combination ({detail})")
             }
         }
     }
@@ -641,11 +638,7 @@ mod tests {
                 .typed_unavailable
                 .iter()
                 .any(|u| u.code == codes::REV_UNAVAILABLE);
-            assert!(
-                has_rev,
-                "expected REV_UNAVAILABLE, got {:?}",
-                plan.typed_unavailable
-            );
+            assert!(has_rev, "expected REV_UNAVAILABLE, got {:?}", plan.typed_unavailable);
         }
     }
 

@@ -260,12 +260,7 @@ fn sequences_are_unique_and_monotonic_across_keys_and_reopens() -> TestResult {
     let catalog = SqliteCatalog::open(temp.path(), Duration::from_millis(100))?;
     let key = key(IngestOperationKindV1::RepoMeta, 9, "digest-late");
     let body = [8_u8; 32];
-    sequences.push(claim_and_commit(
-        &catalog,
-        &key,
-        &body,
-        &receipt(9, "digest-late", 0),
-    )?);
+    sequences.push(claim_and_commit(&catalog, &key, &body, &receipt(9, "digest-late", 0))?);
     if sequences != vec![1, 2, 3, 4] {
         return Err(format!("sequences must be 1..=4 in order, got {sequences:?}").into());
     }
@@ -391,7 +386,7 @@ fn the_pair_listing_and_forget_cover_every_route_and_forget_is_idempotent() -> T
     let removed = catalog.forget_generation(&repo, &revision, ManifestGeneration::new(4))?;
     if removed != 2 {
         return Err(
-            format!("both routes' records of generation 4 must go, removed {removed}").into(),
+            format!("both routes' records of generation 4 must go, removed {removed}").into()
         );
     }
     let again = catalog.forget_generation(&repo, &revision, ManifestGeneration::new(4))?;

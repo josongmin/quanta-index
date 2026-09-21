@@ -48,13 +48,7 @@ type DocTableRow = (u64, String, String, String);
 /// Wire shape of a shard file: a fixed-order CBOR array so the encoding is
 /// auditable without a derive and an extra or missing element is a decode
 /// failure.
-type ShardRow = (
-    Vec<DocTableRow>,
-    TrigramIndex,
-    TrigramIndex,
-    PositionsIndex,
-    PositionsIndex,
-);
+type ShardRow = (Vec<DocTableRow>, TrigramIndex, TrigramIndex, PositionsIndex, PositionsIndex);
 
 /// One document as the text authority holds it.
 #[derive(Clone, Debug, Eq, PartialEq)]

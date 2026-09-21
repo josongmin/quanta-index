@@ -228,7 +228,7 @@ pub(super) fn expect_decode_fail(err: CoreError, needle: &str) -> TestResult {
             }
             if !message.contains(needle) {
                 return Err(
-                    format!("expected message to contain `{needle}`, got `{message}`").into(),
+                    format!("expected message to contain `{needle}`, got `{message}`").into()
                 );
             }
             Ok(())
@@ -289,10 +289,7 @@ pub(super) fn assert_active_composite_v1(
     ] {
         let observed =
             catalog.resolve_record(generation.repo_id(), generation.revision_id(), track)?;
-        assert_eq!(
-            observed.manifest_generation,
-            generation.manifest_generation()
-        );
+        assert_eq!(observed.manifest_generation, generation.manifest_generation());
         assert_eq!(observed.manifest_digest, generation.manifest_digest());
     }
     Ok(())

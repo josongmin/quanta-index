@@ -74,10 +74,7 @@ mod tests {
 
     #[test]
     fn bounded_capacity_matches_the_wire_bound_v1() {
-        assert_eq!(
-            u32::try_from(CLUSTER_MEMBERS_CAPACITY_V1),
-            Ok(MAX_CLUSTER_MEMBERSHIP_READ_V1)
-        );
+        assert_eq!(u32::try_from(CLUSTER_MEMBERS_CAPACITY_V1), Ok(MAX_CLUSTER_MEMBERSHIP_READ_V1));
     }
 
     #[test]

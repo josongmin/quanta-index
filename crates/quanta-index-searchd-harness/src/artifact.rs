@@ -254,11 +254,7 @@ impl fmt::Display for BenchProvenanceError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::GitUnavailable { detail } => {
-                write!(
-                    formatter,
-                    "{}: git rev-parse HEAD failed: {detail}",
-                    self.code()
-                )
+                write!(formatter, "{}: git rev-parse HEAD failed: {detail}", self.code())
             }
             Self::NotAFullHead { text } => write!(
                 formatter,
@@ -925,10 +921,7 @@ mod tests {
                 matches!(outcome, Err(BenchProvenanceError::NotAFullHead { .. })),
                 "{refused:?}: {outcome:?}"
             );
-            assert_eq!(
-                outcome.map_err(|err| err.code()),
-                Err("BENCH_GIT_HEAD_NOT_FULL")
-            );
+            assert_eq!(outcome.map_err(|err| err.code()), Err("BENCH_GIT_HEAD_NOT_FULL"));
         }
     }
 
@@ -973,10 +966,7 @@ mod tests {
         // A tracked modification is dirty.
         std::fs::write(repo.join("tracked.txt"), "two\n")?;
         let dirty = GitHeadV1::resolve(&repo);
-        assert!(
-            matches!(dirty, Err(BenchProvenanceError::DirtyWorktree { .. })),
-            "{dirty:?}"
-        );
+        assert!(matches!(dirty, Err(BenchProvenanceError::DirtyWorktree { .. })), "{dirty:?}");
         git(&["checkout", "--", "tracked.txt"])?;
         // An untracked file is dirty too: it could be the source measured.
         std::fs::write(repo.join("untracked.rs"), "fn main() {}\n")?;
@@ -996,26 +986,14 @@ mod tests {
         let split_early = corpus_digest("scale", &[("ab".to_string(), "c".to_string())]);
         let other_dimension = corpus_digest("tail", &[("a".to_string(), "bc".to_string())]);
         assert_ne!(split_late, split_early, "part boundaries are framed");
-        assert_ne!(
-            split_late, other_dimension,
-            "dimensions are domain-separated"
-        );
+        assert_ne!(split_late, other_dimension, "dimensions are domain-separated");
         assert!(split_late.starts_with("sha256:") && split_late.len() == 7 + 64);
-        let x = config_digest(
-            "scale",
-            &[("seed", "1".to_string()), ("tier", "small".to_string())],
-        );
-        let y = config_digest(
-            "scale",
-            &[("tier", "small".to_string()), ("seed", "1".to_string())],
-        );
+        let x = config_digest("scale", &[("seed", "1".to_string()), ("tier", "small".to_string())]);
+        let y = config_digest("scale", &[("tier", "small".to_string()), ("seed", "1".to_string())]);
         assert_eq!(x, y, "config entries are canonically ordered");
         assert_ne!(
             x,
-            config_digest(
-                "scale",
-                &[("seed", "2".to_string()), ("tier", "small".to_string())]
-            )
+            config_digest("scale", &[("seed", "2".to_string()), ("tier", "small".to_string())])
         );
     }
 
@@ -1053,14 +1031,8 @@ mod tests {
     fn model_revision_names_the_hash_embedder_and_none_when_unavailable() {
         use quanta_index_searchd::app::SemanticEmbedderProfile;
         let hash = model_revision_of(&SemanticEmbedderProfile::Hash { dimension: 16 });
-        assert_eq!(
-            hash.as_deref(),
-            Some("search-owned-hash-text-v1@fnv1a64-slots-l2unit-v1:d16")
-        );
-        assert_eq!(
-            model_revision_of(&SemanticEmbedderProfile::Unavailable),
-            None
-        );
+        assert_eq!(hash.as_deref(), Some("search-owned-hash-text-v1@fnv1a64-slots-l2unit-v1:d16"));
+        assert_eq!(model_revision_of(&SemanticEmbedderProfile::Unavailable), None);
     }
 
     #[test]
@@ -1086,10 +1058,7 @@ mod tests {
         ] {
             assert!(object.contains_key(key), "missing {key}");
         }
-        assert_eq!(
-            value["schema_version"],
-            serde_json::json!(BENCH_ARTIFACT_SCHEMA_VERSION)
-        );
+        assert_eq!(value["schema_version"], serde_json::json!(BENCH_ARTIFACT_SCHEMA_VERSION));
         assert_eq!(value["provenance"]["git_head"], serde_json::json!(HEAD));
         assert!(
             value["provenance"]["corpus_digest"]
@@ -1129,10 +1098,7 @@ mod tests {
         for key in ["p50_ms", "p95_ms", "p99_ms", "samples"] {
             assert!(row["latency"].get(key).is_some(), "rows[0].latency.{key}");
         }
-        assert!(
-            !value.to_string().contains("git_rev"),
-            "the short-SHA field is gone"
-        );
+        assert!(!value.to_string().contains("git_rev"), "the short-SHA field is gone");
         Ok(())
     }
 

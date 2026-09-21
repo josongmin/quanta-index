@@ -40,10 +40,7 @@ impl fmt::Display for ClusterMembershipReadPolicyErrorV1 {
                 formatter.write_str("expected_authority_digest must not be empty")
             }
             Self::InvalidLimit { limit, max } => {
-                write!(
-                    formatter,
-                    "cluster membership read limit must be in 1..={max}; got {limit}"
-                )
+                write!(formatter, "cluster membership read limit must be in 1..={max}; got {limit}")
             }
             Self::EmptyBatch => {
                 formatter.write_str("cluster membership read batch must not be empty")

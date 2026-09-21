@@ -167,10 +167,8 @@ fn hybrid_seed_dispatch_includes_dense_only_entity_in_the_seed_set() -> TestResu
             guard.corpus_constraints.clone(),
         )
     };
-    let expected = default_query_embedder().embed_query(
-        "scope alpha",
-        &quanta_index_core::RequestBudgetV1::unbounded(),
-    )?;
+    let expected = default_query_embedder()
+        .embed_query("scope alpha", &quanta_index_core::RequestBudgetV1::unbounded())?;
     // QI-BB-019: the seed list is built from the dense lanes alone; no
     // second, lexical-scoped dense search runs behind it.
     if !scoped_vectors.is_empty() {
@@ -256,32 +254,12 @@ fn hybrid_seed_keeps_cross_owner_ids_and_corpus_local_ranks_distinct() -> TestRe
 
     let semantic_lanes = vec![
         vec![
-            hit(
-                "module-shared",
-                "shared",
-                SemanticCorpusKindV1::ModuleCard,
-                0.0001,
-            ),
-            hit(
-                "module-only",
-                "module-only",
-                SemanticCorpusKindV1::ModuleCard,
-                9_999.0,
-            ),
+            hit("module-shared", "shared", SemanticCorpusKindV1::ModuleCard, 0.0001),
+            hit("module-only", "module-only", SemanticCorpusKindV1::ModuleCard, 9_999.0),
         ],
         vec![
-            hit(
-                "symbol-shared",
-                "shared",
-                SemanticCorpusKindV1::SymbolCard,
-                0.0002,
-            ),
-            hit(
-                "symbol-only",
-                "symbol-only",
-                SemanticCorpusKindV1::SymbolCard,
-                8_888.0,
-            ),
+            hit("symbol-shared", "shared", SemanticCorpusKindV1::SymbolCard, 0.0002),
+            hit("symbol-only", "symbol-only", SemanticCorpusKindV1::SymbolCard, 8_888.0),
         ],
     ];
     let seeds = build_hybrid_seed_candidates(&[], &semantic_lanes, &[], 3)?;

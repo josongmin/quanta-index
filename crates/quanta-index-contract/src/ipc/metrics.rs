@@ -109,10 +109,7 @@ impl<'de> Visitor<'de> for MetricsSnapshotRequestVisitor {
         A: MapAccess<'de>,
     {
         if let Some(key) = map.next_key::<String>()? {
-            return Err(de::Error::unknown_field(
-                &key,
-                METRICS_SNAPSHOT_REQUEST_FIELDS,
-            ));
+            return Err(de::Error::unknown_field(&key, METRICS_SNAPSHOT_REQUEST_FIELDS));
         }
         Ok(MetricsSnapshotRequest)
     }
@@ -144,9 +141,7 @@ fn reject_bad_name<E: de::Error>(name: &str) -> Result<(), E> {
     if is_metric_name_v1(name) {
         Ok(())
     } else {
-        Err(E::custom(format!(
-            "metric name `{name}` is not [a-z][a-z0-9_]*"
-        )))
+        Err(E::custom(format!("metric name `{name}` is not [a-z][a-z0-9_]*")))
     }
 }
 

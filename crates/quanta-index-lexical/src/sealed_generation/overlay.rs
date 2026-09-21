@@ -73,10 +73,7 @@ mod tests {
     #[test]
     fn every_family_round_trips_through_its_file_name() {
         for family in OverlayFamily::ALL {
-            assert_eq!(
-                OverlayFamily::from_file_name(family.file_name()),
-                Some(family)
-            );
+            assert_eq!(OverlayFamily::from_file_name(family.file_name()), Some(family));
         }
         assert_eq!(OverlayFamily::from_file_name("meta.json"), None);
     }

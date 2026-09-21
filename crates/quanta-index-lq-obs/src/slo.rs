@@ -228,10 +228,9 @@ impl<'de> serde::Deserialize<'de> for SloViolation {
                         match v {
                             "observed_p99_ms" => Ok(Field::Observed),
                             "target_p99_ms" => Ok(Field::Target),
-                            other => Err(E::unknown_field(
-                                other,
-                                &["observed_p99_ms", "target_p99_ms"],
-                            )),
+                            other => {
+                                Err(E::unknown_field(other, &["observed_p99_ms", "target_p99_ms"]))
+                            }
                         }
                     }
                 }
@@ -310,10 +309,7 @@ mod tests {
 
     #[test]
     fn structural_slo_matches_spec() {
-        assert_eq!(
-            STRUCTURAL_SINGLE_REPO_SLO,
-            SloTarget::new(200, 1_000, 3_000)
-        );
+        assert_eq!(STRUCTURAL_SINGLE_REPO_SLO, SloTarget::new(200, 1_000, 3_000));
     }
 
     #[test]

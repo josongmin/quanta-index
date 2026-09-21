@@ -64,10 +64,7 @@ fn fresh_runtime_exposes_empty_semantic_boot_report() -> TestResult {
 
     // No legacy journal and no durable generations on a fresh state root, so the
     // boot path reports a direct (no-migration) open with zero seeded generations.
-    assert_eq!(
-        runtime.semantic_boot.migration,
-        SemanticMigrationOutcome::NoLegacyJournal
-    );
+    assert_eq!(runtime.semantic_boot.migration, SemanticMigrationOutcome::NoLegacyJournal);
     assert_eq!(runtime.semantic_boot.seed.sealed_generations, 0);
     Ok(())
 }

@@ -284,10 +284,7 @@ mod tests {
             ("shared:group=devs", shared(Some(2000), &[])),
             ("shared:group=2001", shared(Some(2001), &[])),
             ("shared:uid=alice,uid=1002", shared(None, &[1001, 1002])),
-            (
-                "shared:uid=1002,group=devs,uid=alice",
-                shared(Some(2000), &[1001, 1002]),
-            ),
+            ("shared:uid=1002,group=devs,uid=alice", shared(Some(2000), &[1001, 1002])),
         ];
         for (raw, expected) in cases {
             let parsed = parse_socket_access(KNOB, raw, &Scripted).expect(raw);
@@ -311,10 +308,7 @@ mod tests {
             ("shared:group=devs,group=devs", "`group=` may be given once"),
             ("shared:uid=alice,uid=1001", "listed more than once"),
             ("shared:group=nope", "group `nope` does not exist"),
-            (
-                "shared:uid=nobody-here",
-                "user `nobody-here` does not exist",
-            ),
+            ("shared:uid=nobody-here", "user `nobody-here` does not exist"),
         ];
         for (raw, expected) in cases {
             let error = parse_socket_access(KNOB, raw, &Scripted)
@@ -343,18 +337,9 @@ mod tests {
             &Scripted,
         )
         .expect("a shared query socket");
-        assert_eq!(
-            query_only.for_role(SocketRole::Query),
-            &shared(Some(2000), &[])
-        );
-        assert_eq!(
-            query_only.for_role(SocketRole::Control),
-            &SocketAccessPolicy::Private
-        );
-        assert_eq!(
-            query_only.for_role(SocketRole::Ingest),
-            &SocketAccessPolicy::Private
-        );
+        assert_eq!(query_only.for_role(SocketRole::Query), &shared(Some(2000), &[]));
+        assert_eq!(query_only.for_role(SocketRole::Control), &SocketAccessPolicy::Private);
+        assert_eq!(query_only.for_role(SocketRole::Ingest), &SocketAccessPolicy::Private);
 
         let ingest_bad = socket_access_policies_from_lookup(
             &|name| Ok((name == SocketRole::Ingest.env_name()).then(|| "shared:uid=".to_string())),
@@ -384,10 +369,7 @@ mod tests {
         .expect_err("an unknown group name must refuse the config")
         .to_string();
         assert!(error.contains(SocketRole::Query.env_name()), "{error}");
-        assert!(
-            error.contains("group `no-such-group-xyz` does not exist"),
-            "{error}"
-        );
+        assert!(error.contains("group `no-such-group-xyz` does not exist"), "{error}");
     }
 
     /// The system resolver answers for this process's own primary group

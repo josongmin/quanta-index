@@ -423,11 +423,7 @@ mod tests {
         // Mutation (first `||` → `&&`): (A && B) || C = (true && false) || false = false → Ok.
         let mut opts = LqOptions::defaults();
         opts.pattern_type = LqPatternType::Structural;
-        let q = make_query(
-            LqExpr::Leaf(LqLeaf::Keyword("anything".to_string())),
-            Vec::new(),
-            opts,
-        );
+        let q = make_query(LqExpr::Leaf(LqLeaf::Keyword("anything".to_string())), Vec::new(), opts);
         let result = LexicalPolicy::validate_query(&q);
         assert!(
             matches!(

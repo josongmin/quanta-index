@@ -95,9 +95,8 @@ impl crate::NamespaceIngest for RepoMapNs {
         client: &QuantaIndex,
         bundle: &RepoMapSourceBundle,
     ) -> Result<RepoMapMutationAck, SdkError> {
-        let response = client.dispatch_ingest(
-            SearchPlaneIngestIpcRequest::PublishRepoMapBundle(bundle.clone()),
-        )?;
+        let response = client
+            .dispatch_ingest(SearchPlaneIngestIpcRequest::PublishRepoMapBundle(bundle.clone()))?;
         match response {
             SearchPlaneIngestIpcResponse::RepoMapReceipt(ack) => Ok(ack),
             other @ (SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)

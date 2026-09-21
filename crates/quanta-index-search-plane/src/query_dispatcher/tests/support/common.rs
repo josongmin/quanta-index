@@ -43,9 +43,7 @@ pub(crate) fn encode_cbor<T: serde::Serialize>(
 }
 
 pub(crate) fn default_query_embedder() -> Arc<dyn QueryTextEmbedderPort + Send + Sync> {
-    Arc::new(HashingQueryTextEmbedder::new(
-        SEARCH_OWNED_SEMANTIC_DIMENSION,
-    ))
+    Arc::new(HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION))
 }
 
 pub(crate) fn test_activation_catalog() -> Result<Arc<ActivationCatalog>, Box<dyn std::error::Error>>
@@ -88,7 +86,7 @@ pub(crate) fn activation_catalog_with_generations(
         let activation = catalog.activate_prepared_search_corpus_generation_v1(&prepared)?;
         if activation.active != *generation {
             return Err(
-                "activation receipt did not preserve the prepared composite generation".into(),
+                "activation receipt did not preserve the prepared composite generation".into()
             );
         }
     }

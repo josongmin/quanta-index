@@ -51,10 +51,8 @@ fn history_dispatch_success_emits_closed_obs_metrics() -> TestResult {
         obs_sink.clone(),
     );
 
-    let response = dispatcher.dispatch(
-        history_query_request("type:commit fix"),
-        &RequestBudgetV1::unbounded(),
-    );
+    let response = dispatcher
+        .dispatch(history_query_request("type:commit fix"), &RequestBudgetV1::unbounded());
     match response {
         SearchPlaneQueryIpcResponse::History(history) => {
             if history.generation != ready_pin()
@@ -108,10 +106,8 @@ fn history_dispatch_unavailable_emits_closed_obs_metric() -> TestResult {
         obs_sink.clone(),
     );
 
-    let response = dispatcher.dispatch(
-        history_query_request("type:commit fix"),
-        &RequestBudgetV1::unbounded(),
-    );
+    let response = dispatcher
+        .dispatch(history_query_request("type:commit fix"), &RequestBudgetV1::unbounded());
     let (code, _message) = ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
     if code != ERR_HISTORY_PRODUCER_UNAVAILABLE {
         return Err(format!("expected {ERR_HISTORY_PRODUCER_UNAVAILABLE}, got {code}").into());
@@ -220,10 +216,8 @@ fn history_validate_rejects_content_regex_leaf_upfront() -> TestResult {
 fn history_dispatch_maps_generation_not_ready_before_lexical_materialization() -> TestResult {
     let dispatcher = history_dispatcher_with_ledger(Arc::new(RwLock::new(Ledger::default())))?;
 
-    let response = dispatcher.dispatch(
-        history_query_request("type:commit fix"),
-        &RequestBudgetV1::unbounded(),
-    );
+    let response = dispatcher
+        .dispatch(history_query_request("type:commit fix"), &RequestBudgetV1::unbounded());
 
     let (code, _message) = ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
     if code != ERR_HISTORY_GENERATION_NOT_READY {
@@ -236,10 +230,8 @@ fn history_dispatch_maps_generation_not_ready_before_lexical_materialization() -
 fn history_dispatch_maps_producer_unavailable_after_lexical_ready() -> TestResult {
     let dispatcher = history_dispatcher_with_ledger(ready_ledger())?;
 
-    let response = dispatcher.dispatch(
-        history_query_request("type:commit fix"),
-        &RequestBudgetV1::unbounded(),
-    );
+    let response = dispatcher
+        .dispatch(history_query_request("type:commit fix"), &RequestBudgetV1::unbounded());
 
     let (code, _message) = ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
     if code != ERR_HISTORY_PRODUCER_UNAVAILABLE {
@@ -262,10 +254,8 @@ fn history_dispatch_maps_shard_unavailable_for_missing_diff_shard() -> TestResul
         }),
     ])?)?;
 
-    let response = dispatcher.dispatch(
-        history_query_request("type:diff history"),
-        &RequestBudgetV1::unbounded(),
-    );
+    let response = dispatcher
+        .dispatch(history_query_request("type:diff history"), &RequestBudgetV1::unbounded());
 
     let (code, _message) = ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
     if code != ERR_HISTORY_SHARD_UNAVAILABLE {

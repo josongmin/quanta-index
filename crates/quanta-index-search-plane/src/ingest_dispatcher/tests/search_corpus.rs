@@ -60,7 +60,7 @@ fn search_corpus_receipt_exactly_acknowledges_semantic_replace_and_tombstone_mut
         || receipt.accepted_semantic_tombstone_scopes != 1
     {
         return Err(
-            format!("search-corpus receipt lost semantic mutation partition: {receipt:?}").into(),
+            format!("search-corpus receipt lost semantic mutation partition: {receipt:?}").into()
         );
     }
     Ok(())
@@ -242,9 +242,8 @@ fn reclaim_materializer(
     semantic_reclaim: &Arc<ScriptedSealedReclaim>,
     idempotency: &Arc<MemoryIdempotencyCatalog>,
 ) -> DirectSearchCorpusMaterializer {
-    let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> = Arc::new(
-        DirectSemanticMaterializer::new(Arc::new(FakeSemanticBuilder::default())),
-    );
+    let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> =
+        Arc::new(DirectSemanticMaterializer::new(Arc::new(FakeSemanticBuilder::default())));
     DirectSearchCorpusMaterializer::new_with_search_owned_semantics(SearchCorpusMaterializerParts {
         builder: Arc::new(FakeSearchCorpusBuilder::default()),
         ledger: Arc::new(RwLock::new(Ledger::new())),
@@ -310,13 +309,7 @@ fn a_reclaim_pass_step_failing_after_the_seal_is_durable_is_counted_and_redone()
         let lexical = lexical_reclaim.remaining();
         let semantic = semantic_reclaim.remaining();
         let records = idempotency.generations_with_records();
-        if (
-            failures,
-            lexical.as_slice(),
-            semantic.as_slice(),
-            records.as_slice(),
-        ) != expected
-        {
+        if (failures, lexical.as_slice(), semantic.as_slice(), records.as_slice()) != expected {
             return Err(format!(
                 "{step}: failures={failures} lexical={lexical:?} semantic={semantic:?} records={records:?}, expected {expected:?}"
             )
@@ -335,10 +328,7 @@ fn a_reclaim_pass_step_failing_after_the_seal_is_durable_is_counted_and_redone()
     pass("a failed record forget", (3, &[3, 4], &[3, 4], &[1, 3]))?;
     idempotency.fail_next_listing();
     pass("a failed record listing", (4, &[3, 4], &[3, 4], &[1, 3]))?;
-    pass(
-        "a clean pass redoes what is left",
-        (4, &[3, 4], &[3, 4], &[3]),
-    )?;
+    pass("a clean pass redoes what is left", (4, &[3, 4], &[3, 4], &[3]))?;
     Ok(())
 }
 
@@ -425,14 +415,8 @@ fn every_pass_first_finishes_what_interrupted_reclaims_left() -> TestRes {
             gc.failures,
             gc.interrupted_reclaims_finished,
             (gc.lexical_reclaimed_generations, gc.lexical_reclaimed_bytes),
-            (
-                gc.semantic_reclaimed_generations,
-                gc.semantic_reclaimed_bytes,
-            ),
-            (
-                lexical_reclaim.interrupted_left(),
-                semantic_reclaim.interrupted_left(),
-            ),
+            (gc.semantic_reclaimed_generations, gc.semantic_reclaimed_bytes),
+            (lexical_reclaim.interrupted_left(), semantic_reclaim.interrupted_left()),
         );
         if observed != expected {
             return Err(format!("{step}: {observed:?}, expected {expected:?}").into());
@@ -441,14 +425,8 @@ fn every_pass_first_finishes_what_interrupted_reclaims_left() -> TestRes {
     };
 
     lexical_reclaim.fail_next_finish();
-    pass(
-        "a lexical finish the storage failed",
-        (1, 1, (0, 0), (1, 10), (2, 0)),
-    )?;
-    pass(
-        "the next pass finishes the rest",
-        (1, 3, (2, 20), (1, 10), (0, 0)),
-    )?;
+    pass("a lexical finish the storage failed", (1, 1, (0, 0), (1, 10), (2, 0)))?;
+    pass("the next pass finishes the rest", (1, 3, (2, 20), (1, 10), (0, 0)))?;
     let untouched = (
         lexical_reclaim.remaining(),
         semantic_reclaim.remaining(),
@@ -483,9 +461,8 @@ fn reclaim_sweeps_orphans_and_defers_pinned_generations() -> TestRes {
     let snapshots = SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT);
     let catalog = memory_catalog();
     let lexical_ledger = Arc::new(RwLock::new(Ledger::new()));
-    let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> = Arc::new(
-        DirectSemanticMaterializer::new(Arc::new(FakeSemanticBuilder::default())),
-    );
+    let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> =
+        Arc::new(DirectSemanticMaterializer::new(Arc::new(FakeSemanticBuilder::default())));
     let materializer = DirectSearchCorpusMaterializer::new_with_search_owned_semantics(
         SearchCorpusMaterializerParts {
             builder: Arc::new(FakeSearchCorpusBuilder::default()),
@@ -520,19 +497,11 @@ fn reclaim_sweeps_orphans_and_defers_pinned_generations() -> TestRes {
     );
     // Generation 0 never sealed on either track (a batch that crashed or
     // was rejected mid-apply); 1..=5 are the generations on disk above.
-    seed_records(
-        &catalog,
-        &batch.repo_id,
-        &batch.revision_id,
-        &[0, 1, 2, 3, 4, 5],
-    )?;
+    seed_records(&catalog, &batch.repo_id, &batch.revision_id, &[0, 1, 2, 3, 4, 5])?;
 
     // A query still holds generation 2 on the lexical track.
-    let pinned_key = SnapshotKey::new(
-        &batch.repo_id,
-        &batch.revision_id,
-        ManifestGeneration::new(2),
-    );
+    let pinned_key =
+        SnapshotKey::new(&batch.repo_id, &batch.revision_id, ManifestGeneration::new(2));
     let pin = snapshots
         .lexical
         .acquire(&pinned_key, &RequestBudgetV1::unbounded(), || {
@@ -843,10 +812,7 @@ fn a_delta_over_a_corrupt_base_is_refused_with_the_repair() -> TestRes {
         );
     for (label, outcome) in [
         ("preflight", probe.materializer.preflight_batch(&delta)),
-        (
-            "publish",
-            probe.materializer.publish_batch(&delta).map(|_receipt| ()),
-        ),
+        ("publish", probe.materializer.publish_batch(&delta).map(|_receipt| ())),
     ] {
         match outcome {
             Err(CoreError::Typed { code, message })
@@ -870,9 +836,7 @@ fn search_corpus_materializer_derives_search_owned_semantic_batch() -> TestRes {
         search_corpus_builder,
         Arc::clone(&lexical_ledger),
         semantic_materializer,
-        Arc::new(crate::HashingQueryTextEmbedder::new(
-            SEARCH_OWNED_SEMANTIC_DIMENSION,
-        )),
+        Arc::new(crate::HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION,)),
         authority.clone(),
         build_then_valid_generation(),
         build_then_valid_generation(),
@@ -1007,9 +971,7 @@ fn sealed_exact_retry_repairs_authority_without_rebuilding_tracks() -> TestRes {
         lexical_builder.clone(),
         Arc::clone(&ledger),
         semantic_materializer,
-        Arc::new(crate::HashingQueryTextEmbedder::new(
-            SEARCH_OWNED_SEMANTIC_DIMENSION,
-        )),
+        Arc::new(crate::HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION,)),
         authority.clone(),
         always_valid_generation(),
         always_valid_generation(),
@@ -1062,22 +1024,15 @@ fn durable_retention_error_fences_same_process_rollback_authority() -> TestRes {
     let materializer = search_corpus_materializer!(
         Arc::new(FakeSearchCorpusBuilder::default()),
         Arc::clone(&ledger),
-        Arc::new(DirectSemanticMaterializer::new(Arc::new(
-            FakeSemanticBuilder::default()
-        ))),
-        Arc::new(crate::HashingQueryTextEmbedder::new(
-            SEARCH_OWNED_SEMANTIC_DIMENSION,
-        )),
+        Arc::new(DirectSemanticMaterializer::new(Arc::new(FakeSemanticBuilder::default()))),
+        Arc::new(crate::HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION,)),
         Arc::new(FailingRetentionAuthority),
         always_valid_generation(),
         always_valid_generation(),
         test_incomplete_generation_discard(),
         test_incomplete_generation_discard(),
     );
-    assert!(matches!(
-        materializer.publish_batch(&batch),
-        Err(CoreError::Storage(_))
-    ));
+    assert!(matches!(materializer.publish_batch(&batch), Err(CoreError::Storage(_))));
     let rollback = ledger
         .read()
         .map_err(|err| format!("ledger poisoned: {err}"))?
@@ -1099,9 +1054,7 @@ fn non_seal_batch_cannot_mutate_an_already_sealed_generation() -> TestRes {
         lexical_builder.clone(),
         Arc::new(RwLock::new(Ledger::new())),
         semantic_materializer,
-        Arc::new(crate::HashingQueryTextEmbedder::new(
-            SEARCH_OWNED_SEMANTIC_DIMENSION,
-        )),
+        Arc::new(crate::HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION,)),
         recording_search_corpus_authority(),
         always_valid_generation(),
         always_valid_generation(),
@@ -1114,10 +1067,7 @@ fn non_seal_batch_cannot_mutate_an_already_sealed_generation() -> TestRes {
     let Err(CoreError::Typed { code, .. }) = result else {
         return Err("non-seal mutation of sealed generation unexpectedly succeeded".into());
     };
-    assert_eq!(
-        code,
-        quanta_index_contract::SearchPlaneErrorCodeV2::GenerationImmutable
-    );
+    assert_eq!(code, quanta_index_contract::SearchPlaneErrorCodeV2::GenerationImmutable);
     assert!(
         lexical_builder
             .batches
@@ -1143,9 +1093,7 @@ fn exact_lexical_missing_semantic_retry_builds_only_missing_track() -> TestRes {
         lexical_builder.clone(),
         Arc::clone(&ledger),
         semantic_materializer,
-        Arc::new(crate::HashingQueryTextEmbedder::new(
-            SEARCH_OWNED_SEMANTIC_DIMENSION,
-        )),
+        Arc::new(crate::HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION,)),
         recording_search_corpus_authority(),
         always_valid_generation(),
         build_then_valid_generation(),
@@ -1183,9 +1131,7 @@ fn incomplete_lexical_exact_semantic_retry_discards_and_rebuilds_only_lexical() 
         lexical_builder.clone(),
         Arc::clone(&ledger),
         semantic_materializer,
-        Arc::new(crate::HashingQueryTextEmbedder::new(
-            SEARCH_OWNED_SEMANTIC_DIMENSION,
-        )),
+        Arc::new(crate::HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION,)),
         recording_search_corpus_authority(),
         incomplete_then_valid_generation(),
         always_valid_generation(),
@@ -1221,9 +1167,7 @@ fn jointly_incomplete_tracks_keep_staged_data_for_normal_seal() -> TestRes {
         lexical_builder.clone(),
         Arc::new(RwLock::new(Ledger::new())),
         semantic_materializer,
-        Arc::new(crate::HashingQueryTextEmbedder::new(
-            SEARCH_OWNED_SEMANTIC_DIMENSION,
-        )),
+        Arc::new(crate::HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION,)),
         recording_search_corpus_authority(),
         incomplete_then_valid_generation(),
         incomplete_then_valid_generation(),
@@ -1257,9 +1201,7 @@ fn search_corpus_materializer_rejects_mismatched_semantic_receipt_before_authori
         Arc::new(FakeSearchCorpusBuilder::default()),
         Arc::clone(&ledger),
         Arc::new(MismatchedSemanticIngest),
-        Arc::new(crate::HashingQueryTextEmbedder::new(
-            SEARCH_OWNED_SEMANTIC_DIMENSION,
-        )),
+        Arc::new(crate::HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION,)),
         authority.clone(),
         build_then_valid_generation(),
         build_then_valid_generation(),

@@ -182,7 +182,7 @@ fn a_one_row_dirty_mutation_writes_one_row() -> TestRes {
     drop(guard);
     if applied != Some(2) || resident != Some(1_000) {
         return Err(
-            format!("the row changed in place: applied={applied:?} resident={resident:?}").into(),
+            format!("the row changed in place: applied={applied:?} resident={resident:?}").into()
         );
     }
     Ok(())
@@ -241,9 +241,8 @@ fn sealing_materializer(
     ledger: &Arc<RwLock<Ledger>>,
     aux: &AuxiliaryMaterializerParts,
 ) -> DirectSearchCorpusMaterializer {
-    let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> = Arc::new(
-        DirectSemanticMaterializer::new(Arc::new(FakeSemanticBuilder::default())),
-    );
+    let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> =
+        Arc::new(DirectSemanticMaterializer::new(Arc::new(FakeSemanticBuilder::default())));
     DirectSearchCorpusMaterializer::new_with_search_owned_semantics(SearchCorpusMaterializerParts {
         builder: Arc::new(FakeSearchCorpusBuilder::default()),
         ledger: Arc::clone(ledger),
@@ -280,10 +279,8 @@ fn retention_forgets_auxiliary_generations_the_receipt_does_not_retain() -> Test
     let (aux, catalog) = aux_parts(Arc::clone(&ledger));
     let history = DirectHistoryMaterializer::new(aux.clone());
     for generation in [3, 4] {
-        let _receipt = history.publish_batch(&fixture_history_batch(
-            generation,
-            vec![fixture_commit(1, &[])],
-        ))?;
+        let _receipt = history
+            .publish_batch(&fixture_history_batch(generation, vec![fixture_commit(1, &[])]))?;
     }
     let materializer = sealing_materializer(&ledger, &aux);
     let mut batch = fixture_search_corpus_batch()?;
@@ -299,25 +296,13 @@ fn retention_forgets_auxiliary_generations_the_receipt_does_not_retain() -> Test
         .read()
         .map_err(|err| format!("ledger poisoned: {err}"))?;
     let forgotten = guard
-        .history_state(
-            &batch.repo_id,
-            &batch.revision_id,
-            ManifestGeneration::new(3),
-        )
+        .history_state(&batch.repo_id, &batch.revision_id, ManifestGeneration::new(3))
         .is_none();
     let retained = guard
-        .history_state(
-            &batch.repo_id,
-            &batch.revision_id,
-            ManifestGeneration::new(4),
-        )
+        .history_state(&batch.repo_id, &batch.revision_id, ManifestGeneration::new(4))
         .is_some();
     let sealed_chunks = guard
-        .structural_state(
-            &batch.repo_id,
-            &batch.revision_id,
-            ManifestGeneration::new(5),
-        )
+        .structural_state(&batch.repo_id, &batch.revision_id, ManifestGeneration::new(5))
         .map(|state| state.chunks().len());
     drop(guard);
     if !forgotten || !retained || sealed_chunks != Some(1) {
@@ -355,10 +340,8 @@ fn a_seal_whose_reap_transaction_fails_changes_neither_catalog_nor_ledger() -> T
     let (aux, catalog) = aux_parts(Arc::clone(&ledger));
     let history = DirectHistoryMaterializer::new(aux.clone());
     for generation in [3, 4] {
-        let _receipt = history.publish_batch(&fixture_history_batch(
-            generation,
-            vec![fixture_commit(1, &[])],
-        ))?;
+        let _receipt = history
+            .publish_batch(&fixture_history_batch(generation, vec![fixture_commit(1, &[])]))?;
     }
     let materializer = sealing_materializer(&ledger, &aux);
     let mut batch = fixture_search_corpus_batch()?;
@@ -373,18 +356,10 @@ fn a_seal_whose_reap_transaction_fails_changes_neither_catalog_nor_ledger() -> T
             .read()
             .map_err(|err| format!("ledger poisoned: {err}"))?;
         let holds_3 = guard
-            .history_state(
-                &batch.repo_id,
-                &batch.revision_id,
-                ManifestGeneration::new(3),
-            )
+            .history_state(&batch.repo_id, &batch.revision_id, ManifestGeneration::new(3))
             .is_some();
         let chunks_5 = guard
-            .structural_state(
-                &batch.repo_id,
-                &batch.revision_id,
-                ManifestGeneration::new(5),
-            )
+            .structural_state(&batch.repo_id, &batch.revision_id, ManifestGeneration::new(5))
             .map(|state| state.chunks().len());
         drop(guard);
         Ok((catalog.generations(), holds_3, chunks_5))
@@ -448,10 +423,8 @@ fn forgotten_generations_text_indexes_are_swept_and_a_failed_discard_is_retried(
     let history =
         DirectHistoryMaterializer::new(aux.clone()).with_history_text(history_text.clone());
     for generation in [3, 4] {
-        let _receipt = history.publish_batch(&fixture_history_batch(
-            generation,
-            vec![fixture_commit(1, &[])],
-        ))?;
+        let _receipt = history
+            .publish_batch(&fixture_history_batch(generation, vec![fixture_commit(1, &[])]))?;
     }
     let mut batch = fixture_search_corpus_batch()?;
     let key = |generation: u64| AuxiliaryGenerationKeyV1 {
@@ -527,10 +500,8 @@ fn a_refused_history_text_listing_fails_the_seal_closed() -> TestRes {
     let history =
         DirectHistoryMaterializer::new(aux.clone()).with_history_text(history_text.clone());
     for generation in [3, 4] {
-        let _receipt = history.publish_batch(&fixture_history_batch(
-            generation,
-            vec![fixture_commit(1, &[])],
-        ))?;
+        let _receipt = history
+            .publish_batch(&fixture_history_batch(generation, vec![fixture_commit(1, &[])]))?;
     }
     let materializer = sealing_materializer(&ledger, &aux).with_history_text(history_text.clone());
     let mut batch = fixture_search_corpus_batch()?;

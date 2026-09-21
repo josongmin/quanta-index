@@ -219,11 +219,7 @@ fn route_socket_registry_and_diagnostic_tallies_move_by_exactly_the_traffic_sent
         &second.counter_delta(&first, "ipc_query_dispatch_queue_wait_total")?,
         &0,
     )?;
-    expect_eq(
-        "query dispatch in flight",
-        &second.gauge("ipc_query_dispatch_in_flight")?,
-        &0.0,
-    )?;
+    expect_eq("query dispatch in flight", &second.gauge("ipc_query_dispatch_in_flight")?, &0.0)?;
     let response_bytes = second.counter_delta(&first, "ipc_query_response_bytes_total")?;
     if response_bytes < SERVED_QUERIES.saturating_mul(5) {
         return Err(format!("five answers carried bytes: {response_bytes}").into());
@@ -375,46 +371,16 @@ fn boot_gauges_match_the_boot_inventory_and_the_writer_envelope_reflects_the_sea
             "boot_semantic_quarantined_generations",
             u64::try_from(inventory.semantic.quarantined.len())?,
         ),
-        (
-            "boot_lexical_interrupted_reclaims_finished",
-            lexical_finished,
-        ),
-        (
-            "boot_lexical_interrupted_reclaims_unfinished",
-            lexical_unfinished,
-        ),
-        (
-            "boot_semantic_interrupted_reclaims_finished",
-            semantic_finished,
-        ),
-        (
-            "boot_semantic_interrupted_reclaims_unfinished",
-            semantic_unfinished,
-        ),
-        (
-            "boot_active_pairs_validated",
-            u64::try_from(inventory.active_pairs_validated)?,
-        ),
-        (
-            "boot_half_sealed_pairs",
-            u64::try_from(inventory.half_sealed_pairs.len())?,
-        ),
-        (
-            "boot_auxiliary_rows_restored",
-            inventory.auxiliary_rows_restored,
-        ),
-        (
-            "boot_repomap_snapshots_loaded",
-            inventory.repo_map.snapshots_loaded,
-        ),
-        (
-            "boot_repomap_snapshots_migrated",
-            inventory.repo_map.snapshots_migrated,
-        ),
-        (
-            "boot_repomap_activations_loaded",
-            inventory.repo_map.activations_loaded,
-        ),
+        ("boot_lexical_interrupted_reclaims_finished", lexical_finished),
+        ("boot_lexical_interrupted_reclaims_unfinished", lexical_unfinished),
+        ("boot_semantic_interrupted_reclaims_finished", semantic_finished),
+        ("boot_semantic_interrupted_reclaims_unfinished", semantic_unfinished),
+        ("boot_active_pairs_validated", u64::try_from(inventory.active_pairs_validated)?),
+        ("boot_half_sealed_pairs", u64::try_from(inventory.half_sealed_pairs.len())?),
+        ("boot_auxiliary_rows_restored", inventory.auxiliary_rows_restored),
+        ("boot_repomap_snapshots_loaded", inventory.repo_map.snapshots_loaded),
+        ("boot_repomap_snapshots_migrated", inventory.repo_map.snapshots_migrated),
+        ("boot_repomap_activations_loaded", inventory.repo_map.activations_loaded),
         (
             "boot_repomap_stale_temporaries_removed",
             inventory.repo_map.stale_temporaries_removed,
@@ -436,11 +402,7 @@ fn boot_gauges_match_the_boot_inventory_and_the_writer_envelope_reflects_the_sea
     // One generation was written and sealed: its writer was released by
     // the seal, and nothing is open now. The envelope's ceiling is the
     // policy's, never zero.
-    expect_eq(
-        "seal releases",
-        &scrape.counter("lexical_writer_seal_releases_total")?,
-        &1,
-    )?;
+    expect_eq("seal releases", &scrape.counter("lexical_writer_seal_releases_total")?, &1)?;
     expect_eq("open writers", &scrape.gauge("lexical_writers_open")?, &0.0)?;
     // Two chunks were ingested into one generation: the first batch found
     // no text authority and rebuilt from its one document, the second
@@ -509,29 +471,17 @@ fn boot_gauges_match_the_boot_inventory_and_the_writer_envelope_reflects_the_sea
         let live = scrape.gauge(&format!("ipc_{plane}_connections_live"))?;
         // The control connection carrying this very scrape is live.
         let expected_live = if plane == "control" { 1.0 } else { 0.0 };
-        expect_eq(
-            &format!("ipc_{plane}_connections_live"),
-            &live,
-            &expected_live,
-        )?;
+        expect_eq(&format!("ipc_{plane}_connections_live"), &live, &expected_live)?;
     }
     // The ingest envelope admitted the fixture's batches and refused none.
     if scrape.counter("ingest_batches_admitted_total")? == 0 {
         return Err("the fixture's ingest batches were admitted".into());
     }
-    expect_eq(
-        "ingest refusals",
-        &scrape.counter("ingest_batches_refused_total")?,
-        &0,
-    )?;
+    expect_eq("ingest refusals", &scrape.counter("ingest_batches_refused_total")?, &0)?;
 
     // The development embedder label (QI-BB-007): the harness boots the
     // hash profile, and the scrape says so.
-    expect_eq(
-        "dev semantic profile",
-        &scrape.gauge("boot_semantic_profile_is_dev")?,
-        &1.0,
-    )?;
+    expect_eq("dev semantic profile", &scrape.gauge("boot_semantic_profile_is_dev")?, &1.0)?;
     if !inventory.semantic_profile_is_dev {
         return Err("the boot inventory labels the hash profile as dev".into());
     }
@@ -540,11 +490,7 @@ fn boot_gauges_match_the_boot_inventory_and_the_writer_envelope_reflects_the_sea
     // measured both tracks at boot, the writer gate is disabled by
     // default and says so, and the process reports a resident set.
     let _present = scrape.counter("maintenance_ticks_total")?;
-    expect_eq(
-        "sweep failures",
-        &scrape.counter("maintenance_sweep_failures_total")?,
-        &0,
-    )?;
+    expect_eq("sweep failures", &scrape.counter("maintenance_sweep_failures_total")?, &0)?;
     expect_eq(
         "disk refresh failures",
         &scrape.counter("maintenance_disk_refresh_failures_total")?,
@@ -557,11 +503,7 @@ fn boot_gauges_match_the_boot_inventory_and_the_writer_envelope_reflects_the_sea
         &scrape.gauge("lexical_writer_rss_gate_enabled")?,
         &0.0,
     )?;
-    expect_eq(
-        "rss refusals",
-        &scrape.counter("lexical_writer_rss_refusals_total")?,
-        &0,
-    )?;
+    expect_eq("rss refusals", &scrape.counter("lexical_writer_rss_refusals_total")?, &0)?;
     if scrape.gauge("process_resident_bytes")? <= 0.0 {
         return Err("a running daemon has resident pages".into());
     }
@@ -627,11 +569,7 @@ fn the_provider_and_cache_open_metrics_are_scraped_under_the_openai_profile() ->
         &scrape.counter("embedding_cache_manifest_flushes_total")?,
         &1,
     )?;
-    expect_eq(
-        "not a dev profile",
-        &scrape.gauge("boot_semantic_profile_is_dev")?,
-        &0.0,
-    )?;
+    expect_eq("not a dev profile", &scrape.gauge("boot_semantic_profile_is_dev")?, &0.0)?;
     Ok(())
 }
 
@@ -676,16 +614,8 @@ fn regex_match_cache_tallies_move_by_exactly_the_regex_traffic() -> TestResult {
         return Err("a built set occupies bytes".into());
     }
     // The seed ran no regex, so the cache held nothing before.
-    expect_eq(
-        "entries before",
-        &before.gauge("lexical_regex_cache_entries")?,
-        &0.0,
-    )?;
-    expect_eq(
-        "entries",
-        &first.gauge("lexical_regex_cache_entries")?,
-        &1.0,
-    )?;
+    expect_eq("entries before", &before.gauge("lexical_regex_cache_entries")?, &0.0)?;
+    expect_eq("entries", &first.gauge("lexical_regex_cache_entries")?, &1.0)?;
     let resident = first.gauge("lexical_regex_cache_resident_bytes")?;
     if resident <= before.gauge("lexical_regex_cache_resident_bytes")? {
         return Err("the kept set is resident".into());

@@ -126,9 +126,9 @@ impl TantivySearcher {
                 }
                 Ok(collapse_exprs(out, false))
             }
-            LqExpr::Not(inner) => Ok(LqExpr::Not(Box::new(
-                self.lower_predicates_for_boolean_scope(inner, budget)?,
-            ))),
+            LqExpr::Not(inner) => {
+                Ok(LqExpr::Not(Box::new(self.lower_predicates_for_boolean_scope(inner, budget)?)))
+            }
         }
     }
 
@@ -136,14 +136,8 @@ impl TantivySearcher {
         &self,
         expr: &LqExpr,
         budget: &RequestBudgetV1,
-    ) -> Result<
-        (
-            LqExpr,
-            Vec<RepoScopeConstraint>,
-            Vec<ContentPredicateConstraint>,
-        ),
-        CoreError,
-    > {
+    ) -> Result<(LqExpr, Vec<RepoScopeConstraint>, Vec<ContentPredicateConstraint>), CoreError>
+    {
         match expr {
             LqExpr::Empty => Ok((LqExpr::Empty, Vec::new(), Vec::new())),
             LqExpr::Leaf(LqLeaf::Predicate { name, args }) => {
@@ -245,17 +239,11 @@ impl TantivySearcher {
                     repo_predicates.extend(repo_parts);
                     file_predicates.extend(file_parts);
                 }
-                Ok((
-                    collapse_exprs(exprs, true),
-                    repo_predicates,
-                    file_predicates,
-                ))
+                Ok((collapse_exprs(exprs, true), repo_predicates, file_predicates))
             }
-            LqExpr::Any(_) | LqExpr::Not(_) => Ok((
-                self.lower_predicates_for_boolean_scope(expr, budget)?,
-                Vec::new(),
-                Vec::new(),
-            )),
+            LqExpr::Any(_) | LqExpr::Not(_) => {
+                Ok((self.lower_predicates_for_boolean_scope(expr, budget)?, Vec::new(), Vec::new()))
+            }
         }
     }
 

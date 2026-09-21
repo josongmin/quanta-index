@@ -98,21 +98,9 @@ fn expect(
 fn count_all_keeps_the_page_and_reports_the_exact_total() -> TestResult {
     let mut rt = seeded_runtime()?;
     let observed = text_query(&mut rt, "count:all needle", 2)?;
-    expect(
-        "count:all top_k=2",
-        &observed,
-        2,
-        CandidateCountV1::Exact(FILES),
-        true,
-    )?;
+    expect("count:all top_k=2", &observed, 2, CandidateCountV1::Exact(FILES), true)?;
     let whole = text_query(&mut rt, "count:all needle", 10)?;
-    expect(
-        "count:all top_k=10",
-        &whole,
-        5,
-        CandidateCountV1::Exact(FILES),
-        false,
-    )
+    expect("count:all top_k=10", &whole, 5, CandidateCountV1::Exact(FILES), false)
 }
 
 #[test]
@@ -120,26 +108,14 @@ fn a_plain_page_reports_only_what_the_probe_proved() -> TestResult {
     let mut rt = seeded_runtime()?;
     let observed = text_query(&mut rt, "needle", 2)?;
     // Two rows plus one probe row observed: at least three, more exist.
-    expect(
-        "plain top_k=2",
-        &observed,
-        2,
-        CandidateCountV1::AtLeast(3),
-        true,
-    )
+    expect("plain top_k=2", &observed, 2, CandidateCountV1::AtLeast(3), true)
 }
 
 #[test]
 fn a_bounded_count_caps_the_page_and_still_reports_the_exact_total() -> TestResult {
     let mut rt = seeded_runtime()?;
     let observed = text_query(&mut rt, "count:3 needle", 10)?;
-    expect(
-        "count:3 top_k=10",
-        &observed,
-        3,
-        CandidateCountV1::Exact(FILES),
-        true,
-    )
+    expect("count:3 top_k=10", &observed, 3, CandidateCountV1::Exact(FILES), true)
 }
 
 #[test]
@@ -147,11 +123,5 @@ fn a_projection_reports_its_collapsed_universe_exactly() -> TestResult {
     let mut rt = seeded_runtime()?;
     // Five files on five distinct paths collapse to five path rows.
     let observed = text_query(&mut rt, "select:path needle", 2)?;
-    expect(
-        "select:path top_k=2",
-        &observed,
-        2,
-        CandidateCountV1::Exact(FILES),
-        true,
-    )
+    expect("select:path top_k=2", &observed, 2, CandidateCountV1::Exact(FILES), true)
 }

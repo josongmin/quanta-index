@@ -211,11 +211,9 @@ impl RepoMapGraphCompiler {
         let mut edges = Vec::new();
         for edge in &bundle.edges {
             let (kind, source, target) = match edge {
-                RepoMapEdge::Contains(contains) => (
-                    RepoMapEdgeKind::Contains,
-                    &contains.container,
-                    &contains.contained,
-                ),
+                RepoMapEdge::Contains(contains) => {
+                    (RepoMapEdgeKind::Contains, &contains.container, &contains.contained)
+                }
                 RepoMapEdge::Call(call) => (RepoMapEdgeKind::Call, &call.caller, &call.callee),
                 RepoMapEdge::Import(import) => {
                     (RepoMapEdgeKind::Import, &import.importer, &import.imported)
@@ -223,11 +221,9 @@ impl RepoMapGraphCompiler {
                 RepoMapEdge::OwnsChunk(owns) => {
                     (RepoMapEdgeKind::OwnsChunk, &owns.owner, &owns.chunk)
                 }
-                RepoMapEdge::DependsOn(depends) => (
-                    RepoMapEdgeKind::DependsOn,
-                    &depends.dependent,
-                    &depends.dependency,
-                ),
+                RepoMapEdge::DependsOn(depends) => {
+                    (RepoMapEdgeKind::DependsOn, &depends.dependent, &depends.dependency)
+                }
             };
             if !identities.contains(source) || !identities.contains(target) {
                 return Err(refusal(
@@ -401,12 +397,7 @@ fn check_cap(
     observed: u64,
 ) -> Result<(), RepoMapCompileRefusalV1> {
     if observed > limit {
-        return Err(refusal(
-            RepoMapCompileStageV1::Budget,
-            code,
-            Some(limit),
-            observed,
-        ));
+        return Err(refusal(RepoMapCompileStageV1::Budget, code, Some(limit), observed));
     }
     Ok(())
 }
@@ -517,10 +508,7 @@ fn hex_nibble(byte: u8) -> Option<u8> {
 
 /// Validated chunk statistics: (`by_owner_path`, `by_subject_ref`). Dangling
 /// `OwnsChunk` endpoints were already refused by the edge validation stage.
-type ChunkStatsTables = (
-    BTreeMap<String, ChunkStatsV1>,
-    BTreeMap<String, ChunkStatsV1>,
-);
+type ChunkStatsTables = (BTreeMap<String, ChunkStatsV1>, BTreeMap<String, ChunkStatsV1>);
 
 fn validated_chunk_stats(
     bundle: &RepoMapSourceBundle,
@@ -531,10 +519,7 @@ fn validated_chunk_stats(
     for node in &bundle.nodes {
         if let RepoMapNode::Chunk(chunk) = node {
             let inserted = chunks.insert(chunk.chunk_id.as_str(), chunk);
-            debug_assert!(
-                inserted.is_none(),
-                "duplicate chunk identities were already refused"
-            );
+            debug_assert!(inserted.is_none(), "duplicate chunk identities were already refused");
         }
     }
     for chunk in chunks.values() {
@@ -551,10 +536,7 @@ fn validated_chunk_stats(
                 continue;
             };
             if let Some(chunk) = chunks.get(chunk_id.as_str()) {
-                accumulate_chunk(
-                    by_subject.entry(node_ref_key(&owns.owner)).or_default(),
-                    chunk,
-                )?;
+                accumulate_chunk(by_subject.entry(node_ref_key(&owns.owner)).or_default(), chunk)?;
             }
         }
     }
@@ -927,10 +909,7 @@ pub fn snapshot_from_projection(
 pub fn decode_compiled_payload(
     bytes: &[u8],
 ) -> Result<
-    (
-        CompiledRepoMapGraphV1,
-        Vec<CompiledRepoMapProjectionEntryV1>,
-    ),
+    (CompiledRepoMapGraphV1, Vec<CompiledRepoMapProjectionEntryV1>),
     quanta_index_core::CoreError,
 > {
     let refuse = |detail: String| -> quanta_index_core::CoreError {
@@ -945,9 +924,7 @@ pub fn decode_compiled_payload(
     // (nodes, edges, projection) each under its own definite array header.
     let version = reader.array_header("payload").map_err(refuse)?;
     if version != 2 {
-        return Err(refuse(format!(
-            "payload schema version {version}, expected 2"
-        )));
+        return Err(refuse(format!("payload schema version {version}, expected 2")));
     }
     let nodes_len = reader.array_header("nodes").map_err(refuse)?;
     if !matches!(nodes_len, 0..=2_000_000) {
@@ -957,9 +934,7 @@ pub fn decode_compiled_payload(
     for _ in 0..nodes_len {
         let entry_len = reader.array_header("node").map_err(refuse)?;
         if entry_len != 3 {
-            return Err(refuse(format!(
-                "node array holds {entry_len} items, expected 3"
-            )));
+            return Err(refuse(format!("node array holds {entry_len} items, expected 3")));
         }
         let identity = reader.node_ref("node.identity").map_err(refuse)?;
         let degree_in = reader.u32_value("node.degree_in").map_err(refuse)?;
@@ -978,9 +953,7 @@ pub fn decode_compiled_payload(
     for _ in 0..edges_len {
         let entry_len = reader.array_header("edge").map_err(refuse)?;
         if entry_len != 3 {
-            return Err(refuse(format!(
-                "edge array holds {entry_len} items, expected 3"
-            )));
+            return Err(refuse(format!("edge array holds {entry_len} items, expected 3")));
         }
         let kind = reader.edge_kind("edge.kind").map_err(refuse)?;
         let source = reader.node_ref("edge.source").map_err(refuse)?;
@@ -993,17 +966,13 @@ pub fn decode_compiled_payload(
     }
     let projection_len = reader.array_header("projection").map_err(refuse)?;
     if !matches!(projection_len, 0..=2_000_000) {
-        return Err(refuse(format!(
-            "projection table holds {projection_len} entries"
-        )));
+        return Err(refuse(format!("projection table holds {projection_len} entries")));
     }
     let mut projection = Vec::new();
     for _ in 0..projection_len {
         let entry_len = reader.array_header("projection-entry").map_err(refuse)?;
         if entry_len != 5 {
-            return Err(refuse(format!(
-                "projection entry holds {entry_len} items, expected 5"
-            )));
+            return Err(refuse(format!("projection entry holds {entry_len} items, expected 5")));
         }
         let subject = reader.node_ref("projection.subject").map_err(refuse)?;
         let doc_type = reader.doc_type("projection.doc_type").map_err(refuse)?;
@@ -1165,9 +1134,7 @@ impl<'a> CompileCborReader<'a> {
     fn node_ref(&mut self, label: &str) -> Result<RepoMapNodeRef, String> {
         let entry_len = self.array_header(label)?;
         if entry_len != 2 {
-            return Err(format!(
-                "{label}: array holds {entry_len} items, expected 2"
-            ));
+            return Err(format!("{label}: array holds {entry_len} items, expected 2"));
         }
         let variant = self.text(label)?;
         let id = self.text(label)?;

@@ -69,10 +69,9 @@ impl SearchPlaneDispatcher {
             Some(scope) => Some(plan_semantic_scope(request, scope)?),
             None => None,
         };
-        let effective_constraints: QueryConstraintSetV1 = scope_plan.as_ref().map_or_else(
-            || request.constraints.clone(),
-            |plan| plan.prepared.constraints.clone(),
-        );
+        let effective_constraints: QueryConstraintSetV1 = scope_plan
+            .as_ref()
+            .map_or_else(|| request.constraints.clone(), |plan| plan.prepared.constraints.clone());
         let view = self.acquire_read_view(
             &ReadViewRequestV1::declare(
                 "semantic",

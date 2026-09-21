@@ -38,9 +38,7 @@ impl SearchdCommand {
     }
 
     pub fn into_config(self) -> Result<SearchdConfig> {
-        self.state_root_override.map_or_else(
-            SearchdConfig::from_env,
-            SearchdConfig::from_env_with_state_root,
-        )
+        self.state_root_override
+            .map_or_else(SearchdConfig::from_env, SearchdConfig::from_env_with_state_root)
     }
 }

@@ -163,14 +163,7 @@ fn scv2_s01_exact_owner_replace_does_not_erase_sibling_on_same_path() -> TestRes
 
     build_resident_batch_v1(
         &adapter,
-        &scenario_batch(
-            generation,
-            None,
-            "batch:s01:seal",
-            Vec::new(),
-            Vec::new(),
-            true,
-        ),
+        &scenario_batch(generation, None, "batch:s01:seal", Vec::new(), Vec::new(), true),
     )?;
 
     let searcher = adapter.open(&repo_id(), &revision_id(), generation)?;
@@ -209,16 +202,8 @@ fn scv2_s02_owner_tombstone_removes_only_target_owner() -> TestResult {
             None,
             "batch:s02:base",
             vec![symbol_scope(vec![
-                symbol_embedding(
-                    "commit",
-                    "symbol:RuntimeSession::commit",
-                    vec![1.0, 0.0, 0.0],
-                )?,
-                symbol_embedding(
-                    "prepare",
-                    "symbol:RuntimeSession::prepare",
-                    vec![0.0, 1.0, 0.0],
-                )?,
+                symbol_embedding("commit", "symbol:RuntimeSession::commit", vec![1.0, 0.0, 0.0])?,
+                symbol_embedding("prepare", "symbol:RuntimeSession::prepare", vec![0.0, 1.0, 0.0])?,
             ])],
             Vec::new(),
             true,

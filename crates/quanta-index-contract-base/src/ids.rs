@@ -195,10 +195,7 @@ impl RepositoryRevisionIdentityV1 {
     #[must_use]
     /// Infallible by construction: SHA-256 over validated canonical payload cannot fail.
     pub fn digest(&self) -> [u8; 32] {
-        domain_digest(
-            REPOSITORY_REVISION_DOMAIN,
-            self.canonical_payload().as_slice(),
-        )
+        domain_digest(REPOSITORY_REVISION_DOMAIN, self.canonical_payload().as_slice())
     }
 }
 
@@ -239,10 +236,7 @@ impl LogicalGenerationIdentityV1 {
     #[must_use]
     /// Infallible by construction: SHA-256 over validated canonical payload cannot fail.
     pub fn digest(&self) -> [u8; 32] {
-        domain_digest(
-            LOGICAL_GENERATION_DOMAIN,
-            self.canonical_payload().as_slice(),
-        )
+        domain_digest(LOGICAL_GENERATION_DOMAIN, self.canonical_payload().as_slice())
     }
 }
 
@@ -277,18 +271,9 @@ mod tests {
     #[test]
     fn identity_policy_is_exact_and_does_not_normalize() {
         assert_eq!(RepoId::new(""), Err(IdentityValidationErrorV1::Empty));
-        assert_eq!(
-            RepoId::new("a\u{0000}b"),
-            Err(IdentityValidationErrorV1::ControlCharacter)
-        );
-        assert_eq!(
-            RepoId::new("e\u{301}"),
-            Err(IdentityValidationErrorV1::NonCanonical)
-        );
-        assert_eq!(
-            RepoId::new("a".repeat(513)),
-            Err(IdentityValidationErrorV1::TooLong)
-        );
+        assert_eq!(RepoId::new("a\u{0000}b"), Err(IdentityValidationErrorV1::ControlCharacter));
+        assert_eq!(RepoId::new("e\u{301}"), Err(IdentityValidationErrorV1::NonCanonical));
+        assert_eq!(RepoId::new("a".repeat(513)), Err(IdentityValidationErrorV1::TooLong));
         for accepted in ["%", "/", ".", "..", "A", "a", "é"] {
             assert_eq!(
                 RepoId::new(accepted).map(super::RepoId::into_inner),
@@ -301,10 +286,7 @@ mod tests {
     fn identity_serde_and_constructor_share_validation() {
         let id = RepoId::new("repo/../%").expect("valid fixture ID");
         let json = serde_json::to_string(&id).expect("serialize id");
-        assert_eq!(
-            serde_json::from_str::<RepoId>(json.as_str()).expect("roundtrip decode"),
-            id
-        );
+        assert_eq!(serde_json::from_str::<RepoId>(json.as_str()).expect("roundtrip decode"), id);
         assert!(serde_json::from_str::<RepoId>("\"e\\u0301\"").is_err());
     }
 

@@ -46,16 +46,8 @@ use crate::{SnapshotRegistries, SnapshotRegistryPolicy};
 fn symbol_hits_project_into_all_overlapping_chunks_deterministically()
 -> Result<(), Box<dyn std::error::Error>> {
     let structural_state = structural_state_for_test_chunks(&[
-        (
-            "chunk-symbol-left",
-            "src/symbol.rs",
-            "fn ParityTypeSymbol() {}",
-        ),
-        (
-            "chunk-symbol-right",
-            "src/symbol.rs",
-            "fn ParityTypeSymbol() {}",
-        ),
+        ("chunk-symbol-left", "src/symbol.rs", "fn ParityTypeSymbol() {}"),
+        ("chunk-symbol-right", "src/symbol.rs", "fn ParityTypeSymbol() {}"),
     ])?;
     let buckets = symbol_hits_to_structural_buckets(
         vec![SymbolCandidate {
@@ -102,9 +94,9 @@ fn structural_dispatch_success_emits_closed_obs_metrics() -> TestResult {
         Arc::new(RejectSemanticOpener),
         SnapshotRegistries::new(SnapshotRegistryPolicy::DEFAULT),
         Arc::new(StubRepoMapQueryPort),
-        Arc::new(RecordingStructuralProducer::ready_with(vec![
-            structural_match_candidate("chunk-tree"),
-        ])),
+        Arc::new(RecordingStructuralProducer::ready_with(vec![structural_match_candidate(
+            "chunk-tree",
+        )])),
         ready_ledger_with_structural_universe(),
         test_activation_catalog()?,
         default_query_embedder(),
@@ -163,9 +155,10 @@ fn structural_dispatch_success_emits_closed_obs_metrics() -> TestResult {
 
 #[test]
 fn structural_dispatch_routes_happy_path_through_structural_service() -> TestResult {
-    let producer = Arc::new(RecordingStructuralProducer::ready_with(vec![
-        structural_match_candidate("chunk-tree"),
-    ]));
+    let producer =
+        Arc::new(RecordingStructuralProducer::ready_with(vec![structural_match_candidate(
+            "chunk-tree",
+        )]));
     let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
 
     let response = dispatcher.dispatch(
@@ -262,9 +255,8 @@ fn structural_dispatch_routes_happy_path_through_structural_service() -> TestRes
 
 #[test]
 fn structural_dispatch_maps_generation_not_ready() -> TestResult {
-    let producer = Arc::new(RecordingStructuralProducer::new(
-        StructuralReadiness::GenerationNotReady,
-    ));
+    let producer =
+        Arc::new(RecordingStructuralProducer::new(StructuralReadiness::GenerationNotReady));
     let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
 
     let response = dispatcher.dispatch(
@@ -295,9 +287,8 @@ fn structural_dispatch_maps_generation_not_ready() -> TestResult {
 
 #[test]
 fn structural_dispatch_maps_shard_unavailable() -> TestResult {
-    let producer = Arc::new(RecordingStructuralProducer::new(
-        StructuralReadiness::ShardUnavailable,
-    ));
+    let producer =
+        Arc::new(RecordingStructuralProducer::new(StructuralReadiness::ShardUnavailable));
     let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
 
     let response = dispatcher.dispatch(
@@ -362,9 +353,10 @@ fn structural_dispatch_maps_lang_not_supported() -> TestResult {
 
 #[test]
 fn structural_dispatch_routes_repo_and_file_filters_to_producer() -> TestResult {
-    let producer = Arc::new(RecordingStructuralProducer::ready_with(vec![
-        structural_match_candidate("chunk-tree"),
-    ]));
+    let producer =
+        Arc::new(RecordingStructuralProducer::ready_with(vec![structural_match_candidate(
+            "chunk-tree",
+        )]));
     let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
 
     let response = dispatcher.dispatch(
@@ -426,9 +418,10 @@ fn structural_dispatch_routes_repo_and_file_filters_to_producer() -> TestResult 
 
 #[test]
 fn structural_dispatch_rejects_non_executable_filters_before_consulting_producer() -> TestResult {
-    let producer = Arc::new(RecordingStructuralProducer::ready_with(vec![
-        structural_match_candidate("chunk-tree"),
-    ]));
+    let producer =
+        Arc::new(RecordingStructuralProducer::ready_with(vec![structural_match_candidate(
+            "chunk-tree",
+        )]));
     let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
 
     let response = dispatcher.dispatch(
@@ -465,9 +458,10 @@ fn structural_dispatch_rejects_non_executable_filters_before_consulting_producer
 
 #[test]
 fn structural_dispatch_routes_sourcegraph_structural_subset_to_producer() -> TestResult {
-    let producer = Arc::new(RecordingStructuralProducer::ready_with(vec![
-        structural_match_candidate("chunk-tree"),
-    ]));
+    let producer =
+        Arc::new(RecordingStructuralProducer::ready_with(vec![structural_match_candidate(
+            "chunk-tree",
+        )]));
     let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
 
     let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Structural(
@@ -533,9 +527,10 @@ fn structural_dispatch_routes_sourcegraph_structural_subset_to_producer() -> Tes
 
 #[test]
 fn structural_dispatch_rejects_typed_hole_kind_with_exact_code() -> TestResult {
-    let producer = Arc::new(RecordingStructuralProducer::ready_with(vec![
-        structural_match_candidate("chunk-tree"),
-    ]));
+    let producer =
+        Arc::new(RecordingStructuralProducer::ready_with(vec![structural_match_candidate(
+            "chunk-tree",
+        )]));
     let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
 
     let response = dispatcher.dispatch(
@@ -1021,10 +1016,8 @@ fn structural_page(
     top_k: u32,
     cursor: Option<quanta_index_contract::StructuralCursorV1>,
 ) -> Result<quanta_index_contract::SearchPlaneStructuralQueryResponse, Box<dyn std::error::Error>> {
-    match dispatcher.dispatch(
-        structural_page_request(top_k, cursor),
-        &RequestBudgetV1::unbounded(),
-    ) {
+    match dispatcher.dispatch(structural_page_request(top_k, cursor), &RequestBudgetV1::unbounded())
+    {
         SearchPlaneQueryIpcResponse::Structural(page) => Ok(page),
         other @ (SearchPlaneQueryIpcResponse::Text(_)
         | SearchPlaneQueryIpcResponse::Symbol(_)
@@ -1064,9 +1057,7 @@ fn scrambled_matches(count: u32) -> Vec<quanta_index_core::StructuralMatchCandid
 fn structural_pages_partition_the_match_set_in_candidate_id_order() -> TestResult {
     const MATCHES: u32 = 23;
     const TOP_K: u32 = 5;
-    let producer = Arc::new(RecordingStructuralProducer::ready_with(scrambled_matches(
-        MATCHES,
-    )));
+    let producer = Arc::new(RecordingStructuralProducer::ready_with(scrambled_matches(MATCHES)));
     let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
     let mut walked: Vec<String> = Vec::new();
     let mut cursor: Option<quanta_index_contract::StructuralCursorV1> = None;
@@ -1083,11 +1074,9 @@ fn structural_pages_partition_the_match_set_in_candidate_id_order() -> TestResul
             .into());
         }
         if page.examined != u64::from(MATCHES) {
-            return Err(format!(
-                "every matched candidate is walked, examined {}",
-                page.examined
-            )
-            .into());
+            return Err(
+                format!("every matched candidate is walked, examined {}", page.examined).into()
+            );
         }
         walked.extend(page.results.iter().map(|row| row.candidate_id.clone()));
         remaining = remaining.saturating_sub(u64::from(page.window.returned()));
@@ -1097,7 +1086,7 @@ fn structural_pages_partition_the_match_set_in_candidate_id_order() -> TestResul
                     || next.aux_epoch != page.read_epoch
                 {
                     return Err(
-                        format!("the cursor is the last row in the read epoch: {next:?}").into(),
+                        format!("the cursor is the last row in the read epoch: {next:?}").into()
                     );
                 }
                 cursor = Some(next);
@@ -1121,9 +1110,7 @@ fn structural_pages_partition_the_match_set_in_candidate_id_order() -> TestResul
 /// starts at the first match past it, and one past the end is empty.
 #[test]
 fn a_forged_structural_cursor_is_a_boundary_not_a_lookup() -> TestResult {
-    let producer = Arc::new(RecordingStructuralProducer::ready_with(scrambled_matches(
-        6,
-    )));
+    let producer = Arc::new(RecordingStructuralProducer::ready_with(scrambled_matches(6)));
     let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
     let first = structural_page(&dispatcher, 6, None)?;
     let epoch = first.read_epoch;
@@ -1169,9 +1156,7 @@ fn a_structural_continuation_pins_its_cursor_epoch_or_is_refused() -> TestResult
 
     use crate::query_dispatcher::tests::support::structural::install_structural_test_chunk;
 
-    let producer = Arc::new(RecordingStructuralProducer::ready_with(scrambled_matches(
-        5,
-    )));
+    let producer = Arc::new(RecordingStructuralProducer::ready_with(scrambled_matches(5)));
     let ledger = ready_ledger_with_structural_universe();
     let dispatcher =
         structural_dispatcher_with_producer_and_ledger(Arc::clone(&producer), Arc::clone(&ledger))?;
@@ -1214,21 +1199,19 @@ fn a_structural_continuation_pins_its_cursor_epoch_or_is_refused() -> TestResult
     }
     let fresh = structural_page(&dispatcher, 2, None)?;
     if fresh.read_epoch != quanta_index_contract::AuxEpochV1::new(2) {
-        return Err(format!(
-            "a fresh walk reads the current epoch 2: {:?}",
-            fresh.read_epoch
-        )
-        .into());
+        return Err(
+            format!("a fresh walk reads the current epoch 2: {:?}", fresh.read_epoch).into()
+        );
     }
 
     let unknown = quanta_index_contract::StructuralCursorV1 {
         candidate_id: cursor.candidate_id.clone(),
         aux_epoch: quanta_index_contract::AuxEpochV1::new(99),
     };
-    let (code, _message) = ipc_error_from(dispatcher.dispatch(
-        structural_page_request(2, Some(unknown)),
-        &RequestBudgetV1::unbounded(),
-    ))
+    let (code, _message) = ipc_error_from(
+        dispatcher
+            .dispatch(structural_page_request(2, Some(unknown)), &RequestBudgetV1::unbounded()),
+    )
     .map_err(Box::<dyn std::error::Error>::from)?;
     if code != AUX_EPOCH_UNKNOWN_CODE {
         return Err(format!("an epoch never produced is refused unknown, got {code}").into());
@@ -1243,10 +1226,10 @@ fn a_structural_continuation_pins_its_cursor_epoch_or_is_refused() -> TestResult
             install_structural_test_chunk(&mut guard, &name, &format!("src/{name}.rs"), "churn")?;
         }
     }
-    let (code, _message) = ipc_error_from(dispatcher.dispatch(
-        structural_page_request(2, Some(cursor)),
-        &RequestBudgetV1::unbounded(),
-    ))
+    let (code, _message) = ipc_error_from(
+        dispatcher
+            .dispatch(structural_page_request(2, Some(cursor)), &RequestBudgetV1::unbounded()),
+    )
     .map_err(Box::<dyn std::error::Error>::from)?;
     if code != AUX_EPOCH_EXPIRED_CODE {
         return Err(format!("a pruned epoch is refused expired, got {code}").into());

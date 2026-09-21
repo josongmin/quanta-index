@@ -286,10 +286,7 @@ impl<'de> Visitor<'de> for QueryConstraintSetV1Visitor {
                     repo_relative_path_exact = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        QUERY_CONSTRAINT_SET_V1_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, QUERY_CONSTRAINT_SET_V1_FIELDS));
                 }
             }
         }
@@ -361,34 +358,30 @@ impl QueryConstraintSetV1 {
     /// restriction; disjoint constrained axes return an explicit verdict.
     #[must_use]
     pub fn intersect(&self, other: &Self) -> QueryConstraintIntersectionV1 {
-        let language_any_of = match (
-            self.language_any_of.is_empty(),
-            other.language_any_of.is_empty(),
-        ) {
-            (true, true) => BTreeSet::new(),
-            (true, false) => other.language_any_of.clone(),
-            (false, true) => self.language_any_of.clone(),
-            (false, false) => {
-                let intersection: BTreeSet<LanguageCode> = self
-                    .language_any_of
-                    .intersection(&other.language_any_of)
-                    .cloned()
-                    .collect();
-                if intersection.is_empty() {
-                    return QueryConstraintIntersectionV1::Contradiction;
+        let language_any_of =
+            match (self.language_any_of.is_empty(), other.language_any_of.is_empty()) {
+                (true, true) => BTreeSet::new(),
+                (true, false) => other.language_any_of.clone(),
+                (false, true) => self.language_any_of.clone(),
+                (false, false) => {
+                    let intersection: BTreeSet<LanguageCode> = self
+                        .language_any_of
+                        .intersection(&other.language_any_of)
+                        .cloned()
+                        .collect();
+                    if intersection.is_empty() {
+                        return QueryConstraintIntersectionV1::Contradiction;
+                    }
+                    intersection
                 }
-                intersection
-            }
-        };
-        let repo_relative_path_exact = match (
-            &self.repo_relative_path_exact,
-            &other.repo_relative_path_exact,
-        ) {
-            (None, None) => None,
-            (Some(path), None) | (None, Some(path)) => Some(path.clone()),
-            (Some(left), Some(right)) if left == right => Some(left.clone()),
-            (Some(_), Some(_)) => return QueryConstraintIntersectionV1::Contradiction,
-        };
+            };
+        let repo_relative_path_exact =
+            match (&self.repo_relative_path_exact, &other.repo_relative_path_exact) {
+                (None, None) => None,
+                (Some(path), None) | (None, Some(path)) => Some(path.clone()),
+                (Some(left), Some(right)) if left == right => Some(left.clone()),
+                (Some(_), Some(_)) => return QueryConstraintIntersectionV1::Contradiction,
+            };
         QueryConstraintIntersectionV1::Compatible(Self {
             language_any_of,
             repo_relative_path_exact,
@@ -534,9 +527,8 @@ mod tests {
         let rust = LanguageCode::new("rust").expect("valid language");
         let left_path = ExactRepoRelativePathV1::new("left/lib.rs").expect("valid path");
         let right_path = ExactRepoRelativePathV1::new("right/lib.rs").expect("valid path");
-        let combined = QueryConstraintSetV1::from_languages([rust.clone()]).intersect(
-            &QueryConstraintSetV1::from_exact_repo_relative_path(left_path.clone()),
-        );
+        let combined = QueryConstraintSetV1::from_languages([rust.clone()])
+            .intersect(&QueryConstraintSetV1::from_exact_repo_relative_path(left_path.clone()));
         assert_eq!(
             combined,
             QueryConstraintIntersectionV1::Compatible(
@@ -545,9 +537,8 @@ mod tests {
             )
         );
         assert_eq!(
-            QueryConstraintSetV1::from_exact_repo_relative_path(left_path).intersect(
-                &QueryConstraintSetV1::from_exact_repo_relative_path(right_path),
-            ),
+            QueryConstraintSetV1::from_exact_repo_relative_path(left_path)
+                .intersect(&QueryConstraintSetV1::from_exact_repo_relative_path(right_path),),
             QueryConstraintIntersectionV1::Contradiction
         );
         assert_eq!(

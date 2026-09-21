@@ -189,10 +189,7 @@ pub fn query_phrase<S: TermPostingSource + ?Sized>(
         Err(_) => {
             return Err(PositionsError::plan_limit_exceeded(
                 LimitDimension::PhraseLen,
-                format!(
-                    "phrase length {} exceeds u32 (cap={MAX_PHRASE_LEN})",
-                    terms.len()
-                ),
+                format!("phrase length {} exceeds u32 (cap={MAX_PHRASE_LEN})", terms.len()),
             ));
         }
     }

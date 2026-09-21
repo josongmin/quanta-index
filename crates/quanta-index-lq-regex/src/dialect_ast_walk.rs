@@ -398,10 +398,9 @@ mod tests {
         // verify we return `Ok(())` (no forbidden classification).
         match ast_walk_filter("foo(") {
             Ok(()) => {}
-            Err(e) => assert!(
-                false,
-                "expected Ok(()) (downstream parse_hir surfaces ParseFail), got {e}"
-            ),
+            Err(e) => {
+                assert!(false, "expected Ok(()) (downstream parse_hir surfaces ParseFail), got {e}")
+            }
         }
     }
 
@@ -411,10 +410,9 @@ mod tests {
         // its typed classification to `classify_ast_error`.
         match ast_walk_filter("foo(?=bar)") {
             Ok(()) => {}
-            Err(e) => assert!(
-                false,
-                "AST walk should not classify lookaround; expected Ok(()), got {e}"
-            ),
+            Err(e) => {
+                assert!(false, "AST walk should not classify lookaround; expected Ok(()), got {e}")
+            }
         }
     }
 
@@ -422,10 +420,9 @@ mod tests {
     fn backref_left_to_downstream() {
         match ast_walk_filter(r"(foo)\1") {
             Ok(()) => {}
-            Err(e) => assert!(
-                false,
-                "AST walk should not classify backref; expected Ok(()), got {e}"
-            ),
+            Err(e) => {
+                assert!(false, "AST walk should not classify backref; expected Ok(()), got {e}")
+            }
         }
     }
 

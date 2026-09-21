@@ -173,9 +173,6 @@ mod tests {
             }
             BatchDigestVerdictV1::Verified(_) => panic!("a mutated body must not verify"),
         }
-        assert_eq!(
-            batch.batch_digest, stamped,
-            "verification leaves the batch as it was"
-        );
+        assert_eq!(batch.batch_digest, stamped, "verification leaves the batch as it was");
     }
 }

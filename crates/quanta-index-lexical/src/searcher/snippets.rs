@@ -110,9 +110,8 @@ pub(crate) fn window_snippet(
             .iter()
             .filter_map(|term| stored.find(term.as_str()))
             .min();
-        let start = first_hit.map_or(0, |hit| {
-            floor_char_boundary(stored, hit.saturating_sub(SNIPPET_LEAD_BYTES))
-        });
+        let start = first_hit
+            .map_or(0, |hit| floor_char_boundary(stored, hit.saturating_sub(SNIPPET_LEAD_BYTES)));
         let raw_end = start.saturating_add(SNIPPET_WINDOW_BYTES).min(stored.len());
         let end = floor_char_boundary(stored, raw_end);
         // start <= end <= stored.len(), both floor_char_boundary results, so this is unreachable; "" keeps the fallback bounded.

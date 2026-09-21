@@ -142,19 +142,13 @@ mod tests {
         for requested in [0, PUBLIC_TOP_K_MAX + 1, u32::MAX] {
             let refused = validate_public_top_k(requested);
             assert_eq!(refused, Err(TopKOutOfRangeV1 { requested }));
-            assert_eq!(
-                refused.map_err(TopKOutOfRangeV1::code),
-                Err(TOP_K_OUT_OF_RANGE_CODE)
-            );
+            assert_eq!(refused.map_err(TopKOutOfRangeV1::code), Err(TOP_K_OUT_OF_RANGE_CODE));
         }
     }
 
     #[test]
     fn continuation_fetch_stays_under_the_internal_ceiling() {
-        assert_eq!(
-            continuation_fetch_size(PUBLIC_TOP_K_MAX),
-            INTERNAL_FETCH_CEILING
-        );
+        assert_eq!(continuation_fetch_size(PUBLIC_TOP_K_MAX), INTERNAL_FETCH_CEILING);
         assert_eq!(continuation_fetch_size(1), 2);
         assert!(INTERNAL_FETCH_CEILING > PUBLIC_TOP_K_MAX);
     }

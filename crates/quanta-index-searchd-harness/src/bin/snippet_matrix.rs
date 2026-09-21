@@ -54,10 +54,7 @@ fn main() -> ExitCode {
     };
 
     if let Err(err) = write_artifacts(&report, &out_dir, &rev) {
-        eprintln!(
-            "snippet_matrix: failed to write artifacts under {}: {err:#}",
-            out_dir.display()
-        );
+        eprintln!("snippet_matrix: failed to write artifacts under {}: {err:#}", out_dir.display());
         return ExitCode::FAILURE;
     }
 

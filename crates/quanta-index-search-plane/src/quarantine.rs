@@ -71,10 +71,7 @@ impl OrphanedSealedGenerationV1 {
 pub fn partition_sealed_inventory_v1<'a>(
     ledger: &Ledger,
     sealed: &'a [InventoriedSealedGenerationV1],
-) -> (
-    Vec<&'a InventoriedSealedGenerationV1>,
-    Vec<OrphanedSealedGenerationV1>,
-) {
+) -> (Vec<&'a InventoriedSealedGenerationV1>, Vec<OrphanedSealedGenerationV1>) {
     let mut retained = Vec::new();
     let mut orphaned = Vec::new();
     for entry in sealed {
@@ -702,10 +699,7 @@ pub(crate) mod tests {
         let ack = doubles
             .service
             .discard(&QuarantineTargetV1::Generation(listed.clone()))?;
-        assert_eq!(
-            ack.outcome,
-            QuarantineDiscardOutcomeDtoV1::Discarded { bytes: 42 }
-        );
+        assert_eq!(ack.outcome, QuarantineDiscardOutcomeDtoV1::Discarded { bytes: 42 });
         assert_eq!(ack.target, QuarantineTargetV1::Generation(listed.clone()));
         let discarded = doubles
             .lexical_discard
@@ -713,11 +707,7 @@ pub(crate) mod tests {
             .lock()
             .map_err(|err| err.to_string())?
             .clone();
-        assert_eq!(
-            discarded,
-            vec![lexical],
-            "the lexical port got the lexical entry"
-        );
+        assert_eq!(discarded, vec![lexical], "the lexical port got the lexical entry");
 
         let ack = doubles.service.discard(&QuarantineTargetV1::RepoMapFile(
             QuarantinedRepoMapFileEntryV1 {
@@ -725,10 +715,7 @@ pub(crate) mod tests {
                 reason: "did not decode".to_string(),
             },
         ))?;
-        assert_eq!(
-            ack.outcome,
-            QuarantineDiscardOutcomeDtoV1::Discarded { bytes: 7 }
-        );
+        assert_eq!(ack.outcome, QuarantineDiscardOutcomeDtoV1::Discarded { bytes: 7 });
         Ok(())
     }
 
@@ -815,20 +802,14 @@ pub(crate) mod tests {
         let ack = doubles
             .service
             .discard(&QuarantineTargetV1::Generation(orphan.clone()))?;
-        assert_eq!(
-            ack.outcome,
-            QuarantineDiscardOutcomeDtoV1::Discarded { bytes: 1_000 }
-        );
+        assert_eq!(ack.outcome, QuarantineDiscardOutcomeDtoV1::Discarded { bytes: 1_000 });
         let reclaimed = doubles
             .lexical_reclaim
             .reclaimed
             .lock()
             .map_err(|err| err.to_string())?
             .clone();
-        assert_eq!(
-            reclaimed,
-            vec![sealed(SearchPlaneTrackKind::Lexical, 2).identity]
-        );
+        assert_eq!(reclaimed, vec![sealed(SearchPlaneTrackKind::Lexical, 2).identity]);
         assert!(doubles.service.inventory()?.lexical.is_empty());
         let again = doubles
             .service
@@ -850,7 +831,7 @@ pub(crate) mod tests {
                 if code == QUARANTINE_TARGET_NOT_QUARANTINED_CODE => {}
             other => {
                 return Err(
-                    format!("a retained generation must not be discardable: {other:?}").into(),
+                    format!("a retained generation must not be discardable: {other:?}").into()
                 );
             }
         }
@@ -893,10 +874,7 @@ pub(crate) mod tests {
         let ack = doubles
             .service
             .discard(&QuarantineTargetV1::Generation(orphan))?;
-        assert_eq!(
-            ack.outcome,
-            QuarantineDiscardOutcomeDtoV1::Discarded { bytes: 1_000 }
-        );
+        assert_eq!(ack.outcome, QuarantineDiscardOutcomeDtoV1::Discarded { bytes: 1_000 });
         Ok(())
     }
 }

@@ -42,9 +42,7 @@ where
     let bytes = encode(value)?;
     let decoded: T = decode(&bytes)?;
     if &decoded != value {
-        return Err(
-            format!("round-trip mismatch: original={value:?}, decoded={decoded:?}",).into(),
-        );
+        return Err(format!("round-trip mismatch: original={value:?}, decoded={decoded:?}",).into());
     }
     Ok(())
 }
@@ -102,11 +100,7 @@ fn lexical_error_code_all_is_at_least_30() -> TestRes {
     // Spec requires "30+ SCREAMING_SNAKE_CASE variants". Keep the live
     // contract surface above that floor.
     if LexicalErrorCode::ALL.len() < 30 {
-        return Err(format!(
-            "expected >= 30 variants, got {}",
-            LexicalErrorCode::ALL.len()
-        )
-        .into());
+        return Err(format!("expected >= 30 variants, got {}", LexicalErrorCode::ALL.len()).into());
     }
     Ok(())
 }
@@ -386,34 +380,16 @@ fn commit_record_cbor_rejects_missing_field() -> TestRes {
                 ciborium::Value::Text("sha".into()),
                 ciborium::Value::Text("0123456789abcdef0123456789abcdef01234567".into()),
             ),
-            (
-                ciborium::Value::Text("parents".into()),
-                ciborium::Value::Array(Vec::new()),
-            ),
+            (ciborium::Value::Text("parents".into()), ciborium::Value::Array(Vec::new())),
             (
                 ciborium::Value::Text("applied_at_ms".into()),
                 ciborium::Value::Integer(0i64.into()),
             ),
-            (
-                ciborium::Value::Text("author".into()),
-                ciborium::Value::Text("a".into()),
-            ),
-            (
-                ciborium::Value::Text("committer".into()),
-                ciborium::Value::Text("c".into()),
-            ),
-            (
-                ciborium::Value::Text("message".into()),
-                ciborium::Value::Text("m".into()),
-            ),
-            (
-                ciborium::Value::Text("is_merge".into()),
-                ciborium::Value::Bool(false),
-            ),
-            (
-                ciborium::Value::Text("tags".into()),
-                ciborium::Value::Array(Vec::new()),
-            ),
+            (ciborium::Value::Text("author".into()), ciborium::Value::Text("a".into())),
+            (ciborium::Value::Text("committer".into()), ciborium::Value::Text("c".into())),
+            (ciborium::Value::Text("message".into()), ciborium::Value::Text("m".into())),
+            (ciborium::Value::Text("is_merge".into()), ciborium::Value::Bool(false)),
+            (ciborium::Value::Text("tags".into()), ciborium::Value::Array(Vec::new())),
         ]),
         &mut buf,
     )?;

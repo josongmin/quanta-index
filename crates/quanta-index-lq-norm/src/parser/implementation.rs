@@ -733,11 +733,9 @@ impl Parser<'_> {
                 self.directives.push(directive);
                 Ok(())
             }
-            _ => Err(LqParseError::new(
-                LqParseErrorCode::UnknownFilter,
-                span,
-                "unknown filter name",
-            )),
+            _ => {
+                Err(LqParseError::new(LqParseErrorCode::UnknownFilter, span, "unknown filter name"))
+            }
         }
     }
 }
@@ -1015,11 +1013,7 @@ fn read_quoted_arg(
     span: LqSpan,
 ) -> Result<(usize, String), LqParseError> {
     let mut pos = start.checked_add(1).ok_or_else(|| {
-        LqParseError::new(
-            LqParseErrorCode::SyntaxError,
-            span,
-            "predicate args offset overflow",
-        )
+        LqParseError::new(LqParseErrorCode::SyntaxError, span, "predicate args offset overflow")
     })?;
     let mut buf = String::new();
     while let Some(&b) = bytes.get(pos) {
@@ -1095,11 +1089,7 @@ fn read_quoted_arg(
         buf.push(ch);
         let step = ch.len_utf8();
         pos = pos.checked_add(step).ok_or_else(|| {
-            LqParseError::new(
-                LqParseErrorCode::SyntaxError,
-                span,
-                "predicate args offset overflow",
-            )
+            LqParseError::new(LqParseErrorCode::SyntaxError, span, "predicate args offset overflow")
         })?;
     }
     Err(LqParseError::new(
@@ -1137,11 +1127,7 @@ fn read_bare_arg(
         buf.push(ch);
         let step = ch.len_utf8();
         pos = pos.checked_add(step).ok_or_else(|| {
-            LqParseError::new(
-                LqParseErrorCode::SyntaxError,
-                span,
-                "predicate args offset overflow",
-            )
+            LqParseError::new(LqParseErrorCode::SyntaxError, span, "predicate args offset overflow")
         })?;
     }
     Ok((pos, buf))
@@ -1386,20 +1372,14 @@ impl<'a> StructuralParser<'a> {
         loop {
             if stop_on_directive && self.starts_expr_directive() {
                 if !literal_buf.is_empty() {
-                    out.push(LqStructuralNode::Literal(bytes_to_box(
-                        &literal_buf,
-                        self.span,
-                    )?));
+                    out.push(LqStructuralNode::Literal(bytes_to_box(&literal_buf, self.span)?));
                     literal_buf.clear();
                 }
                 return Ok(out);
             }
             let Some(&b) = self.bytes.get(self.pos) else {
                 if !literal_buf.is_empty() {
-                    out.push(LqStructuralNode::Literal(bytes_to_box(
-                        &literal_buf,
-                        self.span,
-                    )?));
+                    out.push(LqStructuralNode::Literal(bytes_to_box(&literal_buf, self.span)?));
                     literal_buf.clear();
                 }
                 return Ok(out);
@@ -1407,10 +1387,7 @@ impl<'a> StructuralParser<'a> {
             match b {
                 b'.' if self.peek_sequence(b"...") => {
                     if !literal_buf.is_empty() {
-                        out.push(LqStructuralNode::Literal(bytes_to_box(
-                            &literal_buf,
-                            self.span,
-                        )?));
+                        out.push(LqStructuralNode::Literal(bytes_to_box(&literal_buf, self.span)?));
                         literal_buf.clear();
                     }
                     self.bump()?;
@@ -1420,20 +1397,14 @@ impl<'a> StructuralParser<'a> {
                 }
                 b'}' => {
                     if !literal_buf.is_empty() {
-                        out.push(LqStructuralNode::Literal(bytes_to_box(
-                            &literal_buf,
-                            self.span,
-                        )?));
+                        out.push(LqStructuralNode::Literal(bytes_to_box(&literal_buf, self.span)?));
                         literal_buf.clear();
                     }
                     return Ok(out);
                 }
                 b'{' => {
                     if !literal_buf.is_empty() {
-                        out.push(LqStructuralNode::Literal(bytes_to_box(
-                            &literal_buf,
-                            self.span,
-                        )?));
+                        out.push(LqStructuralNode::Literal(bytes_to_box(&literal_buf, self.span)?));
                         literal_buf.clear();
                     }
                     self.bump()?;
@@ -1457,20 +1428,14 @@ impl<'a> StructuralParser<'a> {
                 }
                 b'$' => {
                     if !literal_buf.is_empty() {
-                        out.push(LqStructuralNode::Literal(bytes_to_box(
-                            &literal_buf,
-                            self.span,
-                        )?));
+                        out.push(LqStructuralNode::Literal(bytes_to_box(&literal_buf, self.span)?));
                         literal_buf.clear();
                     }
                     out.push(self.parse_hole_node_dollar()?);
                 }
                 b':' if self.peek_alias() => {
                     if !literal_buf.is_empty() {
-                        out.push(LqStructuralNode::Literal(bytes_to_box(
-                            &literal_buf,
-                            self.span,
-                        )?));
+                        out.push(LqStructuralNode::Literal(bytes_to_box(&literal_buf, self.span)?));
                         literal_buf.clear();
                     }
                     out.push(self.parse_hole_node_alias()?);
@@ -2080,26 +2045,17 @@ mod tests {
 
     #[test]
     fn unknown_filter_errors() {
-        assert_eq!(
-            parse_err("not_a_filter:v foo"),
-            LqParseErrorCode::UnknownFilter
-        );
+        assert_eq!(parse_err("not_a_filter:v foo"), LqParseErrorCode::UnknownFilter);
     }
 
     #[test]
     fn duplicate_type_filter_errors() {
-        assert_eq!(
-            parse_err("type:file type:diff foo"),
-            LqParseErrorCode::InvalidFilterValue
-        );
+        assert_eq!(parse_err("type:file type:diff foo"), LqParseErrorCode::InvalidFilterValue);
     }
 
     #[test]
     fn invalid_patterntype_errors() {
-        assert_eq!(
-            parse_err("patterntype:fuzzy foo"),
-            LqParseErrorCode::InvalidPatternType
-        );
+        assert_eq!(parse_err("patterntype:fuzzy foo"), LqParseErrorCode::InvalidPatternType);
     }
 
     #[test]
@@ -2120,14 +2076,8 @@ mod tests {
 
     #[test]
     fn invalid_timeout_errors() {
-        assert_eq!(
-            parse_err("timeout:soon /.*/"),
-            LqParseErrorCode::InvalidFilterValue
-        );
-        assert_eq!(
-            parse_err("timeout:5 /.*/"),
-            LqParseErrorCode::InvalidFilterValue
-        );
+        assert_eq!(parse_err("timeout:soon /.*/"), LqParseErrorCode::InvalidFilterValue);
+        assert_eq!(parse_err("timeout:5 /.*/"), LqParseErrorCode::InvalidFilterValue);
     }
 
     #[test]
@@ -2280,10 +2230,7 @@ mod tests {
         match q.expr {
             LqExpr::Leaf(LqLeaf::Predicate { name, args }) => {
                 assert_eq!(name, "file.contains");
-                assert_eq!(
-                    args,
-                    vec![crate::ast::LqPredicateArg::RawString("oo_ba".to_owned())]
-                );
+                assert_eq!(args, vec![crate::ast::LqPredicateArg::RawString("oo_ba".to_owned())]);
             }
             other => {
                 assert!(false, "expected Predicate leaf, got {other:?}");
@@ -2297,10 +2244,7 @@ mod tests {
         match q.expr {
             LqExpr::Leaf(LqLeaf::Predicate { name, args }) => {
                 assert_eq!(name, "repo.contains.content");
-                assert_eq!(
-                    args,
-                    vec![crate::ast::LqPredicateArg::Phrase("TODO".to_owned())]
-                );
+                assert_eq!(args, vec![crate::ast::LqPredicateArg::Phrase("TODO".to_owned())]);
             }
             other => {
                 assert!(false, "expected Predicate leaf, got {other:?}");
@@ -2609,9 +2553,6 @@ mod tests {
 
     #[test]
     fn structural_block_rejects_typed_hole_alias() {
-        assert_eq!(
-            parse_err("match { fn :[hole.type=ident]() }"),
-            LqParseErrorCode::SyntaxError
-        );
+        assert_eq!(parse_err("match { fn :[hole.type=ident]() }"), LqParseErrorCode::SyntaxError);
     }
 }

@@ -53,11 +53,9 @@ fn refused_with(result: &E2eQueryResult, what: &str, code: SearchPlaneErrorCodeV
     match &result.typed_error {
         Some(error) if error.code == E2eErrorCode::Remote(code) => Ok(()),
         Some(error) => Err(format!("{what}: expected {code}, got {error}").into()),
-        None => Err(format!(
-            "{what}: expected {code}, got {} rows",
-            result.candidate_ids.len()
-        )
-        .into()),
+        None => {
+            Err(format!("{what}: expected {code}, got {} rows", result.candidate_ids.len()).into())
+        }
     }
 }
 
@@ -110,16 +108,9 @@ fn verify_missing_domains_and_track_plans(rt: &mut E2eRuntime) -> TestResult {
     }
 
     // `rev:at.time(...)` selects through the history authority: absent.
-    let at_time = rt.query_text(
-        TextQuerySyntax::Sourcegraph,
-        "rev:at.time(2024-01-01) needle",
-        TOP_K,
-    );
-    refused_with(
-        &at_time,
-        "rev:at.time selection",
-        HISTORY_PRODUCER_UNAVAILABLE,
-    )?;
+    let at_time =
+        rt.query_text(TextQuerySyntax::Sourcegraph, "rev:at.time(2024-01-01) needle", TOP_K);
+    refused_with(&at_time, "rev:at.time selection", HISTORY_PRODUCER_UNAVAILABLE)?;
 
     // `repo:has.commit.after(...)` reads the commit-recency authority
     // beside the lexical generation: absent.
@@ -142,30 +133,12 @@ fn verify_missing_domains_and_track_plans(rt: &mut E2eRuntime) -> TestResult {
     // The other repo-metadata authorities are absent too, each with its
     // own code.
     for (query_text, authority) in [
-        (
-            "repo:has.meta(team:core) needle",
-            RepoMetadataAuthorityV1::Meta,
-        ),
-        (
-            "repo:has.topic(security) needle",
-            RepoMetadataAuthorityV1::Topic,
-        ),
-        (
-            "repo:has.description(\"search\") needle",
-            RepoMetadataAuthorityV1::Description,
-        ),
-        (
-            "file:has.owner(@alice) needle",
-            RepoMetadataAuthorityV1::FileOwnership,
-        ),
-        (
-            "select:file.owners needle",
-            RepoMetadataAuthorityV1::FileOwnership,
-        ),
-        (
-            "file:has.contributor(alice) needle",
-            RepoMetadataAuthorityV1::Contributor,
-        ),
+        ("repo:has.meta(team:core) needle", RepoMetadataAuthorityV1::Meta),
+        ("repo:has.topic(security) needle", RepoMetadataAuthorityV1::Topic),
+        ("repo:has.description(\"search\") needle", RepoMetadataAuthorityV1::Description),
+        ("file:has.owner(@alice) needle", RepoMetadataAuthorityV1::FileOwnership),
+        ("select:file.owners needle", RepoMetadataAuthorityV1::FileOwnership),
+        ("file:has.contributor(alice) needle", RepoMetadataAuthorityV1::Contributor),
     ] {
         let result = rt.query_text(TextQuerySyntax::Sourcegraph, query_text, TOP_K);
         refused_with(&result, query_text, authority.unavailable_code())?;
@@ -230,7 +203,7 @@ fn verify_explanation_read_view_identity(rt: &mut E2eRuntime) -> TestResult {
         .any(|detail| detail.starts_with("read_view.lexical_artifact="))
     {
         return Err(
-            format!("an unscoped semantic view holds no lexical artifact: {trace:?}").into(),
+            format!("an unscoped semantic view holds no lexical artifact: {trace:?}").into()
         );
     }
 

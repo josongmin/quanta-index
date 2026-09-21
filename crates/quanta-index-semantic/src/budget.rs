@@ -200,10 +200,7 @@ impl DenseLaneTalliesV1 {
                 self.queries(lane),
             ));
             points.push(MetricPointV1::counter(
-                format!(
-                    "semantic_budget_interruptions_{}_total",
-                    lane.metric_infix()
-                ),
+                format!("semantic_budget_interruptions_{}_total", lane.metric_infix()),
                 self.interruptions(lane),
             ));
         }
@@ -412,10 +409,7 @@ mod tests {
         let (code, message) = typed(&result)?;
         assert_eq!(code, REQUEST_CANCELLED_CODE);
         assert!(message.contains("checkpoint `semantic:ann`"), "{message}");
-        assert!(
-            !work_started,
-            "the query must not start under a cancelled budget"
-        );
+        assert!(!work_started, "the query must not start under a cancelled budget");
         assert_eq!(tallies.interruptions(DenseLaneKindV1::Approximate), 1);
         assert_eq!(tallies.interruptions(DenseLaneKindV1::Exact), 0);
 
@@ -427,10 +421,8 @@ mod tests {
         let pending = CancelOnFirstPoll {
             handle: live.cancel_handle(),
         };
-        let result = crate::run_blocking(
-            &runtime,
-            race_with_budget(watch, DenseLaneKindV1::Exact, pending),
-        );
+        let result =
+            crate::run_blocking(&runtime, race_with_budget(watch, DenseLaneKindV1::Exact, pending));
         let (code, message) = typed(&result)?;
         assert_eq!(code, REQUEST_CANCELLED_CODE);
         assert!(message.contains("checkpoint `semantic:exact`"), "{message}");
@@ -562,22 +554,10 @@ mod tests {
         assert_eq!(
             points,
             vec![
-                (
-                    "semantic_dense_exact_completions_total".to_string(),
-                    MetricValueV1::Counter(1)
-                ),
-                (
-                    "semantic_dense_queries_ann_total".to_string(),
-                    MetricValueV1::Counter(2)
-                ),
-                (
-                    "semantic_budget_interruptions_ann_total".to_string(),
-                    MetricValueV1::Counter(0)
-                ),
-                (
-                    "semantic_dense_queries_exact_total".to_string(),
-                    MetricValueV1::Counter(1)
-                ),
+                ("semantic_dense_exact_completions_total".to_string(), MetricValueV1::Counter(1)),
+                ("semantic_dense_queries_ann_total".to_string(), MetricValueV1::Counter(2)),
+                ("semantic_budget_interruptions_ann_total".to_string(), MetricValueV1::Counter(0)),
+                ("semantic_dense_queries_exact_total".to_string(), MetricValueV1::Counter(1)),
                 (
                     "semantic_budget_interruptions_exact_total".to_string(),
                     MetricValueV1::Counter(1)

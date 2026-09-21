@@ -179,10 +179,7 @@ fn security_metadata_uid_mode_type_device_and_link_matrix() {
         fstat: Some(fstat),
     };
     let reject_leaf = |lstat, fstat, expected| {
-        assert_eq!(
-            context.verify_opened_file(&[], pair(lstat, fstat)),
-            Err(expected)
-        );
+        assert_eq!(context.verify_opened_file(&[], pair(lstat, fstat)), Err(expected));
     };
     let reject_directory = |lstat, fstat, expected| {
         assert_eq!(
@@ -240,16 +237,8 @@ fn security_metadata_uid_mode_type_device_and_link_matrix() {
     reject_leaf(file, linked, hardlink);
     let mut symlink = file;
     symlink.kind = ObservedFileKindV1::Symlink;
-    reject_leaf(
-        symlink,
-        linked,
-        StateRootSecurityVerificationErrorV1::SymlinkEncountered,
-    );
-    reject_leaf(
-        linked,
-        symlink,
-        StateRootSecurityVerificationErrorV1::SymlinkEncountered,
-    );
+    reject_leaf(symlink, linked, StateRootSecurityVerificationErrorV1::SymlinkEncountered);
+    reject_leaf(linked, symlink, StateRootSecurityVerificationErrorV1::SymlinkEncountered);
     let mut directory_symlink = directory;
     directory_symlink.kind = ObservedFileKindV1::Symlink;
     reject_directory(

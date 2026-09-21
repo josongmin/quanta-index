@@ -93,11 +93,7 @@ impl GenerationContract {
 
     /// Decode the current format only; any other format is refused typed.
     pub(crate) fn decode(bytes: &[u8]) -> Result<Self, CoreError> {
-        decode_current_format(
-            bytes,
-            "semantic generation contract",
-            GENERATION_CONTRACT_VERSION,
-        )
+        decode_current_format(bytes, "semantic generation contract", GENERATION_CONTRACT_VERSION)
     }
 
     pub(crate) fn validate_batch_shape(

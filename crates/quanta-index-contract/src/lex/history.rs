@@ -33,16 +33,10 @@ impl fmt::Display for CommitShaParseError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             Self::BadLength { observed } => {
-                write!(
-                    formatter,
-                    "CommitSha hex must be exactly 40 chars; observed {observed}",
-                )
+                write!(formatter, "CommitSha hex must be exactly 40 chars; observed {observed}",)
             }
             Self::NonHexChar { position } => {
-                write!(
-                    formatter,
-                    "CommitSha hex has non-hex char at position {position}"
-                )
+                write!(formatter, "CommitSha hex has non-hex char at position {position}")
             }
         }
     }

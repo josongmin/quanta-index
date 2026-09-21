@@ -131,7 +131,7 @@ fn check_page(
 ) -> TestResult {
     if rows != expected_rows {
         return Err(
-            format!("{what}: rows drifted: got {rows:?}, expected {expected_rows:?}").into(),
+            format!("{what}: rows drifted: got {rows:?}, expected {expected_rows:?}").into()
         );
     }
     if window.candidate_count() != expected_count {
@@ -143,11 +143,9 @@ fn check_page(
     }
     let continues = cursor_id.is_some();
     if window.has_more() != continues {
-        return Err(format!(
-            "{what}: has_more={} with cursor={cursor_id:?}",
-            window.has_more()
-        )
-        .into());
+        return Err(
+            format!("{what}: has_more={} with cursor={cursor_id:?}", window.has_more()).into()
+        );
     }
     if continues && cursor_id != rows.last().map(String::as_str) {
         return Err(format!("{what}: the cursor names the last row, got {cursor_id:?}").into());
@@ -204,11 +202,7 @@ fn runtime_metadata_pages_walk_the_dirty_overlay_once_and_pin_their_epochs() -> 
         None,
     )?;
     if whole.examined != u64::try_from(ORIGINAL)? {
-        return Err(format!(
-            "the whole walk examines every dirty row: {}",
-            whole.examined
-        )
-        .into());
+        return Err(format!("the whole walk examines every dirty row: {}", whole.examined).into());
     }
 
     // Page one stops at its probe row.
@@ -227,11 +221,7 @@ fn runtime_metadata_pages_walk_the_dirty_overlay_once_and_pin_their_epochs() -> 
         Some(cursor.candidate_id.as_str()),
     )?;
     if first.examined != 11 {
-        return Err(format!(
-            "page one examines the page and its probe: {}",
-            first.examined
-        )
-        .into());
+        return Err(format!("page one examines the page and its probe: {}", first.examined).into());
     }
     if (cursor.aux_epoch, cursor.universe_epoch) != walk_epochs {
         return Err(format!("the cursor names the epochs page one read: {cursor:?}").into());
@@ -500,12 +490,7 @@ fn structural_pages_walk_the_match_set_once_and_pin_their_epoch() -> TestResult 
         let id = original.first().ok_or("the original set is not empty")?;
         publish_tree(&mut rt, &chunks, id, sealed)?;
     }
-    match rt.query_structural_page(
-        TextQuerySyntax::Native,
-        STRUCTURAL_QUERY,
-        PAGE,
-        Some(cursor),
-    )? {
+    match rt.query_structural_page(TextQuerySyntax::Native, STRUCTURAL_QUERY, PAGE, Some(cursor))? {
         E2eRoutePage::Refused(error)
             if error.code == E2eErrorCode::Remote(AUX_EPOCH_EXPIRED_CODE) =>
         {

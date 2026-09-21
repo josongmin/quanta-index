@@ -117,9 +117,9 @@ impl PeerCredentialsSource for ScriptedSource {
             .map_err(|poisoned| std::io::Error::other(poisoned.to_string()))?;
         match *guard {
             ScriptedPeer::Reports(peer) => Ok(peer),
-            ScriptedPeer::Unreadable => Err(std::io::Error::other(
-                "scripted: the kernel did not report the peer",
-            )),
+            ScriptedPeer::Unreadable => {
+                Err(std::io::Error::other("scripted: the kernel did not report the peer"))
+            }
         }
     }
 }
@@ -279,10 +279,7 @@ fn group_reachable_directory(gid: u32) -> Result<tempfile::TempDir, Box<dyn Erro
         .prefix("qi-ipc-shared-")
         .tempdir_in("/tmp")?;
     std::os::unix::fs::chown(dir.path(), None, Some(gid))?;
-    std::fs::set_permissions(
-        dir.path(),
-        std::fs::Permissions::from_mode(GROUP_DIRECTORY_MODE),
-    )?;
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(GROUP_DIRECTORY_MODE))?;
     Ok(dir)
 }
 
@@ -306,12 +303,7 @@ fn a_group_shared_socket_is_0660_of_that_group_and_serves_its_owner() -> TestRes
         .into());
     }
     if gid_of(&socket)? != self_gid() {
-        return Err(format!(
-            "socket group must be {}, got {}",
-            self_gid(),
-            gid_of(&socket)?
-        )
-        .into());
+        return Err(format!("socket group must be {}, got {}", self_gid(), gid_of(&socket)?).into());
     }
     expect_snapshot(send(&socket, "owner")?, "owner")?;
     let snapshot = server.counters.snapshot();

@@ -26,10 +26,7 @@ fn validated_id_constructor_and_serde_refuse_the_same_invalid_forms() {
         assert!(serde_json::from_str::<RevisionId>(&wire).is_err());
     }
     let over_limit = "é".repeat(257);
-    assert_eq!(
-        RepoId::new(&over_limit),
-        Err(IdentityValidationErrorV1::TooLong)
-    );
+    assert_eq!(RepoId::new(&over_limit), Err(IdentityValidationErrorV1::TooLong));
     assert!(
         serde_json::from_str::<RepoId>(
             &serde_json::to_string(&over_limit).expect("serialize over-limit")
@@ -61,14 +58,8 @@ fn tuple_framing_separates_legacy_collision_and_digest_domains() {
     let first_generation = LogicalGenerationIdentityV1::new(first, 0);
     let second_generation = LogicalGenerationIdentityV1::new(second, 0);
     assert_ne!(first_generation.digest(), second_generation.digest());
-    assert_ne!(
-        first_generation.digest(),
-        first_generation.repository_revision().digest()
-    );
-    assert_eq!(
-        first_generation.canonical_payload().get(..4),
-        Some(&4_u32.to_be_bytes()[..])
-    );
+    assert_ne!(first_generation.digest(), first_generation.repository_revision().digest());
+    assert_eq!(first_generation.canonical_payload().get(..4), Some(&4_u32.to_be_bytes()[..]));
     assert_eq!(
         hex(&first_generation.repository_revision().canonical_payload()),
         "00000004612d2d620000000163"

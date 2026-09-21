@@ -117,31 +117,19 @@ const GOLDENS: &[Golden] = &[
         &["greek_upper"],
         "per-character fold on both sides: `ΟΔΟΣ` is `οδοσ` in the index and in the query",
     ),
-    row(
-        "οδοσ",
-        &["greek_upper"],
-        "the folded spelling finds the uppercase document",
-    ),
+    row("οδοσ", &["greek_upper"], "the folded spelling finds the uppercase document"),
     row(
         "οδος",
         &["greek_lower_final"],
         "documented limit: no final-sigma rule, `οδος` and `οδοσ` are different tokens",
     ),
-    row(
-        "\"ΟΔΟΣ\"",
-        &["greek_upper"],
-        "a phrase folds like a keyword",
-    ),
+    row("\"ΟΔΟΣ\"", &["greek_upper"], "a phrase folds like a keyword"),
     native_row(
         "ΟΔΟΣ /(?i)δ/",
         &["greek_upper"],
         "a regex's `(?i)` records `case:no` without touching the keyword beside it (the Sourcegraph route hands its regex source to the engine verbatim and refuses the flag typed)",
     ),
-    cased_row(
-        "ΟΔΟΣ case:yes",
-        &["greek_upper"],
-        "case:yes keeps the uppercase document only",
-    ),
+    cased_row("ΟΔΟΣ case:yes", &["greek_upper"], "case:yes keeps the uppercase document only"),
     cased_row(
         "οδοσ case:yes",
         &[],
@@ -165,39 +153,23 @@ const GOLDENS: &[Golden] = &[
     ),
     row("cafe", &[], "documented limit: no diacritic stripping"),
     row("\"café au\"", ALL_CAFE, "a phrase over accented tokens"),
-    cased_row(
-        "CAFÉ case:yes",
-        &["latin_upper"],
-        "case:yes accented uppercase",
-    ),
+    cased_row("CAFÉ case:yes", &["latin_upper"], "case:yes accented uppercase"),
     cased_row(
         "café case:yes",
         &["latin_lower", "latin_nfd"],
         "case:yes still NFC-normalizes: the decomposed document equals the composed query",
     ),
     // --- CJK --------------------------------------------------------------
-    row(
-        "検索",
-        &["cjk_spaced"],
-        "a CJK run delimited by whitespace is one token",
-    ),
+    row("検索", &["cjk_spaced"], "a CJK run delimited by whitespace is one token"),
     row(
         "全文検索エンジン",
         &["cjk_joined"],
         "documented limit: no CJK segmentation, a contiguous CJK run is one token",
     ),
-    row(
-        "\"検索 エンジン\"",
-        &["cjk_spaced"],
-        "a phrase over CJK tokens",
-    ),
+    row("\"検索 エンジン\"", &["cjk_spaced"], "a phrase over CJK tokens"),
     // --- emoji boundaries ---------------------------------------------------
     row("ok", &["emoji_glue"], "an emoji is a token boundary"),
-    row(
-        "\"ok done\"",
-        &["emoji_glue"],
-        "tokens around an emoji are consecutive",
-    ),
+    row("\"ok done\"", &["emoji_glue"], "tokens around an emoji are consecutive"),
     // --- NFC singleton ------------------------------------------------------
     row(
         "kelvin",
@@ -220,16 +192,8 @@ const GOLDENS: &[Golden] = &[
         &["dot", "space"],
         "punctuation and whitespace are boundaries; `_` and camelCase are not",
     ),
-    row(
-        "foo_bar",
-        &["snake"],
-        "a snake_case identifier is one token",
-    ),
-    row(
-        "foobar",
-        &["camel"],
-        "camelCase folds to one lowercase token",
-    ),
+    row("foo_bar", &["snake"], "a snake_case identifier is one token"),
+    row("foobar", &["camel"], "camelCase folds to one lowercase token"),
     row(
         "FOOBAR",
         &["camel"],
@@ -320,12 +284,7 @@ fn every_syntax_case_spelling_and_route_answers_the_golden_set() -> TestResult {
     if failures.is_empty() {
         Ok(())
     } else {
-        Err(format!(
-            "{} golden spellings failed:\n{}",
-            failures.len(),
-            failures.join("\n")
-        )
-        .into())
+        Err(format!("{} golden spellings failed:\n{}", failures.len(), failures.join("\n")).into())
     }
 }
 

@@ -37,9 +37,7 @@ impl SearchdBinaryProcess {
     }
 
     pub(super) fn connect(&self) -> Result<QuantaIndex, Box<dyn Error>> {
-        Ok(QuantaIndex::connect(ConnectOptions::from_state_root(
-            &self.state_root,
-        ))?)
+        Ok(QuantaIndex::connect(ConnectOptions::from_state_root(&self.state_root))?)
     }
 
     pub(super) fn stop(mut self) -> Result<(), Box<dyn Error>> {
@@ -138,14 +136,8 @@ pub(super) fn searchd_command(state_root: &Path, max_generations: usize) -> Comm
             "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_GENERATIONS",
             max_generations.to_string(),
         )
-        .env(
-            "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_BYTES",
-            (16 * 1024 * 1024).to_string(),
-        )
-        .env(
-            "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_REVISION_PAIRS",
-            "128",
-        )
+        .env("QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_BYTES", (16 * 1024 * 1024).to_string())
+        .env("QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_REVISION_PAIRS", "128")
         .env(
             "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_TOTAL_BYTES",
             (256 * 1024 * 1024).to_string(),

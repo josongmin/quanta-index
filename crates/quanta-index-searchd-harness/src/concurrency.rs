@@ -426,9 +426,7 @@ pub struct ConcurrencyReport {
 /// Seed the medium corpus, serve it, and measure every client count.
 pub fn run_concurrency_report(seed: u64, requests_per_client: u32) -> AnyResult<ConcurrencyReport> {
     if requests_per_client == 0 {
-        return Err(anyhow::anyhow!(
-            "concurrency: requests_per_client must be at least 1"
-        ));
+        return Err(anyhow::anyhow!("concurrency: requests_per_client must be at least 1"));
     }
     let tier = ScaleTier::Medium;
     let corpus = generate_corpus(tier, seed);
@@ -471,12 +469,7 @@ pub fn run_concurrency_report(seed: u64, requests_per_client: u32) -> AnyResult<
     let socket = socket.to_path_buf();
     let mut measurements = Vec::with_capacity(CLIENT_COUNTS.len());
     for clients in CLIENT_COUNTS {
-        measurements.push(measure_clients(
-            &socket,
-            &pin,
-            clients,
-            requests_per_client,
-        )?);
+        measurements.push(measure_clients(&socket, &pin, clients, requests_per_client)?);
     }
     let passed = measurements.iter().all(|measurement| {
         measurement.fast.timeout_count == 0
@@ -640,16 +633,10 @@ pub fn artifacts(
                                 ("tier", report.tier.as_str().to_string()),
                                 ("seed", report.seed.to_string()),
                                 ("clients", measurement.clients.to_string()),
-                                (
-                                    "requests_per_client",
-                                    report.requests_per_client.to_string(),
-                                ),
+                                ("requests_per_client", report.requests_per_client.to_string()),
                                 ("fast_top_k", FAST_TOP_K.to_string()),
                                 ("slow_top_k", SLOW_TOP_K.to_string()),
-                                (
-                                    "request_timeout_secs",
-                                    REQUEST_TIMEOUT.as_secs().to_string(),
-                                ),
+                                ("request_timeout_secs", REQUEST_TIMEOUT.as_secs().to_string()),
                             ],
                         ),
                         model_revision: report.model_revision.clone(),
@@ -700,11 +687,7 @@ mod tests {
     #[test]
     fn tallies_split_served_typed_and_timeouts_and_qps_counts_served_only() {
         let samples = vec![
-            sample(
-                Some(MixedRoute::Lexical),
-                1.0,
-                RequestOutcome::Served { result_count: 3 },
-            ),
+            sample(Some(MixedRoute::Lexical), 1.0, RequestOutcome::Served { result_count: 3 }),
             sample(
                 Some(MixedRoute::Lexical),
                 2.0,
@@ -713,11 +696,7 @@ mod tests {
                 },
             ),
             sample(Some(MixedRoute::Lexical), 30_000.0, RequestOutcome::Timeout),
-            sample(
-                Some(MixedRoute::Lexical),
-                3.0,
-                RequestOutcome::Served { result_count: 5 },
-            ),
+            sample(Some(MixedRoute::Lexical), 3.0, RequestOutcome::Served { result_count: 5 }),
         ];
         let summary = summarize("fast", &samples, 2.0).expect("a window");
         assert_eq!(summary.requests, 4);
@@ -725,20 +704,10 @@ mod tests {
         assert_eq!(summary.error_count, 1);
         assert_eq!(summary.timeout_count, 1);
         assert!((summary.qps - 1.0).abs() < f64::EPSILON, "2 served over 2s");
-        assert_eq!(
-            summary.latency.map(|l| l.samples),
-            Some(3),
-            "timeouts are not latencies"
-        );
-        assert_eq!(
-            summary.error_codes,
-            vec![SearchPlaneErrorCodeV2::ServerOverloaded]
-        );
+        assert_eq!(summary.latency.map(|l| l.samples), Some(3), "timeouts are not latencies");
+        assert_eq!(summary.error_codes, vec![SearchPlaneErrorCodeV2::ServerOverloaded]);
         assert_eq!(summary.last_result_count, Some(5));
-        assert!(
-            summarize("fast", &samples, 0.0).is_err(),
-            "a zero window is refused"
-        );
+        assert!(summarize("fast", &samples, 0.0).is_err(), "a zero window is refused");
     }
 
     fn measurement(clients: u32, fast_p50: f64, slow: bool) -> ConcurrencyMeasurement {
@@ -815,11 +784,7 @@ mod tests {
         assert_eq!(counts, CLIENT_COUNTS.to_vec());
         let (_, alone) = artifacts.first().expect("the single-client artifact");
         assert_eq!(alone.concurrency, 1);
-        assert_eq!(
-            alone.rows.len(),
-            MixedRoute::ALL.len() + 1,
-            "routes plus the fast aggregate"
-        );
+        assert_eq!(alone.rows.len(), MixedRoute::ALL.len() + 1, "routes plus the fast aggregate");
         let (_, mixed) = artifacts.get(1).expect("the eight-client artifact");
         assert_eq!(mixed.concurrency, 9, "eight fast clients plus the slow one");
         assert_eq!(mixed.rows.len(), MixedRoute::ALL.len() + 2);
@@ -832,9 +797,6 @@ mod tests {
             alone.provenance.config_digest, mixed.provenance.config_digest,
             "the client count is part of the configuration"
         );
-        assert_eq!(
-            alone.provenance.corpus_digest,
-            mixed.provenance.corpus_digest
-        );
+        assert_eq!(alone.provenance.corpus_digest, mixed.provenance.corpus_digest);
     }
 }

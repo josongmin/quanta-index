@@ -159,10 +159,7 @@ mod tests {
     #[test]
     fn non_finite_values_are_refused_at_construction_and_on_the_wire() {
         for wrong in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            assert!(
-                HistoryScoreV1::try_new(wrong).is_err(),
-                "{wrong} is not a score"
-            );
+            assert!(HistoryScoreV1::try_new(wrong).is_err(), "{wrong} is not a score");
         }
         for wrong in [
             serde_json::json!("1.0"),

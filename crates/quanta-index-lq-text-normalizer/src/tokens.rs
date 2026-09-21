@@ -223,20 +223,11 @@ mod tests {
 
     #[test]
     fn boundaries_are_punctuation_whitespace_and_symbols() {
-        assert_eq!(
-            texts("foo.bar foo-bar", CaseMode::Sensitive),
-            ["foo", "bar", "foo", "bar"]
-        );
-        assert_eq!(
-            texts("foo_bar fooBar", CaseMode::Sensitive),
-            ["foo_bar", "fooBar"]
-        );
+        assert_eq!(texts("foo.bar foo-bar", CaseMode::Sensitive), ["foo", "bar", "foo", "bar"]);
+        assert_eq!(texts("foo_bar fooBar", CaseMode::Sensitive), ["foo_bar", "fooBar"]);
         assert_eq!(texts("ok👍done", CaseMode::Sensitive), ["ok", "done"]);
         assert_eq!(texts("👍👍", CaseMode::Sensitive), Vec::<String>::new());
-        assert_eq!(
-            texts("全文検索エンジン", CaseMode::Sensitive),
-            ["全文検索エンジン"]
-        );
+        assert_eq!(texts("全文検索エンジン", CaseMode::Sensitive), ["全文検索エンジン"]);
         assert_eq!(texts("नमस्ते दुनिया", CaseMode::Sensitive), ["नमस्ते", "दुनिया"]);
         assert_eq!(texts("FooBar", CaseMode::Folded), ["foobar"]);
         assert_eq!(texts("FooBar", CaseMode::Sensitive), ["FooBar"]);
@@ -257,23 +248,14 @@ mod tests {
         let indexable: Vec<usize> = tokenized.indexable().map(|token| token.position).collect();
         assert_eq!(indexable, [0, 2]);
         for token in &tokenized.tokens {
-            assert_eq!(
-                tokenized.text.get(token.start..token.end),
-                Some(token.text.as_str())
-            );
+            assert_eq!(tokenized.text.get(token.start..token.end), Some(token.text.as_str()));
         }
     }
 
     #[test]
     fn query_tokens_refuse_empty_and_over_long() {
-        assert_eq!(
-            query_tokens("👍", CaseMode::Folded),
-            Err(TextQueryError::NoTokens)
-        );
-        assert_eq!(
-            query_tokens("  ", CaseMode::Folded),
-            Err(TextQueryError::NoTokens)
-        );
+        assert_eq!(query_tokens("👍", CaseMode::Folded), Err(TextQueryError::NoTokens));
+        assert_eq!(query_tokens("  ", CaseMode::Folded), Err(TextQueryError::NoTokens));
         let long = "b".repeat(MAX_TOKEN_BYTES.saturating_add(1));
         assert_eq!(
             query_tokens(&format!("ok {long}"), CaseMode::Folded),
@@ -329,16 +311,8 @@ mod tests {
     #[test]
     fn substring_containment_is_nfc_and_folded() {
         assert!(contains_substring("café au lait", "CAFÉ", CaseMode::Folded));
-        assert!(contains_substring(
-            "café au lait",
-            "cafe\u{301}",
-            CaseMode::Folded
-        ));
-        assert!(!contains_substring(
-            "café au lait",
-            "CAFÉ",
-            CaseMode::Sensitive
-        ));
+        assert!(contains_substring("café au lait", "cafe\u{301}", CaseMode::Folded));
+        assert!(!contains_substring("café au lait", "CAFÉ", CaseMode::Sensitive));
         assert!(contains_substring("foo_bar", "o_b", CaseMode::Sensitive));
         assert!(!contains_substring("foo", "", CaseMode::Folded));
     }

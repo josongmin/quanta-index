@@ -103,11 +103,7 @@ impl ActivationCatalog {
         parent_sync: Arc<dyn ParentDirectorySyncPort>,
     ) -> Result<Self, CoreError> {
         let root = root.as_ref();
-        ensure_durable_directory_v1(
-            root,
-            "search-plane activation catalog",
-            parent_sync.as_ref(),
-        )?;
+        ensure_durable_directory_v1(root, "search-plane activation catalog", parent_sync.as_ref())?;
         let staging_dir = root.join(".staging");
         ensure_durable_directory_v1(
             &staging_dir,
@@ -245,10 +241,9 @@ impl ActivationCatalog {
         }
 
         let persisted = PersistedSearchCorpusGenerationRootV1::from_generation(candidate);
-        let path = self.activations_dir.join(search_corpus_root_file_name(
-            candidate.repo_id(),
-            candidate.revision_id(),
-        ));
+        let path = self
+            .activations_dir
+            .join(search_corpus_root_file_name(candidate.repo_id(), candidate.revision_id()));
         let bytes = serde_json::to_vec_pretty(&persisted).map_err(|err| {
             CoreError::Storage(format!(
                 "search-plane activation catalog: encode composite activation {}: {err}",
@@ -369,10 +364,9 @@ impl ActivationCatalog {
         }
 
         let persisted = PersistedSearchCorpusGenerationRootV1::from_generation(&target);
-        let path = self.activations_dir.join(search_corpus_root_file_name(
-            target.repo_id(),
-            target.revision_id(),
-        ));
+        let path = self
+            .activations_dir
+            .join(search_corpus_root_file_name(target.repo_id(), target.revision_id()));
         let bytes = serde_json::to_vec_pretty(&persisted).map_err(|err| {
             CoreError::Storage(format!(
                 "search-plane activation catalog: encode composite rollback {}: {err}",
@@ -522,11 +516,7 @@ impl ActivationCatalog {
             CoreError::Storage(format!("search-plane activation catalog poisoned: {err}"))
         })?;
         self.ensure_durability_certain_v1()?;
-        Ok(active_search_corpus_generation_v1(
-            &entries,
-            repo_id,
-            revision_id,
-        ))
+        Ok(active_search_corpus_generation_v1(&entries, repo_id, revision_id))
     }
 
     fn ensure_durability_certain_v1(&self) -> Result<(), CoreError> {
@@ -555,11 +545,7 @@ impl ActiveSearchCorpusPinReadPort for ActivationCatalog {
         let entries = self.entries.read().map_err(|error| {
             CoreError::Storage(format!("search-plane activation catalog poisoned: {error}"))
         })?;
-        Ok(active_search_corpus_generation_v1(
-            &entries,
-            repo_id,
-            revision_id,
-        ))
+        Ok(active_search_corpus_generation_v1(&entries, repo_id, revision_id))
     }
 
     fn all_active_search_corpora_for_bootstrap_v1(
@@ -607,10 +593,7 @@ fn insert_search_corpus_generation_records(
 }
 
 pub(super) fn search_corpus_root_file_name(repo_id: &RepoId, revision_id: &RevisionId) -> String {
-    format!(
-        "{}--corpus.json",
-        search_corpus_pair_digest(repo_id, revision_id)
-    )
+    format!("{}--corpus.json", search_corpus_pair_digest(repo_id, revision_id))
 }
 
 fn is_search_corpus_root_path(path: &Path) -> bool {

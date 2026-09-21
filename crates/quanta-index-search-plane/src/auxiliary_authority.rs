@@ -131,13 +131,7 @@ fn epoch_row(
     generation: &AuxiliaryGenerationKeyV1,
     epoch: AuxEpochV1,
 ) -> Result<AuxiliaryRowMutationV1, CoreError> {
-    upsert(
-        domain,
-        generation,
-        AuxiliaryRowFamilyV1::Epoch,
-        Vec::new(),
-        &epoch,
-    )
+    upsert(domain, generation, AuxiliaryRowFamilyV1::Epoch, Vec::new(), &epoch)
 }
 
 fn diff_key_bytes(key: &HistoryDiffKey) -> Vec<u8> {
@@ -179,9 +173,7 @@ fn commit_sha_from_bytes(bytes: &[u8]) -> Result<CommitSha, CoreError> {
 
 fn utf8_key<'a>(label: &str, bytes: &'a [u8]) -> Result<&'a str, CoreError> {
     std::str::from_utf8(bytes).map_err(|err| {
-        CoreError::Storage(format!(
-            "auxiliary authority: {label} row key is not UTF-8: {err}"
-        ))
+        CoreError::Storage(format!("auxiliary authority: {label} row key is not UTF-8: {err}"))
     })
 }
 
@@ -264,10 +256,7 @@ pub(crate) fn history_transition(
                 quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
                     quanta_index_contract::lex::LexicalErrorCode::HistoryRefNotFound,
                 ),
-                format!(
-                    "history ingest: diff hunk for unknown commit {}",
-                    hunk.commit_sha
-                ),
+                format!("history ingest: diff hunk for unknown commit {}", hunk.commit_sha),
             ));
         }
         diff_hunks.push((
@@ -680,12 +669,7 @@ pub(crate) fn runtime_catalog_delta_rows(
             state,
         )?);
     }
-    chunk_set_rows(
-        generation,
-        AuxiliaryRowFamilyV1::Snapshot,
-        &delta.snapshots,
-        &mut rows,
-    )?;
+    chunk_set_rows(generation, AuxiliaryRowFamilyV1::Snapshot, &delta.snapshots, &mut rows)?;
     chunk_set_rows(
         generation,
         AuxiliaryRowFamilyV1::AffectedDocs,
@@ -832,13 +816,7 @@ pub(crate) fn history_state_rows(
         (AuxiliaryRowFamilyV1::Tag, state.tags()),
     ] {
         for (name, sha) in map {
-            rows.push(upsert(
-                DOMAIN,
-                generation,
-                family,
-                name.as_bytes().to_vec(),
-                sha,
-            )?);
+            rows.push(upsert(DOMAIN, generation, family, name.as_bytes().to_vec(), sha)?);
         }
     }
     for (key, record) in state.diff_hunks() {
@@ -899,19 +877,10 @@ pub(crate) fn runtime_state_rows(
     for (family, sets) in [
         (AuxiliaryRowFamilyV1::Snapshot, state.snapshots()),
         (AuxiliaryRowFamilyV1::AffectedDocs, state.affected_docs()),
-        (
-            AuxiliaryRowFamilyV1::InvalidatedByDocs,
-            state.invalidated_by_docs(),
-        ),
+        (AuxiliaryRowFamilyV1::InvalidatedByDocs, state.invalidated_by_docs()),
     ] {
         for (name, chunk_ids) in sets {
-            rows.push(upsert(
-                DOMAIN,
-                generation,
-                family,
-                name.as_bytes().to_vec(),
-                chunk_ids,
-            )?);
+            rows.push(upsert(DOMAIN, generation, family, name.as_bytes().to_vec(), chunk_ids)?);
         }
     }
     rows.push(upsert(
@@ -1285,11 +1254,7 @@ pub(crate) mod testing {
                 .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?;
             for track in &batch.tracks {
                 let _previous = tracks.insert(
-                    (
-                        track.repo_id.clone(),
-                        track.revision_id.clone(),
-                        track.track,
-                    ),
+                    (track.repo_id.clone(), track.revision_id.clone(), track.track),
                     track.value.clone(),
                 );
                 written = written.saturating_add(1);

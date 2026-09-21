@@ -199,10 +199,7 @@ fn committed_files(generation_dir: &Path) -> Result<Vec<CommittedFile>, Box<dyn 
                 let shard = shard?;
                 let shard_metadata = shard.metadata()?;
                 files.push(CommittedFile {
-                    name: format!(
-                        "{TEXT_AUTHORITY_DIR}/{}",
-                        shard.file_name().to_string_lossy()
-                    ),
+                    name: format!("{TEXT_AUTHORITY_DIR}/{}", shard.file_name().to_string_lossy()),
                     bytes: shard_metadata.len(),
                     inode: shard_metadata.ino(),
                 });
@@ -336,14 +333,8 @@ fn a_delta_seal_reads_only_what_the_delta_wrote() -> TestResult {
         ("delta_files", delta_files.len().to_string()),
         ("delta_written_bytes", written_bytes.to_string()),
         ("delta_linked_bytes", linked_bytes.to_string()),
-        (
-            "delta_seal_bytes_hashed",
-            delta_seal.bytes_hashed.to_string(),
-        ),
-        (
-            "delta_seal_bytes_inherited",
-            delta_seal.bytes_inherited.to_string(),
-        ),
+        ("delta_seal_bytes_hashed", delta_seal.bytes_hashed.to_string()),
+        ("delta_seal_bytes_inherited", delta_seal.bytes_inherited.to_string()),
         ("delta_written", written_names.join(",")),
     ]);
 
@@ -393,9 +384,7 @@ fn a_delta_seal_reads_only_what_the_delta_wrote() -> TestResult {
         .iter()
         .any(|file| file.name.starts_with(TEXT_AUTHORITY_DIR))
     {
-        return Err(
-            "no text-authority shard was inherited; untouched shards were rewritten".into(),
-        );
+        return Err("no text-authority shard was inherited; untouched shards were rewritten".into());
     }
     if !linked
         .iter()

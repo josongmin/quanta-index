@@ -87,9 +87,7 @@ fn semantic_query_request_lexical_scope_round_trips() -> TestRes {
     let bytes = encode(&original)?;
     let decoded: SemanticQueryRequest = decode(&bytes)?;
     if decoded != original {
-        return Err(
-            format!("roundtrip mismatch: original={original:?} decoded={decoded:?}").into(),
-        );
+        return Err(format!("roundtrip mismatch: original={original:?} decoded={decoded:?}").into());
     }
     let scope = decoded
         .lexical_scope
@@ -205,9 +203,7 @@ fn hybrid_query_request_text_query_round_trips() -> TestRes {
     let bytes = encode(&original)?;
     let decoded: HybridQueryRequest = decode(&bytes)?;
     if decoded != original {
-        return Err(
-            format!("roundtrip mismatch: original={original:?} decoded={decoded:?}").into(),
-        );
+        return Err(format!("roundtrip mismatch: original={original:?} decoded={decoded:?}").into());
     }
     if decoded.text_query.syntax != TextQuerySyntax::Sourcegraph {
         return Err("hybrid text_query.syntax not preserved".into());
@@ -432,10 +428,7 @@ fn search_explanation_rejects_unknown_field() -> TestRes {
     let ciborium::Value::Map(fields) = &mut wire else {
         return Err("expected map".into());
     };
-    fields.push((
-        ciborium::Value::Text("__never_field".to_owned()),
-        ciborium::Value::Bool(true),
-    ));
+    fields.push((ciborium::Value::Text("__never_field".to_owned()), ciborium::Value::Bool(true)));
     let mutated = encode(&wire)?;
     let result: Result<SearchExplanation, _> =
         ciborium::de::from_reader::<SearchExplanation, _>(mutated.as_slice());

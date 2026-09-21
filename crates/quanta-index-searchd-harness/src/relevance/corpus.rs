@@ -458,10 +458,7 @@ pub const SEMANTIC_DISTRACTOR_CORPUS: &[(&str, &str)] = &[
         "build/feature_flags.rs",
         "pub fn rollout_enabled(flag: &str) -> bool { !flag.is_empty() }\n",
     ),
-    (
-        "cli/arg_parse.rs",
-        "pub fn parse_args(raw: &[String]) -> usize { raw.len() }\n",
-    ),
+    ("cli/arg_parse.rs", "pub fn parse_args(raw: &[String]) -> usize { raw.len() }\n"),
     (
         "config/source_paths.rs",
         "pub fn source_paths(root: &str) -> Vec<String> { vec![root.to_string()] }\n",
@@ -490,10 +487,7 @@ pub const SEMANTIC_DISTRACTOR_CORPUS: &[(&str, &str)] = &[
         "index/bloom.rs",
         "pub fn bloom_bits(size: usize) -> usize { size.saturating_mul(8) }\n",
     ),
-    (
-        "json/pretty.rs",
-        "pub fn pretty(input: &str) -> String { input.to_string() }\n",
-    ),
+    ("json/pretty.rs", "pub fn pretty(input: &str) -> String { input.to_string() }\n"),
     (
         "lint/rule_names.rs",
         "pub fn rule_names() -> Vec<&'static str> { vec![\"unused\", \"dead_code\"] }\n",

@@ -423,10 +423,7 @@ impl LexicalAdapter {
                 let mut doc = TantivyDocument::new();
                 doc.add_u64(self.fields.text_authority_doc_id, doc_id);
                 doc.add_text(self.fields.candidate_id, candidate_id);
-                doc.add_text(
-                    self.fields.repo_id,
-                    chunk.searchable_repo_id(&key.repo_id).as_str(),
-                );
+                doc.add_text(self.fields.repo_id, chunk.searchable_repo_id(&key.repo_id).as_str());
                 doc.add_text(self.fields.revision_id, key.revision_id.as_str());
                 doc.add_text(self.fields.doc_kind, TEXT_DOC_KIND);
                 add_metadata_fields(
@@ -460,14 +457,8 @@ impl LexicalAdapter {
                     symbol.repo_relative_path.as_str(),
                     Some(symbol.language.as_str()),
                 );
-                doc.add_u64(
-                    self.fields.start_line,
-                    u64::from(symbol.definition_span.line_start),
-                );
-                doc.add_u64(
-                    self.fields.end_line,
-                    u64::from(symbol.definition_span.line_end),
-                );
+                doc.add_u64(self.fields.start_line, u64::from(symbol.definition_span.line_start));
+                doc.add_u64(self.fields.end_line, u64::from(symbol.definition_span.line_end));
                 let snippet = match symbol.container_qualified_name.as_deref() {
                     Some(container) if !container.is_empty() => {
                         format!("{} {}", symbol.local_name.as_ref(), container)
@@ -528,10 +519,7 @@ impl LexicalAdapter {
                         self.fields.start_line,
                         u64::from(symbol.definition_span.line_start),
                     );
-                    doc.add_u64(
-                        self.fields.end_line,
-                        u64::from(symbol.definition_span.line_end),
-                    );
+                    doc.add_u64(self.fields.end_line, u64::from(symbol.definition_span.line_end));
                     let snippet = match symbol.container_qualified_name.as_deref() {
                         Some(container) if !container.is_empty() => {
                             format!("{} {}", symbol.local_name.as_ref(), container)
@@ -659,17 +647,15 @@ pub(crate) fn legacy_ops_for_batch(
         }));
     }
     for scope in &batch.tombstone_scopes {
-        ops.push(LexicalChannelOp::TombstoneLexicalScope(
-            TombstoneLexicalScope {
-                repo_id: batch.repo_id.clone(),
-                revision_id: batch.revision_id.clone(),
-                generation: batch.generation,
-                payload: encode_cbor(
-                    &(batch.mode, batch.base_generation, scope.clone()),
-                    "tombstone lexical scope payload",
-                )?,
-            },
-        ));
+        ops.push(LexicalChannelOp::TombstoneLexicalScope(TombstoneLexicalScope {
+            repo_id: batch.repo_id.clone(),
+            revision_id: batch.revision_id.clone(),
+            generation: batch.generation,
+            payload: encode_cbor(
+                &(batch.mode, batch.base_generation, scope.clone()),
+                "tombstone lexical scope payload",
+            )?,
+        }));
     }
     if include_seal {
         ops.push(LexicalChannelOp::Seal(LexicalSeal {

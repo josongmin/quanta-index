@@ -26,10 +26,7 @@ fn query_window_uses_one_continuation_row_and_never_requires_full_count_v1() {
     assert_eq!(fused.candidate_count(), CandidateCountV1::AtLeast(101));
     assert!(fused.has_more());
     assert!(fused_window_v1(100, 99, 99, true).is_err());
-    assert_eq!(
-        probe_top_k_v1(9_999).expect("one-row probe within ceiling"),
-        10_000
-    );
+    assert_eq!(probe_top_k_v1(9_999).expect("one-row probe within ceiling"), 10_000);
     // The public maximum is accepted and probes one row past it; the
     // internal fetch ceiling is the contract's, not the caller's.
     assert_eq!(

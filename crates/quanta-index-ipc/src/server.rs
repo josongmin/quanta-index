@@ -138,10 +138,9 @@ impl RequestEnvelope<quanta_index_contract::SearchPlaneQueryIpcRequest>
             Request::Text(text) => {
                 pinned_repo_scope(text.generation.as_ref(), text.generation_selector.as_ref())
             }
-            Request::Symbol(symbol) => pinned_repo_scope(
-                symbol.generation.as_ref(),
-                symbol.generation_selector.as_ref(),
-            ),
+            Request::Symbol(symbol) => {
+                pinned_repo_scope(symbol.generation.as_ref(), symbol.generation_selector.as_ref())
+            }
             Request::Semantic(semantic) => pinned_repo_scope(
                 semantic.generation.as_ref(),
                 semantic.generation_selector.as_ref(),
@@ -350,9 +349,7 @@ impl SocketPathIdentity {
     fn capture(path: &Path) -> std::io::Result<Self> {
         let metadata = std::fs::symlink_metadata(path)?;
         if !metadata.file_type().is_socket() {
-            return Err(std::io::Error::other(
-                "bound uds path is no longer a socket",
-            ));
+            return Err(std::io::Error::other("bound uds path is no longer a socket"));
         }
         Ok(Self {
             device: metadata.dev(),
@@ -499,10 +496,7 @@ fn create_socket_directory_chain(
             Err(error) if error.kind() == ErrorKind::NotFound => {
                 missing.push(cursor);
                 cursor = cursor.parent().ok_or_else(|| {
-                    insecure(
-                        parent,
-                        "socket directory has no existing ancestor to create it under",
-                    )
+                    insecure(parent, "socket directory has no existing ancestor to create it under")
                 })?;
             }
             Err(error) => return Err(IpcError::Io(error)),
@@ -622,18 +616,12 @@ fn reclaim_socket_path(path: &Path, owner: u32) -> Result<(), IpcError> {
         Err(error) => return Err(IpcError::Io(error)),
     };
     if !before.file_type().is_socket() {
-        return Err(insecure(
-            path,
-            "path exists and is not a socket; refusing to remove it",
-        ));
+        return Err(insecure(path, "path exists and is not a socket; refusing to remove it"));
     }
     if before.uid() != owner {
         return Err(insecure(
             path,
-            format!(
-                "socket is owned by uid {} and this process runs as {owner}",
-                before.uid()
-            ),
+            format!("socket is owned by uid {} and this process runs as {owner}", before.uid()),
         ));
     }
     match UnixStream::connect(path) {
@@ -1404,10 +1392,7 @@ fn connect_before_deadline(socket_path: &Path, deadline: Instant) -> std::io::Re
 }
 
 fn connect_requires_completion_wait(error: Errno) -> bool {
-    matches!(
-        error,
-        Errno::INPROGRESS | Errno::ALREADY | Errno::WOULDBLOCK | Errno::INTR
-    )
+    matches!(error, Errno::INPROGRESS | Errno::ALREADY | Errno::WOULDBLOCK | Errno::INTR)
 }
 
 #[cfg(target_os = "linux")]
@@ -1502,10 +1487,7 @@ impl DeadlineStream {
     fn remaining(&self) -> std::io::Result<Duration> {
         let remaining = self.deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            Err(std::io::Error::new(
-                ErrorKind::TimedOut,
-                "IPC request deadline elapsed",
-            ))
+            Err(std::io::Error::new(ErrorKind::TimedOut, "IPC request deadline elapsed"))
         } else {
             Ok(remaining)
         }
@@ -1946,9 +1928,7 @@ mod tests {
         let refused = typed_bind_error(UdsServer::bind(&socket_path))?;
         if !matches!(refused, IpcError::SocketPathInsecure { ref reason, .. } if reason.contains("not a socket"))
         {
-            return Err(format!(
-                "expected SOCKET_PATH_INSECURE for a regular file, got {refused}"
-            ));
+            return Err(format!("expected SOCKET_PATH_INSECURE for a regular file, got {refused}"));
         }
         if std::fs::read(&socket_path).map_err(|error| error.to_string())? != b"keep me" {
             return Err("the regular file must be untouched".to_string());
@@ -2015,9 +1995,7 @@ mod tests {
                 timeout: observed,
             }) if observed == timeout
         ) {
-            return Err(format!(
-                "expected typed partial-frame timeout, got {result:?}"
-            ));
+            return Err(format!("expected typed partial-frame timeout, got {result:?}"));
         }
         Ok(())
     }
@@ -2327,9 +2305,7 @@ mod tests {
         where
             S: Serializer,
         {
-            Err(serde::ser::Error::custom(
-                "simulated response encode failure",
-            ))
+            Err(serde::ser::Error::custom("simulated response encode failure"))
         }
     }
 
@@ -2430,10 +2406,7 @@ mod tests {
     impl IpcDispatcher<u64, u64> for BlockingDispatcher {
         fn dispatch(&self, request: u64, budget: &RequestBudgetV1) -> u64 {
             let send_result = self.entered.send(());
-            assert!(
-                send_result.is_ok(),
-                "test must observe dispatcher entry: {send_result:?}"
-            );
+            assert!(send_result.is_ok(), "test must observe dispatcher entry: {send_result:?}");
             let _wait = self.gate.wait();
             let started = Instant::now();
             while started.elapsed() < Duration::from_secs(2) {
@@ -2458,10 +2431,7 @@ mod tests {
     impl IpcDispatcher<u64, u64> for HalfCloseDispatcher {
         fn dispatch(&self, request: u64, budget: &RequestBudgetV1) -> u64 {
             let send_result = self.entered.send(());
-            assert!(
-                send_result.is_ok(),
-                "test must observe dispatcher entry: {send_result:?}"
-            );
+            assert!(send_result.is_ok(), "test must observe dispatcher entry: {send_result:?}");
             let _wait = self.gate.wait();
             if budget.is_cancelled() {
                 self.observed_cancel.store(true, Ordering::Release);
@@ -2559,10 +2529,7 @@ mod tests {
                 &AtomicBool::new(false),
                 &counters,
             );
-            if !matches!(
-                reason,
-                ConnectionCloseReason::RequestDecodeFailed(IpcError::EmptyFrame)
-            ) {
+            if !matches!(reason, ConnectionCloseReason::RequestDecodeFailed(IpcError::EmptyFrame)) {
                 return Err(format!("unexpected close reason: {reason:?}"));
             }
             // The failure is counted where a scrape will read it (QI-BB-015).
@@ -2609,10 +2576,7 @@ mod tests {
                 .join()
                 .map_err(|_panic| "server thread panicked".to_string())?;
             if response.request_id != 12 {
-                return Err(format!(
-                    "refusal carried request_id {}",
-                    response.request_id
-                ));
+                return Err(format!("refusal carried request_id {}", response.request_id));
             }
             let limit = u64::try_from(MAX_FRAME_BODY_BYTES).map_err(|err| err.to_string())?;
             if response.payload <= limit {

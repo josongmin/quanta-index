@@ -424,10 +424,7 @@ impl<'de> Visitor<'de> for SemanticSourceRecordV1Visitor {
                     text = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        SEMANTIC_SOURCE_RECORD_V1_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, SEMANTIC_SOURCE_RECORD_V1_FIELDS));
                 }
             }
         }

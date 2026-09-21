@@ -152,10 +152,7 @@ fn ensure_names(
         if !accept(&artifact.name) {
             return Err(manifest_corrupt(
                 path,
-                &format!(
-                    "{section} lists {}, which is not a {section} file",
-                    artifact.name
-                ),
+                &format!("{section} lists {}, which is not a {section} file", artifact.name),
             ));
         }
         if let Some(previous) = position
@@ -307,19 +304,13 @@ impl LexicalSealedManifest {
             let Some(family) = OverlayFamily::from_file_name(&overlay.name) else {
                 return Err(manifest_corrupt(
                     path,
-                    &format!(
-                        "overlays list {}, which is not an overlay family",
-                        overlay.name
-                    ),
+                    &format!("overlays list {}, which is not an overlay family", overlay.name),
                 ));
             };
             if last_family.is_some_and(|previous| previous >= family) {
                 return Err(manifest_corrupt(
                     path,
-                    &format!(
-                        "overlays list {} out of family order or twice",
-                        overlay.name
-                    ),
+                    &format!("overlays list {} out of family order or twice", overlay.name),
                 ));
             }
             last_family = Some(family);

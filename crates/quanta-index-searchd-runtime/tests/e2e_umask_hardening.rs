@@ -40,14 +40,8 @@ fn searchd_under_umask(state_root: &Path, umask: &str) -> Command {
         .arg(state_root)
         .env("QUANTA_INDEX_EMBEDDER", "hash-dev")
         .env("QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_GENERATIONS", "8")
-        .env(
-            "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_BYTES",
-            (16 * 1024 * 1024).to_string(),
-        )
-        .env(
-            "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_REVISION_PAIRS",
-            "128",
-        )
+        .env("QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_BYTES", (16 * 1024 * 1024).to_string())
+        .env("QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_REVISION_PAIRS", "128")
         .env(
             "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_TOTAL_BYTES",
             (256 * 1024 * 1024).to_string(),

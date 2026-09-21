@@ -68,10 +68,9 @@ impl fmt::Display for LexicalPlannerError {
             Self::UnsupportedNotScope => f.write_str("planner: unsupported NOT scope"),
             Self::UnsupportedOrScope => f.write_str("planner: unsupported OR scope"),
             Self::UnsupportedFilterCombo => f.write_str("planner: unsupported filter combination"),
-            Self::Unimplemented { node, owner_ticket } => write!(
-                f,
-                "planner: IR node '{node}' is unimplemented (owner: {owner_ticket})",
-            ),
+            Self::Unimplemented { node, owner_ticket } => {
+                write!(f, "planner: IR node '{node}' is unimplemented (owner: {owner_ticket})",)
+            }
             Self::RegexPlan(e) => write!(f, "planner: {e}"),
             Self::TrigramPlan(e) => write!(f, "planner: {e}"),
             Self::PhrasePlan(e) => write!(f, "planner: {e}"),
@@ -146,11 +145,7 @@ impl LexicalPlanner {
             }
             LqExpr::Not(inner) => {
                 let (child, trace, engines) = Self::plan_expr(query, inner)?;
-                Ok((
-                    PlanNode::Not(Box::new(child)),
-                    PlanTraceNode::Not(Box::new(trace)),
-                    engines,
-                ))
+                Ok((PlanNode::Not(Box::new(child)), PlanTraceNode::Not(Box::new(trace)), engines))
             }
             LqExpr::All(children) => {
                 let (nodes, traces, engines) = Self::plan_children(query, children)?;
@@ -407,10 +402,7 @@ fn predicate_arity_label(name: &str) -> &'static str {
         "predicate_repo_has_file_arity"
     } else if matches!(canonical_predicate_name(name), Some("repo.has.content")) {
         "predicate_repo_has_content_arity"
-    } else if matches!(
-        canonical_predicate_name(name),
-        Some("repo.has.commit.after")
-    ) {
+    } else if matches!(canonical_predicate_name(name), Some("repo.has.commit.after")) {
         "predicate_repo_has_commit_after_arity"
     } else if matches!(canonical_predicate_name(name), Some("repo.has.meta")) {
         "predicate_repo_has_meta_arity"
@@ -512,11 +504,7 @@ mod tests {
                 &plan.trace,
                 PlanTraceNode::Leaf { engine: EngineKind::Tantivy, summary } if summary == "content:alpha"
             );
-            assert!(
-                matched_trace,
-                "expected leaf trace summary, got {:?}",
-                plan.trace
-            );
+            assert!(matched_trace, "expected leaf trace summary, got {:?}", plan.trace);
         }
     }
 
@@ -556,10 +544,7 @@ mod tests {
                 }
             ))
         );
-        assert!(
-            is_lookbehind,
-            "expected lookbehind rejection, got {outcome:?}"
-        );
+        assert!(is_lookbehind, "expected lookbehind rejection, got {outcome:?}");
     }
 
     #[test]
@@ -576,10 +561,7 @@ mod tests {
                 }
             ))
         );
-        assert!(
-            is_too_short,
-            "expected NeedleTooShort rejection, got {outcome:?}"
-        );
+        assert!(is_too_short, "expected NeedleTooShort rejection, got {outcome:?}");
     }
 
     #[test]
@@ -594,11 +576,7 @@ mod tests {
                 PlanNode::Leaf { leaf: PlanLeaf::RawSubstring { needle, .. }, .. }
                     if needle == "foo"
             );
-            assert!(
-                matched_leaf,
-                "expected raw_substring leaf, got {:?}",
-                plan.root
-            );
+            assert!(matched_leaf, "expected raw_substring leaf, got {:?}", plan.root);
             assert!(plan.engines.contains(&EngineKind::Trigram));
         }
     }
@@ -642,11 +620,7 @@ mod tests {
                 PlanNode::Leaf { leaf: PlanLeaf::Symbol { name, plan: symbol_plan }, .. }
                     if name == "foo" && symbol_plan.needle == "foo"
             );
-            assert!(
-                matched_leaf,
-                "expected symbol leaf with needle `foo`, got {:?}",
-                plan.root
-            );
+            assert!(matched_leaf, "expected symbol leaf with needle `foo`, got {:?}", plan.root);
             assert!(plan.engines.contains(&EngineKind::Symbol));
         }
     }

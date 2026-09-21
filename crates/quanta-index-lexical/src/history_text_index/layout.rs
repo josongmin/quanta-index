@@ -48,10 +48,8 @@ pub(super) fn staging_dir(
     generation: &AuxiliaryGenerationKeyV1,
     epoch: AuxEpochV1,
 ) -> PathBuf {
-    generation_dir(root, generation).join(format!(
-        "{EPOCH_DIR_PREFIX}{}{STAGING_DIR_SUFFIX}",
-        epoch.get()
-    ))
+    generation_dir(root, generation)
+        .join(format!("{EPOCH_DIR_PREFIX}{}{STAGING_DIR_SUFFIX}", epoch.get()))
 }
 
 /// The sub-directory of one kind's index inside an epoch directory.
@@ -174,20 +172,14 @@ pub(super) fn list_epochs(
 /// Recursive byte size of a directory tree (what a discard reclaims).
 pub(super) fn tree_bytes(path: &Path) -> Result<u64, CoreError> {
     let metadata = std::fs::symlink_metadata(path).map_err(|err| {
-        CoreError::Storage(format!(
-            "history text index: inspect {}: {err}",
-            path.display()
-        ))
+        CoreError::Storage(format!("history text index: inspect {}: {err}", path.display()))
     })?;
     if !metadata.is_dir() {
         return Ok(metadata.len());
     }
     let mut total = 0_u64;
     let entries = std::fs::read_dir(path).map_err(|err| {
-        CoreError::Storage(format!(
-            "history text index: list {}: {err}",
-            path.display()
-        ))
+        CoreError::Storage(format!("history text index: list {}: {err}", path.display()))
     })?;
     for entry in entries {
         let entry = entry.map_err(|err| {
@@ -231,10 +223,7 @@ mod tests {
 
     #[test]
     fn epoch_directory_names_parse_and_foreign_names_are_refused() {
-        assert_eq!(
-            parse_epoch_dir_name("e7").expect("parses"),
-            Some(AuxEpochV1::new(7))
-        );
+        assert_eq!(parse_epoch_dir_name("e7").expect("parses"), Some(AuxEpochV1::new(7)));
         assert_eq!(parse_epoch_dir_name("e7.staging").expect("parses"), None);
         assert!(parse_epoch_dir_name("g7").is_err());
         assert!(parse_epoch_dir_name("e").is_err());

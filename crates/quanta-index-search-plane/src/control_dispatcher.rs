@@ -428,11 +428,7 @@ mod tests {
             candidate: &GenerationSnapshot,
         ) -> Result<Box<dyn LexicalSearcher>, CoreError> {
             prove_echo_digest(candidate)?;
-            self.open(
-                &candidate.repo_id,
-                &candidate.revision_id,
-                candidate.manifest_generation,
-            )
+            self.open(&candidate.repo_id, &candidate.revision_id, candidate.manifest_generation)
         }
     }
 
@@ -457,11 +453,7 @@ mod tests {
             candidate: &GenerationSnapshot,
         ) -> Result<Box<dyn SemanticSearcher>, CoreError> {
             prove_echo_digest(candidate)?;
-            self.open(
-                &candidate.repo_id,
-                &candidate.revision_id,
-                candidate.manifest_generation,
-            )
+            self.open(&candidate.repo_id, &candidate.revision_id, candidate.manifest_generation)
         }
     }
 
@@ -537,10 +529,7 @@ mod tests {
     }
 
     fn empty_scrape() -> Arc<ObservabilityScrape> {
-        Arc::new(ObservabilityScrape::new(
-            Arc::new(BoundedQueryObsStore::default()),
-            Vec::new(),
-        ))
+        Arc::new(ObservabilityScrape::new(Arc::new(BoundedQueryObsStore::default()), Vec::new()))
     }
 
     /// A source that reports fixed points, or fails typed.
@@ -683,10 +672,7 @@ mod tests {
         let error = scrape_via_control(&dispatcher)
             .err()
             .ok_or("a failing source refuses")?;
-        assert_eq!(
-            error.code,
-            quanta_index_contract::SearchPlaneErrorCodeV2::Internal
-        );
+        assert_eq!(error.code, quanta_index_contract::SearchPlaneErrorCodeV2::Internal);
         assert!(
             error.message.contains("writer cache poisoned"),
             "the source's own failure is the answer: {}",
@@ -702,10 +688,7 @@ mod tests {
         let error = scrape_via_control(&dispatcher)
             .err()
             .ok_or("a bad name refuses")?;
-        assert_eq!(
-            error.code,
-            quanta_index_contract::SearchPlaneErrorCodeV2::MetricsSourceDefect
-        );
+        assert_eq!(error.code, quanta_index_contract::SearchPlaneErrorCodeV2::MetricsSourceDefect);
         assert!(error.message.contains("Ipc-Bad Name"), "{}", error.message);
 
         let store = Arc::new(BoundedQueryObsStore::default());
@@ -724,15 +707,8 @@ mod tests {
         let error = scrape_via_control(&dispatcher)
             .err()
             .ok_or("a collision refuses")?;
-        assert_eq!(
-            error.code,
-            quanta_index_contract::SearchPlaneErrorCodeV2::MetricsSourceDefect
-        );
-        assert!(
-            error.message.contains("more than one source"),
-            "{}",
-            error.message
-        );
+        assert_eq!(error.code, quanta_index_contract::SearchPlaneErrorCodeV2::MetricsSourceDefect);
+        assert!(error.message.contains("more than one source"), "{}", error.message);
         Ok(())
     }
 
@@ -917,10 +893,7 @@ mod tests {
             &RevisionId::new("rev-map-ipc").expect("static fixture ID satisfies canonical policy"),
             SearchPlaneTrackKind::Semantic,
         )?;
-        assert_eq!(
-            semantic_pin.manifest_generation,
-            lexical_pin.manifest_generation
-        );
+        assert_eq!(semantic_pin.manifest_generation, lexical_pin.manifest_generation);
         Ok(())
     }
 
@@ -963,10 +936,7 @@ mod tests {
                 &RequestBudgetV1::unbounded(),
             ),
         )?;
-        assert_eq!(
-            code,
-            quanta_index_contract::SearchPlaneErrorCodeV2::InvalidRequest
-        );
+        assert_eq!(code, quanta_index_contract::SearchPlaneErrorCodeV2::InvalidRequest);
         assert!(
             activation_catalog
                 .resolve_record(
@@ -1319,29 +1289,19 @@ mod tests {
         else {
             return Err("activation must succeed with the proof outside the guard".into());
         };
-        assert_eq!(
-            ack.active.lexical.manifest_generation,
-            ManifestGeneration::new(11)
-        );
+        assert_eq!(ack.active.lexical.manifest_generation, ManifestGeneration::new(11));
 
         let key = fixture_key(11);
         let lexical = snapshots
             .lexical
             .acquire(&key, &RequestBudgetV1::unbounded(), || {
-                Err(CoreError::Storage(
-                    "the lexical handle must already be resident".into(),
-                ))
+                Err(CoreError::Storage("the lexical handle must already be resident".into()))
             })?;
-        assert_eq!(
-            lexical.handle.artifact_identity().manifest_digest,
-            "manifest-digest-11"
-        );
+        assert_eq!(lexical.handle.artifact_identity().manifest_digest, "manifest-digest-11");
         let semantic = snapshots
             .semantic
             .acquire(&key, &RequestBudgetV1::unbounded(), || {
-                Err(CoreError::Storage(
-                    "the semantic handle must already be resident".into(),
-                ))
+                Err(CoreError::Storage("the semantic handle must already be resident".into()))
             })?;
         assert_eq!(semantic.handle.manifest_digest(), "manifest-digest-11");
         for registry_stats in [snapshots.lexical.stats()?, snapshots.semantic.stats()?] {
@@ -1365,9 +1325,8 @@ mod tests {
         let activation_catalog = Arc::new(ActivationCatalog::open(dir.path())?);
         let (mut parts, _snapshots) =
             control_parts(Arc::clone(&activation_catalog), sealed_ledger(&[11]));
-        parts.lifecycle.authority = Arc::new(ScriptedAuthority(
-            SealedSearchCorpusAuthorityStateV1::Absent,
-        ));
+        parts.lifecycle.authority =
+            Arc::new(ScriptedAuthority(SealedSearchCorpusAuthorityStateV1::Absent));
         let dispatcher = SearchPlaneControlDispatcher::new(parts);
 
         let code = into_error_code(
@@ -1436,20 +1395,9 @@ mod tests {
         let code = into_error_code(
             dispatcher.dispatch(activate_request(11), &RequestBudgetV1::unbounded()),
         )?;
-        assert_eq!(
-            code,
-            crate::search_corpus_lifecycle::ERR_ACTIVATION_TARGET_UNOPENABLE
-        );
-        assert_eq!(
-            snapshots.lexical.stats()?.entries,
-            0,
-            "nothing was promoted"
-        );
-        assert_eq!(
-            snapshots.semantic.stats()?.entries,
-            0,
-            "nothing was promoted"
-        );
+        assert_eq!(code, crate::search_corpus_lifecycle::ERR_ACTIVATION_TARGET_UNOPENABLE);
+        assert_eq!(snapshots.lexical.stats()?.entries, 0, "nothing was promoted");
+        assert_eq!(snapshots.semantic.stats()?.entries, 0, "nothing was promoted");
         assert!(
             activation_catalog
                 .resolve_record(

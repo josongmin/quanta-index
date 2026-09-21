@@ -361,22 +361,10 @@ fn a_repo_metadata_predicate_without_its_authority_is_refused_before_any_lane() 
             "repo:has.commit.after(2020-01-01) needle",
             RepoMetadataAuthorityV1::CommitRecency,
         ),
-        (
-            "repo:has.meta(team:core) needle",
-            RepoMetadataAuthorityV1::Meta,
-        ),
-        (
-            "repo:has.topic(security) needle",
-            RepoMetadataAuthorityV1::Topic,
-        ),
-        (
-            "repo:has.description(\"search\") needle",
-            RepoMetadataAuthorityV1::Description,
-        ),
-        (
-            "file:has.contributor(alice) needle",
-            RepoMetadataAuthorityV1::Contributor,
-        ),
+        ("repo:has.meta(team:core) needle", RepoMetadataAuthorityV1::Meta),
+        ("repo:has.topic(security) needle", RepoMetadataAuthorityV1::Topic),
+        ("repo:has.description(\"search\") needle", RepoMetadataAuthorityV1::Description),
+        ("file:has.contributor(alice) needle", RepoMetadataAuthorityV1::Contributor),
     ];
     for (query_text, authority) in cases {
         let response = dispatcher.dispatch(
@@ -446,11 +434,8 @@ fn other_generation_history_read(
 #[test]
 fn a_mixed_generation_aux_state_is_refused_typed() -> TestResult {
     let pin = ready_pin();
-    let request = ReadViewRequestV1::new(
-        "history",
-        &pin,
-        RequiredDomainsV1::of(ReadDomainV1::History),
-    );
+    let request =
+        ReadViewRequestV1::new("history", &pin, RequiredDomainsV1::of(ReadDomainV1::History));
     let mixed = other_generation_history_read(&pin)?;
     match assemble_for_test(&request, Some(mixed), None, None, None) {
         Err(CoreError::Typed { code, message }) if code == READ_VIEW_GENERATION_MIX_CODE => {
@@ -514,11 +499,8 @@ fn a_mixed_generation_aux_state_is_refused_typed() -> TestResult {
 #[test]
 fn a_route_reaching_past_its_declaration_is_refused() -> TestResult {
     let pin = ready_pin();
-    let request = ReadViewRequestV1::new(
-        "lexical",
-        &pin,
-        RequiredDomainsV1::of(ReadDomainV1::LexicalTrack),
-    );
+    let request =
+        ReadViewRequestV1::new("lexical", &pin, RequiredDomainsV1::of(ReadDomainV1::LexicalTrack));
     let view = assemble_for_test(
         &request,
         None,
@@ -538,16 +520,13 @@ fn a_route_reaching_past_its_declaration_is_refused() -> TestResult {
         ("history_text", view.history_text().map(|_| ())),
         ("runtime", view.runtime().map(|_| ())),
         ("structural", view.structural().map(|_| ())),
-        (
-            "semantic_manifest_digest",
-            view.semantic_manifest_digest().map(|_| ()),
-        ),
+        ("semantic_manifest_digest", view.semantic_manifest_digest().map(|_| ())),
     ] {
         match outcome {
             Err(CoreError::Typed { code, .. }) if code == READ_VIEW_DOMAIN_UNDECLARED_CODE => {}
             other => {
                 return Err(
-                    format!("{name}: an undeclared domain is refused, got {other:?}").into(),
+                    format!("{name}: an undeclared domain is refused, got {other:?}").into()
                 );
             }
         }

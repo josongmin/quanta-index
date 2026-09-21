@@ -71,9 +71,9 @@ fn claim(
 ) -> Result<PreparedMutationV1, CoreError> {
     match catalog.claim_prepared(key, body, "journal-test", LONG_LEASE_MS, body)? {
         ClaimOutcomeV1::Claimed(claim) => Ok(claim),
-        ClaimOutcomeV1::Replay { .. } => Err(CoreError::InvalidContract(
-            "expected a fresh claim, got a replay".to_string(),
-        )),
+        ClaimOutcomeV1::Replay { .. } => {
+            Err(CoreError::InvalidContract("expected a fresh claim, got a replay".to_string()))
+        }
     }
 }
 
@@ -98,21 +98,16 @@ fn raw(temp: &tempfile::TempDir) -> Result<rusqlite::Connection, Box<dyn Error>>
 
 fn allocator_next(temp: &tempfile::TempDir) -> Result<Option<i64>, Box<dyn Error>> {
     let connection = raw(temp)?;
-    let next: Option<i64> = connection.query_row(
-        "SELECT next FROM catalog_sequence_v2 WHERE id = 1",
-        [],
-        |row| row.get(0),
-    )?;
+    let next: Option<i64> =
+        connection
+            .query_row("SELECT next FROM catalog_sequence_v2 WHERE id = 1", [], |row| row.get(0))?;
     Ok(next)
 }
 
 fn event_count(temp: &tempfile::TempDir) -> Result<i64, Box<dyn Error>> {
     let connection = raw(temp)?;
-    Ok(connection.query_row(
-        "SELECT COUNT(*) FROM catalog_sequence_event_v2",
-        [],
-        |row| row.get(0),
-    )?)
+    Ok(connection
+        .query_row("SELECT COUNT(*) FROM catalog_sequence_event_v2", [], |row| row.get(0))?)
 }
 
 /// The allocator row's self-digest preimage, test-owned so a restored-DB
@@ -293,13 +288,7 @@ fn timeout_disconnect_and_cancellation_have_distinct_terminals() -> TestResult {
         .claimed()?;
     let live = key(IngestOperationKindV1::RepoDescription, 6, "d-live");
     let _held = catalog
-        .claim_prepared(
-            &live,
-            &[3_u8; 32],
-            "live-worker",
-            LONG_LEASE_MS,
-            &[3_u8; 32],
-        )?
+        .claim_prepared(&live, &[3_u8; 32], "live-worker", LONG_LEASE_MS, &[3_u8; 32])?
         .claimed()?;
     match catalog.recover(&timed_out)? {
         OperationInspectV1::Absent => {}
@@ -332,13 +321,7 @@ fn timeout_disconnect_and_cancellation_have_distinct_terminals() -> TestResult {
     }
     // A live foreign claim refuses a second claimant typed-busy.
     let busy = catalog
-        .claim_prepared(
-            &live,
-            &[3_u8; 32],
-            "other-worker",
-            LONG_LEASE_MS,
-            &[3_u8; 32],
-        )
+        .claim_prepared(&live, &[3_u8; 32], "other-worker", LONG_LEASE_MS, &[3_u8; 32])
         .expect_err("a live foreign claim must refuse");
     if typed_code(&busy) != Some(CATALOG_BUSY_CODE) {
         return Err(format!("expected CATALOG_BUSY, got {busy:?}").into());
@@ -383,13 +366,7 @@ fn a_foreign_receipt_version_is_refused_typed_before_mutation() -> TestResult {
     let catalog = SqliteCatalog::open(temp.path(), Duration::from_millis(200))?;
     let key = key(IngestOperationKindV1::SearchCorpus, 7, "d-ver");
     let refused = catalog
-        .claim_prepared(
-            &key,
-            &[6_u8; 32],
-            "journal-test",
-            LONG_LEASE_MS,
-            &[6_u8; 32],
-        )
+        .claim_prepared(&key, &[6_u8; 32], "journal-test", LONG_LEASE_MS, &[6_u8; 32])
         .expect_err("a foreign receipt version must refuse");
     if typed_code(&refused) != Some(CATALOG_ROW_CORRUPT_CODE)
         || !refused.to_string().contains("format version")
@@ -480,11 +457,7 @@ fn interleaved_kinds_share_one_strictly_monotonic_sequence() -> TestResult {
     }
     // refusal
     expected += 1;
-    let claim = claim(
-        &catalog,
-        &key(IngestOperationKindV1::History, 12, "d-i2"),
-        &[2_u8; 32],
-    )?;
+    let claim = claim(&catalog, &key(IngestOperationKindV1::History, 12, "d-i2"), &[2_u8; 32])?;
     if catalog.record_refused(
         &claim,
         &CoreError::Typed {

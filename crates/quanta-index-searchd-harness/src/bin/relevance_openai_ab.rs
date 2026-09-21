@@ -80,9 +80,6 @@ fn main() -> ExitCode {
         report.provider_stats.retryable_status_count,
         report.provider_stats.transport_error_count,
     );
-    println!(
-        "relevance-openai-ab artifacts written to {}",
-        out_dir.display()
-    );
+    println!("relevance-openai-ab artifacts written to {}", out_dir.display());
     ExitCode::SUCCESS
 }

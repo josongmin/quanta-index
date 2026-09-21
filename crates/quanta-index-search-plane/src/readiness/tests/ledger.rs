@@ -78,7 +78,7 @@ fn a_refused_auxiliary_mutation_leaves_the_ledger_as_it_was() -> TestResult {
         }) => {}
         other => {
             return Err(
-                format!("a ref to an unknown commit is refused typed, got {other:?}").into(),
+                format!("a ref to an unknown commit is refused typed, got {other:?}").into()
             );
         }
     }

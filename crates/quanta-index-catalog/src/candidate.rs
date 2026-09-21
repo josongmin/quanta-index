@@ -132,9 +132,7 @@ impl RepoMapCandidateStateV1 {
             2 => Ok(Self::Activated),
             3 => Ok(Self::ActivationInvalidated),
             4 => Ok(Self::Quarantined),
-            other => Err(corrupt(&format!(
-                "candidate state code {other} is not known"
-            ))),
+            other => Err(corrupt(&format!("candidate state code {other} is not known"))),
         }
     }
 }
@@ -385,9 +383,7 @@ fn read_candidate_row(
     };
     let stored = blob32("candidate row digest", &digest)?;
     if candidate_row_digest(&row) != stored {
-        return Err(corrupt(
-            "repomap candidate row does not match its own digest",
-        ));
+        return Err(corrupt("repomap candidate row does not match its own digest"));
     }
     Ok(Some(row))
 }
@@ -443,9 +439,7 @@ fn read_activation_row(
         0 => false,
         1 => true,
         other => {
-            return Err(corrupt(&format!(
-                "activation active flag is {other}, expected 0 or 1"
-            )));
+            return Err(corrupt(&format!("activation active flag is {other}, expected 0 or 1")));
         }
     };
     let row = RepoMapActivationRowV1 {
@@ -463,9 +457,7 @@ fn read_activation_row(
     };
     let stored = blob32("activation row digest", &digest)?;
     if activation_row_digest(&row) != stored {
-        return Err(corrupt(
-            "repomap activation row does not match its own digest",
-        ));
+        return Err(corrupt("repomap activation row does not match its own digest"));
     }
     Ok(Some(row))
 }
@@ -706,18 +698,14 @@ impl SqliteCatalog {
                     ],
                 )
                 .map_err(|error| engine_error("retire superseded activation", path, &error))?;
-            let superseded = read_candidate_row(
-                &transaction,
-                repo_id,
-                revision_id,
-                prior.manifest_generation,
-            )?
-            .ok_or_else(|| {
-                corrupt(&format!(
-                    "prior activation names generation {} with no candidate row",
-                    prior.manifest_generation
-                ))
-            })?;
+            let superseded =
+                read_candidate_row(&transaction, repo_id, revision_id, prior.manifest_generation)?
+                    .ok_or_else(|| {
+                        corrupt(&format!(
+                            "prior activation names generation {} with no candidate row",
+                            prior.manifest_generation
+                        ))
+                    })?;
             let superseded_row = RepoMapCandidateRowV1 {
                 state: RepoMapCandidateStateV1::ActivationInvalidated,
                 ..superseded
@@ -1259,9 +1247,7 @@ impl SqliteCatalog {
             };
             let stored = blob32("candidate row digest", &digest)?;
             if candidate_row_digest(&candidate) != stored {
-                return Err(corrupt(
-                    "repomap candidate row does not match its own digest",
-                ));
+                return Err(corrupt("repomap candidate row does not match its own digest"));
             }
             out.push(candidate);
         }
@@ -1331,9 +1317,7 @@ impl SqliteCatalog {
             };
             let stored = blob32("incident row digest", &row_digest)?;
             if quarantine_row_digest(&incident) != stored {
-                return Err(corrupt(
-                    "quarantine incident row does not match its own digest",
-                ));
+                return Err(corrupt("quarantine incident row does not match its own digest"));
             }
             out.push(incident);
         }

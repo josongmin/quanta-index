@@ -97,9 +97,9 @@ fn typed_code(response: &SearchPlaneIngestIpcResponse) -> Option<&str> {
 fn a_replay_is_acked_from_the_record_and_a_forged_digest_never_lands() -> TestResult {
     let mut rt = E2eRuntime::boot()?;
     let batch = rt.text_search_corpus_batch("src/idem.rs", "fn first_body() { idem_first }")?;
-    let first = receipt_of(rt.ingest_once(
-        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch.clone()),
-    )?)?;
+    let first = receipt_of(
+        rt.ingest_once(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch.clone()))?,
+    )?;
     if !first.applied || first.durable_sequence == 0 || first.batch_digest != batch.batch_digest {
         return Err(format!("first publish must apply under a sequence: {first:?}").into());
     }
@@ -108,9 +108,9 @@ fn a_replay_is_acked_from_the_record_and_a_forged_digest_never_lands() -> TestRe
         return Err(format!("one apply must leave one record, found {rows_after_apply}").into());
     }
 
-    let replay = receipt_of(rt.ingest_once(
-        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch.clone()),
-    )?)?;
+    let replay = receipt_of(
+        rt.ingest_once(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch.clone()))?,
+    )?;
     if replay.applied {
         return Err(format!("a replay must not report a new apply: {replay:?}").into());
     }
@@ -133,9 +133,7 @@ fn a_replay_is_acked_from_the_record_and_a_forged_digest_never_lands() -> TestRe
         .and_then(|scope| scope.chunks.first_mut())
         .ok_or("the batch carries one chunk")?
         .text = "fn second_body() { idem_second }".into();
-    let refused = rt.ingest_once(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(
-        forged,
-    ))?;
+    let refused = rt.ingest_once(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(forged))?;
     if typed_code(&refused) != Some(BATCH_DIGEST_MISMATCH_CODE.as_wire_str()) {
         return Err(format!(
             "a body that is not what its digest names must be refused typed, got {refused:?}"
@@ -279,9 +277,9 @@ fn a_replay_after_restart_is_still_a_replay() -> TestResult {
     let mut rt = E2eRuntime::boot()?;
     let batch =
         rt.text_search_corpus_batch("src/durable.rs", "fn durable_body() { idem_durable }")?;
-    let first = receipt_of(rt.ingest_once(
-        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch.clone()),
-    )?)?;
+    let first = receipt_of(
+        rt.ingest_once(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch.clone()))?,
+    )?;
     let mut rt = rt.reopen();
     let replay =
         receipt_of(rt.ingest_once(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch))?)?;

@@ -642,10 +642,7 @@ mod tests {
             match q.expr {
                 LqExpr::Leaf(LqLeaf::Keyword(s)) => assert_eq!(s, keyword, "{source}"),
                 other => {
-                    assert!(
-                        false,
-                        "{source}: expected a verbatim Keyword, got {other:?}"
-                    );
+                    assert!(false, "{source}: expected a verbatim Keyword, got {other:?}");
                 }
             }
             assert_eq!(q.options.case, Some(LqCase::Insensitive), "{source}");
@@ -709,11 +706,9 @@ mod tests {
         };
         match normalize(q) {
             Ok(q) => assert!(false, "expected UnsupportedCombo, got {q:?}"),
-            Err(e) => assert_eq!(
-                e.code,
-                crate::errors::LqParseErrorCode::UnsupportedCombo,
-                "got {e}"
-            ),
+            Err(e) => {
+                assert_eq!(e.code, crate::errors::LqParseErrorCode::UnsupportedCombo, "got {e}")
+            }
         }
     }
 
@@ -846,11 +841,9 @@ mod tests {
         };
         match normalize(q) {
             Ok(_) => assert!(false, "expected ForbiddenSyntax"),
-            Err(e) => assert_eq!(
-                e.code,
-                crate::errors::LqParseErrorCode::ForbiddenSyntax,
-                "got {e}"
-            ),
+            Err(e) => {
+                assert_eq!(e.code, crate::errors::LqParseErrorCode::ForbiddenSyntax, "got {e}")
+            }
         }
     }
 }

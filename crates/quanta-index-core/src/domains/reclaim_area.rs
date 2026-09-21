@@ -83,11 +83,7 @@ fn reclaim_directory_removing_with(
             .map_err(|error| storage("remove earlier interrupted reclaim", &entry, &error))?;
     }
     std::fs::rename(generation_dir, &entry).map_err(|error| {
-        storage(
-            "move generation into the reclaim area",
-            generation_dir,
-            &error,
-        )
+        storage("move generation into the reclaim area", generation_dir, &error)
     })?;
     if let Some(parent) = generation_dir.parent() {
         sync_directory(parent)?;
@@ -194,7 +190,7 @@ mod tests {
             });
         if interrupted.is_ok() || dir.exists() {
             return Err(
-                "the failed removal is an error and the namespace no longer holds g3".into(),
+                "the failed removal is an error and the namespace no longer holds g3".into()
             );
         }
         let left = reclaim_area(root.path()).join("family.g3");
@@ -210,7 +206,7 @@ mod tests {
             || left.exists()
         {
             return Err(
-                format!("finishing removes the entry and its 12 bytes: {finished:?}").into(),
+                format!("finishing removes the entry and its 12 bytes: {finished:?}").into()
             );
         }
         if finish_interrupted_reclaims(root.path())? != FinishedReclaims::default() {

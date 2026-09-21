@@ -87,10 +87,7 @@ impl CardinalityGuard {
             if next_count >= self.max_tenants {
                 return Err(ObsError::cardinality(
                     "tenant_id",
-                    format!(
-                        "distinct tenant_id values would exceed cap {}",
-                        self.max_tenants
-                    ),
+                    format!("distinct tenant_id values would exceed cap {}", self.max_tenants),
                 ));
             }
             let _prev: Option<u32> = self.tenant_count.insert(d.tenant_id.clone(), 0);

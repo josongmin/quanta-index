@@ -225,18 +225,14 @@ fn open_writer(
     index
         .writer_with_num_threads(1, writer_heap_bytes)
         .map_err(|err| {
-            CoreError::Storage(format!(
-                "history text index: open {kind} index writer: {err}"
-            ))
+            CoreError::Storage(format!("history text index: open {kind} index writer: {err}"))
         })
 }
 
 /// Wait until the engine has no merge in flight or pending for `kind`.
 fn await_merges(writer: IndexWriter<TantivyDocument>, kind: &str) -> Result<(), CoreError> {
     writer.wait_merging_threads().map_err(|err| {
-        CoreError::Storage(format!(
-            "history text index: await {kind} index merges: {err}"
-        ))
+        CoreError::Storage(format!("history text index: await {kind} index merges: {err}"))
     })
 }
 
@@ -248,9 +244,7 @@ fn segments_with_superseded_docs(
     Ok(index
         .searchable_segment_metas()
         .map_err(|err| {
-            CoreError::Storage(format!(
-                "history text index: list {kind} index segments: {err}"
-            ))
+            CoreError::Storage(format!("history text index: list {kind} index segments: {err}"))
         })?
         .iter()
         .filter(|meta| meta.num_deleted_docs() > 0)
@@ -313,11 +307,7 @@ pub(super) fn publish_epoch(
                     "history text index: epoch {epoch} cannot be built over epoch {base}, which is not before it"
                 )));
             }
-            (
-                Some(require_servable_base(root, generation, base)?),
-                upserts,
-                true,
-            )
+            (Some(require_servable_base(root, generation, base)?), upserts, true)
         }
     };
     if staging.exists() {

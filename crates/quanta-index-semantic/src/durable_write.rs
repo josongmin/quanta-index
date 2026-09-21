@@ -53,10 +53,7 @@ static ATOMIC_WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 /// failed build cannot accumulate or later promote stale staging artifacts.
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8], action: &str) -> Result<(), CoreError> {
     let parent = path.parent().ok_or_else(|| {
-        CoreError::Storage(format!(
-            "semantic: {action} target has no parent: {}",
-            path.display()
-        ))
+        CoreError::Storage(format!("semantic: {action} target has no parent: {}", path.display()))
     })?;
     let file_name = path.file_name().ok_or_else(|| {
         CoreError::Storage(format!(
@@ -77,17 +74,11 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8], action: &str) -> Result<()
         .map_err(|err| fs_err(action, &staging, &err))?;
     if let Err(err) = file.write_all(bytes) {
         drop(file);
-        return Err(cleanup_atomic_temporary(
-            &staging,
-            fs_err(action, &staging, &err),
-        ));
+        return Err(cleanup_atomic_temporary(&staging, fs_err(action, &staging, &err)));
     }
     if let Err(err) = file.sync_all() {
         drop(file);
-        return Err(cleanup_atomic_temporary(
-            &staging,
-            fs_err(action, &staging, &err),
-        ));
+        return Err(cleanup_atomic_temporary(&staging, fs_err(action, &staging, &err)));
     }
     drop(file);
 
@@ -100,10 +91,7 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8], action: &str) -> Result<()
     }
 
     if let Err(err) = fs::rename(&staging, path) {
-        return Err(cleanup_atomic_temporary(
-            &staging,
-            fs_err(action, path, &err),
-        ));
+        return Err(cleanup_atomic_temporary(&staging, fs_err(action, path, &err)));
     }
     File::open(parent)
         .and_then(|directory| directory.sync_all())

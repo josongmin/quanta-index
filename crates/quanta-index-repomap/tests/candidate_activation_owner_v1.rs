@@ -213,10 +213,7 @@ fn closed_transition_table_publish_activate_supersede_and_illegal_refusals() -> 
     // Activated -> (same) replay of the original activation receipt.
     let replay_activation = store.activate_generation(&activate_request(1))?;
     assert!(replay_activation.replayed);
-    assert_eq!(
-        replay_activation.terminal_sequence,
-        activation.terminal_sequence
-    );
+    assert_eq!(replay_activation.terminal_sequence, activation.terminal_sequence);
 
     // Activate a fresh generation: supersedes, binds prior commitment.
     let seal_two = publish(store, 2, "g2")?;
@@ -228,10 +225,7 @@ fn closed_transition_table_publish_activate_supersede_and_illegal_refusals() -> 
         Some(seal.new_candidate_commitment.as_str())
     );
     assert!(query(store, 2).is_ok());
-    assert!(
-        query(store, 1).is_err(),
-        "superseded generation must not serve"
-    );
+    assert!(query(store, 1).is_err(), "superseded generation must not serve");
     drop(seal_two);
 
     // Activating an absent generation: typed NotFound.
@@ -302,10 +296,7 @@ fn corruption_durable_invalidation_and_no_resurrection() -> TestResult {
     // Boot reconcile: durable invalidation, unserveable.
     eprintln!("STAGE: reopening after corruption");
     let (catalog, store) = open_fixture(&root)?;
-    assert!(
-        query(store.as_ref(), 1).is_err(),
-        "corrupt object must not serve"
-    );
+    assert!(query(store.as_ref(), 1).is_err(), "corrupt object must not serve");
     let activation = catalog.repomap_activation_row("repo-p03", "rev-p03")?;
     let activation = activation.expect("activation row survives invalidation");
     assert!(!activation.active, "corruption must durably invalidate");
@@ -332,10 +323,7 @@ fn find_single_object(objects_dir: &std::path::Path) -> Result<std::path::PathBu
     let mut found: Option<std::path::PathBuf> = None;
     for entry in walk(objects_dir)? {
         if entry.extension().and_then(|ext| ext.to_str()) == Some("cbor") {
-            assert!(
-                found.replace(entry.clone()).is_none(),
-                "fixture holds exactly one object"
-            );
+            assert!(found.replace(entry.clone()).is_none(), "fixture holds exactly one object");
         }
     }
     Ok(found.ok_or("no sealed object found")?)
@@ -390,10 +378,7 @@ fn quarantine_projection_exact_byte_replay_and_tombstone_discard() -> TestResult
         .join("sha256")
         .join(incident_hex.get(..2).unwrap_or_default())
         .join(incident_hex.get(2..4).unwrap_or_default())
-        .join(format!(
-            "{}.cbor",
-            incident_hex.get(4..).unwrap_or_default()
-        ));
+        .join(format!("{}.cbor", incident_hex.get(4..).unwrap_or_default()));
     eprintln!(
         "STAGE: expect path {} exists={}",
         incident_path.display(),
@@ -408,10 +393,7 @@ fn quarantine_projection_exact_byte_replay_and_tombstone_discard() -> TestResult
     // sequence/time); the incident row is the authority.
     let incidents_again = catalog.repomap_quarantine_incidents()?;
     assert_eq!(incidents_again.len(), 1);
-    assert_eq!(
-        incidents_again.first().map(|row| row.sequence),
-        Some(incident.sequence)
-    );
+    assert_eq!(incidents_again.first().map(|row| row.sequence), Some(incident.sequence));
 
     // Listing + journaled tombstone discard: payload-only reclaim.
     let mut listed = store.as_ref().quarantined_files()?;
@@ -435,17 +417,10 @@ fn quarantine_projection_exact_byte_replay_and_tombstone_discard() -> TestResult
     }
     // The incident/event row survives; a second discard is Absent.
     let incidents_after = catalog.repomap_quarantine_incidents()?;
-    assert_eq!(
-        incidents_after.len(),
-        1,
-        "the incident row is never deleted"
-    );
+    assert_eq!(incidents_after.len(), 1, "the incident row is never deleted");
     assert!(incidents_after.first().expect("one").discarded);
     let again = store.as_ref().discard_quarantined_file(&entry)?;
-    assert!(matches!(
-        again,
-        quanta_index_core::QuarantineDiscardOutcomeV1::Absent
-    ));
+    assert!(matches!(again, quanta_index_core::QuarantineDiscardOutcomeV1::Absent));
     drop(original);
     Ok(())
 }

@@ -63,20 +63,14 @@ impl PositionsIndex {
     /// CBOR-canonical serialize.
     pub fn serialize_cbor<W: Write>(&self, w: &mut W) -> Result<(), PositionsError> {
         into_writer(self, w).map_err(|e| {
-            PositionsError::new(
-                PositionsErrorCode::IndexCorrupted,
-                format!("cbor encode: {e}"),
-            )
+            PositionsError::new(PositionsErrorCode::IndexCorrupted, format!("cbor encode: {e}"))
         })
     }
 
     /// CBOR-canonical deserialize.
     pub fn deserialize_cbor<R: Read>(r: R) -> Result<Self, PositionsError> {
         from_reader(r).map_err(|e| {
-            PositionsError::new(
-                PositionsErrorCode::IndexDeserialize,
-                format!("cbor decode: {e}"),
-            )
+            PositionsError::new(PositionsErrorCode::IndexDeserialize, format!("cbor decode: {e}"))
         })
     }
 
@@ -154,10 +148,7 @@ impl<'a> TermPostings<'a> {
 
     fn read_varint(&mut self) -> Result<u32, PositionsError> {
         let rest = self.bytes.get(self.cursor..).ok_or_else(|| {
-            PositionsError::new(
-                PositionsErrorCode::IndexCorrupted,
-                "posting cursor past end",
-            )
+            PositionsError::new(PositionsErrorCode::IndexCorrupted, "posting cursor past end")
         })?;
         let (v, n) = decode_u32(rest)?;
         self.cursor = self.cursor.saturating_add(n);
@@ -185,10 +176,7 @@ impl<'a> TermPostings<'a> {
 
         let pos_count = self.read_varint()?;
         let pos_count_usize = usize::try_from(pos_count).map_err(|_err| {
-            PositionsError::new(
-                PositionsErrorCode::IndexCorrupted,
-                "position_count exceeds usize",
-            )
+            PositionsError::new(PositionsErrorCode::IndexCorrupted, "position_count exceeds usize")
         })?;
         let mut positions: Vec<Position> = Vec::with_capacity(pos_count_usize);
         let mut prev_pos: u32 = 0;
@@ -421,10 +409,7 @@ mod tests {
         let v = collect_postings(&idx, "t");
         assert_eq!(v.len(), 2);
         assert_eq!(v[0].doc_id, DocId(100));
-        assert_eq!(
-            v[0].positions,
-            vec![Position(10), Position(30), Position(50)]
-        );
+        assert_eq!(v[0].positions, vec![Position(10), Position(30), Position(50)]);
         assert_eq!(v[1].doc_id, DocId(1_000_000));
         assert_eq!(v[1].positions, vec![Position(0)]);
     }

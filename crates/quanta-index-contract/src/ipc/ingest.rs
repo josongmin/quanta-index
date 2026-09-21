@@ -100,10 +100,7 @@ impl Visitor<'_> for BatchIngestModeVisitor {
         match value {
             "ReplaceGeneration" => Ok(BatchIngestMode::ReplaceGeneration),
             "Delta" => Ok(BatchIngestMode::Delta),
-            other => Err(de::Error::unknown_variant(
-                other,
-                BATCH_INGEST_MODE_VARIANTS,
-            )),
+            other => Err(de::Error::unknown_variant(other, BATCH_INGEST_MODE_VARIANTS)),
         }
     }
 }
@@ -201,10 +198,7 @@ impl Visitor<'_> for SearchScopeSurfaceVisitor {
             "Module" => Ok(SearchScopeSurface::Module),
             "Chunk" => Ok(SearchScopeSurface::Chunk),
             "Symbol" => Ok(SearchScopeSurface::Symbol),
-            other => Err(de::Error::unknown_variant(
-                other,
-                SEARCH_SCOPE_SURFACE_VARIANTS,
-            )),
+            other => Err(de::Error::unknown_variant(other, SEARCH_SCOPE_SURFACE_VARIANTS)),
         }
     }
 }
@@ -238,14 +232,12 @@ impl fmt::Display for SearchCorpusSurfaceMutationConflictV1 {
             Self::NonCanonicalClearOrder => {
                 formatter.write_str("search surface clears must use canonical ascending order")
             }
-            Self::DuplicateReplaceScope(surface) => write!(
-                formatter,
-                "duplicate replace scope on search surface {surface:?}"
-            ),
-            Self::DuplicateTombstoneScope(surface) => write!(
-                formatter,
-                "duplicate tombstone scope on search surface {surface:?}"
-            ),
+            Self::DuplicateReplaceScope(surface) => {
+                write!(formatter, "duplicate replace scope on search surface {surface:?}")
+            }
+            Self::DuplicateTombstoneScope(surface) => {
+                write!(formatter, "duplicate tombstone scope on search surface {surface:?}")
+            }
             Self::ReplaceAndTombstone(surface) => write!(
                 formatter,
                 "search scope on surface {surface:?} cannot be replaced and tombstoned in one batch"
@@ -677,10 +669,7 @@ impl<'de> Visitor<'de> for SearchCorpusIngestBatchVisitor {
                     seal = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        SEARCH_CORPUS_INGEST_BATCH_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, SEARCH_CORPUS_INGEST_BATCH_FIELDS));
                 }
             }
         }
@@ -846,9 +835,7 @@ fn validated_search_corpus_clear_surfaces_v1(
     let mut clear_surfaces = BTreeSet::new();
     for surface in &batch.clear_surfaces {
         if !clear_surfaces.insert(*surface) {
-            return Err(SearchCorpusSurfaceMutationConflictV1::DuplicateClear(
-                *surface,
-            ));
+            return Err(SearchCorpusSurfaceMutationConflictV1::DuplicateClear(*surface));
         }
     }
     if !batch
@@ -866,30 +853,20 @@ fn validate_search_corpus_lexical_scope_mutations_v1(
 ) -> Result<(), SearchCorpusSurfaceMutationConflictV1> {
     let mut replace_scope_keys = BTreeSet::new();
     for scope in &batch.replace_scopes {
-        let key = (
-            scope.scope.doc_surface,
-            scope.scope.repo_relative_path.as_str(),
-        );
+        let key = (scope.scope.doc_surface, scope.scope.repo_relative_path.as_str());
         if !replace_scope_keys.insert(key) {
-            return Err(
-                SearchCorpusSurfaceMutationConflictV1::DuplicateReplaceScope(
-                    scope.scope.doc_surface,
-                ),
-            );
+            return Err(SearchCorpusSurfaceMutationConflictV1::DuplicateReplaceScope(
+                scope.scope.doc_surface,
+            ));
         }
     }
     let mut tombstone_scope_keys = BTreeSet::new();
     for scope in &batch.tombstone_scopes {
-        let key = (
-            scope.scope.doc_surface,
-            scope.scope.repo_relative_path.as_str(),
-        );
+        let key = (scope.scope.doc_surface, scope.scope.repo_relative_path.as_str());
         if !tombstone_scope_keys.insert(key) {
-            return Err(
-                SearchCorpusSurfaceMutationConflictV1::DuplicateTombstoneScope(
-                    scope.scope.doc_surface,
-                ),
-            );
+            return Err(SearchCorpusSurfaceMutationConflictV1::DuplicateTombstoneScope(
+                scope.scope.doc_surface,
+            ));
         }
         if replace_scope_keys.contains(&key) {
             return Err(SearchCorpusSurfaceMutationConflictV1::ReplaceAndTombstone(
@@ -931,9 +908,7 @@ fn validate_search_corpus_semantic_scope_mutations_v1(
             return Err(SearchCorpusSurfaceMutationConflictV1::DuplicateTombstoneScope(surface));
         }
         if replace_scope_keys.contains(&key) {
-            return Err(SearchCorpusSurfaceMutationConflictV1::ReplaceAndTombstone(
-                surface,
-            ));
+            return Err(SearchCorpusSurfaceMutationConflictV1::ReplaceAndTombstone(surface));
         }
     }
     Ok(())
@@ -955,9 +930,7 @@ fn validate_search_corpus_clear_disjoint_v1(
         }))
     {
         if clear_surfaces.contains(&surface) {
-            return Err(SearchCorpusSurfaceMutationConflictV1::ClearAndReplace(
-                surface,
-            ));
+            return Err(SearchCorpusSurfaceMutationConflictV1::ClearAndReplace(surface));
         }
     }
     for surface in batch
@@ -969,9 +942,7 @@ fn validate_search_corpus_clear_disjoint_v1(
         }))
     {
         if clear_surfaces.contains(&surface) {
-            return Err(SearchCorpusSurfaceMutationConflictV1::ClearAndTombstone(
-                surface,
-            ));
+            return Err(SearchCorpusSurfaceMutationConflictV1::ClearAndTombstone(surface));
         }
     }
     Ok(())
@@ -1013,10 +984,7 @@ impl Visitor<'_> for EmbeddingNormalizationVisitor {
         match value {
             "None" => Ok(EmbeddingNormalization::None),
             "L2Unit" => Ok(EmbeddingNormalization::L2Unit),
-            other => Err(de::Error::unknown_variant(
-                other,
-                EMBEDDING_NORMALIZATION_VARIANTS,
-            )),
+            other => Err(de::Error::unknown_variant(other, EMBEDDING_NORMALIZATION_VARIANTS)),
         }
     }
 }
@@ -1069,10 +1037,7 @@ impl Visitor<'_> for EmbeddingDistanceMetricVisitor {
             "Cosine" => Ok(EmbeddingDistanceMetric::Cosine),
             "Dot" => Ok(EmbeddingDistanceMetric::Dot),
             "Euclidean" => Ok(EmbeddingDistanceMetric::Euclidean),
-            other => Err(de::Error::unknown_variant(
-                other,
-                EMBEDDING_DISTANCE_METRIC_VARIANTS,
-            )),
+            other => Err(de::Error::unknown_variant(other, EMBEDDING_DISTANCE_METRIC_VARIANTS)),
         }
     }
 }
@@ -1189,10 +1154,7 @@ impl<'de> Visitor<'de> for EmbeddingModelContractVisitor {
                     view_policy_digest = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        EMBEDDING_MODEL_CONTRACT_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, EMBEDDING_MODEL_CONTRACT_FIELDS));
                 }
             }
         }
@@ -1307,10 +1269,7 @@ impl<'de> Visitor<'de> for SemanticReplaceScopeVisitor {
                     cluster_memberships = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        SEMANTIC_REPLACE_SCOPE_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, SEMANTIC_REPLACE_SCOPE_FIELDS));
                 }
             }
         }
@@ -1393,18 +1352,13 @@ impl<'de> Visitor<'de> for SemanticTombstoneScopeVisitor {
                     semantic_scope = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        SEMANTIC_TOMBSTONE_SCOPE_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, SEMANTIC_TOMBSTONE_SCOPE_FIELDS));
                 }
             }
         }
         let semantic_scope = semantic_scope.unwrap_or(None);
         if scope.is_none() && semantic_scope.is_none() {
-            return Err(de::Error::custom(
-                "semantic tombstone requires scope or semantic_scope",
-            ));
+            return Err(de::Error::custom("semantic tombstone requires scope or semantic_scope"));
         }
         Ok(SemanticTombstoneScope {
             scope,
@@ -1599,10 +1553,7 @@ impl<'de> Visitor<'de> for SemanticIngestBatchVisitor {
                     seal = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        SEMANTIC_INGEST_BATCH_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, SEMANTIC_INGEST_BATCH_FIELDS));
                 }
             }
         }
@@ -1828,10 +1779,7 @@ impl<'de> Visitor<'de> for HistoryRefMutationVisitor {
         match tag.as_str() {
             "Upsert" => Ok(HistoryRefMutation::Upsert(variant.newtype_variant()?)),
             "Delete" => Ok(HistoryRefMutation::Delete(variant.newtype_variant()?)),
-            other => Err(de::Error::unknown_variant(
-                other,
-                HISTORY_REF_MUTATION_VARIANTS,
-            )),
+            other => Err(de::Error::unknown_variant(other, HISTORY_REF_MUTATION_VARIANTS)),
         }
     }
 }
@@ -1912,10 +1860,7 @@ impl<'de> Visitor<'de> for HistoryDiffHunkUpsertVisitor {
                     record = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        HISTORY_DIFF_HUNK_UPSERT_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, HISTORY_DIFF_HUNK_UPSERT_FIELDS));
                 }
             }
         }
@@ -2090,10 +2035,7 @@ impl<'de> Visitor<'de> for RepoCommitRecencyEntryVisitor {
                 "source_repo_id" => source_repo_id = Some(map.next_value()?),
                 "latest_committer_time_ms" => latest_committer_time_ms = Some(map.next_value()?),
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        REPO_COMMIT_RECENCY_ENTRY_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, REPO_COMMIT_RECENCY_ENTRY_FIELDS));
                 }
             }
         }
@@ -2335,10 +2277,7 @@ impl<'de> Visitor<'de> for RepoMetaIngestBatchVisitor {
                 "batch_digest" => batch_digest = Some(map.next_value()?),
                 "entries" => entries = Some(map.next_value()?),
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        REPO_META_INGEST_BATCH_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, REPO_META_INGEST_BATCH_FIELDS));
                 }
             }
         }
@@ -2488,10 +2427,7 @@ impl<'de> Visitor<'de> for RepoTopicIngestBatchVisitor {
                 "batch_digest" => batch_digest = Some(map.next_value()?),
                 "entries" => entries = Some(map.next_value()?),
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        REPO_TOPIC_INGEST_BATCH_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, REPO_TOPIC_INGEST_BATCH_FIELDS));
                 }
             }
         }
@@ -2575,10 +2511,7 @@ impl<'de> Visitor<'de> for RepoDescriptionEntryVisitor {
                     description = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        REPO_DESCRIPTION_ENTRY_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, REPO_DESCRIPTION_ENTRY_FIELDS));
                 }
             }
         }
@@ -3007,10 +2940,7 @@ impl<'de> Visitor<'de> for FileContributorEntryVisitor {
                 "repo_relative_path" => repo_relative_path = Some(map.next_value()?),
                 "contributors" => contributors = Some(map.next_value()?),
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        FILE_CONTRIBUTOR_ENTRY_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, FILE_CONTRIBUTOR_ENTRY_FIELDS));
                 }
             }
         }
@@ -3379,10 +3309,7 @@ impl<'de> Visitor<'de> for RuntimeChangedRecordVisitor {
                 "applied_at_ms" => applied_at_ms = Some(map.next_value()?),
                 "payload_hash" => payload_hash = Some(map.next_value()?),
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        RUNTIME_CHANGED_RECORD_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, RUNTIME_CHANGED_RECORD_FIELDS));
                 }
             }
         }
@@ -3461,10 +3388,7 @@ impl<'de> Visitor<'de> for RuntimeDocFacetRecordVisitor {
                 "layer" => layer = Some(map.next_value()?),
                 "surface" => surface = Some(map.next_value()?),
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        RUNTIME_DOC_FACET_RECORD_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, RUNTIME_DOC_FACET_RECORD_FIELDS));
                 }
             }
         }
@@ -3531,10 +3455,7 @@ impl<'de> Visitor<'de> for RuntimeSnapshotRecordVisitor {
                 "name" => name = Some(map.next_value()?),
                 "doc_ids" => doc_ids = Some(map.next_value()?),
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        RUNTIME_SNAPSHOT_RECORD_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, RUNTIME_SNAPSHOT_RECORD_FIELDS));
                 }
             }
         }
@@ -3667,10 +3588,7 @@ impl Serialize for RuntimeCatalogIngestBatch {
         state.serialize_field("generation", &self.generation)?;
         state.serialize_field("overlay_epoch_ms", &self.overlay_epoch_ms)?;
         state.serialize_field("batch_digest", &self.batch_digest)?;
-        state.serialize_field(
-            "producer_head_applied_at_ms",
-            &self.producer_head_applied_at_ms,
-        )?;
+        state.serialize_field("producer_head_applied_at_ms", &self.producer_head_applied_at_ms)?;
         state.serialize_field(
             "generation_materialized_at_ms",
             &self.generation_materialized_at_ms,
@@ -3817,10 +3735,7 @@ impl<'de> Visitor<'de> for StructuralTreeRecordVisitor {
                 "chunk_id" => chunk_id = Some(map.next_value()?),
                 "record" => record = Some(map.next_value()?),
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        STRUCTURAL_TREE_RECORD_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, STRUCTURAL_TREE_RECORD_FIELDS));
                 }
             }
         }
@@ -3903,10 +3818,7 @@ impl<'de> Visitor<'de> for StructuralReplaceScopeVisitor {
                     trees = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        STRUCTURAL_REPLACE_SCOPE_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, STRUCTURAL_REPLACE_SCOPE_FIELDS));
                 }
             }
         }
@@ -3972,10 +3884,7 @@ impl<'de> Visitor<'de> for StructuralTombstoneScopeVisitor {
                     scope = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        STRUCTURAL_TOMBSTONE_SCOPE_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, STRUCTURAL_TOMBSTONE_SCOPE_FIELDS));
                 }
             }
         }
@@ -4131,10 +4040,7 @@ impl<'de> Visitor<'de> for StructuralIngestBatchVisitor {
                     seal = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        STRUCTURAL_INGEST_BATCH_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, STRUCTURAL_INGEST_BATCH_FIELDS));
                 }
             }
         }
@@ -4327,9 +4233,7 @@ impl<'de> Visitor<'de> for BatchPublishReceiptVisitor {
                 }
                 "accepted_semantic_replace_scopes" => {
                     if accepted_semantic_replace_scopes.is_some() {
-                        return Err(de::Error::duplicate_field(
-                            "accepted_semantic_replace_scopes",
-                        ));
+                        return Err(de::Error::duplicate_field("accepted_semantic_replace_scopes"));
                     }
                     accepted_semantic_replace_scopes = Some(map.next_value()?);
                 }
@@ -4372,10 +4276,7 @@ impl<'de> Visitor<'de> for BatchPublishReceiptVisitor {
                     semantic_content = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        BATCH_PUBLISH_RECEIPT_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, BATCH_PUBLISH_RECEIPT_FIELDS));
                 }
             }
         }
@@ -4642,17 +4543,17 @@ impl<'de> Visitor<'de> for SearchPlaneIngestIpcRequestVisitor {
             "PublishSearchCorpusBatch" => Ok(
                 SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(variant.newtype_variant()?),
             ),
-            "PublishHistoryBatch" => Ok(SearchPlaneIngestIpcRequest::PublishHistoryBatch(
-                variant.newtype_variant()?,
-            )),
+            "PublishHistoryBatch" => {
+                Ok(SearchPlaneIngestIpcRequest::PublishHistoryBatch(variant.newtype_variant()?))
+            }
             "PublishRepoCommitRecencyBatch" => {
                 Ok(SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(
                     variant.newtype_variant()?,
                 ))
             }
-            "PublishRepoTopicBatch" => Ok(SearchPlaneIngestIpcRequest::PublishRepoTopicBatch(
-                variant.newtype_variant()?,
-            )),
+            "PublishRepoTopicBatch" => {
+                Ok(SearchPlaneIngestIpcRequest::PublishRepoTopicBatch(variant.newtype_variant()?))
+            }
             "PublishFileOwnershipBatch" => Ok(
                 SearchPlaneIngestIpcRequest::PublishFileOwnershipBatch(variant.newtype_variant()?),
             ),
@@ -4661,30 +4562,27 @@ impl<'de> Visitor<'de> for SearchPlaneIngestIpcRequestVisitor {
                     variant.newtype_variant()?,
                 ))
             }
-            "PublishDirtyBatch" => Ok(SearchPlaneIngestIpcRequest::PublishDirtyBatch(
-                variant.newtype_variant()?,
-            )),
+            "PublishDirtyBatch" => {
+                Ok(SearchPlaneIngestIpcRequest::PublishDirtyBatch(variant.newtype_variant()?))
+            }
             "PublishRuntimeCatalogBatch" => Ok(
                 SearchPlaneIngestIpcRequest::PublishRuntimeCatalogBatch(variant.newtype_variant()?),
             ),
-            "PublishStructuralBatch" => Ok(SearchPlaneIngestIpcRequest::PublishStructuralBatch(
-                variant.newtype_variant()?,
-            )),
-            "PublishRepoMapBundle" => Ok(SearchPlaneIngestIpcRequest::PublishRepoMapBundle(
-                variant.newtype_variant()?,
-            )),
-            "PublishRepoMetaBatch" => Ok(SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(
-                variant.newtype_variant()?,
-            )),
+            "PublishStructuralBatch" => {
+                Ok(SearchPlaneIngestIpcRequest::PublishStructuralBatch(variant.newtype_variant()?))
+            }
+            "PublishRepoMapBundle" => {
+                Ok(SearchPlaneIngestIpcRequest::PublishRepoMapBundle(variant.newtype_variant()?))
+            }
+            "PublishRepoMetaBatch" => {
+                Ok(SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(variant.newtype_variant()?))
+            }
             "PublishRepoDescriptionBatch" => {
                 Ok(SearchPlaneIngestIpcRequest::PublishRepoDescriptionBatch(
                     variant.newtype_variant()?,
                 ))
             }
-            other => Err(de::Error::unknown_variant(
-                other,
-                SEARCH_PLANE_INGEST_REQUEST_VARIANTS,
-            )),
+            other => Err(de::Error::unknown_variant(other, SEARCH_PLANE_INGEST_REQUEST_VARIANTS)),
         }
     }
 }
@@ -4839,49 +4737,44 @@ impl<'de> Visitor<'de> for SearchPlaneIngestIpcResponseVisitor {
     {
         let (tag, variant) = data.variant::<String>()?;
         match tag.as_str() {
-            "SearchCorpusReceipt" => Ok(SearchPlaneIngestIpcResponse::SearchCorpusReceipt(
-                variant.newtype_variant()?,
-            )),
-            "HistoryReceipt" => Ok(SearchPlaneIngestIpcResponse::HistoryReceipt(
-                variant.newtype_variant()?,
-            )),
+            "SearchCorpusReceipt" => {
+                Ok(SearchPlaneIngestIpcResponse::SearchCorpusReceipt(variant.newtype_variant()?))
+            }
+            "HistoryReceipt" => {
+                Ok(SearchPlaneIngestIpcResponse::HistoryReceipt(variant.newtype_variant()?))
+            }
             "RepoCommitRecencyReceipt" => Ok(
                 SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(variant.newtype_variant()?),
             ),
-            "RepoTopicReceipt" => Ok(SearchPlaneIngestIpcResponse::RepoTopicReceipt(
-                variant.newtype_variant()?,
-            )),
-            "FileOwnershipReceipt" => Ok(SearchPlaneIngestIpcResponse::FileOwnershipReceipt(
-                variant.newtype_variant()?,
-            )),
-            "FileContributorReceipt" => Ok(SearchPlaneIngestIpcResponse::FileContributorReceipt(
-                variant.newtype_variant()?,
-            )),
-            "DirtyReceipt" => Ok(SearchPlaneIngestIpcResponse::DirtyReceipt(
-                variant.newtype_variant()?,
-            )),
-            "RuntimeCatalogReceipt" => Ok(SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(
-                variant.newtype_variant()?,
-            )),
-            "StructuralReceipt" => Ok(SearchPlaneIngestIpcResponse::StructuralReceipt(
-                variant.newtype_variant()?,
-            )),
-            "RepoMapReceipt" => Ok(SearchPlaneIngestIpcResponse::RepoMapReceipt(
-                variant.newtype_variant()?,
-            )),
-            "RepoMetaReceipt" => Ok(SearchPlaneIngestIpcResponse::RepoMetaReceipt(
-                variant.newtype_variant()?,
-            )),
-            "RepoDescriptionReceipt" => Ok(SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(
-                variant.newtype_variant()?,
-            )),
-            "Error" => Ok(SearchPlaneIngestIpcResponse::Error(
-                variant.newtype_variant()?,
-            )),
-            other => Err(de::Error::unknown_variant(
-                other,
-                SEARCH_PLANE_INGEST_RESPONSE_VARIANTS,
-            )),
+            "RepoTopicReceipt" => {
+                Ok(SearchPlaneIngestIpcResponse::RepoTopicReceipt(variant.newtype_variant()?))
+            }
+            "FileOwnershipReceipt" => {
+                Ok(SearchPlaneIngestIpcResponse::FileOwnershipReceipt(variant.newtype_variant()?))
+            }
+            "FileContributorReceipt" => {
+                Ok(SearchPlaneIngestIpcResponse::FileContributorReceipt(variant.newtype_variant()?))
+            }
+            "DirtyReceipt" => {
+                Ok(SearchPlaneIngestIpcResponse::DirtyReceipt(variant.newtype_variant()?))
+            }
+            "RuntimeCatalogReceipt" => {
+                Ok(SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(variant.newtype_variant()?))
+            }
+            "StructuralReceipt" => {
+                Ok(SearchPlaneIngestIpcResponse::StructuralReceipt(variant.newtype_variant()?))
+            }
+            "RepoMapReceipt" => {
+                Ok(SearchPlaneIngestIpcResponse::RepoMapReceipt(variant.newtype_variant()?))
+            }
+            "RepoMetaReceipt" => {
+                Ok(SearchPlaneIngestIpcResponse::RepoMetaReceipt(variant.newtype_variant()?))
+            }
+            "RepoDescriptionReceipt" => {
+                Ok(SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(variant.newtype_variant()?))
+            }
+            "Error" => Ok(SearchPlaneIngestIpcResponse::Error(variant.newtype_variant()?)),
+            other => Err(de::Error::unknown_variant(other, SEARCH_PLANE_INGEST_RESPONSE_VARIANTS)),
         }
     }
 }
@@ -5602,17 +5495,13 @@ mod tests {
         batch.clear_surfaces = vec![SearchScopeSurface::File];
         assert_eq!(
             batch.validate_surface_mutations_v1(),
-            Err(SearchCorpusSurfaceMutationConflictV1::ClearAndReplace(
-                SearchScopeSurface::File
-            ))
+            Err(SearchCorpusSurfaceMutationConflictV1::ClearAndReplace(SearchScopeSurface::File))
         );
 
         batch.clear_surfaces = vec![SearchScopeSurface::Chunk, SearchScopeSurface::Chunk];
         assert_eq!(
             batch.validate_surface_mutations_v1(),
-            Err(SearchCorpusSurfaceMutationConflictV1::DuplicateClear(
-                SearchScopeSurface::Chunk
-            ))
+            Err(SearchCorpusSurfaceMutationConflictV1::DuplicateClear(SearchScopeSurface::Chunk))
         );
 
         batch.clear_surfaces = vec![SearchScopeSurface::Symbol, SearchScopeSurface::Chunk];
@@ -5630,11 +5519,9 @@ mod tests {
         batch.replace_scopes.push(duplicate_replace);
         assert_eq!(
             batch.validate_surface_mutations_v1(),
-            Err(
-                SearchCorpusSurfaceMutationConflictV1::DuplicateReplaceScope(
-                    SearchScopeSurface::File
-                )
-            )
+            Err(SearchCorpusSurfaceMutationConflictV1::DuplicateReplaceScope(
+                SearchScopeSurface::File
+            ))
         );
 
         let mut batch = fixture_search_corpus_batch();
@@ -6136,10 +6023,7 @@ mod tests {
     fn unknown_batch_ingest_mode_tag_rejected() {
         let bad = serde_json::json!("Unknown");
         let result = BatchIngestMode::deserialize(bad);
-        assert!(
-            result.is_err(),
-            "unknown batch ingest mode tag should fail closed: {result:?}"
-        );
+        assert!(result.is_err(), "unknown batch ingest mode tag should fail closed: {result:?}");
         let Err(err) = result else {
             return;
         };
@@ -6179,9 +6063,8 @@ mod tests {
             Err(SearchCorpusBatchShapeErrorV1::BaseNotOlderThanTarget { .. })
         ));
 
-        batch.base_generation = Some(ManifestGeneration::new(
-            batch.generation.get().saturating_sub(1),
-        ));
+        batch.base_generation =
+            Some(ManifestGeneration::new(batch.generation.get().saturating_sub(1)));
         batch.validate_v1()?;
 
         for value in ["", "has space"] {

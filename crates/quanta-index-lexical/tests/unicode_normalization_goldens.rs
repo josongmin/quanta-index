@@ -342,20 +342,8 @@ const GOLDENS: &[Golden] = &[
         FOO_THEN_BAR,
         "case:yes keeps the same boundaries",
     ),
-    row(
-        Leaf::Keyword,
-        Case::Sensitive,
-        "Foo",
-        &[],
-        "case:yes is byte-exact on case",
-    ),
-    row(
-        Leaf::Keyword,
-        Case::Sensitive,
-        "fooBar",
-        &["camel"],
-        "case:yes camelCase token",
-    ),
+    row(Leaf::Keyword, Case::Sensitive, "Foo", &[], "case:yes is byte-exact on case"),
+    row(Leaf::Keyword, Case::Sensitive, "fooBar", &["camel"], "case:yes camelCase token"),
     row(
         Leaf::Keyword,
         Case::Sensitive,
@@ -427,13 +415,7 @@ const GOLDENS: &[Golden] = &[
         FOO_THEN_BAR,
         "phrase folds with Unicode lowercase",
     ),
-    row(
-        Leaf::Phrase,
-        Case::Insensitive,
-        "bar foo",
-        &[],
-        "phrase order matters",
-    ),
+    row(Leaf::Phrase, Case::Insensitive, "bar foo", &[], "phrase order matters"),
     row(
         Leaf::Phrase,
         Case::Insensitive,
@@ -484,13 +466,7 @@ const GOLDENS: &[Golden] = &[
         "phrase after NFC singleton mapping",
     ),
     // --- phrase, case:yes -------------------------------------------------
-    row(
-        Leaf::Phrase,
-        Case::Sensitive,
-        "CAFÉ AU",
-        &["latin_upper"],
-        "case:yes phrase",
-    ),
+    row(Leaf::Phrase, Case::Sensitive, "CAFÉ AU", &["latin_upper"], "case:yes phrase"),
     row(
         Leaf::Phrase,
         Case::Sensitive,
@@ -576,13 +552,7 @@ const GOLDENS: &[Golden] = &[
         &["emoji_glue", "emoji_only"],
         "raw string finds a token-less document",
     ),
-    row(
-        Leaf::Raw,
-        Case::Insensitive,
-        "straße",
-        &["mixed"],
-        "raw string mixed script",
-    ),
+    row(Leaf::Raw, Case::Insensitive, "straße", &["mixed"], "raw string mixed script"),
     row(
         Leaf::Raw,
         Case::Insensitive,
@@ -612,13 +582,7 @@ const GOLDENS: &[Golden] = &[
         "raw string with combining marks",
     ),
     // --- raw string, case:yes --------------------------------------------
-    row(
-        Leaf::Raw,
-        Case::Sensitive,
-        "CAFÉ",
-        &["latin_upper"],
-        "case:yes raw string",
-    ),
+    row(Leaf::Raw, Case::Sensitive, "CAFÉ", &["latin_upper"], "case:yes raw string"),
     row(
         Leaf::Raw,
         Case::Sensitive,
@@ -705,13 +669,7 @@ const GOLDENS: &[Golden] = &[
         "regex over NFC text sees the mapped `K`",
     ),
     // --- regex, case:yes --------------------------------------------------
-    row(
-        Leaf::Regex,
-        Case::Sensitive,
-        "CAFÉ",
-        &["latin_upper"],
-        "case:yes regex",
-    ),
+    row(Leaf::Regex, Case::Sensitive, "CAFÉ", &["latin_upper"], "case:yes regex"),
     row(
         Leaf::Regex,
         Case::Sensitive,
@@ -719,13 +677,7 @@ const GOLDENS: &[Golden] = &[
         LOWER_CAFE,
         "case:yes regex, decomposed doc equals composed pattern",
     ),
-    row(
-        Leaf::Regex,
-        Case::Sensitive,
-        "Foo",
-        &[],
-        "case:yes regex is byte-exact on case",
-    ),
+    row(Leaf::Regex, Case::Sensitive, "Foo", &[], "case:yes regex is byte-exact on case"),
 ];
 
 #[expect(
@@ -891,12 +843,7 @@ fn golden_table_holds_on_both_routes() -> TestResult {
     if failures.is_empty() {
         Ok(())
     } else {
-        Err(format!(
-            "{} golden rows failed:\n{}",
-            failures.len(),
-            failures.join("\n")
-        )
-        .into())
+        Err(format!("{} golden rows failed:\n{}", failures.len(), failures.join("\n")).into())
     }
 }
 
@@ -927,14 +874,10 @@ fn composed_and_decomposed_spellings_agree_across_keyword_and_phrase() -> TestRe
     // The Kelvin singleton: keyword (index) and phrase (sidecar) see the same
     // NFC text.
     for spelling in ["kelvin", &format!("{KELVIN_SIGN}elvin")] {
-        let keyword = candidate_ids(
-            searcher,
-            &query(Leaf::Keyword, Case::Insensitive, spelling, None),
-        )?;
-        let phrase = candidate_ids(
-            searcher,
-            &query(Leaf::Phrase, Case::Insensitive, spelling, None),
-        )?;
+        let keyword =
+            candidate_ids(searcher, &query(Leaf::Keyword, Case::Insensitive, spelling, None))?;
+        let phrase =
+            candidate_ids(searcher, &query(Leaf::Phrase, Case::Insensitive, spelling, None))?;
         let expected = expected_set(&["kelvin"]);
         if keyword != expected || phrase != expected {
             return Err(format!(
@@ -1085,10 +1028,7 @@ fn over_long_token_is_refused_on_token_surfaces_and_found_by_raw() -> TestResult
         return Err(format!("raw long token: got {raw:?}").into());
     }
     // The short document is unaffected.
-    let short = candidate_ids(
-        searcher,
-        &query(Leaf::Keyword, Case::Insensitive, "bbb", None),
-    )?;
+    let short = candidate_ids(searcher, &query(Leaf::Keyword, Case::Insensitive, "bbb", None))?;
     if short != expected_set(&["short"]) {
         return Err(format!("keyword bbb: got {short:?}").into());
     }
@@ -1237,12 +1177,7 @@ fn a_generation_sealed_under_the_previous_format_is_refused_typed() -> TestResul
     }
 
     write_manifest_row(&manifest, as_format_one(&current))?;
-    expect_both_doors(
-        &adapter,
-        generation(),
-        "format 1 manifest",
-        FORMAT_UNSUPPORTED,
-    )?;
+    expect_both_doors(&adapter, generation(), "format 1 manifest", FORMAT_UNSUPPORTED)?;
 
     std::fs::write(&manifest, &original)?;
     let restored = candidate_ids(
@@ -1268,17 +1203,10 @@ fn a_generation_stamped_with_another_normalizer_is_refused_typed() -> TestResult
     let stamp = stamped
         .get_mut(MANIFEST_NORMALIZER_INDEX)
         .ok_or("manifest row has no normalizer stamp")?;
-    *stamp = ciborium::Value::Array(vec![
-        ciborium::Value::from(1_u16),
-        ciborium::Value::from(0_u16),
-    ]);
+    *stamp =
+        ciborium::Value::Array(vec![ciborium::Value::from(1_u16), ciborium::Value::from(0_u16)]);
     write_manifest_row(&manifest, stamped)?;
-    expect_both_doors(
-        &adapter,
-        generation(),
-        "normalizer 1.0 stamp",
-        NORMALIZER_UNSUPPORTED,
-    )?;
+    expect_both_doors(&adapter, generation(), "normalizer 1.0 stamp", NORMALIZER_UNSUPPORTED)?;
     std::fs::write(&manifest, &original)?;
     let (validate, open) = knock(&adapter, generation());
     if validate.is_some() || open.is_some() {

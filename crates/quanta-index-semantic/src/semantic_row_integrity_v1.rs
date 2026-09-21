@@ -193,9 +193,7 @@ pub(crate) async fn semantic_row_commitment_v1(
             leaf.update(starts.value(row).to_le_bytes());
             leaf.update(ends.value(row).to_le_bytes());
             let vector_len = u64::try_from(vector.len()).map_err(|error| {
-                CoreError::Storage(format!(
-                    "semantic row root: vector length overflow: {error}"
-                ))
+                CoreError::Storage(format!("semantic row root: vector length overflow: {error}"))
             })?;
             leaf.update(vector_len.to_le_bytes());
             for value in vector {

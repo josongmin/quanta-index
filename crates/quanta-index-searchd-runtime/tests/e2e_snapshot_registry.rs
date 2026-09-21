@@ -214,9 +214,7 @@ fn an_auxiliary_publish_into_a_sealed_generation_is_refused_and_keeps_residency(
     let dir = lexical_generation_dir(&rt)?;
     for entry in std::fs::read_dir(&dir)? {
         if entry?.file_name().to_string_lossy().contains("repo-meta") {
-            return Err(
-                format!("a refused publish wrote an overlay into {}", dir.display()).into(),
-            );
+            return Err(format!("a refused publish wrote an overlay into {}", dir.display()).into());
         }
     }
     std::fs::remove_dir_all(&dir)?;
@@ -280,11 +278,9 @@ fn assert_first_queries_are_promoted_hits(rt: &mut E2eRuntime) -> TestResult {
 
     let text = ids(&rt.query_text(TextQuerySyntax::Native, QUERY, TOP_K))?;
     if text.len() != 2 {
-        return Err(format!(
-            "the promoted lexical handle served {} rows, expected 2",
-            text.len()
-        )
-        .into());
+        return Err(
+            format!("the promoted lexical handle served {} rows, expected 2", text.len()).into()
+        );
     }
     let semantic = ids(&rt.query_semantic(QUERY, TOP_K, None))?;
     if semantic.is_empty() {
@@ -299,17 +295,13 @@ fn assert_first_queries_are_promoted_hits(rt: &mut E2eRuntime) -> TestResult {
             )
             .into());
         }
-        if counter(
-            &after,
-            &format!("snapshot_registry_{track}_promotions_total"),
-        )? != 1
-        {
+        if counter(&after, &format!("snapshot_registry_{track}_promotions_total"))? != 1 {
             return Err(format!("{track}: exactly one promotion is expected: {after:?}").into());
         }
         let hits = format!("snapshot_registry_{track}_hits_total");
         if counter(&after, &hits)? != counter(&before, &hits)?.saturating_add(1) {
             return Err(
-                format!("{track}: the first query is one hit: {before:?} -> {after:?}").into(),
+                format!("{track}: the first query is one hit: {before:?} -> {after:?}").into()
             );
         }
     }

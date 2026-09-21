@@ -707,24 +707,16 @@ mod tests {
         // 100-byte window, hit at offset 40 -> centered, bounded, present.
         let snippet = format!("{}NEEDLE{}", "a".repeat(40), "b".repeat(40));
         let m = measure_snippet(&snippet, "NEEDLE");
-        let failures = gate_snippet(
-            SnippetIntent::LongLine,
-            &m,
-            MAX_SNIPPET_LEN,
-            MIN_LEADING_CONTEXT,
-        );
+        let failures =
+            gate_snippet(SnippetIntent::LongLine, &m, MAX_SNIPPET_LEN, MIN_LEADING_CONTEXT);
         assert!(failures.is_empty(), "unexpected failures: {failures:?}");
     }
 
     #[test]
     fn gate_trips_on_absent_needle() {
         let m = measure_snippet("unrelated content", "compute_target");
-        let failures = gate_snippet(
-            SnippetIntent::Phrase,
-            &m,
-            MAX_SNIPPET_LEN,
-            MIN_LEADING_CONTEXT,
-        );
+        let failures =
+            gate_snippet(SnippetIntent::Phrase, &m, MAX_SNIPPET_LEN, MIN_LEADING_CONTEXT);
         assert_eq!(failures.len(), 1);
         assert!(failures[0].contains("needle absent"), "{failures:?}");
     }
@@ -737,12 +729,8 @@ mod tests {
         // emits this shape; it truncates to a hit-centered window).
         let snippet = format!("NEEDLE{}", "z".repeat(MAX_SNIPPET_LEN + 50));
         let m = measure_snippet(&snippet, "NEEDLE");
-        let failures = gate_snippet(
-            SnippetIntent::LongLine,
-            &m,
-            MAX_SNIPPET_LEN,
-            MIN_LEADING_CONTEXT,
-        );
+        let failures =
+            gate_snippet(SnippetIntent::LongLine, &m, MAX_SNIPPET_LEN, MIN_LEADING_CONTEXT);
         assert!(
             failures.iter().any(|f| f.contains("exceeds bound")),
             "expected bound violation, got {failures:?}"
@@ -756,16 +744,9 @@ mod tests {
     #[test]
     fn gate_trips_on_single_hit_multi_intent() {
         let m = measure_snippet("only one marker here", "marker");
-        let failures = gate_snippet(
-            SnippetIntent::MultiHit,
-            &m,
-            MAX_SNIPPET_LEN,
-            MIN_LEADING_CONTEXT,
-        );
-        assert!(
-            failures.iter().any(|f| f.contains("multiple needle")),
-            "{failures:?}"
-        );
+        let failures =
+            gate_snippet(SnippetIntent::MultiHit, &m, MAX_SNIPPET_LEN, MIN_LEADING_CONTEXT);
+        assert!(failures.iter().any(|f| f.contains("multiple needle")), "{failures:?}");
     }
 
     #[test]
@@ -773,12 +754,8 @@ mod tests {
         // A short phrase snippet with the hit near the start is fine: no
         // truncation was required, so no centering obligation.
         let m = measure_snippet("brown fox marker in a short line", "brown fox marker");
-        let failures = gate_snippet(
-            SnippetIntent::Phrase,
-            &m,
-            MAX_SNIPPET_LEN,
-            MIN_LEADING_CONTEXT,
-        );
+        let failures =
+            gate_snippet(SnippetIntent::Phrase, &m, MAX_SNIPPET_LEN, MIN_LEADING_CONTEXT);
         assert!(failures.is_empty(), "{failures:?}");
     }
 
@@ -787,11 +764,7 @@ mod tests {
     #[test]
     fn seeded_snippet_rail_runs_and_grades_every_query() {
         let report = run_snippet_report().expect("snippet rail runs");
-        assert_eq!(
-            report.scores.len(),
-            SNIPPET_QUERIES.len(),
-            "every judged query must be scored"
-        );
+        assert_eq!(report.scores.len(), SNIPPET_QUERIES.len(), "every judged query must be scored");
         // Every NON-long-line intent must retrieve its candidate and present the
         // needle: a short-chunk snippet is the full chunk, which contains the
         // needle, so phrase/regex/multi must pass the presence floor.

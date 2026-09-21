@@ -70,10 +70,7 @@ pub fn inventory_sealed_generations(
             continue;
         }
         for generation_entry in std::fs::read_dir(family_entry.path()).map_err(|error| {
-            CoreError::Storage(format!(
-                "lexical: list {}: {error}",
-                family_entry.path().display()
-            ))
+            CoreError::Storage(format!("lexical: list {}: {error}", family_entry.path().display()))
         })? {
             let generation_entry = generation_entry.map_err(|error| {
                 CoreError::Storage(format!("lexical: read generation entry: {error}"))
@@ -124,10 +121,7 @@ pub(crate) fn discard_quarantined_directory(
 ) -> Result<QuarantineDiscardOutcomeV1, CoreError> {
     let not_quarantined = |why: String| CoreError::Typed {
         code: quanta_index_contract::SearchPlaneErrorCodeV2::QuarantineTargetNotQuarantined,
-        message: format!(
-            "lexical: refusing to discard {}: {why}",
-            entry.path.display()
-        ),
+        message: format!("lexical: refusing to discard {}: {why}", entry.path.display()),
     };
     let Some(current) = quarantined_now
         .iter()

@@ -117,7 +117,7 @@ fn the_request_budget_reaches_the_lexical_searcher() -> TestResult {
     let (code, message) = ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
     if code != REQUEST_CANCELLED_CODE || !message.contains("checkpoint `stub:collect`") {
         return Err(
-            format!("the searcher's own observation is the answer: {code} {message}").into(),
+            format!("the searcher's own observation is the answer: {code} {message}").into()
         );
     }
     if !budget.is_cancelled() {
@@ -165,9 +165,7 @@ fn sourcegraph_text_syntax_dispatch_returns_text_payload() -> TestResult {
                 return Err("text response did not echo request pin".into());
             }
             if text.results.len() != 2 {
-                return Err(
-                    format!("expected two text results, got {}", text.results.len()).into(),
-                );
+                return Err(format!("expected two text results, got {}", text.results.len()).into());
             }
         }
         other @ (SearchPlaneQueryIpcResponse::Symbol(_)
@@ -629,7 +627,7 @@ fn lexical_dispatch_passes_through_when_no_unavailable_filters() -> TestResult {
     };
     if search_top_ks.as_slice() != [6] {
         return Err(
-            format!("expected searcher.search probe with top_k=6, got {search_top_ks:?}").into(),
+            format!("expected searcher.search probe with top_k=6, got {search_top_ks:?}").into()
         );
     }
     Ok(())
@@ -667,7 +665,7 @@ fn symbol_dispatch_returns_symbol_candidates_with_kind_truth() -> TestResult {
         SearchPlaneQueryIpcResponse::Symbol(symbols) => {
             if symbols.results.len() != 1 {
                 return Err(
-                    format!("expected 1 symbol result, got {}", symbols.results.len()).into(),
+                    format!("expected 1 symbol result, got {}", symbols.results.len()).into()
                 );
             }
             let Some(first) = symbols.results.first() else {

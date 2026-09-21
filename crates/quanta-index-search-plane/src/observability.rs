@@ -455,10 +455,7 @@ fn admit_source_point(
     if let MetricValueV1::Gauge(value) = point.value
         && !value.is_finite()
     {
-        return Err(source_defect(&format!(
-            "source gauge `{}` is not finite",
-            point.name
-        )));
+        return Err(source_defect(&format!("source gauge `{}` is not finite", point.name)));
     }
     if !names.insert(point.name.clone()) {
         return Err(source_defect(&format!(
@@ -563,11 +560,7 @@ mod tests {
         // One observation per band: below the first bound, on a bound,
         // between bounds, past the last bound.
         for value in [0.5, 1.0, 1.5, 30_001.0] {
-            store.emit(sample(
-                "lq_route_lexical_latency_ms",
-                MetricKind::Histogram,
-                value,
-            ));
+            store.emit(sample("lq_route_lexical_latency_ms", MetricKind::Histogram, value));
         }
         let snapshot = store.metrics_snapshot();
         let gauge = snapshot
@@ -601,10 +594,7 @@ mod tests {
         // at 3; the fourth observation lies past the last bound, so only
         // `count` holds it.
         let mut expected_counts = vec![2_u64, 3];
-        expected_counts.extend(std::iter::repeat_n(
-            3_u64,
-            HISTOGRAM_BUCKET_BOUNDS.len() - 2,
-        ));
+        expected_counts.extend(std::iter::repeat_n(3_u64, HISTOGRAM_BUCKET_BOUNDS.len() - 2));
         if counts != expected_counts {
             return Err(format!("cumulative counts: {counts:?} != {expected_counts:?}").into());
         }
@@ -653,11 +643,9 @@ mod tests {
             || snapshot.diagnostics.errors_recorded != refused_count
             || store.snapshot().len() != 1
         {
-            return Err(format!(
-                "refused samples are not in the tail: {:?}",
-                snapshot.diagnostics
-            )
-            .into());
+            return Err(
+                format!("refused samples are not in the tail: {:?}", snapshot.diagnostics).into()
+            );
         }
         let kind_conflict = errors
             .iter()
@@ -717,11 +705,7 @@ mod tests {
     fn scrape_merges_sources_into_one_sorted_snapshot() -> TestResult {
         let store = Arc::new(BoundedQueryObsStore::default());
         store.emit(sample("lq_query_intake_total", MetricKind::Counter, 2.0));
-        store.emit(sample(
-            "lq_route_lexical_latency_ms",
-            MetricKind::Histogram,
-            3.0,
-        ));
+        store.emit(sample("lq_route_lexical_latency_ms", MetricKind::Histogram, 3.0));
         let sources: Vec<Arc<dyn MetricSourcePort>> = vec![
             Arc::new(FixedSource(vec![
                 MetricPointV1::counter("snapshot_registry_lexical_hits_total", 5),
@@ -779,20 +763,14 @@ mod tests {
             Err(CoreError::Storage(message)) if message.contains("regex cache poisoned") => {}
             other => {
                 return Err(
-                    format!("a failing source fails the scrape as itself: {other:?}").into(),
+                    format!("a failing source fails the scrape as itself: {other:?}").into()
                 );
             }
         }
         let defects: [(&str, Vec<MetricPointV1>); 4] = [
             ("not [a-z]", vec![MetricPointV1::counter("Bad-Name", 1)]),
-            (
-                "not finite",
-                vec![MetricPointV1::gauge("ipc_query_live", f64::NAN)],
-            ),
-            (
-                "more than one source",
-                vec![MetricPointV1::counter("lq_query_intake_total", 1)],
-            ),
+            ("not finite", vec![MetricPointV1::gauge("ipc_query_live", f64::NAN)]),
+            ("more than one source", vec![MetricPointV1::counter("lq_query_intake_total", 1)]),
             (
                 "more than one source",
                 vec![

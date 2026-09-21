@@ -549,9 +549,7 @@ mod tests {
         );
         assert!(GenerationStorageKeyV1::is_canonical_name(key.as_str()));
         assert!(!GenerationStorageKeyV1::is_canonical_name("repo-alpha"));
-        assert!(!GenerationStorageKeyV1::is_canonical_name(
-            "generation-v1-ABCDEF"
-        ));
+        assert!(!GenerationStorageKeyV1::is_canonical_name("generation-v1-ABCDEF"));
     }
 
     #[test]
@@ -635,11 +633,7 @@ pub fn commit_tree_v1(
             let file_name = file_name.to_str().ok_or_else(|| {
                 std::io::Error::other(format!("non-UTF-8 file name under {}", directory.display()))
             })?;
-            entries.push((
-                format!("{name}/{file_name}"),
-                entry.path(),
-                entry.file_type()?,
-            ));
+            entries.push((format!("{name}/{file_name}"), entry.path(), entry.file_type()?));
         }
         for (entry_name, path, file_type) in entries {
             if file_type.is_symlink() {
@@ -686,24 +680,15 @@ impl fmt::Display for TreeCommitmentMismatchV1 {
         match self {
             Self::Missing { name } => write!(formatter, "{name}: missing"),
             Self::Extra { name } => {
-                write!(
-                    formatter,
-                    "{name}: present although the seal did not commit to it"
-                )
+                write!(formatter, "{name}: present although the seal did not commit to it")
             }
             Self::Length {
                 name,
                 on_disk,
                 committed,
-            } => write!(
-                formatter,
-                "{name}: {on_disk} bytes on disk, {committed} committed"
-            ),
+            } => write!(formatter, "{name}: {on_disk} bytes on disk, {committed} committed"),
             Self::Digest { name } => {
-                write!(
-                    formatter,
-                    "{name}: content digest differs from the committed digest"
-                )
+                write!(formatter, "{name}: content digest differs from the committed digest")
             }
         }
     }
@@ -1223,16 +1208,10 @@ mod tree_commitment_tests {
         write(&root, "sub/c.idx", b"charlie");
         let committed = commit_tree_v1(&root, "dataset").expect("commit");
 
-        assert_eq!(
-            verify_tree_layout_v1(&root, "dataset", &committed).expect("io"),
-            Ok(18)
-        );
+        assert_eq!(verify_tree_layout_v1(&root, "dataset", &committed).expect("io"), Ok(18));
         // A same-length rewrite passes the layout check by design…
         std::fs::write(root.join("a.lance"), b"alphA").expect("flip");
-        assert_eq!(
-            verify_tree_layout_v1(&root, "dataset", &committed).expect("io"),
-            Ok(18)
-        );
+        assert_eq!(verify_tree_layout_v1(&root, "dataset", &committed).expect("io"), Ok(18));
         // …and is the scrub's to find, whatever the cursor; the bytes it
         // read to find it are reported, not hidden.
         assert_eq!(

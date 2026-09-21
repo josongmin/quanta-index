@@ -114,11 +114,7 @@ fn a_group_shared_query_socket_serves_and_is_reported_while_the_others_stay_priv
     if let Some(error) = served.typed_error {
         return Err(format!("a query over the shared socket failed typed: {error:?}").into());
     }
-    expect_eq(
-        "hits over the shared socket",
-        &served.candidate_ids.len(),
-        &1,
-    )?;
+    expect_eq("hits over the shared socket", &served.candidate_ids.len(), &1)?;
 
     // On disk: the shared socket is `0660` of the group, the private ones
     // `0600`, and the directory the daemon created is `0710` of the group.
@@ -127,35 +123,19 @@ fn a_group_shared_query_socket_serves_and_is_reported_while_the_others_stay_priv
         .ok_or("the driver is running after a served query")?;
     expect_eq("query socket mode", &mode_of(query)?, &GROUP_SOCKET_MODE)?;
     expect_eq("query socket gid", &gid_of(query)?, &gid)?;
-    expect_eq(
-        "control socket mode",
-        &mode_of(control)?,
-        &PRIVATE_SOCKET_MODE,
-    )?;
-    expect_eq(
-        "ingest socket mode",
-        &mode_of(ingest)?,
-        &PRIVATE_SOCKET_MODE,
-    )?;
+    expect_eq("control socket mode", &mode_of(control)?, &PRIVATE_SOCKET_MODE)?;
+    expect_eq("ingest socket mode", &mode_of(ingest)?, &PRIVATE_SOCKET_MODE)?;
     let directory = rt
         .socket_directory()
         .ok_or("a shared policy places the sockets in a directory of their own")?;
-    expect_eq(
-        "socket directory mode",
-        &mode_of(directory)?,
-        &GROUP_DIRECTORY_MODE,
-    )?;
+    expect_eq("socket directory mode", &mode_of(directory)?, &GROUP_DIRECTORY_MODE)?;
     expect_eq("socket directory gid", &gid_of(directory)?, &gid)?;
 
     // The boot inventory names every policy as configured.
     let inventory = rt
         .boot_inventory()
         .ok_or("the harness holds the boot inventory while the driver runs")?;
-    expect_eq(
-        "boot inventory policies",
-        &inventory.socket_access,
-        &policies,
-    )?;
+    expect_eq("boot inventory policies", &inventory.socket_access, &policies)?;
     for role in SocketRole::ALL {
         expect_eq(
             &format!("{} policy by role", role.as_str()),
@@ -167,21 +147,13 @@ fn a_group_shared_query_socket_serves_and_is_reported_while_the_others_stay_priv
     // The scrape carries the same policies as gauges: shared flags, listed
     // uids, and a gid only for the socket that names a group.
     let gauges = scrape_gauges(&mut rt)?;
-    expect_eq(
-        "query shared",
-        &gauge(&gauges, "boot_socket_query_shared")?,
-        &1.0,
-    )?;
+    expect_eq("query shared", &gauge(&gauges, "boot_socket_query_shared")?, &1.0)?;
     expect_eq(
         "query group gid",
         &gauge(&gauges, "boot_socket_query_group_gid")?,
         &f64::from(gid),
     )?;
-    expect_eq(
-        "query listed uids",
-        &gauge(&gauges, "boot_socket_query_allowed_uids")?,
-        &0.0,
-    )?;
+    expect_eq("query listed uids", &gauge(&gauges, "boot_socket_query_allowed_uids")?, &0.0)?;
     for role in ["control", "ingest"] {
         expect_eq(
             &format!("{role} shared"),

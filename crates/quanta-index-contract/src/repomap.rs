@@ -511,10 +511,7 @@ impl<'de> Visitor<'de> for RepoMapGraphEdgeDtoV1Visitor {
                     edge_kind = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        REPOMAP_GRAPH_EDGE_DTO_V1_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, REPOMAP_GRAPH_EDGE_DTO_V1_FIELDS));
                 }
             }
         }
@@ -719,10 +716,7 @@ impl<'de> Visitor<'de> for RepoMapGraphCoverageVisitor {
                     graph_coverage_class = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        REPOMAP_GRAPH_COVERAGE_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, REPOMAP_GRAPH_COVERAGE_FIELDS));
                 }
             }
         }
@@ -1371,10 +1365,7 @@ impl<'de> Visitor<'de> for RepoMapContainsEdgeVisitor {
                     child_node = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        REPOMAP_CONTAINS_EDGE_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, REPOMAP_CONTAINS_EDGE_FIELDS));
                 }
             }
         }
@@ -1592,10 +1583,7 @@ impl<'de> Visitor<'de> for RepoMapOwnsChunkEdgeVisitor {
                     chunk = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        REPOMAP_OWNS_CHUNK_EDGE_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, REPOMAP_OWNS_CHUNK_EDGE_FIELDS));
                 }
             }
         }
@@ -1669,10 +1657,7 @@ impl<'de> Visitor<'de> for RepoMapDependsOnEdgeVisitor {
                     dependency = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        REPOMAP_DEPENDS_ON_EDGE_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, REPOMAP_DEPENDS_ON_EDGE_FIELDS));
                 }
             }
         }
@@ -1966,10 +1951,7 @@ impl<'de> Visitor<'de> for RepoMapSourceBundleV1Visitor {
                     edges = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        REPOMAP_SOURCE_BUNDLE_V1_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, REPOMAP_SOURCE_BUNDLE_V1_FIELDS));
                 }
             }
         }
@@ -2178,10 +2160,7 @@ impl Serialize for RepoMapMutationAck {
         state.serialize_field("repo_id", &self.repo_id)?;
         state.serialize_field("revision_id", &self.revision_id)?;
         state.serialize_field("manifest_generation", &self.manifest_generation)?;
-        state.serialize_field(
-            "prior_candidate_commitment",
-            &self.prior_candidate_commitment,
-        )?;
+        state.serialize_field("prior_candidate_commitment", &self.prior_candidate_commitment)?;
         state.serialize_field("new_candidate_commitment", &self.new_candidate_commitment)?;
         state.serialize_field("activation_epoch", &self.activation_epoch)?;
         state.serialize_field("terminal_sequence", &self.terminal_sequence)?;
@@ -2262,10 +2241,7 @@ impl<'de> Visitor<'de> for RepoMapMutationAckV1Visitor {
                     replayed = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        REPOMAP_MUTATION_ACK_V1_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, REPOMAP_MUTATION_ACK_V1_FIELDS));
                 }
             }
         }
@@ -2399,10 +2375,7 @@ impl<'de> Visitor<'de> for RepoMapSnapshotMetaV1Visitor {
                     exactness_summary = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        REPOMAP_SNAPSHOT_META_V1_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, REPOMAP_SNAPSHOT_META_V1_FIELDS));
                 }
             }
         }
@@ -2619,10 +2592,7 @@ impl Serialize for RepoMapEntryDto {
             "projection_authority_artifact_id",
             &self.projection_authority_artifact_id,
         )?;
-        state.serialize_field(
-            "projection_authority_digest",
-            &self.projection_authority_digest,
-        )?;
+        state.serialize_field("projection_authority_digest", &self.projection_authority_digest)?;
         state.serialize_field("projection_status", &self.projection_status)?;
         state.serialize_field("redaction_state", &self.redaction_state)?;
         state.end()
@@ -2748,9 +2718,7 @@ impl<'de> Visitor<'de> for RepoMapEntryDtoV1Visitor {
                 }
                 "projection_authority_artifact_id" => {
                     if projection_authority_artifact_id.is_some() {
-                        return Err(de::Error::duplicate_field(
-                            "projection_authority_artifact_id",
-                        ));
+                        return Err(de::Error::duplicate_field("projection_authority_artifact_id"));
                     }
                     projection_authority_artifact_id = Some(map.next_value()?);
                 }
@@ -2969,10 +2937,7 @@ impl<'de> Visitor<'de> for RepoMapQueryRequestV1Visitor {
                     focus_subjects = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        REPOMAP_QUERY_REQUEST_V1_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, REPOMAP_QUERY_REQUEST_V1_FIELDS));
                 }
             }
         }
@@ -3123,10 +3088,7 @@ impl<'de> Visitor<'de> for RepoMapQueryResponseV1Visitor {
                     degraded_reason_codes = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        REPOMAP_QUERY_RESPONSE_V1_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, REPOMAP_QUERY_RESPONSE_V1_FIELDS));
                 }
             }
         }
@@ -3216,7 +3178,7 @@ mod tests {
         let decoded: T = decode(&bytes)?;
         if &decoded != value {
             return Err(
-                format!("round-trip mismatch: original={value:?}, decoded={decoded:?}").into(),
+                format!("round-trip mismatch: original={value:?}, decoded={decoded:?}").into()
             );
         }
         Ok(())

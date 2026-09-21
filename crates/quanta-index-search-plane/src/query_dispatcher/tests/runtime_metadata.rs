@@ -188,9 +188,7 @@ fn runtime_generation_is_stale_requires_producer_head_ahead() -> TestResult {
     let is_stale = runtime_generation_is_stale(runtime, 30)?;
     drop(guard);
     if is_stale {
-        return Err(
-            "stale relation unexpectedly matched when producer head did not advance".into(),
-        );
+        return Err("stale relation unexpectedly matched when producer head did not advance".into());
     }
     Ok(())
 }
@@ -342,10 +340,7 @@ fn runtime_drivers_narrow_the_walk_without_changing_its_meaning() -> TestResult 
     let ledger = ready_runtime_metadata_ledger(100, 20);
     let read = read_current(&ledger)?;
     let cases = [
-        (
-            "changed:since=1970-01-01T00:00:00.010Z catalog",
-            vec!["chunk-changed"],
-        ),
+        ("changed:since=1970-01-01T00:00:00.010Z catalog", vec!["chunk-changed"]),
         ("dirty:no todo", vec!["chunk-clean"]),
         ("affected:rebuild=lexical catalog", vec!["chunk-changed"]),
         ("snapshot:active catalog", vec!["chunk-snapshot"]),
@@ -356,9 +351,7 @@ fn runtime_drivers_narrow_the_walk_without_changing_its_meaning() -> TestResult 
         let query = lowered(query_text)?;
         let first = page(&read, &query, 5, None)?;
         if ids(&first) != expected {
-            return Err(
-                format!("`{query_text}` yields {expected:?}, got {:?}", ids(&first)).into(),
-            );
+            return Err(format!("`{query_text}` yields {expected:?}, got {:?}", ids(&first)).into());
         }
         if first.window.has_more() || first.next_cursor.is_some() {
             return Err(format!("`{query_text}` fits one page: {:?}", first.window).into());
@@ -617,7 +610,7 @@ fn a_continuation_reads_the_epochs_its_cursor_names() -> TestResult {
             Err(CoreError::Typed { code, .. }) if code == AUX_EPOCH_EXPIRED_CODE => {}
             other => {
                 return Err(
-                    format!("{label}: a pruned epoch is refused expired, got {other:?}").into(),
+                    format!("{label}: a pruned epoch is refused expired, got {other:?}").into()
                 );
             }
         }

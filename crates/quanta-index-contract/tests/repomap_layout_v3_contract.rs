@@ -13,13 +13,12 @@ use std::fmt::Write as _;
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 fn hex(bytes: &[u8]) -> String {
-    bytes.iter().fold(
-        String::with_capacity(bytes.len().saturating_mul(2)),
-        |mut out, byte| {
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len().saturating_mul(2)), |mut out, byte| {
             let _written = write!(out, "{byte:02x}");
             out
-        },
-    )
+        })
 }
 
 fn candidate() -> Result<RepoMapCandidateEnvelopeV1, Box<dyn std::error::Error>> {
@@ -56,18 +55,12 @@ fn candidate_canonical_bytes_bind_artifact_and_distinct_digest_domains() -> Test
     let candidate = candidate()?;
     let bytes = candidate.encode_canonical()?;
     assert_eq!(bytes.first(), Some(&0xab_u8));
-    assert_eq!(
-        RepoMapCandidateEnvelopeV1::decode_canonical(&bytes)?,
-        candidate
-    );
+    assert_eq!(RepoMapCandidateEnvelopeV1::decode_canonical(&bytes)?, candidate);
     assert_eq!(
         CandidateObjectDigestV1::for_canonical_envelope(&bytes),
         candidate.object_digest()?
     );
-    assert_ne!(
-        candidate.object_digest()?.as_bytes(),
-        candidate.commitment()?.as_bytes()
-    );
+    assert_ne!(candidate.object_digest()?.as_bytes(), candidate.commitment()?.as_bytes());
     assert_eq!(
         hex(&candidate.artifact().encode_canonical()?),
         concat!(
@@ -137,9 +130,7 @@ fn quarantine_incident_retains_raw_invalid_path_evidence_and_sequence() -> TestR
     )?;
     assert_eq!(
         QuarantineIncidentV1::new(0, 11, evidence.clone()),
-        Err(CanonicalRepoMapCodecErrorV1::InvalidValue(
-            "quarantine_sequence"
-        ))
+        Err(CanonicalRepoMapCodecErrorV1::InvalidValue("quarantine_sequence"))
     );
     let incident = QuarantineIncidentV1::new(1, 11, evidence)?;
     let bytes = incident.encode_canonical()?;
@@ -156,10 +147,7 @@ fn quarantine_incident_retains_raw_invalid_path_evidence_and_sequence() -> TestR
         "sha256:2b28731af88150159ffbe4ffeaa7d443a5852d502a9639a099518c5e0de260f7"
     );
     assert_eq!(QuarantineIncidentV1::decode_canonical(&bytes)?, incident);
-    assert_eq!(
-        incident.digest()?,
-        QuarantineIncidentV1::decode_canonical(&bytes)?.digest()?
-    );
+    assert_eq!(incident.digest()?, QuarantineIncidentV1::decode_canonical(&bytes)?.digest()?);
     let mut detached_evidence = bytes.clone();
     let evidence_digest_offset = detached_evidence
         .windows(3)
@@ -213,10 +201,7 @@ fn replace_first(bytes: &[u8], old: &[u8], new: &[u8]) -> Vec<u8> {
         .position(|window| window == old)
         .expect("the fixture contains the targeted canonical field");
     let mut mutated = bytes.to_vec();
-    drop(mutated.splice(
-        offset..offset.saturating_add(old.len()),
-        new.iter().copied(),
-    ));
+    drop(mutated.splice(offset..offset.saturating_add(old.len()), new.iter().copied()));
     mutated
 }
 
@@ -343,16 +328,8 @@ fn quarantine_evidence_rejects_reason_prerequisite_violations() -> TestResult {
         vec![b"a\0b".to_vec()],
     ] {
         assert_eq!(
-            evidence(
-                invalid.clone(),
-                None,
-                None,
-                None,
-                Reason::SecureIoUnavailable
-            ),
-            Err(CanonicalRepoMapCodecErrorV1::InvalidValue(
-                "quarantine_raw_path_reason"
-            ))
+            evidence(invalid.clone(), None, None, None, Reason::SecureIoUnavailable),
+            Err(CanonicalRepoMapCodecErrorV1::InvalidValue("quarantine_raw_path_reason"))
         );
         let preserved = evidence(invalid, None, None, None, Reason::NonCanonicalSourceAddress)?;
         assert_eq!(
@@ -360,67 +337,27 @@ fn quarantine_evidence_rejects_reason_prerequisite_violations() -> TestResult {
             preserved
         );
         assert!(
-            evidence(
-                vec![b"..".to_vec()],
-                Some(1),
-                None,
-                None,
-                Reason::NonCanonicalSourceAddress
-            )
-            .is_err()
+            evidence(vec![b"..".to_vec()], Some(1), None, None, Reason::NonCanonicalSourceAddress)
+                .is_err()
         );
     }
     assert!(
-        evidence(
-            valid(),
-            None,
-            Some([1; 32]),
-            None,
-            Reason::NonCanonicalSourceAddress
-        )
-        .is_err()
+        evidence(valid(), None, Some([1; 32]), None, Reason::NonCanonicalSourceAddress).is_err()
     );
     for (raw, address) in [(None, None), (Some([1; 32]), None), (None, Some([2; 32]))] {
-        assert!(
-            evidence(
-                valid(),
-                Some(1),
-                raw,
-                address,
-                Reason::AddressDigestMismatch
-            )
-            .is_err()
-        );
+        assert!(evidence(valid(), Some(1), raw, address, Reason::AddressDigestMismatch).is_err());
     }
     assert!(
-        evidence(
-            valid(),
-            Some(1),
-            Some([1; 32]),
-            Some([1; 32]),
-            Reason::AddressDigestMismatch
-        )
-        .is_err()
+        evidence(valid(), Some(1), Some([1; 32]), Some([1; 32]), Reason::AddressDigestMismatch)
+            .is_err()
     );
     assert!(
-        evidence(
-            valid(),
-            None,
-            Some([1; 32]),
-            Some([2; 32]),
-            Reason::AddressDigestMismatch
-        )
-        .is_err()
+        evidence(valid(), None, Some([1; 32]), Some([2; 32]), Reason::AddressDigestMismatch)
+            .is_err()
     );
     assert!(
-        evidence(
-            valid(),
-            Some(1),
-            Some([1; 32]),
-            Some([2; 32]),
-            Reason::AddressDigestMismatch
-        )
-        .is_ok()
+        evidence(valid(), Some(1), Some([1; 32]), Some([2; 32]), Reason::AddressDigestMismatch)
+            .is_ok()
     );
     for reason in [
         Reason::NonCanonicalEnvelope,
@@ -453,25 +390,9 @@ fn quarantine_evidence_rejects_reason_prerequisite_violations() -> TestResult {
         .is_err()
     );
     assert!(
-        evidence(
-            valid(),
-            Some(1),
-            Some([1; 32]),
-            None,
-            Reason::NonCanonicalSourceAddress
-        )
-        .is_ok()
+        evidence(valid(), Some(1), Some([1; 32]), None, Reason::NonCanonicalSourceAddress).is_ok()
     );
-    assert!(
-        evidence(
-            valid(),
-            None,
-            None,
-            None,
-            Reason::UnsupportedPersistedFormat
-        )
-        .is_err()
-    );
+    assert!(evidence(valid(), None, None, None, Reason::UnsupportedPersistedFormat).is_err());
     assert!(
         evidence(
             valid(),

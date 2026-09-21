@@ -91,10 +91,9 @@ fn walk(
     let mut pages: Vec<Vec<String>> = Vec::new();
     let mut cursor: Option<LexicalCursor> = None;
     for _ in 0..64 {
-        let page = text(dispatcher.dispatch(
-            request(top_k, cursor.clone()),
-            &RequestBudgetV1::unbounded(),
-        ))?;
+        let page = text(
+            dispatcher.dispatch(request(top_k, cursor.clone()), &RequestBudgetV1::unbounded()),
+        )?;
         pages.push(ids(&page.results));
         let expected = page
             .window
@@ -145,10 +144,8 @@ fn the_cursor_reaches_the_searcher_and_another_generations_is_refused_first() ->
     )?;
     let row = rows(1, 8).into_iter().next().ok_or("a row")?;
     let cursor = LexicalCursor::at(ManifestGeneration::new(9), row.order_key());
-    let _page = text(dispatcher.dispatch(
-        request(2, Some(cursor.clone())),
-        &RequestBudgetV1::unbounded(),
-    ))?;
+    let _page =
+        text(dispatcher.dispatch(request(2, Some(cursor.clone())), &RequestBudgetV1::unbounded()))?;
     let afters = state
         .lock()
         .map_err(|err| format!("state: {err}"))?
@@ -234,10 +231,8 @@ fn a_cursor_on_a_route_that_does_not_page_is_refused() -> TestResult {
     else {
         return Err("the helper builds a runtime-metadata request".into());
     };
-    runtime.text_query.cursor = Some(LexicalCursor::at(
-        ManifestGeneration::new(9),
-        row.order_key(),
-    ));
+    runtime.text_query.cursor =
+        Some(LexicalCursor::at(ManifestGeneration::new(9), row.order_key()));
     let (code, _message) = ipc_error_from(dispatcher.dispatch(
         SearchPlaneQueryIpcRequest::RuntimeMetadata(runtime),
         &RequestBudgetV1::unbounded(),

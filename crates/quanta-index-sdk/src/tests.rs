@@ -275,13 +275,11 @@ fn sample_cluster_membership_batch(
     quanta_index_contract::ClusterMembershipBatchReadRequestV1 {
         generation: sample_generation_pin(),
         items: (0..count)
-            .map(
-                |index| quanta_index_contract::ClusterMembershipBatchReadItemV1 {
-                    cluster_record_id: format!("cluster-card:{index:02}"),
-                    expected_authority_digest: format!("authority:{index:02}"),
-                    limit: 1,
-                },
-            )
+            .map(|index| quanta_index_contract::ClusterMembershipBatchReadItemV1 {
+                cluster_record_id: format!("cluster-card:{index:02}"),
+                expected_authority_digest: format!("authority:{index:02}"),
+                limit: 1,
+            })
             .collect(),
     }
 }
@@ -659,15 +657,13 @@ fn sample_parse_tree_record() -> ParseTreeRecord {
 }
 
 fn unused_query() -> Arc<StubQueryTransport> {
-    Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(
-        TextQueryResponse {
-            generation: sample_generation_pin(),
-            results: vec![],
-            window: QueryResultWindowV1::exact(0),
-            file_owner_rows: None,
-            next_cursor: None,
-        },
-    )))
+    Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
+        generation: sample_generation_pin(),
+        results: vec![],
+        window: QueryResultWindowV1::exact(0),
+        file_owner_rows: None,
+        next_cursor: None,
+    })))
 }
 
 fn unused_control() -> Arc<StubControlTransport> {
@@ -681,9 +677,9 @@ fn unused_control() -> Arc<StubControlTransport> {
 }
 
 fn unused_ingest() -> Arc<StubIngestTransport> {
-    Arc::new(StubIngestTransport::new(
-        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(BatchPublishReceipt::default()),
-    ))
+    Arc::new(StubIngestTransport::new(SearchPlaneIngestIpcResponse::SearchCorpusReceipt(
+        BatchPublishReceipt::default(),
+    )))
 }
 
 fn only_query_request(
@@ -746,10 +742,7 @@ fn only_ingest_request(
 fn connect_options_from_state_root_resolve_default_sockets() {
     let resolved = ok_or_fail!(ConnectOptions::from_state_root("/tmp/qi-state").resolve());
     assert_eq!(resolved.state_root, Some(PathBuf::from("/tmp/qi-state")));
-    assert_eq!(
-        resolved.query_socket,
-        PathBuf::from("/tmp/qi-state/search-plane/query.sock")
-    );
+    assert_eq!(resolved.query_socket, PathBuf::from("/tmp/qi-state/search-plane/query.sock"));
     assert_eq!(
         resolved.control_socket,
         PathBuf::from("/tmp/qi-state/search-plane/control.sock")
@@ -759,10 +752,7 @@ fn connect_options_from_state_root_resolve_default_sockets() {
         PathBuf::from("/tmp/qi-state/search-plane/ingest.sock"),
         "QI-SDK-01: ingest socket resolves to state_root/search-plane/ingest.sock"
     );
-    assert_eq!(
-        resolved.io_policy,
-        quanta_index_ipc::ClientIoPolicy::default()
-    );
+    assert_eq!(resolved.io_policy, quanta_index_ipc::ClientIoPolicy::default());
 }
 
 #[test]
@@ -824,13 +814,12 @@ fn cluster_membership_read_routes_exact_request_and_validates_available_authorit
         completeness: quanta_index_contract::ClusterMembershipCompletenessV1::Complete,
     };
     let expected = quanta_index_contract::ClusterMembershipReadOutcomeV1::Available(snapshot);
-    let query = Arc::new(StubQueryTransport::new(
-        SearchPlaneQueryIpcResponse::ClusterMembershipRead(
+    let query =
+        Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::ClusterMembershipRead(
             quanta_index_contract::ClusterMembershipBatchReadResponseV1 {
                 outcomes: vec![expected.clone()],
             },
-        ),
-    ));
+        )));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
 
     let observed = ok_or_fail!(client.search().cluster_membership_read_v1(request.clone()));
@@ -867,13 +856,12 @@ fn cluster_membership_read_preserves_matching_typed_absence_and_rejection_v1() {
     ];
 
     for expected in outcomes {
-        let query = Arc::new(StubQueryTransport::new(
-            SearchPlaneQueryIpcResponse::ClusterMembershipRead(
+        let query =
+            Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::ClusterMembershipRead(
                 quanta_index_contract::ClusterMembershipBatchReadResponseV1 {
                     outcomes: vec![expected.clone()],
                 },
-            ),
-        ));
+            )));
         let client = QuantaIndex::from_transports(query, unused_control(), unused_ingest());
         let observed = ok_or_fail!(client.search().cluster_membership_read_v1(request.clone()));
         assert_eq!(observed, expected);
@@ -892,13 +880,12 @@ fn cluster_membership_read_rejects_stale_response_authority_v1() {
             completeness: quanta_index_contract::ClusterMembershipCompletenessV1::Complete,
         },
     );
-    let query = Arc::new(StubQueryTransport::new(
-        SearchPlaneQueryIpcResponse::ClusterMembershipRead(
+    let query =
+        Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::ClusterMembershipRead(
             quanta_index_contract::ClusterMembershipBatchReadResponseV1 {
                 outcomes: vec![stale],
             },
-        ),
-    ));
+        )));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
 
     let error = match client.search().cluster_membership_read_v1(request) {
@@ -936,13 +923,12 @@ fn cluster_membership_read_rejects_mismatched_absence_and_rejection_authority_v1
     ];
 
     for mismatched in mismatched_outcomes {
-        let query = Arc::new(StubQueryTransport::new(
-            SearchPlaneQueryIpcResponse::ClusterMembershipRead(
+        let query =
+            Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::ClusterMembershipRead(
                 quanta_index_contract::ClusterMembershipBatchReadResponseV1 {
                     outcomes: vec![mismatched],
                 },
-            ),
-        ));
+            )));
         let client = QuantaIndex::from_transports(query, unused_control(), unused_ingest());
         let error = match client.search().cluster_membership_read_v1(request.clone()) {
             Ok(outcome) => {
@@ -985,10 +971,7 @@ fn cluster_membership_read_rejects_unrelated_query_response_v1() {
     let crate::SdkError::Protocol(message) = error else {
         panic!("expected protocol error for unrelated response");
     };
-    assert_eq!(
-        message,
-        "expected cluster membership read response, got text"
-    );
+    assert_eq!(message, "expected cluster membership read response, got text");
 }
 
 #[test]
@@ -1008,11 +991,7 @@ fn cluster_membership_batch_read_routes_fifteen_items_once_and_preserves_order_v
     assert_eq!(observed, expected);
     let dispatched = {
         let requests = ok_or_fail!(query.requests.lock());
-        assert_eq!(
-            requests.len(),
-            1,
-            "one logical batch must use one transport call"
-        );
+        assert_eq!(requests.len(), 1, "one logical batch must use one transport call");
         requests
             .first()
             .expect("transport call count was just asserted")
@@ -1062,14 +1041,14 @@ fn cluster_membership_batch_read_rejects_partial_reordered_and_stale_response_v1
 
 #[test]
 fn semantic_query_builder_emits_active_selector_and_query_text() {
-    let query = Arc::new(StubQueryTransport::new(
-        SearchPlaneQueryIpcResponse::Semantic(SemanticQueryResponse {
+    let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Semantic(
+        SemanticQueryResponse {
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
             window: QueryResultWindowV1::exact(1),
             explanation: sample_explanation(),
-        }),
-    ));
+        },
+    )));
     let control = unused_control();
     let ingest = unused_ingest();
     let client = QuantaIndex::from_transports(query.clone(), control, ingest);
@@ -1095,22 +1074,19 @@ fn semantic_query_builder_emits_active_selector_and_query_text() {
     };
     assert_eq!(req.top_k, 5);
     assert_eq!(req.query_text.as_str(), "0.1 0.2 0.3");
-    assert!(matches!(
-        req.generation_selector,
-        Some(GenerationSelector::Active { .. })
-    ));
+    assert!(matches!(req.generation_selector, Some(GenerationSelector::Active { .. })));
 }
 
 #[test]
 fn semantic_scope_sourcegraph_query_preserves_scope_wire_fields() {
-    let query = Arc::new(StubQueryTransport::new(
-        SearchPlaneQueryIpcResponse::Semantic(SemanticQueryResponse {
+    let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Semantic(
+        SemanticQueryResponse {
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
             window: QueryResultWindowV1::exact(1),
             explanation: sample_explanation(),
-        }),
-    ));
+        },
+    )));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
     let _response = ok_or_fail!(
         client
@@ -1136,32 +1112,25 @@ fn semantic_scope_sourcegraph_query_preserves_scope_wire_fields() {
         return;
     };
     assert_eq!(req.top_k, 5);
-    assert!(
-        req.lexical_scope.is_some(),
-        "expected semantic lexical scope"
-    );
+    assert!(req.lexical_scope.is_some(), "expected semantic lexical scope");
     let Some(scope) = &req.lexical_scope else {
         return;
     };
-    assert_eq!(
-        scope.syntax,
-        quanta_index_contract::TextQuerySyntax::Sourcegraph
-    );
+    assert_eq!(scope.syntax, quanta_index_contract::TextQuerySyntax::Sourcegraph);
     assert_eq!(scope.query_text, "repo:repo-1 file:lib.rs");
     assert_eq!(scope.top_k, 8);
 }
 
 #[test]
 fn lexical_query_builder_carries_top_k_to_wire_contract() {
-    let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(
-        TextQueryResponse {
+    let query =
+        Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
             window: QueryResultWindowV1::exact(1),
             file_owner_rows: None,
             next_cursor: None,
-        },
-    )));
+        })));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
     let _response = ok_or_fail!(
         client
@@ -1174,33 +1143,26 @@ fn lexical_query_builder_carries_top_k_to_wire_contract() {
     );
     let captured = ok_or_fail!(only_query_request(query.as_ref()));
     assert!(
-        matches!(
-            &captured.payload,
-            quanta_index_contract::SearchPlaneQueryIpcRequest::Text(_)
-        ),
+        matches!(&captured.payload, quanta_index_contract::SearchPlaneQueryIpcRequest::Text(_)),
         "expected text request, got {:?}",
         captured.payload
     );
     let quanta_index_contract::SearchPlaneQueryIpcRequest::Text(req) = &captured.payload else {
         return;
     };
-    assert_eq!(
-        req.top_k, 42,
-        "QI-QRY-01: TextQueryRequest.top_k must be set from builder"
-    );
+    assert_eq!(req.top_k, 42, "QI-QRY-01: TextQueryRequest.top_k must be set from builder");
 }
 
 #[test]
 fn lexical_constraint_setters_preserve_path_and_language_axes_v1() {
-    let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(
-        TextQueryResponse {
+    let query =
+        Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
             generation: sample_generation_pin(),
             results: Vec::new(),
             window: QueryResultWindowV1::exact(0),
             file_owner_rows: None,
             next_cursor: None,
-        },
-    )));
+        })));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
     let path = ExactRepoRelativePathV1::new("src/lib.rs").expect("valid exact path");
     let rust = LanguageCode::new("rust").expect("valid language");
@@ -1217,10 +1179,7 @@ fn lexical_constraint_setters_preserve_path_and_language_axes_v1() {
     );
     let captured = ok_or_fail!(only_query_request(query.as_ref()));
     assert!(
-        matches!(
-            &captured.payload,
-            quanta_index_contract::SearchPlaneQueryIpcRequest::Text(_)
-        ),
+        matches!(&captured.payload, quanta_index_contract::SearchPlaneQueryIpcRequest::Text(_)),
         "expected text query request, got {:?}",
         captured.payload
     );
@@ -1232,10 +1191,7 @@ fn lexical_constraint_setters_preserve_path_and_language_axes_v1() {
         Some(&path),
         "language setter must not erase the exact-path axis"
     );
-    assert_eq!(
-        request.constraints.language_any_of,
-        std::collections::BTreeSet::from([rust])
-    );
+    assert_eq!(request.constraints.language_any_of, std::collections::BTreeSet::from([rust]));
 }
 
 #[test]
@@ -1252,11 +1208,8 @@ fn semantic_hybrid_seed_and_symbol_setters_preserve_both_constraint_axes_v1() {
             explanation: sample_explanation(),
         }),
     ));
-    let semantic_client = QuantaIndex::from_transports(
-        semantic_transport.clone(),
-        unused_control(),
-        unused_ingest(),
-    );
+    let semantic_client =
+        QuantaIndex::from_transports(semantic_transport.clone(), unused_control(), unused_ingest());
     let _semantic_response = ok_or_fail!(
         semantic_client
             .semantic()
@@ -1283,10 +1236,7 @@ fn semantic_hybrid_seed_and_symbol_setters_preserve_both_constraint_axes_v1() {
             .as_ref(),
         Some(&path)
     );
-    assert_eq!(
-        semantic_request.constraints.language_any_of,
-        expected_languages
-    );
+    assert_eq!(semantic_request.constraints.language_any_of, expected_languages);
     assert_eq!(
         semantic_request
             .lexical_scope
@@ -1333,19 +1283,16 @@ fn semantic_hybrid_seed_and_symbol_setters_preserve_both_constraint_axes_v1() {
             .as_ref(),
         Some(&path)
     );
-    assert_eq!(
-        hybrid_request.text_query.constraints.language_any_of,
-        expected_languages
-    );
+    assert_eq!(hybrid_request.text_query.constraints.language_any_of, expected_languages);
 
-    let symbol_transport = Arc::new(StubQueryTransport::new(
-        SearchPlaneQueryIpcResponse::Symbol(quanta_index_contract::SymbolQueryResponse {
+    let symbol_transport = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Symbol(
+        quanta_index_contract::SymbolQueryResponse {
             generation: sample_generation_pin(),
             results: Vec::new(),
             window: QueryResultWindowV1::exact(0),
             next_cursor: None,
-        }),
-    ));
+        },
+    )));
     let symbol_client =
         QuantaIndex::from_transports(symbol_transport.clone(), unused_control(), unused_ingest());
     let _symbol_response = ok_or_fail!(
@@ -1365,27 +1312,20 @@ fn semantic_hybrid_seed_and_symbol_setters_preserve_both_constraint_axes_v1() {
     else {
         return;
     };
-    assert_eq!(
-        symbol_request.constraints.repo_relative_path_exact.as_ref(),
-        Some(&path)
-    );
-    assert_eq!(
-        symbol_request.constraints.language_any_of,
-        expected_languages
-    );
+    assert_eq!(symbol_request.constraints.repo_relative_path_exact.as_ref(), Some(&path));
+    assert_eq!(symbol_request.constraints.language_any_of, expected_languages);
 }
 
 #[test]
 fn lexical_query_request_forwards_contract_dto_unchanged() {
-    let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(
-        TextQueryResponse {
+    let query =
+        Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
             window: QueryResultWindowV1::exact(1),
             file_owner_rows: None,
             next_cursor: None,
-        },
-    )));
+        })));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
     let request = quanta_index_contract::TextQueryRequest {
         syntax: quanta_index_contract::TextQuerySyntax::Sourcegraph,
@@ -1409,14 +1349,14 @@ fn lexical_query_request_forwards_contract_dto_unchanged() {
 
 #[test]
 fn symbol_query_request_forwards_contract_dto_unchanged() {
-    let query = Arc::new(StubQueryTransport::new(
-        SearchPlaneQueryIpcResponse::Symbol(quanta_index_contract::SymbolQueryResponse {
+    let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Symbol(
+        quanta_index_contract::SymbolQueryResponse {
             generation: sample_generation_pin(),
             results: vec![sample_symbol_hit()],
             window: QueryResultWindowV1::exact(1),
             next_cursor: None,
-        }),
-    ));
+        },
+    )));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
     let request = quanta_index_contract::SymbolQueryRequest {
         syntax: quanta_index_contract::TextQuerySyntax::Native,
@@ -1445,15 +1385,15 @@ fn symbol_query_request_forwards_contract_dto_unchanged() {
 
 #[test]
 fn hybrid_seed_search_builder_dispatches_hybrid_seed_request_with_semantic_text() {
-    let query = Arc::new(StubQueryTransport::new(
-        SearchPlaneQueryIpcResponse::HybridSeed(HybridSeedQueryResponse {
+    let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::HybridSeed(
+        HybridSeedQueryResponse {
             generation: sample_generation_pin(),
             manifest_digest: "manifest-digest".to_string(),
             seed_candidates: vec![sample_hybrid_seed_candidate()],
             window: QueryResultWindowV1::exact(1),
             explanation: sample_explanation(),
-        }),
-    ));
+        },
+    )));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
     let _response = ok_or_fail!(
         client
@@ -1500,14 +1440,14 @@ fn hybrid_seed_search_builder_dispatches_hybrid_seed_request_with_semantic_text(
 
 #[test]
 fn semantic_query_request_forwards_contract_dto_unchanged() {
-    let query = Arc::new(StubQueryTransport::new(
-        SearchPlaneQueryIpcResponse::Semantic(SemanticQueryResponse {
+    let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Semantic(
+        SemanticQueryResponse {
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
             window: QueryResultWindowV1::exact(1),
             explanation: sample_explanation(),
-        }),
-    ));
+        },
+    )));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
     let request = quanta_index_contract::SemanticQueryRequest {
         query_text: "legacy semantic text".to_string(),
@@ -1538,15 +1478,15 @@ fn semantic_query_request_forwards_contract_dto_unchanged() {
 
 #[test]
 fn hybrid_seed_request_forwards_contract_dto_unchanged() {
-    let query = Arc::new(StubQueryTransport::new(
-        SearchPlaneQueryIpcResponse::HybridSeed(HybridSeedQueryResponse {
+    let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::HybridSeed(
+        HybridSeedQueryResponse {
             generation: sample_generation_pin(),
             manifest_digest: "manifest-digest".to_string(),
             seed_candidates: vec![sample_hybrid_seed_candidate()],
             window: QueryResultWindowV1::exact(1),
             explanation: sample_explanation(),
-        }),
-    ));
+        },
+    )));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
     let request = quanta_index_contract::HybridSeedQueryRequest {
         text_query: quanta_index_contract::TextQueryRequest {
@@ -1577,15 +1517,14 @@ fn hybrid_seed_request_forwards_contract_dto_unchanged() {
 
 #[test]
 fn lexical_sourcegraph_query_builder_dispatches_text_query_request() {
-    let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(
-        TextQueryResponse {
+    let query =
+        Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
             window: QueryResultWindowV1::exact(1),
             file_owner_rows: None,
             next_cursor: None,
-        },
-    )));
+        })));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
     let response = client
         .lexical()
@@ -1598,20 +1537,14 @@ fn lexical_sourcegraph_query_builder_dispatches_text_query_request() {
     assert_eq!(response.results.len(), 1);
     let captured = ok_or_fail!(only_query_request(query.as_ref()));
     assert!(
-        matches!(
-            &captured.payload,
-            quanta_index_contract::SearchPlaneQueryIpcRequest::Text(_)
-        ),
+        matches!(&captured.payload, quanta_index_contract::SearchPlaneQueryIpcRequest::Text(_)),
         "expected text request, got {:?}",
         captured.payload
     );
     let quanta_index_contract::SearchPlaneQueryIpcRequest::Text(req) = &captured.payload else {
         return;
     };
-    assert_eq!(
-        req.syntax,
-        quanta_index_contract::TextQuerySyntax::Sourcegraph
-    );
+    assert_eq!(req.syntax, quanta_index_contract::TextQuerySyntax::Sourcegraph);
     assert_eq!(req.query_text.as_str(), "repo:repo-1 lang:rust sample");
     assert_eq!(req.generation, Some(sample_generation_pin()));
     assert_eq!(req.top_k, 9);
@@ -1659,10 +1592,7 @@ fn search_corpus_publish_routes_through_ingest_transport_and_carries_typed_recor
     assert_eq!(observed, expected);
     let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
     assert!(
-        matches!(
-            &captured.payload,
-            SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(_)
-        ),
+        matches!(&captured.payload, SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(_)),
         "expected PublishSearchCorpusBatch, got {:?}",
         captured.payload
     );
@@ -1675,11 +1605,7 @@ fn search_corpus_publish_routes_through_ingest_transport_and_carries_typed_recor
     assert_eq!(wire.replace_scopes.len(), 1);
     assert_eq!(wire.tombstone_scopes.len(), 0);
     assert!(wire.seal);
-    assert_eq!(
-        wire.replace_scopes.len(),
-        1,
-        "expected one search corpus replace scope"
-    );
+    assert_eq!(wire.replace_scopes.len(), 1, "expected one search corpus replace scope");
     let Some(first_scope) = wire.replace_scopes.first() else {
         return;
     };
@@ -1718,16 +1644,8 @@ fn search_corpus_builder_preserves_semantic_lifecycle_in_canonical_wire_order() 
         ManifestGeneration::new(1),
         "manifest:semantic",
     )
-    .replace_semantic_scope(
-        scope_b.clone(),
-        "scope:b",
-        vec![sample_semantic_source("symbol-b")],
-    )
-    .replace_semantic_scope(
-        scope_a.clone(),
-        "scope:a",
-        vec![sample_semantic_source("symbol-a")],
-    )
+    .replace_semantic_scope(scope_b.clone(), "scope:b", vec![sample_semantic_source("symbol-b")])
+    .replace_semantic_scope(scope_a.clone(), "scope:a", vec![sample_semantic_source("symbol-a")])
     .tombstone_semantic_scope(tombstone_d.clone())
     .tombstone_semantic_scope(tombstone_c.clone());
 
@@ -1739,24 +1657,15 @@ fn search_corpus_builder_preserves_semantic_lifecycle_in_canonical_wire_order() 
             .collect::<Vec<_>>(),
         vec![scope_a, scope_b]
     );
-    assert_eq!(
-        batch.semantic_tombstone_scopes(),
-        &[tombstone_c, tombstone_d]
-    );
+    assert_eq!(batch.semantic_tombstone_scopes(), &[tombstone_c, tombstone_d]);
 
     let _receipt = ok_or_fail!(client.search_corpus().publish(&batch));
     let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
     let SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(wire) = captured.payload else {
         panic!("expected search corpus wire batch");
     };
-    assert_eq!(
-        wire.semantic_replace_scopes,
-        batch.semantic_replace_scopes()
-    );
-    assert_eq!(
-        wire.semantic_tombstone_scopes,
-        batch.semantic_tombstone_scopes()
-    );
+    assert_eq!(wire.semantic_replace_scopes, batch.semantic_replace_scopes());
+    assert_eq!(wire.semantic_tombstone_scopes, batch.semantic_tombstone_scopes());
 
     let unsealed = batch.without_seal();
     assert!(!unsealed.seal_requested());
@@ -1986,23 +1895,19 @@ fn search_corpus_semantic_scope_conflicts_fail_before_transport_io() {
         .lock()
         .expect("ingest request list should remain readable")
         .is_empty();
-    assert!(
-        requests_are_empty,
-        "invalid batches must not reach transport"
-    );
+    assert!(requests_are_empty, "invalid batches must not reach transport");
 }
 
 #[test]
 fn reader_client_routes_lexical_query_surface() {
-    let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(
-        TextQueryResponse {
+    let query =
+        Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
             window: QueryResultWindowV1::exact(1),
             file_owner_rows: None,
             next_cursor: None,
-        },
-    )));
+        })));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
     let response = ok_or_fail!(
         client
@@ -2016,10 +1921,7 @@ fn reader_client_routes_lexical_query_surface() {
     assert_eq!(response.generation, sample_generation_pin());
     let captured = ok_or_fail!(only_query_request(query.as_ref()));
     assert!(
-        matches!(
-            captured.payload,
-            quanta_index_contract::SearchPlaneQueryIpcRequest::Text(_)
-        ),
+        matches!(captured.payload, quanta_index_contract::SearchPlaneQueryIpcRequest::Text(_)),
         "expected text request, got {:?}",
         captured.payload
     );
@@ -2059,20 +1961,14 @@ fn producer_client_publish_search_corpus_accepts_unsealed_batches() {
     let _receipt = ok_or_fail!(client.producer().publish_search_corpus(&batch));
     let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
     assert!(
-        matches!(
-            captured.payload,
-            SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(_)
-        ),
+        matches!(captured.payload, SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(_)),
         "expected search corpus ingest request, got {:?}",
         captured.payload
     );
     let SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(wire) = &captured.payload else {
         return;
     };
-    assert!(
-        !wire.seal,
-        "unsealed producer publish must preserve seal=false"
-    );
+    assert!(!wire.seal, "unsealed producer publish must preserve seal=false");
 }
 
 #[test]
@@ -2529,9 +2425,9 @@ fn history_publish_routes_through_ingest_transport_and_carries_typed_authority_r
         accepted_semantic_tombstone_scopes: 0,
         sealed: false,
     };
-    let ingest = Arc::new(StubIngestTransport::new(
-        SearchPlaneIngestIpcResponse::HistoryReceipt(receipt.clone()),
-    ));
+    let ingest = Arc::new(StubIngestTransport::new(SearchPlaneIngestIpcResponse::HistoryReceipt(
+        receipt.clone(),
+    )));
     let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
     let batch = HistoryBatch::new(repo_id(), revision_id(), ManifestGeneration::new(3))
         .manifest_digest("manifest:history-3")
@@ -2547,10 +2443,7 @@ fn history_publish_routes_through_ingest_transport_and_carries_typed_authority_r
     assert_eq!(observed, expected);
     let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
     assert!(
-        matches!(
-            &captured.payload,
-            SearchPlaneIngestIpcRequest::PublishHistoryBatch(_)
-        ),
+        matches!(&captured.payload, SearchPlaneIngestIpcRequest::PublishHistoryBatch(_)),
         "expected PublishHistoryBatch, got {:?}",
         captured.payload
     );
@@ -2613,10 +2506,7 @@ fn history_publish_repo_commit_recency_routes_through_ingest_transport() {
     assert_eq!(observed, expected);
     let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
     assert!(
-        matches!(
-            &captured.payload,
-            SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(_)
-        ),
+        matches!(&captured.payload, SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(_)),
         "expected PublishRepoCommitRecencyBatch, got {:?}",
         captured.payload
     );
@@ -2625,11 +2515,7 @@ fn history_publish_repo_commit_recency_routes_through_ingest_transport() {
     };
     assert_eq!(wire.batch_digest, ok_or_fail!(batch.batch_digest()));
     let [entry_a, entry_b] = wire.entries.as_slice() else {
-        assert!(
-            false,
-            "expected two repo-commit-recency entries, got {}",
-            wire.entries.len()
-        );
+        assert!(false, "expected two repo-commit-recency entries, got {}", wire.entries.len());
         return;
     };
     assert_eq!(entry_a.source_repo_id.as_str(), "corp-a");
@@ -2654,9 +2540,9 @@ fn history_publish_repo_meta_routes_through_ingest_transport() {
         accepted_semantic_tombstone_scopes: 0,
         sealed: false,
     };
-    let ingest = Arc::new(StubIngestTransport::new(
-        SearchPlaneIngestIpcResponse::RepoMetaReceipt(receipt.clone()),
-    ));
+    let ingest = Arc::new(StubIngestTransport::new(SearchPlaneIngestIpcResponse::RepoMetaReceipt(
+        receipt.clone(),
+    )));
     let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
     let batch = crate::RepoMetaBatch::new(repo_id(), revision_id(), ManifestGeneration::new(4))
         .entry(
@@ -2677,10 +2563,7 @@ fn history_publish_repo_meta_routes_through_ingest_transport() {
     assert_eq!(observed, expected);
     let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
     assert!(
-        matches!(
-            &captured.payload,
-            SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(_)
-        ),
+        matches!(&captured.payload, SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(_)),
         "expected PublishRepoMetaBatch, got {:?}",
         captured.payload
     );
@@ -2689,11 +2572,7 @@ fn history_publish_repo_meta_routes_through_ingest_transport() {
     };
     assert_eq!(wire.batch_digest, ok_or_fail!(batch.batch_digest()));
     let [entry_a, entry_b] = wire.entries.as_slice() else {
-        assert!(
-            false,
-            "expected two repo-meta entries, got {}",
-            wire.entries.len()
-        );
+        assert!(false, "expected two repo-meta entries, got {}", wire.entries.len());
         return;
     };
     assert_eq!(entry_a.source_repo_id.as_str(), "corp-a");
@@ -2745,10 +2624,7 @@ fn history_publish_repo_topic_routes_through_ingest_transport() {
     assert_eq!(observed, expected);
     let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
     assert!(
-        matches!(
-            &captured.payload,
-            SearchPlaneIngestIpcRequest::PublishRepoTopicBatch(_)
-        ),
+        matches!(&captured.payload, SearchPlaneIngestIpcRequest::PublishRepoTopicBatch(_)),
         "expected PublishRepoTopicBatch, got {:?}",
         captured.payload
     );
@@ -2757,11 +2633,7 @@ fn history_publish_repo_topic_routes_through_ingest_transport() {
     };
     assert_eq!(wire.batch_digest, ok_or_fail!(batch.batch_digest()));
     let [entry_a, entry_b, entry_c] = wire.entries.as_slice() else {
-        assert!(
-            false,
-            "expected three repo-topic entries, got {}",
-            wire.entries.len()
-        );
+        assert!(false, "expected three repo-topic entries, got {}", wire.entries.len());
         return;
     };
     assert_eq!(entry_a.source_repo_id.as_str(), "corp-a");
@@ -2812,10 +2684,7 @@ fn history_publish_file_ownership_routes_through_ingest_transport() {
     assert_eq!(observed, expected);
     let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
     assert!(
-        matches!(
-            &captured.payload,
-            SearchPlaneIngestIpcRequest::PublishFileOwnershipBatch(_)
-        ),
+        matches!(&captured.payload, SearchPlaneIngestIpcRequest::PublishFileOwnershipBatch(_)),
         "expected PublishFileOwnershipBatch, got {:?}",
         captured.payload
     );
@@ -2824,11 +2693,7 @@ fn history_publish_file_ownership_routes_through_ingest_transport() {
     };
     assert_eq!(wire.batch_digest, ok_or_fail!(batch.batch_digest()));
     let [entry_a, entry_b] = wire.entries.as_slice() else {
-        assert!(
-            false,
-            "expected two file-ownership entries, got {}",
-            wire.entries.len()
-        );
+        assert!(false, "expected two file-ownership entries, got {}", wire.entries.len());
         return;
     };
     assert_eq!(entry_a.source_repo_id.as_str(), "corp-a");
@@ -2879,10 +2744,7 @@ fn history_publish_file_contributor_routes_through_ingest_transport() {
     assert_eq!(observed, expected);
     let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
     assert!(
-        matches!(
-            &captured.payload,
-            SearchPlaneIngestIpcRequest::PublishFileContributorBatch(_)
-        ),
+        matches!(&captured.payload, SearchPlaneIngestIpcRequest::PublishFileContributorBatch(_)),
         "expected PublishFileContributorBatch, got {:?}",
         captured.payload
     );
@@ -2891,11 +2753,7 @@ fn history_publish_file_contributor_routes_through_ingest_transport() {
     };
     assert_eq!(wire.batch_digest, ok_or_fail!(batch.batch_digest()));
     let [entry_a, entry_b] = wire.entries.as_slice() else {
-        assert!(
-            false,
-            "expected two file-contributor entries, got {}",
-            wire.entries.len()
-        );
+        assert!(false, "expected two file-contributor entries, got {}", wire.entries.len());
         return;
     };
     assert_eq!(entry_a.source_repo_id.as_str(), "corp-a");
@@ -2918,25 +2776,18 @@ fn history_publish_file_contributor_routes_through_ingest_transport() {
 
 #[test]
 fn dirty_publish_routes_through_ingest_transport_and_carries_typed_entries() {
-    let ingest = Arc::new(StubIngestTransport::new(
-        SearchPlaneIngestIpcResponse::DirtyReceipt(BatchPublishReceipt::default()),
-    ));
+    let ingest = Arc::new(StubIngestTransport::new(SearchPlaneIngestIpcResponse::DirtyReceipt(
+        BatchPublishReceipt::default(),
+    )));
     let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
-    let batch = DirtyBatch::new(
-        repo_id(),
-        revision_id(),
-        ManifestGeneration::new(4),
-        1_717_171_717_000,
-    )
-    .upsert(sample_dirty_record())
-    .delete(ChunkId::new("chunk-evict"));
+    let batch =
+        DirtyBatch::new(repo_id(), revision_id(), ManifestGeneration::new(4), 1_717_171_717_000)
+            .upsert(sample_dirty_record())
+            .delete(ChunkId::new("chunk-evict"));
     let _receipt = ok_or_fail!(client.runtime().publish_dirty(&batch));
     let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
     assert!(
-        matches!(
-            &captured.payload,
-            SearchPlaneIngestIpcRequest::PublishDirtyBatch(_)
-        ),
+        matches!(&captured.payload, SearchPlaneIngestIpcRequest::PublishDirtyBatch(_)),
         "expected PublishDirtyBatch, got {:?}",
         captured.payload
     );
@@ -2976,10 +2827,7 @@ fn structural_publish_routes_through_ingest_transport_and_carries_parse_trees() 
     let _receipt = ok_or_fail!(client.structural().publish(&batch));
     let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
     assert!(
-        matches!(
-            &captured.payload,
-            SearchPlaneIngestIpcRequest::PublishStructuralBatch(_)
-        ),
+        matches!(&captured.payload, SearchPlaneIngestIpcRequest::PublishStructuralBatch(_)),
         "expected PublishStructuralBatch, got {:?}",
         captured.payload
     );
@@ -3006,9 +2854,9 @@ fn repomap_publish_routes_through_ingest_transport() {
         revision_id: revision_id(),
         manifest_generation: ManifestGeneration::new(1),
     };
-    let ingest = Arc::new(StubIngestTransport::new(
-        SearchPlaneIngestIpcResponse::RepoMapReceipt(ack.clone()),
-    ));
+    let ingest = Arc::new(StubIngestTransport::new(SearchPlaneIngestIpcResponse::RepoMapReceipt(
+        ack.clone(),
+    )));
     let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
     let bundle = quanta_index_contract::RepoMapSourceBundle::new(
         repo_id(),
@@ -3074,18 +2922,15 @@ fn repomap_publish_routes_through_ingest_transport() {
     let observed = ok_or_fail!(client.repomap().publish(&bundle));
     assert_eq!(observed.manifest_generation, ack.manifest_generation);
     let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
-    assert!(matches!(
-        captured.payload,
-        SearchPlaneIngestIpcRequest::PublishRepoMapBundle(_)
-    ));
+    assert!(matches!(captured.payload, SearchPlaneIngestIpcRequest::PublishRepoMapBundle(_)));
 }
 
 #[test]
 fn repomap_query_routes_through_query_transport() {
     let response = sample_repomap_query_response();
-    let query = Arc::new(StubQueryTransport::new(
-        SearchPlaneQueryIpcResponse::RepoMapQuery(response.clone()),
-    ));
+    let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::RepoMapQuery(
+        response.clone(),
+    )));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
     let request = sample_repomap_query_request();
     let observed = ok_or_fail!(client.repomap().query(request.clone()));
@@ -3155,8 +3000,8 @@ fn repomap_activate_routes_through_control_transport() {
 
 #[test]
 fn history_query_routes_through_typed_query_variant() {
-    let query = Arc::new(StubQueryTransport::new(
-        SearchPlaneQueryIpcResponse::History(SearchPlaneHistoryQueryResponse {
+    let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::History(
+        SearchPlaneHistoryQueryResponse {
             generation: sample_generation_pin(),
             order: quanta_index_contract::HistoryOrderV1::Recency,
             commits: vec![],
@@ -3165,8 +3010,8 @@ fn history_query_routes_through_typed_query_variant() {
             read_epoch: quanta_index_contract::AuxEpochV1::new(1),
             examined: 0,
             next_cursor: None,
-        }),
-    ));
+        },
+    )));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
     let response = ok_or_fail!(
         client
@@ -3181,10 +3026,7 @@ fn history_query_routes_through_typed_query_variant() {
     assert_eq!(response.generation, sample_generation_pin());
     let captured = ok_or_fail!(only_query_request(query.as_ref()));
     assert!(
-        matches!(
-            &captured.payload,
-            quanta_index_contract::SearchPlaneQueryIpcRequest::History(_)
-        ),
+        matches!(&captured.payload, quanta_index_contract::SearchPlaneQueryIpcRequest::History(_)),
         "expected History request, got {:?}",
         captured.payload
     );
@@ -3196,8 +3038,8 @@ fn history_query_routes_through_typed_query_variant() {
 
 #[test]
 fn history_sourcegraph_query_preserves_rev_filter_and_syntax() {
-    let query = Arc::new(StubQueryTransport::new(
-        SearchPlaneQueryIpcResponse::History(SearchPlaneHistoryQueryResponse {
+    let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::History(
+        SearchPlaneHistoryQueryResponse {
             generation: sample_generation_pin(),
             order: quanta_index_contract::HistoryOrderV1::Recency,
             commits: vec![],
@@ -3206,8 +3048,8 @@ fn history_sourcegraph_query_preserves_rev_filter_and_syntax() {
             read_epoch: quanta_index_contract::AuxEpochV1::new(1),
             examined: 0,
             next_cursor: None,
-        }),
-    ));
+        },
+    )));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
     let _response = ok_or_fail!(
         client
@@ -3221,27 +3063,21 @@ fn history_sourcegraph_query_preserves_rev_filter_and_syntax() {
     );
     let captured = ok_or_fail!(only_query_request(query.as_ref()));
     assert!(
-        matches!(
-            &captured.payload,
-            quanta_index_contract::SearchPlaneQueryIpcRequest::History(_)
-        ),
+        matches!(&captured.payload, quanta_index_contract::SearchPlaneQueryIpcRequest::History(_)),
         "expected History request, got {:?}",
         captured.payload
     );
     let quanta_index_contract::SearchPlaneQueryIpcRequest::History(req) = &captured.payload else {
         return;
     };
-    assert_eq!(
-        req.text_query.syntax,
-        quanta_index_contract::TextQuerySyntax::Sourcegraph
-    );
+    assert_eq!(req.text_query.syntax, quanta_index_contract::TextQuerySyntax::Sourcegraph);
     assert_eq!(req.text_query.query_text, "type:commit rev:refs/heads/main");
 }
 
 #[test]
 fn history_query_request_forwards_contract_dto_unchanged() {
-    let query = Arc::new(StubQueryTransport::new(
-        SearchPlaneQueryIpcResponse::History(SearchPlaneHistoryQueryResponse {
+    let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::History(
+        SearchPlaneHistoryQueryResponse {
             generation: sample_generation_pin(),
             order: quanta_index_contract::HistoryOrderV1::Recency,
             commits: vec![],
@@ -3250,8 +3086,8 @@ fn history_query_request_forwards_contract_dto_unchanged() {
             read_epoch: quanta_index_contract::AuxEpochV1::new(1),
             examined: 0,
             next_cursor: None,
-        }),
-    ));
+        },
+    )));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
     let request = HistoryQueryRequest {
         text_query: quanta_index_contract::TextQueryRequest {
@@ -3279,8 +3115,8 @@ fn history_query_request_forwards_contract_dto_unchanged() {
 
 #[test]
 fn runtime_query_routes_through_typed_query_variant() {
-    let query = Arc::new(StubQueryTransport::new(
-        SearchPlaneQueryIpcResponse::RuntimeMetadata(SearchPlaneRuntimeMetadataQueryResponse {
+    let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::RuntimeMetadata(
+        SearchPlaneRuntimeMetadataQueryResponse {
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
             window: QueryResultWindowV1::exact(1),
@@ -3288,8 +3124,8 @@ fn runtime_query_routes_through_typed_query_variant() {
             universe_epoch: quanta_index_contract::AuxEpochV1::new(1),
             examined: 1,
             next_cursor: None,
-        }),
-    ));
+        },
+    )));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
     let response = ok_or_fail!(
         client
@@ -3314,16 +3150,13 @@ fn runtime_query_routes_through_typed_query_variant() {
     else {
         return;
     };
-    assert_eq!(
-        req.text_query.syntax,
-        quanta_index_contract::TextQuerySyntax::Sourcegraph
-    );
+    assert_eq!(req.text_query.syntax, quanta_index_contract::TextQuerySyntax::Sourcegraph);
 }
 
 #[test]
 fn runtime_query_request_forwards_contract_dto_unchanged() {
-    let query = Arc::new(StubQueryTransport::new(
-        SearchPlaneQueryIpcResponse::RuntimeMetadata(SearchPlaneRuntimeMetadataQueryResponse {
+    let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::RuntimeMetadata(
+        SearchPlaneRuntimeMetadataQueryResponse {
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
             window: QueryResultWindowV1::exact(1),
@@ -3331,8 +3164,8 @@ fn runtime_query_request_forwards_contract_dto_unchanged() {
             universe_epoch: quanta_index_contract::AuxEpochV1::new(1),
             examined: 1,
             next_cursor: None,
-        }),
-    ));
+        },
+    )));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
     let request = RuntimeMetadataQueryRequest {
         text_query: quanta_index_contract::TextQueryRequest {
@@ -3356,16 +3189,16 @@ fn runtime_query_request_forwards_contract_dto_unchanged() {
 
 #[test]
 fn structural_query_routes_through_typed_query_variant() {
-    let query = Arc::new(StubQueryTransport::new(
-        SearchPlaneQueryIpcResponse::Structural(SearchPlaneStructuralQueryResponse {
+    let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Structural(
+        SearchPlaneStructuralQueryResponse {
             generation: sample_generation_pin(),
             results: vec![],
             window: QueryResultWindowV1::exact(0),
             read_epoch: quanta_index_contract::AuxEpochV1::new(1),
             examined: 0,
             next_cursor: None,
-        }),
-    ));
+        },
+    )));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
     let response = ok_or_fail!(
         client
@@ -3395,16 +3228,16 @@ fn structural_query_routes_through_typed_query_variant() {
 
 #[test]
 fn structural_query_request_forwards_contract_dto_unchanged() {
-    let query = Arc::new(StubQueryTransport::new(
-        SearchPlaneQueryIpcResponse::Structural(SearchPlaneStructuralQueryResponse {
+    let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Structural(
+        SearchPlaneStructuralQueryResponse {
             generation: sample_generation_pin(),
             results: vec![],
             window: QueryResultWindowV1::exact(0),
             read_epoch: quanta_index_contract::AuxEpochV1::new(1),
             examined: 0,
             next_cursor: None,
-        }),
-    ));
+        },
+    )));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
     let request = StructuralQueryRequest {
         text_query: quanta_index_contract::TextQueryRequest {
@@ -3431,16 +3264,16 @@ fn structural_query_request_forwards_contract_dto_unchanged() {
 
 #[test]
 fn structural_native_query_preserves_syntax() {
-    let query = Arc::new(StubQueryTransport::new(
-        SearchPlaneQueryIpcResponse::Structural(SearchPlaneStructuralQueryResponse {
+    let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Structural(
+        SearchPlaneStructuralQueryResponse {
             generation: sample_generation_pin(),
             results: vec![],
             window: QueryResultWindowV1::exact(0),
             read_epoch: quanta_index_contract::AuxEpochV1::new(1),
             examined: 0,
             next_cursor: None,
-        }),
-    ));
+        },
+    )));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
     let _response = ok_or_fail!(
         client
@@ -3464,29 +3297,23 @@ fn structural_native_query_preserves_syntax() {
     else {
         return;
     };
-    assert_eq!(
-        req.text_query.syntax,
-        quanta_index_contract::TextQuerySyntax::Native
-    );
-    assert_eq!(
-        req.text_query.query_text,
-        "repo:repo-1 lang:rust match { function_item }"
-    );
+    assert_eq!(req.text_query.syntax, quanta_index_contract::TextQuerySyntax::Native);
+    assert_eq!(req.text_query.query_text, "repo:repo-1 lang:rust match { function_item }");
     assert_eq!(req.text_query.top_k, 4);
 }
 
 #[test]
 fn structural_sourcegraph_query_preserves_syntax() {
-    let query = Arc::new(StubQueryTransport::new(
-        SearchPlaneQueryIpcResponse::Structural(SearchPlaneStructuralQueryResponse {
+    let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Structural(
+        SearchPlaneStructuralQueryResponse {
             generation: sample_generation_pin(),
             results: vec![],
             window: QueryResultWindowV1::exact(0),
             read_epoch: quanta_index_contract::AuxEpochV1::new(1),
             examined: 0,
             next_cursor: None,
-        }),
-    ));
+        },
+    )));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
     let _response =
         ok_or_fail!(client
@@ -3511,10 +3338,7 @@ fn structural_sourcegraph_query_preserves_syntax() {
     else {
         return;
     };
-    assert_eq!(
-        req.text_query.syntax,
-        quanta_index_contract::TextQuerySyntax::Sourcegraph
-    );
+    assert_eq!(req.text_query.syntax, quanta_index_contract::TextQuerySyntax::Sourcegraph);
     assert_eq!(
         req.text_query.query_text,
         r#"repo:repo-1 path:src/lib.rs lang:rust patterntype:structural "function_item""#
@@ -3524,13 +3348,13 @@ fn structural_sourcegraph_query_preserves_syntax() {
 
 #[test]
 fn lexical_publish_propagates_ingest_error_as_typed_remote() {
-    let ingest = Arc::new(StubIngestTransport::new(
-        SearchPlaneIngestIpcResponse::Error(quanta_index_contract::SearchPlaneIpcError {
+    let ingest = Arc::new(StubIngestTransport::new(SearchPlaneIngestIpcResponse::Error(
+        quanta_index_contract::SearchPlaneIpcError {
             code: SearchPlaneErrorCodeV2::InvalidRequest,
             message: "channel rejected".to_string(),
             repair: None,
-        }),
-    ));
+        },
+    )));
     let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest);
     let batch = SearchCorpusBatch::replace_generation(
         repo_id(),
@@ -3800,13 +3624,13 @@ fn generations_current_returns_snapshot_from_control_response() {
 fn generations_current_propagates_not_ready_as_typed_remote() {
     use crate::Track;
     use quanta_index_contract::{SearchPlaneControlIpcResponse, SearchPlaneIpcError};
-    let control = Arc::new(StubControlTransport::new(
-        SearchPlaneControlIpcResponse::Error(SearchPlaneIpcError {
+    let control = Arc::new(StubControlTransport::new(SearchPlaneControlIpcResponse::Error(
+        SearchPlaneIpcError {
             code: SearchPlaneErrorCodeV2::NotReady,
             message: "no active Lexical generation for repo=r revision=rev".to_string(),
             repair: None,
-        }),
-    ));
+        },
+    )));
     let client = QuantaIndex::from_transports(unused_query(), control, unused_ingest());
     let err = client
         .generations()
@@ -3960,13 +3784,13 @@ fn observability_metrics_snapshot_refuses_wrong_kind_and_surfaces_remote_errors(
         }
         other => panic!("expected a protocol error, got {other:?}"),
     }
-    let refused = Arc::new(StubControlTransport::new(
-        SearchPlaneControlIpcResponse::Error(SearchPlaneIpcError {
+    let refused = Arc::new(StubControlTransport::new(SearchPlaneControlIpcResponse::Error(
+        SearchPlaneIpcError {
             code: SearchPlaneErrorCodeV2::MetricsSourceDefect,
             message: "metrics scrape: source point name `Bad` is not [a-z][a-z0-9_]*".to_string(),
             repair: None,
-        }),
-    ));
+        },
+    )));
     let client = QuantaIndex::from_transports(unused_query(), refused, unused_ingest());
     match client.observability().metrics_snapshot() {
         Err(crate::SdkError::Remote { code, message, .. }) => {
@@ -4008,10 +3832,7 @@ fn quarantine_inventory_and_discard_carry_the_target_verbatim() {
     assert_eq!(listed, inventory);
     let sent = ok_or_fail!(only_control_request(&control));
     assert!(
-        matches!(
-            sent.payload,
-            SearchPlaneControlIpcRequest::QuarantineInventory(_)
-        ),
+        matches!(sent.payload, SearchPlaneControlIpcRequest::QuarantineInventory(_)),
         "the inventory request is what went over the wire: {sent:?}"
     );
 
@@ -4033,10 +3854,7 @@ fn quarantine_inventory_and_discard_carry_the_target_verbatim() {
     let SearchPlaneControlIpcRequest::QuarantineDiscard(request) = sent.payload else {
         panic!("expected the discard request on the wire, got {sent:?}");
     };
-    assert_eq!(
-        request.target, target,
-        "the target goes over the wire verbatim"
-    );
+    assert_eq!(request.target, target, "the target goes over the wire verbatim");
 }
 
 /// QI-BB-026: a mismatched ack, a wrong kind and a typed refusal each
@@ -4116,10 +3934,7 @@ fn quarantine_discard_refuses_mismatched_acks_wrong_kinds_and_surfaces_refusals(
     match client.quarantine().discard(&sent) {
         Err(crate::SdkError::Remote { code, message, .. }) => {
             assert_eq!(code, SearchPlaneErrorCodeV2::QuarantineTargetNotQuarantined);
-            assert!(
-                message.contains("list again") || message.contains("now"),
-                "{message}"
-            );
+            assert!(message.contains("list again") || message.contains("now"), "{message}");
         }
         other => panic!("expected the daemon's typed refusal, got {other:?}"),
     }
@@ -4253,10 +4068,7 @@ fn text_query_builder_accepts_the_public_maximum_top_k() {
     );
     let captured = ok_or_fail!(only_query_request(query.as_ref()));
     let quanta_index_contract::SearchPlaneQueryIpcRequest::Text(request) = captured.payload else {
-        panic!(
-            "expected a text query on the wire, got {:?}",
-            captured.payload
-        );
+        panic!("expected a text query on the wire, got {:?}", captured.payload);
     };
     assert_eq!(request.top_k, quanta_index_contract::PUBLIC_TOP_K_MAX);
 }
@@ -4300,8 +4112,8 @@ fn runtime_query_builder_carries_the_cursor_it_continues_from() {
         aux_epoch: quanta_index_contract::AuxEpochV1::new(4),
         universe_epoch: quanta_index_contract::AuxEpochV1::new(9),
     };
-    let query = Arc::new(StubQueryTransport::new(
-        SearchPlaneQueryIpcResponse::RuntimeMetadata(SearchPlaneRuntimeMetadataQueryResponse {
+    let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::RuntimeMetadata(
+        SearchPlaneRuntimeMetadataQueryResponse {
             generation: sample_generation_pin(),
             results: vec![],
             window: QueryResultWindowV1::exact(0),
@@ -4309,8 +4121,8 @@ fn runtime_query_builder_carries_the_cursor_it_continues_from() {
             universe_epoch: quanta_index_contract::AuxEpochV1::new(9),
             examined: 0,
             next_cursor: None,
-        }),
-    ));
+        },
+    )));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
     let _response = ok_or_fail!(
         client
@@ -4325,10 +4137,7 @@ fn runtime_query_builder_carries_the_cursor_it_continues_from() {
     let captured = ok_or_fail!(only_query_request(query.as_ref()));
     let quanta_index_contract::SearchPlaneQueryIpcRequest::RuntimeMetadata(req) = &captured.payload
     else {
-        panic!(
-            "expected RuntimeMetadata request, got {:?}",
-            captured.payload
-        );
+        panic!("expected RuntimeMetadata request, got {:?}", captured.payload);
     };
     assert_eq!(req.cursor.as_ref(), Some(&cursor));
 
@@ -4359,10 +4168,7 @@ fn runtime_query_builder_carries_the_cursor_it_continues_from() {
     let quanta_index_contract::SearchPlaneQueryIpcRequest::RuntimeMetadata(fresh) =
         &captured.payload
     else {
-        panic!(
-            "expected RuntimeMetadata request, got {:?}",
-            captured.payload
-        );
+        panic!("expected RuntimeMetadata request, got {:?}", captured.payload);
     };
     assert_eq!(fresh.cursor, None);
 }
@@ -4375,16 +4181,16 @@ fn structural_query_builder_carries_the_cursor_it_continues_from() {
         candidate_id: "chunk://alpha".to_string(),
         aux_epoch: quanta_index_contract::AuxEpochV1::new(6),
     };
-    let query = Arc::new(StubQueryTransport::new(
-        SearchPlaneQueryIpcResponse::Structural(SearchPlaneStructuralQueryResponse {
+    let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Structural(
+        SearchPlaneStructuralQueryResponse {
             generation: sample_generation_pin(),
             results: vec![],
             window: QueryResultWindowV1::exact(0),
             read_epoch: quanta_index_contract::AuxEpochV1::new(6),
             examined: 0,
             next_cursor: None,
-        }),
-    ));
+        },
+    )));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
     let _response = ok_or_fail!(
         client
@@ -4413,14 +4219,14 @@ fn structural_query_builder_carries_the_cursor_it_continues_from() {
 fn hybrid_builder_assembles_a_hybrid_request_with_both_lanes() {
     let rust = ok_or_fail!(LanguageCode::new("rust"));
     let path = ok_or_fail!(ExactRepoRelativePathV1::new("src/lib.rs"));
-    let query = Arc::new(StubQueryTransport::new(
-        SearchPlaneQueryIpcResponse::Hybrid(quanta_index_contract::HybridQueryResponse {
+    let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Hybrid(
+        quanta_index_contract::HybridQueryResponse {
             generation: sample_generation_pin(),
             results: Vec::new(),
             window: QueryResultWindowV1::exact(0),
             explanation: sample_explanation(),
-        }),
-    ));
+        },
+    )));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
     let response = ok_or_fail!(
         client
@@ -4442,10 +4248,7 @@ fn hybrid_builder_assembles_a_hybrid_request_with_both_lanes() {
     };
     assert_eq!(request.top_k, 7);
     assert_eq!(request.text_query.top_k, 7);
-    assert_eq!(
-        request.text_query.syntax,
-        quanta_index_contract::TextQuerySyntax::Sourcegraph
-    );
+    assert_eq!(request.text_query.syntax, quanta_index_contract::TextQuerySyntax::Sourcegraph);
     assert_eq!(request.text_query.query_text, "needle");
     assert_eq!(request.semantic_query_text, "where the needle is kept");
     assert_eq!(request.generation, Some(sample_generation_pin()));
@@ -4527,15 +4330,13 @@ fn hybrid_explain_carries_the_row_and_both_queries() {
             },
         ],
     };
-    let query = Arc::new(StubQueryTransport::new(
-        SearchPlaneQueryIpcResponse::Explain(
-            quanta_index_contract::SearchPlaneExplainQueryResponse {
-                generation: sample_generation_pin(),
-                presence: quanta_index_contract::CandidatePresenceV1::Indexed,
-                explanation: sample_explanation(),
-            },
-        ),
-    ));
+    let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Explain(
+        quanta_index_contract::SearchPlaneExplainQueryResponse {
+            generation: sample_generation_pin(),
+            presence: quanta_index_contract::CandidatePresenceV1::Indexed,
+            explanation: sample_explanation(),
+        },
+    )));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
     let text_query = quanta_index_contract::TextQueryRequest {
         syntax: quanta_index_contract::TextQuerySyntax::Sourcegraph,
@@ -4552,22 +4353,13 @@ fn hybrid_explain_carries_the_row_and_both_queries() {
         text_query.clone(),
         "where the needle is kept",
     ));
-    assert_eq!(
-        response.presence,
-        quanta_index_contract::CandidatePresenceV1::Indexed
-    );
+    assert_eq!(response.presence, quanta_index_contract::CandidatePresenceV1::Indexed);
     let captured = ok_or_fail!(only_query_request(query.as_ref()));
     let quanta_index_contract::SearchPlaneQueryIpcRequest::Explain(request) = &captured.payload
     else {
         panic!("expected Explain request, got {:?}", captured.payload);
     };
-    assert_eq!(
-        request.candidate,
-        quanta_index_contract::ExplainCandidateV1::Hybrid(row)
-    );
+    assert_eq!(request.candidate, quanta_index_contract::ExplainCandidateV1::Hybrid(row));
     assert_eq!(request.text_query.as_ref(), Some(&text_query));
-    assert_eq!(
-        request.semantic_query_text.as_deref(),
-        Some("where the needle is kept")
-    );
+    assert_eq!(request.semantic_query_text.as_deref(), Some("where the needle is kept"));
 }

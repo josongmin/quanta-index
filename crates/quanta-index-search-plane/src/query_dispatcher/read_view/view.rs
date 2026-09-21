@@ -251,11 +251,7 @@ impl QueryReadViewV1 {
             let _previous = aux_epochs.insert(ReadDomainV1::RuntimeOverlay, read.epoch);
         }
         if let Some(read) = &parts.structural {
-            ensure_same_generation(
-                &pin,
-                ReadDomainV1::StructuralChunkUniverse,
-                &read.generation,
-            )?;
+            ensure_same_generation(&pin, ReadDomainV1::StructuralChunkUniverse, &read.generation)?;
             let _previous = aux_epochs.insert(ReadDomainV1::StructuralChunkUniverse, read.epoch);
         }
         let lexical_identity = lexical.as_ref().map(|handle| handle.artifact_identity());
@@ -263,7 +259,7 @@ impl QueryReadViewV1 {
             for authority in request.domains.repo_metadata() {
                 if !identity.repo_metadata.contains(authority) {
                     return Err(
-                        ReadViewRefusedError::RepoMetadataUnavailable { authority, pin }.into(),
+                        ReadViewRefusedError::RepoMetadataUnavailable { authority, pin }.into()
                     );
                 }
             }
@@ -395,13 +391,7 @@ impl SearchPlaneDispatcher {
         now: Instant,
     ) -> Result<AuxRead<HistoryAuthorityState>, CoreError> {
         ledger
-            .history_read_at(
-                &pin.repo_id,
-                &pin.revision_id,
-                pin.manifest_generation,
-                epoch,
-                now,
-            )?
+            .history_read_at(&pin.repo_id, &pin.revision_id, pin.manifest_generation, epoch, now)?
             .ok_or_else(|| {
                 let lexical_materialized = ledger.track_materialized(
                     &pin.repo_id,
@@ -449,12 +439,7 @@ impl SearchPlaneDispatcher {
             None
         };
         let history = if domains.contains(ReadDomainV1::History) {
-            Some(Self::history_read(
-                ledger,
-                pin,
-                request.epochs.history,
-                now,
-            )?)
+            Some(Self::history_read(ledger, pin, request.epochs.history, now)?)
         } else {
             None
         };

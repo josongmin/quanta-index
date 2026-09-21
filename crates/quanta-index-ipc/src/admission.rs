@@ -406,10 +406,7 @@ mod tests {
             ServerAdmissionPolicy::DEFAULT.max_in_flight_per_repo()
                 < ServerAdmissionPolicy::DEFAULT.dispatch_slots()
         );
-        assert_eq!(
-            ServerAdmissionPolicy::SERIAL_DISPATCH.max_in_flight_per_repo(),
-            1
-        );
+        assert_eq!(ServerAdmissionPolicy::SERIAL_DISPATCH.max_in_flight_per_repo(), 1);
     }
 
     #[test]

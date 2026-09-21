@@ -47,9 +47,6 @@ fn typed_and_dsl_language_constraints_intersect_before_every_retrieval_lane_v1()
         id: "python".to_string(),
     });
     let prepared = prepare_language_query_v1(disjoint, &typed_rust).expect("valid constraints");
-    assert!(
-        prepared.force_empty,
-        "disjoint constraints must not widen to all languages"
-    );
+    assert!(prepared.force_empty, "disjoint constraints must not widen to all languages");
     assert!(prepared.constraints.is_unconstrained());
 }

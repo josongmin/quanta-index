@@ -65,11 +65,7 @@ fn map_parse_error(e: &regex_syntax::Error, span: LqSpan) -> LqParseError {
             _ => {}
         }
     }
-    LqParseError::new(
-        LqParseErrorCode::RegexParse,
-        span,
-        format!("regex parse error: {e}"),
-    )
+    LqParseError::new(LqParseErrorCode::RegexParse, span, format!("regex parse error: {e}"))
 }
 
 /// Walk the HIR and return a monotone upper bound on the NFA state count.

@@ -234,11 +234,7 @@ fn a_broad_regex_is_served_but_not_cached_and_a_narrow_one_is_a_shared_hit() -> 
 fn a_regex_restricts_to_exactly_what_an_independent_engine_matches() -> TestResult {
     const CORPUS: u32 = 64;
     let temp = tempfile::tempdir()?;
-    let adapter = adapter_of(
-        temp.path().to_path_buf(),
-        RegexMatchCachePolicy::DEFAULT,
-        CORPUS,
-    )?;
+    let adapter = adapter_of(temp.path().to_path_buf(), RegexMatchCachePolicy::DEFAULT, CORPUS)?;
     let searcher = adapter.open(&repo(), &revision(), ManifestGeneration::new(1))?;
     for source in [
         "narrow_7_tok.n",
@@ -285,10 +281,7 @@ fn eviction_and_generation_reclaim_do_not_break_a_held_searcher() -> TestResult 
         manifest_generation: ManifestGeneration::new(1),
         manifest_digest: "regex-cache-manifest:1".to_string(),
     })?;
-    if !matches!(
-        reclaimed,
-        SealedGenerationReclaimOutcomeV1::Reclaimed { .. }
-    ) {
+    if !matches!(reclaimed, SealedGenerationReclaimOutcomeV1::Reclaimed { .. }) {
         return Err(format!("the generation is reclaimed: {reclaimed:?}").into());
     }
     if stats(&adapter)?.entries != 0 {

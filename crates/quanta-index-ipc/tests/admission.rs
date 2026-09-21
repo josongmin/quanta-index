@@ -326,20 +326,14 @@ fn a_full_dispatch_queue_is_refused_with_a_typed_overload_then_serves_again() ->
         refusal.message.contains("(1 slots busy)"),
         format!("message must name the slot count: {}", refusal.message),
     )?;
-    ensure(
-        server.served() == 0,
-        "nothing may be served while the only slot is held",
-    )?;
+    ensure(server.served() == 0, "nothing may be served while the only slot is held")?;
 
     let _release = server.release.wait();
     expect_snapshot(join_holder(holder)?, HOLD_REPO)?;
     expect_snapshot(send(&server.socket, "after", HANDSHAKE_BOUND)?, "after")?;
     ensure(
         server.served() == 2,
-        format!(
-            "holder and follow-up must both be served, got {}",
-            server.served()
-        ),
+        format!("holder and follow-up must both be served, got {}", server.served()),
     )?;
     // The counters agree with the dispatcher's own tally: three requests
     // arrived, one found no slot, two were answered (QI-BB-015).
@@ -393,10 +387,7 @@ fn connections_past_the_cap_are_closed_at_accept_and_counted() -> TestResult {
     )?;
     ensure(
         server.uds.refused_connections() == 1,
-        format!(
-            "exactly one refusal must be counted, got {}",
-            server.uds.refused_connections()
-        ),
+        format!("exactly one refusal must be counted, got {}", server.uds.refused_connections()),
     )?;
 
     let _release = server.release.wait();
@@ -452,15 +443,9 @@ fn the_dispatch_budget_deadline_reaches_the_dispatcher_checkpoint() -> TestResul
     )?;
     ensure(
         error.message.contains("checkpoint `after-native`"),
-        format!(
-            "the interruption must name the checkpoint: {}",
-            error.message
-        ),
+        format!("the interruption must name the checkpoint: {}", error.message),
     )?;
-    ensure(
-        server.served() == 0,
-        "an interrupted dispatch must not count as served",
-    )?;
+    ensure(server.served() == 0, "an interrupted dispatch must not count as served")?;
     // A request within budget on the same server is unaffected.
     expect_snapshot(send(&server.socket, "quick", HANDSHAKE_BOUND)?, "quick")?;
     // Both requests were dispatched — the interrupted one was answered

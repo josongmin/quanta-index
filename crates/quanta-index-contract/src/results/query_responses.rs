@@ -457,12 +457,10 @@ impl HybridCandidateV1 {
         // The row is a copy of the preferred lane's row, so its score is
         // bit-identical to that lane's raw score; both are finite here.
         if self.candidate.score.to_bits() != preferred.raw_score.to_bits() {
-            return Err(
-                HybridCandidatePolicyErrorV1::CandidateScoreIsNotPreferredLaneScore {
-                    score: self.candidate.score,
-                    raw_score: preferred.raw_score,
-                },
-            );
+            return Err(HybridCandidatePolicyErrorV1::CandidateScoreIsNotPreferredLaneScore {
+                score: self.candidate.score,
+                raw_score: preferred.raw_score,
+            });
         }
         Ok(())
     }
@@ -860,9 +858,7 @@ impl<'de> Visitor<'de> for SearchPlaneHistoryQueryResponseVisitor {
         let window = window.ok_or_else(|| de::Error::missing_field("window"))?;
         // A page carries one kind of row; the window counts exactly those.
         if !commits.is_empty() && !diffs.is_empty() {
-            return Err(de::Error::custom(
-                "history page carries both commits and diffs",
-            ));
+            return Err(de::Error::custom("history page carries both commits and diffs"));
         }
         // A relevance page scores every row; a recency page scores none.
         let scored = commits
@@ -877,9 +873,7 @@ impl<'de> Visitor<'de> for SearchPlaneHistoryQueryResponseVisitor {
                     ));
                 }
                 HistoryOrderV1::Recency if row_scored => {
-                    return Err(de::Error::custom(
-                        "recency history page carries a scored row",
-                    ));
+                    return Err(de::Error::custom("recency history page carries a scored row"));
                 }
                 HistoryOrderV1::Relevance | HistoryOrderV1::Recency => {}
             }
@@ -904,9 +898,7 @@ impl<'de> Visitor<'de> for SearchPlaneHistoryQueryResponseVisitor {
             ));
         }
         if window.has_more() != next_cursor.is_some() {
-            return Err(de::Error::custom(
-                "history page has_more and next_cursor disagree",
-            ));
+            return Err(de::Error::custom("history page has_more and next_cursor disagree"));
         }
         let read_epoch = read_epoch.ok_or_else(|| de::Error::missing_field("read_epoch"))?;
         // The continuation is cut from the epoch this page read; a cursor
@@ -1424,10 +1416,7 @@ impl<'de> Visitor<'de> for FileOwnerProjectionRowVisitor {
                     owners = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        FILE_OWNER_PROJECTION_ROW_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, FILE_OWNER_PROJECTION_ROW_FIELDS));
                 }
             }
         }
@@ -1857,10 +1846,7 @@ impl<'de> Deserialize<'de> for SeedLane {
                     "Exact" => Ok(SeedLane::Exact),
                     "Bm25" => Ok(SeedLane::Bm25),
                     "Dense" => Ok(SeedLane::Dense),
-                    other => Err(de::Error::unknown_variant(
-                        other,
-                        &["Exact", "Bm25", "Dense"],
-                    )),
+                    other => Err(de::Error::unknown_variant(other, &["Exact", "Bm25", "Dense"])),
                 }
             }
         }
@@ -2179,10 +2165,7 @@ impl<'de> Visitor<'de> for HybridSeedQueryResponseVisitor {
                     explanation = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        HYBRID_SEED_QUERY_RESPONSE_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, HYBRID_SEED_QUERY_RESPONSE_FIELDS));
                 }
             }
         }

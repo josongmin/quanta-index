@@ -238,9 +238,7 @@ fn rows_u64(rows: usize, what: &str) -> Result<u64, CoreError> {
 }
 
 fn seal_refused(detail: &str) -> CoreError {
-    CoreError::Storage(format!(
-        "semantic: refusing to seal the vector index: {detail}"
-    ))
+    CoreError::Storage(format!("semantic: refusing to seal the vector index: {detail}"))
 }
 
 /// What the library reports about the policy's index, in the seal's units.
@@ -306,14 +304,10 @@ async fn read_index_segments_v1(
         .await
         .map_err(|err| lancedb_err(&format!("open dataset for index segments {when}"), err))?;
     let statistics = dataset.index_statistics(index_name).await.map_err(|err| {
-        CoreError::Storage(format!(
-            "semantic: read index segment statistics {when}: {err}"
-        ))
+        CoreError::Storage(format!("semantic: read index segment statistics {when}: {err}"))
     })?;
     let statistics: serde_json::Value = serde_json::from_str(&statistics).map_err(|err| {
-        CoreError::Storage(format!(
-            "semantic: decode index segment statistics {when}: {err}"
-        ))
+        CoreError::Storage(format!("semantic: decode index segment statistics {when}: {err}"))
     })?;
     let malformed = |detail: &str| {
         CoreError::Storage(format!(
@@ -342,9 +336,7 @@ async fn read_index_segments_v1(
                 .and_then(serde_json::Value::as_u64)
                 .ok_or_else(|| malformed(&format!("segment {position} reports no `{name}`")))?;
             u32::try_from(value).map_err(|error| {
-                malformed(&format!(
-                    "segment {position} `{name}` {value} overflows: {error}"
-                ))
+                malformed(&format!("segment {position} `{name}` {value} overflows: {error}"))
             })
         };
         out.push(AnnIndexSegmentSealV1 {
@@ -507,10 +499,7 @@ async fn append_plan_v1(
     let lineage = AnnIndexLineageV1 {
         appended_rows,
         deleted_rows,
-        ..trained_lineage_v1(
-            base_lineage.trained_at_generation,
-            base_lineage.trained_rows,
-        )
+        ..trained_lineage_v1(base_lineage.trained_at_generation, base_lineage.trained_rows)
     };
     let expected_segments = if before.unindexed_rows == 0 {
         before.segments
@@ -574,12 +563,7 @@ async fn append_to_inherited_v1(
         )));
     }
     let segments = read_index_segments_v1(table, VECTOR_INDEX_NAME, "after the append").await?;
-    Ok(ann_seal_record_v1(
-        plan.num_partitions,
-        after,
-        plan.lineage,
-        segments,
-    ))
+    Ok(ann_seal_record_v1(plan.num_partitions, after, plan.lineage, segments))
 }
 
 /// Drop every vector index the dataset carries and train the policy's.
@@ -674,16 +658,7 @@ pub(crate) async fn seal_vector_index_v1(
     };
     match append_plan_v1(table, input, &present, num_partitions).await? {
         Some(plan) => append_to_inherited_v1(table, plan).await,
-        None => {
-            train_v1(
-                table,
-                &present,
-                input.generation,
-                input.row_count,
-                num_partitions,
-            )
-            .await
-        }
+        None => train_v1(table, &present, input.generation, input.row_count, num_partitions).await,
     }
 }
 
@@ -818,12 +793,10 @@ impl LoadedVectorIndexV1 {
             index: self
                 .approximate
                 .as_ref()
-                .map_or(DenseIndexV1::Exact, |approximate| {
-                    DenseIndexV1::Approximate {
-                        effort: approximate.effort.contract(),
-                        lineage: approximate.lineage,
-                        build: approximate.build.clone(),
-                    }
+                .map_or(DenseIndexV1::Exact, |approximate| DenseIndexV1::Approximate {
+                    effort: approximate.effort.contract(),
+                    lineage: approximate.lineage,
+                    build: approximate.build.clone(),
                 }),
             attestation: self.attestation,
         }
@@ -1283,10 +1256,7 @@ mod tests {
             other_version.library_version = "0.0.1".to_string();
             let served =
                 verify_vector_index_v1(&table, &other_version, VECTOR_INDEX_MIN_ROWS).await?;
-            assert_eq!(
-                served.attestation,
-                DenseLaneAttestationV1::SealedByAnotherLibraryVersion
-            );
+            assert_eq!(served.attestation, DenseLaneAttestationV1::SealedByAnotherLibraryVersion);
             let mut other_library = sealed.clone();
             other_library.library = "faiss".to_string();
             let refused =
@@ -1600,11 +1570,7 @@ mod tests {
                 append_rows(&table, 1_000..1_010, DIMENSION).await?;
                 let rows = row_count(&table).await?;
                 let sealed = seal_delta(&table, 2, &inherited).await?;
-                assert_eq!(
-                    lineage_of(&sealed)?.trained_at_generation,
-                    2,
-                    "{label} must retrain"
-                );
+                assert_eq!(lineage_of(&sealed)?.trained_at_generation, 2, "{label} must retrain");
                 assert_eq!(report_of(&sealed), Some((rows, 1)), "{label}");
                 // Remove the delta rows again so every variant starts from
                 // the same 400 live rows; the variants never reach the
@@ -1689,16 +1655,10 @@ mod tests {
             let appended = delta.ann.as_ref().ok_or("appended seal")?;
             assert_eq!(appended.segments, built);
             assert_eq!(built.len(), 2);
-            assert_eq!(
-                built[0], trained.segments[0],
-                "the trained segment is unchanged"
-            );
+            assert_eq!(built[0], trained.segments[0], "the trained segment is unchanged");
             assert_eq!(
                 (built[1].hnsw_m, built[1].hnsw_ef_construction),
-                (
-                    LIBRARY_INCREMENTAL_HNSW_M,
-                    LIBRARY_INCREMENTAL_HNSW_EF_CONSTRUCTION
-                ),
+                (LIBRARY_INCREMENTAL_HNSW_M, LIBRARY_INCREMENTAL_HNSW_EF_CONSTRUCTION),
                 "the appended segment was built by the library's incremental builder"
             );
             assert_ne!(
@@ -1779,12 +1739,8 @@ mod tests {
             let appended_root = tempfile::tempdir()?;
             let appended_table = vector_table(appended_root.path(), BASE_ROWS, WIDE).await?;
             let base = seal_fresh(&appended_table, 1).await?;
-            append_rows(
-                &appended_table,
-                BASE_ROWS..BASE_ROWS.saturating_add(DELTA_ROWS),
-                WIDE,
-            )
-            .await?;
+            append_rows(&appended_table, BASE_ROWS..BASE_ROWS.saturating_add(DELTA_ROWS), WIDE)
+                .await?;
             let appended = seal_delta(&appended_table, 2, &base).await?;
             assert_eq!(lineage_of(&appended)?.appended_rows, DELTA_ROWS);
             let appended_loaded = verify_vector_index_v1(
@@ -1795,12 +1751,8 @@ mod tests {
             .await?;
 
             let fresh_root = tempfile::tempdir()?;
-            let fresh_table = vector_table(
-                fresh_root.path(),
-                BASE_ROWS.saturating_add(DELTA_ROWS),
-                WIDE,
-            )
-            .await?;
+            let fresh_table =
+                vector_table(fresh_root.path(), BASE_ROWS.saturating_add(DELTA_ROWS), WIDE).await?;
             let fresh = seal_fresh(&fresh_table, 1).await?;
             let fresh_loaded =
                 verify_vector_index_v1(&fresh_table, &fresh, BASE_ROWS.saturating_add(DELTA_ROWS))
@@ -1817,16 +1769,8 @@ mod tests {
                 let appended_hits =
                     search_ids(&appended_table, &appended_loaded, &query, K).await?;
                 let fresh_hits = search_ids(&fresh_table, &fresh_loaded, &query, K).await?;
-                assert_eq!(
-                    appended_hits.len(),
-                    K,
-                    "query {query_seed} through the appended index"
-                );
-                assert_eq!(
-                    fresh_hits.len(),
-                    K,
-                    "query {query_seed} through the fresh index"
-                );
+                assert_eq!(appended_hits.len(), K, "query {query_seed} through the appended index");
+                assert_eq!(fresh_hits.len(), K, "query {query_seed} through the fresh index");
                 appended_found = appended_found.saturating_add(u64::try_from(
                     appended_hits
                         .iter()

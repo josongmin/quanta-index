@@ -284,9 +284,7 @@ mod tests {
     /// the port it stands in for.
     fn ten_each(set: &BTreeSet<ManifestGeneration>) -> Result<u64, CoreError> {
         if set.len() > 1_000 {
-            return Err(CoreError::Storage(
-                "the test measure is bounded".to_string(),
-            ));
+            return Err(CoreError::Storage("the test measure is bounded".to_string()));
         }
         Ok(10_u64.saturating_mul(u64::try_from(set.len()).map_or(u64::MAX, |len| len)))
     }
@@ -343,10 +341,7 @@ mod tests {
             }
             Ok(bytes)
         };
-        let plan = policy.plan(
-            vec![item(4, true), item(3, false), item(2, false)],
-            &mut shared,
-        )?;
+        let plan = policy.plan(vec![item(4, true), item(3, false), item(2, false)], &mut shared)?;
         assert!(plan.retains(g(4)) && plan.retains(g(3)));
         assert!(!plan.retains(g(2)), "2 would push the set to 22 > 15");
         assert_eq!(plan.retained_bytes(), 12);
@@ -358,10 +353,7 @@ mod tests {
         let policy = SearchCorpusHistoryRetentionPolicyV1::new(2, 1024, 8, 8192)?;
         assert!(
             policy
-                .plan(
-                    vec![item(4, false), item(3, false), item(2, true)],
-                    &mut ten_each
-                )
+                .plan(vec![item(4, false), item(3, false), item(2, true)], &mut ten_each)
                 .is_err()
         );
         Ok(())

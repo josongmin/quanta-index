@@ -401,9 +401,6 @@ mod tests {
 
         let mut diffs = [hit(1.0, 1, 1, Some("z.rs")), hit(1.0, 1, 1, Some("a.rs"))];
         diffs.sort();
-        assert_eq!(
-            diffs.first().and_then(|hit| hit.key.file_path()),
-            Some("a.rs")
-        );
+        assert_eq!(diffs.first().and_then(|hit| hit.key.file_path()), Some("a.rs"));
     }
 }

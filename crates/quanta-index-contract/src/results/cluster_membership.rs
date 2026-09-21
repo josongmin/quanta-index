@@ -763,11 +763,9 @@ impl<'de> Visitor<'de> for ClusterMembershipOutcomePayloadBufferV1Visitor {
         };
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
-                "cluster_record_id" => set_once_v1(
-                    &mut payload.cluster_record_id,
-                    "cluster_record_id",
-                    &mut map,
-                )?,
+                "cluster_record_id" => {
+                    set_once_v1(&mut payload.cluster_record_id, "cluster_record_id", &mut map)?
+                }
                 "generation" => set_once_v1(&mut payload.generation, "generation", &mut map)?,
                 "authority_digest" => {
                     set_once_v1(&mut payload.authority_digest, "authority_digest", &mut map)?;
@@ -884,13 +882,11 @@ impl<'de> Visitor<'de> for ClusterMembershipReadOutcomeV1Visitor {
                     expected_authority_digest.as_str(),
                 )
                 .map_err(de::Error::custom)?;
-                Ok(ClusterMembershipReadOutcomeV1::Unavailable(
-                    ClusterMembershipUnavailableV1 {
-                        cluster_record_id,
-                        generation,
-                        expected_authority_digest,
-                    },
-                ))
+                Ok(ClusterMembershipReadOutcomeV1::Unavailable(ClusterMembershipUnavailableV1 {
+                    cluster_record_id,
+                    generation,
+                    expected_authority_digest,
+                }))
             }
             "Rejected" => {
                 if payload.authority_digest.is_some()
@@ -909,21 +905,18 @@ impl<'de> Visitor<'de> for ClusterMembershipReadOutcomeV1Visitor {
                     expected_authority_digest.as_str(),
                 )
                 .map_err(de::Error::custom)?;
-                Ok(ClusterMembershipReadOutcomeV1::Rejected(
-                    ClusterMembershipReadRejectionV1 {
-                        cluster_record_id,
-                        generation,
-                        expected_authority_digest,
-                        failure: payload
-                            .failure
-                            .ok_or_else(|| de::Error::missing_field("failure"))?,
-                    },
-                ))
+                Ok(ClusterMembershipReadOutcomeV1::Rejected(ClusterMembershipReadRejectionV1 {
+                    cluster_record_id,
+                    generation,
+                    expected_authority_digest,
+                    failure: payload
+                        .failure
+                        .ok_or_else(|| de::Error::missing_field("failure"))?,
+                }))
             }
-            other => Err(de::Error::unknown_variant(
-                other,
-                CLUSTER_MEMBERSHIP_READ_OUTCOME_V1_VARIANTS,
-            )),
+            other => {
+                Err(de::Error::unknown_variant(other, CLUSTER_MEMBERSHIP_READ_OUTCOME_V1_VARIANTS))
+            }
         }
     }
 }
@@ -1117,10 +1110,7 @@ mod tests {
             failure: ClusterMembershipReadFailureV1::CurrentGenerationMissing,
         });
         let value = serde_json::to_value(&missing).expect("typed missing outcome");
-        assert_eq!(
-            value.pointer("/kind").and_then(serde_json::Value::as_str),
-            Some("Rejected")
-        );
+        assert_eq!(value.pointer("/kind").and_then(serde_json::Value::as_str), Some("Rejected"));
         assert_eq!(
             value
                 .pointer("/payload/failure")

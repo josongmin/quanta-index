@@ -92,10 +92,10 @@ fn counter_or_zero(snapshot: &MetricsSnapshotV1, name: &str) -> u64 {
 }
 
 fn served(result: &E2eQueryResult, what: &str) -> Result<(), Box<dyn Error>> {
-    result.typed_error.as_ref().map_or_else(
-        || Ok(()),
-        |error| Err(format!("{what} was refused: {error}").into()),
-    )
+    result
+        .typed_error
+        .as_ref()
+        .map_or_else(|| Ok(()), |error| Err(format!("{what} was refused: {error}").into()))
 }
 
 fn top_is(result: &E2eQueryResult, id: &str, what: &str) -> TestResult {
@@ -109,7 +109,7 @@ fn top_is(result: &E2eQueryResult, id: &str, what: &str) -> TestResult {
             .map(|candidate| (candidate.candidate_id.clone(), candidate.score))
             .collect();
         return Err(
-            format!("{what} must rank `{id}` first at cosine 1; top-{TOP_K}: {ranked:?}").into(),
+            format!("{what} must rank `{id}` first at cosine 1; top-{TOP_K}: {ranked:?}").into()
         );
     }
     Ok(())

@@ -192,9 +192,7 @@ impl Serialize for LexicalCursor {
         S: Serializer,
     {
         if !self.score.is_finite() {
-            return Err(serde::ser::Error::custom(
-                "a lexical cursor score must be finite",
-            ));
+            return Err(serde::ser::Error::custom("a lexical cursor score must be finite"));
         }
         let mut state = serializer.serialize_struct("LexicalCursor", 6)?;
         state.serialize_field("manifest_generation", &self.manifest_generation)?;

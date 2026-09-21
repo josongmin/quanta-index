@@ -63,10 +63,7 @@ fn boot_with_history() -> AnyResult<E2eRuntime> {
 fn history_commit_count(rt: &mut E2eRuntime, query: &str) -> AnyResult<usize> {
     let result = rt.query_history(TextQuerySyntax::Sourcegraph, query, 10);
     if let Some(error) = result.typed_error {
-        anyhow::bail!(
-            "history query `{query}` returned typed error {}",
-            error.code
-        );
+        anyhow::bail!("history query `{query}` returned typed error {}", error.code);
     }
     Ok(result.commit_ids.len())
 }
@@ -75,15 +72,9 @@ fn history_commit_count(rt: &mut E2eRuntime, query: &str) -> AnyResult<usize> {
 fn rev_filter_admits_matching_ref_and_excludes_others() -> AnyResult<()> {
     let mut rt = boot_with_history()?;
     let admitted = history_commit_count(&mut rt, "type:commit rev:refs/heads/main needle_token")?;
-    ensure!(
-        admitted == 1,
-        "rev: on the seeded ref must admit the commit, got {admitted}"
-    );
+    ensure!(admitted == 1, "rev: on the seeded ref must admit the commit, got {admitted}");
     let excluded = history_commit_count(&mut rt, "type:commit rev:refs/heads/absent needle_token")?;
-    ensure!(
-        excluded == 0,
-        "rev: on an unknown ref must exclude the commit, got {excluded}"
-    );
+    ensure!(excluded == 0, "rev: on an unknown ref must exclude the commit, got {excluded}");
     Ok(())
 }
 
@@ -96,10 +87,7 @@ fn author_filter_admits_matching_author_and_excludes_others() -> AnyResult<()> {
         "author: matching the commit author must admit it, got {admitted}"
     );
     let excluded = history_commit_count(&mut rt, "type:commit author:nobodyxyz needle_token")?;
-    ensure!(
-        excluded == 0,
-        "author: not matching must exclude the commit, got {excluded}"
-    );
+    ensure!(excluded == 0, "author: not matching must exclude the commit, got {excluded}");
     Ok(())
 }
 
@@ -107,15 +95,9 @@ fn author_filter_admits_matching_author_and_excludes_others() -> AnyResult<()> {
 fn committer_filter_admits_matching_committer_and_excludes_others() -> AnyResult<()> {
     let mut rt = boot_with_history()?;
     let admitted = history_commit_count(&mut rt, "type:commit committer:bob needle_token")?;
-    ensure!(
-        admitted == 1,
-        "committer: matching must admit the commit, got {admitted}"
-    );
+    ensure!(admitted == 1, "committer: matching must admit the commit, got {admitted}");
     let excluded = history_commit_count(&mut rt, "type:commit committer:nobodyxyz needle_token")?;
-    ensure!(
-        excluded == 0,
-        "committer: not matching must exclude the commit, got {excluded}"
-    );
+    ensure!(excluded == 0, "committer: not matching must exclude the commit, got {excluded}");
     Ok(())
 }
 
@@ -128,10 +110,7 @@ fn message_filter_admits_matching_message_and_excludes_others() -> AnyResult<()>
         "message: matching the commit message must admit it, got {admitted}"
     );
     let excluded = history_commit_count(&mut rt, "type:commit message:absentword needle_token")?;
-    ensure!(
-        excluded == 0,
-        "message: not matching must exclude the commit, got {excluded}"
-    );
+    ensure!(excluded == 0, "message: not matching must exclude the commit, got {excluded}");
     Ok(())
 }
 
@@ -142,11 +121,7 @@ fn boot_with_lexical() -> AnyResult<E2eRuntime> {
     rt.ingest_text(REPO, "src/other.rs", "let unrelated = quartz;\n")?;
     rt.ingest_text(REPO, "config/path_only_needle.toml", "value = 1\n")?;
     rt.ingest_text(REPO, "docs/colors.md", "the lemon yellow banana ripens\n")?;
-    rt.ingest_text(
-        REPO,
-        "src/version.rs",
-        "const VERSION: &str = \"v1.2.3-rc.4\";\n",
-    )?;
+    rt.ingest_text(REPO, "src/version.rs", "const VERSION: &str = \"v1.2.3-rc.4\";\n")?;
     let _generation = rt.seal()?;
     rt.activate_last_sealed_generation()?;
     Ok(rt)
@@ -653,11 +628,8 @@ fn boot_with_rev_at_time_generations() -> AnyResult<(E2eRuntime, GenerationPin)>
 #[test]
 fn content_filter_executes_as_a_text_pattern() -> AnyResult<()> {
     let mut rt = boot_with_lexical()?;
-    let via_content = rt.query_text(
-        TextQuerySyntax::Sourcegraph,
-        "content:parity_needle_alpha",
-        10,
-    );
+    let via_content =
+        rt.query_text(TextQuerySyntax::Sourcegraph, "content:parity_needle_alpha", 10);
     ensure!(via_content.typed_error.is_none(), "content: must not error");
     ensure!(
         via_content.candidate_ids.len() == 1,
@@ -679,11 +651,7 @@ fn timeout_option_is_typed_refused_off_the_regex_surface() -> AnyResult<()> {
     let mut rt = boot_with_lexical()?;
     // `timeout:` is executable only for regex-backed lexical queries; on a plain
     // keyword it must fail typed (fail-closed), not silently ignore the option.
-    let result = rt.query_text(
-        TextQuerySyntax::Sourcegraph,
-        "timeout:5s parity_needle_alpha",
-        10,
-    );
+    let result = rt.query_text(TextQuerySyntax::Sourcegraph, "timeout:5s parity_needle_alpha", 10);
     ensure!(
         result.typed_error.is_some(),
         "timeout: on a non-regex query must return a typed error, got {:?}",
@@ -700,10 +668,7 @@ fn repo_has_content_predicate_executes_on_sourcegraph_surface() -> AnyResult<()>
         "repo:has.content(corp-a) shared_oracle_needle",
         10,
     );
-    ensure!(
-        admitted.typed_error.is_none(),
-        "repo:has.content positive must not error"
-    );
+    ensure!(admitted.typed_error.is_none(), "repo:has.content positive must not error");
     ensure!(
         sorted_candidate_paths(&admitted) == ["src/corp-a.rs", "src/gate-a.rs"],
         "repo:has.content(corp-a) must gate to corp-a paths, got {:?}",
@@ -714,10 +679,7 @@ fn repo_has_content_predicate_executes_on_sourcegraph_surface() -> AnyResult<()>
         "repo:has.content(missing-corpus-token) shared_oracle_needle",
         10,
     );
-    ensure!(
-        excluded.typed_error.is_none(),
-        "repo:has.content miss must not error"
-    );
+    ensure!(excluded.typed_error.is_none(), "repo:has.content miss must not error");
     ensure!(
         excluded.candidate_ids.is_empty(),
         "repo:has.content miss must return no docs, got {:?}",
@@ -752,10 +714,7 @@ fn repo_has_commit_after_predicate_executes_on_sourcegraph_surface() -> AnyResul
         r#"repo:has.commit.after("2030-01-01T00:00:00Z") shared_oracle_needle"#,
         10,
     );
-    ensure!(
-        miss.typed_error.is_none(),
-        "future repo:has.commit.after miss must not error"
-    );
+    ensure!(miss.typed_error.is_none(), "future repo:has.commit.after miss must not error");
     ensure!(
         miss.candidate_ids.is_empty(),
         "future repo:has.commit.after miss must return no docs, got {:?}",
@@ -791,10 +750,7 @@ fn repo_contains_commit_after_alias_executes_with_human_timeref_and_boolean_scop
         "repo:contains.commit.after(2025-01-01) OR missing_corpus_token",
         10,
     );
-    ensure!(
-        or_alias.typed_error.is_none(),
-        "repo:contains.commit.after OR must not error"
-    );
+    ensure!(or_alias.typed_error.is_none(), "repo:contains.commit.after OR must not error");
     ensure!(
         sorted_candidate_paths(&or_alias) == ["src/corp-a.rs", "src/gate-a.rs"],
         "repo:contains.commit.after OR must stay on corp-a paths, got {:?}",
@@ -806,10 +762,7 @@ fn repo_contains_commit_after_alias_executes_with_human_timeref_and_boolean_scop
         "shared_oracle_needle NOT repo:contains.commit.after(2025-01-01)",
         10,
     );
-    ensure!(
-        not_alias.typed_error.is_none(),
-        "repo:contains.commit.after NOT must not error"
-    );
+    ensure!(not_alias.typed_error.is_none(), "repo:contains.commit.after NOT must not error");
     ensure!(
         sorted_candidate_paths(&not_alias) == ["lib/gate-a.rs", "src/corp-b.rs", "src/gate-b.py"],
         "repo:contains.commit.after NOT must leave only corp-b, got {:?}",
@@ -886,11 +839,8 @@ fn repo_has_meta_key_only_existence_executes_on_sourcegraph_surface() -> AnyResu
 
     // `tier` exists only on corp-a → gates to corp-a. (An inverted "key absent"
     // gate would wrongly select corp-b, so this distinguishes the two.)
-    let tier = rt.query_text(
-        TextQuerySyntax::Sourcegraph,
-        "repo:has.meta(tier) shared_oracle_needle",
-        10,
-    );
+    let tier =
+        rt.query_text(TextQuerySyntax::Sourcegraph, "repo:has.meta(tier) shared_oracle_needle", 10);
     ensure!(
         tier.typed_error.is_none(),
         "key existence must not error: {:?}",
@@ -1363,11 +1313,8 @@ fn repo_has_topic_predicate_executes_on_sourcegraph_surface() -> AnyResult<()> {
 #[test]
 fn select_file_owners_projects_owner_rows_on_sourcegraph_surface() -> AnyResult<()> {
     let mut rt = boot_with_multi_repo_and_file_ownership()?;
-    let result = rt.query_text(
-        TextQuerySyntax::Sourcegraph,
-        "select:file.owners shared_oracle_needle",
-        10,
-    );
+    let result =
+        rt.query_text(TextQuerySyntax::Sourcegraph, "select:file.owners shared_oracle_needle", 10);
     ensure!(
         result.typed_error.is_none(),
         "select:file.owners must not typed-fail: {:?}",
@@ -1549,11 +1496,8 @@ fn file_has_owner_executes_on_sourcegraph_surface() -> AnyResult<()> {
         sorted_candidate_paths(&admitted),
     );
 
-    let any_owner = rt.query_text(
-        TextQuerySyntax::Sourcegraph,
-        "file:has.owner() shared_oracle_needle",
-        10,
-    );
+    let any_owner =
+        rt.query_text(TextQuerySyntax::Sourcegraph, "file:has.owner() shared_oracle_needle", 10);
     ensure!(
         any_owner.typed_error.is_none(),
         "file:has.owner() must not error: {:?}",
@@ -1726,10 +1670,7 @@ fn repo_has_path_alias_executes_on_sourcegraph_surface() -> AnyResult<()> {
         "repo:has.path(src/gate-a.rs) shared_oracle_needle",
         10,
     );
-    ensure!(
-        admitted.typed_error.is_none(),
-        "repo:has.path positive must not error"
-    );
+    ensure!(admitted.typed_error.is_none(), "repo:has.path positive must not error");
     ensure!(
         sorted_candidate_paths(&admitted) == ["src/corp-a.rs", "src/gate-a.rs"],
         "repo:has.path(src/gate-a.rs) must gate to corp-a paths, got {:?}",
@@ -1740,10 +1681,7 @@ fn repo_has_path_alias_executes_on_sourcegraph_surface() -> AnyResult<()> {
         "repo:has.path(src/missing.rs) shared_oracle_needle",
         10,
     );
-    ensure!(
-        excluded.typed_error.is_none(),
-        "repo:has.path miss must not error"
-    );
+    ensure!(excluded.typed_error.is_none(), "repo:has.path miss must not error");
     ensure!(
         excluded.candidate_ids.is_empty(),
         "repo:has.path miss must return no docs, got {:?}",
@@ -1814,11 +1752,7 @@ fn repo_has_file_matcher_combinations_execute_on_sourcegraph_surface() -> AnyRes
         ),
     ] {
         let result = rt.query_text(TextQuerySyntax::Sourcegraph, query, 10);
-        ensure!(
-            result.typed_error.is_none(),
-            "{query} must not error: {:?}",
-            result.typed_error,
-        );
+        ensure!(result.typed_error.is_none(), "{query} must not error: {:?}", result.typed_error,);
         let expected = expected.into_iter().map(str::to_string).collect::<Vec<_>>();
         ensure!(
             sorted_candidate_paths(&result) == expected,
@@ -1834,11 +1768,7 @@ fn repo_has_file_matcher_combinations_execute_on_sourcegraph_surface() -> AnyRes
         "repo:has.file(path:src/gate-a.rs, name:gate-a.rs, lang:python) shared_oracle_needle",
     ] {
         let result = rt.query_text(TextQuerySyntax::Sourcegraph, query, 10);
-        ensure!(
-            result.typed_error.is_none(),
-            "{query} must not error: {:?}",
-            result.typed_error,
-        );
+        ensure!(result.typed_error.is_none(), "{query} must not error: {:?}", result.typed_error,);
         ensure!(
             sorted_candidate_paths(&result).is_empty(),
             "{query} must miss, got {:?}",
@@ -1874,10 +1804,7 @@ fn repo_contains_path_alias_executes_on_sourcegraph_surface() -> AnyResult<()> {
         "repo:contains.path(src/missing.rs) shared_oracle_needle",
         10,
     );
-    ensure!(
-        excluded.typed_error.is_none(),
-        "repo:contains.path miss must not error"
-    );
+    ensure!(excluded.typed_error.is_none(), "repo:contains.path miss must not error");
     ensure!(
         excluded.candidate_ids.is_empty(),
         "repo:contains.path miss must return no docs, got {:?}",
@@ -1903,11 +1830,7 @@ fn repo_contains_file_alias_executes_on_sourcegraph_surface() -> AnyResult<()> {
         ),
     ] {
         let result = rt.query_text(TextQuerySyntax::Sourcegraph, query, 10);
-        ensure!(
-            result.typed_error.is_none(),
-            "{query} must not error: {:?}",
-            result.typed_error,
-        );
+        ensure!(result.typed_error.is_none(), "{query} must not error: {:?}", result.typed_error,);
         let expected = expected.into_iter().map(str::to_string).collect::<Vec<_>>();
         ensure!(
             sorted_candidate_paths(&result) == expected,
@@ -1920,10 +1843,7 @@ fn repo_contains_file_alias_executes_on_sourcegraph_surface() -> AnyResult<()> {
         "repo:contains.file(src/missing.rs) shared_oracle_needle",
         10,
     );
-    ensure!(
-        excluded.typed_error.is_none(),
-        "repo:contains.file miss must not error"
-    );
+    ensure!(excluded.typed_error.is_none(), "repo:contains.file miss must not error");
     ensure!(
         excluded.candidate_ids.is_empty(),
         "repo:contains.file miss must return no docs, got {:?}",
@@ -1946,11 +1866,7 @@ fn repo_has_file_path_content_correlates_per_document_on_sourcegraph_surface() -
         "repo:contains.file(path:src/gate-a.rs, content:123) shared_oracle_needle",
     ] {
         let result = rt.query_text(TextQuerySyntax::Sourcegraph, query, 10);
-        ensure!(
-            result.typed_error.is_none(),
-            "{query} must not error: {:?}",
-            result.typed_error,
-        );
+        ensure!(result.typed_error.is_none(), "{query} must not error: {:?}", result.typed_error,);
         ensure!(
             sorted_candidate_paths(&result) == ["src/corp-a.rs", "src/gate-a.rs"],
             "{query} must gate to corp-a (file at path contains content), got {:?}",
@@ -2001,10 +1917,7 @@ fn repo_has_file_path_content_correlates_per_document_on_sourcegraph_surface() -
         10,
     );
     let Some(error) = empty.typed_error else {
-        anyhow::bail!(
-            "empty content value must typed-fail, got {:?}",
-            empty.candidate_ids
-        );
+        anyhow::bail!("empty content value must typed-fail, got {:?}", empty.candidate_ids);
     };
     ensure!(
         error.code.as_str() == "LEX_PREDICATE_UNIMPLEMENTED" && error.message.contains("content:"),
@@ -2023,10 +1936,7 @@ fn file_contains_content_alias_executes_on_sourcegraph_surface() -> AnyResult<()
         "file:contains.content(\"lemon yellow banana\")",
         10,
     );
-    ensure!(
-        admitted.typed_error.is_none(),
-        "file:contains.content positive must not error"
-    );
+    ensure!(admitted.typed_error.is_none(), "file:contains.content positive must not error");
     ensure!(
         sorted_candidate_paths(&admitted) == ["docs/colors.md"],
         "file:contains.content phrase must match the phrase doc, got {:?}",
@@ -2037,10 +1947,7 @@ fn file_contains_content_alias_executes_on_sourcegraph_surface() -> AnyResult<()
         "file:contains.content(\"absent_zzz_token\")",
         10,
     );
-    ensure!(
-        excluded.typed_error.is_none(),
-        "file:contains.content miss must not error"
-    );
+    ensure!(excluded.typed_error.is_none(), "file:contains.content miss must not error");
     ensure!(
         excluded.candidate_ids.is_empty(),
         "file:contains.content miss must return nothing, got {:?}",
@@ -2057,10 +1964,7 @@ fn repo_contains_content_alias_executes_on_sourcegraph_surface() -> AnyResult<()
         "repo:contains.content(\"gate-a only\") shared_oracle_needle",
         10,
     );
-    ensure!(
-        admitted.typed_error.is_none(),
-        "repo:contains.content positive must not error"
-    );
+    ensure!(admitted.typed_error.is_none(), "repo:contains.content positive must not error");
     ensure!(
         sorted_candidate_paths(&admitted) == ["src/corp-a.rs", "src/gate-a.rs"],
         "repo:contains.content(\"gate-a only\") must gate to corp-a paths, got {:?}",
@@ -2071,10 +1975,7 @@ fn repo_contains_content_alias_executes_on_sourcegraph_surface() -> AnyResult<()
         "repo:contains.content(\"gate-a only\") OR missing_corpus_token",
         10,
     );
-    ensure!(
-        or_alias.typed_error.is_none(),
-        "repo:contains.content alias OR must not error"
-    );
+    ensure!(or_alias.typed_error.is_none(), "repo:contains.content alias OR must not error");
     ensure!(
         sorted_candidate_paths(&or_alias) == ["src/corp-a.rs", "src/gate-a.rs"],
         "repo:contains.content alias OR must return corp-a repo only, got {:?}",
@@ -2101,10 +2002,7 @@ fn repo_contains_content_alias_executes_on_sourcegraph_surface() -> AnyResult<()
 fn numeric_content_predicates_execute_on_sourcegraph_surface() -> AnyResult<()> {
     let mut lexical = boot_with_lexical()?;
     let file_contains = lexical.query_text(TextQuerySyntax::Sourcegraph, "file:contains(1)", 10);
-    ensure!(
-        file_contains.typed_error.is_none(),
-        "file:contains(1) must not error"
-    );
+    ensure!(file_contains.typed_error.is_none(), "file:contains(1) must not error");
     ensure!(
         sorted_candidate_paths(&file_contains) == ["config/path_only_needle.toml"],
         "file:contains(1) must hit the numeric file, got {:?}",
@@ -2112,10 +2010,7 @@ fn numeric_content_predicates_execute_on_sourcegraph_surface() -> AnyResult<()> 
     );
     let file_has_content =
         lexical.query_text(TextQuerySyntax::Sourcegraph, "file:has.content(1)", 10);
-    ensure!(
-        file_has_content.typed_error.is_none(),
-        "file:has.content(1) must not error"
-    );
+    ensure!(file_has_content.typed_error.is_none(), "file:has.content(1) must not error");
     ensure!(
         sorted_candidate_paths(&file_has_content) == ["config/path_only_needle.toml"],
         "file:has.content(1) must hit the numeric file, got {:?}",
@@ -2139,10 +2034,7 @@ fn numeric_content_predicates_execute_on_sourcegraph_surface() -> AnyResult<()> 
         "repo:has.content(123) shared_oracle_needle",
         10,
     );
-    ensure!(
-        repo_content.typed_error.is_none(),
-        "repo:has.content(123) must not error"
-    );
+    ensure!(repo_content.typed_error.is_none(), "repo:has.content(123) must not error");
     ensure!(
         sorted_candidate_paths(&repo_content) == ["src/corp-a.rs", "src/gate-a.rs"],
         "repo:has.content(123) must gate corp-a open, got {:?}",
@@ -2270,10 +2162,7 @@ fn scoped_file_content_predicates_execute_under_or_not_and_name_scope() -> AnyRe
             "file:has.content(path:docs/colors.md, \"lemon yellow banana\") OR missing_corpus_token",
             vec!["docs/colors.md"],
         ),
-        (
-            "file:contains(name:colors.md, \"lemon yellow banana\")",
-            vec!["docs/colors.md"],
-        ),
+        ("file:contains(name:colors.md, \"lemon yellow banana\")", vec!["docs/colors.md"]),
         (
             "file:has.content(name:colors.md, \"lemon yellow banana\")",
             vec!["docs/colors.md"],
@@ -2315,10 +2204,7 @@ fn scoped_file_content_predicates_execute_under_or_not_and_name_scope() -> AnyRe
     ] {
         let result = rt.query_text(TextQuerySyntax::Sourcegraph, query, 10);
         let Some(error) = result.typed_error else {
-            anyhow::bail!(
-                "query `{query}` must typed-fail, got {:?}",
-                result.candidate_ids
-            );
+            anyhow::bail!("query `{query}` must typed-fail, got {:?}", result.candidate_ids);
         };
         ensure!(
             error.code.as_str() == "LEX_PREDICATE_UNIMPLEMENTED",
@@ -2337,10 +2223,7 @@ fn repo_has_file_predicate_under_or_and_not_executes_on_sourcegraph_surface() ->
         "repo:has.file(path:src/gate-a.rs) OR missing_corpus_token",
         10,
     );
-    ensure!(
-        admitted.typed_error.is_none(),
-        "repo:has.file OR positive must not error"
-    );
+    ensure!(admitted.typed_error.is_none(), "repo:has.file OR positive must not error");
     ensure!(
         sorted_candidate_paths(&admitted) == ["src/corp-a.rs", "src/gate-a.rs"],
         "repo:has.file(path:src/gate-a.rs) OR missing token must stay on corp-a paths, got {:?}",
@@ -2352,10 +2235,7 @@ fn repo_has_file_predicate_under_or_and_not_executes_on_sourcegraph_surface() ->
         "shared_oracle_needle NOT repo:has.file(path:src/gate-a.rs)",
         10,
     );
-    ensure!(
-        excluded.typed_error.is_none(),
-        "repo:has.file NOT positive must not error"
-    );
+    ensure!(excluded.typed_error.is_none(), "repo:has.file NOT positive must not error");
     ensure!(
         sorted_candidate_paths(&excluded) == ["lib/gate-a.rs", "src/corp-b.rs", "src/gate-b.py"],
         "shared_oracle_needle NOT repo:has.file(path:src/gate-a.rs) must leave only corp-b, got {:?}",
@@ -2393,10 +2273,7 @@ fn repo_has_content_predicate_under_or_and_not_executes_on_sourcegraph_surface()
         r#"repo:has.content("gate-a only") OR missing_corpus_token"#,
         10,
     );
-    ensure!(
-        admitted.typed_error.is_none(),
-        "repo:has.content OR positive must not error"
-    );
+    ensure!(admitted.typed_error.is_none(), "repo:has.content OR positive must not error");
     ensure!(
         sorted_candidate_paths(&admitted) == ["src/corp-a.rs", "src/gate-a.rs"],
         "repo:has.content(\"gate-a only\") OR missing token must stay on corp-a paths, got {:?}",
@@ -2408,10 +2285,7 @@ fn repo_has_content_predicate_under_or_and_not_executes_on_sourcegraph_surface()
         r#"shared_oracle_needle NOT repo:has.content("gate-a only")"#,
         10,
     );
-    ensure!(
-        excluded.typed_error.is_none(),
-        "repo:has.content NOT positive must not error"
-    );
+    ensure!(excluded.typed_error.is_none(), "repo:has.content NOT positive must not error");
     ensure!(
         sorted_candidate_paths(&excluded) == ["lib/gate-a.rs", "src/corp-b.rs", "src/gate-b.py"],
         "shared_oracle_needle NOT repo:has.content(\"gate-a only\") must leave only corp-b, got {:?}",
@@ -2429,18 +2303,9 @@ fn encode_repo_metadata(fork: bool, archived: bool, contexts: &[&str]) -> AnyRes
     let visibility_wire: ciborium::Value = ciborium::from_reader(visibility_payload.as_slice())
         .map_err(|err| anyhow::anyhow!("decode visibility wire: {err}"))?;
     let wire = ciborium::Value::Map(vec![
-        (
-            ciborium::Value::Text("fork".to_string()),
-            ciborium::Value::Bool(fork),
-        ),
-        (
-            ciborium::Value::Text("archived".to_string()),
-            ciborium::Value::Bool(archived),
-        ),
-        (
-            ciborium::Value::Text("visibility".to_string()),
-            visibility_wire,
-        ),
+        (ciborium::Value::Text("fork".to_string()), ciborium::Value::Bool(fork)),
+        (ciborium::Value::Text("archived".to_string()), ciborium::Value::Bool(archived)),
+        (ciborium::Value::Text("visibility".to_string()), visibility_wire),
         (
             ciborium::Value::Text("contexts".to_string()),
             ciborium::Value::Array(
@@ -2471,22 +2336,14 @@ fn boot_with_metadata() -> AnyResult<E2eRuntime> {
 #[test]
 fn archived_filter_admits_non_archived_and_excludes_only() -> AnyResult<()> {
     let mut rt = boot_with_metadata()?;
-    let no = rt.query_text(
-        TextQuerySyntax::Sourcegraph,
-        "archived:no parity_needle_alpha",
-        10,
-    );
+    let no = rt.query_text(TextQuerySyntax::Sourcegraph, "archived:no parity_needle_alpha", 10);
     ensure!(no.typed_error.is_none(), "archived:no must not error");
     ensure!(
         no.candidate_ids.len() == 1,
         "archived:no must admit the non-archived repo's doc, got {}",
         no.candidate_ids.len(),
     );
-    let only = rt.query_text(
-        TextQuerySyntax::Sourcegraph,
-        "archived:only parity_needle_alpha",
-        10,
-    );
+    let only = rt.query_text(TextQuerySyntax::Sourcegraph, "archived:only parity_needle_alpha", 10);
     ensure!(only.typed_error.is_none(), "archived:only must not error");
     ensure!(
         only.candidate_ids.is_empty(),
@@ -2499,29 +2356,17 @@ fn archived_filter_admits_non_archived_and_excludes_only() -> AnyResult<()> {
 #[test]
 fn context_filter_admits_member_context_and_excludes_others() -> AnyResult<()> {
     let mut rt = boot_with_metadata()?;
-    let member = rt.query_text(
-        TextQuerySyntax::Sourcegraph,
-        "context:bench-ctx parity_needle_alpha",
-        10,
-    );
-    ensure!(
-        member.typed_error.is_none(),
-        "context: member must not error"
-    );
+    let member =
+        rt.query_text(TextQuerySyntax::Sourcegraph, "context:bench-ctx parity_needle_alpha", 10);
+    ensure!(member.typed_error.is_none(), "context: member must not error");
     ensure!(
         member.candidate_ids.len() == 1,
         "context: matching a member context must admit the doc, got {}",
         member.candidate_ids.len(),
     );
-    let other = rt.query_text(
-        TextQuerySyntax::Sourcegraph,
-        "context:absent-ctx parity_needle_alpha",
-        10,
-    );
-    ensure!(
-        other.typed_error.is_none(),
-        "context: non-member must not error"
-    );
+    let other =
+        rt.query_text(TextQuerySyntax::Sourcegraph, "context:absent-ctx parity_needle_alpha", 10);
+    ensure!(other.typed_error.is_none(), "context: non-member must not error");
     ensure!(
         other.candidate_ids.is_empty(),
         "context: for a non-member context must exclude the doc, got {}",
@@ -2534,16 +2379,9 @@ fn context_filter_admits_member_context_and_excludes_others() -> AnyResult<()> {
 fn sourcegraph_legacy_index_and_boost_execute_on_active_stack() -> AnyResult<()> {
     let mut rt = boot_with_lexical()?;
     let baseline = rt.query_text(TextQuerySyntax::Sourcegraph, "parity_needle_alpha", 10);
-    ensure!(
-        baseline.typed_error.is_none(),
-        "baseline lexical query must succeed"
-    );
+    ensure!(baseline.typed_error.is_none(), "baseline lexical query must succeed");
 
-    let index_no = rt.query_text(
-        TextQuerySyntax::Sourcegraph,
-        "index:no parity_needle_alpha",
-        10,
-    );
+    let index_no = rt.query_text(TextQuerySyntax::Sourcegraph, "index:no parity_needle_alpha", 10);
     ensure!(index_no.typed_error.is_none(), "index:no must execute");
     ensure!(
         sorted_candidate_ids(&index_no) == sorted_candidate_ids(&baseline),
@@ -2552,11 +2390,7 @@ fn sourcegraph_legacy_index_and_boost_execute_on_active_stack() -> AnyResult<()>
         sorted_candidate_ids(&baseline),
     );
 
-    let boosted = rt.query_text(
-        TextQuerySyntax::Sourcegraph,
-        "boost:5 parity_needle_alpha",
-        10,
-    );
+    let boosted = rt.query_text(TextQuerySyntax::Sourcegraph, "boost:5 parity_needle_alpha", 10);
     ensure!(boosted.typed_error.is_none(), "boost: must execute");
     ensure!(
         boosted.candidate_ids == baseline.candidate_ids,

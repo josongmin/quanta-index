@@ -134,16 +134,10 @@ pub fn validate_audit(e: &AuditEntry) -> Result<(), ObsError> {
         ));
     }
     if e.user_id.is_empty() {
-        return Err(ObsError::new(
-            ObsErrorCode::ObsAuditMissingField,
-            "user_id must not be empty",
-        ));
+        return Err(ObsError::new(ObsErrorCode::ObsAuditMissingField, "user_id must not be empty"));
     }
     if e.action.is_empty() {
-        return Err(ObsError::new(
-            ObsErrorCode::ObsAuditMissingField,
-            "action must not be empty",
-        ));
+        return Err(ObsError::new(ObsErrorCode::ObsAuditMissingField, "action must not be empty"));
     }
     if e.resource.is_empty() {
         return Err(ObsError::new(
@@ -322,14 +316,7 @@ mod tests {
     ];
 
     fn ok_entry() -> AuditEntry {
-        AuditEntry::new(
-            "tenant-1",
-            "user-7",
-            "query",
-            "0xdeadbeef",
-            AuditOutcome::Granted,
-            123,
-        )
+        AuditEntry::new("tenant-1", "user-7", "query", "0xdeadbeef", AuditOutcome::Granted, 123)
     }
 
     #[test]

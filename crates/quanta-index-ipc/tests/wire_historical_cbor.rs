@@ -76,9 +76,7 @@ fn historical_v1_cbor_frame_rejects_truncated_header_and_body() -> TestRes {
     let header_truncated: Result<SearchPlaneIpcError, IpcError> =
         decode_response(&mut Cursor::new(header_prefix));
     if !matches!(header_truncated, Err(IpcError::Truncated)) {
-        return Err(
-            format!("expected truncated header rejection, got {header_truncated:?}").into(),
-        );
+        return Err(format!("expected truncated header rejection, got {header_truncated:?}").into());
     }
 
     let body_prefix_len = historical
@@ -116,7 +114,7 @@ fn historical_v1_cbor_frame_rejects_malformed_declared_lengths() -> TestRes {
         decode_response(&mut Cursor::new(&too_short));
     if !matches!(short_result, Err(IpcError::Decode(_))) {
         return Err(
-            format!("expected short declared length rejection, got {short_result:?}").into(),
+            format!("expected short declared length rejection, got {short_result:?}").into()
         );
     }
 
@@ -130,7 +128,7 @@ fn historical_v1_cbor_frame_rejects_malformed_declared_lengths() -> TestRes {
     if !matches!(oversized_result, Err(IpcError::Oversized(length)) if length == u64::from(oversized))
     {
         return Err(
-            format!("expected oversized declaration rejection, got {oversized_result:?}").into(),
+            format!("expected oversized declaration rejection, got {oversized_result:?}").into()
         );
     }
     Ok(())

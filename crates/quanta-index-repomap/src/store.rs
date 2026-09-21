@@ -298,9 +298,7 @@ impl RepoMapGenerationStore {
         let incident_digest = *evidence
             .digest()
             .map_err(|error| {
-                CoreError::Storage(format!(
-                    "repomap quarantine evidence digest refused: {error}"
-                ))
+                CoreError::Storage(format!("repomap quarantine evidence digest refused: {error}"))
             })?
             .as_bytes();
         let source_path = relative.to_string_lossy().into_owned();
@@ -415,11 +413,8 @@ impl RepoMapGenerationStore {
             .map_err(|refusal| {
                 CoreError::InvalidContract(format!("repomap compile refused: {refusal}"))
             })?;
-        let identity = logical_identity(
-            &bundle.repo_id,
-            &bundle.revision_id,
-            bundle.manifest_generation,
-        );
+        let identity =
+            logical_identity(&bundle.repo_id, &bundle.revision_id, bundle.manifest_generation);
         let envelope = candidate.envelope(identity).map_err(|error| {
             CoreError::InvalidContract(format!("repomap candidate envelope refused: {error}"))
         })?;
@@ -578,13 +573,7 @@ impl RepoMapGenerationStore {
             }
         }
         if outcome.replayed {
-            return Ok(receipt(
-                None,
-                commitment,
-                outcome.epoch,
-                outcome.terminal_sequence,
-                true,
-            ));
+            return Ok(receipt(None, commitment, outcome.epoch, outcome.terminal_sequence, true));
         }
         {
             let mut activated = self
@@ -592,10 +581,7 @@ impl RepoMapGenerationStore {
                 .write()
                 .map_err(|err| storage_poisoned("activation map", &err))?;
             let _prior = activated.insert(
-                (
-                    request.repo_id.as_str().to_string(),
-                    request.revision_id.as_str().to_string(),
-                ),
+                (request.repo_id.as_str().to_string(), request.revision_id.as_str().to_string()),
                 request.manifest_generation.get(),
             );
         }
@@ -642,10 +628,7 @@ impl RepoMapGenerationStore {
         repo_id: &RepoId,
         revision_id: &RevisionId,
     ) -> Result<Option<u64>, CoreError> {
-        let key = (
-            repo_id.as_str().to_string(),
-            revision_id.as_str().to_string(),
-        );
+        let key = (repo_id.as_str().to_string(), revision_id.as_str().to_string());
         let guard = self
             .activated
             .read()
@@ -676,10 +659,7 @@ impl RepoMapGenerationStore {
         &self,
         request: &quanta_index_contract::RepoMapQueryRequest,
     ) -> Result<(), CoreError> {
-        let key = (
-            request.repo_id.as_str().to_string(),
-            request.revision_id.as_str().to_string(),
-        );
+        let key = (request.repo_id.as_str().to_string(), request.revision_id.as_str().to_string());
         let guard = self
             .activated
             .read()
@@ -781,11 +761,9 @@ impl RepoMapQuarantinePort for RepoMapGenerationStore {
             .catalog
             .discard_repomap_quarantine_payload(&incident.incident_digest)?;
         let payload_bytes = objects
-            .read_quarantine_payload(
-                quanta_index_contract::QuarantinePayloadDigestV1::from_bytes(
-                    incident.payload_digest,
-                ),
-            )?
+            .read_quarantine_payload(quanta_index_contract::QuarantinePayloadDigestV1::from_bytes(
+                incident.payload_digest,
+            ))?
             .map_or(0_usize, |bytes| bytes.len());
         let reclaimed = u64::try_from(payload_bytes).map_or(0, |bytes| bytes);
         let _reclaimed = objects.reclaim_quarantine_payload(

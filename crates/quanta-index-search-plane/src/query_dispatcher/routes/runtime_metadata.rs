@@ -244,10 +244,8 @@ impl<'a> RuntimeDriver<'a> {
     /// The chunk ids strictly after `after` — all of them for `None` —
     /// in ascending order.
     fn ids_after(&self, after: Option<&'a ChunkId>) -> Box<dyn Iterator<Item = &'a ChunkId> + 'a> {
-        let bounds: (Bound<&ChunkId>, Bound<&ChunkId>) = (
-            after.map_or(Bound::Unbounded, Bound::Excluded),
-            Bound::Unbounded,
-        );
+        let bounds: (Bound<&ChunkId>, Bound<&ChunkId>) =
+            (after.map_or(Bound::Unbounded, Bound::Excluded), Bound::Unbounded);
         match *self {
             Self::Universe(map) => Box::new(keys_after(map, bounds)),
             Self::DirtyDocs(map) => Box::new(keys_after(map, bounds)),
@@ -571,12 +569,7 @@ fn runtime_chunk_matches(
         }
     }
     expr_matches(&query.expr, &mut |leaf| {
-        leaf_matches_text(
-            "runtime metadata",
-            leaf,
-            chunk.text.as_ref(),
-            &query.options,
-        )
+        leaf_matches_text("runtime metadata", leaf, chunk.text.as_ref(), &query.options)
     })
 }
 
@@ -585,9 +578,7 @@ pub(crate) fn runtime_generation_is_stale(
     before_ms: u64,
 ) -> Result<bool, CoreError> {
     let Some(generation_materialized_at_ms) = runtime_state.generation_materialized_at_ms() else {
-        return Err(runtime_catalog_head_missing(
-            "generation_materialized_at_ms",
-        ));
+        return Err(runtime_catalog_head_missing("generation_materialized_at_ms"));
     };
     let Some(producer_head_applied_at_ms) = runtime_state.producer_head_applied_at_ms() else {
         return Err(runtime_catalog_head_missing("producer_head_applied_at_ms"));

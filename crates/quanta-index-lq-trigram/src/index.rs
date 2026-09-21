@@ -120,11 +120,7 @@ impl TrigramIndex {
             if acc.len() > MAX_CANDIDATE_PRE_VERIFY {
                 return Err(TrigramError::plan_limit(
                     LimitDimension::CandidateSet,
-                    format!(
-                        "candidate set {} exceeds cap {}",
-                        acc.len(),
-                        MAX_CANDIDATE_PRE_VERIFY
-                    ),
+                    format!("candidate set {} exceeds cap {}", acc.len(), MAX_CANDIDATE_PRE_VERIFY),
                 ));
             }
         }
@@ -391,9 +387,7 @@ impl<'de> serde::Deserialize<'de> for TrigramEntryOwned {
                     .next_element()?
                     .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
                 if bytes.0.len() != TRIGRAM_LEN {
-                    return Err(serde::de::Error::custom(
-                        "trigram key must be exactly 3 bytes",
-                    ));
+                    return Err(serde::de::Error::custom("trigram key must be exactly 3 bytes"));
                 }
                 let mut tri: Trigram = [0u8; TRIGRAM_LEN];
                 for (i, b) in bytes.0.iter().enumerate() {

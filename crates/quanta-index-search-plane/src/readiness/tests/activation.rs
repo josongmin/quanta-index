@@ -37,10 +37,7 @@ fn activation_catalog_persists_composite_root_and_rolls_back_both_tracks_v1() ->
     let active = corpus_generation(17, "digest-17")?;
     let prepared = PreparedSearchCorpusGenerationV1::new(active, None)?;
     let activation = catalog.activate_prepared_search_corpus_generation_v1(&prepared)?;
-    assert_eq!(
-        activation.active.manifest_generation(),
-        ManifestGeneration::new(17)
-    );
+    assert_eq!(activation.active.manifest_generation(), ManifestGeneration::new(17));
 
     let pin = catalog.resolve(
         &RepoId::new("repo-corpus").expect("static fixture ID satisfies canonical policy"),
@@ -55,20 +52,14 @@ fn activation_catalog_persists_composite_root_and_rolls_back_both_tracks_v1() ->
         &RevisionId::new("rev-corpus").expect("static fixture ID satisfies canonical policy"),
         SearchPlaneTrackKind::Lexical,
     )?;
-    assert_eq!(
-        reopened_pin.manifest_generation,
-        ManifestGeneration::new(17)
-    );
+    assert_eq!(reopened_pin.manifest_generation, ManifestGeneration::new(17));
 
     let semantic_before = reopened.resolve_record(
         &RepoId::new("repo-corpus").expect("static fixture ID satisfies canonical policy"),
         &RevisionId::new("rev-corpus").expect("static fixture ID satisfies canonical policy"),
         SearchPlaneTrackKind::Semantic,
     )?;
-    assert_eq!(
-        semantic_before.manifest_generation,
-        ManifestGeneration::new(17)
-    );
+    assert_eq!(semantic_before.manifest_generation, ManifestGeneration::new(17));
 
     let rollback = catalog.rollback(&SearchPlaneRollbackSearchCorpusGenerationCasRequest {
         expected_active:
@@ -83,10 +74,7 @@ fn activation_catalog_persists_composite_root_and_rolls_back_both_tracks_v1() ->
         rollback.previous_sealed_active.lexical.manifest_generation,
         ManifestGeneration::new(17)
     );
-    assert_eq!(
-        rollback.active.lexical.manifest_generation,
-        ManifestGeneration::new(16)
-    );
+    assert_eq!(rollback.active.lexical.manifest_generation, ManifestGeneration::new(16));
     let reopened = ActivationCatalog::open(dir.path())?;
     let lexical_after = reopened.resolve_record(
         &RepoId::new("repo-corpus").expect("static fixture ID satisfies canonical policy"),
@@ -98,14 +86,8 @@ fn activation_catalog_persists_composite_root_and_rolls_back_both_tracks_v1() ->
         &RevisionId::new("rev-corpus").expect("static fixture ID satisfies canonical policy"),
         SearchPlaneTrackKind::Semantic,
     )?;
-    assert_eq!(
-        lexical_after.manifest_generation,
-        ManifestGeneration::new(16)
-    );
-    assert_eq!(
-        semantic_after.manifest_generation,
-        ManifestGeneration::new(16)
-    );
+    assert_eq!(lexical_after.manifest_generation, ManifestGeneration::new(16));
+    assert_eq!(semantic_after.manifest_generation, ManifestGeneration::new(16));
     assert_eq!(lexical_after.manifest_digest, "digest-16");
     assert_eq!(semantic_after.manifest_digest, "digest-16");
     Ok(())
@@ -176,16 +158,13 @@ fn prepared_search_corpus_activation_is_durable_before_reopen_and_rejects_stale_
     assert_eq!(first_receipt.active, first);
     assert_eq!(first_receipt.previous_active, None);
 
-    let root = dir.path().join(
-        crate::readiness::activation_catalog::search_corpus_root_file_name(
+    let root = dir
+        .path()
+        .join(crate::readiness::activation_catalog::search_corpus_root_file_name(
             first.repo_id(),
             first.revision_id(),
-        ),
-    );
-    assert!(
-        root.is_file(),
-        "composite root must exist before memory receipt"
-    );
+        ));
+    assert!(root.is_file(), "composite root must exist before memory receipt");
     let directory_entries = std::fs::read_dir(dir.path())?.collect::<Result<Vec<_>, _>>()?;
     assert!(
         directory_entries
@@ -289,7 +268,7 @@ fn activation_catalog_concurrent_cas_promotions_select_one_composite_winner() ->
             }
             Err(error) => {
                 return Err(
-                    format!("concurrent activation returned unexpected error: {error}").into(),
+                    format!("concurrent activation returned unexpected error: {error}").into()
                 );
             }
         }
@@ -329,11 +308,8 @@ fn activation_catalog_fails_closed_after_durability_becomes_uncertain() -> TestR
     // serve its potentially stale in-memory records in the meantime.
     catalog.mark_durability_uncertain_v1();
 
-    let resolve = catalog.resolve_record(
-        first.repo_id(),
-        first.revision_id(),
-        SearchPlaneTrackKind::Lexical,
-    );
+    let resolve =
+        catalog.resolve_record(first.repo_id(), first.revision_id(), SearchPlaneTrackKind::Lexical);
     let Err(CoreError::NotReady(resolve_message)) = resolve else {
         return Err("durability-uncertain catalog unexpectedly served a read".into());
     };
@@ -373,16 +349,13 @@ fn activation_catalog_fences_real_post_rename_parent_sync_failure() -> TestResul
     };
     assert!(message.contains("injected parent sync failure"));
 
-    let persisted = dir.path().join(
-        crate::readiness::activation_catalog::search_corpus_root_file_name(
-            candidate.repo_id(),
-            candidate.revision_id(),
-        ),
-    );
-    assert!(
-        persisted.is_file(),
-        "rename must precede injected sync failure"
-    );
+    let persisted =
+        dir.path()
+            .join(crate::readiness::activation_catalog::search_corpus_root_file_name(
+                candidate.repo_id(),
+                candidate.revision_id(),
+            ));
+    assert!(persisted.is_file(), "rename must precede injected sync failure");
     let resolve = catalog.resolve_record(
         candidate.repo_id(),
         candidate.revision_id(),
@@ -571,12 +544,12 @@ fn activation_catalog_refuses_symlink_composite_root_v1() -> TestResult {
     let persisted = crate::readiness::search_corpus_generation::PersistedSearchCorpusGenerationRootV1::from_generation(&generation);
     let attacker_target = attacker_dir.path().join("attacker-controlled.json");
     std::fs::write(&attacker_target, serde_json::to_vec_pretty(&persisted)?)?;
-    let activation_path = dir.path().join(
-        crate::readiness::activation_catalog::search_corpus_root_file_name(
-            generation.repo_id(),
-            generation.revision_id(),
-        ),
-    );
+    let activation_path =
+        dir.path()
+            .join(crate::readiness::activation_catalog::search_corpus_root_file_name(
+                generation.repo_id(),
+                generation.revision_id(),
+            ));
     symlink(&attacker_target, &activation_path)?;
 
     let result = ActivationCatalog::open(dir.path());

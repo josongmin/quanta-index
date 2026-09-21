@@ -253,10 +253,7 @@ fn publish_refuses_malformed_bundles_with_zero_mutation() -> TestResult {
     let mut no_nodes = bundle(1, "g1");
     no_nodes.nodes.clear();
     assert!(store.as_ref().ingest_bundle(&no_nodes).is_err());
-    assert!(
-        find_objects(&root)?.is_empty(),
-        "a refused publish mutates nothing on disk"
-    );
+    assert!(find_objects(&root)?.is_empty(), "a refused publish mutates nothing on disk");
     assert!(
         catalog
             .repomap_candidate_row(repo().as_str(), revision().as_str(), 1)?

@@ -113,9 +113,7 @@ impl TantivySearcher {
         let mut admitted = BTreeSet::new();
         for (_score, doc_address) in hits {
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
-                CoreError::Storage(format!(
-                    "lexical: admission fetch doc {doc_address:?}: {err}"
-                ))
+                CoreError::Storage(format!("lexical: admission fetch doc {doc_address:?}: {err}"))
             })?;
             let Some(candidate_id) = stored_text(&doc, self.fields.candidate_id) else {
                 return Err(CoreError::Storage(format!(

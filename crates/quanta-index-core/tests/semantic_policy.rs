@@ -36,10 +36,7 @@ fn semantic_top_k_above_ceiling_uses_the_shared_out_of_range_code() {
 #[test]
 fn semantic_top_k_public_maximum_is_accepted() {
     assert!(SemanticPolicy::validate_top_k(SemanticPolicy::max_top_k()).is_ok());
-    assert_eq!(
-        SemanticPolicy::max_top_k(),
-        quanta_index_contract::PUBLIC_TOP_K_MAX
-    );
+    assert_eq!(SemanticPolicy::max_top_k(), quanta_index_contract::PUBLIC_TOP_K_MAX);
 }
 
 // ---------------------------------------------------------------------------
@@ -80,24 +77,12 @@ mod vector_contract {
             ("zero", vec![0.0, 0.0], EmbeddingNormalization::L2Unit),
             ("zero raw", vec![0.0, 0.0], EmbeddingNormalization::None),
             ("nan", vec![f32::NAN, 0.0], EmbeddingNormalization::None),
-            (
-                "inf",
-                vec![f32::INFINITY, 0.0],
-                EmbeddingNormalization::L2Unit,
-            ),
-            (
-                "dimension",
-                vec![1.0, 0.0, 0.0],
-                EmbeddingNormalization::L2Unit,
-            ),
+            ("inf", vec![f32::INFINITY, 0.0], EmbeddingNormalization::L2Unit),
+            ("dimension", vec![1.0, 0.0, 0.0], EmbeddingNormalization::L2Unit),
         ];
         for (label, vector, normalization) in cases {
             assert_eq!(
-                code(SemanticPolicy::validate_embedding_vector_v1(
-                    &vector,
-                    2,
-                    normalization
-                )),
+                code(SemanticPolicy::validate_embedding_vector_v1(&vector, 2, normalization)),
                 "SEM_INVALID_VECTOR",
                 "{label}"
             );
@@ -218,10 +203,7 @@ mod vector_contract {
         ] {
             let provider = L2UnitEmbeddingProvider::new(raw(vectors)).expect("raw provider wraps");
             let outcome = provider.embed_batch(&["only"]);
-            assert!(
-                outcome.is_err(),
-                "{label}: must fail the batch, got {outcome:?}"
-            );
+            assert!(outcome.is_err(), "{label}: must fail the batch, got {outcome:?}");
         }
     }
 
@@ -244,9 +226,7 @@ mod vector_contract {
                 Some(MetricValueV1::Counter(off_unit)),
                 Some(MetricValueV1::Gauge(max_deviation)),
             ) => Ok((normalized, off_unit, max_deviation)),
-            other => Err(CoreError::Storage(format!(
-                "the tallies name three points: {other:?}"
-            ))),
+            other => Err(CoreError::Storage(format!("the tallies name three points: {other:?}"))),
         }
     }
 
@@ -287,10 +267,7 @@ mod vector_contract {
         let smaller_tallies = smaller.raw_norm_tallies();
         let _served = smaller.embed_batch(&["half"]).expect("normalized");
         let _served = smaller.embed_batch(&["half"]).expect("normalized");
-        assert_eq!(
-            scraped(&smaller_tallies).expect("the tallies scrape"),
-            (2, 2, 0.5)
-        );
+        assert_eq!(scraped(&smaller_tallies).expect("the tallies scrape"), (2, 2, 0.5));
     }
 
     /// Stacking normalizers would hide which layer is trusted; a provider
@@ -331,10 +308,7 @@ fn dense_lane_trace_names_index_attestation_effort_lineage_and_segment_builds() 
         index: DenseIndexV1::Exact,
         attestation: DenseLaneAttestationV1::Sealed,
     };
-    assert_eq!(
-        exact.trace_detail(),
-        "dense.index=exact; dense.attestation=sealed"
-    );
+    assert_eq!(exact.trace_detail(), "dense.index=exact; dense.attestation=sealed");
     let trained = DenseLaneContractV1 {
         index: DenseIndexV1::Approximate {
             effort: effort(),

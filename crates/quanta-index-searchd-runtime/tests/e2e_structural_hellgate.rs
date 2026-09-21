@@ -330,11 +330,8 @@ fn verify_direct_phrase_and_regex_bodies(rt: &mut E2eRuntime) -> AnyResult<()> {
         "quoted SG structural body must bind identifier span, got {phrase_binding:?}",
     );
 
-    let direct_regex = rt.query_structural(
-        TextQuerySyntax::Sourcegraph,
-        r"patterntype:structural /^main$/",
-        10,
-    );
+    let direct_regex =
+        rt.query_structural(TextQuerySyntax::Sourcegraph, r"patterntype:structural /^main$/", 10);
     ensure!(
         direct_regex.typed_error.is_none(),
         "direct SG structural regex body must execute, got {:?}",

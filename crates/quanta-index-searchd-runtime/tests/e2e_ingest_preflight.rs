@@ -160,12 +160,7 @@ fn every_preflight_refusal_over_raw_ipc_changes_nothing() -> TestResult {
     unsealed_base.mode = BatchIngestMode::Delta;
     unsealed_base.base_generation = Some(good.generation);
     stamp_batch_digest_v1(&mut unsealed_base)?;
-    refused_with_nothing_changed(
-        &mut rt,
-        "unsealed-base",
-        unsealed_base,
-        DELTA_BASE_NOT_SEALED,
-    )?;
+    refused_with_nothing_changed(&mut rt, "unsealed-base", unsealed_base, DELTA_BASE_NOT_SEALED)?;
 
     // Digest: empty, wrong shape, and a body that is not what its digest
     // names — verified before anything else looks at the batch.
@@ -318,7 +313,7 @@ fn sdk_publishes_carry_the_canonical_digest_and_refusals_record_nothing() -> Tes
         .expect_err("a delta on an unsealed base must be refused");
     if remote_code(&refused) != Some(DELTA_BASE_NOT_SEALED.as_wire_str()) {
         return Err(
-            format!("expected {DELTA_BASE_NOT_SEALED} through the SDK, got {refused:?}").into(),
+            format!("expected {DELTA_BASE_NOT_SEALED} through the SDK, got {refused:?}").into()
         );
     }
 

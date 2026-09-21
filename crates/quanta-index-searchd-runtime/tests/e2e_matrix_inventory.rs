@@ -58,9 +58,7 @@ fn verify_invalid_query_returns_typed_error(rt: &mut E2eRuntime) -> AnyResult<()
     // typed-error surface of the harness end-to-end.
     let result = rt.query_text_with_pin(TextQuerySyntax::Native, "smoke_needle_rust", 10, None);
     let Some(typed) = result.typed_error else {
-        return Err(anyhow::anyhow!(
-            "expected a typed error for missing generation pin"
-        ));
+        return Err(anyhow::anyhow!("expected a typed error for missing generation pin"));
     };
     if typed.code.as_str() != "INVALID_REQUEST" {
         return Err(anyhow::anyhow!(

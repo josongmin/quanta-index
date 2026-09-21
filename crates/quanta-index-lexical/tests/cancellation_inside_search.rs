@@ -123,19 +123,13 @@ fn keyword_query() -> LqQuery {
 /// A regex whose literal prefilter admits every document, so verification
 /// walks the whole corpus.
 fn regex_query() -> LqQuery {
-    query(
-        LqExpr::Leaf(LqLeaf::Regex("token_[0-9]+".to_string())),
-        LqOptions::defaults(),
-    )
+    query(LqExpr::Leaf(LqLeaf::Regex("token_[0-9]+".to_string())), LqOptions::defaults())
 }
 
 fn unindexed_query() -> LqQuery {
     let mut options = LqOptions::defaults();
     options.index_mode = Some(LqYesNoOnly::No);
-    query(
-        LqExpr::Leaf(LqLeaf::Keyword("cancel_needle".to_string())),
-        options,
-    )
+    query(LqExpr::Leaf(LqLeaf::Keyword("cancel_needle".to_string())), options)
 }
 
 fn seeded() -> Result<(tempfile::TempDir, LexicalAdapter), Box<dyn Error>> {
@@ -198,11 +192,9 @@ fn a_cancelled_or_expired_budget_is_observed_inside_the_native_collect() -> Test
         &RequestBudgetV1::unbounded(),
     )?;
     if served.candidates.len() != 10 {
-        return Err(format!(
-            "the control page serves 10 rows, got {}",
-            served.candidates.len()
-        )
-        .into());
+        return Err(
+            format!("the control page serves 10 rows, got {}", served.candidates.len()).into()
+        );
     }
     expect_interrupted(
         searcher

@@ -246,15 +246,9 @@ mod tests {
             embeddings[0].embedding_id,
             legacy_batch.replace_scopes[0].embeddings[0].embedding_id
         );
-        assert_eq!(
-            embeddings[0].record_id,
-            legacy_batch.replace_scopes[0].embeddings[0].record_id
-        );
+        assert_eq!(embeddings[0].record_id, legacy_batch.replace_scopes[0].embeddings[0].record_id);
         assert_eq!(embeddings[0].owner_id, embeddings[1].owner_id);
-        assert_eq!(
-            embeddings[0].parent_owner_id,
-            Some(embeddings[0].owner_id.clone())
-        );
+        assert_eq!(embeddings[0].parent_owner_id, Some(embeddings[0].owner_id.clone()));
         assert_eq!(embeddings[2], legacy_batch.replace_scopes[0].embeddings[2]);
         Ok(())
     }
@@ -270,23 +264,11 @@ mod tests {
         let adapter = SemanticAdapter::with_state_root(semantic_root)?;
         build_durable(
             &adapter,
-            &batch(
-                ManifestGeneration::new(3),
-                "a",
-                "a.rs",
-                vec![1.0, 0.0, 0.0],
-                true,
-            )?,
+            &batch(ManifestGeneration::new(3), "a", "a.rs", vec![1.0, 0.0, 0.0], true)?,
         )?;
         build_durable(
             &adapter,
-            &batch(
-                ManifestGeneration::new(5),
-                "b",
-                "b.rs",
-                vec![0.0, 1.0, 0.0],
-                true,
-            )?,
+            &batch(ManifestGeneration::new(5), "b", "b.rs", vec![0.0, 1.0, 0.0], true)?,
         )?;
 
         let ledger = ledger_retaining(&[3, 5]);
@@ -322,13 +304,7 @@ mod tests {
         let adapter = SemanticAdapter::with_state_root(semantic_root)?;
         build_durable(
             &adapter,
-            &batch(
-                ManifestGeneration::new(2),
-                "a",
-                "a.rs",
-                vec![1.0, 0.0, 0.0],
-                false,
-            )?,
+            &batch(ManifestGeneration::new(2), "a", "a.rs", vec![1.0, 0.0, 0.0], false)?,
         )?;
 
         let ledger = Arc::new(RwLock::new(Ledger::new()));
@@ -360,10 +336,7 @@ mod tests {
         let semantic_root: PathBuf = temp.path().join("indexes").join("semantic");
         let adapter = SemanticAdapter::with_state_root(semantic_root.clone())?;
         let generation = ManifestGeneration::new(9);
-        build_durable(
-            &adapter,
-            &batch(generation, "a", "a.rs", vec![1.0, 0.0, 0.0], true)?,
-        )?;
+        build_durable(&adapter, &batch(generation, "a", "a.rs", vec![1.0, 0.0, 0.0], true)?)?;
 
         let manifest_path = GenerationStorageKeyV1::for_repo_revision(&repo_id(), &revision_id())
             .generation_dir(&semantic_root, generation)
@@ -442,13 +415,8 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let legacy_root = temp.path().join("semantic");
         let semantic_root: PathBuf = temp.path().join("indexes").join("semantic");
-        let mut sealing = batch(
-            ManifestGeneration::new(8),
-            "emb-1",
-            "x.rs",
-            vec![1.0, 0.0, 0.0],
-            true,
-        )?;
+        let mut sealing =
+            batch(ManifestGeneration::new(8), "emb-1", "x.rs", vec![1.0, 0.0, 0.0], true)?;
         sealing.replace_scopes.push(SemanticReplaceScope {
             scope: SearchScopeKey {
                 doc_surface: SearchScopeSurface::Chunk,
@@ -500,21 +468,10 @@ mod tests {
 
         // Stage a legacy journal: build gen 7 across two batches, sealing on the
         // second (mirrors the old append-then-seal producer cadence).
-        let mut first = batch(
-            ManifestGeneration::new(7),
-            "emb-1",
-            "x.rs",
-            vec![1.0, 0.0, 0.0],
-            false,
-        )?;
+        let mut first =
+            batch(ManifestGeneration::new(7), "emb-1", "x.rs", vec![1.0, 0.0, 0.0], false)?;
         first.batch_digest = "batch:7:a".to_string();
-        let second = batch(
-            ManifestGeneration::new(7),
-            "emb-2",
-            "y.rs",
-            vec![0.0, 1.0, 0.0],
-            true,
-        )?;
+        let second = batch(ManifestGeneration::new(7), "emb-2", "y.rs", vec![0.0, 1.0, 0.0], true)?;
         LegacySemanticJournalStore::stage_for_test(&legacy_root, &[first, second])?;
 
         let adapter = SemanticAdapter::with_state_root(semantic_root.clone())?;
@@ -559,24 +516,13 @@ mod tests {
         // surviving embeddings.
         let clean_root: PathBuf = temp.path().join("clean").join("indexes").join("semantic");
         let clean_adapter = SemanticAdapter::with_state_root(clean_root)?;
-        let mut clean_first = batch(
-            ManifestGeneration::new(7),
-            "emb-1",
-            "x.rs",
-            vec![1.0, 0.0, 0.0],
-            false,
-        )?;
+        let mut clean_first =
+            batch(ManifestGeneration::new(7), "emb-1", "x.rs", vec![1.0, 0.0, 0.0], false)?;
         clean_first.batch_digest = "batch:7:a".to_string();
         build_legacy_durable(&clean_adapter, &clean_first)?;
         build_legacy_durable(
             &clean_adapter,
-            &batch(
-                ManifestGeneration::new(7),
-                "emb-2",
-                "y.rs",
-                vec![0.0, 1.0, 0.0],
-                true,
-            )?,
+            &batch(ManifestGeneration::new(7), "emb-2", "y.rs", vec![0.0, 1.0, 0.0], true)?,
         )?;
         let clean_searcher =
             clean_adapter.open(&repo_id(), &revision_id(), ManifestGeneration::new(7))?;
@@ -605,30 +551,12 @@ mod tests {
         // writing the MIGRATED marker: gen 1 is durable on disk, marker absent.
         build_legacy_durable(
             &adapter,
-            &batch(
-                ManifestGeneration::new(1),
-                "emb-1",
-                "a.rs",
-                vec![1.0, 0.0, 0.0],
-                true,
-            )?,
+            &batch(ManifestGeneration::new(1), "emb-1", "a.rs", vec![1.0, 0.0, 0.0], true)?,
         )?;
 
         // The legacy journal still carries BOTH generations.
-        let g1 = batch(
-            ManifestGeneration::new(1),
-            "emb-1",
-            "a.rs",
-            vec![1.0, 0.0, 0.0],
-            true,
-        )?;
-        let g2 = batch(
-            ManifestGeneration::new(2),
-            "emb-2",
-            "b.rs",
-            vec![0.0, 1.0, 0.0],
-            true,
-        )?;
+        let g1 = batch(ManifestGeneration::new(1), "emb-1", "a.rs", vec![1.0, 0.0, 0.0], true)?;
+        let g2 = batch(ManifestGeneration::new(2), "emb-2", "b.rs", vec![0.0, 1.0, 0.0], true)?;
         LegacySemanticJournalStore::stage_for_test(&legacy_root, &[g1, g2])?;
 
         let store = LegacySemanticJournalStore::open(&legacy_root)?;

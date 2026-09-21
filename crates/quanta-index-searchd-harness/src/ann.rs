@@ -153,10 +153,7 @@ fn query_direction(seed: u64, config: &AnnRailConfig) -> AnyResult<Vec<f32>> {
             .collect();
         Ok(unit(&mixed))
     } else {
-        Ok(unit_direction(
-            2_000_000_u64.wrapping_add(seed),
-            config.width,
-        ))
+        Ok(unit_direction(2_000_000_u64.wrapping_add(seed), config.width))
     }
 }
 
@@ -231,14 +228,8 @@ pub fn run_ann_report(config: AnnRailConfig, state_root: &Path) -> AnyResult<Ann
         .map(|(id, vector)| legacy_chunk_embedding_record_v1(id, CORPUS_PATH, vector.clone()))
         .collect::<Result<Vec<_>, String>>()
         .map_err(|error| anyhow!("ann rail row: {error}"))?;
-    let batch = sealed_replace_batch_v1(
-        repo(),
-        revision(),
-        generation,
-        CORPUS_PATH,
-        embeddings,
-        width,
-    );
+    let batch =
+        sealed_replace_batch_v1(repo(), revision(), generation, CORPUS_PATH, embeddings, width);
     let normalization = batch.model_contract.normalization;
     let build_started = Instant::now();
     build_resident_batch_v1(&adapter, &batch)?;
@@ -274,10 +265,7 @@ pub fn run_ann_report(config: AnnRailConfig, state_root: &Path) -> AnyResult<Ann
                 .iter()
                 .find(|(id, _)| *id == hit.candidate_id)
                 .ok_or_else(|| {
-                    anyhow!(
-                        "the index returned {}, which is not a row",
-                        hit.candidate_id
-                    )
+                    anyhow!("the index returned {}, which is not a row", hit.candidate_id)
                 })?;
             if (hit.score - cosine(&row.1, &query)).abs() > EXACT_SCORE_TOLERANCE {
                 exact_scores = false;
@@ -464,19 +452,12 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let report = run_ann_report(SMALL, temp.path()).expect("the rail runs");
         assert_eq!(report.latencies_ms.len(), 8);
-        assert!(
-            report.exact_scores,
-            "the sealed effort refines to exact cosine"
-        );
+        assert!(report.exact_scores, "the sealed effort refines to exact cosine");
         assert_eq!(report.short_pages, 0);
         assert!((0.0..=1.0).contains(&report.recall_at_k));
         assert!(report.index_bytes > 0, "300 rows seal an ANN index");
         assert!(report.generation_bytes > report.index_bytes);
-        assert!(
-            report.dense_lane.contains("dense.index=ivf_hnsw_sq"),
-            "{}",
-            report.dense_lane
-        );
+        assert!(report.dense_lane.contains("dense.index=ivf_hnsw_sq"), "{}", report.dense_lane);
         assert_eq!(report.normalization, EmbeddingNormalization::L2Unit);
         assert!(report.passed);
 

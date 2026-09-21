@@ -727,11 +727,8 @@ fn verify_file_owner_contributor_and_projection(rt: &mut E2eRuntime) -> AnyResul
         sorted_candidate_paths(&owner),
     );
 
-    let any_owner = rt.query_text(
-        TextQuerySyntax::Sourcegraph,
-        "file:has.owner() shared_oracle_needle",
-        10,
-    );
+    let any_owner =
+        rt.query_text(TextQuerySyntax::Sourcegraph, "file:has.owner() shared_oracle_needle", 10);
     ensure!(
         sorted_candidate_paths(&any_owner) == ["src/corp-a.rs", "src/corp-b.rs", "src/gate-a.rs"],
         "file:has.owner() must gate files with owners, got {:?}",
@@ -818,11 +815,8 @@ fn verify_file_owner_contributor_and_projection(rt: &mut E2eRuntime) -> AnyResul
         contributor_error.code,
     );
 
-    let owners = rt.query_text(
-        TextQuerySyntax::Sourcegraph,
-        "select:file.owners shared_oracle_needle",
-        10,
-    );
+    let owners =
+        rt.query_text(TextQuerySyntax::Sourcegraph, "select:file.owners shared_oracle_needle", 10);
     ensure!(
         sorted_candidate_paths(&owners)
             == [
@@ -925,16 +919,9 @@ fn sourcegraph_rev_at_time_hellgate() -> AnyResult<()> {
 
 fn verify_legacy_index_and_boost(rt: &mut E2eRuntime) -> AnyResult<()> {
     let baseline = rt.query_text(TextQuerySyntax::Sourcegraph, "shared_oracle_needle", 10);
-    ensure!(
-        baseline.typed_error.is_none(),
-        "baseline lexical query must succeed",
-    );
+    ensure!(baseline.typed_error.is_none(), "baseline lexical query must succeed",);
 
-    let index_no = rt.query_text(
-        TextQuerySyntax::Sourcegraph,
-        "index:no shared_oracle_needle",
-        10,
-    );
+    let index_no = rt.query_text(TextQuerySyntax::Sourcegraph, "index:no shared_oracle_needle", 10);
     ensure!(index_no.typed_error.is_none(), "index:no must execute");
     ensure!(
         sorted_candidate_ids(&index_no) == sorted_candidate_ids(&baseline),
@@ -943,11 +930,7 @@ fn verify_legacy_index_and_boost(rt: &mut E2eRuntime) -> AnyResult<()> {
         sorted_candidate_ids(&baseline),
     );
 
-    let boosted = rt.query_text(
-        TextQuerySyntax::Sourcegraph,
-        "boost:5 shared_oracle_needle",
-        10,
-    );
+    let boosted = rt.query_text(TextQuerySyntax::Sourcegraph, "boost:5 shared_oracle_needle", 10);
     ensure!(boosted.typed_error.is_none(), "boost: must execute");
     ensure!(
         boosted.candidate_ids == baseline.candidate_ids,
@@ -982,10 +965,7 @@ fn sourcegraph_text_route_authorities_share_one_indexed_fixture() -> AnyResult<(
             "repo_meta_description_and_repo_file",
             verify_repo_meta_description_and_repo_file_fn,
         ),
-        (
-            "repo_topic_and_commit_recency",
-            verify_repo_topic_and_commit_recency,
-        ),
+        ("repo_topic_and_commit_recency", verify_repo_topic_and_commit_recency),
         (
             "scoped_file_content_name_and_boolean",
             verify_scoped_file_content_name_and_boolean,

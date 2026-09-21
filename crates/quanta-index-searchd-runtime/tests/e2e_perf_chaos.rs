@@ -96,9 +96,7 @@ fn route_metric(name: &str) -> Option<(&str, &str)> {
 fn assert_route_tail(all_names: &[String], pipeline_suffix: &[&str]) -> AnyResult<()> {
     let tail: Vec<&str> = all_names.iter().rev().take(2).map(String::as_str).collect();
     let (Some(outcome), Some(latency)) = (tail.first(), tail.get(1)) else {
-        return Err(anyhow::anyhow!(
-            "route tail needs two samples: {all_names:?}"
-        ));
+        return Err(anyhow::anyhow!("route tail needs two samples: {all_names:?}"));
     };
     let (Some((latency_route, "latency_ms")), Some((outcome_route, outcome_suffix))) =
         (route_metric(latency), route_metric(outcome))
@@ -108,9 +106,7 @@ fn assert_route_tail(all_names: &[String], pipeline_suffix: &[&str]) -> AnyResul
         ));
     };
     if latency_route != outcome_route {
-        return Err(anyhow::anyhow!(
-            "latency and outcome name different routes: {tail:?}"
-        ));
+        return Err(anyhow::anyhow!("latency and outcome name different routes: {tail:?}"));
     }
     let expected_outcome = if pipeline_suffix
         .last()
@@ -136,9 +132,7 @@ fn assert_closed_metric_suffix(
 ) -> AnyResult<()> {
     let errors = rt.query_metric_errors()?;
     if !errors.is_empty() {
-        return Err(anyhow::anyhow!(
-            "unexpected runtime metric errors: {errors:?}"
-        ));
+        return Err(anyhow::anyhow!("unexpected runtime metric errors: {errors:?}"));
     }
     let samples = rt.query_metrics_snapshot()?;
     let all_names = samples
@@ -150,9 +144,7 @@ fn assert_closed_metric_suffix(
             && !is_snapshot_metric(name)
             && route_metric(name).is_none()
     }) {
-        return Err(anyhow::anyhow!(
-            "runtime metric names escaped closed set: {all_names:?}"
-        ));
+        return Err(anyhow::anyhow!("runtime metric names escaped closed set: {all_names:?}"));
     }
     assert_route_tail(&all_names, expected_suffix)?;
     let names = all_names
@@ -402,12 +394,7 @@ fn seed_history_partial_shard_fixture(
 ) -> AnyResult<()> {
     let path = "src/history.rs";
     rt.ingest_text("repo-e2e", path, "history lexical proof")?;
-    rt.publish_history_batch(history_partial_shard_batch(
-        rt,
-        path,
-        include_ref,
-        include_tag,
-    ))?;
+    rt.publish_history_batch(history_partial_shard_batch(rt, path, include_ref, include_tag))?;
     _ = rt.seal()?;
     rt.activate_last_sealed_generation()?;
     Ok(())
@@ -526,11 +513,7 @@ fn seed_runtime_catalog_fixture(rt: &mut E2eRuntime) -> AnyResult<()> {
 }
 
 fn seed_predicate_fixture(rt: &mut E2eRuntime) -> AnyResult<()> {
-    rt.ingest_text(
-        "repo-e2e",
-        "src/file_contains.rs",
-        "foo oo_ba filecontainsmarker",
-    )?;
+    rt.ingest_text("repo-e2e", "src/file_contains.rs", "foo oo_ba filecontainsmarker")?;
     rt.ingest_text("repo-e2e", "src/lib.rs", "needle alpha")?;
     rt.ingest_text("repo-e2e", "src/main.rs", "needle beta")?;
     rt.ingest_text("repo-e2e", "docs/readme.md", "other text")?;
@@ -603,9 +586,7 @@ fn regex_false_positive_candidate_is_rejected_by_exact_verify() -> AnyResult<()>
         ));
     }
     if result.candidate_ids.contains(&bait_id) {
-        return Err(anyhow::anyhow!(
-            "regex verify leaked trigram false positive {bait_id}"
-        ));
+        return Err(anyhow::anyhow!("regex verify leaked trigram false positive {bait_id}"));
     }
     Ok(())
 }
@@ -631,10 +612,7 @@ fn regex_typed_rejection_does_not_poison_next_query() -> AnyResult<()> {
 
     let exact_id = rt.candidate_id_for_path("src/exact.txt")?;
     let follow_up = rt.query_text(TextQuerySyntax::Native, "needle_x", 10);
-    require_no_typed_error(
-        follow_up.typed_error,
-        "follow-up lexical query after regex reject",
-    )?;
+    require_no_typed_error(follow_up.typed_error, "follow-up lexical query after regex reject")?;
     if follow_up.candidate_ids != vec![exact_id] {
         return Err(anyhow::anyhow!(
             "follow-up lexical query diverged after regex reject: {:?}",
@@ -654,24 +632,15 @@ fn regex_timeout_is_typed_and_does_not_poison_next_query() -> AnyResult<()> {
         .typed_error
         .ok_or_else(|| anyhow::anyhow!("expected typed regex timeout"))?;
     if error.code.as_str() != "QUERY_TIMEOUT" {
-        return Err(anyhow::anyhow!(
-            "expected QUERY_TIMEOUT, got {}",
-            error.code
-        ));
+        return Err(anyhow::anyhow!("expected QUERY_TIMEOUT, got {}", error.code));
     }
     if !error.message.contains("timed out") {
-        return Err(anyhow::anyhow!(
-            "regex timeout lost timeout detail: {}",
-            error.message
-        ));
+        return Err(anyhow::anyhow!("regex timeout lost timeout detail: {}", error.message));
     }
 
     let exact_id = rt.candidate_id_for_path("src/exact.txt")?;
     let follow_up = rt.query_text(TextQuerySyntax::Native, "needle_x", 10);
-    require_no_typed_error(
-        follow_up.typed_error,
-        "follow-up lexical query after regex timeout",
-    )?;
+    require_no_typed_error(follow_up.typed_error, "follow-up lexical query after regex timeout")?;
     if follow_up.candidate_ids != vec![exact_id] {
         return Err(anyhow::anyhow!(
             "follow-up lexical query diverged after regex timeout: {:?}",
@@ -978,10 +947,7 @@ fn lexical_timeout_runtime_metrics_use_plan_limit_bucket_without_query_leakage()
         .typed_error
         .ok_or_else(|| anyhow::anyhow!("expected lexical timeout typed error"))?;
     if error.code.as_str() != "QUERY_TIMEOUT" {
-        return Err(anyhow::anyhow!(
-            "expected QUERY_TIMEOUT, got {}",
-            error.code
-        ));
+        return Err(anyhow::anyhow!("expected QUERY_TIMEOUT, got {}", error.code));
     }
     assert_closed_metric_suffix(
         &rt,
@@ -996,25 +962,16 @@ fn history_missing_ref_shard_uses_closed_unavailable_metric() -> AnyResult<()> {
     let mut rt = E2eRuntime::boot()?;
     seed_history_partial_shard_fixture(&mut rt, false, false)?;
 
-    let result = rt.query_history(
-        TextQuerySyntax::Sourcegraph,
-        "type:commit rev:refs/heads/main fix",
-        10,
-    );
+    let result =
+        rt.query_history(TextQuerySyntax::Sourcegraph, "type:commit rev:refs/heads/main fix", 10);
     let error = result
         .typed_error
         .ok_or_else(|| anyhow::anyhow!("expected history ref-shard typed error"))?;
     if error.code.as_str() != "HISTORY_SHARD_UNAVAILABLE" {
-        return Err(anyhow::anyhow!(
-            "expected HISTORY_SHARD_UNAVAILABLE, got {}",
-            error.code
-        ));
+        return Err(anyhow::anyhow!("expected HISTORY_SHARD_UNAVAILABLE, got {}", error.code));
     }
     if !error.message.contains("ref shard is unavailable") {
-        return Err(anyhow::anyhow!(
-            "unexpected history ref-shard message: {}",
-            error.message
-        ));
+        return Err(anyhow::anyhow!("unexpected history ref-shard message: {}", error.message));
     }
     assert_closed_metric_suffix(
         &rt,
@@ -1029,25 +986,15 @@ fn history_missing_tag_shard_uses_closed_unavailable_metric() -> AnyResult<()> {
     let mut rt = E2eRuntime::boot()?;
     seed_history_partial_shard_fixture(&mut rt, true, false)?;
 
-    let result = rt.query_history(
-        TextQuerySyntax::Sourcegraph,
-        "type:commit rev:v1.0.0 fix",
-        10,
-    );
+    let result = rt.query_history(TextQuerySyntax::Sourcegraph, "type:commit rev:v1.0.0 fix", 10);
     let error = result
         .typed_error
         .ok_or_else(|| anyhow::anyhow!("expected history tag-shard typed error"))?;
     if error.code.as_str() != "HISTORY_SHARD_UNAVAILABLE" {
-        return Err(anyhow::anyhow!(
-            "expected HISTORY_SHARD_UNAVAILABLE, got {}",
-            error.code
-        ));
+        return Err(anyhow::anyhow!("expected HISTORY_SHARD_UNAVAILABLE, got {}", error.code));
     }
     if !error.message.contains("tag shard is unavailable") {
-        return Err(anyhow::anyhow!(
-            "unexpected history tag-shard message: {}",
-            error.message
-        ));
+        return Err(anyhow::anyhow!("unexpected history tag-shard message: {}", error.message));
     }
     assert_closed_metric_suffix(
         &rt,
@@ -1106,10 +1053,7 @@ fn structural_missing_parse_tree_fails_typed_generation_not_ready() -> AnyResult
         .typed_error
         .ok_or_else(|| anyhow::anyhow!("expected typed structural readiness error"))?;
     if error.code.as_str() != "STR_GENERATION_NOT_READY" {
-        return Err(anyhow::anyhow!(
-            "expected STR_GENERATION_NOT_READY, got {}",
-            error.code
-        ));
+        return Err(anyhow::anyhow!("expected STR_GENERATION_NOT_READY, got {}", error.code));
     }
     assert_closed_metric_suffix(
         &rt,
@@ -1127,11 +1071,7 @@ fn structural_orphan_chunk_authority_fails_typed_shard_unavailable() -> AnyResul
     rt.ingest_text("repo-e2e", path, content)?;
     // Keep the generation's required RawCodeFallback corpus present after
     // deleting the structural owner's lexical authority below.
-    rt.ingest_text(
-        "repo-e2e",
-        "src/semantic_sentinel.rs",
-        "fn semantic_sentinel() {}",
-    )?;
+    rt.ingest_text("repo-e2e", "src/semantic_sentinel.rs", "fn semantic_sentinel() {}")?;
     rt.ingest_structural_function_tree(path, content, "orphaned")?;
     rt.delete_chunk_for_path(path)?;
     _ = rt.seal_lexical_generation_for_tracks(&[
@@ -1144,10 +1084,7 @@ fn structural_orphan_chunk_authority_fails_typed_shard_unavailable() -> AnyResul
         .typed_error
         .ok_or_else(|| anyhow::anyhow!("expected typed structural shard-unavailable error"))?;
     if error.code.as_str() != "STR_SHARD_UNAVAILABLE" {
-        return Err(anyhow::anyhow!(
-            "expected STR_SHARD_UNAVAILABLE, got {}",
-            error.code
-        ));
+        return Err(anyhow::anyhow!("expected STR_SHARD_UNAVAILABLE, got {}", error.code));
     }
     assert_closed_metric_suffix(
         &rt,
@@ -1168,10 +1105,7 @@ fn structural_mixed_lexical_boolean_executes_and_does_not_poison_next_query() ->
         "chaos_structural_alpha AND match { function_item }",
         10,
     );
-    require_no_typed_error(
-        mixed.typed_error,
-        "mixed lexical/structural boolean execution",
-    )?;
+    require_no_typed_error(mixed.typed_error, "mixed lexical/structural boolean execution")?;
     if mixed.candidate_ids != vec![expected_id.clone()] {
         return Err(anyhow::anyhow!(
             "mixed lexical/structural boolean diverged: {:?}",
@@ -1230,10 +1164,7 @@ fn structural_mixed_lexical_or_executes_and_does_not_poison_next_query() -> AnyR
         "chaos_structural_alpha OR match { trait_item }",
         10,
     );
-    require_no_typed_error(
-        mixed_or.typed_error,
-        "mixed lexical/structural OR execution",
-    )?;
+    require_no_typed_error(mixed_or.typed_error, "mixed lexical/structural OR execution")?;
     let mut observed = mixed_or.candidate_ids;
     observed.sort();
     let mut expected = vec![fn_id.clone(), trait_id];
@@ -1309,10 +1240,7 @@ fn structural_pure_negative_boolean_executes_and_does_not_poison_next_query() ->
 
     let pure_negative =
         rt.query_structural(TextQuerySyntax::Native, "NOT match { function_item }", 10);
-    require_no_typed_error(
-        pure_negative.typed_error,
-        "pure-negative structural root execution",
-    )?;
+    require_no_typed_error(pure_negative.typed_error, "pure-negative structural root execution")?;
     if !pure_negative.candidate_ids.is_empty() {
         return Err(anyhow::anyhow!(
             "single-function structural fixture should yield empty pure-negative survivors, got {:?}",
@@ -1369,10 +1297,7 @@ fn structural_typed_hole_kind_rejects_typed_and_does_not_poison_next_query() -> 
         .typed_error
         .ok_or_else(|| anyhow::anyhow!("expected typed structural typed-hole rejection"))?;
     if error.code.as_str() != "STR_HOLE_KIND_UNSUPPORTED" {
-        return Err(anyhow::anyhow!(
-            "expected STR_HOLE_KIND_UNSUPPORTED, got {}",
-            error.code
-        ));
+        return Err(anyhow::anyhow!("expected STR_HOLE_KIND_UNSUPPORTED, got {}", error.code));
     }
     if !error.message.contains("typed hole kind `lambda`") {
         return Err(anyhow::anyhow!(
@@ -1487,10 +1412,7 @@ fn runtime_catalog_without_authority_fails_typed_and_metrics_are_bounded() -> An
         .typed_error
         .ok_or_else(|| anyhow::anyhow!("expected RUNTIME_CATALOG_NOT_READY typed error"))?;
     if error.code.as_str() != "RUNTIME_CATALOG_NOT_READY" {
-        return Err(anyhow::anyhow!(
-            "expected RUNTIME_CATALOG_NOT_READY, got {}",
-            error.code
-        ));
+        return Err(anyhow::anyhow!("expected RUNTIME_CATALOG_NOT_READY, got {}", error.code));
     }
     assert_closed_metric_suffix(
         &rt,
@@ -1657,10 +1579,7 @@ fn runtime_catalog_snapshot_unknown_rejects_typed_and_does_not_poison_next_query
         .typed_error
         .ok_or_else(|| anyhow::anyhow!("expected SNAPSHOT_UNKNOWN typed rejection"))?;
     if error.code.as_str() != "SNAPSHOT_UNKNOWN" {
-        return Err(anyhow::anyhow!(
-            "expected SNAPSHOT_UNKNOWN, got {}",
-            error.code
-        ));
+        return Err(anyhow::anyhow!("expected SNAPSHOT_UNKNOWN, got {}", error.code));
     }
 
     let follow_up = rt.query_runtime_metadata(
@@ -1707,17 +1626,10 @@ fn predicate_file_contains_executes_and_miss_does_not_poison_next_query() -> Any
     let hit = rt.query_text(TextQuerySyntax::Native, "file.contains('oo_ba')", 10);
     require_no_typed_error(hit.typed_error, "file.contains hit query")?;
     if hit.candidate_ids != vec![expected_id] {
-        return Err(anyhow::anyhow!(
-            "file.contains hit query diverged: {:?}",
-            hit.candidate_ids
-        ));
+        return Err(anyhow::anyhow!("file.contains hit query diverged: {:?}", hit.candidate_ids));
     }
 
-    let miss = rt.query_text(
-        TextQuerySyntax::Native,
-        "file.contains(\"banana lemon\")",
-        10,
-    );
+    let miss = rt.query_text(TextQuerySyntax::Native, "file.contains(\"banana lemon\")", 10);
     require_no_typed_error(miss.typed_error, "file.contains miss query")?;
     if !miss.candidate_ids.is_empty() {
         return Err(anyhow::anyhow!(
@@ -1764,24 +1676,15 @@ fn predicate_repo_has_file_executes_and_miss_does_not_poison_next_query() -> Any
     let alpha_id = rt.candidate_id_for_path("src/lib.rs")?;
     let beta_id = rt.candidate_id_for_path("src/main.rs")?;
 
-    let hit = rt.query_text(
-        TextQuerySyntax::Sourcegraph,
-        "repo:has.file(path:src/lib.rs) needle",
-        10,
-    );
+    let hit =
+        rt.query_text(TextQuerySyntax::Sourcegraph, "repo:has.file(path:src/lib.rs) needle", 10);
     require_no_typed_error(hit.typed_error, "repo.has.file hit query")?;
     if hit.candidate_ids != vec![alpha_id.clone(), beta_id.clone()] {
-        return Err(anyhow::anyhow!(
-            "repo.has.file hit query diverged: {:?}",
-            hit.candidate_ids
-        ));
+        return Err(anyhow::anyhow!("repo.has.file hit query diverged: {:?}", hit.candidate_ids));
     }
 
-    let miss = rt.query_text(
-        TextQuerySyntax::Sourcegraph,
-        "repo:has.file(path:missing.rs) needle",
-        10,
-    );
+    let miss =
+        rt.query_text(TextQuerySyntax::Sourcegraph, "repo:has.file(path:missing.rs) needle", 10);
     require_no_typed_error(miss.typed_error, "repo.has.file miss query")?;
     if !miss.candidate_ids.is_empty() {
         return Err(anyhow::anyhow!(
@@ -1924,10 +1827,7 @@ fn history_missing_type_rejects_typed_and_does_not_poison_next_query() -> AnyRes
         .typed_error
         .ok_or_else(|| anyhow::anyhow!("expected INVALID_REQUEST for missing history type"))?;
     if error.code.as_str() != "INVALID_REQUEST" {
-        return Err(anyhow::anyhow!(
-            "expected INVALID_REQUEST, got {}",
-            error.code
-        ));
+        return Err(anyhow::anyhow!("expected INVALID_REQUEST, got {}", error.code));
     }
     if !error
         .message
@@ -1975,19 +1875,13 @@ fn history_commit_file_filter_rejects_typed_and_does_not_poison_next_query() -> 
     let mut rt = E2eRuntime::boot()?;
     seed_history_fixture(&mut rt)?;
 
-    let rejected = rt.query_history(
-        TextQuerySyntax::Native,
-        "type:commit file:src/history.rs fix",
-        10,
-    );
+    let rejected =
+        rt.query_history(TextQuerySyntax::Native, "type:commit file:src/history.rs fix", 10);
     let error = rejected.typed_error.ok_or_else(|| {
         anyhow::anyhow!("expected INVALID_REQUEST for commit history file filter")
     })?;
     if error.code.as_str() != "INVALID_REQUEST" {
-        return Err(anyhow::anyhow!(
-            "expected INVALID_REQUEST, got {}",
-            error.code
-        ));
+        return Err(anyhow::anyhow!("expected INVALID_REQUEST, got {}", error.code));
     }
     if !error
         .message
@@ -2035,19 +1929,13 @@ fn history_predicate_leaf_rejects_typed_and_does_not_poison_next_query() -> AnyR
     let mut rt = E2eRuntime::boot()?;
     seed_history_fixture(&mut rt)?;
 
-    let rejected = rt.query_history(
-        TextQuerySyntax::Native,
-        "type:commit file.contains('fix')",
-        10,
-    );
+    let rejected =
+        rt.query_history(TextQuerySyntax::Native, "type:commit file.contains('fix')", 10);
     let error = rejected
         .typed_error
         .ok_or_else(|| anyhow::anyhow!("expected NOT_IMPLEMENTED for history predicate leaf"))?;
     if error.code.as_str() != "NOT_IMPLEMENTED" {
-        return Err(anyhow::anyhow!(
-            "expected NOT_IMPLEMENTED, got {}",
-            error.code
-        ));
+        return Err(anyhow::anyhow!("expected NOT_IMPLEMENTED, got {}", error.code));
     }
     if !error
         .message
@@ -2104,10 +1992,7 @@ fn runtime_metadata_predicate_leaf_rejects_typed_and_does_not_poison_next_query(
         .typed_error
         .ok_or_else(|| anyhow::anyhow!("expected NOT_IMPLEMENTED for runtime predicate leaf"))?;
     if error.code.as_str() != "NOT_IMPLEMENTED" {
-        return Err(anyhow::anyhow!(
-            "expected NOT_IMPLEMENTED, got {}",
-            error.code
-        ));
+        return Err(anyhow::anyhow!("expected NOT_IMPLEMENTED, got {}", error.code));
     }
     if !error
         .message
@@ -2208,10 +2093,7 @@ fn history_before_invalid_timeref_rejects_typed_and_does_not_poison_next_query()
         .typed_error
         .ok_or_else(|| anyhow::anyhow!("expected HISTORY_INVALID_TIMEREF typed error"))?;
     if error.code.as_str() != "HISTORY_INVALID_TIMEREF" {
-        return Err(anyhow::anyhow!(
-            "expected HISTORY_INVALID_TIMEREF, got {}",
-            error.code
-        ));
+        return Err(anyhow::anyhow!("expected HISTORY_INVALID_TIMEREF, got {}", error.code));
     }
     if !error.message.contains("not a valid RFC3339") {
         return Err(anyhow::anyhow!(
@@ -2297,10 +2179,7 @@ fn history_since_time_and_commit_execute_and_unknown_commit_fails_closed() -> An
         ));
     }
     if !error.message.contains("since.commit") {
-        return Err(anyhow::anyhow!(
-            "since.commit unknown ref lost detail: {}",
-            error.message
-        ));
+        return Err(anyhow::anyhow!("since.commit unknown ref lost detail: {}", error.message));
     }
 
     let follow_up = rt.query_history(

@@ -398,9 +398,7 @@ fn distinct_rank_of(
 /// A 0-based position as the 1-based `u32` rank a contribution carries.
 fn checked_rank(index: usize, what: &str) -> Result<u32, CoreError> {
     u32::try_from(index.saturating_add(1)).map_err(|err| {
-        CoreError::Storage(format!(
-            "explain: {what} position does not fit a rank: {err}"
-        ))
+        CoreError::Storage(format!("explain: {what} position does not fit a rank: {err}"))
     })
 }
 
@@ -886,10 +884,9 @@ impl HybridTraceReportV1 {
         self.merge_entry(format!("explain.fused_rederived={rederived:.9}"));
         self.merge_entry(format!(
             "explain.fused_page_position={}",
-            ranks.fused_page_position.map_or_else(
-                || "beyond_top_k".to_string(),
-                |position| position.to_string()
-            )
+            ranks
+                .fused_page_position
+                .map_or_else(|| "beyond_top_k".to_string(), |position| position.to_string())
         ));
         self.merge_entry(format!("explain.fused_reconciled={reconciled}"));
         self.summary.push(if reconciled {

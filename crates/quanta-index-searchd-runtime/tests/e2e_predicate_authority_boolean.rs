@@ -342,11 +342,7 @@ fn repo_authority_boolean_intersection_and_complement_stay_source_repo_correlate
         "repo:has.meta(tier:prod) AND repo:has.topic(security) authority_boolean_needle",
         10,
     );
-    require_ids(
-        &intersection,
-        &[&ids.gamma_target],
-        "repo meta/topic intersection",
-    )?;
+    require_ids(&intersection, &[&ids.gamma_target], "repo meta/topic intersection")?;
 
     let description_or_topic = rt.query_text(
         TextQuerySyntax::Sourcegraph,
@@ -378,11 +374,7 @@ fn file_authority_boolean_intersection_does_not_cross_join_same_path_repositorie
         "file:has.owner(@alice) AND file:has.contributor(alice) authority_boolean_needle",
         10,
     );
-    require_ids(
-        &intersection,
-        &[&ids.gamma_target],
-        "file owner/contributor intersection",
-    )?;
+    require_ids(&intersection, &[&ids.gamma_target], "file owner/contributor intersection")?;
 
     let selected = rt.query_text(
         TextQuerySyntax::Sourcegraph,

@@ -76,9 +76,9 @@ impl DoorFindingQuarantinePort for RecordingDoorFindings {
                 },
             }),
             ScriptedFinding::DoesNotReproduce => Ok(DoorFindingOutcome::NotReproduced),
-            ScriptedFinding::Fails => Err(CoreError::NotFound(
-                "scripted: the generation directory is gone".to_string(),
-            )),
+            ScriptedFinding::Fails => {
+                Err(CoreError::NotFound("scripted: the generation directory is gone".to_string()))
+            }
         }
     }
 }

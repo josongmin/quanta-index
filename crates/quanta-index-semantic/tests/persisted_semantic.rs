@@ -286,10 +286,7 @@ fn language_constraint_is_applied_before_vector_limit_and_composes_with_scope_v1
         1,
         &RequestBudgetV1::unbounded(),
     )?;
-    assert_eq!(
-        scoped.first().map(|hit| hit.candidate_id.as_str()),
-        Some("rust-target")
-    );
+    assert_eq!(scoped.first().map(|hit| hit.candidate_id.as_str()), Some("rust-target"));
     Ok(())
 }
 
@@ -629,21 +626,11 @@ fn generation_pin_isolates_results() -> TestResult {
     let g2 = ManifestGeneration::new(2);
     build_resident_batch_v1(
         &adapter,
-        &sealed_batch(
-            g1,
-            "a.rs",
-            vec![embedding_record("emb-a", "a.rs", vec![1.0, 0.0, 0.0])?],
-            3,
-        ),
+        &sealed_batch(g1, "a.rs", vec![embedding_record("emb-a", "a.rs", vec![1.0, 0.0, 0.0])?], 3),
     )?;
     build_resident_batch_v1(
         &adapter,
-        &sealed_batch(
-            g2,
-            "b.rs",
-            vec![embedding_record("emb-b", "b.rs", vec![0.0, 0.0, 1.0])?],
-            3,
-        ),
+        &sealed_batch(g2, "b.rs", vec![embedding_record("emb-b", "b.rs", vec![0.0, 0.0, 1.0])?], 3),
     )?;
 
     let s1 = adapter.open(&repo_id(), &revision_id(), g1)?;
@@ -884,18 +871,9 @@ fn query_vectors_are_held_to_the_generations_normalization() -> TestResult {
 
     for (index, (label, vector)) in (2_u64..).zip(off_contract_unit_vectors()) {
         for (entry, code) in [
-            (
-                "search",
-                typed_code(&searcher.search(&vector, 2, &unbounded)),
-            ),
-            (
-                "hits",
-                typed_code(&searcher.search_hits(&vector, 2, &unbounded)),
-            ),
-            (
-                "score",
-                typed_code(&searcher.score_candidate("emb-1", &vector, &unbounded)),
-            ),
+            ("search", typed_code(&searcher.search(&vector, 2, &unbounded))),
+            ("hits", typed_code(&searcher.search_hits(&vector, 2, &unbounded))),
+            ("score", typed_code(&searcher.score_candidate("emb-1", &vector, &unbounded))),
         ] {
             if code.as_deref() != Some("SEM_INVALID_VECTOR") {
                 return Err(format!("a {label} query via {entry} answered {code:?}").into());
@@ -909,7 +887,7 @@ fn query_vectors_are_held_to_the_generations_normalization() -> TestResult {
         );
         if typed_code(&ingested).as_deref() != Some("SEM_INVALID_VECTOR") {
             return Err(
-                format!("a {label} row must be refused like the query: {ingested:?}").into(),
+                format!("a {label} row must be refused like the query: {ingested:?}").into()
             );
         }
     }
@@ -977,10 +955,7 @@ fn every_persisted_row_of_an_l2_unit_generation_is_unit() -> TestResult {
                 .map_err(|err| -> Box<dyn std::error::Error> { err.into() })
         })
         .collect::<Result<Vec<_>, _>>()?;
-    build_resident_batch_v1(
-        &adapter,
-        &sealed_batch(generation, "src/main.rs", embeddings, 3),
-    )?;
+    build_resident_batch_v1(&adapter, &sealed_batch(generation, "src/main.rs", embeddings, 3))?;
 
     let dir = generation_dir(temp.path(), generation);
     let manifest: ciborium::value::Value =
@@ -1151,11 +1126,7 @@ fn scan_reports_sealed_generations_only() -> TestResult {
     build_resident_batch_v1(&adapter, &unsealed)?;
 
     let inventory = inventory_persisted_generations(&semantic_root)?;
-    assert!(
-        inventory.quarantined.is_empty(),
-        "{:?}",
-        inventory.quarantined
-    );
+    assert!(inventory.quarantined.is_empty(), "{:?}", inventory.quarantined);
     let scanned = inventory.sealed;
     assert_eq!(scanned.len(), 1);
     let Some(record) = scanned.first() else {
@@ -1220,11 +1191,7 @@ fn inventory_lists_a_content_corrupted_generation_and_the_deep_witness_refuses_i
     std::fs::write(&manifest_path, &tampered)?;
 
     let inventory = inventory_persisted_generations(&semantic_root)?;
-    assert!(
-        inventory.quarantined.is_empty(),
-        "{:?}",
-        inventory.quarantined
-    );
+    assert!(inventory.quarantined.is_empty(), "{:?}", inventory.quarantined);
     let Some(record) = inventory
         .sealed
         .iter()
@@ -1625,11 +1592,7 @@ fn open_cache_survives_eviction_beyond_capacity() -> TestResult {
                 3,
             ),
         )?;
-        let warm = adapter.open(
-            &repo_id(),
-            &revision_id(),
-            ManifestGeneration::new(generation),
-        )?;
+        let warm = adapter.open(&repo_id(), &revision_id(), ManifestGeneration::new(generation))?;
         let _hits = warm.search(&[1.0, 0.0, 0.0], 1, &RequestBudgetV1::unbounded())?;
     }
 

@@ -60,10 +60,7 @@ fn classify_error_metric_name_uses_closed_taxonomy() {
             },
             "lq_typed_error_plan_limit_total",
         ),
-        (
-            CoreError::NotReady("replay".to_string()),
-            "lq_typed_error_not_ready_total",
-        ),
+        (CoreError::NotReady("replay".to_string()), "lq_typed_error_not_ready_total"),
         (
             CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::StrGenerationNotReady,
@@ -71,10 +68,7 @@ fn classify_error_metric_name_uses_closed_taxonomy() {
             },
             "lq_typed_error_not_ready_total",
         ),
-        (
-            CoreError::Storage("disk".to_string()),
-            "lq_typed_error_internal_total",
-        ),
+        (CoreError::Storage("disk".to_string()), "lq_typed_error_internal_total"),
         (
             CoreError::InvalidContract("wire".to_string()),
             "lq_typed_error_invalid_request_total",

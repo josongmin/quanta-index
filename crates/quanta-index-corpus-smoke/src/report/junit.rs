@@ -55,11 +55,7 @@ fn write_testcase(writer: &mut dyn Write, row: &RowOutcome) -> io::Result<()> {
         }
         Verdict::Fail { reason } => {
             writer.write_all(b">\n")?;
-            writeln!(
-                writer,
-                "    <failure type=\"fail\" message=\"{}\" />",
-                escape_attr(reason),
-            )?;
+            writeln!(writer, "    <failure type=\"fail\" message=\"{}\" />", escape_attr(reason),)?;
             writer.write_all(b"  </testcase>\n")
         }
         Verdict::UnexpectedError { observed } => {
@@ -73,11 +69,7 @@ fn write_testcase(writer: &mut dyn Write, row: &RowOutcome) -> io::Result<()> {
         }
         Verdict::Pending { ticket } => {
             writer.write_all(b">\n")?;
-            writeln!(
-                writer,
-                "    <skipped message=\"gated on `{}`\" />",
-                escape_attr(ticket),
-            )?;
+            writeln!(writer, "    <skipped message=\"gated on `{}`\" />", escape_attr(ticket),)?;
             writer.write_all(b"  </testcase>\n")
         }
     }

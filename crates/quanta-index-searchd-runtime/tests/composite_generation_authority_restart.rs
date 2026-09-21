@@ -139,10 +139,7 @@ fn config_for(state_root: &Path) -> SearchdConfig {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_nanos());
-    let prefix = format!(
-        "qi-composite-authority-{}-{nanos}-{sequence}",
-        std::process::id()
-    );
+    let prefix = format!("qi-composite-authority-{}-{nanos}-{sequence}", std::process::id());
     let temp = std::env::temp_dir();
     SearchdConfig::from_state_root(state_root.to_path_buf())
         .try_with_search_corpus_history_retention_limits(
@@ -574,9 +571,7 @@ fn real_child_process_restart_preserves_and_rolls_back_composite_generation_v1()
     let third_process = SearchdBinaryProcess::start(directory.path())?;
     let third_client = third_process.connect()?;
     if current_composite(&third_client)? != activated.g1 {
-        return Err(
-            "second child process restart did not preserve rolled-back G1 authority".into(),
-        );
+        return Err("second child process restart did not preserve rolled-back G1 authority".into());
     }
     drop(third_client);
     third_process.stop()
@@ -602,14 +597,8 @@ fn real_child_process_cross_repo_restart_retains_and_rolls_back_each_composite_v
     let b0 = publish_and_activate_for(&first_client, REPO_B, REVISION_B, G0, B0_DIGEST, None)?;
     let a1 = publish_and_activate_for(&first_client, REPO, REVISION, G1, A1_DIGEST, Some(a0))?;
     let b1 = publish_and_activate_for(&first_client, REPO_B, REVISION_B, G1, B1_DIGEST, Some(b0))?;
-    let a2 = publish_and_activate_for(
-        &first_client,
-        REPO,
-        REVISION,
-        G2,
-        A2_DIGEST,
-        Some(a1.clone()),
-    )?;
+    let a2 =
+        publish_and_activate_for(&first_client, REPO, REVISION, G2, A2_DIGEST, Some(a1.clone()))?;
     let b2 = publish_and_activate_for(
         &first_client,
         REPO_B,
@@ -686,7 +675,7 @@ fn real_child_process_cross_repo_restart_retains_and_rolls_back_each_composite_v
         || current_composite_for(&third_client, REPO_B, REVISION_B)? != b1
     {
         return Err(
-            "second restart did not preserve both independently rolled-back composites".into(),
+            "second restart did not preserve both independently rolled-back composites".into()
         );
     }
     drop(third_client);

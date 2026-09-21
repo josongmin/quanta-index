@@ -216,10 +216,7 @@ fn damage_to_an_inactive_generation_does_not_stop_the_daemon() -> TestResult {
         .collect::<Vec<_>>();
     lexical_quarantine.sort();
     let mut expected = vec![
-        (
-            legacy_family,
-            GenerationQuarantineReasonV1::NonCanonicalLayout,
-        ),
+        (legacy_family, GenerationQuarantineReasonV1::NonCanonicalLayout),
         (garbage, GenerationQuarantineReasonV1::IdentityUnreadable),
     ];
     expected.sort();
@@ -240,11 +237,7 @@ fn damage_to_an_inactive_generation_does_not_stop_the_daemon() -> TestResult {
         return Err(format!("active generation {} does not serve: {error}", active.get()).into());
     }
     if served.candidate_ids.len() != 1 {
-        return Err(format!(
-            "active generation served {} rows",
-            served.candidate_ids.len()
-        )
-        .into());
+        return Err(format!("active generation served {} rows", served.candidate_ids.len()).into());
     }
 
     // The damaged inactive generation is refused at its own door, typed.
@@ -346,10 +339,7 @@ fn quarantine_is_listed_discarded_as_named_and_gone_after_a_reboot() -> TestResu
     let state_root = std::fs::canonicalize(rt.state_root())?;
     let lexical_legacy = state_root.join("indexes/lexical").join("repo-legacy");
     std::fs::create_dir_all(lexical_legacy.join("rev-legacy/g1"))?;
-    std::fs::write(
-        lexical_legacy.join("rev-legacy/g1/leftover.bin"),
-        [7_u8; 64],
-    )?;
+    std::fs::write(lexical_legacy.join("rev-legacy/g1/leftover.bin"), [7_u8; 64])?;
     let lexical_garbage = pair_dir(&rt, "indexes/lexical")?.join("g9");
     std::fs::create_dir_all(&lexical_garbage)?;
     std::fs::write(lexical_garbage.join(LEXICAL_IDENTITY), b"\xff\x00not-cbor")?;
@@ -357,10 +347,7 @@ fn quarantine_is_listed_discarded_as_named_and_gone_after_a_reboot() -> TestResu
     std::fs::create_dir_all(semantic_legacy.join("rev-legacy/g1"))?;
     let repo_map_snapshots = state_root.join("repo-map").join("snapshots");
     std::fs::create_dir_all(&repo_map_snapshots)?;
-    std::fs::write(
-        repo_map_snapshots.join("stale--marker.json"),
-        b"not json at all",
-    )?;
+    std::fs::write(repo_map_snapshots.join("stale--marker.json"), b"not json at all")?;
 
     rt.start()?;
 
@@ -446,7 +433,7 @@ fn quarantine_is_listed_discarded_as_named_and_gone_after_a_reboot() -> TestResu
         Err(error) if error.code.as_wire_str() == "QUARANTINE_TARGET_NOT_QUARANTINED" => {}
         other => {
             return Err(
-                format!("a sealed generation must never be discarded here: {other:?}").into(),
+                format!("a sealed generation must never be discarded here: {other:?}").into()
             );
         }
     }
@@ -462,9 +449,7 @@ fn quarantine_is_listed_discarded_as_named_and_gone_after_a_reboot() -> TestResu
         match ack.outcome {
             QuarantineDiscardOutcomeDtoV1::Discarded { .. } => {}
             QuarantineDiscardOutcomeDtoV1::Absent => {
-                return Err(
-                    format!("{} was listed, so it was there to discard", entry.path).into(),
-                );
+                return Err(format!("{} was listed, so it was there to discard", entry.path).into());
             }
         }
         if ack.target != QuarantineTargetV1::Generation(entry.clone()) {
@@ -494,11 +479,7 @@ fn quarantine_is_listed_discarded_as_named_and_gone_after_a_reboot() -> TestResu
         .discard_quarantined(QuarantineTargetV1::RepoMapFile(repo_map_entry.clone()))?
         .map_err(|error| format!("discard the repo-map file: {error:?}"))?;
     if ack.outcome != (QuarantineDiscardOutcomeDtoV1::Discarded { bytes: 15 }) {
-        return Err(format!(
-            "the repo-map file's 15 bytes are reported: {:?}",
-            ack.outcome
-        )
-        .into());
+        return Err(format!("the repo-map file's 15 bytes are reported: {:?}", ack.outcome).into());
     }
     if state_root
         .join("repo-map/quarantine")
@@ -677,7 +658,7 @@ fn a_rollback_that_proves_inactive_damage_quarantines_it() -> TestResult {
         Some(("GENERATION_SIDECAR_CORRUPT", _)) => {}
         other => {
             return Err(
-                format!("the pinned query must meet the damage typed, got {other:?}").into(),
+                format!("the pinned query must meet the damage typed, got {other:?}").into()
             );
         }
     }
@@ -735,7 +716,7 @@ fn a_rollback_that_proves_inactive_damage_quarantines_it() -> TestResult {
         Some(("GENERATION_QUARANTINED", _)) => {}
         other => {
             return Err(
-                format!("a pinned query must be refused as quarantined, got {other:?}").into(),
+                format!("a pinned query must be refused as quarantined, got {other:?}").into()
             );
         }
     }
@@ -750,15 +731,9 @@ fn a_rollback_that_proves_inactive_damage_quarantines_it() -> TestResult {
         .clone();
     if report.active_pairs_validated != 1
         || boot_listed(&report.lexical.quarantined)
-            != vec![(
-                lexical_first.clone(),
-                GenerationQuarantineReasonV1::ContentCorrupt,
-            )]
+            != vec![(lexical_first.clone(), GenerationQuarantineReasonV1::ContentCorrupt)]
         || boot_listed(&report.semantic.quarantined)
-            != vec![(
-                semantic_second.clone(),
-                GenerationQuarantineReasonV1::ContentCorrupt,
-            )]
+            != vec![(semantic_second.clone(), GenerationQuarantineReasonV1::ContentCorrupt)]
     {
         return Err(format!("the reboot must prove one pair and list both: {report:?}").into());
     }
@@ -826,11 +801,9 @@ fn damage_to_the_active_semantic_generation_refuses_to_boot_and_records_nothing(
         return Err(format!("the restored active generation does not serve: {error}").into());
     }
     if served.candidate_ids.len() != 1 {
-        return Err(format!(
-            "the active generation served {} rows",
-            served.candidate_ids.len()
-        )
-        .into());
+        return Err(
+            format!("the active generation served {} rows", served.candidate_ids.len()).into()
+        );
     }
     let listing = rt.quarantine_inventory()?;
     if !(listing.lexical.is_empty() && listing.semantic.is_empty()) {

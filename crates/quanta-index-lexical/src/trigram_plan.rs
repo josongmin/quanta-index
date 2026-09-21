@@ -41,10 +41,9 @@ pub enum TrigramPlannerError {
 impl fmt::Display for TrigramPlannerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NeedleTooShort { len, min_required } => write!(
-                f,
-                "trigram planner: needle length {len} below minimum {min_required}"
-            ),
+            Self::NeedleTooShort { len, min_required } => {
+                write!(f, "trigram planner: needle length {len} below minimum {min_required}")
+            }
             Self::UnsupportedNeedle { reason } => {
                 write!(f, "trigram planner: unsupported needle '{reason}'")
             }

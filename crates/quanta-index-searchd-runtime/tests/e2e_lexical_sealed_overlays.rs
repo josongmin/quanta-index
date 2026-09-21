@@ -119,11 +119,7 @@ fn expect_meta_hit(rt: &mut E2eRuntime, value: &str, what: &str) -> TestResult {
         5,
     );
     if let Some(error) = served.typed_error {
-        return Err(format!(
-            "{what}: query refused typed {}: {}",
-            error.code, error.message
-        )
-        .into());
+        return Err(format!("{what}: query refused typed {}: {}", error.code, error.message).into());
     }
     if served.candidate_ids.len() != 1 {
         return Err(format!(

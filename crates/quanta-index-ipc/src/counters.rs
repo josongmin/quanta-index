@@ -214,10 +214,7 @@ impl MetricSourcePort for IpcServerCounters {
                 self.metric_name("connections_refused_total"),
                 snapshot.connections_refused,
             ),
-            MetricPointV1::counter(
-                self.metric_name("peer_refused_total"),
-                snapshot.peers_refused,
-            ),
+            MetricPointV1::counter(self.metric_name("peer_refused_total"), snapshot.peers_refused),
             MetricPointV1::counter(
                 self.metric_name("peer_credentials_unreadable_total"),
                 snapshot.peer_credentials_unreadable,
@@ -258,10 +255,7 @@ impl MetricSourcePort for IpcServerCounters {
                 self.metric_name("requests_dispatched_total"),
                 snapshot.requests_dispatched,
             ),
-            MetricPointV1::counter(
-                self.metric_name("peer_hangups_total"),
-                snapshot.peer_hangups,
-            ),
+            MetricPointV1::counter(self.metric_name("peer_hangups_total"), snapshot.peer_hangups),
         ])
     }
 }

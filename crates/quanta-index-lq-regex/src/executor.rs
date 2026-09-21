@@ -207,19 +207,13 @@ fn classify_parse_error(pattern: &str, err: &regex_syntax::Error) -> RegexError 
             if let Some(kind) = classify_ast_error(a.kind(), slice) {
                 return RegexError::forbidden(
                     kind,
-                    format!(
-                        "regex dialect rejection at byte {}: {}",
-                        span.start.offset, a
-                    ),
+                    format!("regex dialect rejection at byte {}: {}", span.start.offset, a),
                 );
             }
             if let Some(kind) = classify_construct_from_slice(slice) {
                 return RegexError::forbidden(
                     kind,
-                    format!(
-                        "regex dialect rejection at byte {}: {}",
-                        span.start.offset, a
-                    ),
+                    format!("regex dialect rejection at byte {}: {}", span.start.offset, a),
                 );
             }
             RegexError::new(
@@ -227,16 +221,12 @@ fn classify_parse_error(pattern: &str, err: &regex_syntax::Error) -> RegexError 
                 format!("regex parse failed at byte {}: {}", span.start.offset, a),
             )
         }
-        regex_syntax::Error::Translate(ref t) => RegexError::new(
-            RegexErrorCode::ParseFail,
-            format!("regex HIR translation failed: {t}"),
-        ),
+        regex_syntax::Error::Translate(ref t) => {
+            RegexError::new(RegexErrorCode::ParseFail, format!("regex HIR translation failed: {t}"))
+        }
         // `regex_syntax::Error` is `#[non_exhaustive]`. Treat any future
         // variant as a generic parse failure rather than panicking.
-        _ => RegexError::new(
-            RegexErrorCode::ParseFail,
-            format!("regex parse failed: {err}"),
-        ),
+        _ => RegexError::new(RegexErrorCode::ParseFail, format!("regex parse failed: {err}")),
     }
 }
 
@@ -475,11 +465,7 @@ mod tests {
                 );
             }
         }
-        assert_eq!(
-            asked.get(),
-            3,
-            "the check is asked once per candidate until it answers true"
-        );
+        assert_eq!(asked.get(), 3, "the check is asked once per candidate until it answers true");
         // A check that never answers true changes nothing.
         match exec.execute_interruptible(&cands, &m, 0, &|| false) {
             Ok(v) => assert_eq!(v, vec![DocId(1), DocId(2)]),

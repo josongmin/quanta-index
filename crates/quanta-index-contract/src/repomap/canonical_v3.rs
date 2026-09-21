@@ -190,9 +190,7 @@ impl ArtifactIdentityV1 {
         let artifact = decode_artifact(&mut decoder)?;
         decoder.finish()?;
         if artifact.encode_canonical()?.as_slice() != bytes {
-            return Err(CanonicalRepoMapCodecErrorV1::InvalidValue(
-                "artifact_canonical_bytes",
-            ));
+            return Err(CanonicalRepoMapCodecErrorV1::InvalidValue("artifact_canonical_bytes"));
         }
         Ok(artifact)
     }
@@ -344,9 +342,7 @@ impl RepoMapCandidateEnvelopeV1 {
             compiled_payload,
         )?;
         if candidate.encode_canonical()?.as_slice() != bytes {
-            return Err(CanonicalRepoMapCodecErrorV1::InvalidValue(
-                "candidate_canonical_bytes",
-            ));
+            return Err(CanonicalRepoMapCodecErrorV1::InvalidValue("candidate_canonical_bytes"));
         }
         Ok(candidate)
     }
@@ -422,9 +418,7 @@ impl QuarantineReasonCodeV1 {
             8 => Ok(Self::SecureIoUnavailable),
             9 => Ok(Self::NonCanonicalSourceAddress),
             10 => Ok(Self::UnsupportedPersistedFormat),
-            _ => Err(CanonicalRepoMapCodecErrorV1::InvalidValue(
-                "quarantine_reason",
-            )),
+            _ => Err(CanonicalRepoMapCodecErrorV1::InvalidValue("quarantine_reason")),
         }
     }
 }
@@ -470,9 +464,7 @@ impl QuarantineObservationEvidenceV1 {
                     && !component.contains(&b'/')
             });
         if !valid_raw_path && self.reason != QuarantineReasonCodeV1::NonCanonicalSourceAddress {
-            return Err(CanonicalRepoMapCodecErrorV1::InvalidValue(
-                "quarantine_raw_path_reason",
-            ));
+            return Err(CanonicalRepoMapCodecErrorV1::InvalidValue("quarantine_raw_path_reason"));
         }
         if !valid_raw_path
             && (self.observed_byte_size.is_some()
@@ -564,10 +556,7 @@ impl QuarantineObservationEvidenceV1 {
         push_key(&mut bytes, 3);
         push_nullable_digest(&mut bytes, self.raw_payload_digest.map(|digest| digest.0))?;
         push_key(&mut bytes, 4);
-        push_nullable_digest(
-            &mut bytes,
-            self.encoded_address_digest.map(|digest| digest.0),
-        )?;
+        push_nullable_digest(&mut bytes, self.encoded_address_digest.map(|digest| digest.0))?;
         push_uint_pair(&mut bytes, 5, u64::from(self.reason.code()));
         push_key(&mut bytes, 6);
         push_bytes(&mut bytes, self.state_root_uuid_commitment.as_bytes())?;
@@ -601,9 +590,7 @@ impl QuarantineObservationEvidenceV1 {
             state_root_uuid_commitment,
         )?;
         if evidence.encode_canonical()?.as_slice() != bytes {
-            return Err(CanonicalRepoMapCodecErrorV1::InvalidValue(
-                "evidence_canonical_bytes",
-            ));
+            return Err(CanonicalRepoMapCodecErrorV1::InvalidValue("evidence_canonical_bytes"));
         }
         Ok(evidence)
     }
@@ -632,9 +619,7 @@ impl QuarantineIncidentV1 {
         evidence: QuarantineObservationEvidenceV1,
     ) -> Result<Self, CanonicalRepoMapCodecErrorV1> {
         if sequence == 0 || sequence > i64::MAX.unsigned_abs() {
-            return Err(CanonicalRepoMapCodecErrorV1::InvalidValue(
-                "quarantine_sequence",
-            ));
+            return Err(CanonicalRepoMapCodecErrorV1::InvalidValue("quarantine_sequence"));
         }
         evidence.validate()?;
         Ok(Self {
@@ -669,10 +654,7 @@ impl QuarantineIncidentV1 {
         push_key(&mut bytes, 4);
         push_nullable_uint(&mut bytes, self.evidence.observed_byte_size);
         push_key(&mut bytes, 5);
-        push_nullable_digest(
-            &mut bytes,
-            self.evidence.raw_payload_digest.map(|digest| digest.0),
-        )?;
+        push_nullable_digest(&mut bytes, self.evidence.raw_payload_digest.map(|digest| digest.0))?;
         push_key(&mut bytes, 6);
         push_nullable_digest(
             &mut bytes,
@@ -682,10 +664,7 @@ impl QuarantineIncidentV1 {
         push_key(&mut bytes, 8);
         push_bytes(&mut bytes, evidence_digest.as_bytes())?;
         push_key(&mut bytes, 9);
-        push_bytes(
-            &mut bytes,
-            self.evidence.state_root_uuid_commitment.as_bytes(),
-        )?;
+        push_bytes(&mut bytes, self.evidence.state_root_uuid_commitment.as_bytes())?;
         Ok(bytes)
     }
 
@@ -726,9 +705,7 @@ impl QuarantineIncidentV1 {
         }
         let incident = Self::new(sequence, observed_at_unix_nanos, evidence)?;
         if incident.encode_canonical()?.as_slice() != bytes {
-            return Err(CanonicalRepoMapCodecErrorV1::InvalidValue(
-                "incident_canonical_bytes",
-            ));
+            return Err(CanonicalRepoMapCodecErrorV1::InvalidValue("incident_canonical_bytes"));
         }
         Ok(incident)
     }
@@ -803,9 +780,7 @@ fn decode_artifact(
     let generation = decoder.uint()?;
     decoder.expect_uint(4, "artifact_key_4")?;
     if decoder.text()? != REPOMAP_ARTIFACT_DOMAIN {
-        return Err(CanonicalRepoMapCodecErrorV1::InvalidValue(
-            "artifact_domain",
-        ));
+        return Err(CanonicalRepoMapCodecErrorV1::InvalidValue("artifact_domain"));
     }
     decoder.expect_uint(5, "artifact_key_5")?;
     let content_digest = ArtifactContentDigestV1(decoder.digest()?);

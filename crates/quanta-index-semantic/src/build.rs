@@ -344,10 +344,7 @@ async fn ensure_cluster_membership_table(
         .execute()
         .await
         .map_err(|err| {
-            lancedb_err(
-                &format!("create_empty_table {CLUSTER_MEMBERSHIP_TABLE_NAME}"),
-                err,
-            )
+            lancedb_err(&format!("create_empty_table {CLUSTER_MEMBERSHIP_TABLE_NAME}"), err)
         })
 }
 
@@ -471,11 +468,7 @@ fn semantic_scope_key_v1(corpus_kind: &str, owner_kind: &str, owner_id: &str) ->
 }
 
 fn path_scope_key_v1(scope: &quanta_index_contract::SearchScopeKey) -> String {
-    format!(
-        "{:?}\u{1f}{}",
-        scope.doc_surface,
-        scope.repo_relative_path.as_str()
-    )
+    format!("{:?}\u{1f}{}", scope.doc_surface, scope.repo_relative_path.as_str())
 }
 
 /// The scope authority of one streamed batch, checked window by window.
@@ -629,9 +622,7 @@ fn column_as<'a, T: Array + 'static>(
     arrow_type: &str,
 ) -> Result<&'a T, CoreError> {
     let column = batch.column_by_name(name).ok_or_else(|| {
-        CoreError::Storage(format!(
-            "semantic: column `{name}` missing from lancedb result batch"
-        ))
+        CoreError::Storage(format!("semantic: column `{name}` missing from lancedb result batch"))
     })?;
     column.as_any().downcast_ref::<T>().ok_or_else(|| {
         CoreError::Storage(format!(
@@ -705,10 +696,9 @@ async fn validate_cluster_membership_coverage_v1(
         let record_ids = column_as::<StringArray>(&batch, crate::layout::COLUMN_RECORD_ID, "Utf8")?;
         let authority_digests = column_as::<StringArray>(&batch, COLUMN_AUTHORITY_DIGEST, "Utf8")?;
         for row in 0..batch.num_rows() {
-            if !expected.insert((
-                record_ids.value(row).to_owned(),
-                authority_digests.value(row).to_owned(),
-            )) {
+            if !expected
+                .insert((record_ids.value(row).to_owned(), authority_digests.value(row).to_owned()))
+            {
                 return Err(CoreError::Storage(format!(
                     "semantic: duplicate ClusterCard record_id {:?} in sealed dataset",
                     record_ids.value(row)
@@ -825,9 +815,7 @@ fn string_column<'a>(
     rows: &[&'a EmbeddingRecord],
     value: impl Fn(&'a EmbeddingRecord) -> &'a str,
 ) -> Arc<dyn Array> {
-    Arc::new(StringArray::from_iter_values(
-        rows.iter().map(|embedding| value(embedding)),
-    ))
+    Arc::new(StringArray::from_iter_values(rows.iter().map(|embedding| value(embedding))))
 }
 
 /// One nullable string column built straight from the rows.
@@ -847,9 +835,7 @@ fn u32_column<'a>(
     rows: &[&'a EmbeddingRecord],
     value: impl Fn(&'a EmbeddingRecord) -> u32,
 ) -> Arc<dyn Array> {
-    Arc::new(UInt32Array::from_iter_values(
-        rows.iter().map(|embedding| value(embedding)),
-    ))
+    Arc::new(UInt32Array::from_iter_values(rows.iter().map(|embedding| value(embedding))))
 }
 
 /// The Arrow batch of one window's rows: every replace scope's embeddings
@@ -980,9 +966,7 @@ fn build_cluster_membership_record_batch(
     )
     .map(Some)
     .map_err(|error| {
-        CoreError::Storage(format!(
-            "semantic: build cluster membership record batch: {error}"
-        ))
+        CoreError::Storage(format!("semantic: build cluster membership record batch: {error}"))
     })
 }
 
@@ -1007,10 +991,7 @@ fn semantic_scopes_for_replace_scope(
 }
 
 async fn delete_by_path(table: &lancedb::Table, path: &str) -> Result<(), CoreError> {
-    let predicate = format!(
-        "{COLUMN_REPO_RELATIVE_PATH} = {}",
-        crate::sql::quote_sql_string(path)
-    );
+    let predicate = format!("{COLUMN_REPO_RELATIVE_PATH} = {}", crate::sql::quote_sql_string(path));
     let _result = table
         .delete(predicate.as_str())
         .await
@@ -1076,10 +1057,7 @@ async fn delete_cluster_membership_for_surface(
     }
     let predicate = owner_kinds.join(" OR ");
     let _result = table.delete(predicate.as_str()).await.map_err(|err| {
-        lancedb_err(
-            &format!("delete cluster membership surface predicate `{predicate}`"),
-            err,
-        )
+        lancedb_err(&format!("delete cluster membership surface predicate `{predicate}`"), err)
     })?;
     Ok(())
 }
@@ -1128,10 +1106,7 @@ async fn delete_surface_rows(
 ) -> Result<(), CoreError> {
     let predicate = semantic_surface_delete_predicate_v1(surface)?;
     let _result = table.delete(predicate.as_str()).await.map_err(|err| {
-        lancedb_err(
-            &format!("delete semantic surface {surface:?} predicate `{predicate}`"),
-            err,
-        )
+        lancedb_err(&format!("delete semantic surface {surface:?} predicate `{predicate}`"), err)
     })?;
     Ok(())
 }
@@ -1176,10 +1151,8 @@ async fn delete_replace_scope_memberships(
     let mut owners = BTreeSet::new();
     for embedding in &scope.embeddings {
         if embedding.corpus_kind == SemanticCorpusKindV1::ClusterCard {
-            let _inserted = owners.insert((
-                embedding.owner_kind.as_code_str(),
-                embedding.owner_id.as_ref(),
-            ));
+            let _inserted =
+                owners.insert((embedding.owner_kind.as_code_str(), embedding.owner_id.as_ref()));
         }
     }
     for (owner_kind, owner_id) in owners {
@@ -1259,19 +1232,11 @@ fn recover_dataset_artifacts(generation_dir: &Path) -> Result<(), CoreError> {
         if staged_contract_path.exists() {
             if paths.backup.exists() || !contract_path.exists() {
                 fs::rename(&staged_contract_path, &contract_path).map_err(|err| {
-                    fs_err(
-                        "recover promoted generation contract",
-                        &staged_contract_path,
-                        &err,
-                    )
+                    fs_err("recover promoted generation contract", &staged_contract_path, &err)
                 })?;
             } else {
                 fs::remove_file(&staged_contract_path).map_err(|err| {
-                    fs_err(
-                        "abort pre-promotion generation contract",
-                        &staged_contract_path,
-                        &err,
-                    )
+                    fs_err("abort pre-promotion generation contract", &staged_contract_path, &err)
                 })?;
             }
         }
@@ -1282,11 +1247,7 @@ fn recover_dataset_artifacts(generation_dir: &Path) -> Result<(), CoreError> {
 
     if staged_contract_path.exists() {
         fs::remove_file(&staged_contract_path).map_err(|err| {
-            fs_err(
-                "remove aborted generation contract",
-                &staged_contract_path,
-                &err,
-            )
+            fs_err("remove aborted generation contract", &staged_contract_path, &err)
         })?;
     }
     if paths.backup.exists() {
@@ -1339,11 +1300,7 @@ fn stage_generation_contract(
 ) -> Result<PathBuf, CoreError> {
     let staged_path = layout::build_contract_path(generation_dir).with_extension("next");
     let bytes = contract.encode()?;
-    write_atomic(
-        &staged_path,
-        &bytes,
-        "stage generation contract for dataset promotion",
-    )?;
+    write_atomic(&staged_path, &bytes, "stage generation contract for dataset promotion")?;
     Ok(staged_path)
 }
 
@@ -1431,13 +1388,8 @@ fn rollback_promoted_dataset(generation_dir: &Path) -> Result<(), CoreError> {
     let paths = DatasetPaths::for_generation(generation_dir);
     remove_dir_if_exists("remove uncommitted promoted dataset", &paths.dataset)?;
     if paths.backup.exists() {
-        fs::rename(&paths.backup, &paths.dataset).map_err(|err| {
-            fs_err(
-                "restore dataset after contract failure",
-                &paths.backup,
-                &err,
-            )
-        })?;
+        fs::rename(&paths.backup, &paths.dataset)
+            .map_err(|err| fs_err("restore dataset after contract failure", &paths.backup, &err))?;
     }
     Ok(())
 }
@@ -1472,11 +1424,7 @@ fn inherited_vector_index_seal_v1(
     let bytes = fs::read(&manifest_path)
         .map_err(|err| fs_err("read delta base scope manifest", &manifest_path, &err))?;
     let manifest = SemanticManifest::decode(&bytes)?;
-    manifest.validate_scope(
-        &header.pin.repo_id,
-        &header.pin.revision_id,
-        base_generation,
-    )?;
+    manifest.validate_scope(&header.pin.repo_id, &header.pin.revision_id, base_generation)?;
     Ok(Some(manifest.vector_index))
 }
 
@@ -1787,17 +1735,9 @@ pub(crate) fn build_stream(
     }
     finalize_promoted_dataset(&generation_dir)?;
 
-    write_atomic(
-        &layout::ready_marker_path(&generation_dir),
-        b"ready",
-        "write ready marker",
-    )?;
+    write_atomic(&layout::ready_marker_path(&generation_dir), b"ready", "write ready marker")?;
     if let Some(manifest_bytes) = manifest_bytes {
-        write_atomic(
-            &layout::manifest_path(&generation_dir),
-            &manifest_bytes,
-            "write manifest",
-        )?;
+        write_atomic(&layout::manifest_path(&generation_dir), &manifest_bytes, "write manifest")?;
         // The file commitment every door checks the layout of and the scrub
         // proves the bytes of (QI-BB-017): measured after the dataset, the
         // contract and the scope manifest are durable, written before the

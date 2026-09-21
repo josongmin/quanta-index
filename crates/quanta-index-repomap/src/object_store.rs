@@ -73,10 +73,7 @@ pub(crate) fn exit_at_crash_boundary(boundary: &str) {
 }
 
 fn storage_error(action: &str, path: &Path, err: &dyn std::fmt::Display) -> CoreError {
-    CoreError::Storage(format!(
-        "repomap object store failed to {action} {}: {err}",
-        path.display()
-    ))
+    CoreError::Storage(format!("repomap object store failed to {action} {}: {err}", path.display()))
 }
 
 fn typed_refusal(
@@ -133,10 +130,7 @@ impl RepoMapObjectStore {
         if root_metadata.is_symlink() {
             return Err(typed_refusal(
                 quanta_index_contract::SearchPlaneErrorCodeV2::StateRootInsecure,
-                format!(
-                    "repomap object store refuses a symlinked layout root: {}",
-                    root.display()
-                ),
+                format!("repomap object store refuses a symlinked layout root: {}", root.display()),
             ));
         }
         if !root_metadata.is_dir() {
@@ -395,10 +389,7 @@ impl RepoMapObjectStore {
         if let Err(error) = self.security.verify_opened_file(&directory_pairs, leaf) {
             return Err(typed_refusal(
                 quanta_index_contract::SearchPlaneErrorCodeV2::StateRootInsecure,
-                format!(
-                    "repomap object store refused {}: {error}",
-                    final_path.display()
-                ),
+                format!("repomap object store refused {}: {error}", final_path.display()),
             ));
         }
         let mut bytes = Vec::new();
@@ -453,13 +444,7 @@ impl RepoMapObjectStore {
         &self,
         incident: &QuarantineIncidentV1,
         payload_bytes: Option<&[u8]>,
-    ) -> Result<
-        (
-            QuarantineIncidentDigestV1,
-            Option<QuarantinePayloadDigestV1>,
-        ),
-        CoreError,
-    > {
+    ) -> Result<(QuarantineIncidentDigestV1, Option<QuarantinePayloadDigestV1>), CoreError> {
         let envelope_bytes = incident
             .encode_canonical()
             .map_err(|err| object_codec_error("encode quarantine incident", &err))?;
@@ -581,11 +566,7 @@ fn write_content_addressed(
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
         Err(err) => {
-            return Err(storage_error(
-                &format!("inspect {label}"),
-                &final_path,
-                &err,
-            ));
+            return Err(storage_error(&format!("inspect {label}"), &final_path, &err));
         }
     }
     // Build the fanout directories with exact modes before the leaf.
@@ -661,10 +642,7 @@ fn observe_directory(path: &Path) -> Result<SecureMetadataPairV1, CoreError> {
     if metadata.is_symlink() {
         return Err(typed_refusal(
             quanta_index_contract::SearchPlaneErrorCodeV2::StateRootInsecure,
-            format!(
-                "repomap object store refuses a symlinked directory: {}",
-                path.display()
-            ),
+            format!("repomap object store refuses a symlinked directory: {}", path.display()),
         ));
     }
     let lstat = observed_metadata(path, &metadata)

@@ -346,17 +346,15 @@ fn a_replay_is_answered_from_the_record_and_a_forged_digest_is_refused() -> Test
     let budget = RequestBudgetV1::unbounded();
 
     let batch = dirty_batch("src/a.rs")?;
-    let first = receipt_of(dispatcher.dispatch(
-        SearchPlaneIngestIpcRequest::PublishDirtyBatch(batch.clone()),
-        &budget,
-    ))?;
+    let first = receipt_of(
+        dispatcher.dispatch(SearchPlaneIngestIpcRequest::PublishDirtyBatch(batch.clone()), &budget),
+    )?;
     if !first.applied || first.durable_sequence != 1 || first.batch_digest != batch.batch_digest {
         return Err(format!("first publish must apply at sequence 1: {first:?}").into());
     }
-    let replay = receipt_of(dispatcher.dispatch(
-        SearchPlaneIngestIpcRequest::PublishDirtyBatch(batch.clone()),
-        &budget,
-    ))?;
+    let replay = receipt_of(
+        dispatcher.dispatch(SearchPlaneIngestIpcRequest::PublishDirtyBatch(batch.clone()), &budget),
+    )?;
     if replay.applied || replay.durable_sequence != 1 {
         return Err(format!("replay must be the recorded apply, not a new one: {replay:?}").into());
     }
@@ -376,10 +374,8 @@ fn a_replay_is_answered_from_the_record_and_a_forged_digest_is_refused() -> Test
     // A different body wearing the first body's digest.
     let mut forged = dirty_batch("src/b.rs")?;
     forged.batch_digest.clone_from(&batch.batch_digest);
-    let refused = dispatcher.dispatch(
-        SearchPlaneIngestIpcRequest::PublishDirtyBatch(forged),
-        &budget,
-    );
+    let refused =
+        dispatcher.dispatch(SearchPlaneIngestIpcRequest::PublishDirtyBatch(forged), &budget);
     match typed_code_of(&refused) {
         Some(code) if code == BATCH_DIGEST_MISMATCH_CODE => {}
         other => {
@@ -456,10 +452,8 @@ fn a_refused_search_corpus_batch_leaves_no_record() -> TestRes {
     let mut malformed = fixture_search_corpus_batch()?;
     malformed.base_generation = Some(ManifestGeneration::new(3));
     stamp_batch_digest_v1(&mut malformed)?;
-    let refused = dispatcher.dispatch(
-        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(malformed),
-        &budget,
-    );
+    let refused = dispatcher
+        .dispatch(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(malformed), &budget);
     if typed_code_of(&refused)
         != Some(quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusBatchShapeInvalid)
     {
@@ -503,10 +497,10 @@ fn a_refused_search_corpus_batch_leaves_no_record() -> TestRes {
 
     // The corrected batch under its own digest applies and is recorded.
     let corrected = fixture_search_corpus_batch()?;
-    let receipt = receipt_of(dispatcher.dispatch(
-        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(corrected),
-        &budget,
-    ))?;
+    let receipt = receipt_of(
+        dispatcher
+            .dispatch(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(corrected), &budget),
+    )?;
     if !receipt.applied || !receipt.sealed || catalog.records() != 1 {
         return Err(format!("the corrected batch must apply and be recorded: {receipt:?}").into());
     }
@@ -541,10 +535,11 @@ fn a_resumed_sealed_batch_finalizes_without_re_embedding() -> TestRes {
         body_sha256,
     )?;
 
-    let resumed = receipt_of(dispatcher.dispatch(
-        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch.clone()),
-        &budget,
-    ))?;
+    let resumed =
+        receipt_of(dispatcher.dispatch(
+            SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch.clone()),
+            &budget,
+        ))?;
     if !resumed.applied || !resumed.sealed || resumed.durable_sequence != 1 {
         return Err(format!("the resumed publish must finalize as the apply: {resumed:?}").into());
     }
@@ -566,13 +561,12 @@ fn a_resumed_sealed_batch_finalizes_without_re_embedding() -> TestRes {
         )
         .into());
     }
-    let replay = receipt_of(dispatcher.dispatch(
-        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch),
-        &budget,
-    ))?;
+    let replay = receipt_of(
+        dispatcher.dispatch(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch), &budget),
+    )?;
     if replay.applied || replay.durable_sequence != 1 {
         return Err(
-            format!("after the resume, a replay is answered from the record: {replay:?}").into(),
+            format!("after the resume, a replay is answered from the record: {replay:?}").into()
         );
     }
     Ok(())

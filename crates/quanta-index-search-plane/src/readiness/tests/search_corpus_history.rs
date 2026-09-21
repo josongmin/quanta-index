@@ -406,10 +406,7 @@ fn restart_repairs_one_over_limit_before_restoring_history() -> TestResult {
     let reopened = AuxiliaryAuthorityStore::open(dir.path(), search_corpus_retention(2)?)?;
     let mut ledger = Ledger::new();
     reopened.restore_into(&mut ledger)?;
-    assert_eq!(
-        std::fs::read_dir(reopened.search_corpus_pair_dir(&repo, &revision))?.count(),
-        2
-    );
+    assert_eq!(std::fs::read_dir(reopened.search_corpus_pair_dir(&repo, &revision))?.count(), 2);
     for generation in [18, 19] {
         ledger.validate_historically_sealed_track_identity(
             &GenerationSnapshot {
@@ -639,10 +636,7 @@ fn retention_required_set_exhaustion_preserves_activation_and_history_v1() -> Te
         quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted
     );
     assert_active_composite_v1(&catalog, &active)?;
-    assert_eq!(
-        search_corpus_history_file_names_v1(&store, &repo, &revision)?,
-        history_before
-    );
+    assert_eq!(search_corpus_history_file_names_v1(&store, &repo, &revision)?, history_before);
     assert!(
         !store
             .search_corpus_authority_path(&repo, &revision, ManifestGeneration::new(2),)
@@ -722,10 +716,7 @@ fn retention_preserves_rolled_back_active_generation_before_next_activation_v1()
 fn startup_rejects_foreign_staging_entry_v1() -> TestResult {
     let dir = tempdir()?;
     let store = AuxiliaryAuthorityStore::open(dir.path(), search_corpus_retention(2)?)?;
-    std::fs::write(
-        store.search_corpus_staging_dir.join("foreign.tmp"),
-        b"foreign",
-    )?;
+    std::fs::write(store.search_corpus_staging_dir.join("foreign.tmp"), b"foreign")?;
     drop(store);
 
     let Err(CoreError::Storage(message)) =
@@ -758,10 +749,7 @@ fn startup_rejects_non_hex_pair_directory_v1() -> TestResult {
 #[test]
 fn concurrent_history_writes_serialize_gc_and_remain_bounded() -> TestResult {
     let dir = tempdir()?;
-    let store = Arc::new(AuxiliaryAuthorityStore::open(
-        dir.path(),
-        search_corpus_retention(3)?,
-    )?);
+    let store = Arc::new(AuxiliaryAuthorityStore::open(dir.path(), search_corpus_retention(3)?)?);
     let repo =
         RepoId::new("repo-concurrent-gc").expect("static fixture ID satisfies canonical policy");
     let revision =
@@ -797,10 +785,7 @@ fn concurrent_history_writes_serialize_gc_and_remain_bounded() -> TestResult {
             Err(error) => return Err(format!("unexpected concurrent GC error: {error}").into()),
         }
     }
-    assert_eq!(
-        std::fs::read_dir(store.search_corpus_pair_dir(&repo, &revision))?.count(),
-        3
-    );
+    assert_eq!(std::fs::read_dir(store.search_corpus_pair_dir(&repo, &revision))?.count(), 3);
     assert!(
         store
             .search_corpus_authority_path(&repo, &revision, ManifestGeneration::new(8))
@@ -862,10 +847,7 @@ fn durable_pair_names_are_bounded_and_length_delimited() {
 #[test]
 fn sealed_search_corpus_retry_revalidates_parent_durability() -> TestResult {
     let dir = tempdir()?;
-    drop(AuxiliaryAuthorityStore::open(
-        dir.path(),
-        search_corpus_retention(2)?,
-    )?);
+    drop(AuxiliaryAuthorityStore::open(dir.path(), search_corpus_retention(2)?)?);
     let sync = Arc::new(FailAtParentSync {
         calls: AtomicUsize::new(0),
         // Revalidating the authority root plus five owned directories
@@ -908,10 +890,7 @@ fn sealed_search_corpus_retry_revalidates_parent_durability() -> TestResult {
 #[test]
 fn sealed_search_corpus_retry_repairs_post_rename_parent_sync_failure() -> TestResult {
     let dir = tempdir()?;
-    drop(AuxiliaryAuthorityStore::open(
-        dir.path(),
-        search_corpus_retention(2)?,
-    )?);
+    drop(AuxiliaryAuthorityStore::open(dir.path(), search_corpus_retention(2)?)?);
     let sync = Arc::new(FailAtParentSync {
         calls: AtomicUsize::new(0),
         // Revalidating the authority root plus five owned directories
@@ -955,10 +934,7 @@ fn sealed_search_corpus_retry_repairs_post_rename_parent_sync_failure() -> TestR
 #[test]
 fn sealed_search_corpus_retry_repairs_staging_parent_sync_failure_v1() -> TestResult {
     let dir = tempdir()?;
-    drop(AuxiliaryAuthorityStore::open(
-        dir.path(),
-        search_corpus_retention(2)?,
-    )?);
+    drop(AuxiliaryAuthorityStore::open(dir.path(), search_corpus_retention(2)?)?);
     let staging_dir = dir.path().join("search-corpus/.staging");
     let sync = Arc::new(FailNthSyncForParent {
         target_parent: staging_dir,

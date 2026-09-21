@@ -619,10 +619,7 @@ impl<'de> Visitor<'de> for SearchPlaneIpcErrorVisitor {
                     repair = map.next_value()?;
                 }
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        SEARCH_PLANE_IPC_ERROR_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, SEARCH_PLANE_IPC_ERROR_FIELDS));
                 }
             }
         }

@@ -166,10 +166,7 @@ fn ids(set: &[&str]) -> BTreeSet<String> {
 
 /// A dense row whose score falls with its rank.
 fn ranked_dense_row(index: u16) -> LexicalCandidate {
-    candidate(
-        &format!("d{index:03}"),
-        0.001_f32.mul_add(-f32::from(index), 1.0),
-    )
+    candidate(&format!("d{index:03}"), 0.001_f32.mul_add(-f32::from(index), 1.0))
 }
 
 /// The admission evaluations the lexical double saw, in call order.
@@ -208,10 +205,11 @@ fn hybrid_dense_only_candidate_excluded_by_a_file_filter_never_appears() -> Test
         ],
         Some(&["alpha"]),
     )?;
-    let response = hybrid_response(lanes.dispatcher.dispatch(
-        hybrid_request("file:src/lib.rs needle", 10),
-        &RequestBudgetV1::unbounded(),
-    ))?;
+    let response = hybrid_response(
+        lanes
+            .dispatcher
+            .dispatch(hybrid_request("file:src/lib.rs needle", 10), &RequestBudgetV1::unbounded()),
+    )?;
     let fused = response
         .results
         .iter()
@@ -237,18 +235,14 @@ fn hybrid_dense_only_candidate_excluded_by_a_file_filter_never_appears() -> Test
         ]
     {
         return Err(
-            format!("alpha provenance must rank within the admitted lane: {alpha:?}").into(),
+            format!("alpha provenance must rank within the admitted lane: {alpha:?}").into()
         );
     }
     if response.window.returned() != 1
         || response.window.candidate_count() != CandidateCountV1::Exact(1)
         || response.window.has_more()
     {
-        return Err(format!(
-            "window must count the admitted union: {:?}",
-            response.window
-        )
-        .into());
+        return Err(format!("window must count the admitted union: {:?}", response.window).into());
     }
     // The plan the dense candidates were admitted through is the query's
     // exact filters with an empty expression: the dense lane is not asked
@@ -262,11 +256,7 @@ fn hybrid_dense_only_candidate_excluded_by_a_file_filter_never_appears() -> Test
     }
     if !matches!(plan.filters.as_slice(), [LqFilter::File { pattern, .. }] if pattern == "src/lib.rs")
     {
-        return Err(format!(
-            "admission plan must carry the file filter: {:?}",
-            plan.filters
-        )
-        .into());
+        return Err(format!("admission plan must carry the file filter: {:?}", plan.filters).into());
     }
     if *asked != ids(&["alpha", "beta", "gamma"]) {
         return Err(format!("every dense candidate must be evaluated: {asked:?}").into());
@@ -293,10 +283,11 @@ fn hybrid_repo_filter_excluding_the_generation_empties_both_lanes() -> TestResul
         vec![candidate("alpha", 0.9), candidate("beta", 0.8)],
         Some(&[]),
     )?;
-    let response = hybrid_response(lanes.dispatcher.dispatch(
-        hybrid_request("repo:^other$ needle", 10),
-        &RequestBudgetV1::unbounded(),
-    ))?;
+    let response = hybrid_response(
+        lanes
+            .dispatcher
+            .dispatch(hybrid_request("repo:^other$ needle", 10), &RequestBudgetV1::unbounded()),
+    )?;
     if !response.results.is_empty() {
         return Err(format!(
             "a repo the query excluded must not answer from the dense lane: {:?}",
@@ -308,11 +299,7 @@ fn hybrid_repo_filter_excluding_the_generation_empties_both_lanes() -> TestResul
         return Err(format!("expected an honest empty window: {:?}", response.window).into());
     }
     if response.explanation.strategy != "empty" {
-        return Err(format!(
-            "expected an empty strategy: {}",
-            response.explanation.strategy
-        )
-        .into());
+        return Err(format!("expected an empty strategy: {}", response.explanation.strategy).into());
     }
     let calls = admission_calls(&lanes.lexical)?;
     if calls.len() != 1
@@ -390,10 +377,11 @@ fn hybrid_dense_lane_refills_until_admitted_rows_fill_top_k() -> TestResult {
         .collect::<Vec<_>>();
     let admitted_refs = admitted.iter().map(String::as_str).collect::<Vec<_>>();
     let lanes = filtered_dispatcher(Vec::new(), dense, Some(&admitted_refs))?;
-    let response = hybrid_response(lanes.dispatcher.dispatch(
-        hybrid_request("file:src/tail.rs needle", 2),
-        &RequestBudgetV1::unbounded(),
-    ))?;
+    let response = hybrid_response(
+        lanes
+            .dispatcher
+            .dispatch(hybrid_request("file:src/tail.rs needle", 2), &RequestBudgetV1::unbounded()),
+    )?;
     let fused = response
         .results
         .iter()
@@ -406,11 +394,9 @@ fn hybrid_dense_lane_refills_until_admitted_rows_fill_top_k() -> TestResult {
         || response.window.candidate_count() != CandidateCountV1::AtLeast(3)
         || !response.window.has_more()
     {
-        return Err(format!(
-            "window must say more admitted rows exist: {:?}",
-            response.window
-        )
-        .into());
+        return Err(
+            format!("window must say more admitted rows exist: {:?}", response.window).into()
+        );
     }
     // One fetch of the depth admitted nothing; the refill doubled it and
     // the engine answered fewer rows than asked — exhausted.
@@ -439,10 +425,11 @@ fn hybrid_dense_lane_refills_until_admitted_rows_fill_top_k() -> TestResult {
 fn hybrid_dense_lane_stops_when_filled_and_names_a_capped_lane() -> TestResult {
     let dense = (0_u16..120).map(ranked_dense_row).collect::<Vec<_>>();
     let lanes = filtered_dispatcher(Vec::new(), dense, None)?;
-    let response = hybrid_response(lanes.dispatcher.dispatch(
-        hybrid_request("file:src needle", 2),
-        &RequestBudgetV1::unbounded(),
-    ))?;
+    let response = hybrid_response(
+        lanes
+            .dispatcher
+            .dispatch(hybrid_request("file:src needle", 2), &RequestBudgetV1::unbounded()),
+    )?;
     if dense_fetch_sizes(&lanes.semantic)? != [100] {
         return Err("a filled lane must not refill".into());
     }
@@ -461,10 +448,11 @@ fn hybrid_dense_lane_stops_when_filled_and_names_a_capped_lane() -> TestResult {
         .map(|index| candidate(&format!("d{index:05}"), 0.5))
         .collect::<Vec<_>>();
     let lanes = filtered_dispatcher(vec![candidate("lexical-only", 1.0)], dense, Some(&[]))?;
-    let response = hybrid_response(lanes.dispatcher.dispatch(
-        hybrid_request("file:src/nowhere.rs needle", 2),
-        &RequestBudgetV1::unbounded(),
-    ))?;
+    let response =
+        hybrid_response(lanes.dispatcher.dispatch(
+            hybrid_request("file:src/nowhere.rs needle", 2),
+            &RequestBudgetV1::unbounded(),
+        ))?;
     let fused = response
         .results
         .iter()
@@ -500,10 +488,9 @@ fn hybrid_unsupported_filter_is_refused_typed_with_zero_lane_calls() -> TestResu
             vec![candidate("alpha", 0.9)],
             None,
         )?;
-        let response = lanes.dispatcher.dispatch(
-            hybrid_request(query_text, 10),
-            &RequestBudgetV1::unbounded(),
-        );
+        let response = lanes
+            .dispatcher
+            .dispatch(hybrid_request(query_text, 10), &RequestBudgetV1::unbounded());
         let (code, message) =
             ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
         if code != HYBRID_FILTER_UNSUPPORTED_CODE {
@@ -607,7 +594,7 @@ fn hybrid_seed_lanes_apply_the_same_filter_contract() -> TestResult {
         .collect::<Vec<_>>();
     if degraded != ["requested_semantic_corpus_unavailable:RepositorySummary"] {
         return Err(
-            format!("only the lane with nothing to examine is unavailable: {degraded:?}").into(),
+            format!("only the lane with nothing to examine is unavailable: {degraded:?}").into()
         );
     }
     let details = trace_details(&response.explanation);

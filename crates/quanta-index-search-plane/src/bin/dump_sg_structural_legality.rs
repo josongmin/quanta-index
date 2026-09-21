@@ -66,10 +66,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         verdicts: leaves
             .into_iter()
             .map(|(name, leaf)| {
-                (
-                    name,
-                    verdict_name(&lowering_dump::structural_leaf_verdict(&leaf)),
-                )
+                (name, verdict_name(&lowering_dump::structural_leaf_verdict(&leaf)))
             })
             .collect(),
     };

@@ -284,19 +284,13 @@ fn a_repository_at_its_in_flight_cap_is_refused_by_name_while_another_is_served(
     )?;
     ensure(
         refusal.message.contains("repository `hold`") && refusal.message.contains("1 in-flight"),
-        format!(
-            "the refusal names the repository and its cap: {}",
-            refusal.message
-        ),
+        format!("the refusal names the repository and its cap: {}", refusal.message),
     )?;
     ensure(
         refused_after >= QUEUE_WAIT && refused_after < HANDSHAKE_BOUND,
         format!("the refusal waited exactly the policy's queue wait: {refused_after:?}"),
     )?;
-    ensure(
-        server.served() == 0,
-        "nothing was served while the holder was parked",
-    )?;
+    ensure(server.served() == 0, "nothing was served while the holder was parked")?;
     // Another repository takes one of the two free slots at once.
     expect_served(&send(&server.socket, "other", HANDSHAKE_BOUND)?, "other")?;
     ensure(server.served() == 1, "the other repository was served")?;
@@ -365,10 +359,7 @@ fn a_stalled_half_frame_a_held_slot_and_a_normal_query_do_not_block_each_other()
     expect_served(&answer, "normal")?;
     ensure(
         server.served() == 1,
-        format!(
-            "exactly the normal query completed while B was held: {}",
-            server.served()
-        ),
+        format!("exactly the normal query completed while B was held: {}", server.served()),
     )?;
     ensure(
         served_in < QUEUE_WAIT,
@@ -453,9 +444,6 @@ fn a_peer_that_pipelines_then_hangs_up_still_cancels_the_running_dispatch() -> T
         format!("the hang-up is counted once: {counters:?}"),
     )?;
     // The server still serves after the abandoned connection.
-    expect_served(
-        &send(&server.socket, "follow-up", HANDSHAKE_BOUND)?,
-        "follow-up",
-    )?;
+    expect_served(&send(&server.socket, "follow-up", HANDSHAKE_BOUND)?, "follow-up")?;
     server.stop()
 }

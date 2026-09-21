@@ -319,10 +319,8 @@ mod tests {
         let row = active_row("R1", "fooBar", ExpectedShape::Multi { min: 1, max: None });
         let corpus = corpus_of(vec![row]);
         let norm = MockNormalizer::default();
-        let exec = MockExecutor::new().with(
-            "fooBar",
-            MockResponse::Ok(CandidateShape::Multi { count: 3 }),
-        );
+        let exec = MockExecutor::new()
+            .with("fooBar", MockResponse::Ok(CandidateShape::Multi { count: 3 }));
         let report = run_corpus(&corpus, &norm, &exec);
         assert_eq!(first_verdict(&report), Verdict::Pass);
         assert_eq!(report.summary.passed, 1);
@@ -334,10 +332,8 @@ mod tests {
         let row = active_row("R1", "fooBar", ExpectedShape::Multi { min: 5, max: None });
         let corpus = corpus_of(vec![row]);
         let norm = MockNormalizer::default();
-        let exec = MockExecutor::new().with(
-            "fooBar",
-            MockResponse::Ok(CandidateShape::Multi { count: 2 }),
-        );
+        let exec = MockExecutor::new()
+            .with("fooBar", MockResponse::Ok(CandidateShape::Multi { count: 2 }));
         let report = run_corpus(&corpus, &norm, &exec);
         assert!(matches!(first_verdict(&report), Verdict::Fail { .. }));
         assert_eq!(report.summary.failed, 1);
@@ -414,10 +410,8 @@ mod tests {
         );
         let corpus = corpus_of(vec![row]);
         let norm = MockNormalizer::default();
-        let exec = MockExecutor::new().with(
-            "oversized",
-            MockResponse::Err(ConformanceError::OversizedRequest),
-        );
+        let exec = MockExecutor::new()
+            .with("oversized", MockResponse::Err(ConformanceError::OversizedRequest));
         let report = run_corpus(&corpus, &norm, &exec);
         assert_eq!(
             first_verdict(&report),
@@ -432,10 +426,8 @@ mod tests {
         let row = active_row("R1", "fooBar", ExpectedShape::Single);
         let corpus = corpus_of(vec![row]);
         let norm = MockNormalizer::default();
-        let exec = MockExecutor::new().with(
-            "fooBar",
-            MockResponse::Err(ConformanceError::TimeoutExceeded),
-        );
+        let exec = MockExecutor::new()
+            .with("fooBar", MockResponse::Err(ConformanceError::TimeoutExceeded));
         let report = run_corpus(&corpus, &norm, &exec);
         assert_eq!(
             first_verdict(&report),

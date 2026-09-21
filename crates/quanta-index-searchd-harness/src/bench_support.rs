@@ -139,10 +139,7 @@ const LEXICAL_CORPUS: &[(&str, &str)] = &[
     ),
     ("src/other.rs", "fn parity_needle_alpha() {}\n"),
     ("docs/intro.md", "parity documentation lives here\n"),
-    (
-        "src/with_helper.rs",
-        "fn parity_needle_alpha() {\n    let helper = 1;\n}\n",
-    ),
+    ("src/with_helper.rs", "fn parity_needle_alpha() {\n    let helper = 1;\n}\n"),
 ];
 
 fn ingest_lexical_corpus(rt: &mut E2eRuntime) -> AnyResult<()> {
@@ -172,11 +169,7 @@ fn ingest_history_ledger(rt: &mut E2eRuntime) -> AnyResult<()> {
     use crate::harness::E2eHistoryFixtureSpec;
 
     let path = "src/history.rs";
-    rt.ingest_text(
-        BENCH_REPO,
-        path,
-        "history lexical proof alpha_content_needle\n",
-    )?;
+    rt.ingest_text(BENCH_REPO, path, "history lexical proof alpha_content_needle\n")?;
     rt.ingest_history_fixture_spec(&E2eHistoryFixtureSpec {
         commit_sha: "0123456789abcdef0123456789abcdef01234567",
         file_path: path,
@@ -513,10 +506,7 @@ mod tests {
         for kind in families {
             let files = fixture_corpus_files(kind);
             assert!(!files.is_empty(), "{kind:?} seeds something");
-            assert!(
-                digests.insert(corpus_digest("dsl-cold", &files)),
-                "{kind:?} is distinct"
-            );
+            assert!(digests.insert(corpus_digest("dsl-cold", &files)), "{kind:?} is distinct");
         }
         let warm = warm_fixture_corpus_files();
         assert_eq!(
