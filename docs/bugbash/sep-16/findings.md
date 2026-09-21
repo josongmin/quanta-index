@@ -269,8 +269,8 @@
 - `QUANTA_INDEX_EMBEDDER` 미설정 시 hash profile을 선택한다: [config.rs](../../../crates/quanta-index-searchd/src/app/config.rs):344-373.
 - corpus/query가 같은 provider를 쓰고 model identity를 맞추는 배선은 올바르다: [runtime.rs](../../../crates/quanta-index-searchd/src/app/runtime.rs):311-361.
 - 의미 paraphrase real-provider E2E는 OpenAI key가 필요한 ignored test다: [end_to_end.rs](../../../crates/quanta-index-searchd-runtime/tests/end_to_end.rs):1927-1942.
-- checked-in relevance summary는 lexical 2건과 exact-token semantic 1건뿐이며 semantic MRR/NDCG floor가 0이고 external lexical floor도 미구성이다: [relevance summary](../../../artifacts/search-quality/relevance/latest/summary.json).
-- OpenAI A/B는 2 cases뿐인 advisory capture다. paraphrase 1건에서 OpenAI top-1=1, hash top-1=0이었다: [OpenAI A/B summary](../../../artifacts/search-quality/relevance/openai-ab/latest/summary.json).
+- 감사 당시 gitignored host-local `artifacts/search-quality/relevance/latest/summary.json`은 lexical 2건과 exact-token semantic 1건뿐이며 semantic MRR/NDCG floor가 0이고 external lexical floor도 미구성이다. 이 artifact는 현재 checkout에 영구 보존되지 않는다.
+- 감사 당시 gitignored host-local `artifacts/search-quality/relevance/openai-ab/latest/summary.json`은 2 cases뿐인 advisory capture다. paraphrase 1건에서 OpenAI top-1=1, hash top-1=0이었다. 이 artifact는 현재 checkout에 영구 보존되지 않는다.
 
 **도달 영향**
 
@@ -355,9 +355,9 @@
 - `scan_vs_index`는 `adapter.build` 직후 sealed identity 없이 `open`한다: [main.rs](../../../crates/quanta-index-scan-experiment/src/main.rs):242-265.
 - 현재 HEAD에서 작은 probe도 `GENERATION_IDENTITY_INCOMPLETE`로 실패했다.
 - 이 실험은 searcher를 sample loop 전에 한 번만 열어 실제 daemon query의 QI-BB-001 reopen 비용을 측정하지 않는다.
-- checked-in [scan-vs-index.md](../../../artifacts/experiments/scan-vs-index.md)는 git SHA가 없고 현재 harness로 재생할 수 없다. 과거 50.4 MB/100,000 chunks build는 79.7초, query p95는 0.372 ms였지만 현재 성능 증거로 쓸 수 없다.
-- warm DSL artifact는 HEAD보다 102 commits, cold는 105 commits 뒤다: [warm](../../../artifacts/dsl-bench/warm-matrix.json), [cold](../../../artifacts/dsl-bench/cold-matrix.json).
-- scale/tail artifact는 HEAD보다 90 commits 뒤다: [scale](../../../artifacts/search-quality/scale/latest/summary.json), [tail](../../../artifacts/search-quality/tail/latest/summary.json).
+- 감사 당시 gitignored host-local `artifacts/experiments/scan-vs-index.md`는 git SHA가 없고 현재 harness로 재생할 수 없다. 과거 50.4 MB/100,000 chunks build는 79.7초, query p95는 0.372 ms였지만 현재 성능 증거로 쓸 수 없다. 이 artifact는 현재 checkout에 영구 보존되지 않는다.
+- 감사 당시 gitignored host-local warm DSL artifact `artifacts/dsl-bench/warm-matrix.json`은 HEAD보다 102 commits, cold artifact `artifacts/dsl-bench/cold-matrix.json`은 105 commits 뒤였다. 두 artifact 모두 현재 checkout에 영구 보존되지 않는다.
+- 감사 당시 gitignored host-local scale artifact `artifacts/search-quality/scale/latest/summary.json`과 tail artifact `artifacts/search-quality/tail/latest/summary.json`은 HEAD보다 90 commits 뒤였다. 두 artifact 모두 현재 checkout에 영구 보존되지 않는다.
 - local scale rail은 16 files인 small tier만 측정하고 medium/large/xlarge는 Linux perf runner 소유의 advisory 선언이다: [scale.rs](../../../crates/quanta-index-searchd-harness/src/scale.rs):95-145.
 - `open_ms`라는 필드는 index open이 아니라 activation 시간을 잰다: 동일 파일 346-370.
 

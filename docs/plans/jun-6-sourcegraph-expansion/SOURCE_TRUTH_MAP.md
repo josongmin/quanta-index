@@ -12,7 +12,7 @@ Use these anchors before changing any ticket.
 ## Current Capability Truth
 
 - analysis inventory:
-  - [../analysis/jun-4-dsl-capabilty.md](/Users/songmin/Documents/code-new/quanta-index/docs/analysis/jun-4-dsl-capabilty.md)
+  - [jun-4-dsl-capabilty.md](../../analysis/jun-4-dsl-capabilty.md)
 - parity report:
   - [../../../tools/benchmark/SOURCEGRAPH_PARITY.md](../../../tools/benchmark/SOURCEGRAPH_PARITY.md)
 - parity guard:
