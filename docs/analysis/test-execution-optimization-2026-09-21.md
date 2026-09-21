@@ -424,11 +424,11 @@ reduction, not a measured wall-clock speedup.
 Ten CI/correctness jobs previously installed the complete `.[dev]` dependency
 set even when they needed only the project runtime dependencies, pytest,
 pre-commit, Semgrep, or the Python standard library. Their installs now match
-their actual command imports; the prompt-manager job retains one full dev
-environment check. Two stdlib-only correctness jobs no longer invoke pip at
-all. This removes redundant package resolution and installation, without
-dropping a gate or changing its selected tests. No hosted-runner time reduction
-can be measured while GitHub jobs fail before startup.
+their actual command imports; the prompt-manager job installs runtime deps,
+pytest, and Ruff without Semgrep or pre-commit. Two stdlib-only correctness
+jobs no longer invoke pip at all. This removes redundant package resolution
+and installation without dropping a gate or changing its selected tests.
+No hosted-runner time reduction can be measured while GitHub jobs fail before startup.
 
 A clean-environment rehearsal exposed an existing CI pre-commit failure:
 generated prompt files and the parity report had extra final blank lines, two
@@ -447,6 +447,48 @@ names, checks complete/unique typed tables, and fails closed on drift. The
 report again lists 10 canonical predicates, six aliases, and the symbol route.
 This inventory is static source proof; it does not replace executable query
 results or the DSL capability owner's runnable dump.
+
+## Error-authority inventory scan cost
+
+The P00 inventory producer scanned 492 Rust source files (about 8 MB) with
+eight regular expressions, including files lacking a literal required by each
+pattern. It also reread every file for the source digest and located every
+match's line with a linear search. The producer now reads raw bytes once,
+preserves universal-newline text semantics, skips regexes when their required
+literal is absent, and uses binary search for line lookup. At frozen HEAD
+`b78ccd11289f274aa5568881640eb6547008841d` with unchanged Rust source,
+the complete serialized inventory SHA-256 remained
+`0e80ebd47bc6efac315848ce7d4d0972fc26e066ad865b4bc33c93257fd2ba25`,
+with all eight category counts unchanged. Contended local cProfile probes
+observed 16.868s before and 3.310s after; these are diagnostic observations,
+not controlled latency or hosted-CI speedup claims.
+
+The pre-commit digest-fallibility lint also performed character-by-character
+comment stripping and brace-depth analysis on every Rust source file, although
+it can report a site only when the file contains both a public declaration and
+a literal `[u8; N]` array. A cheap exact prefilter now excludes files where a
+site is impossible; the parser and its policy are unchanged for candidate
+files. The current 448-file scan still reports six sites and zero violations,
+with the complete site/finding-list SHA-256 unchanged at
+`646e0e09a6a0df0a34556a8785cb0729e0073bc969d3d80ec7c6e7c6f07346a6`.
+Contended local probes observed 35.7s before and 6.815s after; again this is
+diagnostic, not a controlled CI timing claim.
+
+## Aggregate receipt validation passes
+
+The P12 aggregate writer performed the full source-bound semantic validation
+twice before atomic replacement, then again after publication. It now keeps
+one pre-publication validation and the independent post-publication rebind.
+The second pre-publication pass was redundant because no authority state is
+mutated between those checks. The existing release-ready, diagnostic, and
+host-drift aggregate tests passed with the two-pass path. A new source-drift
+test proves that the post-publication pass still detects a changed source.
+That test also reproduced a pre-existing failure mode: post-publication
+rejection deleted a previous aggregate after overwriting it. The writer now
+restores the prior bytes atomically on post-publication failure (or removes the
+new file when no prior receipt existed). This is a correctness repair as well
+as a repeated-validation reduction. Heavy fixture timings remain contended,
+so no numeric P12 speedup is claimed.
 
 ## Remaining measurement
 

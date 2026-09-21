@@ -135,6 +135,20 @@ def test_all_five_digest_sizes_are_flagged(tmp_path: Path):
         assert f"[u8; {n}]" in violations[0].message
 
 
+def test_literal_prefilter_keeps_whitespace_tolerant_digest(tmp_path: Path):
+    p = write(
+        tmp_path,
+        """
+        pub fn h() -> [ u8 ; 32 ] {
+            [0u8; 32]
+        }
+        """,
+    )
+    sites, violations = MODULE.audit_file(p)
+    assert len(sites) == 1
+    assert len(violations) == 1
+
+
 def test_multiline_signature_handled(tmp_path: Path):
     p = write(
         tmp_path,

@@ -478,6 +478,10 @@ def strip_block_comments(lines: list[str]) -> list[str]:
 def audit_file(path: Path) -> tuple[list[DigestSite], list[Violation]]:
     """Return (digest_return_sites, violations) for this file."""
     text = path.read_text(encoding="utf-8")
+    # Every reported site needs both a public declaration and a literal digest
+    # array. Avoid the character-by-character comment and brace scans otherwise.
+    if "pub" not in text or "u8" not in text or DIGEST_ARRAY_RE.search(text) is None:
+        return [], []
     raw_lines = text.splitlines()
     # Block comments stripped for parser scanning; the doc-comment scanner
     # uses the raw `lines` too so it can still see `///` lines verbatim.

@@ -276,6 +276,47 @@ def test_writer_publishes_truthful_not_ready_diagnostic_for_staged_graph(
     assert registry["aggregate"]["artifact"] == output.relative_to(root).as_posix()
 
 
+@pytest.mark.parametrize("prior_bytes", [None, b"prior-authoritative-aggregate\n"])
+def test_writer_rebinds_source_after_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, prior_bytes: bytes | None
+) -> None:
+    root, registry = _fixture_root(tmp_path, executable=False)
+    paired = _paired_checkout(tmp_path)
+    output = root / registry["aggregate"]["artifact"]
+    if prior_bytes is not None:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(prior_bytes)
+    check_receipt = CHECKER.check_aggregate_receipt
+    calls = 0
+
+    def mutate_after_prepublication_check(*args, **kwargs):
+        nonlocal calls
+        findings = check_receipt(*args, **kwargs)
+        calls += 1
+        if calls == 1:
+            with (root / "Justfile").open("a", encoding="utf-8") as handle:
+                handle.write("\n# source changed during publication\n")
+        return findings
+
+    monkeypatch.setattr(WRITER, "_load_checker", lambda: CHECKER)
+    monkeypatch.setattr(CHECKER, "check_aggregate_receipt", mutate_after_prepublication_check)
+
+    with pytest.raises(
+        WRITER.AggregateRefused, match="proof inputs changed at aggregate publication"
+    ):
+        WRITER.publish_aggregate(
+            root=root,
+            registry_path=root / "tools/ci/proof-authority.toml",
+            paired_checkout=paired,
+        )
+
+    assert calls == 2
+    if prior_bytes is None:
+        assert not output.exists()
+    else:
+        assert output.read_bytes() == prior_bytes
+
+
 def test_writer_derives_ready_receipt_from_full_valid_closure(tmp_path: Path) -> None:
     root, registry = _fixture_root(tmp_path, executable=True)
     paired = _paired_checkout(tmp_path)

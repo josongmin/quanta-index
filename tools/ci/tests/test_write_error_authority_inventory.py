@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import shutil
@@ -107,6 +108,38 @@ def test_inventory_source_digest_changes_with_raw_source_bytes(tmp_path: Path) -
 
     assert before["source_head"] == after["source_head"]
     assert before["source_digest"] != after["source_digest"]
+
+
+def test_literal_prefilter_preserves_every_category_and_unicode_columns(tmp_path: Path) -> None:
+    source = (
+        "α SearchPlaneIpcError\n"
+        "CoreError::Typed {\n"
+        "code: String\n"
+        'code: format!("X")\n'
+        "code: &str\n"
+        'error_code.contains("bad")\n'
+        'code == "X"\n'
+        "BAD_REQUEST\n"
+    )
+    root = _fixture(tmp_path, source)
+
+    payload = WRITER.build_inventory(root)
+    categories = {category["id"]: category for category in payload["categories"]}
+
+    assert {category_id: category["count"] for category_id, category in categories.items()} == {
+        category.id: 1 for category in WRITER.CATEGORIES
+    }
+    reference = categories["search-plane-ipc-error-reference"]["occurrences"][0]
+    assert reference["line"] == 1
+    assert reference["column"] == 3
+    assert (
+        reference["line_sha256"] == hashlib.sha256("α SearchPlaneIpcError\n".encode()).hexdigest()
+    )
+
+    (root / "crates/example/src/lib.rs").write_bytes(source.replace("\n", "\r\n").encode())
+    crlf_payload = WRITER.build_inventory(root)
+    assert crlf_payload["categories"] == payload["categories"]
+    assert crlf_payload["source_digest"] != payload["source_digest"]
 
 
 def test_inventory_refuses_output_escape(tmp_path: Path) -> None:

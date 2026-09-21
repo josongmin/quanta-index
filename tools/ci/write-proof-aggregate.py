@@ -253,6 +253,35 @@ def _proof_lock_path(root: Path) -> Path:
     return path if path.is_absolute() else root / path
 
 
+def _restore_prior_aggregate(output_path: Path, prior_bytes: bytes | None) -> None:
+    if prior_bytes is None:
+        output_path.unlink(missing_ok=True)
+    else:
+        restore_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                dir=output_path.parent,
+                prefix=f".{output_path.name}.",
+                suffix=".restore",
+                delete=False,
+            ) as handle:
+                restore_path = Path(handle.name)
+                handle.write(prior_bytes)
+                handle.flush()
+                os.fsync(handle.fileno())
+        except BaseException:
+            if restore_path is not None:
+                restore_path.unlink(missing_ok=True)
+            raise
+        # Keep the complete backup on disk if replacement itself fails.
+        os.replace(restore_path, output_path)
+    directory_fd = os.open(output_path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
 def _publish_aggregate_locked(
     *,
     root: Path,
@@ -307,39 +336,29 @@ def _publish_aggregate_locked(
         if findings:
             rendered = "; ".join(finding.render() for finding in findings)
             raise AggregateRefused(f"semantic aggregate validation failed: {rendered}")
-        final_findings = checker.check_aggregate_receipt(
-            payload,
-            receipt_path=output_path,
-            registry=registry,
-            registry_path=registry_path,
-            schema=schema,
-            root=root,
-            bind_source=True,
-            paired_checkouts={target["paired_repository"]: paired_checkout},
-        )
-        if final_findings:
-            rendered = "; ".join(finding.render() for finding in final_findings)
-            raise AggregateRefused(f"proof inputs changed before aggregate publication: {rendered}")
+        prior_bytes = output_path.read_bytes() if output_path.exists() else None
         os.replace(temporary_path, output_path)
         temporary_path = None
-        installed_payload = _read_json(output_path)
-        if installed_payload != payload:
-            output_path.unlink(missing_ok=True)
-            raise AggregateRefused("published aggregate bytes differ from validated payload")
-        published_findings = checker.check_aggregate_receipt(
-            installed_payload,
-            receipt_path=output_path,
-            registry=registry,
-            registry_path=registry_path,
-            schema=schema,
-            root=root,
-            bind_source=True,
-            paired_checkouts={target["paired_repository"]: paired_checkout},
-        )
-        if published_findings:
-            output_path.unlink(missing_ok=True)
-            rendered = "; ".join(finding.render() for finding in published_findings)
-            raise AggregateRefused(f"proof inputs changed at aggregate publication: {rendered}")
+        try:
+            installed_payload = _read_json(output_path)
+            if installed_payload != payload:
+                raise AggregateRefused("published aggregate bytes differ from validated payload")
+            published_findings = checker.check_aggregate_receipt(
+                installed_payload,
+                receipt_path=output_path,
+                registry=registry,
+                registry_path=registry_path,
+                schema=schema,
+                root=root,
+                bind_source=True,
+                paired_checkouts={target["paired_repository"]: paired_checkout},
+            )
+            if published_findings:
+                rendered = "; ".join(finding.render() for finding in published_findings)
+                raise AggregateRefused(f"proof inputs changed at aggregate publication: {rendered}")
+        except BaseException:
+            _restore_prior_aggregate(output_path, prior_bytes)
+            raise
         directory_fd = os.open(output_path.parent, os.O_RDONLY)
         try:
             os.fsync(directory_fd)

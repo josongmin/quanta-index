@@ -10,6 +10,7 @@ import os
 import re
 import subprocess
 import tempfile
+from bisect import bisect_right
 from dataclasses import dataclass
 from pathlib import Path
 from re import Pattern
@@ -26,18 +27,32 @@ class Category:
     id: str
     pattern: Pattern[str]
     requires_semantic_migration_review: bool
+    required_literal: str
 
 
 CATEGORIES = (
-    Category("core-error-typed-constructor", re.compile(r"\bCoreError::Typed\s*\{"), False),
-    Category("search-plane-ipc-error-reference", re.compile(r"\bSearchPlaneIpcError\b"), False),
-    Category("free-form-code-string-field", re.compile(r"\bcode\s*:\s*String\b"), True),
-    Category("dynamic-code-format", re.compile(r"\bcode\s*:\s*format!\s*\("), True),
-    Category("code-str-parameter", re.compile(r"\bcode\s*:\s*&(?:'[_a-zA-Z0-9]+\s+)?str\b"), True),
+    Category(
+        "core-error-typed-constructor",
+        re.compile(r"\bCoreError::Typed\s*\{"),
+        False,
+        "CoreError::Typed",
+    ),
+    Category(
+        "search-plane-ipc-error-reference",
+        re.compile(r"\bSearchPlaneIpcError\b"),
+        False,
+        "SearchPlaneIpcError",
+    ),
+    Category("free-form-code-string-field", re.compile(r"\bcode\s*:\s*String\b"), True, "code"),
+    Category("dynamic-code-format", re.compile(r"\bcode\s*:\s*format!\s*\("), True, "code"),
+    Category(
+        "code-str-parameter", re.compile(r"\bcode\s*:\s*&(?:'[_a-zA-Z0-9]+\s+)?str\b"), True, "code"
+    ),
     Category(
         "code-substring-classification",
         re.compile(r"(?:\bcode\b|\berror_code\b)[^\n;]{0,80}\.contains\s*\("),
         True,
+        "code",
     ),
     Category(
         "code-string-equality",
@@ -45,8 +60,9 @@ CATEGORIES = (
             r"(?:\bcode\b|\berror_code\b)[^\n;]{0,80}(?:==|!=)\s*\"|\"[^\n\"]+\"\s*(?:==|!=)[^\n;]{0,80}(?:\bcode\b|\berror_code\b)"
         ),
         True,
+        "code",
     ),
-    Category("bad-request-wire-literal", re.compile(r"\bBAD_REQUEST\b"), False),
+    Category("bad-request-wire-literal", re.compile(r"\bBAD_REQUEST\b"), False, "BAD_REQUEST"),
 )
 
 MANUAL_GATES = (
@@ -70,27 +86,23 @@ def _source_files(root: Path) -> list[Path]:
     return sorted(path for path in (root / "crates").glob("*/src/**/*.rs") if path.is_file())
 
 
-def _source_digest(root: Path, files: list[Path]) -> str:
-    digest = hashlib.sha256()
-    domain = b"quanta-index/error-authority-source/v1"
-    digest.update(len(domain).to_bytes(4, "big"))
-    digest.update(domain)
-    for path in files:
-        relative = path.relative_to(root).as_posix().encode()
-        content = path.read_bytes()
-        digest.update(len(relative).to_bytes(4, "big"))
-        digest.update(relative)
-        digest.update(len(content).to_bytes(8, "big"))
-        digest.update(content)
-    return f"sha256:{digest.hexdigest()}"
-
-
 def build_inventory(root: Path) -> dict:
     files = _source_files(root)
+    source_digest = hashlib.sha256()
+    domain = b"quanta-index/error-authority-source/v1"
+    source_digest.update(len(domain).to_bytes(4, "big"))
+    source_digest.update(domain)
     records: dict[str, list[dict[str, object]]] = {category.id: [] for category in CATEGORIES}
     for path in files:
         relative = path.relative_to(root).as_posix()
-        text = path.read_text(encoding="utf-8")
+        content = path.read_bytes()
+        relative_bytes = relative.encode()
+        source_digest.update(len(relative_bytes).to_bytes(4, "big"))
+        source_digest.update(relative_bytes)
+        source_digest.update(len(content).to_bytes(8, "big"))
+        source_digest.update(content)
+        # Match Path.read_text's universal-newline behavior while hashing raw bytes.
+        text = content.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
         lines = text.splitlines(keepends=True)
         offsets: list[int] = []
         offset = 0
@@ -98,14 +110,10 @@ def build_inventory(root: Path) -> dict:
             offsets.append(offset)
             offset += len(line)
         for category in CATEGORIES:
+            if category.required_literal not in text:
+                continue
             for match in category.pattern.finditer(text):
-                line_index = max(
-                    0,
-                    next(
-                        (index - 1 for index, start in enumerate(offsets) if start > match.start()),
-                        len(offsets) - 1,
-                    ),
-                )
+                line_index = bisect_right(offsets, match.start()) - 1
                 line = lines[line_index] if lines else ""
                 line_start = offsets[line_index] if offsets else 0
                 records[category.id].append(
@@ -129,7 +137,7 @@ def build_inventory(root: Path) -> dict:
         "schema_version": 1,
         "scope": {"include": "crates/*/src/**/*.rs", "exclude": []},
         "source_head": _git_head(root),
-        "source_digest": _source_digest(root, files),
+        "source_digest": f"sha256:{source_digest.hexdigest()}",
         "categories": categories,
         "p01_completion_requirements": {
             "manual_gates": list(MANUAL_GATES),
