@@ -1,8 +1,9 @@
 # SEP-21 Search Plane SOTA Hardening — Ticket Index
 
-Status: `in progress`; M0 proof infrastructure exists, but the corrected semantic contract needs a new current-source
-P00 manifest/handoff. P01A is blocked until that receipt explicitly permits it. S21-13 Phase B and every
-product/runtime proof remain open until their owning lanes produce same-source receipts.
+Status: current gate is `P00 OWNER_PROOF_GREEN`. The source-bound P00 handoff
+(`artifacts/sep-21/handoffs/P00.json`, pinned by its immutable archive receipt) is the current authority and
+permits P01R. S21-13 Phase B and every product/runtime proof remain open until their owning lanes produce
+same-source receipts. Tracked docs do not embed the result SHA; the handoff owns it.
 
 Authority inputs:
 

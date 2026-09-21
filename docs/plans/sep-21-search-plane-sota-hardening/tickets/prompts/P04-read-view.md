@@ -52,7 +52,7 @@ DoD:
 - production `QueryReadViewV1`/`ReadIdentityV1` live path 0; adapter concrete type의 core import 0
 - catalog lock을 잡은 채 disk open/query 0; lock order는 하나의 canonical owner에 고정
 
-owner node expected tuple은 `id=p04-read-view-lifetime-owner`, `family=F`, `required_host=any`,
+owner node expected tuple은 `id=p04-read-view-lifetime-owner`, `family=U`, `required_host=any`,
 `dependencies=[p03-candidate-activation-owner]`다. release node는 `id=p04-read-view-lifetime`, `family=F`,
 `required_host=linux-production-like`, `dependencies=[p04-read-view-lifetime-owner,p03-candidate-activation]`다.
 proof selector는 core read-view owner, activation/retire/GC barrier, panic/cancel reconciliation, shared physical handle

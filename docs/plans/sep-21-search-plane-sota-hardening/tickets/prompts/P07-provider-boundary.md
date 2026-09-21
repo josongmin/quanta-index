@@ -52,7 +52,7 @@ DoD:
 - controlled HTTP spy와 budgeted opt-in real-provider proof는 구분 기록
 - provider network/credential/cost 승인이 없으면 real-provider proof는 NOT_RUN이며 hash/stub evidence로 대체 금지
 
-owner node expected tuple은 `id=p07-provider-boundary-owner`, `family=X`, `required_host=any`,
+owner node expected tuple은 `id=p07-provider-boundary-owner`, `family=U`, `required_host=any`,
 `dependencies=[p06-sdk-binding-owner]`이며 loopback/stub만 허용한다. release node는
 `id=p07-provider-boundary`, `family=X`, `required_host=linux-production-like`,
 `dependencies=[p07-provider-boundary-owner,p06-sdk-binding]`다. `test_authority_targets`가 비어 있으면 production implementation 전에 같은

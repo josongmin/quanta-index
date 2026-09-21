@@ -54,7 +54,7 @@ mandatory proofs:
 - before/after FD/thread/socket inode/lease/residual provider task accounting
 - live work가 남은 상태에서 graceful `drive` return 발생 건수 = 0; child 종료 전 lease drop 발생 건수 = 0
 
-owner node expected tuple은 `id=p08-runtime-supervisor-owner`, `family=P`, `required_host=any`,
+owner node expected tuple은 `id=p08-runtime-supervisor-owner`, `family=U`, `required_host=any`,
 `dependencies=[p07-provider-boundary-owner]`이며 disposable local processes만 사용한다. release node는
 `id=p08-runtime-supervisor`, `family=P`, `required_host=linux-production-like`,
 `dependencies=[p08-runtime-supervisor-owner,p07-provider-boundary]`다. `test_authority_targets`가 비어 있으면 production implementation 전에 같은

@@ -27,6 +27,10 @@ target flow:
 - `crates/quanta-index-search-plane/src/ingest_dispatcher/`
 - `crates/quanta-index-search-plane/src/auxiliary_authority.rs`
 - `crates/quanta-index-contract/src/ipc/ingest.rs`의 operation journal/status/terminal receipt section만
+- `crates/quanta-index-searchd-runtime/src/lib.rs`의 `build_runtime_with_memory_probe` composition section만:
+  SqliteCatalog/idempotency/auxiliary port 조립 라인. 함수 전체 재작성이나 파일 wildcard 권한이 아니다
+- `crates/quanta-index-searchd/src/app/runtime.rs`의 `SearchdRuntimeParts` 중 idempotency/auxiliary_catalog field
+  section만. 파일 전체가 아니다; provider/supervisor/socket section은 각 owner lane이다
 - SDK facade/re-export/public baseline/wire inventory는 수정하지 않고 exact integration delta를 P02I에 handoff
 - owner-local transaction/fault tests와 P02B proof/test-authority delta
 - `tools/ci/proof-authority.toml`의 `p02b-operation-journal` row,

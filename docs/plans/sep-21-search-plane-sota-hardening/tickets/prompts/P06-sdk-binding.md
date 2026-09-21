@@ -54,7 +54,7 @@ DoD:
 - exported public method 전수와 coverage table exact match; contextual validator 없는 same-variant success path 0
 - query-only profile은 dummy control/ingest transport를 만들지 않음
 
-owner node expected tuple은 `id=p06-sdk-binding-owner`, `family=D`, `required_host=any`,
+owner node expected tuple은 `id=p06-sdk-binding-owner`, `family=U`, `required_host=any`,
 `dependencies=[p05-query-truth-owner]`다. release node는 `id=p06-sdk-binding`, `family=D`,
 `required_host=linux-production-like`, `dependencies=[p06-sdk-binding-owner,p05-query-truth]`다. dedicated `just rust-proof-p06-sdk-binding`은 SDK mock negative target과 real UDS
 `searchd-runtime-sdk-frontdoor`를 모두 선택한다. `just rust-profile test-daemon` 하나는 positive subordinate rail이며

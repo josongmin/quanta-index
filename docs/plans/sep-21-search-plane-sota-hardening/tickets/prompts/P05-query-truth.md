@@ -53,7 +53,7 @@ DoD:
 - available-empty, filtered-empty, zero-hit executed는 서로 다른 provenance; unavailable는 typed refusal
 - explain mismatch는 typed fail-closed
 
-owner node expected tuple은 `id=p05-query-truth-owner`, `family=Q`, `required_host=any`,
+owner node expected tuple은 `id=p05-query-truth-owner`, `family=U`, `required_host=any`,
 `dependencies=[p04-read-view-lifetime-owner]`다. release node는 `id=p05-query-truth`, `family=Q`,
 `required_host=linux-production-like`, `dependencies=[p05-query-truth-owner,p04-read-view-lifetime]`다. dedicated `just rust-proof-p05-query-truth`는 최소
 `searchd-runtime-e2e-keyset-cursors`, `searchd-runtime-e2e-exact-count-window`,

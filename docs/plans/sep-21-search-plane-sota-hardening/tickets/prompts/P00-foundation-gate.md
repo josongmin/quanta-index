@@ -144,6 +144,9 @@ inventory한다.
 않는다. proof node는 `p00-authority-freeze`다. current clean checkpoint에서 manifest와
 `artifacts/sep-21/handoffs/P00.json`을 재생성·검증한다.
 
+P00C contract-refresh 실행 시 기존 P00 result commit/handoff를 supersede하는 새 result commit과 handoff를
+발행한다. 기존 result SHA의 immutable archive receipt는 보존하고 삭제/overwrite하지 않는다.
+
 최종 보고에는 status, exact source/dirty ownership, amended decision 표, source-bound error-authority inventory
 cardinality/digest와 P01A semantic completion requirements,
 lane owner matrix, proof negative matrix, command/counts, NOT_RUN, handoff path/digest, P01A 허용/차단 근거를 포함한다.

@@ -58,7 +58,7 @@ DoD:
 - active repository 0개이고 required process/provider가 healthy이면 `ready=true`; candidate integrity gate는 active
   candidate가 있을 때만 적용
 
-owner node expected tuple은 `id=p09-control-readiness-owner`, `family=P`, `required_host=any`,
+owner node expected tuple은 `id=p09-control-readiness-owner`, `family=U`, `required_host=any`,
 `dependencies=[p08-runtime-supervisor-owner]`다. release node는 `id=p09-control-readiness`, `family=P`,
 `required_host=linux-production-like`, `dependencies=[p09-control-readiness-owner,p08-runtime-supervisor]`다. transitive
 P02B contract는 current source digest로 소비하며 redundant direct dependency를 추가하지 않는다. `test_authority_targets`가

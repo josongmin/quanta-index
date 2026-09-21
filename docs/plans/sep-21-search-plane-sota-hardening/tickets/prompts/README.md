@@ -34,7 +34,10 @@ handoff artifact ID는 실행 label과 대부분 같지만 `P01A`는 `P01.json`/
 `P12.json`/`lane=P12`를 사용한다. 이 둘을 `P01A.json`/`P12Q.json`으로 임의 변경하지 않는다.
 
 1. P00을 붙여넣고 checkpoint commit, source-bound proof, handoff, lane branch push를 받는다.
-2. P00 result SHA에서 P01A를 실행하고 같은 산출물을 받는다.
+1b. P00C contract-refresh: 이미 발급된 P00 receipt가 있어도 prompt/registry/문구 정합성 교정이 필요하면
+    P00 prompt를 재실행해 새 P00 result commit과 source-bound P00 handoff를 재발행한다. 기존 receipt는
+    immutable archive DAG로 보존하고 새 handoff가 current authority가 된다.
+2. P01R(=P01A)는 직전 P00/P00C 재발행 handoff의 result SHA에서만 실행하고 같은 산출물을 받는다.
 3. P01A result SHA를 exact base로 두 개의 격리 worktree/task에 P02A와 P02B를 동시에 붙여넣는다.
 4. 두 task가 모두 끝난 뒤 P02I를 새 integration task에 붙여넣는다.
 5. P02I 이후는 P03, P04, P05, P06, P07, P08, P09, P10, P11, P12A, P12Q를 한 번에 하나씩

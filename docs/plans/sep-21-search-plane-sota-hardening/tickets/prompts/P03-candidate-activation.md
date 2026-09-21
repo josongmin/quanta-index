@@ -19,7 +19,11 @@ SQLite catalog를 visibility와 incident-event의 sole authority로 만들고 fi
 
 - `crates/quanta-index-repomap/src/{materializer,model,persistence,store}.rs`와 live layout/quarantine tests
 - catalog candidate/activation/invalidation/quarantine schema와 transaction adapters
-- `crates/quanta-index-searchd/src/app/runtime.rs`
+- `crates/quanta-index-searchd/src/app/runtime.rs`의 `SearchdRuntimeParts` section만: repo_map_* field/activation
+  wiring 삭제에 필요한 최소 section. 파일 전체 wildcard가 아니며 provider/supervisor/socket section은
+  P07/P08/P09 owner다
+- `crates/quanta-index-searchd-runtime/src/lib.rs`의 `build_runtime_with_memory_probe` 내 RepoMap
+  activation/store 조립 section만. 파일 전체나 supervisor 재구조는 P08 owner다
 - search-plane ingest/control RepoMap routes
 - `crates/quanta-index-contract/src/repomap.rs`, `crates/quanta-index-sdk/src/repomap.rs`
 - P03 owner-local process/fault tests, test/proof authority delta
@@ -78,7 +82,7 @@ SQLite catalog를 visibility와 incident-event의 sole authority로 만들고 fi
 - typed CandidateCommitmentConflict/ActivationCasConflict/ActivationTargetNotSealed만 사용; raw code 0
 
 owner-local proof와 Linux release proof를 분리한다. owner node expected tuple은
-`id=p03-candidate-activation-owner`, `family=F`, `required_host=any`,
+`id=p03-candidate-activation-owner`, `family=U`, `required_host=any`,
 `dependencies=[p02a-repomap-compiler,p02b-operation-journal]`다. release node는
 `id=p03-candidate-activation`, `family=F`, `required_host=linux-production-like`,
 `dependencies=[p03-candidate-activation-owner]`다. owner-local

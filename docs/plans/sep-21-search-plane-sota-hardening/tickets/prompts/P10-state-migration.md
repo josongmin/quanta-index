@@ -57,7 +57,7 @@ DoD fixtures:
 - non-empty destination, symlink/path traversal, wrong owner/mode, disk-full, fsync/rename crash를 fail-closed
 - broad/root/home/unresolved target과 source=destination destructive operation을 mutation 전에 거부
 
-owner node expected tuple은 `id=p10-state-migration-owner`, `family=X`, `required_host=any`,
+owner node expected tuple은 `id=p10-state-migration-owner`, `family=U`, `required_host=any`,
 `dependencies=[p09-control-readiness-owner]`이며 disposable state roots만 사용한다. release node는
 `id=p10-state-migration`, `family=X`, `required_host=linux-production-like`,
 `dependencies=[p10-state-migration-owner,p09-control-readiness]`다. transitive
