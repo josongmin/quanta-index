@@ -639,14 +639,19 @@ dependency narrowing.
 
 Staged-source hashing still launched `git ls-files` and `git cat-file` once per
 changed path. A 100-file fixture required 201 Git subprocesses and 3.76s. The
-source binder now reads the index once and resolves all unique blobs through
+source binder now reads the index once and resolves all indexed blobs through
 one `git cat-file --batch` stream. The equivalent prototype required two Git
 subprocesses and 0.05s for 101 staged paths while producing byte-identical
-index entries. The implemented end-to-end dirty digest requires three Git
-subprocesses and 0.07s for 100 staged paths, versus 201 and 3.76s before, and
-produces the identical digest. A regression test fixes the full dirty digest
-and requires one status, one index, and one blob-batch subprocess for 32
-staged files. The complete tooling set passes 344 tests after batching.
+index entries. A follow-up audit found that capturing the complete batch
+output traded subprocess cost for RSS proportional to all staged bytes. The
+final implementation streams bounded 32-request chunks through one persistent
+process and hashes each response before reading the next; memory is bounded by
+the largest staged blob rather than their sum. The end-to-end dirty digest now
+requires three Git subprocesses and 0.12s for 100 staged paths, versus 201 and
+3.76s before, and produces the identical digest. A regression test fixes the
+full dirty digest and requires one status, one index, and one streaming
+blob-batch subprocess for 32 staged files. The complete tooling set passes 344
+tests after batching.
 
 The MSRV rail invoked Cargo twice on the same 1.92.0 workspace: `check
 --all-targets` and then `test --no-run`. A single `test --all-targets --no-run`

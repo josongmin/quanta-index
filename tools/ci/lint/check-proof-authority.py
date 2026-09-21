@@ -746,47 +746,6 @@ def _working_tree_bytes(root: Path, raw_path: bytes) -> tuple[bytes, bytes]:
     return b"special:" + mode, b""
 
 
-def _batch_blob_contents(root: Path, object_ids: Iterable[bytes]) -> dict[bytes, bytes]:
-    ordered_ids = list(dict.fromkeys(object_ids))
-    if not ordered_ids:
-        return {}
-    completed = subprocess.run(
-        ["git", "-C", str(root), "cat-file", "--batch"],
-        input=b"\n".join(ordered_ids) + b"\n",
-        check=False,
-        capture_output=True,
-    )
-    if completed.returncode != 0:
-        message = os.fsdecode(completed.stderr).strip()
-        raise RuntimeError(message or "git cat-file --batch failed")
-
-    output = completed.stdout
-    cursor = 0
-    contents: dict[bytes, bytes] = {}
-    for expected_id in ordered_ids:
-        header_end = output.find(b"\n", cursor)
-        if header_end < 0:
-            raise RuntimeError("truncated git cat-file --batch header")
-        header = output[cursor:header_end].split()
-        if len(header) != 3 or header[0] != expected_id or header[1] != b"blob":
-            raise RuntimeError(
-                f"unexpected git cat-file --batch header for {os.fsdecode(expected_id)!r}"
-            )
-        try:
-            size = int(header[2])
-        except ValueError as error:
-            raise RuntimeError("invalid git cat-file --batch object size") from error
-        content_start = header_end + 1
-        content_end = content_start + size
-        if content_end >= len(output) or output[content_end : content_end + 1] != b"\n":
-            raise RuntimeError("truncated git cat-file --batch object")
-        contents[expected_id] = output[content_start:content_end]
-        cursor = content_end + 1
-    if cursor != len(output):
-        raise RuntimeError("unexpected trailing git cat-file --batch output")
-    return contents
-
-
 def _index_entries(
     root: Path, raw_paths: Iterable[bytes]
 ) -> dict[bytes, list[tuple[bytes, bytes]]]:
@@ -801,8 +760,6 @@ def _index_entries(
     # ARG_MAX on large staged changes, while one ls-files scan stays constant
     # in subprocess count and preserves arbitrary path bytes with -z.
     output = _git_bytes(root, "ls-files", "--stage", "-z")
-    indexed: dict[bytes, list[tuple[bytes, bytes]]] = {raw_path: [] for raw_path in requested}
-    object_ids: list[bytes] = []
     for raw_entry in (entry for entry in output.split(b"\0") if entry):
         header, _, entry_path = raw_entry.partition(b"\t")
         if entry_path not in requested:
@@ -811,15 +768,92 @@ def _index_entries(
         if len(parts) != 3:
             raise RuntimeError(f"unexpected git index entry for {os.fsdecode(entry_path)!r}")
         mode, object_id, stage = parts
-        indexed[entry_path].append((b"mode=" + mode + b";stage=" + stage, object_id))
-        object_ids.append(object_id)
-
-    contents = _batch_blob_contents(root, object_ids)
-    for raw_path, entries in indexed.items():
-        entries_by_path[raw_path] = [
-            (metadata, contents[object_id]) for metadata, object_id in entries
-        ]
+        entries_by_path[entry_path].append((b"mode=" + mode + b";stage=" + stage, object_id))
     return entries_by_path
+
+
+def _digest_index_entries(
+    digest: Any,
+    root: Path,
+    raw_paths: Iterable[bytes],
+    entries_by_path: dict[bytes, list[tuple[bytes, bytes]]],
+) -> None:
+    ordered_paths = list(raw_paths)
+    if not any(entries_by_path[raw_path] for raw_path in ordered_paths):
+        for raw_path in ordered_paths:
+            _digest_record(digest, b"index", raw_path, b"missing", b"")
+        return
+
+    process = subprocess.Popen(
+        ["git", "-C", str(root), "cat-file", "--batch"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert process.stdin is not None
+    assert process.stdout is not None
+    assert process.stderr is not None
+    try:
+        pending: list[tuple[bytes, bytes, bytes]] = []
+
+        def digest_pending() -> None:
+            if not pending:
+                return
+            # Keep each request write well below PIPE_BUF. Git may block on a
+            # large response before reading later requests, but the complete
+            # request chunk is already in the independent stdin pipe.
+            for _, _, object_id in pending:
+                process.stdin.write(object_id + b"\n")
+            process.stdin.flush()
+            for raw_path, metadata, object_id in pending:
+                header = process.stdout.readline().removesuffix(b"\n").split()
+                if len(header) != 3 or header[0] != object_id or header[1] != b"blob":
+                    raise RuntimeError(
+                        f"unexpected git cat-file --batch header for {os.fsdecode(object_id)!r}"
+                    )
+                try:
+                    size = int(header[2])
+                except ValueError as error:
+                    raise RuntimeError("invalid git cat-file --batch object size") from error
+                content = bytearray(size)
+                view = memoryview(content)
+                while view:
+                    read = process.stdout.readinto(view)
+                    if not read:
+                        raise RuntimeError("truncated git cat-file --batch object")
+                    view = view[read:]
+                if process.stdout.read(1) != b"\n":
+                    raise RuntimeError("truncated git cat-file --batch object delimiter")
+                _digest_record(digest, b"index", raw_path, metadata, content)
+            pending.clear()
+
+        for raw_path in ordered_paths:
+            entries = entries_by_path[raw_path]
+            if not entries:
+                digest_pending()
+                _digest_record(digest, b"index", raw_path, b"missing", b"")
+                continue
+            for metadata, object_id in entries:
+                pending.append((raw_path, metadata, object_id))
+                if len(pending) == 32:
+                    digest_pending()
+        digest_pending()
+
+        process.stdin.close()
+        message = os.fsdecode(process.stderr.read()).strip()
+        returncode = process.wait()
+        if returncode != 0:
+            raise RuntimeError(message or "git cat-file --batch failed")
+    except BaseException:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        raise
+    finally:
+        if not process.stdin.closed:
+            process.stdin.close()
+        process.stdout.close()
+        process.stderr.close()
 
 
 def _git_status_snapshot(root: Path) -> bytes:
@@ -895,18 +929,9 @@ def dirty_digest(
     staged, unstaged, untracked = _dirty_paths_from_status(
         _status_snapshot if _status_snapshot is not None else _git_status_snapshot(root)
     )
-    staged_entries = _index_entries(
-        root,
-        (raw_path for raw_path in staged if not _is_excluded(raw_path, exclusions)),
-    )
-    for raw_path in staged:
-        if _is_excluded(raw_path, exclusions):
-            continue
-        entries = staged_entries[raw_path]
-        if not entries:
-            _digest_record(digest, b"index", raw_path, b"missing", b"")
-        for metadata, content in entries:
-            _digest_record(digest, b"index", raw_path, metadata, content)
+    included_staged = [raw_path for raw_path in staged if not _is_excluded(raw_path, exclusions)]
+    staged_entries = _index_entries(root, included_staged)
+    _digest_index_entries(digest, root, included_staged, staged_entries)
 
     for raw_path in unstaged:
         if _is_excluded(raw_path, exclusions):

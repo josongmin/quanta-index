@@ -480,12 +480,19 @@ def test_dirty_digest_batches_staged_index_reads(
 
     calls: list[list[str]] = []
     original_run = MODULE.subprocess.run
+    original_popen = MODULE.subprocess.Popen
 
     def record_run(*args, **kwargs):
         calls.append(args[0])
         return original_run(*args, **kwargs)
 
+    def record_popen(*args, **kwargs):
+        if "cat-file" in args[0]:
+            calls.append(args[0])
+        return original_popen(*args, **kwargs)
+
     monkeypatch.setattr(MODULE.subprocess, "run", record_run)
+    monkeypatch.setattr(MODULE.subprocess, "Popen", record_popen)
     actual = MODULE.dirty_digest(tmp_path)
 
     expected = hashlib.sha256()
