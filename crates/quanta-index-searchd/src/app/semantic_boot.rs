@@ -1,14 +1,16 @@
-//! Semantic boot path: legacy journal migration (LDB-04) and durable readiness
-//! seeding (LDB-03).
+//! Semantic boot path: durable readiness seeding (LDB-03) plus the offline
+//! legacy-journal migration engine (LDB-04, S21-11).
 //!
-//! Replaces the retired boot-time `journal.cbor` replay. On boot the runtime:
+//! On boot the runtime only seeds the readiness ledger directly from the
+//! sealed generations; it never migrates. A legacy state root is refused
+//! typed at boot (see `state_format::refuse_legacy_state_root_v1`) and the
+//! boot report hardcodes `SemanticMigrationOutcome::NoLegacyJournal`.
 //!
-//! 1. runs a one-shot, idempotent migration off any legacy semantic journal
-//!    into the durable generation directories, then
-//! 2. seeds the readiness ledger directly from those sealed generations.
-//!
-//! There is no steady-state journal authority and no full replay; seeding cost
-//! is bounded by the count of sealed generations, not total batch history.
+//! [`migrate_legacy_semantic_journal`] is retained solely as the engine the
+//! offline `migrate-state` importer calls after the daemon is fully stopped.
+//! There is no steady-state journal authority and no full replay; seeding
+//! cost is bounded by the count of sealed generations, not total batch
+//! history.
 
 use std::path::Path;
 use std::sync::{Arc, RwLock};
@@ -68,6 +70,9 @@ pub struct SemanticBootReport {
 }
 
 /// Migrate the legacy semantic journal into durable generations exactly once.
+///
+/// Offline-only (S21-11): called solely by the `migrate-state` importer with
+/// the daemon fully stopped, never from the boot path.
 ///
 /// Idempotent and resumable: generations already sealed on disk (from a prior
 /// run or a partial crash) are skipped, so a re-run never tries to mutate a

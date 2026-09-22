@@ -344,7 +344,7 @@ impl SearchPlaneDispatcher {
                 self.emit_planner_metric(&response.generation);
                 self.emit_engine_fanout_metric(
                     &response.generation,
-                    response.explanation.engines_touched.len(),
+                    response.explanation.engines_executed.len(),
                 );
                 self.emit_early_stop_metric(
                     &response.generation,
@@ -376,7 +376,7 @@ impl SearchPlaneDispatcher {
                     self.emit_planner_metric(&response.generation);
                     self.emit_engine_fanout_metric(
                         &response.generation,
-                        response.explanation.engines_touched.len(),
+                        response.explanation.engines_executed.len(),
                     );
                     self.emit_merge_count_metric(&response.generation, response.results.len());
                     self.emit_early_stop_metric(
@@ -410,7 +410,7 @@ impl SearchPlaneDispatcher {
                     self.emit_planner_metric(&response.generation);
                     self.emit_engine_fanout_metric(
                         &response.generation,
-                        response.explanation.engines_touched.len(),
+                        response.explanation.engines_executed.len(),
                     );
                     // The merge count is what the window says the page holds
                     // (QI-BB-019): the one canonical seed list.
@@ -541,7 +541,7 @@ impl SearchPlaneDispatcher {
                     self.emit_planner_metric(&response.generation);
                     self.emit_engine_fanout_metric(
                         &response.generation,
-                        response.explanation.engines_touched.len(),
+                        response.explanation.engines_executed.len(),
                     );
                     self.emit_early_stop_metric(
                         &response.generation,
@@ -615,6 +615,9 @@ impl SearchPlaneDispatcher {
         self.emit_metric(Some(pin), "lq_planner_total", MetricKind::Counter, 1.0);
     }
 
+    /// Executed-engine fanout (S21-10): `count` must be
+    /// `explanation.engines_executed.len()` — lanes the route ran — never
+    /// `engines_touched.len()`, so an executed zero-hit lane still counts.
     fn emit_engine_fanout_metric(&self, pin: &GenerationPin, count: usize) {
         self.emit_metric(
             Some(pin),

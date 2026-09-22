@@ -27,13 +27,18 @@ impl PlaneDispatch<SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse>
 {
     fn dispatch(
         &self,
-        _context: &quanta_index_ipc::DispatchContextV1,
+        context: &quanta_index_ipc::DispatchContextV1,
         request: SearchPlaneQueryIpcRequest,
         budget: &RequestBudgetV1,
     ) -> SearchPlaneQueryIpcResponse {
         // The query plane reads no principal: it exposes no capability
         // beyond serving a query the admission layer already admitted.
-        SearchPlaneDispatcher::dispatch(self, request, budget)
+        // It does read the envelope's request id (S21-10): the typed
+        // payload's explanation carries it so a response correlates
+        // without its envelope.
+        let mut response = SearchPlaneDispatcher::dispatch(self, request, budget);
+        response.stamp_request_id(context.request_id);
+        response
     }
 }
 

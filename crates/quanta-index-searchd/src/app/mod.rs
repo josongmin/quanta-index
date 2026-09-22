@@ -22,8 +22,8 @@ pub use boot_inventory::{
     SealedGenerationKey, TrackInventoryReportV1, half_sealed_pairs,
 };
 pub use config::{
-    ALLOW_DEV_EMBEDDER_ENV, DEV_HASH_EMBEDDER_SELECTOR, MaintenancePolicy, ProcessMemoryCeilings,
-    SearchdConfig, SemanticEmbedderProfile,
+    DEV_HASH_EMBEDDER_SELECTOR, MaintenancePolicy, ProcessMemoryCeilings, SearchdConfig,
+    SemanticEmbedderProfile,
 };
 pub use integrity_scrub::{PacedIntegrityScrubV1, ScrubSchedulerV1, ScrubTalliesV1, ScrubTickV1};
 pub use legacy_semantic_migration::LegacySemanticJournalStore;

@@ -7,7 +7,9 @@
 //! per-query or per-route failure. `summary.json` is the `BenchArtifactV1`
 //! (QI-BB-010): the exact head of a clean worktree, both fixtures' corpus
 //! digest, the cutoffs' config digest, the host, the process's peak RSS and
-//! the embedder the semantic gate ran on. This is the authority behind
+//! the embedder the semantic gate ran on. The default profile is potion-code;
+//! `QUANTA_INDEX_EMBEDDER=hash-dev` selects the separate mechanical rail.
+//! This is the authority behind
 //! `just rust-verify-quality-relevance`.
 
 use std::path::{Path, PathBuf};
@@ -31,15 +33,38 @@ fn capture_date() -> String {
     "unprovisioned-capture-date".to_string()
 }
 
-fn parse_out_dir() -> PathBuf {
+fn parse_args() -> AnyResult<(PathBuf, bool)> {
     let mut args = std::env::args().skip(1);
-    match (args.next().as_deref(), args.next()) {
-        (Some("--out-dir"), Some(path)) => PathBuf::from(path),
-        _ => PathBuf::from("artifacts/search-quality/relevance/latest"),
+    let mut out_dir = PathBuf::from("artifacts/search-quality/relevance/latest");
+    let mut diagnostic = false;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--out-dir" => {
+                out_dir = PathBuf::from(
+                    args.next()
+                        .ok_or_else(|| anyhow::anyhow!("--out-dir requires a path"))?,
+                );
+            }
+            "--diagnostic" => diagnostic = true,
+            other => {
+                return Err(anyhow::anyhow!(
+                    "unknown relevance_matrix argument: {other}"
+                ));
+            }
+        }
     }
+    if diagnostic && out_dir != Path::new("artifacts/search-quality/relevance/latest") {
+        return Err(anyhow::anyhow!(
+            "--diagnostic does not write artifacts; omit --out-dir"
+        ));
+    }
+    Ok((out_dir, diagnostic))
 }
 
-fn run(out_dir: &Path, capture_date: &str) -> AnyResult<RelevanceReport> {
+fn run(out_dir: &Path, capture_date: &str, diagnostic: bool) -> AnyResult<RelevanceReport> {
+    if diagnostic {
+        return run_relevance_report();
+    }
     // Provenance first: a run that cannot be attributed is not started.
     let git_head = GitHeadV1::resolve(Path::new("."))?;
     let host = HostV1::observe()?;
@@ -54,10 +79,16 @@ fn run(out_dir: &Path, capture_date: &str) -> AnyResult<RelevanceReport> {
     reason = "rail binary reports rail status on stdout/stderr by design"
 )]
 fn main() -> ExitCode {
-    let out_dir = parse_out_dir();
+    let (out_dir, diagnostic) = match parse_args() {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            eprintln!("relevance_matrix: {err:#}");
+            return ExitCode::FAILURE;
+        }
+    };
     let capture_date = capture_date();
 
-    let report = match run(&out_dir, &capture_date) {
+    let report = match run(&out_dir, &capture_date, diagnostic) {
         Ok(report) => report,
         Err(err) => {
             eprintln!("relevance_matrix: {err:#}");
@@ -76,6 +107,20 @@ fn main() -> ExitCode {
             route.passed,
         );
     }
+    if let Some(quality) = &report.semantic_quality {
+        println!(
+            "relevance[paraphrase]: cases={} top1={} MRR@10={:.4} NDCG@10={:.4} Recall@20={:.4} passed={}",
+            quality.case_count,
+            quality.top1_count,
+            quality.mean_mrr_at_10,
+            quality.mean_ndcg_at_10,
+            quality.mean_recall_at_20,
+            quality.passed,
+        );
+    }
+    if diagnostic {
+        eprintln!("relevance_matrix: diagnostic only; no attributed artifact was written");
+    }
     for query in &report.queries {
         if !query.passed() {
             eprintln!("relevance FAIL [{}] ({})", query.id, query.intent);
@@ -87,7 +132,11 @@ fn main() -> ExitCode {
     }
 
     if report.passed {
-        println!("relevance rail green");
+        if diagnostic {
+            println!("relevance diagnostic gates green (not an attributed artifact)");
+        } else {
+            println!("relevance rail green");
+        }
         ExitCode::SUCCESS
     } else {
         eprintln!("relevance rail RED: one or more route/query gates failed");

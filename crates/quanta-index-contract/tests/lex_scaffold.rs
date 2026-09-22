@@ -14,9 +14,9 @@
 #![forbid(unsafe_code)]
 
 use quanta_index_contract::lex::{
-    CommitRecord, CommitSha, CommitShaParseError, DirtyRecord, ExplanationRow, LanguageCode,
-    LexicalErrorCode, ParseNode, ParseTreeRecord, SearchExplanation, SymbolKindCode, SymbolRecord,
-    SymbolRelationship, SymbolSpan,
+    CommitRecord, CommitSha, CommitShaParseError, DirtyRecord, EngineTouched, ExplanationRow,
+    LanguageCode, LexicalErrorCode, ParseNode, ParseTreeRecord, SearchExplanation, SymbolKindCode,
+    SymbolRecord, SymbolRelationship, SymbolSpan,
 };
 use quanta_index_contract::{ChunkId, RepoRelativePath, SymbolId};
 
@@ -527,6 +527,8 @@ fn search_explanation_cbor_roundtrip() -> TestRes {
     let explanation = SearchExplanation {
         planner_trace: Vec::new(),
         engines_touched: Vec::new(),
+        engines_executed: vec![EngineTouched::Lexical],
+        request_id: 11,
         early_stop_reason: None,
         contributions: vec![
             ExplanationRow {

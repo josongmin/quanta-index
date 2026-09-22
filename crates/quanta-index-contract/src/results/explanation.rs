@@ -555,14 +555,24 @@ impl std::error::Error for WeightsHashError {}
 /// fallible digest helper (see [`WeightsHashError`] and
 /// [`SearchExplanationBuilder::ranker_weights_hash`]).
 ///
-/// `planner_trace`, `engines_touched`, `early_stop_reason`, and `summary`
-/// carry hybrid/semantic-planner provenance. Use [`SearchExplanation::empty`]
-/// for incremental population by producers, or [`SearchExplanationBuilder`]
-/// when the build site wants typed push helpers.
+/// `planner_trace`, `engines_touched`, `engines_executed`, `early_stop_reason`,
+/// and `summary` carry hybrid/semantic-planner provenance. Use
+/// [`SearchExplanation::empty`] for incremental population by producers, or
+/// [`SearchExplanationBuilder`] when the build site wants typed push helpers.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchExplanation {
     pub planner_trace: Vec<PlannerTraceEntry>,
     pub engines_touched: Vec<EngineTouched>,
+    /// Every engine the route's plan ran (S21-10): unlike
+    /// `engines_touched` (lanes that *contributed* hits), this lists lanes
+    /// that *executed* — plan-level, mirroring `LaneTraceV1.executed`, so
+    /// a zero-hit lane still counts here. The executed fanout metric reads
+    /// this, never `engines_touched`.
+    pub engines_executed: Vec<EngineTouched>,
+    /// The transport request id this explanation answers (S21-10), so a
+    /// typed payload correlates without its envelope. `0` means the
+    /// response was built off-transport (stubs, in-process calls).
+    pub request_id: u64,
     pub early_stop_reason: Option<EarlyStopReason>,
     pub contributions: Vec<ExplanationRow>,
     pub ranker_weights_hash: [u8; 32],
@@ -579,6 +589,8 @@ impl SearchExplanation {
         Self {
             planner_trace: Vec::new(),
             engines_touched: Vec::new(),
+            engines_executed: Vec::new(),
+            request_id: 0,
             early_stop_reason: None,
             contributions: Vec::new(),
             ranker_weights_hash: [0u8; 32],
@@ -597,6 +609,8 @@ impl Default for SearchExplanation {
 const SEARCH_EXPLANATION_FIELDS: &[&str] = &[
     "planner_trace",
     "engines_touched",
+    "engines_executed",
+    "request_id",
     "early_stop_reason",
     "contributions",
     "ranker_weights_hash",
@@ -609,13 +623,15 @@ impl Serialize for SearchExplanation {
     where
         S: Serializer,
     {
-        let mut field_count: usize = 6;
+        let mut field_count: usize = 8;
         if self.early_stop_reason.is_some() {
             field_count = field_count.saturating_add(1);
         }
         let mut state = serializer.serialize_struct("SearchExplanation", field_count)?;
         state.serialize_field("planner_trace", &self.planner_trace)?;
         state.serialize_field("engines_touched", &self.engines_touched)?;
+        state.serialize_field("engines_executed", &self.engines_executed)?;
+        state.serialize_field("request_id", &self.request_id)?;
         if let Some(early_stop_reason) = &self.early_stop_reason {
             state.serialize_field("early_stop_reason", early_stop_reason)?;
         }
@@ -642,6 +658,8 @@ impl<'de> Visitor<'de> for SearchExplanationVisitor {
     {
         let mut planner_trace: Option<Vec<PlannerTraceEntry>> = None;
         let mut engines_touched: Option<Vec<EngineTouched>> = None;
+        let mut engines_executed: Option<Vec<EngineTouched>> = None;
+        let mut request_id: Option<u64> = None;
         let mut early_stop_reason: Option<Option<EarlyStopReason>> = None;
         let mut contributions: Option<Vec<ExplanationRow>> = None;
         let mut ranker_weights_hash: Option<[u8; 32]> = None;
@@ -660,6 +678,18 @@ impl<'de> Visitor<'de> for SearchExplanationVisitor {
                         return Err(de::Error::duplicate_field("engines_touched"));
                     }
                     engines_touched = Some(map.next_value()?);
+                }
+                "engines_executed" => {
+                    if engines_executed.is_some() {
+                        return Err(de::Error::duplicate_field("engines_executed"));
+                    }
+                    engines_executed = Some(map.next_value()?);
+                }
+                "request_id" => {
+                    if request_id.is_some() {
+                        return Err(de::Error::duplicate_field("request_id"));
+                    }
+                    request_id = Some(map.next_value()?);
                 }
                 "early_stop_reason" => {
                     if early_stop_reason.is_some() {
@@ -699,6 +729,9 @@ impl<'de> Visitor<'de> for SearchExplanationVisitor {
                 .ok_or_else(|| de::Error::missing_field("planner_trace"))?,
             engines_touched: engines_touched
                 .ok_or_else(|| de::Error::missing_field("engines_touched"))?,
+            // New in S21-10: pre-change payloads stay readable.
+            engines_executed: engines_executed.unwrap_or_default(),
+            request_id: request_id.unwrap_or_default(),
             early_stop_reason: early_stop_reason.unwrap_or(None),
             contributions: contributions
                 .ok_or_else(|| de::Error::missing_field("contributions"))?,
@@ -789,6 +822,21 @@ impl SearchExplanationBuilder {
     #[must_use]
     pub fn push_engine(mut self, engine: EngineTouched) -> Self {
         self.inner.engines_touched.push(engine);
+        self
+    }
+
+    /// Appends one executed-engine identifier (S21-10): a lane that ran,
+    /// whether or not it contributed hits.
+    #[must_use]
+    pub fn push_executed_engine(mut self, engine: EngineTouched) -> Self {
+        self.inner.engines_executed.push(engine);
+        self
+    }
+
+    /// Sets the transport request id this explanation answers (S21-10).
+    #[must_use]
+    pub fn request_id(mut self, request_id: u64) -> Self {
+        self.inner.request_id = request_id;
         self
     }
 

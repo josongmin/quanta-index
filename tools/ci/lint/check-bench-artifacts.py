@@ -57,6 +57,11 @@ CURRENT_SCHEMA_VERSION = 2
 
 FULL_HEAD_RE = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+POTION_CODE_MODEL_REVISION = (
+    "model2vec:minishlab/potion-code-16M-v2@"
+    "e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b:"
+    "model2vec-rs-0.3.0:fancy-regex:full-length-v1:d256"
+)
 
 try:
     MANIFEST = load_manifest()
@@ -347,6 +352,22 @@ def check_envelope(
 
     if not isinstance(payload.get("detail"), dict):
         reasons.append("detail is not an object")
+    elif dimension == "relevance":
+        detail = payload["detail"]
+        model_revision = (
+            provenance.get("model_revision") if isinstance(provenance, dict) else None
+        )
+        quality = detail.get("semantic_quality")
+        if model_revision != POTION_CODE_MODEL_REVISION:
+            reasons.append("relevance: canonical artifact requires potion-code model provenance")
+        if (
+            not isinstance(quality, dict)
+            or quality.get("case_count") != 12
+            or type(quality.get("passed")) is not bool
+        ):
+            reasons.append(
+                "relevance: canonical artifact requires 12 judged paraphrase cases and a verdict"
+            )
 
     rows = payload.get("rows")
     if not isinstance(rows, list):
@@ -355,6 +376,18 @@ def check_envelope(
         if not rows:
             reasons.append("rows is empty: nothing was measured")
         reasons.extend(_validate_rows(rows, dimension=dimension))
+        if dimension == "relevance":
+            paraphrase_ids = [
+                row.get("scenario_id")
+                for row in rows
+                if isinstance(row, dict)
+                and isinstance(row.get("scenario_id"), str)
+                and row["scenario_id"].startswith("relevance.semantic.sem.")
+                and row["scenario_id"].endswith(".paraphrase")
+                and row.get("route_family") == "semantic"
+            ]
+            if len(paraphrase_ids) != 12 or len(set(paraphrase_ids)) != 12:
+                reasons.append("relevance: canonical artifact requires 12 distinct paraphrase rows")
     return reasons
 
 

@@ -111,6 +111,8 @@ fn response(results: Vec<HybridCandidateV1>) -> SearchPlaneQueryIpcResponse {
         explanation: SearchExplanation {
             planner_trace: Vec::new(),
             engines_touched: vec![EngineTouched::Lexical, EngineTouched::Semantic],
+            engines_executed: vec![EngineTouched::Lexical, EngineTouched::Semantic],
+            request_id: 0,
             early_stop_reason: None,
             contributions: Vec::new(),
             ranker_weights_hash: [0u8; 32],

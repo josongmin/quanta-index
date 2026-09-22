@@ -463,6 +463,11 @@ pub(super) fn build_hybrid_seed_response_explanation(
     SearchExplanation {
         planner_trace,
         engines_touched,
+        // Plan-level execution (mirrors `LaneTraceV1.executed`): the seed
+        // route always plans both lanes, even when one returns nothing.
+        engines_executed: vec![EngineTouched::Lexical, EngineTouched::Semantic],
+        // Stamped by the transport adapter; 0 off-transport.
+        request_id: 0,
         early_stop_reason,
         contributions: Vec::new(),
         ranker_weights_hash: [0u8; 32],
@@ -856,6 +861,13 @@ pub(super) fn build_semantic_response_explanation(
     if result_count > 0 {
         engines_touched.push(EngineTouched::Semantic);
     }
+    // Plan-level execution (mirrors `LaneTraceV1.executed`): the semantic
+    // lane always runs; the lexical scope lane runs iff one was planned.
+    let engines_executed = if scoped {
+        vec![EngineTouched::Lexical, EngineTouched::Semantic]
+    } else {
+        vec![EngineTouched::Semantic]
+    };
     let summary = if scoped {
         format!(
             "semantic scoped query returned {result_count} candidates from text scope of {scope_candidate_count}"
@@ -866,6 +878,9 @@ pub(super) fn build_semantic_response_explanation(
     SearchExplanation {
         planner_trace,
         engines_touched,
+        engines_executed,
+        // Stamped by the transport adapter; 0 off-transport.
+        request_id: 0,
         early_stop_reason,
         contributions: Vec::new(),
         ranker_weights_hash: [0u8; 32],
@@ -942,6 +957,11 @@ pub(super) fn build_hybrid_response_explanation(
     SearchExplanation {
         planner_trace,
         engines_touched,
+        // Plan-level execution (mirrors `LaneTraceV1.executed`): the hybrid
+        // route always plans both independent lanes (QI-BB-018).
+        engines_executed: vec![EngineTouched::Lexical, EngineTouched::Semantic],
+        // Stamped by the transport adapter; 0 off-transport.
+        request_id: 0,
         early_stop_reason,
         contributions: Vec::new(),
         ranker_weights_hash: [0u8; 32],

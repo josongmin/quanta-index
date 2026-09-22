@@ -77,7 +77,7 @@ struct ScenarioFixture {
 
 impl ScenarioFixture {
     fn boot() -> Result<Self, Box<dyn Error>> {
-        Self::boot_with_profile(SemanticEmbedderProfile::default())
+        Self::boot_with_profile(SemanticEmbedderProfile::hash_dev())
     }
 
     fn boot_with_profile(profile: SemanticEmbedderProfile) -> Result<Self, Box<dyn Error>> {

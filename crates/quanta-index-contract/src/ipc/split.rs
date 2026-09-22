@@ -122,6 +122,33 @@ pub enum SearchPlaneQueryIpcResponse {
     Error(SearchPlaneIpcError),
 }
 
+impl SearchPlaneQueryIpcResponse {
+    /// Stamp the transport request id onto the carried explanation (S21-10),
+    /// so a typed payload correlates without its envelope. Only the four
+    /// explanation-carrying variants (`Semantic`, `Hybrid`, `HybridSeed`,
+    /// `Explain`) change; every other variant has no explanation to stamp
+    /// and is left untouched.
+    pub fn stamp_request_id(&mut self, request_id: u64) {
+        let explanation = match self {
+            SearchPlaneQueryIpcResponse::Semantic(response) => Some(&mut response.explanation),
+            SearchPlaneQueryIpcResponse::Hybrid(response) => Some(&mut response.explanation),
+            SearchPlaneQueryIpcResponse::HybridSeed(response) => Some(&mut response.explanation),
+            SearchPlaneQueryIpcResponse::Explain(response) => Some(&mut response.explanation),
+            SearchPlaneQueryIpcResponse::Text(_)
+            | SearchPlaneQueryIpcResponse::Symbol(_)
+            | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+            | SearchPlaneQueryIpcResponse::Structural(_)
+            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
+            | SearchPlaneQueryIpcResponse::Error(_) => None,
+        };
+        if let Some(explanation) = explanation {
+            explanation.request_id = request_id;
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchPlaneControlIpcRequestEnvelope {
     pub request_id: u64,
@@ -1699,5 +1726,84 @@ mod tests {
             .expect("membership response CBOR decode"),
             response
         );
+    }
+
+    #[test]
+    fn stamp_request_id_marks_exactly_the_explanation_carrying_variants() {
+        let pin = || {
+            crate::GenerationPin::new(
+                fixture_repo(),
+                fixture_revision(),
+                ManifestGeneration::new(1),
+            )
+        };
+        let window = || crate::QueryResultWindowV2::exact_probe(0);
+        // (name, response, carries an explanation)
+        let mut cases: Vec<(&str, SearchPlaneQueryIpcResponse, bool)> = vec![
+            (
+                "Semantic",
+                SearchPlaneQueryIpcResponse::Semantic(SemanticQueryResponse {
+                    generation: pin(),
+                    results: Vec::new(),
+                    window: window(),
+                    explanation: crate::SearchExplanation::empty(),
+                }),
+                true,
+            ),
+            (
+                "Hybrid",
+                SearchPlaneQueryIpcResponse::Hybrid(HybridQueryResponse {
+                    generation: pin(),
+                    results: Vec::new(),
+                    window: window(),
+                    explanation: crate::SearchExplanation::empty(),
+                }),
+                true,
+            ),
+            (
+                "HybridSeed",
+                SearchPlaneQueryIpcResponse::HybridSeed(HybridSeedQueryResponse {
+                    generation: pin(),
+                    manifest_digest: String::new(),
+                    seed_candidates: Vec::new(),
+                    window: window(),
+                    explanation: crate::SearchExplanation::empty(),
+                }),
+                true,
+            ),
+            (
+                "Explain",
+                SearchPlaneQueryIpcResponse::Explain(SearchPlaneExplainQueryResponse {
+                    generation: pin(),
+                    presence: crate::CandidatePresenceV1::NotIndexed,
+                    explanation: crate::SearchExplanation::empty(),
+                }),
+                true,
+            ),
+            (
+                "Error",
+                SearchPlaneQueryIpcResponse::Error(SearchPlaneIpcError {
+                    code: crate::SearchPlaneErrorCodeV2::InvalidRequest,
+                    message: "bad request".to_string(),
+                    repair: None,
+                }),
+                false,
+            ),
+        ];
+        for (name, response, carries) in &mut cases {
+            response.stamp_request_id(99);
+            let stamped = match response {
+                SearchPlaneQueryIpcResponse::Semantic(r) => Some(r.explanation.request_id),
+                SearchPlaneQueryIpcResponse::Hybrid(r) => Some(r.explanation.request_id),
+                SearchPlaneQueryIpcResponse::HybridSeed(r) => Some(r.explanation.request_id),
+                SearchPlaneQueryIpcResponse::Explain(r) => Some(r.explanation.request_id),
+                _ => None,
+            };
+            assert_eq!(
+                stamped,
+                (*carries).then_some(99),
+                "{name}: stamp must reach exactly the explanation-carrying variants"
+            );
+        }
     }
 }

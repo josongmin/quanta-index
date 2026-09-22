@@ -1,0 +1,131 @@
+# SEP-23 Retrieval Benchmark — Test and Qualification Plan
+
+Status: `planned`. This is the required proof map for RB-00 through RB-06, not a record of executed tests. Link each implemented test ID to `tools/ci/test-authority.toml` or the explicit benchmark command before claiming closure.
+
+## 1. Claims and evidence classes
+
+| Claim | Required evidence | Must not be inferred from |
+| --- | --- | --- |
+| `CONTRACT_GREEN` | Frozen-data/schema/chunker unit and mutation tests | Documentation or a compile |
+| `SDK_PATH_GREEN` | Separate searchd process; actual SDK publish, sealed receipt, activation and SDK query on pinned files | Direct IPC or `E2eRuntime::ingest_text*` fixture |
+| `PAIR_VALID` | Both real runners, identical admitted file/query universe, source/model/provenance, complete records | Upstream Semble README number or one-sided run |
+| `PERF_QUALIFIED` | Quiet same-host repetitions, phase boundaries, raw samples, resource and error accounting | Contended/debug/one-shot timing |
+| `QUALITY_DELTA` | Independent labels, frozen eval set and paired score with uncertainty/strata | Pilot smoke, train-tuned labels or absent model route |
+
+These states are separate. A 20-query pilot is labeled **exploratory-only**: it can prove the pipeline and expose regressions but cannot justify an all-language or production “beats Semble” statement. `Hash`/`hash-dev` only checks plumbing. The `potion-code` profile currently appears in the working tree; admission requires a clean, built source revision and a verified local model snapshot, not mere source presence.
+
+`PAIR_VALID` asserts paired protocol/universe validity (same commit, files, queries, `top_k`, output-unit policy, host, complete records). A blinded `QUALITY_DELTA` additionally requires proven runner blinding. Blinding is recorded as `blinding: isolated | attested`, plus `isolation_method` (how the runner was prevented from reading gold, e.g. separate suite access, path/permission denial, process sandbox) and an `access_block_log` (what was blocked/verified, or why only attestation holds). An `attested` run keeps `gold_access: false` as an attestation only and cannot claim an isolated quality verdict. T15 gates only the same-model claim, never `PAIR_VALID` itself. T16 is required only when an incremental-update claim is made.
+
+## 2. Test data and anti-leakage custody
+
+1. **Tiny oracle repo**: generated for tests, contains multi-file Rust/Python examples with known byte/line answers, comments/strings, duplicate symbols, Unicode, CRLF, long functions, no-answer queries, generated/binary/symlink exclusions and one incremental edit. This tests mechanics, not search quality.
+2. **Pilot real repo**: a clean pinned Rust checkout with at least 20 reviewed, balanced symbol/semantic/architecture queries, labeled exploratory-only. Freeze path manifest and exact file bytes once. Obtain an independently reviewed answer set before viewing either engine's results; do not derive gold from either output. Gold requires two-person independent adjudication: two reviewers judge each answer independently and reconcile disagreements under the frozen rubric, with the reconciliation recorded. If the proposed repo or labels are ineligible, record why and select another before running the comparison. Pilot completion proves machinery, not population-level superiority.
+3. **Broader suite**: multiple pinned repos/languages and sizes, query categories and no-answer stratum where independently labeled. Publish all eligible/excluded counts by category and repo. Do not silently pool a Rust-only result with a 19-language published aggregate.
+4. **Split**: tuning/development and frozen evaluation queries must not overlap by query, near-duplicate paraphrase or answer-bearing span; the evaluator already rejects exact label-span overlap, and W0 must define/review the stronger semantic-leakage check. Lock chunk sizes, ranking knobs, model and `top_k` before eval. Semble's public model-generated/model-checked labels are an external comparison set, not an independent holdout.
+5. **Blinding**: the Quanta and Semble runners consume only a frozen query pack plus source files. Gold/grades are evaluator-only. Every run records `blinding: isolated | attested`, `isolation_method`, and an `access_block_log`. `isolated` requires a runner process that cannot read the suite path (separate suite access, enforced path/permission denial, or sandbox), with the block verified and logged. `attested` keeps `gold_access: false` as an attestation only and explicitly downgrades any quality claim to attested-only; a blinded `QUALITY_DELTA` requires `isolated`. A committed suite in the same accessible checkout is not blinded by naming convention.
+6. **Relevance rubric**: W0 stage A must freeze the 0–3 grade meaning, how one candidate maps to one or more gold spans, partial overlap, same-file duplicates, ties and large-context penalty before inspecting eval results; W0 stage B freezes the two-person adjudicated gold set. Primary quality is graded NDCG@10 only for independently adjudicated grades under that rubric. Without them, report span Recall/MRR/BCY as diagnostics and mark `QUALITY_DELTA` unavailable; never invent grades from Quanta/Semble rankings. The rubric must not award a whole-file chunk full context-quality credit solely because it contains a short gold span.
+
+## 3. Blocking correctness matrix
+
+| ID | Layer / owner | Positive oracle | Negative or mutant that must fail |
+| --- | --- | --- | --- |
+| T00 | RB-00 corpus | One canonical sorted tracked-file inventory and byte digest for both runners | Dirty/wrong HEAD; ignored/extra/missing/symlink/binary/oversize file; divergent Semble filter |
+| T01 | RB-01 suite | Valid pinned labels, distinct IDs, blind query-pack SHA | Wrong file/line hash; unsafe path; missing gold; accidental gold or grade in runner pack |
+| T02 | RB-01 split | Tuning vs eval separation, reviewed grade and category | Duplicate/paraphrased query or overlapping answer span across splits; invented no-answer label |
+| T03 | RB-01 record | Every eligible `(task, route)` has one ordered result and route-specific provenance | Missing/duplicate result, unknown field, mismatched model/repo/query hash, nonfinite timing |
+| T04 | RB-01 scoring | Hand-calculated span Recall/MRR/NDCG and BCY golden cases | Same-file wrong lines, partial span for full-cover credit, duplicate chunk boosting, out-of-budget result credited |
+| T05 | RB-02 process | Isolated daemon boots, SDK full client connects and readiness precedes publish | Wrong socket/state root, no readiness, stale daemon or accidental old index reuse |
+| T06 | RB-02 SDK write | `SearchCorpusBatch` publish returns sealed receipt; CAS activation acknowledges exact identity | Direct IPC, mismatched digest, failed/partial seal, activation conflict, query before activation |
+| T07 | RB-02 SDK read | SDK lexical/semantic/hybrid query produces real ranked spans under expected generation | Wrong route, stale generation, typed timeout/error converted to empty or success, capped result treated exhaustive |
+| T08 | RB-03 chunk bytes | Original byte slice equals emitted text; byte/line bounds and stable ID agree | UTF-8 split, CRLF/off-by-one, BOM, EOF, zero-length, overflow, reordered/non-deterministic ID |
+| T09 | RB-03 syntax | Parser-derived boundaries and declared fallback coverage on supported language | Unsupported grammar, parse error, long declaration, silent whole-file fallback, overlap/duplicate inflation |
+| T10 | RB-03 semantics | Each strategy's dependent semantic sources are rebuilt under same pinned model | Reused vectors/source digest from another chunk strategy; `hash-dev` passed as model-quality route |
+| T11 | RB-04 Semble | Pinned real Semble result mapped to exact tracked file and line span | Truncated snippet used as full chunk, path-prefix drift, missing model, skipped query, ignored-file mismatch |
+| T12 | RB-05 pair | Same commit, files, queries, `top_k`, output-unit policy and host; complete raw rows | One-sided run, public README score substituted, partial sample set, wrong host/model/cache state |
+| T13 | RB-05 report | Deterministic re-score of immutable records gives identical aggregates and disagreements | Score changes with row order, omitted errors/exclusions, invalid artifact still labelled qualified |
+| T14 | RB-06 command | One Quanta-only chunk A/B command; optional Semble pair command; external artifact root | CI implicitly downloads model/Semble, output dirties source tree, profile name claims unselected tests |
+| T15 | RB-00/RB-04 model parity (same-model claim only) | Same pinned Model2Vec weights, tokenizer and normalization produce vectors within a predeclared tolerance on code/query probes | Matching model name but different tokenizer, vector dimension, normalization or scores called “model-matched” |
+| T16 | RB-02/RB-05 incremental (incremental claim only) | SDK update/rename/delete becomes visible only after acknowledged activation; old spans disappear | Stale hit, mixed generation, mtime-only freshness timestamp, full-rebuild time reported as incremental |
+
+For T00/T11, an identical *file count* is insufficient: compare canonical path+file SHA lists. For T04, evaluate both raw chunk ranking and the declared same-file-collapse rule; never let one rule silently replace the other. For T06, validate SDK-issued `BatchReceipt` and `SearchPlaneSearchCorpusActivationCasAck`, not a daemon log line. T15 failure blocks only the same-model control claim; an end-to-end system pair with disclosed models stays eligible. T16 applies only when an incremental-update claim is made; otherwise it is recorded as not-applicable in the verdict artifact, not as a failure.
+
+## 4. Process integration and lifecycle scenarios
+
+- Boot fresh daemon with isolated state root and separately pinned binary/config. Provision model before timed phases. Wait for readiness through a product surface; assert initial index is empty.
+- Publish multiple files and chunks in one declared batching policy. Assert counts, scope digests, seal receipt, composite activation identity and query-visible generation. Repeat with a new state root to prove determinism.
+- Exercise wrong manifest/revision, stale expected-active CAS, missing model asset, provider unavailable, timeout and daemon termination. Each must produce a typed failure record and **no** scored success; runner-owned process/state resources are released within a bounded timeout.
+- Optional incremental track: edit/rename/delete one file at a frozen follow-up revision, publish through SDK, and verify old hits disappear/new hits become visible only after acknowledged activation. Measure freshness from accepted/durable producer receipt to query visibility; keep this distinct from full cold-build speed and existing synthetic freshness rail.
+- Do not test the SDK path by linking the in-process fixture harness. `SDK_PATH_GREEN` requires a separately launched searchd and public SDK APIs for writes, activation and reads.
+
+## 5. Semble fairness and adapter proof
+
+Before a paired run, pin Semble commit/package, model weights/revision, Python/runtime dependencies, Quanta binary/model, repo commit and file filters. The [upstream method](https://github.com/MinishLab/semble/blob/main/benchmarks/README.md) compares code chunks and reports index and warm query timings separately; the local run is the only opponent measurement used here.
+
+| Check | Rule |
+| --- | --- |
+| Corpus | Hash every admitted path+bytes on both sides. If Semble cannot index an identical set, fail the common-universe pair; separately report native coverage. |
+| Path-mapping proof | Emit a path-mapping proof artifact: the explicit path map (Semble-visible path → canonical repo path for every admitted file) plus the both-side path+SHA diff (Quanta-side list vs Semble-side list, per-file SHA). Any mismatch fails the common-universe pair; the diff digest is a mandatory manifest field. |
+| Query | Same exact text, order-independent query IDs, predeclared `top_k` and result budgets. Do not rewrite queries for one side. |
+| Output | Convert native spans/ranks without changing order; prove each span against source bytes. Missing or malformed results are typed failures, not abstentions. |
+| Model | Main system comparison records actual model and revision. Add a model-matched `potion-code` control only after T15 validates weights, tokenization and output behavior on fixed probes; a same-model comparison is still not a same-ranker comparison. T15 gates only that control claim. |
+| Timing | Compare warm SDK/API layers separately from CLI process startup. Include total time-to-searchable and phase breakdown; do not remove embedding/model cost from one system only. |
+| Attribution | Record Semble native index/query behavior, not a reimplementation or a copied upstream reported score. |
+| Manifest | Mandatory fields: tokenizer/budget version, Semble dependency lockfile digest, and both-side path+SHA diff digest. A run missing any of these cannot be labeled authoritative. |
+
+## 6. Measurement protocol and sample floors
+
+- **Preflight:** freeze exact SHA of Quanta, Semble, suite and corpus; verify clean checkouts, CPU/memory/OS, toolchain, model file digests, process limits and no other benchmark/build load. The quiet host is a fixed host profile (pinned CPU/power plan, no concurrent builds or benchmarks, declared cache regime). Apply the check-record rule: check CPU identity/settings, concurrent-build/benchmark absence, and thermal/frequency sanity, and record each observation in the run manifest; there is no single load-average gate. Contention override yields diagnostic status only. Do not run both systems concurrently for timing.
+- **Cold build:** prebuild binaries and provision/download models before measurement. For each repo/system, use at least five fresh index/state roots, alternating system order by repetition. Include file discovery, chunking, embedding, SDK publish/seal/activation and first successful query in `time_to_searchable`. Record cache regime explicitly (OS page cache/model loaded vs true process cold); never call a warm-cache build “cold start.”
+- **Warm query:** first warm each index, then interleave and randomize query order without changing query text. Pilot floor: 20 queries × 50 repetitions per eligible route (= 1,000 observations); broader suite floor: 1,000 observations per route. Record per-query and aggregate raw monotonic durations, error/timeout/partial counts. p99 is descriptive unless the sample floor is met; do not gate on a five-run p99.
+- **Resources:** sample the whole owned process tree and per-process RSS/CPU; measure index bytes from isolated roots, excluding shared model cache but reporting that cache's bytes separately. Count file discovery and parser/embedding caches. No system-wide `getrusage` of only the coordinator as a substitute for daemon+provider resource use.
+- **Uncertainty:** publish query-paired deltas by repo/category plus bootstrap intervals where sample size supports them; use the query/repo as resampling unit, not individual repeated latency samples as independent relevance judgments. Predeclare primary metric and exclusions; no post-hoc threshold selection.
+- **Incremental:** separate scenario and artifact: full initial index, one-file update, rename, delete, stale-hit check, and receipt-to-visible duration. Never blend these times into full-build median.
+- **Concurrency:** the primary pair is single-query/single-process warm latency. Concurrency/QPS is a separate diagnostic unless both APIs admit the same declared client/concurrency and offered-load contract; report offered/accepted/completed/error counts and do not conflate it with the existing synthetic Quanta open-loop rail.
+
+## 7. Execution ladder and command ownership
+
+1. **Static PREP (cheap):** `python3 -m pytest tools/ci/tests/test_retrieval_benchmark.py -q` currently covers the v1 evaluator. After implementation, add new schema/adapter mutants and run the registered Rust owner tests via `./scripts/cargow test -p quanta-index-retrieval-bench`. Update `just benchmark-prep-local` and `tools/ci/test-authority.toml` to include actual targets; verify selection counts. These are contract checks, not benchmark measurements. W0-A exit (protocol + schema freeze) is required before scaffolding/scorer finalization.
+2. **SDK process proof:** a future named `Justfile` recipe runs T05–T10 on a tiny repo with an actual daemon process. It emits a terminal receipt with binary hash, SDK route, selected/executed counts and failures. A unit test cannot substitute.
+3. **Pilot pair (exploratory-only):** a future explicit `Justfile` recipe freezes one repo/suite, runs Quanta and Semble sequentially, validates T00–T14 plus T15/T16 only as applicable (T15 only for a same-model control claim; T16 only for an incremental claim), then scores. If any shared-universe prerequisite fails, stop before expensive repetitions. W0-B exit (repo + gold + model + host freeze) is the measurement-entry gate. Pilot output is `PAIR_VALID` or a typed refusal; quality/speed claims require the additional qualification conditions.
+4. **Qualified full run:** repeat the same immutable protocol on the reviewed broader suite and quiet canonical host profile. Preserve raw records, complete per-query report, failed/ineligible rows and provenance. No committed baseline or registered `benchctl` family until its artifact/host/source controls are actually wired and tested.
+
+Every closeout states the exact command, source SHA and dirty state, selected/executed/passed/failed counts, covered surface, excluded surface, artifact path, terminal verdict and failure class. `NOT_RUN` or missing evidence remains open. Product deployment/activation is not implied by benchmark qualification.
+
+## 8. Verdict artifact JSON schema
+
+Every pilot and qualified run emits one `verdict.json` under the external output root. It carries the five states independently plus the evidence needed to audit them. No run is authoritative without this artifact.
+
+```json
+{
+  "verdict_version": 1,
+  "states": {
+    "CONTRACT_GREEN": "pass | fail | not_run",
+    "SDK_PATH_GREEN": "pass | fail | not_run",
+    "PAIR_VALID": "pass | fail | not_run",
+    "PERF_QUALIFIED": "pass | fail | not_run | not_applicable",
+    "QUALITY_DELTA": "pass | fail | not_run | not_applicable"
+  },
+  "blinding": "isolated | attested",
+  "isolation_method": "string describing how runner gold access was prevented",
+  "access_block_log": "string with block verification entries, or attestation-only rationale",
+  "missing_t_ids": ["T00", "T16"],
+  "not_applicable_t_ids": ["T16"],
+  "failure_class": "none | corpus_mismatch | blinding | provenance | model | host | scoring | infra",
+  "provenance": {
+    "quanta_source_sha": "hex",
+    "quanta_binary_digest": "hex",
+    "semble_revision": "string",
+    "semble_lockfile_digest": "hex",
+    "corpus_digest": "hex",
+    "path_sha_diff_digest": "hex",
+    "suite_digest": "hex",
+    "query_pack_digest": "hex",
+    "tokenizer_budget_version": "string",
+    "host_profile": "string",
+    "host_check_record": "string"
+  },
+  "counts": {"selected": 0, "executed": 0, "passed": 0, "failed": 0}
+}
+```
+
+Rules: `missing_t_ids` lists blocking IDs with no evidence; `not_applicable_t_ids` lists conditionally scoped IDs (T15 without a same-model claim, T16 without an incremental claim). `failure_class` is `none` only when every applicable state passes. `provenance` digests must match the run manifest; a missing mandatory digest fails the verdict. RB-05 writes this artifact; RB-06 verifies it at closeout.

@@ -36,7 +36,40 @@ the same implementation as `evaluator.digest(evaluator.canonical(pack))`.
 The evaluator re-derives the pack from the frozen suite and rejects a different
 hash. The pack includes suite commitment, repository commit, tokenizer, route
 names and only eval task IDs, query text and query hashes. It contains no labels,
-answerability bit or train tasks.
+answerability bit or train tasks. `freeze` is the only query-pack producer.
+
+## Schema versions
+
+Current contract is v2 (`schema_version: 2`, see `suite.schema.json` and
+`runner.schema.json`). V1 suites and runner records remain readable by the
+same single evaluator for migration; v1 still requires at least two routes
+and both answerable and no-gold eval tasks. V2 permits an all-answerable
+external suite: no no-answer tasks are invented, and the absent stratum
+reports `not_applicable`. Suite and runner versions must match.
+
+## Frozen suite v2
+
+V2 suite: `schema_version: 2`, `suite_id`, `repository_commit`, at least one
+route, `tasks`, and optional `file_universe` (canonical path+SHA allowlist).
+When present, every gold label and candidate must come from the allowlist;
+a tracked-but-excluded file is rejected. Each task adds optional `category`;
+each gold block adds optional `grade` (0-3). Grades enable NDCG@10 only when
+every eval answerable gold label carries one. Eval needs at least one task.
+
+## Runner record v2
+
+V2 record: `schema_version: 2`, `query_pack_sha256`, `runner`,
+`route_provenance`, `results`. `runner` adds `tokenizer_budget_version`
+(`qb-v1`), `blinding: isolated | attested`, `isolation_method`, and
+`access_block_log`; `gold_access: false` stays an attestation. Authoritative
+blinded quality requires `isolated` with separate suite access, otherwise the
+claim is attested-only. `route_provenance` carries per-route
+`system`/`model`/`model_revision`. Each result has `status` (`success`,
+`abstained`, `capped`, `error`, `timeout`, `unavailable`), ordered
+`candidates` with 1-based sequential `rank`, `timings`
+(`query_latency_ms`, finite, >= 0), and typed `error` (null except for
+error/timeout/unavailable). Non-success results carry no candidates and
+score zero; `capped` is scored but flagged, never treated as exhaustive.
 
 ## Frozen suite v1
 
@@ -79,13 +112,24 @@ Packing stops at the first candidate that exceeds the remaining budget.
 `BCY@budget` is the fraction of answerable eval tasks whose **every** gold
 block is fully covered by packed candidates. `file_recall` and `block_recall`
 are task-macro averages. `no_gold_abstention` is the fraction of no-gold tasks
-with explicit abstention. `mean_context_tokens` is averaged across all eval
-tasks. The report gives these metrics for each route and the selected route
-pair's deltas and paired win/loss/tie counts (where success means BCY for
-answerable tasks and abstention for no-gold tasks). A candidate matching a
-gold file but missing its gold line span cannot earn block credit.
+with explicit abstention, or `not_applicable` without a real no-answer
+stratum. `mean_context_tokens` is averaged across all eval tasks. The report
+gives these metrics for each route and the selected route pair's deltas and
+paired win/loss/tie counts (where success means BCY for answerable tasks and
+abstention for no-gold tasks). A candidate matching a gold file but missing
+its gold line span cannot earn block credit.
+
+V2 adds span-aware Recall@1/5/10/20, MRR@10, graded NDCG@10 (only when every
+eval answerable gold label carries a reviewed grade, else `not_applicable`),
+file-only recall as a secondary view, and both chunk-level and deterministic
+same-file-collapsed rankings (best chunk per file). Primary metric is
+`ndcg_at_10` when graded, else `recall_at_10`. Reports include per-query rows,
+per-route status counts and mean latency, sample counts, and a 95% normal
+confidence interval on paired deltas when the sample reaches 20, else an
+explicit insufficient-sample marker. Re-scoring immutable records is
+deterministic under row order; scores depend only on recorded spans and
+statuses, never on runner identity strings.
 
 The report is evidence only for the supplied frozen suite, pinned repository
 and runner record. No arbitrary pass threshold or claim of production retrieval
-quality is inferred. The current contract has no query execution latency,
-external task QA, human graded utility, or agent outcome measurement.
+quality is inferred.

@@ -19,7 +19,9 @@ use quanta_index_core::RequestBudgetV1;
 
 use crate::observability::NoopQueryObsSink;
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
-use crate::query_dispatcher::response_budget::{ResponsePayloadBudget, fit_ranked_page};
+use crate::query_dispatcher::response_budget::{
+    RankedPage, ResponsePayloadBudget, fit_ranked_page,
+};
 use crate::query_dispatcher::tests::support::common::{
     TestResult, candidate, dispatcher_with_obs, ipc_error_from, ready_pin,
 };
@@ -322,6 +324,46 @@ fn a_fitting_first_row_is_not_refused_by_cursor_reservation() -> TestResult {
     let encoded = quanta_index_ipc::cbor_payload_len(&first)?;
     if encoded > budget.max_payload_bytes() {
         return Err(format!("the prefix encodes to {encoded} bytes").into());
+    }
+    Ok(())
+}
+
+#[test]
+fn a_shorter_prefix_can_exceed_the_budget_when_its_cursor_is_larger() -> TestResult {
+    let results = rows(4, 8);
+    let large_token = ContinuationTokenV2::new("L".repeat(3_000))?;
+    let page = TextQueryResponse {
+        generation: ready_pin(),
+        results,
+        window: QueryResultWindowV2::pageable(4, CandidateCountV1::AtLeast(5), true, vec![])?,
+        file_owner_rows: None,
+        next_cursor: Some(large_token.clone()),
+    };
+    let budget = ResponsePayloadBudget::new(2_500)?;
+    let two = page.clone().cut(
+        2,
+        crate::query_dispatcher::window::cut_pageable_window_v2(&page.window, 2)?,
+        large_token,
+    );
+    if quanta_index_ipc::cbor_payload_len(&two)? <= budget.max_payload_bytes() {
+        return Err("the two-row fixture must not fit with its large cursor".into());
+    }
+    let fitted = fit_ranked_page(page, budget, |cursor| {
+        Ok(
+            ContinuationTokenV2::new(if cursor.candidate_id == "cand-02" {
+                "short".to_string()
+            } else {
+                "L".repeat(3_000)
+            })
+            .expect("nonempty fixture token"),
+        )
+    })?;
+    if fitted.results.len() != 3
+        || fitted.window.has_more() != Some(true)
+        || fitted.next_cursor.as_ref().map(ContinuationTokenV2::as_str) != Some("short")
+        || quanta_index_ipc::cbor_payload_len(&fitted)? > budget.max_payload_bytes()
+    {
+        return Err(format!("the longest fitting prefix was not selected: {fitted:?}").into());
     }
     Ok(())
 }

@@ -310,6 +310,8 @@ fn prop_search_explanation() -> impl Strategy<Value = SearchExplanation> {
     (
         prop_vec(prop_planner_trace_entry(), 0..3),
         prop_vec(prop_engine_touched(), 0..3),
+        prop_vec(prop_engine_touched(), 0..3),
+        any::<u64>(),
         proptest::option::of(prop_early_stop_reason()),
         prop_vec(prop_explanation_row(), 0..4),
         any::<[u8; 32]>(),
@@ -320,6 +322,8 @@ fn prop_search_explanation() -> impl Strategy<Value = SearchExplanation> {
             |(
                 planner_trace,
                 engines_touched,
+                engines_executed,
+                request_id,
                 early_stop_reason,
                 contributions,
                 ranker_weights_hash,
@@ -328,6 +332,8 @@ fn prop_search_explanation() -> impl Strategy<Value = SearchExplanation> {
             )| SearchExplanation {
                 planner_trace,
                 engines_touched,
+                engines_executed,
+                request_id,
                 early_stop_reason,
                 contributions,
                 ranker_weights_hash,

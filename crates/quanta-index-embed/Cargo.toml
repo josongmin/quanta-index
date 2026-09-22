@@ -12,6 +12,10 @@ workspace = true
 path = "src/lib.rs"
 
 [dependencies]
+# The upstream `onig` feature also enables tokenizers/progressbar, pulling in
+# unmaintained number_prefix. Its minimal `wasm` feature is native-compatible,
+# local-only, and uses fancy-regex without the progress bar or hub downloader.
+model2vec-rs = { version = "=0.3.0", default-features = false, features = ["wasm"] }
 quanta-index-core = { version = "0.1.0", path = "../quanta-index-core" }
 quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
 reqwest.workspace = true

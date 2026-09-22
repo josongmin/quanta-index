@@ -154,37 +154,8 @@ fn a_batch_past_the_vector_envelope_is_refused_before_any_track_writes() -> Test
     Ok(())
 }
 
-/// The record ceiling counts every carried row, independent of vector
-/// bytes: the harness's batch carries one chunk and one typed source, two
-/// rows, and does not fit a one-row envelope.
-#[test]
-fn the_record_ceiling_counts_every_carried_row() -> TestResult {
-    let policy = IngestResourcePolicy::new(
-        1,
-        IngestResourcePolicy::DEFAULT.max_text_bytes(),
-        IngestResourcePolicy::DEFAULT.max_vector_bytes(),
-    )?;
-    let mut rt = E2eRuntime::boot_with_ingest_resource_policy(policy)?;
-    let batch = rt.text_search_corpus_batch("src/rows.rs", "fn rows_body() { rows_needle }")?;
-    let carried = batch
-        .replace_scopes
-        .iter()
-        .map(|s| s.chunks.len())
-        .sum::<usize>()
-        + batch
-            .semantic_replace_scopes
-            .iter()
-            .map(|s| s.sources.len())
-            .sum::<usize>();
-    if carried != 2 {
-        return Err(format!("the fixture must carry two rows, carries {carried}").into());
-    }
-    let refused = rt.ingest_once(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch))?;
-    if typed_code(&refused) != Some(INGEST_RESOURCE_BUDGET_EXCEEDED_CODE.as_wire_str()) {
-        return Err(format!(
-            "two carried rows under a one-row envelope must be refused typed, got {refused:?}"
-        )
-        .into());
-    }
-    Ok(())
-}
+// NOTE (TOPT-07): the record-ceiling daemon case lived here and was
+// deleted after its four stronger owners passed: the core policy unit
+// test, the search-plane preflight/publish proofs, the config
+// field-to-policy mapping proof, and the vector-envelope daemon E2E
+// above, which keeps the one daemon-level envelope refusal.

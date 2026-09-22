@@ -71,9 +71,7 @@ fn history_commit_count(rt: &mut E2eRuntime, query: &str) -> AnyResult<usize> {
     Ok(result.commit_ids.len())
 }
 
-#[test]
-fn rev_filter_admits_matching_ref_and_excludes_others() -> AnyResult<()> {
-    let mut rt = boot_with_history()?;
+fn rev_filter_admits_matching_ref_and_excludes_others(mut rt: &mut E2eRuntime) -> AnyResult<()> {
     let admitted = history_commit_count(&mut rt, "type:commit rev:refs/heads/main needle_token")?;
     ensure!(
         admitted == 1,
@@ -87,9 +85,7 @@ fn rev_filter_admits_matching_ref_and_excludes_others() -> AnyResult<()> {
     Ok(())
 }
 
-#[test]
-fn author_filter_admits_matching_author_and_excludes_others() -> AnyResult<()> {
-    let mut rt = boot_with_history()?;
+fn author_filter_admits_matching_author_and_excludes_others(mut rt: &mut E2eRuntime) -> AnyResult<()> {
     let admitted = history_commit_count(&mut rt, "type:commit author:alice needle_token")?;
     ensure!(
         admitted == 1,
@@ -103,9 +99,7 @@ fn author_filter_admits_matching_author_and_excludes_others() -> AnyResult<()> {
     Ok(())
 }
 
-#[test]
-fn committer_filter_admits_matching_committer_and_excludes_others() -> AnyResult<()> {
-    let mut rt = boot_with_history()?;
+fn committer_filter_admits_matching_committer_and_excludes_others(mut rt: &mut E2eRuntime) -> AnyResult<()> {
     let admitted = history_commit_count(&mut rt, "type:commit committer:bob needle_token")?;
     ensure!(
         admitted == 1,
@@ -119,9 +113,7 @@ fn committer_filter_admits_matching_committer_and_excludes_others() -> AnyResult
     Ok(())
 }
 
-#[test]
-fn message_filter_admits_matching_message_and_excludes_others() -> AnyResult<()> {
-    let mut rt = boot_with_history()?;
+fn message_filter_admits_matching_message_and_excludes_others(mut rt: &mut E2eRuntime) -> AnyResult<()> {
     let admitted = history_commit_count(&mut rt, "type:commit message:needle_token needle_token")?;
     ensure!(
         admitted == 1,
@@ -650,9 +642,7 @@ fn boot_with_rev_at_time_generations() -> AnyResult<(E2eRuntime, GenerationPin)>
     Ok((rt.reopen(), head_pin))
 }
 
-#[test]
-fn content_filter_executes_as_a_text_pattern() -> AnyResult<()> {
-    let mut rt = boot_with_lexical()?;
+fn content_filter_executes_as_a_text_pattern(rt: &mut E2eRuntime) -> AnyResult<()> {
     let via_content = rt.query_text(
         TextQuerySyntax::Sourcegraph,
         "content:parity_needle_alpha",
@@ -674,9 +664,7 @@ fn content_filter_executes_as_a_text_pattern() -> AnyResult<()> {
     Ok(())
 }
 
-#[test]
-fn timeout_option_is_typed_refused_off_the_regex_surface() -> AnyResult<()> {
-    let mut rt = boot_with_lexical()?;
+fn timeout_option_is_typed_refused_off_the_regex_surface(rt: &mut E2eRuntime) -> AnyResult<()> {
     // `timeout:` is executable only for regex-backed lexical queries; on a plain
     // keyword it must fail typed (fail-closed), not silently ignore the option.
     let result = rt.query_text(
@@ -692,9 +680,7 @@ fn timeout_option_is_typed_refused_off_the_regex_surface() -> AnyResult<()> {
     Ok(())
 }
 
-#[test]
-fn repo_has_content_predicate_executes_on_sourcegraph_surface() -> AnyResult<()> {
-    let mut rt = boot_with_multi_repo()?;
+fn repo_has_content_predicate_executes_on_sourcegraph_surface(rt: &mut E2eRuntime) -> AnyResult<()> {
     let admitted = rt.query_text(
         TextQuerySyntax::Sourcegraph,
         "repo:has.content(corp-a) shared_oracle_needle",
@@ -726,9 +712,7 @@ fn repo_has_content_predicate_executes_on_sourcegraph_surface() -> AnyResult<()>
     Ok(())
 }
 
-#[test]
-fn repo_has_commit_after_predicate_executes_on_sourcegraph_surface() -> AnyResult<()> {
-    let mut rt = boot_with_multi_repo_and_commit_recency()?;
+fn repo_has_commit_after_predicate_executes_on_sourcegraph_surface(rt: &mut E2eRuntime) -> AnyResult<()> {
     for query in [
         r#"repo:has.commit.after("2025-01-01T00:00:00Z") shared_oracle_needle"#,
         r#"repo:has.commit.after("2025-01-01") shared_oracle_needle"#,
@@ -764,10 +748,8 @@ fn repo_has_commit_after_predicate_executes_on_sourcegraph_surface() -> AnyResul
     Ok(())
 }
 
-#[test]
-fn repo_contains_commit_after_alias_executes_with_human_timeref_and_boolean_scope() -> AnyResult<()>
+fn repo_contains_commit_after_alias_executes_with_human_timeref_and_boolean_scope(rt: &mut E2eRuntime) -> AnyResult<()>
 {
-    let mut rt = boot_with_multi_repo_and_commit_recency()?;
     for query in [
         r#"repo:contains.commit.after("June 25 2025") shared_oracle_needle"#,
         "repo:contains.commit.after(yesterday) shared_oracle_needle",
@@ -818,9 +800,7 @@ fn repo_contains_commit_after_alias_executes_with_human_timeref_and_boolean_scop
     Ok(())
 }
 
-#[test]
-fn repo_has_commit_after_rejects_invalid_timeref_typed() -> AnyResult<()> {
-    let mut rt = boot_with_multi_repo_and_commit_recency()?;
+fn repo_has_commit_after_rejects_invalid_timeref_typed(rt: &mut E2eRuntime) -> AnyResult<()> {
     let result = rt.query_text(
         TextQuerySyntax::Sourcegraph,
         "repo:has.commit.after(definitely-not-a-timeref) shared_oracle_needle",
@@ -840,9 +820,7 @@ fn repo_has_commit_after_rejects_invalid_timeref_typed() -> AnyResult<()> {
     Ok(())
 }
 
-#[test]
-fn repo_has_meta_predicate_executes_on_sourcegraph_surface() -> AnyResult<()> {
-    let mut rt = boot_with_multi_repo_and_repo_meta()?;
+fn repo_has_meta_predicate_executes_on_sourcegraph_surface(rt: &mut E2eRuntime) -> AnyResult<()> {
     let admitted = rt.query_text(
         TextQuerySyntax::Sourcegraph,
         "repo:has.meta(license:apache-2.0) shared_oracle_needle",
@@ -877,12 +855,10 @@ fn repo_has_meta_predicate_executes_on_sourcegraph_surface() -> AnyResult<()> {
     Ok(())
 }
 
-#[test]
-fn repo_has_meta_key_only_existence_executes_on_sourcegraph_surface() -> AnyResult<()> {
+fn repo_has_meta_key_only_existence_executes_on_sourcegraph_surface(rt: &mut E2eRuntime) -> AnyResult<()> {
     // SGX-03: `repo:has.meta(key)` gates repos that have the key PRESENT with any
     // value — genuine existence (contains_key), not a wildcard or empty-string
     // match. Corpus: corp-a={license, tier}, corp-b={license}.
-    let mut rt = boot_with_multi_repo_and_repo_meta()?;
 
     // `tier` exists only on corp-a → gates to corp-a. (An inverted "key absent"
     // gate would wrongly select corp-b, so this distinguishes the two.)
@@ -947,12 +923,10 @@ fn repo_has_meta_key_only_existence_executes_on_sourcegraph_surface() -> AnyResu
     Ok(())
 }
 
-#[test]
-fn repo_has_meta_tag_existence_executes_on_sourcegraph_surface() -> AnyResult<()> {
+fn repo_has_meta_tag_existence_executes_on_sourcegraph_surface(rt: &mut E2eRuntime) -> AnyResult<()> {
     // SGX-03: `repo:has.meta(tag:)` (empty value) is the key-existence shape —
     // `repo:has.meta(tier:)` gates repos where key `tier` is present (corp-a),
     // NOT repos with an empty-string `tier` value.
-    let mut rt = boot_with_multi_repo_and_repo_meta()?;
     let result = rt.query_text(
         TextQuerySyntax::Sourcegraph,
         "repo:has.meta(tier:) shared_oracle_needle",
@@ -971,9 +945,7 @@ fn repo_has_meta_tag_existence_executes_on_sourcegraph_surface() -> AnyResult<()
     Ok(())
 }
 
-#[test]
-fn repo_has_meta_regex_family_executes_on_sourcegraph_surface() -> AnyResult<()> {
-    let mut rt = boot_with_multi_repo_and_repo_meta()?;
+fn repo_has_meta_regex_family_executes_on_sourcegraph_surface(rt: &mut E2eRuntime) -> AnyResult<()> {
 
     let regex_pair = rt.query_text(
         TextQuerySyntax::Sourcegraph,
@@ -1058,9 +1030,7 @@ fn repo_has_meta_regex_family_executes_on_sourcegraph_surface() -> AnyResult<()>
     Ok(())
 }
 
-#[test]
-fn repo_has_meta_invalid_regex_typed_fails() -> AnyResult<()> {
-    let mut rt = boot_with_multi_repo_and_repo_meta()?;
+fn repo_has_meta_invalid_regex_typed_fails(rt: &mut E2eRuntime) -> AnyResult<()> {
     let result = rt.query_text(
         TextQuerySyntax::Sourcegraph,
         "repo:has.meta(/license(/:/apache.*/) shared_oracle_needle",
@@ -1085,15 +1055,13 @@ fn repo_has_meta_invalid_regex_typed_fails() -> AnyResult<()> {
     Ok(())
 }
 
-#[test]
-fn repo_has_description_predicate_executes_on_sourcegraph_surface() -> AnyResult<()> {
+fn repo_has_description_predicate_executes_on_sourcegraph_surface(rt: &mut E2eRuntime) -> AnyResult<()> {
     // SGX-02: Sourcegraph's `repo:has.description(<regex>)` filters repos by their
     // producer-published description text, matched as a regex. The description is
     // a distinct source-repo keyed authority (RepoDescriptionIngestBatch ->
     // repo-description.cbor shard), NOT folded into repo:has.meta or repo topics,
     // and the search-plane never fabricates source bytes — the producer publishes
     // the description and the gate matches it.
-    let mut rt = boot_with_multi_repo_and_repo_description()?;
 
     // Literal substring pattern gates to the owning repo's docs.
     let corp_a = rt.query_text(
@@ -1216,11 +1184,9 @@ fn repo_has_description_predicate_executes_on_sourcegraph_surface() -> AnyResult
     Ok(())
 }
 
-#[test]
-fn repo_has_description_invalid_regex_fails_closed() -> AnyResult<()> {
+fn repo_has_description_invalid_regex_fails_closed(rt: &mut E2eRuntime) -> AnyResult<()> {
     // A malformed regex pattern must surface a typed error, never a silently
     // empty candidate set.
-    let mut rt = boot_with_multi_repo_and_repo_description()?;
     let result = rt.query_text(
         TextQuerySyntax::Sourcegraph,
         "repo:has.description(\"a[b\") shared_oracle_needle",
@@ -1240,12 +1206,10 @@ fn repo_has_description_invalid_regex_fails_closed() -> AnyResult<()> {
     Ok(())
 }
 
-#[test]
-fn repo_has_description_without_authority_fails_closed() -> AnyResult<()> {
+fn repo_has_description_without_authority_fails_closed(rt: &mut E2eRuntime) -> AnyResult<()> {
     // When no producer has published a description authority for the generation,
     // the gate must fail closed with a typed unavailable error — never silently
     // match nothing as if every repo lacked a description.
-    let mut rt = boot_with_multi_repo_and_repo_meta()?;
     let result = rt.query_text(
         TextQuerySyntax::Sourcegraph,
         "repo:has.description(enginecorp) shared_oracle_needle",
@@ -1297,12 +1261,10 @@ fn repo_has_description_conflicting_batch_fails_closed() -> AnyResult<()> {
     Ok(())
 }
 
-#[test]
-fn repo_has_description_non_textual_arg_is_typed_unsupported() -> AnyResult<()> {
+fn repo_has_description_non_textual_arg_is_typed_unsupported(rt: &mut E2eRuntime) -> AnyResult<()> {
     // A numeric argument is not an admissible description pattern; it must
     // typed-fail through the unimplemented-predicate path, never coerce to a
     // string pattern or silently match nothing.
-    let mut rt = boot_with_multi_repo_and_repo_description()?;
     let result = rt.query_text(
         TextQuerySyntax::Sourcegraph,
         "repo:has.description(123) shared_oracle_needle",
@@ -1360,9 +1322,7 @@ fn repo_has_topic_predicate_executes_on_sourcegraph_surface() -> AnyResult<()> {
     Ok(())
 }
 
-#[test]
-fn select_file_owners_projects_owner_rows_on_sourcegraph_surface() -> AnyResult<()> {
-    let mut rt = boot_with_multi_repo_and_file_ownership()?;
+fn select_file_owners_projects_owner_rows_on_sourcegraph_surface(rt: &mut E2eRuntime) -> AnyResult<()> {
     let result = rt.query_text(
         TextQuerySyntax::Sourcegraph,
         "select:file.owners shared_oracle_needle",
@@ -1403,9 +1363,7 @@ fn select_file_owners_projects_owner_rows_on_sourcegraph_surface() -> AnyResult<
     Ok(())
 }
 
-#[test]
-fn file_has_contributor_executes_on_sourcegraph_surface() -> AnyResult<()> {
-    let mut rt = boot_with_multi_repo_and_file_contributor()?;
+fn file_has_contributor_executes_on_sourcegraph_surface(rt: &mut E2eRuntime) -> AnyResult<()> {
 
     let admitted = rt.query_text(
         TextQuerySyntax::Sourcegraph,
@@ -1441,10 +1399,8 @@ fn file_has_contributor_executes_on_sourcegraph_surface() -> AnyResult<()> {
     Ok(())
 }
 
-#[test]
-fn file_has_contributor_supports_name_and_email_regex_without_canonical_fallback() -> AnyResult<()>
+fn file_has_contributor_supports_name_and_email_regex_without_canonical_fallback(rt: &mut E2eRuntime) -> AnyResult<()>
 {
-    let mut rt = boot_with_multi_repo_and_file_contributor()?;
 
     let prefix = rt.query_text(
         TextQuerySyntax::Sourcegraph,
@@ -1529,9 +1485,7 @@ fn file_has_contributor_supports_name_and_email_regex_without_canonical_fallback
     Ok(())
 }
 
-#[test]
-fn file_has_owner_executes_on_sourcegraph_surface() -> AnyResult<()> {
-    let mut rt = boot_with_multi_repo_and_file_ownership()?;
+fn file_has_owner_executes_on_sourcegraph_surface(rt: &mut E2eRuntime) -> AnyResult<()> {
 
     let admitted = rt.query_text(
         TextQuerySyntax::Sourcegraph,
@@ -1583,9 +1537,7 @@ fn file_has_owner_executes_on_sourcegraph_surface() -> AnyResult<()> {
     Ok(())
 }
 
-#[test]
-fn file_has_owner_executes_inside_boolean_scope() -> AnyResult<()> {
-    let mut rt = boot_with_multi_repo_and_file_ownership()?;
+fn file_has_owner_executes_inside_boolean_scope(rt: &mut E2eRuntime) -> AnyResult<()> {
 
     let or_query = rt.query_text(
         TextQuerySyntax::Sourcegraph,
@@ -1718,9 +1670,7 @@ fn rev_at_time_text_route_rebinds_to_selected_revision_generation() -> AnyResult
     Ok(())
 }
 
-#[test]
-fn repo_has_path_alias_executes_on_sourcegraph_surface() -> AnyResult<()> {
-    let mut rt = boot_with_multi_repo()?;
+fn repo_has_path_alias_executes_on_sourcegraph_surface(rt: &mut E2eRuntime) -> AnyResult<()> {
     let admitted = rt.query_text(
         TextQuerySyntax::Sourcegraph,
         "repo:has.path(src/gate-a.rs) shared_oracle_needle",
@@ -1752,9 +1702,7 @@ fn repo_has_path_alias_executes_on_sourcegraph_surface() -> AnyResult<()> {
     Ok(())
 }
 
-#[test]
-fn repo_has_file_scalar_path_executes_on_sourcegraph_surface() -> AnyResult<()> {
-    let mut rt = boot_with_multi_repo()?;
+fn repo_has_file_scalar_path_executes_on_sourcegraph_surface(rt: &mut E2eRuntime) -> AnyResult<()> {
     let admitted = rt.query_text(
         TextQuerySyntax::Sourcegraph,
         "repo:has.file(src/gate-a.rs) shared_oracle_needle",
@@ -1786,9 +1734,7 @@ fn repo_has_file_scalar_path_executes_on_sourcegraph_surface() -> AnyResult<()> 
     Ok(())
 }
 
-#[test]
-fn repo_has_file_matcher_combinations_execute_on_sourcegraph_surface() -> AnyResult<()> {
-    let mut rt = boot_with_multi_repo()?;
+fn repo_has_file_matcher_combinations_execute_on_sourcegraph_surface(rt: &mut E2eRuntime) -> AnyResult<()> {
     for (query, expected) in [
         (
             "repo:has.file(path:src/gate-a.rs, name:gate-a.rs) shared_oracle_needle",
@@ -1848,12 +1794,10 @@ fn repo_has_file_matcher_combinations_execute_on_sourcegraph_surface() -> AnyRes
     Ok(())
 }
 
-#[test]
-fn repo_contains_path_alias_executes_on_sourcegraph_surface() -> AnyResult<()> {
+fn repo_contains_path_alias_executes_on_sourcegraph_surface(rt: &mut E2eRuntime) -> AnyResult<()> {
     // SGT-01: `repo:contains.path(...)` is Sourcegraph's alias of
     // `repo:has.path(...)`; it canonicalizes onto the repo-file gate exactly
     // like the native `repo.has.path` alias.
-    let mut rt = boot_with_multi_repo()?;
     let admitted = rt.query_text(
         TextQuerySyntax::Sourcegraph,
         "repo:contains.path(src/gate-a.rs) shared_oracle_needle",
@@ -1886,12 +1830,10 @@ fn repo_contains_path_alias_executes_on_sourcegraph_surface() -> AnyResult<()> {
     Ok(())
 }
 
-#[test]
-fn repo_contains_file_alias_executes_on_sourcegraph_surface() -> AnyResult<()> {
+fn repo_contains_file_alias_executes_on_sourcegraph_surface(rt: &mut E2eRuntime) -> AnyResult<()> {
     // SGT-01: `repo:contains.file(...)` is Sourcegraph's alias of
     // `repo:has.file(...)`; unlike `contains.path` it forwards the full matcher
     // surface (scalar shorthand AND path:/name:/lang: filters) unchanged.
-    let mut rt = boot_with_multi_repo()?;
     for (query, expected) in [
         (
             "repo:contains.file(src/gate-a.rs) shared_oracle_needle",
@@ -1932,13 +1874,11 @@ fn repo_contains_file_alias_executes_on_sourcegraph_surface() -> AnyResult<()> {
     Ok(())
 }
 
-#[test]
-fn repo_has_file_path_content_correlates_per_document_on_sourcegraph_surface() -> AnyResult<()> {
+fn repo_has_file_path_content_correlates_per_document_on_sourcegraph_surface(rt: &mut E2eRuntime) -> AnyResult<()> {
     // SGX-01: `repo:has.file(path:... content:...)` gates a repo only when ONE
     // file satisfies BOTH path AND content — true per-document correlation, not a
     // repo-level cross-product. Corpus: corp-a has src/gate-a.rs (contains the
     // unique token "123") and src/corp-a.rs (does NOT contain "123").
-    let mut rt = boot_with_multi_repo()?;
 
     // Positive: the file at src/gate-a.rs DOES contain "123" → gates corp-a.
     for query in [
@@ -2015,9 +1955,7 @@ fn repo_has_file_path_content_correlates_per_document_on_sourcegraph_surface() -
     Ok(())
 }
 
-#[test]
-fn file_contains_content_alias_executes_on_sourcegraph_surface() -> AnyResult<()> {
-    let mut rt = boot_with_lexical()?;
+fn file_contains_content_alias_executes_on_sourcegraph_surface(rt: &mut E2eRuntime) -> AnyResult<()> {
     let admitted = rt.query_text(
         TextQuerySyntax::Sourcegraph,
         "file:contains.content(\"lemon yellow banana\")",
@@ -2049,9 +1987,7 @@ fn file_contains_content_alias_executes_on_sourcegraph_surface() -> AnyResult<()
     Ok(())
 }
 
-#[test]
-fn repo_contains_content_alias_executes_on_sourcegraph_surface() -> AnyResult<()> {
-    let mut rt = boot_with_multi_repo()?;
+fn repo_contains_content_alias_executes_on_sourcegraph_surface(rt: &mut E2eRuntime) -> AnyResult<()> {
     let admitted = rt.query_text(
         TextQuerySyntax::Sourcegraph,
         "repo:contains.content(\"gate-a only\") shared_oracle_needle",
@@ -2151,9 +2087,7 @@ fn numeric_content_predicates_execute_on_sourcegraph_surface() -> AnyResult<()> 
     Ok(())
 }
 
-#[test]
-fn scoped_file_content_predicates_execute_on_sourcegraph_surface() -> AnyResult<()> {
-    let mut rt = boot_with_lexical()?;
+fn scoped_file_content_predicates_execute_on_sourcegraph_surface(rt: &mut E2eRuntime) -> AnyResult<()> {
     let path_hit = rt.query_text(
         TextQuerySyntax::Sourcegraph,
         "file:has.content(path:docs/colors.md, \"lemon yellow banana\")",
@@ -2258,9 +2192,7 @@ fn scoped_file_content_predicates_execute_on_sourcegraph_surface() -> AnyResult<
     Ok(())
 }
 
-#[test]
-fn scoped_file_content_predicates_execute_under_or_not_and_name_scope() -> AnyResult<()> {
-    let mut rt = boot_with_lexical()?;
+fn scoped_file_content_predicates_execute_under_or_not_and_name_scope(rt: &mut E2eRuntime) -> AnyResult<()> {
     for (query, expected) in [
         (
             "file:contains(path:docs/colors.md, \"lemon yellow banana\") OR missing_corpus_token",
@@ -2329,9 +2261,7 @@ fn scoped_file_content_predicates_execute_under_or_not_and_name_scope() -> AnyRe
     Ok(())
 }
 
-#[test]
-fn repo_has_file_predicate_under_or_and_not_executes_on_sourcegraph_surface() -> AnyResult<()> {
-    let mut rt = boot_with_multi_repo()?;
+fn repo_has_file_predicate_under_or_and_not_executes_on_sourcegraph_surface(rt: &mut E2eRuntime) -> AnyResult<()> {
     let admitted = rt.query_text(
         TextQuerySyntax::Sourcegraph,
         "repo:has.file(path:src/gate-a.rs) OR missing_corpus_token",
@@ -2364,9 +2294,7 @@ fn repo_has_file_predicate_under_or_and_not_executes_on_sourcegraph_surface() ->
     Ok(())
 }
 
-#[test]
-fn repo_has_content_phrase_and_raw_string_execute_on_sourcegraph_surface() -> AnyResult<()> {
-    let mut rt = boot_with_multi_repo()?;
+fn repo_has_content_phrase_and_raw_string_execute_on_sourcegraph_surface(rt: &mut E2eRuntime) -> AnyResult<()> {
     for query in [
         r#"repo:has.content("gate-a only") shared_oracle_needle"#,
         "repo:has.content('gate-a only') shared_oracle_needle",
@@ -2385,9 +2313,7 @@ fn repo_has_content_phrase_and_raw_string_execute_on_sourcegraph_surface() -> An
     Ok(())
 }
 
-#[test]
-fn repo_has_content_predicate_under_or_and_not_executes_on_sourcegraph_surface() -> AnyResult<()> {
-    let mut rt = boot_with_multi_repo()?;
+fn repo_has_content_predicate_under_or_and_not_executes_on_sourcegraph_surface(rt: &mut E2eRuntime) -> AnyResult<()> {
     let admitted = rt.query_text(
         TextQuerySyntax::Sourcegraph,
         r#"repo:has.content("gate-a only") OR missing_corpus_token"#,
@@ -2468,9 +2394,7 @@ fn boot_with_metadata() -> AnyResult<E2eRuntime> {
     Ok(rt)
 }
 
-#[test]
-fn archived_filter_admits_non_archived_and_excludes_only() -> AnyResult<()> {
-    let mut rt = boot_with_metadata()?;
+fn archived_filter_admits_non_archived_and_excludes_only(rt: &mut E2eRuntime) -> AnyResult<()> {
     let no = rt.query_text(
         TextQuerySyntax::Sourcegraph,
         "archived:no parity_needle_alpha",
@@ -2496,9 +2420,7 @@ fn archived_filter_admits_non_archived_and_excludes_only() -> AnyResult<()> {
     Ok(())
 }
 
-#[test]
-fn context_filter_admits_member_context_and_excludes_others() -> AnyResult<()> {
-    let mut rt = boot_with_metadata()?;
+fn context_filter_admits_member_context_and_excludes_others(rt: &mut E2eRuntime) -> AnyResult<()> {
     let member = rt.query_text(
         TextQuerySyntax::Sourcegraph,
         "context:bench-ctx parity_needle_alpha",
@@ -2530,9 +2452,7 @@ fn context_filter_admits_member_context_and_excludes_others() -> AnyResult<()> {
     Ok(())
 }
 
-#[test]
-fn sourcegraph_legacy_index_and_boost_execute_on_active_stack() -> AnyResult<()> {
-    let mut rt = boot_with_lexical()?;
+fn sourcegraph_legacy_index_and_boost_execute_on_active_stack(rt: &mut E2eRuntime) -> AnyResult<()> {
     let baseline = rt.query_text(TextQuerySyntax::Sourcegraph, "parity_needle_alpha", 10);
     ensure!(
         baseline.typed_error.is_none(),
@@ -2578,5 +2498,360 @@ fn sourcegraph_legacy_index_and_boost_execute_on_active_stack() -> AnyResult<()>
         boosted_score > baseline_score,
         "boost: must increase lexical score magnitude, got baseline={baseline_score} boosted={boosted_score}",
     );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Amortized families (TOPT-07): one boot per immutable fixture family,
+// every retained case as a named row. A row failure carries its case
+// identity; no per-case cleanup exists to skip (single drop at the end).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn history_filter_cases_share_one_boot() -> AnyResult<()> {
+    let mut rt = boot_with_history()?;
+    let cases: [(&str, fn(&mut E2eRuntime) -> AnyResult<()>); 4] = [
+        (
+            "rev_filter_admits_matching_ref_and_excludes_others",
+            rev_filter_admits_matching_ref_and_excludes_others,
+        ),
+        (
+            "author_filter_admits_matching_author_and_excludes_others",
+            author_filter_admits_matching_author_and_excludes_others,
+        ),
+        (
+            "committer_filter_admits_matching_committer_and_excludes_others",
+            committer_filter_admits_matching_committer_and_excludes_others,
+        ),
+        (
+            "message_filter_admits_matching_message_and_excludes_others",
+            message_filter_admits_matching_message_and_excludes_others,
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (name, case) in cases {
+        if let Err(err) = case(&mut rt) {
+            failures.push(format!("{name}: {err:#}"));
+        }
+    }
+    if !failures.is_empty() {
+        return Err(anyhow::anyhow!(
+            "{} case(s) failed:\n{}",
+            failures.len(),
+            failures.join("\n")
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn lexical_filter_cases_share_one_boot() -> AnyResult<()> {
+    let mut rt = boot_with_lexical()?;
+    let cases: [(&str, fn(&mut E2eRuntime) -> AnyResult<()>); 6] = [
+        (
+            "content_filter_executes_as_a_text_pattern",
+            content_filter_executes_as_a_text_pattern,
+        ),
+        (
+            "timeout_option_is_typed_refused_off_the_regex_surface",
+            timeout_option_is_typed_refused_off_the_regex_surface,
+        ),
+        (
+            "file_contains_content_alias_executes_on_sourcegraph_surface",
+            file_contains_content_alias_executes_on_sourcegraph_surface,
+        ),
+        (
+            "scoped_file_content_predicates_execute_on_sourcegraph_surface",
+            scoped_file_content_predicates_execute_on_sourcegraph_surface,
+        ),
+        (
+            "scoped_file_content_predicates_execute_under_or_not_and_name_scope",
+            scoped_file_content_predicates_execute_under_or_not_and_name_scope,
+        ),
+        (
+            "sourcegraph_legacy_index_and_boost_execute_on_active_stack",
+            sourcegraph_legacy_index_and_boost_execute_on_active_stack,
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (name, case) in cases {
+        if let Err(err) = case(&mut rt) {
+            failures.push(format!("{name}: {err:#}"));
+        }
+    }
+    if !failures.is_empty() {
+        return Err(anyhow::anyhow!(
+            "{} case(s) failed:\n{}",
+            failures.len(),
+            failures.join("\n")
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn multi_repo_filter_cases_share_one_boot() -> AnyResult<()> {
+    let mut rt = boot_with_multi_repo()?;
+    let cases: [(&str, fn(&mut E2eRuntime) -> AnyResult<()>); 11] = [
+        (
+            "repo_has_content_predicate_executes_on_sourcegraph_surface",
+            repo_has_content_predicate_executes_on_sourcegraph_surface,
+        ),
+        (
+            "repo_has_path_alias_executes_on_sourcegraph_surface",
+            repo_has_path_alias_executes_on_sourcegraph_surface,
+        ),
+        (
+            "repo_has_file_scalar_path_executes_on_sourcegraph_surface",
+            repo_has_file_scalar_path_executes_on_sourcegraph_surface,
+        ),
+        (
+            "repo_has_file_matcher_combinations_execute_on_sourcegraph_surface",
+            repo_has_file_matcher_combinations_execute_on_sourcegraph_surface,
+        ),
+        (
+            "repo_contains_path_alias_executes_on_sourcegraph_surface",
+            repo_contains_path_alias_executes_on_sourcegraph_surface,
+        ),
+        (
+            "repo_contains_file_alias_executes_on_sourcegraph_surface",
+            repo_contains_file_alias_executes_on_sourcegraph_surface,
+        ),
+        (
+            "repo_has_file_path_content_correlates_per_document_on_sourcegraph_surface",
+            repo_has_file_path_content_correlates_per_document_on_sourcegraph_surface,
+        ),
+        (
+            "repo_contains_content_alias_executes_on_sourcegraph_surface",
+            repo_contains_content_alias_executes_on_sourcegraph_surface,
+        ),
+        (
+            "repo_has_file_predicate_under_or_and_not_executes_on_sourcegraph_surface",
+            repo_has_file_predicate_under_or_and_not_executes_on_sourcegraph_surface,
+        ),
+        (
+            "repo_has_content_phrase_and_raw_string_execute_on_sourcegraph_surface",
+            repo_has_content_phrase_and_raw_string_execute_on_sourcegraph_surface,
+        ),
+        (
+            "repo_has_content_predicate_under_or_and_not_executes_on_sourcegraph_surface",
+            repo_has_content_predicate_under_or_and_not_executes_on_sourcegraph_surface,
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (name, case) in cases {
+        if let Err(err) = case(&mut rt) {
+            failures.push(format!("{name}: {err:#}"));
+        }
+    }
+    if !failures.is_empty() {
+        return Err(anyhow::anyhow!(
+            "{} case(s) failed:\n{}",
+            failures.len(),
+            failures.join("\n")
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn commit_recency_filter_cases_share_one_boot() -> AnyResult<()> {
+    let mut rt = boot_with_multi_repo_and_commit_recency()?;
+    let cases: [(&str, fn(&mut E2eRuntime) -> AnyResult<()>); 3] = [
+        (
+            "repo_has_commit_after_predicate_executes_on_sourcegraph_surface",
+            repo_has_commit_after_predicate_executes_on_sourcegraph_surface,
+        ),
+        (
+            "repo_contains_commit_after_alias_executes_with_human_timeref_and_boolean_scope",
+            repo_contains_commit_after_alias_executes_with_human_timeref_and_boolean_scope,
+        ),
+        (
+            "repo_has_commit_after_rejects_invalid_timeref_typed",
+            repo_has_commit_after_rejects_invalid_timeref_typed,
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (name, case) in cases {
+        if let Err(err) = case(&mut rt) {
+            failures.push(format!("{name}: {err:#}"));
+        }
+    }
+    if !failures.is_empty() {
+        return Err(anyhow::anyhow!(
+            "{} case(s) failed:\n{}",
+            failures.len(),
+            failures.join("\n")
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn repo_meta_filter_cases_share_one_boot() -> AnyResult<()> {
+    let mut rt = boot_with_multi_repo_and_repo_meta()?;
+    let cases: [(&str, fn(&mut E2eRuntime) -> AnyResult<()>); 6] = [
+        (
+            "repo_has_meta_predicate_executes_on_sourcegraph_surface",
+            repo_has_meta_predicate_executes_on_sourcegraph_surface,
+        ),
+        (
+            "repo_has_meta_key_only_existence_executes_on_sourcegraph_surface",
+            repo_has_meta_key_only_existence_executes_on_sourcegraph_surface,
+        ),
+        (
+            "repo_has_meta_tag_existence_executes_on_sourcegraph_surface",
+            repo_has_meta_tag_existence_executes_on_sourcegraph_surface,
+        ),
+        (
+            "repo_has_meta_regex_family_executes_on_sourcegraph_surface",
+            repo_has_meta_regex_family_executes_on_sourcegraph_surface,
+        ),
+        (
+            "repo_has_meta_invalid_regex_typed_fails",
+            repo_has_meta_invalid_regex_typed_fails,
+        ),
+        (
+            "repo_has_description_without_authority_fails_closed",
+            repo_has_description_without_authority_fails_closed,
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (name, case) in cases {
+        if let Err(err) = case(&mut rt) {
+            failures.push(format!("{name}: {err:#}"));
+        }
+    }
+    if !failures.is_empty() {
+        return Err(anyhow::anyhow!(
+            "{} case(s) failed:\n{}",
+            failures.len(),
+            failures.join("\n")
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn repo_description_filter_cases_share_one_boot() -> AnyResult<()> {
+    let mut rt = boot_with_multi_repo_and_repo_description()?;
+    let cases: [(&str, fn(&mut E2eRuntime) -> AnyResult<()>); 3] = [
+        (
+            "repo_has_description_predicate_executes_on_sourcegraph_surface",
+            repo_has_description_predicate_executes_on_sourcegraph_surface,
+        ),
+        (
+            "repo_has_description_invalid_regex_fails_closed",
+            repo_has_description_invalid_regex_fails_closed,
+        ),
+        (
+            "repo_has_description_non_textual_arg_is_typed_unsupported",
+            repo_has_description_non_textual_arg_is_typed_unsupported,
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (name, case) in cases {
+        if let Err(err) = case(&mut rt) {
+            failures.push(format!("{name}: {err:#}"));
+        }
+    }
+    if !failures.is_empty() {
+        return Err(anyhow::anyhow!(
+            "{} case(s) failed:\n{}",
+            failures.len(),
+            failures.join("\n")
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn file_ownership_filter_cases_share_one_boot() -> AnyResult<()> {
+    let mut rt = boot_with_multi_repo_and_file_ownership()?;
+    let cases: [(&str, fn(&mut E2eRuntime) -> AnyResult<()>); 3] = [
+        (
+            "select_file_owners_projects_owner_rows_on_sourcegraph_surface",
+            select_file_owners_projects_owner_rows_on_sourcegraph_surface,
+        ),
+        (
+            "file_has_owner_executes_on_sourcegraph_surface",
+            file_has_owner_executes_on_sourcegraph_surface,
+        ),
+        (
+            "file_has_owner_executes_inside_boolean_scope",
+            file_has_owner_executes_inside_boolean_scope,
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (name, case) in cases {
+        if let Err(err) = case(&mut rt) {
+            failures.push(format!("{name}: {err:#}"));
+        }
+    }
+    if !failures.is_empty() {
+        return Err(anyhow::anyhow!(
+            "{} case(s) failed:\n{}",
+            failures.len(),
+            failures.join("\n")
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn file_contributor_filter_cases_share_one_boot() -> AnyResult<()> {
+    let mut rt = boot_with_multi_repo_and_file_contributor()?;
+    let cases: [(&str, fn(&mut E2eRuntime) -> AnyResult<()>); 2] = [
+        (
+            "file_has_contributor_executes_on_sourcegraph_surface",
+            file_has_contributor_executes_on_sourcegraph_surface,
+        ),
+        (
+            "file_has_contributor_supports_name_and_email_regex_without_canonical_fallback",
+            file_has_contributor_supports_name_and_email_regex_without_canonical_fallback,
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (name, case) in cases {
+        if let Err(err) = case(&mut rt) {
+            failures.push(format!("{name}: {err:#}"));
+        }
+    }
+    if !failures.is_empty() {
+        return Err(anyhow::anyhow!(
+            "{} case(s) failed:\n{}",
+            failures.len(),
+            failures.join("\n")
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn repo_metadata_filter_cases_share_one_boot() -> AnyResult<()> {
+    let mut rt = boot_with_metadata()?;
+    let cases: [(&str, fn(&mut E2eRuntime) -> AnyResult<()>); 2] = [
+        (
+            "archived_filter_admits_non_archived_and_excludes_only",
+            archived_filter_admits_non_archived_and_excludes_only,
+        ),
+        (
+            "context_filter_admits_member_context_and_excludes_others",
+            context_filter_admits_member_context_and_excludes_others,
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (name, case) in cases {
+        if let Err(err) = case(&mut rt) {
+            failures.push(format!("{name}: {err:#}"));
+        }
+    }
+    if !failures.is_empty() {
+        return Err(anyhow::anyhow!(
+            "{} case(s) failed:\n{}",
+            failures.len(),
+            failures.join("\n")
+        ));
+    }
     Ok(())
 }

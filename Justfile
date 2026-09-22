@@ -422,7 +422,14 @@ rust-verify-quality-relevance:
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib relevance:: --all-features --locked -- --nocapture
     mkdir -p artifacts/search-quality/relevance/latest
     {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin relevance_matrix --all-features --locked
-    env QUANTA_INDEX_BUILD_LANE=test-daemon-lane QUANTA_QUALITY_CAPTURE_DATE="$(date -u +%Y-%m-%d)" bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/relevance_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/relevance/latest"'
+    env QUANTA_INDEX_EMBEDDER=potion-code QUANTA_INDEX_BUILD_LANE=test-daemon-lane QUANTA_QUALITY_CAPTURE_DATE="$(date -u +%Y-%m-%d)" bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/relevance_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/relevance/latest"'
+
+# Hermetic mechanical regression rail. This is not learned semantic quality and
+# cannot replace the default potion-code relevance artifact.
+rust-verify-quality-relevance-hash-dev:
+    {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin relevance_matrix --all-features --locked
+    mkdir -p artifacts/search-quality/relevance/hash-dev/latest
+    env QUANTA_INDEX_EMBEDDER=hash-dev QUANTA_INDEX_BUILD_LANE=test-daemon-lane QUANTA_QUALITY_CAPTURE_DATE="$(date -u +%Y-%m-%d)" bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/relevance_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/relevance/hash-dev/latest"'
 
 # Local semantic A/B capture. Advisory only: compares deterministic Hash against
 # env-resolved OpenAI on the semantic judged fixture and writes delta artifacts

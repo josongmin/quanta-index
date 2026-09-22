@@ -262,6 +262,10 @@ fn sample_explanation_full() -> SearchExplanation {
             },
         ],
         engines_touched: vec![EngineTouched::Lexical, EngineTouched::Semantic],
+        // Deliberately distinct from `engines_touched`: a serializer that
+        // swaps the two vec fields must fail the roundtrip below.
+        engines_executed: vec![EngineTouched::Lexical],
+        request_id: 41,
         early_stop_reason: Some(EarlyStopReason::CountReached),
         contributions: vec![ExplanationRow {
             signal_name: Box::from("bm25"),
@@ -276,7 +280,7 @@ fn sample_explanation_full() -> SearchExplanation {
 }
 
 #[test]
-fn search_explanation_round_trips_all_seven_fields() -> TestRes {
+fn search_explanation_round_trips_all_nine_fields() -> TestRes {
     let original = sample_explanation_full();
     let bytes = encode(&original)?;
     let decoded: SearchExplanation = decode(&bytes)?;
@@ -309,6 +313,12 @@ fn search_explanation_round_trips_all_seven_fields() -> TestRes {
     }
     if decoded.engines_touched != vec![EngineTouched::Lexical, EngineTouched::Semantic] {
         return Err("engines_touched dropped on roundtrip".into());
+    }
+    if decoded.engines_executed != vec![EngineTouched::Lexical] {
+        return Err("engines_executed dropped on roundtrip".into());
+    }
+    if decoded.request_id != 41 {
+        return Err("request_id dropped on roundtrip".into());
     }
     if decoded.early_stop_reason != Some(EarlyStopReason::CountReached) {
         return Err("early_stop_reason dropped on roundtrip".into());

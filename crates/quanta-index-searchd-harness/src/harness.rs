@@ -453,7 +453,7 @@ impl E2eRuntime {
     /// started yet — it boots lazily on first `query_text`. The daemon under
     /// test uses the default `Hash` embedder profile.
     pub fn boot() -> AnyResult<Self> {
-        Self::boot_with_embedder_profile(SemanticEmbedderProfile::default())
+        Self::boot_with_embedder_profile(SemanticEmbedderProfile::hash_dev())
     }
 
     /// Like [`Self::boot`] but selects the daemon's semantic embedder profile
@@ -472,7 +472,7 @@ impl E2eRuntime {
     /// generations per pair, so retention (and the physical GC behind it)
     /// runs inside a test instead of never.
     pub fn boot_with_history_max_generations(max_generations: usize) -> AnyResult<Self> {
-        Self::boot_with_profile_and_history(SemanticEmbedderProfile::default(), max_generations)
+        Self::boot_with_profile_and_history(SemanticEmbedderProfile::hash_dev(), max_generations)
     }
 
     /// Change the retention window the next daemon start runs under. With
@@ -3462,7 +3462,7 @@ const HARNESS_MAINTENANCE_TICK: Duration = Duration::from_millis(50);
 const HARNESS_DORMANT_SCRUB_INTERVAL_MILLIS: u64 = 24 * 60 * 60 * 1_000;
 
 fn build_config(spec: &DriverSpec<'_>) -> AnyResult<SearchdConfig> {
-    let mut cfg = SearchdConfig::from_state_root(spec.state_root.to_path_buf())
+    let mut cfg = SearchdConfig::from_test_state_root(spec.state_root.to_path_buf())
         .try_with_search_corpus_history_retention_limits(
             spec.history_max_generations,
             spec.history_max_bytes,

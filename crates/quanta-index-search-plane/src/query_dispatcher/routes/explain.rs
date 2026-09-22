@@ -439,6 +439,9 @@ fn build_presence_explanation(
             },
         ],
         engines_touched: vec![EngineTouched::Lexical],
+        engines_executed: vec![EngineTouched::Lexical],
+        // Stamped by the transport adapter; 0 off-transport.
+        request_id: 0,
         early_stop_reason: None,
         contributions: Vec::new(),
         ranker_weights_hash: [0u8; 32],
@@ -620,6 +623,9 @@ fn build_lexical_score_explanation(
     Ok(SearchExplanation {
         planner_trace,
         engines_touched: vec![EngineTouched::Lexical],
+        engines_executed: vec![EngineTouched::Lexical],
+        // Stamped by the transport adapter; 0 off-transport.
+        request_id: 0,
         early_stop_reason: None,
         contributions,
         ranker_weights_hash: ranker_weights_hash_v1(&query.options, RankerFusionV1::None),
@@ -910,6 +916,10 @@ impl HybridTraceReportV1 {
         SearchExplanation {
             planner_trace: self.planner_trace,
             engines_touched: vec![EngineTouched::Lexical, EngineTouched::Semantic],
+            // The hybrid trace re-runs both bounded lanes under the plan.
+            engines_executed: vec![EngineTouched::Lexical, EngineTouched::Semantic],
+            // Stamped by the transport adapter; 0 off-transport.
+            request_id: 0,
             early_stop_reason: None,
             contributions: self.contributions,
             ranker_weights_hash: ranker_weights_hash_v1(options, RankerFusionV1::Rrf),

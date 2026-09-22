@@ -409,6 +409,8 @@ fn sample_explanation() -> SearchExplanation {
             detail: "planned".to_string(),
         }],
         engines_touched: vec![quanta_index_contract::EngineTouched::Semantic],
+        engines_executed: vec![quanta_index_contract::EngineTouched::Semantic],
+        request_id: 0,
         early_stop_reason: None,
         contributions: Vec::new(),
         ranker_weights_hash: [0; 32],

@@ -3307,14 +3307,12 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
                 .top_k(10)
                 .execute()
         },
-        |response| {
-            response.generation == pin()
-                && response.results.len() == 1
-                && response
-                    .results
-                    .first()
-                    .is_some_and(|candidate| !candidate.bindings.is_empty())
-        },
+        // The OR survivor arrives through the lexical arm without
+        // structural captures (TOPT-06: the old timeout-as-Ok wait
+        // masked the bindings clause never becoming ready; the
+        // assertions below never required them). AND-capture bindings
+        // stay guarded by `mixed_boolean` above.
+        |response| response.generation == pin() && response.results.len() == 1,
     )?;
     if mixed_or.results.len() != 1 {
         return Err(format!(

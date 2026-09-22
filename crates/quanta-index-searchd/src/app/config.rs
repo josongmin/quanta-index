@@ -5,8 +5,8 @@ use anyhow::Result;
 use quanta_index_core::{
     EMBEDDING_CACHE_LEDGER_BYTES_PER_ENTRY, IngestResourcePolicy, IntegrityScrubPolicyV1,
     LexicalExecutionBudgetV1, LexicalWriterPolicy, MAX_EMBEDDING_DIMENSION,
-    ProcessMemoryEnvelopeV1, ProviderWorkBudgetV1, RegexMatchCachePolicy,
-    SemanticEgressGrantV1, SemanticStreamWindowPolicy,
+    ProcessMemoryEnvelopeV1, ProviderWorkBudgetV1, RegexMatchCachePolicy, SemanticEgressGrantV1,
+    SemanticStreamWindowPolicy,
 };
 use quanta_index_embed::{
     DEFAULT_CONCURRENCY, DEFAULT_MAX_BATCH, DEFAULT_MAX_ESTIMATED_TOKENS_PER_REQUEST,
@@ -185,11 +185,6 @@ impl ProviderEgressGrantConfig {
 /// The env selector for the development hash embedder (QI-BB-007): the
 /// name says what it is, so no deployment picks it by omission.
 pub const DEV_HASH_EMBEDDER_SELECTOR: &str = "hash-dev";
-/// The env knob that lets an unset `QUANTA_INDEX_EMBEDDER` resolve to the
-/// development hash embedder instead of refusing boot (QI-BB-007).
-///
-/// The harness and the test rails set it; a deployment names its embedder.
-pub const ALLOW_DEV_EMBEDDER_ENV: &str = "QUANTA_INDEX_ALLOW_DEV_EMBEDDER";
 
 /// How `searchd` resolves the semantic embedder for both query and corpus paths.
 ///
@@ -202,11 +197,11 @@ pub enum SemanticEmbedderProfile {
     ///
     /// It hashes tokens into slots and carries no learned semantics, so a
     /// semantic query under it is token overlap, not meaning. It is
-    /// selected by name (`hash-dev`) or, with
-    /// `QUANTA_INDEX_ALLOW_DEV_EMBEDDER=1`, by an unset selector; the
-    /// daemon logs a boot warning and reports
+    /// selected only by name (`hash-dev`); the daemon logs a boot warning and reports
     /// `boot_semantic_profile_is_dev` whenever it serves under it.
     Hash { dimension: usize },
+    /// Pinned local Model2Vec code model used by Semble.
+    PotionCode { model_dir: PathBuf },
     /// Network-backed `OpenAI` embeddings. `api_key` is held here but redacted in
     /// `Debug` (R-SEC-01) and never logged. `tuning` carries the env-resolved
     /// operational knobs threaded into the provider/cache at the composition root.
@@ -248,12 +243,30 @@ impl std::fmt::Debug for SemanticEmbedderProfile {
                 .field("api_key", &"<redacted>")
                 .field("tuning", tuning)
                 .finish(),
+            Self::PotionCode { model_dir } => f
+                .debug_struct("PotionCode")
+                .field("model_dir", model_dir)
+                .finish(),
             Self::Unavailable => f.write_str("Unavailable"),
         }
     }
 }
 
 impl SemanticEmbedderProfile {
+    /// Resolve the same embedder selection used by the daemon, without
+    /// requiring unrelated daemon policies such as history retention.
+    pub fn from_env() -> Result<Self> {
+        semantic_embedder_profile_from_lookup(&optional_env)
+    }
+
+    /// Explicit development-only hash profile for hermetic test rails.
+    #[must_use]
+    pub const fn hash_dev() -> Self {
+        Self::Hash {
+            dimension: SEARCH_OWNED_SEMANTIC_DIMENSION,
+        }
+    }
+
     /// Whether this profile is a development/test embedder rather than a
     /// learned one (QI-BB-007).
     #[must_use]
@@ -266,22 +279,9 @@ impl SemanticEmbedderProfile {
     pub const fn selector(&self) -> &'static str {
         match self {
             Self::Hash { .. } => DEV_HASH_EMBEDDER_SELECTOR,
+            Self::PotionCode { .. } => "potion-code",
             Self::OpenAi { .. } => "openai",
             Self::Unavailable => "unavailable",
-        }
-    }
-}
-
-/// The builder default is the development hash embedder.
-///
-/// The harness and the in-process test rails build configs directly and
-/// need a key-free, network-free embedder. A deployment resolves its
-/// profile from env, where an unset selector is refused unless the
-/// operator opted into the development embedder by name.
-impl Default for SemanticEmbedderProfile {
-    fn default() -> Self {
-        Self::Hash {
-            dimension: SEARCH_OWNED_SEMANTIC_DIMENSION,
         }
     }
 }
@@ -455,7 +455,7 @@ pub(crate) const ENV_POLICY_FAMILIES: &[EnvPolicyFamily] = &[
         name: "semantic embedder",
         env_vars: &[
             "QUANTA_INDEX_EMBEDDER",
-            ALLOW_DEV_EMBEDDER_ENV,
+            "QUANTA_INDEX_EMBED_MODEL_DIR",
             "QUANTA_INDEX_EMBED_DIM",
             "QUANTA_INDEX_EMBED_MODEL",
             "QUANTA_INDEX_EMBED_MODEL_REVISION",
@@ -635,15 +635,18 @@ pub(crate) const STATE_ROOT_ENV_VARS: &[&str] =
     &["QUANTA_INDEX_STATE_ROOT", "QUANTA_INDEX_CACHE_ROOT"];
 
 impl SearchdConfig {
+    /// In-process test/harness builder. Its hash embedder is intentionally
+    /// explicit in the name; daemon entry points must use [`Self::from_env`]
+    /// or [`Self::from_env_with_state_root`] so potion-code is the default.
     #[must_use]
-    pub fn from_state_root(state_root: PathBuf) -> Self {
+    pub fn from_test_state_root(state_root: PathBuf) -> Self {
         let socket_dir = state_root.join("search-plane");
         Self {
             state_root,
             query_socket_path: socket_dir.join("query.sock"),
             control_socket_path: socket_dir.join("control.sock"),
             ingest_socket_path: socket_dir.join("ingest.sock"),
-            semantic_embedder_profile: SemanticEmbedderProfile::default(),
+            semantic_embedder_profile: SemanticEmbedderProfile::hash_dev(),
             search_corpus_history_retention_policy: None,
             snapshot_registry_policy: SnapshotRegistryPolicy::DEFAULT,
             lexical_execution_budget: LexicalExecutionBudgetV1::DEFAULT,
@@ -683,7 +686,7 @@ impl SearchdConfig {
             Some(state_root) => state_root,
             None => Self::resolve_state_root_from_lookup(lookup)?,
         };
-        let mut config = Self::from_state_root(state_root);
+        let mut config = Self::from_test_state_root(state_root);
         for family in ENV_POLICY_FAMILIES {
             config = (family.apply)(config, lookup).map_err(|error| {
                 anyhow::anyhow!(
@@ -899,6 +902,7 @@ impl SearchdConfig {
                 .max_entries()
                 .saturating_mul(EMBEDDING_CACHE_LEDGER_BYTES_PER_ENTRY),
             SemanticEmbedderProfile::OpenAi { .. }
+            | SemanticEmbedderProfile::PotionCode { .. }
             | SemanticEmbedderProfile::Hash { .. }
             | SemanticEmbedderProfile::Unavailable => 0,
         };
@@ -961,7 +965,7 @@ impl SearchdConfig {
 
     /// Override the ingest socket path independently. Test rails that need
     /// per-instance ingest socket paths use this; the production path is the
-    /// default in [`Self::from_state_root`].
+    /// default in [`Self::from_test_state_root`].
     #[must_use]
     pub fn with_ingest_socket_override(mut self, ingest_socket: PathBuf) -> Self {
         self.ingest_socket_path = ingest_socket;
@@ -1424,12 +1428,12 @@ fn required_positive_raw_u64(name: &str, raw: Option<String>) -> Result<u64> {
 /// Resolve the semantic embedder profile from an injected lookup
 /// (QI-BB-007).
 ///
-/// `QUANTA_INDEX_EMBEDDER` names the profile: `openai` (a learned
-/// provider), `unavailable` (queries fail closed), or `hash-dev` (the
-/// development hash embedder, by name). Unset, it is refused — a
-/// deployment that names no embedder does not silently serve token
-/// overlap as semantics — unless `QUANTA_INDEX_ALLOW_DEV_EMBEDDER=1`,
-/// which the harness and the test rails set explicitly. An unknown
+/// `QUANTA_INDEX_EMBEDDER` names the profile: `potion-code` (pinned local
+/// Model2Vec), `openai` (a learned network provider), `unavailable` (queries
+/// fail closed), or `hash-dev` (the
+/// development hash embedder, by name). Unset selects `potion-code`;
+/// a deployment that names no embedder never serves token overlap as
+/// semantics. An unknown
 /// selector, the retired `hash` spelling, or a missing `OpenAI` key fails
 /// closed. Applied by the one config chain, so `--state-root` and the
 /// env-resolved root honor it alike.
@@ -1437,15 +1441,19 @@ fn semantic_embedder_profile_from_lookup(
     lookup: &EnvLookup<'_>,
 ) -> Result<SemanticEmbedderProfile> {
     match lookup("QUANTA_INDEX_EMBEDDER")?.as_deref() {
-        None | Some("") => {
-            if !dev_embedder_allowed(lookup)? {
+        None | Some("") | Some("potion-code") => {
+            let model_dir = match lookup("QUANTA_INDEX_EMBED_MODEL_DIR")?
+                .filter(|value| !value.trim().is_empty())
+            {
+                Some(path) => PathBuf::from(path),
+                None => default_potion_code_model_dir(lookup)?,
+            };
+            if !model_dir.is_absolute() {
                 return Err(anyhow::anyhow!(
-                    "QUANTA_INDEX_EMBEDDER is unset: name the embedder (openai|unavailable|{DEV_HASH_EMBEDDER_SELECTOR}); the development hash embedder is served only by name or with {ALLOW_DEV_EMBEDDER_ENV}=1"
+                    "QUANTA_INDEX_EMBED_MODEL_DIR must be an absolute path"
                 ));
             }
-            Ok(SemanticEmbedderProfile::Hash {
-                dimension: embed_dim_from_lookup(lookup, SEARCH_OWNED_SEMANTIC_DIMENSION)?,
-            })
+            Ok(SemanticEmbedderProfile::PotionCode { model_dir })
         }
         Some(DEV_HASH_EMBEDDER_SELECTOR) => Ok(SemanticEmbedderProfile::Hash {
             dimension: embed_dim_from_lookup(lookup, SEARCH_OWNED_SEMANTIC_DIMENSION)?,
@@ -1475,22 +1483,51 @@ fn semantic_embedder_profile_from_lookup(
             })
         }
         Some(other) => Err(anyhow::anyhow!(
-            "unknown QUANTA_INDEX_EMBEDDER '{other}' (expected openai|unavailable|{DEV_HASH_EMBEDDER_SELECTOR})"
+            "unknown QUANTA_INDEX_EMBEDDER '{other}' (expected potion-code|openai|unavailable|{DEV_HASH_EMBEDDER_SELECTOR})"
         )),
     }
 }
 
-/// Whether the operator opted an unset selector into the development
-/// embedder: `QUANTA_INDEX_ALLOW_DEV_EMBEDDER=1`; any other value is a
-/// misspelling, refused.
-fn dev_embedder_allowed(lookup: &EnvLookup<'_>) -> Result<bool> {
-    match lookup(ALLOW_DEV_EMBEDDER_ENV)?.as_deref() {
-        None => Ok(false),
-        Some("1") => Ok(true),
-        Some(other) => Err(anyhow::anyhow!(
-            "{ALLOW_DEV_EMBEDDER_ENV} must be `1` to opt into the development embedder, got `{other}`"
-        )),
+fn default_potion_code_model_dir(lookup: &EnvLookup<'_>) -> Result<PathBuf> {
+    let cache_root = if let Some(root) =
+        lookup("QUANTA_INDEX_CACHE_ROOT")?.filter(|value| !value.trim().is_empty())
+    {
+        PathBuf::from(root)
+    } else {
+        #[cfg(target_os = "macos")]
+        {
+            PathBuf::from(std::env::var("HOME").map_err(|_| {
+                anyhow::anyhow!(
+                    "HOME unset: set QUANTA_INDEX_CACHE_ROOT or QUANTA_INDEX_EMBED_MODEL_DIR"
+                )
+            })?)
+            .join("Library/Caches/quanta-index")
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let base = std::env::var("XDG_CACHE_HOME")
+                .ok()
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+                .or_else(|| {
+                    std::env::var("HOME")
+                        .ok()
+                        .map(|home| PathBuf::from(home).join(".cache"))
+                })
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "HOME unset: set QUANTA_INDEX_CACHE_ROOT or QUANTA_INDEX_EMBED_MODEL_DIR"
+                    )
+                })?;
+            base.join("quanta-index")
+        }
+    };
+    if !cache_root.is_absolute() {
+        return Err(anyhow::anyhow!(
+            "QUANTA_INDEX_CACHE_ROOT must be absolute for the potion-code model"
+        ));
     }
+    Ok(cache_root.join("models/potion-code-16M-v2-e9d2a44"))
 }
 
 fn embed_dim_from_lookup(lookup: &EnvLookup<'_>, default: usize) -> Result<usize> {
@@ -1618,9 +1655,10 @@ fn parse_provider_cap_u64(name: &str, raw: Option<&str>, default: u64) -> Result
     match raw {
         None | Some("") => Ok(default),
         Some(value) => {
-            let parsed = value.trim().parse::<u64>().map_err(|err| {
-                anyhow::anyhow!("invalid {name} '{value}': {err}")
-            })?;
+            let parsed = value
+                .trim()
+                .parse::<u64>()
+                .map_err(|err| anyhow::anyhow!("invalid {name} '{value}': {err}"))?;
             if parsed == 0 {
                 return Err(anyhow::anyhow!("{name} must be >= 1, got 0"));
             }
@@ -1633,9 +1671,10 @@ fn parse_provider_cap_u32(name: &str, raw: Option<&str>, default: u32) -> Result
     match raw {
         None | Some("") => Ok(default),
         Some(value) => {
-            let parsed = value.trim().parse::<u32>().map_err(|err| {
-                anyhow::anyhow!("invalid {name} '{value}': {err}")
-            })?;
+            let parsed = value
+                .trim()
+                .parse::<u32>()
+                .map_err(|err| anyhow::anyhow!("invalid {name} '{value}': {err}"))?;
             if parsed == 0 {
                 return Err(anyhow::anyhow!("{name} must be >= 1, got 0"));
             }
@@ -1814,8 +1853,9 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     #[test]
-    fn default_profile_is_hash_at_search_owned_dimension() {
-        let config = SearchdConfig::from_state_root(PathBuf::from("/tmp/quanta-index-cfg-test"));
+    fn in_process_builder_uses_explicit_hash_dev_at_search_owned_dimension() {
+        let config =
+            SearchdConfig::from_test_state_root(PathBuf::from("/tmp/quanta-index-cfg-test"));
         assert_eq!(
             config.semantic_embedder_profile(),
             &SemanticEmbedderProfile::Hash {
@@ -1842,7 +1882,7 @@ mod tests {
                 "65536",
             ),
             ("QUANTA_INDEX_EMBEDDER", "openai"),
-            (ALLOW_DEV_EMBEDDER_ENV, "1"),
+            ("QUANTA_INDEX_EMBED_MODEL_DIR", "/opt/models/potion-code"),
             ("QUANTA_INDEX_EMBED_DIM", "256"),
             ("QUANTA_INDEX_EMBED_MODEL", "text-embedding-3-large"),
             ("QUANTA_INDEX_EMBED_MODEL_REVISION", "rev-2026-09"),
@@ -1891,10 +1931,7 @@ mod tests {
             ("QUANTA_INDEX_PROVIDER_COST_CEILING_MICROS", "999"),
             ("QUANTA_INDEX_PROVIDER_MAX_RETRY_ATTEMPTS", "7"),
             ("QUANTA_INDEX_PROVIDER_TENANT", "fence-tenant"),
-            (
-                "QUANTA_INDEX_PROVIDER_ENDPOINT",
-                "https://fence.example/v1",
-            ),
+            ("QUANTA_INDEX_PROVIDER_ENDPOINT", "https://fence.example/v1"),
             ("QUANTA_INDEX_PROVIDER_REGION", "fence-region"),
             ("QUANTA_INDEX_PROVIDER_RETENTION", "fence-30d"),
             ("QUANTA_INDEX_PROVIDER_PROFILE", "fence-release"),
@@ -1984,7 +2021,7 @@ mod tests {
         // (2) Every family applies what it resolves.
         let root = PathBuf::from("/tmp/quanta-index-chain-fence");
         for family in ENV_POLICY_FAMILIES {
-            let base = SearchdConfig::from_state_root(root.clone());
+            let base = SearchdConfig::from_test_state_root(root.clone());
             let applied = match (family.apply)(base.clone(), &lookup) {
                 Ok(applied) => applied,
                 Err(error) => panic!("{} applies its knobs: {error}", family.name),
@@ -2101,28 +2138,21 @@ mod tests {
         }
     }
 
-    /// The development label (QI-BB-007): an unset selector is refused
-    /// unless the operator opts in by name; `hash-dev` is the hash
-    /// embedder by name; the retired `hash` spelling is refused.
+    /// An unset selector selects the learned model; `hash-dev` requires
+    /// an explicit name, and the retired `hash` spelling is refused.
     #[test]
-    fn an_unset_embedder_is_refused_unless_the_dev_embedder_is_allowed_by_name() {
-        let unset = semantic_embedder_profile_from_lookup(&|_name| Ok(None))
-            .expect_err("an unset embedder does not silently serve the hash profile");
-        assert!(
-            unset.to_string().contains(ALLOW_DEV_EMBEDDER_ENV),
-            "{unset}"
+    fn an_unset_embedder_selects_potion_code_and_hash_requires_explicit_name() {
+        let unset = semantic_embedder_profile_from_lookup(&|name| {
+            Ok((name == "QUANTA_INDEX_CACHE_ROOT").then(|| "/opt/quanta-cache".to_string()))
+        })
+        .expect("unset selector resolves the pinned model");
+        assert_eq!(
+            unset,
+            SemanticEmbedderProfile::PotionCode {
+                model_dir: PathBuf::from("/opt/quanta-cache/models/potion-code-16M-v2-e9d2a44")
+            }
         );
-        let allowed = semantic_embedder_profile_from_lookup(&|name| {
-            Ok((name == ALLOW_DEV_EMBEDDER_ENV).then(|| "1".to_string()))
-        })
-        .expect("the opt-in resolves the dev embedder");
-        assert!(allowed.is_dev());
-        assert_eq!(allowed.selector(), DEV_HASH_EMBEDDER_SELECTOR);
-        let misspelt = semantic_embedder_profile_from_lookup(&|name| {
-            Ok((name == ALLOW_DEV_EMBEDDER_ENV).then(|| "yes".to_string()))
-        })
-        .expect_err("only `1` opts in");
-        assert!(misspelt.to_string().contains("must be `1`"), "{misspelt}");
+        assert!(!unset.is_dev());
         let by_name = semantic_embedder_profile_from_lookup(&|name| {
             Ok((name == "QUANTA_INDEX_EMBEDDER").then(|| DEV_HASH_EMBEDDER_SELECTOR.to_string()))
         })
@@ -2140,12 +2170,66 @@ mod tests {
         assert!(!unavailable.is_dev());
     }
 
+    #[test]
+    fn both_deployment_entry_points_default_to_potion_code() {
+        let mut knobs = every_knob_non_default();
+        let _removed = knobs.remove("QUANTA_INDEX_EMBEDDER");
+        let _removed = knobs.remove("QUANTA_INDEX_EMBED_MODEL_DIR");
+        let _previous = knobs.insert("QUANTA_INDEX_CACHE_ROOT", "/opt/quanta-cache");
+        let _previous = knobs.insert("QUANTA_INDEX_STATE_ROOT", "/opt/quanta-state");
+        let lookup = |name: &str| -> Result<Option<String>> {
+            Ok(knobs.get(name).map(|value| (*value).to_string()))
+        };
+        let from_env = SearchdConfig::from_lookup(None, &lookup).expect("env root");
+        let explicit =
+            SearchdConfig::from_lookup(Some(PathBuf::from("/opt/explicit-state")), &lookup)
+                .expect("explicit root");
+        let expected = SemanticEmbedderProfile::PotionCode {
+            model_dir: PathBuf::from("/opt/quanta-cache/models/potion-code-16M-v2-e9d2a44"),
+        };
+        assert_eq!(from_env.semantic_embedder_profile(), &expected);
+        assert_eq!(explicit.semantic_embedder_profile(), &expected);
+    }
+
+    #[test]
+    fn potion_code_uses_pinned_cache_path_unless_an_absolute_override_is_given() {
+        let lookup = |name: &str| -> Result<Option<String>> {
+            Ok(match name {
+                "QUANTA_INDEX_EMBEDDER" => Some("potion-code".to_string()),
+                "QUANTA_INDEX_CACHE_ROOT" => Some("/opt/quanta-cache".to_string()),
+                _ => None,
+            })
+        };
+        let cached = semantic_embedder_profile_from_lookup(&lookup).expect("default model path");
+        assert_eq!(cached.selector(), "potion-code");
+        let relative = semantic_embedder_profile_from_lookup(&|name| {
+            Ok(match name {
+                "QUANTA_INDEX_EMBEDDER" => Some("potion-code".to_string()),
+                "QUANTA_INDEX_EMBED_MODEL_DIR" => Some("model".to_string()),
+                _ => None,
+            })
+        })
+        .expect_err("relative path");
+        assert!(relative.to_string().contains("absolute"));
+        let profile = semantic_embedder_profile_from_lookup(&|name| {
+            Ok(match name {
+                "QUANTA_INDEX_EMBEDDER" => Some("potion-code".to_string()),
+                "QUANTA_INDEX_EMBED_MODEL_DIR" => Some("/opt/models/potion-code".to_string()),
+                _ => None,
+            })
+        })
+        .expect("pinned model selection");
+        assert_eq!(profile.selector(), "potion-code");
+        assert!(!profile.is_dev());
+    }
+
     /// The one envelope (QI-BB-016): the config's resident byte policies
     /// sum under the ceiling, and a ceiling below their sum is refused
     /// typed by both entry points.
     #[test]
     fn the_process_memory_envelope_sums_the_policies_and_a_low_ceiling_is_refused_typed() {
-        let config = SearchdConfig::from_state_root(PathBuf::from("/tmp/quanta-index-envelope"));
+        let config =
+            SearchdConfig::from_test_state_root(PathBuf::from("/tmp/quanta-index-envelope"));
         let envelope = config.process_memory_envelope().expect("the defaults fit");
         assert_eq!(
             envelope.lexical_writer_bytes,
@@ -2203,16 +2287,17 @@ mod tests {
             "{refused}"
         );
         // An OpenAI profile with the cache declares the ledger's bound.
-        let cached = SearchdConfig::from_state_root(PathBuf::from("/tmp/quanta-index-envelope"))
-            .with_semantic_embedder_profile(SemanticEmbedderProfile::OpenAi {
-                model: "m".to_string(),
-                model_revision: "r".to_string(),
-                dimension: 8,
-                api_key: "sk".to_string(),
-                tuning: OpenAiEmbedderTuning::default(),
-            })
-            .process_memory_envelope()
-            .expect("fits");
+        let cached =
+            SearchdConfig::from_test_state_root(PathBuf::from("/tmp/quanta-index-envelope"))
+                .with_semantic_embedder_profile(SemanticEmbedderProfile::OpenAi {
+                    model: "m".to_string(),
+                    model_revision: "r".to_string(),
+                    dimension: 8,
+                    api_key: "sk".to_string(),
+                    tuning: OpenAiEmbedderTuning::default(),
+                })
+                .process_memory_envelope()
+                .expect("fits");
         assert_eq!(
             cached.embedding_cache_ledger_bytes,
             EmbeddingCacheRetentionPolicy::DEFAULT.max_entries()
@@ -2222,7 +2307,8 @@ mod tests {
 
     #[test]
     fn socket_access_defaults_to_private_everywhere_and_the_builder_sets_it() {
-        let config = SearchdConfig::from_state_root(PathBuf::from("/tmp/quanta-index-cfg-test"));
+        let config =
+            SearchdConfig::from_test_state_root(PathBuf::from("/tmp/quanta-index-cfg-test"));
         assert_eq!(
             config.socket_access_policies(),
             &SocketAccessPolicies::PRIVATE
@@ -2243,8 +2329,9 @@ mod tests {
 
     #[test]
     fn provider_unavailable_builder_sets_unavailable_profile() {
-        let config = SearchdConfig::from_state_root(PathBuf::from("/tmp/quanta-index-cfg-test"))
-            .with_provider_unavailable_query_text_embedder();
+        let config =
+            SearchdConfig::from_test_state_root(PathBuf::from("/tmp/quanta-index-cfg-test"))
+                .with_provider_unavailable_query_text_embedder();
         assert_eq!(
             config.semantic_embedder_profile(),
             &SemanticEmbedderProfile::Unavailable
@@ -2253,15 +2340,17 @@ mod tests {
 
     #[test]
     fn search_corpus_history_retention_is_required_and_validated() {
-        let missing = SearchdConfig::from_state_root(PathBuf::from("/tmp/quanta-index-cfg-test"));
+        let missing =
+            SearchdConfig::from_test_state_root(PathBuf::from("/tmp/quanta-index-cfg-test"));
         assert!(missing.search_corpus_history_retention_policy().is_err());
 
-        let too_small = SearchdConfig::from_state_root(PathBuf::from("/tmp/quanta-index-cfg-test"))
-            .try_with_search_corpus_history_retention_limits(1, 1024, 8, 8192);
+        let too_small =
+            SearchdConfig::from_test_state_root(PathBuf::from("/tmp/quanta-index-cfg-test"))
+                .try_with_search_corpus_history_retention_limits(1, 1024, 8, 8192);
         assert!(too_small.is_err());
 
         let configured =
-            SearchdConfig::from_state_root(PathBuf::from("/tmp/quanta-index-cfg-test"))
+            SearchdConfig::from_test_state_root(PathBuf::from("/tmp/quanta-index-cfg-test"))
                 .try_with_search_corpus_history_retention_limits(3, 4096, 17, 65_536)
                 .expect("valid explicit retention limits");
         let policy = configured
@@ -2913,9 +3002,8 @@ mod tests {
             .validate()
             .expect("the default budget validates");
 
-        let explicit =
-            provider_budget_from_raw(Some("5"), Some("8192"), Some("999"), Some("7"))
-                .expect("explicit knobs parse");
+        let explicit = provider_budget_from_raw(Some("5"), Some("8192"), Some("999"), Some("7"))
+            .expect("explicit knobs parse");
         assert_eq!(
             explicit,
             ProviderWorkBudgetConfig {
@@ -2947,10 +3035,7 @@ mod tests {
         assert_eq!(unset, ProviderEgressGrantConfig::default());
         assert!(!unset.source_content_consent);
         assert!(
-            unset
-                .to_grant("openai", "model", "rev")
-                .validate()
-                .is_err(),
+            unset.to_grant("openai", "model", "rev").validate().is_err(),
             "an unset grant is incomplete and must fail validation"
         );
 

@@ -1552,6 +1552,8 @@ pub quanta_index_contract::ipc::SearchPlaneQueryIpcResponse::Semantic(quanta_ind
 pub quanta_index_contract::ipc::SearchPlaneQueryIpcResponse::Structural(quanta_index_contract::SearchPlaneStructuralQueryResponse)
 pub quanta_index_contract::ipc::SearchPlaneQueryIpcResponse::Symbol(quanta_index_contract::SymbolQueryResponse)
 pub quanta_index_contract::ipc::SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse)
+impl quanta_index_contract::SearchPlaneQueryIpcResponse
+pub fn quanta_index_contract::SearchPlaneQueryIpcResponse::stamp_request_id(&mut self, request_id: u64)
 impl core::clone::Clone for quanta_index_contract::SearchPlaneQueryIpcResponse
 pub fn quanta_index_contract::SearchPlaneQueryIpcResponse::clone(&self) -> quanta_index_contract::SearchPlaneQueryIpcResponse
 impl core::cmp::PartialEq for quanta_index_contract::SearchPlaneQueryIpcResponse
@@ -4734,9 +4736,11 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::PlannerTrac
 pub struct quanta_index_contract::lex::SearchExplanation
 pub quanta_index_contract::lex::SearchExplanation::contributions: alloc::vec::Vec<quanta_index_contract::ExplanationRow>
 pub quanta_index_contract::lex::SearchExplanation::early_stop_reason: core::option::Option<quanta_index_contract::EarlyStopReason>
+pub quanta_index_contract::lex::SearchExplanation::engines_executed: alloc::vec::Vec<quanta_index_contract::EngineTouched>
 pub quanta_index_contract::lex::SearchExplanation::engines_touched: alloc::vec::Vec<quanta_index_contract::EngineTouched>
 pub quanta_index_contract::lex::SearchExplanation::planner_trace: alloc::vec::Vec<quanta_index_contract::PlannerTraceEntry>
 pub quanta_index_contract::lex::SearchExplanation::ranker_weights_hash: [u8; 32]
+pub quanta_index_contract::lex::SearchExplanation::request_id: u64
 pub quanta_index_contract::lex::SearchExplanation::strategy: alloc::string::String
 pub quanta_index_contract::lex::SearchExplanation::summary: alloc::string::String
 impl quanta_index_contract::SearchExplanation
@@ -4768,8 +4772,10 @@ pub fn quanta_index_contract::SearchExplanationBuilder::contributions(self, rows
 pub fn quanta_index_contract::SearchExplanationBuilder::early_stop_reason(self, reason: core::option::Option<quanta_index_contract::EarlyStopReason>) -> Self
 pub fn quanta_index_contract::SearchExplanationBuilder::new() -> Self
 pub fn quanta_index_contract::SearchExplanationBuilder::push_engine(self, engine: quanta_index_contract::EngineTouched) -> Self
+pub fn quanta_index_contract::SearchExplanationBuilder::push_executed_engine(self, engine: quanta_index_contract::EngineTouched) -> Self
 pub fn quanta_index_contract::SearchExplanationBuilder::push_trace(self, entry: quanta_index_contract::PlannerTraceEntry) -> Self
 pub fn quanta_index_contract::SearchExplanationBuilder::ranker_weights_hash(self, hash: core::result::Result<[u8; 32], quanta_index_contract::WeightsHashError>) -> core::result::Result<Self, quanta_index_contract::WeightsHashError>
+pub fn quanta_index_contract::SearchExplanationBuilder::request_id(self, request_id: u64) -> Self
 pub fn quanta_index_contract::SearchExplanationBuilder::strategy(self, strategy: alloc::string::String) -> Self
 pub fn quanta_index_contract::SearchExplanationBuilder::summary(self, summary: alloc::string::String) -> Self
 impl core::clone::Clone for quanta_index_contract::SearchExplanationBuilder
@@ -7736,9 +7742,11 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::PlannerTrac
 pub struct quanta_index_contract::results::SearchExplanation
 pub quanta_index_contract::results::SearchExplanation::contributions: alloc::vec::Vec<quanta_index_contract::ExplanationRow>
 pub quanta_index_contract::results::SearchExplanation::early_stop_reason: core::option::Option<quanta_index_contract::EarlyStopReason>
+pub quanta_index_contract::results::SearchExplanation::engines_executed: alloc::vec::Vec<quanta_index_contract::EngineTouched>
 pub quanta_index_contract::results::SearchExplanation::engines_touched: alloc::vec::Vec<quanta_index_contract::EngineTouched>
 pub quanta_index_contract::results::SearchExplanation::planner_trace: alloc::vec::Vec<quanta_index_contract::PlannerTraceEntry>
 pub quanta_index_contract::results::SearchExplanation::ranker_weights_hash: [u8; 32]
+pub quanta_index_contract::results::SearchExplanation::request_id: u64
 pub quanta_index_contract::results::SearchExplanation::strategy: alloc::string::String
 pub quanta_index_contract::results::SearchExplanation::summary: alloc::string::String
 impl quanta_index_contract::SearchExplanation
@@ -7770,8 +7778,10 @@ pub fn quanta_index_contract::SearchExplanationBuilder::contributions(self, rows
 pub fn quanta_index_contract::SearchExplanationBuilder::early_stop_reason(self, reason: core::option::Option<quanta_index_contract::EarlyStopReason>) -> Self
 pub fn quanta_index_contract::SearchExplanationBuilder::new() -> Self
 pub fn quanta_index_contract::SearchExplanationBuilder::push_engine(self, engine: quanta_index_contract::EngineTouched) -> Self
+pub fn quanta_index_contract::SearchExplanationBuilder::push_executed_engine(self, engine: quanta_index_contract::EngineTouched) -> Self
 pub fn quanta_index_contract::SearchExplanationBuilder::push_trace(self, entry: quanta_index_contract::PlannerTraceEntry) -> Self
 pub fn quanta_index_contract::SearchExplanationBuilder::ranker_weights_hash(self, hash: core::result::Result<[u8; 32], quanta_index_contract::WeightsHashError>) -> core::result::Result<Self, quanta_index_contract::WeightsHashError>
+pub fn quanta_index_contract::SearchExplanationBuilder::request_id(self, request_id: u64) -> Self
 pub fn quanta_index_contract::SearchExplanationBuilder::strategy(self, strategy: alloc::string::String) -> Self
 pub fn quanta_index_contract::SearchExplanationBuilder::summary(self, summary: alloc::string::String) -> Self
 impl core::clone::Clone for quanta_index_contract::SearchExplanationBuilder
@@ -9937,6 +9947,8 @@ pub quanta_index_contract::SearchPlaneQueryIpcResponse::Semantic(quanta_index_co
 pub quanta_index_contract::SearchPlaneQueryIpcResponse::Structural(quanta_index_contract::SearchPlaneStructuralQueryResponse)
 pub quanta_index_contract::SearchPlaneQueryIpcResponse::Symbol(quanta_index_contract::SymbolQueryResponse)
 pub quanta_index_contract::SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse)
+impl quanta_index_contract::SearchPlaneQueryIpcResponse
+pub fn quanta_index_contract::SearchPlaneQueryIpcResponse::stamp_request_id(&mut self, request_id: u64)
 impl core::clone::Clone for quanta_index_contract::SearchPlaneQueryIpcResponse
 pub fn quanta_index_contract::SearchPlaneQueryIpcResponse::clone(&self) -> quanta_index_contract::SearchPlaneQueryIpcResponse
 impl core::cmp::PartialEq for quanta_index_contract::SearchPlaneQueryIpcResponse
@@ -13355,9 +13367,11 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchCorpu
 pub struct quanta_index_contract::SearchExplanation
 pub quanta_index_contract::SearchExplanation::contributions: alloc::vec::Vec<quanta_index_contract::ExplanationRow>
 pub quanta_index_contract::SearchExplanation::early_stop_reason: core::option::Option<quanta_index_contract::EarlyStopReason>
+pub quanta_index_contract::SearchExplanation::engines_executed: alloc::vec::Vec<quanta_index_contract::EngineTouched>
 pub quanta_index_contract::SearchExplanation::engines_touched: alloc::vec::Vec<quanta_index_contract::EngineTouched>
 pub quanta_index_contract::SearchExplanation::planner_trace: alloc::vec::Vec<quanta_index_contract::PlannerTraceEntry>
 pub quanta_index_contract::SearchExplanation::ranker_weights_hash: [u8; 32]
+pub quanta_index_contract::SearchExplanation::request_id: u64
 pub quanta_index_contract::SearchExplanation::strategy: alloc::string::String
 pub quanta_index_contract::SearchExplanation::summary: alloc::string::String
 impl quanta_index_contract::SearchExplanation
@@ -13389,8 +13403,10 @@ pub fn quanta_index_contract::SearchExplanationBuilder::contributions(self, rows
 pub fn quanta_index_contract::SearchExplanationBuilder::early_stop_reason(self, reason: core::option::Option<quanta_index_contract::EarlyStopReason>) -> Self
 pub fn quanta_index_contract::SearchExplanationBuilder::new() -> Self
 pub fn quanta_index_contract::SearchExplanationBuilder::push_engine(self, engine: quanta_index_contract::EngineTouched) -> Self
+pub fn quanta_index_contract::SearchExplanationBuilder::push_executed_engine(self, engine: quanta_index_contract::EngineTouched) -> Self
 pub fn quanta_index_contract::SearchExplanationBuilder::push_trace(self, entry: quanta_index_contract::PlannerTraceEntry) -> Self
 pub fn quanta_index_contract::SearchExplanationBuilder::ranker_weights_hash(self, hash: core::result::Result<[u8; 32], quanta_index_contract::WeightsHashError>) -> core::result::Result<Self, quanta_index_contract::WeightsHashError>
+pub fn quanta_index_contract::SearchExplanationBuilder::request_id(self, request_id: u64) -> Self
 pub fn quanta_index_contract::SearchExplanationBuilder::strategy(self, strategy: alloc::string::String) -> Self
 pub fn quanta_index_contract::SearchExplanationBuilder::summary(self, summary: alloc::string::String) -> Self
 impl core::clone::Clone for quanta_index_contract::SearchExplanationBuilder

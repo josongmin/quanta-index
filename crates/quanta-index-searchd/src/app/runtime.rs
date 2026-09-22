@@ -43,7 +43,8 @@ use quanta_index_core::{
 };
 use quanta_index_embed::{
     CachingEmbeddingProvider, EmbeddingCacheIdentityV1, FileEmbeddingCache,
-    OpenAiEmbedTelemetrySource, OpenAiEmbeddingProvider, ProviderAttemptPool,
+    OpenAiEmbedTelemetrySource, OpenAiEmbeddingProvider, PotionCodeEmbeddingProvider,
+    ProviderAttemptPool,
 };
 use quanta_index_ipc::{IpcDispatcher, IpcServerCounters, ServerAdmissionPolicy};
 use quanta_index_lq_structural::{
@@ -587,6 +588,27 @@ fn build_semantic_embedders(
                 )),
                 corpus: provider,
                 metric_sources: Vec::new(),
+                provider_ledger,
+                source_egress_policy: None,
+                provider_attempt_pool: None,
+            })
+        }
+        SemanticEmbedderProfile::PotionCode { model_dir } => {
+            let model = PotionCodeEmbeddingProvider::from_local_dir(model_dir)?;
+            let normalized = L2UnitEmbeddingProvider::new(model)?;
+            let raw_norms: Arc<dyn MetricSourcePort> = normalized.raw_norm_tallies();
+            let provider: Arc<dyn TextEmbeddingProvider + Send + Sync> = Arc::new(normalized);
+            let inner: Arc<dyn QueryTextEmbedderPort + Send + Sync> =
+                Arc::new(QueryEmbedderAdapter(Arc::clone(&provider)));
+            Ok(SemanticEmbedders {
+                query: Arc::new(ProviderBoundaryQueryEmbedder::new(
+                    inner,
+                    Arc::clone(&provider_ledger),
+                    SemanticEgressPolicyV1::Loopback,
+                    PROVIDER_SUPERVISOR_ID,
+                )),
+                corpus: provider,
+                metric_sources: vec![raw_norms],
                 provider_ledger,
                 source_egress_policy: None,
                 provider_attempt_pool: None,
@@ -1887,6 +1909,35 @@ mod tests {
                 "OpenAi profile must NOT advertise the search-owned hash fixture identity".into(),
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires the pinned 33 MB upstream model assets"]
+    fn potion_code_profile_uses_one_model_for_query_and_corpus() -> TestRes {
+        let model_dir = std::env::var("QUANTA_INDEX_TEST_POTION_CODE_MODEL_DIR")?;
+        let state_root = tempfile::tempdir()?;
+        let super::SemanticEmbedders {
+            query,
+            corpus,
+            source_egress_policy,
+            ..
+        } = super::build_semantic_embedders(
+            &super::SemanticEmbedderProfile::PotionCode {
+                model_dir: model_dir.into(),
+            },
+            state_root.path(),
+            &test_budget(),
+            &super::ProviderEgressGrantConfig::default(),
+        )?;
+        assert!(source_egress_policy.is_none());
+        assert_eq!(query.model_id(), corpus.model_id());
+        assert_eq!(query.model_revision(), corpus.model_revision());
+        let query_vector =
+            query.embed_query("refresh access token", &RequestBudgetV1::unbounded())?;
+        let corpus_vector = corpus.embed_batch(&["refresh access token"])?;
+        assert_eq!(corpus_vector.len(), 1);
+        assert_eq!(query_vector, corpus_vector[0]);
         Ok(())
     }
 

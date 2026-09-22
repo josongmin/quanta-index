@@ -373,7 +373,7 @@ fn walk_bytes(root: &std::path::Path) -> Result<u64, Box<dyn Error>> {
 /// boot typed, before any socket exists.
 #[test]
 fn an_envelope_over_its_ceiling_refuses_boot_typed_before_any_socket() -> TestResult {
-    let declared = quanta_index_searchd::app::SearchdConfig::from_state_root(
+    let declared = quanta_index_searchd::app::SearchdConfig::from_test_state_root(
         std::env::temp_dir().join("quanta-index-envelope-probe"),
     )
     .process_memory_envelope()?

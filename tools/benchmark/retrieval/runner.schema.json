@@ -1,48 +1,98 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://quanta-index.invalid/benchmark/retrieval/runner-v1",
-  "title": "Externally recorded retrieval results v1",
+  "$id": "https://quanta-index.invalid/benchmark/retrieval/runner-v2",
+  "title": "Externally recorded retrieval results v2",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "query_pack_sha256", "runner", "results"],
+  "required": ["schema_version", "query_pack_sha256", "runner", "route_provenance", "results"],
   "properties": {
-    "schema_version": {"const": 1},
+    "schema_version": {"const": 2},
     "query_pack_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "runner": {
       "type": "object", "additionalProperties": false,
-      "required": ["name", "revision", "run_id", "tokenizer", "gold_access"],
+      "required": ["name", "revision", "run_id", "tokenizer", "tokenizer_budget_version", "gold_access", "blinding", "isolation_method", "access_block_log"],
       "properties": {
         "name": {"type": "string", "minLength": 1},
         "revision": {"type": "string", "minLength": 1},
         "run_id": {"type": "string", "minLength": 1},
         "tokenizer": {"const": "qi-regex-v1"},
-        "gold_access": {"const": false}
+        "tokenizer_budget_version": {"const": "qb-v1"},
+        "gold_access": {"const": false},
+        "blinding": {"enum": ["isolated", "attested"]},
+        "isolation_method": {"type": "string", "minLength": 1},
+        "access_block_log": {"type": "string", "minLength": 1}
       }
+    },
+    "route_provenance": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"$ref": "#/$defs/provenance"}
     },
     "results": {"type": "array", "items": {"$ref": "#/$defs/result"}}
   },
   "$defs": {
+    "provenance": {
+      "type": "object", "additionalProperties": false,
+      "required": ["system", "model", "model_revision"],
+      "properties": {
+        "system": {"type": "string", "minLength": 1},
+        "model": {"type": "string", "minLength": 1},
+        "model_revision": {"type": "string", "minLength": 1}
+      }
+    },
     "candidate": {
       "type": "object", "additionalProperties": false,
-      "required": ["path", "start_line", "end_line", "file_sha256", "block_sha256", "tokens"],
+      "required": ["path", "start_line", "end_line", "file_sha256", "block_sha256", "tokens", "rank"],
       "properties": {
         "path": {"type": "string", "minLength": 1},
         "start_line": {"type": "integer", "minimum": 1},
         "end_line": {"type": "integer", "minimum": 1},
         "file_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "block_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "tokens": {"type": "integer", "minimum": 1}
+        "tokens": {"type": "integer", "minimum": 1},
+        "rank": {"type": "integer", "minimum": 1}
+      }
+    },
+    "timings": {
+      "type": "object", "additionalProperties": false,
+      "required": ["query_latency_ms"],
+      "properties": {
+        "query_latency_ms": {"type": "number", "minimum": 0}
+      }
+    },
+    "error": {
+      "type": "object", "additionalProperties": false,
+      "required": ["code", "message"],
+      "properties": {
+        "code": {"type": "string", "minLength": 1},
+        "message": {"type": "string", "minLength": 1}
       }
     },
     "result": {
       "type": "object", "additionalProperties": false,
-      "required": ["task_id", "route", "abstain", "candidates"],
+      "required": ["task_id", "route", "status", "candidates", "timings", "error"],
       "properties": {
         "task_id": {"type": "string", "minLength": 1},
         "route": {"type": "string", "minLength": 1},
-        "abstain": {"type": "boolean"},
-        "candidates": {"type": "array", "items": {"$ref": "#/$defs/candidate"}}
-      }
+        "status": {"enum": ["success", "abstained", "capped", "error", "timeout", "unavailable"]},
+        "candidates": {"type": "array", "items": {"$ref": "#/$defs/candidate"}},
+        "timings": {"$ref": "#/$defs/timings"},
+        "error": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/error"}]}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"enum": ["success", "capped"]}}},
+          "then": {"properties": {"candidates": {"minItems": 1}, "error": {"type": "null"}}}
+        },
+        {
+          "if": {"properties": {"status": {"const": "abstained"}}},
+          "then": {"properties": {"candidates": {"maxItems": 0}, "error": {"type": "null"}}}
+        },
+        {
+          "if": {"properties": {"status": {"enum": ["error", "timeout", "unavailable"]}}},
+          "then": {"properties": {"candidates": {"maxItems": 0}, "error": {"$ref": "#/$defs/error"}}}
+        }
+      ]
     }
   }
 }

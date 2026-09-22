@@ -370,6 +370,8 @@ fn explanation_v2() -> SearchExplanation {
             },
         ],
         engines_touched: vec![EngineTouched::History, EngineTouched::Bridge],
+        engines_executed: vec![EngineTouched::History, EngineTouched::Bridge],
+        request_id: 0,
         early_stop_reason: None,
         contributions: vec![ExplanationRow {
             signal_name: "lexical.score".into(),

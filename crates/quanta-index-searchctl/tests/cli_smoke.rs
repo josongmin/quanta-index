@@ -1626,7 +1626,9 @@ fn stub_explanation(summary: &str, engines_touched: Vec<EngineTouched>) -> Searc
             stage: PlannerStage::Merge,
             detail: "rrf fused lexical candidates".to_string(),
         }],
-        engines_touched,
+        engines_touched: engines_touched.clone(),
+        engines_executed: engines_touched,
+        request_id: 0,
         early_stop_reason: None,
         contributions: vec![ExplanationRow {
             signal_name: "bm25".into(),

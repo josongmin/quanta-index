@@ -559,17 +559,16 @@ pub struct SemanticJudgedQuery {
     pub hard_negative_path: &'static str,
 }
 
-/// The semantic queries that are GATED in the relevance rail's artifact
-/// (`run_relevance_report`), as opposed to the determinism-only unit coverage.
+/// Exact-token semantic queries gated in both relevance profiles.
 ///
 /// Only the `ExactToken` layer is gated: its tokens appear verbatim in the
 /// on-topic file, so the deterministic `Hash` embedder genuinely retrieves it and
 /// `Recall@20 = 1.0` is a FAIR, achievable assertion (RFC §5 P1-3). The paraphrase
-/// layer is intentionally absent here — hash cannot recall it, so gating it would
-/// be either a false-green (floored recall) or a guaranteed red; it is covered as
-/// a determinism-only unit test instead. MRR/NDCG stay floored at `0.0` in
+/// layer is intentionally absent from this hash-fair slice. The default
+/// model-backed rail separately scores its 12 paraphrase cases from
+/// [`SEMANTIC_JUDGED_QUERIES`]. MRR/NDCG stay floored at `0.0` in
 /// `thresholds_for(Semantic)` because head-rank ordering is not a hash property;
-/// neural-quality separation lives in the OpenAI-gated local A/B, not in CI.
+/// the model-backed aggregate applies its own nonzero quality floor.
 ///
 /// Doc grades / negative path mirror `SEMANTIC_JUDGED_QUERIES`'s `ExactToken`
 /// entry (`auth/token_refresh.rs` on-topic, `util/string_pad.rs` off-topic).
@@ -596,8 +595,9 @@ pub const SEMANTIC_GATED_QUERIES: &[JudgedQuery] = &[JudgedQuery {
     },
 }];
 
-/// The judged semantic query set (determinism / mechanics unit coverage; the
-/// `ExactToken` subset is additionally gated via [`SEMANTIC_GATED_QUERIES`]).
+/// The judged semantic query set. The default model-backed relevance rail gates
+/// paraphrase aggregates; hash-dev only exercises determinism/mechanics and the
+/// `ExactToken` subset via [`SEMANTIC_GATED_QUERIES`].
 pub const SEMANTIC_JUDGED_QUERIES: &[SemanticJudgedQuery] = &[
     SemanticJudgedQuery {
         id: "sem.refresh_auth_token.exact",

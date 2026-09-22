@@ -22,7 +22,7 @@ use quanta_index_contract::TextQuerySyntax;
 use quanta_index_embed::{
     OpenAiEmbedStatsSnapshot, reset_openai_embed_stats, snapshot_openai_embed_stats,
 };
-use quanta_index_searchd::app::{SearchdConfig, SemanticEmbedderProfile};
+use quanta_index_searchd::app::SemanticEmbedderProfile;
 use serde_json::{Value, json};
 
 use crate::artifact::{
@@ -152,6 +152,49 @@ pub struct RelevanceReport {
     /// The embedder the semantic gate's fixture was built under, for the
     /// provenance.
     pub model_revision: Option<String>,
+    /// Model-backed paraphrase gate; absent only on the explicit hash-dev rail.
+    pub semantic_quality: Option<SemanticQualitySummary>,
+}
+
+const MIN_PARAPHRASE_MRR_AT_10: f64 = 0.65;
+const MIN_PARAPHRASE_NDCG_AT_10: f64 = 0.70;
+const MIN_PARAPHRASE_TOP1_RATE: f64 = 0.50;
+
+#[derive(Clone, Debug)]
+pub struct SemanticQualitySummary {
+    pub case_count: usize,
+    pub top1_count: usize,
+    pub mean_mrr_at_10: f64,
+    pub mean_ndcg_at_10: f64,
+    pub mean_recall_at_20: f64,
+    pub passed: bool,
+}
+
+fn summarize_semantic_quality(cases: &[SemanticCaseMetrics]) -> SemanticQualitySummary {
+    let count = crate::relevance::metrics::usize_to_f64(cases.len());
+    let mean = |metric: &dyn Fn(&SemanticCaseMetrics) -> f64| -> f64 {
+        if cases.is_empty() {
+            0.0
+        } else {
+            cases.iter().map(|case| metric(case)).sum::<f64>() / count
+        }
+    };
+    let top1_count = cases.iter().filter(|case| case.top1_is_on_topic).count();
+    let mean_mrr_at_10 = mean(&|case| case.mrr_at_10);
+    let mean_ndcg_at_10 = mean(&|case| case.ndcg_at_10);
+    let mean_recall_at_20 = mean(&|case| case.recall_at_20);
+    SemanticQualitySummary {
+        case_count: cases.len(),
+        top1_count,
+        mean_mrr_at_10,
+        mean_ndcg_at_10,
+        mean_recall_at_20,
+        passed: !cases.is_empty()
+            && mean_mrr_at_10 >= MIN_PARAPHRASE_MRR_AT_10
+            && mean_ndcg_at_10 >= MIN_PARAPHRASE_NDCG_AT_10
+            && crate::relevance::metrics::usize_to_f64(top1_count) / count
+                >= MIN_PARAPHRASE_TOP1_RATE,
+    }
 }
 
 fn to_text_syntax(syntax: BenchSyntax) -> TextQuerySyntax {
@@ -246,7 +289,7 @@ fn prepare_semantic_relevance_runtime_with_profile(
 /// the `Hash` profile keeps the CI semantic gate deterministic and
 /// neural-quality-free (RFC §5 P1-3); the `OpenAI` A/B is a separate local lane.
 pub fn prepare_semantic_relevance_runtime() -> AnyResult<E2eRuntime> {
-    let rt = prepare_semantic_relevance_runtime_with_profile(SemanticEmbedderProfile::default())?;
+    let rt = prepare_semantic_relevance_runtime_with_profile(SemanticEmbedderProfile::hash_dev())?;
     if !matches!(
         rt.embedder_profile(),
         quanta_index_searchd::app::SemanticEmbedderProfile::Hash { .. }
@@ -494,8 +537,19 @@ fn capture_overlap_bucket(
     }
 }
 
-/// Run the full relevance rail against a freshly seeded runtime.
+/// Run the production-default relevance rail against a freshly seeded runtime.
 pub fn run_relevance_report() -> AnyResult<RelevanceReport> {
+    run_relevance_report_with_profile(SemanticEmbedderProfile::from_env()?)
+}
+
+fn run_relevance_report_with_profile(
+    profile: SemanticEmbedderProfile,
+) -> AnyResult<RelevanceReport> {
+    if matches!(profile, SemanticEmbedderProfile::Unavailable) {
+        return Err(anyhow::anyhow!(
+            "relevance evaluation requires an active semantic embedder"
+        ));
+    }
     let mut rt = prepare_relevance_runtime()?;
     let mut queries = Vec::with_capacity(
         JUDGED_QUERIES
@@ -506,18 +560,50 @@ pub fn run_relevance_report() -> AnyResult<RelevanceReport> {
         let order = produced_order(&mut rt, query)?;
         queries.push(score_query(query, order)?);
     }
-    // Semantic route, gated on what the deterministic Hash embedder genuinely
-    // owns: exact-token recall (RFC §5 P1-3). Runs on a SEMANTIC-track runtime so
-    // `query_semantic` has a live vector index; paraphrase queries are NOT gated
-    // here (neural-only — covered as determinism-only unit tests). This is a real
-    // rail gate + artifact row, not a test-only probe.
-    let mut sem_rt = prepare_semantic_relevance_runtime()?;
+    // The same profile derives corpus vectors and embeds queries. The explicit
+    // hash-dev rail retains its exact-token mechanical gate; learned profiles
+    // additionally run the full discriminative paraphrase set.
+    let learned = !profile.is_dev();
+    let mut sem_rt = prepare_semantic_relevance_runtime_with_profile(profile)?;
     let model_revision = model_revision_of(sem_rt.embedder_profile());
     for query in SEMANTIC_GATED_QUERIES {
         let order = produced_order(&mut sem_rt, query)?;
         queries.push(score_query(query, order)?);
     }
-    let routes = aggregate_routes(&queries);
+    let semantic_quality = if learned {
+        let mut cases = Vec::new();
+        for query in SEMANTIC_JUDGED_QUERIES
+            .iter()
+            .filter(|query| query.intent_kind == SemanticIntentKind::Paraphrase)
+        {
+            let order = produced_semantic_order(&mut sem_rt, query.id, query.query)?;
+            let metrics = score_semantic_case(query, order.clone())?;
+            queries.push(QueryScore {
+                id: query.id,
+                route: RelevanceRoute::Semantic,
+                intent: query.intent,
+                query: query.query,
+                produced_order: order,
+                mrr_at_10: metrics.mrr_at_10,
+                ndcg_at_10: metrics.ndcg_at_10,
+                recall_at_20: metrics.recall_at_20,
+                failures: Vec::new(),
+            });
+            cases.push(metrics);
+        }
+        Some(summarize_semantic_quality(&cases))
+    } else {
+        None
+    };
+    let mut routes = aggregate_routes(&queries);
+    if let Some(quality) = &semantic_quality {
+        if let Some(semantic_route) = routes
+            .iter_mut()
+            .find(|route| route.route == RelevanceRoute::Semantic)
+        {
+            semantic_route.passed &= quality.passed;
+        }
+    }
     // J7Q-01B: capture the quanta-index half of every overlap bucket live. The
     // Sourcegraph half stays unprovisioned, so this never gates `passed`.
     let overlap = SOURCEGRAPH_OVERLAP_BUCKETS
@@ -531,6 +617,7 @@ pub fn run_relevance_report() -> AnyResult<RelevanceReport> {
         overlap,
         passed,
         model_revision,
+        semantic_quality,
     })
 }
 
@@ -611,14 +698,13 @@ fn score_semantic_case(
 }
 
 pub fn openai_profile_from_env_for_relevance_ab() -> AnyResult<SemanticEmbedderProfile> {
-    let config = SearchdConfig::from_env()?;
-    match config.semantic_embedder_profile().clone() {
+    match SemanticEmbedderProfile::from_env()? {
         profile @ SemanticEmbedderProfile::OpenAi { .. } => Ok(profile),
-        other @ (SemanticEmbedderProfile::Hash { .. } | SemanticEmbedderProfile::Unavailable) => {
-            Err(anyhow::anyhow!(
-                "local OpenAI A/B requires an OpenAi semantic profile; got {other:?}"
-            ))
-        }
+        other @ (SemanticEmbedderProfile::Hash { .. }
+        | SemanticEmbedderProfile::PotionCode { .. }
+        | SemanticEmbedderProfile::Unavailable) => Err(anyhow::anyhow!(
+            "local OpenAI A/B requires an OpenAi semantic profile; got {other:?}"
+        )),
     }
 }
 
@@ -705,11 +791,11 @@ fn route_summary_json(summary: &RouteSummary) -> Value {
 
 /// Judgment manifest mirror — the checked-in SSOT, persisted alongside results
 /// so a reviewer can diff intended grades against produced order in one place.
-fn judgments_json(report: &RelevanceReport) -> Value {
-    let rows: Vec<Value> = JUDGED_QUERIES
+fn judgments_json(report: &RelevanceReport) -> AnyResult<Value> {
+    let mut rows: Vec<Value> = JUDGED_QUERIES
         .iter()
         .chain(SEMANTIC_GATED_QUERIES.iter())
-        .map(|q| {
+        .map(|q| -> AnyResult<Value> {
             let judgments: Vec<Value> = q
                 .judgments
                 .iter()
@@ -720,8 +806,8 @@ fn judgments_json(report: &RelevanceReport) -> Value {
                 .iter()
                 .find(|s| s.id == q.id)
                 .map(|s| s.produced_order.clone())
-                .unwrap_or_default();
-            json!({
+                .ok_or_else(|| anyhow::anyhow!("missing produced ranking for {}", q.id))?;
+            Ok(json!({
                 "id": q.id,
                 "route": q.route.as_str(),
                 "intent": q.intent,
@@ -736,14 +822,41 @@ fn judgments_json(report: &RelevanceReport) -> Value {
                         .collect::<Vec<_>>(),
                 },
                 "produced_order": produced,
-            })
+            }))
         })
-        .collect();
-    json!({
+        .collect::<AnyResult<Vec<_>>>()?;
+    if report.semantic_quality.is_some() {
+        let paraphrase_rows = SEMANTIC_JUDGED_QUERIES
+            .iter()
+            .filter(|query| query.intent_kind == SemanticIntentKind::Paraphrase)
+            .map(|query| -> AnyResult<Value> {
+                let produced = report
+                    .queries
+                    .iter()
+                    .find(|score| score.id == query.id)
+                    .map(|score| score.produced_order.clone())
+                    .ok_or_else(|| anyhow::anyhow!("missing produced ranking for {}", query.id))?;
+                Ok(json!({
+                    "id": query.id,
+                    "route": "semantic",
+                    "intent": query.intent,
+                    "query": query.query,
+                    "intent_kind": "paraphrase",
+                    "judgments": [
+                        {"doc": query.on_topic_path, "grade": 3},
+                        {"doc": query.hard_negative_path, "grade": 0},
+                    ],
+                    "produced_order": produced,
+                }))
+            })
+            .collect::<AnyResult<Vec<_>>>()?;
+        rows.extend(paraphrase_rows);
+    }
+    Ok(json!({
         "kind": "quanta-index-relevance-judgments",
         "supplement_schema_version": 1,
         "queries": rows,
-    })
+    }))
 }
 
 /// The relevance artifact's detail: every route and query verdict and the
@@ -752,6 +865,17 @@ fn judgments_json(report: &RelevanceReport) -> Value {
 pub fn detail_json(report: &RelevanceReport) -> Value {
     json!({
         "passed": report.passed,
+        "semantic_quality": report.semantic_quality.as_ref().map(|quality| json!({
+            "case_count": quality.case_count,
+            "top1_count": quality.top1_count,
+            "mean_mrr_at_10": quality.mean_mrr_at_10,
+            "mean_ndcg_at_10": quality.mean_ndcg_at_10,
+            "mean_recall_at_20": quality.mean_recall_at_20,
+            "minimum_mean_mrr_at_10": MIN_PARAPHRASE_MRR_AT_10,
+            "minimum_mean_ndcg_at_10": MIN_PARAPHRASE_NDCG_AT_10,
+            "minimum_top1_rate": MIN_PARAPHRASE_TOP1_RATE,
+            "passed": quality.passed,
+        })),
         "routes": report.routes.iter().map(route_summary_json).collect::<Vec<_>>(),
         "queries": report.queries.iter().map(query_score_json).collect::<Vec<_>>(),
         "external_lexical_floor": {
@@ -822,6 +946,26 @@ pub fn artifact(
                     (
                         "semantic_gated_queries",
                         SEMANTIC_GATED_QUERIES.len().to_string(),
+                    ),
+                    (
+                        "model_backed_cases",
+                        report
+                            .semantic_quality
+                            .as_ref()
+                            .map_or(0, |quality| quality.case_count)
+                            .to_string(),
+                    ),
+                    (
+                        "min_paraphrase_mrr_at_10",
+                        MIN_PARAPHRASE_MRR_AT_10.to_string(),
+                    ),
+                    (
+                        "min_paraphrase_ndcg_at_10",
+                        MIN_PARAPHRASE_NDCG_AT_10.to_string(),
+                    ),
+                    (
+                        "min_paraphrase_top1_rate",
+                        MIN_PARAPHRASE_TOP1_RATE.to_string(),
                     ),
                 ],
             ),
@@ -898,12 +1042,12 @@ pub fn write_artifacts(
     host: HostV1,
     capture_date: &str,
 ) -> AnyResult<()> {
-    artifact(report, git_head, host)?.write_to(&dir.join("summary.json"))?;
-    crate::artifact::write_json_pretty(&dir.join("query_judgments.json"), &judgments_json(report))?;
-    crate::artifact::write_json_pretty(
-        &dir.join("sourcegraph-overlap.json"),
-        &sourcegraph_overlap_json(report, capture_date),
-    )?;
+    let summary = artifact(report, git_head, host)?;
+    let judgments = judgments_json(report)?;
+    let overlap = sourcegraph_overlap_json(report, capture_date);
+    summary.write_to(&dir.join("summary.json"))?;
+    crate::artifact::write_json_pretty(&dir.join("query_judgments.json"), &judgments)?;
+    crate::artifact::write_json_pretty(&dir.join("sourcegraph-overlap.json"), &overlap)?;
     Ok(())
 }
 
@@ -1175,6 +1319,31 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn model_quality_gate_requires_nonempty_discriminative_ranks() {
+        let perfect = SemanticCaseMetrics {
+            produced_order: vec!["on-topic.rs".to_string()],
+            mrr_at_10: 1.0,
+            ndcg_at_10: 1.0,
+            recall_at_20: 1.0,
+            top1_is_on_topic: true,
+            hard_negative_rank: None,
+            on_topic_rank: Some(1),
+        };
+        assert!(!summarize_semantic_quality(&[]).passed);
+        assert!(summarize_semantic_quality(&[perfect.clone(), perfect.clone()]).passed);
+        let missed = SemanticCaseMetrics {
+            produced_order: vec!["hard-negative.rs".to_string()],
+            mrr_at_10: 0.0,
+            ndcg_at_10: 0.0,
+            recall_at_20: 0.0,
+            top1_is_on_topic: false,
+            hard_negative_rank: Some(1),
+            on_topic_rank: None,
+        };
+        assert!(!summarize_semantic_quality(&[perfect, missed]).passed);
+    }
+
     // --- pure same-path-collapse oracle (no daemon) ---------------------
 
     #[test]
@@ -1262,10 +1431,9 @@ mod tests {
     /// Boot a HASH-embedder runtime, seed the semantic fixture, and activate
     /// the Lexical + Semantic tracks.
     ///
-    /// Delegates to the shared production helper so the unit coverage and the
-    /// gated `run_relevance_report` rail seed the SAME way (no test/prod
-    /// divergence). `auth/token_refresh.rs` is ingested as TWO chunks so the
-    /// same-path-collapse rule has repeated hits to collapse.
+    /// Delegates to the shared fixture builder used by the model-backed rail;
+    /// only the embedding profile differs. `auth/token_refresh.rs` is ingested
+    /// as TWO chunks so the same-path-collapse rule has repeated hits to collapse.
     fn prepare_semantic_runtime() -> AnyResult<E2eRuntime> {
         super::prepare_semantic_relevance_runtime()
     }
@@ -1477,6 +1645,23 @@ mod tests {
     }
 
     #[test]
+    fn judgment_artifact_refuses_a_missing_produced_ranking() {
+        let report = RelevanceReport {
+            queries: Vec::new(),
+            routes: Vec::new(),
+            overlap: Vec::new(),
+            passed: false,
+            model_revision: None,
+            semantic_quality: None,
+        };
+        let error = judgments_json(&report).expect_err("missing ranked query must not serialize");
+        let first = JUDGED_QUERIES
+            .first()
+            .expect("the judged corpus is nonempty");
+        assert!(error.to_string().contains(first.id));
+    }
+
+    #[test]
     #[expect(
         clippy::indexing_slicing,
         reason = "test indexes the overlap JSON shape this module constructs; an out-of-range index is a legitimate test failure"
@@ -1499,6 +1684,7 @@ mod tests {
             }],
             passed: true,
             model_revision: None,
+            semantic_quality: None,
         };
         let value = sourcegraph_overlap_json(&report, "2026-06-09");
         assert_eq!(value["status"], "unprovisioned");

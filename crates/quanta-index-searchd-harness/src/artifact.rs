@@ -448,6 +448,12 @@ pub fn model_revision_of(
             dimension,
             ..
         } => Some(format!("{model}@{model_revision}:d{dimension}")),
+        SemanticEmbedderProfile::PotionCode { .. } => Some(format!(
+            "{}@{}:d{}",
+            quanta_index_embed::POTION_CODE_MODEL_ID,
+            quanta_index_embed::POTION_CODE_MODEL_REVISION,
+            quanta_index_embed::POTION_CODE_DIMENSION
+        )),
         SemanticEmbedderProfile::Unavailable => None,
     }
 }

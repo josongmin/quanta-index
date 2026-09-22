@@ -110,6 +110,28 @@ fn build_hybrid_response_explanation_reports_honest_lane_contribution_v1() {
     let semantic_only = hybrid_explanation(0, 1, 1, 1);
     assert_eq!(semantic_only.strategy, "semantic_only");
     assert_eq!(semantic_only.engines_touched, vec![EngineTouched::Semantic]);
+
+    // S21-10: executed is plan-level, not contribution-level. All four
+    // outcomes above planned both independent lanes, so every one of them
+    // reports both engines executed — including the zero-hit cases the
+    // fanout metric must count.
+    for (name, explanation) in [
+        ("both", &both),
+        ("lex_only", &lex_only),
+        ("empty", &empty),
+        ("semantic_only", &semantic_only),
+    ] {
+        assert_eq!(
+            explanation.engines_executed,
+            vec![EngineTouched::Lexical, EngineTouched::Semantic],
+            "{name} hybrid must report both lanes executed"
+        );
+        // Builders emit 0; only the transport adapter stamps a real id.
+        assert_eq!(
+            explanation.request_id, 0,
+            "{name} hybrid built off-transport must carry request_id 0"
+        );
+    }
 }
 
 #[test]

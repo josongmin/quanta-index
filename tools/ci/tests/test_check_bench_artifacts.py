@@ -270,11 +270,32 @@ def test_named_profile_scopes_required_evidence(tmp_path: Path, capsys) -> None:
 def test_relevance_rows_are_intentionally_untimed() -> None:
     value = artifact(dimension="relevance")
     value["rows"][0]["latency"] = None
+    value["provenance"]["model_revision"] = MODULE.POTION_CODE_MODEL_REVISION
+    value["detail"]["semantic_quality"] = {"case_count": 12, "passed": True}
+    value["rows"].extend(
+        {
+            **value["rows"][0],
+            "scenario_id": f"relevance.semantic.sem.case_{index}.paraphrase",
+            "route_family": "semantic",
+        }
+        for index in range(12)
+    )
     assert MODULE.check_envelope(value, dimension="relevance", head=HEAD) == []
     assert any(
         "latency is not an object" in reason
         for reason in MODULE.check_envelope(value, dimension="dsl-warm", head=HEAD)
     )
+
+
+def test_relevance_cannot_admit_hash_dev_as_canonical_quality() -> None:
+    value = artifact(dimension="relevance")
+    value["rows"][0]["latency"] = None
+    value["provenance"]["model_revision"] = "hash-dev:v1:d256"
+    value["detail"]["semantic_quality"] = None
+    reasons = MODULE.check_envelope(value, dimension="relevance", head=HEAD)
+    assert any("requires potion-code" in reason for reason in reasons)
+    assert any("requires 12 judged paraphrase" in reason for reason in reasons)
+    assert any("requires 12 distinct paraphrase rows" in reason for reason in reasons)
 
 
 def test_contract_quality_rails_are_intentionally_untimed_but_verdict_bound() -> None:

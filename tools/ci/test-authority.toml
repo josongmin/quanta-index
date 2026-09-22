@@ -849,6 +849,12 @@ owner = "quanta-index-searchd-harness"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
+id = "searchd-harness-runtime-custody"
+path = "crates/quanta-index-searchd-harness/tests/runtime_custody.rs"
+owner = "quanta-index-searchd-harness"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
 id = "searchd-runtime-dsl-scenarios"
 path = "crates/quanta-index-searchd-runtime/tests/dsl_scenarios.rs"
 owner = "quanta-index-searchd-runtime"
@@ -956,6 +962,13 @@ rail = "pr-workspace-nextest"
 [[integration_targets]]
 id = "searchd-runtime-e2e-crash-matrix"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_crash_matrix.rs"
+owner = "quanta-index-searchd-runtime"
+target = "runtime_extended_suite"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-e2e-long-state-root-sockets"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_long_state_root_sockets.rs"
 owner = "quanta-index-searchd-runtime"
 target = "runtime_extended_suite"
 rail = "pr-workspace-nextest"
