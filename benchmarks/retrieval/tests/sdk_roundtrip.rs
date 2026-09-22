@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use quanta_index_retrieval_bench::batch::{BatchIdentity, assemble_batch};
+use quanta_index_retrieval_bench::chunking::chunk_corpus;
 use quanta_index_retrieval_bench::chunking::whole_file::WholeFileChunker;
-use quanta_index_retrieval_bench::chunking::{Chunker, chunk_corpus};
 use quanta_index_retrieval_bench::corpus::{CorpusLimits, load_corpus, load_manifest};
 use quanta_index_retrieval_bench::sdk::{
     DaemonConfig, DaemonSession, QueryOutcome, RouteQuery, publish_and_activate, query_route,
@@ -153,7 +153,9 @@ fn stale_state_root_is_refused() {
         io_timeout: Duration::from_secs(5),
         history_max_generations: 8,
     };
-    let err = DaemonSession::boot(&config).expect_err("stale root must fail");
+    let err = DaemonSession::boot(&config)
+        .err()
+        .expect("stale root must fail");
     assert!(err.to_string().contains("not fresh"), "{err}");
 }
 
@@ -272,7 +274,8 @@ fn real_daemon_roundtrip_publishes_and_queries() {
         QueryOutcome::Hits { .. } => panic!("unknown route must not hit"),
     }
 
-    let _ = (&receipt, ack);
+    assert!(receipt.semantic_content.is_some());
+    let _ack = ack;
     session.stop().expect("bounded shutdown");
 }
 
@@ -290,7 +293,7 @@ fn second_boot_over_used_root_is_refused_without_cleanup() {
     let state = tempfile::tempdir().expect("state root");
     let state_root = state.path().join("daemon");
     let session = boot_session(&state_root);
-    publish_and_activate(&session, &batch, None).expect("publish");
+    let (_receipt, _ack) = publish_and_activate(&session, &batch, None).expect("publish");
     session.stop().expect("stop");
     // The used root still holds index data: a second boot must refuse it.
     let config = DaemonConfig {

@@ -88,7 +88,14 @@ fn line_depths(text: &str) -> Option<(Vec<i64>, Vec<usize>)> {
                     index += 1;
                 }
                 '"' => state = Lex::Str,
-                '\'' => state = Lex::Char,
+                '\'' => {
+                    // Lifetime (`&'a`, `<'static>`) or char literal (`'x'`,
+                    // `'\n'`)? Only an immediate close or escape opens Char.
+                    let after_next = chars.get(index + 2).copied();
+                    if next == Some('\\') || after_next == Some('\'') {
+                        state = Lex::Char;
+                    }
+                }
                 'r' if next == Some('"') || next == Some('#') => {
                     let mut hashes = 0;
                     let mut look = index + 1;

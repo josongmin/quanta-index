@@ -1,7 +1,7 @@
 //! Chunking contract tests (RB-03, T08–T09): boundary correctness,
 //! determinism, fallback accounting and corpus-loader rejection rules.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use quanta_index_retrieval_bench::chunking::fixed_window::FixedWindowChunker;
@@ -291,7 +291,8 @@ fn validator_rejects_mutated_spans_ids_and_order() {
     assert!(validate_chunks(&wrong_id, file).is_err());
 
     let mut dup_id = valid.to_vec();
-    dup_id[1].chunk_id.clone_from(&dup_id[0].chunk_id);
+    let first_id = dup_id[0].chunk_id.clone();
+    dup_id[1].chunk_id = first_id;
     assert!(validate_chunks(&dup_id, file).is_err());
 
     let mut reordered = valid.to_vec();

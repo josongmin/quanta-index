@@ -36,6 +36,22 @@ pub fn resolve_searchd_binary(explicit: Option<&Path>) -> BenchResult<PathBuf> {
     if let Some(env) = std::env::var_os(SEARCHD_BIN_ENV) {
         candidates.push(PathBuf::from(env));
     }
+    // Compile-time workspace layout (this crate lives two levels below root).
+    for profile in ["debug", "release"] {
+        candidates.push(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target")
+                .join(profile)
+                .join("quanta-index-searchd"),
+        );
+    }
+    // Runtime target-dir override (custom lanes set CARGO_TARGET_DIR).
+    if let Some(target) = std::env::var_os("CARGO_TARGET_DIR") {
+        let target = PathBuf::from(target);
+        for profile in ["debug", "release"] {
+            candidates.push(target.join(profile).join("quanta-index-searchd"));
+        }
+    }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             candidates.push(dir.join("quanta-index-searchd"));
@@ -87,6 +103,31 @@ fn remove_socket_files(state_root: &Path) {
     }
 }
 
+/// The daemon requires a 0700 state root; enforce it on roots the runner
+/// creates so a umask-dependent boot can never fail closed spuriously.
+#[cfg(unix)]
+fn secure_state_root(state_root: &Path) -> BenchResult<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(state_root, std::fs::Permissions::from_mode(0o700)).map_err(|err| {
+        BenchError::Io {
+            path: state_root.display().to_string(),
+            message: format!("failed to secure state root mode 0700: {err}"),
+        }
+    })
+}
+
+#[cfg(not(unix))]
+fn secure_state_root(_state_root: &Path) -> BenchResult<()> {
+    Ok(())
+}
+
+fn daemon_stderr_tail(state_root: &Path) -> String {
+    let text = std::fs::read_to_string(state_root.join("searchd.stderr.log"))
+        .unwrap_or_else(|_| "<stderr log unreadable>".to_string());
+    let tail: String = text.chars().rev().take(600).collect();
+    tail.chars().rev().collect()
+}
+
 fn terminate_child(child: &mut Child) {
     if child.try_wait().unwrap_or(None).is_none() {
         let _ignored = child.kill();
@@ -136,10 +177,26 @@ impl DaemonSession {
                 path: config.state_root.display().to_string(),
                 message: err.to_string(),
             })?;
+            secure_state_root(config.state_root)?;
         }
         let binary = resolve_searchd_binary(config.searchd_binary)?;
+        // Daemon output lands in runner-owned log files inside the fresh
+        // state root: no pipe deadlock on long runs, and failures carry
+        // the daemon's own tail.
+        let stdout_log = std::fs::File::create(config.state_root.join("searchd.stdout.log"))
+            .map_err(|err| BenchError::Io {
+                path: config.state_root.display().to_string(),
+                message: format!("failed to create daemon stdout log: {err}"),
+            })?;
+        let stderr_log = std::fs::File::create(config.state_root.join("searchd.stderr.log"))
+            .map_err(|err| BenchError::Io {
+                path: config.state_root.display().to_string(),
+                message: format!("failed to create daemon stderr log: {err}"),
+            })?;
         let mut command = Command::new(&binary);
         let _configured = command
+            .stdout(std::process::Stdio::from(stdout_log))
+            .stderr(std::process::Stdio::from(stderr_log))
             .arg("serve")
             .arg("--state-root")
             .arg(config.state_root)
@@ -147,6 +204,18 @@ impl DaemonSession {
             .env(
                 "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_GENERATIONS",
                 config.history_max_generations.to_string(),
+            )
+            .env(
+                "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_BYTES",
+                (16 * 1024 * 1024).to_string(),
+            )
+            .env(
+                "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_REVISION_PAIRS",
+                "128",
+            )
+            .env(
+                "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_TOTAL_BYTES",
+                (256 * 1024 * 1024).to_string(),
             );
         let mut child = command.spawn().map_err(|err| {
             BenchError::Daemon(format!("failed to spawn {}: {err}", binary.display()))
@@ -162,9 +231,10 @@ impl DaemonSession {
             }
             match child.try_wait() {
                 Ok(Some(status)) => {
+                    let tail = daemon_stderr_tail(config.state_root);
                     remove_socket_files(config.state_root);
                     return Err(BenchError::Daemon(format!(
-                        "searchd exited before opening sockets: {status}"
+                        "searchd exited before opening sockets: {status}; stderr tail: {tail}"
                     )));
                 }
                 Ok(None) => {}
