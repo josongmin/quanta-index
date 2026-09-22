@@ -85,7 +85,8 @@ impl<'a> RepoMapNamespace<'a> {
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
-            | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)) => {
+            | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
+            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)) => {
                 Err(SdkError::unexpected_response(
                     "repomap activate ack",
                     QuantaIndex::control_response_kind(&other),

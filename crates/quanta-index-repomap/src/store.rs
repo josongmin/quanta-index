@@ -31,7 +31,11 @@ use quanta_index_contract::{
 use quanta_index_core::{
     CoreError, QuarantineDiscardOutcomeV1, QuarantinedRepoMapFileV1, RepoMapBundleIngestPort,
     RepoMapGenerationActivatePort, RepoMapMutationReceiptV1, RepoMapOpenReportV1,
-    RepoMapQuarantinePort, RepoMapQueryPort,
+    RepoMapQuarantinePort,
+};
+use quanta_index_core::{
+    PinnedRepoMapSnapshot, RepoMapSnapshotAcquirePort, RepoMapSnapshotAcquireV1,
+    RepoMapSnapshotEvidenceV1,
 };
 
 use quanta_index_catalog::SqliteCatalog;
@@ -44,7 +48,7 @@ use crate::model::{RepoMapIndexedSnapshot, RepoMapSnapshot};
 use crate::object_store::{
     AFTER_CATALOG_COMMIT, LEGACY_V1_DIR_NAMES, RepoMapObjectStore, exit_at_crash_boundary,
 };
-use crate::query::RepoMapQueryEngine;
+use crate::pinned::{PinnedRepoMapSnapshotV1, RepoMapPinLease, RepoMapStoreKeyV1};
 
 #[derive(Debug)]
 pub struct RepoMapGenerationStore {
@@ -52,7 +56,31 @@ pub struct RepoMapGenerationStore {
     catalog: Arc<SqliteCatalog>,
     objects: Option<RepoMapObjectStore>,
     snapshots: RwLock<BTreeMap<RepoMapStoreKeyV1, Arc<RepoMapIndexedSnapshot>>>,
-    activated: RwLock<BTreeMap<(String, String), u64>>,
+    activated: RwLock<BTreeMap<(String, String), ActivatedHeadV1>>,
+    /// The pin table: how many pinned read views hold each logical
+    /// generation (S21-05). Physical GC and republish defer to it.
+    pins: Arc<RwLock<BTreeMap<RepoMapStoreKeyV1, u64>>>,
+}
+
+/// The serving head of one repo/revision as the acquisition critical
+/// section sees it: the active generation with the candidate commitment
+/// and activation epoch a pinned view carries as evidence.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ActivatedHeadV1 {
+    manifest_generation: u64,
+    epoch: u64,
+    candidate_commitment: [u8; 32],
+}
+
+/// What one GC pass over retired candidates did.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RepoMapGcOutcomeV1 {
+    /// Retired (activation-invalidated) candidates the pass considered.
+    pub considered: u64,
+    /// Objects physically reclaimed this pass.
+    pub reclaimed: u64,
+    /// Candidates kept because a pinned read view still holds them.
+    pub deferred_pinned: u64,
 }
 
 /// A store opened from its root and catalog, with what the open found.
@@ -60,27 +88,6 @@ pub struct RepoMapGenerationStore {
 pub struct OpenedRepoMapStore {
     pub store: RepoMapGenerationStore,
     pub report: RepoMapOpenReportV1,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
-struct RepoMapStoreKeyV1 {
-    repo_id: String,
-    revision_id: String,
-    manifest_generation: u64,
-}
-
-impl RepoMapStoreKeyV1 {
-    fn new(
-        repo_id: &RepoId,
-        revision_id: &RevisionId,
-        manifest_generation: ManifestGeneration,
-    ) -> Self {
-        Self {
-            repo_id: repo_id.as_str().to_string(),
-            revision_id: revision_id.as_str().to_string(),
-            manifest_generation: manifest_generation.get(),
-        }
-    }
 }
 
 fn storage_poisoned(what: &str, err: &dyn std::fmt::Display) -> CoreError {
@@ -140,6 +147,7 @@ impl RepoMapGenerationStore {
                     objects: None,
                     snapshots: RwLock::new(BTreeMap::new()),
                     activated: RwLock::new(BTreeMap::new()),
+                    pins: Arc::new(RwLock::new(BTreeMap::new())),
                 },
                 report,
             });
@@ -151,6 +159,7 @@ impl RepoMapGenerationStore {
             objects: Some(objects),
             snapshots: RwLock::new(BTreeMap::new()),
             activated: RwLock::new(BTreeMap::new()),
+            pins: Arc::new(RwLock::new(BTreeMap::new())),
         };
         store.reconcile(&mut report)?;
         Ok(OpenedRepoMapStore { store, report })
@@ -164,7 +173,16 @@ impl RepoMapGenerationStore {
             .ok_or_else(|| legacy_root_refusal(&self.root))?;
         let candidates = self.catalog.repomap_candidate_rows()?;
         for candidate in &candidates {
-            if candidate.state == quanta_index_catalog::RepoMapCandidateStateV1::Quarantined {
+            // A quarantined candidate was already unlinked durably; an
+            // activation-invalidated (retired) candidate may additionally
+            // have had its object reclaimed by the pin-gated GC pass
+            // (S21-05). Neither is serveable and neither may resurrect,
+            // so neither is verified or loaded here: absence is the
+            // expected terminal condition, not corruption.
+            if candidate.state == quanta_index_catalog::RepoMapCandidateStateV1::Quarantined
+                || candidate.state
+                    == quanta_index_catalog::RepoMapCandidateStateV1::ActivationInvalidated
+            {
                 continue;
             }
             let repo_id =
@@ -216,7 +234,7 @@ impl RepoMapGenerationStore {
         }
         // Serve-head pointers: only a verified, still-activated candidate
         // is active truth.
-        let mut reactivations: Vec<((String, String), u64)> = Vec::new();
+        let mut reactivations: Vec<((String, String), ActivatedHeadV1)> = Vec::new();
         for candidate in &candidates {
             if candidate.state != quanta_index_catalog::RepoMapCandidateStateV1::Activated {
                 continue;
@@ -231,7 +249,11 @@ impl RepoMapGenerationStore {
                 report.activations_loaded = report.activations_loaded.saturating_add(1);
                 reactivations.push((
                     (candidate.repo_id.clone(), candidate.revision_id.clone()),
-                    candidate.manifest_generation,
+                    ActivatedHeadV1 {
+                        manifest_generation: candidate.manifest_generation,
+                        epoch: activation.epoch,
+                        candidate_commitment: activation.candidate_commitment,
+                    },
                 ));
             }
         }
@@ -277,13 +299,10 @@ impl RepoMapGenerationStore {
                     .into_bytes()
             })
             .collect();
-        let payload_digest = failure.raw_bytes.as_deref().map(|bytes| {
-            use sha2::Digest as _;
-            let mut hasher = sha2::Sha256::new();
-            hasher.update(b"quanta-index/quarantine-payload/v1\0");
-            hasher.update(bytes);
-            quanta_index_contract::QuarantinePayloadDigestV1::from_bytes(hasher.finalize().into())
-        });
+        let payload_digest = failure
+            .raw_bytes
+            .as_deref()
+            .map(quanta_index_contract::QuarantinePayloadDigestV1::for_payload);
         let observed_nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0_u128, |elapsed| elapsed.as_nanos());
@@ -342,6 +361,7 @@ impl RepoMapGenerationStore {
                 Ok((*digest.as_bytes(), bytes))
             },
         )?;
+        let quarantine_entry = quarantine_entry_name(&incident.incident_digest);
         let incident = quanta_index_contract::QuarantineIncidentV1::new(
             u64::try_from(incident.sequence).map_or(0, |sequence| sequence),
             observed_nanos,
@@ -383,8 +403,8 @@ impl RepoMapGenerationStore {
             )?;
         }
         report.quarantined.push(QuarantinedRepoMapFileV1 {
-            file_name: source_path,
-            reason: reason_text,
+            file_name: quarantine_entry,
+            reason: format!("quarantine-reason-{reason_code}"),
         });
         Ok(())
     }
@@ -420,6 +440,30 @@ impl RepoMapGenerationStore {
             .objects
             .as_ref()
             .ok_or_else(|| legacy_root_refusal(&self.root))?;
+        // Attach fence (S21-05): a pinned logical generation may not have
+        // its physical artifact swapped underneath an in-flight read
+        // view, so a republish of a pinned generation is refused typed
+        // before any object, catalog or registry mutation.
+        {
+            let publish_key = RepoMapStoreKeyV1::new(
+                &bundle.repo_id,
+                &bundle.revision_id,
+                bundle.manifest_generation,
+            );
+            let pins = self
+                .pins
+                .read()
+                .map_err(|err| storage_poisoned("pin table", &err))?;
+            if pins.get(&publish_key).copied().unwrap_or(0) > 0 {
+                return Err(CoreError::InvalidContract(format!(
+                    "repomap publish: generation {} of repo={} revision={} is pinned by an \
+                     in-flight read; republishing would swap the artifact under a logical pin",
+                    bundle.manifest_generation.get(),
+                    bundle.repo_id.as_str(),
+                    bundle.revision_id.as_str()
+                )));
+            }
+        }
         let meta_json = meta.to_json()?;
         // Compile (typed refusal ⇒ zero object/catalog/registry mutation)
         // and seal the immutable object; only then commit the catalog row.
@@ -679,7 +723,11 @@ impl RepoMapGenerationStore {
                     request.repo_id.as_str().to_string(),
                     request.revision_id.as_str().to_string(),
                 ),
-                request.manifest_generation.get(),
+                ActivatedHeadV1 {
+                    manifest_generation: request.manifest_generation.get(),
+                    epoch: outcome.epoch,
+                    candidate_commitment: *commitment.as_bytes(),
+                },
             );
         }
         Ok(receipt(
@@ -746,31 +794,176 @@ impl RepoMapGenerationStore {
         })
     }
 
-    pub fn read_query_snapshot(
+    /// Acquire the serving snapshot for one logical identity in a single
+    /// critical section (S21-05).
+    ///
+    /// Lock order (canonical, one owner): `activated` read guard, then
+    /// `snapshots` read guard; the `pins` write guard comes after both
+    /// are released. No store guard is ever held across a catalog call,
+    /// a disk object open/verify, or a query execution — the pinned
+    /// snapshot queries the `Arc` it holds and nothing else.
+    ///
+    /// The active identity, its candidate commitment, its activation
+    /// epoch and the artifact reference are observed together: a
+    /// concurrent activation or retirement either fully precedes this
+    /// acquisition (the new head is what gets pinned) or fully follows it
+    /// (the pinned view keeps the old commitment to completion). A
+    /// generation that is not the serving head is refused typed; it is
+    /// never resolved to another generation.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "both guards must be held through the whole acquisition block: one critical section observes head and snapshot together"
+    )]
+    pub fn acquire_pinned(
         &self,
-        request: &quanta_index_contract::RepoMapQueryRequest,
-    ) -> Result<quanta_index_contract::RepoMapQueryResponse, CoreError> {
-        self.ensure_generation_activated(request)?;
+        acquire: &RepoMapSnapshotAcquireV1,
+    ) -> Result<PinnedRepoMapSnapshotV1, CoreError> {
         let key = RepoMapStoreKeyV1::new(
-            &request.repo_id,
-            &request.revision_id,
-            request.manifest_generation,
+            &acquire.repo_id,
+            &acquire.revision_id,
+            acquire.manifest_generation,
         );
-        let snapshot = {
-            let guard = self
+        let activation_key = (
+            acquire.repo_id.as_str().to_string(),
+            acquire.revision_id.as_str().to_string(),
+        );
+        let (head, snapshot) = {
+            let activated = self
+                .activated
+                .read()
+                .map_err(|err| storage_poisoned("activation map", &err))?;
+            let snapshots = self
                 .snapshots
                 .read()
                 .map_err(|err| storage_poisoned("registry", &err))?;
-            guard.get(&key).map(Arc::clone).ok_or_else(|| {
+            let head = activated.get(&activation_key).ok_or_else(|| {
                 CoreError::NotFound(format!(
-                    "repomap snapshot missing for repo={} revision={} generation={}",
-                    request.repo_id.as_str(),
-                    request.revision_id.as_str(),
-                    request.manifest_generation.get()
+                    "repomap acquire: no activated generation for repo={} revision={}",
+                    acquire.repo_id.as_str(),
+                    acquire.revision_id.as_str()
                 ))
-            })?
+            })?;
+            if head.manifest_generation != key.manifest_generation {
+                return Err(CoreError::NotFound(format!(
+                    "repomap acquire: requested generation {} is not the activated generation {} \
+                     for repo={} revision={}",
+                    key.manifest_generation,
+                    head.manifest_generation,
+                    acquire.repo_id.as_str(),
+                    acquire.revision_id.as_str()
+                )));
+            }
+            let snapshot = snapshots.get(&key).cloned().ok_or_else(|| {
+                CoreError::NotFound(format!(
+                    "repomap acquire: snapshot missing for repo={} revision={} generation={}",
+                    acquire.repo_id.as_str(),
+                    acquire.revision_id.as_str(),
+                    key.manifest_generation
+                ))
+            })?;
+            (
+                ActivatedHeadV1 {
+                    manifest_generation: head.manifest_generation,
+                    epoch: head.epoch,
+                    candidate_commitment: head.candidate_commitment,
+                },
+                snapshot,
+            )
         };
-        RepoMapQueryEngine::query(&snapshot, request)
+        let evidence = RepoMapSnapshotEvidenceV1 {
+            repo_id: acquire.repo_id.as_str().to_string(),
+            revision_id: acquire.revision_id.as_str().to_string(),
+            manifest_generation: key.manifest_generation,
+            candidate_commitment: CandidateCommitmentV1::from_bytes(head.candidate_commitment)
+                .to_wire_string(),
+            activation_epoch: head.epoch,
+        };
+        let lease = RepoMapPinLease::new(Arc::clone(&self.pins), key)?;
+        Ok(PinnedRepoMapSnapshotV1::new(snapshot, evidence, lease))
+    }
+
+    /// How many pinned read views hold `generation` of `repo`/`revision`.
+    pub fn pinned_view_count(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+    ) -> Result<u64, CoreError> {
+        let key = RepoMapStoreKeyV1::new(repo_id, revision_id, generation);
+        let guard = self
+            .pins
+            .read()
+            .map_err(|err| storage_poisoned("pin table", &err))?;
+        Ok(guard.get(&key).copied().unwrap_or(0))
+    }
+
+    /// Reclaim the physical objects of retired candidates (S21-05).
+    ///
+    /// A candidate is retired when its activation was invalidated (a
+    /// newer generation superseded it, or it was quarantined out). P03
+    /// left such objects on disk (tombstone-only); this pass reclaims
+    /// them, but only when no pinned read view still holds the logical
+    /// generation: a pinned view keeps its artifact alive and the pass
+    /// defers to a later one. The catalog rows stay as the durable
+    /// tombstones; the bytes carry no authority once invalidated and can
+    /// never resurrect.
+    pub fn gc_retired_objects(&self) -> Result<RepoMapGcOutcomeV1, CoreError> {
+        let objects = self
+            .objects
+            .as_ref()
+            .ok_or_else(|| legacy_root_refusal(&self.root))?;
+        let mut outcome = RepoMapGcOutcomeV1::default();
+        let rows = self.catalog.repomap_candidate_rows()?;
+        for row in rows {
+            if row.state != quanta_index_catalog::RepoMapCandidateStateV1::ActivationInvalidated {
+                continue;
+            }
+            outcome.considered = outcome.considered.saturating_add(1);
+            let repo_id = RepoId::new(row.repo_id.as_str()).map_err(|error| CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                message: format!("repomap candidate row holds an invalid repo ID: {error}"),
+            })?;
+            let revision_id =
+                RevisionId::new(row.revision_id.as_str()).map_err(|error| CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                    message: format!("repomap candidate row holds an invalid revision ID: {error}"),
+                })?;
+            let generation = ManifestGeneration::new(row.manifest_generation);
+            let key = RepoMapStoreKeyV1::new(&repo_id, &revision_id, generation);
+            // Pin gate first, under the pin read guard only: no other
+            // store guard is held across the unlink or the registry edit.
+            {
+                let pins = self
+                    .pins
+                    .read()
+                    .map_err(|err| storage_poisoned("pin table", &err))?;
+                if pins.get(&key).copied().unwrap_or(0) > 0 {
+                    outcome.deferred_pinned = outcome.deferred_pinned.saturating_add(1);
+                    continue;
+                }
+            }
+            let digest =
+                quanta_index_contract::CandidateObjectDigestV1::from_bytes(row.object_address);
+            // Already-reclaimed rows stay tombstoned in the catalog; a
+            // pass that finds no bytes counts nothing.
+            if !self
+                .root
+                .join(crate::layout_v3::CandidateObjectAddressV1::new(digest).relative_path())
+                .exists()
+            {
+                continue;
+            }
+            objects.unlink_object(digest)?;
+            {
+                let mut registry = self
+                    .snapshots
+                    .write()
+                    .map_err(|err| storage_poisoned("registry", &err))?;
+                let _retired = registry.remove(&key);
+            }
+            outcome.reclaimed = outcome.reclaimed.saturating_add(1);
+        }
+        Ok(outcome)
     }
 
     pub fn activated_generation_for(
@@ -786,7 +979,7 @@ impl RepoMapGenerationStore {
             .activated
             .read()
             .map_err(|err| storage_poisoned("activation map", &err))?;
-        Ok(guard.get(&key).copied())
+        Ok(guard.get(&key).map(|head| head.manifest_generation))
     }
 
     /// The generations the registry holds for `repo`/`revision`, ascending.
@@ -807,36 +1000,14 @@ impl RepoMapGenerationStore {
             .map(|key| key.manifest_generation)
             .collect())
     }
+}
 
-    fn ensure_generation_activated(
+impl RepoMapSnapshotAcquirePort for RepoMapGenerationStore {
+    fn acquire(
         &self,
-        request: &quanta_index_contract::RepoMapQueryRequest,
-    ) -> Result<(), CoreError> {
-        let key = (
-            request.repo_id.as_str().to_string(),
-            request.revision_id.as_str().to_string(),
-        );
-        let guard = self
-            .activated
-            .read()
-            .map_err(|err| storage_poisoned("activation map", &err))?;
-        match guard.get(&key) {
-            Some(active_generation) if *active_generation == request.manifest_generation.get() => {
-                Ok(())
-            }
-            Some(active_generation) => Err(CoreError::NotFound(format!(
-                "repomap query: requested generation {} is not the activated generation {} for repo={} revision={}",
-                request.manifest_generation.get(),
-                active_generation,
-                request.repo_id.as_str(),
-                request.revision_id.as_str()
-            ))),
-            None => Err(CoreError::NotFound(format!(
-                "repomap query: no activated generation for repo={} revision={}",
-                request.repo_id.as_str(),
-                request.revision_id.as_str()
-            ))),
-        }
+        acquire: RepoMapSnapshotAcquireV1,
+    ) -> Result<Box<dyn PinnedRepoMapSnapshot>, CoreError> {
+        Ok(Box::new(self.acquire_pinned(&acquire)?))
     }
 }
 
@@ -916,13 +1087,22 @@ impl RepoMapBundleIngestPort for RepoMapGenerationStore {
     }
 }
 
+// The V1 wire contract accepts one path segment, while V3 source objects
+// occupy a nested content-addressed layout. Name the durable incident,
+// not an adapter-local path, so list/discard remain exact and unambiguous.
+fn quarantine_entry_name(digest: &[u8; 32]) -> String {
+    let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("incident-{hex}.cbor")
+}
+
 impl RepoMapQuarantinePort for RepoMapGenerationStore {
     fn quarantined_files(&self) -> Result<Vec<QuarantinedRepoMapFileV1>, CoreError> {
         let incidents = self.catalog.repomap_quarantine_incidents()?;
         Ok(incidents
             .into_iter()
+            .filter(|incident| !incident.discarded)
             .map(|incident| QuarantinedRepoMapFileV1 {
-                file_name: incident.source_path,
+                file_name: quarantine_entry_name(&incident.incident_digest),
                 reason: incident.reason_code,
             })
             .collect())
@@ -939,7 +1119,7 @@ impl RepoMapQuarantinePort for RepoMapGenerationStore {
         let incidents = self.catalog.repomap_quarantine_incidents()?;
         let Some(incident) = incidents
             .iter()
-            .find(|incident| incident.source_path == entry.file_name)
+            .find(|incident| quarantine_entry_name(&incident.incident_digest) == entry.file_name)
         else {
             return Err(CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::QuarantineTargetNotQuarantined,
@@ -995,14 +1175,5 @@ impl RepoMapGenerationActivatePort for RepoMapGenerationStore {
         request: &RepoMapActivateGenerationRequestV2,
     ) -> Result<RepoMapTerminalReceiptV2, CoreError> {
         Self::activate_generation_v2(self, request)
-    }
-}
-
-impl RepoMapQueryPort for RepoMapGenerationStore {
-    fn query(
-        &self,
-        request: quanta_index_contract::RepoMapQueryRequest,
-    ) -> Result<quanta_index_contract::RepoMapQueryResponse, CoreError> {
-        Self::read_query_snapshot(self, &request)
     }
 }

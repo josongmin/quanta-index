@@ -888,7 +888,7 @@ fn repo_map_bundle() -> Result<RepoMapSourceBundle, Box<dyn Error>> {
         owner_path: RepoRelativePath::new("tests/repo_map.rs"),
         local_name: "Gamma".to_string(),
         qualified_name: "tests::repo_map::Gamma".to_string(),
-        symbol_kind: symbol_kind.clone(),
+        symbol_kind,
     }))
     .with_node(RepoMapNode::Chunk(RepoMapChunkNode {
         chunk_id: ChunkId::new("chunk://alpha"),
@@ -973,7 +973,7 @@ fn repo_map_activate_request() -> RepoMapActivateGenerationRequest {
         repo_id: repo(),
         revision_id: revision(),
         manifest_generation: generation(),
-        manifest_digest: "2".repeat(64).to_string(),
+        manifest_digest: "2".repeat(64),
     }
 }
 
@@ -1163,7 +1163,9 @@ fn expect_remote_code(err: SdkError, expected: &str) -> TestResult {
         | SdkError::Protocol(_)
         | SdkError::Serialization(_)
         | SdkError::Transport(_)
-        | SdkError::Remote { .. }) => {
+        | SdkError::Remote { .. }
+        | SdkError::Binding { .. }
+        | SdkError::PlaneUnavailable { .. }) => {
             Err(format!("expected remote code {expected}, got {other:?}").into())
         }
     }
@@ -1433,12 +1435,27 @@ fn assert_repo_map_happy_path(
     if response.entries.len() != 1 || response.dropped_entries_count == 0 {
         return Err(format!("unexpected repo-map inclusion set: {response:?}").into());
     }
+    // The legacy per-chunk token hint (and the budget-floor degradation it
+    // could trigger) was replaced by P02A's compiled envelope: the entry
+    // records the compiled-projection evidence and the page reports its
+    // drops explicitly instead of inferring them from a hint. Assert the
+    // honest drop accounting rather than the removed heuristic.
     if !response
+        .drop_reason_codes
+        .iter()
+        .any(|code| code == "top_k_exhausted")
+    {
+        return Err(format!("missing repo-map drop reason: {response:?}").into());
+    }
+    if response
         .degraded_reason_codes
         .iter()
-        .any(|code| code == "token_budget_floor_applied")
+        .any(|code| code == "token_budget_floor_applied" || code == "focus_subjects_unresolved")
     {
-        return Err(format!("missing repo-map degraded reason: {response:?}").into());
+        return Err(format!(
+            "a strict compiled projection must not report retired degraded reasons: {response:?}"
+        )
+        .into());
     }
     Ok(())
 }
@@ -3050,7 +3067,9 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                     | SdkError::Protocol(_)
                     | SdkError::Serialization(_)
                     | SdkError::Transport(_)
-                    | SdkError::Remote { .. }) => {
+                    | SdkError::Remote { .. }
+                    | SdkError::Binding { .. }
+                    | SdkError::PlaneUnavailable { .. }) => {
                         stop_runtime(&shutdown, join)?;
                         return Err(format!(
                             "{} typed error drifted: expected code={} fragment={:?}, got {other:?}",
@@ -3368,7 +3387,9 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
         | SdkError::Protocol(_)
         | SdkError::Serialization(_)
         | SdkError::Transport(_)
-        | SdkError::Remote { .. }) => {
+        | SdkError::Remote { .. }
+        | SdkError::Binding { .. }
+        | SdkError::PlaneUnavailable { .. }) => {
             stop_runtime(&shutdown, join)?;
             return Err(format!("unexpected lexical timeout error: {other:?}").into());
         }
@@ -3418,7 +3439,9 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
         | SdkError::Protocol(_)
         | SdkError::Serialization(_)
         | SdkError::Transport(_)
-        | SdkError::Remote { .. }) => {
+        | SdkError::Remote { .. }
+        | SdkError::Binding { .. }
+        | SdkError::PlaneUnavailable { .. }) => {
             stop_runtime(&shutdown, join)?;
             return Err(format!("unexpected structural timeout error: {other:?}").into());
         }
@@ -3442,7 +3465,9 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
         | SdkError::Protocol(_)
         | SdkError::Serialization(_)
         | SdkError::Transport(_)
-        | SdkError::Remote { .. }) => {
+        | SdkError::Remote { .. }
+        | SdkError::Binding { .. }
+        | SdkError::PlaneUnavailable { .. }) => {
             stop_runtime(&shutdown, join)?;
             return Err(format!("unexpected typed-hole error: {other:?}").into());
         }
@@ -3590,7 +3615,9 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
         | SdkError::Protocol(_)
         | SdkError::Serialization(_)
         | SdkError::Transport(_)
-        | SdkError::Remote { .. }) => {
+        | SdkError::Remote { .. }
+        | SdkError::Binding { .. }
+        | SdkError::PlaneUnavailable { .. }) => {
             stop_runtime(&shutdown, join)?;
             return Err(format!("unexpected patterntype error: {other:?}").into());
         }

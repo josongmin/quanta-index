@@ -176,6 +176,50 @@ impl MaintenanceTimer {
     pub fn tallies(&self) -> Arc<MaintenanceTallies> {
         Arc::clone(&self.tallies)
     }
+
+    /// Hand the timer to a supervisor (SEP-21 P08): the stop signal is
+    /// sent now-or-by-the-closure and the join becomes the supervisor's
+    /// to own, so the timer is never a detached thread and never joined
+    /// after the runtime guards drop.
+    ///
+    /// The stop closure is idempotent with [`Drop`]: whichever runs
+    /// first signals; the join handle is out of this value so a later
+    /// drop of the timer stops nothing and joins nothing. A second
+    /// hand-off is a typed error, not a silent stub.
+    pub fn into_supervised_parts(mut self) -> Result<(MaintenanceStop, JoinHandle<()>), CoreError> {
+        let (dummy, _dummy_rx) = mpsc::channel();
+        let stop = std::mem::replace(&mut self.stop, dummy);
+        let Some(handle) = self.thread.take() else {
+            return Err(CoreError::Storage(
+                "maintenance timer: supervised hand-off attempted twice".to_string(),
+            ));
+        };
+        Ok((
+            MaintenanceStop {
+                stop: Arc::new(stop),
+            },
+            handle,
+        ))
+    }
+}
+
+/// The supervisor-owned stop for one maintenance timer: sends the stop
+/// signal when called or when dropped, whichever comes first.
+pub struct MaintenanceStop {
+    stop: Arc<Sender<()>>,
+}
+
+impl MaintenanceStop {
+    /// Signal the timer to stop; idempotent.
+    pub fn stop(&self) {
+        let _sent = self.stop.send(());
+    }
+}
+
+impl Drop for MaintenanceStop {
+    fn drop(&mut self) {
+        self.stop();
+    }
 }
 
 impl Drop for MaintenanceTimer {

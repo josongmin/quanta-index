@@ -1320,6 +1320,17 @@ fn map_sdk_error(error: SdkError) -> CliError {
             Ok(text) => CliError::remote(text),
             Err(err) => err,
         },
+        SdkError::Binding {
+            route,
+            axis,
+            expected,
+            actual,
+        } => CliError::protocol(format!(
+            "response binding failed on route `{route}` axis `{axis}`: expected {expected}, got {actual}"
+        )),
+        SdkError::PlaneUnavailable { plane } => CliError::usage(format!(
+            "{plane} transport is not configured for this client profile"
+        )),
     }
 }
 
@@ -4345,6 +4356,7 @@ mod tests {
                     },
                 ],
                 window: quanta_index_contract::QueryResultWindowV1::exact(2),
+                window_v2: quanta_index_contract::QueryResultWindowV2::exact_probe(2),
                 explanation: SearchExplanation {
                     planner_trace: Vec::new(),
                     engines_touched: vec![EngineTouched::Lexical, EngineTouched::Semantic],

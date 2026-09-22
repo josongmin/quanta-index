@@ -939,10 +939,12 @@ impl CandidateProjectionMetaV1 {
         if let (Some(manifest_digest), Some(source_bundle_digest)) =
             (&manifest_digest, &source_bundle_digest)
         {
-            producer_digest(manifest_digest).map_err(|_| quanta_index_core::CoreError::Typed {
-                code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
-                message: "repomap projection meta has an invalid V2 manifest custody digest"
-                    .to_string(),
+            let _validated_manifest_digest = producer_digest(manifest_digest).map_err(|_| {
+                quanta_index_core::CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                    message: "repomap projection meta has an invalid V2 manifest custody digest"
+                        .to_string(),
+                }
             })?;
             let source_hex = source_bundle_digest
                 .strip_prefix("sha256:")

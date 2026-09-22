@@ -83,7 +83,7 @@ pub struct QuarantinedGenerationEntryV1 {
     pub detail: String,
 }
 
-/// One `RepoMap` file the store moved aside.
+/// One `RepoMap` quarantine incident, named by an opaque single-segment token.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct QuarantinedRepoMapFileEntryV1 {
     pub file_name: String,
@@ -262,8 +262,8 @@ impl QuarantinedGenerationEntryV1 {
 impl QuarantinedRepoMapFileEntryV1 {
     fn validate_wire<E: de::Error>(&self) -> Result<(), E> {
         reject_empty("file_name", &self.file_name)?;
-        // A file name is one path segment; anything that could walk out of
-        // the quarantine directory is refused before it reaches a port.
+        // The incident token is one path segment; adapter-local paths must
+        // never cross this control boundary.
         if self.file_name == "." || self.file_name == ".." || self.file_name.contains('/') {
             return Err(E::custom(format!(
                 "`file_name` `{}` is not a single path segment",

@@ -1,15 +1,7 @@
-use quanta_index_contract::{RepoMapQueryRequest, RepoMapQueryResponse};
-use quanta_index_core::CoreError;
+//! The pinned `RepoMap` snapshot executor (S21-05).
+//!
+//! The handle and its RAII pin lease live in [`crate::pinned`], the lower
+//! module both this facade and `store` depend on; this module keeps the
+//! historical `reader::PinnedRepoMapSnapshotV1` path working.
 
-use crate::store::RepoMapGenerationStore;
-
-pub struct RepoMapPinnedReader;
-
-impl RepoMapPinnedReader {
-    pub fn read_query_snapshot(
-        store: &RepoMapGenerationStore,
-        request: &RepoMapQueryRequest,
-    ) -> Result<RepoMapQueryResponse, CoreError> {
-        store.read_query_snapshot(request)
-    }
-}
+pub use crate::pinned::PinnedRepoMapSnapshotV1;

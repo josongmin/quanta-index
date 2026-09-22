@@ -28,6 +28,16 @@ rust-profile-list:
         'test-p02a-repomap-compiler P02A whole-bundle graph compiler owner proof' \
         'test-p02b-operation-journal P02B global sequence authority and operation journal proof' \
         'test-candidate-activation-owner P03 sealed-candidate activation, recovery, and quarantine owner proof' \
+        'test-read-view-lifetime-owner P04 read-view lifetime, pin/GC barrier owner proof' \
+        'test-search-plane-read-view-lib P04 search-plane read-view lib proof' \
+        'test-query-truth-owner P05 query outcome/cursor/oracle owner proof' \
+        'test-control-readiness-owner P09 control authorization/readiness owner proof' \
+        'test-control-readiness-owner-lib P09 control authorization/readiness lib suites' \
+        'test-query-truth-owner-lib P05 outcome/cursor/oracle lib suites' \
+        'test-sdk-binding-owner P06 SDK contextual binding negative-matrix owner proof' \
+        'test-sdk-binding-owner-lib P06 SDK lib suites' \
+        'test-provider-boundary-owner P07 semantic admission / provider boundary owner proof' \
+        'test-runtime-supervisor-owner P08 supervised runtime / bounded shutdown owner proof' \
         'test-integration-fast bounded integration loop; excludes slow text/Lance storage' \
         'test-integration-storage text-authority shard persistence slice' \
         'test-integration-semantic semantic storage integration slice' \
@@ -60,6 +70,16 @@ rust-profile profile:
         test-p02a-repomap-compiler) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-p02a-repomap-compiler ;; \
         test-p02b-operation-journal) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-p02b-operation-journal ;; \
         test-candidate-activation-owner) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-candidate-activation-owner ;; \
+        test-read-view-lifetime-owner) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-read-view-lifetime-owner ;; \
+        test-search-plane-read-view-lib) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-search-plane-read-view-lib ;; \
+        test-query-truth-owner) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-query-truth-owner ;; \
+        test-control-readiness-owner) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-control-readiness-owner ;; \
+        test-control-readiness-owner-lib) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-control-readiness-owner-lib ;; \
+        test-query-truth-owner-lib) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-query-truth-owner-lib ;; \
+        test-sdk-binding-owner) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-sdk-binding-owner ;; \
+        test-sdk-binding-owner-lib) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-sdk-binding-owner-lib ;; \
+        test-provider-boundary-owner) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-provider-boundary-owner ;; \
+        test-runtime-supervisor-owner) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-runtime-supervisor-owner ;; \
         test-integration-fast) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-integration-fast ;; \
         test-integration-storage) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-integration-storage ;; \
         test-integration-semantic) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-integration-semantic ;; \
@@ -220,6 +240,36 @@ rust-test-p02b-operation-journal lane="test-p02b-operation-journal-lane":
 
 rust-test-candidate-activation-owner lane="test-candidate-activation-owner-lane":
     python3 tools/ci/run-local-test-scope.py candidate-activation-owner --lane {{lane}}
+
+rust-test-read-view-lifetime-owner lane="test-read-view-lifetime-owner-lane":
+    python3 tools/ci/run-local-test-scope.py read-view-lifetime-owner --lane {{lane}}
+
+rust-test-search-plane-read-view-lib lane="test-search-plane-read-view-lane":
+    python3 tools/ci/run-local-test-scope.py search-plane-read-view-lib --lane {{lane}}
+
+rust-test-query-truth-owner lane="test-query-truth-owner-lane":
+    python3 tools/ci/run-local-test-scope.py query-truth-owner --lane {{lane}}
+
+rust-test-query-truth-owner-lib lane="test-query-truth-owner-lane":
+    python3 tools/ci/run-local-test-scope.py query-truth-owner-lib --lane {{lane}}
+
+rust-test-control-readiness-owner lane="test-control-readiness-owner-lane":
+    python3 tools/ci/run-local-test-scope.py control-readiness-owner --lane {{lane}}
+
+rust-test-control-readiness-owner-lib lane="test-control-readiness-owner-lane":
+    python3 tools/ci/run-local-test-scope.py control-readiness-owner-lib --lane {{lane}}
+
+rust-test-sdk-binding-owner lane="test-sdk-binding-owner-lane":
+    python3 tools/ci/run-local-test-scope.py sdk-binding-owner --lane {{lane}}
+
+rust-test-sdk-binding-owner-lib lane="test-sdk-binding-owner-lane":
+    python3 tools/ci/run-local-test-scope.py sdk-binding-owner-lib --lane {{lane}}
+
+rust-test-provider-boundary-owner lane="test-provider-boundary-owner-lane":
+    python3 tools/ci/run-local-test-scope.py provider-boundary-owner --lane {{lane}}
+
+rust-test-runtime-supervisor-owner lane="test-runtime-supervisor-owner-lane":
+    python3 tools/ci/run-local-test-scope.py runtime-supervisor-owner --lane {{lane}}
 
 rust-test-integration-fast lane="test-integration-lane":
     python3 tools/ci/run-local-test-scope.py integration-fast --lane {{lane}}
@@ -793,6 +843,103 @@ proof-p02a-repomap-compiler:
 
 proof-p03-candidate-activation-owner:
     @just rust-profile test-candidate-activation-owner
+    @just rust-hexagonal
+    @just rust-wire-inventory
+    @just rust-public-api
+    @just rust-fuzz-smoke
+
+# P04 read-view lifetime owner proof (S21-05): the scoped rail runs the
+# repomap lifetime owner target plus the repomap owner surface and the core
+# read-view declaration bound to the same source; the search-plane lib rail
+# carries the view-level V2 tests. The structural guard proves routes have
+# zero ambient lookup and the V1 surfaces stay deleted. The Linux
+# production-like release subrail (p04-read-view-lifetime, release-daemon
+# binding) stays NOT_RUN on this host.
+proof-p04-read-view-lifetime-owner:
+    @just rust-profile test-read-view-lifetime-owner
+    @just rust-profile test-search-plane-read-view-lib
+    @python3 tools/ci/lint/check-read-view-ambient-lookup.py
+    @just rust-hexagonal
+    @just rust-wire-inventory
+    @just rust-public-api
+    @just rust-fuzz-smoke
+
+# P06 SDK binding owner proof (S21-07): the scoped rail runs the SDK
+# owner integration target (wrong-but-same-variant negative matrix over a
+# real UDS scripted peer, query-only profile, coverage table) and the SDK
+# lib suites bound to the same source. The SDK public API changed
+# (binding error, profile split, coverage inventory), so the structural
+# rails include public API and wire inventory plus the IPC fuzz smoke.
+# The Linux production-like release subrail (p06-sdk-binding,
+# release-daemon binding) stays NOT_RUN on this host.
+proof-p06-sdk-binding-owner:
+    @just rust-profile test-sdk-binding-owner
+    @just rust-profile test-sdk-binding-owner-lib
+    @just rust-hexagonal
+    @just rust-wire-inventory
+    @just rust-public-api
+    @just rust-fuzz-smoke
+
+# P05 query-truth owner proof (S21-06): the scoped rail runs the
+# contract-base outcome/cursor-envelope owner suite and the search-plane
+# query-truth owner suite (independent RRF/window oracle, outcome honesty
+# matrix, cursor key custody) bound to the same source. Wire shapes
+# changed (window_v2 fields, cursor envelope), so the structural rails
+# include wire inventory, public API and the IPC fuzz smoke. The Linux
+# production-like release subrail (p05-query-truth, release-daemon
+# binding) stays NOT_RUN on this host.
+# P07 semantic admission / provider boundary owner proof (S21-08): the
+# scoped rail runs the search-plane owner suite (zero-call refusal matrix
+# over a counting spy embedder, global reservation/settlement bounds,
+# cancellation reconciliation, declared-vs-observed validation, source
+# content egress grant). Core gained the semantic admission module, so the
+# structural rails include the module-tree snapshot plus hexagonal, wire
+# inventory and the IPC fuzz smoke. The Linux production-like release
+# subrail (p07-provider-boundary, release-daemon binding) and the approved
+# budgeted real-provider proof stay NOT_RUN on this host.
+proof-p07-provider-boundary-owner:
+    @just rust-profile test-provider-boundary-owner
+    @just rust-hexagonal
+    @just rust-wire-inventory
+    @just rust-cargo-modules
+    @just rust-fuzz-smoke
+
+# P08 supervised runtime / bounded shutdown owner proof (S21-09): the
+# scoped rail runs the supervisor owner suite (clean drain with
+# guards-last drop order, startup rollback, required-child loss,
+# cooperative-vs-hard deadline escalation, second-signal abort exit
+# semantics, RAII permit reconciliation, real two-process state-root
+# exclusion with lock fstat invariants).
+# The supervisor lives in quanta-index-searchd and the split changed the
+# runtime facade, so the structural rails include hexagonal, wire
+# inventory and the module-tree snapshot. The Linux production-like
+# release process rail (p08-runtime-supervisor, release-daemon binding,
+# SIGINT/SIGTERM on the release binary) stays NOT_RUN on this host.
+proof-p08-runtime-supervisor-owner:
+    @just rust-profile test-runtime-supervisor-owner
+    @just rust-hexagonal
+    @just rust-wire-inventory
+    @just rust-cargo-modules
+
+proof-p05-query-truth-owner:
+    @just rust-profile test-query-truth-owner
+    @just rust-profile test-query-truth-owner-lib
+    @just rust-hexagonal
+    @just rust-wire-inventory
+    @just rust-public-api
+    @just rust-fuzz-smoke
+
+# Dedicated P04 read-view recipe: owner-local selector first, then the
+# Linux release subrail split the prompt names (NOT_RUN off-Linux).
+rust-proof-p04-read-view: proof-p04-read-view-lifetime-owner
+
+# P09 (S21-10) control authorization + readiness owner proof: the scoped
+# integration target proves the capability/access matrix, the lib scope
+# proves the dispatch-level default-deny (zero mutation) and the readiness
+# truth table. Rustx/fuzz rails guard the wire shapes the DTOs added.
+proof-p09-control-readiness-owner:
+    @just rust-profile test-control-readiness-owner
+    @just rust-profile test-control-readiness-owner-lib
     @just rust-hexagonal
     @just rust-wire-inventory
     @just rust-public-api

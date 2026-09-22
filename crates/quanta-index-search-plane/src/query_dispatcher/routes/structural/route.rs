@@ -30,7 +30,7 @@ use quanta_index_core::{
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
 use crate::query_dispatcher::errors::structural_invalid_request;
 use crate::query_dispatcher::keyset_page::{KeysetPageCollector, StreamEnd};
-use crate::query_dispatcher::read_view::{AuxEpochPinsV1, QueryReadViewV1, ReadViewRequestV1};
+use crate::query_dispatcher::read_view::{AuxEpochPinsV1, QueryReadViewV2, ReadViewRequestV1};
 use crate::query_dispatcher::routes::structural::buckets::StructuralCandidateBuckets;
 use crate::query_dispatcher::routes::structural::eval::{
     StructuralEvalContext, evaluate_structural_expr, extract_structural_requested_lang,
@@ -101,7 +101,7 @@ impl SearchPlaneDispatcher {
     /// select the page after `cursor`.
     fn execute_structural_page(
         &self,
-        view: &QueryReadViewV1,
+        view: &QueryReadViewV2,
         read: StructuralRead<'_>,
         lowered: &LqQuery,
         top_k: u32,

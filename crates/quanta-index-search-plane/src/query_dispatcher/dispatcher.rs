@@ -14,7 +14,7 @@ use quanta_index_contract::{
 use quanta_index_core::domains::structural::StructuralProducerPort;
 use quanta_index_core::{
     CoreError, ExplainQueryPort, HybridQueryPort, LexicalIndexOpenPort, LexicalQueryPort,
-    RepoMapQueryPort, RequestBudgetV1, SemanticIndexOpenPort, SemanticQueryPort,
+    RepoMapSnapshotAcquirePort, RequestBudgetV1, SemanticIndexOpenPort, SemanticQueryPort,
 };
 use quanta_index_lq_obs::{Dimensions, MetricKind, MetricSample};
 
@@ -38,7 +38,10 @@ pub struct SearchPlaneDispatcher {
     /// Resident opened generations, shared with the ingest side which
     /// invalidates them (QI-BB-001).
     pub(super) snapshots: SnapshotRegistries,
-    pub(super) repo_map_query: Arc<dyn RepoMapQueryPort + Send + Sync>,
+    /// The `RepoMap` snapshot acquisition port (S21-05): the read view
+    /// acquires one pinned handle per request; no route holds this port
+    /// for execution.
+    pub(super) repo_map_snapshots: Arc<dyn RepoMapSnapshotAcquirePort + Send + Sync>,
     /// Structural producer adapter wired by the composition root.
     pub(super) structural_producer: Arc<dyn StructuralProducerPort + Send + Sync>,
     pub(super) ledger: Arc<RwLock<Ledger>>,
@@ -64,7 +67,7 @@ impl SearchPlaneDispatcher {
     pub fn new(
         lex_opener: Arc<dyn LexicalIndexOpenPort + Send + Sync>,
         sem_opener: Arc<dyn SemanticIndexOpenPort + Send + Sync>,
-        repo_map_query: Arc<dyn RepoMapQueryPort + Send + Sync>,
+        repo_map_snapshots: Arc<dyn RepoMapSnapshotAcquirePort + Send + Sync>,
         structural_producer: Arc<dyn StructuralProducerPort + Send + Sync>,
         ledger: Arc<RwLock<Ledger>>,
         activation_catalog: Arc<ActivationCatalog>,
@@ -73,7 +76,7 @@ impl SearchPlaneDispatcher {
             lex_opener,
             sem_opener,
             SnapshotRegistries::new(SnapshotRegistryPolicy::DEFAULT),
-            repo_map_query,
+            repo_map_snapshots,
             structural_producer,
             ledger,
             activation_catalog,
@@ -92,7 +95,7 @@ impl SearchPlaneDispatcher {
         lex_opener: Arc<dyn LexicalIndexOpenPort + Send + Sync>,
         sem_opener: Arc<dyn SemanticIndexOpenPort + Send + Sync>,
         snapshots: SnapshotRegistries,
-        repo_map_query: Arc<dyn RepoMapQueryPort + Send + Sync>,
+        repo_map_snapshots: Arc<dyn RepoMapSnapshotAcquirePort + Send + Sync>,
         structural_producer: Arc<dyn StructuralProducerPort + Send + Sync>,
         ledger: Arc<RwLock<Ledger>>,
         activation_catalog: Arc<ActivationCatalog>,
@@ -103,7 +106,7 @@ impl SearchPlaneDispatcher {
             lex_opener,
             sem_opener,
             snapshots,
-            repo_map_query,
+            repo_map_snapshots,
             structural_producer,
             ledger,
             activation_catalog,

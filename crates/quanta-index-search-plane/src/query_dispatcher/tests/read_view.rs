@@ -1,4 +1,4 @@
-//! One `QueryReadViewV1` per request (plan §5.6 / §7.1).
+//! One `QueryReadViewV2` per request (plan §5.6 / §7.1).
 //!
 //! A route opens exactly the domains its plan declares, a required domain
 //! the generation lacks is refused typed before any lane executes, and
@@ -35,7 +35,7 @@ use crate::query_dispatcher::tests::support::common::{
 use crate::query_dispatcher::tests::support::lexical::{
     RecordingLexicalOpener, RecordingLexicalState, StubLexicalSearcher,
 };
-use crate::query_dispatcher::tests::support::repo_map::StubRepoMapQueryPort;
+use crate::query_dispatcher::tests::support::repo_map::StubRepoMapSnapshotPort;
 use crate::query_dispatcher::tests::support::semantic::{
     RecordingSemanticOpener, RecordingSemanticState,
 };
@@ -55,7 +55,7 @@ fn recording_dispatcher(
         Arc::new(RecordingSemanticOpener {
             state: Arc::clone(semantic_state),
         }),
-        Arc::new(StubRepoMapQueryPort),
+        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ledger,
         test_activation_catalog()?,
@@ -253,7 +253,7 @@ fn a_history_read_on_a_generation_without_history_is_refused_before_any_lane() -
         Arc::new(RecordingSemanticOpener {
             state: Arc::clone(&semantic_state),
         }),
-        Arc::new(StubRepoMapQueryPort),
+        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         lexical_only_ledger(),
         activation_catalog_with_generations(&[corpus_generation(
@@ -317,7 +317,7 @@ fn a_history_read_ahead_of_the_lexical_track_is_not_ready() -> TestResult {
         Arc::new(RecordingSemanticOpener {
             state: Arc::clone(&semantic_state),
         }),
-        Arc::new(StubRepoMapQueryPort),
+        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         lexical_only_ledger(),
         test_activation_catalog()?,

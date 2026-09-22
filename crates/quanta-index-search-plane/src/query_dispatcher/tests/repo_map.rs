@@ -10,7 +10,7 @@ use crate::query_dispatcher::tests::support::common::{
 };
 use crate::query_dispatcher::tests::support::lexical::RejectLexicalOpener;
 use crate::query_dispatcher::tests::support::repo_map::{
-    StubRepoMapQueryPort, into_repo_map_query_response, repo_map_request,
+    StubRepoMapSnapshotPort, into_repo_map_query_response, repo_map_request,
 };
 use crate::query_dispatcher::tests::support::semantic::RejectSemanticOpener;
 use crate::query_dispatcher::tests::support::structural::FailClosedStructuralProducer;
@@ -21,7 +21,7 @@ fn repo_map_dispatcher_branch_delegates_to_repo_map_query_port() -> TestResult {
     let dispatcher = SearchPlaneDispatcher::new(
         Arc::new(RejectLexicalOpener),
         Arc::new(RejectSemanticOpener),
-        Arc::new(StubRepoMapQueryPort),
+        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         Arc::new(RwLock::new(Ledger::default())),
         test_activation_catalog()?,
@@ -72,7 +72,7 @@ fn repo_map_dispatch_emits_closed_obs_metrics() -> TestResult {
         Arc::new(RejectLexicalOpener),
         Arc::new(RejectSemanticOpener),
         SnapshotRegistries::new(SnapshotRegistryPolicy::DEFAULT),
-        Arc::new(StubRepoMapQueryPort),
+        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         Arc::new(RwLock::new(Ledger::default())),
         test_activation_catalog()?,

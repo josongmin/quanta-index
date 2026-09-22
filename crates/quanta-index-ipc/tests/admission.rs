@@ -64,6 +64,7 @@ struct ControlStub {
 impl IpcDispatcher<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse> for ControlStub {
     fn dispatch(
         &self,
+        _context: &quanta_index_ipc::DispatchContextV1,
         request: SearchPlaneControlIpcRequest,
         budget: &RequestBudgetV1,
     ) -> SearchPlaneControlIpcResponse {
@@ -157,6 +158,7 @@ fn start_server(policy: ServerAdmissionPolicy) -> Result<Harness, Box<dyn Error>
         thread::spawn(move || {
             uds.run::<SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponseEnvelope, SearchPlaneControlIpcResponse, ControlStub>(
                 &dispatcher,
+                quanta_index_ipc::IpcPlane::Control,
                 ACCEPT_IDLE,
             )
         })
@@ -256,7 +258,8 @@ fn expect_snapshot(response: SearchPlaneControlIpcResponse, repo: &str) -> TestR
         | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
         | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
         | SearchPlaneControlIpcResponse::QuarantineInventory(_)
-        | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)) => {
+        | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
+        | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)) => {
             Err(format!("expected a snapshot for {repo}, got {other:?}").into())
         }
     }
@@ -275,7 +278,8 @@ fn expect_error(
         | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
         | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
         | SearchPlaneControlIpcResponse::QuarantineInventory(_)
-        | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)) => {
+        | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
+        | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)) => {
             Err(format!("expected a typed error, got {other:?}").into())
         }
     }

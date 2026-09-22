@@ -27,7 +27,7 @@
 //! Different domains are supplied by different producers at different
 //! times; the view never claims they are one instant. What it fixes is
 //! one pin, one epoch per auxiliary domain, and the artifacts and
-//! capability versions the response can name (`ReadIdentityV1`).
+//! capability versions the response can name (`ReadIdentityV2`).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -38,9 +38,11 @@ use quanta_index_contract::{
     SearchPlaneTrackKind,
 };
 use quanta_index_core::{
-    AuxiliaryGenerationKeyV1, CoreError, HistoryTextSearcher, LexicalSearcher, QueryRouteV1,
-    ReadDomainV1, ReadIdentityV1, ReadViewRefusedError, RequestBudgetV1, RequiredDomainsV1,
-    SemanticProfileV1, SemanticSearcher, StructuralError, declare_required_domains_v1,
+    AuxiliaryGenerationKeyV1, CoreError, DomainReadEvidenceV2, HistoryTextSearcher,
+    LexicalSearcher, PinnedRepoMapSnapshot, QueryRouteV1, ReadDomainV1, ReadIdentityV2,
+    ReadResourceGroupV2, ReadViewRefusedError, RepoMapSnapshotAcquireV1, RequestBudgetV1,
+    RequiredDomainsV1, SemanticProfileV1, SemanticSearcher, StructuralError,
+    declare_required_domains_v1,
 };
 
 use crate::Ledger;
@@ -152,18 +154,19 @@ struct LedgerParts {
 /// Holds a handle or snapshot for exactly the declared domains; the
 /// accessors refuse typed for any other, so a route cannot widen its
 /// declaration by reaching past it.
-pub(crate) struct QueryReadViewV1 {
-    identity: ReadIdentityV1,
+pub(crate) struct QueryReadViewV2 {
+    identity: ReadIdentityV2,
     lexical: Option<Arc<dyn LexicalSearcher>>,
     semantic: Option<Arc<dyn SemanticSearcher>>,
     history: Option<AuxRead<HistoryAuthorityState>>,
     history_text: Option<Arc<dyn HistoryTextSearcher>>,
     runtime: Option<AuxRead<RuntimeMetadataState>>,
     structural: Option<AuxRead<StructuralAuthorityState>>,
+    repo_map: Option<Box<dyn PinnedRepoMapSnapshot>>,
 }
 
-impl QueryReadViewV1 {
-    pub(crate) const fn identity(&self) -> &ReadIdentityV1 {
+impl QueryReadViewV2 {
+    pub(crate) const fn identity(&self) -> &ReadIdentityV2 {
         &self.identity
     }
 
@@ -223,6 +226,16 @@ impl QueryReadViewV1 {
             .ok_or_else(|| self.undeclared(ReadDomainV1::RuntimeOverlay))
     }
 
+    /// The pinned `RepoMap` snapshot of the declared `RepoMap` domain:
+    /// the only way a route reaches the `RepoMap` store. Executing the
+    /// query cannot re-enter any store, registry or ledger — the handle
+    /// was acquired once, with the view.
+    pub(crate) fn repo_map(&self) -> Result<&dyn PinnedRepoMapSnapshot, CoreError> {
+        self.repo_map
+            .as_deref()
+            .ok_or_else(|| self.undeclared(ReadDomainV1::RepoMap))
+    }
+
     /// The structural snapshot at the pinned epoch.
     pub(crate) fn structural(&self) -> Result<&AuxRead<StructuralAuthorityState>, CoreError> {
         self.structural
@@ -239,6 +252,7 @@ impl QueryReadViewV1 {
         history_text: Option<Arc<dyn HistoryTextSearcher>>,
         lexical: Option<Arc<dyn LexicalSearcher>>,
         semantic: Option<Arc<dyn SemanticSearcher>>,
+        repo_map: Option<Box<dyn PinnedRepoMapSnapshot>>,
     ) -> Result<Self, CoreError> {
         let pin = request.pin.clone();
         let mut aux_epochs = BTreeMap::new();
@@ -272,7 +286,64 @@ impl QueryReadViewV1 {
             model_id: handle.index_model_id().to_string(),
             model_revision: handle.index_model_revision().map(str::to_string),
         });
-        let identity = ReadIdentityV1 {
+        let repomap_evidence = repo_map.as_ref().map(|handle| handle.evidence().clone());
+        let mut evidence = BTreeMap::new();
+        for domain in request.domains.iter() {
+            let entry = match domain {
+                ReadDomainV1::LexicalTrack | ReadDomainV1::RepoMetadata(_) => {
+                    DomainReadEvidenceV2 {
+                        domain,
+                        resource_group: ReadResourceGroupV2::LexicalTrack,
+                        artifact: lexical_identity
+                            .as_ref()
+                            .map(|identity| identity.manifest_digest.clone()),
+                        activation_epoch: None,
+                        aux_epoch: None,
+                    }
+                }
+                ReadDomainV1::SemanticTrack => DomainReadEvidenceV2 {
+                    domain,
+                    resource_group: ReadResourceGroupV2::SemanticTrack,
+                    artifact: parts.semantic_manifest_digest.clone(),
+                    activation_epoch: None,
+                    aux_epoch: None,
+                },
+                ReadDomainV1::History => DomainReadEvidenceV2 {
+                    domain,
+                    resource_group: ReadResourceGroupV2::HistoryEpoch,
+                    artifact: None,
+                    activation_epoch: None,
+                    aux_epoch: aux_epochs.get(&domain).copied(),
+                },
+                ReadDomainV1::RuntimeOverlay => DomainReadEvidenceV2 {
+                    domain,
+                    resource_group: ReadResourceGroupV2::RuntimeEpoch,
+                    artifact: None,
+                    activation_epoch: None,
+                    aux_epoch: aux_epochs.get(&domain).copied(),
+                },
+                ReadDomainV1::StructuralChunkUniverse => DomainReadEvidenceV2 {
+                    domain,
+                    resource_group: ReadResourceGroupV2::StructuralEpoch,
+                    artifact: None,
+                    activation_epoch: None,
+                    aux_epoch: aux_epochs.get(&domain).copied(),
+                },
+                ReadDomainV1::RepoMap => DomainReadEvidenceV2 {
+                    domain,
+                    resource_group: ReadResourceGroupV2::RepoMapSnapshot,
+                    artifact: repomap_evidence
+                        .as_ref()
+                        .map(|evidence| evidence.candidate_commitment.clone()),
+                    activation_epoch: repomap_evidence
+                        .as_ref()
+                        .map(|evidence| evidence.activation_epoch),
+                    aux_epoch: None,
+                },
+            };
+            let _prior = evidence.insert(domain, entry);
+        }
+        let identity = ReadIdentityV2 {
             pin,
             domains: request.domains,
             lexical_artifact: lexical_identity
@@ -284,6 +355,13 @@ impl QueryReadViewV1 {
                 .as_ref()
                 .map(|identity| identity.normalizer),
             profile,
+            repomap_commitment: repomap_evidence
+                .as_ref()
+                .map(|evidence| evidence.candidate_commitment.clone()),
+            repomap_activation_epoch: repomap_evidence
+                .as_ref()
+                .map(|evidence| evidence.activation_epoch),
+            evidence,
         };
         Ok(Self {
             identity,
@@ -293,6 +371,7 @@ impl QueryReadViewV1 {
             history_text,
             runtime: parts.runtime,
             structural: parts.structural,
+            repo_map,
         })
     }
 }
@@ -304,7 +383,7 @@ impl QueryReadViewV1 {
 /// against comes before what the plan did with it.
 pub(crate) fn attach_read_view_trace(
     explanation: &mut SearchExplanation,
-    identity: &ReadIdentityV1,
+    identity: &ReadIdentityV2,
 ) {
     let entries: Vec<PlannerTraceEntry> = identity
         .trace_details()
@@ -348,7 +427,7 @@ impl SearchPlaneDispatcher {
         &self,
         request: &ReadViewRequestV1<'_>,
         budget: &RequestBudgetV1,
-    ) -> Result<QueryReadViewV1, CoreError> {
+    ) -> Result<QueryReadViewV2, CoreError> {
         let mut parts = {
             let guard = self
                 .ledger
@@ -382,7 +461,20 @@ impl SearchPlaneDispatcher {
         } else {
             None
         };
-        QueryReadViewV1::assemble(request, parts, history_text, lexical, semantic)
+        // The RepoMap handle is acquired after the ledger guard is
+        // released: the store's own critical section resolves the active
+        // identity, commitment, epoch and artifact together, and no
+        // ledger or catalog guard is ever held across it.
+        let repo_map = if request.domains.contains(ReadDomainV1::RepoMap) {
+            Some(self.repo_map_snapshots.acquire(RepoMapSnapshotAcquireV1 {
+                repo_id: pin.repo_id.clone(),
+                revision_id: pin.revision_id.clone(),
+                manifest_generation: pin.manifest_generation,
+            })?)
+        } else {
+            None
+        };
+        QueryReadViewV2::assemble(request, parts, history_text, lexical, semantic, repo_map)
     }
 
     /// The history snapshot of `pin` at `epoch` (current when `None`);
@@ -602,8 +694,8 @@ pub(crate) fn assemble_for_test(
     runtime: Option<AuxRead<RuntimeMetadataState>>,
     structural: Option<AuxRead<StructuralAuthorityState>>,
     lexical: Option<Arc<dyn LexicalSearcher>>,
-) -> Result<QueryReadViewV1, CoreError> {
-    QueryReadViewV1::assemble(
+) -> Result<QueryReadViewV2, CoreError> {
+    QueryReadViewV2::assemble(
         request,
         LedgerParts {
             semantic_manifest_digest: None,
@@ -614,6 +706,7 @@ pub(crate) fn assemble_for_test(
         },
         None,
         lexical,
+        None,
         None,
     )
 }

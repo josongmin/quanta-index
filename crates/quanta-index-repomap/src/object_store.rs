@@ -289,6 +289,14 @@ impl RepoMapObjectStore {
             reason = "usize-to-u64 cannot fail on supported targets; the Option marks the byte size as observed-or-not"
         )]
         let observed_byte_size = u64::try_from(raw.len()).ok();
+        if CandidateObjectDigestV1::for_canonical_envelope(&raw) != digest {
+            return Err(ObjectVerificationFailureV1 {
+                reason: QuarantineReasonCodeV1::AddressDigestMismatch,
+                detail: "raw object bytes do not match the catalog content address".to_string(),
+                raw_bytes: Some(raw),
+                observed_byte_size,
+            });
+        }
         let envelope =
             RepoMapCandidateEnvelopeV1::decode_canonical(raw_bytes.as_slice()).map_err(|err| {
                 ObjectVerificationFailureV1 {
@@ -473,12 +481,7 @@ impl RepoMapObjectStore {
             envelope_bytes.as_slice(),
             "quarantine incident",
         )?;
-        let payload_digest = payload_bytes.map(|bytes| {
-            let mut hasher = Sha256::new();
-            hasher.update(b"quanta-index/quarantine-payload/v1\0");
-            hasher.update(bytes);
-            QuarantinePayloadDigestV1::from_bytes(hasher.finalize().into())
-        });
+        let payload_digest = payload_bytes.map(QuarantinePayloadDigestV1::for_payload);
         if let (Some(bytes), Some(digest)) = (payload_bytes, payload_digest) {
             let address = crate::layout_v3::QuarantinePayloadAddressV1::new(digest);
             write_content_addressed(

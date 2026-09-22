@@ -31,7 +31,8 @@ pub use errors::{
     ReadViewRefusedError,
 };
 pub use identity::{
-    LexicalArtifactIdentityV1, ReadIdentityV1, SemanticProfileV1, TextNormalizerVersionV1,
+    DomainReadEvidenceV2, LexicalArtifactIdentityV1, ReadIdentityV2, ReadResourceGroupV2,
+    SemanticProfileV1, TextNormalizerVersionV1,
 };
 pub use predicate::{
     LexicalPredicateAliasV1, LexicalPredicateFamilyV1, LexicalPredicateV1, lexical_predicate_v1,

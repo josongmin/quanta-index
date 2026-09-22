@@ -10,10 +10,10 @@ use crate::{
     ClusterMembershipBatchReadRequestV1, ClusterMembershipBatchReadResponseV1,
     CurrentGenerationRequest, GenerationSnapshot, GenerationStatusReport, GenerationStatusRequest,
     HistoryQueryRequest, HybridQueryRequest, HybridQueryResponse, HybridSeedQueryRequest,
-    HybridSeedQueryResponse, MetricsSnapshotRequest, MetricsSnapshotV1, QuarantineDiscardAck,
-    QuarantineDiscardRequest, QuarantineInventoryRequest, QuarantineInventoryV1,
-    RepoMapActivateGenerationRequest, RepoMapActivateGenerationRequestV2, RepoMapMutationAck,
-    RepoMapQueryRequest, RepoMapQueryResponse, RepoMapTerminalReceiptV2,
+    HybridSeedQueryResponse, MetricsSnapshotRequest, MetricsSnapshotV1, ProcessReadinessRequest,
+    ProcessReadinessV1, QuarantineDiscardAck, QuarantineDiscardRequest, QuarantineInventoryRequest,
+    QuarantineInventoryV1, RepoMapActivateGenerationRequest, RepoMapActivateGenerationRequestV2,
+    RepoMapMutationAck, RepoMapQueryRequest, RepoMapQueryResponse, RepoMapTerminalReceiptV2,
     RuntimeMetadataQueryRequest, SearchPlaneActivateSearchCorpusGenerationCasRequest,
     SearchPlaneExplainQueryRequest, SearchPlaneExplainQueryResponse,
     SearchPlaneHistoryQueryResponse, SearchPlaneIpcError,
@@ -63,6 +63,7 @@ const SEARCH_PLANE_CONTROL_IPC_REQUEST_VARIANTS: &[&str] = &[
     "MetricsSnapshot",
     "QuarantineInventory",
     "QuarantineDiscard",
+    "ProcessReadiness",
 ];
 const SEARCH_PLANE_CONTROL_IPC_RESPONSE_VARIANTS: &[&str] = &[
     "SearchCorpusActivationCasAck",
@@ -75,6 +76,7 @@ const SEARCH_PLANE_CONTROL_IPC_RESPONSE_VARIANTS: &[&str] = &[
     "MetricsSnapshot",
     "QuarantineInventory",
     "QuarantineDiscardAck",
+    "ProcessReadinessReport",
 ];
 
 #[derive(Clone, Debug, PartialEq)]
@@ -152,6 +154,10 @@ pub enum SearchPlaneControlIpcRequest {
     QuarantineInventory(QuarantineInventoryRequest),
     /// QI-BB-026: remove one quarantined entry exactly as it was listed.
     QuarantineDiscard(QuarantineDiscardRequest),
+    /// S21-10: process-wide readiness synthesis (supervisor, required
+    /// planes, maintenance, backend, provider, candidate integrity).
+    /// Deliberately distinct from repository generation status.
+    ProcessReadiness(ProcessReadinessRequest),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -177,6 +183,8 @@ pub enum SearchPlaneControlIpcResponse {
     QuarantineInventory(QuarantineInventoryV1),
     /// QI-BB-026: response to [`SearchPlaneControlIpcRequest::QuarantineDiscard`].
     QuarantineDiscardAck(QuarantineDiscardAck),
+    /// S21-10: response to [`SearchPlaneControlIpcRequest::ProcessReadiness`].
+    ProcessReadinessReport(ProcessReadinessV1),
 }
 
 fn serialize_envelope<S, Payload>(
@@ -790,6 +798,12 @@ impl Serialize for SearchPlaneControlIpcRequest {
                 payload,
                 serializer,
             ),
+            Self::ProcessReadiness(payload) => serialize_adjacent_tagged(
+                "SearchPlaneControlIpcRequest",
+                "ProcessReadiness",
+                payload,
+                serializer,
+            ),
         }
     }
 }
@@ -855,6 +869,9 @@ impl<'de> Visitor<'de> for SearchPlaneControlIpcRequestVisitor {
                         }
                         "QuarantineDiscard" => {
                             SearchPlaneControlIpcRequest::QuarantineDiscard(map.next_value()?)
+                        }
+                        "ProcessReadiness" => {
+                            SearchPlaneControlIpcRequest::ProcessReadiness(map.next_value()?)
                         }
                         other => {
                             return Err(de::Error::unknown_variant(
@@ -1011,6 +1028,12 @@ impl Serialize for SearchPlaneControlIpcResponse {
                 payload,
                 serializer,
             ),
+            Self::ProcessReadinessReport(payload) => serialize_adjacent_tagged(
+                "SearchPlaneControlIpcResponse",
+                "ProcessReadinessReport",
+                payload,
+                serializer,
+            ),
         }
     }
 }
@@ -1081,6 +1104,9 @@ impl<'de> Visitor<'de> for SearchPlaneControlIpcResponseVisitor {
                         }
                         "QuarantineDiscardAck" => {
                             SearchPlaneControlIpcResponse::QuarantineDiscardAck(map.next_value()?)
+                        }
+                        "ProcessReadinessReport" => {
+                            SearchPlaneControlIpcResponse::ProcessReadinessReport(map.next_value()?)
                         }
                         other => {
                             return Err(de::Error::unknown_variant(

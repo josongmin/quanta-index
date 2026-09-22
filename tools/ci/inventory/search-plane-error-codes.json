@@ -1,5 +1,5 @@
 {
-  "cardinality": 264,
+  "cardinality": 265,
   "codes": [
     "ACTIVATION_CAS_CONFLICT",
     "ACTIVATION_TARGET_NOT_SEALED",
@@ -21,6 +21,7 @@
     "CATALOG_BUSY",
     "CATALOG_ROW_CORRUPT",
     "COMPOSITE_ACTIVATION_CAS_CONFLICT",
+    "CONTROL_AUTHORIZATION_DENIED",
     "CURSOR_CONTEXT_MISMATCH",
     "CURSOR_EXPIRED",
     "CURSOR_INVALID",
@@ -266,7 +267,7 @@
     "WEIGHTS_HASH_MISMATCH",
     "WINDOW_OUT_OF_RANGE"
   ],
-  "enum_source_digest": "sha256:677d3cf888b8de3da81130629499b1e0a12823a690e72b52e8163487b40bd30a",
+  "enum_source_digest": "sha256:ca27cdca1facf7b3211334f550f0103d1bf708240d887ae97f95cd75682bd783",
   "enum_source_path": "crates/quanta-index-contract/src/ipc/error.rs",
   "enum_type": "SearchPlaneErrorCodeV2",
   "schema_version": 2

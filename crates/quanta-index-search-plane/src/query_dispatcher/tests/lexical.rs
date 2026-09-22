@@ -19,7 +19,7 @@ use crate::query_dispatcher::tests::support::common::{
 use crate::query_dispatcher::tests::support::lexical::{
     RecordingLexicalOpener, RecordingLexicalState, RejectLexicalOpener, StubLexicalOpener,
 };
-use crate::query_dispatcher::tests::support::repo_map::StubRepoMapQueryPort;
+use crate::query_dispatcher::tests::support::repo_map::StubRepoMapSnapshotPort;
 use crate::query_dispatcher::tests::support::semantic::RejectSemanticOpener;
 use crate::query_dispatcher::tests::support::structural::FailClosedStructuralProducer;
 
@@ -28,7 +28,7 @@ fn lexical_dispatch_fail_closed_when_generation_is_not_ready() -> TestResult {
     let dispatcher = SearchPlaneDispatcher::new(
         Arc::new(RejectLexicalOpener),
         Arc::new(RejectSemanticOpener),
-        Arc::new(StubRepoMapQueryPort),
+        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         Arc::new(RwLock::new(Ledger::default())),
         test_activation_catalog()?,
@@ -91,7 +91,7 @@ fn the_request_budget_reaches_the_lexical_searcher() -> TestResult {
             results: vec![candidate("alpha", 1.0)],
         }),
         Arc::new(RejectSemanticOpener),
-        Arc::new(StubRepoMapQueryPort),
+        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ready_ledger(),
         test_activation_catalog()?,
@@ -135,7 +135,7 @@ fn sourcegraph_text_syntax_dispatch_returns_text_payload() -> TestResult {
             results: vec![candidate("alpha", 1.0), candidate("beta", 0.9)],
         }),
         Arc::new(RejectSemanticOpener),
-        Arc::new(StubRepoMapQueryPort),
+        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ready_ledger(),
         test_activation_catalog()?,
@@ -207,7 +207,7 @@ fn symbol_dispatch_admits_only_typed_exact_path_as_constraint_only_authority_v1(
             results: vec![candidate("path-owned", 1.0)],
         }),
         Arc::new(RejectSemanticOpener),
-        Arc::new(StubRepoMapQueryPort),
+        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ready_ledger(),
         test_activation_catalog()?,
@@ -296,7 +296,7 @@ fn lexical_dispatch_stabilizes_tied_text_results() -> TestResult {
             ],
         }),
         Arc::new(RejectSemanticOpener),
-        Arc::new(StubRepoMapQueryPort),
+        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ready_ledger(),
         test_activation_catalog()?,
@@ -356,7 +356,7 @@ fn sourcegraph_dispatch_rejects_structural_pattern_type_before_lexical_execution
             results: vec![candidate("alpha", 1.0)],
         }),
         Arc::new(RejectSemanticOpener),
-        Arc::new(StubRepoMapQueryPort),
+        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ready_ledger(),
         test_activation_catalog()?,
@@ -463,7 +463,7 @@ fn lexical_dispatch_returns_typed_when_filter_is_fork_only() -> TestResult {
             results: Vec::new(),
         }),
         Arc::new(RejectSemanticOpener),
-        Arc::new(StubRepoMapQueryPort),
+        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ready_ledger(),
         test_activation_catalog()?,
@@ -532,7 +532,7 @@ fn lexical_dispatch_returns_typed_when_filter_is_rev() -> TestResult {
             results: Vec::new(),
         }),
         Arc::new(RejectSemanticOpener),
-        Arc::new(StubRepoMapQueryPort),
+        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ready_ledger(),
         test_activation_catalog()?,
@@ -570,7 +570,7 @@ fn lexical_dispatch_passes_through_when_no_unavailable_filters() -> TestResult {
             results: vec![candidate("hit", 1.0)],
         }),
         Arc::new(RejectSemanticOpener),
-        Arc::new(StubRepoMapQueryPort),
+        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ready_ledger(),
         test_activation_catalog()?,
@@ -644,7 +644,7 @@ fn symbol_dispatch_returns_symbol_candidates_with_kind_truth() -> TestResult {
             results: vec![candidate("sym-hit", 1.0)],
         }),
         Arc::new(RejectSemanticOpener),
-        Arc::new(StubRepoMapQueryPort),
+        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ready_ledger(),
         test_activation_catalog()?,

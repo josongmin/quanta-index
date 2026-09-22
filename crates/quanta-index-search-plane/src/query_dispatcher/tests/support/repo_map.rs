@@ -6,11 +6,23 @@ use quanta_index_contract::{
     RepoMapQueryResponse, RepoMapRedactionState, RepoMapSnapshotMeta, RevisionId,
     SearchPlaneQueryIpcResponse,
 };
-use quanta_index_core::{CoreError, RepoMapQueryPort};
+use quanta_index_core::{
+    CoreError, PinnedRepoMapSnapshot, RepoMapSnapshotAcquirePort, RepoMapSnapshotAcquireV1,
+    RepoMapSnapshotEvidenceV1,
+};
 
-pub(crate) struct StubRepoMapQueryPort;
+/// A recording acquire-port double: every acquisition pins one stub
+/// snapshot whose evidence names the requested identity.
+#[derive(Default)]
+pub(crate) struct StubRepoMapSnapshotPort {
+    pub(crate) acquired: std::sync::Mutex<Vec<RepoMapSnapshotEvidenceV1>>,
+}
 
-impl RepoMapQueryPort for StubRepoMapQueryPort {
+pub(crate) struct StubPinnedRepoMapSnapshot {
+    evidence: RepoMapSnapshotEvidenceV1,
+}
+
+impl PinnedRepoMapSnapshot for StubPinnedRepoMapSnapshot {
     fn query(&self, request: RepoMapQueryRequest) -> Result<RepoMapQueryResponse, CoreError> {
         Ok(RepoMapQueryResponse {
             repo_id: request.repo_id,
@@ -48,6 +60,36 @@ impl RepoMapQueryPort for StubRepoMapQueryPort {
             drop_reason_codes: Vec::new(),
             degraded_reason_codes: Vec::new(),
         })
+    }
+
+    fn evidence(&self) -> &RepoMapSnapshotEvidenceV1 {
+        &self.evidence
+    }
+}
+
+impl RepoMapSnapshotAcquirePort for StubRepoMapSnapshotPort {
+    fn acquire(
+        &self,
+        acquire: RepoMapSnapshotAcquireV1,
+    ) -> Result<Box<dyn PinnedRepoMapSnapshot>, CoreError> {
+        let evidence = RepoMapSnapshotEvidenceV1 {
+            repo_id: acquire.repo_id.as_str().to_string(),
+            revision_id: acquire.revision_id.as_str().to_string(),
+            manifest_generation: acquire.manifest_generation.get(),
+            candidate_commitment: format!(
+                "stub-commitment-{}-{}",
+                acquire.repo_id.as_str(),
+                acquire.manifest_generation.get()
+            ),
+            activation_epoch: 1,
+        };
+        self.acquired
+            .lock()
+            .map_err(|_poisoned| {
+                CoreError::Storage("repo map stub acquire log poisoned".to_string())
+            })?
+            .push(evidence.clone());
+        Ok(Box::new(StubPinnedRepoMapSnapshot { evidence }))
     }
 }
 

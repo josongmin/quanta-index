@@ -127,6 +127,21 @@ targets = [
   "repomap-owner-surface",
 ]
 
+[local_scopes.control-readiness-owner]
+lane = "test-control-readiness-owner-lane"
+test_threads = 4
+targets = [
+  "control-readiness-owner-v1",
+]
+
+[local_scopes.control-readiness-owner-lib]
+lane = "test-control-readiness-owner-lane"
+test_threads = 4
+lib = true
+packages = [
+  "quanta-index-search-plane",
+]
+
 [local_scopes.canonical-identity]
 lane = "test-canonical-identity-lane"
 test_threads = 4
@@ -153,6 +168,68 @@ targets = [
   "repomap-store-durability",
   "repomap-bootstrap-owner-flow",
   "repomap-owner-surface",
+]
+
+[local_scopes.read-view-lifetime-owner]
+lane = "test-read-view-lifetime-owner-lane"
+test_threads = 4
+targets = [
+  "read-view-lifetime-owner-v1",
+  "repomap-owner-surface",
+  "core-read-view-declaration",
+]
+
+[local_scopes.query-truth-owner]
+lane = "test-query-truth-owner-lane"
+test_threads = 4
+targets = [
+  "query-truth-owner-v1",
+]
+
+[local_scopes.sdk-binding-owner]
+lane = "test-sdk-binding-owner-lane"
+test_threads = 4
+targets = [
+  "sdk-binding-owner-v1",
+]
+
+[local_scopes.provider-boundary-owner]
+lane = "test-provider-boundary-owner-lane"
+test_threads = 4
+targets = [
+  "provider-boundary-owner-v1",
+]
+
+[local_scopes.runtime-supervisor-owner]
+lane = "test-runtime-supervisor-owner-lane"
+test_threads = 4
+targets = [
+  "runtime-supervisor-owner-v1",
+]
+
+[local_scopes.sdk-binding-owner-lib]
+lane = "test-sdk-binding-owner-lane"
+test_threads = 4
+lib = true
+packages = [
+  "quanta-index-sdk",
+]
+
+[local_scopes.query-truth-owner-lib]
+lane = "test-query-truth-owner-lane"
+test_threads = 4
+lib = true
+packages = [
+  "quanta-index-contract-base",
+  "quanta-index-search-plane",
+]
+
+[local_scopes.search-plane-read-view-lib]
+lane = "test-search-plane-read-view-lane"
+test_threads = 4
+lib = true
+packages = [
+  "quanta-index-search-plane",
 ]
 
 [local_scopes.cli-smoke]
@@ -213,6 +290,36 @@ owners = [
 id = "contract-hybrid-candidate"
 path = "crates/quanta-index-contract/tests/hybrid_candidate_contract.rs"
 owner = "quanta-index-contract"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "provider-boundary-owner-v1"
+path = "crates/quanta-index-search-plane/tests/provider_boundary_owner_v1.rs"
+owner = "quanta-index-search-plane"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "runtime-supervisor-owner-v1"
+path = "crates/quanta-index-searchd-runtime/tests/runtime_supervisor_owner_v1.rs"
+owner = "quanta-index-searchd-runtime"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "sdk-binding-owner-v1"
+path = "crates/quanta-index-sdk/tests/sdk_binding_owner_v1.rs"
+owner = "quanta-index-sdk"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "query-truth-owner-v1"
+path = "crates/quanta-index-contract-base/tests/query_truth_owner_v1.rs"
+owner = "quanta-index-contract-base"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "control-readiness-owner-v1"
+path = "crates/quanta-index-search-plane/tests/control_readiness_owner_v1.rs"
+owner = "quanta-index-search-plane"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
@@ -681,6 +788,12 @@ rail = "pr-workspace-nextest"
 [[integration_targets]]
 id = "candidate-activation-owner-v1"
 path = "crates/quanta-index-repomap/tests/candidate_activation_owner_v1.rs"
+owner = "quanta-index-repomap"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "read-view-lifetime-owner-v1"
+path = "crates/quanta-index-repomap/tests/read_view_lifetime_owner_v1.rs"
 owner = "quanta-index-repomap"
 rail = "pr-workspace-nextest"
 

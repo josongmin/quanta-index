@@ -34,7 +34,7 @@ use quanta_index_core::{
     LexicalIndexOpenPort, MetricSourcePort, MutationCoordinatorPort, ProcessMemoryProbePort,
     QuarantinedGenerationDiscardPort, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
     RepoMapBundleIngestPort, RepoMapGenerationActivatePort, RepoMapOpenReportV1,
-    RepoMapQuarantinePort, RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort,
+    RepoMapQuarantinePort, RepoMapSnapshotAcquirePort, RepoMetaIngestPort, RepoTopicIngestPort,
     RequestBudgetV1, SealedGenerationReclaimPort, SealedGenerationScanPort,
     SearchCorpusBatchBuildPort, SearchCorpusIngestPort, SemanticContentRootsPort,
     SemanticIndexOpenPort, SemanticIngestPort, SemanticScopeStreamBuildPort, StructuralError,
@@ -105,7 +105,7 @@ pub struct SearchdRuntimeParts {
     pub semantic_incomplete_discard: Arc<dyn IncompleteGenerationDiscardPort + Send + Sync>,
     pub semantic_sealed_reclaim: Arc<dyn SealedGenerationReclaimPort + Send + Sync>,
     pub sem_open_port: Arc<dyn SemanticIndexOpenPort + Send + Sync>,
-    pub repo_map_query_port: Arc<dyn RepoMapQueryPort + Send + Sync>,
+    pub repo_map_snapshot_port: Arc<dyn RepoMapSnapshotAcquirePort + Send + Sync>,
     pub repo_map_bundle_ingest_port: Arc<dyn RepoMapBundleIngestPort + Send + Sync>,
     pub repo_map_generation_activate_port: Arc<dyn RepoMapGenerationActivatePort + Send + Sync>,
     /// The quarantine's destructive side (QI-BB-026): one discard port per
@@ -225,6 +225,7 @@ impl StateRootLease {
 #[cfg(unix)]
 fn open_state_root_lock_nofollow_v1(path: &Path) -> std::io::Result<File> {
     use rustix::fs::{Mode, OFlags, open};
+    use std::os::unix::fs::MetadataExt;
 
     let file = open(
         path,
@@ -233,9 +234,32 @@ fn open_state_root_lock_nofollow_v1(path: &Path) -> std::io::Result<File> {
     )
     .map(File::from)
     .map_err(|error| std::io::Error::from_raw_os_error(error.raw_os_error()))?;
-    if !file.metadata()?.is_file() {
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
         return Err(std::io::Error::other(format!(
             "state-root lock is not a regular file: {}",
+            path.display()
+        )));
+    }
+    // A lock that already existed must still be exactly this process's
+    // (S21-09): expected owner, the exact private mode, and a single
+    // link — a foreign, permissive, or hard-linked lock is refused, not
+    // adopted.
+    if metadata.uid() != rustix::process::geteuid().as_raw() {
+        return Err(std::io::Error::other(format!(
+            "state-root lock is owned by another uid: {}",
+            path.display()
+        )));
+    }
+    if metadata.mode() & 0o7777 != 0o600 {
+        return Err(std::io::Error::other(format!(
+            "state-root lock mode is not exactly 0600: {}",
+            path.display()
+        )));
+    }
+    if metadata.nlink() != 1 {
+        return Err(std::io::Error::other(format!(
+            "state-root lock has more than one link: {}",
             path.display()
         )));
     }
@@ -1023,7 +1047,7 @@ pub struct SearchdRuntime {
     pub ingest_server: SearchPlaneIngestServer<
         dyn IpcDispatcher<SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse>,
     >,
-    pub repo_map_query_port: Arc<dyn RepoMapQueryPort + Send + Sync>,
+    pub repo_map_snapshot_port: Arc<dyn RepoMapSnapshotAcquirePort + Send + Sync>,
     pub query_obs_store: Arc<BoundedQueryObsStore>,
     pub semantic_boot: semantic_boot::SemanticBootReport,
     /// What boot inventoried, quarantined and proved (QI-BB-026).
@@ -1036,14 +1060,54 @@ pub struct SearchdRuntime {
     /// ceiling or absence (QI-BB-016). The daemon entry prints them; an
     /// in-process harness keeps them as data.
     pub boot_notices: Vec<String>,
-    /// The maintenance timer (QI-BB-016, QI-BB-015); stops when the
-    /// runtime drops, after the servers have joined.
+    /// The maintenance timer (QI-BB-016, QI-BB-015). It runs until the
+    /// supervisor drains it; since SEP-21 P08 the serving path hands it
+    /// to the supervisor (`into_servers_guards_and_boot_notices`) so it
+    /// is never a detached thread and never torn down after the lease.
     _maintenance: MaintenanceTimer,
     _search_corpus_lifecycle: Arc<SearchCorpusLifecycleOwner>,
     // Rust drops fields in declaration order. Keep the state-root lease last
     // so every adapter, server, and authority handle is gone before ownership
-    // of the shared root is released.
+    // of the shared root is released. The serving path moves these three
+    // into the supervisor's `RuntimeGuards` bundle, which drops only after
+    // every supervised child has joined or been explicitly escalated
+    // (S21-09); `SearchdRuntime::drop` alone is the non-serving fallback.
     _state_root_lease: StateRootLease,
+}
+
+/// The serving surfaces of one assembled runtime, split from its
+/// lifetime guards (SEP-21 P08 / S21-09).
+pub struct RuntimeServers {
+    /// The query accept loop's bound server.
+    pub query: SearchPlaneQueryServer<
+        dyn IpcDispatcher<SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse>,
+    >,
+    /// The control accept loop's bound server.
+    pub control: SearchPlaneControlServer<
+        dyn IpcDispatcher<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>,
+    >,
+    /// The ingest accept loop's bound server.
+    pub ingest: SearchPlaneIngestServer<
+        dyn IpcDispatcher<SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse>,
+    >,
+}
+
+/// The lifetime guards of one assembled runtime: the search-corpus
+/// lifecycle owner and the state-root lease (SEP-21 P08 / S21-09).
+///
+/// The maintenance timer is split out at the same time and becomes a
+/// supervised child of its own. The supervisor owns this bundle for the
+/// whole serving interval; the guards drop only after every supervised
+/// child — accept loops, the connections they joined, the maintenance
+/// timer, provider tasks — has joined, or after an explicit hard-deadline
+/// escalation. In particular the state-root lease is held from
+/// construction until every child exits, so a second daemon cannot
+/// acquire the same state root while the first is still serving.
+pub struct RuntimeGuards {
+    /// The search-corpus lifecycle owner (readiness/GC authority).
+    pub search_corpus_lifecycle: Arc<SearchCorpusLifecycleOwner>,
+    /// The state-root lease; released last, after everything else.
+    pub state_root_lease: StateRootLease,
 }
 
 impl SearchdRuntime {
@@ -1070,7 +1134,7 @@ impl SearchdRuntime {
             semantic_incomplete_discard,
             semantic_sealed_reclaim,
             sem_open_port,
-            repo_map_query_port,
+            repo_map_snapshot_port,
             repo_map_bundle_ingest_port,
             repo_map_generation_activate_port,
             lexical_quarantine_discard,
@@ -1383,7 +1447,7 @@ impl SearchdRuntime {
                 Arc::clone(&lex_open_port),
                 Arc::clone(&sem_open_port),
                 snapshots.clone(),
-                Arc::clone(&repo_map_query_port),
+                Arc::clone(&repo_map_snapshot_port),
                 Arc::new(LedgerStructuralProducer::new(Arc::clone(&ledger))),
                 Arc::clone(&ledger),
                 activation_catalog.clone(),
@@ -1415,6 +1479,9 @@ impl SearchdRuntime {
                 },
                 observability,
                 quarantine,
+                // No readiness authority is wired in this composition yet:
+                // the readiness opcode refuses typed until one is injected.
+                readiness: None,
             },
         ));
         let ingest_dispatcher = Arc::new(SearchPlaneIngestDispatcher::new(
@@ -1446,6 +1513,7 @@ impl SearchdRuntime {
                 .map(|role| socket_access.for_role(*role)),
         );
         let query_server = SearchPlaneQueryServer::bind(
+            quanta_index_ipc::IpcPlane::Query,
             "quanta-index-query-uds",
             config.query_socket_path(),
             query_adapter,
@@ -1461,6 +1529,7 @@ impl SearchdRuntime {
         // Control and ingest mutate; their dispatches serialize by policy
         // while their connections still read independently (QI-BB-002).
         let control_server = SearchPlaneControlServer::bind(
+            quanta_index_ipc::IpcPlane::Control,
             "quanta-index-control-uds",
             config.control_socket_path(),
             control_adapter,
@@ -1474,6 +1543,7 @@ impl SearchdRuntime {
             dyn IpcDispatcher<SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse>,
         > = Arc::new(SearchPlaneIngestIpcAdapter::new(ingest_dispatcher));
         let ingest_server = SearchPlaneIngestServer::bind(
+            quanta_index_ipc::IpcPlane::Ingest,
             "quanta-index-ingest-uds",
             config.ingest_socket_path(),
             ingest_adapter,
@@ -1489,7 +1559,7 @@ impl SearchdRuntime {
             query_server,
             control_server,
             ingest_server,
-            repo_map_query_port,
+            repo_map_snapshot_port,
             query_obs_store,
             semantic_boot: boot_report,
             boot_inventory,
@@ -1499,6 +1569,41 @@ impl SearchdRuntime {
             _search_corpus_lifecycle: search_corpus_lifecycle,
             _state_root_lease: state_root_lease,
         })
+    }
+
+    /// Split the runtime into its serving surfaces, its maintenance
+    /// timer, and its lifetime guards (SEP-21 P08 / S21-09). The
+    /// supervisor takes all of them: the servers and the timer are
+    /// spawned as supervised children, the guards are held until every
+    /// child has joined or been explicitly escalated — never released
+    /// before serving ends.
+    #[must_use]
+    pub fn into_servers_maintenance_guards_and_boot_notices(
+        self,
+    ) -> (RuntimeServers, MaintenanceTimer, RuntimeGuards, Vec<String>) {
+        let Self {
+            query_server,
+            control_server,
+            ingest_server,
+            boot_notices,
+            _maintenance: maintenance,
+            _search_corpus_lifecycle: search_corpus_lifecycle,
+            _state_root_lease: state_root_lease,
+            ..
+        } = self;
+        (
+            RuntimeServers {
+                query: query_server,
+                control: control_server,
+                ingest: ingest_server,
+            },
+            maintenance,
+            RuntimeGuards {
+                search_corpus_lifecycle,
+                state_root_lease,
+            },
+            boot_notices,
+        )
     }
 }
 

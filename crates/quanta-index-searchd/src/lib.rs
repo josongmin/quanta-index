@@ -8,5 +8,9 @@
 pub mod app;
 pub mod cli;
 
-pub use app::{QueryServer, SearchdConfig, SearchdRuntime, drive};
+pub use app::{
+    CancelRoot, ChildContext, ChildExit, ChildExitKind, DEFAULT_COOPERATIVE_DRAIN_DEADLINE,
+    HARD_DRAIN_DEADLINE, QueryServer, RuntimeGuards, RuntimeServers, SearchdConfig, SearchdRuntime,
+    SearchdSupervisor, SupervisionError, SupervisionOutcome, drive, supervise_runtime,
+};
 pub use cli::SearchdCommand;

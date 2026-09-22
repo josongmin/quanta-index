@@ -10,7 +10,6 @@
 //! Concrete runtime wiring for the search-plane daemon.
 
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -22,10 +21,11 @@ use quanta_index_core::{
     LexicalIndexOpenPort, MetricSourcePort, MutationCoordinatorPort, ProcessMemoryProbePort,
     QuarantinedGenerationDiscardPort, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
     RepoMapBundleIngestPort, RepoMapGenerationActivatePort, RepoMapQuarantinePort,
-    RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort, ResidentMemoryWriterAdmission,
-    SealedGenerationReclaimPort, SealedGenerationScanPort, SearchCorpusBatchBuildPort,
-    SemanticContentRootsPort, SemanticIndexOpenPort, SemanticScopeStreamBuildPort,
-    TrackDiskUsagePort, UnboundedWriterAdmission, WriterAdmissionPort, WriterIdleSweepPort,
+    RepoMapSnapshotAcquirePort, RepoMetaIngestPort, RepoTopicIngestPort,
+    ResidentMemoryWriterAdmission, SealedGenerationReclaimPort, SealedGenerationScanPort,
+    SearchCorpusBatchBuildPort, SemanticContentRootsPort, SemanticIndexOpenPort,
+    SemanticScopeStreamBuildPort, TrackDiskUsagePort, UnboundedWriterAdmission,
+    WriterAdmissionPort, WriterIdleSweepPort,
 };
 use quanta_index_lexical::LexicalAdapter;
 use quanta_index_lexical::history_text_index::HistoryTextIndexAdapter;
@@ -36,8 +36,14 @@ use quanta_index_search_plane::{
 };
 use quanta_index_searchd::app::runtime::{SearchdRuntimeParts, StateRootAccessV1, StateRootLease};
 use quanta_index_searchd::app::{KernelResidentMemoryProbe, LegacySemanticJournalStore};
-use quanta_index_searchd::{SearchdCommand, SearchdConfig, SearchdRuntime, drive};
+use quanta_index_searchd::{
+    DEFAULT_COOPERATIVE_DRAIN_DEADLINE, HARD_DRAIN_DEADLINE, SearchdCommand, SearchdConfig,
+    SearchdRuntime, supervise_runtime,
+};
 use quanta_index_semantic::SemanticAdapter;
+
+/// The process signal root (SIGINT/SIGTERM -> `CancelRoot`).
+pub mod signal;
 
 /// How long a catalog write waits on a held lock before answering typed.
 const CATALOG_BUSY_BUDGET: Duration = Duration::from_secs(2);
@@ -186,7 +192,8 @@ pub fn build_runtime_with_memory_probe(
     // (QI-BB-017), through the one scrub port.
     let semantic_integrity_scrub: Arc<dyn IntegrityScrubPort + Send + Sync> = sem_adapter.clone();
     let sem_open_port: Arc<dyn SemanticIndexOpenPort + Send + Sync> = sem_adapter;
-    let repo_map_query_port: Arc<dyn RepoMapQueryPort + Send + Sync> = repo_map_store.clone();
+    let repo_map_snapshot_port: Arc<dyn RepoMapSnapshotAcquirePort + Send + Sync> =
+        repo_map_store.clone();
     let repo_map_bundle_ingest_port: Arc<dyn RepoMapBundleIngestPort + Send + Sync> =
         repo_map_store.clone();
     let repo_map_generation_activate_port: Arc<dyn RepoMapGenerationActivatePort + Send + Sync> =
@@ -216,7 +223,7 @@ pub fn build_runtime_with_memory_probe(
             semantic_incomplete_discard,
             semantic_sealed_reclaim,
             sem_open_port,
-            repo_map_query_port,
+            repo_map_snapshot_port,
             repo_map_bundle_ingest_port,
             repo_map_generation_activate_port,
             lexical_quarantine_discard,
@@ -275,18 +282,47 @@ fn boot_log(line: &str) {
 }
 
 /// The daemon entry: the process mask is hardened before any path is
-/// created (QI-BB-014), then the config chain runs and the runtime boots.
+/// created (QI-BB-014), then the config chain runs and the runtime boots
+/// under the supervisor.
+///
+/// The fixed exit code semantics (S21-09): clean operator shutdown `0`;
+/// required-child death, startup rollback, or hard-deadline escalation
+/// `70`; a second signal `128 + signum`.
 pub fn run(command: SearchdCommand) -> Result<()> {
+    let outcome = run_supervised(command)?;
+    if outcome.is_stopped_clean() {
+        return Ok(());
+    }
+    Err(anyhow::Error::from(
+        quanta_index_searchd::SupervisionError { outcome },
+    ))
+}
+
+/// The daemon entry with the supervision outcome surfaced, for the
+/// process entry to map onto the fixed exit codes.
+///
+/// Signals are installed before the runtime is built, so a signal
+/// during startup still reaches the supervisor.
+pub fn run_supervised(command: SearchdCommand) -> Result<quanta_index_searchd::SupervisionOutcome> {
     let inherited = quanta_index_searchd::app::harden_umask();
     boot_log(&format!(
         "umask set to {:03o} (inherited {inherited:03o})",
         quanta_index_searchd::app::DAEMON_UMASK
     ));
+    let root = quanta_index_searchd::CancelRoot::new();
+    // The watcher is held for the whole supervised lifetime; it detaches
+    // itself once an abort is latched or the process exits.
+    let _signal_watch = signal::install(quanta_index_searchd::CancelRoot::clone(&root))
+        .map_err(anyhow::Error::from)?;
     let config = command.into_config()?;
     let runtime = build_runtime(config)?;
     for notice in &runtime.boot_notices {
         boot_log(notice);
     }
-    let shutdown = Arc::new(AtomicBool::new(false));
-    drive(runtime, &shutdown)
+    Ok(supervise_runtime(
+        runtime,
+        DEFAULT_COOPERATIVE_DRAIN_DEADLINE,
+        HARD_DRAIN_DEADLINE,
+        &root,
+    ))
 }

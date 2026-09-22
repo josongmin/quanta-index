@@ -10,8 +10,12 @@ use quanta_index_contract::{
     SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
 };
 
+use crate::binding::{
+    ControlCallBinding, IngestCallBinding, QueryCallBinding, bind_control_response,
+    bind_ingest_response, bind_query_response,
+};
 use crate::{
-    ConnectOptions, GenerationNamespace, HistoryNamespace, LexicalNamespace,
+    ClientProfile, ConnectOptions, GenerationNamespace, HistoryNamespace, LexicalNamespace,
     ObservabilityNamespace, QuarantineNamespace, QueryTransport, RepoMapNamespace,
     RuntimeNamespace, SdkError, SearchCorpusNamespace, SearchNamespace, SemanticNamespace,
     StructuralNamespace, SymbolNamespace, UdsControlTransport, UdsIngestTransport,
@@ -21,8 +25,10 @@ use crate::{ControlTransport, IngestTransport};
 
 struct QuantaIndexInner {
     query_transport: Arc<dyn QueryTransport>,
-    control_transport: Arc<dyn ControlTransport>,
-    ingest_transport: Arc<dyn IngestTransport>,
+    /// `None` in the query-only profile (S21-07): least privilege, no
+    /// dummy transport.
+    control_transport: Option<Arc<dyn ControlTransport>>,
+    ingest_transport: Option<Arc<dyn IngestTransport>>,
     next_request_id: AtomicU64,
 }
 
@@ -34,6 +40,15 @@ pub struct QuantaIndex {
 impl QuantaIndex {
     pub fn connect(options: ConnectOptions) -> Result<Self, SdkError> {
         let resolved = options.resolve()?;
+        Ok(Self::from_resolved(resolved))
+    }
+
+    /// Connect a query-only client (S21-07): no control or ingest
+    /// transport is configured or required. Calling a control or ingest
+    /// method on the result fails with a typed
+    /// [`SdkError::PlaneUnavailable`] instead of fabricating a transport.
+    pub fn connect_query_only(options: ConnectOptions) -> Result<Self, SdkError> {
+        let resolved = options.resolve_profile(ClientProfile::QueryOnly)?;
         Ok(Self::from_resolved(resolved))
     }
 
@@ -127,6 +142,7 @@ impl QuantaIndex {
         &self,
         payload: SearchPlaneQueryIpcRequest,
     ) -> Result<SearchPlaneQueryIpcResponse, SdkError> {
+        let binding = QueryCallBinding::from_request(&payload);
         let request_id = self.next_request_id();
         let envelope = SearchPlaneQueryIpcRequestEnvelope {
             request_id,
@@ -139,6 +155,7 @@ impl QuantaIndex {
                 response.request_id, request_id
             )));
         }
+        bind_query_response(&binding, &response.payload)?;
         match response.payload {
             SearchPlaneQueryIpcResponse::Error(error) => Err(SdkError::Remote {
                 code: error.code,
@@ -163,18 +180,25 @@ impl QuantaIndex {
         &self,
         payload: SearchPlaneControlIpcRequest,
     ) -> Result<SearchPlaneControlIpcResponse, SdkError> {
+        let binding = ControlCallBinding::from_request(&payload);
+        let control_transport = self
+            .inner
+            .control_transport
+            .clone()
+            .ok_or(SdkError::PlaneUnavailable { plane: "control" })?;
         let request_id = self.next_request_id();
         let envelope = SearchPlaneControlIpcRequestEnvelope {
             request_id,
             payload,
         };
-        let response = self.inner.control_transport.send(envelope)?;
+        let response = control_transport.send(envelope)?;
         if response.request_id != request_id {
             return Err(SdkError::Protocol(format!(
                 "control response request_id {} != request {}",
                 response.request_id, request_id
             )));
         }
+        bind_control_response(&binding, &response.payload)?;
         match response.payload {
             SearchPlaneControlIpcResponse::Error(error) => Err(SdkError::Remote {
                 code: error.code,
@@ -189,7 +213,8 @@ impl QuantaIndex {
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
-            | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)) => Ok(payload),
+            | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
+            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)) => Ok(payload),
         }
     }
 
@@ -200,18 +225,25 @@ impl QuantaIndex {
         &self,
         payload: SearchPlaneIngestIpcRequest,
     ) -> Result<SearchPlaneIngestIpcResponse, SdkError> {
+        let binding = IngestCallBinding::from_request(&payload);
+        let ingest_transport = self
+            .inner
+            .ingest_transport
+            .clone()
+            .ok_or(SdkError::PlaneUnavailable { plane: "ingest" })?;
         let request_id = self.next_request_id();
         let envelope = SearchPlaneIngestIpcRequestEnvelope {
             request_id,
             payload,
         };
-        let response = self.inner.ingest_transport.send(envelope)?;
+        let response = ingest_transport.send(envelope)?;
         if response.request_id != request_id {
             return Err(SdkError::Protocol(format!(
                 "ingest response request_id {} != request {}",
                 response.request_id, request_id
             )));
         }
+        bind_ingest_response(&binding, &response.payload)?;
         match response.payload {
             SearchPlaneIngestIpcResponse::Error(error) => Err(SdkError::Remote {
                 code: error.code,
@@ -291,6 +323,7 @@ impl QuantaIndex {
             SearchPlaneControlIpcResponse::MetricsSnapshot(_) => "metrics_snapshot",
             SearchPlaneControlIpcResponse::QuarantineInventory(_) => "quarantine_inventory",
             SearchPlaneControlIpcResponse::QuarantineDiscardAck(_) => "quarantine_discard_ack",
+            SearchPlaneControlIpcResponse::ProcessReadinessReport(_) => "process_readiness_report",
             SearchPlaneControlIpcResponse::Error(_) => "error",
         }
     }
@@ -327,14 +360,17 @@ impl QuantaIndex {
             resolved.query_socket,
             resolved.io_policy,
         ));
-        let control_transport = Arc::new(UdsControlTransport::new(
-            resolved.control_socket,
-            resolved.io_policy,
-        ));
-        let ingest_transport = Arc::new(UdsIngestTransport::new(
-            resolved.ingest_socket,
-            resolved.io_policy,
-        ));
+        let control_transport =
+            resolved
+                .control_socket
+                .map(|socket| -> Arc<dyn ControlTransport> {
+                    Arc::new(UdsControlTransport::new(socket, resolved.io_policy))
+                });
+        let ingest_transport = resolved
+            .ingest_socket
+            .map(|socket| -> Arc<dyn IngestTransport> {
+                Arc::new(UdsIngestTransport::new(socket, resolved.io_policy))
+            });
         Self {
             inner: Arc::new(QuantaIndexInner {
                 query_transport,
@@ -354,8 +390,8 @@ impl QuantaIndex {
         Self {
             inner: Arc::new(QuantaIndexInner {
                 query_transport,
-                control_transport,
-                ingest_transport,
+                control_transport: Some(control_transport),
+                ingest_transport: Some(ingest_transport),
                 next_request_id: AtomicU64::new(1),
             }),
         }

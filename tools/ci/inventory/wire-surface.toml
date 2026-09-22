@@ -160,6 +160,7 @@ variants = [
   "MetricsSnapshot",
   "QuarantineInventory",
   "QuarantineDiscard",
+  "ProcessReadiness",
 ]
 
 [[ipc]]
@@ -178,6 +179,7 @@ variants = [
   "MetricsSnapshot",
   "QuarantineInventory",
   "QuarantineDiscardAck",
+  "ProcessReadinessReport",
 ]
 
 [[ipc]]

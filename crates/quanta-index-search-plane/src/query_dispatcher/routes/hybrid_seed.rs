@@ -2,10 +2,12 @@
 
 use std::collections::BTreeSet;
 
-use quanta_index_contract::{EarlyStopReason, HybridSeedQueryRequest, HybridSeedQueryResponse};
+use quanta_index_contract::{
+    CandidateCountV1, EarlyStopReason, HybridSeedQueryRequest, HybridSeedQueryResponse, LaneTraceV1,
+};
 use quanta_index_core::{
-    CoreError, HybridFilterPlanV1, HybridOrchestratorPolicy, LexicalPageSpec, LexicalPolicy,
-    QueryRouteV1, RequestBudgetV1, SemanticSearchHitV1,
+    CoreError, DenseAdmissionOutcomeV1, HybridFilterPlanV1, HybridOrchestratorPolicy,
+    LexicalPageSpec, LexicalPolicy, QueryRouteV1, RequestBudgetV1, SemanticSearchHitV1,
 };
 
 use crate::lower_lexical_text_query;
@@ -21,7 +23,9 @@ use crate::query_dispatcher::semantic_query::{
     build_hybrid_seed_response_explanation, canonical_dense_corpus_budgets_v1,
     resolve_hybrid_seed_request_selection,
 };
-use crate::query_dispatcher::window::{fused_window_v1, hybrid_probe_top_k_v1};
+use crate::query_dispatcher::window::{
+    fused_window_v1, fused_window_v2, hybrid_probe_top_k_v1, lane_count_u64,
+};
 
 impl SearchPlaneDispatcher {
     /// The hybrid-seed route: one lexical lane and one dense lane per
@@ -94,6 +98,7 @@ impl SearchPlaneDispatcher {
         let mut unavailable_corpus_reasons = Vec::new();
         let mut semantic_lanes = Vec::new();
         let mut admission_traces = Vec::new();
+        let mut dense_outcomes: Vec<DenseAdmissionOutcomeV1> = Vec::new();
         if prepared_language.force_empty {
             semantic_lanes.push(Vec::new());
         } else if dense_corpora.is_empty() {
@@ -115,6 +120,7 @@ impl SearchPlaneDispatcher {
                 },
             )?;
             admission_traces.push(lane.trace_detail("hybrid_seed.dense_admission[global]"));
+            dense_outcomes.push(lane.outcome);
             let mut hits = lane.rows;
             stabilize_semantic_seed_hits_v1(&mut hits);
             semantic_lanes.push(hits);
@@ -144,6 +150,7 @@ impl SearchPlaneDispatcher {
                     "hybrid_seed.dense_admission[{}]",
                     corpus_kind.as_code_str()
                 )));
+                dense_outcomes.push(lane.outcome);
                 // A corpus is unavailable when its lane returned no row to
                 // examine, not when the filters admitted none.
                 if lane.examined == 0 {
@@ -210,11 +217,41 @@ impl SearchPlaneDispatcher {
             fused_entity_universe,
             primary_lane_limit_reached,
         )?;
+        // Aggregate dense admission: one capped lane caps the whole
+        // window; a filled lane proves a continuation; exhausted lanes
+        // prove only their own universe.
+        let aggregate_outcome = if dense_outcomes.contains(&DenseAdmissionOutcomeV1::Capped) {
+            Some(DenseAdmissionOutcomeV1::Capped)
+        } else if dense_outcomes.contains(&DenseAdmissionOutcomeV1::Filled) {
+            Some(DenseAdmissionOutcomeV1::Filled)
+        } else if dense_outcomes.contains(&DenseAdmissionOutcomeV1::Exhausted) {
+            Some(DenseAdmissionOutcomeV1::Exhausted)
+        } else {
+            None
+        };
+        let seed_lane_traces = vec![
+            LaneTraceV1::new("hybrid_seed.lexical", true, !lex_results.is_empty()).with_candidates(
+                CandidateCountV1::AtLeast(lane_count_u64(lexical_entity_count)?),
+            ),
+            LaneTraceV1::new("hybrid_seed.dense", true, semantic_entity_count > 0).with_candidates(
+                CandidateCountV1::AtLeast(lane_count_u64(semantic_entity_count)?),
+            ),
+        ];
+        let window_v2 = fused_window_v2(
+            request.top_k,
+            seed_candidates.len(),
+            fused_entity_universe,
+            primary_lane_limit_reached,
+            aggregate_outcome,
+            internal_top_k,
+            seed_lane_traces,
+        )?;
         Ok(HybridSeedQueryResponse {
             generation: pin,
             manifest_digest,
             seed_candidates,
             window,
+            window_v2,
             explanation,
         })
     }

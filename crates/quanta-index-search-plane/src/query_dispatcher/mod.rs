@@ -11,7 +11,7 @@
 //!   `planning`; never on each other except `hybrid`/`hybrid_seed` ->
 //!   `semantic` (shared embed gate) and `structural/route` -> its own
 //!   sub-modules.
-//! - `read_view` — the one `QueryReadViewV1` a request executes against:
+//! - `read_view` — the one `QueryReadViewV2` a request executes against:
 //!   the declared domains acquired once, every ledger read under one
 //!   guard, the track handles through its private `snapshots` child.
 //!   Routes never reach the ledger or the registries except through it.
@@ -28,6 +28,7 @@
 //!   ranked lexical page's byte budget). `rev_at_time` and `text_plane`
 //!   depend on `timeref` / `errors`; the rest depend only on `errors`.
 
+mod cursor_key;
 mod dense_admission;
 mod dispatcher;
 mod errors;
@@ -49,6 +50,8 @@ pub use dispatcher::{SearchPlaneDispatcher, SearchPlaneQueryDispatcher, SearchPl
 pub use errors::repair_for_code;
 pub use response_budget::{RESPONSE_ENVELOPE_RESERVE_BYTES, ResponsePayloadBudget};
 pub use selection::make_pin;
+
+pub use cursor_key::CursorKeyStore;
 
 #[cfg(test)]
 pub(crate) mod tests;

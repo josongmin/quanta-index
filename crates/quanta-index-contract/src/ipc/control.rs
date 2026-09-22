@@ -1337,6 +1337,661 @@ impl<'de> Deserialize<'de> for GenerationStatusReport {
 }
 
 // =============================================================================
+// S21-10 process readiness (P09): process-wide readiness DTO, deliberately
+// distinct from repository generation status above.
+// =============================================================================
+
+/// Ask the daemon for its process-wide readiness synthesis.
+///
+/// A readiness probe takes no parameters; the struct exists so the request
+/// has a typed payload that decodes fail-closed like every other one.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ProcessReadinessRequest;
+
+const PROCESS_READINESS_REQUEST_FIELDS: &[&str] = &[];
+
+impl Serialize for ProcessReadinessRequest {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer
+            .serialize_struct("ProcessReadinessRequest", 0)?
+            .end()
+    }
+}
+
+struct ProcessReadinessRequestVisitor;
+
+impl<'de> Visitor<'de> for ProcessReadinessRequestVisitor {
+    type Value = ProcessReadinessRequest;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an empty ProcessReadinessRequest map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        if let Some(key) = map.next_key::<String>()? {
+            return Err(de::Error::unknown_field(
+                &key,
+                PROCESS_READINESS_REQUEST_FIELDS,
+            ));
+        }
+        Ok(ProcessReadinessRequest)
+    }
+}
+
+impl<'de> Deserialize<'de> for ProcessReadinessRequest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "ProcessReadinessRequest",
+            PROCESS_READINESS_REQUEST_FIELDS,
+            ProcessReadinessRequestVisitor,
+        )
+    }
+}
+
+/// The supervisor phase a process reports, mirroring the runtime's
+/// supervised lifecycle (S21-09). Closed vocabulary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProcessReadinessPhaseV1 {
+    Starting,
+    Ready,
+    Draining,
+    Stopped,
+    Failed,
+}
+
+impl ProcessReadinessPhaseV1 {
+    const VARIANTS: &'static [&'static str] =
+        &["starting", "ready", "draining", "stopped", "failed"];
+
+    #[must_use]
+    pub const fn as_code_str(self) -> &'static str {
+        match self {
+            Self::Starting => "starting",
+            Self::Ready => "ready",
+            Self::Draining => "draining",
+            Self::Stopped => "stopped",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+impl Serialize for ProcessReadinessPhaseV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_code_str())
+    }
+}
+
+struct ProcessReadinessPhaseV1Visitor;
+
+impl Visitor<'_> for ProcessReadinessPhaseV1Visitor {
+    type Value = ProcessReadinessPhaseV1;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a process readiness phase code")
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Self::Value::VARIANTS
+            .iter()
+            .position(|candidate| *candidate == value)
+            .map(|index| match index {
+                0 => Self::Value::Starting,
+                1 => Self::Value::Ready,
+                2 => Self::Value::Draining,
+                3 => Self::Value::Stopped,
+                _ => Self::Value::Failed,
+            })
+            .ok_or_else(|| E::unknown_variant(value, Self::Value::VARIANTS))
+    }
+}
+
+impl<'de> Deserialize<'de> for ProcessReadinessPhaseV1 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_str(ProcessReadinessPhaseV1Visitor)
+    }
+}
+
+/// What the provider profile claims about a provider executor's role in
+/// readiness (S21-08). Closed vocabulary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProcessProviderClaimV1 {
+    Required,
+    Degraded,
+    Disabled,
+}
+
+impl ProcessProviderClaimV1 {
+    const VARIANTS: &'static [&'static str] = &["required", "degraded", "disabled"];
+
+    #[must_use]
+    pub const fn as_code_str(self) -> &'static str {
+        match self {
+            Self::Required => "required",
+            Self::Degraded => "degraded",
+            Self::Disabled => "disabled",
+        }
+    }
+}
+
+impl Serialize for ProcessProviderClaimV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_code_str())
+    }
+}
+
+struct ProcessProviderClaimV1Visitor;
+
+impl Visitor<'_> for ProcessProviderClaimV1Visitor {
+    type Value = ProcessProviderClaimV1;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a provider readiness claim code")
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        match value {
+            "required" => Ok(Self::Value::Required),
+            "degraded" => Ok(Self::Value::Degraded),
+            "disabled" => Ok(Self::Value::Disabled),
+            _ => Err(E::unknown_variant(value, Self::Value::VARIANTS)),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ProcessProviderClaimV1 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_str(ProcessProviderClaimV1Visitor)
+    }
+}
+
+/// One provider executor's readiness as its profile claims it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProcessProviderReadinessV1 {
+    /// The profile's claim: `required` providers gate readiness,
+    /// `degraded` ones are recorded but do not gate, `disabled` ones are
+    /// not expected to run.
+    pub claim: ProcessProviderClaimV1,
+    /// Whether the executor is currently healthy.
+    pub healthy: bool,
+}
+
+const PROCESS_PROVIDER_READINESS_FIELDS: &[&str] = &["claim", "healthy"];
+
+impl Serialize for ProcessProviderReadinessV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("ProcessProviderReadinessV1", 2)?;
+        state.serialize_field("claim", &self.claim)?;
+        state.serialize_field("healthy", &self.healthy)?;
+        state.end()
+    }
+}
+
+struct ProcessProviderReadinessV1Visitor;
+
+impl<'de> Visitor<'de> for ProcessProviderReadinessV1Visitor {
+    type Value = ProcessProviderReadinessV1;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a ProcessProviderReadinessV1 map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut claim = None;
+        let mut healthy = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "claim" => {
+                    if claim.is_some() {
+                        return Err(de::Error::duplicate_field("claim"));
+                    }
+                    claim = Some(map.next_value()?);
+                }
+                "healthy" => {
+                    if healthy.is_some() {
+                        return Err(de::Error::duplicate_field("healthy"));
+                    }
+                    healthy = Some(map.next_value()?);
+                }
+                _other => {
+                    let _: de::IgnoredAny = map.next_value()?;
+                }
+            }
+        }
+        let claim = claim.ok_or_else(|| de::Error::missing_field("claim"))?;
+        let healthy = healthy.ok_or_else(|| de::Error::missing_field("healthy"))?;
+        Ok(Self::Value { claim, healthy })
+    }
+}
+
+impl<'de> Deserialize<'de> for ProcessProviderReadinessV1 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "ProcessProviderReadinessV1",
+            PROCESS_PROVIDER_READINESS_FIELDS,
+            ProcessProviderReadinessV1Visitor,
+        )
+    }
+}
+
+/// The health of every required process component one readiness
+/// synthesis consults.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each bool is one independently observable required component; a bitfield would hide which plane failed"
+)]
+pub struct ProcessComponentsHealthV1 {
+    /// The query plane's accept loop is alive and accepting.
+    pub query_plane: bool,
+    /// The control plane's accept loop is alive and accepting.
+    pub control_plane: bool,
+    /// The ingest plane's accept loop is alive and accepting.
+    pub ingest_plane: bool,
+    /// The maintenance heartbeat is fresh.
+    pub maintenance_heartbeat: bool,
+    /// The required backend's open proof succeeded.
+    pub required_backend: bool,
+    /// The provider executor as its profile claims it.
+    pub provider: ProcessProviderReadinessV1,
+}
+
+const PROCESS_COMPONENTS_HEALTH_FIELDS: &[&str] = &[
+    "query_plane",
+    "control_plane",
+    "ingest_plane",
+    "maintenance_heartbeat",
+    "required_backend",
+    "provider",
+];
+
+impl Serialize for ProcessComponentsHealthV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("ProcessComponentsHealthV1", 6)?;
+        state.serialize_field("query_plane", &self.query_plane)?;
+        state.serialize_field("control_plane", &self.control_plane)?;
+        state.serialize_field("ingest_plane", &self.ingest_plane)?;
+        state.serialize_field("maintenance_heartbeat", &self.maintenance_heartbeat)?;
+        state.serialize_field("required_backend", &self.required_backend)?;
+        state.serialize_field("provider", &self.provider)?;
+        state.end()
+    }
+}
+
+struct ProcessComponentsHealthV1Visitor;
+
+impl<'de> Visitor<'de> for ProcessComponentsHealthV1Visitor {
+    type Value = ProcessComponentsHealthV1;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a ProcessComponentsHealthV1 map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut query_plane = None;
+        let mut control_plane = None;
+        let mut ingest_plane = None;
+        let mut maintenance_heartbeat = None;
+        let mut required_backend = None;
+        let mut provider = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "query_plane" => {
+                    if query_plane.is_some() {
+                        return Err(de::Error::duplicate_field("query_plane"));
+                    }
+                    query_plane = Some(map.next_value()?);
+                }
+                "control_plane" => {
+                    if control_plane.is_some() {
+                        return Err(de::Error::duplicate_field("control_plane"));
+                    }
+                    control_plane = Some(map.next_value()?);
+                }
+                "ingest_plane" => {
+                    if ingest_plane.is_some() {
+                        return Err(de::Error::duplicate_field("ingest_plane"));
+                    }
+                    ingest_plane = Some(map.next_value()?);
+                }
+                "maintenance_heartbeat" => {
+                    if maintenance_heartbeat.is_some() {
+                        return Err(de::Error::duplicate_field("maintenance_heartbeat"));
+                    }
+                    maintenance_heartbeat = Some(map.next_value()?);
+                }
+                "required_backend" => {
+                    if required_backend.is_some() {
+                        return Err(de::Error::duplicate_field("required_backend"));
+                    }
+                    required_backend = Some(map.next_value()?);
+                }
+                "provider" => {
+                    if provider.is_some() {
+                        return Err(de::Error::duplicate_field("provider"));
+                    }
+                    provider = Some(map.next_value()?);
+                }
+                _other => {
+                    let _: de::IgnoredAny = map.next_value()?;
+                }
+            }
+        }
+        let query_plane = query_plane.ok_or_else(|| de::Error::missing_field("query_plane"))?;
+        let control_plane =
+            control_plane.ok_or_else(|| de::Error::missing_field("control_plane"))?;
+        let ingest_plane = ingest_plane.ok_or_else(|| de::Error::missing_field("ingest_plane"))?;
+        let maintenance_heartbeat = maintenance_heartbeat
+            .ok_or_else(|| de::Error::missing_field("maintenance_heartbeat"))?;
+        let required_backend =
+            required_backend.ok_or_else(|| de::Error::missing_field("required_backend"))?;
+        let provider = provider.ok_or_else(|| de::Error::missing_field("provider"))?;
+        Ok(Self::Value {
+            query_plane,
+            control_plane,
+            ingest_plane,
+            maintenance_heartbeat,
+            required_backend,
+            provider,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for ProcessComponentsHealthV1 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "ProcessComponentsHealthV1",
+            PROCESS_COMPONENTS_HEALTH_FIELDS,
+            ProcessComponentsHealthV1Visitor,
+        )
+    }
+}
+
+/// Why a process is not ready. Closed vocabulary: every reason a
+/// readiness synthesis can report.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProcessReadinessReasonV1 {
+    SupervisorNotReady,
+    QueryPlaneUnhealthy,
+    ControlPlaneUnhealthy,
+    IngestPlaneUnhealthy,
+    MaintenanceHeartbeatStale,
+    RequiredBackendOpenUnproven,
+    ProviderRequiredUnhealthy,
+    ActiveCandidateIntegrityFailed,
+}
+
+impl ProcessReadinessReasonV1 {
+    const VARIANTS: &'static [&'static str] = &[
+        "supervisor_not_ready",
+        "query_plane_unhealthy",
+        "control_plane_unhealthy",
+        "ingest_plane_unhealthy",
+        "maintenance_heartbeat_stale",
+        "required_backend_open_unproven",
+        "provider_required_unhealthy",
+        "active_candidate_integrity_failed",
+    ];
+
+    #[must_use]
+    pub const fn as_code_str(self) -> &'static str {
+        match self {
+            Self::SupervisorNotReady => "supervisor_not_ready",
+            Self::QueryPlaneUnhealthy => "query_plane_unhealthy",
+            Self::ControlPlaneUnhealthy => "control_plane_unhealthy",
+            Self::IngestPlaneUnhealthy => "ingest_plane_unhealthy",
+            Self::MaintenanceHeartbeatStale => "maintenance_heartbeat_stale",
+            Self::RequiredBackendOpenUnproven => "required_backend_open_unproven",
+            Self::ProviderRequiredUnhealthy => "provider_required_unhealthy",
+            Self::ActiveCandidateIntegrityFailed => "active_candidate_integrity_failed",
+        }
+    }
+}
+
+impl Serialize for ProcessReadinessReasonV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_code_str())
+    }
+}
+
+struct ProcessReadinessReasonV1Visitor;
+
+impl Visitor<'_> for ProcessReadinessReasonV1Visitor {
+    type Value = ProcessReadinessReasonV1;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a process readiness reason code")
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        let reason = match value {
+            "supervisor_not_ready" => Self::Value::SupervisorNotReady,
+            "query_plane_unhealthy" => Self::Value::QueryPlaneUnhealthy,
+            "control_plane_unhealthy" => Self::Value::ControlPlaneUnhealthy,
+            "ingest_plane_unhealthy" => Self::Value::IngestPlaneUnhealthy,
+            "maintenance_heartbeat_stale" => Self::Value::MaintenanceHeartbeatStale,
+            "required_backend_open_unproven" => Self::Value::RequiredBackendOpenUnproven,
+            "provider_required_unhealthy" => Self::Value::ProviderRequiredUnhealthy,
+            "active_candidate_integrity_failed" => Self::Value::ActiveCandidateIntegrityFailed,
+            _ => return Err(E::unknown_variant(value, Self::Value::VARIANTS)),
+        };
+        Ok(reason)
+    }
+}
+
+impl<'de> Deserialize<'de> for ProcessReadinessReasonV1 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_str(ProcessReadinessReasonV1Visitor)
+    }
+}
+
+/// Process-wide readiness (S21-10 / D-READY-01).
+///
+/// Deliberately distinct from repository generation status: `ready=true`
+/// means the *process* can serve — supervisor ready, every required
+/// plane accepting, maintenance heartbeat fresh, required backend open
+/// proven, required provider executor healthy — and is legitimate with
+/// zero active repositories. The candidate integrity gate applies only
+/// while an active candidate exists (`active_candidate_integrity=None`
+/// means none does).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProcessReadinessV1 {
+    /// The conjunction of every required component below.
+    pub ready: bool,
+    /// The supervisor's phase as the readiness synthesis saw it.
+    pub supervisor_phase: ProcessReadinessPhaseV1,
+    /// Required plane, maintenance, backend and provider health.
+    pub components: ProcessComponentsHealthV1,
+    /// `Some(false)` names a failed active candidate integrity gate;
+    /// `None` means no active candidate exists and the gate does not
+    /// apply.
+    pub active_candidate_integrity: Option<bool>,
+    /// How many repositories currently have an active generation. Zero
+    /// is a legitimate ready state.
+    pub active_repositories: u64,
+    /// Every failed required component, in fixed evaluation order. Empty
+    /// when `ready=true`.
+    pub not_ready_reasons: Vec<ProcessReadinessReasonV1>,
+}
+
+const PROCESS_READINESS_FIELDS: &[&str] = &[
+    "ready",
+    "supervisor_phase",
+    "components",
+    "active_candidate_integrity",
+    "active_repositories",
+    "not_ready_reasons",
+];
+
+impl Serialize for ProcessReadinessV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("ProcessReadinessV1", 6)?;
+        state.serialize_field("ready", &self.ready)?;
+        state.serialize_field("supervisor_phase", &self.supervisor_phase)?;
+        state.serialize_field("components", &self.components)?;
+        state.serialize_field(
+            "active_candidate_integrity",
+            &self.active_candidate_integrity,
+        )?;
+        state.serialize_field("active_repositories", &self.active_repositories)?;
+        state.serialize_field("not_ready_reasons", &self.not_ready_reasons)?;
+        state.end()
+    }
+}
+
+struct ProcessReadinessV1Visitor;
+
+impl<'de> Visitor<'de> for ProcessReadinessV1Visitor {
+    type Value = ProcessReadinessV1;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a ProcessReadinessV1 map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut ready = None;
+        let mut supervisor_phase = None;
+        let mut components = None;
+        let mut active_candidate_integrity = None;
+        let mut active_candidate_integrity_seen = false;
+        let mut active_repositories = None;
+        let mut not_ready_reasons = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "ready" => {
+                    if ready.is_some() {
+                        return Err(de::Error::duplicate_field("ready"));
+                    }
+                    ready = Some(map.next_value()?);
+                }
+                "supervisor_phase" => {
+                    if supervisor_phase.is_some() {
+                        return Err(de::Error::duplicate_field("supervisor_phase"));
+                    }
+                    supervisor_phase = Some(map.next_value()?);
+                }
+                "components" => {
+                    if components.is_some() {
+                        return Err(de::Error::duplicate_field("components"));
+                    }
+                    components = Some(map.next_value()?);
+                }
+                "active_candidate_integrity" => {
+                    if active_candidate_integrity_seen {
+                        return Err(de::Error::duplicate_field("active_candidate_integrity"));
+                    }
+                    active_candidate_integrity_seen = true;
+                    active_candidate_integrity = map.next_value()?;
+                }
+                "active_repositories" => {
+                    if active_repositories.is_some() {
+                        return Err(de::Error::duplicate_field("active_repositories"));
+                    }
+                    active_repositories = Some(map.next_value()?);
+                }
+                "not_ready_reasons" => {
+                    if not_ready_reasons.is_some() {
+                        return Err(de::Error::duplicate_field("not_ready_reasons"));
+                    }
+                    not_ready_reasons = Some(map.next_value()?);
+                }
+                _other => {
+                    let _: de::IgnoredAny = map.next_value()?;
+                }
+            }
+        }
+        let ready = ready.ok_or_else(|| de::Error::missing_field("ready"))?;
+        let supervisor_phase =
+            supervisor_phase.ok_or_else(|| de::Error::missing_field("supervisor_phase"))?;
+        let components = components.ok_or_else(|| de::Error::missing_field("components"))?;
+        let active_repositories =
+            active_repositories.ok_or_else(|| de::Error::missing_field("active_repositories"))?;
+        let not_ready_reasons =
+            not_ready_reasons.ok_or_else(|| de::Error::missing_field("not_ready_reasons"))?;
+        Ok(Self::Value {
+            ready,
+            supervisor_phase,
+            components,
+            active_candidate_integrity,
+            active_repositories,
+            not_ready_reasons,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for ProcessReadinessV1 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "ProcessReadinessV1",
+            PROCESS_READINESS_FIELDS,
+            ProcessReadinessV1Visitor,
+        )
+    }
+}
+
+// =============================================================================
 // QI-ACT-01 round-trip tests
 // =============================================================================
 

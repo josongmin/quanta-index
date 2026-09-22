@@ -330,7 +330,7 @@ fn repo_map_activate_request() -> SearchPlaneControlIpcRequestEnvelope {
             repo_id: repo(),
             revision_id: revision(),
             manifest_generation: generation(),
-            manifest_digest: "1".repeat(64).to_string(),
+            manifest_digest: "1".repeat(64),
         }),
     }
 }

@@ -190,9 +190,8 @@ required_host = "linux-production-like"
 
 [[proofs]]
 id = "p04-read-view-lifetime-owner"
-authority_state = "staged"
+authority_state = "executable"
 execution_mode = "test-authority"
-staged_reason = "P04 must land host-independent read-view lifetime, pin and GC owner targets."
 ticket = "S21-05"
 family = "U"
 checkpoint = "M2"
@@ -205,7 +204,12 @@ filter = "none"
 source_binding = "exact"
 binary_binding = "none"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
-test_authority_targets = []
+test_authority_scopes = ["read-view-lifetime-owner", "search-plane-read-view-lib"]
+test_authority_targets = [
+  "read-view-lifetime-owner-v1",
+  "repomap-owner-surface",
+  "core-read-view-declaration",
+]
 dependencies = ["p03-candidate-activation-owner"]
 artifact = "artifacts/proof-authority/p04-read-view-lifetime-owner.json"
 required_host = "any"
@@ -234,9 +238,8 @@ required_host = "linux-production-like"
 
 [[proofs]]
 id = "p05-query-truth-owner"
-authority_state = "staged"
+authority_state = "executable"
 execution_mode = "test-authority"
-staged_reason = "P05 must land host-independent query outcome, cursor and independent-oracle owner targets."
 ticket = "S21-06"
 family = "U"
 checkpoint = "M2"
@@ -249,7 +252,8 @@ filter = "none"
 source_binding = "exact"
 binary_binding = "none"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
-test_authority_targets = []
+test_authority_scopes = ["query-truth-owner", "query-truth-owner-lib"]
+test_authority_targets = ["query-truth-owner-v1"]
 dependencies = ["p04-read-view-lifetime-owner"]
 artifact = "artifacts/proof-authority/p05-query-truth-owner.json"
 required_host = "any"
@@ -278,9 +282,8 @@ required_host = "linux-production-like"
 
 [[proofs]]
 id = "p06-sdk-binding-owner"
-authority_state = "staged"
+authority_state = "executable"
 execution_mode = "test-authority"
-staged_reason = "P06 must land host-independent SDK contextual binding and negative-matrix owner targets."
 ticket = "S21-07"
 family = "U"
 checkpoint = "M2"
@@ -293,7 +296,8 @@ filter = "none"
 source_binding = "exact"
 binary_binding = "none"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
-test_authority_targets = []
+test_authority_scopes = ["sdk-binding-owner", "sdk-binding-owner-lib"]
+test_authority_targets = ["sdk-binding-owner-v1"]
 dependencies = ["p05-query-truth-owner"]
 artifact = "artifacts/proof-authority/p06-sdk-binding-owner.json"
 required_host = "any"
@@ -322,9 +326,8 @@ required_host = "linux-production-like"
 
 [[proofs]]
 id = "p07-provider-boundary-owner"
-authority_state = "staged"
+authority_state = "executable"
 execution_mode = "test-authority"
-staged_reason = "P07 must land host-independent admission, reservation and loopback-provider owner targets."
 ticket = "S21-08"
 family = "U"
 checkpoint = "M3"
@@ -337,7 +340,8 @@ filter = "none"
 source_binding = "exact"
 binary_binding = "none"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
-test_authority_targets = []
+test_authority_scopes = ["provider-boundary-owner"]
+test_authority_targets = ["provider-boundary-owner-v1"]
 dependencies = ["p06-sdk-binding-owner"]
 artifact = "artifacts/proof-authority/p07-provider-boundary-owner.json"
 required_host = "any"
@@ -366,9 +370,8 @@ required_host = "linux-production-like"
 
 [[proofs]]
 id = "p08-runtime-supervisor-owner"
-authority_state = "staged"
+authority_state = "executable"
 execution_mode = "test-authority"
-staged_reason = "P08 must land host-independent supervisor ownership and deterministic lifecycle owner targets."
 ticket = "S21-09"
 family = "U"
 checkpoint = "M3"
@@ -381,7 +384,8 @@ filter = "none"
 source_binding = "exact"
 binary_binding = "none"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
-test_authority_targets = []
+test_authority_scopes = ["runtime-supervisor-owner"]
+test_authority_targets = ["runtime-supervisor-owner-v1"]
 dependencies = ["p07-provider-boundary-owner"]
 artifact = "artifacts/proof-authority/p08-runtime-supervisor-owner.json"
 required_host = "any"
@@ -410,9 +414,8 @@ required_host = "linux-production-like"
 
 [[proofs]]
 id = "p09-control-readiness-owner"
-authority_state = "staged"
+authority_state = "executable"
 execution_mode = "test-authority"
-staged_reason = "P09 must land host-independent authorization and readiness owner targets."
 ticket = "S21-10"
 family = "U"
 checkpoint = "M3"
@@ -425,7 +428,8 @@ filter = "none"
 source_binding = "exact"
 binary_binding = "none"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
-test_authority_targets = []
+test_authority_scopes = ["control-readiness-owner", "control-readiness-owner-lib"]
+test_authority_targets = ["control-readiness-owner-v1"]
 dependencies = ["p08-runtime-supervisor-owner"]
 artifact = "artifacts/proof-authority/p09-control-readiness-owner.json"
 required_host = "any"

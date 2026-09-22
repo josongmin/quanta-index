@@ -166,9 +166,12 @@ fn a_new_writer_is_refused_typed_above_the_rss_ceiling_and_admitted_below_it() -
         &0.0,
     )?;
 
-    // Below the ceiling: the same batch is admitted and served.
+    // Below the ceiling the next batch is admitted and served. It is a
+    // different body on purpose: the refused batch above was recorded as a
+    // frozen-policy refusal and an identical retry replays it by design
+    // (S21-04), so a fresh body is what exercises the gate's new reading.
     probe.0.store(ceiling - 1, Ordering::Release);
-    let batch = rt.text_search_corpus_batch("src/gate.rs", "fn gate_body() { gate_needle }")?;
+    let batch = rt.text_search_corpus_batch("src/gate.rs", "fn gate_body_v2() { gate_needle }")?;
     let admitted = rt.ingest_once(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch))?;
     if typed_code(&admitted).is_some() {
         return Err(format!("below the ceiling the batch is admitted, got {admitted:?}").into());

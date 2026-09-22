@@ -8,6 +8,7 @@ pub mod layout_v3;
 pub mod materializer;
 pub mod model;
 mod object_store;
+mod pinned;
 pub mod query;
 pub mod reader;
 pub mod store;
@@ -23,6 +24,7 @@ pub use materializer::{
     snapshot_from_projection,
 };
 pub use model::{RepoMapEntry, RepoMapIndexedSnapshot, RepoMapSnapshot, RepoMapSnapshotIndex};
+pub use pinned::PinnedRepoMapSnapshotV1;
 pub use query::RepoMapQueryEngine;
-pub use reader::RepoMapPinnedReader;
+pub use store::RepoMapGcOutcomeV1;
 pub use store::{OpenedRepoMapStore, RepoMapGenerationStore};

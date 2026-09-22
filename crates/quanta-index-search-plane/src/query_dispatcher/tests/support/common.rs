@@ -14,7 +14,7 @@ use tempfile::tempdir;
 use crate::observability::{BoundedQueryObsStore, QueryObsSink};
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
 use crate::query_dispatcher::selection::make_pin;
-use crate::query_dispatcher::tests::support::repo_map::StubRepoMapQueryPort;
+use crate::query_dispatcher::tests::support::repo_map::StubRepoMapSnapshotPort;
 use crate::query_dispatcher::tests::support::structural::FailClosedStructuralProducer;
 use crate::{
     ActivationCatalog, HashingQueryTextEmbedder, Ledger, PreparedSearchCorpusGenerationV1,
@@ -194,7 +194,7 @@ pub(crate) fn dispatcher_with_obs(
         lex_opener,
         sem_opener,
         SnapshotRegistries::new(SnapshotRegistryPolicy::DEFAULT),
-        Arc::new(StubRepoMapQueryPort),
+        Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ready_ledger(),
         test_activation_catalog()?,

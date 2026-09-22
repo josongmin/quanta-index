@@ -43,7 +43,24 @@ use tempfile::TempDir;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-/// A distinct valid 64-hex producer digest per fixture marker.
+// A distinct valid 64-hex producer digest per fixture marker.
+
+fn read_query_snapshot(
+    store: &quanta_index_repomap::RepoMapGenerationStore,
+    request: &RepoMapQueryRequest,
+) -> Result<quanta_index_contract::RepoMapQueryResponse, quanta_index_core::CoreError> {
+    // S21-05: the ambient store read is gone; a test reads through one
+    // acquired pinned view, exactly like a production route.
+    use quanta_index_core::PinnedRepoMapSnapshot as _;
+    store
+        .acquire_pinned(&quanta_index_core::RepoMapSnapshotAcquireV1 {
+            repo_id: request.repo_id.clone(),
+            revision_id: request.revision_id.clone(),
+            manifest_generation: request.manifest_generation,
+        })?
+        .query(request.clone())
+}
+
 fn producer_hex(marker: &str) -> String {
     let hash = marker
         .bytes()
@@ -141,12 +158,15 @@ fn publish(
 }
 
 fn query(store: &RepoMapGenerationStore, generation: u64) -> Result<(), CoreError> {
-    let _response = store.read_query_snapshot(&RepoMapQueryRequest {
-        repo_id: repo(),
-        revision_id: revision(),
-        manifest_generation: ManifestGeneration::new(generation),
-        ..query_defaults()
-    })?;
+    let _response = read_query_snapshot(
+        store,
+        &RepoMapQueryRequest {
+            repo_id: repo(),
+            revision_id: revision(),
+            manifest_generation: ManifestGeneration::new(generation),
+            ..query_defaults()
+        },
+    )?;
     Ok(())
 }
 
@@ -734,12 +754,15 @@ fn restart_serves_the_activated_generation_with_identical_projection() -> TestRe
     let (_catalog, store) = open_fixture(&root)?;
     assert!(query(store.as_ref(), 1).is_ok());
     // The restart-rebuilt registry keeps the bundle-declared snapshot id.
-    let response = store.as_ref().read_query_snapshot(&RepoMapQueryRequest {
-        repo_id: repo(),
-        revision_id: revision(),
-        manifest_generation: ManifestGeneration::new(1),
-        ..query_defaults()
-    })?;
+    let response = read_query_snapshot(
+        store.as_ref(),
+        &RepoMapQueryRequest {
+            repo_id: repo(),
+            revision_id: revision(),
+            manifest_generation: ManifestGeneration::new(1),
+            ..query_defaults()
+        },
+    )?;
     assert_eq!(response.snapshot_meta.snapshot_id, "snap-g1");
     assert!(!response.entries.is_empty());
     Ok(())

@@ -1,4 +1,4 @@
-//! One `QueryReadViewV1` per request (plan §5.6 / §7.1).
+//! One `QueryReadViewV2` per request (plan §5.6 / §7.1).
 //!
 //! - `view` — the request, the view, its acquisition and the trace
 //!   attachment.
@@ -10,7 +10,7 @@
 mod snapshots;
 mod view;
 
-pub(crate) use view::{AuxEpochPinsV1, QueryReadViewV1, ReadViewRequestV1, attach_read_view_trace};
+pub(crate) use view::{AuxEpochPinsV1, QueryReadViewV2, ReadViewRequestV1, attach_read_view_trace};
 
 #[cfg(test)]
 pub(crate) use view::assemble_for_test;

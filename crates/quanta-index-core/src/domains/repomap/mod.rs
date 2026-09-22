@@ -3,7 +3,10 @@ mod outbound;
 mod policy;
 mod service;
 
-pub use inbound::RepoMapQueryPort;
+pub use inbound::{
+    PinnedRepoMapSnapshot, RepoMapSnapshotAcquirePort, RepoMapSnapshotAcquireV1,
+    RepoMapSnapshotEvidenceV1,
+};
 pub use outbound::{
     QuarantinedRepoMapFileV1, RepoMapBundleIngestPort, RepoMapGenerationActivatePort,
     RepoMapMutationReceiptV1, RepoMapOpenReportV1, RepoMapQuarantinePort,

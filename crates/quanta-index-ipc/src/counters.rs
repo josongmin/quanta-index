@@ -5,6 +5,7 @@
 //! server at bind so the composition root can register them with the
 //! metrics scrape before any connection exists.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use quanta_index_core::{CoreError, MetricPointV1, MetricSourcePort};
@@ -263,5 +264,111 @@ impl MetricSourcePort for IpcServerCounters {
                 snapshot.peer_hangups,
             ),
         ])
+    }
+}
+
+/// The RAII live-connection permit (SEP-21 P08 / S21-09).
+///
+/// `admit` counts the accepted connection and dropping the guard —
+/// normal tail, early return, or panic unwind — releases the live
+/// count, so `connections_live` returns to its baseline after a
+/// panicking connection too.
+pub(crate) struct LiveConnectionGuard {
+    counters: Arc<IpcServerCounters>,
+}
+
+impl LiveConnectionGuard {
+    /// Count one admitted connection and hold its live permit.
+    pub(crate) fn admit(counters: &Arc<IpcServerCounters>) -> Self {
+        counters.connection_accepted();
+        Self {
+            counters: Arc::clone(counters),
+        }
+    }
+}
+
+impl Drop for LiveConnectionGuard {
+    fn drop(&mut self) {
+        self.counters.connection_closed();
+    }
+}
+
+/// The RAII in-flight dispatch permit (SEP-21 P08 / S21-09).
+///
+/// `start` counts the slot taken and dropping the guard — normal tail,
+/// early return, or panic unwind — releases it.
+pub(crate) struct InFlightDispatchGuard {
+    counters: Arc<IpcServerCounters>,
+}
+
+impl InFlightDispatchGuard {
+    /// Count one dispatch started (`waited` says whether it had to wait
+    /// for the slot) and hold the in-flight permit.
+    pub(crate) fn start(counters: &Arc<IpcServerCounters>, waited: bool) -> Self {
+        counters.dispatch_started(waited);
+        Self {
+            counters: Arc::clone(counters),
+        }
+    }
+}
+
+impl Drop for InFlightDispatchGuard {
+    fn drop(&mut self) {
+        self.counters.dispatch_finished();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{InFlightDispatchGuard, IpcServerCounters, LiveConnectionGuard};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// The RAII permits reconcile on a panic unwind: both gauges return
+    /// to their baseline (S21-09), so a panicking connection or dispatch
+    /// cannot leak a live or in-flight count.
+    #[test]
+    fn raii_permits_reconcile_on_panic() {
+        let counters = Arc::new(IpcServerCounters::for_plane("test"));
+        let panicked = Arc::new(AtomicU64::new(0));
+        let worker_panicked = Arc::clone(&panicked);
+        let worker_counters = Arc::clone(&counters);
+        let handle = std::thread::Builder::new()
+            .spawn(move || {
+                let _live = LiveConnectionGuard::admit(&worker_counters);
+                let _in_flight = InFlightDispatchGuard::start(&worker_counters, false);
+                let _prior = worker_panicked.fetch_add(1, Ordering::AcqRel);
+                panic!("a panicking dispatcher unwinds through the permits");
+            })
+            .expect("the worker spawns");
+        let _joined = handle.join();
+        assert_eq!(panicked.load(Ordering::Acquire), 1);
+        let snapshot = counters.snapshot();
+        assert_eq!(snapshot.connections_accepted, 1);
+        assert_eq!(
+            snapshot.connections_live, 0,
+            "the live count reconciled on unwind"
+        );
+        assert_eq!(
+            snapshot.dispatch_in_flight, 0,
+            "the in-flight count reconciled on unwind"
+        );
+    }
+
+    /// The permits also release on the normal tail.
+    #[test]
+    fn raii_permits_release_on_the_normal_tail() {
+        let counters = Arc::new(IpcServerCounters::for_plane("test"));
+        {
+            let _live = LiveConnectionGuard::admit(&counters);
+            let _in_flight = InFlightDispatchGuard::start(&counters, true);
+            let snapshot = counters.snapshot();
+            assert_eq!(snapshot.connections_live, 1);
+            assert_eq!(snapshot.dispatch_in_flight, 1);
+            assert_eq!(snapshot.dispatch_queue_waits, 1);
+        }
+        let snapshot = counters.snapshot();
+        assert_eq!(snapshot.connections_live, 0);
+        assert_eq!(snapshot.dispatch_in_flight, 0);
     }
 }

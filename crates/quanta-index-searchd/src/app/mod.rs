@@ -12,6 +12,7 @@ pub mod searchd;
 pub mod semantic_boot;
 pub mod server;
 pub mod socket_access;
+pub mod supervisor;
 pub mod umask;
 
 pub use boot_inventory::{
@@ -25,8 +26,14 @@ pub use config::{
 pub use integrity_scrub::{PacedIntegrityScrubV1, ScrubSchedulerV1, ScrubTalliesV1, ScrubTickV1};
 pub use legacy_semantic_migration::LegacySemanticJournalStore;
 pub use process_memory::KernelResidentMemoryProbe;
+pub use runtime::{RuntimeGuards, RuntimeServers};
 pub use runtime::{SearchdRuntime, StateRootAccessV1};
-pub use searchd::drive;
+pub use searchd::{drive, supervise_runtime};
 pub use server::QueryServer;
 pub use socket_access::{SocketAccessPolicies, SocketRole};
+pub use supervisor::{
+    CancelRoot, ChildContext, ChildExit, ChildExitKind, ChildSpawnFailure,
+    DEFAULT_COOPERATIVE_DRAIN_DEADLINE, HARD_DRAIN_DEADLINE, SearchdSupervisor, SupervisionError,
+    SupervisionOutcome,
+};
 pub use umask::{DAEMON_UMASK, harden_umask};

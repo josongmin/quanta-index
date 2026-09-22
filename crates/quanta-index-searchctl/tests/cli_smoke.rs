@@ -23,8 +23,8 @@ use quanta_index_contract::lex::ExplanationRow;
 use quanta_index_contract::{
     EngineTouched, ExplainCandidateV1, GenerationPin, HybridCandidateV1, HybridLaneContributionV1,
     HybridLaneV1, HybridQueryResponse, HybridSeedQueryResponse, LexicalCandidate,
-    ManifestGeneration, PlannerStage, PlannerTraceEntry, QueryResultWindowV1, RepoId,
-    RepoMapDocType, RepoMapEntryDto, RepoMapExactnessSummary, RepoMapFocusSubjectDto,
+    ManifestGeneration, PlannerStage, PlannerTraceEntry, QueryResultWindowV1, QueryResultWindowV2,
+    RepoId, RepoMapDocType, RepoMapEntryDto, RepoMapExactnessSummary, RepoMapFocusSubjectDto,
     RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapQueryResponse,
     RepoMapRedactionState, RepoMapSnapshotMeta, RepoRelativePath, RevisionId, SearchExplanation,
     SearchPlaneErrorCodeV2, SearchPlaneExplainQueryResponse, SearchPlaneIpcError,
@@ -54,6 +54,7 @@ static NEXT_SOCKET_ID: AtomicU64 = AtomicU64::new(0);
 impl IpcDispatcher<SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse> for ScenarioDispatcher {
     fn dispatch(
         &self,
+        _context: &quanta_index_ipc::DispatchContextV1,
         request: SearchPlaneQueryIpcRequest,
         _budget: &RequestBudgetV1,
     ) -> SearchPlaneQueryIpcResponse {
@@ -638,6 +639,7 @@ impl IpcDispatcher<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>
 {
     fn dispatch(
         &self,
+        _context: &quanta_index_ipc::DispatchContextV1,
         request: SearchPlaneControlIpcRequest,
         _budget: &RequestBudgetV1,
     ) -> SearchPlaneControlIpcResponse {
@@ -654,7 +656,8 @@ impl IpcDispatcher<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>
             other @ (SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(_)
             | SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(_)
             | SearchPlaneControlIpcRequest::RepoMapActivate(_)
-            | SearchPlaneControlIpcRequest::RepoMapActivateV2(_)) => control_error_response(
+            | SearchPlaneControlIpcRequest::RepoMapActivateV2(_)
+            | SearchPlaneControlIpcRequest::ProcessReadiness(_)) => control_error_response(
                 SearchPlaneErrorCodeV2::Internal,
                 format!("doctor mock received unexpected control request: {other:?}"),
             ),
@@ -1060,7 +1063,7 @@ fn start_control_server(
             SearchPlaneControlIpcResponseEnvelope,
             SearchPlaneControlIpcResponse,
             ControlScenarioDispatcher,
-        >(&dispatcher, Duration::from_millis(5))
+        >(&dispatcher, quanta_index_ipc::IpcPlane::Control, Duration::from_millis(5))
         {
             Ok(()) | Err(_) => {}
         }
@@ -1258,7 +1261,7 @@ fn start_server(
             SearchPlaneQueryIpcResponseEnvelope,
             SearchPlaneQueryIpcResponse,
             ScenarioDispatcher,
-        >(&dispatcher, Duration::from_millis(5))
+        >(&dispatcher, quanta_index_ipc::IpcPlane::Query, Duration::from_millis(5))
         {
             Ok(()) | Err(_) => {}
         }
@@ -1416,6 +1419,7 @@ fn dispatch_semantic_request(request: SearchPlaneQueryIpcRequest) -> SearchPlane
         generation: expected_generation.clone(),
         results: vec![stub_candidate(expected_generation)],
         window: QueryResultWindowV1::exact(1),
+        window_v2: QueryResultWindowV2::exact_probe(1),
         explanation: stub_explanation("semantic explanation", vec![EngineTouched::Semantic]),
     })
 }
@@ -1446,6 +1450,7 @@ fn dispatch_hybrid_request(request: SearchPlaneQueryIpcRequest) -> SearchPlaneQu
         generation: expected_generation.clone(),
         results: vec![stub_hybrid_candidate(expected_generation)],
         window: QueryResultWindowV1::exact(1),
+        window_v2: QueryResultWindowV2::exact_probe(1),
         explanation,
     })
 }
@@ -1520,6 +1525,7 @@ fn dispatch_hybrid_seed_request(
             degraded_reasons: Vec::new(),
         }],
         window: QueryResultWindowV1::exact(1),
+        window_v2: QueryResultWindowV2::exact_probe(1),
         explanation: stub_explanation(
             "hybrid seed explanation",
             vec![EngineTouched::Lexical, EngineTouched::Semantic],

@@ -33,7 +33,8 @@ impl<'a> ObservabilityNamespace<'a> {
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::Error(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
-            | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)) => {
+            | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
+            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)) => {
                 Err(SdkError::Protocol(format!(
                     "expected metrics snapshot, got {}",
                     QuantaIndex::control_response_kind(&other)

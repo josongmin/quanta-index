@@ -63,6 +63,7 @@ struct QueryStub {
 impl IpcDispatcher<SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse> for QueryStub {
     fn dispatch(
         &self,
+        _context: &quanta_index_ipc::DispatchContextV1,
         request: SearchPlaneQueryIpcRequest,
         budget: &RequestBudgetV1,
     ) -> SearchPlaneQueryIpcResponse {
@@ -135,6 +136,7 @@ fn start_server(policy: ServerAdmissionPolicy) -> Result<Harness, Box<dyn Error>
         thread::spawn(move || {
             uds.run::<SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponseEnvelope, SearchPlaneQueryIpcResponse, QueryStub>(
                 &dispatcher,
+                quanta_index_ipc::IpcPlane::Query,
                 ACCEPT_IDLE,
             )
         })

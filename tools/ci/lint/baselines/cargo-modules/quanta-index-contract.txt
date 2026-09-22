@@ -52,6 +52,27 @@ crate quanta_index_contract
 │   │   ├── struct GenerationStatusRequest: pub
 │   │   ├── struct GenerationStatusRequestVisitor: pub(self)
 │   │   │   └── type Value: pub(self)
+│   │   ├── struct ProcessComponentsHealthV1: pub
+│   │   ├── struct ProcessComponentsHealthV1Visitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── enum ProcessProviderClaimV1: pub
+│   │   ├── struct ProcessProviderClaimV1Visitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct ProcessProviderReadinessV1: pub
+│   │   ├── struct ProcessProviderReadinessV1Visitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── enum ProcessReadinessPhaseV1: pub
+│   │   ├── struct ProcessReadinessPhaseV1Visitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── enum ProcessReadinessReasonV1: pub
+│   │   ├── struct ProcessReadinessReasonV1Visitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct ProcessReadinessRequest: pub
+│   │   ├── struct ProcessReadinessRequestVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct ProcessReadinessV1: pub
+│   │   ├── struct ProcessReadinessV1Visitor: pub(self)
+│   │   │   └── type Value: pub(self)
 │   │   ├── enum SearchCorpusActivationValidationErrorV1: pub
 │   │   ├── struct SearchCorpusGenerationIdentityV1: pub
 │   │   ├── struct SearchCorpusGenerationIdentityV1Visitor: pub(self)
@@ -532,23 +553,29 @@ crate quanta_index_contract
 │   │   ├── struct StateRootUuidCommitmentV1: pub
 │   │   └── mod cbor: pub(self)
 │   │       └── struct Decoder: pub(super)
-│   └── mod compile: pub(self)
-│       ├── struct CompiledRepoMapCandidateV1: pub
-│       ├── struct CompiledRepoMapEdgeV1: pub
-│       ├── struct CompiledRepoMapGraphV1: pub
-│       ├── struct CompiledRepoMapNodeV1: pub
-│       ├── struct CompiledRepoMapProjectionEntryV1: pub
-│       ├── enum RepoMapCompileRefusalCodeV1: pub
-│       ├── struct RepoMapCompileRefusalV1: pub
-│       ├── struct RepoMapCompileRefusalVisitor: pub(self)
-│       │   └── type Value: pub(self)
-│       ├── enum RepoMapCompileStageV1: pub
-│       ├── struct RepoMapCompilerBudgetV1: pub
-│       ├── struct RepoMapCompilerBudgetVisitor: pub(self)
-│       │   └── type Value: pub(self)
-│       ├── struct RepoMapResourceReceiptV1: pub
-│       └── struct RepoMapResourceReceiptVisitor: pub(self)
-│           └── type Value: pub(self)
+│   ├── mod compile: pub(self)
+│   │   ├── struct CompiledRepoMapCandidateV1: pub
+│   │   ├── struct CompiledRepoMapEdgeV1: pub
+│   │   ├── struct CompiledRepoMapGraphV1: pub
+│   │   ├── struct CompiledRepoMapNodeV1: pub
+│   │   ├── struct CompiledRepoMapProjectionEntryV1: pub
+│   │   ├── enum RepoMapCompileRefusalCodeV1: pub
+│   │   ├── struct RepoMapCompileRefusalV1: pub
+│   │   ├── struct RepoMapCompileRefusalVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── enum RepoMapCompileStageV1: pub
+│   │   ├── struct RepoMapCompilerBudgetV1: pub
+│   │   ├── struct RepoMapCompilerBudgetVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct RepoMapResourceReceiptV1: pub
+│   │   └── struct RepoMapResourceReceiptVisitor: pub(self)
+│   │       └── type Value: pub(self)
+│   └── mod terminal_receipt_v2: pub(self)
+│       ├── struct RepoMapActivateGenerationRequestV2: pub
+│       ├── enum RepoMapMutationPhaseV2: pub
+│       ├── struct RepoMapPublishBundleRequestV2: pub
+│       ├── struct RepoMapSourceBundleDigestErrorV2: pub
+│       └── struct RepoMapTerminalReceiptV2: pub
 ├── mod results: pub
 │   ├── mod cluster_membership: pub(self)
 │   │   ├── struct ClusterMembershipBatchReadResponseV1: pub

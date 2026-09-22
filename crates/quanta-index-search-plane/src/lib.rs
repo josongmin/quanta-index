@@ -31,7 +31,10 @@ mod semantic_derive;
 mod single_flight;
 mod snapshot_registry;
 
-pub use control_dispatcher::{SearchPlaneControlDispatcher, SearchPlaneControlDispatcherParts};
+pub use control_dispatcher::{
+    ControlAccessV1, ControlCapabilityV1, ProcessReadinessPort, SearchPlaneControlDispatcher,
+    SearchPlaneControlDispatcherParts,
+};
 pub use history_text::{HistoryTextHandles, HistoryTextIndexParts};
 pub use ingest_dispatcher::{
     AuxiliaryMaterializerParts, AuxiliaryMutationCoordinator, DirectHistoryMaterializer,
@@ -53,12 +56,13 @@ pub use quarantine::{
     QuarantineServiceParts, partition_sealed_inventory_v1,
 };
 pub use query_dispatcher::{
-    RESPONSE_ENVELOPE_RESERVE_BYTES, ResponsePayloadBudget, SearchPlaneDispatcher,
+    CursorKeyStore, RESPONSE_ENVELOPE_RESERVE_BYTES, ResponsePayloadBudget, SearchPlaneDispatcher,
     SearchPlaneQueryDispatcher, SearchPlaneQueryService, make_pin, repair_for_code,
 };
 pub use query_embedder::{
-    HashingQueryTextEmbedder, QueryTextEmbedderPort, SEARCH_OWNED_SEMANTIC_DIMENSION,
-    SEARCH_OWNED_SEMANTIC_MODEL_ID, SEARCH_OWNED_SEMANTIC_MODEL_REVISION,
+    HashingQueryTextEmbedder, ProviderBoundaryQueryEmbedder, QueryTextEmbedderPort,
+    SEARCH_OWNED_SEMANTIC_DIMENSION, SEARCH_OWNED_SEMANTIC_MODEL_ID,
+    SEARCH_OWNED_SEMANTIC_MODEL_REVISION, admit_source_derive_content,
 };
 pub use readiness::{
     ActivationCatalog, ActiveGenerationRecord, AuxiliaryAuthorityStore, Ledger,

@@ -749,3 +749,86 @@ impl Claimed for ClaimOutcomeV1 {
         }
     }
 }
+
+#[test]
+fn a_crashed_claim_is_aborted_at_open_and_the_retry_claims_fresh() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let body = [7_u8; 32];
+    let key = key(IngestOperationKindV1::SearchCorpus, 5, "crash-claim");
+    {
+        let catalog = SqliteCatalog::open(temp.path(), Duration::from_millis(500))?;
+        let _claim = claim(&catalog, &key, &body)?;
+        // The process "crashes" here: the connection closes with the row
+        // still Claimed and its lease far in the future.
+    }
+    let events_before = event_count(&temp)?;
+    let catalog = SqliteCatalog::open(temp.path(), Duration::from_millis(500))?;
+    // Recovery aborted the unfinished row: inspect reports it as absent
+    // (Aborted is superseded), and the retry claims fresh instead of
+    // answering CATALOG_BUSY for the rest of the lease.
+    match catalog.inspect(&key)? {
+        OperationInspectV1::Absent => {}
+        other @ (OperationInspectV1::Committed { .. }
+        | OperationInspectV1::InFlight { .. }
+        | OperationInspectV1::Refused { .. }
+        | OperationInspectV1::Uncertain { .. }) => {
+            return Err(format!("recovered row must read as absent, got {other:?}").into());
+        }
+    }
+    let retried = claim(&catalog, &key, &body)?;
+    catalog.mark_applying(&retried)?;
+    let _sequence = catalog.commit(&retried, &receipt(5, "crash-claim"))?;
+    if event_count(&temp)? <= events_before {
+        return Err("recovery must attribute the abort in the ledger".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn a_stale_mutation_lease_is_released_at_open() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    {
+        let catalog = SqliteCatalog::open(temp.path(), Duration::from_millis(500))?;
+        // A lease far beyond this test's lifetime, but still inside the
+        // catalog's integer deadline column.
+        let _lease = catalog.enter("ingest", "dead-process", 3_600_000)?;
+        // The owning process dies without releasing the durable lease.
+    }
+    let catalog = SqliteCatalog::open(temp.path(), Duration::from_millis(500))?;
+    // A fresh process takes the same scope immediately: the state root
+    // admits one live writer, so the dead lease cannot outlive its owner.
+    let lease: MutationLeaseV1 = catalog.enter("ingest", "fresh-process", 5_000)?;
+    // The handle is proof enough of the takeover; keep it alive to the end
+    // of the test so the fresh lease is not released early.
+    drop(lease);
+    Ok(())
+}
+
+#[test]
+fn committed_history_survives_crash_recovery_untouched() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let body = [9_u8; 32];
+    let key = key(IngestOperationKindV1::History, 6, "committed-survives");
+    let sequence = {
+        let catalog = SqliteCatalog::open(temp.path(), Duration::from_millis(500))?;
+        apply_and_commit(&catalog, &key, &body, &receipt(6, "committed-survives"))?
+    };
+    let events_before = event_count(&temp)?;
+    let catalog = SqliteCatalog::open(temp.path(), Duration::from_millis(500))?;
+    match catalog.inspect(&key)? {
+        OperationInspectV1::Committed {
+            durable_sequence, ..
+        } if durable_sequence == sequence => {}
+        other @ (OperationInspectV1::Absent
+        | OperationInspectV1::Committed { .. }
+        | OperationInspectV1::InFlight { .. }
+        | OperationInspectV1::Refused { .. }
+        | OperationInspectV1::Uncertain { .. }) => {
+            return Err(format!("a committed row must survive recovery, got {other:?}").into());
+        }
+    }
+    if event_count(&temp)? != events_before {
+        return Err("recovery must not touch terminal history".into());
+    }
+    Ok(())
+}

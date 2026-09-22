@@ -894,7 +894,8 @@ impl E2eRuntime {
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
-            | SearchPlaneControlIpcResponse::QuarantineInventory(_)) => Err(anyhow::anyhow!(
+            | SearchPlaneControlIpcResponse::QuarantineInventory(_)
+            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)) => Err(anyhow::anyhow!(
                 "e2e-harness: quarantine discard returned an unexpected control response: {other:?}"
             )),
         }
@@ -1050,7 +1051,8 @@ impl E2eRuntime {
                     | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
                     | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
                     | SearchPlaneControlIpcResponse::QuarantineInventory(_)
-                    | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)) => {
+                    | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
+                    | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)) => {
                         Err(anyhow::anyhow!(
                             "e2e-harness: current generation returned an unexpected control response: {other:?}"
                         ))
@@ -1127,7 +1129,8 @@ impl E2eRuntime {
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
-            | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)) => Err(anyhow::anyhow!(
+            | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
+            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)) => Err(anyhow::anyhow!(
                 "e2e-harness: generation status returned an unexpected control response: {other:?}"
             )),
         }
