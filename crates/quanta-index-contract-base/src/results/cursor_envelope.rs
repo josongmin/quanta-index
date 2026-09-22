@@ -376,14 +376,14 @@ impl CursorEnvelopeV2 {
             .skip(CURSOR_CONTEXT_DOMAIN.len())
             .ok_or(CursorEnvelopeError::MalformedToken)?;
         let route = cursor.route().ok_or(CursorEnvelopeError::MalformedToken)?;
-        let repo_id = cursor
-            .str()
-            .and_then(|repo| RepoId::new(repo).ok())
-            .ok_or(CursorEnvelopeError::MalformedToken)?;
-        let revision_id = cursor
-            .str()
-            .and_then(|revision| RevisionId::new(revision).ok())
-            .ok_or(CursorEnvelopeError::MalformedToken)?;
+        let repo = cursor.str().ok_or(CursorEnvelopeError::MalformedToken)?;
+        let Ok(repo_id) = RepoId::new(repo) else {
+            return Err(CursorEnvelopeError::MalformedToken);
+        };
+        let revision = cursor.str().ok_or(CursorEnvelopeError::MalformedToken)?;
+        let Ok(revision_id) = RevisionId::new(revision) else {
+            return Err(CursorEnvelopeError::MalformedToken);
+        };
         let manifest_generation = cursor.u64().ok_or(CursorEnvelopeError::MalformedToken)?;
         let plan_digest = cursor.digest().ok_or(CursorEnvelopeError::MalformedToken)?;
         let query_digest = cursor.digest().ok_or(CursorEnvelopeError::MalformedToken)?;

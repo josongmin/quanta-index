@@ -15,6 +15,10 @@ use quanta_index_contract_base::{
     ExhaustionProofV1, GenerationPin, ManifestGeneration, QueryResultWindowV2, RepoId, RevisionId,
 };
 
+#[expect(
+    clippy::expect_used,
+    reason = "static fixture identities (\"repo-a\"/\"repo-b\"/\"rev-a\") are valid by construction; a validator change surfaces in the validator's own tests"
+)]
 fn binding(repo: &str) -> CursorBindingV2 {
     CursorBindingV2 {
         route: CursorRouteV2::Lexical,

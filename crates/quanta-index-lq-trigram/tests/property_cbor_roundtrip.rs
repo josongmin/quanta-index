@@ -151,10 +151,7 @@ mod controls {
         }
     }
 
-    #[expect(
-        clippy::expect_used,
-        reason = "control setup is total by construction; only the mapped step is asserted"
-    )]
+    // Control setup is total by construction; only the mapped step is asserted.
     #[test]
     fn serialize_error_fails_the_case() {
         let docs = vec![(1, b"rust-embeddings".to_vec())];
@@ -172,10 +169,7 @@ mod controls {
         }
     }
 
-    #[expect(
-        clippy::expect_used,
-        reason = "control setup is total by construction; only the mapped step is asserted"
-    )]
+    // Control setup is total by construction; only the mapped step is asserted.
     #[test]
     fn deserialize_error_fails_the_case() {
         let docs = vec![(1, b"rust-embeddings".to_vec())];
@@ -220,10 +214,7 @@ mod controls {
         }
     }
 
-    #[expect(
-        clippy::expect_used,
-        reason = "control setup is total by construction; only the mapped step is asserted"
-    )]
+    // Control setup is total by construction; only the mapped step is asserted.
     #[test]
     fn over_cap_intersect_error_fails_the_case() {
         // One posting list past MAX_CANDIDATE_PRE_VERIFY: the intersect

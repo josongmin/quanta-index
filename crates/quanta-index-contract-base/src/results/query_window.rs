@@ -407,8 +407,8 @@ impl ExecutionOutcomeV2 {
             Self::LowerBound { continuation: true } => Some(true),
             Self::LowerBound {
                 continuation: false,
-            } => None,
-            Self::CappedUnknown { .. }
+            }
+            | Self::CappedUnknown { .. }
             | Self::InterruptedPartial { .. }
             | Self::Approximate { .. } => None,
         }
