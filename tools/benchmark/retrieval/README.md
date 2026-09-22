@@ -26,7 +26,7 @@ python3 -m tools.benchmark.retrieval freeze \
 # benchmark CLI against the blind pack. The manifest is JSON with exactly
 # repository_commit and files [{path, file_sha256}] for the admitted universe.
 # The state root and output must be outside the clean source checkout.
-./scripts/cargow --lane bench-lane build -p quanta-index-searchd \
+./scripts/cargow --lane bench-lane build -p quanta-index-searchd-runtime \
   --bin quanta-index-searchd --locked
 ./scripts/cargow --lane bench-lane run -p quanta-index-retrieval-bench \
   --bin quanta-index-retrieval-bench --locked -- run \
