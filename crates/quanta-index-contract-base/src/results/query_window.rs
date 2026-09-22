@@ -755,16 +755,6 @@ impl QueryResultWindowV2 {
         }
     }
 
-    /// The exact window for a probe that observed the universe end.
-    #[must_use]
-    pub fn exact_probe(returned: u32) -> Self {
-        Self::exact_exhausted(
-            returned,
-            ExhaustionProofV1::ProbeExhausted { fetched: returned },
-            Vec::new(),
-        )
-    }
-
     #[must_use]
     pub const fn returned(&self) -> u32 {
         self.returned

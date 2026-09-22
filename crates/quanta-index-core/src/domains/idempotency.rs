@@ -10,26 +10,34 @@
 //! The protocol (SEP-21-002) is replay-first, immutable-prepare,
 //! fenced-claim, terminally-classified:
 //!
-//! 1. **Digest verification** (dispatcher): the carried `batch_digest` is
-//!    recomputed from the body; a forged digest is refused before this
-//!    port is reached ([`BATCH_DIGEST_MISMATCH_CODE`]).
-//! 2. **Preflight** (dispatcher): every refusal the route can make without
-//!    mutating — including the auxiliary routes' semantic validation
-//!    against the ledger — runs before any record exists.
-//! 3. [`IdempotencyCatalogPort::inspect`] (read-only): a committed record
-//!    answers the replay here; nothing is written.
-//! 4. [`IdempotencyCatalogPort::claim_prepared`]: an immutable prepared
-//!    row is written under the verified body digest with an owner, a
-//!    lease deadline, a fence token and an input commitment.
-//! 5. **Apply**: the route materializes the batch under the claim
+//! 1. **Intrinsic validation** (dispatcher): canonical decode and digest
+//!    verification — the carried `batch_digest` is recomputed from the
+//!    body; a forged digest is refused before this port is reached
+//!    ([`BATCH_DIGEST_MISMATCH_CODE`]). Pure: no storage, no provider.
+//! 2. [`IdempotencyCatalogPort::inspect`] (read-only): a terminal
+//!    (`Committed`/`Refused`) record answers the replay here with its
+//!    stored result; nothing is written and no preflight runs.
+//! 3. [`IdempotencyCatalogPort::prepare`]: the immutable prepared row is
+//!    written under the verified body digest with an owner, a lease
+//!    deadline, a fence token and an input commitment. A different body
+//!    under the same key is a typed conflict before anything mutable.
+//! 4. **Mutable preflight** (dispatcher): every refusal the route can
+//!    make without mutating — including the auxiliary routes' semantic
+//!    validation against the ledger — runs now. A frozen-policy refusal
+//!    is recorded terminally from the prepared mutation (no claim ever
+//!    held); anything else leaves the prepared row to lease expiry.
+//! 5. [`IdempotencyCatalogPort::claim_prepared`] (fenced claim),
+//!    [`IdempotencyCatalogPort::mark_applying`], then **apply**: the
+//!    route materializes the batch under the claim
 //!    ([`PreparedMutationV1::verify`] detects drift).
 //! 6. Terminal: [`IdempotencyCatalogPort::commit`] (fenced, allocates the
 //!    global durable sequence and its journal event in one transaction),
-//!    [`IdempotencyCatalogPort::record_refused`] (frozen-policy refusal),
-//!    or [`IdempotencyCatalogPort::mark_uncertain`] when the terminal
-//!    attempt itself failed ambiguously; [`IdempotencyCatalogPort::recover`]
-//!    resolves expired or uncertain records to `Aborted` so a retry can
-//!    claim fresh.
+//!    [`IdempotencyCatalogPort::record_refused`] (frozen-policy refusal
+//!    from the applying claim), or [`IdempotencyCatalogPort::mark_uncertain`]
+//!    when the terminal attempt itself failed ambiguously;
+//!    [`IdempotencyCatalogPort::recover`] resolves expired or uncertain
+//!    records to `Aborted` so a retry can claim fresh, and an uncertain
+//!    worker reconciles through `commit` without re-running the apply.
 //!
 //! A stale worker — one whose lease expired and whose record was recovered
 //! or re-claimed — cannot commit: [`IdempotencyCatalogPort::commit`] checks
@@ -43,7 +51,8 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use quanta_index_contract::{
-    BatchPublishReceipt, IngestOperationKindV1, ManifestGeneration, RepoId, RevisionId,
+    BatchPublishReceipt, IngestOperationKindV1, ManifestGeneration, RepoId,
+    RepoMapTerminalReceiptV2, RevisionId,
 };
 use sha2::{Digest, Sha256};
 
@@ -93,6 +102,7 @@ pub fn ingest_kind_from_code_str(
         "file-ownership" => Ok(K::FileOwnership),
         "file-contributor" => Ok(K::FileContributor),
         "repo-meta" => Ok(K::RepoMeta),
+        "repomap-bundle" => Ok(K::RepoMapBundle),
         other => Err(CoreError::Typed {
             code: CATALOG_ROW_CORRUPT_CODE,
             message: format!("catalog: journal kind column holds {other:?}, not a known route"),
@@ -233,16 +243,26 @@ impl OperationJournalStateV1 {
 
     /// The closed transition table: `from → to` is legal exactly when this
     /// returns `true`. `Committed`, `Refused` and `Aborted` are terminal.
+    ///
+    /// The forward path is exactly `Prepared → Claimed → Applying →
+    /// {Committed, Refused, Uncertain}` plus the pre-claim frozen refusal
+    /// `Prepared → Refused`: a refusal is recorded either from the
+    /// immutable prepared mutation (mutable-preflight refusal, no claim
+    /// ever held) or from the applying claim (apply-time typed refusal).
+    /// `Claimed` knows no other edge — in particular there is no
+    /// `Claimed → Refused` and no `Claimed → Uncertain`, so a refusal or
+    /// an ambiguity is unrepresentable before the worker starts applying.
+    /// The `→ Aborted` edges and `Uncertain → Committed` are the recovery
+    /// vocabulary only: expiry/uncertainty resolution (`recover`, crash
+    /// recovery at open) and reconcile-without-reapply of an uncertain
+    /// terminal attempt.
     #[must_use]
     pub fn transition_allowed(from: Self, to: Self) -> bool {
         use OperationJournalStateV1 as S;
         matches!(
             (from, to),
             (S::Prepared, S::Claimed | S::Refused | S::Aborted)
-                | (
-                    S::Claimed,
-                    S::Applying | S::Refused | S::Aborted | S::Uncertain
-                )
+                | (S::Claimed, S::Applying | S::Aborted)
                 | (
                     S::Applying,
                     S::Committed | S::Refused | S::Aborted | S::Uncertain
@@ -273,11 +293,21 @@ pub fn now_unix_ms() -> u64 {
 
 /// The immutable claim one publish mutates under (SEP-21-002).
 ///
-/// `epoch_commitment` binds the validated input the claim was prepared
-/// against (the verified body digest on the ingest routes); the catalog
-/// re-checks it at every fenced step, so a worker that drifted — or a
-/// caller replaying a stale claim after the record moved on — is refused
-/// with `OPERATION_FENCE_LOST` before any mutation.
+/// The four authorities the mutation is bound to are explicit:
+/// - operation kind: [`PreparedMutationV1::operation_kind`] (`key.kind`),
+/// - target identity: [`PreparedMutationV1::target_identity`]
+///   (`key` repo/revision/generation),
+/// - body digest: `body_sha256` (the verified canonical digest),
+/// - validated input commitment: `epoch_commitment` (the input the claim
+///   was prepared against; the verified body digest on the ingest
+///   routes).
+///
+/// The catalog re-checks the binding at every fenced step, so a worker
+/// that drifted — or a caller replaying a stale claim after the record
+/// moved on — is refused with `OPERATION_FENCE_LOST` before any
+/// mutation. A prepared mutation that never became a claim (the
+/// `Prepared` row) can still record an atomic terminal refusal via
+/// [`IdempotencyCatalogPort::record_refused`]; it can never apply.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreparedMutationV1 {
     pub key: IdempotencyKeyV1,
@@ -289,6 +319,23 @@ pub struct PreparedMutationV1 {
 }
 
 impl PreparedMutationV1 {
+    /// The operation kind this mutation was prepared for.
+    #[must_use]
+    pub fn operation_kind(&self) -> IngestOperationKindV1 {
+        self.key.kind
+    }
+
+    /// The target identity this mutation was prepared for: the key's
+    /// repo, revision and generation.
+    #[must_use]
+    pub fn target_identity(&self) -> (&RepoId, &RevisionId, ManifestGeneration) {
+        (
+            &self.key.repo_id,
+            &self.key.revision_id,
+            self.key.generation,
+        )
+    }
+
     /// Verify `other` describes this same claim with no drift. Called at
     /// apply time; drift is a fence loss, not a conflict.
     pub fn verify(&self, other: &PreparedMutationV1) -> Result<(), CoreError> {
@@ -312,6 +359,12 @@ impl PreparedMutationV1 {
 /// What [`IdempotencyCatalogPort::inspect`] found for a key. Read-only:
 /// inspect never mutates, so the dispatcher can answer replays before any
 /// storage work.
+///
+/// Terminal answers (`Committed`, `CommittedRepoMap`, `Refused`) are the
+/// stored result verbatim: the dispatcher returns them without
+/// re-inspecting storage, config or base state. A refused replay carries
+/// the refusal's own terminal sequence, so two refusals of one key prove
+/// one frozen decision.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OperationInspectV1 {
     /// No record and no invalidation: a first publish.
@@ -319,6 +372,14 @@ pub enum OperationInspectV1 {
     /// A committed record with the same body: this publish is a replay.
     Committed {
         receipt: BatchPublishReceipt,
+        durable_sequence: u64,
+    },
+    /// A committed repo-map bundle record with the same body: this
+    /// publish is a replay. Same journal, same fence and sequence
+    /// authority as [`OperationInspectV1::Committed`]; only the terminal
+    /// payload type differs.
+    CommittedRepoMap {
+        receipt: RepoMapTerminalReceiptV2,
         durable_sequence: u64,
     },
     /// A record exists mid-protocol under `state`.
@@ -330,9 +391,12 @@ pub enum OperationInspectV1 {
     },
     /// A terminal frozen-policy refusal: the retry replays it exactly.
     /// The code is the closed enum; stored wire text decodes fail-closed.
+    /// `durable_sequence` is the refusal's own terminal sequence, so a
+    /// refused replay proves the same frozen decision, not a fresh one.
     Refused {
         code: quanta_index_contract::SearchPlaneErrorCodeV2,
         message: String,
+        durable_sequence: u64,
     },
     /// The terminal attempt failed ambiguously and recovery has not
     /// resolved it yet.
@@ -348,6 +412,14 @@ pub enum ClaimOutcomeV1 {
     /// A committed record with the same body answered the claim: replay.
     Replay {
         receipt: BatchPublishReceipt,
+        durable_sequence: u64,
+    },
+    /// A committed repo-map bundle record with the same body answered the
+    /// claim: replay. Same journal authority as
+    /// [`ClaimOutcomeV1::Replay`]; only the terminal payload type
+    /// differs.
+    ReplayRepoMap {
+        receipt: RepoMapTerminalReceiptV2,
         durable_sequence: u64,
     },
 }
@@ -366,9 +438,36 @@ pub trait IdempotencyCatalogPort: Send + Sync {
     /// floor) refuses `OPERATION_REPLAY_FLOOR` before any storage work.
     fn inspect(&self, key: &IdempotencyKeyV1) -> Result<OperationInspectV1, CoreError>;
 
-    /// Write (or take over) the immutable prepared row for `key` under
+    /// Write the immutable prepared row for `key` under `body_sha256`
+    /// and return the prepared mutation — before any mutable preflight
+    /// runs. This is the `Prepared` half of the old prepare-and-claim:
+    /// no lease is held yet, no apply may run under the returned
+    /// mutation. Outcomes:
+    /// - no record, or a superseded (`Aborted`) record → a fresh
+    ///   `Prepared` row and its mutation;
+    /// - a `Prepared` row with the same body → that row's mutation
+    ///   (idempotent prepare; a live foreign lease refuses
+    ///   [`CATALOG_BUSY_CODE`]);
+    /// - a different body under the same key →
+    ///   [`BATCH_DIGEST_CONFLICT_CODE`], nothing written;
+    /// - a live unexpired claim held by another owner →
+    ///   [`CATALOG_BUSY_CODE`];
+    /// - an invalidated key → [`OPERATION_REPLAY_FLOOR_CODE`];
+    /// - a terminal `Committed`/`Refused` row the inspect missed in a
+    ///   race → `OPERATION_FENCE_LOST` (retry, and the retry replays).
+    fn prepare(
+        &self,
+        key: &IdempotencyKeyV1,
+        body_sha256: &[u8; 32],
+        owner: &str,
+        lease_deadline_ms: u64,
+        epoch_commitment: &[u8; 32],
+    ) -> Result<PreparedMutationV1, CoreError>;
+
+    /// Take the fenced claim over a prepared row for `key` under
     /// `body_sha256` and return the claim. Outcomes:
-    /// - a committed same-body record → [`ClaimOutcomeV1::Replay`];
+    /// - a committed same-body record → [`ClaimOutcomeV1::Replay`] (or
+    ///   [`ClaimOutcomeV1::ReplayRepoMap`] for a repo-map bundle key);
     /// - a terminal refusal with the same body → that refusal, exact;
     /// - a different body under the same key →
     ///   [`BATCH_DIGEST_CONFLICT_CODE`], nothing written;
@@ -388,9 +487,15 @@ pub trait IdempotencyCatalogPort: Send + Sync {
     /// A stale fence or a drifted commitment is `OPERATION_FENCE_LOST`.
     fn mark_applying(&self, claim: &PreparedMutationV1) -> Result<(), CoreError>;
 
-    /// Terminal: record a frozen-policy refusal under the claim's fence
-    /// and return the allocated durable sequence. The refusal is
-    /// exact-replayed by later same-body attempts.
+    /// Terminal: record a frozen-policy refusal and return the allocated
+    /// durable sequence. The refusal is exact-replayed by later
+    /// same-body attempts.
+    ///
+    /// The mutation may be the immutable prepared mutation (a
+    /// mutable-preflight refusal: no claim was ever held, `Prepared →
+    /// Refused`) or the applying claim (an apply-time typed refusal,
+    /// `Applying → Refused`). A refusal from a bare `Claimed` mutation
+    /// is unrepresentable and refused with `OPERATION_FENCE_LOST`.
     fn record_refused(
         &self,
         claim: &PreparedMutationV1,
@@ -401,15 +506,33 @@ pub trait IdempotencyCatalogPort: Send + Sync {
     /// fence, allocating the global durable sequence and its
     /// `OperationCommitted` event in the same transaction. A stale fence
     /// (recovered, re-claimed or expired-then-aborted record) is
-    /// `OPERATION_FENCE_LOST` and mutates nothing.
+    /// `OPERATION_FENCE_LOST` and mutates nothing. An `Uncertain` record
+    /// reconciles here without re-running the domain apply.
     fn commit(
         &self,
         claim: &PreparedMutationV1,
         receipt: &BatchPublishReceipt,
     ) -> Result<u64, CoreError>;
 
-    /// Mark the terminal attempt ambiguous (`→ Uncertain`) under the
-    /// claim's fence: the worker cannot know whether its commit landed.
+    /// Terminal: record a repo-map bundle terminal receipt under the
+    /// claim's fence, allocating the global durable sequence and its
+    /// `OperationCommitted` event in one transaction. Same journal
+    /// authority as [`IdempotencyCatalogPort::commit`] — same key,
+    /// fence, conflict, floor and sequence semantics — with the
+    /// repo-map terminal payload instead of a batch receipt. The key's
+    /// kind must be `RepoMapBundle`; any other kind is
+    /// `OPERATION_FENCE_LOST`.
+    fn commit_repomap(
+        &self,
+        claim: &PreparedMutationV1,
+        receipt: &RepoMapTerminalReceiptV2,
+    ) -> Result<u64, CoreError>;
+
+    /// Mark the terminal attempt ambiguous (`Applying → Uncertain`)
+    /// under the claim's fence: the worker cannot know whether its
+    /// commit landed. Recovery resolves the row; the original worker
+    /// reconciles through [`IdempotencyCatalogPort::commit`] without
+    /// re-running the domain apply.
     fn mark_uncertain(&self, claim: &PreparedMutationV1) -> Result<(), CoreError>;
 
     /// Resolve a record whose lease expired or whose terminal attempt was

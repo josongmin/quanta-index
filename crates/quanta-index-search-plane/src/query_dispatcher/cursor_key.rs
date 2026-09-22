@@ -11,7 +11,7 @@ use std::path::Path;
 
 use quanta_index_contract::{
     CursorBindingV2, CursorEnvelopeError, CursorEnvelopeV2, CursorKeyV2, CursorTtlPolicyV2,
-    SearchPlaneErrorCodeV2,
+    GenerationPin, ManifestGeneration, RepoId, RevisionId, SearchPlaneErrorCodeV2,
 };
 use quanta_index_core::CoreError;
 
@@ -241,8 +241,11 @@ mod tests {
     fn binding(repo: &str) -> CursorBindingV2 {
         CursorBindingV2 {
             route: CursorRouteV2::Lexical,
-            repo_id: repo.to_string(),
-            pinned_generation: 3,
+            pin: GenerationPin::new(
+                RepoId::new(repo).expect("static fixture identity"),
+                RevisionId::new("rev-a").expect("static fixture identity"),
+                ManifestGeneration::new(3),
+            ),
             plan_digest: [0x11; 32],
             query_digest: [0x22; 32],
             constraints_digest: [0x33; 32],

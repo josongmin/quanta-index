@@ -103,6 +103,9 @@ fn typed_code(response: &SearchPlaneIngestIpcResponse) -> Option<&str> {
 
 /// Publish one batch over the raw socket and require the typed refusal
 /// `expected`, with the catalog and the durable trees exactly as before.
+///
+/// Intrinsic refusals only (digest verification): the journal is never
+/// reached, so no row exists afterwards.
 fn refused_with_nothing_changed(
     rt: &mut E2eRuntime,
     label: &str,
@@ -116,7 +119,7 @@ fn refused_with_nothing_changed(
         return Err(format!("{label}: expected {expected}, got {response:?}").into());
     }
     if idempotency_rows(rt)? != rows_before {
-        return Err(format!("{label}: a refused batch left an idempotency record").into());
+        return Err(format!("{label}: an intrinsic refusal left an idempotency record").into());
     }
     if durable_tree(rt)? != tree_before {
         return Err(format!("{label}: a refused batch changed bytes under the state root").into());
@@ -124,9 +127,50 @@ fn refused_with_nothing_changed(
     Ok(())
 }
 
-/// Every refusal the raw socket can provoke before intent, each leaving
-/// the catalog and the durable trees untouched; then a well-formed batch
-/// applies on the same daemon.
+/// Publish one batch the mutable preflight refuses and require the
+/// typed refusal `expected` with exactly one new journal row and zero
+/// changed bytes (SEP-21 P02B: a frozen-policy refusal is itself the
+/// terminal record the retry replays).
+///
+/// The retry of the same batch answers the same typed refusal with no
+/// further row and no work.
+fn refused_with_one_frozen_row(
+    rt: &mut E2eRuntime,
+    label: &str,
+    batch: quanta_index_contract::SearchCorpusIngestBatch,
+    expected: SearchPlaneErrorCodeV2,
+) -> TestResult {
+    let rows_before = idempotency_rows(rt)?;
+    let tree_before = durable_tree(rt)?;
+    let response = rt.ingest_once(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(
+        batch.clone(),
+    ))?;
+    if typed_code(&response) != Some(expected.as_wire_str()) {
+        return Err(format!("{label}: expected {expected}, got {response:?}").into());
+    }
+    if idempotency_rows(rt)? != rows_before + 1 {
+        return Err(format!("{label}: a preflight refusal must freeze exactly one row").into());
+    }
+    if durable_tree(rt)? != tree_before {
+        return Err(format!("{label}: a refused batch changed bytes under the state root").into());
+    }
+    let replayed = rt.ingest_once(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch))?;
+    if typed_code(&replayed) != Some(expected.as_wire_str()) {
+        return Err(format!("{label}: the retry must replay the refusal, got {replayed:?}").into());
+    }
+    if idempotency_rows(rt)? != rows_before + 1 {
+        return Err(format!("{label}: a refused replay must add no row").into());
+    }
+    if durable_tree(rt)? != tree_before {
+        return Err(format!("{label}: a refused replay changed bytes under the state root").into());
+    }
+    Ok(())
+}
+
+/// Every refusal the raw socket can provoke: intrinsic (digest)
+/// refusals record nothing, mutable-preflight refusals freeze exactly
+/// one terminal row each, and no refusal changes a byte under the
+/// state root; then a well-formed batch applies on the same daemon.
 #[test]
 fn every_preflight_refusal_over_raw_ipc_changes_nothing() -> TestResult {
     let mut rt = E2eRuntime::boot()?;
@@ -140,20 +184,20 @@ fn every_preflight_refusal_over_raw_ipc_changes_nothing() -> TestResult {
     let mut replace_with_base = good.clone();
     replace_with_base.base_generation = Some(ManifestGeneration::new(0));
     stamp_batch_digest_v1(&mut replace_with_base)?;
-    refused_with_nothing_changed(&mut rt, "replace+base", replace_with_base, SHAPE_INVALID)?;
+    refused_with_one_frozen_row(&mut rt, "replace+base", replace_with_base, SHAPE_INVALID)?;
 
     // Shape: Delta names no base.
     let mut delta_without_base = good.clone();
     delta_without_base.mode = BatchIngestMode::Delta;
     stamp_batch_digest_v1(&mut delta_without_base)?;
-    refused_with_nothing_changed(&mut rt, "delta-no-base", delta_without_base, SHAPE_INVALID)?;
+    refused_with_one_frozen_row(&mut rt, "delta-no-base", delta_without_base, SHAPE_INVALID)?;
 
     // Shape: the base cannot precede its target.
     let mut base_not_older = good.clone();
     base_not_older.mode = BatchIngestMode::Delta;
     base_not_older.base_generation = Some(good.generation);
     stamp_batch_digest_v1(&mut base_not_older)?;
-    refused_with_nothing_changed(&mut rt, "base>=target", base_not_older, SHAPE_INVALID)?;
+    refused_with_one_frozen_row(&mut rt, "base>=target", base_not_older, SHAPE_INVALID)?;
 
     // Cross-track preflight: a delta on a base nothing ever sealed.
     let mut unsealed_base = good.clone();
@@ -161,7 +205,7 @@ fn every_preflight_refusal_over_raw_ipc_changes_nothing() -> TestResult {
     unsealed_base.mode = BatchIngestMode::Delta;
     unsealed_base.base_generation = Some(good.generation);
     stamp_batch_digest_v1(&mut unsealed_base)?;
-    refused_with_nothing_changed(
+    refused_with_one_frozen_row(
         &mut rt,
         "unsealed-base",
         unsealed_base,
@@ -211,8 +255,13 @@ fn every_preflight_refusal_over_raw_ipc_changes_nothing() -> TestResult {
             return Err(format!("the well-formed batch must apply, got {applied:?}").into());
         }
     }
-    if idempotency_rows(&rt)? != 1 {
-        return Err("the applied batch must be the only record".into());
+    // Four frozen preflight refusals plus the one apply.
+    if idempotency_rows(&rt)? != 5 {
+        return Err(format!(
+            "four frozen refusals and one apply must leave five rows, found {}",
+            idempotency_rows(&rt)?
+        )
+        .into());
     }
     Ok(())
 }
@@ -291,8 +340,9 @@ fn remote_code(error: &SdkError) -> Option<&str> {
 }
 
 /// Through the SDK: a delta on an unsealed base and a batch past the
-/// resource envelope are typed refusals that record nothing; the batch
-/// that applies carries the canonical digest the receipt names.
+/// resource envelope are typed refusals that each freeze exactly one
+/// terminal journal row (SEP-21 P02B); the batch that applies carries
+/// the canonical digest the receipt names.
 #[test]
 fn sdk_publishes_carry_the_canonical_digest_and_refusals_record_nothing() -> TestResult {
     // One chunk plus one derived semantic source per batch fits the
@@ -358,8 +408,14 @@ fn sdk_publishes_carry_the_canonical_digest_and_refusals_record_nothing() -> Tes
         .into());
     }
 
-    if idempotency_rows(&rt)? != rows_before {
-        return Err("SDK refusals must leave no idempotency record".into());
+    // Two preflight refusals: two frozen terminal rows, zero changed
+    // bytes.
+    if idempotency_rows(&rt)? != rows_before.saturating_add(2) {
+        return Err(format!(
+            "SDK refusals must freeze exactly one row each, found {}",
+            idempotency_rows(&rt)?
+        )
+        .into());
     }
     if durable_tree(&rt)? != tree_before {
         return Err("SDK refusals must change no bytes under the state root".into());
@@ -373,8 +429,8 @@ fn sdk_publishes_carry_the_canonical_digest_and_refusals_record_nothing() -> Tes
         )
         .into());
     }
-    if idempotency_rows(&rt)? != rows_before.saturating_add(1) {
-        return Err("the applied batch must be the one new record".into());
+    if idempotency_rows(&rt)? != rows_before.saturating_add(3) {
+        return Err("the applied batch must be the third new record".into());
     }
     // The same batch again is the recorded apply, through the SDK too.
     let replay = client.search_corpus().publish(&fits)?;

@@ -13,9 +13,9 @@ use serde::{
 };
 
 use super::{
-    GenerationPin, GenerationSelector, LexicalCursor, QueryConstraintSetV1, TextQuerySyntax,
-    validate_public_top_k,
+    GenerationPin, GenerationSelector, QueryConstraintSetV1, TextQuerySyntax, validate_public_top_k,
 };
+use crate::results::ContinuationTokenV2;
 
 /// The `top_k` gate every wire request shape applies on encode (QI-BB-025).
 ///
@@ -49,10 +49,10 @@ pub struct TextQueryRequest {
     /// under the same code (QI-BB-025). No caller-side default — the SDK
     /// builder enforces this is set.
     pub top_k: u32,
-    /// Continue after this row of an earlier page (QI-BB-005 보완 #4): the
-    /// page holds the rows strictly after it in the ranked order, in the
-    /// generation it names. Absent on the wire for a first page.
-    pub cursor: Option<LexicalCursor>,
+    /// Continue the walk the opaque token names (S21-06): the page runs
+    /// under the token's pinned generation with its boundary, never under
+    /// a re-resolved generation. Absent on the wire for a first page.
+    pub cursor: Option<ContinuationTokenV2>,
 }
 
 const TEXT_QUERY_REQUEST_FIELDS: &[&str] = &[
@@ -120,7 +120,7 @@ impl<'de> Visitor<'de> for TextQueryRequestVisitor {
         let mut generation_selector: Option<GenerationSelector> = None;
         let mut generation_selector_seen = false;
         let mut top_k: Option<u32> = None;
-        let mut cursor: Option<LexicalCursor> = None;
+        let mut cursor: Option<ContinuationTokenV2> = None;
         let mut cursor_seen = false;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {

@@ -10,7 +10,7 @@ use quanta_index_contract::{
     BatchPublishReceipt, CapabilityStatusV1, ChunkId, ChunkRecord, DiffHunkSide,
     ExactRepoRelativePathV1, GenerationSelector, GenerationSnapshot, HistoryQueryRequest,
     HybridSeedQueryResponse, ManifestGeneration, OwnerDocKind, PlannerStage, PlannerTraceEntry,
-    QueryResultWindowV1, QueryResultWindowV2, RepoId, RepoMapChunkExactness,
+    ExhaustionProofV1, QueryResultWindowV1, QueryResultWindowV2, RepoId, RepoMapChunkExactness,
     RepoMapExactnessSummary, RepoMapGraphCoverageClass, RepoMapItemIndexAvailability,
     RepoMapMutationAck, RepoMapRedactionState, RepoRelativePath, RevisionId,
     RuntimeMetadataQueryRequest, SearchCorpusGenerationIdentityV1, SearchExplanation,
@@ -1067,7 +1067,7 @@ fn semantic_query_builder_emits_active_selector_and_query_text() {
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
             window: QueryResultWindowV1::exact(1),
-            window_v2: QueryResultWindowV2::exact_probe(1),
+            window_v2: QueryResultWindowV2::exact_exhausted(1, ExhaustionProofV1::ProbeExhausted { fetched: 1 }, Vec::new()),
             explanation: sample_explanation(),
         }),
     ));
@@ -1109,7 +1109,7 @@ fn semantic_scope_sourcegraph_query_preserves_scope_wire_fields() {
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
             window: QueryResultWindowV1::exact(1),
-            window_v2: QueryResultWindowV2::exact_probe(1),
+            window_v2: QueryResultWindowV2::exact_exhausted(1, ExhaustionProofV1::ProbeExhausted { fetched: 1 }, Vec::new()),
             explanation: sample_explanation(),
         }),
     ));
@@ -1251,7 +1251,7 @@ fn semantic_hybrid_seed_and_symbol_setters_preserve_both_constraint_axes_v1() {
             generation: sample_generation_pin(),
             results: Vec::new(),
             window: QueryResultWindowV1::exact(0),
-            window_v2: QueryResultWindowV2::exact_probe(0),
+            window_v2: QueryResultWindowV2::exact_exhausted(0, ExhaustionProofV1::ProbeExhausted { fetched: 0 }, Vec::new()),
             explanation: sample_explanation(),
         }),
     ));
@@ -1305,7 +1305,7 @@ fn semantic_hybrid_seed_and_symbol_setters_preserve_both_constraint_axes_v1() {
             manifest_digest: "manifest-digest".to_string(),
             seed_candidates: Vec::new(),
             window: QueryResultWindowV1::exact(0),
-            window_v2: QueryResultWindowV2::exact_probe(0),
+            window_v2: QueryResultWindowV2::exact_exhausted(0, ExhaustionProofV1::ProbeExhausted { fetched: 0 }, Vec::new()),
             explanation: sample_explanation(),
         }),
     ));
@@ -1455,7 +1455,7 @@ fn hybrid_seed_search_builder_dispatches_hybrid_seed_request_with_semantic_text(
             manifest_digest: "manifest-digest".to_string(),
             seed_candidates: vec![sample_hybrid_seed_candidate()],
             window: QueryResultWindowV1::exact(1),
-            window_v2: QueryResultWindowV2::exact_probe(1),
+            window_v2: QueryResultWindowV2::exact_exhausted(1, ExhaustionProofV1::ProbeExhausted { fetched: 1 }, Vec::new()),
             explanation: sample_explanation(),
         }),
     ));
@@ -1510,7 +1510,7 @@ fn semantic_query_request_forwards_contract_dto_unchanged() {
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
             window: QueryResultWindowV1::exact(1),
-            window_v2: QueryResultWindowV2::exact_probe(1),
+            window_v2: QueryResultWindowV2::exact_exhausted(1, ExhaustionProofV1::ProbeExhausted { fetched: 1 }, Vec::new()),
             explanation: sample_explanation(),
         }),
     ));
@@ -1550,7 +1550,7 @@ fn hybrid_seed_request_forwards_contract_dto_unchanged() {
             manifest_digest: "manifest-digest".to_string(),
             seed_candidates: vec![sample_hybrid_seed_candidate()],
             window: QueryResultWindowV1::exact(1),
-            window_v2: QueryResultWindowV2::exact_probe(1),
+            window_v2: QueryResultWindowV2::exact_exhausted(1, ExhaustionProofV1::ProbeExhausted { fetched: 1 }, Vec::new()),
             explanation: sample_explanation(),
         }),
     ));
@@ -4470,7 +4470,7 @@ fn hybrid_builder_assembles_a_hybrid_request_with_both_lanes() {
             generation: sample_generation_pin(),
             results: Vec::new(),
             window: QueryResultWindowV1::exact(0),
-            window_v2: QueryResultWindowV2::exact_probe(0),
+            window_v2: QueryResultWindowV2::exact_exhausted(0, ExhaustionProofV1::ProbeExhausted { fetched: 0 }, Vec::new()),
             explanation: sample_explanation(),
         }),
     ));

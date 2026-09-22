@@ -71,9 +71,9 @@ fn claim(
 ) -> Result<PreparedMutationV1, CoreError> {
     match catalog.claim_prepared(key, body, "journal-test", LONG_LEASE_MS, body)? {
         ClaimOutcomeV1::Claimed(claim) => Ok(claim),
-        ClaimOutcomeV1::Replay { .. } => Err(CoreError::InvalidContract(
-            "expected a fresh claim, got a replay".to_string(),
-        )),
+        ClaimOutcomeV1::Replay { .. } | ClaimOutcomeV1::ReplayRepoMap { .. } => Err(
+            CoreError::InvalidContract("expected a fresh claim, got a replay".to_string()),
+        ),
     }
 }
 
@@ -152,7 +152,7 @@ fn ack_loss_replay_does_zero_work() -> TestResult {
                 return Err("the replay must carry the exact recorded apply".into());
             }
         }
-        ClaimOutcomeV1::Claimed(_) => {
+        ClaimOutcomeV1::Claimed(_) | ClaimOutcomeV1::ReplayRepoMap { .. } => {
             return Err("a same-body retry after ack loss must replay".into());
         }
     }
@@ -199,14 +199,17 @@ fn a_recorded_refusal_is_exact_replayed() -> TestResult {
     ) {
         return Err(format!("the refusal must replay exactly, got {replayed:?}").into());
     }
-    // And the inspect reports it without mutating.
+    // And the inspect reports it without mutating — the same typed
+    // refusal and the same terminal sequence.
     match catalog.inspect(&key)? {
         OperationInspectV1::Refused {
             code: SearchPlaneErrorCodeV2::BatchDigestMismatch,
+            durable_sequence,
             ..
-        } => {}
+        } if durable_sequence == sequence => {}
         other @ (OperationInspectV1::Absent
         | OperationInspectV1::Committed { .. }
+        | OperationInspectV1::CommittedRepoMap { .. }
         | OperationInspectV1::InFlight { .. }
         | OperationInspectV1::Refused { .. }
         | OperationInspectV1::Uncertain { .. }) => {
@@ -231,6 +234,7 @@ fn uncertain_recovery_aborts_then_a_retry_commits() -> TestResult {
         OperationInspectV1::Uncertain { .. } => {}
         other @ (OperationInspectV1::Absent
         | OperationInspectV1::Committed { .. }
+        | OperationInspectV1::CommittedRepoMap { .. }
         | OperationInspectV1::InFlight { .. }
         | OperationInspectV1::Refused { .. }) => {
             return Err(format!("expected Uncertain, got {other:?}").into());
@@ -241,6 +245,7 @@ fn uncertain_recovery_aborts_then_a_retry_commits() -> TestResult {
     match catalog.recover(&key)? {
         OperationInspectV1::Absent => {}
         other @ (OperationInspectV1::Committed { .. }
+        | OperationInspectV1::CommittedRepoMap { .. }
         | OperationInspectV1::InFlight { .. }
         | OperationInspectV1::Refused { .. }
         | OperationInspectV1::Uncertain { .. }) => {
@@ -269,6 +274,7 @@ fn timeout_disconnect_and_cancellation_have_distinct_terminals() -> TestResult {
     // Cancellation: a typed refusal terminal, replayed exactly above.
     let cancelled = key(IngestOperationKindV1::RepoTopic, 4, "d-cancel");
     let claim = claim(&catalog, &cancelled, &[1_u8; 32])?;
+    catalog.mark_applying(&claim)?;
     let _refused_sequence = catalog.record_refused(
         &claim,
         &CoreError::Typed {
@@ -280,6 +286,7 @@ fn timeout_disconnect_and_cancellation_have_distinct_terminals() -> TestResult {
         OperationInspectV1::Refused { .. } => {}
         other @ (OperationInspectV1::Absent
         | OperationInspectV1::Committed { .. }
+        | OperationInspectV1::CommittedRepoMap { .. }
         | OperationInspectV1::InFlight { .. }
         | OperationInspectV1::Uncertain { .. }) => {
             return Err(format!("cancellation must be a Refused terminal, got {other:?}").into());
@@ -304,6 +311,7 @@ fn timeout_disconnect_and_cancellation_have_distinct_terminals() -> TestResult {
     match catalog.recover(&timed_out)? {
         OperationInspectV1::Absent => {}
         other @ (OperationInspectV1::Committed { .. }
+        | OperationInspectV1::CommittedRepoMap { .. }
         | OperationInspectV1::InFlight { .. }
         | OperationInspectV1::Refused { .. }
         | OperationInspectV1::Uncertain { .. }) => {
@@ -315,6 +323,7 @@ fn timeout_disconnect_and_cancellation_have_distinct_terminals() -> TestResult {
         // history lives in the ledger).
         OperationInspectV1::Absent => {}
         other @ (OperationInspectV1::Committed { .. }
+        | OperationInspectV1::CommittedRepoMap { .. }
         | OperationInspectV1::InFlight { .. }
         | OperationInspectV1::Refused { .. }
         | OperationInspectV1::Uncertain { .. }) => {
@@ -325,6 +334,7 @@ fn timeout_disconnect_and_cancellation_have_distinct_terminals() -> TestResult {
         OperationInspectV1::InFlight { .. } => {}
         other @ (OperationInspectV1::Absent
         | OperationInspectV1::Committed { .. }
+        | OperationInspectV1::CommittedRepoMap { .. }
         | OperationInspectV1::Refused { .. }
         | OperationInspectV1::Uncertain { .. }) => {
             return Err(format!("a live lease must be left alone, got {other:?}").into());
@@ -485,6 +495,7 @@ fn interleaved_kinds_share_one_strictly_monotonic_sequence() -> TestResult {
         &key(IngestOperationKindV1::History, 12, "d-i2"),
         &[2_u8; 32],
     )?;
+    catalog.mark_applying(&claim)?;
     if catalog.record_refused(
         &claim,
         &CoreError::Typed {
@@ -602,7 +613,9 @@ fn same_body_replay_is_zero_work_across_restart() -> TestResult {
         ClaimOutcomeV1::Replay {
             durable_sequence, ..
         } if durable_sequence == sequence => {}
-        ClaimOutcomeV1::Claimed(_) | ClaimOutcomeV1::Replay { .. } => {
+        ClaimOutcomeV1::Claimed(_)
+        | ClaimOutcomeV1::Replay { .. }
+        | ClaimOutcomeV1::ReplayRepoMap { .. } => {
             return Err("the restart replay must carry the original sequence".into());
         }
     }
@@ -640,14 +653,17 @@ fn forget_then_replay_is_below_the_replay_floor() -> TestResult {
 #[test]
 fn the_state_graph_and_event_kind_set_are_closed() -> TestResult {
     use OperationJournalStateV1 as S;
+    // The forward path is Prepared → Claimed → Applying →
+    // {Committed, Refused, Uncertain} plus the pre-claim frozen refusal
+    // Prepared → Refused; the recovery vocabulary is the → Aborted
+    // edges and Uncertain → Committed. A bare claim can neither refuse
+    // nor go uncertain.
     let allowed = [
         (S::Prepared, S::Claimed),
         (S::Prepared, S::Refused),
         (S::Prepared, S::Aborted),
         (S::Claimed, S::Applying),
-        (S::Claimed, S::Refused),
         (S::Claimed, S::Aborted),
-        (S::Claimed, S::Uncertain),
         (S::Applying, S::Committed),
         (S::Applying, S::Refused),
         (S::Applying, S::Aborted),
@@ -745,7 +761,9 @@ impl Claimed for ClaimOutcomeV1 {
     fn claimed(&self) -> Result<PreparedMutationV1, Box<dyn Error>> {
         match self {
             ClaimOutcomeV1::Claimed(claim) => Ok(claim.clone()),
-            ClaimOutcomeV1::Replay { .. } => Err("expected a claim".into()),
+            ClaimOutcomeV1::Replay { .. } | ClaimOutcomeV1::ReplayRepoMap { .. } => {
+                Err("expected a claim".into())
+            }
         }
     }
 }
@@ -769,6 +787,7 @@ fn a_crashed_claim_is_aborted_at_open_and_the_retry_claims_fresh() -> TestResult
     match catalog.inspect(&key)? {
         OperationInspectV1::Absent => {}
         other @ (OperationInspectV1::Committed { .. }
+        | OperationInspectV1::CommittedRepoMap { .. }
         | OperationInspectV1::InFlight { .. }
         | OperationInspectV1::Refused { .. }
         | OperationInspectV1::Uncertain { .. }) => {
@@ -821,6 +840,7 @@ fn committed_history_survives_crash_recovery_untouched() -> TestResult {
         } if durable_sequence == sequence => {}
         other @ (OperationInspectV1::Absent
         | OperationInspectV1::Committed { .. }
+        | OperationInspectV1::CommittedRepoMap { .. }
         | OperationInspectV1::InFlight { .. }
         | OperationInspectV1::Refused { .. }
         | OperationInspectV1::Uncertain { .. }) => {

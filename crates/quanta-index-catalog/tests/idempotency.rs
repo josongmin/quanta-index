@@ -1,10 +1,10 @@
 //! QI-BB-032 / SEP-21 P02B — the operation journal's contract, against
 //! the real engine.
 //!
-//! 1. inspect → claim → apply → fenced commit: a fresh key is claimed,
-//!    committed with a receipt, and every later attempt of the same body
-//!    replays that receipt and sequence; a different body is a typed
-//!    conflict.
+//! 1. inspect → prepare → claim → apply → fenced commit: a fresh key is
+//!    prepared, claimed, committed with a receipt, and every later
+//!    attempt of the same body replays that receipt and sequence; a
+//!    different body is a typed conflict before anything mutable.
 //! 2. A claim left in progress by a crash (recovered) is claimed fresh
 //!    and then commits.
 //! 3. Rows verify their own digest: a bit flipped in the stored body hash
@@ -23,12 +23,13 @@ use std::time::Duration;
 
 use quanta_index_catalog::{CATALOG_FILE_NAME, SqliteCatalog, catalog_dir};
 use quanta_index_contract::{
-    BatchPublishReceipt, IngestOperationKindV1, ManifestGeneration, RepoId, RevisionId,
+    BatchPublishReceipt, IngestOperationKindV1, ManifestGeneration, RepoId, RepoMapMutationAck,
+    RepoMapMutationPhaseV2, RepoMapTerminalReceiptV2, RevisionId, SearchPlaneErrorCodeV2,
 };
 use quanta_index_core::{
     BATCH_DIGEST_CONFLICT_CODE, CATALOG_BUSY_CODE, CATALOG_ROW_CORRUPT_CODE, ClaimOutcomeV1,
-    CoreError, IdempotencyCatalogPort, IdempotencyKeyV1, OPERATION_REPLAY_FLOOR_CODE,
-    OperationInspectV1, PreparedMutationV1,
+    CoreError, IdempotencyCatalogPort, IdempotencyKeyV1, OPERATION_FENCE_LOST_CODE,
+    OPERATION_REPLAY_FLOOR_CODE, OperationInspectV1, PreparedMutationV1,
 };
 
 const LONG_LEASE_MS: u64 = i64::MAX.unsigned_abs();
@@ -83,7 +84,7 @@ fn claim_and_commit(
 ) -> Result<u64, CoreError> {
     let claim = match catalog.claim_prepared(key, body, "test", LONG_LEASE_MS, body)? {
         ClaimOutcomeV1::Claimed(claim) => claim,
-        ClaimOutcomeV1::Replay { .. } => {
+        ClaimOutcomeV1::Replay { .. } | ClaimOutcomeV1::ReplayRepoMap { .. } => {
             return Err(CoreError::InvalidContract(
                 "expected a fresh claim, got a replay".to_string(),
             ));
@@ -118,6 +119,7 @@ fn a_committed_record_replays_and_a_different_body_conflicts() -> TestResult {
             }
         }
         other @ (OperationInspectV1::Absent
+        | OperationInspectV1::CommittedRepoMap { .. }
         | OperationInspectV1::InFlight { .. }
         | OperationInspectV1::Refused { .. }
         | OperationInspectV1::Uncertain { .. }) => {
@@ -130,7 +132,9 @@ fn a_committed_record_replays_and_a_different_body_conflicts() -> TestResult {
             durable_sequence: 1,
             ..
         } => {}
-        other @ (ClaimOutcomeV1::Claimed(_) | ClaimOutcomeV1::Replay { .. }) => {
+        other @ (ClaimOutcomeV1::Claimed(_)
+        | ClaimOutcomeV1::Replay { .. }
+        | ClaimOutcomeV1::ReplayRepoMap { .. }) => {
             return Err(format!("expected a replay claim, got {other:?}").into());
         }
     }
@@ -186,14 +190,21 @@ fn a_crashed_claim_is_recovered_then_claimed_fresh_and_commits() -> TestResult {
         )
         .into());
     }
-    if !matches!(
-        catalog.inspect(&key)?,
+    match catalog.inspect(&key)? {
         OperationInspectV1::Committed {
             durable_sequence: 3,
             ..
+        } => {}
+        other @ (OperationInspectV1::Absent
+        | OperationInspectV1::Committed { .. }
+        | OperationInspectV1::CommittedRepoMap { .. }
+        | OperationInspectV1::InFlight { .. }
+        | OperationInspectV1::Refused { .. }
+        | OperationInspectV1::Uncertain { .. }) => {
+            return Err(
+                format!("a committed recovery replays like any apply, got {other:?}").into(),
+            );
         }
-    ) {
-        return Err("a committed recovery replays like any apply".into());
     }
     Ok(())
 }
@@ -294,11 +305,11 @@ fn a_held_write_lock_past_the_busy_budget_is_typed_busy() -> TestResult {
         return Err(format!("the busy budget was not honored: waited {waited:?}").into());
     }
     holder.execute_batch("ROLLBACK;")?;
-    if !matches!(
-        catalog.claim_prepared(&key, &[0_u8; 32], "test", LONG_LEASE_MS, &[0_u8; 32])?,
-        ClaimOutcomeV1::Claimed(_)
-    ) {
-        return Err("once released, the write proceeds".into());
+    match catalog.claim_prepared(&key, &[0_u8; 32], "test", LONG_LEASE_MS, &[0_u8; 32])? {
+        ClaimOutcomeV1::Claimed(_) => {}
+        other @ (ClaimOutcomeV1::Replay { .. } | ClaimOutcomeV1::ReplayRepoMap { .. }) => {
+            return Err(format!("once released, the write proceeds, got {other:?}").into());
+        }
     }
     Ok(())
 }
@@ -409,6 +420,285 @@ fn the_pair_listing_and_forget_cover_every_route_and_forget_is_idempotent() -> T
     Ok(())
 }
 
+fn db_path(temp: &tempfile::TempDir) -> std::path::PathBuf {
+    catalog_dir(temp.path()).join(CATALOG_FILE_NAME)
+}
+
+fn event_count(temp: &tempfile::TempDir) -> Result<i64, Box<dyn Error>> {
+    let connection = rusqlite::Connection::open(db_path(temp))?;
+    Ok(connection.query_row(
+        "SELECT COUNT(*) FROM catalog_sequence_event_v2",
+        [],
+        |row| row.get(0),
+    )?)
+}
+
+fn allocator_next(temp: &tempfile::TempDir) -> Result<Option<i64>, Box<dyn Error>> {
+    let connection = rusqlite::Connection::open(db_path(temp))?;
+    Ok(connection.query_row(
+        "SELECT next FROM catalog_sequence_v2 WHERE id = 1",
+        [],
+        |row| row.get(0),
+    )?)
+}
+
+fn repomap_receipt(generation: u64, digest: &str) -> RepoMapTerminalReceiptV2 {
+    RepoMapTerminalReceiptV2 {
+        phase: RepoMapMutationPhaseV2::Publish,
+        mutation: RepoMapMutationAck {
+            repo_id: RepoId::new("repo-cat").expect("static fixture ID satisfies canonical policy"),
+            revision_id: RevisionId::new("rev-cat")
+                .expect("static fixture ID satisfies canonical policy"),
+            manifest_generation: ManifestGeneration::new(generation),
+            prior_candidate_commitment: None,
+            new_candidate_commitment: "c".repeat(64),
+            activation_epoch: 0,
+            terminal_sequence: 41,
+            replayed: false,
+        },
+        manifest_digest: "m".repeat(64),
+        snapshot_id: format!("snap-{generation}"),
+        projection_version: 3,
+        authority_digest: "a".repeat(64),
+        source_bundle_digest: digest.to_string(),
+    }
+}
+
+/// A same-key/different-body prepare is a typed conflict with zero
+/// mutations: no event, no allocator advance, and the prepared row is
+/// untouched.
+#[test]
+fn prepare_conflicts_before_any_mutation() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let catalog = SqliteCatalog::open(temp.path(), Duration::from_millis(100))?;
+    let key = key(IngestOperationKindV1::History, 21, "prepare-conflict");
+    let body = [11_u8; 32];
+    let _prepared = catalog.prepare(&key, &body, "test", LONG_LEASE_MS, &body)?;
+    match catalog.inspect(&key)? {
+        OperationInspectV1::InFlight { .. } => {}
+        other => return Err(format!("a prepare must read back in-flight, got {other:?}").into()),
+    }
+    let events_before = event_count(&temp)?;
+    let next_before = allocator_next(&temp)?;
+    let conflict = catalog
+        .prepare(&key, &[12_u8; 32], "test", LONG_LEASE_MS, &[12_u8; 32])
+        .expect_err("a different body under the same key must conflict");
+    if typed_code(&conflict) != Some(BATCH_DIGEST_CONFLICT_CODE) {
+        return Err(format!("expected BATCH_DIGEST_CONFLICT, got {conflict:?}").into());
+    }
+    if event_count(&temp)? != events_before || allocator_next(&temp)? != next_before {
+        return Err("a conflict must append no event and advance no sequence".into());
+    }
+    // The original prepare is untouched: the same owner still claims.
+    match catalog.claim_prepared(&key, &body, "test", LONG_LEASE_MS, &body)? {
+        ClaimOutcomeV1::Claimed(_) => {}
+        other => {
+            return Err(format!("the original prepare must still claim, got {other:?}").into());
+        }
+    }
+    Ok(())
+}
+
+/// A frozen-policy refusal records atomically from the prepared
+/// mutation: no claim is ever held, and the retry replays the same
+/// typed refusal and terminal sequence.
+#[test]
+fn a_prepared_mutation_records_a_frozen_refusal_without_a_claim() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let catalog = SqliteCatalog::open(temp.path(), Duration::from_millis(100))?;
+    let key = key(IngestOperationKindV1::Dirty, 22, "prepare-refuse");
+    let body = [13_u8; 32];
+    let prepared = catalog.prepare(&key, &body, "test", LONG_LEASE_MS, &body)?;
+    let refusal = CoreError::Typed {
+        code: SearchPlaneErrorCodeV2::SearchCorpusBatchShapeInvalid,
+        message: "frozen: shape".to_string(),
+    };
+    let sequence = catalog.record_refused(&prepared, &refusal)?;
+    if sequence != 1 {
+        return Err(format!("the frozen refusal takes sequence 1, got {sequence}").into());
+    }
+    match catalog.inspect(&key)? {
+        OperationInspectV1::Refused {
+            code,
+            message,
+            durable_sequence,
+        } => {
+            if code != SearchPlaneErrorCodeV2::SearchCorpusBatchShapeInvalid
+                || message != "frozen: shape"
+                || durable_sequence != sequence
+            {
+                return Err("the inspect must replay the frozen refusal and its sequence".into());
+            }
+        }
+        other => return Err(format!("expected a refused inspect, got {other:?}").into()),
+    }
+    // The prepared mutation is spent: refusing twice loses the fence.
+    let again = catalog
+        .record_refused(&prepared, &refusal)
+        .expect_err("a spent prepared mutation must not refuse twice");
+    if typed_code(&again) != Some(OPERATION_FENCE_LOST_CODE) {
+        return Err(format!("expected OPERATION_FENCE_LOST, got {again:?}").into());
+    }
+    // A retry meets the same typed refusal, not a claim.
+    let replayed = catalog
+        .claim_prepared(&key, &body, "test", LONG_LEASE_MS, &body)
+        .expect_err("a refused record must exact-replay its refusal");
+    if typed_code(&replayed) != Some(SearchPlaneErrorCodeV2::SearchCorpusBatchShapeInvalid) {
+        return Err(format!("the refusal must replay exactly, got {replayed:?}").into());
+    }
+    Ok(())
+}
+
+/// A bare claim can neither refuse nor go uncertain: those terminals
+/// are unrepresentable before the worker starts applying.
+#[test]
+fn a_bare_claim_cannot_refuse_or_go_uncertain() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let catalog = SqliteCatalog::open(temp.path(), Duration::from_millis(100))?;
+    let key = key(IngestOperationKindV1::Structural, 23, "bare-claim");
+    let body = [14_u8; 32];
+    let prepared = catalog.prepare(&key, &body, "test", LONG_LEASE_MS, &body)?;
+    let claim = match catalog.claim_prepared(&key, &body, "test", LONG_LEASE_MS, &body)? {
+        ClaimOutcomeV1::Claimed(claim) => claim,
+        other => return Err(format!("expected a fresh claim, got {other:?}").into()),
+    };
+    // The prepared mutation and the claim differ by fence rotation, but
+    // neither may refuse from `Claimed`.
+    let _prepared = prepared;
+    let refusal = CoreError::Typed {
+        code: SearchPlaneErrorCodeV2::RequestCancelled,
+        message: "cancelled".to_string(),
+    };
+    let refused = catalog
+        .record_refused(&claim, &refusal)
+        .expect_err("a bare claim must not refuse");
+    if typed_code(&refused) != Some(OPERATION_FENCE_LOST_CODE) {
+        return Err(format!("expected OPERATION_FENCE_LOST, got {refused:?}").into());
+    }
+    let uncertain = catalog
+        .mark_uncertain(&claim)
+        .expect_err("a bare claim must not go uncertain");
+    if typed_code(&uncertain) != Some(OPERATION_FENCE_LOST_CODE) {
+        return Err(format!("expected OPERATION_FENCE_LOST, got {uncertain:?}").into());
+    }
+    // The claim is still live: applying proceeds normally.
+    catalog.mark_applying(&claim)?;
+    let sequence = catalog.record_refused(&claim, &refusal)?;
+    if sequence != 1 {
+        return Err(format!("the applying refusal takes sequence 1, got {sequence}").into());
+    }
+    Ok(())
+}
+
+/// Prepare is idempotent for the same owner and busy for a live
+/// foreign prepare.
+#[test]
+fn prepare_is_idempotent_for_the_same_owner_and_busy_for_foreign() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let catalog = SqliteCatalog::open(temp.path(), Duration::from_millis(100))?;
+    let key = key(IngestOperationKindV1::RepoTopic, 24, "prepare-idem");
+    let body = [15_u8; 32];
+    let first = catalog.prepare(&key, &body, "worker-a", LONG_LEASE_MS, &body)?;
+    let second = catalog.prepare(&key, &body, "worker-a", LONG_LEASE_MS, &body)?;
+    if first.fence_token != second.fence_token {
+        return Err("the same owner's prepare must reuse its row".into());
+    }
+    let busy = catalog
+        .prepare(&key, &body, "worker-b", LONG_LEASE_MS, &body)
+        .expect_err("a live foreign prepare must refuse");
+    if typed_code(&busy) != Some(CATALOG_BUSY_CODE) {
+        return Err(format!("expected CATALOG_BUSY, got {busy:?}").into());
+    }
+    Ok(())
+}
+
+/// A repo-map bundle key travels the same journal: prepare, claim,
+/// apply, then a repo-map terminal commit — and the replay carries the
+/// same receipt and sequence with zero new work.
+#[test]
+fn a_repomap_bundle_key_travels_the_same_journal() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let catalog = SqliteCatalog::open(temp.path(), Duration::from_millis(100))?;
+    let rm_key = key(IngestOperationKindV1::RepoMapBundle, 25, "rm-bundle");
+    let body = [16_u8; 32];
+    let rm_receipt = repomap_receipt(25, "rm-bundle");
+    let prepared = catalog.prepare(&rm_key, &body, "test", LONG_LEASE_MS, &body)?;
+    if prepared.operation_kind() != IngestOperationKindV1::RepoMapBundle {
+        return Err("the prepared mutation must name its operation kind".into());
+    }
+    let (target_repo, _revision, target_generation) = prepared.target_identity();
+    if target_repo.as_str() != "repo-cat" || target_generation.get() != 25 {
+        return Err("the prepared mutation must name its target identity".into());
+    }
+    let claim = match catalog.claim_prepared(&rm_key, &body, "test", LONG_LEASE_MS, &body)? {
+        ClaimOutcomeV1::Claimed(claim) => claim,
+        other => return Err(format!("expected a fresh claim, got {other:?}").into()),
+    };
+    catalog.mark_applying(&claim)?;
+    // A batch commit on a repo-map key is a caller defect.
+    let batch_refused = catalog
+        .commit(&claim, &receipt(25, "rm-bundle", 0))
+        .expect_err("a batch commit must not take a repo-map key");
+    if typed_code(&batch_refused).is_some() {
+        return Err(format!(
+            "a batch commit on a repo-map key must be a contract refusal, got {batch_refused:?}"
+        )
+        .into());
+    }
+    let sequence = catalog.commit_repomap(&claim, &rm_receipt)?;
+    if sequence != 1 {
+        return Err(format!("the repo-map commit takes sequence 1, got {sequence}").into());
+    }
+    let events_before = event_count(&temp)?;
+    match catalog.inspect(&rm_key)? {
+        OperationInspectV1::CommittedRepoMap {
+            receipt: stored,
+            durable_sequence,
+        } => {
+            if stored != rm_receipt || durable_sequence != sequence {
+                return Err("the replay must carry the recorded terminal receipt".into());
+            }
+        }
+        other => {
+            return Err(format!("expected a repo-map committed inspect, got {other:?}").into());
+        }
+    }
+    match catalog.claim_prepared(&rm_key, &body, "test", LONG_LEASE_MS, &body)? {
+        ClaimOutcomeV1::ReplayRepoMap {
+            receipt: stored,
+            durable_sequence,
+        } => {
+            if stored != rm_receipt || durable_sequence != sequence {
+                return Err("the claim replay must carry the recorded terminal receipt".into());
+            }
+        }
+        other => return Err(format!("expected a repo-map replay, got {other:?}").into()),
+    }
+    if event_count(&temp)? != events_before {
+        return Err("a repo-map replay must append no journal event".into());
+    }
+    // A repo-map commit on a batch key is the symmetric caller defect.
+    let batch_key = key(IngestOperationKindV1::History, 26, "not-rm");
+    let batch_body = [17_u8; 32];
+    let _batch_prepared =
+        catalog.prepare(&batch_key, &batch_body, "test", LONG_LEASE_MS, &batch_body)?;
+    let batch_claim = match catalog.claim_prepared(
+        &batch_key,
+        &batch_body,
+        "test",
+        LONG_LEASE_MS,
+        &batch_body,
+    )? {
+        ClaimOutcomeV1::Claimed(claim) => claim,
+        other => return Err(format!("expected a fresh claim, got {other:?}").into()),
+    };
+    catalog.mark_applying(&batch_claim)?;
+    if catalog.commit_repomap(&batch_claim, &rm_receipt).is_ok() {
+        return Err("a repo-map commit must not take a batch key".into());
+    }
+    Ok(())
+}
+
 /// Test helper: a claim outcome that must be a claim.
 trait ClaimedOrFail {
     fn claimed_or_fail(&self) -> Result<PreparedMutationV1, Box<dyn Error>>;
@@ -418,7 +708,9 @@ impl ClaimedOrFail for ClaimOutcomeV1 {
     fn claimed_or_fail(&self) -> Result<PreparedMutationV1, Box<dyn Error>> {
         match self {
             ClaimOutcomeV1::Claimed(claim) => Ok(claim.clone()),
-            ClaimOutcomeV1::Replay { .. } => Err("expected a fresh claim, got a replay".into()),
+            ClaimOutcomeV1::Replay { .. } | ClaimOutcomeV1::ReplayRepoMap { .. } => {
+                Err("expected a fresh claim, got a replay".into())
+            }
         }
     }
 }

@@ -18,6 +18,9 @@ use core::fmt;
 use serde::{Deserialize, Serialize, de};
 use sha2::{Digest, Sha256};
 
+use crate::ids::{ManifestGeneration, RepoId, RevisionId};
+use crate::query::GenerationPin;
+
 /// Envelope format version. One byte on the wire, inside the MAC.
 pub const CURSOR_ENVELOPE_V2_VERSION: u8 = 2;
 
@@ -129,10 +132,10 @@ pub struct CursorAuxEpochV2 {
 pub struct CursorBindingV2 {
     /// The pageable route the token continues.
     pub route: CursorRouteV2,
-    /// Repository identity of the pinned read.
-    pub repo_id: String,
-    /// Pinned generation of the read.
-    pub pinned_generation: u64,
+    /// The full generation pin of the read the token continues: repo,
+    /// revision and manifest generation. A continuation executes under
+    /// exactly this pin — never under a re-resolved active generation.
+    pub pin: GenerationPin,
     /// Digest of the canonical plan / read identity.
     pub plan_digest: [u8; 32],
     /// Digest of the normalized query.
@@ -150,11 +153,18 @@ pub struct CursorBindingV2 {
 impl CursorBindingV2 {
     /// Canonical context bytes; `None` only when a field length cannot
     /// fit the wire length width, which no supported target allows.
+    ///
+    /// The context layout changed with the full-pin binding: tokens
+    /// minted under the old `(repo_id, pinned_generation)` layout fail
+    /// the MAC under the new layout and are refused as tampered. No
+    /// migration exists or is needed — continuations live at most the
+    /// one-hour TTL.
     fn canonical_bytes(&self, buffer: &mut Vec<u8>) -> Option<()> {
         push_domain(buffer, CURSOR_CONTEXT_DOMAIN);
         push_u64(buffer, self.route.discriminant());
-        push_str(buffer, &self.repo_id)?;
-        push_u64(buffer, self.pinned_generation);
+        push_str(buffer, self.pin.repo_id.as_str())?;
+        push_str(buffer, self.pin.revision_id.as_str())?;
+        push_u64(buffer, self.pin.manifest_generation.get());
         push_digest(buffer, &self.plan_digest);
         push_digest(buffer, &self.query_digest);
         push_digest(buffer, &self.constraints_digest);
@@ -366,8 +376,17 @@ impl CursorEnvelopeV2 {
             .skip(CURSOR_CONTEXT_DOMAIN.len())
             .ok_or(CursorEnvelopeError::MalformedToken)?;
         let route = cursor.route().ok_or(CursorEnvelopeError::MalformedToken)?;
-        let repo_id = cursor.str().ok_or(CursorEnvelopeError::MalformedToken)?;
-        let pinned_generation = cursor.u64().ok_or(CursorEnvelopeError::MalformedToken)?;
+        let repo_id = cursor
+            .str()
+            .and_then(|repo| RepoId::new(repo).ok())
+            .ok_or(CursorEnvelopeError::MalformedToken)?;
+        let revision_id = cursor
+            .str()
+            .and_then(|revision| RevisionId::new(revision).ok())
+            .ok_or(CursorEnvelopeError::MalformedToken)?;
+        let manifest_generation = cursor
+            .u64()
+            .ok_or(CursorEnvelopeError::MalformedToken)?;
         let plan_digest = cursor.digest().ok_or(CursorEnvelopeError::MalformedToken)?;
         let query_digest = cursor.digest().ok_or(CursorEnvelopeError::MalformedToken)?;
         let constraints_digest = cursor.digest().ok_or(CursorEnvelopeError::MalformedToken)?;
@@ -390,9 +409,6 @@ impl CursorEnvelopeV2 {
         if key_id != key.id() {
             return Err(CursorEnvelopeError::Signature);
         }
-        if key_id != key.id() {
-            return Err(CursorEnvelopeError::Signature);
-        }
         if expires_at_unix <= issued_at_unix {
             return Err(CursorEnvelopeError::InvalidWindow);
         }
@@ -402,8 +418,11 @@ impl CursorEnvelopeV2 {
         Ok(Self {
             binding: CursorBindingV2 {
                 route,
-                repo_id,
-                pinned_generation,
+                pin: GenerationPin::new(
+                    repo_id,
+                    revision_id,
+                    ManifestGeneration::new(manifest_generation),
+                ),
                 plan_digest,
                 query_digest,
                 constraints_digest,
@@ -741,16 +760,25 @@ mod tests {
         CursorEnvelopeError, CursorEnvelopeV2, CursorKeyV2, CursorRouteV2, CursorTtlPolicyV2,
         base64url_nopad_decode, base64url_nopad_encode, hmac_sha256,
     };
+    use crate::ids::{ManifestGeneration, RepoId, RevisionId};
+    use crate::query::GenerationPin;
 
     fn key() -> CursorKeyV2 {
         CursorKeyV2::new(7, [0x42; 32])
     }
 
+    fn pin(repo: &str, revision: &str, generation: u64) -> GenerationPin {
+        GenerationPin::new(
+            RepoId::new(repo).expect("static fixture identity"),
+            RevisionId::new(revision).expect("static fixture identity"),
+            ManifestGeneration::new(generation),
+        )
+    }
+
     fn binding() -> CursorBindingV2 {
         CursorBindingV2 {
             route: CursorRouteV2::Lexical,
-            repo_id: "repo-a".to_string(),
-            pinned_generation: 12,
+            pin: pin("repo-a", "rev-a", 12),
             plan_digest: [0x01; 32],
             query_digest: [0x02; 32],
             constraints_digest: [0x03; 32],
@@ -885,10 +913,13 @@ mod tests {
         let check = |mutated: CursorBindingV2| !envelope.matches(&mutated, key_id);
         let base = binding();
         let mut other_repo = base.clone();
-        other_repo.repo_id = "repo-b".to_string();
+        other_repo.pin = pin("repo-b", "rev-a", 12);
         assert!(check(other_repo));
+        let mut other_revision = base.clone();
+        other_revision.pin = pin("repo-a", "rev-b", 12);
+        assert!(check(other_revision));
         let mut other_generation = base.clone();
-        other_generation.pinned_generation = 13;
+        other_generation.pin = pin("repo-a", "rev-a", 13);
         assert!(check(other_generation));
         let mut other_plan = base.clone();
         other_plan.plan_digest = [0xaa; 32];

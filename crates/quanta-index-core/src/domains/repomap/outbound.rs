@@ -28,6 +28,18 @@ pub struct RepoMapMutationReceiptV1 {
     pub replayed: bool,
 }
 
+/// The store performs the domain mutation only (SEP-21 P02B).
+///
+/// Operation-journal ownership — the key, the prepared mutation, the
+/// fenced claim, the terminal receipt record and the durable sequence —
+/// lives in the ingest dispatcher and the catalog journal. An
+/// implementation of this port must not keep a journal of its own:
+/// no private prepare/claim rows, no second sequence allocator, no
+/// replay short-circuit around the dispatcher. Whatever durable
+/// custody the store keeps (candidate rows, object verification) is
+/// domain validation inside the apply, and it must answer a repeated
+/// apply deterministically so the journal above can replay without
+/// re-running it.
 pub trait RepoMapBundleIngestPort: Send + Sync {
     fn ingest_bundle(
         &self,

@@ -220,7 +220,8 @@ fn seed_records(
             let body = [u8::try_from(*generation)?; 32];
             let claim = match catalog.claim_prepared(&key, &body, "test-seed", u64::MAX, &body)? {
                 quanta_index_core::ClaimOutcomeV1::Claimed(claim) => claim,
-                quanta_index_core::ClaimOutcomeV1::Replay { .. } => {
+                quanta_index_core::ClaimOutcomeV1::Replay { .. }
+                | quanta_index_core::ClaimOutcomeV1::ReplayRepoMap { .. } => {
                     return Err("seed claim unexpectedly replayed".into());
                 }
             };

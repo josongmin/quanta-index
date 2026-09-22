@@ -31,7 +31,8 @@
 use std::path::Path;
 
 use quanta_index_contract::{
-    BATCH_PUBLISH_RECEIPT_FORMAT_VERSION, BatchPublishReceipt, ManifestGeneration, RepoId,
+    BATCH_PUBLISH_RECEIPT_FORMAT_VERSION, BatchPublishReceipt, IngestOperationKindV1,
+    ManifestGeneration, REPOMAP_TERMINAL_RECEIPT_FORMAT_VERSION, RepoId, RepoMapTerminalReceiptV2,
     RevisionId, SearchPlaneErrorCodeV2,
 };
 use quanta_index_core::{
@@ -172,6 +173,86 @@ fn receipt_version_mismatch(stored: Option<u32>) -> CoreError {
              only version {BATCH_PUBLISH_RECEIPT_FORMAT_VERSION}; receipts of another version \
              are offline-migration input, not live input",
         ),
+    }
+}
+
+/// The versioned persisted form of a repo-map terminal receipt: the
+/// format tag followed by the receipt's canonical CBOR. Same
+/// incompatibility rule as [`encode_versioned_receipt`]: any other
+/// version is a typed refusal before any mutation.
+fn encode_versioned_repomap_receipt(
+    receipt: &RepoMapTerminalReceiptV2,
+) -> Result<Vec<u8>, CoreError> {
+    let cbor = encode_cbor_payload(receipt).map_err(|error| {
+        CoreError::Storage(format!("catalog: encode repo-map receipt: {error}"))
+    })?;
+    let mut bytes = REPOMAP_TERMINAL_RECEIPT_FORMAT_VERSION
+        .to_le_bytes()
+        .to_vec();
+    bytes.extend_from_slice(&cbor);
+    Ok(bytes)
+}
+
+fn decode_versioned_repomap_receipt(bytes: &[u8]) -> Result<RepoMapTerminalReceiptV2, CoreError> {
+    let tag = match bytes.get(..4) {
+        Some(tag) => {
+            <[u8; 4]>::try_from(tag).map_err(|_error| repomap_receipt_version_mismatch(None))?
+        }
+        None => return Err(repomap_receipt_version_mismatch(None)),
+    };
+    let stored_version = u32::from_le_bytes(tag);
+    if stored_version != REPOMAP_TERMINAL_RECEIPT_FORMAT_VERSION {
+        return Err(repomap_receipt_version_mismatch(Some(stored_version)));
+    }
+    let payload = bytes
+        .get(4..)
+        .ok_or_else(|| corrupt_row_wip("stored repo-map receipt payload is missing"))?;
+    decode_cbor_payload(payload).map_err(|error| CoreError::Typed {
+        code: SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+        message: format!("catalog: stored repo-map receipt does not decode: {error}"),
+    })
+}
+
+fn repomap_receipt_version_mismatch(stored: Option<u32>) -> CoreError {
+    CoreError::Typed {
+        code: SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+        message: format!(
+            "catalog: stored repo-map receipt carries format version {stored:?}, but this runtime \
+             reads only version {REPOMAP_TERMINAL_RECEIPT_FORMAT_VERSION}; receipts of another \
+             version are offline-migration input, not live input",
+        ),
+    }
+}
+
+/// A decoded terminal payload: batch routes persist a batch receipt,
+/// repo-map bundle keys persist the repo-map terminal receipt. The
+/// journal row's kind decides the decoder — never the payload bytes.
+enum TerminalReceiptPayload {
+    Batch(BatchPublishReceipt),
+    RepoMap(RepoMapTerminalReceiptV2),
+}
+
+fn decode_terminal_payload(
+    kind: &IngestOperationKindV1,
+    bytes: &[u8],
+) -> Result<TerminalReceiptPayload, CoreError> {
+    match kind {
+        IngestOperationKindV1::RepoMapBundle => {
+            decode_versioned_repomap_receipt(bytes).map(TerminalReceiptPayload::RepoMap)
+        }
+        IngestOperationKindV1::SearchCorpus
+        | IngestOperationKindV1::History
+        | IngestOperationKindV1::Dirty
+        | IngestOperationKindV1::RuntimeCatalog
+        | IngestOperationKindV1::Structural
+        | IngestOperationKindV1::RepoCommitRecency
+        | IngestOperationKindV1::RepoTopic
+        | IngestOperationKindV1::RepoDescription
+        | IngestOperationKindV1::FileOwnership
+        | IngestOperationKindV1::FileContributor
+        | IngestOperationKindV1::RepoMeta => {
+            decode_versioned_receipt(bytes).map(TerminalReceiptPayload::Batch)
+        }
     }
 }
 
@@ -830,28 +911,36 @@ fn write_row(
         .map_err(|error| engine_error("write journal record", Path::new(":catalog:"), &error))
 }
 
-fn inspect_stored(stored: &StoredRow) -> Result<OperationInspectV1, CoreError> {
+fn inspect_stored(
+    key: &IdempotencyKeyV1,
+    stored: &StoredRow,
+) -> Result<OperationInspectV1, CoreError> {
     Ok(match stored.state {
         OperationJournalStateV1::Committed => {
-            let receipt = decode_versioned_receipt(
-                stored
-                    .receipt_cbor
-                    .as_deref()
-                    .ok_or_else(|| corrupt_row_wip("committed row has no receipt bytes"))?,
-            )?;
+            let bytes = stored
+                .receipt_cbor
+                .as_deref()
+                .ok_or_else(|| corrupt_row_wip("committed row has no receipt bytes"))?;
             if let (Some(_sequence), Some(digest)) =
                 (stored.durable_sequence, stored.receipt_digest)
-                && receipt_digest(stored.receipt_cbor.as_deref().unwrap_or(&[])) != digest
+                && receipt_digest(bytes) != digest
             {
                 return Err(corrupt_row_wip(
                     "receipt bytes do not match the receipt digest",
                 ));
             }
-            OperationInspectV1::Committed {
-                receipt,
-                durable_sequence: stored
-                    .durable_sequence
-                    .ok_or_else(|| corrupt_row_wip("committed row has no sequence"))?,
+            let durable_sequence = stored
+                .durable_sequence
+                .ok_or_else(|| corrupt_row_wip("committed row has no sequence"))?;
+            match decode_terminal_payload(&key.kind, bytes)? {
+                TerminalReceiptPayload::Batch(receipt) => OperationInspectV1::Committed {
+                    receipt,
+                    durable_sequence,
+                },
+                TerminalReceiptPayload::RepoMap(receipt) => OperationInspectV1::CommittedRepoMap {
+                    receipt,
+                    durable_sequence,
+                },
             }
         }
         OperationJournalStateV1::Refused => OperationInspectV1::Refused {
@@ -863,6 +952,9 @@ fn inspect_stored(stored: &StoredRow) -> Result<OperationInspectV1, CoreError> {
             )
             .ok_or_else(|| corrupt_row_wip("refused row has an unknown code"))?,
             message: stored.refusal_message.clone().unwrap_or_default(),
+            durable_sequence: stored
+                .durable_sequence
+                .ok_or_else(|| corrupt_row_wip("refused row has no sequence"))?,
         },
         OperationJournalStateV1::Aborted => OperationInspectV1::Absent,
         OperationJournalStateV1::Uncertain => OperationInspectV1::Uncertain {
@@ -890,8 +982,146 @@ impl IdempotencyCatalogPort for SqliteCatalog {
     fn inspect(&self, key: &IdempotencyKeyV1) -> Result<OperationInspectV1, CoreError> {
         let connection = self.lock()?;
         read_row(&connection, &self.path, key)?.map_or(Ok(OperationInspectV1::Absent), |stored| {
-            inspect_stored(&stored)
+            inspect_stored(key, &stored)
         })
+    }
+
+    fn prepare(
+        &self,
+        key: &IdempotencyKeyV1,
+        body_sha256: &[u8; 32],
+        owner: &str,
+        lease_deadline_ms: u64,
+        epoch_commitment: &[u8; 32],
+    ) -> Result<PreparedMutationV1, CoreError> {
+        let mut connection = self.lock()?;
+        let path = self.path.clone();
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| engine_error("begin transaction", &path, &error))?;
+        // Replay floor first, exactly as `claim_prepared`: an invalidated
+        // key refuses before any storage work.
+        let gc_payload = payload_digest_of_parts(&[key.batch_digest.as_bytes()]);
+        if is_invalidated_for_floor(&transaction, &path, &key.identity_digest(), &gc_payload)? {
+            return Err(replay_floor(key));
+        }
+        let now = quanta_index_core::now_unix_ms();
+        let outcome = match read_row(&transaction, &path, key)? {
+            None => prepare_fresh(
+                &transaction,
+                key,
+                body_sha256,
+                owner,
+                lease_deadline_ms,
+                epoch_commitment,
+            )?,
+            Some(stored) => {
+                if stored.body_sha256 != *body_sha256 {
+                    return Err(conflict(key));
+                }
+                match stored.state {
+                    OperationJournalStateV1::Committed | OperationJournalStateV1::Refused => {
+                        // The inspect missed a terminal row in a race: the
+                        // retry replays instead of preparing.
+                        return Err(fence_lost(key, "prepare met a terminal record"));
+                    }
+                    OperationJournalStateV1::Prepared => {
+                        if stored.input_commitment != *epoch_commitment {
+                            return Err(fence_lost(key, "prepare met a drifted prepared record"));
+                        }
+                        if stored.owner != owner && stored.lease_deadline_ms > now {
+                            return Err(busy("prepare met a live prepare"));
+                        }
+                        if stored.owner == owner {
+                            // Idempotent prepare: the same owner retrying
+                            // after a lost prepare answer reuses its row.
+                            PreparedMutationV1 {
+                                key: key.clone(),
+                                body_sha256: stored.body_sha256,
+                                owner: stored.owner.clone(),
+                                fence_token: stored.fence_token,
+                                lease_deadline_ms: stored.lease_deadline_ms,
+                                epoch_commitment: stored.input_commitment,
+                            }
+                        } else {
+                            // Expired foreign prepare: take over fresh.
+                            prepare_fresh(
+                                &transaction,
+                                key,
+                                body_sha256,
+                                owner,
+                                lease_deadline_ms,
+                                epoch_commitment,
+                            )?
+                        }
+                    }
+                    OperationJournalStateV1::Claimed | OperationJournalStateV1::Applying => {
+                        if stored.owner != owner || stored.lease_deadline_ms > now {
+                            return Err(busy("prepare met a live claim"));
+                        }
+                        // Expired lease: abort with its ledger event, then
+                        // prepare fresh — the same takeover `claim_prepared`
+                        // performs, minus the claim.
+                        let identity = key.identity_digest();
+                        let payload = payload_digest_of_parts(&[&stored.fence_token.to_le_bytes()]);
+                        let sequence = append_sequence_event(
+                            &transaction,
+                            SequenceEventKindV1::OperationAborted,
+                            &identity,
+                            &payload,
+                        )?;
+                        let _aborted = write_row(
+                            &transaction,
+                            key,
+                            &stored.body_sha256,
+                            OperationJournalStateV1::Aborted,
+                            &stored.owner,
+                            stored.lease_deadline_ms,
+                            stored.fence_token,
+                            &stored.input_commitment,
+                            None,
+                            None,
+                            Some(sequence_u64(sequence)?),
+                            None,
+                            None,
+                        )?;
+                        prepare_fresh(
+                            &transaction,
+                            key,
+                            body_sha256,
+                            owner,
+                            lease_deadline_ms,
+                            epoch_commitment,
+                        )?
+                    }
+                    OperationJournalStateV1::Aborted | OperationJournalStateV1::Uncertain => {
+                        // Superseded: the event ledger keeps the terminal
+                        // history (attributable through this invalidation),
+                        // and the row is reclaimed by the new prepare.
+                        let payload = payload_digest_of_parts(&[&stored.fence_token.to_le_bytes()]);
+                        let _invalidated = append_sequence_event(
+                            &transaction,
+                            SequenceEventKindV1::Invalidation,
+                            &key.identity_digest(),
+                            &payload,
+                        )?;
+                        prepare_fresh(
+                            &transaction,
+                            key,
+                            body_sha256,
+                            owner,
+                            lease_deadline_ms,
+                            epoch_commitment,
+                        )?
+                    }
+                }
+            }
+        };
+        transaction
+            .commit()
+            .map_err(|error| engine_error("commit prepare", &path, &error))?;
+        drop(connection);
+        Ok(outcome)
     }
 
     fn claim_prepared(
@@ -967,15 +1197,23 @@ impl IdempotencyCatalogPort for SqliteCatalog {
                 }
                 match stored.state {
                     OperationJournalStateV1::Committed => {
-                        let receipt =
-                            decode_versioned_receipt(stored.receipt_cbor.as_deref().ok_or_else(
-                                || corrupt_row(key, "committed row has no receipt bytes"),
-                            )?)?;
-                        ClaimOutcomeV1::Replay {
-                            receipt,
-                            durable_sequence: stored
-                                .durable_sequence
-                                .ok_or_else(|| corrupt_row(key, "committed row has no sequence"))?,
+                        let bytes = stored.receipt_cbor.as_deref().ok_or_else(|| {
+                            corrupt_row(key, "committed row has no receipt bytes")
+                        })?;
+                        let durable_sequence = stored
+                            .durable_sequence
+                            .ok_or_else(|| corrupt_row(key, "committed row has no sequence"))?;
+                        match decode_terminal_payload(&key.kind, bytes)? {
+                            TerminalReceiptPayload::Batch(receipt) => ClaimOutcomeV1::Replay {
+                                receipt,
+                                durable_sequence,
+                            },
+                            TerminalReceiptPayload::RepoMap(receipt) => {
+                                ClaimOutcomeV1::ReplayRepoMap {
+                                    receipt,
+                                    durable_sequence,
+                                }
+                            }
                         }
                     }
                     OperationJournalStateV1::Refused => {
@@ -1047,7 +1285,12 @@ impl IdempotencyCatalogPort for SqliteCatalog {
                     }
                     OperationJournalStateV1::Prepared => {
                         // A prepared row no worker finished claiming: the
-                        // prepare is immutable, so the claim continues.
+                        // prepare is immutable, so the claim continues —
+                        // unless another owner is still inside its live
+                        // prepare window, in which case the claim waits.
+                        if stored.owner != owner && stored.lease_deadline_ms > now {
+                            return Err(busy("claim_prepared met a live prepare"));
+                        }
                         claim_fresh(
                             &transaction,
                             key,
@@ -1118,13 +1361,18 @@ impl IdempotencyCatalogPort for SqliteCatalog {
         let stored = read_row(&transaction, &path, &claim.key)?
             .ok_or_else(|| fence_lost(&claim.key, "record_refused found no record"))?;
         check_claim(&stored, claim, "record_refused met a drifted record")?;
+        // A frozen refusal lands from the immutable prepared mutation
+        // (`Prepared → Refused`, no claim ever held) or from the
+        // applying claim (`Applying → Refused`). A bare `Claimed`
+        // mutation cannot refuse: the worker has not started applying,
+        // so there is no typed apply outcome to freeze.
         if !matches!(
             stored.state,
-            OperationJournalStateV1::Claimed | OperationJournalStateV1::Applying
+            OperationJournalStateV1::Prepared | OperationJournalStateV1::Applying
         ) {
             return Err(fence_lost(
                 &claim.key,
-                "record_refused met a record outside its claim",
+                "record_refused met a record outside its prepare or apply",
             ));
         }
         let payload = payload_digest_of_parts(&[code.as_bytes(), message.as_bytes()]);
@@ -1161,6 +1409,13 @@ impl IdempotencyCatalogPort for SqliteCatalog {
         claim: &PreparedMutationV1,
         receipt: &BatchPublishReceipt,
     ) -> Result<u64, CoreError> {
+        if claim.key.kind == IngestOperationKindV1::RepoMapBundle {
+            return Err(CoreError::InvalidContract(
+                "catalog: commit takes a batch receipt; repo-map bundle keys commit through \
+                 commit_repomap"
+                    .to_string(),
+            ));
+        }
         let receipt_cbor = encode_versioned_receipt(receipt)?;
         let receipt_digest = receipt_digest(&receipt_cbor);
         let mut connection = self.lock()?;
@@ -1209,6 +1464,66 @@ impl IdempotencyCatalogPort for SqliteCatalog {
         sequence_u64(sequence)
     }
 
+    fn commit_repomap(
+        &self,
+        claim: &PreparedMutationV1,
+        receipt: &RepoMapTerminalReceiptV2,
+    ) -> Result<u64, CoreError> {
+        if claim.key.kind != IngestOperationKindV1::RepoMapBundle {
+            return Err(CoreError::InvalidContract(
+                "catalog: commit_repomap takes a repo-map bundle key; batch keys commit through \
+                 commit"
+                    .to_string(),
+            ));
+        }
+        let receipt_cbor = encode_versioned_repomap_receipt(receipt)?;
+        let digest = receipt_digest(&receipt_cbor);
+        let mut connection = self.lock()?;
+        let path = self.path.clone();
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| engine_error("begin transaction", &path, &error))?;
+        let stored = read_row(&transaction, &path, &claim.key)?
+            .ok_or_else(|| fence_lost(&claim.key, "commit_repomap found no record"))?;
+        check_claim(&stored, claim, "commit_repomap met a drifted record")?;
+        if !matches!(
+            stored.state,
+            OperationJournalStateV1::Applying | OperationJournalStateV1::Uncertain
+        ) {
+            return Err(fence_lost(
+                &claim.key,
+                "commit_repomap met a record outside its apply",
+            ));
+        }
+        let payload = payload_digest_of_parts(&[&receipt_cbor]);
+        let sequence = append_sequence_event(
+            &transaction,
+            SequenceEventKindV1::OperationCommitted,
+            &claim.key.identity_digest(),
+            &payload,
+        )?;
+        let _written = write_row(
+            &transaction,
+            &claim.key,
+            &claim.body_sha256,
+            OperationJournalStateV1::Committed,
+            &claim.owner,
+            claim.lease_deadline_ms,
+            claim.fence_token,
+            &claim.epoch_commitment,
+            Some(&receipt_cbor),
+            Some(&digest),
+            Some(sequence_u64(sequence)?),
+            None,
+            None,
+        )?;
+        transaction
+            .commit()
+            .map_err(|error| engine_error("commit repo-map record", &path, &error))?;
+        drop(connection);
+        sequence_u64(sequence)
+    }
+
     fn mark_uncertain(&self, claim: &PreparedMutationV1) -> Result<(), CoreError> {
         let mut connection = self.lock()?;
         let path = self.path.clone();
@@ -1218,15 +1533,16 @@ impl IdempotencyCatalogPort for SqliteCatalog {
         let stored = read_row(&transaction, &path, &claim.key)?
             .ok_or_else(|| fence_lost(&claim.key, "mark_uncertain found no record"))?;
         check_claim(&stored, claim, "mark_uncertain met a drifted record")?;
+        // Ambiguity exists only once the worker started applying
+        // (`Applying → Uncertain`); a bare claim or a prepare cannot be
+        // uncertain, and re-marking an uncertain row is idempotent.
         if !matches!(
             stored.state,
-            OperationJournalStateV1::Claimed
-                | OperationJournalStateV1::Applying
-                | OperationJournalStateV1::Uncertain
+            OperationJournalStateV1::Applying | OperationJournalStateV1::Uncertain
         ) {
             return Err(fence_lost(
                 &claim.key,
-                "mark_uncertain met a record outside its claim",
+                "mark_uncertain met a record outside its apply",
             ));
         }
         let _written = write_row(
@@ -1264,7 +1580,7 @@ impl IdempotencyCatalogPort for SqliteCatalog {
         let expired = stored.lease_deadline_ms <= now;
         match stored.state {
             OperationJournalStateV1::Claimed | OperationJournalStateV1::Applying if !expired => {
-                let outcome = inspect_stored(&stored)?;
+                let outcome = inspect_stored(key, &stored)?;
                 transaction
                     .commit()
                     .map_err(|error| engine_error("commit recover", &path, &error))?;
@@ -1280,7 +1596,7 @@ impl IdempotencyCatalogPort for SqliteCatalog {
             OperationJournalStateV1::Committed
             | OperationJournalStateV1::Refused
             | OperationJournalStateV1::Aborted => {
-                let outcome = inspect_stored(&stored)?;
+                let outcome = inspect_stored(key, &stored)?;
                 transaction
                     .commit()
                     .map_err(|error| engine_error("commit recover", &path, &error))?;
@@ -1446,6 +1762,43 @@ impl IdempotencyCatalogPort for SqliteCatalog {
         // `removed` is already a u64 row count; no conversion is needed.
         Ok(removed)
     }
+}
+
+/// Write a fresh immutable prepared row: the `prepare` half of the
+/// protocol. No lease is held yet; the row waits for mutable preflight
+/// and the fenced claim.
+fn prepare_fresh(
+    transaction: &rusqlite::Transaction<'_>,
+    key: &IdempotencyKeyV1,
+    body_sha256: &[u8; 32],
+    owner: &str,
+    lease_deadline_ms: u64,
+    epoch_commitment: &[u8; 32],
+) -> Result<PreparedMutationV1, CoreError> {
+    let fence = fence_token_now()?;
+    let _written = write_row(
+        transaction,
+        key,
+        body_sha256,
+        OperationJournalStateV1::Prepared,
+        owner,
+        lease_deadline_ms,
+        fence,
+        epoch_commitment,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )?;
+    Ok(PreparedMutationV1 {
+        key: key.clone(),
+        body_sha256: *body_sha256,
+        owner: owner.to_string(),
+        fence_token: fence,
+        lease_deadline_ms,
+        epoch_commitment: *epoch_commitment,
+    })
 }
 
 /// Write a fresh claim over a superseded (Prepared/Aborted/Uncertain)

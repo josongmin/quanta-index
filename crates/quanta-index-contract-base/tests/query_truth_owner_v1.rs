@@ -12,14 +12,17 @@
 use quanta_index_contract_base::{
     CandidateCountV1, CoverageV1, CursorBindingV2, CursorEnvelopeV2, CursorKeyV2, CursorRouteV2,
     CursorTtlPolicyV2, EmptyProvenanceV2, ExaminedUniverseV1, ExecutionOutcomeV2,
-    ExhaustionProofV1, QueryResultWindowV2,
+    ExhaustionProofV1, GenerationPin, ManifestGeneration, QueryResultWindowV2, RepoId, RevisionId,
 };
 
 fn binding(repo: &str) -> CursorBindingV2 {
     CursorBindingV2 {
         route: CursorRouteV2::Lexical,
-        repo_id: repo.to_string(),
-        pinned_generation: 7,
+        pin: GenerationPin::new(
+            RepoId::new(repo).expect("static fixture identity"),
+            RevisionId::new("rev-a").expect("static fixture identity"),
+            ManifestGeneration::new(7),
+        ),
         plan_digest: [1; 32],
         query_digest: [2; 32],
         constraints_digest: [3; 32],

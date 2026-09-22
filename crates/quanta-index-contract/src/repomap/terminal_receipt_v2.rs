@@ -13,6 +13,16 @@ use super::{RepoMapActivateGenerationRequest, RepoMapMutationAck, RepoMapSourceB
 
 const SOURCE_BUNDLE_DIGEST_DOMAIN_V2: &[u8] = b"quanta-index/repomap-source-bundle/v2\0";
 
+/// The canonical-CBOR format version of a [`RepoMapTerminalReceiptV2`]
+/// persisted as an operation-journal terminal payload (SEP-21 P02B).
+///
+/// Same rule as the batch receipt tag: a journal-persisted payload is
+/// this version tag followed by the receipt's canonical CBOR, and any
+/// other version is a typed refusal before any mutation — no dual
+/// decoder, no live migration. Receipts of another version are
+/// offline-migration input only.
+pub const REPOMAP_TERMINAL_RECEIPT_FORMAT_VERSION: u32 = 1;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RepoMapSourceBundleDigestErrorV2 {
     detail: String,

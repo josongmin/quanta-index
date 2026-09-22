@@ -9,10 +9,10 @@ use quanta_index_contract::{
     BatchIngestMode, BatchPublishReceipt, CapabilityStatusV1, ChunkId, ChunkRecord,
     DirtyIngestBatch, DirtyMutation, EmbeddingDistanceMetric, EmbeddingId, EmbeddingModelContract,
     EmbeddingNormalization, EmbeddingRecord, GenerationSnapshot, HistoryIngestBatch,
-    ManifestGeneration, OwnerDocKind, RepoId, RepoRelativePath, RevisionId,
-    SearchCorpusIngestBatch, SearchCorpusReplaceScope, SearchPlaneTrackKind, SearchScopeKey,
-    SearchScopeSurface, SemanticCorpusKindV1, SemanticIngestBatch, SemanticReplaceScope,
-    SourceRoleV1,
+    IngestOperationKindV1, ManifestGeneration, OwnerDocKind, RepoId, RepoMapTerminalReceiptV2,
+    RepoRelativePath, RevisionId, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
+    SearchPlaneErrorCodeV2, SearchPlaneTrackKind, SearchScopeKey, SearchScopeSurface,
+    SemanticCorpusKindV1, SemanticIngestBatch, SemanticReplaceScope, SourceRoleV1,
 };
 use quanta_index_core::{
     ClaimOutcomeV1, CoreError, FinishedReclaims, GenerationIdentityValidatePort,
@@ -55,9 +55,16 @@ pub(super) type MemoryRecord = (
 
 /// An in-memory idempotency catalog with the port's exact semantics, for
 /// tests that need the protocol without the storage engine.
+///
+/// Terminal refusals live in `refusals` (code, message, terminal
+/// sequence, body) and repo-map terminal receipts in `repomap`
+/// (receipt, terminal sequence, body), mirroring the journal row's
+/// refusal columns and kind-bound payload decoder.
 #[derive(Default)]
 pub(crate) struct MemoryIdempotencyCatalog {
     records: Mutex<BTreeMap<IdempotencyKeyV1, MemoryRecord>>,
+    refusals: Mutex<BTreeMap<IdempotencyKeyV1, (SearchPlaneErrorCodeV2, String, u64, [u8; 32])>>,
+    repomap: Mutex<BTreeMap<IdempotencyKeyV1, (RepoMapTerminalReceiptV2, u64, [u8; 32])>>,
     next_sequence: AtomicUsize,
     /// Every `forget_generation` call, in order, with how many records it
     /// dropped: the oracle for "forgotten once, idempotently".
@@ -157,6 +164,29 @@ impl MemoryIdempotencyCatalog {
 
 impl IdempotencyCatalogPort for MemoryIdempotencyCatalog {
     fn inspect(&self, key: &IdempotencyKeyV1) -> Result<OperationInspectV1, CoreError> {
+        if let Some((code, message, durable_sequence, _)) = self
+            .refusals
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?
+            .get(key)
+        {
+            return Ok(OperationInspectV1::Refused {
+                code: *code,
+                message: message.clone(),
+                durable_sequence: *durable_sequence,
+            });
+        }
+        if let Some((receipt, durable_sequence, _)) = self
+            .repomap
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?
+            .get(key)
+        {
+            return Ok(OperationInspectV1::CommittedRepoMap {
+                receipt: receipt.clone(),
+                durable_sequence: *durable_sequence,
+            });
+        }
         let records = self
             .records
             .lock()
@@ -190,6 +220,131 @@ impl IdempotencyCatalogPort for MemoryIdempotencyCatalog {
         clippy::significant_drop_tightening,
         reason = "test fake: the mutex guard must span the whole fenced mutation"
     )]
+    fn prepare(
+        &self,
+        key: &IdempotencyKeyV1,
+        body_sha256: &[u8; 32],
+        owner: &str,
+        lease_deadline_ms: u64,
+        epoch_commitment: &[u8; 32],
+    ) -> Result<PreparedMutationV1, CoreError> {
+        if self
+            .refusals
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?
+            .contains_key(key)
+            || self
+                .repomap
+                .lock()
+                .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?
+                .contains_key(key)
+        {
+            return Err(CoreError::Typed {
+                code: quanta_index_core::OPERATION_FENCE_LOST_CODE,
+                message: format!(
+                    "journal: {} batch_digest={} prepare met a terminal record",
+                    key.kind, key.batch_digest
+                ),
+            });
+        }
+        let mut records = self
+            .records
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?;
+        let fence = quanta_index_core::now_unix_ms().saturating_add(1);
+        match records.get_mut(key) {
+            None => {
+                let _new = records.insert(
+                    key.clone(),
+                    (
+                        *body_sha256,
+                        Some((
+                            owner.to_string(),
+                            fence,
+                            lease_deadline_ms,
+                            OperationJournalStateV1::Prepared,
+                        )),
+                        None,
+                    ),
+                );
+                Ok(PreparedMutationV1 {
+                    key: key.clone(),
+                    body_sha256: *body_sha256,
+                    owner: owner.to_string(),
+                    fence_token: fence,
+                    lease_deadline_ms,
+                    epoch_commitment: *epoch_commitment,
+                })
+            }
+            Some((stored, _, _)) if *stored != *body_sha256 => Err(CoreError::Typed {
+                code: quanta_index_core::BATCH_DIGEST_CONFLICT_CODE,
+                message: format!(
+                    "{} batch_digest={} body differs",
+                    key.kind, key.batch_digest
+                ),
+            }),
+            Some((_, _, Some(_)))
+            | Some((
+                _,
+                Some((
+                    _,
+                    _,
+                    _,
+                    OperationJournalStateV1::Committed
+                    | OperationJournalStateV1::Refused
+                    | OperationJournalStateV1::Aborted,
+                )),
+                _,
+            )) => Err(CoreError::Typed {
+                code: quanta_index_core::OPERATION_FENCE_LOST_CODE,
+                message: format!(
+                    "journal: {} batch_digest={} prepare met a terminal record",
+                    key.kind, key.batch_digest
+                ),
+            }),
+            Some((_, Some((row_owner, row_fence, row_deadline, state)), _)) => {
+                if *state == OperationJournalStateV1::Prepared && *row_owner == owner {
+                    // Idempotent prepare: the same owner retrying after a
+                    // lost prepare answer reuses its row.
+                    return Ok(PreparedMutationV1 {
+                        key: key.clone(),
+                        body_sha256: *body_sha256,
+                        owner: row_owner.clone(),
+                        fence_token: *row_fence,
+                        lease_deadline_ms: *row_deadline,
+                        epoch_commitment: *epoch_commitment,
+                    });
+                }
+                // Takeover: the fake models no lease clock, so a foreign
+                // or superseded in-flight row is re-prepared fresh — the
+                // durable journal's expiry takeover without the wall
+                // clock. Fencing itself is covered against the real
+                // engine in the catalog suite. The whole claim tuple is
+                // replaced: a stale owner or fence must never survive a
+                // takeover.
+                *row_owner = owner.to_string();
+                *row_fence = fence;
+                *row_deadline = lease_deadline_ms;
+                *state = OperationJournalStateV1::Prepared;
+                Ok(PreparedMutationV1 {
+                    key: key.clone(),
+                    body_sha256: *body_sha256,
+                    owner: owner.to_string(),
+                    fence_token: fence,
+                    lease_deadline_ms,
+                    epoch_commitment: *epoch_commitment,
+                })
+            }
+            Some((_, None, _)) => Err(CoreError::InvalidContract(
+                "prepare met a record with no claim".into(),
+            )),
+        }
+    }
+
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "test fake: the mutex guard must span the whole fenced mutation"
+    )]
     fn claim_prepared(
         &self,
         key: &IdempotencyKeyV1,
@@ -198,6 +353,64 @@ impl IdempotencyCatalogPort for MemoryIdempotencyCatalog {
         lease_deadline_ms: u64,
         epoch_commitment: &[u8; 32],
     ) -> Result<ClaimOutcomeV1, CoreError> {
+        // Body conflict precedes every terminal answer, exactly as the
+        // durable journal orders it.
+        let conflict = self
+            .records
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?
+            .get(key)
+            .map(|(stored, _, _)| *stored != *body_sha256)
+            .unwrap_or(false);
+        if conflict {
+            return Err(CoreError::Typed {
+                code: quanta_index_core::BATCH_DIGEST_CONFLICT_CODE,
+                message: format!(
+                    "{} batch_digest={} body differs",
+                    key.kind, key.batch_digest
+                ),
+            });
+        }
+        if let Some((receipt, durable_sequence, stored_body)) = self
+            .repomap
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?
+            .get(key)
+        {
+            if *stored_body != *body_sha256 {
+                return Err(CoreError::Typed {
+                    code: quanta_index_core::BATCH_DIGEST_CONFLICT_CODE,
+                    message: format!(
+                        "{} batch_digest={} body differs",
+                        key.kind, key.batch_digest
+                    ),
+                });
+            }
+            return Ok(ClaimOutcomeV1::ReplayRepoMap {
+                receipt: receipt.clone(),
+                durable_sequence: *durable_sequence,
+            });
+        }
+        if let Some((code, message, _, stored_body)) = self
+            .refusals
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?
+            .get(key)
+        {
+            if *stored_body != *body_sha256 {
+                return Err(CoreError::Typed {
+                    code: quanta_index_core::BATCH_DIGEST_CONFLICT_CODE,
+                    message: format!(
+                        "{} batch_digest={} body differs",
+                        key.kind, key.batch_digest
+                    ),
+                });
+            }
+            return Err(CoreError::Typed {
+                code: *code,
+                message: message.clone(),
+            });
+        }
         let mut records = self
             .records
             .lock()
@@ -238,6 +451,14 @@ impl IdempotencyCatalogPort for MemoryIdempotencyCatalog {
                 receipt: receipt.clone(),
                 durable_sequence: *durable_sequence,
             }),
+            Some((_, Some((row_owner, _, _, OperationJournalStateV1::Prepared)), None))
+                if *row_owner != owner =>
+            {
+                return Err(CoreError::Typed {
+                    code: quanta_index_core::CATALOG_BUSY_CODE,
+                    message: "memory catalog: claim met a live foreign prepare".to_string(),
+                });
+            }
             Some((_, claim, None)) => {
                 *claim = Some((
                     owner.to_string(),
@@ -287,15 +508,25 @@ impl IdempotencyCatalogPort for MemoryIdempotencyCatalog {
     fn record_refused(
         &self,
         claim: &PreparedMutationV1,
-        _refusal: &CoreError,
+        refusal: &CoreError,
     ) -> Result<u64, CoreError> {
+        // Exactly the durable journal's rule: only a typed refusal
+        // freezes; anything else is a caller-side rejection.
+        let (code, message) = match refusal {
+            CoreError::Typed { code, message } => (*code, message.clone()),
+            _ => {
+                return Err(CoreError::InvalidContract(
+                    "record_refused takes a frozen-policy typed refusal".into(),
+                ));
+            }
+        };
         let mut records = self
             .records
             .lock()
             .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?;
         let Some((_, Some((owner, fence, _, state)), _)) = records.get_mut(&claim.key) else {
             return Err(CoreError::InvalidContract(
-                "record_refused before claim".into(),
+                "record_refused before prepare".into(),
             ));
         };
         if *owner != claim.owner || *fence != claim.fence_token {
@@ -303,8 +534,28 @@ impl IdempotencyCatalogPort for MemoryIdempotencyCatalog {
                 "record_refused under a stale fence".into(),
             ));
         }
+        // A frozen refusal lands from the prepared mutation or the
+        // applying claim only; a bare claim cannot refuse.
+        if !matches!(
+            *state,
+            OperationJournalStateV1::Prepared | OperationJournalStateV1::Applying
+        ) {
+            return Err(CoreError::InvalidContract(
+                "record_refused outside prepare or apply".into(),
+            ));
+        }
         *state = OperationJournalStateV1::Refused;
-        self.next_sequence_value()
+        let sequence = self.next_sequence_value()?;
+        drop(records);
+        let _prior = self
+            .refusals
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?
+            .insert(
+                claim.key.clone(),
+                (code, message, sequence, claim.body_sha256),
+            );
+        Ok(sequence)
     }
 
     #[expect(
@@ -316,6 +567,11 @@ impl IdempotencyCatalogPort for MemoryIdempotencyCatalog {
         claim: &PreparedMutationV1,
         receipt: &BatchPublishReceipt,
     ) -> Result<u64, CoreError> {
+        if claim.key.kind == IngestOperationKindV1::RepoMapBundle {
+            return Err(CoreError::InvalidContract(
+                "memory catalog: commit takes a batch receipt".into(),
+            ));
+        }
         let mut records = self
             .records
             .lock()
@@ -342,6 +598,53 @@ impl IdempotencyCatalogPort for MemoryIdempotencyCatalog {
         clippy::significant_drop_tightening,
         reason = "test fake: the mutex guard must span the whole fenced mutation"
     )]
+    fn commit_repomap(
+        &self,
+        claim: &PreparedMutationV1,
+        receipt: &RepoMapTerminalReceiptV2,
+    ) -> Result<u64, CoreError> {
+        if claim.key.kind != IngestOperationKindV1::RepoMapBundle {
+            return Err(CoreError::InvalidContract(
+                "memory catalog: commit_repomap takes a repo-map bundle key".into(),
+            ));
+        }
+        let mut records = self
+            .records
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?;
+        let Some((body, Some((owner, fence, _, state)), _)) = records.get_mut(&claim.key) else {
+            return Err(CoreError::InvalidContract(
+                "commit_repomap before claim".into(),
+            ));
+        };
+        if *body != claim.body_sha256 || *owner != claim.owner || *fence != claim.fence_token {
+            return Err(CoreError::InvalidContract(
+                "commit_repomap under a stale fence".into(),
+            ));
+        }
+        if !matches!(*state, OperationJournalStateV1::Applying) {
+            return Err(CoreError::InvalidContract(
+                "commit_repomap outside its apply".into(),
+            ));
+        }
+        *state = OperationJournalStateV1::Committed;
+        let sequence = self.next_sequence_value()?;
+        drop(records);
+        let _prior = self
+            .repomap
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?
+            .insert(
+                claim.key.clone(),
+                (receipt.clone(), sequence, claim.body_sha256),
+            );
+        Ok(sequence)
+    }
+
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "test fake: the mutex guard must span the whole fenced mutation"
+    )]
     fn mark_uncertain(&self, claim: &PreparedMutationV1) -> Result<(), CoreError> {
         let mut records = self
             .records
@@ -357,11 +660,30 @@ impl IdempotencyCatalogPort for MemoryIdempotencyCatalog {
                 "mark_uncertain under a stale fence".into(),
             ));
         }
+        if !matches!(
+            *state,
+            OperationJournalStateV1::Applying | OperationJournalStateV1::Uncertain
+        ) {
+            return Err(CoreError::InvalidContract(
+                "mark_uncertain outside its apply".into(),
+            ));
+        }
         *state = OperationJournalStateV1::Uncertain;
         Ok(())
     }
 
     fn recover(&self, key: &IdempotencyKeyV1) -> Result<OperationInspectV1, CoreError> {
+        if let Some((receipt, durable_sequence, _)) = self
+            .repomap
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?
+            .get(key)
+        {
+            return Ok(OperationInspectV1::CommittedRepoMap {
+                receipt: receipt.clone(),
+                durable_sequence: *durable_sequence,
+            });
+        }
         let mut records = self
             .records
             .lock()
@@ -420,11 +742,20 @@ impl IdempotencyCatalogPort for MemoryIdempotencyCatalog {
             .lock()
             .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?;
         let before = records.len();
-        records.retain(|key, _| {
-            !(key.repo_id == *repo_id
+        let same_generation = |key: &IdempotencyKeyV1| {
+            key.repo_id == *repo_id
                 && key.revision_id == *revision_id
-                && key.generation == generation)
-        });
+                && key.generation == generation
+        };
+        records.retain(|key, _| !same_generation(key));
+        self.refusals
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?
+            .retain(|key, _| !same_generation(key));
+        self.repomap
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?
+            .retain(|key, _| !same_generation(key));
         let removed = u64::try_from(before.saturating_sub(records.len()))
             .map_err(|err| CoreError::Storage(err.to_string()))?;
         drop(records);

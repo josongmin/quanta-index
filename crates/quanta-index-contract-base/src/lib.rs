@@ -34,8 +34,9 @@ pub use query::{
 };
 pub use results::{
     ApproximateMethodV2, ApproximateQualityContractV2, CURSOR_ENVELOPE_V2_VERSION,
-    CandidateCountV1, CoverageV1, CursorAuxEpochKindV2, CursorAuxEpochV2, CursorBindingV2,
-    CursorEnvelopeError, CursorEnvelopeV2, CursorKeyV2, CursorRouteV2, CursorTtlPolicyV2,
+    CandidateCountV1, ContinuationTokenError, ContinuationTokenV2, CoverageV1,
+    CursorAuxEpochKindV2, CursorAuxEpochV2, CursorBindingV2, CursorEnvelopeError, CursorEnvelopeV2,
+    CursorKeyV2, CursorRouteV2, CursorTtlPolicyV2,
     DiffCandidate, DiffHunkSide, EmptyProvenanceV2, ExaminedUniverseV1, ExecutionOutcomeV2,
     ExhaustionProofV1, HighlightSpan, HistoryScoreError, HistoryScoreV1, InterruptedReasonV2,
     LaneTraceV1, LexicalCandidate, QueryResultWindowV1, QueryResultWindowV2, StructuralBinding,

@@ -4356,7 +4356,11 @@ mod tests {
                     },
                 ],
                 window: quanta_index_contract::QueryResultWindowV1::exact(2),
-                window_v2: quanta_index_contract::QueryResultWindowV2::exact_probe(2),
+                window_v2: quanta_index_contract::QueryResultWindowV2::exact_exhausted(
+                    2,
+                    quanta_index_contract::ExhaustionProofV1::ProbeExhausted { fetched: 2 },
+                    Vec::new(),
+                ),
                 explanation: SearchExplanation {
                     planner_trace: Vec::new(),
                     engines_touched: vec![EngineTouched::Lexical, EngineTouched::Semantic],

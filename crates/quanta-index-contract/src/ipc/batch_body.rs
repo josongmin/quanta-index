@@ -42,9 +42,12 @@ pub const BATCH_DIGEST_TOKEN_LEN_V1: usize = 64;
 ///
 /// The route is part of the batch digest's domain and of the idempotency
 /// key: the same `(repo, revision, generation, body)` under two routes are
-/// two digests and two records. The repo-map bundle route answers with a
-/// mutation ack, not a receipt, and names no batch digest; it is outside
-/// the idempotency catalog until it does.
+/// two digests and two records. The repo-map bundle route (SEP-21 P02B)
+/// travels the same journal under its source-bundle digest with
+/// [`IngestOperationKindV1::RepoMapBundle`]; its terminal payload is the
+/// `RepoMap` terminal receipt, not a batch receipt, but the key, fence,
+/// conflict, floor and sequence semantics are the journal's, not a
+/// `RepoMap`-private second meaning.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum IngestOperationKindV1 {
     SearchCorpus,
@@ -58,6 +61,7 @@ pub enum IngestOperationKindV1 {
     FileOwnership,
     FileContributor,
     RepoMeta,
+    RepoMapBundle,
 }
 
 impl IngestOperationKindV1 {
@@ -75,6 +79,7 @@ impl IngestOperationKindV1 {
             Self::FileOwnership => "file-ownership",
             Self::FileContributor => "file-contributor",
             Self::RepoMeta => "repo-meta",
+            Self::RepoMapBundle => "repomap-bundle",
         }
     }
 }
@@ -154,6 +159,7 @@ mod tests {
             IngestOperationKindV1::FileOwnership,
             IngestOperationKindV1::FileContributor,
             IngestOperationKindV1::RepoMeta,
+            IngestOperationKindV1::RepoMapBundle,
         ]
         .map(IngestOperationKindV1::as_code_str);
         let distinct: std::collections::BTreeSet<&str> = codes.iter().copied().collect();

@@ -13,10 +13,12 @@ use quanta_index_contract::lex::DirtyRecord;
 use quanta_index_contract::{
     BatchPublishReceipt, ChunkId, DirtyIngestBatch, DirtyMutation, FileContributorIngestBatch,
     FileOwnershipIngestBatch, HistoryIngestBatch, IngestOperationKindV1, ManifestGeneration,
-    RepoCommitRecencyIngestBatch, RepoDescriptionIngestBatch, RepoId, RepoMapSourceBundle,
-    RepoMetaIngestBatch, RepoTopicIngestBatch, RevisionId, RuntimeCatalogIngestBatch,
-    SearchCorpusIngestBatch, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse,
-    StructuralIngestBatch,
+    RepoCommitRecencyIngestBatch, RepoDescriptionIngestBatch, RepoId, RepoMapExactnessSummary,
+    RepoMapGraphCoverage, RepoMapGraphCoverageClass, RepoMapItemIndexAvailability,
+    RepoMapMutationAck, RepoMapMutationPhaseV2, RepoMapPublishBundleRequestV2,
+    RepoMapRedactionState, RepoMapSourceBundle, RepoMapTerminalReceiptV2, RepoMetaIngestBatch,
+    RepoTopicIngestBatch, RevisionId, RuntimeCatalogIngestBatch, SearchCorpusIngestBatch,
+    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse, StructuralIngestBatch,
 };
 use quanta_index_core::{
     BATCH_DIGEST_MISMATCH_CODE, CoreError, FileContributorIngestPort, FileOwnershipIngestPort,
@@ -191,9 +193,18 @@ fn search_corpus_dispatcher(
     materializer: DirectSearchCorpusMaterializer,
     catalog: Arc<MemoryIdempotencyCatalog>,
 ) -> SearchPlaneIngestDispatcher {
+    search_corpus_dispatcher_with_port(Arc::new(materializer), catalog)
+}
+
+/// The same dispatcher with an explicit search-corpus port: counting
+/// wrappers and unreachable routes share this constructor.
+fn search_corpus_dispatcher_with_port(
+    lexical: Arc<dyn SearchCorpusIngestPort + Send + Sync>,
+    catalog: Arc<MemoryIdempotencyCatalog>,
+) -> SearchPlaneIngestDispatcher {
     let unreachable = Arc::new(Unreachable);
     SearchPlaneIngestDispatcher::new(
-        Arc::new(materializer),
+        lexical,
         unreachable.clone(),
         unreachable.clone(),
         unreachable.clone(),
@@ -206,6 +217,47 @@ fn search_corpus_dispatcher(
         unreachable,
         catalog,
     )
+}
+
+/// A search-corpus port that counts preflight and apply entries around
+/// the real materializer: the oracle for "a replay runs no preflight".
+struct CountingSearchCorpus {
+    inner: DirectSearchCorpusMaterializer,
+    preflights: AtomicUsize,
+    applies: AtomicUsize,
+}
+
+impl CountingSearchCorpus {
+    fn new(inner: DirectSearchCorpusMaterializer) -> Self {
+        Self {
+            inner,
+            preflights: AtomicUsize::new(0),
+            applies: AtomicUsize::new(0),
+        }
+    }
+
+    fn preflights(&self) -> usize {
+        self.preflights.load(Ordering::SeqCst)
+    }
+
+    fn applies(&self) -> usize {
+        self.applies.load(Ordering::SeqCst)
+    }
+}
+
+impl SearchCorpusIngestPort for CountingSearchCorpus {
+    fn preflight_batch(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError> {
+        let _prior = self.preflights.fetch_add(1, Ordering::SeqCst);
+        self.inner.preflight_batch(batch)
+    }
+
+    fn publish_batch(
+        &self,
+        batch: &SearchCorpusIngestBatch,
+    ) -> Result<BatchPublishReceipt, CoreError> {
+        let _prior = self.applies.fetch_add(1, Ordering::SeqCst);
+        self.inner.publish_batch(batch)
+    }
 }
 
 /// The recording fakes behind one search-corpus materializer.
@@ -440,17 +492,22 @@ fn a_well_formed_but_wrong_digest_is_a_mismatch() -> TestRes {
     Ok(())
 }
 
-/// QI-BB-029: a search-corpus batch the preflight refuses leaves the
-/// idempotency catalog untouched.
+/// SEP-21 P02B: a search-corpus batch the mutable preflight refuses
+/// freezes its refusal as the terminal journal record.
 ///
-/// The record is begun only after the batch has been admitted, and neither
-/// builder nor the authority ran. Before this ordering, the record was
-/// begun first and the refused batch left a durable in-progress row behind.
+/// The frozen refusal is recorded from the prepared mutation — no claim
+/// is ever held — and the retry replays the same typed refusal without
+/// re-running preflight or touching a builder, the authority or the
+/// embedder. The corrected batch under its own digest still applies.
 #[test]
-fn a_refused_search_corpus_batch_leaves_no_record() -> TestRes {
+fn a_refused_search_corpus_batch_freezes_its_refusal() -> TestRes {
     let catalog = memory_catalog();
     let (materializer, fakes) = search_corpus_materializer(Arc::clone(&catalog), false);
-    let dispatcher = search_corpus_dispatcher(materializer, Arc::clone(&catalog));
+    let counting = Arc::new(CountingSearchCorpus::new(materializer));
+    let dispatcher = search_corpus_dispatcher_with_port(
+        counting.clone() as Arc<dyn SearchCorpusIngestPort + Send + Sync>,
+        Arc::clone(&catalog),
+    );
     let budget = RequestBudgetV1::unbounded();
 
     // Mode/base mismatch, re-stamped so the digest is the body's and the
@@ -459,7 +516,7 @@ fn a_refused_search_corpus_batch_leaves_no_record() -> TestRes {
     malformed.base_generation = Some(ManifestGeneration::new(3));
     stamp_batch_digest_v1(&mut malformed)?;
     let refused = dispatcher.dispatch(
-        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(malformed),
+        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(malformed.clone()),
         &budget,
     );
     if typed_code_of(&refused)
@@ -467,12 +524,20 @@ fn a_refused_search_corpus_batch_leaves_no_record() -> TestRes {
     {
         return Err(format!("expected a shape refusal, got {refused:?}").into());
     }
-    if catalog.records() != 0 {
+    if counting.preflights() != 1 {
+        return Err("the first publish must run preflight exactly once".into());
+    }
+    // Exactly one terminal record: the frozen refusal. No claim was
+    // held, no apply ran.
+    if catalog.records() != 1 {
         return Err(format!(
-            "a refused batch must leave no idempotency record, found {}",
+            "a frozen refusal is exactly one terminal record, found {}",
             catalog.records()
         )
         .into());
+    }
+    if counting.applies() != 0 {
+        return Err("a refused batch must never reach apply".into());
     }
     let lexical_builds = fakes
         .lexical_builder
@@ -503,13 +568,34 @@ fn a_refused_search_corpus_batch_leaves_no_record() -> TestRes {
         return Err("a refused batch must not embed".into());
     }
 
+    // The retry replays the same typed refusal: no second preflight, no
+    // second record, no work.
+    let replayed = dispatcher.dispatch(
+        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(malformed),
+        &budget,
+    );
+    if typed_code_of(&replayed)
+        != Some(quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusBatchShapeInvalid)
+    {
+        return Err(format!("the retry must replay the refusal, got {replayed:?}").into());
+    }
+    if counting.preflights() != 1 || counting.applies() != 0 || catalog.records() != 1 {
+        return Err(format!(
+            "a refused replay runs nothing: preflights={} applies={} records={}",
+            counting.preflights(),
+            counting.applies(),
+            catalog.records()
+        )
+        .into());
+    }
+
     // The corrected batch under its own digest applies and is recorded.
     let corrected = fixture_search_corpus_batch()?;
     let receipt = receipt_of(dispatcher.dispatch(
         SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(corrected),
         &budget,
     ))?;
-    if !receipt.applied || !receipt.sealed || catalog.records() != 1 {
+    if !receipt.applied || !receipt.sealed || catalog.records() != 2 {
         return Err(format!("the corrected batch must apply and be recorded: {receipt:?}").into());
     }
     Ok(())
@@ -576,6 +662,273 @@ fn a_resumed_sealed_batch_finalizes_without_re_embedding() -> TestRes {
         return Err(
             format!("after the resume, a replay is answered from the record: {replay:?}").into(),
         );
+    }
+    Ok(())
+}
+
+/// A committed replay runs no preflight, no apply and no storage: the
+/// stored receipt answers verbatim.
+///
+/// The replay goes through a second dispatcher whose routes are all
+/// unreachable and whose config differs — any preflight, provider or
+/// storage contact would explode there instead of answering.
+#[test]
+fn a_committed_replay_runs_no_preflight_apply_or_storage() -> TestRes {
+    let catalog = memory_catalog();
+    let (materializer, fakes) = search_corpus_materializer(Arc::clone(&catalog), true);
+    let counting = Arc::new(CountingSearchCorpus::new(materializer));
+    let dispatcher = search_corpus_dispatcher_with_port(
+        counting.clone() as Arc<dyn SearchCorpusIngestPort + Send + Sync>,
+        Arc::clone(&catalog),
+    );
+    let budget = RequestBudgetV1::unbounded();
+
+    let batch = fixture_search_corpus_batch()?;
+    let first = receipt_of(dispatcher.dispatch(
+        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch.clone()),
+        &budget,
+    ))?;
+    if !first.applied || first.durable_sequence != 1 {
+        return Err(format!("the first publish must apply at sequence 1: {first:?}").into());
+    }
+    if counting.preflights() != 1 || counting.applies() != 1 {
+        return Err("the first publish runs preflight and apply exactly once".into());
+    }
+    let builds_after_apply = fakes
+        .lexical_builder
+        .batches
+        .lock()
+        .map_err(|err| format!("fake lexical builder poisoned: {err}"))?
+        .len();
+
+    let replay = receipt_of(dispatcher.dispatch(
+        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch.clone()),
+        &budget,
+    ))?;
+    if replay.applied
+        || replay.durable_sequence != 1
+        || replay.accepted_replace_scopes != first.accepted_replace_scopes
+        || replay.generation != first.generation
+    {
+        return Err(format!("the replay must be the stored receipt: {replay:?}").into());
+    }
+    if counting.preflights() != 1 || counting.applies() != 1 {
+        return Err(format!(
+            "a committed replay runs no preflight and no apply: preflights={} applies={}",
+            counting.preflights(),
+            counting.applies()
+        )
+        .into());
+    }
+    let builds = fakes
+        .lexical_builder
+        .batches
+        .lock()
+        .map_err(|err| format!("fake lexical builder poisoned: {err}"))?
+        .len();
+    if builds != builds_after_apply {
+        return Err(format!(
+            "the replay must not rebuild: builds={builds} after-apply={builds_after_apply}"
+        )
+        .into());
+    }
+
+    // A dispatcher whose routes cannot serve anything still answers the
+    // replay from the journal alone.
+    let unreachable = Arc::new(Unreachable);
+    let cold = search_corpus_dispatcher_with_port(unreachable, Arc::clone(&catalog));
+    let cold_replay = receipt_of(cold.dispatch(
+        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch),
+        &budget,
+    ))?;
+    if cold_replay != replay {
+        return Err(format!(
+            "a route-less dispatcher must answer the identical stored receipt: {cold_replay:?}"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// A repo-map store double behind the journal: counts V2 applies and
+/// answers a canned terminal receipt built from the request.
+struct CountingRepoMap {
+    calls: AtomicUsize,
+}
+
+impl RepoMapBundleIngestPort for CountingRepoMap {
+    fn ingest_bundle(
+        &self,
+        _bundle: &RepoMapSourceBundle,
+    ) -> Result<RepoMapMutationReceiptV1, CoreError> {
+        Err(unreachable_route("repo map bundle"))
+    }
+
+    fn ingest_bundle_v2(
+        &self,
+        request: &RepoMapPublishBundleRequestV2,
+    ) -> Result<RepoMapTerminalReceiptV2, CoreError> {
+        let _prior = self.calls.fetch_add(1, Ordering::SeqCst);
+        let bundle = &request.bundle;
+        Ok(RepoMapTerminalReceiptV2 {
+            phase: RepoMapMutationPhaseV2::Publish,
+            mutation: RepoMapMutationAck {
+                repo_id: bundle.repo_id.clone(),
+                revision_id: bundle.revision_id.clone(),
+                manifest_generation: bundle.manifest_generation,
+                prior_candidate_commitment: None,
+                new_candidate_commitment: "c".repeat(64),
+                activation_epoch: 0,
+                terminal_sequence: 41,
+                replayed: false,
+            },
+            manifest_digest: bundle.manifest_digest.clone(),
+            snapshot_id: bundle.snapshot_id.clone(),
+            projection_version: bundle.projection_version,
+            authority_digest: bundle.authority_digest.clone(),
+            source_bundle_digest: request.source_bundle_digest.clone(),
+        })
+    }
+}
+
+fn repomap_dispatcher(
+    repomap: Arc<CountingRepoMap>,
+    catalog: Arc<MemoryIdempotencyCatalog>,
+) -> SearchPlaneIngestDispatcher {
+    let unreachable = Arc::new(Unreachable);
+    SearchPlaneIngestDispatcher::new(
+        unreachable.clone(),
+        unreachable.clone(),
+        unreachable.clone(),
+        unreachable.clone(),
+        unreachable.clone(),
+        unreachable.clone(),
+        unreachable.clone(),
+        unreachable.clone(),
+        unreachable.clone(),
+        unreachable.clone(),
+        repomap,
+        catalog,
+    )
+}
+
+fn repomap_bundle_fixture() -> Result<RepoMapSourceBundle, Box<dyn std::error::Error>> {
+    Ok(RepoMapSourceBundle::new(
+        RepoId::new("repo-rm2").expect("static fixture ID satisfies canonical policy"),
+        RevisionId::new("rev-rm2").expect("static fixture ID satisfies canonical policy"),
+        ManifestGeneration::new(9),
+        "m".repeat(64),
+        "snap-rm2",
+        3,
+        "a".repeat(64),
+        RepoMapGraphCoverage {
+            item_index_availability: RepoMapItemIndexAvailability::Available,
+            graph_coverage_class: RepoMapGraphCoverageClass::Complete,
+        },
+        RepoMapExactnessSummary::Exact,
+        RepoMapRedactionState::Unredacted,
+    ))
+}
+
+fn repomap_receipt_of(
+    response: SearchPlaneIngestIpcResponse,
+) -> Result<RepoMapTerminalReceiptV2, String> {
+    match response {
+        SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(receipt) => Ok(receipt),
+        SearchPlaneIngestIpcResponse::Error(error) => {
+            Err(format!("{}: {}", error.code, error.message))
+        }
+        other => Err(format!("unexpected response {other:?}")),
+    }
+}
+
+/// SEP-21 P02B: a RepoMap V2 publish travels the operation journal —
+/// exactly one store apply, then replays carry the stored terminal
+/// receipt with zero store contact.
+///
+/// A forged source-bundle digest is refused before the journal or the
+/// store is touched, and the journal-free V1 bundle arm records
+/// nothing.
+#[test]
+fn a_repomap_v2_publish_journals_once_and_replays_without_the_store() -> TestRes {
+    let catalog = memory_catalog();
+    let repomap = Arc::new(CountingRepoMap {
+        calls: AtomicUsize::new(0),
+    });
+    let dispatcher = repomap_dispatcher(Arc::clone(&repomap), Arc::clone(&catalog));
+    let budget = RequestBudgetV1::unbounded();
+
+    let request = RepoMapPublishBundleRequestV2::new(repomap_bundle_fixture()?)?;
+    let records_before = catalog.records();
+    let first = repomap_receipt_of(dispatcher.dispatch(
+        SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(request.clone()),
+        &budget,
+    ))?;
+    if first.mutation.replayed || first.source_bundle_digest != request.source_bundle_digest {
+        return Err(format!("the first V2 publish must apply: {first:?}").into());
+    }
+    if repomap.calls.load(Ordering::SeqCst) != 1 {
+        return Err("the first V2 publish applies exactly once".into());
+    }
+
+    let replay = repomap_receipt_of(dispatcher.dispatch(
+        SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(request.clone()),
+        &budget,
+    ))?;
+    if !replay.mutation.replayed
+        || replay.mutation.new_candidate_commitment != first.mutation.new_candidate_commitment
+    {
+        return Err(format!("the V2 replay must be the stored receipt: {replay:?}").into());
+    }
+    if replay.mutation.terminal_sequence != first.mutation.terminal_sequence
+        || replay.source_bundle_digest != first.source_bundle_digest
+    {
+        return Err("the V2 replay must carry the original terminal identity".into());
+    }
+    if repomap.calls.load(Ordering::SeqCst) != 1 {
+        return Err(format!(
+            "a V2 replay never reaches the store: calls={}",
+            repomap.calls.load(Ordering::SeqCst)
+        )
+        .into());
+    }
+
+    // A forged digest is refused before the journal or the store.
+    let mut forged = request.clone();
+    forged.source_bundle_digest = format!("sha256:{}", "0".repeat(64));
+    if forged.source_bundle_digest == request.source_bundle_digest {
+        return Err("the forged digest fixture must differ".into());
+    }
+    match dispatcher.dispatch(
+        SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(forged),
+        &budget,
+    ) {
+        SearchPlaneIngestIpcResponse::Error(_) => {}
+        other => {
+            return Err(format!("a forged bundle digest must be refused, got {other:?}").into());
+        }
+    }
+    if repomap.calls.load(Ordering::SeqCst) != 1 {
+        return Err("a forged digest must not reach the store".into());
+    }
+
+    // The V1 bundle arm stays journal-free: its store error records
+    // nothing.
+    match dispatcher.dispatch(
+        SearchPlaneIngestIpcRequest::PublishRepoMapBundle(repomap_bundle_fixture()?),
+        &budget,
+    ) {
+        SearchPlaneIngestIpcResponse::Error(_) => {}
+        other => {
+            return Err(format!("the V1 arm must error on the fake store, got {other:?}").into());
+        }
+    }
+    if catalog.records() != records_before + 1 {
+        return Err(format!(
+            "only the V2 publish journals: records={} before={records_before}",
+            catalog.records()
+        )
+        .into());
     }
     Ok(())
 }
