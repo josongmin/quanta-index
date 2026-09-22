@@ -54,15 +54,15 @@ use quanta_index_lq_structural::{
 };
 use quanta_index_search_plane::{
     ActivationPromotionParts, AuxiliaryMaterializerParts, AuxiliaryMutationCoordinator,
-    BoundedQueryObsStore, CursorKeyStore, DirectHistoryMaterializer, DirectRuntimeMetadataMaterializer,
-    DirectSearchCorpusMaterializer, DirectSemanticMaterializer, DirectStructuralMaterializer,
-    HashingQueryTextEmbedder, HistoryIngestPort, HistoryTextIndexParts, Ledger,
-    ObservabilityScrape, QuarantineService, QuarantineServiceParts, QueryObsSink,
-    QueryTextEmbedderPort, RuntimeMetadataIngestPort, SEARCH_OWNED_SEMANTIC_DIMENSION,
-    SearchCorpusAuthorityInspectPort, SearchCorpusAuthorityWritePort, SearchCorpusLifecycleOwner,
-    SearchCorpusLifecycleParts, SearchCorpusMaterializerParts, SearchPlaneControlDispatcher,
-    SearchPlaneControlDispatcherParts, SearchPlaneDispatcher, SearchPlaneIngestDispatcher,
-    SnapshotRegistries, StructuralIngestPort,
+    BoundedQueryObsStore, CursorKeyStore, DirectHistoryMaterializer,
+    DirectRuntimeMetadataMaterializer, DirectSearchCorpusMaterializer, DirectSemanticMaterializer,
+    DirectStructuralMaterializer, HashingQueryTextEmbedder, HistoryIngestPort,
+    HistoryTextIndexParts, Ledger, ObservabilityScrape, QuarantineService, QuarantineServiceParts,
+    QueryObsSink, QueryTextEmbedderPort, RuntimeMetadataIngestPort,
+    SEARCH_OWNED_SEMANTIC_DIMENSION, SearchCorpusAuthorityInspectPort,
+    SearchCorpusAuthorityWritePort, SearchCorpusLifecycleOwner, SearchCorpusLifecycleParts,
+    SearchCorpusMaterializerParts, SearchPlaneControlDispatcher, SearchPlaneControlDispatcherParts,
+    SearchPlaneDispatcher, SearchPlaneIngestDispatcher, SnapshotRegistries, StructuralIngestPort,
 };
 use regex::Regex;
 

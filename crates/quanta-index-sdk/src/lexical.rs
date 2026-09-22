@@ -9,8 +9,7 @@ use quanta_index_contract::lex::SymbolRecord;
 use quanta_index_contract::{
     ChunkRecord, ClusterMembershipReplaceV1, ContinuationTokenV2, GenerationSelector,
     ManifestGeneration, RepoId, RevisionId, SearchCorpusGenerationIdentityV1,
-    SearchCorpusIngestBatch,
-    SearchCorpusReplaceScope, SearchCorpusTombstoneScope,
+    SearchCorpusIngestBatch, SearchCorpusReplaceScope, SearchCorpusTombstoneScope,
     SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
     SearchPlaneControlIpcResponse, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse,
     SearchPlaneSearchCorpusActivationCasAck, SearchPlaneTrackKind, SearchScopeKey,

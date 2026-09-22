@@ -33,7 +33,9 @@ impl CursorClockV2 for SystemCursorClockV2 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_secs())
-            .map_err(|error| CoreError::Storage(format!("cursor clock is before Unix epoch: {error}")))
+            .map_err(|error| {
+                CoreError::Storage(format!("cursor clock is before Unix epoch: {error}"))
+            })
     }
 }
 
@@ -58,24 +60,17 @@ impl CursorAuthorityV2 {
         }
     }
 
-    #[cfg(test)]
-    pub(super) fn with_clock(mut self, clock: Arc<dyn CursorClockV2>) -> Self {
-        self.clock = clock;
-        self
-    }
-
     /// Authenticate and decode before any route acquires a read view.
     pub(super) fn open<T: DeserializeOwned>(
         &self,
         token: &ContinuationTokenV2,
     ) -> Result<OpenedCursorV2<T>, CoreError> {
         let envelope = self.keys.verify(token.as_str(), self.clock.now_unix()?)?;
-        let boundary = serde_json::from_str(envelope.boundary()).map_err(|error| {
-            CoreError::Typed {
+        let boundary =
+            serde_json::from_str(envelope.boundary()).map_err(|error| CoreError::Typed {
                 code: SearchPlaneErrorCodeV2::CursorInvalid,
                 message: format!("cursor boundary does not decode for its route: {error}"),
-            }
-        })?;
+            })?;
         Ok(OpenedCursorV2 { envelope, boundary })
     }
 
@@ -83,8 +78,9 @@ impl CursorAuthorityV2 {
         &self,
         opened: &OpenedCursorV2<T>,
         context: &CursorRequestContextV2<'_>,
+        aux_epochs: Vec<CursorAuxEpochV2>,
     ) -> Result<(), CoreError> {
-        let expected = context.binding(opened.envelope.binding().aux_epochs.clone())?;
+        let expected = context.binding(aux_epochs)?;
         self.keys.require_binding(&opened.envelope, &expected)
     }
 
@@ -207,4 +203,3 @@ fn push_str(hasher: &mut Sha256, value: &str) {
     hasher.update(u64::try_from(value.len()).unwrap_or(u64::MAX).to_be_bytes());
     hasher.update(value.as_bytes());
 }
-

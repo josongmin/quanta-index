@@ -10,8 +10,8 @@ use std::sync::{Arc, RwLock};
 
 use quanta_index_contract::lex::{CommitRecord, CommitSha};
 use quanta_index_contract::{
-    AuxEpochV1, CandidateCountV1, HistoryCursor, HistoryCursorOrderV1, HistoryIngestBatch,
-    HistoryOrderV1, HistoryQueryRequest, SearchPlaneHistoryQueryResponse,
+    AuxEpochV1, CandidateCountV1, ContinuationTokenV2, HistoryCursor, HistoryCursorOrderV1,
+    HistoryIngestBatch, HistoryOrderV1, HistoryQueryRequest, SearchPlaneHistoryQueryResponse,
     SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_core::{
@@ -27,9 +27,7 @@ use crate::ingest_dispatcher::{
     HistoryIngestPort as _,
 };
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
-use crate::query_dispatcher::errors::{
-    ERR_HISTORY_CURSOR_ORDER_MISMATCH, ERR_HISTORY_RELEVANCE_UNAVAILABLE,
-};
+use crate::query_dispatcher::errors::ERR_HISTORY_RELEVANCE_UNAVAILABLE;
 use crate::query_dispatcher::tests::support::common::{
     TestResult, ready_ledger, ready_pin, test_activation_catalog,
 };
@@ -161,7 +159,7 @@ fn request(
     query_text: &str,
     order: HistoryOrderV1,
     top_k: u32,
-    cursor: Option<HistoryCursor>,
+    cursor: Option<ContinuationTokenV2>,
 ) -> SearchPlaneQueryIpcRequest {
     SearchPlaneQueryIpcRequest::History(HistoryQueryRequest {
         text_query: TextQueryRequest {
@@ -187,7 +185,7 @@ fn page(
     query_text: &str,
     order: HistoryOrderV1,
     top_k: u32,
-    cursor: Option<HistoryCursor>,
+    cursor: Option<ContinuationTokenV2>,
 ) -> Result<SearchPlaneHistoryQueryResponse, String> {
     match dispatcher.dispatch(
         request(query_text, order, top_k, cursor),
@@ -207,10 +205,11 @@ fn error_code(
     dispatcher: &SearchPlaneDispatcher,
     query_text: &str,
     order: HistoryOrderV1,
-    cursor: Option<HistoryCursor>,
+    top_k: u32,
+    cursor: Option<ContinuationTokenV2>,
 ) -> Result<quanta_index_contract::SearchPlaneErrorCodeV2, String> {
     match dispatcher.dispatch(
-        request(query_text, order, 3, cursor),
+        request(query_text, order, top_k, cursor),
         &RequestBudgetV1::unbounded(),
     ) {
         SearchPlaneQueryIpcResponse::Error(err) => Ok(err.code),
@@ -290,12 +289,17 @@ fn relevance_ranks_by_score_and_recency_by_time_on_one_fixture() -> TestResult {
         .into());
     }
     if relevance.window.candidate_count() != CandidateCountV1::Exact(5)
-        || !relevance.window.has_more()
+        || relevance.window.has_more() != Some(true)
         || relevance.examined != 5
     {
         return Err(format!("the relevance window is exact: {relevance:?}").into());
     }
-    match relevance.next_cursor {
+    let relevance_boundary = relevance
+        .next_cursor
+        .as_ref()
+        .map(|token| plane.dispatcher.cursors()?.open::<HistoryCursor>(token))
+        .transpose()?;
+    match relevance_boundary.map(|opened| opened.boundary) {
         Some(HistoryCursor {
             order: HistoryCursorOrderV1::Relevance { score },
             sha,
@@ -359,9 +363,10 @@ fn a_cursor_of_the_other_order_is_refused_typed() -> TestResult {
         &plane.dispatcher,
         "type:commit needle",
         HistoryOrderV1::Recency,
+        2,
         Some(relevance_cursor.clone()),
     )?;
-    if code != ERR_HISTORY_CURSOR_ORDER_MISMATCH {
+    if code != quanta_index_contract::SearchPlaneErrorCodeV2::HistoryCursorOrderMismatch {
         return Err(
             format!("a relevance cursor on a recency walk is refused typed, got {code}").into(),
         );
@@ -370,9 +375,10 @@ fn a_cursor_of_the_other_order_is_refused_typed() -> TestResult {
         &plane.dispatcher,
         "type:commit needle",
         HistoryOrderV1::Relevance,
+        2,
         Some(recency_cursor.clone()),
     )?;
-    if code != ERR_HISTORY_CURSOR_ORDER_MISMATCH {
+    if code != quanta_index_contract::SearchPlaneErrorCodeV2::HistoryCursorOrderMismatch {
         return Err(
             format!("a recency cursor on a relevance walk is refused typed, got {code}").into(),
         );
@@ -412,8 +418,8 @@ fn relevance_pages_partition_the_ranking_and_a_pruned_epoch_is_expired() -> Test
         .map(|(sha, _score)| sha)
         .collect();
     let mut walked: Vec<CommitSha> = Vec::new();
-    let mut cursor: Option<HistoryCursor> = None;
-    let mut first_cursor: Option<HistoryCursor> = None;
+    let mut cursor: Option<ContinuationTokenV2> = None;
+    let mut first_cursor: Option<ContinuationTokenV2> = None;
     for _page in 0..8 {
         let page = page(
             &plane.dispatcher,
@@ -432,15 +438,15 @@ fn relevance_pages_partition_the_ranking_and_a_pruned_epoch_is_expired() -> Test
         }
         walked.extend(page.commits.iter().map(|row| row.sha));
         match (page.window.has_more(), page.next_cursor) {
-            (true, Some(next)) => {
+            (Some(true), Some(next)) => {
                 if first_cursor.is_none() {
                     first_cursor = Some(next.clone());
                 }
                 cursor = Some(next);
             }
-            (false, None) => break,
+            (Some(false), None) => break,
             (has_more, next) => {
-                return Err(format!("has_more={has_more} and cursor={next:?} disagree").into());
+                return Err(format!("has_more={has_more:?} and cursor={next:?} disagree").into());
             }
         }
     }
@@ -504,6 +510,7 @@ fn relevance_pages_partition_the_ranking_and_a_pruned_epoch_is_expired() -> Test
         &plane.dispatcher,
         "type:commit needle",
         HistoryOrderV1::Relevance,
+        2,
         Some(first_cursor),
     )?;
     if code != AUX_EPOCH_EXPIRED_CODE {
@@ -639,6 +646,7 @@ fn relevance_without_a_wired_index_is_refused_typed_while_recency_serves() -> Te
         &dispatcher,
         "type:commit needle",
         HistoryOrderV1::Relevance,
+        3,
         None,
     )?;
     if code != ERR_HISTORY_RELEVANCE_UNAVAILABLE {
@@ -667,6 +675,7 @@ fn an_unscorable_expression_is_refused_under_relevance_and_filters_under_recency
         &plane.dispatcher,
         "type:commit 'needle'",
         HistoryOrderV1::Relevance,
+        3,
         None,
     )?;
     if code != HISTORY_TEXT_QUERY_UNSCORABLE_CODE {

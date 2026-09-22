@@ -384,9 +384,7 @@ impl CursorEnvelopeV2 {
             .str()
             .and_then(|revision| RevisionId::new(revision).ok())
             .ok_or(CursorEnvelopeError::MalformedToken)?;
-        let manifest_generation = cursor
-            .u64()
-            .ok_or(CursorEnvelopeError::MalformedToken)?;
+        let manifest_generation = cursor.u64().ok_or(CursorEnvelopeError::MalformedToken)?;
         let plan_digest = cursor.digest().ok_or(CursorEnvelopeError::MalformedToken)?;
         let query_digest = cursor.digest().ok_or(CursorEnvelopeError::MalformedToken)?;
         let constraints_digest = cursor.digest().ok_or(CursorEnvelopeError::MalformedToken)?;

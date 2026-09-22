@@ -11,8 +11,8 @@ use quanta_index_core::{
 };
 
 use crate::lower_lexical_text_query;
-use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
 use crate::query_dispatcher::continuation::{CursorRequestContextV2, require_token_pin};
+use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
 use crate::query_dispatcher::planning::{
     prepare_language_query_v1, query_selects_file_owner_projection,
 };
@@ -71,7 +71,8 @@ impl SearchPlaneDispatcher {
             cap: request.top_k,
         };
         if let Some(opened) = &opened {
-            self.cursors()?.require_context(opened, &cursor_context)?;
+            self.cursors()?
+                .require_context(opened, &cursor_context, Vec::new())?;
         }
         let wants_file_owner_projection = query_selects_file_owner_projection(&planned.query);
         if planned.force_empty {
@@ -95,10 +96,7 @@ impl SearchPlaneDispatcher {
             &planned.constraints,
             &LexicalPageSpec {
                 fetch: fetch_top_k,
-                after: continuation(
-                    opened.as_ref().map(|cursor| &cursor.boundary),
-                    &planned.pin,
-                )?,
+                after: continuation(opened.as_ref().map(|cursor| &cursor.boundary), &planned.pin)?,
             },
             budget,
         )?;
@@ -188,7 +186,8 @@ impl SearchPlaneDispatcher {
             cap: lexical_request.top_k,
         };
         if let Some(opened) = &opened {
-            self.cursors()?.require_context(opened, &cursor_context)?;
+            self.cursors()?
+                .require_context(opened, &cursor_context, Vec::new())?;
         }
         if prepared_language.force_empty {
             return Ok(SymbolQueryResponse {

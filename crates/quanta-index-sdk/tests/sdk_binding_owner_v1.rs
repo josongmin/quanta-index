@@ -82,7 +82,7 @@ fn text_response(generation: GenerationPin) -> SearchPlaneQueryIpcResponse {
     SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
         generation,
         results: vec![],
-        window: quanta_index_contract::QueryResultWindowV1::exact(0),
+        window: quanta_index_contract::QueryResultWindowV2::exact_probe(0),
         file_owner_rows: None,
         next_cursor: None,
     })
@@ -251,7 +251,7 @@ fn foreign_candidate_fails_closed() {
     let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
         generation: pin(repo_id()),
         results: vec![lexical_candidate(other_repo_id())],
-        window: quanta_index_contract::QueryResultWindowV1::exact(1),
+        window: quanta_index_contract::QueryResultWindowV2::exact_probe(1),
         file_owner_rows: None,
         next_cursor: None,
     });
@@ -272,7 +272,7 @@ fn window_disagreeing_with_rows_fails_closed() {
     let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
         generation: pin(repo_id()),
         results: vec![],
-        window: quanta_index_contract::QueryResultWindowV1::exact(3),
+        window: quanta_index_contract::QueryResultWindowV2::exact_probe(3),
         file_owner_rows: None,
         next_cursor: None,
     });
@@ -292,7 +292,7 @@ fn rows_over_request_cap_fails_closed() {
     let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
         generation: pin(repo_id()),
         results: vec![lexical_candidate(repo_id()), lexical_candidate(repo_id())],
-        window: quanta_index_contract::QueryResultWindowV1::exact(2),
+        window: quanta_index_contract::QueryResultWindowV2::exact_probe(2),
         file_owner_rows: None,
         next_cursor: None,
     });

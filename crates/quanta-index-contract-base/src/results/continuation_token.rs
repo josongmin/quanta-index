@@ -75,7 +75,8 @@ impl Visitor<'_> for ContinuationTokenVisitor {
     where
         E: de::Error,
     {
-        ContinuationTokenV2::new(value).map_err(|_error| E::invalid_value(de::Unexpected::Str(value), &self))
+        ContinuationTokenV2::new(value)
+            .map_err(|_error| E::invalid_value(de::Unexpected::Str(value), &self))
     }
 }
 

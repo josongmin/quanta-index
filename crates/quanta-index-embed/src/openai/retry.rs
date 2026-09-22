@@ -27,19 +27,34 @@ pub(super) fn classify_status(status: u16) -> StatusClass {
     }
 }
 
+/// Exclusive upper bound of the full-jitter backoff for `attempt`:
+/// `RETRY_BASE_DELAY * 2^attempt`, saturating. Pure: the same input always
+/// yields the same bound, so tests pin the production schedule exactly.
+pub(super) fn backoff_bound(attempt: u32) -> Duration {
+    RETRY_BASE_DELAY.saturating_mul(2_u32.saturating_pow(attempt))
+}
+
+/// Full-jitter exponential backoff with explicit entropy: a deterministic
+/// delay in `[0, backoff_bound(attempt))` derived from `entropy`.
+///
+/// Production passes per-thread xorshift output (see [`backoff_delay`]);
+/// tests pass scripted entropy and pin exact delays with zero randomness.
+pub(super) fn backoff_delay_with_entropy(attempt: u32, entropy: u64) -> Duration {
+    let bound_nanos = duration_nanos_saturating(backoff_bound(attempt));
+    if bound_nanos == 0 {
+        return Duration::ZERO;
+    }
+    let jittered = entropy.checked_rem(bound_nanos).unwrap_or(0);
+    Duration::from_nanos(jittered)
+}
+
 /// Full-jitter exponential backoff: a uniform random delay in
 /// `[0, RETRY_BASE_DELAY * 2^attempt]`.
 ///
 /// Jitter prevents concurrent retriers from waking together after a 429. It
 /// affects retry timing only and never embedding output.
 pub(super) fn backoff_delay(attempt: u32) -> Duration {
-    let bound = RETRY_BASE_DELAY.saturating_mul(2_u32.saturating_pow(attempt));
-    let bound_nanos = duration_nanos_saturating(bound);
-    if bound_nanos == 0 {
-        return Duration::ZERO;
-    }
-    let jittered = next_jitter_u64().checked_rem(bound_nanos).unwrap_or(0);
-    Duration::from_nanos(jittered)
+    backoff_delay_with_entropy(attempt, next_jitter_u64())
 }
 
 fn duration_nanos_saturating(duration: Duration) -> u64 {
@@ -88,4 +103,73 @@ fn next_jitter_u64() -> u64 {
         cell.set(state);
         state
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backoff_bound_doubles_per_attempt_from_250ms() {
+        let bounds: Vec<Duration> = (0..6).map(backoff_bound).collect();
+        assert_eq!(
+            bounds,
+            vec![
+                Duration::from_millis(250),
+                Duration::from_millis(500),
+                Duration::from_secs(1),
+                Duration::from_secs(2),
+                Duration::from_secs(4),
+                Duration::from_secs(8),
+            ],
+            "production backoff schedule is 250ms * 2^attempt"
+        );
+    }
+
+    #[test]
+    fn backoff_bound_saturates_instead_of_wrapping() {
+        assert_eq!(backoff_bound(u32::MAX), Duration::MAX);
+    }
+
+    #[test]
+    fn scripted_entropy_pins_exact_delays() {
+        let bound_nanos = duration_nanos_saturating(backoff_bound(0));
+        assert_eq!(
+            backoff_delay_with_entropy(0, 0),
+            Duration::ZERO,
+            "zero entropy maps to a zero delay"
+        );
+        assert_eq!(
+            backoff_delay_with_entropy(0, 1),
+            Duration::from_nanos(1),
+            "entropy below the bound passes through unchanged"
+        );
+        assert_eq!(
+            backoff_delay_with_entropy(0, bound_nanos),
+            Duration::ZERO,
+            "entropy folds modulo the bound"
+        );
+        assert_eq!(
+            backoff_delay_with_entropy(0, bound_nanos + 7),
+            Duration::from_nanos(7),
+            "entropy folds modulo the bound"
+        );
+        assert_eq!(
+            backoff_delay_with_entropy(3, 42),
+            backoff_delay_with_entropy(3, 42),
+            "the same entropy always yields the same delay"
+        );
+    }
+
+    #[test]
+    fn production_jitter_always_stays_inside_its_bound() {
+        for attempt in 0..6 {
+            for _ in 0..32 {
+                assert!(
+                    backoff_delay(attempt) < backoff_bound(attempt),
+                    "attempt {attempt} jitter must stay below its bound"
+                );
+            }
+        }
+    }
 }

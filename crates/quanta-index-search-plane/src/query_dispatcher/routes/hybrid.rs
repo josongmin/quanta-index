@@ -21,9 +21,7 @@ use crate::query_dispatcher::semantic_query::{
     HybridFilterTraceV1, HybridFusion, HybridLaneTallyV1, build_hybrid_response_explanation,
     resolve_hybrid_request_selection,
 };
-use crate::query_dispatcher::window::{
-    fused_window_v2, hybrid_probe_top_k_v1, lane_count_u64,
-};
+use crate::query_dispatcher::window::{fused_window_v2, hybrid_probe_top_k_v1, lane_count_u64};
 
 /// Lane traces for the fused window: lexical and dense lanes carry their
 /// executed/contributed split, candidate counts, and the dense admission

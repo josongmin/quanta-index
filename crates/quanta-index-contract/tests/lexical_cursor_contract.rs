@@ -14,10 +14,10 @@ use std::error::Error;
 
 use quanta_index_contract::lex::SymbolKindCode;
 use quanta_index_contract::{
-    CandidateCountV1, ContinuationTokenV2, FileOwnerProjectionRow, GenerationPin,
-    LexicalCandidate, LexicalCursor, ManifestGeneration, QueryConstraintSetV1,
-    QueryResultWindowV2, RepoId, RepoRelativePath, RevisionId, SymbolCandidate,
-    SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
+    CandidateCountV1, ContinuationTokenV2, FileOwnerProjectionRow, GenerationPin, LexicalCandidate,
+    LexicalCursor, ManifestGeneration, QueryConstraintSetV1, QueryResultWindowV2, RepoId,
+    RepoRelativePath, RevisionId, SymbolCandidate, SymbolQueryRequest, SymbolQueryResponse,
+    TextQueryRequest, TextQueryResponse, TextQuerySyntax,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -219,12 +219,7 @@ fn symbol_requests_and_pages_share_the_text_rules() -> TestResult {
     let page = SymbolQueryResponse {
         generation: pin(),
         next_cursor: Some(token("symbol-page")?),
-        window: QueryResultWindowV2::pageable(
-            3,
-            CandidateCountV1::AtLeast(4),
-            true,
-            Vec::new(),
-        )?,
+        window: QueryResultWindowV2::pageable(3, CandidateCountV1::AtLeast(4), true, Vec::new())?,
         results,
     };
     let mut bytes = Vec::new();

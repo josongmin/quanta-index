@@ -193,14 +193,14 @@ fn hybrid_window_v2_reports_lower_bound_only_when_a_continuation_was_observed() 
         panic!("expected hybrid response, got {response:?}");
     };
     // Universe is 3 distinct ids for a page of 2: a continuation exists.
-    assert!(hybrid.window.has_more());
+    assert_eq!(hybrid.window.has_more(), Some(true));
     assert_eq!(
-        hybrid.window_v2.outcome(),
+        hybrid.window.outcome(),
         ExecutionOutcomeV2::LowerBound { continuation: true }
     );
-    assert_eq!(hybrid.window_v2.has_more(), Some(true));
+    assert_eq!(hybrid.window.has_more(), Some(true));
     // Both lanes executed and contributed, with candidate lower bounds.
-    let lanes = hybrid.window_v2.coverage().lanes();
+    let lanes = hybrid.window.coverage().lanes();
     assert!(
         lanes
             .iter()
@@ -230,12 +230,12 @@ fn hybrid_window_v2_full_page_without_distinct_continuation_is_capped_unknown() 
         panic!("expected hybrid response, got {response:?}");
     };
     assert_eq!(
-        hybrid.window_v2.outcome(),
+        hybrid.window.outcome(),
         ExecutionOutcomeV2::CappedUnknown { cap: 100 },
         "a deduped full page must stay capped-unknown: {:?}",
-        hybrid.window_v2
+        hybrid.window
     );
-    assert_eq!(hybrid.window_v2.has_more(), None);
+    assert_eq!(hybrid.window.has_more(), None);
 }
 
 // CASE-COVERS: S21-06 empty provenance — zero-hit executed stays distinct.
@@ -248,14 +248,14 @@ fn zero_hit_hybrid_carries_zero_hit_executed_provenance_and_lane_traces() {
     };
     assert_eq!(hybrid.results.len(), 0);
     assert_eq!(
-        hybrid.window_v2.empty_provenance(),
+        hybrid.window.empty_provenance(),
         Some(EmptyProvenanceV2::ZeroHitExecuted),
         "an executed zero-hit page must record its provenance: {:?}",
-        hybrid.window_v2
+        hybrid.window
     );
-    assert!(hybrid.window_v2.outcome().is_exhausted());
-    assert_eq!(hybrid.window_v2.has_more(), Some(false));
-    let lanes = hybrid.window_v2.coverage().lanes();
+    assert!(hybrid.window.outcome().is_exhausted());
+    assert_eq!(hybrid.window.has_more(), Some(false));
+    let lanes = hybrid.window.coverage().lanes();
     assert!(
         lanes
             .iter()
@@ -287,12 +287,9 @@ fn semantic_window_v2_is_exact_only_when_the_probe_observed_the_end() {
     let SearchPlaneQueryIpcResponse::Semantic(exact) = response else {
         panic!("expected semantic response, got {response:?}");
     };
-    assert_eq!(
-        exact.window_v2.outcome(),
-        ExecutionOutcomeV2::ExactExhausted
-    );
-    assert!(exact.window_v2.coverage().exhaustion_proof().is_some());
-    assert_eq!(exact.window_v2.has_more(), Some(false));
+    assert_eq!(exact.window.outcome(), ExecutionOutcomeV2::ExactExhausted);
+    assert!(exact.window.coverage().exhaustion_proof().is_some());
+    assert_eq!(exact.window.has_more(), Some(false));
 
     // top_k 1 leaves a probe row: a lower bound with a continuation.
     let response = dispatcher.dispatch(semantic_request(1), &RequestBudgetV1::unbounded());
@@ -300,9 +297,9 @@ fn semantic_window_v2_is_exact_only_when_the_probe_observed_the_end() {
         panic!("expected semantic response, got {response:?}");
     };
     assert_eq!(
-        bound.window_v2.outcome(),
+        bound.window.outcome(),
         ExecutionOutcomeV2::LowerBound { continuation: true }
     );
-    assert!(bound.window_v2.coverage().exhaustion_proof().is_none());
-    assert_eq!(bound.window_v2.has_more(), Some(true));
+    assert!(bound.window.coverage().exhaustion_proof().is_none());
+    assert_eq!(bound.window.has_more(), Some(true));
 }

@@ -20,9 +20,9 @@ use quanta_index_lq_obs::{Dimensions, MetricKind, MetricSample};
 
 use crate::history_text::HistoryTextIndexParts;
 use crate::observability::{NoopQueryObsSink, QueryObsSink};
-use crate::query_dispatcher::errors::core_error_to_ipc;
 use crate::query_dispatcher::continuation::CursorAuthorityV2;
 use crate::query_dispatcher::cursor_key::CursorKeyStore;
+use crate::query_dispatcher::errors::core_error_to_ipc;
 use crate::query_dispatcher::metrics::{
     QueryRoute, classify_error_metric_name, elapsed_millis_metric, examined_candidates_metric,
     interruption_route_suffix, metric_count_value,

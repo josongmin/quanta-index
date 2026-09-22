@@ -1087,11 +1087,11 @@ fn search_plane_ipc_v2_history_relevance_pages_and_requests_round_trip() -> Test
     });
     roundtrip_eq(&page)?;
     let typed_boundary = HistoryCursor {
-            order: HistoryCursorOrderV1::Relevance { score: last },
-            committer_time_ms: 1_717_171_717_000,
-            sha: CommitSha::from_bytes([7u8; 20]),
-            file_path: None,
-            aux_epoch: quanta_index_contract::AuxEpochV1::new(3),
+        order: HistoryCursorOrderV1::Relevance { score: last },
+        committer_time_ms: 1_717_171_717_000,
+        sha: CommitSha::from_bytes([7u8; 20]),
+        file_path: None,
+        aux_epoch: quanta_index_contract::AuxEpochV1::new(3),
     };
     roundtrip_eq(&typed_boundary)?;
     let mut diff = history_diff_candidate();

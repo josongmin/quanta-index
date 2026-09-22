@@ -28,8 +28,8 @@
 //!   ranked lexical page's byte budget). `rev_at_time` and `text_plane`
 //!   depend on `timeref` / `errors`; the rest depend only on `errors`.
 
-mod cursor_key;
 mod continuation;
+mod cursor_key;
 mod dense_admission;
 mod dispatcher;
 mod errors;

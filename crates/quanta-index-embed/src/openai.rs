@@ -89,6 +89,27 @@ pub struct HttpResponse {
     pub body: String,
 }
 
+/// Budget-aware backoff sleep for the retry loop (TOPT-04 / R2).
+///
+/// Production sleeps in [`BUDGET_POLL_INTERVAL`] slices so a cancelled or
+/// expired budget interrupts the backoff typed; unit tests inject a
+/// recorder/zero sleeper and prove the retry schedule with no wall-clock
+/// wait. The trait is provider-local: it changes no public constructor and
+/// no production delay distribution.
+trait RetrySleeper: Send + Sync {
+    fn sleep_backoff(&self, delay: Duration, budget: &RequestBudgetV1) -> Result<(), CoreError>;
+}
+
+/// The production sleeper: [`sleep_within_budget`] semantics under testable
+/// ownership.
+struct BudgetPollSleeper;
+
+impl RetrySleeper for BudgetPollSleeper {
+    fn sleep_backoff(&self, delay: Duration, budget: &RequestBudgetV1) -> Result<(), CoreError> {
+        sleep_within_budget(delay, budget)
+    }
+}
+
 /// Construction parameters for the `OpenAI` embedding provider.
 ///
 /// `api_key` is held only inside the provider and is never logged. Tuning (batch
@@ -201,6 +222,7 @@ pub struct OpenAiEmbeddingProvider {
     max_retries: u32,
     timeout: Duration,
     concurrency: usize,
+    retry_sleeper: Arc<dyn RetrySleeper>,
 }
 
 impl OpenAiEmbeddingProvider {
@@ -265,6 +287,7 @@ impl OpenAiEmbeddingProvider {
             max_retries: config.max_retries,
             timeout: config.timeout,
             concurrency: config.concurrency,
+            retry_sleeper: Arc::new(BudgetPollSleeper),
         })
     }
 
@@ -281,6 +304,14 @@ impl OpenAiEmbeddingProvider {
     #[cfg(test)]
     fn transport_configured_timeout(&self) -> Option<Duration> {
         self.transport.configured_timeout()
+    }
+
+    /// Swap the backoff sleeper. Test-only: production always sleeps in
+    /// budget-poll slices via [`BudgetPollSleeper`].
+    #[cfg(test)]
+    fn with_retry_sleeper(mut self, sleeper: Arc<dyn RetrySleeper>) -> Self {
+        self.retry_sleeper = sleeper;
+        self
     }
 
     fn embed_one_batch(
@@ -380,7 +411,8 @@ impl OpenAiEmbeddingProvider {
             }
             if attempt < self.max_retries {
                 telemetry::record_retry();
-                sleep_within_budget(backoff_delay(attempt), budget)?;
+                self.retry_sleeper
+                    .sleep_backoff(backoff_delay(attempt), budget)?;
             }
         }
         Err(last_error.unwrap_or_else(|| {
@@ -815,9 +847,10 @@ fn invalid(message: &str) -> CoreError {
 
 #[cfg(test)]
 mod tests {
+    use super::retry::backoff_bound;
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Condvar, Mutex};
 
     /// Replays a fixed sequence of canned transport results and counts calls, so
     /// batch / retry knobs can be proven by the number of HTTP requests issued.
@@ -858,6 +891,36 @@ mod tests {
                 ));
             }
             responses.remove(0)
+        }
+    }
+
+    /// A [`RetrySleeper`] that records every proposed backoff and never
+    /// sleeps: retry tests prove the schedule with zero wall-clock wait.
+    /// The budget is still checkpointed so cancellation semantics stay honest.
+    struct RecordingSleeper {
+        delays: Mutex<Vec<Duration>>,
+    }
+
+    impl RecordingSleeper {
+        fn new() -> Self {
+            Self {
+                delays: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn recorded(&self) -> Vec<Duration> {
+            self.delays.lock().expect("test mutex").clone()
+        }
+    }
+
+    impl RetrySleeper for RecordingSleeper {
+        fn sleep_backoff(
+            &self,
+            delay: Duration,
+            budget: &RequestBudgetV1,
+        ) -> Result<(), CoreError> {
+            self.delays.lock().expect("test mutex").push(delay);
+            budget.checkpoint(EMBED_CHECKPOINT)
         }
     }
 
@@ -965,7 +1028,7 @@ mod tests {
     }
 
     /// Records peak concurrency and the inputs of every request, and
-    /// answers each request from its OWN body.
+    /// answers each request from its OWN body, with no wall-clock wait.
     ///
     /// Each input text `"t<N>"` produces a deterministic, order-checkable vector.
     struct ConcurrencyProbeTransport {
@@ -973,7 +1036,32 @@ mod tests {
         peak_in_flight: Arc<AtomicUsize>,
         /// Inputs each request carried, in completion order.
         request_sizes: Arc<Mutex<Vec<usize>>>,
-        delay: Duration,
+    }
+
+    /// Answer a probe request body from its own `t<N>` inputs.
+    fn answer_probe_body(body: &str, request_sizes: &Mutex<Vec<usize>>) -> Vec<(usize, Vec<f32>)> {
+        let parsed: serde_json::Value =
+            serde_json::from_str(body).expect("probe: request body is valid json");
+        let inputs = parsed
+            .get("input")
+            .and_then(serde_json::Value::as_array)
+            .expect("probe: body has an input array");
+        request_sizes
+            .lock()
+            .expect("probe: request sizes mutex")
+            .push(inputs.len());
+        inputs
+            .iter()
+            .enumerate()
+            .map(|(position, value)| {
+                let text = value.as_str().expect("probe: input is a string");
+                let n: f32 = text
+                    .trim_start_matches('t')
+                    .parse()
+                    .expect("probe: input is t<N>");
+                (position, vec![n])
+            })
+            .collect()
     }
 
     impl EmbeddingTransport for ConcurrencyProbeTransport {
@@ -989,29 +1077,84 @@ mod tests {
                 .fetch_add(1, Ordering::SeqCst)
                 .saturating_add(1);
             let _prev_peak = self.peak_in_flight.fetch_max(current, Ordering::SeqCst);
-            std::thread::sleep(self.delay);
-            let parsed: serde_json::Value =
-                serde_json::from_str(body).expect("probe: request body is valid json");
-            let inputs = parsed
-                .get("input")
-                .and_then(serde_json::Value::as_array)
-                .expect("probe: body has an input array");
-            self.request_sizes
-                .lock()
-                .expect("probe: request sizes mutex")
-                .push(inputs.len());
-            let items: Vec<(usize, Vec<f32>)> = inputs
-                .iter()
-                .enumerate()
-                .map(|(position, value)| {
-                    let text = value.as_str().expect("probe: input is a string");
-                    let n: f32 = text
-                        .trim_start_matches('t')
-                        .parse()
-                        .expect("probe: input is t<N>");
-                    (position, vec![n])
-                })
-                .collect();
+            let items = answer_probe_body(body, &self.request_sizes);
+            let _prior = self.in_flight.fetch_sub(1, Ordering::SeqCst);
+            Ok(ok_body(&items))
+        }
+    }
+
+    /// Failure-containment bound for the first-wave rendezvous: reached only
+    /// when the provider fails to overlap its cohort, in which case the
+    /// transport errors typed and the test fails instead of hanging.
+    const RENDEZVOUS_TIMEOUT: Duration = Duration::from_secs(30);
+
+    /// A concurrency probe whose first `cohort` arrivals rendezvous before
+    /// any of them is answered, so overlap is structural instead of
+    /// sleep-timed (TOPT-04 / R3).
+    ///
+    /// Later arrivals proceed without waiting: the latch opens the moment the
+    /// cohort is complete and never closes again. A latch timeout is a typed
+    /// transport error, never a silent pass.
+    struct RendezvousProbeTransport {
+        in_flight: Arc<AtomicUsize>,
+        peak_in_flight: Arc<AtomicUsize>,
+        request_sizes: Arc<Mutex<Vec<usize>>>,
+        cohort: usize,
+        arrivals: Mutex<usize>,
+        released: Mutex<bool>,
+        release: Condvar,
+    }
+
+    impl RendezvousProbeTransport {
+        fn wait_for_cohort(&self, arrival: usize) -> Result<(), CoreError> {
+            let mut released = self.released.lock().expect("probe: release mutex");
+            if *released {
+                return Ok(());
+            }
+            if arrival >= self.cohort {
+                *released = true;
+                self.release.notify_all();
+                return Ok(());
+            }
+            let (guard, waited) = self
+                .release
+                .wait_timeout_while(released, RENDEZVOUS_TIMEOUT, |open| !*open)
+                .expect("probe: release mutex");
+            released = guard;
+            if *released {
+                return Ok(());
+            }
+            debug_assert!(waited.timed_out());
+            Err(typed(
+                LexicalErrorCode::SemProviderTransport,
+                &format!(
+                    "probe: rendezvous latch timed out with {arrival} of {} arrivals",
+                    self.cohort
+                ),
+            ))
+        }
+    }
+
+    impl EmbeddingTransport for RendezvousProbeTransport {
+        fn post_embeddings(
+            &self,
+            _url: &str,
+            _api_key: &str,
+            body: &str,
+            _timeout: Duration,
+        ) -> Result<HttpResponse, CoreError> {
+            let current = self
+                .in_flight
+                .fetch_add(1, Ordering::SeqCst)
+                .saturating_add(1);
+            let _prev_peak = self.peak_in_flight.fetch_max(current, Ordering::SeqCst);
+            let arrival = {
+                let mut arrivals = self.arrivals.lock().expect("probe: arrivals mutex");
+                *arrivals = arrivals.saturating_add(1);
+                *arrivals
+            };
+            self.wait_for_cohort(arrival)?;
+            let items = answer_probe_body(body, &self.request_sizes);
             let _prior = self.in_flight.fetch_sub(1, Ordering::SeqCst);
             Ok(ok_body(&items))
         }
@@ -1040,15 +1183,21 @@ mod tests {
 
     #[test]
     fn embed_batch_dispatches_batches_concurrently_and_preserves_order() {
-        // max_batch=1 -> one batch per text (10 batches); concurrency=4 -> workers
-        // overlap. The probe's per-request delay makes the overlap observable.
+        // max_batch=1 -> one batch per text (10 batches); concurrency=4 -> 4
+        // workers. The first wave of 4 rendezvous inside the transport, so a
+        // peak of exactly 4 proves four-way overlap structurally, with no
+        // sleep-timed observation window.
         let in_flight = Arc::new(AtomicUsize::new(0));
         let peak = Arc::new(AtomicUsize::new(0));
-        let transport = ConcurrencyProbeTransport {
+        let request_sizes = Arc::new(Mutex::new(Vec::new()));
+        let transport = RendezvousProbeTransport {
             in_flight: Arc::clone(&in_flight),
             peak_in_flight: Arc::clone(&peak),
-            request_sizes: Arc::new(Mutex::new(Vec::new())),
-            delay: Duration::from_millis(25),
+            request_sizes: Arc::clone(&request_sizes),
+            cohort: 4,
+            arrivals: Mutex::new(0),
+            released: Mutex::new(false),
+            release: Condvar::new(),
         };
         let provider = OpenAiEmbeddingProvider::new(
             cfg(1).with_max_batch(1).with_concurrency(4),
@@ -1064,15 +1213,25 @@ mod tests {
             out, expected,
             "concurrent dispatch must preserve input order"
         );
-        // Concurrency actually happened: peak in-flight > 1 (bounded by 4).
+        // All four first-wave workers were inside the transport together.
         let observed_peak = peak.load(Ordering::SeqCst);
-        assert!(
-            observed_peak >= 2,
-            "batches must overlap; peak in-flight was {observed_peak}"
+        assert_eq!(
+            observed_peak, 4,
+            "the four-worker first wave must rendezvous; peak in-flight was {observed_peak}"
         );
+        assert_eq!(
+            in_flight.load(Ordering::SeqCst),
+            0,
+            "nothing is left in flight"
+        );
+        let sizes = request_sizes
+            .lock()
+            .expect("probe: request sizes mutex")
+            .clone();
+        assert_eq!(sizes.len(), 10, "ten texts at max_batch=1 -> ten requests");
         assert!(
-            observed_peak <= 4,
-            "concurrency must stay bounded by the knob; peak was {observed_peak}"
+            sizes.iter().all(|size| *size == 1),
+            "every request carries exactly one text: {sizes:?}"
         );
     }
 
@@ -1113,7 +1272,6 @@ mod tests {
             in_flight: Arc::clone(&in_flight),
             peak_in_flight: Arc::clone(&peak),
             request_sizes: Arc::clone(&request_sizes),
-            delay: Duration::ZERO,
         };
         let provider =
             OpenAiEmbeddingProvider::new(cfg(1), Box::new(transport)).expect("provider builds");
@@ -1293,7 +1451,9 @@ mod tests {
             Ok(ok_body(&[(0, vec![0.5, 0.5])])),
         ]);
         let calls = transport.calls_handle();
-        let provider = provider_with(cfg(2).with_max_retries(2), transport);
+        let sleeper = Arc::new(RecordingSleeper::new());
+        let provider = provider_with(cfg(2).with_max_retries(2), transport)
+            .with_retry_sleeper(sleeper.clone());
         let vectors = provider
             .embed_batch(&["a"])
             .expect("recovers after one 429");
@@ -1302,6 +1462,11 @@ mod tests {
             calls.load(Ordering::SeqCst),
             2,
             "one 429 then success = two calls"
+        );
+        assert_eq!(
+            sleeper.recorded().len(),
+            1,
+            "exactly one backoff between the two attempts"
         );
     }
 
@@ -1319,7 +1484,9 @@ mod tests {
             }),
         ]);
         let calls = transport.calls_handle();
-        let provider = provider_with(cfg(2).with_max_retries(1), transport);
+        let sleeper = Arc::new(RecordingSleeper::new());
+        let provider = provider_with(cfg(2).with_max_retries(1), transport)
+            .with_retry_sleeper(sleeper.clone());
         match provider.embed_batch(&["a"]) {
             Err(CoreError::Typed { code, .. }) => {
                 assert_eq!(
@@ -1336,6 +1503,98 @@ mod tests {
             2,
             "max_retries=1 must attempt exactly 1 + 1 retry"
         );
+        assert_eq!(
+            sleeper.recorded().len(),
+            1,
+            "exactly one backoff between the two attempts"
+        );
+    }
+
+    #[test]
+    fn retryable_status_invokes_sleeper_once_per_retry_inside_attempt_bounds() {
+        // Two 503s then success with max_retries=2: the sleeper sees exactly
+        // the attempt-0 and attempt-1 delays, each inside its production
+        // bound, with zero wall-clock wait.
+        let transport = ScriptedTransport::new(vec![
+            Ok(HttpResponse {
+                status: 503,
+                body: "x".to_string(),
+            }),
+            Ok(HttpResponse {
+                status: 503,
+                body: "x".to_string(),
+            }),
+            Ok(ok_body(&[(0, vec![0.5, 0.5])])),
+        ]);
+        let calls = transport.calls_handle();
+        let sleeper = Arc::new(RecordingSleeper::new());
+        let provider = provider_with(cfg(2).with_max_retries(2), transport)
+            .with_retry_sleeper(sleeper.clone());
+        let vectors = provider
+            .embed_batch(&["a"])
+            .expect("recovers after two 503s");
+        assert_eq!(vectors, vec![vec![0.5, 0.5]]);
+        assert_eq!(calls.load(Ordering::SeqCst), 3, "two retries = three calls");
+        let delays = sleeper.recorded();
+        assert_eq!(
+            delays.len(),
+            2,
+            "one backoff per retry, none after the final success"
+        );
+        assert!(
+            delays[0] < backoff_bound(0),
+            "attempt-0 backoff {:?} must stay below {:?}",
+            delays[0],
+            backoff_bound(0)
+        );
+        assert!(
+            delays[1] < backoff_bound(1),
+            "attempt-1 backoff {:?} must stay below {:?}",
+            delays[1],
+            backoff_bound(1)
+        );
+    }
+
+    #[test]
+    fn non_retryable_status_never_sleeps() {
+        // A fatal 400 fails the call with no retry and no backoff at all.
+        let sleeper = Arc::new(RecordingSleeper::new());
+        let provider = provider_with(
+            cfg(2).with_max_retries(3),
+            AlwaysStatusTransport { status: 400 },
+        )
+        .with_retry_sleeper(sleeper.clone());
+        match provider.embed_batch(&["a"]) {
+            Err(CoreError::Typed { code, .. }) => {
+                assert_eq!(
+                    code,
+                    quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+                        LexicalErrorCode::SemProviderTransport
+                    )
+                );
+            }
+            other => panic!("a fatal status must fail closed, got {other:?}"),
+        }
+        assert!(
+            sleeper.recorded().is_empty(),
+            "a non-retryable status must never invoke the sleeper"
+        );
+    }
+
+    #[test]
+    fn production_sleeper_answers_an_expired_budget_typed_without_sleeping() {
+        // The budget holds nothing while the proposed delay is ten seconds:
+        // the production sleeper checkpoints first and returns the existing
+        // interruption class instead of sleeping through the backoff.
+        let budget = RequestBudgetV1::for_duration(Duration::from_millis(1));
+        std::thread::sleep(Duration::from_millis(5));
+        match BudgetPollSleeper.sleep_backoff(Duration::from_secs(10), &budget) {
+            Err(CoreError::Typed { code, message }) => {
+                assert_eq!(code, quanta_index_core::REQUEST_DEADLINE_EXCEEDED_CODE);
+                assert!(message.contains("checkpoint `semantic:embed`"), "{message}");
+            }
+            other => panic!("an expired budget answers typed, got {other:?}"),
+        }
     }
 
     #[test]

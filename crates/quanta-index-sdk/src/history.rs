@@ -1,15 +1,14 @@
 use quanta_index_contract::lex::{CommitRecord, CommitSha, DiffHunkRecord};
 use quanta_index_contract::{
-    FileContributorEntry, FileContributorIdentityEntry, FileContributorIngestBatch,
-    ContinuationTokenV2, FileOwnershipEntry, FileOwnershipIngestBatch, GenerationPin,
+    ContinuationTokenV2, FileContributorEntry, FileContributorIdentityEntry,
+    FileContributorIngestBatch, FileOwnershipEntry, FileOwnershipIngestBatch, GenerationPin,
     GenerationSelector, HistoryDiffHunkUpsert, HistoryIngestBatch, HistoryOrderV1,
-    HistoryQueryRequest,
-    HistoryRefDelete, HistoryRefMutation, HistoryRefUpsert, HistoryTagMutation, ManifestGeneration,
-    RepoCommitRecencyEntry, RepoCommitRecencyIngestBatch, RepoDescriptionEntry,
-    RepoDescriptionIngestBatch, RepoId, RepoMetaEntry, RepoMetaIngestBatch, RepoRelativePath,
-    RepoTopicEntry, RepoTopicIngestBatch, RevisionId, SearchPlaneHistoryQueryResponse,
-    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse, SearchPlaneQueryIpcRequest,
-    SearchPlaneQueryIpcResponse, TextQuerySyntax,
+    HistoryQueryRequest, HistoryRefDelete, HistoryRefMutation, HistoryRefUpsert,
+    HistoryTagMutation, ManifestGeneration, RepoCommitRecencyEntry, RepoCommitRecencyIngestBatch,
+    RepoDescriptionEntry, RepoDescriptionIngestBatch, RepoId, RepoMetaEntry, RepoMetaIngestBatch,
+    RepoRelativePath, RepoTopicEntry, RepoTopicIngestBatch, RevisionId,
+    SearchPlaneHistoryQueryResponse, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse,
+    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, TextQuerySyntax,
 };
 
 use crate::text_query_builder::TextQueryBuilderState;

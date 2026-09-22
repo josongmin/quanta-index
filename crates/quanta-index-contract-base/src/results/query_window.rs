@@ -404,7 +404,10 @@ impl ExecutionOutcomeV2 {
     pub const fn has_more(self) -> Option<bool> {
         match self {
             Self::ExactExhausted => Some(false),
-            Self::LowerBound { continuation } => Some(continuation),
+            Self::LowerBound { continuation: true } => Some(true),
+            Self::LowerBound {
+                continuation: false,
+            } => None,
             Self::CappedUnknown { .. }
             | Self::InterruptedPartial { .. }
             | Self::Approximate { .. } => None,
@@ -784,7 +787,9 @@ impl QueryResultWindowV2 {
                     Some(ExhaustionProofV1::ExactCount { total: exact }),
                 ),
                 CandidateCountV1::Exact(_) => {
-                    return Err("a page without continuation has an exact count above returned rows");
+                    return Err(
+                        "a page without continuation has an exact count above returned rows",
+                    );
                 }
                 CandidateCountV1::AtLeast(_) => (
                     ExecutionOutcomeV2::LowerBound {

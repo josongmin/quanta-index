@@ -11,6 +11,13 @@ clean; a HEAD-matching artifact captured before local source edits cannot be
 requalified as evidence for the dirty tree.
 `benchctl summarize <profile>` is read-only and labels observed files
 `present_unvalidated`; it is deliberately not a qualification command.
+For local PREP after benchmark-control-plane changes, run
+`just benchmark-prep-local`. It validates benchmark-harness Rust formatting,
+benchmark Python contracts, all harness library tests, and producer-binary
+compilation in the warm `test-daemon-lane`. It intentionally does not create
+an artifact, invoke a timing preflight, or claim current-source qualification.
+Run a real profile only after the checkout is clean; DSL authority additionally
+requires the quiet canonical Linux host.
 The `dsl-authority` profile is canonical-Linux-only: it writes an
 `unsupported_host` preflight receipt and refuses before producer execution on
 any other OS. Local macOS runs remain available only for diagnostic families.

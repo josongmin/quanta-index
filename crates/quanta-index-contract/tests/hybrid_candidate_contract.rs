@@ -11,8 +11,8 @@
 use quanta_index_contract::{
     EngineTouched, GenerationPin, HybridCandidatePolicyErrorV1, HybridCandidateV1,
     HybridLaneContributionV1, HybridLaneV1, HybridQueryResponse, LexicalCandidate,
-    ManifestGeneration, QueryResultWindowV2, RepoId, RepoRelativePath,
-    RevisionId, SearchExplanation, SearchPlaneQueryIpcResponse, validate_hybrid_results_v1,
+    ManifestGeneration, QueryResultWindowV2, RepoId, RepoRelativePath, RevisionId,
+    SearchExplanation, SearchPlaneQueryIpcResponse, validate_hybrid_results_v1,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;

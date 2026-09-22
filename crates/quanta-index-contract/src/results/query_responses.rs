@@ -278,12 +278,7 @@ pub struct SemanticQueryResponse {
     pub explanation: SearchExplanation,
 }
 
-const SEMANTIC_QUERY_RESPONSE_FIELDS: &[&str] = &[
-    "generation",
-    "results",
-    "window",
-    "explanation",
-];
+const SEMANTIC_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "results", "window", "explanation"];
 
 /// The hybrid response: the RRF fusion of the two independent lanes, one
 /// [`HybridCandidateV1`] per fused identity (QI-BB-018, QI-BB-022).
@@ -303,12 +298,7 @@ pub struct HybridQueryResponse {
     pub explanation: SearchExplanation,
 }
 
-const HYBRID_QUERY_RESPONSE_FIELDS: &[&str] = &[
-    "generation",
-    "results",
-    "window",
-    "explanation",
-];
+const HYBRID_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "results", "window", "explanation"];
 
 /// One of the two lanes the hybrid route fuses (QI-BB-018).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1228,9 +1218,7 @@ fn check_keyset_page_v2(
     let returned = usize::try_from(window.returned())
         .map_err(|error| format!("query result window returned count cannot fit usize: {error}"))?;
     if returned != rows {
-        return Err(
-            "query result window returned count does not match results length".to_string(),
-        );
+        return Err("query result window returned count does not match results length".to_string());
     }
     if continuation_authorized(window) != next_cursor.is_some() {
         return Err("keyset page outcome and next_cursor disagree: the token is present exactly when the outcome authorizes a continuation".to_string());

@@ -30,8 +30,8 @@ use quanta_index_contract::{
 use quanta_index_core::{CoreError, QueryRouteV1, RequestBudgetV1, validate_query_top_k};
 
 use crate::lower_lexical_text_query;
-use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
 use crate::query_dispatcher::continuation::{CursorRequestContextV2, require_token_pin};
+use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
 use crate::query_dispatcher::errors::{history_cursor_order_mismatch, history_shard_unavailable};
 use crate::query_dispatcher::read_view::{AuxEpochPinsV1, ReadViewRequestV1};
 use crate::query_dispatcher::routes::history_records::{
@@ -95,7 +95,14 @@ impl SearchPlaneDispatcher {
             cap: request.text_query.top_k,
         };
         if let Some(opened) = &opened {
-            self.cursors()?.require_context(opened, &cursor_context)?;
+            self.cursors()?.require_context(
+                opened,
+                &cursor_context,
+                vec![CursorAuxEpochV2 {
+                    kind: CursorAuxEpochKindV2::History,
+                    epoch: opened.boundary.aux_epoch.get(),
+                }],
+            )?;
         }
         let boundary = opened.as_ref().map(|cursor| &cursor.boundary);
         let view = self.acquire_read_view(

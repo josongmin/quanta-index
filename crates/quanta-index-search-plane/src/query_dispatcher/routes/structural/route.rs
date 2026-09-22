@@ -28,8 +28,8 @@ use quanta_index_core::{
     CoreError, QueryRouteV1, RequestBudgetV1, StructuralService, validate_query_top_k,
 };
 
-use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
 use crate::query_dispatcher::continuation::{CursorRequestContextV2, require_token_pin};
+use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
 use crate::query_dispatcher::errors::structural_invalid_request;
 use crate::query_dispatcher::keyset_page::{KeysetPageCollector, StreamEnd};
 use crate::query_dispatcher::read_view::{AuxEpochPinsV1, QueryReadViewV2, ReadViewRequestV1};
@@ -83,10 +83,8 @@ impl SearchPlaneDispatcher {
             },
             cursor: None,
         };
-        let (pin, lowered) = lower_structural_query_request(
-            self.activation_catalog.as_ref(),
-            &pinned_request,
-        )?;
+        let (pin, lowered) =
+            lower_structural_query_request(self.activation_catalog.as_ref(), &pinned_request)?;
         let cursor_context = CursorRequestContextV2 {
             route: CursorRouteV2::Structural,
             pin: &pin,
@@ -96,7 +94,14 @@ impl SearchPlaneDispatcher {
             cap: request.text_query.top_k,
         };
         if let Some(opened) = &opened {
-            self.cursors()?.require_context(opened, &cursor_context)?;
+            self.cursors()?.require_context(
+                opened,
+                &cursor_context,
+                vec![CursorAuxEpochV2 {
+                    kind: CursorAuxEpochKindV2::Structural,
+                    epoch: opened.boundary.aux_epoch.get(),
+                }],
+            )?;
         }
         let boundary = opened.as_ref().map(|cursor| &cursor.boundary);
         // The whole query — the pinned universe, every parse-tree leaf the

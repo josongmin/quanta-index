@@ -78,12 +78,8 @@ pub(super) trait RankedPage: Serialize + Clone {
     fn generation(&self) -> quanta_index_contract::ManifestGeneration;
 
     /// Keep the first `returned` rows under `window`, continued by `cursor`.
-    fn cut(
-        self,
-        returned: usize,
-        window: QueryResultWindowV2,
-        cursor: ContinuationTokenV2,
-    ) -> Self;
+    fn cut(self, returned: usize, window: QueryResultWindowV2, cursor: ContinuationTokenV2)
+    -> Self;
 }
 
 fn encoded_len<T: Serialize>(value: &T, what: &str) -> Result<u64, CoreError> {
@@ -142,13 +138,11 @@ pub(super) fn fit_ranked_page<P: RankedPage>(
         };
         let cursor = LexicalCursor::at(generation, key);
         let token = mint(&cursor)?;
-        let cut = page
-            .clone()
-            .cut(
-                returned,
-                crate::query_dispatcher::window::cut_pageable_window_v2(&window, returned)?,
-                token,
-            );
+        let cut = page.clone().cut(
+            returned,
+            crate::query_dispatcher::window::cut_pageable_window_v2(&window, returned)?,
+            token,
+        );
         if encoded_len(&cut, "cut ranked page")? <= limit {
             return Ok(cut);
         }

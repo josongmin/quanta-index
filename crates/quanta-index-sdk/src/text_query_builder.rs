@@ -5,8 +5,8 @@
 
 use quanta_index_contract::{
     ContinuationTokenV2, GenerationPin, GenerationSelector, HybridQueryRequest,
-    HybridSeedQueryRequest, QueryConstraintSetV1, SemanticQueryRequest,
-    SemanticSeedCorpusBudgetV1, TextQueryRequest, TextQuerySyntax,
+    HybridSeedQueryRequest, QueryConstraintSetV1, SemanticQueryRequest, SemanticSeedCorpusBudgetV1,
+    TextQueryRequest, TextQuerySyntax,
 };
 
 use crate::{QuantaIndex, SdkError};

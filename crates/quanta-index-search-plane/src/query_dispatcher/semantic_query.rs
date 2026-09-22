@@ -12,9 +12,9 @@ use quanta_index_contract::lex::LexicalErrorCode;
 use quanta_index_contract::{
     EarlyStopReason, EngineTouched, GenerationPin, HybridCandidateV1, HybridQueryRequest,
     HybridSeedQueryRequest, LexicalCandidate, OwnerDocKind, PlannerStage, PlannerTraceEntry,
-    QueryResultWindowV2, SearchExplanation, SearchPlaneTrackKind,
-    SeedCandidate, SeedContribution, SeedFusionIdentity, SeedLane, SemanticCorpusKindV1,
-    SemanticQueryRequest, SemanticSeedCorpusBudgetV1,
+    QueryResultWindowV2, SearchExplanation, SearchPlaneTrackKind, SeedCandidate, SeedContribution,
+    SeedFusionIdentity, SeedLane, SemanticCorpusKindV1, SemanticQueryRequest,
+    SemanticSeedCorpusBudgetV1,
 };
 use quanta_index_core::{
     CoreError, DenseLaneContractV1, HybridOrchestratorPolicy, SemanticPolicy, SemanticSearchHitV1,

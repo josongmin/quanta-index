@@ -241,8 +241,8 @@ fn hybrid_dense_only_candidate_excluded_by_a_file_filter_never_appears() -> Test
         );
     }
     if response.window.returned() != 1
-        || response.window.candidate_count() != CandidateCountV1::Exact(1)
-        || response.window.has_more()
+        || response.window.candidate_count() != CandidateCountV1::AtLeast(1)
+        || response.window.has_more().is_some()
     {
         return Err(format!(
             "window must count the admitted union: {:?}",
@@ -304,8 +304,17 @@ fn hybrid_repo_filter_excluding_the_generation_empties_both_lanes() -> TestResul
         )
         .into());
     }
-    if response.window != quanta_index_contract::QueryResultWindowV1::exact(0) {
-        return Err(format!("expected an honest empty window: {:?}", response.window).into());
+    if response.window.returned() != 0
+        || response.window.candidate_count() != CandidateCountV1::AtLeast(0)
+        || response.window.has_more().is_some()
+        || response.window.empty_provenance()
+            != Some(quanta_index_contract::EmptyProvenanceV2::ZeroHitExecuted)
+    {
+        return Err(format!(
+            "expected an honest executed empty window: {:?}",
+            response.window
+        )
+        .into());
     }
     if response.explanation.strategy != "empty" {
         return Err(format!(
@@ -403,8 +412,8 @@ fn hybrid_dense_lane_refills_until_admitted_rows_fill_top_k() -> TestResult {
         return Err(format!("top_k must be filled from admitted rows: {fused:?}").into());
     }
     if response.window.returned() != 2
-        || response.window.candidate_count() != CandidateCountV1::AtLeast(3)
-        || !response.window.has_more()
+        || response.window.candidate_count() != CandidateCountV1::AtLeast(50)
+        || response.window.has_more().is_some()
     {
         return Err(format!(
             "window must say more admitted rows exist: {:?}",
@@ -450,7 +459,9 @@ fn hybrid_dense_lane_stops_when_filled_and_names_a_capped_lane() -> TestResult {
     if !details.contains(&"hybrid.dense_admission=filled; examined=100; admitted=100") {
         return Err(format!("trace must state the filled lane: {details:?}").into());
     }
-    if response.window.candidate_count() != CandidateCountV1::AtLeast(3) {
+    if response.window.candidate_count() != CandidateCountV1::AtLeast(100)
+        || response.window.has_more() != Some(true)
+    {
         return Err(format!("a filled lane proves more rows: {:?}", response.window).into());
     }
 

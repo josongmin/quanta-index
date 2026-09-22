@@ -1000,7 +1000,7 @@ fn structural_dispatch_executes_pure_negative_root_from_pinned_universe() -> Tes
 /// pin.
 fn structural_page_request(
     top_k: u32,
-    cursor: Option<quanta_index_contract::StructuralCursorV1>,
+    cursor: Option<quanta_index_contract::ContinuationTokenV2>,
 ) -> SearchPlaneQueryIpcRequest {
     SearchPlaneQueryIpcRequest::Structural(quanta_index_contract::StructuralQueryRequest {
         text_query: TextQueryRequest {
@@ -1019,7 +1019,7 @@ fn structural_page_request(
 fn structural_page(
     dispatcher: &SearchPlaneDispatcher,
     top_k: u32,
-    cursor: Option<quanta_index_contract::StructuralCursorV1>,
+    cursor: Option<quanta_index_contract::ContinuationTokenV2>,
 ) -> Result<quanta_index_contract::SearchPlaneStructuralQueryResponse, Box<dyn std::error::Error>> {
     match dispatcher.dispatch(
         structural_page_request(top_k, cursor),
@@ -1069,7 +1069,7 @@ fn structural_pages_partition_the_match_set_in_candidate_id_order() -> TestResul
     )));
     let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
     let mut walked: Vec<String> = Vec::new();
-    let mut cursor: Option<quanta_index_contract::StructuralCursorV1> = None;
+    let mut cursor: Option<quanta_index_contract::ContinuationTokenV2> = None;
     let mut remaining = u64::from(MATCHES);
     for _page in 0..8 {
         let page = structural_page(&dispatcher, TOP_K, cursor.clone())?;
@@ -1092,9 +1092,12 @@ fn structural_pages_partition_the_match_set_in_candidate_id_order() -> TestResul
         walked.extend(page.results.iter().map(|row| row.candidate_id.clone()));
         remaining = remaining.saturating_sub(u64::from(page.window.returned()));
         match (page.window.has_more(), page.next_cursor) {
-            (true, Some(next)) => {
-                if Some(next.candidate_id.as_str()) != walked.last().map(String::as_str)
-                    || next.aux_epoch != page.read_epoch
+            (Some(true), Some(next)) => {
+                let opened = dispatcher
+                    .cursors()?
+                    .open::<quanta_index_contract::StructuralCursorV1>(&next)?;
+                if Some(opened.boundary.candidate_id.as_str()) != walked.last().map(String::as_str)
+                    || opened.boundary.aux_epoch != page.read_epoch
                 {
                     return Err(
                         format!("the cursor is the last row in the read epoch: {next:?}").into(),
@@ -1102,9 +1105,9 @@ fn structural_pages_partition_the_match_set_in_candidate_id_order() -> TestResul
                 }
                 cursor = Some(next);
             }
-            (false, None) => break,
+            (Some(false), None) => break,
             (has_more, next) => {
-                return Err(format!("has_more={has_more} and cursor={next:?} disagree").into());
+                return Err(format!("has_more={has_more:?} and cursor={next:?} disagree").into());
             }
         }
     }
@@ -1117,42 +1120,25 @@ fn structural_pages_partition_the_match_set_in_candidate_id_order() -> TestResul
     Ok(())
 }
 
-/// A cursor key that names no match is a boundary: the page after it
-/// starts at the first match past it, and one past the end is empty.
+/// An untrusted caller cannot forge a boundary in the public cursor.
 #[test]
-fn a_forged_structural_cursor_is_a_boundary_not_a_lookup() -> TestResult {
+fn a_forged_structural_cursor_is_refused_before_execution() -> TestResult {
     let producer = Arc::new(RecordingStructuralProducer::ready_with(scrambled_matches(
         6,
     )));
     let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
-    let first = structural_page(&dispatcher, 6, None)?;
-    let epoch = first.read_epoch;
-    let forged = quanta_index_contract::StructuralCursorV1 {
-        candidate_id: "cand-02-and-a-half".to_string(),
-        aux_epoch: epoch,
-    };
-    let page = structural_page(&dispatcher, 2, Some(forged))?;
-    let ids: Vec<&str> = page
-        .results
-        .iter()
-        .map(|row| row.candidate_id.as_str())
-        .collect();
-    if ids != ["cand-03", "cand-04"]
-        || page.window.candidate_count() != quanta_index_contract::CandidateCountV1::Exact(3)
-        || !page.window.has_more()
-    {
-        return Err(format!("the page after the boundary: {ids:?} {:?}", page.window).into());
-    }
-    let past_the_end = quanta_index_contract::StructuralCursorV1 {
-        candidate_id: "cand-99".to_string(),
-        aux_epoch: epoch,
-    };
-    let empty = structural_page(&dispatcher, 2, Some(past_the_end))?;
-    if !empty.results.is_empty()
-        || empty.window.candidate_count() != quanta_index_contract::CandidateCountV1::Exact(0)
-        || empty.next_cursor.is_some()
-    {
-        return Err(format!("nothing follows a boundary past the end: {empty:?}").into());
+    let first = structural_page(&dispatcher, 2, None)?;
+    let token = first.next_cursor.ok_or("page has a continuation")?;
+    let mut forged = token.as_str().as_bytes().to_vec();
+    let last = forged.last_mut().ok_or("nonempty signed token")?;
+    *last = if *last == b'A' { b'B' } else { b'A' };
+    let forged = quanta_index_contract::ContinuationTokenV2::new(String::from_utf8(forged)?)?;
+    let (code, _) = ipc_error_from(dispatcher.dispatch(
+        structural_page_request(2, Some(forged)),
+        &RequestBudgetV1::unbounded(),
+    ))?;
+    if code != quanta_index_contract::SearchPlaneErrorCodeV2::CursorInvalid {
+        return Err(format!("forged continuation must be invalid, got {code}").into());
     }
     Ok(())
 }
@@ -1160,12 +1146,11 @@ fn a_forged_structural_cursor_is_a_boundary_not_a_lookup() -> TestResult {
 /// A continuation pins the epoch its cursor names for every leaf the
 /// producer executes.
 ///
-/// A cursor naming a pruned epoch is refused `AUX_EPOCH_EXPIRED`, one
-/// naming an epoch never produced `AUX_EPOCH_UNKNOWN` — neither is
-/// served from the current snapshot.
+/// A cursor naming a pruned epoch is refused `AUX_EPOCH_EXPIRED`;
+/// unsigned invented epochs are rejected before read acquisition.
 #[test]
 fn a_structural_continuation_pins_its_cursor_epoch_or_is_refused() -> TestResult {
-    use quanta_index_core::{AUX_EPOCH_EXPIRED_CODE, AUX_EPOCH_RETAIN, AUX_EPOCH_UNKNOWN_CODE};
+    use quanta_index_core::{AUX_EPOCH_EXPIRED_CODE, AUX_EPOCH_RETAIN};
 
     use crate::query_dispatcher::tests::support::structural::install_structural_test_chunk;
 
@@ -1177,7 +1162,11 @@ fn a_structural_continuation_pins_its_cursor_epoch_or_is_refused() -> TestResult
         structural_dispatcher_with_producer_and_ledger(Arc::clone(&producer), Arc::clone(&ledger))?;
     let first = structural_page(&dispatcher, 2, None)?;
     let cursor = first.next_cursor.ok_or("five matches continue")?;
-    if cursor.aux_epoch != quanta_index_contract::AuxEpochV1::new(1) {
+    let boundary = dispatcher
+        .cursors()?
+        .open::<quanta_index_contract::StructuralCursorV1>(&cursor)?
+        .boundary;
+    if boundary.aux_epoch != quanta_index_contract::AuxEpochV1::new(1) {
         return Err(format!("one chunk install is epoch 1: {cursor:?}").into());
     }
 
@@ -1189,7 +1178,7 @@ fn a_structural_continuation_pins_its_cursor_epoch_or_is_refused() -> TestResult
         install_structural_test_chunk(&mut guard, "chunk-late", "src/late.rs", "fn late() {}")?;
     }
     let second = structural_page(&dispatcher, 2, Some(cursor.clone()))?;
-    if second.read_epoch != cursor.aux_epoch {
+    if second.read_epoch != boundary.aux_epoch {
         return Err(format!(
             "the continuation reads the cursor's epoch, read {:?}",
             second.read_epoch
@@ -1221,17 +1210,16 @@ fn a_structural_continuation_pins_its_cursor_epoch_or_is_refused() -> TestResult
         .into());
     }
 
-    let unknown = quanta_index_contract::StructuralCursorV1 {
-        candidate_id: cursor.candidate_id.clone(),
-        aux_epoch: quanta_index_contract::AuxEpochV1::new(99),
-    };
+    let unknown = quanta_index_contract::ContinuationTokenV2::new("unsigned-epoch-99".to_string())?;
     let (code, _message) = ipc_error_from(dispatcher.dispatch(
         structural_page_request(2, Some(unknown)),
         &RequestBudgetV1::unbounded(),
     ))
     .map_err(Box::<dyn std::error::Error>::from)?;
-    if code != AUX_EPOCH_UNKNOWN_CODE {
-        return Err(format!("an epoch never produced is refused unknown, got {code}").into());
+    if code != quanta_index_contract::SearchPlaneErrorCodeV2::CursorInvalid {
+        return Err(
+            format!("an unsigned epoch is refused before read acquisition, got {code}").into(),
+        );
     }
 
     {

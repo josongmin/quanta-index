@@ -10,9 +10,9 @@
 use std::sync::{Arc, Mutex};
 
 use quanta_index_contract::{
-    ContinuationTokenV2, ERR_RESULT_TOO_LARGE, LexicalCandidate, LexicalCursor,
-    ManifestGeneration, QueryConstraintSetV1, SearchPlaneQueryIpcRequest,
-    SearchPlaneQueryIpcResponse, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
+    ContinuationTokenV2, ERR_RESULT_TOO_LARGE, LexicalCandidate, LexicalCursor, ManifestGeneration,
+    QueryConstraintSetV1, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
+    TextQueryRequest, TextQueryResponse, TextQuerySyntax,
 };
 use quanta_index_core::RequestBudgetV1;
 
@@ -97,7 +97,10 @@ fn walk(
         ))?;
         pages.push(ids(&page.results));
         if page.window.has_more() == Some(true) {
-            let token = page.next_cursor.as_ref().ok_or("continued page has no token")?;
+            let token = page
+                .next_cursor
+                .as_ref()
+                .ok_or("continued page has no token")?;
             let opened = dispatcher.cursors()?.open::<LexicalCursor>(token)?;
             let expected = page.results.last().ok_or("continued page has no row")?;
             if opened.boundary
@@ -142,12 +145,12 @@ fn the_cursor_reaches_the_searcher_and_another_generations_is_refused_first() ->
         Arc::new(RejectSemanticOpener),
         Arc::new(NoopQueryObsSink),
     )?;
-    let first = text(dispatcher.dispatch(
-        request(1, None),
-        &RequestBudgetV1::unbounded(),
-    ))?;
+    let first = text(dispatcher.dispatch(request(2, None), &RequestBudgetV1::unbounded()))?;
     let cursor = first.next_cursor.ok_or("first page continues")?;
-    let decoded = dispatcher.cursors()?.open::<LexicalCursor>(&cursor)?.boundary;
+    let decoded = dispatcher
+        .cursors()?
+        .open::<LexicalCursor>(&cursor)?
+        .boundary;
     let _page = text(dispatcher.dispatch(
         request(2, Some(cursor.clone())),
         &RequestBudgetV1::unbounded(),
@@ -168,9 +171,8 @@ fn the_cursor_reaches_the_searcher_and_another_generations_is_refused_first() ->
     let mut foreign_pin = ready_pin();
     foreign_pin.manifest_generation = ManifestGeneration::new(10);
     foreign_request.generation = Some(foreign_pin);
-    let (code, _message) = ipc_error_from(
-        dispatcher.dispatch(foreign, &RequestBudgetV1::unbounded()),
-    )?;
+    let (code, _message) =
+        ipc_error_from(dispatcher.dispatch(foreign, &RequestBudgetV1::unbounded()))?;
     if code != quanta_index_contract::SearchPlaneErrorCodeV2::CursorContextMismatch {
         return Err(format!("a foreign cursor answered `{code}`").into());
     }

@@ -287,8 +287,6 @@ mod tests {
         }
     }
 
-
-
     #[test]
     fn key_is_persistent_and_owner_only() {
         let state_root = temp_dir("persist");

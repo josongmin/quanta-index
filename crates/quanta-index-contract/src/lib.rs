@@ -51,8 +51,8 @@ pub use quanta_index_contract_base::{
     InternalFetchOutOfRangeV1, InterruptedReasonV2, LaneTraceV1, LogicalGenerationIdentityV1,
     ManifestDigest, ManifestGeneration, PUBLIC_TOP_K_MAX, PUBLIC_TOP_K_MIN, QueryResultWindowV1,
     QueryResultWindowV2, RepoId, RepoRelativePath, RepositoryRevisionIdentityV1, RevisionId,
-    TOP_K_OUT_OF_RANGE_CODE, TopKOutOfRangeV1, continuation_fetch_size, validate_internal_fetch_size,
-    validate_public_top_k,
+    TOP_K_OUT_OF_RANGE_CODE, TopKOutOfRangeV1, continuation_fetch_size,
+    validate_internal_fetch_size, validate_public_top_k,
 };
 pub use query::*;
 pub use repomap::*;

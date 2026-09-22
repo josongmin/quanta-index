@@ -362,6 +362,19 @@ rust-bench:
 rust-bench-build:
     {{cargo}} --lane bench-lane bench --workspace --all-features --locked --no-run
 
+# Fast local PREP contract check.  It deliberately does not produce a benchmark
+# artifact, enter the timing preflight, or run an end-to-end quality recipe:
+# those require a clean source and (for timing authority) a quiet canonical
+# Linux host.  The shared test-daemon lane keeps all harness library tests and
+# every producer binary warm in one target directory.
+benchmark-prep-local:
+    find crates/quanta-index-searchd-harness/src -name '*.rs' -print0 | xargs -0 rustfmt --check --edition 2024
+    python3 -m pytest tools/ci/tests/test_benchmark_manifest.py tools/ci/tests/test_benchctl.py tools/ci/tests/test_check_bench_artifacts.py tools/ci/tests/test_check_host_contention.py tools/ci/tests/test_compare_dsl_bench.py tools/ci/tests/test_quality_integration_summary.py -q
+    python3 -m py_compile tools/benchmark/benchctl.py tools/benchmark/manifest.py tools/benchmark/compare_dsl_bench.py tools/benchmark/quality_integration_summary.py tools/ci/lint/check-bench-artifacts.py tools/ci/timing/check_host_contention.py
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib --bins --all-features --locked --no-run
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib --all-features --locked
+    git diff --check
+
 # Layer-3 DSL query-latency matrix (docs/plans/jun-2-dsl-hardening/RFC-DSL-Benchmarking.md).
 # Warm: in-process criterion + p50/p95/p99 artifact. Cold: fresh-process-per-sample runner.
 rust-bench-dsl-warm:

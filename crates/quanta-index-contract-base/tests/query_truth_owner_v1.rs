@@ -77,6 +77,19 @@ fn a_capped_outcome_never_becomes_exact() {
 }
 
 #[test]
+fn a_lower_bound_without_observed_continuation_cannot_claim_exhaustion() {
+    let window = QueryResultWindowV2::pageable(
+        2,
+        CandidateCountV1::AtLeast(50),
+        false,
+        Vec::new(),
+    )
+    .expect("lower-bound page is constructible");
+    assert_eq!(window.outcome(), ExecutionOutcomeV2::LowerBound { continuation: false });
+    assert_eq!(window.has_more(), None);
+}
+
+#[test]
 fn a_zero_row_window_must_state_its_empty_provenance() {
     assert!(
         QueryResultWindowV2::new(

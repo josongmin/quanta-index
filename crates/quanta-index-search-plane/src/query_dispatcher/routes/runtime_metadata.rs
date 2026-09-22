@@ -31,8 +31,8 @@ use quanta_index_contract::{
 use quanta_index_core::{CoreError, QueryRouteV1, RequestBudgetV1, validate_query_top_k};
 
 use crate::lower_lexical_text_query;
-use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
 use crate::query_dispatcher::continuation::{CursorRequestContextV2, require_token_pin};
+use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
 use crate::query_dispatcher::errors::{runtime_catalog_head_missing, runtime_snapshot_unknown};
 use crate::query_dispatcher::keyset_page::{KeysetPageCollector, StreamEnd};
 use crate::query_dispatcher::read_view::{AuxEpochPinsV1, ReadViewRequestV1};
@@ -95,7 +95,20 @@ impl SearchPlaneDispatcher {
             cap: request.text_query.top_k,
         };
         if let Some(opened) = &opened {
-            self.cursors()?.require_context(opened, &cursor_context)?;
+            self.cursors()?.require_context(
+                opened,
+                &cursor_context,
+                vec![
+                    CursorAuxEpochV2 {
+                        kind: CursorAuxEpochKindV2::RuntimeMetadata,
+                        epoch: opened.boundary.aux_epoch.get(),
+                    },
+                    CursorAuxEpochV2 {
+                        kind: CursorAuxEpochKindV2::Structural,
+                        epoch: opened.boundary.universe_epoch.get(),
+                    },
+                ],
+            )?;
         }
         let boundary = opened.as_ref().map(|cursor| &cursor.boundary);
         // Both snapshots are the read view's, taken under one read lock

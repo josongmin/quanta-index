@@ -23,9 +23,7 @@ use crate::query_dispatcher::semantic_query::{
     build_hybrid_seed_response_explanation, canonical_dense_corpus_budgets_v1,
     resolve_hybrid_seed_request_selection,
 };
-use crate::query_dispatcher::window::{
-    fused_window_v2, hybrid_probe_top_k_v1, lane_count_u64,
-};
+use crate::query_dispatcher::window::{fused_window_v2, hybrid_probe_top_k_v1, lane_count_u64};
 
 impl SearchPlaneDispatcher {
     /// The hybrid-seed route: one lexical lane and one dense lane per
