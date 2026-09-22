@@ -6,7 +6,7 @@
 //! non-Rust files fall back to an explicit whole-file chunk flagged
 //! `fallback: true`, counted in coverage, never silent.
 
-use crate::chunking::{CHUNKER_VERSION, STRATEGY_SYNTAX, Chunk, Chunker, chunk_id};
+use crate::chunking::{CHUNKER_VERSION, Chunk, Chunker, STRATEGY_SYNTAX, chunk_id};
 use crate::corpus::SourceFile;
 use crate::{BenchError, BenchResult, sha256_hex};
 
@@ -14,8 +14,21 @@ use crate::{BenchError, BenchResult, sha256_hex};
 pub const DEFAULT_MAX_ITEM_BYTES: usize = 32 * 1024;
 
 const ITEM_HEADS: [&str; 15] = [
-    "fn", "struct", "enum", "impl", "trait", "mod", "const", "static", "type", "use",
-    "extern", "macro", "union", "macro_rules", "pub",
+    "fn",
+    "struct",
+    "enum",
+    "impl",
+    "trait",
+    "mod",
+    "const",
+    "static",
+    "type",
+    "use",
+    "extern",
+    "macro",
+    "union",
+    "macro_rules",
+    "pub",
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -87,7 +100,7 @@ fn line_depths(text: &str) -> Option<(Vec<i64>, Vec<usize>)> {
                         state = Lex::RawStr(hashes);
                         index = look;
                     } else {
-                        }
+                    }
                 }
                 '{' => {
                     depth += 1;
@@ -315,7 +328,8 @@ impl Chunker for SyntaxChunker {
         if let Some(first) = chunks.first() {
             if first.start_byte > 0 {
                 let start_line = 1;
-                let (_, first_end) = file.line_span_bytes(first.start_line as usize, first.end_line as usize)?;
+                let (_, first_end) =
+                    file.line_span_bytes(first.start_line as usize, first.end_line as usize)?;
                 let rebuilt = make_chunk(
                     file,
                     &self.config(),

@@ -1,4 +1,4 @@
-//! Exact RepoMap V2 publish/activate request and terminal receipt contracts.
+//! Exact `RepoMap` V2 publish/activate request and terminal receipt contracts.
 
 use core::fmt;
 
@@ -184,7 +184,7 @@ impl<'de> Deserialize<'de> for RepoMapPublishBundleRequestV2 {
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
                         "source_bundle_digest" if digest.is_none() => {
-                            digest = Some(map.next_value()?)
+                            digest = Some(map.next_value()?);
                         }
                         "source_bundle_digest" => {
                             return Err(de::Error::duplicate_field("source_bundle_digest"));
@@ -297,11 +297,11 @@ impl<'de> Deserialize<'de> for RepoMapActivateGenerationRequestV2 {
                         "request_v1" => read_once!(request_v1, "request_v1"),
                         "snapshot_id" => read_once!(snapshot_id, "snapshot_id"),
                         "projection_version" => {
-                            read_once!(projection_version, "projection_version")
+                            read_once!(projection_version, "projection_version");
                         }
                         "authority_digest" => read_once!(authority_digest, "authority_digest"),
                         "source_bundle_digest" => {
-                            read_once!(source_bundle_digest, "source_bundle_digest")
+                            read_once!(source_bundle_digest, "source_bundle_digest");
                         }
                         other => {
                             return Err(de::Error::unknown_field(
@@ -409,11 +409,11 @@ impl<'de> Deserialize<'de> for RepoMapTerminalReceiptV2 {
                         "manifest_digest" => read_once!(manifest_digest, "manifest_digest"),
                         "snapshot_id" => read_once!(snapshot_id, "snapshot_id"),
                         "projection_version" => {
-                            read_once!(projection_version, "projection_version")
+                            read_once!(projection_version, "projection_version");
                         }
                         "authority_digest" => read_once!(authority_digest, "authority_digest"),
                         "source_bundle_digest" => {
-                            read_once!(source_bundle_digest, "source_bundle_digest")
+                            read_once!(source_bundle_digest, "source_bundle_digest");
                         }
                         other => {
                             return Err(de::Error::unknown_field(
@@ -520,7 +520,7 @@ mod tests {
         let mut authority_v2 = source_v2.clone();
         authority_v2.authority_digest = "d".repeat(64);
         mutations_v2.push(authority_v2);
-        let mut payload_v2 = source_v2.clone();
+        let mut payload_v2 = source_v2;
         payload_v2.nodes.push(RepoMapNode::File(RepoMapFileNode {
             file_id: FileId::new("file://src/foreign.rs"),
             repo_relative_path: RepoRelativePath::new("src/foreign.rs"),

@@ -4513,10 +4513,6 @@ impl Default for BatchPublishReceipt {
 
 /// Typed ingest request payload sent over `ingest.sock`.
 #[derive(Clone, Debug, PartialEq)]
-#[expect(
-    clippy::enum_variant_names,
-    reason = "wire protocol keeps explicit publish prefixes for request-kind clarity"
-)]
 pub enum SearchPlaneIngestIpcRequest {
     PublishSearchCorpusBatch(SearchCorpusIngestBatch),
     PublishHistoryBatch(HistoryIngestBatch),

@@ -145,10 +145,7 @@ pub fn load_query_pack(path: &Path) -> BenchResult<QueryPack> {
         )));
     }
     let object = value.as_object().ok_or_else(|| {
-        BenchError::Protocol(format!(
-            "query pack must be an object: {}",
-            path.display()
-        ))
+        BenchError::Protocol(format!("query pack must be an object: {}", path.display()))
     })?;
     let get_str = |key: &str| -> BenchResult<String> {
         object
@@ -156,9 +153,7 @@ pub fn load_query_pack(path: &Path) -> BenchResult<QueryPack> {
             .and_then(Value::as_str)
             .filter(|text| !text.trim().is_empty())
             .map(ToString::to_string)
-            .ok_or_else(|| {
-                BenchError::Protocol(format!("query pack lacks nonempty string: {key}"))
-            })
+            .ok_or_else(|| BenchError::Protocol(format!("query pack lacks nonempty string: {key}")))
     };
     let version = object.get("schema_version").and_then(Value::as_u64);
     if version != Some(2) {
@@ -189,9 +184,10 @@ pub fn load_query_pack(path: &Path) -> BenchResult<QueryPack> {
         .ok_or_else(|| BenchError::Protocol("query pack lacks routes".to_string()))?;
     let mut route_names = Vec::new();
     for route in routes {
-        let name = route.as_str().filter(|text| !text.trim().is_empty()).ok_or_else(|| {
-            BenchError::Protocol("query pack has an empty route".to_string())
-        })?;
+        let name = route
+            .as_str()
+            .filter(|text| !text.trim().is_empty())
+            .ok_or_else(|| BenchError::Protocol("query pack has an empty route".to_string()))?;
         route_names.push(name.to_string());
     }
     let mut universe = Vec::new();
@@ -232,9 +228,9 @@ pub fn load_query_pack(path: &Path) -> BenchResult<QueryPack> {
     let mut seen_queries = BTreeSet::new();
     let mut parsed = Vec::with_capacity(tasks.len());
     for task in tasks {
-        let item = task.as_object().ok_or_else(|| {
-            BenchError::Protocol("query pack task must be an object".to_string())
-        })?;
+        let item = task
+            .as_object()
+            .ok_or_else(|| BenchError::Protocol("query pack task must be an object".to_string()))?;
         let task_id = item
             .get("task_id")
             .and_then(Value::as_str)
@@ -248,16 +244,16 @@ pub fn load_query_pack(path: &Path) -> BenchResult<QueryPack> {
         let query_sha = item
             .get("query_sha256")
             .and_then(Value::as_str)
-            .ok_or_else(|| {
-                BenchError::Protocol(format!("task lacks query_sha256: {task_id}"))
-            })?;
+            .ok_or_else(|| BenchError::Protocol(format!("task lacks query_sha256: {task_id}")))?;
         if sha256_hex(query.as_bytes()) != query_sha {
             return Err(BenchError::Protocol(format!(
                 "query hash mismatch: {task_id}"
             )));
         }
         if !seen_ids.insert(task_id.to_string()) {
-            return Err(BenchError::Protocol(format!("duplicate task_id: {task_id}")));
+            return Err(BenchError::Protocol(format!(
+                "duplicate task_id: {task_id}"
+            )));
         }
         if !seen_queries.insert(query_sha.to_string()) {
             return Err(BenchError::Protocol(format!(
@@ -317,7 +313,9 @@ impl RunnerIdentity {
             ("access_block_log", &access_block_log),
         ] {
             if value.trim().is_empty() {
-                return Err(BenchError::Config(format!("runner {label} must not be empty")));
+                return Err(BenchError::Config(format!(
+                    "runner {label} must not be empty"
+                )));
             }
         }
         Ok(Self {
@@ -370,9 +368,8 @@ fn prove_hit(
         usize::try_from(hit.end_line).unwrap_or(0),
     )?;
     let block = &file.bytes[start..end];
-    let text = std::str::from_utf8(block).map_err(|_| {
-        BenchError::Protocol(format!("SDK hit block is not UTF-8: {}", hit.path))
-    })?;
+    let text = std::str::from_utf8(block)
+        .map_err(|_| BenchError::Protocol(format!("SDK hit block is not UTF-8: {}", hit.path)))?;
     let tokens = count_tokens(text);
     if tokens == 0 {
         return Err(BenchError::Protocol(format!(
@@ -381,35 +378,62 @@ fn prove_hit(
         )));
     }
     let mut candidate = Map::new();
-    assert!(candidate.insert("path".to_string(), Value::String(hit.path.clone())).is_none());
-    assert!(candidate.insert(
-        "start_line".to_string(),
-        Value::Number(hit.start_line.into()),
-    ).is_none());
-    assert!(candidate.insert("end_line".to_string(), Value::Number(hit.end_line.into())).is_none());
-    assert!(candidate.insert(
-        "file_sha256".to_string(),
-        Value::String(file.sha256.clone()),
-    ).is_none());
-    assert!(candidate.insert(
-        "block_sha256".to_string(),
-        Value::String(sha256_hex(block)),
-    ).is_none());
-    assert!(candidate.insert(
-        "tokens".to_string(),
-        Value::Number((tokens as u64).into()),
-    ).is_none());
-    assert!(candidate.insert(
-        "rank".to_string(),
-        Value::Number((rank as u64).into()),
-    ).is_none());
+    assert!(
+        candidate
+            .insert("path".to_string(), Value::String(hit.path.clone()))
+            .is_none()
+    );
+    assert!(
+        candidate
+            .insert(
+                "start_line".to_string(),
+                Value::Number(hit.start_line.into()),
+            )
+            .is_none()
+    );
+    assert!(
+        candidate
+            .insert("end_line".to_string(), Value::Number(hit.end_line.into()))
+            .is_none()
+    );
+    assert!(
+        candidate
+            .insert(
+                "file_sha256".to_string(),
+                Value::String(file.sha256.clone()),
+            )
+            .is_none()
+    );
+    assert!(
+        candidate
+            .insert("block_sha256".to_string(), Value::String(sha256_hex(block)),)
+            .is_none()
+    );
+    assert!(
+        candidate
+            .insert("tokens".to_string(), Value::Number((tokens as u64).into()),)
+            .is_none()
+    );
+    assert!(
+        candidate
+            .insert("rank".to_string(), Value::Number((rank as u64).into()),)
+            .is_none()
+    );
     Ok(Value::Object(candidate))
 }
 
 fn error_value(code: &str, message: &str) -> Value {
     let mut error = Map::new();
-    assert!(error.insert("code".to_string(), Value::String(code.to_string())).is_none());
-    assert!(error.insert("message".to_string(), Value::String(message.to_string())).is_none());
+    assert!(
+        error
+            .insert("code".to_string(), Value::String(code.to_string()))
+            .is_none()
+    );
+    assert!(
+        error
+            .insert("message".to_string(), Value::String(message.to_string()))
+            .is_none()
+    );
     Value::Object(error)
 }
 
@@ -419,7 +443,11 @@ fn timings_value(latency: Duration) -> BenchResult<Value> {
     let number = serde_json::Number::from_f64(ms).ok_or_else(|| {
         BenchError::Protocol("non-finite query latency cannot be recorded".to_string())
     })?;
-    assert!(timings.insert("query_latency_ms".to_string(), Value::Number(number)).is_none());
+    assert!(
+        timings
+            .insert("query_latency_ms".to_string(), Value::Number(number))
+            .is_none()
+    );
     Ok(Value::Object(timings))
 }
 
@@ -433,8 +461,16 @@ pub fn result_value(
     files: &BTreeMap<String, SourceFile>,
 ) -> BenchResult<Value> {
     let mut result = Map::new();
-    assert!(result.insert("task_id".to_string(), Value::String(task_id.to_string())).is_none());
-    assert!(result.insert("route".to_string(), Value::String(route.to_string())).is_none());
+    assert!(
+        result
+            .insert("task_id".to_string(), Value::String(task_id.to_string()))
+            .is_none()
+    );
+    assert!(
+        result
+            .insert("route".to_string(), Value::String(route.to_string()))
+            .is_none()
+    );
     match outcome {
         QueryOutcome::Hits {
             hits,
@@ -449,21 +485,49 @@ pub fn result_value(
             }
             if hits.is_empty() {
                 if outcome.is_exhausted() {
-                    assert!(result.insert("status".to_string(), Value::String("abstained".to_string())).is_none());
-                    assert!(result.insert("candidates".to_string(), Value::Array(Vec::new())).is_none());
-                    assert!(result.insert("timings".to_string(), timings_value(*latency)?).is_none());
+                    assert!(
+                        result
+                            .insert("status".to_string(), Value::String("abstained".to_string()))
+                            .is_none()
+                    );
+                    assert!(
+                        result
+                            .insert("candidates".to_string(), Value::Array(Vec::new()))
+                            .is_none()
+                    );
+                    assert!(
+                        result
+                            .insert("timings".to_string(), timings_value(*latency)?)
+                            .is_none()
+                    );
                     assert!(result.insert("error".to_string(), Value::Null).is_none());
                 } else {
-                    assert!(result.insert("status".to_string(), Value::String("error".to_string())).is_none());
-                    assert!(result.insert("candidates".to_string(), Value::Array(Vec::new())).is_none());
-                    assert!(result.insert("timings".to_string(), timings_value(*latency)?).is_none());
-                    assert!(result.insert(
-                        "error".to_string(),
-                        error_value(
-                            "empty_non_exhausted_window",
-                            "zero hits under a non-exhausted window cannot score",
-                        ),
-                    ).is_none());
+                    assert!(
+                        result
+                            .insert("status".to_string(), Value::String("error".to_string()))
+                            .is_none()
+                    );
+                    assert!(
+                        result
+                            .insert("candidates".to_string(), Value::Array(Vec::new()))
+                            .is_none()
+                    );
+                    assert!(
+                        result
+                            .insert("timings".to_string(), timings_value(*latency)?)
+                            .is_none()
+                    );
+                    assert!(
+                        result
+                            .insert(
+                                "error".to_string(),
+                                error_value(
+                                    "empty_non_exhausted_window",
+                                    "zero hits under a non-exhausted window cannot score",
+                                ),
+                            )
+                            .is_none()
+                    );
                 }
                 return Ok(Value::Object(result));
             }
@@ -476,9 +540,21 @@ pub fn result_value(
             for (index, hit) in hits.iter().enumerate() {
                 candidates.push(prove_hit(hit, index + 1, files)?);
             }
-            assert!(result.insert("status".to_string(), Value::String(status.to_string())).is_none());
-            assert!(result.insert("candidates".to_string(), Value::Array(candidates)).is_none());
-            assert!(result.insert("timings".to_string(), timings_value(*latency)?).is_none());
+            assert!(
+                result
+                    .insert("status".to_string(), Value::String(status.to_string()))
+                    .is_none()
+            );
+            assert!(
+                result
+                    .insert("candidates".to_string(), Value::Array(candidates))
+                    .is_none()
+            );
+            assert!(
+                result
+                    .insert("timings".to_string(), timings_value(*latency)?)
+                    .is_none()
+            );
             assert!(result.insert("error".to_string(), Value::Null).is_none());
         }
         QueryOutcome::Failed {
@@ -487,13 +563,26 @@ pub fn result_value(
             message,
             latency,
         } => {
-            assert!(result.insert(
-                "status".to_string(),
-                Value::String(status.to_string()),
-            ).is_none());
-            assert!(result.insert("candidates".to_string(), Value::Array(Vec::new())).is_none());
-            assert!(result.insert("timings".to_string(), timings_value(*latency)?).is_none());
-            assert!(result.insert("error".to_string(), error_value(code, message)).is_none());
+            assert!(
+                result
+                    .insert("status".to_string(), Value::String(status.to_string()),)
+                    .is_none()
+            );
+            assert!(
+                result
+                    .insert("candidates".to_string(), Value::Array(Vec::new()))
+                    .is_none()
+            );
+            assert!(
+                result
+                    .insert("timings".to_string(), timings_value(*latency)?)
+                    .is_none()
+            );
+            assert!(
+                result
+                    .insert("error".to_string(), error_value(code, message))
+                    .is_none()
+            );
         }
     }
     Ok(Value::Object(result))
@@ -525,79 +614,142 @@ pub fn runner_record(
         }
     }
     let mut record = Map::new();
-    assert!(record.insert(
-        "schema_version".to_string(),
-        Value::Number(RUNNER_SCHEMA_VERSION.into()),
-    ).is_none());
-    assert!(record.insert(
-        "query_pack_sha256".to_string(),
-        Value::String(pack.pack_sha256.clone()),
-    ).is_none());
+    assert!(
+        record
+            .insert(
+                "schema_version".to_string(),
+                Value::Number(RUNNER_SCHEMA_VERSION.into()),
+            )
+            .is_none()
+    );
+    assert!(
+        record
+            .insert(
+                "query_pack_sha256".to_string(),
+                Value::String(pack.pack_sha256.clone()),
+            )
+            .is_none()
+    );
     let mut runner = Map::new();
-    assert!(runner.insert("name".to_string(), Value::String(identity.name.clone())).is_none());
-    assert!(runner.insert(
-        "revision".to_string(),
-        Value::String(identity.revision.clone()),
-    ).is_none());
-    assert!(runner.insert(
-        "run_id".to_string(),
-        Value::String(identity.run_id.clone()),
-    ).is_none());
-    assert!(runner.insert(
-        "tokenizer".to_string(),
-        Value::String(TOKENIZER.to_string()),
-    ).is_none());
-    assert!(runner.insert(
-        "tokenizer_budget_version".to_string(),
-        Value::String(TOKENIZER_BUDGET_VERSION.to_string()),
-    ).is_none());
-    assert!(runner.insert("gold_access".to_string(), Value::Bool(false)).is_none());
-    assert!(runner.insert(
-        "blinding".to_string(),
-        Value::String(identity.blinding.clone()),
-    ).is_none());
-    assert!(runner.insert(
-        "isolation_method".to_string(),
-        Value::String(identity.isolation_method.clone()),
-    ).is_none());
-    assert!(runner.insert(
-        "access_block_log".to_string(),
-        Value::String(identity.access_block_log.clone()),
-    ).is_none());
-    assert!(record.insert("runner".to_string(), Value::Object(runner)).is_none());
+    assert!(
+        runner
+            .insert("name".to_string(), Value::String(identity.name.clone()))
+            .is_none()
+    );
+    assert!(
+        runner
+            .insert(
+                "revision".to_string(),
+                Value::String(identity.revision.clone()),
+            )
+            .is_none()
+    );
+    assert!(
+        runner
+            .insert("run_id".to_string(), Value::String(identity.run_id.clone()),)
+            .is_none()
+    );
+    assert!(
+        runner
+            .insert(
+                "tokenizer".to_string(),
+                Value::String(TOKENIZER.to_string()),
+            )
+            .is_none()
+    );
+    assert!(
+        runner
+            .insert(
+                "tokenizer_budget_version".to_string(),
+                Value::String(TOKENIZER_BUDGET_VERSION.to_string()),
+            )
+            .is_none()
+    );
+    assert!(
+        runner
+            .insert("gold_access".to_string(), Value::Bool(false))
+            .is_none()
+    );
+    assert!(
+        runner
+            .insert(
+                "blinding".to_string(),
+                Value::String(identity.blinding.clone()),
+            )
+            .is_none()
+    );
+    assert!(
+        runner
+            .insert(
+                "isolation_method".to_string(),
+                Value::String(identity.isolation_method.clone()),
+            )
+            .is_none()
+    );
+    assert!(
+        runner
+            .insert(
+                "access_block_log".to_string(),
+                Value::String(identity.access_block_log.clone()),
+            )
+            .is_none()
+    );
+    assert!(
+        record
+            .insert("runner".to_string(), Value::Object(runner))
+            .is_none()
+    );
     let mut provenance_value = Map::new();
     for route in &routes {
-        let entry = provenance.get(*route).ok_or_else(|| {
-            BenchError::Protocol(format!("missing provenance for route {route}"))
-        })?;
+        let entry = provenance
+            .get(*route)
+            .ok_or_else(|| BenchError::Protocol(format!("missing provenance for route {route}")))?;
         let mut item = Map::new();
-        assert!(item.insert("system".to_string(), Value::String(entry.system.clone())).is_none());
-        assert!(item.insert("model".to_string(), Value::String(entry.model.clone())).is_none());
-        assert!(item.insert(
-            "model_revision".to_string(),
-            Value::String(entry.model_revision.clone()),
-        ).is_none());
-        assert!(provenance_value.insert((*route).clone(), Value::Object(item)).is_none());
+        assert!(
+            item.insert("system".to_string(), Value::String(entry.system.clone()))
+                .is_none()
+        );
+        assert!(
+            item.insert("model".to_string(), Value::String(entry.model.clone()))
+                .is_none()
+        );
+        assert!(
+            item.insert(
+                "model_revision".to_string(),
+                Value::String(entry.model_revision.clone()),
+            )
+            .is_none()
+        );
+        assert!(
+            provenance_value
+                .insert((*route).clone(), Value::Object(item))
+                .is_none()
+        );
     }
-    assert!(record.insert(
-        "route_provenance".to_string(),
-        Value::Object(provenance_value),
-    ).is_none());
+    assert!(
+        record
+            .insert(
+                "route_provenance".to_string(),
+                Value::Object(provenance_value),
+            )
+            .is_none()
+    );
     let mut results = Vec::new();
     for task in &pack.tasks {
         for route in &routes {
             let outcome = outcomes
                 .get(&(task.task_id.clone(), (*route).clone()))
                 .ok_or_else(|| {
-                    BenchError::Protocol(format!(
-                        "missing outcome for ({}, {route})",
-                        task.task_id
-                    ))
+                    BenchError::Protocol(format!("missing outcome for ({}, {route})", task.task_id))
                 })?;
             results.push(result_value(&task.task_id, route, outcome, top_k, files)?);
         }
     }
-    assert!(record.insert("results".to_string(), Value::Array(results)).is_none());
+    assert!(
+        record
+            .insert("results".to_string(), Value::Array(results))
+            .is_none()
+    );
     Ok(Value::Object(record))
 }
 
@@ -629,9 +781,8 @@ mod tests {
             let value: Value = serde_json::from_str(raw).expect("fixture parses");
             assert!(forbidden_pack_key(&value).is_some(), "must flag {raw}");
         }
-        let clean: Value =
-            serde_json::from_str(r#"{"tasks":[{"task_id":"t","query":"q"}]}"#)
-                .expect("fixture parses");
+        let clean: Value = serde_json::from_str(r#"{"tasks":[{"task_id":"t","query":"q"}]}"#)
+            .expect("fixture parses");
         assert!(forbidden_pack_key(&clean).is_none());
     }
 }

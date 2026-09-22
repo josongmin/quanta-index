@@ -15,9 +15,7 @@ use quanta_index_contract::{
     ExecutionOutcomeV2, GenerationPin, HybridCandidateV1, LexicalCandidate, ManifestGeneration,
     RepoId, RevisionId, SearchPlaneErrorCodeV2, SearchPlaneSearchCorpusActivationCasAck,
 };
-use quanta_index_sdk::{
-    BatchReceipt, ConnectOptions, QuantaIndex, SdkError, SearchCorpusBatch,
-};
+use quanta_index_sdk::{BatchReceipt, ConnectOptions, QuantaIndex, SdkError, SearchCorpusBatch};
 
 use crate::{BenchError, BenchResult};
 
@@ -119,7 +117,9 @@ impl DaemonSession {
     /// root is refused: the runner never inherits a possibly stale index.
     pub fn boot(config: &DaemonConfig<'_>) -> BenchResult<Self> {
         if config.embedder.trim().is_empty() {
-            return Err(BenchError::Config("embedder profile must not be empty".to_string()));
+            return Err(BenchError::Config(
+                "embedder profile must not be empty".to_string(),
+            ));
         }
         if config.state_root.exists() {
             let non_empty = std::fs::read_dir(config.state_root)
@@ -148,14 +148,16 @@ impl DaemonSession {
                 "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_GENERATIONS",
                 config.history_max_generations.to_string(),
             );
-        let mut child = command.spawn().map_err(|err| BenchError::Daemon(format!(
-            "failed to spawn {}: {err}",
-            binary.display()
-        )))?;
+        let mut child = command.spawn().map_err(|err| {
+            BenchError::Daemon(format!("failed to spawn {}: {err}", binary.display()))
+        })?;
         let sockets = daemon_socket_paths(config.state_root);
         let start = Instant::now();
         let ready = loop {
-            if sockets.iter().all(|socket| socket_accepts_connection(socket)) {
+            if sockets
+                .iter()
+                .all(|socket| socket_accepts_connection(socket))
+            {
                 break true;
             }
             match child.try_wait() {
@@ -230,7 +232,8 @@ impl DaemonSession {
         repo_id: &RepoId,
         revision_id: &RevisionId,
     ) -> BenchResult<()> {
-        match self.client
+        match self
+            .client
             .lexical()
             .query()
             .native("retrieval-bench-empty-probe")
@@ -273,9 +276,9 @@ pub fn publish_and_activate(
     batch: &SearchCorpusBatch,
     expected_active: Option<quanta_index_contract::SearchCorpusGenerationIdentityV1>,
 ) -> BenchResult<(BatchReceipt, SearchPlaneSearchCorpusActivationCasAck)> {
-    let digest = batch.batch_digest().map_err(|err| {
-        BenchError::Sdk(format!("failed to compute batch digest: {err}"))
-    })?;
+    let digest = batch
+        .batch_digest()
+        .map_err(|err| BenchError::Sdk(format!("failed to compute batch digest: {err}")))?;
     let (receipt, ack) = session
         .client()
         .search_corpus()
@@ -394,9 +397,13 @@ fn remote_status(code: &SearchPlaneErrorCodeV2) -> &'static str {
     // the wire string keeps the mapping total across code-table growth.
     match code.as_wire_str() {
         "QUERY_TIMEOUT" | "LEX_QUERY_TIMEOUT" => "timeout",
-        "SEM_NOT_READY" | "SEM_PROVIDER_UNAVAILABLE" | "SEM_PROVIDER_AUTH"
-        | "SEM_PROVIDER_TRANSPORT" | "HISTORY_SHARD_UNAVAILABLE"
-        | "FILE_CONTRIBUTOR_UNAVAILABLE" | "FILE_OWNERSHIP_UNAVAILABLE" => "unavailable",
+        "SEM_NOT_READY"
+        | "SEM_PROVIDER_UNAVAILABLE"
+        | "SEM_PROVIDER_AUTH"
+        | "SEM_PROVIDER_TRANSPORT"
+        | "HISTORY_SHARD_UNAVAILABLE"
+        | "FILE_CONTRIBUTOR_UNAVAILABLE"
+        | "FILE_OWNERSHIP_UNAVAILABLE" => "unavailable",
         _ => "error",
     }
 }
@@ -421,7 +428,8 @@ pub fn query_route(query: &RouteQuery<'_>) -> QueryOutcome {
     let start = Instant::now();
     match query.route {
         "lexical" => {
-            match query.client
+            match query
+                .client
                 .lexical()
                 .query()
                 .native(query.query_text)
@@ -430,8 +438,7 @@ pub fn query_route(query: &RouteQuery<'_>) -> QueryOutcome {
                 .execute()
             {
                 Ok(response) => {
-                    let hits: Vec<RankedHit> =
-                        response.results.iter().map(lexical_hit).collect();
+                    let hits: Vec<RankedHit> = response.results.iter().map(lexical_hit).collect();
                     let outcome = response.window.outcome();
                     match check_pin(query.route, &response.generation, &expected_pin, start) {
                         Ok(guard) => guard.with_hits(hits, outcome),
@@ -442,7 +449,8 @@ pub fn query_route(query: &RouteQuery<'_>) -> QueryOutcome {
             }
         }
         "semantic" => {
-            match query.client
+            match query
+                .client
                 .semantic()
                 .query()
                 .text(query.query_text)
@@ -451,8 +459,7 @@ pub fn query_route(query: &RouteQuery<'_>) -> QueryOutcome {
                 .execute()
             {
                 Ok(response) => {
-                    let hits: Vec<RankedHit> =
-                        response.results.iter().map(lexical_hit).collect();
+                    let hits: Vec<RankedHit> = response.results.iter().map(lexical_hit).collect();
                     let outcome = response.window.outcome();
                     match check_pin(query.route, &response.generation, &expected_pin, start) {
                         Ok(guard) => guard.with_hits(hits, outcome),
@@ -463,7 +470,8 @@ pub fn query_route(query: &RouteQuery<'_>) -> QueryOutcome {
             }
         }
         "hybrid" => {
-            match query.client
+            match query
+                .client
                 .search()
                 .hybrid()
                 .native(query.query_text)
@@ -473,8 +481,7 @@ pub fn query_route(query: &RouteQuery<'_>) -> QueryOutcome {
                 .execute()
             {
                 Ok(response) => {
-                    let hits: Vec<RankedHit> =
-                        response.results.iter().map(hybrid_hit).collect();
+                    let hits: Vec<RankedHit> = response.results.iter().map(hybrid_hit).collect();
                     let outcome = response.window.outcome();
                     match check_pin(query.route, &response.generation, &expected_pin, start) {
                         Ok(guard) => guard.with_hits(hits, outcome),

@@ -9,10 +9,11 @@ use std::collections::BTreeMap;
 
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
-    CapabilityStatusV1, ChunkId, ChunkRecord, ManifestGeneration, OwnerDocKind, RawFallbackReasonV1,
-    RepoId, RepoRelativePath, RevisionId, SearchScopeKey, SearchScopeSurface,
-    SearchPlaneSearchCorpusActivationCasAck, SemanticCorpusKindV1,
-    SemanticSourceRecordV1, SemanticSourceReplaceScopeV1, SemanticSourceScopeKeyV1, SourceRoleV1,
+    CapabilityStatusV1, ChunkId, ChunkRecord, ManifestGeneration, OwnerDocKind,
+    RawFallbackReasonV1, RepoId, RepoRelativePath, RevisionId,
+    SearchPlaneSearchCorpusActivationCasAck, SearchScopeKey, SearchScopeSurface,
+    SemanticCorpusKindV1, SemanticSourceRecordV1, SemanticSourceReplaceScopeV1,
+    SemanticSourceScopeKeyV1, SourceRoleV1,
 };
 use quanta_index_sdk::SearchCorpusBatch;
 
@@ -39,12 +40,10 @@ impl BatchIdentity {
         generation: u64,
         manifest_digest: String,
     ) -> BenchResult<Self> {
-        let repo_id = RepoId::new(repo_id).map_err(|err| {
-            BenchError::Config(format!("invalid repo_id: {err}"))
-        })?;
-        let revision_id = RevisionId::new(revision_id).map_err(|err| {
-            BenchError::Config(format!("invalid revision_id: {err}"))
-        })?;
+        let repo_id = RepoId::new(repo_id)
+            .map_err(|err| BenchError::Config(format!("invalid repo_id: {err}")))?;
+        let revision_id = RevisionId::new(revision_id)
+            .map_err(|err| BenchError::Config(format!("invalid revision_id: {err}")))?;
         Ok(Self {
             repo_id,
             revision_id,

@@ -212,16 +212,18 @@ pub fn validate_chunks(chunks: &[Chunk], file: &SourceFile) -> BenchResult<()> {
                 message: "emitted text differs from original byte slice".to_string(),
             });
         }
-        let expected_start_line = file.line_of_offset(start).map_err(|err| BenchError::Chunk {
-            path: where_.clone(),
-            message: err.to_string(),
-        })?;
-        let expected_end_line =
-            file.line_of_offset(end - 1)
-                .map_err(|err| BenchError::Chunk {
-                    path: where_.clone(),
-                    message: err.to_string(),
-                })?;
+        let expected_start_line = file
+            .line_of_offset(start)
+            .map_err(|err| BenchError::Chunk {
+                path: where_.clone(),
+                message: err.to_string(),
+            })?;
+        let expected_end_line = file
+            .line_of_offset(end - 1)
+            .map_err(|err| BenchError::Chunk {
+                path: where_.clone(),
+                message: err.to_string(),
+            })?;
         if usize::try_from(chunk.start_line).unwrap_or(0) != expected_start_line
             || usize::try_from(chunk.end_line).unwrap_or(0) != expected_end_line
         {
@@ -278,10 +280,17 @@ pub fn chunk_corpus<C: Chunker>(
     for file in files {
         let chunks = chunker.chunk(file)?;
         validate_chunks(&chunks, file)?;
-        assert!(coverage_input.insert(
-            file.path.clone(),
-            (u64::try_from(file.bytes.len()).unwrap_or(u64::MAX), chunks.clone()),
-        ).is_none());
+        assert!(
+            coverage_input
+                .insert(
+                    file.path.clone(),
+                    (
+                        u64::try_from(file.bytes.len()).unwrap_or(u64::MAX),
+                        chunks.clone()
+                    ),
+                )
+                .is_none()
+        );
         assert!(per_file.insert(file.path.clone(), chunks).is_none());
     }
     let report = coverage_report(&coverage_input);
@@ -300,6 +309,8 @@ mod tests {
         assert_eq!(count_tokens("   \n\t"), 0);
         assert_eq!(count_tokens("hello_world 42"), 2);
         assert_eq!(count_tokens("a+b"), 3);
-        assert_eq!(count_tokens("héllo"), 5); // h, é, l, l, o
+        assert_eq!(count_tokens("héllo"), 3); // h, é, llo
+        assert_eq!(count_tokens("a\tb"), 2);
+        assert_eq!(count_tokens("x\ny"), 2);
     }
 }

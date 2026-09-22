@@ -562,10 +562,11 @@ impl fmt::Display for FileOwnerProjectionErrorV1 {
 
 impl std::error::Error for FileOwnerProjectionErrorV1 {}
 
-/// Check that `file_owner_rows` pairs one to one with `results`: absent
-/// is fine, present must carry exactly one row per result, each row
-/// naming the same candidate identity in the same order. A swapped or
-/// foreign projection row is a malformed page, never a partial one.
+/// Check that `file_owner_rows` pairs one to one with `results`.
+///
+/// Absent is fine, present must carry exactly one row per result, each
+/// row naming the same candidate identity in the same order. A swapped
+/// or foreign projection row is a malformed page, never a partial one.
 pub fn validate_file_owner_projection_v1(
     results: &[LexicalCandidate],
     file_owner_rows: Option<&[FileOwnerProjectionRow]>,
@@ -994,15 +995,17 @@ impl<'de> Deserialize<'de> for SearchPlaneHistoryQueryResponse {
     }
 }
 
-/// Whether the window's outcome authorizes a continuation token: only
-/// an observed continuation does. Every other outcome — exhausted,
+/// Whether the window's outcome authorizes a continuation token.
+///
+/// Only an observed continuation does. Every other outcome — exhausted,
 /// capped, partial, approximate, or a lower bound without an observed
 /// row — travels tokenless.
 fn continuation_authorized(window: &QueryResultWindowV2) -> bool {
     window.outcome().has_more() == Some(true)
 }
 
-/// Manual serde for a ranked lexical page without projection rows:
+/// Manual serde for a ranked lexical page without projection rows.
+///
 /// `{ generation, results, window, next_cursor? }`, held to the ranked
 /// order and the single continuation authority: the opaque token is
 /// present exactly when the window's outcome authorizes it.
@@ -1510,11 +1513,13 @@ impl<'de> Deserialize<'de> for FileOwnerProjectionRow {
     }
 }
 
-/// Check one ranked page against its V2 window: `returned` counts the
-/// rows, every row carries a finite score in strict page order, and the
-/// opaque token is present exactly when the window's outcome authorizes
-/// a continuation. Cursor-content agreement (last row, generation) lives
-/// inside the token, verified by the cursor codec — never on the wire.
+/// Check one ranked page against its V2 window.
+///
+/// `returned` counts the rows, every row carries a finite score in
+/// strict page order, and the opaque token is present exactly when the
+/// window's outcome authorizes a continuation. Cursor-content agreement
+/// (last row, generation) lives inside the token, verified by the cursor
+/// codec — never on the wire.
 fn check_ranked_page_v2<'a>(
     window: &QueryResultWindowV2,
     rows: usize,
@@ -2661,6 +2666,10 @@ mod tests {
         assert!(validate_file_owner_projection_v1(&results, None).is_ok());
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "fixture vec literal has exactly two rows; indices 0 and 1 are total by construction"
+    )]
     #[test]
     fn file_owner_projection_exact_pairing_is_valid() {
         let results = vec![

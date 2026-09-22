@@ -21,8 +21,9 @@ pub const DEFAULT_MAX_FILE_BYTES: u64 = 1024 * 1024;
 /// Python `splitlines` boundaries beyond CR/LF. Any file containing one is
 /// refused: the Rust splitter below would otherwise disagree with the
 /// evaluator's line model and every derived block hash.
-const EXOTIC_SPLIT_CHARS: [char; 7] =
-    ['\u{0b}', '\u{0c}', '\u{1c}', '\u{1d}', '\u{1e}', '\u{85}', '\u{2028}'];
+const EXOTIC_SPLIT_CHARS: [char; 7] = [
+    '\u{0b}', '\u{0c}', '\u{1c}', '\u{1d}', '\u{1e}', '\u{85}', '\u{2028}',
+];
 const EXOTIC_SPLIT_CHAR_EXTRA: char = '\u{2029}';
 
 #[derive(Debug, Deserialize)]
@@ -161,9 +162,13 @@ fn check_repo_path(path: &str) -> BenchResult<()> {
     if path.is_empty()
         || path.starts_with('/')
         || path.contains('\\')
-        || path.split('/').any(|part| part.is_empty() || part == "." || part == "..")
+        || path
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
     {
-        return Err(BenchError::Manifest(format!("noncanonical repository path: {path}")));
+        return Err(BenchError::Manifest(format!(
+            "noncanonical repository path: {path}"
+        )));
     }
     Ok(())
 }
@@ -181,11 +186,10 @@ pub fn load_manifest(path: &Path) -> BenchResult<Manifest> {
         path: path.display().to_string(),
         message: err.to_string(),
     })?;
-    let value: serde_json::Value =
-        serde_json::from_str(&raw).map_err(|err| BenchError::Json {
-            path: path.display().to_string(),
-            message: err.to_string(),
-        })?;
+    let value: serde_json::Value = serde_json::from_str(&raw).map_err(|err| BenchError::Json {
+        path: path.display().to_string(),
+        message: err.to_string(),
+    })?;
     let object = value.as_object().ok_or_else(|| {
         BenchError::Manifest(format!("manifest must be an object: {}", path.display()))
     })?;
@@ -210,9 +214,7 @@ pub fn load_manifest(path: &Path) -> BenchResult<Manifest> {
         ));
     }
     if manifest.files.is_empty() {
-        return Err(BenchError::Manifest(
-            "manifest admits no files".to_string(),
-        ));
+        return Err(BenchError::Manifest("manifest admits no files".to_string()));
     }
     let mut seen = std::collections::BTreeSet::new();
     for file in &manifest.files {

@@ -6,7 +6,7 @@
 //! line-anchored for the evaluator's line-span model. A file that fits in
 //! one window yields one chunk.
 
-use crate::chunking::{CHUNKER_VERSION, STRATEGY_FIXED_WINDOW, Chunk, Chunker, chunk_id};
+use crate::chunking::{CHUNKER_VERSION, Chunk, Chunker, STRATEGY_FIXED_WINDOW, chunk_id};
 use crate::corpus::SourceFile;
 use crate::{BenchError, BenchResult, sha256_hex};
 
@@ -107,11 +107,10 @@ impl Chunker for FixedWindowChunker {
                 path: file.path.clone(),
                 message: "file exceeds u32 byte range".to_string(),
             })?;
-            let start_line_u32 =
-                u32::try_from(start_line).map_err(|_| BenchError::Chunk {
-                    path: file.path.clone(),
-                    message: "file exceeds u32 line range".to_string(),
-                })?;
+            let start_line_u32 = u32::try_from(start_line).map_err(|_| BenchError::Chunk {
+                path: file.path.clone(),
+                message: "file exceeds u32 line range".to_string(),
+            })?;
             let end_line_u32 = u32::try_from(end_line).map_err(|_| BenchError::Chunk {
                 path: file.path.clone(),
                 message: "file exceeds u32 line range".to_string(),

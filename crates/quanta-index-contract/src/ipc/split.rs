@@ -1797,7 +1797,14 @@ mod tests {
                 SearchPlaneQueryIpcResponse::Hybrid(r) => Some(r.explanation.request_id),
                 SearchPlaneQueryIpcResponse::HybridSeed(r) => Some(r.explanation.request_id),
                 SearchPlaneQueryIpcResponse::Explain(r) => Some(r.explanation.request_id),
-                _ => None,
+                SearchPlaneQueryIpcResponse::Text(_)
+                | SearchPlaneQueryIpcResponse::Symbol(_)
+                | SearchPlaneQueryIpcResponse::History(_)
+                | SearchPlaneQueryIpcResponse::Structural(_)
+                | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+                | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
+                | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+                | SearchPlaneQueryIpcResponse::Error(_) => None,
             };
             assert_eq!(
                 stamped,

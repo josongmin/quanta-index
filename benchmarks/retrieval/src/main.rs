@@ -87,26 +87,27 @@ fn parse_args(argv: &[String]) -> BenchResult<Args> {
 }
 
 fn required(args: &Args, name: &str) -> BenchResult<String> {
-    args.flags.get(name).cloned().ok_or_else(|| {
-        usage_error(format!("missing required flag --{name}"))
-    })
+    args.flags
+        .get(name)
+        .cloned()
+        .ok_or_else(|| usage_error(format!("missing required flag --{name}")))
 }
 
 fn optional_u64(args: &Args, name: &str, default: u64) -> BenchResult<u64> {
     match args.flags.get(name) {
         None => Ok(default),
-        Some(raw) => raw.parse::<u64>().map_err(|_| {
-            usage_error(format!("flag --{name} must be an unsigned integer"))
-        }),
+        Some(raw) => raw
+            .parse::<u64>()
+            .map_err(|_| usage_error(format!("flag --{name} must be an unsigned integer"))),
     }
 }
 
 fn optional_usize(args: &Args, name: &str, default: usize) -> BenchResult<usize> {
     match args.flags.get(name) {
         None => Ok(default),
-        Some(raw) => raw.parse::<usize>().map_err(|_| {
-            usage_error(format!("flag --{name} must be an unsigned integer"))
-        }),
+        Some(raw) => raw
+            .parse::<usize>()
+            .map_err(|_| usage_error(format!("flag --{name} must be an unsigned integer"))),
     }
 }
 
@@ -194,11 +195,10 @@ fn chunk_with_strategy(
 }
 
 fn write_json(path: &Path, value: &serde_json::Value) -> BenchResult<()> {
-    let rendered =
-        serde_json::to_string_pretty(value).map_err(|err| BenchError::Json {
-            path: path.display().to_string(),
-            message: err.to_string(),
-        })?;
+    let rendered = serde_json::to_string_pretty(value).map_err(|err| BenchError::Json {
+        path: path.display().to_string(),
+        message: err.to_string(),
+    })?;
     std::fs::write(path, format!("{rendered}\n")).map_err(|err| BenchError::Io {
         path: path.display().to_string(),
         message: err.to_string(),
@@ -222,7 +222,11 @@ fn run_chunk(args: &Args) -> BenchResult<()> {
     let repo = PathBuf::from(required(args, "repo")?);
     let manifest = load_manifest(&PathBuf::from(required(args, "manifest")?))?;
     let limits = CorpusLimits {
-        max_file_bytes: optional_u64(args, "max-file-bytes", CorpusLimits::default().max_file_bytes)?,
+        max_file_bytes: optional_u64(
+            args,
+            "max-file-bytes",
+            CorpusLimits::default().max_file_bytes,
+        )?,
     };
     let files = load_corpus(&repo, &manifest, &limits)?;
     let selection = chunk_with_strategy(&required(args, "strategy")?, args, &files)?;
@@ -243,7 +247,11 @@ fn run_chunk(args: &Args) -> BenchResult<()> {
                 })
             })
             .collect();
-        assert!(file_entries.insert(path.clone(), serde_json::Value::Array(items)).is_none());
+        assert!(
+            file_entries
+                .insert(path.clone(), serde_json::Value::Array(items))
+                .is_none()
+        );
     }
     let coverage = &selection.coverage;
     let value = serde_json::json!({
@@ -318,14 +326,17 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             )));
         }
     }
-    let top_k = u32::try_from(optional_u64(args, "top-k", 0)?).map_err(|_| {
-        usage_error("flag --top-k exceeds u32 range".to_string())
-    })?;
+    let top_k = u32::try_from(optional_u64(args, "top-k", 0)?)
+        .map_err(|_| usage_error("flag --top-k exceeds u32 range".to_string()))?;
     if top_k == 0 {
         return Err(usage_error("flag --top-k must be positive".to_string()));
     }
     let limits = CorpusLimits {
-        max_file_bytes: optional_u64(args, "max-file-bytes", CorpusLimits::default().max_file_bytes)?,
+        max_file_bytes: optional_u64(
+            args,
+            "max-file-bytes",
+            CorpusLimits::default().max_file_bytes,
+        )?,
     };
     let files = load_corpus(&repo, &manifest, &limits)?;
     let by_path: BTreeMap<String, SourceFile> = files
@@ -339,7 +350,9 @@ fn run_capture(args: &Args) -> BenchResult<()> {
 
     let generation = optional_u64(args, "generation", 0)?;
     if generation == 0 {
-        return Err(usage_error("flag --generation must be positive".to_string()));
+        return Err(usage_error(
+            "flag --generation must be positive".to_string(),
+        ));
     }
     let manifest_digest = batch_manifest_digest(
         &manifest,
@@ -402,14 +415,18 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     let model_revision = required(args, "model-revision")?;
     let mut provenance = BTreeMap::new();
     for route in routes.iter().copied() {
-        assert!(provenance.insert(
-            route.to_string(),
-            RouteProvenance {
-                system: "quanta-index".to_string(),
-                model: model.clone(),
-                model_revision: model_revision.clone(),
-            },
-        ).is_none());
+        assert!(
+            provenance
+                .insert(
+                    route.to_string(),
+                    RouteProvenance {
+                        system: "quanta-index".to_string(),
+                        model: model.clone(),
+                        model_revision: model_revision.clone(),
+                    },
+                )
+                .is_none()
+        );
     }
     let query_start = Instant::now();
     let mut outcomes: BTreeMap<(String, String), QueryOutcome> = BTreeMap::new();
@@ -424,7 +441,11 @@ fn run_capture(args: &Args) -> BenchResult<()> {
                 generation: identity.generation,
                 top_k,
             });
-            assert!(outcomes.insert((task.task_id.clone(), route.to_string()), outcome).is_none());
+            assert!(
+                outcomes
+                    .insert((task.task_id.clone(), route.to_string()), outcome)
+                    .is_none()
+            );
         }
     }
     let query_elapsed = query_start.elapsed();
@@ -437,7 +458,14 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         required(args, "isolation-method")?,
         required(args, "access-block-log")?,
     )?;
-    let record = runner_record(&pack, &identity_block, &provenance, &outcomes, top_k, &by_path)?;
+    let record = runner_record(
+        &pack,
+        &identity_block,
+        &provenance,
+        &outcomes,
+        top_k,
+        &by_path,
+    )?;
     let out = PathBuf::from(required(args, "out")?);
     write_json(&out, &record)?;
     let binary = session.searchd_binary().display().to_string();
@@ -518,8 +546,7 @@ fn cross_check_manifest_pack(
     if manifest_rows != pack_rows {
         let only_manifest: Vec<&(&str, &str)> =
             manifest_rows.difference(&pack_rows).take(5).collect();
-        let only_pack: Vec<&(&str, &str)> =
-            pack_rows.difference(&manifest_rows).take(5).collect();
+        let only_pack: Vec<&(&str, &str)> = pack_rows.difference(&manifest_rows).take(5).collect();
         return Err(BenchError::Protocol(format!(
             "admitted manifest differs from pack file universe (manifest-only sample: {only_manifest:?}; pack-only sample: {only_pack:?})"
         )));
@@ -533,7 +560,9 @@ fn main() {
         let args = parse_args(&argv)?;
         if args.positional.len() != 1 {
             print_help();
-            return Err(usage_error("expected exactly one subcommand: run|chunk".to_string()));
+            return Err(usage_error(
+                "expected exactly one subcommand: run|chunk".to_string(),
+            ));
         }
         match args.positional[0].as_str() {
             "run" => run_capture(&args),
