@@ -123,20 +123,18 @@ fn collect_sources(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 #[test]
-fn missing_searchd_binary_fails_with_build_guidance() {
-    // An explicit bogus path plus no usable fallback must name the fix.
-    // (This test never spawns; it only exercises resolution failure when
-    // the environment offers no binary. If a binary resolves from the
-    // target layout, resolution succeeds and there is nothing to assert.)
+fn explicit_missing_searchd_binary_never_falls_back() {
+    // An explicit binary pin is authoritative even when another build exists.
     let bogus = PathBuf::from("/nonexistent-dir-xyz/quanta-index-searchd");
-    match resolve_searchd_binary(Some(&bogus)) {
-        Ok(_) => {}
-        Err(err) => {
-            let text = err.to_string();
-            assert!(text.contains("QUANTA_INDEX_SEARCHD_BIN"), "{text}");
-            assert!(text.contains("build"), "{text}");
-        }
-    }
+    let err = resolve_searchd_binary(Some(&bogus))
+        .err()
+        .expect("bad explicit path must fail");
+    let text = err.to_string();
+    assert!(text.contains("--searchd-bin"), "{text}");
+    assert!(
+        text.contains("/nonexistent-dir-xyz/quanta-index-searchd"),
+        "{text}"
+    );
 }
 
 #[test]
