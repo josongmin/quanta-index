@@ -1,0 +1,19 @@
+{
+  "profiles": {
+    "dsl-authority": {
+      "artifact_profile": "dsl-authority",
+      "recipes": ["rust-bench-dsl-warm", "rust-bench-dsl-cold"],
+      "description": "Warm and true-cold DSL latency artifacts"
+    },
+    "quality-core": {
+      "artifact_profile": "quality-core",
+      "recipes": ["rust-verify-quality-relevance", "rust-verify-quality-scale", "rust-verify-quality-tail"],
+      "description": "Core search quality, scale, and latency-tail evidence"
+    },
+    "quality-full": {
+      "artifact_profile": "quality-full",
+      "recipes": ["rust-verify-quality-relevance", "rust-verify-quality-scale", "rust-verify-quality-tail", "rust-verify-quality-ann", "rust-verify-quality-concurrency"],
+      "description": "Core profile plus ANN recall and mixed-load concurrency"
+    }
+  }
+}

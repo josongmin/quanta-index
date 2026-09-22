@@ -76,6 +76,91 @@ def test_rail_binding_requires_an_executed_command() -> None:
     assert not module._executes_declared_command(metadata_only, command)
 
 
+def test_python_owner_target_requires_real_file_scope_and_ci_rail(tmp_path: Path) -> None:
+    module = _load_module()
+    test_file = tmp_path / "tools/ci/tests/test_aggregate.py"
+    test_file.parent.mkdir(parents=True)
+    test_file.write_text("def test_owner():\n    assert True\n", encoding="utf-8")
+    owner = tmp_path / "tools/ci/write-proof-aggregate.py"
+    owner.write_text("# owner\n", encoding="utf-8")
+    catalog = _write_catalog(
+        tmp_path,
+        """
+        format_version = 2
+        [rails.python-owner]
+        tier = "pr"
+        command = "python3 -m pytest tools/ci/tests/test_aggregate.py -q"
+        target_kind = "python"
+        workflow = ".github/workflows/test.yml"
+        job = "test"
+        step = "run"
+
+        [python_scopes.aggregate-owner]
+        targets = ["aggregate-owner"]
+
+        [[python_targets]]
+        id = "aggregate-owner"
+        path = "tools/ci/tests/test_aggregate.py"
+        owner = "tools/ci/write-proof-aggregate.py"
+        rail = "python-owner"
+        """,
+    )
+    assert module.audit_catalog(tmp_path, catalog) == []
+
+    test_file.unlink()
+    messages = [item.message for item in module.audit_catalog(tmp_path, catalog)]
+    assert any("python target file does not exist" in message for message in messages)
+
+
+def test_python_rail_requires_unfiltered_pytest_execution(tmp_path: Path) -> None:
+    module = _load_module()
+    path = "tools/ci/tests/test_aggregate.py"
+    assert module._python_command_selects_path(tmp_path, f"python3 -m pytest {path} -q", path)
+    assert not module._python_command_selects_path(
+        tmp_path, f"python3 -m pytest {path} -k selected -q", path
+    )
+    assert not module._python_command_selects_path(tmp_path, f"# python3 -m pytest {path} -q", path)
+    assert not module._python_command_selects_path(
+        tmp_path, f"python3 -m pytest {path} -q || true", path
+    )
+
+
+def test_python_owner_target_rejects_unselected_and_wrong_kind(tmp_path: Path) -> None:
+    module = _load_module()
+    test_file = tmp_path / "tools/ci/tests/test_aggregate.py"
+    test_file.parent.mkdir(parents=True)
+    test_file.write_text("def test_owner():\n    assert True\n", encoding="utf-8")
+    (tmp_path / "tools/ci/write-proof-aggregate.py").write_text("# owner\n", encoding="utf-8")
+    catalog = _write_catalog(
+        tmp_path,
+        """
+        format_version = 2
+        [rails.python-owner]
+        tier = "pr"
+        command = "python3 -m pytest tools/ci/tests/test_aggregate.py -q"
+        target_kind = "wrong-kind"
+        workflow = ".github/workflows/test.yml"
+        job = "test"
+        step = "run"
+
+        [python_scopes.aggregate-owner]
+        targets = ["unregistered"]
+
+        [[python_targets]]
+        id = "aggregate-owner"
+        path = "tools/ci/tests/test_aggregate.py"
+        owner = "tools/ci/write-proof-aggregate.py"
+        rail = "python-owner"
+        """,
+    )
+    messages = [item.message for item in module.audit_catalog(tmp_path, catalog)]
+    assert any("python target aggregate-owner has kind python" in message for message in messages)
+    assert any("unknown python target unregistered" in message for message in messages)
+    assert any(
+        "python target is not selected by any python scope" in message for message in messages
+    )
+
+
 def test_orphan_integration_target_fails_closed(tmp_path: Path):
     module = _load_module()
     (tmp_path / "crates" / "demo" / "tests").mkdir(parents=True)

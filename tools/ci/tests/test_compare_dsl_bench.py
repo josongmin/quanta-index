@@ -9,10 +9,10 @@ Covers the Layer-3 DSL query-latency regression gate over `BenchArtifactV1`
 2. no-regression OK case (exit 0)
 3. clear regression on the blocking metric: rel > 10% AND abs > threshold (exit 1)
 4. AND-gate: rel exceeded but abs not exceeded -> OK
-5. rows with early_stop_reason are skipped (never compared / failed)
+5. unmeasured current rows fail and unmeasured baselines are refused
 6. --update-baseline overwrites and exits 0
 7. mode mismatch -> exit 2
-8. NEW scenario never fails
+8. NEW scenarios require a reviewed baseline
 9. MISSING scenario fails without --allow-missing, warns with it
 10. cold artifacts still require >=20 samples for tail advisories
 11. warm/cold p95-only drift is advisory; blocking metric is p50
@@ -324,11 +324,11 @@ def test_abs_exceeded_but_not_rel_is_ok(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Case: early_stop_reason rows are skipped
+# Case: early_stop_reason rows are not benchmark evidence
 # ---------------------------------------------------------------------------
 
 
-def test_early_stop_rows_are_skipped(tmp_path: Path) -> None:
+def test_early_stop_baseline_is_refused(tmp_path: Path) -> None:
     baseline = tmp_path / "baseline.json"
     current = tmp_path / "current.json"
     _write_artifact(
@@ -336,19 +336,17 @@ def test_early_stop_rows_are_skipped(tmp_path: Path) -> None:
         "warm",
         [_row("structural.def.native", None, early_stop_reason="fixture_not_seeded")],
     )
-    # Even a huge "regression" must be ignored because rows are unmeasured.
     _write_artifact(
         current,
         "warm",
         [_row("structural.def.native", None, early_stop_reason="fixture_not_seeded")],
     )
     result = _run(str(baseline), str(current))
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "REGRESSION" not in result.stdout
-    assert "skip" in result.stdout
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "unmeasured" in result.stderr
 
 
-def test_current_early_stop_does_not_regress(tmp_path: Path) -> None:
+def test_current_early_stop_fails_closed(tmp_path: Path) -> None:
     baseline = tmp_path / "baseline.json"
     current = tmp_path / "current.json"
     _write_artifact(baseline, "warm", [_row("history.commit.native", 1.00)])
@@ -358,8 +356,8 @@ def test_current_early_stop_does_not_regress(tmp_path: Path) -> None:
         [_row("history.commit.native", None, early_stop_reason="fixture_not_seeded")],
     )
     result = _run(str(baseline), str(current))
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "REGRESSION" not in result.stdout
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "INVALID" in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -384,6 +382,20 @@ def test_update_baseline_overwrites_and_exits_zero(tmp_path: Path) -> None:
     rerun = _run(str(baseline), str(current))
     assert rerun.returncode == 0, rerun.stdout
     assert "OK" in rerun.stdout
+
+
+def test_update_baseline_refuses_unmeasured_candidate(tmp_path: Path) -> None:
+    baseline = tmp_path / "baseline.json"
+    current = tmp_path / "current.json"
+    _write_artifact(
+        current,
+        "warm",
+        [_row("lexical.keyword.native", None, early_stop_reason="fixture_not_seeded")],
+    )
+    result = _run(str(baseline), str(current), "--update-baseline")
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "baseline candidate" in result.stderr
+    assert not baseline.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -511,11 +523,11 @@ def test_cold_rows_with_insufficient_samples_fail_closed(tmp_path: Path) -> None
 
 
 # ---------------------------------------------------------------------------
-# Case: NEW scenario never fails
+# Case: NEW scenario requires reviewed baseline
 # ---------------------------------------------------------------------------
 
 
-def test_new_scenario_never_fails(tmp_path: Path) -> None:
+def test_new_scenario_fails_without_reviewed_baseline(tmp_path: Path) -> None:
     baseline = tmp_path / "baseline.json"
     current = tmp_path / "current.json"
     _write_artifact(baseline, "warm", [_row("lexical.keyword.native", 1.00)])
@@ -528,10 +540,10 @@ def test_new_scenario_never_fails(tmp_path: Path) -> None:
         ],
     )
     result = _run(str(baseline), str(current))
-    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.returncode == 1, result.stdout + result.stderr
     assert "lexical.brand.new" in result.stdout
     assert "NEW" in result.stdout
-    assert "REGRESSION" not in result.stdout
+    assert "new without baseline" in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -575,10 +587,9 @@ def test_missing_scenario_warns_with_allow_missing(tmp_path: Path) -> None:
     assert "OK" in result.stdout
 
 
-def test_missing_unmeasured_baseline_scenario_does_not_fail(tmp_path: Path) -> None:
+def test_missing_unmeasured_baseline_scenario_is_refused(tmp_path: Path) -> None:
     baseline = tmp_path / "baseline.json"
     current = tmp_path / "current.json"
-    # baseline scenario was never measured -> its absence is not a failure.
     _write_artifact(
         baseline,
         "warm",
@@ -589,8 +600,22 @@ def test_missing_unmeasured_baseline_scenario_does_not_fail(tmp_path: Path) -> N
     )
     _write_artifact(current, "warm", [_row("lexical.keyword.native", 1.00)])
     result = _run(str(baseline), str(current))
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "OK" in result.stdout
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "unmeasured" in result.stderr
+
+
+def test_semantic_contract_change_is_refused(tmp_path: Path) -> None:
+    baseline = tmp_path / "baseline.json"
+    current = tmp_path / "current.json"
+    _write_artifact(baseline, "warm", [_row("lexical.keyword.native", 1.00)])
+    _write_artifact(
+        current,
+        "warm",
+        [_row("lexical.keyword.native", 1.00, result_shape="typed_error")],
+    )
+    result = _run(str(baseline), str(current))
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "changed result_shape" in result.stderr
 
 
 if __name__ == "__main__":

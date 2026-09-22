@@ -2,7 +2,8 @@
 #
 # A target is not considered covered merely because a broad command happens to
 # discover it today. Every Cargo integration binary and cargo-fuzz target must
-# be named here with its owning crate and an executable CI rail. The companion
+# be named here with its owning crate and an executable CI rail. Registered
+# Python owner targets have an explicit file, scope, and CI rail. The companion
 # guard fails when the filesystem, a fuzz manifest, or this catalog diverges.
 
 format_version = 2
@@ -30,6 +31,14 @@ target_kind = "integration"
 workflow = ".github/workflows/correctness.yml"
 job = "rust-authority-nextest"
 step = "rust nextest authority receipt"
+
+[rails.pr-proof-authority-python]
+tier = "pr"
+command = "just proof-p00-authority-freeze"
+target_kind = "python"
+workflow = ".github/workflows/ci.yml"
+job = "proof-authority-current-gate"
+step = "Produce P00 authority proof from the static gate"
 
 [rails.correctness-fuzz-ipc-request]
 tier = "correctness"
@@ -300,6 +309,15 @@ owners = [
   "quanta-index-searchd-harness",
   "quanta-index-searchd-runtime",
 ]
+
+[python_scopes.p12a-proof-infrastructure]
+targets = ["proof-aggregate-python-owner"]
+
+[[python_targets]]
+id = "proof-aggregate-python-owner"
+path = "tools/ci/tests/test_write_proof_aggregate.py"
+owner = "tools/ci/write-proof-aggregate.py"
+rail = "pr-proof-authority-python"
 
 [[integration_targets]]
 id = "contract-hybrid-candidate"

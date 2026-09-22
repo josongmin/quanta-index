@@ -70,6 +70,7 @@ fn producer_hex(marker: &str) -> String {
 
 const CRASH_ROOT_ENV: &str = "QUANTA_INDEX_REPOMAP_P03_CRASH_ROOT";
 const CRASH_BOUNDARY_ENV: &str = "QUANTA_INDEX_REPOMAP_CRASH_BOUNDARY";
+const REPLAY_SUBSTITUTE_ENV: &str = "QUANTA_INDEX_REPOMAP_V2_REPLAY_SUBSTITUTE";
 const CRASH_EXIT_CODE: i32 = 87;
 const CATALOG_BUSY_BUDGET: Duration = Duration::from_secs(5);
 
@@ -350,6 +351,95 @@ fn v2_receipts_bind_full_bundle_and_replay_after_restart() -> TestResult {
     let mut expected_activate_replay = activate;
     expected_activate_replay.mutation.replayed = true;
     assert_eq!(activate_replay, expected_activate_replay);
+    Ok(())
+}
+
+#[test]
+fn v2_ack_loss_replay_skips_object_and_catalog_seal() -> TestResult {
+    if let Some(root) = std::env::var_os(CRASH_ROOT_ENV) {
+        let (_catalog, store) = open_fixture(&std::path::PathBuf::from(root))?;
+        if std::env::var_os(REPLAY_SUBSTITUTE_ENV).is_some() {
+            let mut source = bundle(1, "g1");
+            source.snapshot_id.push_str("-foreign");
+            let request = RepoMapPublishBundleRequestV2::new(source)?;
+            let error = store
+                .ingest_bundle_v2(&request)
+                .expect_err("same logical key with different source must refuse before sealing");
+            assert_typed(
+                &error,
+                quanta_index_contract::SearchPlaneErrorCodeV2::CandidateCommitmentConflict,
+            );
+            return Ok(());
+        }
+        let request = RepoMapPublishBundleRequestV2::new(bundle(1, "g1"))?;
+        let replay = store.ingest_bundle_v2(&request)?;
+        assert!(replay.mutation.replayed);
+        return Ok(());
+    }
+
+    let dir = tempfile::tempdir()?;
+    let root = dir.path();
+    let (_catalog, store) = open_fixture(root)?;
+    let request = RepoMapPublishBundleRequestV2::new(bundle(1, "g1"))?;
+    let first = store.ingest_bundle_v2(&request)?;
+    assert!(!first.mutation.replayed);
+    drop(store);
+
+    for boundary in ["after-object-sync", "after-catalog-commit"] {
+        for substituted in [false, true] {
+            let mut child = Command::new(std::env::current_exe()?);
+            let _configured = child
+                .arg("--exact")
+                .arg("v2_ack_loss_replay_skips_object_and_catalog_seal")
+                .env(CRASH_ROOT_ENV, root)
+                .env(CRASH_BOUNDARY_ENV, boundary);
+            if substituted {
+                let _configured = child.env(REPLAY_SUBSTITUTE_ENV, "1");
+            }
+            let status = child.status()?;
+            assert!(
+                status.success(),
+                "V2 ACK-loss replay entered {boundary} (substituted={substituted}): {status}"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn v2_replay_refuses_corrupt_sealed_object() -> TestResult {
+    let fixture = fixture()?;
+    let request = RepoMapPublishBundleRequestV2::new(bundle(1, "g1"))?;
+    let _first = fixture.store.ingest_bundle_v2(&request)?;
+    let before = fixture
+        .catalog
+        .repomap_candidate_row("repo-p03", "rev-p03", 1)?
+        .expect("published candidate is durable");
+    let object_path = find_single_object(
+        &fixture
+            ._dir
+            .path()
+            .join("repo-map")
+            .join("objects")
+            .join("sha256"),
+    )?;
+    let _written = std::fs::write(&object_path, b"corrupt candidate")?;
+
+    let error = fixture
+        .store
+        .ingest_bundle_v2(&request)
+        .expect_err("replay must verify the sealed object");
+    assert_typed(
+        &error,
+        quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+    );
+    assert_eq!(
+        fixture
+            .catalog
+            .repomap_candidate_row("repo-p03", "rev-p03", 1)?
+            .expect("replay refusal preserves catalog row"),
+        before,
+    );
     Ok(())
 }
 
@@ -692,6 +782,15 @@ fn legacy_v1_root_refuses_mutation_typed_and_untouched() -> TestResult {
             quanta_index_contract::SearchPlaneErrorCodeV2::StateRootFormatUnsupported,
         );
     }
+    let v2_request = RepoMapPublishBundleRequestV2::new(bundle(1, "g1"))?;
+    let refused_v2 = store
+        .as_ref()
+        .ingest_bundle_v2(&v2_request)
+        .expect_err("V2 publish must refuse the legacy root before catalog mutation");
+    assert_typed(
+        &refused_v2,
+        quanta_index_contract::SearchPlaneErrorCodeV2::StateRootFormatUnsupported,
+    );
     let refused_activate = store.as_ref().activate_generation(&activate_request(1));
     assert!(refused_activate.is_err());
     if let Err(error) = refused_activate {

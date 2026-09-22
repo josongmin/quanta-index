@@ -549,6 +549,72 @@ impl RepoMapGenerationStore {
         }
         let meta =
             CandidateProjectionMetaV1::from_bundle_with_source_digest_v2(&request.bundle, computed);
+        let objects = self
+            .objects
+            .as_ref()
+            .ok_or_else(|| legacy_root_refusal(&self.root))?;
+        if let Some(existing) = self.catalog.repomap_candidate_row(
+            request.bundle.repo_id.as_str(),
+            request.bundle.revision_id.as_str(),
+            request.bundle.manifest_generation.get(),
+        )? {
+            // A terminal ACK may be lost after the catalog commit. Resolve an
+            // exact replay from durable custody before compilation or sealing;
+            // a different request for this logical key must not do work first.
+            if CandidateProjectionMetaV1::from_json(&existing.projection_meta)? != meta
+                || existing.projection_meta != meta.to_json()?
+            {
+                return Err(CoreError::Typed {
+                    code:
+                        quanta_index_contract::SearchPlaneErrorCodeV2::CandidateCommitmentConflict,
+                    message: format!(
+                        "repomap V2 ingest: durable candidate custody differs from replay request for repo={} revision={} generation={}",
+                        request.bundle.repo_id.as_str(),
+                        request.bundle.revision_id.as_str(),
+                        request.bundle.manifest_generation.get(),
+                    ),
+                });
+            }
+            let address =
+                quanta_index_contract::CandidateObjectDigestV1::from_bytes(existing.object_address);
+            let verified = objects
+                .verify(address, &existing.candidate_commitment)
+                .map_err(|failure| CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                    message: format!(
+                        "repomap V2 ingest: replay object failed verification: {}/{}",
+                        u64::from(failure.reason.code()),
+                        failure.detail,
+                    ),
+                })?;
+            if verified.logical_identity()
+                != &logical_identity(
+                    &request.bundle.repo_id,
+                    &request.bundle.revision_id,
+                    request.bundle.manifest_generation,
+                )
+                || verified.artifact().content_digest().as_bytes() != &existing.content_digest
+                || verified.artifact().byte_size() != existing.byte_size
+            {
+                return Err(CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                    message: "repomap V2 ingest: replay object custody differs from catalog row"
+                        .to_string(),
+                });
+            }
+            let replay = receipt(
+                None,
+                CandidateCommitmentV1::from_bytes(existing.candidate_commitment),
+                0,
+                existing.terminal_sequence,
+                true,
+            );
+            return Ok(terminal_publish_receipt_v2(
+                &request.bundle,
+                request.source_bundle_digest.clone(),
+                replay,
+            ));
+        }
         let receipt = self.ingest_bundle_with_meta_v2(&request.bundle, meta)?;
         self.validate_published_candidate_custody_v2(
             &request.bundle,

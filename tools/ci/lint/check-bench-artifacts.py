@@ -66,6 +66,18 @@ BASELINE_FAMILIES: tuple[tuple[str, str], ...] = (
     ("dsl-cold", "tools/benchmark/baselines/cold-matrix.json"),
 )
 
+# Named evidence sets prevent a small rail from accidentally becoming a proxy
+# for every benchmark family.  `--require --profile dsl-authority` is the
+# scheduled DSL gate; `quality-full` is the complete locally runnable quality
+# evidence set.  A caller that omits --profile retains the exhaustive audit.
+FAMILY_PROFILES: dict[str, tuple[str, ...]] = {
+    "dsl-authority": ("dsl-warm", "dsl-cold"),
+    "quality-core": ("relevance", "scale", "tail"),
+    "quality-full": ("relevance", "scale", "tail", "ann", "concurrency"),
+    "semantic-ab": ("relevance-openai-ab",),
+    "experiments": ("scan-vs-index",),
+}
+
 ENVELOPE_KEYS = (
     "schema_version",
     "dimension",
@@ -252,6 +264,15 @@ def check_families(
     return refusals, checked, absent
 
 
+def select_families(profile: str | None) -> tuple[tuple[str, str], ...]:
+    """Resolve an explicit evidence profile without changing family ownership."""
+    if profile is None:
+        return FRESH_FAMILIES
+    names = FAMILY_PROFILES[profile]
+    by_name = dict(FRESH_FAMILIES)
+    return tuple((name, by_name[name]) for name in names)
+
+
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
@@ -259,6 +280,11 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         type=Path,
         default=REPO_ROOT,
         help="checkout to gate (default: this script's repository)",
+    )
+    parser.add_argument(
+        "--profile",
+        choices=sorted(FAMILY_PROFILES),
+        help="require/check only one named evidence profile (default: every fresh family)",
     )
     parser.add_argument(
         "--head",
@@ -290,8 +316,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: --head {head!r} is not 40 lowercase hex characters", file=sys.stderr)
         return 2
 
+    fresh_families = select_families(args.profile)
     refusals, checked, absent = check_families(
-        repo_root, FRESH_FAMILIES, head=head, require=args.require
+        repo_root, fresh_families, head=head, require=args.require
     )
     if not args.skip_baselines:
         baseline_refusals, baseline_checked, baseline_absent = check_families(

@@ -2,8 +2,8 @@
 """Fail closed when executable test targets lack an authoritative CI rail.
 
 ``tools/ci/test-authority.toml`` is the machine-readable authority for Rust
-integration and cargo-fuzz targets.  This guard deliberately inventories only
-Cargo targets:
+integration, cargo-fuzz, and explicitly registered Python owner targets. Cargo
+targets are fully inventoried:
 
 * ``crates/*/tests/*.rs`` -- direct children are integration-test binaries;
   nested helpers such as ``tests/common/*.rs`` are modules, not targets.
@@ -14,6 +14,7 @@ The catalog must explicitly map every discovered target to an owner and a
 declared rail.  P0/P1 invariants additionally need positive, negative,
 recovery, and consumer proof targets.  The guard never infers a rail from a
 file name or accepts an unregistered target: both are correctness gaps.
+Python targets are opt-in owner files, not a repository-wide pytest inventory.
 """
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
 ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_CATALOG = ROOT / "tools" / "ci" / "test-authority.toml"
 SUPPORTED_TIERS = frozenset({"pr", "merge", "correctness", "nightly", "weekly"})
-SUPPORTED_TARGET_KINDS = frozenset({"integration", "fuzz"})
+SUPPORTED_TARGET_KINDS = frozenset({"integration", "fuzz", "python"})
 PROOF_ROLES = (
     "positive_target",
     "negative_target",
@@ -771,6 +772,150 @@ def _validate_local_scopes(
         visit(scope_name, ())
 
 
+def _python_command_selects_path(root: Path, command: str, path: str) -> bool:
+    if command.startswith("just "):
+        recipe = command.removeprefix("just ")
+        lines = (root / "Justfile").read_text(encoding="utf-8").splitlines()
+        header = re.compile(rf"^{re.escape(recipe)}(?:\s+[^:]*)?:\s*(?:#.*)?$")
+        body: list[str] = []
+        for index, line in enumerate(lines):
+            if header.fullmatch(line):
+                for candidate in lines[index + 1 :]:
+                    if candidate and not candidate[0].isspace():
+                        break
+                    body.append(candidate.strip())
+                break
+        commands = re.sub(r"\\\r?\n[ \t]*", " ", "\n".join(body)).splitlines()
+    else:
+        commands = [command]
+    for line in commands:
+        line = line.lstrip("@").strip()
+        if not line or line.startswith("#"):
+            continue
+        if any(operator in line for operator in ("||", "&&", ";", "|", "$(", "`")):
+            continue
+        try:
+            tokens = shlex.split(line)
+        except ValueError:
+            continue
+        if tokens[:3] != ["python3", "-m", "pytest"]:
+            continue
+        selectors = tokens[3:]
+        if any(
+            item in {"-k", "-m", "--ignore", "--deselect", "--collect-only"}
+            or item.startswith(("-k=", "-m=", "--ignore=", "--deselect="))
+            for item in selectors
+        ):
+            continue
+        if path in selectors:
+            return True
+    return False
+
+
+def _validate_python_targets(
+    *,
+    root: Path,
+    catalog: Path,
+    entries: list[dict[str, Any]],
+    rails: dict[str, dict[str, str]],
+    other_ids: set[str],
+    violations: list[Violation],
+) -> dict[str, str]:
+    targets: dict[str, str] = {}
+    paths: set[str] = set()
+    for index, entry in enumerate(entries):
+        prefix = f"python_targets[{index}]"
+        target_id = _string(
+            entry.get("id"), catalog=catalog, context=f"{prefix}.id", violations=violations
+        )
+        path = _relative_path(
+            entry.get("path"), catalog=catalog, field=f"{prefix}.path", violations=violations
+        )
+        owner = _relative_path(
+            entry.get("owner"), catalog=catalog, field=f"{prefix}.owner", violations=violations
+        )
+        rail = _string(
+            entry.get("rail"), catalog=catalog, context=f"{prefix}.rail", violations=violations
+        )
+        if target_id is None or path is None or owner is None or rail is None:
+            continue
+        if target_id in targets or target_id in other_ids:
+            violations.append(_violation(catalog, f"duplicate target id: {target_id}"))
+        if path in paths:
+            violations.append(_violation(catalog, f"duplicate catalog target path: {path}"))
+        paths.add(path)
+        if not path.startswith("tools/ci/tests/test_") or not path.endswith(".py"):
+            violations.append(
+                _violation(catalog, f"python target path is not a proof test: {path}")
+            )
+        if not (root / path).is_file():
+            violations.append(_violation(catalog, f"python target file does not exist: {path}"))
+        if not (root / owner).is_file():
+            violations.append(_violation(catalog, f"python target owner does not exist: {owner}"))
+        if rail not in rails:
+            violations.append(
+                _violation(catalog, f"python target {target_id} references unknown rail {rail}")
+            )
+        elif rails[rail]["target_kind"] != "python":
+            violations.append(
+                _violation(
+                    catalog,
+                    f"python target {target_id} has kind python but rail {rail} is {rails[rail]['target_kind']}",
+                )
+            )
+        else:
+            try:
+                selected = _python_command_selects_path(root, rails[rail]["command"], path)
+            except OSError as error:
+                violations.append(
+                    _violation(catalog, f"cannot inspect Python rail recipe: {error}")
+                )
+                selected = False
+            if not selected:
+                violations.append(
+                    _violation(catalog, f"python rail {rail} does not execute {path}")
+                )
+        targets[target_id] = path
+    return targets
+
+
+def _validate_python_scopes(
+    *,
+    data: dict[str, Any],
+    catalog: Path,
+    targets: dict[str, str],
+    violations: list[Violation],
+) -> None:
+    scopes = data.get("python_scopes", {})
+    if not isinstance(scopes, dict):
+        violations.append(_violation(catalog, "[python_scopes] must be a table"))
+        return
+    selected: set[str] = set()
+    for scope_id, scope in scopes.items():
+        if not isinstance(scope_id, str) or not scope_id or not isinstance(scope, dict):
+            violations.append(_violation(catalog, "each Python scope must be a non-empty table"))
+            continue
+        members = scope.get("targets")
+        if not isinstance(members, list) or not members:
+            violations.append(_violation(catalog, f"python scope {scope_id} requires targets"))
+            continue
+        if len(members) != len(set(str(item) for item in members)):
+            violations.append(_violation(catalog, f"python scope {scope_id} repeats a target"))
+        for target_id in members:
+            if not isinstance(target_id, str) or target_id not in targets:
+                violations.append(
+                    _violation(
+                        catalog, f"python scope {scope_id} names unknown python target {target_id}"
+                    )
+                )
+            else:
+                selected.add(target_id)
+    for target_id in sorted(targets.keys() - selected):
+        violations.append(
+            _violation(catalog, f"python target is not selected by any python scope: {target_id}")
+        )
+
+
 def _validate_invariants(
     *,
     root: Path,
@@ -986,6 +1131,20 @@ def audit_catalog(root: Path = ROOT, catalog: Path = DEFAULT_CATALOG) -> list[Vi
         violations=violations,
     )
     targets.update(fuzz_targets)
+    python_targets = _validate_python_targets(
+        root=root,
+        catalog=catalog,
+        entries=_table_array(data, "python_targets", catalog, violations),
+        rails=rails,
+        other_ids=set(targets),
+        violations=violations,
+    )
+    _validate_python_scopes(
+        data=data,
+        catalog=catalog,
+        targets=python_targets,
+        violations=violations,
+    )
     _validate_fuzz_manifest_bindings(
         root=root,
         catalog=catalog,

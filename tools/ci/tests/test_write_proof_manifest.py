@@ -507,6 +507,28 @@ def test_exact_pair_is_derived_from_live_external_checkout_without_persisting_pa
     jsonschema.Draft202012Validator(schema["properties"]["source_pair"]).validate(source_pair)
 
 
+def test_p12a_manifest_refuses_missing_pair_and_p11_dependency(
+    tmp_path: Path,
+    manifest_templates: ManifestTemplates,
+) -> None:
+    root, _ = _fixture_root(tmp_path, manifest_templates)
+    terminal_path, _ = _terminal(root)
+    kwargs = {
+        "root": root,
+        "registry_path": root / "tools/ci/proof-authority.toml",
+        "schema_path": root / "tools/ci/proof-manifest.schema.json",
+        "proof_id": "p12a-proof-infrastructure",
+        "terminal_input_path": terminal_path,
+    }
+    with pytest.raises(WRITER.ManifestRefused, match="requires a non-empty --paired-checkout"):
+        WRITER.publish_manifest(**kwargs, paired_checkout=None)
+
+    paired = _paired_checkout(tmp_path, manifest_templates)
+    with pytest.raises(WRITER.ManifestRefused, match="dependency p11-cross-repo-cutover"):
+        WRITER.publish_manifest(**kwargs, paired_checkout=paired)
+    assert not (root / "artifacts/proof-authority/p12a-proof-infrastructure.json").exists()
+
+
 def test_exact_pair_manifest_is_live_bound_through_atomic_writer(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

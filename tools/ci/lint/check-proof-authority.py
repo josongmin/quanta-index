@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import stat
 import subprocess
 import sys
@@ -140,6 +141,31 @@ def _just_recipe_body(root: Path, recipe: str) -> str | None:
     return None
 
 
+def _recipe_selects_python_target(body: str, path: str) -> bool:
+    for raw_line in re.sub(r"\\\r?\n[ \t]*", " ", body).splitlines():
+        line = raw_line.lstrip("@").strip()
+        if not line or line.startswith("#"):
+            continue
+        if any(operator in line for operator in ("||", "&&", ";", "|", "$(", "`")):
+            continue
+        try:
+            tokens = shlex.split(line)
+        except ValueError:
+            continue
+        if tokens[:3] != ["python3", "-m", "pytest"]:
+            continue
+        selectors = tokens[3:]
+        if any(
+            item in {"-k", "-m", "--ignore", "--deselect", "--collect-only"}
+            or item.startswith(("-k=", "-m=", "--ignore=", "--deselect="))
+            for item in selectors
+        ):
+            continue
+        if path in selectors:
+            return True
+    return False
+
+
 def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Finding]:
     findings: list[Finding] = []
     if data.get("schema") != 2:
@@ -169,12 +195,18 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
     test_authority_path = root / "tools/ci/test-authority.toml"
     try:
         test_authority = _read_toml(test_authority_path)
-        known_test_targets = {
+        known_rust_targets = {
             target.get("id")
             for section in ("integration_targets", "fuzz_targets")
             for target in test_authority.get(section, [])
             if isinstance(target, dict) and isinstance(target.get("id"), str)
         }
+        python_target_paths = {
+            target["id"]: target.get("path")
+            for target in test_authority.get("python_targets", [])
+            if isinstance(target, dict) and isinstance(target.get("id"), str)
+        }
+        known_test_targets = known_rust_targets | set(python_target_paths)
         target_owners = {
             target["id"]: target.get("owner")
             for target in test_authority.get("integration_targets", [])
@@ -183,11 +215,16 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
         local_scopes = test_authority.get("local_scopes", {})
         if not isinstance(local_scopes, dict):
             local_scopes = {}
+        python_scopes = test_authority.get("python_scopes", {})
+        if not isinstance(python_scopes, dict):
+            python_scopes = {}
     except (OSError, ValueError, tomllib.TOMLDecodeError) as error:
         findings.append(Finding(test_authority_path, f"cannot load test authority: {error}"))
         known_test_targets = set()
+        python_target_paths = {}
         target_owners = {}
         local_scopes = {}
+        python_scopes = {}
 
     def expand_scope(scope_id: str, active: set[str] | None = None) -> set[str]:
         active = set() if active is None else set(active)
@@ -298,6 +335,8 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
                         f"{where}.paired_dependency_lock must be {PAIRED_DEPENDENCY_LOCK!r}",
                     )
                 )
+        if proof_id == "p12a-proof-infrastructure" and source_binding != "exact-pair":
+            findings.append(Finding(path, "P12A requires exact-pair source binding"))
         binary_binding = proof.get("binary_binding")
         if isinstance(binary_binding, str) and binary_binding not in {"none", "release-daemon"}:
             findings.append(Finding(path, f"{where}.binary_binding {binary_binding!r} is invalid"))
@@ -356,6 +395,17 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
                 )
             if authority_state == "executable" and execution_mode == "test-authority":
                 scopes = proof.get("test_authority_scopes")
+                python_only = bool(test_targets) and all(
+                    target_id in python_target_paths for target_id in test_targets
+                )
+                if (
+                    any(target_id in python_target_paths for target_id in test_targets)
+                    and not python_only
+                ):
+                    findings.append(
+                        Finding(path, f"{where} cannot mix Python and Cargo test targets")
+                    )
+                selected_scopes = python_scopes if python_only else local_scopes
                 if (
                     not isinstance(scopes, list)
                     or not scopes
@@ -368,17 +418,26 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
                         )
                     )
                 else:
-                    unknown_scopes = set(scopes) - set(local_scopes)
+                    unknown_scopes = set(scopes) - set(selected_scopes)
                     if unknown_scopes:
                         findings.append(
                             Finding(
                                 path,
-                                f"{where} names unknown local scopes {sorted(unknown_scopes)}",
+                                f"{where} names unknown {'python' if python_only else 'local'} scopes {sorted(unknown_scopes)}",
                             )
                         )
                     expanded_targets: set[str] = set()
                     for scope in scopes:
-                        expanded_targets.update(expand_scope(scope))
+                        if python_only:
+                            selected = python_scopes.get(scope)
+                            if isinstance(selected, dict):
+                                expanded_targets.update(
+                                    target
+                                    for target in selected.get("targets", [])
+                                    if isinstance(target, str)
+                                )
+                        else:
+                            expanded_targets.update(expand_scope(scope))
                     uncovered = set(test_targets) - expanded_targets
                     if uncovered:
                         findings.append(
@@ -395,6 +454,12 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
                     else None
                 )
                 if profile_match is not None:
+                    if python_only:
+                        findings.append(
+                            Finding(
+                                path, f"{where} Python targets require a dedicated proof recipe"
+                            )
+                        )
                     command_profile = profile_match.group(1)
                     expected_scope = command_profile.removeprefix("test-")
                     if profile != command_profile:
@@ -427,24 +492,41 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
                             )
                         )
                     elif isinstance(scopes, list):
-                        missing_scope_calls = [
-                            scope
-                            for scope in scopes
-                            if not any(
-                                re.fullmatch(
-                                    rf"@?just rust-profile test-{re.escape(scope)}",
-                                    line,
+                        if python_only:
+                            missing_targets = [
+                                target_id
+                                for target_id in test_targets
+                                if not isinstance(python_target_paths.get(target_id), str)
+                                or not _recipe_selects_python_target(
+                                    recipe_body, python_target_paths[target_id]
                                 )
-                                for line in recipe_body.splitlines()
-                            )
-                        ]
-                        if missing_scope_calls:
-                            findings.append(
-                                Finding(
-                                    path,
-                                    f"{where} dedicated proof recipe does not execute scopes {missing_scope_calls}",
+                            ]
+                            if missing_targets:
+                                findings.append(
+                                    Finding(
+                                        path,
+                                        f"{where} dedicated proof recipe does not execute Python targets {missing_targets}",
+                                    )
                                 )
-                            )
+                        else:
+                            missing_scope_calls = [
+                                scope
+                                for scope in scopes
+                                if not any(
+                                    re.fullmatch(
+                                        rf"@?just rust-profile test-{re.escape(scope)}",
+                                        line,
+                                    )
+                                    for line in recipe_body.splitlines()
+                                )
+                            ]
+                            if missing_scope_calls:
+                                findings.append(
+                                    Finding(
+                                        path,
+                                        f"{where} dedicated proof recipe does not execute scopes {missing_scope_calls}",
+                                    )
+                                )
             if execution_mode in {"non-test-assertion", "aggregate"} and test_targets:
                 findings.append(
                     Finding(path, f"{where} {execution_mode} proof cannot name test targets")

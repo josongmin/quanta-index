@@ -10,6 +10,7 @@ The gate refuses stale, unattributed and old-schema benchmark artifacts:
 6. missing envelope / provenance / host / resource / phase / row fields are named
 7. absence passes by default and fails under --require
 8. the CLI exits 0 / 1 / 2 as documented
+9. named profiles require only their explicit artifact families
 """
 
 from __future__ import annotations
@@ -162,6 +163,26 @@ def test_absence_passes_by_default_and_fails_under_require(tmp_path: Path) -> No
     assert set(absent) == {name for name, _ in MODULE.FRESH_FAMILIES}
     refusals, _, _ = MODULE.check_families(tmp_path, MODULE.FRESH_FAMILIES, head=HEAD, require=True)
     assert len(refusals) == len(MODULE.FRESH_FAMILIES)
+
+
+def test_named_profile_scopes_required_evidence(tmp_path: Path, capsys) -> None:
+    write(tmp_path / "artifacts/dsl-bench/warm-matrix.json", artifact())
+    write(tmp_path / "artifacts/dsl-bench/cold-matrix.json", artifact("dsl-cold"))
+    assert MODULE.main(
+        [
+            "--repo-root",
+            str(tmp_path),
+            "--head",
+            HEAD,
+            "--profile",
+            "dsl-authority",
+            "--require",
+            "--skip-baselines",
+        ]
+    ) == 0
+    out = capsys.readouterr().out
+    assert "checked artifacts/dsl-bench/warm-matrix.json" in out
+    assert "absent  scale" not in out
 
 
 def test_the_cli_walks_fresh_families_and_baselines(tmp_path: Path, capsys) -> None:

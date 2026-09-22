@@ -160,15 +160,18 @@ def _build_fixture_root(tmp_path: Path, *, executable: bool) -> tuple[Path, dict
         )
         proof_recipes = []
         for proof in registry["proofs"]:
-            if proof["authority_state"] != "executable" or proof["execution_mode"] != "test-authority":
+            if (
+                proof["authority_state"] != "executable"
+                or proof["execution_mode"] != "test-authority"
+            ):
                 continue
             recipe = proof["command"].removeprefix("just ")
-            proof_recipes.append(
-                f"{recipe}:\n    @just rust-profile test-fixture-all\n"
-            )
+            proof_recipes.append(f"{recipe}:\n    @just rust-profile test-fixture-all\n")
         (root / "Justfile").write_text("\n".join(proof_recipes), encoding="utf-8")
     else:
-        shutil.copyfile(REPO_ROOT / "tools/ci/test-authority.toml", root / "tools/ci/test-authority.toml")
+        shutil.copyfile(
+            REPO_ROOT / "tools/ci/test-authority.toml", root / "tools/ci/test-authority.toml"
+        )
         shutil.copyfile(REPO_ROOT / "Justfile", root / "Justfile")
     for proof in registry["proofs"]:
         owner = root / proof["owner"]
@@ -371,6 +374,7 @@ def test_writer_publishes_truthful_not_ready_diagnostic_for_staged_graph(
     # P01A is now executable, so absent execution is NOT_RUN rather than a
     # staged-contract BLOCKED state. Neither state can qualify the aggregate.
     assert statuses["p01-canonical-identity"] == "NOT_RUN"
+    assert statuses["p12a-proof-infrastructure"] == "NOT_RUN"
     assert payload["verdicts"]["DEPLOYED"]["status"] == "BLOCKED"
     assert payload["registry_sha256"] == WRITER._sha256(root / "tools/ci/proof-authority.toml")
     assert registry["aggregate"]["artifact"] == output.relative_to(root).as_posix()
@@ -447,6 +451,30 @@ def test_writer_derives_ready_receipt_from_full_valid_closure(
     }
     assert payload["release_host"]["profile"] == "linux-production-like"
     assert payload["state_root_format"] == "v2"
+
+
+def test_writer_refuses_stale_p12a_exact_pair_after_paired_source_change(
+    tmp_path: Path,
+    aggregate_templates: AggregateTemplates,
+) -> None:
+    root, registry = _fixture_root(tmp_path, executable=True, templates=aggregate_templates)
+    paired = _paired_checkout(tmp_path, aggregate_templates)
+    _write_dependency_manifests(root, registry, paired)
+    (paired / "Cargo.lock").write_text(
+        "version = 4\n# changed after P12A proof\n", encoding="utf-8"
+    )
+
+    output, _, ready = WRITER.publish_aggregate(
+        root=root,
+        registry_path=root / "tools/ci/proof-authority.toml",
+        paired_checkout=paired,
+    )
+
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    statuses = {item["proof_id"]: item["status"] for item in payload["dependency_receipts"]}
+    assert not ready
+    assert statuses["p12a-proof-infrastructure"] == "FAILED"
+    assert payload["production_ready"] is False
 
 
 def test_aggregate_validation_refuses_source_change_during_cached_pass(

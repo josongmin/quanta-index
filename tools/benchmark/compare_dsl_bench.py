@@ -35,8 +35,9 @@ relative swings; we only care about meaningful regressions, so a delta must
 exceed *both* ``--rel-threshold`` and ``--abs-threshold-ms`` to count.
 
 Rows carrying ``early_stop_reason`` (e.g. ``fixture_not_seeded``) were never
-measured — their latency is null. Such rows are skipped entirely: never
-compared, never failed.
+measured — their latency is null. An authority comparison fails closed on such
+a current row (and refuses a baseline containing one): a missing measurement
+is not evidence that latency did not regress.
 """
 
 from __future__ import annotations
@@ -71,6 +72,9 @@ class ScenarioRow:
     latency_p99_ms: float | None
     early_stop_reason: str | None
     samples: int
+    error_count: int
+    timeout_count: int
+    typed_error_code: str | None
 
 
 @dataclass(frozen=True)
@@ -83,6 +87,12 @@ class Artifact:
 
 class ArtifactRefused(Exception):
     """The artifact is not one this gate can compare."""
+
+
+def require(condition: bool, message: str) -> None:
+    """Refuse malformed benchmark input before deriving a verdict from it."""
+    if not condition:
+        raise ArtifactRefused(message)
 
 
 def parse_args() -> argparse.Namespace:
@@ -142,7 +152,23 @@ def resolve_head(explicit: str | None) -> str:
 
 def _optional_float(row: dict, key: str) -> float | None:
     value = row.get(key)
-    return None if value is None else float(value)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ArtifactRefused(f"latency.{key} is not a finite number or null")
+    value = float(value)
+    if value < 0 or value == float("inf") or value != value:
+        raise ArtifactRefused(f"latency.{key} is not a finite non-negative number")
+    return value
+
+
+def _required_samples(latency: dict, *, role: str, path: Path, index: int) -> int:
+    samples = latency.get("samples")
+    if not isinstance(samples, int) or isinstance(samples, bool) or samples < 1:
+        raise ArtifactRefused(
+            f"{role} {path} rows[{index}] is measured but latency.samples is not a positive integer"
+        )
+    return samples
 
 
 def load_artifact(path: Path, *, role: str) -> Artifact:
@@ -169,12 +195,62 @@ def load_artifact(path: Path, *, role: str) -> Artifact:
     mode = payload.get("mode")
     if mode not in ("warm", "cold"):
         raise ArtifactRefused(f"{role} {path} mode {mode!r} is not warm or cold")
+    expected_dimension = f"dsl-{mode}"
+    if payload.get("dimension") != expected_dimension:
+        raise ArtifactRefused(
+            f"{role} {path} dimension {payload.get('dimension')!r} is not {expected_dimension!r}"
+        )
+    raw_rows = payload.get("rows")
+    if not isinstance(raw_rows, list) or not raw_rows:
+        raise ArtifactRefused(f"{role} {path} has no benchmark rows")
     rows: dict[str, ScenarioRow] = {}
-    for row in payload.get("rows", []):
-        scenario_id = row["scenario_id"]
+    for index, row in enumerate(raw_rows):
+        if not isinstance(row, dict):
+            raise ArtifactRefused(f"{role} {path} rows[{index}] is not an object")
+        scenario_id = row.get("scenario_id")
+        if not isinstance(scenario_id, str) or not scenario_id:
+            raise ArtifactRefused(f"{role} {path} rows[{index}] has no scenario_id")
+        if scenario_id in rows:
+            raise ArtifactRefused(f"{role} {path} repeats scenario_id {scenario_id!r}")
         latency = row.get("latency")
+        if latency is not None and not isinstance(latency, dict):
+            raise ArtifactRefused(f"{role} {path} rows[{index}].latency is not an object or null")
         if latency is None:
             latency = {}
+        for key in ("route_family", "syntax", "result_shape"):
+            require(
+                isinstance(row.get(key), str) and bool(row[key]),
+                f"{role} {path} rows[{index}] has invalid {key}",
+            )
+        early_stop_reason = row.get("early_stop_reason")
+        if early_stop_reason is not None and not isinstance(early_stop_reason, str):
+            raise ArtifactRefused(f"{role} {path} rows[{index}].early_stop_reason is not a string or null")
+        error_count = row.get("error_count")
+        timeout_count = row.get("timeout_count")
+        if not isinstance(error_count, int) or isinstance(error_count, bool) or error_count < 0:
+            raise ArtifactRefused(f"{role} {path} rows[{index}].error_count is not a non-negative integer")
+        if not isinstance(timeout_count, int) or isinstance(timeout_count, bool) or timeout_count < 0:
+            raise ArtifactRefused(f"{role} {path} rows[{index}].timeout_count is not a non-negative integer")
+        typed_error_code = row.get("typed_error_code")
+        if typed_error_code is not None and (
+            not isinstance(typed_error_code, str) or not typed_error_code
+        ):
+            raise ArtifactRefused(
+                f"{role} {path} rows[{index}].typed_error_code is not a non-empty string or null"
+            )
+        if early_stop_reason is None:
+            for key in ("p50_ms", "p95_ms", "p99_ms", "samples"):
+                if key not in latency:
+                    raise ArtifactRefused(
+                        f"{role} {path} rows[{index}] is measured but latency.{key} is missing"
+                    )
+            samples = _required_samples(latency, role=role, path=path, index=index)
+        else:
+            if row.get("latency") is not None:
+                raise ArtifactRefused(
+                    f"{role} {path} rows[{index}] has early_stop_reason but non-null latency"
+                )
+            samples = 0
         rows[scenario_id] = ScenarioRow(
             scenario_id=scenario_id,
             route_family=row["route_family"],
@@ -183,14 +259,23 @@ def load_artifact(path: Path, *, role: str) -> Artifact:
             latency_p50_ms=_optional_float(latency, "p50_ms"),
             latency_p95_ms=_optional_float(latency, "p95_ms"),
             latency_p99_ms=_optional_float(latency, "p99_ms"),
-            early_stop_reason=row.get("early_stop_reason"),
-            samples=int(latency.get("samples", 0)),
+            early_stop_reason=early_stop_reason,
+            samples=samples,
+            error_count=error_count,
+            timeout_count=timeout_count,
+            typed_error_code=typed_error_code,
         )
     return Artifact(mode=mode, git_head=git_head, config_digest=config_digest, rows=rows)
 
 
 def is_measured(row: ScenarioRow) -> bool:
-    return row.early_stop_reason is None and row.latency_p95_ms is not None
+    return (
+        row.early_stop_reason is None
+        and row.latency_p50_ms is not None
+        and row.latency_p95_ms is not None
+        and row.latency_p99_ms is not None
+        and row.samples > 0
+    )
 
 
 def metric_value(row: ScenarioRow, metric: str) -> float | None:
@@ -220,6 +305,38 @@ def gate_provenance(baseline: Artifact, current: Artifact, head: str) -> None:
             f"{baseline.config_digest} vs current {current.config_digest}; "
             "a comparison across different run configurations is not a regression signal"
         )
+    for scenario_id, row in baseline.rows.items():
+        if not is_measured(row):
+            raise ArtifactRefused(
+                f"baseline scenario {scenario_id!r} is unmeasured; recapture a complete baseline"
+            )
+    for scenario_id in sorted(set(baseline.rows) & set(current.rows)):
+        base = baseline.rows[scenario_id]
+        cur = current.rows[scenario_id]
+        for field in (
+            "route_family",
+            "syntax",
+            "result_shape",
+            "typed_error_code",
+            "error_count",
+            "timeout_count",
+        ):
+            if getattr(base, field) != getattr(cur, field):
+                raise ArtifactRefused(
+                    f"scenario {scenario_id!r} changed {field}: "
+                    f"baseline={getattr(base, field)!r} current={getattr(cur, field)!r}; "
+                    "recapture a reviewed baseline after confirming semantic equivalence"
+                )
+
+
+def require_complete_baseline_candidate(artifact: Artifact) -> None:
+    """A baseline must ratchet every declared scenario, not preserve gaps."""
+    for scenario_id, row in artifact.rows.items():
+        if not is_measured(row):
+            raise ArtifactRefused(
+                f"baseline candidate scenario {scenario_id!r} is unmeasured; "
+                "repair the fixture before accepting a baseline"
+            )
 
 
 def main() -> int:
@@ -234,6 +351,7 @@ def main() -> int:
                 "stale artifact, re-run the rail at HEAD"
             )
         if args.update_baseline:
+            require_complete_baseline_candidate(current)
             args.baseline.parent.mkdir(parents=True, exist_ok=True)
             args.baseline.write_text(
                 args.current.read_text(encoding="utf-8"),
@@ -265,6 +383,8 @@ def main() -> int:
 
     regressed: list[tuple[str, float, float, float, float]] = []
     missing_measured: list[str] = []
+    unmeasured_current: list[tuple[str, str]] = []
+    new_scenarios: list[str] = []
     insufficient_samples: list[tuple[str, str, int, int]] = []
     advisories: list[tuple[str, str, float, float, float, float]] = []
 
@@ -281,9 +401,10 @@ def main() -> int:
         cur = current.rows.get(scenario_id)
 
         if base is None:
-            # New scenario: present in current, absent from baseline. Never fails.
-            note = "skipped" if cur is not None and not is_measured(cur) else "NEW"
-            print(f"{scenario_id:40s} {'--':>10s} {'--':>10s} {'--':>10s} {note:>8s}")
+            # A new scenario has no ratchet reference. It must be explicitly
+            # admitted by a reviewed baseline update, never silently pass.
+            new_scenarios.append(scenario_id)
+            print(f"{scenario_id:40s} {'--':>10s} {'--':>10s} {'--':>10s} {'NEW':>8s}")
             continue
 
         if cur is None:
@@ -296,9 +417,10 @@ def main() -> int:
             print(f"{scenario_id:40s} {'--':>10s} {'--':>10s} {'--':>10s} {'gone':>8s}{marker}")
             continue
 
-        if not is_measured(base) or not is_measured(cur):
-            reason = cur.early_stop_reason or base.early_stop_reason or "unmeasured"
-            print(f"{scenario_id:40s} {'--':>10s} {'--':>10s} {'--':>10s} {'skip':>8s}  ({reason})")
+        if not is_measured(cur):
+            reason = cur.early_stop_reason or "incomplete latency row"
+            unmeasured_current.append((scenario_id, reason))
+            print(f"{scenario_id:40s} {'--':>10s} {'--':>10s} {'--':>10s} {'INVALID':>8s}  ({reason})")
             continue
 
         min_samples = MIN_SAMPLES_FOR_P95.get(mode)
@@ -378,6 +500,18 @@ def main() -> int:
         if not args.allow_missing:
             failures += len(missing_measured)
 
+    if new_scenarios:
+        print()
+        for scenario_id in new_scenarios:
+            print(f"NEW: scenario {scenario_id!r} has no reviewed baseline")
+        failures += len(new_scenarios)
+
+    if unmeasured_current:
+        print()
+        for scenario_id, reason in unmeasured_current:
+            print(f"INVALID: scenario {scenario_id!r} was not measured ({reason})")
+        failures += len(unmeasured_current)
+
     if insufficient_samples:
         print()
         for scenario_id, row_mode, base_samples, cur_samples in insufficient_samples:
@@ -392,11 +526,17 @@ def main() -> int:
     if failures:
         regressed_n = len(regressed)
         missing_n = len(missing_measured) if not args.allow_missing else 0
+        new_n = len(new_scenarios)
+        unmeasured_n = len(unmeasured_current)
         parts = []
         if regressed_n:
             parts.append(f"{regressed_n} regressed")
         if missing_n:
             parts.append(f"{missing_n} missing")
+        if new_n:
+            parts.append(f"{new_n} new without baseline")
+        if unmeasured_n:
+            parts.append(f"{unmeasured_n} unmeasured")
         print(
             f"FAIL: {', '.join(parts)} scenario(s) over thresholds "
             f"({blocking_metric} rel > {rel_threshold * 100:.0f}% AND abs > {abs_threshold_ms:.2f}ms)."

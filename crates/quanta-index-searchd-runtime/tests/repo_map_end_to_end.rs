@@ -28,11 +28,12 @@ use std::time::{Duration, Instant};
 
 use quanta_index_contract::lex::{LanguageCode, SymbolKindCode};
 use quanta_index_contract::{
-    FileId, ManifestGeneration, RepoId, RepoMapActivateGenerationRequest, RepoMapChunkExactness,
+    FileId, ManifestGeneration, RepoId, RepoMapActivateGenerationRequestV2, RepoMapChunkExactness,
     RepoMapContainsEdge, RepoMapDocType, RepoMapExactnessSummary, RepoMapFocusSubjectDto,
-    RepoMapGraphCoverage, RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapNode,
-    RepoMapNodeRef, RepoMapOwnsChunkEdge, RepoMapQueryRequest, RepoMapRedactionState,
-    RepoMapSourceBundle, RepoRelativePath, RevisionId, SearchPlaneControlIpcRequest,
+    RepoMapGraphCoverage, RepoMapGraphCoverageClass, RepoMapItemIndexAvailability,
+    RepoMapMutationPhaseV2, RepoMapNode, RepoMapNodeRef, RepoMapOwnsChunkEdge,
+    RepoMapPublishBundleRequestV2, RepoMapQueryRequest, RepoMapRedactionState, RepoMapSourceBundle,
+    RepoRelativePath, RevisionId, SearchPlaneControlIpcRequest,
     SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponse,
     SearchPlaneControlIpcResponseEnvelope, SearchPlaneIngestIpcRequest,
     SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
@@ -323,18 +324,6 @@ fn repo_map_ingest_envelope() -> Result<SearchPlaneIngestIpcRequestEnvelope, Box
     })
 }
 
-fn repo_map_activate_request() -> SearchPlaneControlIpcRequestEnvelope {
-    SearchPlaneControlIpcRequestEnvelope {
-        request_id: 76,
-        payload: SearchPlaneControlIpcRequest::RepoMapActivate(RepoMapActivateGenerationRequest {
-            repo_id: repo(),
-            revision_id: revision(),
-            manifest_generation: generation(),
-            manifest_digest: "1".repeat(64),
-        }),
-    }
-}
-
 fn assert_repo_map_transport_surface(
     repo_map: &quanta_index_contract::RepoMapQueryResponse,
 ) -> TestResult {
@@ -378,26 +367,78 @@ fn repo_map_query_roundtrip_through_searchd_socket() -> TestResult {
         drop(join.join());
         return Err("ingest socket never appeared".into());
     }
-    // QI-INT-01: RepoMap bundle ingest now goes via the ingest socket.
-    let ingest = send_ingest_request(&ingest_socket, &repo_map_ingest_envelope()?)
+    let source = repo_map_bundle()?;
+    let publish_request = RepoMapPublishBundleRequestV2::new(source.clone())?;
+    let publish_envelope = SearchPlaneIngestIpcRequestEnvelope {
+        request_id: 75,
+        payload: SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(publish_request.clone()),
+    };
+    let ingest = send_ingest_request(&ingest_socket, &publish_envelope)
         .map_err(|err| format!("repo-map ingest request failed: {err}"))?;
-    if !matches!(
-        ingest.payload,
-        SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
-    ) {
+    let publish = match ingest.payload {
+        SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(receipt)
+            if receipt.phase == RepoMapMutationPhaseV2::Publish
+                && !receipt.mutation.replayed
+                && receipt.source_bundle_digest == publish_request.source_bundle_digest =>
+        {
+            receipt
+        }
+        other => {
+            shutdown.store(true, Ordering::Release);
+            drop(join.join());
+            return Err(format!("repo-map V2 publish did not ack: {other:?}").into());
+        }
+    };
+    let replay = send_ingest_request(&ingest_socket, &publish_envelope)
+        .map_err(|err| format!("repo-map V2 replay request failed: {err}"))?;
+    let mut expected_replay = publish.clone();
+    expected_replay.mutation.replayed = true;
+    if replay.payload != SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(expected_replay) {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
-        return Err("repo-map ingest did not ack".into());
+        return Err(format!("repo-map V2 replay changed the terminal receipt: {replay:?}").into());
     }
-    let activate = send_control_request(&control_socket, &repo_map_activate_request())
-        .map_err(|err| format!("repo-map activate request failed: {err}"))?;
+
+    let mut substituted = source.clone();
+    substituted.snapshot_id.push_str("-foreign");
+    let refusal = send_ingest_request(
+        &ingest_socket,
+        &SearchPlaneIngestIpcRequestEnvelope {
+            request_id: 76,
+            payload: SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(
+                RepoMapPublishBundleRequestV2::new(substituted)?,
+            ),
+        },
+    )?;
     if !matches!(
-        activate.payload,
-        SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
+        refusal.payload,
+        SearchPlaneIngestIpcResponse::Error(ref error)
+            if error.code == quanta_index_contract::SearchPlaneErrorCodeV2::CandidateCommitmentConflict
     ) {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
-        return Err("repo-map activate did not ack".into());
+        return Err(format!("repo-map V2 substituted source was not refused: {refusal:?}").into());
+    }
+
+    let activate = send_control_request(
+        &control_socket,
+        &SearchPlaneControlIpcRequestEnvelope {
+            request_id: 77,
+            payload: SearchPlaneControlIpcRequest::RepoMapActivateV2(
+                RepoMapActivateGenerationRequestV2::for_bundle(&source)?,
+            ),
+        },
+    )
+    .map_err(|err| format!("repo-map activate request failed: {err}"))?;
+    if !matches!(activate.payload,
+        SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(ref receipt)
+            if receipt.phase == RepoMapMutationPhaseV2::Activate
+                && receipt.source_bundle_digest == publish.source_bundle_digest
+                && receipt.mutation.new_candidate_commitment == publish.mutation.new_candidate_commitment
+    ) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!("repo-map V2 activate did not bind publish: {activate:?}").into());
     }
     if !wait_until(READINESS_TIMEOUT, || {
         send_query_request(&query_socket, &repo_map_request())
@@ -465,26 +506,47 @@ fn repo_map_query_survives_runtime_restart_from_persisted_state() -> TestResult 
         drop(join.join());
         return Err("ingest socket never appeared".into());
     }
-    let ingest = send_ingest_request(&ingest_socket, &repo_map_ingest_envelope()?)
+    let source = repo_map_bundle()?;
+    let publish_request = RepoMapPublishBundleRequestV2::new(source.clone())?;
+    let publish_envelope = SearchPlaneIngestIpcRequestEnvelope {
+        request_id: 75,
+        payload: SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(publish_request),
+    };
+    let ingest = send_ingest_request(&ingest_socket, &publish_envelope)
         .map_err(|err| format!("repo-map ingest request failed: {err}"))?;
-    if !matches!(
-        ingest.payload,
-        SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
-    ) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err("repo-map ingest did not ack".into());
-    }
-    let activate = send_control_request(&control_socket, &repo_map_activate_request())
+    let publish = match ingest.payload {
+        SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(receipt)
+            if receipt.phase == RepoMapMutationPhaseV2::Publish && !receipt.mutation.replayed =>
+        {
+            receipt
+        }
+        other => {
+            shutdown.store(true, Ordering::Release);
+            drop(join.join());
+            return Err(format!("repo-map V2 seed publish failed: {other:?}").into());
+        }
+    };
+    let activate_envelope = SearchPlaneControlIpcRequestEnvelope {
+        request_id: 76,
+        payload: SearchPlaneControlIpcRequest::RepoMapActivateV2(
+            RepoMapActivateGenerationRequestV2::for_bundle(&source)?,
+        ),
+    };
+    let activate = send_control_request(&control_socket, &activate_envelope)
         .map_err(|err| format!("repo-map activate request failed: {err}"))?;
-    if !matches!(
-        activate.payload,
-        SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
-    ) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err("repo-map activate did not ack".into());
-    }
+    let activation = match activate.payload {
+        SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(receipt)
+            if receipt.phase == RepoMapMutationPhaseV2::Activate
+                && receipt.source_bundle_digest == publish.source_bundle_digest =>
+        {
+            receipt
+        }
+        other => {
+            shutdown.store(true, Ordering::Release);
+            drop(join.join());
+            return Err(format!("repo-map V2 seed activation failed: {other:?}").into());
+        }
+    };
 
     shutdown.store(true, Ordering::Release);
     match join.join() {
@@ -496,6 +558,8 @@ fn repo_map_query_survives_runtime_restart_from_persisted_state() -> TestResult 
     let config = build_config(state_root);
     let runtime = build_runtime(config)?;
     let query_socket = runtime.query_server.socket_path().to_path_buf();
+    let control_socket = runtime.control_server.socket_path().to_path_buf();
+    let ingest_socket = runtime.ingest_server.socket_path().to_path_buf();
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_for_drive = Arc::clone(&shutdown);
     let join = thread::Builder::new()
@@ -506,6 +570,35 @@ fn repo_map_query_survives_runtime_restart_from_persisted_state() -> TestResult 
         shutdown.store(true, Ordering::Release);
         drop(join.join());
         return Err("socket never appeared after restart".into());
+    }
+    if !wait_until(Duration::from_secs(2), || {
+        control_socket.exists() && ingest_socket.exists()
+    }) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("repo-map V2 mutation sockets never appeared after restart".into());
+    }
+    let replay = send_ingest_request(&ingest_socket, &publish_envelope)?;
+    let mut expected_publish_replay = publish;
+    expected_publish_replay.mutation.replayed = true;
+    if replay.payload
+        != SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(expected_publish_replay)
+    {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!("repo-map V2 restart publish replay drifted: {replay:?}").into());
+    }
+    let activate_replay = send_control_request(&control_socket, &activate_envelope)?;
+    let mut expected_activation_replay = activation;
+    expected_activation_replay.mutation.replayed = true;
+    if activate_replay.payload
+        != SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(expected_activation_replay)
+    {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(
+            format!("repo-map V2 restart activation replay drifted: {activate_replay:?}").into(),
+        );
     }
     if !wait_until(READINESS_TIMEOUT, || {
         send_query_request(&query_socket, &repo_map_request())

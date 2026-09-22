@@ -451,18 +451,11 @@ jobs:
             --minimum-percent 90
 
   dsl-bench-latency:
-    name: dsl-bench-latency (Layer-3 regression gate, report-only)
-    # RFC-DSL-Benchmarking Phase B. Latency baselines are machine-specific
-    # (the RFC mandates "same machine"), so the committed baselines under
-    # tools/benchmark/baselines/ are dev-captured references. This job runs on
-    # schedule / manual dispatch only — never on pull_request — and is wired
-    # report-only via `continue-on-error`. To promote it to a hard blocking
-    # gate: recapture the baselines ON this runner (a workflow_dispatch run +
-    # `compare_dsl_bench.py --update-baseline`, commit the result), then drop
-    # the `continue-on-error` line below.
+    name: dsl-bench-latency (Layer-3 authority gate)
+    # This gate deliberately fails until committed baselines are captured on
+    # this runner class. Report-only latency output is not a regression gate.
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.proof_bundle_run_id == '')
     runs-on: ubuntu-latest
-    continue-on-error: true
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -476,18 +469,17 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Warm matrix (criterion + p50/p95/p99 artifact)
-        run: |
-          mkdir -p artifacts/dsl-bench
-          DSL_BENCH_WARM_SAMPLES=50 \
-          DSL_BENCH_WARM_OUT="$PWD/artifacts/dsl-bench/warm-matrix.json" \
-          ./scripts/cargow bench -p quanta-index-searchd-runtime --bench dsl_query_matrix --all-features --locked
+      - name: Install just
+        uses: taiki-e/install-action@just
 
-      - name: Fresh artifacts are attributed to this HEAD
-        run: python3 tools/ci/lint/check-bench-artifacts.py --skip-baselines
+      - name: Warm matrix (authority producer)
+        run: just rust-bench-dsl-warm
 
-      - name: Cold matrix (fresh-process-per-sample)
-        run: python3 tools/benchmark/run_dsl_cold_matrix.py --samples 10 --out artifacts/dsl-bench/cold-matrix.json
+      - name: Cold matrix (fresh process, 20 samples per measured scenario)
+        run: just rust-bench-dsl-cold 20
+
+      - name: Require current-source DSL evidence
+        run: python3 tools/ci/lint/check-bench-artifacts.py --profile dsl-authority --require --skip-baselines
 
       - name: Compare warm vs baseline
         run: python3 tools/benchmark/compare_dsl_bench.py tools/benchmark/baselines/warm-matrix.json artifacts/dsl-bench/warm-matrix.json

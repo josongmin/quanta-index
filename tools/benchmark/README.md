@@ -13,6 +13,10 @@ the gate below refuses them, and a stale baseline cannot be migrated into an
 attributed one. `just rust-bench-dsl-compare` fails typed until
 `--update-baseline` records one at `HEAD`.
 
+`--update-baseline` is deliberately fail-closed: every scenario must have a
+real latency row. It cannot turn an `early_stop_reason` fixture gap into a
+committed ratchet reference.
+
 ## Artifact schema (the contract): `BenchArtifactV1`
 
 Every benchmark and relevance artifact — the DSL warm/cold matrices, the
@@ -80,8 +84,8 @@ host it came from is not evidence, so the envelope is:
   rail that wrote an index.
 - `rows` carry p50/p95/p99, `qps` (the concurrency rail), and error / timeout
   counts. A row with `early_stop_reason` set was **not measured**: its
-  `latency` is null and the comparator skips it — never compares, never
-  fails on it.
+  `latency` is null. A baseline containing one is refused and a current one
+  fails the comparison; absent measurement is never a zero-regression result.
 - `detail` is the dimension's own shape (tier manifest, per-route budgets,
   judged queries, per-client-count tallies).
 
@@ -150,6 +154,9 @@ just rust-bench-dsl-warm-criterion  # exploratory criterion view -> warm-matrix.
 just rust-bench-dsl-cold 20     # cold matrix (20 samples/scenario) -> cold-matrix.json
 just rust-bench-dsl-refresh 20  # warm -> cold -> compare, serialized authority run
 just rust-bench-dsl-compare     # gate both matrices against tools/benchmark/baselines/
+python3 tools/ci/lint/check-bench-artifacts.py --profile dsl-authority --require --skip-baselines
+python3 tools/benchmark/benchctl.py list  # list producer/validator authority profiles
+python3 tools/benchmark/benchctl.py run dsl-authority  # serially produce, then validate
 just rust-verify-quality-concurrency  # 1/8/32 clients + slow client -> concurrency/latest/summary-c*.json
 ```
 

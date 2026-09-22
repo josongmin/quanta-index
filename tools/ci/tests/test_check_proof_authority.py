@@ -1011,6 +1011,71 @@ def test_executable_dedicated_proof_requires_existing_scope_bound_recipe() -> No
     assert any("dedicated proof recipe does not exist" in message for message in messages)
 
 
+def test_p12a_python_owner_is_registered_and_source_bound() -> None:
+    registry = MODULE._read_toml(REGISTRY_PATH)
+    proof = next(
+        proof for proof in registry["proofs"] if proof["id"] == "p12a-proof-infrastructure"
+    )
+    assert proof["authority_state"] == "executable"
+    assert proof["source_binding"] == "exact-pair"
+    assert proof["dependencies"] == ["p11-cross-repo-cutover"]
+    assert proof["test_authority_targets"] == ["proof-aggregate-python-owner"]
+    assert not MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH)
+
+
+def test_p12a_python_owner_refuses_missing_scope_target_and_recipe(monkeypatch) -> None:
+    registry = MODULE._read_toml(REGISTRY_PATH)
+    proof = next(
+        proof for proof in registry["proofs"] if proof["id"] == "p12a-proof-infrastructure"
+    )
+    proof["test_authority_targets"] = []
+    messages = _messages(MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH))
+    assert any("requires at least one target" in message for message in messages)
+
+    proof["test_authority_targets"] = ["proof-aggregate-python-owner"]
+    proof["test_authority_scopes"] = ["missing-python-scope"]
+    messages = _messages(MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH))
+    assert any("unknown python scopes" in message for message in messages)
+
+    proof["test_authority_scopes"] = ["p12a-proof-infrastructure"]
+    original_body = MODULE._just_recipe_body
+    monkeypatch.setattr(
+        MODULE,
+        "_just_recipe_body",
+        lambda root, recipe: (
+            "python3 -m pytest tools/ci/tests/test_write_proof_manifest.py -q"
+            if recipe == "proof-p12a-proof-infrastructure"
+            else original_body(root, recipe)
+        ),
+    )
+    messages = _messages(MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH))
+    assert any("does not execute Python targets" in message for message in messages)
+
+    monkeypatch.setattr(
+        MODULE,
+        "_just_recipe_body",
+        lambda root, recipe: (
+            "python3 -m pytest tools/ci/tests/test_write_proof_aggregate.py -k selected -q"
+            if recipe == "proof-p12a-proof-infrastructure"
+            else original_body(root, recipe)
+        ),
+    )
+    messages = _messages(MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH))
+    assert any("does not execute Python targets" in message for message in messages)
+
+
+def test_p12a_refuses_downgraded_source_binding() -> None:
+    registry = MODULE._read_toml(REGISTRY_PATH)
+    proof = next(
+        proof for proof in registry["proofs"] if proof["id"] == "p12a-proof-infrastructure"
+    )
+    proof["source_binding"] = "exact"
+    proof.pop("paired_repository")
+    proof.pop("paired_dependency_lock")
+    messages = _messages(MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH))
+    assert any("P12A requires exact-pair source binding" in message for message in messages)
+
+
 def test_aggregate_refuses_source_and_release_daemon_identity_drift(tmp_path: Path) -> None:
     proof_a = _proof(tmp_path)
     proof_a["id"] = "proof-a"

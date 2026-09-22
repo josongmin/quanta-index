@@ -772,9 +772,14 @@ fn over_maximum_runtime() -> Result<(E2eRuntime, GenerationPin), Box<dyn Error>>
         .zip(&specs)
         .map(|(path, chunks)| (path.as_str(), chunks.as_slice()))
         .collect();
-    let _ids = rt.ingest_text_files_one_batch(&files)?;
-    let generation = rt.seal()?;
-    rt.activate_last_sealed_generation()?;
+    let _ids = rt
+        .ingest_text_files_one_batch(&files)
+        .map_err(|error| format!("over-maximum fixture ingest: {error}"))?;
+    let generation = rt
+        .seal()
+        .map_err(|error| format!("over-maximum fixture seal: {error}"))?;
+    rt.activate_last_sealed_generation()
+        .map_err(|error| format!("over-maximum fixture activate: {error}"))?;
     let pin = GenerationPin::new(rt.repo(), rt.revision(), generation);
     Ok((rt, pin))
 }

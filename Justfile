@@ -542,9 +542,9 @@ rust-verify-quality-ui:
     env QUANTA_INDEX_BUILD_LANE=test-daemon-lane bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/ui_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/ui/latest"'
 
 # Aggregate quality gate (J7Q-08). Orchestrates the LIVE per-dimension rails
-# (relevance, ambiguity, snippet, scale, tail, ops, ui) and records an
+# (relevance, ambiguity, snippet, scale, tail, ANN, concurrency, ops, ui) and records an
 # integration summary WITHOUT erasing dimension boundaries. This is not a
-# substitute for per-dimension closeout. All seven J7Q quality dimensions are now
+# substitute for per-dimension closeout. All registered quality dimensions are now
 # live; a future dimension would be added as `pending` until its rail lands.
 rust-verify-quality-all:
     @just rust-verify-quality-relevance
@@ -552,8 +552,11 @@ rust-verify-quality-all:
     @just rust-verify-quality-snippet
     @just rust-verify-quality-scale
     @just rust-verify-quality-tail
+    @just rust-verify-quality-ann
+    @just rust-verify-quality-concurrency
     @just rust-verify-quality-ops
     @just rust-verify-quality-ui
+    python3 tools/ci/lint/check-bench-artifacts.py --profile quality-full --require --skip-baselines
     mkdir -p artifacts/search-quality/integration/latest
     python3 tools/benchmark/quality_integration_summary.py --out artifacts/search-quality/integration/latest/summary.json
 
@@ -733,6 +736,13 @@ proof-p00-authority-freeze:
         tools/ci/tests/test_check_proof_authority.py \
         tools/ci/tests/test_check_lane_handoff.py \
         -q
+
+# P12A is a Python owner proof. The exact-pair manifest is issued separately
+# only after its P11 dependency and paired checkout are source-bound.
+proof-p12a-proof-infrastructure:
+    python3 tools/ci/lint/check-test-authority.py
+    python3 tools/ci/lint/check-proof-authority.py
+    python3 -m pytest tools/ci/tests/test_write_proof_aggregate.py -q
 
 # P12 records this dependency aggregate as its own terminal evidence. It must
 # exclude p12-final-qualification itself; the release gate below validates the

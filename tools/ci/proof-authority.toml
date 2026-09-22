@@ -598,9 +598,8 @@ required_host = "linux-production-like"
 
 [[proofs]]
 id = "p12a-proof-infrastructure"
-authority_state = "staged"
+authority_state = "executable"
 execution_mode = "test-authority"
-staged_reason = "P12A must land the aggregate handoff-DAG schema, writer, validator and canonical recipe owner scope."
 ticket = "S21-13"
 family = "S"
 checkpoint = "M5"
@@ -615,7 +614,8 @@ paired_repository = "github:josongmin/semantica-codegraph-v2"
 paired_dependency_lock = "Cargo.lock"
 binary_binding = "none"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
-test_authority_targets = []
+test_authority_scopes = ["p12a-proof-infrastructure"]
+test_authority_targets = ["proof-aggregate-python-owner"]
 dependencies = ["p11-cross-repo-cutover"]
 artifact = "artifacts/proof-authority/p12a-proof-infrastructure.json"
 required_host = "any"
