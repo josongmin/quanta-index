@@ -7,7 +7,6 @@ import json
 import sys
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT_PATH = REPO_ROOT / "tools" / "benchmark" / "quality_integration_summary.py"
 HEAD = "0123456789abcdef0123456789abcdef01234567"
@@ -37,11 +36,18 @@ def _schema_two(dimension: str, *, head: str = HEAD, passed: bool = True) -> dic
 def test_schema_two_verdict_requires_matching_dimension_and_head() -> None:
     assert MODULE.rail_verdict(_schema_two("tail"), dimension="tail", head=HEAD) is True
     assert MODULE.rail_verdict(_schema_two("scale"), dimension="tail", head=HEAD) is None
-    assert MODULE.rail_verdict(
-        _schema_two("tail", head="fedcba9876543210fedcba9876543210fedcba98"),
-        dimension="tail",
-        head=HEAD,
-    ) is None
+    assert (
+        MODULE.rail_verdict(
+            _schema_two("tail", head="fedcba9876543210fedcba9876543210fedcba98"),
+            dimension="tail",
+            head=HEAD,
+        )
+        is None
+    )
+    assert (
+        MODULE.rail_verdict(_schema_two("tail", passed="false"), dimension="tail", head=HEAD)
+        is None
+    )
 
 
 def test_schema_one_verdict_requires_matching_full_head() -> None:
@@ -57,8 +63,24 @@ def test_build_fails_closed_when_a_live_artifact_is_stale(tmp_path: Path, monkey
     monkeypatch.setattr(MODULE, "DIMENSIONS", [("tail", "J7Q-04", True, "live", "summary.json")])
     path = MODULE.ARTIFACT_ROOT / "tail" / "latest" / "summary.json"
     path.parent.mkdir(parents=True)
-    path.write_text(json.dumps(_schema_two("tail", head="fedcba9876543210fedcba9876543210fedcba98")))
+    path.write_text(
+        json.dumps(_schema_two("tail", head="fedcba9876543210fedcba9876543210fedcba98"))
+    )
     doc, passed = MODULE.build()
     assert not passed
     assert doc["dimensions"][0]["passed"] is False
     assert "missing 'passed' verdict" in doc["dimensions"][0]["error"]
+
+
+def test_build_requires_every_concurrency_level(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(MODULE, "ARTIFACT_ROOT", tmp_path / "artifacts" / "search-quality")
+    monkeypatch.setattr(MODULE, "resolve_head", lambda: HEAD)
+    monkeypatch.setattr(
+        MODULE, "DIMENSIONS", [("concurrency", "QI-BB-010", True, "live", "summary-c*.json")]
+    )
+    path = MODULE.ARTIFACT_ROOT / "concurrency" / "latest" / "summary-c8.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(_schema_two("concurrency")))
+    doc, passed = MODULE.build()
+    assert not passed
+    assert "c1/c8/c32" in doc["dimensions"][0]["error"]

@@ -1,4 +1,15 @@
-# DSL Benchmark Tooling (Layer 3: query latency)
+# Benchmark tooling
+
+The registered evidence CLI is `python3 tools/benchmark/benchctl.py list`.
+`run systems` executes the freshness and open-loop producers and then requires
+their current-HEAD artifacts. `validate systems` checks existing artifacts
+without rerunning them. `quality-full` additionally includes these rails.
+The recorded retrieval and agent-outcome evaluators have separate CLIs and
+strict input contracts in [retrieval/README.md](retrieval/README.md) and
+[agent_outcome/README.md](agent_outcome/README.md); they do not invent runner
+results when recordings are absent.
+
+The sections below document the DSL Layer-3 latency gate.
 
 The 3-layer DSL-benchmarking model is defined in
 [`docs/plans/jun-2-dsl-hardening/RFC-DSL-Benchmarking.md`](../../docs/plans/jun-2-dsl-hardening/RFC-DSL-Benchmarking.md).
@@ -20,7 +31,7 @@ committed ratchet reference.
 ## Artifact schema (the contract): `BenchArtifactV1`
 
 Every benchmark and relevance artifact — the DSL warm/cold matrices, the
-scale, tail and concurrency rails, the relevance rail and its OpenAI A/B
+  scale, tail, concurrency, freshness and open-loop rails, the relevance rail and its OpenAI A/B
 capture, and the scan-vs-index experiment — is one `BenchArtifactV1`
 envelope, written by exactly one writer
 (`crates/quanta-index-searchd-harness/src/artifact.rs`, QI-BB-010). A
@@ -98,7 +109,7 @@ artifact under `artifacts/` — whose head is not the checkout's `HEAD`.
 Committed baselines are held to the shape and a full head, not to head
 equality. `compare_dsl_bench.py` additionally refuses a comparison whose
 current side is not at `HEAD` or whose corpus, configuration, model revision,
-or canonical host class differs from the baseline's. Absence is reported, not refused; `--require` (the Linux perf
+or host identity differs from the baseline's. Absence is reported, not refused; `--require` (the Linux perf
 evidence gate) fails when a family has no artifact.
 
 ## Producers
@@ -208,12 +219,12 @@ A green fast hellgate is not restart/replay proof.
 
 ```
 python3 tools/benchmark/compare_dsl_bench.py <baseline.json> <current.json> \
-    [--update-baseline] [--rel-threshold F] [--abs-threshold-ms F] [--allow-missing]
+    [--update-baseline] [--rel-threshold F] [--abs-threshold-ms F]
 ```
 
 - Both artifacts must be schema-2 `BenchArtifactV1` with a full `git_head`;
-  the current artifact's head must be the checkout's `HEAD` (`--head`
-  overrides for tests) and both must share `config_digest`. Any of these
+  the current artifact's head must be the checkout's `HEAD` and both must share
+  the corpus/config digest, model revision and host identity. Any of these
   refuses the comparison with exit 2, as does a missing baseline (capture
   one with `--update-baseline`, which itself refuses a stale current).
 - Both artifacts must share the same top-level `mode`; a mismatch exits 2.
@@ -223,9 +234,8 @@ python3 tools/benchmark/compare_dsl_bench.py <baseline.json> <current.json> \
   - `cold`: compare **p50**
 - `p95` / `p99` deltas are printed as `ADVISORY` lines; they do not fail the
   gate.
-- New scenarios (in current, not baseline) print as `NEW` and never fail.
-- Scenarios missing from current (and measured in baseline) **FAIL** by default;
-  `--allow-missing` downgrades them to a warning.
+- New scenarios (in current, not baseline) fail until a reviewed baseline update.
+- Scenarios missing from current fail.
 - `--update-baseline` writes current over the baseline verbatim and exits 0.
 - Exit codes: `0` ok, `1` regression / missing-fail, `2` usage / mode-mismatch.
 
@@ -242,12 +252,14 @@ cold-start, and hands every sample to the same binary's `--assemble`, which
 aggregates p50/p95/p99 (nearest-rank percentile) per scenario and writes the
 `BenchArtifactV1` — the orchestrator never writes an artifact or stamps a
 head. Default sample count is `20`; passing fewer samples is allowed for
-ad-hoc local inspection, but the comparator will refuse to gate cold `p95`
-artifacts when a measured row carries fewer than `20` samples.
+ad-hoc local inspection, but the comparator refuses cold artifacts with fewer
+than `20` measured samples per row. Warm artifacts require `200` samples per
+row; the default warm runner pools `100` samples across `5` passes.
 
 ## Baseline admission and regression gate
 
-The scheduled Linux job is already a blocking authority gate. Until its
+The scheduled Linux job requires a pinned `self-hosted, linux, quanta-bench`
+runner and is a blocking authority gate. Until its
 reviewed canonical baselines are committed it fails typed; it is never silently
 report-only. Capture warm/cold artifacts on that same canonical host class,
 review the artifact and scenario contract, then commit them through

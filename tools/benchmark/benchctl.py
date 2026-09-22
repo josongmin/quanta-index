@@ -16,7 +16,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST_PATH = ROOT / "tools" / "benchmark" / "profiles.json"
 VALIDATOR_PATH = ROOT / "tools" / "ci" / "lint" / "check-bench-artifacts.py"
@@ -34,12 +33,20 @@ def load_profiles(path: Path = MANIFEST_PATH) -> dict[str, dict[str, object]]:
             raise ValueError("every profile must be a named table")
         profile = value.get("artifact_profile")
         recipes = value.get("recipes")
+        families = value.get("families")
         if not isinstance(profile, str) or not profile:
             raise ValueError(f"profile {name!r} has no artifact_profile")
-        if not isinstance(recipes, list) or not recipes or not all(
+        if not isinstance(recipes, list) or not all(
             isinstance(recipe, str) and recipe for recipe in recipes
         ):
-            raise ValueError(f"profile {name!r} has no recipes")
+            raise ValueError(f"profile {name!r} has invalid recipes")
+        if (
+            not isinstance(families, list)
+            or not families
+            or not all(isinstance(family, str) and family for family in families)
+            or len(set(families)) != len(families)
+        ):
+            raise ValueError(f"profile {name!r} has invalid families")
         checked[name] = value
     return checked
 
@@ -95,6 +102,9 @@ def main() -> int:
     if args.command == "run":
         recipes = profile["recipes"]
         assert isinstance(recipes, list)
+        if not recipes:
+            print(f"ERROR: profile {args.profile!r} has no registered producer", file=sys.stderr)
+            return 2
         for recipe in recipes:
             assert isinstance(recipe, str)
             completed = subprocess.run(["just", recipe], cwd=repo_root, check=False)

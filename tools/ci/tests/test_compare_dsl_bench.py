@@ -13,7 +13,7 @@ Covers the Layer-3 DSL query-latency regression gate over `BenchArtifactV1`
 6. --update-baseline overwrites and exits 0
 7. mode mismatch -> exit 2
 8. NEW scenarios require a reviewed baseline
-9. MISSING scenario fails without --allow-missing, warns with it
+9. MISSING scenario always fails
 10. cold artifacts still require >=20 samples for tail advisories
 11. warm/cold p95-only drift is advisory; blocking metric is p50
 12. provenance gate: a current artifact not at HEAD, an old-schema artifact,
@@ -47,7 +47,7 @@ def _load_module(name: str, path: Path):
 COMPARE = _load_module("compare_dsl_bench", COMPARE_PATH)
 COLD_MATRIX = _load_module("run_dsl_cold_matrix", COLD_MATRIX_PATH)
 
-HEAD = "0123456789abcdef0123456789abcdef01234567"
+HEAD = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, text=True).strip()
 OTHER_HEAD = "fedcba9876543210fedcba9876543210fedcba98"
 DIGEST = "sha256:" + "ab" * 32
 OTHER_DIGEST = "sha256:" + "cd" * 32
@@ -108,7 +108,8 @@ def _artifact(
             "config_digest": config_digest,
             "model_revision": model_revision,
         },
-        "host": host or {
+        "host": host
+        or {
             "os": "linux",
             "arch": "x86_64",
             "cpu_count": 8,
@@ -131,7 +132,7 @@ def _write_artifact(path: Path, mode: str, rows: list[dict], **overrides) -> Non
 
 def _run(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, str(COMPARE_PATH), "--head", HEAD, *args],
+        [sys.executable, str(COMPARE_PATH), *args],
         cwd=REPO_ROOT,
         check=False,
         capture_output=True,
@@ -463,7 +464,7 @@ def test_corpus_model_and_host_class_must_match_the_baseline(tmp_path: Path) -> 
                     "hostname_hash": DIGEST,
                 }
             },
-            "host class mismatch",
+            "host identity mismatch",
         ),
     )
     for overrides, expected in cases:
@@ -498,15 +499,6 @@ def test_a_short_or_unknown_head_is_refused(tmp_path: Path) -> None:
         result = _run(str(baseline), str(current))
         assert result.returncode == 2, result.stdout + result.stderr
         assert "not 40 lowercase hex" in result.stderr
-    # The checkout head itself must be a full head.
-    result = subprocess.run(
-        [sys.executable, str(COMPARE_PATH), "--head", "unknown", str(baseline), str(current)],
-        cwd=REPO_ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 2 and "not 40 lowercase hex" in result.stderr
 
 
 def test_a_config_digest_mismatch_is_refused(tmp_path: Path) -> None:
@@ -599,24 +591,6 @@ def test_missing_scenario_fails_without_allow(tmp_path: Path) -> None:
     assert "lexical.gone.native" in result.stdout
 
 
-def test_missing_scenario_warns_with_allow_missing(tmp_path: Path) -> None:
-    baseline = tmp_path / "baseline.json"
-    current = tmp_path / "current.json"
-    _write_artifact(
-        baseline,
-        "warm",
-        [
-            _row("lexical.keyword.native", 1.00),
-            _row("lexical.gone.native", 2.00),
-        ],
-    )
-    _write_artifact(current, "warm", [_row("lexical.keyword.native", 1.00)])
-    result = _run(str(baseline), str(current), "--allow-missing")
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "WARN" in result.stdout
-    assert "OK" in result.stdout
-
-
 def test_missing_unmeasured_baseline_scenario_is_refused(tmp_path: Path) -> None:
     baseline = tmp_path / "baseline.json"
     current = tmp_path / "current.json"
@@ -646,6 +620,83 @@ def test_semantic_contract_change_is_refused(tmp_path: Path) -> None:
     result = _run(str(baseline), str(current))
     assert result.returncode == 2, result.stdout + result.stderr
     assert "changed result_shape" in result.stderr
+
+
+def test_result_count_or_engine_change_is_refused(tmp_path: Path) -> None:
+    baseline = tmp_path / "baseline.json"
+    current = tmp_path / "current.json"
+    _write_artifact(baseline, "warm", [_row("lexical.keyword.native", 1.0)])
+    changed = _row("lexical.keyword.native", 1.0)
+    changed["result_count"] = 2
+    _write_artifact(current, "warm", [changed])
+    result = _run(str(baseline), str(current))
+    assert result.returncode == 2
+    assert "changed result_count" in result.stderr
+
+    changed["result_count"] = 3
+    changed["engine_touched"] = ["semantic"]
+    _write_artifact(current, "warm", [changed])
+    result = _run(str(baseline), str(current))
+    assert result.returncode == 2
+    assert "changed engine_touched" in result.stderr
+
+
+def test_invalid_thresholds_are_refused(tmp_path: Path) -> None:
+    baseline = tmp_path / "baseline.json"
+    current = tmp_path / "current.json"
+    _write_artifact(baseline, "warm", [_row("lexical.keyword.native", 1.0)])
+    _write_artifact(current, "warm", [_row("lexical.keyword.native", 1.0)])
+    for flag, value in (
+        ("--rel-threshold", "nan"),
+        ("--rel-threshold", "-1"),
+        ("--abs-threshold-ms", "inf"),
+    ):
+        result = _run(str(baseline), str(current), flag, value)
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert "finite and non-negative" in result.stderr
+
+
+def test_unordered_latency_is_refused(tmp_path: Path) -> None:
+    baseline = tmp_path / "baseline.json"
+    current = tmp_path / "current.json"
+    _write_artifact(baseline, "warm", [_row("lexical.keyword.native", 1.0)])
+    bad = _row("lexical.keyword.native", 1.0)
+    bad["latency"]["p50_ms"] = 2.0
+    _write_artifact(current, "warm", [bad])
+    result = _run(str(baseline), str(current))
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "unordered latency percentiles" in result.stderr
+
+
+def test_malformed_json_is_typed_refusal(tmp_path: Path) -> None:
+    baseline = tmp_path / "baseline.json"
+    current = tmp_path / "current.json"
+    _write_artifact(baseline, "warm", [_row("lexical.keyword.native", 1.0)])
+    current.write_text("{invalid", encoding="utf-8")
+    result = _run(str(baseline), str(current))
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "cannot be decoded" in result.stderr
+
+
+def test_macos_artifact_cannot_be_admitted_as_canonical_baseline(tmp_path: Path) -> None:
+    baseline = tmp_path / "baseline.json"
+    current = tmp_path / "current.json"
+    _write_artifact(
+        current,
+        "warm",
+        [_row("lexical.keyword.native", 1.0)],
+        host={
+            "os": "macos",
+            "arch": "aarch64",
+            "cpu_count": 8,
+            "mem_bytes": 1 << 34,
+            "hostname_hash": DIGEST,
+        },
+    )
+    result = _run(str(baseline), str(current), "--update-baseline")
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "canonical Linux host" in result.stderr
+    assert not baseline.exists()
 
 
 if __name__ == "__main__":

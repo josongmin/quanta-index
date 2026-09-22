@@ -4,7 +4,7 @@
 //! authority for warm mode. Each scenario is measured through multiple
 //! dedicated warm passes; every pass boots a fresh runtime, primes the exact
 //! scenario query untimed, then records a timed window. The final artifact row
-//! is the median tail across those isolated passes, not a criterion byproduct.
+//! pools raw samples across those isolated passes, not a criterion byproduct.
 //!
 //! The artifact is one `BenchArtifactV1` (QI-BB-010): it names the exact
 //! head of a clean worktree, the fixture corpus digest, the run
@@ -134,13 +134,14 @@ fn measure_pass(
     }
     let mut samples = Vec::with_capacity(config.samples);
     let mut last = run_scenario_query(&mut runtime, scenario);
+    validate_scenario_outcome(scenario, ScenarioTruthMode::IsolatedFixture, &last)?;
     for _ in 0..config.samples {
         thread::sleep(config.cooldown);
         let started = Instant::now();
         last = run_scenario_query(&mut runtime, scenario);
         samples.push(elapsed_ms(started));
+        validate_scenario_outcome(scenario, ScenarioTruthMode::IsolatedFixture, &last)?;
     }
-    validate_scenario_outcome(scenario, ScenarioTruthMode::IsolatedFixture, &last)?;
     Ok((samples, last, model_revision))
 }
 
@@ -155,7 +156,7 @@ fn run(out: &Path) -> AnyResult<()> {
         .map(|_| Vec::with_capacity(config.samples.saturating_mul(config.repeats)))
         .collect();
     let mut last_outcomes: Vec<Option<QueryOutcome>> = SCENARIOS.iter().map(|_| None).collect();
-    let mut model_revision: Option<String> = None;
+    let mut model_revision: Option<Option<String>> = None;
 
     for _ in 0..config.repeats {
         for (scenario_idx, scenario) in SCENARIOS.iter().enumerate() {
@@ -168,7 +169,16 @@ fn run(out: &Path) -> AnyResult<()> {
             if let Some(outcome_slot) = last_outcomes.get_mut(scenario_idx) {
                 *outcome_slot = Some(outcome);
             }
-            model_revision = revision;
+            if let Some(previous) = &model_revision {
+                if previous != &revision {
+                    return Err(anyhow::anyhow!(
+                        "scenario {} used a different model revision across passes",
+                        scenario.id
+                    ));
+                }
+            } else {
+                model_revision = Some(revision);
+            }
         }
     }
 
@@ -200,7 +210,8 @@ fn run(out: &Path) -> AnyResult<()> {
                     .collect::<Vec<_>>(),
             ),
             config_digest: config.digest(),
-            model_revision,
+            model_revision: model_revision
+                .ok_or_else(|| anyhow::anyhow!("no model revision samples"))?,
         },
         host,
         resources: ResourceUsageV1::observe_self()?,

@@ -13,7 +13,7 @@ thresholds.
 
 Provenance gate (QI-BB-010, findings §9): both artifacts must be schema 2
 and carry a full 40-character ``git_head``; the *current* artifact's head
-must be the checkout's ``HEAD`` (or ``--head``), otherwise the comparison
+must be the checkout's ``HEAD``, otherwise the comparison
 measured some other source and is refused (exit 2). The baseline is a
 reference captured at an earlier head, so it is held to the shape, not to
 head equality. The two artifacts must also agree on ``config_digest``: a
@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import subprocess
 import sys
@@ -59,7 +60,7 @@ DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 DEFAULT_REL_THRESHOLD = 0.10
 DEFAULT_ABS_THRESHOLD_MS = {"warm": 1.0, "cold": 5.0}
 DEFAULT_BLOCKING_METRIC = {"warm": "p50", "cold": "p50"}
-MIN_SAMPLES_FOR_P95 = {"cold": 20}
+MIN_SAMPLES_FOR_AUTHORITY = {"warm": 200, "cold": 20}
 
 
 @dataclass(frozen=True)
@@ -76,6 +77,8 @@ class ScenarioRow:
     error_count: int
     timeout_count: int
     typed_error_code: str | None
+    result_count: int | None
+    engine_touched: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -85,7 +88,7 @@ class Artifact:
     corpus_digest: str
     config_digest: str
     model_revision: str | None
-    host_class: tuple[str, str, int, int]
+    host_identity: tuple[str, str, int, int, str]
     rows: dict[str, ScenarioRow]
 
 
@@ -124,34 +127,23 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="absolute growth threshold in ms (default: warm 1.0ms, cold 5.0ms)",
     )
-    parser.add_argument(
-        "--allow-missing",
-        action="store_true",
-        help="downgrade scenarios missing from current from FAIL to a warning",
-    )
-    parser.add_argument(
-        "--head",
-        default=None,
-        help="the head the current artifact must carry (default: `git rev-parse HEAD`)",
-    )
     return parser.parse_args()
 
 
-def resolve_head(explicit: str | None) -> str:
+def resolve_head() -> str:
     """The checkout's full HEAD; refuses anything that is not one."""
-    if explicit is None:
-        completed = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if completed.returncode != 0:
-            raise ArtifactRefused(f"git rev-parse HEAD failed: {completed.stderr.strip()}")
-        explicit = completed.stdout.strip()
-    if not FULL_HEAD_RE.match(explicit):
-        raise ArtifactRefused(f"head {explicit!r} is not 40 lowercase hex characters")
-    return explicit
+    completed = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        raise ArtifactRefused(f"git rev-parse HEAD failed: {completed.stderr.strip()}")
+    head = completed.stdout.strip()
+    if not FULL_HEAD_RE.match(head):
+        raise ArtifactRefused(f"head {head!r} is not 40 lowercase hex characters")
+    return head
 
 
 def _optional_float(row: dict, key: str) -> float | None:
@@ -177,7 +169,13 @@ def _required_samples(latency: dict, *, role: str, path: Path, index: int) -> in
 
 def load_artifact(path: Path, *, role: str) -> Artifact:
     """Decode one ``BenchArtifactV1``, refusing an old schema or a bad head."""
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise
+    except (OSError, ValueError) as exc:
+        raise ArtifactRefused(f"{role} {path} cannot be decoded: {exc}") from exc
+    require(isinstance(payload, dict), f"{role} {path} is not a JSON object")
     schema = payload.get("schema_version")
     if schema != CURRENT_SCHEMA_VERSION:
         raise ArtifactRefused(
@@ -199,16 +197,18 @@ def load_artifact(path: Path, *, role: str) -> Artifact:
         if not isinstance(digest, str) or not DIGEST_RE.match(digest):
             raise ArtifactRefused(f"{role} {path} {key} {digest!r} is not a sha256 digest")
     model_revision = provenance.get("model_revision")
-    if model_revision is not None and (
-        not isinstance(model_revision, str) or not model_revision
-    ):
-        raise ArtifactRefused(
-            f"{role} {path} model_revision is not a non-empty string or null"
-        )
+    if model_revision is not None and (not isinstance(model_revision, str) or not model_revision):
+        raise ArtifactRefused(f"{role} {path} model_revision is not a non-empty string or null")
     host = payload.get("host")
     if not isinstance(host, dict):
         raise ArtifactRefused(f"{role} {path} has no host")
-    host_values = (host.get("os"), host.get("arch"), host.get("cpu_count"), host.get("mem_bytes"))
+    host_values = (
+        host.get("os"),
+        host.get("arch"),
+        host.get("cpu_count"),
+        host.get("mem_bytes"),
+        host.get("hostname_hash"),
+    )
     if (
         not isinstance(host_values[0], str)
         or not host_values[0]
@@ -220,8 +220,10 @@ def load_artifact(path: Path, *, role: str) -> Artifact:
         or not isinstance(host_values[3], int)
         or isinstance(host_values[3], bool)
         or host_values[3] < 1
+        or not isinstance(host_values[4], str)
+        or not DIGEST_RE.match(host_values[4])
     ):
-        raise ArtifactRefused(f"{role} {path} has an invalid host class")
+        raise ArtifactRefused(f"{role} {path} has an invalid host identity")
     mode = payload.get("mode")
     if mode not in ("warm", "cold"):
         raise ArtifactRefused(f"{role} {path} mode {mode!r} is not warm or cold")
@@ -254,13 +256,23 @@ def load_artifact(path: Path, *, role: str) -> Artifact:
             )
         early_stop_reason = row.get("early_stop_reason")
         if early_stop_reason is not None and not isinstance(early_stop_reason, str):
-            raise ArtifactRefused(f"{role} {path} rows[{index}].early_stop_reason is not a string or null")
+            raise ArtifactRefused(
+                f"{role} {path} rows[{index}].early_stop_reason is not a string or null"
+            )
         error_count = row.get("error_count")
         timeout_count = row.get("timeout_count")
         if not isinstance(error_count, int) or isinstance(error_count, bool) or error_count < 0:
-            raise ArtifactRefused(f"{role} {path} rows[{index}].error_count is not a non-negative integer")
-        if not isinstance(timeout_count, int) or isinstance(timeout_count, bool) or timeout_count < 0:
-            raise ArtifactRefused(f"{role} {path} rows[{index}].timeout_count is not a non-negative integer")
+            raise ArtifactRefused(
+                f"{role} {path} rows[{index}].error_count is not a non-negative integer"
+            )
+        if (
+            not isinstance(timeout_count, int)
+            or isinstance(timeout_count, bool)
+            or timeout_count < 0
+        ):
+            raise ArtifactRefused(
+                f"{role} {path} rows[{index}].timeout_count is not a non-negative integer"
+            )
         typed_error_code = row.get("typed_error_code")
         if typed_error_code is not None and (
             not isinstance(typed_error_code, str) or not typed_error_code
@@ -268,6 +280,14 @@ def load_artifact(path: Path, *, role: str) -> Artifact:
             raise ArtifactRefused(
                 f"{role} {path} rows[{index}].typed_error_code is not a non-empty string or null"
             )
+        result_count = row.get("result_count")
+        if result_count is not None and (type(result_count) is not int or result_count < 0):
+            raise ArtifactRefused(f"{role} {path} rows[{index}].result_count is invalid")
+        engines = row.get("engine_touched")
+        if not isinstance(engines, list) or not all(
+            isinstance(engine, str) and engine for engine in engines
+        ):
+            raise ArtifactRefused(f"{role} {path} rows[{index}].engine_touched is invalid")
         if early_stop_reason is None:
             for key in ("p50_ms", "p95_ms", "p99_ms", "samples"):
                 if key not in latency:
@@ -275,25 +295,35 @@ def load_artifact(path: Path, *, role: str) -> Artifact:
                         f"{role} {path} rows[{index}] is measured but latency.{key} is missing"
                     )
             samples = _required_samples(latency, role=role, path=path, index=index)
+            p50 = _optional_float(latency, "p50_ms")
+            p95 = _optional_float(latency, "p95_ms")
+            p99 = _optional_float(latency, "p99_ms")
+            require(
+                p50 is not None and p95 is not None and p99 is not None and p50 <= p95 <= p99,
+                f"{role} {path} rows[{index}] has missing or unordered latency percentiles",
+            )
         else:
             if row.get("latency") is not None:
                 raise ArtifactRefused(
                     f"{role} {path} rows[{index}] has early_stop_reason but non-null latency"
                 )
             samples = 0
+            p50 = p95 = p99 = None
         rows[scenario_id] = ScenarioRow(
             scenario_id=scenario_id,
             route_family=row["route_family"],
             syntax=row["syntax"],
             result_shape=row["result_shape"],
-            latency_p50_ms=_optional_float(latency, "p50_ms"),
-            latency_p95_ms=_optional_float(latency, "p95_ms"),
-            latency_p99_ms=_optional_float(latency, "p99_ms"),
+            latency_p50_ms=p50,
+            latency_p95_ms=p95,
+            latency_p99_ms=p99,
             early_stop_reason=early_stop_reason,
             samples=samples,
             error_count=error_count,
             timeout_count=timeout_count,
             typed_error_code=typed_error_code,
+            result_count=result_count,
+            engine_touched=tuple(engines),
         )
     return Artifact(
         mode=mode,
@@ -301,7 +331,13 @@ def load_artifact(path: Path, *, role: str) -> Artifact:
         corpus_digest=corpus_digest,
         config_digest=config_digest,
         model_revision=model_revision,
-        host_class=(host_values[0], host_values[1], host_values[2], host_values[3]),
+        host_identity=(
+            host_values[0],
+            host_values[1],
+            host_values[2],
+            host_values[3],
+            host_values[4],
+        ),
         rows=rows,
     )
 
@@ -355,11 +391,11 @@ def gate_provenance(baseline: Artifact, current: Artifact, head: str) -> None:
             f"{baseline.model_revision!r} vs current {current.model_revision!r}; "
             "a comparison across different embedding models is not a regression signal"
         )
-    if baseline.host_class != current.host_class:
+    if baseline.host_identity != current.host_identity:
         raise ArtifactRefused(
-            "host class mismatch: baseline "
-            f"{baseline.host_class!r} vs current {current.host_class!r}; "
-            "capture and compare on the same canonical runner class"
+            "host identity mismatch: baseline "
+            f"{baseline.host_identity!r} vs current {current.host_identity!r}; "
+            "capture and compare on the same pinned benchmark host"
         )
     for scenario_id, row in baseline.rows.items():
         if not is_measured(row):
@@ -376,6 +412,8 @@ def gate_provenance(baseline: Artifact, current: Artifact, head: str) -> None:
             "typed_error_code",
             "error_count",
             "timeout_count",
+            "result_count",
+            "engine_touched",
         ):
             if getattr(base, field) != getattr(cur, field):
                 raise ArtifactRefused(
@@ -387,6 +425,8 @@ def gate_provenance(baseline: Artifact, current: Artifact, head: str) -> None:
 
 def require_complete_baseline_candidate(artifact: Artifact) -> None:
     """A baseline must ratchet every declared scenario, not preserve gaps."""
+    if artifact.host_identity[0] != "linux":
+        raise ArtifactRefused("baseline candidate was not captured on the canonical Linux host")
     for scenario_id, row in artifact.rows.items():
         if not is_measured(row):
             raise ArtifactRefused(
@@ -398,8 +438,16 @@ def require_complete_baseline_candidate(artifact: Artifact) -> None:
 def main() -> int:
     args = parse_args()
 
+    for flag, value in (
+        ("--rel-threshold", args.rel_threshold),
+        ("--abs-threshold-ms", args.abs_threshold_ms),
+    ):
+        if value is not None and (not math.isfinite(value) or value < 0):
+            print(f"ERROR: {flag} must be finite and non-negative", file=sys.stderr)
+            return 2
+
     try:
-        head = resolve_head(args.head)
+        head = resolve_head()
         current = load_artifact(args.current, role="current")
         if current.git_head != head:
             raise ArtifactRefused(
@@ -476,10 +524,12 @@ def main() -> int:
         if not is_measured(cur):
             reason = cur.early_stop_reason or "incomplete latency row"
             unmeasured_current.append((scenario_id, reason))
-            print(f"{scenario_id:40s} {'--':>10s} {'--':>10s} {'--':>10s} {'INVALID':>8s}  ({reason})")
+            print(
+                f"{scenario_id:40s} {'--':>10s} {'--':>10s} {'--':>10s} {'INVALID':>8s}  ({reason})"
+            )
             continue
 
-        min_samples = MIN_SAMPLES_FOR_P95.get(mode)
+        min_samples = MIN_SAMPLES_FOR_AUTHORITY.get(mode)
         if min_samples is not None and (base.samples < min_samples or cur.samples < min_samples):
             insufficient_samples.append((scenario_id, mode, base.samples, cur.samples))
             print(
@@ -551,10 +601,8 @@ def main() -> int:
     if missing_measured:
         print()
         for scenario_id in missing_measured:
-            level = "WARN" if args.allow_missing else "MISSING"
-            print(f"{level}: scenario {scenario_id!r} present in baseline but absent from current")
-        if not args.allow_missing:
-            failures += len(missing_measured)
+            print(f"MISSING: scenario {scenario_id!r} present in baseline but absent from current")
+        failures += len(missing_measured)
 
     if new_scenarios:
         print()
@@ -571,9 +619,9 @@ def main() -> int:
     if insufficient_samples:
         print()
         for scenario_id, row_mode, base_samples, cur_samples in insufficient_samples:
-            required = MIN_SAMPLES_FOR_P95.get(row_mode, 0)
+            required = MIN_SAMPLES_FOR_AUTHORITY.get(row_mode, 0)
             print(
-                f"INVALID: scenario {scenario_id!r} has insufficient samples for p95 gating "
+                f"INVALID: scenario {scenario_id!r} has insufficient samples for authority comparison "
                 f"(baseline={base_samples}, current={cur_samples}, required>={required})"
             )
         return 2
@@ -581,7 +629,7 @@ def main() -> int:
     print()
     if failures:
         regressed_n = len(regressed)
-        missing_n = len(missing_measured) if not args.allow_missing else 0
+        missing_n = len(missing_measured)
         new_n = len(new_scenarios)
         unmeasured_n = len(unmeasured_current)
         parts = []

@@ -453,9 +453,9 @@ jobs:
   dsl-bench-latency:
     name: dsl-bench-latency (Layer-3 authority gate)
     # This gate deliberately fails until committed baselines are captured on
-    # this runner class. Report-only latency output is not a regression gate.
+    # this dedicated host. Report-only latency output is not a regression gate.
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.proof_bundle_run_id == '')
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, quanta-bench]
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -484,6 +484,15 @@ jobs:
       - name: Require current-source DSL evidence
         run: python3 tools/ci/lint/check-bench-artifacts.py --profile dsl-authority --require --skip-baselines
 
+      - name: Workspace freshness matrix
+        run: just rust-verify-quality-freshness
+
+      - name: Open-loop offered-load matrix
+        run: just rust-verify-quality-open-loop
+
+      - name: Require current-source systems evidence
+        run: python3 tools/ci/lint/check-bench-artifacts.py --profile systems --require --skip-baselines
+
       - name: Compare warm vs baseline
         run: python3 tools/benchmark/compare_dsl_bench.py tools/benchmark/baselines/warm-matrix.json artifacts/dsl-bench/warm-matrix.json
 
@@ -496,4 +505,14 @@ jobs:
         with:
           name: dsl-bench-${{ github.run_id }}-${{ github.job }}
           path: artifacts/dsl-bench/
+          if-no-files-found: warn
+
+      - name: Upload systems benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: systems-bench-${{ github.run_id }}-${{ github.job }}
+          path: |
+            artifacts/search-quality/freshness/latest/
+            artifacts/search-quality/open-loop/latest/
           if-no-files-found: warn

@@ -58,6 +58,8 @@ FRESH_FAMILIES: tuple[tuple[str, str], ...] = (
     ("relevance-openai-ab", "artifacts/search-quality/relevance/openai-ab/latest/summary.json"),
     ("concurrency", "artifacts/search-quality/concurrency/latest/summary-c*.json"),
     ("scan-vs-index", "artifacts/experiments/scan-vs-index/*.json"),
+    ("freshness", "artifacts/search-quality/freshness/latest/summary.json"),
+    ("open-loop", "artifacts/search-quality/open-loop/latest/summary.json"),
 )
 
 #: Committed baselines: held to the shape and a full head, not HEAD equality.
@@ -66,17 +68,32 @@ BASELINE_FAMILIES: tuple[tuple[str, str], ...] = (
     ("dsl-cold", "tools/benchmark/baselines/cold-matrix.json"),
 )
 
-# Named evidence sets prevent a small rail from accidentally becoming a proxy
-# for every benchmark family.  `--require --profile dsl-authority` is the
-# scheduled DSL gate; `quality-full` is the complete locally runnable quality
-# evidence set.  A caller that omits --profile retains the exhaustive audit.
-FAMILY_PROFILES: dict[str, tuple[str, ...]] = {
-    "dsl-authority": ("dsl-warm", "dsl-cold"),
-    "quality-core": ("relevance", "scale", "tail"),
-    "quality-full": ("relevance", "scale", "tail", "ann", "concurrency"),
-    "semantic-ab": ("relevance-openai-ab",),
-    "experiments": ("scan-vs-index",),
-}
+
+def load_family_profiles() -> dict[str, tuple[str, ...]]:
+    """Read profile membership from the bench CLI registry."""
+    path = REPO_ROOT / "tools/benchmark/profiles.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    profiles = payload.get("profiles")
+    if not isinstance(profiles, dict) or not profiles:
+        raise ValueError(f"{path}: no profiles")
+    known = dict(FRESH_FAMILIES)
+    result: dict[str, tuple[str, ...]] = {}
+    for name, profile in profiles.items():
+        if not isinstance(name, str) or not isinstance(profile, dict):
+            raise ValueError(f"{path}: malformed profile")
+        families = profile.get("families")
+        if (
+            not isinstance(families, list)
+            or not families
+            or not all(isinstance(family, str) and family in known for family in families)
+            or len(set(families)) != len(families)
+        ):
+            raise ValueError(f"{path}: profile {name!r} has invalid artifact families")
+        result[name] = tuple(families)
+    return result
+
+
+FAMILY_PROFILES = load_family_profiles()
 
 ENVELOPE_KEYS = (
     "schema_version",
@@ -111,6 +128,21 @@ ROW_KEYS = (
 )
 LATENCY_KEYS = ("p50_ms", "p95_ms", "p99_ms", "samples")
 MODES = ("warm", "cold")
+UNTIMED_DIMENSIONS = ("relevance", "relevance-openai-ab")
+CONCURRENCY_COUNTS = (1, 8, 32)
+VERDICT_DIMENSIONS = frozenset(
+    (
+        "relevance",
+        "relevance-openai-ab",
+        "scale",
+        "tail",
+        "ann",
+        "concurrency",
+        "freshness",
+        "open-loop",
+    )
+)
+AUTHORITY_SAMPLE_MIN = {"dsl-warm": 200, "dsl-cold": 20, "freshness": 20}
 
 
 @dataclass(frozen=True)
@@ -154,7 +186,7 @@ def _non_negative_number(value: object) -> bool:
     )
 
 
-def _validate_rows(rows: list[object]) -> list[str]:
+def _validate_rows(rows: list[object], *, dimension: str) -> list[str]:
     """Validate row semantics shared by every BenchArtifactV1 family."""
     reasons: list[str] = []
     scenario_ids: set[str] = set()
@@ -201,6 +233,8 @@ def _validate_rows(rows: list[object]) -> list[str]:
             if latency is not None:
                 reasons.append(f"{where}.latency must be null when early_stop_reason is set")
             continue
+        if latency is None and dimension in UNTIMED_DIMENSIONS:
+            continue
         if not isinstance(latency, dict):
             reasons.append(f"{where}.latency is not an object for a measured row")
             continue
@@ -212,9 +246,7 @@ def _validate_rows(rows: list[object]) -> list[str]:
                 reasons.append(f"{where}.latency.{key} is not a finite non-negative number")
             else:
                 percentiles.append(float(value))
-        if len(percentiles) == 3 and not (
-            percentiles[0] <= percentiles[1] <= percentiles[2]
-        ):
+        if len(percentiles) == 3 and not (percentiles[0] <= percentiles[1] <= percentiles[2]):
             reasons.append(f"{where}.latency percentiles are not ordered p50 <= p95 <= p99")
         samples = latency.get("samples")
         if not isinstance(samples, int) or isinstance(samples, bool) or samples < 1:
@@ -296,7 +328,7 @@ def check_envelope(
     else:
         if not rows:
             reasons.append("rows is empty: nothing was measured")
-        reasons.extend(_validate_rows(rows))
+        reasons.extend(_validate_rows(rows, dimension=dimension))
     return reasons
 
 
@@ -327,6 +359,16 @@ def check_families(
                     Refusal(repo_root / pattern, f"{dimension}: no artifact (required)")
                 )
             continue
+        if dimension == "concurrency" and require:
+            expected = {f"summary-c{count}.json" for count in CONCURRENCY_COUNTS}
+            actual = {path.name for path in paths}
+            for missing in sorted(expected - actual):
+                refusals.append(
+                    Refusal(
+                        repo_root / "artifacts/search-quality/concurrency/latest" / missing,
+                        "concurrency: required client-count artifact missing",
+                    )
+                )
         for path in paths:
             checked.append(path)
             try:
@@ -336,6 +378,51 @@ def check_families(
                 continue
             for reason in check_envelope(payload, dimension=dimension, head=head):
                 refusals.append(Refusal(path, reason))
+            if require and isinstance(payload, dict):
+                rows = payload.get("rows")
+                minimum = AUTHORITY_SAMPLE_MIN.get(dimension)
+                if minimum is not None and isinstance(rows, list):
+                    for index, row in enumerate(rows):
+                        latency = row.get("latency") if isinstance(row, dict) else None
+                        if (
+                            not isinstance(latency, dict)
+                            or type(latency.get("samples")) is not int
+                            or latency["samples"] < minimum
+                        ):
+                            refusals.append(
+                                Refusal(
+                                    path,
+                                    f"{dimension}: rows[{index}] needs at least {minimum} samples",
+                                )
+                            )
+                if dimension in VERDICT_DIMENSIONS:
+                    detail = payload.get("detail")
+                    if not isinstance(detail, dict) or detail.get("passed") is not True:
+                        refusals.append(
+                            Refusal(path, f"{dimension}: required rail verdict is not true")
+                        )
+                if dimension == "open-loop":
+                    detail = payload.get("detail")
+                    if (
+                        not isinstance(detail, dict)
+                        or type(detail.get("duration_ms")) is not int
+                        or detail["duration_ms"] < 10_000
+                        or not isinstance(detail.get("points"), list)
+                        or len(detail["points"]) < 4
+                    ):
+                        refusals.append(
+                            Refusal(
+                                path,
+                                "open-loop: authority needs >=10 s and >=4 offered-load points",
+                            )
+                        )
+                if isinstance(rows, list) and any(
+                    isinstance(row, dict) and row.get("early_stop_reason") is not None
+                    for row in rows
+                ):
+                    refusals.append(
+                        Refusal(path, f"{dimension}: required measurement contains an early stop")
+                    )
     return refusals, checked, absent
 
 

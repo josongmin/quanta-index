@@ -34,10 +34,13 @@ DIMENSIONS = [
     ("tail", "J7Q-04", True, "live", "summary.json"),
     ("ann", "QI-BB-027", True, "live", "summary.json"),
     ("concurrency", "QI-BB-010", True, "live", "summary-c*.json"),
+    ("freshness", "BQ-05", True, "live", "summary.json"),
+    ("open-loop", "BQ-06", True, "live", "summary.json"),
     ("ops", "J7Q-05", True, "live", "summary.json"),
     ("ui", "J7Q-07", True, "live", "summary.json"),
 ]
 FULL_HEAD_RE = re.compile(r"^[0-9a-f]{40}$")
+CONCURRENCY_ARTIFACTS = {"summary-c1.json", "summary-c8.json", "summary-c32.json"}
 
 
 def resolve_head() -> str:
@@ -81,16 +84,16 @@ def rail_verdict(summary: dict, *, dimension: str, head: str) -> bool | None:
         ):
             return None
         detail = summary.get("detail")
-        if isinstance(detail, dict) and "passed" in detail:
-            return bool(detail["passed"])
+        if isinstance(detail, dict) and isinstance(detail.get("passed"), bool):
+            return detail["passed"]
         return None
     if (
         summary.get("schema_version") == 1
         and summary.get("dimension") == dimension
         and summary.get("git_rev") == head
-        and "passed" in summary
+        and isinstance(summary.get("passed"), bool)
     ):
-        return bool(summary["passed"])
+        return summary["passed"]
     return None
 
 
@@ -107,7 +110,14 @@ def build() -> tuple[dict, bool]:
         }
         if status == "live":
             summaries = load_summaries(dimension, filename)
-            if not summaries:
+            if (
+                dimension == "concurrency"
+                and {path.name for path, _ in summaries} != CONCURRENCY_ARTIFACTS
+            ):
+                row["passed"] = False
+                row["error"] = "required concurrency c1/c8/c32 artifacts incomplete"
+                all_live_passed = False
+            elif not summaries:
                 # A dimension declared live but missing its artifact is a
                 # fail-closed integration error, not a silent pass.
                 row["passed"] = False

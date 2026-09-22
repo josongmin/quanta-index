@@ -70,7 +70,7 @@ def artifact(dimension: str = "dsl-warm", head: str = HEAD) -> dict:
                 "route_family": "lexical",
                 "syntax": "native",
                 "result_shape": "candidates",
-                "latency": {"p50_ms": 1.0, "p95_ms": 2.0, "p99_ms": 3.0, "samples": 10},
+                "latency": {"p50_ms": 1.0, "p95_ms": 2.0, "p99_ms": 3.0, "samples": 500},
                 "qps": None,
                 "error_count": 0,
                 "timeout_count": 0,
@@ -80,7 +80,7 @@ def artifact(dimension: str = "dsl-warm", head: str = HEAD) -> dict:
                 "early_stop_reason": None,
             }
         ],
-        "detail": {},
+        "detail": {"passed": True},
     }
 
 
@@ -185,21 +185,78 @@ def test_absence_passes_by_default_and_fails_under_require(tmp_path: Path) -> No
 def test_named_profile_scopes_required_evidence(tmp_path: Path, capsys) -> None:
     write(tmp_path / "artifacts/dsl-bench/warm-matrix.json", artifact())
     write(tmp_path / "artifacts/dsl-bench/cold-matrix.json", artifact("dsl-cold"))
-    assert MODULE.main(
-        [
-            "--repo-root",
-            str(tmp_path),
-            "--head",
-            HEAD,
-            "--profile",
-            "dsl-authority",
-            "--require",
-            "--skip-baselines",
-        ]
-    ) == 0
+    assert (
+        MODULE.main(
+            [
+                "--repo-root",
+                str(tmp_path),
+                "--head",
+                HEAD,
+                "--profile",
+                "dsl-authority",
+                "--require",
+                "--skip-baselines",
+            ]
+        )
+        == 0
+    )
     out = capsys.readouterr().out
     assert "checked artifacts/dsl-bench/warm-matrix.json" in out
     assert "absent  scale" not in out
+
+
+def test_relevance_rows_are_intentionally_untimed() -> None:
+    value = artifact(dimension="relevance")
+    value["rows"][0]["latency"] = None
+    assert MODULE.check_envelope(value, dimension="relevance", head=HEAD) == []
+    assert any(
+        "latency is not an object" in reason
+        for reason in MODULE.check_envelope(value, dimension="dsl-warm", head=HEAD)
+    )
+
+
+def test_required_concurrency_profile_needs_all_client_counts(tmp_path: Path) -> None:
+    write(
+        tmp_path / "artifacts/search-quality/concurrency/latest/summary-c8.json",
+        artifact("concurrency"),
+    )
+    refusals, _, _ = MODULE.check_families(
+        tmp_path, (("concurrency", MODULE.FRESH_FAMILIES[7][1]),), head=HEAD, require=True
+    )
+    assert {refusal.path.name for refusal in refusals} == {"summary-c1.json", "summary-c32.json"}
+
+
+def test_required_evidence_refuses_failed_verdict_and_early_stop(tmp_path: Path) -> None:
+    value = artifact("tail")
+    value["detail"]["passed"] = False
+    value["rows"][0]["latency"] = None
+    value["rows"][0]["early_stop_reason"] = "fixture_missing"
+    write(tmp_path / "artifacts/search-quality/tail/latest/summary.json", value)
+    refusals, _, _ = MODULE.check_families(
+        tmp_path, (("tail", MODULE.FRESH_FAMILIES[3][1]),), head=HEAD, require=True
+    )
+    assert any("required rail verdict is not true" in refusal.reason for refusal in refusals)
+    assert any("contains an early stop" in refusal.reason for refusal in refusals)
+
+
+def test_authority_sample_floor_and_open_loop_ladder(tmp_path: Path) -> None:
+    cold = artifact("dsl-cold")
+    cold["rows"][0]["latency"]["samples"] = 19
+    write(tmp_path / "artifacts/dsl-bench/cold-matrix.json", cold)
+    load = artifact("open-loop")
+    load["detail"] = {"passed": True, "duration_ms": 1000, "points": [{}, {}]}
+    write(tmp_path / "artifacts/search-quality/open-loop/latest/summary.json", load)
+    refusals, _, _ = MODULE.check_families(
+        tmp_path,
+        (
+            ("dsl-cold", dict(MODULE.FRESH_FAMILIES)["dsl-cold"]),
+            ("open-loop", dict(MODULE.FRESH_FAMILIES)["open-loop"]),
+        ),
+        head=HEAD,
+        require=True,
+    )
+    assert any("needs at least 20 samples" in refusal.reason for refusal in refusals)
+    assert any("authority needs >=10 s" in refusal.reason for refusal in refusals)
 
 
 def test_the_cli_walks_fresh_families_and_baselines(tmp_path: Path, capsys) -> None:

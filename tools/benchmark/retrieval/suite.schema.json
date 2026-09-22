@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://quanta-index.invalid/benchmark/retrieval/suite-v1",
+  "title": "Frozen retrieval suite v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "suite_id", "repository_commit", "routes", "tasks"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "suite_id": {"type": "string", "minLength": 1},
+    "repository_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "routes": {"type": "array", "minItems": 2, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "tasks": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/task"}}
+  },
+  "$defs": {
+    "block": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "start_line", "end_line", "file_sha256", "block_sha256"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "start_line": {"type": "integer", "minimum": 1},
+        "end_line": {"type": "integer", "minimum": 1},
+        "file_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "block_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task_id", "split", "query", "query_sha256", "answerable", "gold"],
+      "properties": {
+        "task_id": {"type": "string", "minLength": 1},
+        "split": {"enum": ["train", "eval"]},
+        "query": {"type": "string", "minLength": 1},
+        "query_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "answerable": {"type": "boolean"},
+        "gold": {"type": "array", "items": {"$ref": "#/$defs/block"}}
+      },
+      "allOf": [
+        {"if": {"properties": {"answerable": {"const": true}}}, "then": {"properties": {"gold": {"minItems": 1}}}},
+        {"if": {"properties": {"answerable": {"const": false}}}, "then": {"properties": {"gold": {"maxItems": 0}}}}
+      ]
+    }
+  }
+}

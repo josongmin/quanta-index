@@ -514,6 +514,21 @@ rust-verify-quality-concurrency requests="16":
     {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin concurrency_matrix --all-features --locked
     env QUANTA_INDEX_BUILD_LANE=test-daemon-lane bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/concurrency_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/concurrency/latest" --requests-per-client {{requests}}'
 
+# Explicit workspace file-mutation to generation-pinned lexical visibility.
+# This measures the ingest receipt through seal/activation/query path, not a watcher.
+rust-verify-quality-freshness samples="20":
+    python3 tools/ci/timing/check_host_contention.py
+    mkdir -p artifacts/search-quality/freshness/latest
+    {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin freshness_matrix --all-features --locked
+    env QUANTA_INDEX_BUILD_LANE=test-daemon-lane bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/freshness_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/freshness/latest" --samples {{samples}}'
+
+# Scheduled arrivals over real query IPC; record offered/achieved QPS and tails.
+rust-verify-quality-open-loop:
+    python3 tools/ci/timing/check_host_contention.py
+    mkdir -p artifacts/search-quality/open-loop/latest
+    {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin open_loop_matrix --all-features --locked
+    env QUANTA_INDEX_BUILD_LANE=test-daemon-lane bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/open_loop_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/open-loop/latest"'
+
 # Operator-ergonomics rail (J7Q-05). Blocking dimension: ops.
 # Proves: read-only operator-diagnosis surfaces are machine-readable and preserve
 # provenance — route (engines_touched) + serving generation, the typed-error code
@@ -542,7 +557,8 @@ rust-verify-quality-ui:
     env QUANTA_INDEX_BUILD_LANE=test-daemon-lane bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/ui_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/ui/latest"'
 
 # Aggregate quality gate (J7Q-08). Orchestrates the LIVE per-dimension rails
-# (relevance, ambiguity, snippet, scale, tail, ANN, concurrency, ops, ui) and records an
+# (relevance, ambiguity, snippet, scale, tail, ANN, concurrency, freshness,
+# open-loop, ops, ui) and records an
 # integration summary WITHOUT erasing dimension boundaries. This is not a
 # substitute for per-dimension closeout. All registered quality dimensions are now
 # live; a future dimension would be added as `pending` until its rail lands.
@@ -554,6 +570,8 @@ rust-verify-quality-all:
     @just rust-verify-quality-tail
     @just rust-verify-quality-ann
     @just rust-verify-quality-concurrency
+    @just rust-verify-quality-freshness
+    @just rust-verify-quality-open-loop
     @just rust-verify-quality-ops
     @just rust-verify-quality-ui
     python3 tools/ci/lint/check-bench-artifacts.py --profile quality-full --require --skip-baselines

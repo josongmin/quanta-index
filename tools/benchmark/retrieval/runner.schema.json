@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://quanta-index.invalid/benchmark/retrieval/runner-v1",
+  "title": "Externally recorded retrieval results v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "query_pack_sha256", "runner", "results"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "query_pack_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "runner": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "revision", "run_id", "tokenizer", "gold_access"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "revision": {"type": "string", "minLength": 1},
+        "run_id": {"type": "string", "minLength": 1},
+        "tokenizer": {"const": "qi-regex-v1"},
+        "gold_access": {"const": false}
+      }
+    },
+    "results": {"type": "array", "items": {"$ref": "#/$defs/result"}}
+  },
+  "$defs": {
+    "candidate": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "start_line", "end_line", "file_sha256", "block_sha256", "tokens"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "start_line": {"type": "integer", "minimum": 1},
+        "end_line": {"type": "integer", "minimum": 1},
+        "file_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "block_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "tokens": {"type": "integer", "minimum": 1}
+      }
+    },
+    "result": {
+      "type": "object", "additionalProperties": false,
+      "required": ["task_id", "route", "abstain", "candidates"],
+      "properties": {
+        "task_id": {"type": "string", "minLength": 1},
+        "route": {"type": "string", "minLength": 1},
+        "abstain": {"type": "boolean"},
+        "candidates": {"type": "array", "items": {"$ref": "#/$defs/candidate"}}
+      }
+    }
+  }
+}

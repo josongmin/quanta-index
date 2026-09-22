@@ -37,7 +37,8 @@ use quanta_index_searchd_harness::artifact::{
     model_revision_of,
 };
 use quanta_index_searchd_harness::bench_support::{
-    QueryOutcome, bench_row, fixture_corpus_files, prepare_cold_runtime, run_scenario_query,
+    QueryOutcome, ScenarioTruthMode, bench_row, fixture_corpus_files, prepare_cold_runtime,
+    run_scenario_query, validate_scenario_outcome,
 };
 use quanta_index_searchd_harness::scenarios::{DslBenchScenario, SCENARIOS, scenario_by_id};
 use quanta_index_searchd_harness::{E2eErrorCode, E2eRuntime};
@@ -94,16 +95,31 @@ fn run_scenario(scenario: &DslBenchScenario) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    emit_stdout(&measured_sample(&mut runtime, scenario));
-    ExitCode::SUCCESS
+    match measured_sample(&mut runtime, scenario) {
+        Ok(sample) => {
+            emit_stdout(&sample);
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            emit_stderr(&format!(
+                "dsl_cold_matrix: scenario {}: {err:#}",
+                scenario.id
+            ));
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// Time exactly one cold query and build its JSON sample.
-fn measured_sample(runtime: &mut E2eRuntime, scenario: &DslBenchScenario) -> serde_json::Value {
+fn measured_sample(
+    runtime: &mut E2eRuntime,
+    scenario: &DslBenchScenario,
+) -> AnyResult<serde_json::Value> {
     let started = Instant::now();
     let outcome = run_scenario_query(runtime, scenario);
     let first_query_ms = started.elapsed().as_secs_f64() * 1000.0;
-    serde_json::json!({
+    validate_scenario_outcome(scenario, ScenarioTruthMode::IsolatedFixture, &outcome)?;
+    Ok(serde_json::json!({
         "scenario_id": scenario.id,
         "route_family": scenario.route_family.as_str(),
         "syntax": scenario.syntax.as_str(),
@@ -115,7 +131,7 @@ fn measured_sample(runtime: &mut E2eRuntime, scenario: &DslBenchScenario) -> ser
         "engine_touched": outcome.engine_touched,
         "early_stop_reason": outcome.early_stop_reason,
         "model_revision": model_revision_of(runtime.embedder_profile()),
-    })
+    }))
 }
 
 /// One `--scenario` sample as the assembler reads it back.
@@ -177,6 +193,11 @@ fn parse_sample(sample: &serde_json::Value) -> AnyResult<ColdSample> {
                 anyhow::anyhow!("sample first_query_ms is not a number: {value}")
             })?),
         };
+    if first_query_ms.is_some_and(|value| !value.is_finite() || value < 0.0) {
+        return Err(anyhow::anyhow!(
+            "sample first_query_ms is not finite non-negative: {sample}"
+        ));
+    }
     let engine_touched = sample
         .get("engine_touched")
         .and_then(serde_json::Value::as_array)
@@ -213,10 +234,8 @@ fn parse_sample(sample: &serde_json::Value) -> AnyResult<ColdSample> {
 
 /// Read every sample on stdin and write the cold artifact.
 ///
-/// Every scenario in the authority must have exactly `samples` samples
-/// unless one early-stopped, in which case its row is unmeasured; a
-/// scenario with no sample at all, or a sample naming an unknown scenario,
-/// is a refusal.
+/// Every scenario in the authority must have exactly `samples` valid samples.
+/// A missing, early-stopped, mislabeled or semantically wrong sample is refused.
 fn assemble(out: &Path, samples_per_scenario: usize) -> AnyResult<()> {
     let git_head = GitHeadV1::resolve(Path::new("."))?;
     let host = HostV1::observe()?;
@@ -226,10 +245,31 @@ fn assemble(out: &Path, samples_per_scenario: usize) -> AnyResult<()> {
     let mut by_scenario: BTreeMap<String, Vec<ColdSample>> = BTreeMap::new();
     for sample in &samples {
         let parsed = parse_sample(sample)?;
-        if scenario_by_id(&parsed.scenario_id).is_none() {
+        let scenario = scenario_by_id(&parsed.scenario_id).ok_or_else(|| {
+            anyhow::anyhow!("sample names unknown scenario {:?}", parsed.scenario_id)
+        })?;
+        for (field, expected) in [
+            ("mode", BenchMode::Cold.as_str()),
+            ("route_family", scenario.route_family.as_str()),
+            ("syntax", scenario.syntax.as_str()),
+        ] {
+            let actual = string_field(sample, field)?;
+            if actual != expected {
+                return Err(anyhow::anyhow!(
+                    "scenario {} sample {field}={actual:?}, expected {expected:?}",
+                    scenario.id
+                ));
+            }
+        }
+        validate_scenario_outcome(
+            scenario,
+            ScenarioTruthMode::IsolatedFixture,
+            &parsed.outcome,
+        )?;
+        if parsed.first_query_ms.is_none() {
             return Err(anyhow::anyhow!(
-                "sample names unknown scenario {:?}",
-                parsed.scenario_id
+                "scenario {} sample has null first_query_ms",
+                scenario.id
             ));
         }
         by_scenario
@@ -238,21 +278,25 @@ fn assemble(out: &Path, samples_per_scenario: usize) -> AnyResult<()> {
             .push(parsed);
     }
     let mut rows = Vec::with_capacity(SCENARIOS.len());
-    let mut model_revision: Option<String> = None;
+    let mut model_revision: Option<Option<String>> = None;
     for scenario in SCENARIOS {
         let Some(scenario_samples) = by_scenario.remove(scenario.id) else {
             return Err(anyhow::anyhow!("no samples for scenario {}", scenario.id));
         };
-        let early_stopped = scenario_samples
-            .iter()
-            .find(|sample| sample.outcome.early_stop_reason.is_some());
         let Some(last) = scenario_samples.last() else {
             return Err(anyhow::anyhow!("no samples for scenario {}", scenario.id));
         };
-        model_revision.clone_from(&last.model_revision);
-        if let Some(stopped) = early_stopped {
-            rows.push(bench_row(scenario, clone_outcome(&stopped.outcome), None));
-            continue;
+        for sample in &scenario_samples {
+            if let Some(previous) = &model_revision {
+                if previous != &sample.model_revision {
+                    return Err(anyhow::anyhow!(
+                        "scenario {} sample model_revision differs from other samples",
+                        scenario.id
+                    ));
+                }
+            } else {
+                model_revision = Some(sample.model_revision.clone());
+            }
         }
         if scenario_samples.len() != samples_per_scenario {
             return Err(anyhow::anyhow!(
@@ -300,7 +344,8 @@ fn assemble(out: &Path, samples_per_scenario: usize) -> AnyResult<()> {
                     ("scenario_count", SCENARIOS.len().to_string()),
                 ],
             ),
-            model_revision,
+            model_revision: model_revision
+                .ok_or_else(|| anyhow::anyhow!("no model revision samples"))?,
         },
         host,
         resources: ResourceUsageV1::observe_self()?,
