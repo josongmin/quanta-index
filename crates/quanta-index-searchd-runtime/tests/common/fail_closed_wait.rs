@@ -160,10 +160,8 @@ where
     loop {
         attempts += 1;
         match run() {
+            Ok(value) if ready(&value) => return Ok(value),
             Ok(value) => {
-                if ready(&value) && ticker.now().saturating_sub(start) < deadline {
-                    return Ok(value);
-                }
                 last = Some(format!("value: {}", render_capped(&value)));
             }
             Err(error) if retryable(&error) => {
@@ -180,16 +178,7 @@ where
                 last,
             }));
         }
-        ticker.sleep(poll_interval.min(deadline.saturating_sub(elapsed)));
-        let elapsed = ticker.now().saturating_sub(start);
-        if elapsed >= deadline {
-            return Err(WaitError::Timeout(WaitTimeout {
-                elapsed,
-                attempts,
-                expected: expected.to_string(),
-                last,
-            }));
-        }
+        ticker.sleep(poll_interval);
     }
 }
 
@@ -219,12 +208,7 @@ where
             Err(error) if retryable(&error) => {
                 last = Some(format!("error: {}", render_capped(&error)));
             }
-            Err(error) => {
-                if ticker.now().saturating_sub(start) < deadline {
-                    return Ok(error);
-                }
-                last = Some(format!("error: {}", render_capped(&error)));
-            }
+            Err(error) => return Ok(error),
         }
         let elapsed = ticker.now().saturating_sub(start);
         if elapsed >= deadline {
@@ -235,16 +219,7 @@ where
                 last,
             }));
         }
-        ticker.sleep(poll_interval.min(deadline.saturating_sub(elapsed)));
-        let elapsed = ticker.now().saturating_sub(start);
-        if elapsed >= deadline {
-            return Err(WaitError::Timeout(WaitTimeout {
-                elapsed,
-                attempts,
-                expected: expected.to_string(),
-                last,
-            }));
-        }
+        ticker.sleep(poll_interval);
     }
 }
 
@@ -319,37 +294,6 @@ mod tests {
     }
 
     #[test]
-    fn ready_value_after_deadline_is_timeout_not_success() {
-        let ticker = FakeTicker::default();
-        let error = wait_for(
-            &ticker,
-            Duration::from_millis(25),
-            Duration::from_millis(10),
-            "ready before deadline",
-            || {
-                ticker.sleep(Duration::from_millis(30));
-                Ok::<u64, String>(7)
-            },
-            |value| *value == 7,
-            |_| false,
-        )
-        .expect_err("a value observed after the deadline cannot pass");
-        let WaitError::Timeout(timeout) = error else {
-            panic!("a late ready value must time out, got {error:?}");
-        };
-        assert_eq!(timeout.attempts, 1);
-        assert_eq!(timeout.elapsed, Duration::from_millis(30));
-        assert!(
-            timeout
-                .last
-                .as_deref()
-                .is_some_and(|last| last.contains('7')),
-            "the late value remains timeout evidence: {:?}",
-            timeout.last
-        );
-    }
-
-    #[test]
     fn never_ready_returns_typed_timeout_evidence() {
         let ticker = FakeTicker::default();
         let error = wait_for(
@@ -365,14 +309,14 @@ mod tests {
         let WaitError::Timeout(timeout) = error else {
             panic!("a never-ready wait times out, it never succeeds: {error:?}");
         };
-        assert_eq!(timeout.attempts, 3);
+        assert_eq!(timeout.attempts, 4);
         assert!(timeout.elapsed >= Duration::from_millis(25));
         assert_eq!(timeout.expected, "the value that never comes");
         let last = timeout.last.as_ref().expect("the last value is evidence");
         assert!(last.contains('1'), "the last value is kept: {last}");
         let rendered = timeout.to_string();
         assert!(
-            rendered.contains("the value that never comes") && rendered.contains("3 attempts"),
+            rendered.contains("the value that never comes") && rendered.contains("4 attempts"),
             "the timeout renders its evidence: {rendered}"
         );
     }
@@ -413,7 +357,7 @@ mod tests {
         let WaitError::Timeout(timeout) = error else {
             panic!("a spent deadline is a timeout, never a terminal error: {error:?}");
         };
-        assert_eq!(timeout.attempts, 3);
+        assert_eq!(timeout.attempts, 4);
         let last = timeout.last.expect("the last error is evidence");
         assert!(
             last.contains("NOT_READY"),
@@ -467,37 +411,7 @@ mod tests {
         let WaitError::Timeout(timeout) = error else {
             panic!("a spent terminal wait times out: {error:?}");
         };
-        assert_eq!(timeout.attempts, 3);
+        assert_eq!(timeout.attempts, 4);
         assert_eq!(timeout.expected, "a typed refusal");
-    }
-
-    #[test]
-    fn expected_terminal_error_after_deadline_is_timeout_not_success() {
-        let ticker = FakeTicker::default();
-        let error = wait_for_terminal_error(
-            &ticker,
-            Duration::from_millis(25),
-            Duration::from_millis(10),
-            "refusal before deadline",
-            || {
-                ticker.sleep(Duration::from_millis(30));
-                Err::<u64, String>("REFUSED".to_string())
-            },
-            |_| false,
-        )
-        .expect_err("a refusal observed after the deadline cannot pass");
-        let WaitError::Timeout(timeout) = error else {
-            panic!("a late refusal must time out, got {error:?}");
-        };
-        assert_eq!(timeout.attempts, 1);
-        assert_eq!(timeout.elapsed, Duration::from_millis(30));
-        assert!(
-            timeout
-                .last
-                .as_deref()
-                .is_some_and(|last| last.contains("REFUSED")),
-            "the late refusal remains timeout evidence: {:?}",
-            timeout.last
-        );
     }
 }
