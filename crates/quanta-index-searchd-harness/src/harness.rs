@@ -27,29 +27,28 @@ use quanta_index_contract::lex::{
 };
 use quanta_index_contract::{
     AuxEpochV1, BatchIngestMode, BatchPublishReceipt, CapabilityStatusV1, ChunkId, ChunkRecord,
-    CurrentGenerationRequest, EngineTouched, ExplainCandidateV1, FileOwnerProjectionRow,
-    GenerationPin, GenerationSnapshot, GenerationStatusReport, GenerationStatusRequest,
-    HistoryCursor, HistoryOrderV1, HistoryQueryRequest, HistoryScoreV1, HybridCandidateV1,
-    HybridQueryRequest, LexicalCandidate, LexicalCursor, ManifestGeneration,
+    ContinuationTokenV2, CurrentGenerationRequest, EngineTouched, ExplainCandidateV1,
+    FileOwnerProjectionRow, GenerationPin, GenerationSnapshot, GenerationStatusReport,
+    GenerationStatusRequest, HistoryOrderV1, HistoryQueryRequest, HistoryScoreV1,
+    HybridCandidateV1, HybridQueryRequest, LexicalCandidate, ManifestGeneration,
     MetricsSnapshotRequest, MetricsSnapshotV1, OwnerDocKind, QuarantineDiscardAck,
     QuarantineDiscardRequest, QuarantineInventoryRequest, QuarantineInventoryV1,
-    QuarantineTargetV1, QueryResultWindowV1, RawFallbackReasonV1, RepoId, RepoRelativePath,
-    RevisionId, RuntimeMetadataCursorV1, RuntimeMetadataQueryRequest,
-    SearchCorpusGenerationIdentityV1, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
-    SearchCorpusTombstoneScope, SearchExplanation,
-    SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
-    SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponse,
-    SearchPlaneControlIpcResponseEnvelope, SearchPlaneErrorCodeV2, SearchPlaneExplainQueryRequest,
-    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
+    QuarantineTargetV1, QueryResultWindowV2, RawFallbackReasonV1, RepoId, RepoRelativePath,
+    RevisionId, RuntimeMetadataQueryRequest, SearchCorpusGenerationIdentityV1,
+    SearchCorpusIngestBatch, SearchCorpusReplaceScope, SearchCorpusTombstoneScope,
+    SearchExplanation, SearchPlaneActivateSearchCorpusGenerationCasRequest,
+    SearchPlaneControlIpcRequest, SearchPlaneControlIpcRequestEnvelope,
+    SearchPlaneControlIpcResponse, SearchPlaneControlIpcResponseEnvelope, SearchPlaneErrorCodeV2,
+    SearchPlaneExplainQueryRequest, SearchPlaneIngestIpcRequest,
+    SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneIpcError, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope, SearchPlaneRollbackSearchCorpusGenerationCasRequest,
     SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneStructuralQueryResponse,
     SearchPlaneTrackKind, SemanticContentRootsV1, SemanticCorpusKindV1, SemanticQueryRequest,
     SemanticSourceRecordV1, SemanticSourceReplaceScopeV1, SemanticSourceScopeKeyV1, SourceRoleV1,
-    StructuralCandidate, StructuralCursorV1, StructuralIngestBatch, StructuralQueryRequest,
-    StructuralReplaceScope, StructuralTreeRecord, SymbolId, TextQueryRequest, TextQueryResponse,
-    TextQuerySyntax,
+    StructuralCandidate, StructuralIngestBatch, StructuralQueryRequest, StructuralReplaceScope,
+    StructuralTreeRecord, SymbolId, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
 };
 use quanta_index_core::{
     IngestResourcePolicy, IntegrityScrubPolicyV1, LexicalWriterPolicy, ProcessMemoryProbePort,
@@ -309,12 +308,12 @@ pub struct E2eHistoryResult {
     /// recency.
     pub scores: Vec<Option<HistoryScoreV1>>,
     /// The page's window and continuation, when the daemon answered.
-    pub window: Option<QueryResultWindowV1>,
+    pub window: Option<QueryResultWindowV2>,
     /// The history authority epoch the page was cut from, when the daemon
     /// answered (QI-BB-020 W2).
     pub read_epoch: Option<AuxEpochV1>,
     pub examined: u64,
-    pub next_cursor: Option<HistoryCursor>,
+    pub next_cursor: Option<ContinuationTokenV2>,
     pub typed_error: Option<E2eTypedError>,
 }
 
@@ -412,7 +411,7 @@ impl<R> E2eRoutePage<R> {
 pub struct E2eRouteWindowProbe {
     pub typed_error: Option<E2eTypedError>,
     pub returned_rows: usize,
-    pub window: Option<QueryResultWindowV1>,
+    pub window: Option<QueryResultWindowV2>,
 }
 
 pub struct E2eExplainResult {
@@ -2113,7 +2112,7 @@ impl E2eRuntime {
         query_text: &str,
         top_k: u32,
         order: HistoryOrderV1,
-        cursor: Option<HistoryCursor>,
+        cursor: Option<ContinuationTokenV2>,
     ) -> E2eHistoryResult {
         let request_id = self.request_id_counter.fetch_add(1, Ordering::Relaxed);
         let envelope = SearchPlaneQueryIpcRequestEnvelope {
@@ -2264,7 +2263,7 @@ impl E2eRuntime {
         syntax: TextQuerySyntax,
         query_text: &str,
         top_k: u32,
-        cursor: Option<RuntimeMetadataCursorV1>,
+        cursor: Option<ContinuationTokenV2>,
     ) -> AnyResult<E2eRoutePage<SearchPlaneRuntimeMetadataQueryResponse>> {
         let pin = self.last_sealed_pin();
         self.keyset_page_query(
@@ -2305,7 +2304,7 @@ impl E2eRuntime {
         query_text: &str,
         top_k: u32,
         pin: Option<GenerationPin>,
-        cursor: Option<LexicalCursor>,
+        cursor: Option<ContinuationTokenV2>,
     ) -> AnyResult<E2eRoutePage<TextQueryResponse>> {
         self.keyset_page_query(
             SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
@@ -2342,7 +2341,7 @@ impl E2eRuntime {
         syntax: TextQuerySyntax,
         query_text: &str,
         top_k: u32,
-        cursor: Option<StructuralCursorV1>,
+        cursor: Option<ContinuationTokenV2>,
     ) -> AnyResult<E2eRoutePage<SearchPlaneStructuralQueryResponse>> {
         let pin = self.last_sealed_pin();
         self.structural_page_with_pin(syntax, query_text, top_k, pin, cursor)
@@ -2354,7 +2353,7 @@ impl E2eRuntime {
         query_text: &str,
         top_k: u32,
         pin: Option<GenerationPin>,
-        cursor: Option<StructuralCursorV1>,
+        cursor: Option<ContinuationTokenV2>,
     ) -> AnyResult<E2eRoutePage<SearchPlaneStructuralQueryResponse>> {
         self.keyset_page_query(
             SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {

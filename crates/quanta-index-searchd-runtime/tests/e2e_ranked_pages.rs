@@ -15,8 +15,7 @@
 use std::error::Error;
 
 use quanta_index_contract::{
-    GenerationPin, LexicalCursor, ManifestGeneration, QUERY_CURSOR_GENERATION_MISMATCH_CODE,
-    TextQueryResponse, TextQuerySyntax,
+    ContinuationTokenV2, GenerationPin, SearchPlaneErrorCodeV2, TextQueryResponse, TextQuerySyntax,
 };
 use quanta_index_search_plane::ResponsePayloadBudget;
 use quanta_index_searchd_harness as e2e_harness;
@@ -67,7 +66,7 @@ fn walk(
 ) -> Result<(Vec<String>, usize), Box<dyn Error>> {
     let mut rows: Vec<String> = Vec::new();
     let mut pages = 0_usize;
-    let mut cursor: Option<LexicalCursor> = None;
+    let mut cursor: Option<ContinuationTokenV2> = None;
     loop {
         let page = served(rt.query_text_page(
             TextQuerySyntax::Native,
@@ -77,7 +76,7 @@ fn walk(
             cursor.clone(),
         )?)?;
         pages = pages.saturating_add(1);
-        if page.window.has_more() != page.next_cursor.is_some() {
+        if page.window.has_more() != Some(page.next_cursor.is_some()) {
             return Err(format!("page {pages}: has_more and the cursor disagree").into());
         }
         rows.extend(paths(&page));
@@ -130,7 +129,7 @@ fn a_tied_corpus_walks_page_by_page_in_path_order() -> TestResult {
 /// cursor walk still returns every row once in order.
 #[test]
 fn a_byte_budget_cuts_pages_with_an_explicit_continuation() -> TestResult {
-    let budget = ResponsePayloadBudget::new(1_200)?;
+    let budget = ResponsePayloadBudget::new(2_500)?;
     let (mut rt, pin) = seeded(E2eRuntime::boot_with_query_response_budget(budget)?)?;
     let first = served(rt.query_text_page(
         TextQuerySyntax::Native,
@@ -143,9 +142,12 @@ fn a_byte_budget_cuts_pages_with_an_explicit_continuation() -> TestResult {
     if encoded > budget.max_payload_bytes() {
         return Err(format!("a cut page encodes to {encoded} bytes").into());
     }
-    if first.results.is_empty() || first.results.len() >= FILES || !first.window.has_more() {
+    if first.results.is_empty()
+        || first.results.len() >= FILES
+        || first.window.has_more() != Some(true)
+    {
         return Err(format!(
-            "nine rows do not fit 1200 bytes but one does: {} rows",
+            "nine rows do not fit 2500 bytes but one does: {} rows",
             first.results.len()
         )
         .into());
@@ -162,13 +164,18 @@ fn a_byte_budget_cuts_pages_with_an_explicit_continuation() -> TestResult {
 #[test]
 fn a_cursor_does_not_continue_in_another_generation() -> TestResult {
     let (mut rt, first_pin) = seeded(E2eRuntime::boot()?)?;
-    let page =
-        served(rt.query_text_page(TextQuerySyntax::Native, QUERY, 2, Some(first_pin), None)?)?;
+    let page = served(rt.query_text_page(
+        TextQuerySyntax::Native,
+        QUERY,
+        2,
+        Some(first_pin.clone()),
+        None,
+    )?)?;
     let cursor = page.next_cursor.ok_or("a two-row page of nine continues")?;
     rt.ingest_text("repo", "src/late.rs", "fn late() { page_needle }")?;
     let next = rt.seal()?;
     rt.activate_last_sealed_generation()?;
-    if next == ManifestGeneration::new(cursor.manifest_generation.get()) {
+    if next == first_pin.manifest_generation {
         return Err("the second seal is a new generation".into());
     }
     let next_pin = GenerationPin::new(rt.repo(), rt.revision(), next);
@@ -180,7 +187,10 @@ fn a_cursor_does_not_continue_in_another_generation() -> TestResult {
         Some(cursor),
     )? {
         E2eRoutePage::Refused(error)
-            if error.code.as_str() == QUERY_CURSOR_GENERATION_MISMATCH_CODE =>
+            if error.code
+                == e2e_harness::E2eErrorCode::Remote(
+                    SearchPlaneErrorCodeV2::CursorContextMismatch,
+                ) =>
         {
             Ok(())
         }

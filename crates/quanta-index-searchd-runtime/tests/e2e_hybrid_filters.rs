@@ -15,8 +15,8 @@ use std::error::Error;
 
 use crate::e2e_harness;
 use quanta_index_contract::{
-    CandidateCountV1, HybridSeedQueryRequest, PlannerStage, QueryConstraintSetV1,
-    QueryResultWindowV1, SearchExplanation, SearchPlaneErrorCodeV2, SearchPlaneQueryIpcRequest,
+    HybridSeedQueryRequest, PlannerStage, QueryConstraintSetV1, QueryResultWindowV2,
+    SearchExplanation, SearchPlaneErrorCodeV2, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcResponse, TextQueryRequest, TextQuerySyntax,
 };
 
@@ -55,7 +55,7 @@ fn ingest_fixture(rt: &mut E2eRuntime) -> Result<Fixture, Box<dyn Error>> {
 
 struct HybridPage {
     ids: Vec<String>,
-    window: QueryResultWindowV1,
+    window: QueryResultWindowV2,
     explanation: SearchExplanation,
 }
 
@@ -144,7 +144,7 @@ fn hybrid_refusal(
 fn hybrid_seed_page(
     rt: &mut E2eRuntime,
     text_query: &str,
-) -> Result<(Vec<String>, QueryResultWindowV1, SearchExplanation), Box<dyn Error>> {
+) -> Result<(Vec<String>, QueryResultWindowV2, SearchExplanation), Box<dyn Error>> {
     let response = rt.query_once(|pin| {
         SearchPlaneQueryIpcRequest::HybridSeed(HybridSeedQueryRequest {
             text_query: TextQueryRequest {
@@ -233,8 +233,15 @@ fn verify_file_filter(rt: &mut E2eRuntime, fixture: &Fixture) -> TestResult {
         )
         .into());
     }
-    if page.window != QueryResultWindowV1::exact(1) {
-        return Err(format!("expected an exact one-row window: {:?}", page.window).into());
+    if page.window.returned() != 1
+        || page.window.candidate_count().lower_bound() != 1
+        || page.window.has_more() == Some(true)
+    {
+        return Err(format!(
+            "expected one admitted row without observed continuation: {:?}",
+            page.window
+        )
+        .into());
     }
     let filters = trace_detail(&page.explanation, "hybrid.filters=")
         .ok_or("the hybrid trace states the push-down class per filter")?;
@@ -266,8 +273,9 @@ fn verify_repo_filter(rt: &mut E2eRuntime, _fixture: &Fixture) -> TestResult {
         )
         .into());
     }
-    if page.window != QueryResultWindowV1::exact(0)
-        || page.window.candidate_count() != CandidateCountV1::Exact(0)
+    if page.window.returned() != 0
+        || page.window.candidate_count().lower_bound() != 0
+        || page.window.has_more() == Some(true)
     {
         return Err(format!("expected an honest empty window: {:?}", page.window).into());
     }
@@ -357,8 +365,14 @@ fn verify_hybrid_seed_filters(rt: &mut E2eRuntime, fixture: &Fixture) -> TestRes
     if seeds != [fixture.alpha.clone()] {
         return Err(format!("file:src/lib.rs must seed alpha alone: {seeds:?}").into());
     }
-    if window != QueryResultWindowV1::exact(1) {
-        return Err(format!("expected an exact one-row window: {window:?}").into());
+    if window.returned() != 1
+        || window.candidate_count().lower_bound() != 1
+        || window.has_more() == Some(true)
+    {
+        return Err(format!(
+            "expected one admitted seed without observed continuation: {window:?}"
+        )
+        .into());
     }
     let admission = trace_detail(&explanation, "hybrid_seed.dense_admission[global]=")
         .ok_or("the seed trace states the dense admission outcome")?;
@@ -372,7 +386,7 @@ fn verify_hybrid_seed_filters(rt: &mut E2eRuntime, fixture: &Fixture) -> TestRes
     }
 
     let (seeds, window, _explanation) = hybrid_seed_page(rt, "repo:other needle")?;
-    if !seeds.is_empty() || window != QueryResultWindowV1::exact(0) {
+    if !seeds.is_empty() || window.returned() != 0 || window.candidate_count().lower_bound() != 0 {
         return Err(format!("an excluded repo must seed nothing: {seeds:?} {window:?}").into());
     }
 

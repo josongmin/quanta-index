@@ -31,11 +31,11 @@
 use std::error::Error;
 
 use quanta_index_contract::{
-    CandidateCountV1, GenerationPin, HistoryOrderV1, HistoryQueryRequest, HybridQueryRequest,
-    HybridSeedQueryRequest, PUBLIC_TOP_K_MAX, QueryConstraintSetV1, QueryResultWindowV1,
-    RuntimeMetadataQueryRequest, SearchPlaneQueryIpcRequest, SemanticQueryRequest,
-    StructuralQueryRequest, SymbolQueryRequest, TOP_K_OUT_OF_RANGE_CODE, TextQueryRequest,
-    TextQuerySyntax,
+    CandidateCountV1, ContinuationTokenV2, GenerationPin, HistoryOrderV1, HistoryQueryRequest,
+    HybridQueryRequest, HybridSeedQueryRequest, PUBLIC_TOP_K_MAX, QueryConstraintSetV1,
+    QueryResultWindowV2, RuntimeMetadataQueryRequest, SearchPlaneQueryIpcRequest,
+    SemanticQueryRequest, StructuralQueryRequest, SymbolQueryRequest, TOP_K_OUT_OF_RANGE_CODE,
+    TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_ipc::{ClientIoPolicy, encode_request, send_request};
 use quanta_index_searchd_harness as e2e_harness;
@@ -273,7 +273,7 @@ fn runtime_and_structural_windows_report_the_continuation() -> TestResult {
             Some(window)
                 if page_of_one.returned_rows == 1
                     && window.returned() == 1
-                    && window.has_more()
+                    && window.has_more() == Some(true)
                     && window.candidate_count() == expected_at_one => {}
             other => failures.push(format!(
                 "{name}: top_k=1 over two hits must report one row and has_more with {expected_at_one:?}, got rows={} window={other:?}",
@@ -289,7 +289,7 @@ fn runtime_and_structural_windows_report_the_continuation() -> TestResult {
             Some(window)
                 if whole.returned_rows == 2
                     && window.returned() == 2
-                    && !window.has_more()
+                    && window.has_more() == Some(false)
                     && window.candidate_count() == CandidateCountV1::Exact(2) => {}
             other => failures.push(format!(
                 "{name}: top_k=10 over two hits must return both with an exact count, got rows={} window={other:?}",
@@ -306,22 +306,22 @@ fn runtime_and_structural_windows_report_the_continuation() -> TestResult {
 /// One keyset route as the continuation check sees it: how to fetch a
 /// page after a cursor and how to read the page's rows, window and
 /// cursor.
-struct KeysetRoute<R, C> {
+struct KeysetRoute<R> {
     name: &'static str,
-    page: fn(&mut E2eRuntime, Option<C>) -> Result<E2eRoutePage<R>, anyhow::Error>,
+    page:
+        fn(&mut E2eRuntime, Option<ContinuationTokenV2>) -> Result<E2eRoutePage<R>, anyhow::Error>,
     rows: fn(&R) -> Vec<String>,
-    window: fn(&R) -> QueryResultWindowV1,
-    cursor: fn(&R) -> Option<C>,
-    cursor_id: fn(&C) -> &str,
+    window: fn(&R) -> QueryResultWindowV2,
+    cursor: fn(&R) -> Option<ContinuationTokenV2>,
 }
 
 /// Walk `route` at `top_k = 1` over the two-hit fixture and return the
 /// failures observed.
 ///
-/// Page one's cursor names its row, the continuation returns the other
-/// row with no cursor, and the two pages together are the whole set in
-/// candidate-id order, once each.
-fn check_two_page_walk<R, C>(rt: &mut E2eRuntime, route: &KeysetRoute<R, C>) -> Vec<String> {
+/// Page one returns exactly one row and an opaque continuation; page two
+/// returns the other row without continuation. Together they cover the
+/// candidate-id-ordered set exactly once.
+fn check_two_page_walk<R>(rt: &mut E2eRuntime, route: &KeysetRoute<R>) -> Vec<String> {
     let name = route.name;
     let first = match (route.page)(rt, None) {
         Ok(E2eRoutePage::Served(page)) => page,
@@ -333,13 +333,15 @@ fn check_two_page_walk<R, C>(rt: &mut E2eRuntime, route: &KeysetRoute<R, C>) -> 
     let first_rows = (route.rows)(&first);
     let cursor = match (route.cursor)(&first) {
         Some(cursor)
-            if first_rows.last().map(String::as_str) == Some((route.cursor_id)(&cursor)) =>
+            if first_rows.len() == 1
+                && (route.window)(&first).returned() == 1
+                && (route.window)(&first).has_more() == Some(true) =>
         {
             cursor
         }
         _ => {
             return vec![format!(
-                "{name}: page one of two names its row as the cursor, got rows {first_rows:?} window {:?}",
+                "{name}: page one of two must return one row and a continuation, got rows {first_rows:?} window {:?}",
                 (route.window)(&first)
             )];
         }
@@ -363,7 +365,7 @@ fn check_two_page_walk<R, C>(rt: &mut E2eRuntime, route: &KeysetRoute<R, C>) -> 
         ));
     }
     let window = (route.window)(&second);
-    if window.has_more()
+    if window.has_more() != Some(false)
         || (route.cursor)(&second).is_some()
         || window.candidate_count() != CandidateCountV1::Exact(1)
     {
@@ -397,9 +399,8 @@ fn runtime_and_structural_cursors_continue_the_page() -> TestResult {
                     .map(|row| row.candidate_id.clone())
                     .collect()
             },
-            window: |page| page.window,
+            window: |page| page.window.clone(),
             cursor: |page| page.next_cursor.clone(),
-            cursor_id: |cursor| cursor.candidate_id.as_str(),
         },
     );
     failures.extend(check_two_page_walk(
@@ -415,9 +416,8 @@ fn runtime_and_structural_cursors_continue_the_page() -> TestResult {
                     .map(|row| row.candidate_id.clone())
                     .collect()
             },
-            window: |page| page.window,
+            window: |page| page.window.clone(),
             cursor: |page| page.next_cursor.clone(),
-            cursor_id: |cursor| cursor.candidate_id.as_str(),
         },
     ));
     if !failures.is_empty() {
@@ -432,7 +432,7 @@ fn runtime_and_structural_cursors_continue_the_page() -> TestResult {
 /// an independent check on the values as they crossed the wire, not on the
 /// constructor that produced them.
 fn window_contradiction(
-    window: QueryResultWindowV1,
+    window: &QueryResultWindowV2,
     returned_rows: usize,
     top_k: u32,
 ) -> Option<String> {
@@ -454,19 +454,20 @@ fn window_contradiction(
         ));
     }
     match (window.candidate_count(), window.has_more()) {
-        (CandidateCountV1::Exact(exact), false) if exact == returned => None,
-        (CandidateCountV1::Exact(exact), true)
+        (CandidateCountV1::Exact(exact), Some(false)) if exact == returned => None,
+        (CandidateCountV1::Exact(exact), Some(true))
             if exact > returned && returned == u64::from(top_k) =>
         {
             None
         }
-        (CandidateCountV1::AtLeast(lower), true)
+        (CandidateCountV1::AtLeast(lower), Some(true))
             if lower > returned && returned == u64::from(top_k) =>
         {
             None
         }
+        (CandidateCountV1::AtLeast(_), None) => None,
         (count, has_more) => Some(format!(
-            "candidate_count={count:?} has_more={has_more} contradict returned={returned} top_k={top_k}"
+            "candidate_count={count:?} has_more={has_more:?} contradict returned={returned} top_k={top_k}"
         )),
     }
 }
@@ -659,7 +660,7 @@ fn every_route_accepts_the_public_range_including_the_maximum() -> TestResult {
                     }
                     if let Some(window) = observed.window
                         && let Some(contradiction) =
-                            window_contradiction(window, observed.returned_rows, top_k)
+                            window_contradiction(&window, observed.returned_rows, top_k)
                     {
                         failures.push(format!(
                             "{}: top_k={top_k} window contradiction: {contradiction}",
@@ -724,7 +725,7 @@ fn fixture_gives_every_route_at_least_one_row() -> TestResult {
     let window = observed
         .window
         .ok_or("lexical route answered without a wire window")?;
-    if !window.has_more() {
+    if window.has_more() != Some(true) {
         return Err("two-hit fixture at top_k=1 must report has_more".into());
     }
     Ok(())
@@ -810,9 +811,9 @@ fn the_public_maximum_reports_the_continuation_over_ten_thousand_and_one_rows() 
         let window = observed
             .window
             .ok_or_else(|| format!("{} answered without a window", route.name))?;
-        if observed.returned_rows != maximum || !window.has_more() {
+        if observed.returned_rows != maximum || window.has_more() != Some(true) {
             return Err(format!(
-                "{} returned {} rows with has_more={} over {rows} matching rows",
+                "{} returned {} rows with has_more={:?} over {rows} matching rows",
                 route.name,
                 observed.returned_rows,
                 window.has_more()
@@ -820,7 +821,7 @@ fn the_public_maximum_reports_the_continuation_over_ten_thousand_and_one_rows() 
             .into());
         }
         if let Some(contradiction) =
-            window_contradiction(window, observed.returned_rows, PUBLIC_TOP_K_MAX)
+            window_contradiction(&window, observed.returned_rows, PUBLIC_TOP_K_MAX)
         {
             return Err(format!("{}: {contradiction}", route.name).into());
         }
@@ -841,7 +842,7 @@ fn the_public_maximum_reports_the_continuation_over_ten_thousand_and_one_rows() 
             .served("the lexical walk")?;
         pages = pages.saturating_add(1);
         if let Some(contradiction) =
-            window_contradiction(page.window, page.results.len(), PUBLIC_TOP_K_MAX)
+            window_contradiction(&page.window, page.results.len(), PUBLIC_TOP_K_MAX)
         {
             return Err(format!("page {pages}: {contradiction}").into());
         }
@@ -851,11 +852,11 @@ fn the_public_maximum_reports_the_continuation_over_ten_thousand_and_one_rows() 
             }
         }
         match (page.window.has_more(), page.next_cursor) {
-            (true, Some(next)) => cursor = Some(next),
-            (false, None) => break,
+            (Some(true), Some(next)) => cursor = Some(next),
+            (Some(false), None) => break,
             (has_more, next) => {
                 return Err(format!(
-                    "page {pages}: has_more={has_more} but the cursor is {next:?}"
+                    "page {pages}: has_more={has_more:?} but the cursor is {next:?}"
                 )
                 .into());
             }

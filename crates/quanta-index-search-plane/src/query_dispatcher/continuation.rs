@@ -203,3 +203,57 @@ fn push_str(hasher: &mut Sha256, value: &str) {
     hasher.update(u64::try_from(value.len()).unwrap_or(u64::MAX).to_be_bytes());
     hasher.update(value.as_bytes());
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quanta_index_contract::{LqSpan, ManifestGeneration, RepoId, RevisionId};
+
+    #[test]
+    fn the_boundary_epoch_must_agree_with_the_signed_envelope_epoch() {
+        let authority = CursorAuthorityV2::process_local().expect("ephemeral authority");
+        let pin = GenerationPin::new(
+            RepoId::new("repo-a").expect("repo"),
+            RevisionId::new("rev-a").expect("revision"),
+            ManifestGeneration::new(3),
+        );
+        let query = LqQuery::empty(LqSpan::eof(0));
+        let constraints = QueryConstraintSetV1::unconstrained();
+        let context = CursorRequestContextV2 {
+            route: CursorRouteV2::History,
+            pin: &pin,
+            query: &query,
+            constraints: &constraints,
+            order: "recency",
+            cap: 2,
+        };
+        // A validly signed envelope can still be internally inconsistent.
+        // Its epoch is not authoritative over the decoded boundary.
+        let token = authority
+            .mint(
+                &1_u64,
+                &context,
+                vec![CursorAuxEpochV2 {
+                    kind: quanta_index_contract::CursorAuxEpochKindV2::History,
+                    epoch: 2,
+                }],
+            )
+            .expect("signed inconsistent fixture");
+        let opened = authority.open::<u64>(&token).expect("signed token");
+        let result = authority.require_context(
+            &opened,
+            &context,
+            vec![CursorAuxEpochV2 {
+                kind: quanta_index_contract::CursorAuxEpochKindV2::History,
+                epoch: opened.boundary,
+            }],
+        );
+        assert!(matches!(
+            result,
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::CursorContextMismatch,
+                ..
+            })
+        ));
+    }
+}

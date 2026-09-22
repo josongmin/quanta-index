@@ -11,17 +11,16 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use quanta_index_contract::{
-    AuxEpochV1, EarlyStopReason, EngineTouched, ExplainCandidateV1, GenerationPin, HistoryCursor,
-    HistoryOrderV1, HistoryQueryRequest, HybridCandidateV1, HybridQueryRequest,
+    AuxEpochV1, ContinuationTokenV2, EarlyStopReason, EngineTouched, ExplainCandidateV1,
+    GenerationPin, HistoryOrderV1, HistoryQueryRequest, HybridCandidateV1, HybridQueryRequest,
     HybridQueryResponse, HybridSeedQueryRequest, HybridSeedQueryResponse, LexicalCandidate,
-    LexicalCursor, ManifestGeneration, PlannerTraceEntry, QueryConstraintSetV1, QueryErrorRepair,
-    QueryResultWindowV1, RepoId, RepoMapDocType, RepoMapFocusSubjectDto, RepoMapQueryRequest,
-    RevisionId, RuntimeMetadataCursorV1, RuntimeMetadataQueryRequest, SearchExplanation,
-    SearchPlaneHistoryQueryResponse, SearchPlaneQueryIpcResponse,
-    SearchPlaneQueryIpcResponseEnvelope, SearchPlaneRuntimeMetadataQueryResponse,
-    SearchPlaneStructuralQueryResponse, SemanticQueryRequest, StructuralCursorV1,
-    StructuralQueryRequest, SymbolCandidate, SymbolQueryRequest, SymbolQueryResponse,
-    TextQueryRequest, TextQueryResponse, TextQuerySyntax,
+    ManifestGeneration, PlannerTraceEntry, QueryConstraintSetV1, QueryErrorRepair,
+    QueryResultWindowV2, RepoId, RepoMapDocType, RepoMapFocusSubjectDto, RepoMapQueryRequest,
+    RevisionId, RuntimeMetadataQueryRequest, SearchExplanation, SearchPlaneHistoryQueryResponse,
+    SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope,
+    SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneStructuralQueryResponse,
+    SemanticQueryRequest, StructuralQueryRequest, SymbolCandidate, SymbolQueryRequest,
+    SymbolQueryResponse, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
     ipc::{
         GenerationStatusReport, MetricHistogramV1, MetricsSnapshotV1, QuarantineDiscardAck,
         QuarantineDiscardOutcomeDtoV1, QuarantineInventoryV1, QuarantineTargetV1,
@@ -426,7 +425,7 @@ fn parse_query_command_flags(
 
 fn parse_lexical(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> CliResult<CliRequest> {
     let page = parse_keyset_page_query(common, rest, "lexical")?;
-    let cursor = page.cursor::<LexicalCursor>()?;
+    let cursor = page.cursor()?;
     Ok(CliRequest::Lexical(TextQueryRequest {
         cursor,
         ..page.text_query
@@ -435,7 +434,7 @@ fn parse_lexical(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> Cli
 
 fn parse_symbol(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> CliResult<CliRequest> {
     let page = parse_keyset_page_query(common, rest, "symbol")?;
-    let cursor = page.cursor::<LexicalCursor>()?;
+    let cursor = page.cursor()?;
     Ok(CliRequest::Symbol(SymbolQueryRequest::from(
         TextQueryRequest {
             cursor,
@@ -449,7 +448,7 @@ fn parse_runtime_metadata(
     rest: &mut VecDeque<String>,
 ) -> CliResult<CliRequest> {
     let page = parse_keyset_page_query(common, rest, "runtime-metadata")?;
-    let cursor = page.cursor::<RuntimeMetadataCursorV1>()?;
+    let cursor = page.cursor()?;
     Ok(CliRequest::RuntimeMetadata(RuntimeMetadataQueryRequest {
         text_query: page.text_query,
         cursor,
@@ -465,17 +464,14 @@ struct KeysetPageQueryArgs {
 }
 
 impl KeysetPageQueryArgs {
-    /// Decode the cursor as the route's own type, or `None` for a fresh
-    /// walk. The JSON is what `--output json` prints as `next_cursor`.
-    fn cursor<C>(&self) -> CliResult<Option<C>>
-    where
-        C: serde::de::DeserializeOwned,
-    {
+    /// Parse only the opaque public token; the daemon owns route binding.
+    /// The JSON is what `--output json` prints as `next_cursor`.
+    fn cursor(&self) -> CliResult<Option<ContinuationTokenV2>> {
         self.cursor_json
             .as_ref()
             .map(|(path, command)| {
                 let raw = read_json_text(path, &format!("{command} cursor"))?;
-                serde_json::from_str::<C>(&raw).map_err(|err| {
+                serde_json::from_str::<ContinuationTokenV2>(&raw).map_err(|err| {
                     CliError::usage(format!(
                         "failed to decode {command} cursor json from {path}: {err}"
                     ))
@@ -573,7 +569,7 @@ fn parse_history(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> Cli
             _ => Ok(false),
         })?;
     let order = order.ok_or_else(|| CliError::usage("missing --order".to_string()))?;
-    let cursor = page.cursor::<HistoryCursor>()?;
+    let cursor = page.cursor()?;
     Ok(CliRequest::History(HistoryQueryRequest {
         text_query: page.text_query,
         order,
@@ -586,7 +582,7 @@ fn parse_structural(
     rest: &mut VecDeque<String>,
 ) -> CliResult<CliRequest> {
     let page = parse_keyset_page_query(common, rest, "structural")?;
-    let cursor = page.cursor::<StructuralCursorV1>()?;
+    let cursor = page.cursor()?;
     Ok(CliRequest::Structural(StructuralQueryRequest {
         text_query: page.text_query,
         cursor,
@@ -1960,7 +1956,7 @@ fn render_pretty(
             &TextQueryResponse {
                 generation: payload.generation.clone(),
                 results: payload.results.clone(),
-                window: payload.window,
+                window: payload.window.clone(),
                 file_owner_rows: None,
                 next_cursor: None,
             },
@@ -2066,7 +2062,7 @@ fn render_hybrid_payload(payload: &HybridQueryResponse, rendered: &mut String) -
     fmt_ok(writeln!(rendered, "kind: hybrid"))?;
     render_generation(&payload.generation, rendered)?;
     fmt_ok(writeln!(rendered, "results: {}", payload.results.len()))?;
-    render_window_line(payload.window, rendered)?;
+    render_window_line(&payload.window, rendered)?;
     for (index, row) in payload.results.iter().enumerate() {
         let display_index = index
             .checked_add(1)
@@ -2117,7 +2113,7 @@ fn render_hybrid_seed_payload(
         "manifest_digest: {} seeds: {} has_more: {}",
         payload.manifest_digest,
         payload.window.returned(),
-        payload.window.has_more()
+        display_has_more(payload.window.has_more())
     ))?;
     for seed in &payload.seed_candidates {
         let contributions = seed
@@ -2179,30 +2175,10 @@ fn render_history_payload(
         "order: {} matched: {matched} examined: {} has_more: {}",
         payload.order,
         payload.examined,
-        payload.window.has_more()
+        display_has_more(payload.window.has_more())
     ))?;
     render_read_epoch_line(payload.read_epoch, rendered)?;
-    if let Some(cursor) = &payload.next_cursor {
-        let score = match cursor.order {
-            quanta_index_contract::HistoryCursorOrderV1::Recency => String::new(),
-            quanta_index_contract::HistoryCursorOrderV1::Relevance { score } => {
-                format!(" score={score}")
-            }
-        };
-        fmt_ok(writeln!(
-            rendered,
-            "next_cursor: order={}{score} committer_time_ms={} sha={}{} aux_epoch={}",
-            cursor.order.order(),
-            cursor.committer_time_ms,
-            cursor.sha.to_hex(),
-            cursor
-                .file_path
-                .as_deref()
-                .map(|path| format!(" file_path={path}"))
-                .unwrap_or_default(),
-            cursor.aux_epoch
-        ))?;
-    }
+    render_continuation_cursor(payload.next_cursor.as_ref(), rendered)?;
     for (index, commit) in payload.commits.iter().enumerate() {
         let display_index = index
             .checked_add(1)
@@ -2252,7 +2228,15 @@ fn render_history_score(score: Option<quanta_index_contract::HistoryScoreV1>) ->
 
 /// One line for a page's window: how many candidates matched (exactly, or
 /// at least) and whether the page cut them (QI-BB-025).
-fn render_window_line(window: QueryResultWindowV1, rendered: &mut String) -> CliResult<()> {
+fn display_has_more(value: Option<bool>) -> &'static str {
+    match value {
+        Some(true) => "true",
+        Some(false) => "false",
+        None => "unknown",
+    }
+}
+
+fn render_window_line(window: &QueryResultWindowV2, rendered: &mut String) -> CliResult<()> {
     let matched = match window.candidate_count() {
         quanta_index_contract::CandidateCountV1::Exact(count) => format!("{count}"),
         quanta_index_contract::CandidateCountV1::AtLeast(count) => format!(">={count}"),
@@ -2260,7 +2244,7 @@ fn render_window_line(window: QueryResultWindowV1, rendered: &mut String) -> Cli
     fmt_ok(writeln!(
         rendered,
         "matched: {matched} has_more: {}",
-        window.has_more()
+        display_has_more(window.has_more())
     ))
 }
 
@@ -2274,7 +2258,7 @@ fn render_read_epoch_line(epoch: AuxEpochV1, rendered: &mut String) -> CliResult
 /// in the shape the history page prints: `order: candidate_id matched: N
 /// examined: M has_more: B`.
 fn render_keyset_page_line(
-    window: QueryResultWindowV1,
+    window: &QueryResultWindowV2,
     examined: u64,
     rendered: &mut String,
 ) -> CliResult<()> {
@@ -2285,7 +2269,7 @@ fn render_keyset_page_line(
     fmt_ok(writeln!(
         rendered,
         "order: candidate_id matched: {matched} examined: {examined} has_more: {}",
-        window.has_more()
+        display_has_more(window.has_more())
     ))
 }
 
@@ -2296,15 +2280,9 @@ fn render_structural_payload(
     fmt_ok(writeln!(rendered, "kind: structural"))?;
     render_generation(&payload.generation, rendered)?;
     fmt_ok(writeln!(rendered, "results: {}", payload.results.len()))?;
-    render_keyset_page_line(payload.window, payload.examined, rendered)?;
+    render_keyset_page_line(&payload.window, payload.examined, rendered)?;
     render_read_epoch_line(payload.read_epoch, rendered)?;
-    if let Some(cursor) = &payload.next_cursor {
-        fmt_ok(writeln!(
-            rendered,
-            "next_cursor: candidate_id={} aux_epoch={}",
-            cursor.candidate_id, cursor.aux_epoch
-        ))?;
-    }
+    render_continuation_cursor(payload.next_cursor.as_ref(), rendered)?;
     for (index, candidate) in payload.results.iter().enumerate() {
         let display_index = index
             .checked_add(1)
@@ -2383,7 +2361,7 @@ fn render_lexical_payload(
             ))?;
         }
     }
-    render_lexical_cursor(payload.next_cursor.as_ref(), rendered)?;
+    render_continuation_cursor(payload.next_cursor.as_ref(), rendered)?;
     if let Some(explanation) = explanation {
         render_explanation(explanation, rendered)?;
     }
@@ -2400,11 +2378,14 @@ fn render_symbol_payload(payload: &SymbolQueryResponse, rendered: &mut String) -
             .ok_or_else(|| CliError::protocol("symbol candidate index overflow".to_string()))?;
         render_symbol_candidate(display_index, candidate, rendered)?;
     }
-    render_lexical_cursor(payload.next_cursor.as_ref(), rendered)
+    render_continuation_cursor(payload.next_cursor.as_ref(), rendered)
 }
 
 /// The continuation of a ranked page, as `--cursor-json` takes it back.
-fn render_lexical_cursor(cursor: Option<&LexicalCursor>, rendered: &mut String) -> CliResult<()> {
+fn render_continuation_cursor(
+    cursor: Option<&ContinuationTokenV2>,
+    rendered: &mut String,
+) -> CliResult<()> {
     if let Some(cursor) = cursor {
         let json = serde_json::to_string(cursor)
             .map_err(|err| CliError::protocol(format!("encode next_cursor: {err}")))?;
@@ -2447,20 +2428,14 @@ fn render_runtime_metadata_payload(
     fmt_ok(writeln!(rendered, "kind: runtime-metadata"))?;
     render_generation(&payload.generation, rendered)?;
     fmt_ok(writeln!(rendered, "results: {}", payload.results.len()))?;
-    render_keyset_page_line(payload.window, payload.examined, rendered)?;
+    render_keyset_page_line(&payload.window, payload.examined, rendered)?;
     render_read_epoch_line(payload.read_epoch, rendered)?;
     fmt_ok(writeln!(
         rendered,
         "universe_epoch: {}",
         payload.universe_epoch
     ))?;
-    if let Some(cursor) = &payload.next_cursor {
-        fmt_ok(writeln!(
-            rendered,
-            "next_cursor: candidate_id={} aux_epoch={} universe_epoch={}",
-            cursor.candidate_id, cursor.aux_epoch, cursor.universe_epoch
-        ))?;
-    }
+    render_continuation_cursor(payload.next_cursor.as_ref(), rendered)?;
     for (index, candidate) in payload.results.iter().enumerate() {
         let display_index = index.checked_add(1).ok_or_else(|| {
             CliError::protocol("runtime-metadata candidate index overflow".to_string())
@@ -3227,7 +3202,7 @@ mod tests {
     #[test]
     fn pretty_renderer_supports_symbol_response() {
         use quanta_index_contract::{
-            QueryResultWindowV1, RepoRelativePath, SymbolQueryResponse,
+            RepoRelativePath, SymbolQueryResponse,
             lex::{SymbolKindCode, SymbolKindFamily},
         };
         let Ok(symbol_kind) = SymbolKindCode::new("function") else {
@@ -3277,7 +3252,12 @@ mod tests {
         use quanta_index_contract::RepoRelativePath;
         // One row returned of at least two: the continuation probe saw a
         // second match past the page.
-        let probe_window = quanta_index_contract::QueryResultWindowV1::from_probe(1, 2);
+        let probe_window = QueryResultWindowV2::pageable(
+            1,
+            quanta_index_contract::CandidateCountV1::AtLeast(2),
+            true,
+            Vec::new(),
+        );
         assert!(probe_window.is_ok(), "{probe_window:?}");
         let Ok(probe_window) = probe_window else {
             return;
@@ -3311,11 +3291,9 @@ mod tests {
                     read_epoch: AuxEpochV1::new(4),
                     universe_epoch: AuxEpochV1::new(9),
                     examined: 2,
-                    next_cursor: Some(RuntimeMetadataCursorV1 {
-                        candidate_id: "rt-1".to_string(),
-                        aux_epoch: AuxEpochV1::new(4),
-                        universe_epoch: AuxEpochV1::new(9),
-                    }),
+                    next_cursor: Some(
+                        ContinuationTokenV2::new("runtime-token".to_string()).expect("token"),
+                    ),
                 },
             ),
         };
@@ -3340,7 +3318,7 @@ mod tests {
                 "the probe window is rendered: {text}"
             );
             assert!(
-                text.contains("next_cursor: candidate_id=rt-1 aux_epoch=4 universe_epoch=9"),
+                text.contains("next_cursor: \"runtime-token\""),
                 "the continuation is rendered: {text}"
             );
         }
@@ -3371,7 +3349,7 @@ mod tests {
                     snippet_hit_offset: None,
                     highlights: Vec::new(),
                 }],
-                window: quanta_index_contract::QueryResultWindowV1::exact(1),
+                window: QueryResultWindowV2::exact_probe(1),
                 file_owner_rows: Some(vec![quanta_index_contract::FileOwnerProjectionRow {
                     candidate_id: "cand-1".to_string(),
                     repo_id: RepoId::new("repo")
@@ -3582,21 +3560,18 @@ mod tests {
                     score: None,
                 }],
                 diffs: Vec::new(),
-                window: quanta_index_contract::QueryResultWindowV1::new(
+                window: QueryResultWindowV2::pageable(
                     1,
-                    quanta_index_contract::CandidateCountV1::Exact(3),
+                    quanta_index_contract::CandidateCountV1::AtLeast(3),
                     true,
+                    Vec::new(),
                 )
                 .expect("a page of one out of three"),
                 read_epoch: AuxEpochV1::new(12),
                 examined: 9,
-                next_cursor: Some(quanta_index_contract::HistoryCursor {
-                    order: quanta_index_contract::HistoryCursorOrderV1::Recency,
-                    committer_time_ms: 1_700_000_000_000,
-                    sha: quanta_index_contract::lex::CommitSha::ZERO,
-                    file_path: None,
-                    aux_epoch: AuxEpochV1::new(12),
-                }),
+                next_cursor: Some(
+                    ContinuationTokenV2::new("history-recency-token".to_string()).expect("token"),
+                ),
             }),
         };
         let mut stdout = Vec::new();
@@ -3604,11 +3579,11 @@ mod tests {
         assert!(rendered.is_ok());
         let text = String::from_utf8(stdout).expect("utf-8");
         assert!(
-            text.contains("order: recency matched: 3 examined: 9 has_more: true"),
+            text.contains("order: recency matched: >=3 examined: 9 has_more: true"),
             "{text}"
         );
         assert!(
-            text.contains("next_cursor: order=recency committer_time_ms=1700000000000 sha="),
+            text.contains("next_cursor: \"history-recency-token\""),
             "{text}"
         );
         assert!(
@@ -3618,10 +3593,6 @@ mod tests {
         assert!(
             text.contains("epoch: 12"),
             "the read epoch is rendered: {text}"
-        );
-        assert!(
-            text.contains(" aux_epoch=12"),
-            "the cursor carries the epoch: {text}"
         );
         assert!(text.contains("kind: history"));
         assert!(text.contains("commits: 1 diffs: 0"));
@@ -3652,21 +3623,18 @@ mod tests {
                     snippet: "needle".to_string(),
                     score: Some(score),
                 }],
-                window: quanta_index_contract::QueryResultWindowV1::new(
+                window: QueryResultWindowV2::pageable(
                     1,
-                    quanta_index_contract::CandidateCountV1::Exact(2),
+                    quanta_index_contract::CandidateCountV1::AtLeast(2),
                     true,
+                    Vec::new(),
                 )
                 .expect("a page of one out of two"),
                 read_epoch: AuxEpochV1::new(3),
                 examined: 4,
-                next_cursor: Some(quanta_index_contract::HistoryCursor {
-                    order: quanta_index_contract::HistoryCursorOrderV1::Relevance { score },
-                    committer_time_ms: 5,
-                    sha: quanta_index_contract::lex::CommitSha::ZERO,
-                    file_path: Some("src/lib.rs".to_string()),
-                    aux_epoch: AuxEpochV1::new(3),
-                }),
+                next_cursor: Some(
+                    ContinuationTokenV2::new("history-relevance-token".to_string()).expect("token"),
+                ),
             }),
         };
         let mut stdout = Vec::new();
@@ -3674,7 +3642,7 @@ mod tests {
         assert!(rendered.is_ok());
         let text = String::from_utf8(stdout).expect("utf-8");
         assert!(
-            text.contains("order: relevance matched: 2 examined: 4 has_more: true"),
+            text.contains("order: relevance matched: >=2 examined: 4 has_more: true"),
             "{text}"
         );
         assert!(
@@ -3682,10 +3650,9 @@ mod tests {
             "each row carries its score: {text}"
         );
         assert!(
-            text.contains("next_cursor: order=relevance score=1.5 committer_time_ms=5 sha="),
-            "the cursor carries its score: {text}"
+            text.contains("next_cursor: \"history-relevance-token\""),
+            "the opaque cursor is rendered: {text}"
         );
-        assert!(text.contains(" file_path=src/lib.rs aux_epoch=3"), "{text}");
     }
 
     #[test]
@@ -4262,7 +4229,7 @@ mod tests {
                         end_line: 2,
                     }],
                 }],
-                window: quanta_index_contract::QueryResultWindowV1::exact(1),
+                window: QueryResultWindowV2::exact_probe(1),
                 read_epoch: AuxEpochV1::new(3),
                 examined: 1,
                 next_cursor: None,
@@ -4355,12 +4322,7 @@ mod tests {
                         }],
                     },
                 ],
-                window: quanta_index_contract::QueryResultWindowV1::exact(2),
-                window_v2: quanta_index_contract::QueryResultWindowV2::exact_exhausted(
-                    2,
-                    quanta_index_contract::ExhaustionProofV1::ProbeExhausted { fetched: 2 },
-                    Vec::new(),
-                ),
+                window: QueryResultWindowV2::exact_probe(2),
                 explanation: SearchExplanation {
                     planner_trace: Vec::new(),
                     engines_touched: vec![EngineTouched::Lexical, EngineTouched::Semantic],
@@ -4548,9 +4510,8 @@ mod tests {
     /// A keyset route continues from the cursor a previous page printed
     /// as JSON (QI-BB-025 W4).
     ///
-    /// `--cursor-json` decodes the route's own cursor type, is absent from
-    /// a fresh walk, and refuses another route's cursor shape or a
-    /// malformed document.
+    /// `--cursor-json` carries the opaque token unchanged. Binding to a
+    /// route is verified by the daemon, not by the CLI JSON parser.
     #[test]
     fn parses_keyset_routes_with_a_cursor_json_continuation() {
         let dir = tempfile::tempdir();
@@ -4558,22 +4519,10 @@ mod tests {
         let Ok(dir) = dir else {
             return;
         };
-        let runtime_cursor = RuntimeMetadataCursorV1 {
-            candidate_id: "chunk://alpha".to_string(),
-            aux_epoch: AuxEpochV1::new(4),
-            universe_epoch: AuxEpochV1::new(9),
-        };
-        let structural_cursor = StructuralCursorV1 {
-            candidate_id: "chunk://alpha".to_string(),
-            aux_epoch: AuxEpochV1::new(6),
-        };
-        let history_cursor = HistoryCursor {
-            order: quanta_index_contract::HistoryCursorOrderV1::Recency,
-            committer_time_ms: 1_700_000_000_000,
-            sha: quanta_index_contract::lex::CommitSha::ZERO,
-            file_path: None,
-            aux_epoch: AuxEpochV1::new(12),
-        };
+        let runtime_cursor = ContinuationTokenV2::new("runtime-token".to_string()).expect("token");
+        let structural_cursor =
+            ContinuationTokenV2::new("structural-token".to_string()).expect("token");
+        let history_cursor = ContinuationTokenV2::new("history-token".to_string()).expect("token");
         let write = |name: &str, json: Result<Vec<u8>, serde_json::Error>| -> String {
             let path = dir.path().join(name);
             let written = json
@@ -4664,13 +4613,11 @@ mod tests {
             assert_eq!(request.cursor, None);
         }
 
-        // Another route's cursor, or a document that is not JSON, is a
-        // usage error naming the route.
-        for (command, path) in [
-            ("structural", runtime_path.as_str()),
-            ("runtime-metadata", structural_path.as_str()),
-            ("history", malformed_path.as_str()),
-        ] {
+        // Route binding is server-side; CLI must not inspect an opaque token.
+        assert!(with_cursor("structural", &runtime_path).is_ok());
+        assert!(with_cursor("runtime-metadata", &structural_path).is_ok());
+        // A malformed JSON document is still a local usage error.
+        for (command, path) in [("history", malformed_path.as_str())] {
             let parsed = with_cursor(command, path);
             assert!(parsed.is_err(), "{command}: {parsed:?}");
             if let Err(error) = parsed {

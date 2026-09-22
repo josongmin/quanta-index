@@ -18,9 +18,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 
 use quanta_index_contract::{
-    CandidateCountV1, ManifestGeneration, QueryResultWindowV1, RuntimeMetadataCursorV1,
-    SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneStructuralQueryResponse,
-    StructuralCursorV1, TextQuerySyntax,
+    CandidateCountV1, ContinuationTokenV2, ManifestGeneration, QueryResultWindowV2,
+    SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneStructuralQueryResponse, TextQuerySyntax,
 };
 use quanta_index_core::{AUX_EPOCH_EXPIRED_CODE, AUX_EPOCH_RETAIN};
 use quanta_index_searchd_harness as e2e_harness;
@@ -124,10 +123,10 @@ fn page_rows(rows: &[String], range: std::ops::Range<usize>) -> Result<&[String]
 fn check_page(
     what: &str,
     rows: &[String],
-    window: QueryResultWindowV1,
+    window: &QueryResultWindowV2,
     expected_rows: &[String],
     expected_count: CandidateCountV1,
-    cursor_id: Option<&str>,
+    continues: bool,
 ) -> TestResult {
     if rows != expected_rows {
         return Err(
@@ -141,16 +140,12 @@ fn check_page(
         )
         .into());
     }
-    let continues = cursor_id.is_some();
-    if window.has_more() != continues {
+    if window.has_more() != Some(continues) {
         return Err(format!(
-            "{what}: has_more={} with cursor={cursor_id:?}",
+            "{what}: has_more={:?} with cursor_present={continues}",
             window.has_more()
         )
         .into());
-    }
-    if continues && cursor_id != rows.last().map(String::as_str) {
-        return Err(format!("{what}: the cursor names the last row, got {cursor_id:?}").into());
     }
     Ok(())
 }
@@ -169,7 +164,7 @@ fn runtime_ids(page: &SearchPlaneRuntimeMetadataQueryResponse) -> Vec<String> {
 fn runtime_page(
     rt: &mut E2eRuntime,
     top_k: u32,
-    cursor: Option<RuntimeMetadataCursorV1>,
+    cursor: Option<ContinuationTokenV2>,
     what: &str,
 ) -> Result<SearchPlaneRuntimeMetadataQueryResponse, Box<dyn Error>> {
     Ok(rt
@@ -198,10 +193,10 @@ fn runtime_metadata_pages_walk_the_dirty_overlay_once_and_pin_their_epochs() -> 
     check_page(
         "whole",
         &runtime_ids(&whole),
-        whole.window,
+        &whole.window,
         &original,
         CandidateCountV1::Exact(u64::try_from(ORIGINAL)?),
-        None,
+        false,
     )?;
     if whole.examined != u64::try_from(ORIGINAL)? {
         return Err(format!(
@@ -221,10 +216,10 @@ fn runtime_metadata_pages_walk_the_dirty_overlay_once_and_pin_their_epochs() -> 
     check_page(
         "page one",
         &runtime_ids(&first),
-        first.window,
+        &first.window,
         page_rows(&original, 0..10)?,
         CandidateCountV1::AtLeast(11),
-        Some(cursor.candidate_id.as_str()),
+        true,
     )?;
     if first.examined != 11 {
         return Err(format!(
@@ -232,9 +227,6 @@ fn runtime_metadata_pages_walk_the_dirty_overlay_once_and_pin_their_epochs() -> 
             first.examined
         )
         .into());
-    }
-    if (cursor.aux_epoch, cursor.universe_epoch) != walk_epochs {
-        return Err(format!("the cursor names the epochs page one read: {cursor:?}").into());
     }
 
     // Five rows that sort into page two land between page one and two.
@@ -258,10 +250,10 @@ fn runtime_metadata_pages_walk_the_dirty_overlay_once_and_pin_their_epochs() -> 
     check_page(
         "page two",
         &runtime_ids(&second),
-        second.window,
+        &second.window,
         page_rows(&original, 10..20)?,
         CandidateCountV1::AtLeast(11),
-        Some(second_cursor.candidate_id.as_str()),
+        true,
     )?;
     let third = runtime_page(&mut rt, PAGE, Some(second_cursor), "page three")?;
     if (third.read_epoch, third.universe_epoch) != walk_epochs {
@@ -270,10 +262,10 @@ fn runtime_metadata_pages_walk_the_dirty_overlay_once_and_pin_their_epochs() -> 
     check_page(
         "page three",
         &runtime_ids(&third),
-        third.window,
+        &third.window,
         page_rows(&original, 20..ORIGINAL)?,
         CandidateCountV1::Exact(5),
-        None,
+        false,
     )?;
     if third.examined != 5 {
         return Err(format!("the last page examines what is left: {}", third.examined).into());
@@ -300,10 +292,10 @@ fn runtime_metadata_pages_walk_the_dirty_overlay_once_and_pin_their_epochs() -> 
     check_page(
         "fresh whole",
         &runtime_ids(&fresh),
-        fresh.window,
+        &fresh.window,
         &chunks.ids(),
         CandidateCountV1::Exact(u64::try_from(CHUNKS)?),
-        None,
+        false,
     )?;
 
     // `AUX_EPOCH_RETAIN` more overlay mutations push the walk's runtime
@@ -351,7 +343,7 @@ fn structural_ids(page: &SearchPlaneStructuralQueryResponse) -> Vec<String> {
 fn structural_page(
     rt: &mut E2eRuntime,
     top_k: u32,
-    cursor: Option<StructuralCursorV1>,
+    cursor: Option<ContinuationTokenV2>,
     what: &str,
 ) -> Result<SearchPlaneStructuralQueryResponse, Box<dyn Error>> {
     Ok(rt
@@ -395,10 +387,10 @@ fn structural_pages_walk_the_match_set_once_and_pin_their_epoch() -> TestResult 
     check_page(
         "whole",
         &structural_ids(&whole),
-        whole.window,
+        &whole.window,
         &original,
         CandidateCountV1::Exact(u64::try_from(ORIGINAL)?),
-        None,
+        false,
     )?;
 
     // Page one: the count after the cursor is exact, the whole match set
@@ -412,16 +404,13 @@ fn structural_pages_walk_the_match_set_once_and_pin_their_epoch() -> TestResult 
     check_page(
         "page one",
         &structural_ids(&first),
-        first.window,
+        &first.window,
         page_rows(&original, 0..10)?,
         CandidateCountV1::Exact(u64::try_from(ORIGINAL)?),
-        Some(cursor.candidate_id.as_str()),
+        true,
     )?;
     if first.examined != u64::try_from(ORIGINAL)? {
         return Err(format!("page one walks the whole match set: {}", first.examined).into());
-    }
-    if cursor.aux_epoch != walk_epoch {
-        return Err(format!("the cursor names the epoch page one read: {cursor:?}").into());
     }
 
     // Five matches that sort into page two land between page one and two.
@@ -442,10 +431,10 @@ fn structural_pages_walk_the_match_set_once_and_pin_their_epoch() -> TestResult 
     check_page(
         "page two",
         &structural_ids(&second),
-        second.window,
+        &second.window,
         page_rows(&original, 10..20)?,
         CandidateCountV1::Exact(15),
-        Some(second_cursor.candidate_id.as_str()),
+        true,
     )?;
     if second.examined != u64::try_from(ORIGINAL)? {
         return Err(format!(
@@ -461,10 +450,10 @@ fn structural_pages_walk_the_match_set_once_and_pin_their_epoch() -> TestResult 
     check_page(
         "page three",
         &structural_ids(&third),
-        third.window,
+        &third.window,
         page_rows(&original, 20..ORIGINAL)?,
         CandidateCountV1::Exact(5),
-        None,
+        false,
     )?;
     let mut walked = structural_ids(&first);
     walked.extend(structural_ids(&second));
@@ -488,10 +477,10 @@ fn structural_pages_walk_the_match_set_once_and_pin_their_epoch() -> TestResult 
     check_page(
         "fresh whole",
         &structural_ids(&fresh),
-        fresh.window,
+        &fresh.window,
         &chunks.ids(),
         CandidateCountV1::Exact(u64::try_from(CHUNKS)?),
-        None,
+        false,
     )?;
 
     // `AUX_EPOCH_RETAIN` more structural mutations push the walk's epoch

@@ -18,7 +18,7 @@ use std::error::Error;
 
 use quanta_index_contract::lex::{CommitRecord, CommitSha};
 use quanta_index_contract::{
-    AuxEpochV1, HistoryCursor, HistoryIngestBatch, HistoryOrderV1, ManifestGeneration,
+    AuxEpochV1, ContinuationTokenV2, HistoryIngestBatch, HistoryOrderV1, ManifestGeneration,
     TextQuerySyntax,
 };
 use quanta_index_core::AUX_EPOCH_EXPIRED_CODE;
@@ -124,7 +124,7 @@ fn served(page: E2eHistoryResult, what: &str) -> Result<E2eHistoryResult, Box<dy
 /// Walk from `cursor` to the end; every page must read `epoch`.
 fn walk_from(
     rt: &mut E2eRuntime,
-    mut cursor: Option<HistoryCursor>,
+    mut cursor: Option<ContinuationTokenV2>,
     epoch: AuxEpochV1,
     what: &str,
 ) -> Result<Vec<String>, Box<dyn Error>> {
@@ -150,19 +150,11 @@ fn walk_from(
         let window = page.window.ok_or("a served page carries a window")?;
         seen.extend(page.commit_ids);
         match (window.has_more(), page.next_cursor) {
-            (true, Some(next)) => {
-                if next.aux_epoch != epoch {
-                    return Err(format!(
-                        "{what}: the cursor names the epoch it was cut from, got {next:?}"
-                    )
-                    .into());
-                }
-                cursor = Some(next);
-            }
-            (false, None) => return Ok(seen),
+            (Some(true), Some(next)) => cursor = Some(next),
+            (Some(false), None) => return Ok(seen),
             (has_more, next) => {
                 return Err(
-                    format!("{what}: has_more={has_more} and cursor={next:?} disagree").into(),
+                    format!("{what}: has_more={has_more:?} and cursor={next:?} disagree").into(),
                 );
             }
         }
@@ -206,9 +198,6 @@ fn a_page_walk_never_mixes_epochs_and_the_epoch_survives_a_restart() -> TestResu
     let cursor = first
         .next_cursor
         .ok_or("thirty commits continue past page one")?;
-    if cursor.aux_epoch != walk_epoch {
-        return Err(format!("the cursor names the epoch page one read, got {cursor:?}").into());
-    }
 
     // Five commits land between page one and page two, each timed to sort
     // into page two by recency.

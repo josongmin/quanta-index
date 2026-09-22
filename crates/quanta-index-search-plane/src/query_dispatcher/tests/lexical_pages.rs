@@ -164,7 +164,7 @@ fn the_cursor_reaches_the_searcher_and_another_generations_is_refused_first() ->
         return Err(format!("the searcher saw {afters:?}").into());
     }
 
-    let mut foreign = request(2, Some(cursor));
+    let mut foreign = request(2, Some(cursor.clone()));
     let SearchPlaneQueryIpcRequest::Text(foreign_request) = &mut foreign else {
         return Err("text request fixture drifted".into());
     };
@@ -175,6 +175,33 @@ fn the_cursor_reaches_the_searcher_and_another_generations_is_refused_first() ->
         ipc_error_from(dispatcher.dispatch(foreign, &RequestBudgetV1::unbounded()))?;
     if code != quanta_index_contract::SearchPlaneErrorCodeV2::CursorContextMismatch {
         return Err(format!("a foreign cursor answered `{code}`").into());
+    }
+    let (code, _) = ipc_error_from(dispatcher.dispatch(
+        request(1, Some(cursor.clone())),
+        &RequestBudgetV1::unbounded(),
+    ))?;
+    if code != quanta_index_contract::SearchPlaneErrorCodeV2::CursorContextMismatch {
+        return Err(format!("a changed page cap answered `{code}`").into());
+    }
+    let mut changed_query = request(2, Some(cursor.clone()));
+    let SearchPlaneQueryIpcRequest::Text(text) = &mut changed_query else {
+        return Err("text request fixture drifted".into());
+    };
+    text.query_text = "different query".to_string();
+    let (code, _) =
+        ipc_error_from(dispatcher.dispatch(changed_query, &RequestBudgetV1::unbounded()))?;
+    if code != quanta_index_contract::SearchPlaneErrorCodeV2::CursorContextMismatch {
+        return Err(format!("a changed query answered `{code}`").into());
+    }
+    let mut tampered = cursor.as_str().as_bytes().to_vec();
+    let first = tampered.first_mut().ok_or("nonempty token")?;
+    *first = if *first == b'A' { b'B' } else { b'A' };
+    let tampered = ContinuationTokenV2::new(String::from_utf8(tampered)?)?;
+    let (code, _) = ipc_error_from(
+        dispatcher.dispatch(request(2, Some(tampered)), &RequestBudgetV1::unbounded()),
+    )?;
+    if code != quanta_index_contract::SearchPlaneErrorCodeV2::CursorInvalid {
+        return Err(format!("a tampered token answered `{code}`").into());
     }
     let searches = state
         .lock()

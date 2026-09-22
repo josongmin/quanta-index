@@ -14,7 +14,7 @@
 use std::error::Error;
 
 use quanta_index_contract::{
-    CandidateCountV1, QueryConstraintSetV1, QueryResultWindowV1, SearchPlaneQueryIpcRequest,
+    CandidateCountV1, QueryConstraintSetV1, QueryResultWindowV2, SearchPlaneQueryIpcRequest,
     TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_searchd_harness as e2e_harness;
@@ -41,7 +41,7 @@ fn seeded_runtime() -> Result<E2eRuntime, Box<dyn Error>> {
 
 struct Observed {
     rows: usize,
-    window: QueryResultWindowV1,
+    window: QueryResultWindowV2,
 }
 
 fn text_query(
@@ -81,10 +81,10 @@ fn expect(
 ) -> Result<(), Box<dyn Error>> {
     if observed.rows != rows
         || observed.window.candidate_count() != count
-        || observed.window.has_more() != has_more
+        || observed.window.has_more() != Some(has_more)
     {
         return Err(format!(
-            "{what}: expected rows={rows} count={count:?} has_more={has_more}, observed rows={} count={:?} has_more={}",
+            "{what}: expected rows={rows} count={count:?} has_more={has_more}, observed rows={} count={:?} has_more={:?}",
             observed.rows,
             observed.window.candidate_count(),
             observed.window.has_more()

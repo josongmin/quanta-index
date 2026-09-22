@@ -10,7 +10,9 @@
 use std::collections::BTreeSet;
 use std::error::Error;
 
-use quanta_index_contract::{CandidateCountV1, HistoryCursor, HistoryOrderV1, TextQuerySyntax};
+use quanta_index_contract::{
+    CandidateCountV1, ContinuationTokenV2, HistoryOrderV1, TextQuerySyntax,
+};
 use quanta_index_searchd_harness as e2e_harness;
 
 use e2e_harness::{E2eHistoryFixtureSpec, E2eRuntime};
@@ -57,7 +59,7 @@ fn ingest_commits(rt: &mut E2eRuntime) -> TestResult {
 
 /// Walk every page and return the commit ids in page order.
 fn walk_pages(rt: &mut E2eRuntime, page_size: u32) -> Result<Vec<String>, Box<dyn Error>> {
-    let mut cursor: Option<HistoryCursor> = None;
+    let mut cursor: Option<ContinuationTokenV2> = None;
     let mut seen = Vec::new();
     for _page in 0..16 {
         let page = rt.query_history_page(
@@ -82,10 +84,10 @@ fn walk_pages(rt: &mut E2eRuntime, page_size: u32) -> Result<Vec<String>, Box<dy
         }
         seen.extend(page.commit_ids);
         match (window.has_more(), page.next_cursor) {
-            (true, Some(next)) => cursor = Some(next),
-            (false, None) => return Ok(seen),
+            (Some(true), Some(next)) => cursor = Some(next),
+            (Some(false), None) => return Ok(seen),
             (has_more, next) => {
-                return Err(format!("has_more={has_more} and cursor={next:?} disagree").into());
+                return Err(format!("has_more={has_more:?} and cursor={next:?} disagree").into());
             }
         }
     }

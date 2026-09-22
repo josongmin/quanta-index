@@ -17,8 +17,8 @@ use std::error::Error;
 
 use quanta_index_contract::lex::{CommitRecord, CommitSha};
 use quanta_index_contract::{
-    AuxEpochV1, CandidateCountV1, HistoryCursor, HistoryCursorOrderV1, HistoryIngestBatch,
-    HistoryOrderV1, ManifestGeneration, TextQuerySyntax,
+    AuxEpochV1, CandidateCountV1, ContinuationTokenV2, HistoryIngestBatch, HistoryOrderV1,
+    ManifestGeneration, TextQuerySyntax,
 };
 use quanta_index_searchd_harness as e2e_harness;
 
@@ -310,7 +310,7 @@ struct RelevanceWalk {
     /// Every `(sha, score)` in page order.
     rows: Vec<(String, f32)>,
     /// The first page's continuation, when there was more than one page.
-    first_cursor: Option<HistoryCursor>,
+    first_cursor: Option<ContinuationTokenV2>,
     /// The epoch every page read.
     epoch: Option<AuxEpochV1>,
 }
@@ -321,8 +321,8 @@ fn walk_relevance(
     expected_total: u64,
     what: &str,
 ) -> Result<RelevanceWalk, Box<dyn Error>> {
-    let mut cursor: Option<HistoryCursor> = None;
-    let mut first_cursor: Option<HistoryCursor> = None;
+    let mut cursor: Option<ContinuationTokenV2> = None;
+    let mut first_cursor: Option<ContinuationTokenV2> = None;
     let mut epoch: Option<AuxEpochV1> = None;
     let mut walked = Vec::new();
     for _page in 0..16 {
@@ -336,7 +336,10 @@ fn walk_relevance(
             ),
             what,
         )?;
-        let window = page.window.ok_or("a served page carries a window")?;
+        let window = page
+            .window
+            .as_ref()
+            .ok_or("a served page carries a window")?;
         let remaining = expected_total.saturating_sub(u64::try_from(walked.len())?);
         if window.candidate_count() != CandidateCountV1::Exact(remaining) {
             return Err(format!(
@@ -351,16 +354,13 @@ fn walk_relevance(
         }
         walked.extend(scored_rows(&page, what)?);
         match (window.has_more(), page.next_cursor) {
-            (true, Some(next)) => {
-                if !matches!(next.order, HistoryCursorOrderV1::Relevance { .. }) {
-                    return Err(format!("{what}: a relevance walk issues relevance cursors").into());
-                }
+            (Some(true), Some(next)) => {
                 if first_cursor.is_none() {
                     first_cursor = Some(next.clone());
                 }
                 cursor = Some(next);
             }
-            (false, None) => {
+            (Some(false), None) => {
                 return Ok(RelevanceWalk {
                     rows: walked,
                     first_cursor,
@@ -369,7 +369,7 @@ fn walk_relevance(
             }
             (has_more, next) => {
                 return Err(
-                    format!("{what}: has_more={has_more} and cursor={next:?} disagree").into(),
+                    format!("{what}: has_more={has_more:?} and cursor={next:?} disagree").into(),
                 );
             }
         }
@@ -443,7 +443,9 @@ fn relevance_ranks_by_bm25_recency_by_time_and_pages_survive_restarts_and_ingest
         "relevance top-3",
     )?;
     let top_window = top.window.ok_or("a window")?;
-    if top_window.candidate_count() != CandidateCountV1::Exact(matching) || !top_window.has_more() {
+    if top_window.candidate_count() != CandidateCountV1::Exact(matching)
+        || top_window.has_more() != Some(true)
+    {
         return Err(format!("the relevance window is exact: {top_window:?}").into());
     }
     if top.examined < matching {
