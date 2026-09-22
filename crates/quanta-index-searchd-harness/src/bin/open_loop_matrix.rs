@@ -99,7 +99,7 @@ fn main() -> ExitCode {
     );
     if !report.passed() {
         eprintln!(
-            "open_loop_matrix: correctness failure: invalid result, unexpected typed error, or transport error"
+            "open_loop_matrix: correctness failure: no healthy first load point, invalid result, or unexpected typed error"
         );
         ExitCode::FAILURE
     } else {

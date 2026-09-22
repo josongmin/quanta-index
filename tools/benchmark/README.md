@@ -4,6 +4,11 @@ The registered evidence CLI is `python3 tools/benchmark/benchctl.py list`.
 `run systems` executes the freshness and open-loop producers and then requires
 their current-HEAD artifacts. `validate systems` checks existing artifacts
 without rerunning them. `quality-full` additionally includes these rails.
+The open-loop correctness verdict requires a healthy first offered-load point
+and no malformed response or unexpected typed error. Timeout, drop and socket
+refusal above saturation are recorded as capacity loss with error-kind counts,
+not hidden or interpreted as a passing latency SLO. A capacity threshold needs
+reviewed measurements on the pinned Linux host.
 The recorded retrieval and agent-outcome evaluators have separate CLIs and
 strict input contracts in [retrieval/README.md](retrieval/README.md) and
 [agent_outcome/README.md](agent_outcome/README.md); they do not invent runner

@@ -437,11 +437,15 @@ pub(crate) struct Report {
 
 impl Report {
     pub(crate) fn passed(&self) -> bool {
-        self.points.iter().all(|point| {
-            point.invalid_results == 0
-                && point.unexpected_typed_errors == 0
-                && point.transport_errors == 0
-        })
+        // A load ladder must establish one healthy operating point. Above its
+        // saturation boundary the listener may refuse connections at its hard
+        // cap; those transport failures are capacity evidence, not proof that
+        // a served response was incorrect. They remain counted in every row.
+        self.points.first().is_some_and(|point| !point.saturated)
+            && self
+                .points
+                .iter()
+                .all(|point| point.invalid_results == 0 && point.unexpected_typed_errors == 0)
     }
 
     pub(crate) fn saturation_onset_qps(&self) -> Option<u32> {
@@ -690,7 +694,10 @@ mod tests {
             1.0,
         )?;
         assert_eq!(point.transport_errors, 1);
-        assert_eq!(point.transport_error_kinds["io::ConnectionReset"], 1);
+        assert_eq!(
+            point.transport_error_kinds.get("io::ConnectionReset"),
+            Some(&1)
+        );
         assert!(
             !Report {
                 config: Config {
@@ -707,6 +714,70 @@ mod tests {
             }
             .passed()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn transport_refusal_after_a_healthy_point_is_capacity_evidence() -> AnyResult<()> {
+        let healthy = summarize(
+            1,
+            Duration::from_secs(1),
+            1,
+            0,
+            0,
+            vec![Completion {
+                outcome: Outcome::Served { result_count: 2 },
+                elapsed_ms: Some(5.0),
+                dispatch_lag_ms: 0.0,
+            }],
+            1.0,
+        )?;
+        let overloaded = summarize(
+            2,
+            Duration::from_secs(1),
+            2,
+            0,
+            0,
+            vec![
+                Completion {
+                    outcome: Outcome::Served { result_count: 2 },
+                    elapsed_ms: Some(5.0),
+                    dispatch_lag_ms: 0.0,
+                },
+                Completion {
+                    outcome: Outcome::TransportError {
+                        kind: "truncated".to_string(),
+                    },
+                    elapsed_ms: Some(10.0),
+                    dispatch_lag_ms: 0.0,
+                },
+            ],
+            1.0,
+        )?;
+        let report = Report {
+            config: Config {
+                seed: 1,
+                rates_qps: vec![1, 2],
+                duration: Duration::from_secs(1),
+                workers: 1,
+                queue_capacity: 1,
+                request_timeout: Duration::from_secs(1),
+            },
+            corpus_digest: String::new(),
+            model_revision: None,
+            points: vec![healthy, overloaded],
+        };
+        assert!(report.passed());
+        assert_eq!(
+            report
+                .points
+                .get(1)
+                .context("missing saturated load point")?
+                .transport_error_kinds
+                .get("truncated"),
+            Some(&1)
+        );
+        assert_eq!(report.saturation_onset_qps(), Some(2));
         Ok(())
     }
 
