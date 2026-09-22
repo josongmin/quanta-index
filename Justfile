@@ -33,6 +33,8 @@ rust-profile-list:
         'test-query-truth-owner P05 query outcome/cursor/oracle owner proof' \
         'test-control-readiness-owner P09 control authorization/readiness owner proof' \
         'test-control-readiness-owner-lib P09 control authorization/readiness lib suites' \
+        'test-state-migration-owner P10 offline state migration/backup/restore owner proof' \
+        'test-state-migration-owner-lib P10 offline state migration lib suites' \
         'test-query-truth-owner-lib P05 outcome/cursor/oracle lib suites' \
         'test-sdk-binding-owner P06 SDK contextual binding negative-matrix owner proof' \
         'test-sdk-binding-owner-lib P06 SDK lib suites' \
@@ -75,6 +77,8 @@ rust-profile profile:
         test-query-truth-owner) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-query-truth-owner ;; \
         test-control-readiness-owner) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-control-readiness-owner ;; \
         test-control-readiness-owner-lib) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-control-readiness-owner-lib ;; \
+        test-state-migration-owner) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-state-migration-owner ;; \
+        test-state-migration-owner-lib) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-state-migration-owner-lib ;; \
         test-query-truth-owner-lib) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-query-truth-owner-lib ;; \
         test-sdk-binding-owner) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-sdk-binding-owner ;; \
         test-sdk-binding-owner-lib) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-sdk-binding-owner-lib ;; \
@@ -258,6 +262,12 @@ rust-test-control-readiness-owner lane="test-control-readiness-owner-lane":
 
 rust-test-control-readiness-owner-lib lane="test-control-readiness-owner-lane":
     python3 tools/ci/run-local-test-scope.py control-readiness-owner-lib --lane {{lane}}
+
+rust-test-state-migration-owner lane="test-state-migration-owner-lane":
+    python3 tools/ci/run-local-test-scope.py state-migration-owner --lane {{lane}}
+
+rust-test-state-migration-owner-lib lane="test-state-migration-owner-lane":
+    python3 tools/ci/run-local-test-scope.py state-migration-owner-lib --lane {{lane}}
 
 rust-test-sdk-binding-owner lane="test-sdk-binding-owner-lane":
     python3 tools/ci/run-local-test-scope.py sdk-binding-owner --lane {{lane}}
@@ -944,3 +954,18 @@ proof-p09-control-readiness-owner:
     @just rust-wire-inventory
     @just rust-public-api
     @just rust-fuzz-smoke
+
+# P10 (S21-11) offline state migration, backup and restore owner proof: the
+# scoped integration target proves the offline migrate/backup/restore/verify
+# workflow over disposable state roots (legacy-root typed refusal at boot,
+# backup-API catalog freeze, manifest-last crash convergence, atomic cutover,
+# refusal matrix) and the lib scope carries the engine's unit suites. The
+# structural rails guard the surface the offline CLI and the new persisted
+# formats touched. The Linux production-like release subrail
+# (p10-state-migration, release-daemon binding) stays NOT_RUN on this host.
+proof-p10-state-migration-owner:
+    @just rust-profile test-state-migration-owner
+    @just rust-profile test-state-migration-owner-lib
+    @just rust-hexagonal
+    @just rust-wire-inventory
+    @just rust-public-api

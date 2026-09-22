@@ -34,8 +34,8 @@ use quanta_index_repomap::RepoMapGenerationStore;
 use quanta_index_search_plane::{
     PairIndexBytesMeasurer, SearchCorpusIndexBytesPort, SearchCorpusLifecycleOwner,
 };
+use quanta_index_searchd::app::KernelResidentMemoryProbe;
 use quanta_index_searchd::app::runtime::{SearchdRuntimeParts, StateRootAccessV1, StateRootLease};
-use quanta_index_searchd::app::{KernelResidentMemoryProbe, LegacySemanticJournalStore};
 use quanta_index_searchd::{
     DEFAULT_COOPERATIVE_DRAIN_DEADLINE, HARD_DRAIN_DEADLINE, SearchdCommand, SearchdConfig,
     SearchdRuntime, supervise_runtime,
@@ -44,6 +44,12 @@ use quanta_index_semantic::SemanticAdapter;
 
 /// The process signal root (SIGINT/SIGTERM -> `CancelRoot`).
 pub mod signal;
+
+/// Offline `migrate-state` / `backup-state` / `restore-state` /
+/// `verify-state` composition (SEP-21 P10 / S21-11).
+///
+/// The only surface that links the legacy parsers.
+pub mod state_migration;
 
 /// How long a catalog write waits on a held lock before answering typed.
 const CATALOG_BUSY_BUDGET: Duration = Duration::from_secs(2);
@@ -112,9 +118,6 @@ pub fn build_runtime_with_memory_probe(
         &state_root,
         search_corpus_history_retention,
         index_bytes,
-    )?);
-    let legacy_semantic_journal_store = Arc::new(LegacySemanticJournalStore::open(
-        state_root.join("semantic"),
     )?);
     // The durable idempotency catalog (QI-BB-032). Its busy budget only
     // matters against a foreign writer, which the state-root lease excludes;
@@ -233,7 +236,6 @@ pub fn build_runtime_with_memory_probe(
             repo_map_quarantine,
             repo_map_open_report,
             search_corpus_lifecycle,
-            legacy_semantic_journal_store,
             idempotency,
             mutation_coordinator,
             auxiliary_catalog,

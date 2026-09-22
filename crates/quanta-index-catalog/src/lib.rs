@@ -22,12 +22,17 @@
 #![forbid(unsafe_code)]
 
 mod auxiliary;
+mod backup;
 mod candidate;
 mod connection;
 mod idempotency;
 mod open;
 mod sequence;
 
+pub use backup::{
+    CatalogSnapshotReceiptV1, catalog_content_digest, fsync_directory, live_catalog_receipt,
+    normalize_catalog_journal_mode, snapshot_catalog_file, verify_snapshot,
+};
 pub use candidate::{
     ActivationOutcomeV1, RepoMapActivationRowV1, RepoMapCandidateRowV1, RepoMapCandidateStateV1,
     RepoMapQuarantineIncidentRowV1, SealOutcomeV1,

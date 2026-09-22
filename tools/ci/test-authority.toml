@@ -142,6 +142,21 @@ packages = [
   "quanta-index-search-plane",
 ]
 
+[local_scopes.state-migration-owner]
+lane = "test-state-migration-owner-lane"
+test_threads = 4
+targets = [
+  "state-migration-owner-v1",
+]
+
+[local_scopes.state-migration-owner-lib]
+lane = "test-state-migration-owner-lane"
+test_threads = 4
+lib = true
+packages = [
+  "quanta-index-searchd",
+]
+
 [local_scopes.canonical-identity]
 lane = "test-canonical-identity-lane"
 test_threads = 4
@@ -320,6 +335,12 @@ rail = "pr-workspace-nextest"
 id = "control-readiness-owner-v1"
 path = "crates/quanta-index-search-plane/tests/control_readiness_owner_v1.rs"
 owner = "quanta-index-search-plane"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "state-migration-owner-v1"
+path = "crates/quanta-index-searchd-runtime/tests/state_migration_owner_v1.rs"
+owner = "quanta-index-searchd-runtime"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]

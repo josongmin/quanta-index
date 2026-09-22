@@ -11,7 +11,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use super::LegacySemanticJournalStore;
 use anyhow::Result;
 use fs2::FileExt;
 use memchr::memchr_iter;
@@ -122,7 +121,6 @@ pub struct SearchdRuntimeParts {
     /// opened it (QI-BB-008); surfaced through the boot inventory.
     pub repo_map_open_report: RepoMapOpenReportV1,
     pub search_corpus_lifecycle: Arc<SearchCorpusLifecycleOwner>,
-    pub legacy_semantic_journal_store: Arc<LegacySemanticJournalStore>,
     /// Durable ingest operation journal (QI-BB-032, SEP-21 P02B).
     pub idempotency: Arc<dyn IdempotencyCatalogPort + Send + Sync>,
     /// The state-root-global durable mutation coordinator
@@ -1144,7 +1142,6 @@ impl SearchdRuntime {
             repo_map_quarantine,
             repo_map_open_report,
             search_corpus_lifecycle,
-            legacy_semantic_journal_store,
             idempotency,
             mutation_coordinator,
             auxiliary_catalog,
@@ -1190,6 +1187,12 @@ impl SearchdRuntime {
             .require_state_root_v1(config.state_root())
             .map_err(anyhow::Error::from)?;
         let leased_state_root = state_root_lease.state_root_identity_v1().to_path_buf();
+        // Offline-only migration (SEP-21 P10 / S21-11): a legacy layout is
+        // refused typed here, before any adapter opens it. The boot path
+        // carries no legacy decoder and no migrator; the operator runs the
+        // offline `migrate-state` command and boots the produced root.
+        crate::app::state_format::refuse_legacy_state_root_v1(&leased_state_root)
+            .map_err(anyhow::Error::from)?;
         let activation_catalog = search_corpus_lifecycle.activation_catalog();
         let aux_authority_store = search_corpus_lifecycle.authority_store();
         let ledger = Arc::new(RwLock::new(Ledger::new()));
@@ -1226,16 +1229,6 @@ impl SearchdRuntime {
             SearchPlaneTrackKind::Lexical,
             lexical_generation_scanner.as_ref(),
         )?;
-        let semantic_root = quanta_index_semantic::semantic_state_root(&leased_state_root);
-        let migration_start = std::time::Instant::now();
-        let migration = semantic_boot::migrate_legacy_semantic_journal(
-            legacy_semantic_journal_store.as_ref(),
-            sem_build_port.as_ref(),
-            &semantic_root,
-            config.semantic_stream_window_policy(),
-        )
-        .map_err(anyhow::Error::from)?;
-        let migration_micros = migration_start.elapsed().as_micros();
         let seed_start = std::time::Instant::now();
         let semantic_inventory = semantic_boot::seed_persisted_semantic_readiness(
             &ledger,
@@ -1243,8 +1236,11 @@ impl SearchdRuntime {
         )
         .map_err(anyhow::Error::from)?;
         let boot_report = semantic_boot::SemanticBootReport {
-            migration,
-            migration_micros,
+            // Boot never migrates (SEP-21 P10): a legacy journal would have
+            // been refused above, so by construction there is none here.
+            // The offline `migrate-state` command is the only migrator.
+            migration: semantic_boot::SemanticMigrationOutcome::NoLegacyJournal,
+            migration_micros: 0,
             seed: semantic_boot::SemanticSeedReport::from_track_report(&semantic_inventory),
             seed_micros: seed_start.elapsed().as_micros(),
         };

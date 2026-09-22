@@ -458,9 +458,8 @@ required_host = "linux-production-like"
 
 [[proofs]]
 id = "p10-state-migration-owner"
-authority_state = "staged"
+authority_state = "executable"
 execution_mode = "test-authority"
-staged_reason = "P10 must land host-independent migration schema, refusal and disposable-root owner targets."
 ticket = "S21-11"
 family = "U"
 checkpoint = "M4"
@@ -473,7 +472,8 @@ filter = "none"
 source_binding = "exact"
 binary_binding = "none"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
-test_authority_targets = []
+test_authority_scopes = ["state-migration-owner", "state-migration-owner-lib"]
+test_authority_targets = ["state-migration-owner-v1"]
 dependencies = ["p09-control-readiness-owner"]
 artifact = "artifacts/proof-authority/p10-state-migration-owner.json"
 required_host = "any"
