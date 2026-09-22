@@ -144,6 +144,84 @@ def _missing(obj: object, keys: tuple[str, ...], where: str) -> list[str]:
     return [f"{where} is missing `{key}`" for key in keys if key not in obj]
 
 
+def _non_negative_number(value: object) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and value >= 0
+        and value != float("inf")
+        and value == value
+    )
+
+
+def _validate_rows(rows: list[object]) -> list[str]:
+    """Validate row semantics shared by every BenchArtifactV1 family."""
+    reasons: list[str] = []
+    scenario_ids: set[str] = set()
+    for index, row in enumerate(rows):
+        where = f"rows[{index}]"
+        reasons.extend(_missing(row, ROW_KEYS, where))
+        if not isinstance(row, dict):
+            continue
+        scenario_id = row.get("scenario_id")
+        if not isinstance(scenario_id, str) or not scenario_id:
+            reasons.append(f"{where}.scenario_id is not a non-empty string")
+        elif scenario_id in scenario_ids:
+            reasons.append(f"{where}.scenario_id {scenario_id!r} is duplicated")
+        else:
+            scenario_ids.add(scenario_id)
+        for key in ("route_family", "syntax", "result_shape"):
+            if not isinstance(row.get(key), str) or not row[key]:
+                reasons.append(f"{where}.{key} is not a non-empty string")
+        for key in ("error_count", "timeout_count"):
+            value = row.get(key)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                reasons.append(f"{where}.{key} is not a non-negative integer")
+        result_count = row.get("result_count")
+        if result_count is not None and (
+            not isinstance(result_count, int) or isinstance(result_count, bool) or result_count < 0
+        ):
+            reasons.append(f"{where}.result_count is not a non-negative integer or null")
+        typed_error = row.get("typed_error_code")
+        if typed_error is not None and (not isinstance(typed_error, str) or not typed_error):
+            reasons.append(f"{where}.typed_error_code is not a non-empty string or null")
+        engines = row.get("engine_touched")
+        if not isinstance(engines, list) or not all(
+            isinstance(engine, str) and engine for engine in engines
+        ):
+            reasons.append(f"{where}.engine_touched is not an array of non-empty strings")
+        qps = row.get("qps")
+        if qps is not None and not _non_negative_number(qps):
+            reasons.append(f"{where}.qps is not a finite non-negative number or null")
+        early_stop = row.get("early_stop_reason")
+        if early_stop is not None and (not isinstance(early_stop, str) or not early_stop):
+            reasons.append(f"{where}.early_stop_reason is not a non-empty string or null")
+        latency = row.get("latency")
+        if early_stop is not None:
+            if latency is not None:
+                reasons.append(f"{where}.latency must be null when early_stop_reason is set")
+            continue
+        if not isinstance(latency, dict):
+            reasons.append(f"{where}.latency is not an object for a measured row")
+            continue
+        reasons.extend(_missing(latency, LATENCY_KEYS, f"{where}.latency"))
+        percentiles: list[float] = []
+        for key in ("p50_ms", "p95_ms", "p99_ms"):
+            value = latency.get(key)
+            if not _non_negative_number(value):
+                reasons.append(f"{where}.latency.{key} is not a finite non-negative number")
+            else:
+                percentiles.append(float(value))
+        if len(percentiles) == 3 and not (
+            percentiles[0] <= percentiles[1] <= percentiles[2]
+        ):
+            reasons.append(f"{where}.latency percentiles are not ordered p50 <= p95 <= p99")
+        samples = latency.get("samples")
+        if not isinstance(samples, int) or isinstance(samples, bool) or samples < 1:
+            reasons.append(f"{where}.latency.samples is not a positive integer")
+    return reasons
+
+
 def check_envelope(
     payload: object,
     *,
@@ -218,10 +296,7 @@ def check_envelope(
     else:
         if not rows:
             reasons.append("rows is empty: nothing was measured")
-        for index, row in enumerate(rows):
-            reasons.extend(_missing(row, ROW_KEYS, f"rows[{index}]"))
-            if isinstance(row, dict) and row.get("latency") is not None:
-                reasons.extend(_missing(row["latency"], LATENCY_KEYS, f"rows[{index}].latency"))
+        reasons.extend(_validate_rows(rows))
     return reasons
 
 

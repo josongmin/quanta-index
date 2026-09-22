@@ -472,6 +472,9 @@ jobs:
       - name: Install just
         uses: taiki-e/install-action@just
 
+      - name: Refuse contended benchmark host
+        run: python3 tools/ci/timing/check_host_contention.py
+
       - name: Warm matrix (authority producer)
         run: just rust-bench-dsl-warm
 
@@ -486,3 +489,11 @@ jobs:
 
       - name: Compare cold vs baseline
         run: python3 tools/benchmark/compare_dsl_bench.py tools/benchmark/baselines/cold-matrix.json artifacts/dsl-bench/cold-matrix.json
+
+      - name: Upload DSL benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsl-bench-${{ github.run_id }}-${{ github.job }}
+          path: artifacts/dsl-bench/
+          if-no-files-found: warn

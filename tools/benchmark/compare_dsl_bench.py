@@ -52,6 +52,7 @@ from pathlib import Path
 
 CURRENT_SCHEMA_VERSION = 2
 FULL_HEAD_RE = re.compile(r"^[0-9a-f]{40}$")
+DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 # Mode-aware default thresholds applied to the blocking metric. Explicit
 # --rel-threshold / --abs-threshold-ms flags override these.
@@ -81,7 +82,10 @@ class ScenarioRow:
 class Artifact:
     mode: str
     git_head: str
+    corpus_digest: str
     config_digest: str
+    model_revision: str | None
+    host_class: tuple[str, str, int, int]
     rows: dict[str, ScenarioRow]
 
 
@@ -190,8 +194,34 @@ def load_artifact(path: Path, *, role: str) -> Artifact:
             f"{role} {path} git_head {git_head!r} is not 40 lowercase hex characters"
         )
     config_digest = provenance.get("config_digest")
-    if not isinstance(config_digest, str) or not config_digest:
-        raise ArtifactRefused(f"{role} {path} has no config_digest")
+    corpus_digest = provenance.get("corpus_digest")
+    for key, digest in (("corpus_digest", corpus_digest), ("config_digest", config_digest)):
+        if not isinstance(digest, str) or not DIGEST_RE.match(digest):
+            raise ArtifactRefused(f"{role} {path} {key} {digest!r} is not a sha256 digest")
+    model_revision = provenance.get("model_revision")
+    if model_revision is not None and (
+        not isinstance(model_revision, str) or not model_revision
+    ):
+        raise ArtifactRefused(
+            f"{role} {path} model_revision is not a non-empty string or null"
+        )
+    host = payload.get("host")
+    if not isinstance(host, dict):
+        raise ArtifactRefused(f"{role} {path} has no host")
+    host_values = (host.get("os"), host.get("arch"), host.get("cpu_count"), host.get("mem_bytes"))
+    if (
+        not isinstance(host_values[0], str)
+        or not host_values[0]
+        or not isinstance(host_values[1], str)
+        or not host_values[1]
+        or not isinstance(host_values[2], int)
+        or isinstance(host_values[2], bool)
+        or host_values[2] < 1
+        or not isinstance(host_values[3], int)
+        or isinstance(host_values[3], bool)
+        or host_values[3] < 1
+    ):
+        raise ArtifactRefused(f"{role} {path} has an invalid host class")
     mode = payload.get("mode")
     if mode not in ("warm", "cold"):
         raise ArtifactRefused(f"{role} {path} mode {mode!r} is not warm or cold")
@@ -265,7 +295,15 @@ def load_artifact(path: Path, *, role: str) -> Artifact:
             timeout_count=timeout_count,
             typed_error_code=typed_error_code,
         )
-    return Artifact(mode=mode, git_head=git_head, config_digest=config_digest, rows=rows)
+    return Artifact(
+        mode=mode,
+        git_head=git_head,
+        corpus_digest=corpus_digest,
+        config_digest=config_digest,
+        model_revision=model_revision,
+        host_class=(host_values[0], host_values[1], host_values[2], host_values[3]),
+        rows=rows,
+    )
 
 
 def is_measured(row: ScenarioRow) -> bool:
@@ -304,6 +342,24 @@ def gate_provenance(baseline: Artifact, current: Artifact, head: str) -> None:
             "config_digest mismatch: baseline "
             f"{baseline.config_digest} vs current {current.config_digest}; "
             "a comparison across different run configurations is not a regression signal"
+        )
+    if baseline.corpus_digest != current.corpus_digest:
+        raise ArtifactRefused(
+            "corpus_digest mismatch: baseline "
+            f"{baseline.corpus_digest} vs current {current.corpus_digest}; "
+            "a comparison across different corpus bytes is not a regression signal"
+        )
+    if baseline.model_revision != current.model_revision:
+        raise ArtifactRefused(
+            "model_revision mismatch: baseline "
+            f"{baseline.model_revision!r} vs current {current.model_revision!r}; "
+            "a comparison across different embedding models is not a regression signal"
+        )
+    if baseline.host_class != current.host_class:
+        raise ArtifactRefused(
+            "host class mismatch: baseline "
+            f"{baseline.host_class!r} vs current {current.host_class!r}; "
+            "capture and compare on the same canonical runner class"
         )
     for scenario_id, row in baseline.rows.items():
         if not is_measured(row):

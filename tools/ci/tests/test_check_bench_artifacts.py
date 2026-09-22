@@ -11,6 +11,7 @@ The gate refuses stale, unattributed and old-schema benchmark artifacts:
 7. absence passes by default and fails under --require
 8. the CLI exits 0 / 1 / 2 as documented
 9. named profiles require only their explicit artifact families
+10. malformed, duplicate and unmeasured rows cannot become attributed evidence
 """
 
 from __future__ import annotations
@@ -153,6 +154,22 @@ def test_a_wrong_dimension_a_bad_digest_and_empty_rows_are_refused() -> None:
     empty["rows"] = []
     reasons = MODULE.check_envelope(empty, dimension="dsl-warm", head=HEAD)
     assert "rows is empty: nothing was measured" in reasons
+
+
+def test_row_contract_refuses_duplicate_invalid_percentile_and_bad_early_stop() -> None:
+    broken = artifact()
+    duplicate = copy.deepcopy(broken["rows"][0])
+    broken["rows"].append(duplicate)
+    broken["rows"][0]["latency"] = {
+        "p50_ms": 3.0,
+        "p95_ms": 2.0,
+        "p99_ms": 1.0,
+        "samples": 0,
+    }
+    broken["rows"][0]["early_stop_reason"] = "fixture_missing"
+    reasons = MODULE.check_envelope(broken, dimension="dsl-warm", head=HEAD)
+    assert any("scenario_id 'lexical.keyword.native' is duplicated" in reason for reason in reasons)
+    assert any("latency must be null" in reason for reason in reasons)
 
 
 def test_absence_passes_by_default_and_fails_under_require(tmp_path: Path) -> None:

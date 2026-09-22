@@ -97,8 +97,8 @@ that is not schema 2, whose head is not 40 lowercase hex, or — for a fresh
 artifact under `artifacts/` — whose head is not the checkout's `HEAD`.
 Committed baselines are held to the shape and a full head, not to head
 equality. `compare_dsl_bench.py` additionally refuses a comparison whose
-current side is not at `HEAD` or whose `config_digest` differs from the
-baseline's. Absence is reported, not refused; `--require` (the Linux perf
+current side is not at `HEAD` or whose corpus, configuration, model revision,
+or canonical host class differs from the baseline's. Absence is reported, not refused; `--require` (the Linux perf
 evidence gate) fails when a family has no artifact.
 
 ## Producers
@@ -245,16 +245,14 @@ head. Default sample count is `20`; passing fewer samples is allowed for
 ad-hoc local inspection, but the comparator will refuse to gate cold `p95`
 artifacts when a measured row carries fewer than `20` samples.
 
-## Rollout: Phase A then Phase B
+## Baseline admission and regression gate
 
-- **Phase A — baseline capture (report-only).** Run the producers on a quiet
-  host at `HEAD`, eyeball the numbers, and commit captured baselines with
-  `--update-baseline`. No gating; the comparator is informational only. There
-  are no baselines until this phase runs.
-- **Phase B — relative regression gate.** Once baselines are trusted, wire
-  `compare_dsl_bench.py` into CI as a blocking gate against the committed
-  baselines. Regressions fail the build; deliberate changes are accepted by
-  re-running with `--update-baseline` in the same PR.
+The scheduled Linux job is already a blocking authority gate. Until its
+reviewed canonical baselines are committed it fails typed; it is never silently
+report-only. Capture warm/cold artifacts on that same canonical host class,
+review the artifact and scenario contract, then commit them through
+`--update-baseline`. A deliberate scenario or semantic change requires the
+same review, not an automatic PR-side update.
 
 ## Ratchet rule (exact)
 

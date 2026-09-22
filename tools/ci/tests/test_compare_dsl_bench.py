@@ -92,6 +92,9 @@ def _artifact(
     *,
     head: str = HEAD,
     config_digest: str = DIGEST,
+    corpus_digest: str = DIGEST,
+    model_revision: str | None = None,
+    host: dict | None = None,
     schema_version: int = 2,
 ) -> dict:
     return {
@@ -101,11 +104,11 @@ def _artifact(
         "concurrency": 1,
         "provenance": {
             "git_head": head,
-            "corpus_digest": DIGEST,
+            "corpus_digest": corpus_digest,
             "config_digest": config_digest,
-            "model_revision": None,
+            "model_revision": model_revision,
         },
-        "host": {
+        "host": host or {
             "os": "linux",
             "arch": "x86_64",
             "cpu_count": 8,
@@ -441,6 +444,33 @@ def test_a_baseline_at_another_head_is_compared_not_refused(tmp_path: Path) -> N
     result = _run(str(baseline), str(current))
     assert result.returncode == 0, result.stdout + result.stderr
     assert "OK" in result.stdout
+
+
+def test_corpus_model_and_host_class_must_match_the_baseline(tmp_path: Path) -> None:
+    baseline = tmp_path / "baseline.json"
+    current = tmp_path / "current.json"
+    _write_artifact(baseline, "warm", [_row("lexical.keyword.native", 1.00)])
+    cases = (
+        ({"corpus_digest": OTHER_DIGEST}, "corpus_digest mismatch"),
+        ({"model_revision": "embed-v2"}, "model_revision mismatch"),
+        (
+            {
+                "host": {
+                    "os": "linux",
+                    "arch": "x86_64",
+                    "cpu_count": 16,
+                    "mem_bytes": 1 << 34,
+                    "hostname_hash": DIGEST,
+                }
+            },
+            "host class mismatch",
+        ),
+    )
+    for overrides, expected in cases:
+        _write_artifact(current, "warm", [_row("lexical.keyword.native", 1.00)], **overrides)
+        result = _run(str(baseline), str(current))
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert expected in result.stderr
 
 
 def test_an_old_schema_artifact_is_refused(tmp_path: Path) -> None:

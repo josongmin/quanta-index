@@ -385,7 +385,7 @@ rust-bench-dsl-refresh samples="20":
     @just rust-bench-dsl-cold {{samples}}
     @just rust-bench-dsl-compare
 
-# Phase B relative-regression gate (report-only until baselines are captured via --update-baseline).
+# Relative-regression gate. It fails typed until reviewed canonical baselines exist.
 rust-bench-dsl-compare:
     python3 tools/benchmark/compare_dsl_bench.py tools/benchmark/baselines/warm-matrix.json artifacts/dsl-bench/warm-matrix.json
     python3 tools/benchmark/compare_dsl_bench.py tools/benchmark/baselines/cold-matrix.json artifacts/dsl-bench/cold-matrix.json
