@@ -361,7 +361,7 @@ impl<H: ?Sized + Send + Sync + 'static> SnapshotRegistry<H> {
     /// retries. A coalesced caller waits under `budget`: its deadline or
     /// cancellation ends the wait with the typed interruption while the
     /// flight lands for the others. A flight whose key was retired while it
-    /// ran admits nothing and is refused [`UNKNOWN_GENERATION_CODE`].
+    /// ran admits nothing and is refused [`quanta_index_core::UNKNOWN_GENERATION_CODE`].
     pub fn acquire(
         &self,
         key: &SnapshotKey,

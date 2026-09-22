@@ -638,7 +638,7 @@ impl<'de> Deserialize<'de> for SymbolQueryRequest {
 /// (QI-BB-023).
 ///
 /// `order` is required and has no default: a page is cut under exactly
-/// the total order documented on [`HistoryOrderV1`] and [`HistoryCursor`],
+/// the total order documented on [`HistoryOrderV1`] and [`super::HistoryCursor`],
 /// and `top_k` bounds it. A cursor may only continue a walk of the order
 /// it was issued under; a mismatch is refused typed
 /// (`HISTORY_CURSOR_ORDER_MISMATCH`). A continuation is served from the
@@ -817,7 +817,7 @@ macro_rules! impl_text_query_page_request_serde {
 /// the first, the cursor the previous page returned (QI-BB-025 W4).
 ///
 /// Results are ordered by candidate id under the total order documented
-/// on [`RuntimeMetadataCursorV1`]; `top_k` bounds one page. A
+/// on [`super::RuntimeMetadataCursorV1`]; `top_k` bounds one page. A
 /// continuation is served from the runtime and structural authority
 /// epochs its cursor names (QI-BB-020 W2), so the pages of one walk
 /// partition one consistent cut; a cursor naming an epoch the plane no
@@ -841,7 +841,7 @@ impl_text_query_page_request_serde!(
 /// first, the cursor the previous page returned (QI-BB-025 W4).
 ///
 /// Results are ordered by candidate id under the total order documented
-/// on [`StructuralCursorV1`]; `top_k` bounds one page. A continuation is
+/// on [`super::StructuralCursorV1`]; `top_k` bounds one page. A continuation is
 /// evaluated against the structural authority epoch its cursor names
 /// (QI-BB-020 W2), so the pages of one walk partition one snapshot's
 /// match set; a cursor naming an epoch the plane no longer retains is
