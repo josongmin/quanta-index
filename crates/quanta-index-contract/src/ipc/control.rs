@@ -1409,7 +1409,8 @@ pub enum ProcessReadinessPhaseV1 {
 }
 
 impl ProcessReadinessPhaseV1 {
-    const VARIANTS: &'static [&'static str] = &["starting", "ready", "draining", "stopped", "failed"];
+    const VARIANTS: &'static [&'static str] =
+        &["starting", "ready", "draining", "stopped", "failed"];
 
     #[must_use]
     pub const fn as_code_str(self) -> &'static str {
@@ -1434,7 +1435,7 @@ impl Serialize for ProcessReadinessPhaseV1 {
 
 struct ProcessReadinessPhaseV1Visitor;
 
-impl<'de> Visitor<'de> for ProcessReadinessPhaseV1Visitor {
+impl Visitor<'_> for ProcessReadinessPhaseV1Visitor {
     type Value = ProcessReadinessPhaseV1;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1501,7 +1502,7 @@ impl Serialize for ProcessProviderClaimV1 {
 
 struct ProcessProviderClaimV1Visitor;
 
-impl<'de> Visitor<'de> for ProcessProviderClaimV1Visitor {
+impl Visitor<'_> for ProcessProviderClaimV1Visitor {
     type Value = ProcessProviderClaimV1;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1611,6 +1612,10 @@ impl<'de> Deserialize<'de> for ProcessProviderReadinessV1 {
 /// The health of every required process component one readiness
 /// synthesis consults.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each bool is one independently observable required component; a bitfield would hide which plane failed"
+)]
 pub struct ProcessComponentsHealthV1 {
     /// The query plane's accept loop is alive and accepting.
     pub query_plane: bool,
@@ -1719,8 +1724,8 @@ impl<'de> Visitor<'de> for ProcessComponentsHealthV1Visitor {
         let ingest_plane = ingest_plane.ok_or_else(|| de::Error::missing_field("ingest_plane"))?;
         let maintenance_heartbeat = maintenance_heartbeat
             .ok_or_else(|| de::Error::missing_field("maintenance_heartbeat"))?;
-        let required_backend = required_backend
-            .ok_or_else(|| de::Error::missing_field("required_backend"))?;
+        let required_backend =
+            required_backend.ok_or_else(|| de::Error::missing_field("required_backend"))?;
         let provider = provider.ok_or_else(|| de::Error::missing_field("provider"))?;
         Ok(Self::Value {
             query_plane,
@@ -1798,7 +1803,7 @@ impl Serialize for ProcessReadinessReasonV1 {
 
 struct ProcessReadinessReasonV1Visitor;
 
-impl<'de> Visitor<'de> for ProcessReadinessReasonV1Visitor {
+impl Visitor<'_> for ProcessReadinessReasonV1Visitor {
     type Value = ProcessReadinessReasonV1;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1958,10 +1963,10 @@ impl<'de> Visitor<'de> for ProcessReadinessV1Visitor {
         let supervisor_phase =
             supervisor_phase.ok_or_else(|| de::Error::missing_field("supervisor_phase"))?;
         let components = components.ok_or_else(|| de::Error::missing_field("components"))?;
-        let active_repositories = active_repositories
-            .ok_or_else(|| de::Error::missing_field("active_repositories"))?;
-        let not_ready_reasons = not_ready_reasons
-            .ok_or_else(|| de::Error::missing_field("not_ready_reasons"))?;
+        let active_repositories =
+            active_repositories.ok_or_else(|| de::Error::missing_field("active_repositories"))?;
+        let not_ready_reasons =
+            not_ready_reasons.ok_or_else(|| de::Error::missing_field("not_ready_reasons"))?;
         Ok(Self::Value {
             ready,
             supervisor_phase,

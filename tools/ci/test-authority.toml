@@ -127,6 +127,21 @@ targets = [
   "repomap-owner-surface",
 ]
 
+[local_scopes.control-readiness-owner]
+lane = "test-control-readiness-owner-lane"
+test_threads = 4
+targets = [
+  "control-readiness-owner-v1",
+]
+
+[local_scopes.control-readiness-owner-lib]
+lane = "test-control-readiness-owner-lane"
+test_threads = 4
+lib = true
+packages = [
+  "quanta-index-search-plane",
+]
+
 [local_scopes.canonical-identity]
 lane = "test-canonical-identity-lane"
 test_threads = 4
@@ -299,6 +314,12 @@ rail = "pr-workspace-nextest"
 id = "query-truth-owner-v1"
 path = "crates/quanta-index-contract-base/tests/query_truth_owner_v1.rs"
 owner = "quanta-index-contract-base"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "control-readiness-owner-v1"
+path = "crates/quanta-index-search-plane/tests/control_readiness_owner_v1.rs"
+owner = "quanta-index-search-plane"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]

@@ -31,6 +31,8 @@ rust-profile-list:
         'test-read-view-lifetime-owner P04 read-view lifetime, pin/GC barrier owner proof' \
         'test-search-plane-read-view-lib P04 search-plane read-view lib proof' \
         'test-query-truth-owner P05 query outcome/cursor/oracle owner proof' \
+        'test-control-readiness-owner P09 control authorization/readiness owner proof' \
+        'test-control-readiness-owner-lib P09 control authorization/readiness lib suites' \
         'test-query-truth-owner-lib P05 outcome/cursor/oracle lib suites' \
         'test-sdk-binding-owner P06 SDK contextual binding negative-matrix owner proof' \
         'test-sdk-binding-owner-lib P06 SDK lib suites' \
@@ -71,6 +73,8 @@ rust-profile profile:
         test-read-view-lifetime-owner) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-read-view-lifetime-owner ;; \
         test-search-plane-read-view-lib) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-search-plane-read-view-lib ;; \
         test-query-truth-owner) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-query-truth-owner ;; \
+        test-control-readiness-owner) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-control-readiness-owner ;; \
+        test-control-readiness-owner-lib) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-control-readiness-owner-lib ;; \
         test-query-truth-owner-lib) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-query-truth-owner-lib ;; \
         test-sdk-binding-owner) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-sdk-binding-owner ;; \
         test-sdk-binding-owner-lib) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-sdk-binding-owner-lib ;; \
@@ -248,6 +252,12 @@ rust-test-query-truth-owner lane="test-query-truth-owner-lane":
 
 rust-test-query-truth-owner-lib lane="test-query-truth-owner-lane":
     python3 tools/ci/run-local-test-scope.py query-truth-owner-lib --lane {{lane}}
+
+rust-test-control-readiness-owner lane="test-control-readiness-owner-lane":
+    python3 tools/ci/run-local-test-scope.py control-readiness-owner --lane {{lane}}
+
+rust-test-control-readiness-owner-lib lane="test-control-readiness-owner-lane":
+    python3 tools/ci/run-local-test-scope.py control-readiness-owner-lib --lane {{lane}}
 
 rust-test-sdk-binding-owner lane="test-sdk-binding-owner-lane":
     python3 tools/ci/run-local-test-scope.py sdk-binding-owner --lane {{lane}}
@@ -923,3 +933,15 @@ proof-p05-query-truth-owner:
 # Dedicated P04 read-view recipe: owner-local selector first, then the
 # Linux release subrail split the prompt names (NOT_RUN off-Linux).
 rust-proof-p04-read-view: proof-p04-read-view-lifetime-owner
+
+# P09 (S21-10) control authorization + readiness owner proof: the scoped
+# integration target proves the capability/access matrix, the lib scope
+# proves the dispatch-level default-deny (zero mutation) and the readiness
+# truth table. Rustx/fuzz rails guard the wire shapes the DTOs added.
+proof-p09-control-readiness-owner:
+    @just rust-profile test-control-readiness-owner
+    @just rust-profile test-control-readiness-owner-lib
+    @just rust-hexagonal
+    @just rust-wire-inventory
+    @just rust-public-api
+    @just rust-fuzz-smoke

@@ -1479,6 +1479,9 @@ impl SearchdRuntime {
                 },
                 observability,
                 quarantine,
+                // No readiness authority is wired in this composition yet:
+                // the readiness opcode refuses typed until one is injected.
+                readiness: None,
             },
         ));
         let ingest_dispatcher = Arc::new(SearchPlaneIngestDispatcher::new(
@@ -1510,6 +1513,7 @@ impl SearchdRuntime {
                 .map(|role| socket_access.for_role(*role)),
         );
         let query_server = SearchPlaneQueryServer::bind(
+            quanta_index_ipc::IpcPlane::Query,
             "quanta-index-query-uds",
             config.query_socket_path(),
             query_adapter,
@@ -1525,6 +1529,7 @@ impl SearchdRuntime {
         // Control and ingest mutate; their dispatches serialize by policy
         // while their connections still read independently (QI-BB-002).
         let control_server = SearchPlaneControlServer::bind(
+            quanta_index_ipc::IpcPlane::Control,
             "quanta-index-control-uds",
             config.control_socket_path(),
             control_adapter,
@@ -1538,6 +1543,7 @@ impl SearchdRuntime {
             dyn IpcDispatcher<SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse>,
         > = Arc::new(SearchPlaneIngestIpcAdapter::new(ingest_dispatcher));
         let ingest_server = SearchPlaneIngestServer::bind(
+            quanta_index_ipc::IpcPlane::Ingest,
             "quanta-index-ingest-uds",
             config.ingest_socket_path(),
             ingest_adapter,

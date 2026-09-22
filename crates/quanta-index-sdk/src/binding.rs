@@ -82,6 +82,7 @@ pub(crate) enum ExpectedControlResponseV1 {
     MetricsSnapshot,
     QuarantineInventory,
     QuarantineDiscardAck,
+    ProcessReadinessReport,
 }
 
 impl ExpectedControlResponseV1 {
@@ -96,6 +97,7 @@ impl ExpectedControlResponseV1 {
             Self::MetricsSnapshot => "metrics_snapshot",
             Self::QuarantineInventory => "quarantine_inventory",
             Self::QuarantineDiscardAck => "quarantine_discard_ack",
+            Self::ProcessReadinessReport => "process_readiness_report",
         }
     }
 }
@@ -817,6 +819,10 @@ impl ControlCallBinding {
                 expected: ExpectedControlResponseV1::QuarantineDiscardAck,
                 inner: ControlCall::QuarantineDiscard(payload.target.clone()),
             },
+            SearchPlaneControlIpcRequest::ProcessReadiness(_) => Self {
+                expected: ExpectedControlResponseV1::ProcessReadinessReport,
+                inner: ControlCall::Intrinsic,
+            },
         }
     }
 }
@@ -995,6 +1001,12 @@ pub(crate) fn bind_control_response(
                     "the discard target as requested",
                     "a different target",
                 ));
+            }
+            Ok(())
+        }
+        SearchPlaneControlIpcResponse::ProcessReadinessReport(_) => {
+            if binding.expected != ExpectedControlResponseV1::ProcessReadinessReport {
+                return Err(variant("process_readiness_report"));
             }
             Ok(())
         }

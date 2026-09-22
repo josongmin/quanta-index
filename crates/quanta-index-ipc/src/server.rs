@@ -88,6 +88,10 @@ pub struct DispatchContextV1 {
     pub plane: IpcPlane,
     /// The peer's kernel-reported credentials, or `None` off-socket.
     pub principal: Option<PeerCredentials>,
+    /// The effective uid the daemon bound the socket as. A peer running as
+    /// this uid (or as root) is the operator; any other admitted peer is
+    /// observe-only.
+    pub owner_uid: u32,
     /// One-up id of the connection the request arrived on.
     pub connection_id: u64,
     /// The dispatch deadline the budget enforces.
@@ -943,6 +947,7 @@ impl UdsServer {
                     let counters = Arc::clone(&self.counters);
                     let shutdown = Arc::clone(&self.shutdown);
                     let policy = self.policy;
+                    let owner_uid = self.owner;
                     let connection_id = self
                         .next_connection_id
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -962,6 +967,7 @@ impl UdsServer {
                                 policy,
                                 plane,
                                 admitted,
+                                owner_uid,
                                 connection_id,
                                 &shutdown,
                                 &counters,
@@ -1137,6 +1143,10 @@ impl core::fmt::Display for ConnectionCloseReason {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the transport threads the connection's kernel identity (plane, peer credentials, owner uid, connection id) plus admission and observability handles; bundling them would hide which identity a context was built from"
+)]
 fn handle_connection<RequestEnvelopeT, Request, ResponseEnvelopeT, Response, D>(
     mut stream: UnixStream,
     dispatcher: &D,
@@ -1144,6 +1154,7 @@ fn handle_connection<RequestEnvelopeT, Request, ResponseEnvelopeT, Response, D>(
     policy: ServerAdmissionPolicy,
     plane: IpcPlane,
     principal: PeerCredentials,
+    owner_uid: u32,
     connection_id: u64,
     shutdown: &AtomicBool,
     counters: &Arc<IpcServerCounters>,
@@ -1208,8 +1219,11 @@ where
             request_id,
             plane,
             principal: Some(principal),
+            owner_uid,
             connection_id,
-            deadline: std::time::Instant::now() + policy.dispatch_budget(),
+            deadline: std::time::Instant::now()
+                .checked_add(policy.dispatch_budget())
+                .unwrap_or_else(std::time::Instant::now),
             cancellation: budget.cancel_handle(),
         };
         // The dispatch slot and the in-flight count are one RAII pair
@@ -1671,9 +1685,9 @@ fn classify_client_io_error(
 #[cfg(test)]
 mod tests {
     use super::{
-        ClientIoPolicy, ConnectionCloseReason, IpcDispatcher, IpcError, IpcPlane, IpcServerCounters,
-        PeerCredentials, PeerWatch, RequestEnvelope, ResponseEnvelope, SocketPathIdentity,
-        UdsServer, connect_before_deadline, connect_requires_completion_wait,
+        ClientIoPolicy, ConnectionCloseReason, IpcDispatcher, IpcError, IpcPlane,
+        IpcServerCounters, PeerCredentials, PeerWatch, RequestEnvelope, ResponseEnvelope,
+        SocketPathIdentity, UdsServer, connect_before_deadline, connect_requires_completion_wait,
         create_connect_socket, decode_response, encode_request, handle_connection, send_request,
         wait_for_connect,
     };
@@ -2163,7 +2177,12 @@ mod tests {
     struct TestDispatcher;
 
     impl IpcDispatcher<u64, u64> for TestDispatcher {
-        fn dispatch(&self, _context: &super::DispatchContextV1, request: u64, _budget: &RequestBudgetV1) -> u64 {
+        fn dispatch(
+            &self,
+            _context: &super::DispatchContextV1,
+            request: u64,
+            _budget: &RequestBudgetV1,
+        ) -> u64 {
             request.saturating_add(1)
         }
     }
@@ -2384,7 +2403,12 @@ mod tests {
                 &test_slots(),
                 test_policy(),
                 super::IpcPlane::Query,
-                super::PeerCredentials { uid: 1000, gid: 1000, pid: None },
+                super::PeerCredentials {
+                    uid: 1000,
+                    gid: 1000,
+                    pid: None,
+                },
+                1000,
                 1,
                 &AtomicBool::new(false),
                 &test_counters(),
@@ -2529,7 +2553,12 @@ mod tests {
     }
 
     impl IpcDispatcher<u64, u64> for BlockingDispatcher {
-        fn dispatch(&self, _context: &super::DispatchContextV1, request: u64, budget: &RequestBudgetV1) -> u64 {
+        fn dispatch(
+            &self,
+            _context: &super::DispatchContextV1,
+            request: u64,
+            budget: &RequestBudgetV1,
+        ) -> u64 {
             let send_result = self.entered.send(());
             assert!(
                 send_result.is_ok(),
@@ -2557,7 +2586,12 @@ mod tests {
     }
 
     impl IpcDispatcher<u64, u64> for HalfCloseDispatcher {
-        fn dispatch(&self, _context: &super::DispatchContextV1, request: u64, budget: &RequestBudgetV1) -> u64 {
+        fn dispatch(
+            &self,
+            _context: &super::DispatchContextV1,
+            request: u64,
+            budget: &RequestBudgetV1,
+        ) -> u64 {
             let send_result = self.entered.send(());
             assert!(
                 send_result.is_ok(),
@@ -2610,7 +2644,12 @@ mod tests {
                     &test_slots(),
                     test_policy(),
                     IpcPlane::Query,
-                    PeerCredentials { uid: 0, gid: 0, pid: None },
+                    PeerCredentials {
+                        uid: 0,
+                        gid: 0,
+                        pid: None,
+                    },
+                    0,
                     1,
                     &AtomicBool::new(false),
                     &test_counters(),
@@ -2661,7 +2700,12 @@ mod tests {
                 &test_slots(),
                 test_policy(),
                 IpcPlane::Query,
-                PeerCredentials { uid: 0, gid: 0, pid: None },
+                PeerCredentials {
+                    uid: 0,
+                    gid: 0,
+                    pid: None,
+                },
+                0,
                 1,
                 &AtomicBool::new(false),
                 &counters,
@@ -2707,7 +2751,12 @@ mod tests {
                     &test_slots(),
                     test_policy(),
                     IpcPlane::Query,
-                    PeerCredentials { uid: 0, gid: 0, pid: None },
+                    PeerCredentials {
+                        uid: 0,
+                        gid: 0,
+                        pid: None,
+                    },
+                    0,
                     1,
                     &AtomicBool::new(false),
                     &test_counters(),
@@ -2761,7 +2810,12 @@ mod tests {
                 &test_slots(),
                 test_policy(),
                 super::IpcPlane::Query,
-                super::PeerCredentials { uid: 1000, gid: 1000, pid: None },
+                super::PeerCredentials {
+                    uid: 1000,
+                    gid: 1000,
+                    pid: None,
+                },
+                1000,
                 1,
                 &AtomicBool::new(false),
                 &test_counters(),
@@ -2816,7 +2870,12 @@ mod tests {
                     &test_slots(),
                     test_policy(),
                     IpcPlane::Query,
-                    PeerCredentials { uid: 0, gid: 0, pid: None },
+                    PeerCredentials {
+                        uid: 0,
+                        gid: 0,
+                        pid: None,
+                    },
+                    0,
                     1,
                     &AtomicBool::new(false),
                     &test_counters(),
@@ -2881,7 +2940,12 @@ mod tests {
                     &test_slots(),
                     test_policy(),
                     IpcPlane::Query,
-                    PeerCredentials { uid: 0, gid: 0, pid: None },
+                    PeerCredentials {
+                        uid: 0,
+                        gid: 0,
+                        pid: None,
+                    },
+                    0,
                     1,
                     &AtomicBool::new(false),
                     &test_counters(),

@@ -414,9 +414,8 @@ required_host = "linux-production-like"
 
 [[proofs]]
 id = "p09-control-readiness-owner"
-authority_state = "staged"
+authority_state = "executable"
 execution_mode = "test-authority"
-staged_reason = "P09 must land host-independent authorization and readiness owner targets."
 ticket = "S21-10"
 family = "U"
 checkpoint = "M3"
@@ -429,7 +428,8 @@ filter = "none"
 source_binding = "exact"
 binary_binding = "none"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
-test_authority_targets = []
+test_authority_scopes = ["control-readiness-owner", "control-readiness-owner-lib"]
+test_authority_targets = ["control-readiness-owner-v1"]
 dependencies = ["p08-runtime-supervisor-owner"]
 artifact = "artifacts/proof-authority/p09-control-readiness-owner.json"
 required_host = "any"

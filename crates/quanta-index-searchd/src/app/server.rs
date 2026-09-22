@@ -17,7 +17,7 @@ use quanta_index_contract::{
     SearchPlaneQueryIpcResponseEnvelope,
 };
 use quanta_index_ipc::{
-    IpcDispatcher, IpcError, IpcServerCounters, RequestEnvelope, ResponseEnvelope,
+    IpcDispatcher, IpcError, IpcPlane, IpcServerCounters, RequestEnvelope, ResponseEnvelope,
     ServerAdmissionPolicy, ShutdownHandle as IpcShutdownHandle, SocketAccessPolicy, UdsServer,
 };
 
@@ -31,6 +31,9 @@ where
 {
     server: UdsServer,
     dispatcher: Arc<D>,
+    /// Which plane this server carries (S21-10): the dispatch context
+    /// names it so a control-socket request can never claim another plane.
+    plane: IpcPlane,
     thread_name: String,
     marker: PhantomData<fn(RequestEnvelopeT, Request, ResponseEnvelopeT, Response)>,
 }
@@ -74,6 +77,7 @@ where
     /// socket's admitted peers can reach it while the directory stays no
     /// wider than any of them needs.
     pub fn bind(
+        plane: IpcPlane,
         thread_name: impl Into<String>,
         socket_path: &Path,
         dispatcher: Arc<D>,
@@ -87,6 +91,7 @@ where
         Ok(Self {
             server,
             dispatcher,
+            plane,
             thread_name: thread_name.into(),
             marker: PhantomData,
         })
@@ -116,6 +121,7 @@ where
         let Self {
             server,
             dispatcher,
+            plane,
             thread_name,
             marker: _,
         } = self;
@@ -124,6 +130,7 @@ where
             .spawn(move || {
                 server.run::<RequestEnvelopeT, Request, ResponseEnvelopeT, Response, D>(
                     &dispatcher,
+                    plane,
                     accept_idle,
                 )
             })?;

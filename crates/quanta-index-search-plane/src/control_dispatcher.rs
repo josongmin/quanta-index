@@ -41,6 +41,8 @@ pub struct SearchPlaneControlDispatcher {
     observability: Arc<ObservabilityScrape>,
     /// The live quarantine inventory and discard (QI-BB-026).
     quarantine: QuarantineService,
+    /// The process-wide readiness authority, when one is wired.
+    readiness: Option<Arc<dyn ProcessReadinessPort>>,
 }
 
 /// The ports one [`SearchPlaneControlDispatcher`] is composed from.
@@ -49,6 +51,108 @@ pub struct SearchPlaneControlDispatcherParts {
     pub lifecycle: SearchCorpusLifecycleParts,
     pub observability: Arc<ObservabilityScrape>,
     pub quarantine: QuarantineService,
+    /// The process-wide readiness authority (S21-10). `None` means no
+    /// authority is wired, and the readiness opcode refuses typed.
+    pub readiness: Option<Arc<dyn ProcessReadinessPort>>,
+}
+
+/// The readiness authority the control plane asks for (S21-10).
+///
+/// The control plane never fabricates a verdict: with no port wired, the
+/// request is refused typed instead of answered `ready`.
+pub trait ProcessReadinessPort: Send + Sync {
+    fn readiness(&self) -> Result<quanta_index_contract::ProcessReadinessV1, CoreError>;
+}
+
+/// The closed capability every control opcode requires (S21-10).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ControlCapabilityV1 {
+    /// Read-only status, metrics and inventories.
+    Observe,
+    /// Durable mutations of the serving state.
+    Admin,
+}
+
+impl ControlCapabilityV1 {
+    /// The capability one request requires. Exhaustive over the closed
+    /// request enum: a new opcode cannot compile without a decision.
+    #[must_use]
+    pub const fn required_for(request: &SearchPlaneControlIpcRequest) -> Self {
+        match request {
+            SearchPlaneControlIpcRequest::CurrentGeneration(_)
+            | SearchPlaneControlIpcRequest::GenerationStatus(_)
+            | SearchPlaneControlIpcRequest::MetricsSnapshot(_)
+            | SearchPlaneControlIpcRequest::QuarantineInventory(_)
+            | SearchPlaneControlIpcRequest::ProcessReadiness(_) => Self::Observe,
+            SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(_)
+            | SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(_)
+            | SearchPlaneControlIpcRequest::RepoMapActivate(_)
+            | SearchPlaneControlIpcRequest::QuarantineDiscard(_) => Self::Admin,
+        }
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Observe => "observe",
+            Self::Admin => "admin",
+        }
+    }
+}
+
+/// The authorization context a control dispatch runs under (S21-10).
+///
+/// Two principals exist, and neither is inferred from the payload:
+/// - `InProcessOperator` is the daemon calling its own dispatcher (the
+///   composition root and in-process tests). It is constructed explicitly,
+///   never selected by the absence of a credential.
+/// - `Peer` carries the kernel-reported credentials of a connected peer
+///   plus the uid the socket was bound as: a peer running as the socket
+///   owner (or as root) is the operator, any other admitted peer is
+///   observe-only.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ControlAccessV1 {
+    InProcessOperator,
+    Peer { uid: u32, owner_uid: u32 },
+}
+
+impl ControlAccessV1 {
+    /// Whether this access may exercise `capability`.
+    #[must_use]
+    pub const fn permits(self, capability: ControlCapabilityV1) -> bool {
+        match (self, capability) {
+            (Self::InProcessOperator, _) | (Self::Peer { .. }, ControlCapabilityV1::Observe) => {
+                true
+            }
+            (Self::Peer { uid, owner_uid }, ControlCapabilityV1::Admin) => {
+                uid == owner_uid || uid == 0
+            }
+        }
+    }
+
+    #[must_use]
+    pub const fn principal_name(self) -> &'static str {
+        match self {
+            Self::InProcessOperator => "in-process-operator",
+            Self::Peer { uid, owner_uid } if uid == owner_uid || uid == 0 => "peer-operator",
+            Self::Peer { .. } => "peer-observer",
+        }
+    }
+}
+
+/// The typed authorization refusal, carrying provenance but never payload.
+fn control_authorization_denied(
+    access: ControlAccessV1,
+    capability: ControlCapabilityV1,
+) -> CoreError {
+    CoreError::Typed {
+        code: quanta_index_contract::SearchPlaneErrorCodeV2::ControlAuthorizationDenied,
+        message: format!(
+            "control: principal {} may not exercise the {} capability",
+            access.principal_name(),
+            capability.as_str()
+        ),
+    }
 }
 
 impl SearchPlaneControlDispatcher {
@@ -59,6 +163,7 @@ impl SearchPlaneControlDispatcher {
             lifecycle,
             observability,
             quarantine,
+            readiness,
         } = parts;
         let activation_catalog = Arc::clone(&lifecycle.activation_catalog);
         let search_corpus_lifecycle = SearchCorpusLifecycleService::new(lifecycle);
@@ -68,7 +173,18 @@ impl SearchPlaneControlDispatcher {
             search_corpus_lifecycle,
             observability,
             quarantine,
+            readiness,
         }
+    }
+
+    fn process_readiness(&self) -> Result<quanta_index_contract::ProcessReadinessV1, CoreError> {
+        let Some(port) = self.readiness.as_ref() else {
+            return Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::ProcessNotReady,
+                message: "control: no process-readiness authority is wired".to_string(),
+            });
+        };
+        port.readiness()
     }
 
     fn repo_map_activate(
@@ -209,6 +325,52 @@ impl SearchPlaneControlDispatcher {
         request: SearchPlaneControlIpcRequest,
         budget: &RequestBudgetV1,
     ) -> SearchPlaneControlIpcResponse {
+        // The daemon's own in-process entry: an explicitly constructed
+        // operator context, never a default that a peer path inherits.
+        self.dispatch_as(ControlAccessV1::InProcessOperator, request, budget)
+    }
+
+    /// Serve one control request under the transport's kernel-derived
+    /// context (S21-10): the peer's credentials and the socket owner decide
+    /// the principal, and the capability table decides the answer. A
+    /// context without a peer credential is the in-process path only when
+    /// the caller says so explicitly; here it is a typed refusal.
+    #[must_use]
+    pub fn dispatch_authorized(
+        &self,
+        context: &quanta_index_ipc::DispatchContextV1,
+        request: SearchPlaneControlIpcRequest,
+        budget: &RequestBudgetV1,
+    ) -> SearchPlaneControlIpcResponse {
+        let access = match context.principal {
+            Some(credentials) => ControlAccessV1::Peer {
+                uid: credentials.uid,
+                owner_uid: context.owner_uid,
+            },
+            None => {
+                return SearchPlaneControlIpcResponse::Error(core_error_to_ipc(CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::ControlAuthorizationDenied,
+                    message: "control: request carried no kernel credential context".to_string(),
+                }));
+            }
+        };
+        self.dispatch_as(access, request, budget)
+    }
+
+    /// Serve one control request under an explicit access decision.
+    #[must_use]
+    pub fn dispatch_as(
+        &self,
+        access: ControlAccessV1,
+        request: SearchPlaneControlIpcRequest,
+        budget: &RequestBudgetV1,
+    ) -> SearchPlaneControlIpcResponse {
+        let capability = ControlCapabilityV1::required_for(&request);
+        if !access.permits(capability) {
+            return SearchPlaneControlIpcResponse::Error(core_error_to_ipc(
+                control_authorization_denied(access, capability),
+            ));
+        }
         if let Err(err) = budget.checkpoint("control:entry") {
             return SearchPlaneControlIpcResponse::Error(core_error_to_ipc(err));
         }
@@ -264,15 +426,10 @@ impl SearchPlaneControlDispatcher {
                 }
             }
             SearchPlaneControlIpcRequest::ProcessReadiness(_request) => {
-                // S21-10 P09 WIP: the readiness synthesis (supervisor phase
-                // plus plane health, deliberately separate from repository
-                // generation status) is not wired in this checkpoint. The
-                // refusal is typed and explicit: never a silent success and
-                // never a fabricated readiness verdict.
-                SearchPlaneControlIpcResponse::Error(core_error_to_ipc(CoreError::Typed {
-                    code: quanta_index_contract::SearchPlaneErrorCodeV2::ProcessNotReady,
-                    message: "control: process readiness synthesis is not wired yet".to_string(),
-                }))
+                match self.process_readiness() {
+                    Ok(report) => SearchPlaneControlIpcResponse::ProcessReadinessReport(report),
+                    Err(err) => SearchPlaneControlIpcResponse::Error(core_error_to_ipc(err)),
+                }
             }
         }
     }
@@ -317,7 +474,7 @@ mod tests {
     )]
     use std::sync::{Arc, Mutex, RwLock};
 
-    use super::SearchPlaneControlDispatcher;
+    use super::{ControlAccessV1, ProcessReadinessPort, SearchPlaneControlDispatcher};
     use quanta_index_contract::{
         GenerationSnapshot, ManifestGeneration, MetricsSnapshotRequest, MetricsSnapshotV1,
         QuarantineDiscardOutcomeDtoV1, QuarantineDiscardRequest, QuarantineInventoryRequest,
@@ -524,6 +681,7 @@ mod tests {
             },
             observability: empty_scrape(),
             quarantine: empty_quarantine(),
+            readiness: None,
         };
         (parts, snapshots)
     }
@@ -533,6 +691,249 @@ mod tests {
         ledger: Arc<RwLock<Ledger>>,
     ) -> SearchPlaneControlDispatcher {
         SearchPlaneControlDispatcher::new(control_parts(activation_catalog, ledger).0)
+    }
+
+    /// A dispatcher over the standard fixtures with a readiness authority.
+    fn control_dispatcher_with_readiness(
+        port: Arc<dyn ProcessReadinessPort>,
+    ) -> SearchPlaneControlDispatcher {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let activation_catalog =
+            Arc::new(ActivationCatalog::open(dir.path()).expect("activation catalog"));
+        let ledger = Arc::new(RwLock::new(Ledger::new()));
+        let (mut parts, _snapshots) = control_parts(activation_catalog, ledger);
+        parts.readiness = Some(port);
+        SearchPlaneControlDispatcher::new(parts)
+    }
+
+    struct FixedReadiness(Result<quanta_index_contract::ProcessReadinessV1, &'static str>);
+
+    impl ProcessReadinessPort for FixedReadiness {
+        fn readiness(&self) -> Result<quanta_index_contract::ProcessReadinessV1, CoreError> {
+            match &self.0 {
+                Ok(report) => Ok(report.clone()),
+                Err(message) => Err(CoreError::Storage((*message).to_string())),
+            }
+        }
+    }
+
+    fn ready_report(active_repositories: u64) -> quanta_index_contract::ProcessReadinessV1 {
+        quanta_index_contract::ProcessReadinessV1 {
+            ready: true,
+            supervisor_phase: quanta_index_contract::ProcessReadinessPhaseV1::Ready,
+            components: quanta_index_contract::ProcessComponentsHealthV1 {
+                query_plane: true,
+                control_plane: true,
+                ingest_plane: true,
+                maintenance_heartbeat: true,
+                required_backend: true,
+                provider: quanta_index_contract::ProcessProviderReadinessV1 {
+                    claim: quanta_index_contract::ProcessProviderClaimV1::Disabled,
+                    healthy: true,
+                },
+            },
+            active_candidate_integrity: None,
+            active_repositories,
+            not_ready_reasons: Vec::new(),
+        }
+    }
+
+    fn readiness_request() -> SearchPlaneControlIpcRequest {
+        SearchPlaneControlIpcRequest::ProcessReadiness(
+            quanta_index_contract::ProcessReadinessRequest,
+        )
+    }
+
+    fn admin_request() -> SearchPlaneControlIpcRequest {
+        SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(
+            SearchPlaneActivateSearchCorpusGenerationCasRequest {
+                candidate: composite_identity("repo-auth", "rev-auth", 1, "digest-auth-1")
+                    .expect("fixture identity"),
+                expected_active: None,
+            },
+        )
+    }
+
+    fn other_control_responses(other: &SearchPlaneControlIpcResponse) -> ! {
+        match other {
+            SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
+            | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
+            | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
+            | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
+            | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
+            | SearchPlaneControlIpcResponse::QuarantineInventory(_)
+            | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
+            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
+            | SearchPlaneControlIpcResponse::Error(_) => {
+                panic!("expected an error response, got {other:?}")
+            }
+        }
+    }
+
+    fn error_code(
+        response: SearchPlaneControlIpcResponse,
+    ) -> quanta_index_contract::SearchPlaneErrorCodeV2 {
+        match response {
+            SearchPlaneControlIpcResponse::Error(error) => error.code,
+            ref other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
+            | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
+            | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
+            | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
+            | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
+            | SearchPlaneControlIpcResponse::QuarantineInventory(_)
+            | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
+            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)) => {
+                other_control_responses(other)
+            }
+        }
+    }
+
+    #[test]
+    fn a_peer_observer_is_denied_admin_and_mutates_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let activation_catalog = Arc::new(ActivationCatalog::open(dir.path()).expect("catalog"));
+        let dispatcher = control_dispatcher(
+            Arc::clone(&activation_catalog),
+            Arc::new(RwLock::new(Ledger::new())),
+        );
+        let observer = ControlAccessV1::Peer {
+            uid: 2000,
+            owner_uid: 1000,
+        };
+        let response =
+            dispatcher.dispatch_as(observer, admin_request(), &RequestBudgetV1::unbounded());
+        assert_eq!(
+            error_code(response),
+            quanta_index_contract::SearchPlaneErrorCodeV2::ControlAuthorizationDenied
+        );
+        // Default deny means zero mutation: the catalog still resolves no
+        // active search-corpus generation for the fixture pair.
+        let active = activation_catalog
+            .active_search_corpus_v1(
+                &RepoId::new("repo-auth").expect("fixture"),
+                &RevisionId::new("rev-auth").expect("fixture"),
+            )
+            .expect("read active state");
+        assert!(active.is_none(), "a denied mutation must commit nothing");
+    }
+
+    #[test]
+    fn a_peer_without_a_kernel_credential_context_is_denied_even_observe() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dispatcher = control_dispatcher(
+            Arc::new(ActivationCatalog::open(dir.path()).expect("catalog")),
+            Arc::new(RwLock::new(Ledger::new())),
+        );
+        let context = quanta_index_ipc::DispatchContextV1 {
+            request_id: 1,
+            plane: quanta_index_ipc::IpcPlane::Control,
+            principal: None,
+            owner_uid: 1000,
+            connection_id: 1,
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(1),
+            cancellation: RequestBudgetV1::unbounded().cancel_handle(),
+        };
+        let response = dispatcher.dispatch_authorized(
+            &context,
+            readiness_request(),
+            &RequestBudgetV1::unbounded(),
+        );
+        assert_eq!(
+            error_code(response),
+            quanta_index_contract::SearchPlaneErrorCodeV2::ControlAuthorizationDenied
+        );
+    }
+
+    #[test]
+    fn the_socket_owner_peer_is_admitted_for_admin() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dispatcher = control_dispatcher(
+            Arc::new(ActivationCatalog::open(dir.path()).expect("catalog")),
+            Arc::new(RwLock::new(Ledger::new())),
+        );
+        let context = quanta_index_ipc::DispatchContextV1 {
+            request_id: 1,
+            plane: quanta_index_ipc::IpcPlane::Control,
+            principal: Some(quanta_index_ipc::PeerCredentials {
+                uid: 1000,
+                gid: 1000,
+                pid: None,
+            }),
+            owner_uid: 1000,
+            connection_id: 1,
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(1),
+            cancellation: RequestBudgetV1::unbounded().cancel_handle(),
+        };
+        // The operator reaches the domain layer: the activation is attempted
+        // and answered by the domain, not by the authorization gate.
+        let response = dispatcher.dispatch_authorized(
+            &context,
+            admin_request(),
+            &RequestBudgetV1::unbounded(),
+        );
+        assert_ne!(
+            error_code(response),
+            quanta_index_contract::SearchPlaneErrorCodeV2::ControlAuthorizationDenied
+        );
+    }
+
+    #[test]
+    fn readiness_without_an_authority_refuses_typed_never_fabricates_ready() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dispatcher = control_dispatcher(
+            Arc::new(ActivationCatalog::open(dir.path()).expect("catalog")),
+            Arc::new(RwLock::new(Ledger::new())),
+        );
+        let response = dispatcher.dispatch(readiness_request(), &RequestBudgetV1::unbounded());
+        assert_eq!(
+            error_code(response),
+            quanta_index_contract::SearchPlaneErrorCodeV2::ProcessNotReady
+        );
+    }
+
+    #[test]
+    fn readiness_reports_pass_through_and_errors_stay_typed() {
+        let dispatcher =
+            control_dispatcher_with_readiness(Arc::new(FixedReadiness(Ok(ready_report(0)))));
+        match dispatcher.dispatch(readiness_request(), &RequestBudgetV1::unbounded()) {
+            SearchPlaneControlIpcResponse::ProcessReadinessReport(report) => {
+                assert!(report.ready);
+                assert_eq!(report.active_repositories, 0);
+                assert!(report.not_ready_reasons.is_empty());
+            }
+            ref other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
+            | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
+            | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
+            | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
+            | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
+            | SearchPlaneControlIpcResponse::QuarantineInventory(_)
+            | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
+            | SearchPlaneControlIpcResponse::Error(_)) => other_control_responses(other),
+        }
+        let failing =
+            control_dispatcher_with_readiness(Arc::new(FixedReadiness(Err("backend down"))));
+        match failing.dispatch(readiness_request(), &RequestBudgetV1::unbounded()) {
+            SearchPlaneControlIpcResponse::Error(error) => {
+                assert_eq!(
+                    error.code,
+                    quanta_index_contract::SearchPlaneErrorCodeV2::Internal
+                );
+            }
+            ref other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
+            | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
+            | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
+            | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
+            | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
+            | SearchPlaneControlIpcResponse::QuarantineInventory(_)
+            | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
+            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)) => {
+                other_control_responses(other)
+            }
+        }
     }
 
     /// A quarantine service whose adapters quarantine nothing.
@@ -593,11 +994,14 @@ mod tests {
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
-            | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)) => Err(SearchPlaneIpcError {
-                code: quanta_index_contract::SearchPlaneErrorCodeV2::Internal,
-                message: format!("{other:?}"),
-                repair: None,
-            }),
+            | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
+            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)) => {
+                Err(SearchPlaneIpcError {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::Internal,
+                    message: format!("{other:?}"),
+                    repair: None,
+                })
+            }
         }
     }
 
@@ -798,7 +1202,8 @@ mod tests {
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
-            | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)) => {
+            | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
+            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)) => {
                 Err(format!("expected error response, got {other:?}").into())
             }
         }

@@ -54,6 +54,7 @@ static NEXT_SOCKET_ID: AtomicU64 = AtomicU64::new(0);
 impl IpcDispatcher<SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse> for ScenarioDispatcher {
     fn dispatch(
         &self,
+        _context: &quanta_index_ipc::DispatchContextV1,
         request: SearchPlaneQueryIpcRequest,
         _budget: &RequestBudgetV1,
     ) -> SearchPlaneQueryIpcResponse {
@@ -638,6 +639,7 @@ impl IpcDispatcher<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>
 {
     fn dispatch(
         &self,
+        _context: &quanta_index_ipc::DispatchContextV1,
         request: SearchPlaneControlIpcRequest,
         _budget: &RequestBudgetV1,
     ) -> SearchPlaneControlIpcResponse {
@@ -653,7 +655,8 @@ impl IpcDispatcher<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>
             SearchPlaneControlIpcRequest::QuarantineDiscard(request) => quarantine_discard(request),
             other @ (SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(_)
             | SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(_)
-            | SearchPlaneControlIpcRequest::RepoMapActivate(_)) => control_error_response(
+            | SearchPlaneControlIpcRequest::RepoMapActivate(_)
+            | SearchPlaneControlIpcRequest::ProcessReadiness(_)) => control_error_response(
                 SearchPlaneErrorCodeV2::Internal,
                 format!("doctor mock received unexpected control request: {other:?}"),
             ),
@@ -1059,7 +1062,7 @@ fn start_control_server(
             SearchPlaneControlIpcResponseEnvelope,
             SearchPlaneControlIpcResponse,
             ControlScenarioDispatcher,
-        >(&dispatcher, Duration::from_millis(5))
+        >(&dispatcher, quanta_index_ipc::IpcPlane::Control, Duration::from_millis(5))
         {
             Ok(()) | Err(_) => {}
         }
@@ -1257,7 +1260,7 @@ fn start_server(
             SearchPlaneQueryIpcResponseEnvelope,
             SearchPlaneQueryIpcResponse,
             ScenarioDispatcher,
-        >(&dispatcher, Duration::from_millis(5))
+        >(&dispatcher, quanta_index_ipc::IpcPlane::Query, Duration::from_millis(5))
         {
             Ok(()) | Err(_) => {}
         }

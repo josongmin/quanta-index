@@ -212,7 +212,8 @@ impl QuantaIndex {
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
-            | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)) => Ok(payload),
+            | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
+            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)) => Ok(payload),
         }
     }
 
@@ -317,6 +318,7 @@ impl QuantaIndex {
             SearchPlaneControlIpcResponse::MetricsSnapshot(_) => "metrics_snapshot",
             SearchPlaneControlIpcResponse::QuarantineInventory(_) => "quarantine_inventory",
             SearchPlaneControlIpcResponse::QuarantineDiscardAck(_) => "quarantine_discard_ack",
+            SearchPlaneControlIpcResponse::ProcessReadinessReport(_) => "process_readiness_report",
             SearchPlaneControlIpcResponse::Error(_) => "error",
         }
     }

@@ -832,6 +832,91 @@ impl core::marker::Unpin for quanta_index_contract::IngestOperationKindV1
 impl core::marker::UnsafeUnpin for quanta_index_contract::IngestOperationKindV1
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::IngestOperationKindV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::IngestOperationKindV1
+pub enum quanta_index_contract::ipc::ProcessProviderClaimV1
+pub quanta_index_contract::ipc::ProcessProviderClaimV1::Degraded
+pub quanta_index_contract::ipc::ProcessProviderClaimV1::Disabled
+pub quanta_index_contract::ipc::ProcessProviderClaimV1::Required
+impl quanta_index_contract::ProcessProviderClaimV1
+pub const fn quanta_index_contract::ProcessProviderClaimV1::as_code_str(self) -> &'static str
+impl core::clone::Clone for quanta_index_contract::ProcessProviderClaimV1
+pub fn quanta_index_contract::ProcessProviderClaimV1::clone(&self) -> quanta_index_contract::ProcessProviderClaimV1
+impl core::cmp::Eq for quanta_index_contract::ProcessProviderClaimV1
+impl core::cmp::PartialEq for quanta_index_contract::ProcessProviderClaimV1
+pub fn quanta_index_contract::ProcessProviderClaimV1::eq(&self, other: &quanta_index_contract::ProcessProviderClaimV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::ProcessProviderClaimV1
+pub fn quanta_index_contract::ProcessProviderClaimV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::ProcessProviderClaimV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::ProcessProviderClaimV1
+impl serde_core::ser::Serialize for quanta_index_contract::ProcessProviderClaimV1
+pub fn quanta_index_contract::ProcessProviderClaimV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::ProcessProviderClaimV1
+pub fn quanta_index_contract::ProcessProviderClaimV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::ProcessProviderClaimV1
+impl core::marker::Send for quanta_index_contract::ProcessProviderClaimV1
+impl core::marker::Sync for quanta_index_contract::ProcessProviderClaimV1
+impl core::marker::Unpin for quanta_index_contract::ProcessProviderClaimV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::ProcessProviderClaimV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ProcessProviderClaimV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ProcessProviderClaimV1
+pub enum quanta_index_contract::ipc::ProcessReadinessPhaseV1
+pub quanta_index_contract::ipc::ProcessReadinessPhaseV1::Draining
+pub quanta_index_contract::ipc::ProcessReadinessPhaseV1::Failed
+pub quanta_index_contract::ipc::ProcessReadinessPhaseV1::Ready
+pub quanta_index_contract::ipc::ProcessReadinessPhaseV1::Starting
+pub quanta_index_contract::ipc::ProcessReadinessPhaseV1::Stopped
+impl quanta_index_contract::ProcessReadinessPhaseV1
+pub const fn quanta_index_contract::ProcessReadinessPhaseV1::as_code_str(self) -> &'static str
+impl core::clone::Clone for quanta_index_contract::ProcessReadinessPhaseV1
+pub fn quanta_index_contract::ProcessReadinessPhaseV1::clone(&self) -> quanta_index_contract::ProcessReadinessPhaseV1
+impl core::cmp::Eq for quanta_index_contract::ProcessReadinessPhaseV1
+impl core::cmp::PartialEq for quanta_index_contract::ProcessReadinessPhaseV1
+pub fn quanta_index_contract::ProcessReadinessPhaseV1::eq(&self, other: &quanta_index_contract::ProcessReadinessPhaseV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::ProcessReadinessPhaseV1
+pub fn quanta_index_contract::ProcessReadinessPhaseV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::ProcessReadinessPhaseV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::ProcessReadinessPhaseV1
+impl serde_core::ser::Serialize for quanta_index_contract::ProcessReadinessPhaseV1
+pub fn quanta_index_contract::ProcessReadinessPhaseV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::ProcessReadinessPhaseV1
+pub fn quanta_index_contract::ProcessReadinessPhaseV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::ProcessReadinessPhaseV1
+impl core::marker::Send for quanta_index_contract::ProcessReadinessPhaseV1
+impl core::marker::Sync for quanta_index_contract::ProcessReadinessPhaseV1
+impl core::marker::Unpin for quanta_index_contract::ProcessReadinessPhaseV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::ProcessReadinessPhaseV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ProcessReadinessPhaseV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ProcessReadinessPhaseV1
+pub enum quanta_index_contract::ipc::ProcessReadinessReasonV1
+pub quanta_index_contract::ipc::ProcessReadinessReasonV1::ActiveCandidateIntegrityFailed
+pub quanta_index_contract::ipc::ProcessReadinessReasonV1::ControlPlaneUnhealthy
+pub quanta_index_contract::ipc::ProcessReadinessReasonV1::IngestPlaneUnhealthy
+pub quanta_index_contract::ipc::ProcessReadinessReasonV1::MaintenanceHeartbeatStale
+pub quanta_index_contract::ipc::ProcessReadinessReasonV1::ProviderRequiredUnhealthy
+pub quanta_index_contract::ipc::ProcessReadinessReasonV1::QueryPlaneUnhealthy
+pub quanta_index_contract::ipc::ProcessReadinessReasonV1::RequiredBackendOpenUnproven
+pub quanta_index_contract::ipc::ProcessReadinessReasonV1::SupervisorNotReady
+impl quanta_index_contract::ProcessReadinessReasonV1
+pub const fn quanta_index_contract::ProcessReadinessReasonV1::as_code_str(self) -> &'static str
+impl core::clone::Clone for quanta_index_contract::ProcessReadinessReasonV1
+pub fn quanta_index_contract::ProcessReadinessReasonV1::clone(&self) -> quanta_index_contract::ProcessReadinessReasonV1
+impl core::cmp::Eq for quanta_index_contract::ProcessReadinessReasonV1
+impl core::cmp::PartialEq for quanta_index_contract::ProcessReadinessReasonV1
+pub fn quanta_index_contract::ProcessReadinessReasonV1::eq(&self, other: &quanta_index_contract::ProcessReadinessReasonV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::ProcessReadinessReasonV1
+pub fn quanta_index_contract::ProcessReadinessReasonV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::ProcessReadinessReasonV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::ProcessReadinessReasonV1
+impl serde_core::ser::Serialize for quanta_index_contract::ProcessReadinessReasonV1
+pub fn quanta_index_contract::ProcessReadinessReasonV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::ProcessReadinessReasonV1
+pub fn quanta_index_contract::ProcessReadinessReasonV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::ProcessReadinessReasonV1
+impl core::marker::Send for quanta_index_contract::ProcessReadinessReasonV1
+impl core::marker::Sync for quanta_index_contract::ProcessReadinessReasonV1
+impl core::marker::Unpin for quanta_index_contract::ProcessReadinessReasonV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::ProcessReadinessReasonV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ProcessReadinessReasonV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ProcessReadinessReasonV1
 pub enum quanta_index_contract::ipc::QuarantineDiscardOutcomeDtoV1
 pub quanta_index_contract::ipc::QuarantineDiscardOutcomeDtoV1::Absent
 pub quanta_index_contract::ipc::QuarantineDiscardOutcomeDtoV1::Discarded
@@ -1086,6 +1171,7 @@ pub quanta_index_contract::ipc::SearchPlaneControlIpcRequest::ActivateSearchCorp
 pub quanta_index_contract::ipc::SearchPlaneControlIpcRequest::CurrentGeneration(quanta_index_contract::CurrentGenerationRequest)
 pub quanta_index_contract::ipc::SearchPlaneControlIpcRequest::GenerationStatus(quanta_index_contract::GenerationStatusRequest)
 pub quanta_index_contract::ipc::SearchPlaneControlIpcRequest::MetricsSnapshot(quanta_index_contract::MetricsSnapshotRequest)
+pub quanta_index_contract::ipc::SearchPlaneControlIpcRequest::ProcessReadiness(quanta_index_contract::ProcessReadinessRequest)
 pub quanta_index_contract::ipc::SearchPlaneControlIpcRequest::QuarantineDiscard(quanta_index_contract::QuarantineDiscardRequest)
 pub quanta_index_contract::ipc::SearchPlaneControlIpcRequest::QuarantineInventory(quanta_index_contract::QuarantineInventoryRequest)
 pub quanta_index_contract::ipc::SearchPlaneControlIpcRequest::RepoMapActivate(quanta_index_contract::RepoMapActivateGenerationRequest)
@@ -1113,6 +1199,7 @@ pub quanta_index_contract::ipc::SearchPlaneControlIpcResponse::CurrentGeneration
 pub quanta_index_contract::ipc::SearchPlaneControlIpcResponse::Error(quanta_index_contract::SearchPlaneIpcError)
 pub quanta_index_contract::ipc::SearchPlaneControlIpcResponse::GenerationStatusReport(quanta_index_contract::GenerationStatusReport)
 pub quanta_index_contract::ipc::SearchPlaneControlIpcResponse::MetricsSnapshot(quanta_index_contract::MetricsSnapshotV1)
+pub quanta_index_contract::ipc::SearchPlaneControlIpcResponse::ProcessReadinessReport(quanta_index_contract::ProcessReadinessV1)
 pub quanta_index_contract::ipc::SearchPlaneControlIpcResponse::QuarantineDiscardAck(quanta_index_contract::QuarantineDiscardAck)
 pub quanta_index_contract::ipc::SearchPlaneControlIpcResponse::QuarantineInventory(quanta_index_contract::QuarantineInventoryV1)
 pub quanta_index_contract::ipc::SearchPlaneControlIpcResponse::RepoMapMutationAck(quanta_index_contract::RepoMapMutationAck)
@@ -1152,6 +1239,7 @@ pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::CandidateIdentityInvalid
 pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::CatalogBusy
 pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::CatalogRowCorrupt
 pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::CompositeActivationCasConflict
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::ControlAuthorizationDenied
 pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::CursorContextMismatch
 pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::CursorExpired
 pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::CursorInvalid
@@ -2221,6 +2309,105 @@ impl core::marker::Unpin for quanta_index_contract::MetricsSnapshotV1
 impl core::marker::UnsafeUnpin for quanta_index_contract::MetricsSnapshotV1
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::MetricsSnapshotV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::MetricsSnapshotV1
+pub struct quanta_index_contract::ipc::ProcessComponentsHealthV1
+pub quanta_index_contract::ipc::ProcessComponentsHealthV1::control_plane: bool
+pub quanta_index_contract::ipc::ProcessComponentsHealthV1::ingest_plane: bool
+pub quanta_index_contract::ipc::ProcessComponentsHealthV1::maintenance_heartbeat: bool
+pub quanta_index_contract::ipc::ProcessComponentsHealthV1::provider: quanta_index_contract::ProcessProviderReadinessV1
+pub quanta_index_contract::ipc::ProcessComponentsHealthV1::query_plane: bool
+pub quanta_index_contract::ipc::ProcessComponentsHealthV1::required_backend: bool
+impl core::clone::Clone for quanta_index_contract::ProcessComponentsHealthV1
+pub fn quanta_index_contract::ProcessComponentsHealthV1::clone(&self) -> quanta_index_contract::ProcessComponentsHealthV1
+impl core::cmp::Eq for quanta_index_contract::ProcessComponentsHealthV1
+impl core::cmp::PartialEq for quanta_index_contract::ProcessComponentsHealthV1
+pub fn quanta_index_contract::ProcessComponentsHealthV1::eq(&self, other: &quanta_index_contract::ProcessComponentsHealthV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::ProcessComponentsHealthV1
+pub fn quanta_index_contract::ProcessComponentsHealthV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::ProcessComponentsHealthV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::ProcessComponentsHealthV1
+impl serde_core::ser::Serialize for quanta_index_contract::ProcessComponentsHealthV1
+pub fn quanta_index_contract::ProcessComponentsHealthV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::ProcessComponentsHealthV1
+pub fn quanta_index_contract::ProcessComponentsHealthV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::ProcessComponentsHealthV1
+impl core::marker::Send for quanta_index_contract::ProcessComponentsHealthV1
+impl core::marker::Sync for quanta_index_contract::ProcessComponentsHealthV1
+impl core::marker::Unpin for quanta_index_contract::ProcessComponentsHealthV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::ProcessComponentsHealthV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ProcessComponentsHealthV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ProcessComponentsHealthV1
+pub struct quanta_index_contract::ipc::ProcessProviderReadinessV1
+pub quanta_index_contract::ipc::ProcessProviderReadinessV1::claim: quanta_index_contract::ProcessProviderClaimV1
+pub quanta_index_contract::ipc::ProcessProviderReadinessV1::healthy: bool
+impl core::clone::Clone for quanta_index_contract::ProcessProviderReadinessV1
+pub fn quanta_index_contract::ProcessProviderReadinessV1::clone(&self) -> quanta_index_contract::ProcessProviderReadinessV1
+impl core::cmp::Eq for quanta_index_contract::ProcessProviderReadinessV1
+impl core::cmp::PartialEq for quanta_index_contract::ProcessProviderReadinessV1
+pub fn quanta_index_contract::ProcessProviderReadinessV1::eq(&self, other: &quanta_index_contract::ProcessProviderReadinessV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::ProcessProviderReadinessV1
+pub fn quanta_index_contract::ProcessProviderReadinessV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::ProcessProviderReadinessV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::ProcessProviderReadinessV1
+impl serde_core::ser::Serialize for quanta_index_contract::ProcessProviderReadinessV1
+pub fn quanta_index_contract::ProcessProviderReadinessV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::ProcessProviderReadinessV1
+pub fn quanta_index_contract::ProcessProviderReadinessV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::ProcessProviderReadinessV1
+impl core::marker::Send for quanta_index_contract::ProcessProviderReadinessV1
+impl core::marker::Sync for quanta_index_contract::ProcessProviderReadinessV1
+impl core::marker::Unpin for quanta_index_contract::ProcessProviderReadinessV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::ProcessProviderReadinessV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ProcessProviderReadinessV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ProcessProviderReadinessV1
+pub struct quanta_index_contract::ipc::ProcessReadinessRequest
+impl core::clone::Clone for quanta_index_contract::ProcessReadinessRequest
+pub fn quanta_index_contract::ProcessReadinessRequest::clone(&self) -> quanta_index_contract::ProcessReadinessRequest
+impl core::cmp::Eq for quanta_index_contract::ProcessReadinessRequest
+impl core::cmp::PartialEq for quanta_index_contract::ProcessReadinessRequest
+pub fn quanta_index_contract::ProcessReadinessRequest::eq(&self, other: &quanta_index_contract::ProcessReadinessRequest) -> bool
+impl core::default::Default for quanta_index_contract::ProcessReadinessRequest
+pub fn quanta_index_contract::ProcessReadinessRequest::default() -> quanta_index_contract::ProcessReadinessRequest
+impl core::fmt::Debug for quanta_index_contract::ProcessReadinessRequest
+pub fn quanta_index_contract::ProcessReadinessRequest::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::ProcessReadinessRequest
+impl core::marker::StructuralPartialEq for quanta_index_contract::ProcessReadinessRequest
+impl serde_core::ser::Serialize for quanta_index_contract::ProcessReadinessRequest
+pub fn quanta_index_contract::ProcessReadinessRequest::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::ProcessReadinessRequest
+pub fn quanta_index_contract::ProcessReadinessRequest::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::ProcessReadinessRequest
+impl core::marker::Send for quanta_index_contract::ProcessReadinessRequest
+impl core::marker::Sync for quanta_index_contract::ProcessReadinessRequest
+impl core::marker::Unpin for quanta_index_contract::ProcessReadinessRequest
+impl core::marker::UnsafeUnpin for quanta_index_contract::ProcessReadinessRequest
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ProcessReadinessRequest
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ProcessReadinessRequest
+pub struct quanta_index_contract::ipc::ProcessReadinessV1
+pub quanta_index_contract::ipc::ProcessReadinessV1::active_candidate_integrity: core::option::Option<bool>
+pub quanta_index_contract::ipc::ProcessReadinessV1::active_repositories: u64
+pub quanta_index_contract::ipc::ProcessReadinessV1::components: quanta_index_contract::ProcessComponentsHealthV1
+pub quanta_index_contract::ipc::ProcessReadinessV1::not_ready_reasons: alloc::vec::Vec<quanta_index_contract::ProcessReadinessReasonV1>
+pub quanta_index_contract::ipc::ProcessReadinessV1::ready: bool
+pub quanta_index_contract::ipc::ProcessReadinessV1::supervisor_phase: quanta_index_contract::ProcessReadinessPhaseV1
+impl core::clone::Clone for quanta_index_contract::ProcessReadinessV1
+pub fn quanta_index_contract::ProcessReadinessV1::clone(&self) -> quanta_index_contract::ProcessReadinessV1
+impl core::cmp::Eq for quanta_index_contract::ProcessReadinessV1
+impl core::cmp::PartialEq for quanta_index_contract::ProcessReadinessV1
+pub fn quanta_index_contract::ProcessReadinessV1::eq(&self, other: &quanta_index_contract::ProcessReadinessV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::ProcessReadinessV1
+pub fn quanta_index_contract::ProcessReadinessV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::ProcessReadinessV1
+impl serde_core::ser::Serialize for quanta_index_contract::ProcessReadinessV1
+pub fn quanta_index_contract::ProcessReadinessV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::ProcessReadinessV1
+pub fn quanta_index_contract::ProcessReadinessV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::ProcessReadinessV1
+impl core::marker::Send for quanta_index_contract::ProcessReadinessV1
+impl core::marker::Sync for quanta_index_contract::ProcessReadinessV1
+impl core::marker::Unpin for quanta_index_contract::ProcessReadinessV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::ProcessReadinessV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ProcessReadinessV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ProcessReadinessV1
 pub struct quanta_index_contract::ipc::QuarantineDiscardAck
 pub quanta_index_contract::ipc::QuarantineDiscardAck::outcome: quanta_index_contract::QuarantineDiscardOutcomeDtoV1
 pub quanta_index_contract::ipc::QuarantineDiscardAck::target: quanta_index_contract::QuarantineTargetV1
@@ -8412,6 +8599,91 @@ impl core::marker::Unpin for quanta_index_contract::PlannerStage
 impl core::marker::UnsafeUnpin for quanta_index_contract::PlannerStage
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::PlannerStage
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::PlannerStage
+pub enum quanta_index_contract::ProcessProviderClaimV1
+pub quanta_index_contract::ProcessProviderClaimV1::Degraded
+pub quanta_index_contract::ProcessProviderClaimV1::Disabled
+pub quanta_index_contract::ProcessProviderClaimV1::Required
+impl quanta_index_contract::ProcessProviderClaimV1
+pub const fn quanta_index_contract::ProcessProviderClaimV1::as_code_str(self) -> &'static str
+impl core::clone::Clone for quanta_index_contract::ProcessProviderClaimV1
+pub fn quanta_index_contract::ProcessProviderClaimV1::clone(&self) -> quanta_index_contract::ProcessProviderClaimV1
+impl core::cmp::Eq for quanta_index_contract::ProcessProviderClaimV1
+impl core::cmp::PartialEq for quanta_index_contract::ProcessProviderClaimV1
+pub fn quanta_index_contract::ProcessProviderClaimV1::eq(&self, other: &quanta_index_contract::ProcessProviderClaimV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::ProcessProviderClaimV1
+pub fn quanta_index_contract::ProcessProviderClaimV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::ProcessProviderClaimV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::ProcessProviderClaimV1
+impl serde_core::ser::Serialize for quanta_index_contract::ProcessProviderClaimV1
+pub fn quanta_index_contract::ProcessProviderClaimV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::ProcessProviderClaimV1
+pub fn quanta_index_contract::ProcessProviderClaimV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::ProcessProviderClaimV1
+impl core::marker::Send for quanta_index_contract::ProcessProviderClaimV1
+impl core::marker::Sync for quanta_index_contract::ProcessProviderClaimV1
+impl core::marker::Unpin for quanta_index_contract::ProcessProviderClaimV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::ProcessProviderClaimV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ProcessProviderClaimV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ProcessProviderClaimV1
+pub enum quanta_index_contract::ProcessReadinessPhaseV1
+pub quanta_index_contract::ProcessReadinessPhaseV1::Draining
+pub quanta_index_contract::ProcessReadinessPhaseV1::Failed
+pub quanta_index_contract::ProcessReadinessPhaseV1::Ready
+pub quanta_index_contract::ProcessReadinessPhaseV1::Starting
+pub quanta_index_contract::ProcessReadinessPhaseV1::Stopped
+impl quanta_index_contract::ProcessReadinessPhaseV1
+pub const fn quanta_index_contract::ProcessReadinessPhaseV1::as_code_str(self) -> &'static str
+impl core::clone::Clone for quanta_index_contract::ProcessReadinessPhaseV1
+pub fn quanta_index_contract::ProcessReadinessPhaseV1::clone(&self) -> quanta_index_contract::ProcessReadinessPhaseV1
+impl core::cmp::Eq for quanta_index_contract::ProcessReadinessPhaseV1
+impl core::cmp::PartialEq for quanta_index_contract::ProcessReadinessPhaseV1
+pub fn quanta_index_contract::ProcessReadinessPhaseV1::eq(&self, other: &quanta_index_contract::ProcessReadinessPhaseV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::ProcessReadinessPhaseV1
+pub fn quanta_index_contract::ProcessReadinessPhaseV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::ProcessReadinessPhaseV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::ProcessReadinessPhaseV1
+impl serde_core::ser::Serialize for quanta_index_contract::ProcessReadinessPhaseV1
+pub fn quanta_index_contract::ProcessReadinessPhaseV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::ProcessReadinessPhaseV1
+pub fn quanta_index_contract::ProcessReadinessPhaseV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::ProcessReadinessPhaseV1
+impl core::marker::Send for quanta_index_contract::ProcessReadinessPhaseV1
+impl core::marker::Sync for quanta_index_contract::ProcessReadinessPhaseV1
+impl core::marker::Unpin for quanta_index_contract::ProcessReadinessPhaseV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::ProcessReadinessPhaseV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ProcessReadinessPhaseV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ProcessReadinessPhaseV1
+pub enum quanta_index_contract::ProcessReadinessReasonV1
+pub quanta_index_contract::ProcessReadinessReasonV1::ActiveCandidateIntegrityFailed
+pub quanta_index_contract::ProcessReadinessReasonV1::ControlPlaneUnhealthy
+pub quanta_index_contract::ProcessReadinessReasonV1::IngestPlaneUnhealthy
+pub quanta_index_contract::ProcessReadinessReasonV1::MaintenanceHeartbeatStale
+pub quanta_index_contract::ProcessReadinessReasonV1::ProviderRequiredUnhealthy
+pub quanta_index_contract::ProcessReadinessReasonV1::QueryPlaneUnhealthy
+pub quanta_index_contract::ProcessReadinessReasonV1::RequiredBackendOpenUnproven
+pub quanta_index_contract::ProcessReadinessReasonV1::SupervisorNotReady
+impl quanta_index_contract::ProcessReadinessReasonV1
+pub const fn quanta_index_contract::ProcessReadinessReasonV1::as_code_str(self) -> &'static str
+impl core::clone::Clone for quanta_index_contract::ProcessReadinessReasonV1
+pub fn quanta_index_contract::ProcessReadinessReasonV1::clone(&self) -> quanta_index_contract::ProcessReadinessReasonV1
+impl core::cmp::Eq for quanta_index_contract::ProcessReadinessReasonV1
+impl core::cmp::PartialEq for quanta_index_contract::ProcessReadinessReasonV1
+pub fn quanta_index_contract::ProcessReadinessReasonV1::eq(&self, other: &quanta_index_contract::ProcessReadinessReasonV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::ProcessReadinessReasonV1
+pub fn quanta_index_contract::ProcessReadinessReasonV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::ProcessReadinessReasonV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::ProcessReadinessReasonV1
+impl serde_core::ser::Serialize for quanta_index_contract::ProcessReadinessReasonV1
+pub fn quanta_index_contract::ProcessReadinessReasonV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::ProcessReadinessReasonV1
+pub fn quanta_index_contract::ProcessReadinessReasonV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::ProcessReadinessReasonV1
+impl core::marker::Send for quanta_index_contract::ProcessReadinessReasonV1
+impl core::marker::Sync for quanta_index_contract::ProcessReadinessReasonV1
+impl core::marker::Unpin for quanta_index_contract::ProcessReadinessReasonV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::ProcessReadinessReasonV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ProcessReadinessReasonV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ProcessReadinessReasonV1
 pub enum quanta_index_contract::QuarantineDiscardOutcomeDtoV1
 pub quanta_index_contract::QuarantineDiscardOutcomeDtoV1::Absent
 pub quanta_index_contract::QuarantineDiscardOutcomeDtoV1::Discarded
@@ -9086,6 +9358,7 @@ pub quanta_index_contract::SearchPlaneControlIpcRequest::ActivateSearchCorpusGen
 pub quanta_index_contract::SearchPlaneControlIpcRequest::CurrentGeneration(quanta_index_contract::CurrentGenerationRequest)
 pub quanta_index_contract::SearchPlaneControlIpcRequest::GenerationStatus(quanta_index_contract::GenerationStatusRequest)
 pub quanta_index_contract::SearchPlaneControlIpcRequest::MetricsSnapshot(quanta_index_contract::MetricsSnapshotRequest)
+pub quanta_index_contract::SearchPlaneControlIpcRequest::ProcessReadiness(quanta_index_contract::ProcessReadinessRequest)
 pub quanta_index_contract::SearchPlaneControlIpcRequest::QuarantineDiscard(quanta_index_contract::QuarantineDiscardRequest)
 pub quanta_index_contract::SearchPlaneControlIpcRequest::QuarantineInventory(quanta_index_contract::QuarantineInventoryRequest)
 pub quanta_index_contract::SearchPlaneControlIpcRequest::RepoMapActivate(quanta_index_contract::RepoMapActivateGenerationRequest)
@@ -9113,6 +9386,7 @@ pub quanta_index_contract::SearchPlaneControlIpcResponse::CurrentGenerationSnaps
 pub quanta_index_contract::SearchPlaneControlIpcResponse::Error(quanta_index_contract::SearchPlaneIpcError)
 pub quanta_index_contract::SearchPlaneControlIpcResponse::GenerationStatusReport(quanta_index_contract::GenerationStatusReport)
 pub quanta_index_contract::SearchPlaneControlIpcResponse::MetricsSnapshot(quanta_index_contract::MetricsSnapshotV1)
+pub quanta_index_contract::SearchPlaneControlIpcResponse::ProcessReadinessReport(quanta_index_contract::ProcessReadinessV1)
 pub quanta_index_contract::SearchPlaneControlIpcResponse::QuarantineDiscardAck(quanta_index_contract::QuarantineDiscardAck)
 pub quanta_index_contract::SearchPlaneControlIpcResponse::QuarantineInventory(quanta_index_contract::QuarantineInventoryV1)
 pub quanta_index_contract::SearchPlaneControlIpcResponse::RepoMapMutationAck(quanta_index_contract::RepoMapMutationAck)
@@ -9152,6 +9426,7 @@ pub quanta_index_contract::SearchPlaneErrorCodeV2::CandidateIdentityInvalid
 pub quanta_index_contract::SearchPlaneErrorCodeV2::CatalogBusy
 pub quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt
 pub quanta_index_contract::SearchPlaneErrorCodeV2::CompositeActivationCasConflict
+pub quanta_index_contract::SearchPlaneErrorCodeV2::ControlAuthorizationDenied
 pub quanta_index_contract::SearchPlaneErrorCodeV2::CursorContextMismatch
 pub quanta_index_contract::SearchPlaneErrorCodeV2::CursorExpired
 pub quanta_index_contract::SearchPlaneErrorCodeV2::CursorInvalid
@@ -11238,6 +11513,105 @@ impl core::marker::Unpin for quanta_index_contract::PlannerTraceEntry
 impl core::marker::UnsafeUnpin for quanta_index_contract::PlannerTraceEntry
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::PlannerTraceEntry
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::PlannerTraceEntry
+pub struct quanta_index_contract::ProcessComponentsHealthV1
+pub quanta_index_contract::ProcessComponentsHealthV1::control_plane: bool
+pub quanta_index_contract::ProcessComponentsHealthV1::ingest_plane: bool
+pub quanta_index_contract::ProcessComponentsHealthV1::maintenance_heartbeat: bool
+pub quanta_index_contract::ProcessComponentsHealthV1::provider: quanta_index_contract::ProcessProviderReadinessV1
+pub quanta_index_contract::ProcessComponentsHealthV1::query_plane: bool
+pub quanta_index_contract::ProcessComponentsHealthV1::required_backend: bool
+impl core::clone::Clone for quanta_index_contract::ProcessComponentsHealthV1
+pub fn quanta_index_contract::ProcessComponentsHealthV1::clone(&self) -> quanta_index_contract::ProcessComponentsHealthV1
+impl core::cmp::Eq for quanta_index_contract::ProcessComponentsHealthV1
+impl core::cmp::PartialEq for quanta_index_contract::ProcessComponentsHealthV1
+pub fn quanta_index_contract::ProcessComponentsHealthV1::eq(&self, other: &quanta_index_contract::ProcessComponentsHealthV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::ProcessComponentsHealthV1
+pub fn quanta_index_contract::ProcessComponentsHealthV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::ProcessComponentsHealthV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::ProcessComponentsHealthV1
+impl serde_core::ser::Serialize for quanta_index_contract::ProcessComponentsHealthV1
+pub fn quanta_index_contract::ProcessComponentsHealthV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::ProcessComponentsHealthV1
+pub fn quanta_index_contract::ProcessComponentsHealthV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::ProcessComponentsHealthV1
+impl core::marker::Send for quanta_index_contract::ProcessComponentsHealthV1
+impl core::marker::Sync for quanta_index_contract::ProcessComponentsHealthV1
+impl core::marker::Unpin for quanta_index_contract::ProcessComponentsHealthV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::ProcessComponentsHealthV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ProcessComponentsHealthV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ProcessComponentsHealthV1
+pub struct quanta_index_contract::ProcessProviderReadinessV1
+pub quanta_index_contract::ProcessProviderReadinessV1::claim: quanta_index_contract::ProcessProviderClaimV1
+pub quanta_index_contract::ProcessProviderReadinessV1::healthy: bool
+impl core::clone::Clone for quanta_index_contract::ProcessProviderReadinessV1
+pub fn quanta_index_contract::ProcessProviderReadinessV1::clone(&self) -> quanta_index_contract::ProcessProviderReadinessV1
+impl core::cmp::Eq for quanta_index_contract::ProcessProviderReadinessV1
+impl core::cmp::PartialEq for quanta_index_contract::ProcessProviderReadinessV1
+pub fn quanta_index_contract::ProcessProviderReadinessV1::eq(&self, other: &quanta_index_contract::ProcessProviderReadinessV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::ProcessProviderReadinessV1
+pub fn quanta_index_contract::ProcessProviderReadinessV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::ProcessProviderReadinessV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::ProcessProviderReadinessV1
+impl serde_core::ser::Serialize for quanta_index_contract::ProcessProviderReadinessV1
+pub fn quanta_index_contract::ProcessProviderReadinessV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::ProcessProviderReadinessV1
+pub fn quanta_index_contract::ProcessProviderReadinessV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::ProcessProviderReadinessV1
+impl core::marker::Send for quanta_index_contract::ProcessProviderReadinessV1
+impl core::marker::Sync for quanta_index_contract::ProcessProviderReadinessV1
+impl core::marker::Unpin for quanta_index_contract::ProcessProviderReadinessV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::ProcessProviderReadinessV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ProcessProviderReadinessV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ProcessProviderReadinessV1
+pub struct quanta_index_contract::ProcessReadinessRequest
+impl core::clone::Clone for quanta_index_contract::ProcessReadinessRequest
+pub fn quanta_index_contract::ProcessReadinessRequest::clone(&self) -> quanta_index_contract::ProcessReadinessRequest
+impl core::cmp::Eq for quanta_index_contract::ProcessReadinessRequest
+impl core::cmp::PartialEq for quanta_index_contract::ProcessReadinessRequest
+pub fn quanta_index_contract::ProcessReadinessRequest::eq(&self, other: &quanta_index_contract::ProcessReadinessRequest) -> bool
+impl core::default::Default for quanta_index_contract::ProcessReadinessRequest
+pub fn quanta_index_contract::ProcessReadinessRequest::default() -> quanta_index_contract::ProcessReadinessRequest
+impl core::fmt::Debug for quanta_index_contract::ProcessReadinessRequest
+pub fn quanta_index_contract::ProcessReadinessRequest::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::ProcessReadinessRequest
+impl core::marker::StructuralPartialEq for quanta_index_contract::ProcessReadinessRequest
+impl serde_core::ser::Serialize for quanta_index_contract::ProcessReadinessRequest
+pub fn quanta_index_contract::ProcessReadinessRequest::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::ProcessReadinessRequest
+pub fn quanta_index_contract::ProcessReadinessRequest::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::ProcessReadinessRequest
+impl core::marker::Send for quanta_index_contract::ProcessReadinessRequest
+impl core::marker::Sync for quanta_index_contract::ProcessReadinessRequest
+impl core::marker::Unpin for quanta_index_contract::ProcessReadinessRequest
+impl core::marker::UnsafeUnpin for quanta_index_contract::ProcessReadinessRequest
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ProcessReadinessRequest
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ProcessReadinessRequest
+pub struct quanta_index_contract::ProcessReadinessV1
+pub quanta_index_contract::ProcessReadinessV1::active_candidate_integrity: core::option::Option<bool>
+pub quanta_index_contract::ProcessReadinessV1::active_repositories: u64
+pub quanta_index_contract::ProcessReadinessV1::components: quanta_index_contract::ProcessComponentsHealthV1
+pub quanta_index_contract::ProcessReadinessV1::not_ready_reasons: alloc::vec::Vec<quanta_index_contract::ProcessReadinessReasonV1>
+pub quanta_index_contract::ProcessReadinessV1::ready: bool
+pub quanta_index_contract::ProcessReadinessV1::supervisor_phase: quanta_index_contract::ProcessReadinessPhaseV1
+impl core::clone::Clone for quanta_index_contract::ProcessReadinessV1
+pub fn quanta_index_contract::ProcessReadinessV1::clone(&self) -> quanta_index_contract::ProcessReadinessV1
+impl core::cmp::Eq for quanta_index_contract::ProcessReadinessV1
+impl core::cmp::PartialEq for quanta_index_contract::ProcessReadinessV1
+pub fn quanta_index_contract::ProcessReadinessV1::eq(&self, other: &quanta_index_contract::ProcessReadinessV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::ProcessReadinessV1
+pub fn quanta_index_contract::ProcessReadinessV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::ProcessReadinessV1
+impl serde_core::ser::Serialize for quanta_index_contract::ProcessReadinessV1
+pub fn quanta_index_contract::ProcessReadinessV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::ProcessReadinessV1
+pub fn quanta_index_contract::ProcessReadinessV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::ProcessReadinessV1
+impl core::marker::Send for quanta_index_contract::ProcessReadinessV1
+impl core::marker::Sync for quanta_index_contract::ProcessReadinessV1
+impl core::marker::Unpin for quanta_index_contract::ProcessReadinessV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::ProcessReadinessV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ProcessReadinessV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ProcessReadinessV1
 pub struct quanta_index_contract::QuarantineDiscardAck
 pub quanta_index_contract::QuarantineDiscardAck::outcome: quanta_index_contract::QuarantineDiscardOutcomeDtoV1
 pub quanta_index_contract::QuarantineDiscardAck::target: quanta_index_contract::QuarantineTargetV1

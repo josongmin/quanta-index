@@ -31,7 +31,10 @@ mod semantic_derive;
 mod single_flight;
 mod snapshot_registry;
 
-pub use control_dispatcher::{SearchPlaneControlDispatcher, SearchPlaneControlDispatcherParts};
+pub use control_dispatcher::{
+    ControlAccessV1, ControlCapabilityV1, ProcessReadinessPort, SearchPlaneControlDispatcher,
+    SearchPlaneControlDispatcherParts,
+};
 pub use history_text::{HistoryTextHandles, HistoryTextIndexParts};
 pub use ingest_dispatcher::{
     AuxiliaryMaterializerParts, AuxiliaryMutationCoordinator, DirectHistoryMaterializer,

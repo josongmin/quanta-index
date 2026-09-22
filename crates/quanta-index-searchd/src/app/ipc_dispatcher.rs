@@ -11,7 +11,15 @@ use quanta_index_search_plane::{
 };
 
 pub(super) trait PlaneDispatch<Request, Response>: Send + Sync {
-    fn dispatch(&self, request: Request, budget: &RequestBudgetV1) -> Response;
+    /// Handle one request. The transport's kernel-derived context is
+    /// mandatory: a plane that does not authorize on it must still accept
+    /// it explicitly instead of relying on an ambient default.
+    fn dispatch(
+        &self,
+        context: &quanta_index_ipc::DispatchContextV1,
+        request: Request,
+        budget: &RequestBudgetV1,
+    ) -> Response;
 }
 
 impl PlaneDispatch<SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse>
@@ -19,9 +27,12 @@ impl PlaneDispatch<SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse>
 {
     fn dispatch(
         &self,
+        _context: &quanta_index_ipc::DispatchContextV1,
         request: SearchPlaneQueryIpcRequest,
         budget: &RequestBudgetV1,
     ) -> SearchPlaneQueryIpcResponse {
+        // The query plane reads no principal: it exposes no capability
+        // beyond serving a query the admission layer already admitted.
         SearchPlaneDispatcher::dispatch(self, request, budget)
     }
 }
@@ -31,10 +42,13 @@ impl PlaneDispatch<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>
 {
     fn dispatch(
         &self,
+        context: &quanta_index_ipc::DispatchContextV1,
         request: SearchPlaneControlIpcRequest,
         budget: &RequestBudgetV1,
     ) -> SearchPlaneControlIpcResponse {
-        SearchPlaneControlDispatcher::dispatch(self, request, budget)
+        // The control plane authorizes every request against the
+        // kernel-derived peer credential in the context.
+        SearchPlaneControlDispatcher::dispatch_authorized(self, context, request, budget)
     }
 }
 
@@ -43,9 +57,12 @@ impl PlaneDispatch<SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse>
 {
     fn dispatch(
         &self,
+        _context: &quanta_index_ipc::DispatchContextV1,
         request: SearchPlaneIngestIpcRequest,
         budget: &RequestBudgetV1,
     ) -> SearchPlaneIngestIpcResponse {
+        // Ingest authorization is the socket access policy's; the payload
+        // binding is the digest stamp, not a principal.
         SearchPlaneIngestDispatcher::dispatch(self, request, budget)
     }
 }
@@ -96,7 +113,12 @@ impl<Request, Response, D> IpcDispatcher<Request, Response>
 where
     D: PlaneDispatch<Request, Response>,
 {
-    fn dispatch(&self, request: Request, budget: &RequestBudgetV1) -> Response {
-        self.inner.dispatch(request, budget)
+    fn dispatch(
+        &self,
+        context: &quanta_index_ipc::DispatchContextV1,
+        request: Request,
+        budget: &RequestBudgetV1,
+    ) -> Response {
+        self.inner.dispatch(context, request, budget)
     }
 }
