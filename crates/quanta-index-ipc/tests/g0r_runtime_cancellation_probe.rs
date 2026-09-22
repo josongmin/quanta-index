@@ -201,7 +201,7 @@ struct GatedDispatcher {
 }
 
 impl IpcDispatcher<u64, u64> for GatedDispatcher {
-    fn dispatch(&self, request: u64, budget: &RequestBudgetV1) -> u64 {
+    fn dispatch(&self, _context: &quanta_index_ipc::DispatchContextV1, request: u64, budget: &RequestBudgetV1) -> u64 {
         if request == HOLD {
             // A probe that cannot observe entry has no ordering evidence; a
             // failed send means the test side already went away.
@@ -264,7 +264,7 @@ fn start_server() -> Result<Server, Box<dyn Error>> {
     });
     let join = thread::spawn(move || {
         server
-            .run::<ProbeRequest, u64, ProbeResponse, u64, GatedDispatcher>(&dispatcher, ACCEPT_IDLE)
+            .run::<ProbeRequest, u64, ProbeResponse, u64, GatedDispatcher>(&dispatcher, quanta_index_ipc::IpcPlane::Query, ACCEPT_IDLE)
     });
     Ok(Server {
         socket,

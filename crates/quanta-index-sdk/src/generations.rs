@@ -49,6 +49,7 @@ impl<'a> GenerationNamespace<'a> {
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
+            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)) => {
                 Err(SdkError::Protocol(format!(
                     "expected rollback ack, got {}",
@@ -83,6 +84,7 @@ impl<'a> GenerationNamespace<'a> {
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::Error(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
+            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)) => {
                 Err(SdkError::Protocol(format!(
                     "expected current generation snapshot, got {}",

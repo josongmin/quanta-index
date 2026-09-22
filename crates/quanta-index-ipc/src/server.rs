@@ -62,18 +62,57 @@ use crate::codec::{
     encode_request, encode_response,
 };
 use crate::counters::IpcServerCounters;
+use crate::socket_access::PeerCredentials;
+
+/// Which daemon plane one server serves (S21-10). The transport names it
+/// so a dispatch context cannot misreport which socket carried a request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IpcPlane {
+    Query,
+    Control,
+    Ingest,
+}
+
+/// The kernel-derived dispatch context the transport creates for every
+/// request (S21-10 `DispatchContextV1`).
+///
+/// `principal` is what the kernel reported for the connected peer at
+/// `accept` — never something the payload asserted. It is `None` only on
+/// in-process call paths that bypass a socket; authorization treats that
+/// as a missing credential context and refuses (default deny).
+#[derive(Clone, Debug)]
+pub struct DispatchContextV1 {
+    /// The envelope's request id, correlated through diagnostics.
+    pub request_id: u64,
+    /// The plane whose socket carried the request.
+    pub plane: IpcPlane,
+    /// The peer's kernel-reported credentials, or `None` off-socket.
+    pub principal: Option<PeerCredentials>,
+    /// One-up id of the connection the request arrived on.
+    pub connection_id: u64,
+    /// The dispatch deadline the budget enforces.
+    pub deadline: std::time::Instant,
+    /// The cancellation handle that fires if the peer hangs up mid-flight.
+    pub cancellation: quanta_index_core::CancelHandleV1,
+}
 
 /// Dispatch hook supplied by the composition root.
 ///
-/// Receives a fully-parsed request payload and returns a fully-typed response
-/// payload. Domain errors MUST be surfaced through the response type rather
-/// than panicking.
+/// Receives the transport's dispatch context, a fully-parsed request
+/// payload and the budget, and returns a fully-typed response payload.
+/// Domain errors MUST be surfaced through the response type rather than
+/// panicking.
 pub trait IpcDispatcher<Request, Response>: Send + Sync {
     /// Handle one request under its budget. The budget's deadline is the
     /// server's dispatch budget from admission; its cancellation fires if the
     /// peer disconnects while this call runs. Implementations check it at
     /// their own boundaries and answer with a typed interruption.
-    fn dispatch(&self, request: Request, budget: &RequestBudgetV1) -> Response;
+    fn dispatch(
+        &self,
+        context: &DispatchContextV1,
+        request: Request,
+        budget: &RequestBudgetV1,
+    ) -> Response;
 }
 
 pub trait RequestEnvelope<Request>: serde::de::DeserializeOwned + Send + Sync + 'static {
@@ -338,6 +377,9 @@ pub struct UdsServer {
     /// connections, which the accept loop refuses past the policy's cap
     /// instead of queueing without bound, and every admission outcome.
     counters: Arc<IpcServerCounters>,
+    /// One-up connection ids, so every dispatch context names the
+    /// connection it arrived on (S21-10).
+    next_connection_id: std::sync::atomic::AtomicU64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -768,6 +810,7 @@ impl UdsServer {
             owner,
             peer_source,
             counters,
+            next_connection_id: std::sync::atomic::AtomicU64::new(1),
         })
     }
 
@@ -799,7 +842,9 @@ impl UdsServer {
         if self.counters.connections_live() >= max_connections {
             return AcceptOutcome::CapReached;
         }
-        AcceptOutcome::Admitted
+        // S21-10: the admitted peer's kernel credentials are preserved —
+        // screening must not discard what operation authorization needs.
+        AcceptOutcome::Admitted(credentials)
     }
 
     /// Connections the accept loop closed because the cap was reached.
@@ -843,6 +888,7 @@ impl UdsServer {
     pub fn run<RequestEnvelopeT, Request, ResponseEnvelopeT, Response, D>(
         &self,
         dispatcher: &Arc<D>,
+        plane: IpcPlane,
         accept_idle: Duration,
     ) -> Result<(), IpcError>
     where
@@ -870,8 +916,8 @@ impl UdsServer {
             connection_threads = still_running;
             match self.listener.accept() {
                 Ok((stream, _addr)) => {
-                    match self.screen(&stream, max_connections) {
-                        AcceptOutcome::Admitted => {}
+                    let admitted = match self.screen(&stream, max_connections) {
+                        AcceptOutcome::Admitted(credentials) => credentials,
                         AcceptOutcome::PeerRefused(_refusal) => {
                             self.counters.peer_refused();
                             drop(stream);
@@ -887,7 +933,7 @@ impl UdsServer {
                             drop(stream);
                             continue;
                         }
-                    }
+                    };
                     // The live-connection permit is RAII (S21-09): a
                     // panicking dispatcher unwinds through its drop and
                     // the live count returns to its baseline.
@@ -897,6 +943,9 @@ impl UdsServer {
                     let counters = Arc::clone(&self.counters);
                     let shutdown = Arc::clone(&self.shutdown);
                     let policy = self.policy;
+                    let connection_id = self
+                        .next_connection_id
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let spawned = std::thread::Builder::new()
                         .name("uds-connection".to_string())
                         .spawn(move || {
@@ -911,6 +960,9 @@ impl UdsServer {
                                 dispatcher.as_ref(),
                                 &slots,
                                 policy,
+                                plane,
+                                admitted,
+                                connection_id,
                                 &shutdown,
                                 &counters,
                             );
@@ -953,7 +1005,9 @@ impl Drop for UdsServer {
 /// What the accept loop decided about one connection before reading it.
 #[derive(Debug)]
 enum AcceptOutcome {
-    Admitted,
+    /// The peer is admitted; its kernel-reported credentials are carried
+    /// into the connection's dispatch contexts (S21-10).
+    Admitted(PeerCredentials),
     /// The access policy does not admit this peer; closed, counted, and
     /// never named anywhere but this value.
     PeerRefused(PeerRefusal),
@@ -1088,6 +1142,9 @@ fn handle_connection<RequestEnvelopeT, Request, ResponseEnvelopeT, Response, D>(
     dispatcher: &D,
     slots: &DispatchSlots,
     policy: ServerAdmissionPolicy,
+    plane: IpcPlane,
+    principal: PeerCredentials,
+    connection_id: u64,
     shutdown: &AtomicBool,
     counters: &Arc<IpcServerCounters>,
 ) -> ConnectionCloseReason
@@ -1144,6 +1201,17 @@ where
             }
         };
         let budget = RequestBudgetV1::for_duration(policy.dispatch_budget());
+        // S21-10: the transport builds the kernel-derived dispatch
+        // context every dispatcher authorizes against. The principal is
+        // the accept-time kernel report; the payload never asserts one.
+        let context = DispatchContextV1 {
+            request_id,
+            plane,
+            principal: Some(principal),
+            connection_id,
+            deadline: std::time::Instant::now() + policy.dispatch_budget(),
+            cancellation: budget.cancel_handle(),
+        };
         // The dispatch slot and the in-flight count are one RAII pair
         // (S21-09): a panicking dispatcher unwinds through both drops,
         // and the peer watch stops and joins its thread the same way.
@@ -1159,7 +1227,7 @@ where
                     return ConnectionCloseReason::PeerWatchFailed(err.to_string());
                 }
             };
-            let response_payload = dispatcher.dispatch(request_payload, &budget);
+            let response_payload = dispatcher.dispatch(&context, request_payload, &budget);
             let peer_hung_up = watch.disarm();
             (response_payload, peer_hung_up)
         };
@@ -1603,10 +1671,11 @@ fn classify_client_io_error(
 #[cfg(test)]
 mod tests {
     use super::{
-        ClientIoPolicy, ConnectionCloseReason, IpcDispatcher, IpcError, IpcServerCounters,
-        PeerWatch, RequestEnvelope, ResponseEnvelope, SocketPathIdentity, UdsServer,
-        connect_before_deadline, connect_requires_completion_wait, create_connect_socket,
-        decode_response, encode_request, handle_connection, send_request, wait_for_connect,
+        ClientIoPolicy, ConnectionCloseReason, IpcDispatcher, IpcError, IpcPlane, IpcServerCounters,
+        PeerCredentials, PeerWatch, RequestEnvelope, ResponseEnvelope, SocketPathIdentity,
+        UdsServer, connect_before_deadline, connect_requires_completion_wait,
+        create_connect_socket, decode_response, encode_request, handle_connection, send_request,
+        wait_for_connect,
     };
     use crate::socket_access::{PRIVATE_DIRECTORY_MODE, PRIVATE_SOCKET_MODE};
     use rustix::fs::{OFlags, fcntl_getfl};
@@ -2094,7 +2163,7 @@ mod tests {
     struct TestDispatcher;
 
     impl IpcDispatcher<u64, u64> for TestDispatcher {
-        fn dispatch(&self, request: u64, _budget: &RequestBudgetV1) -> u64 {
+        fn dispatch(&self, _context: &super::DispatchContextV1, request: u64, _budget: &RequestBudgetV1) -> u64 {
             request.saturating_add(1)
         }
     }
@@ -2314,6 +2383,9 @@ mod tests {
                 &TestDispatcher,
                 &test_slots(),
                 test_policy(),
+                super::IpcPlane::Query,
+                super::PeerCredentials { uid: 1000, gid: 1000, pid: None },
+                1,
                 &AtomicBool::new(false),
                 &test_counters(),
             );
@@ -2457,7 +2529,7 @@ mod tests {
     }
 
     impl IpcDispatcher<u64, u64> for BlockingDispatcher {
-        fn dispatch(&self, request: u64, budget: &RequestBudgetV1) -> u64 {
+        fn dispatch(&self, _context: &super::DispatchContextV1, request: u64, budget: &RequestBudgetV1) -> u64 {
             let send_result = self.entered.send(());
             assert!(
                 send_result.is_ok(),
@@ -2485,7 +2557,7 @@ mod tests {
     }
 
     impl IpcDispatcher<u64, u64> for HalfCloseDispatcher {
-        fn dispatch(&self, request: u64, budget: &RequestBudgetV1) -> u64 {
+        fn dispatch(&self, _context: &super::DispatchContextV1, request: u64, budget: &RequestBudgetV1) -> u64 {
             let send_result = self.entered.send(());
             assert!(
                 send_result.is_ok(),
@@ -2537,6 +2609,9 @@ mod tests {
                     &TestDispatcher,
                     &test_slots(),
                     test_policy(),
+                    IpcPlane::Query,
+                    PeerCredentials { uid: 0, gid: 0, pid: None },
+                    1,
                     &AtomicBool::new(false),
                     &test_counters(),
                 )
@@ -2585,6 +2660,9 @@ mod tests {
                 &TestDispatcher,
                 &test_slots(),
                 test_policy(),
+                IpcPlane::Query,
+                PeerCredentials { uid: 0, gid: 0, pid: None },
+                1,
                 &AtomicBool::new(false),
                 &counters,
             );
@@ -2628,6 +2706,9 @@ mod tests {
                     &TestDispatcher,
                     &test_slots(),
                     test_policy(),
+                    IpcPlane::Query,
+                    PeerCredentials { uid: 0, gid: 0, pid: None },
+                    1,
                     &AtomicBool::new(false),
                     &test_counters(),
                 )
@@ -2679,6 +2760,9 @@ mod tests {
                 &TestDispatcher,
                 &test_slots(),
                 test_policy(),
+                super::IpcPlane::Query,
+                super::PeerCredentials { uid: 1000, gid: 1000, pid: None },
+                1,
                 &AtomicBool::new(false),
                 &test_counters(),
             );
@@ -2731,6 +2815,9 @@ mod tests {
                     &dispatcher,
                     &test_slots(),
                     test_policy(),
+                    IpcPlane::Query,
+                    PeerCredentials { uid: 0, gid: 0, pid: None },
+                    1,
                     &AtomicBool::new(false),
                     &test_counters(),
                 )
@@ -2793,6 +2880,9 @@ mod tests {
                     &dispatcher,
                     &test_slots(),
                     test_policy(),
+                    IpcPlane::Query,
+                    PeerCredentials { uid: 0, gid: 0, pid: None },
+                    1,
                     &AtomicBool::new(false),
                     &test_counters(),
                 )

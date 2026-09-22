@@ -263,6 +263,17 @@ impl SearchPlaneControlDispatcher {
                     Err(err) => SearchPlaneControlIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
+            SearchPlaneControlIpcRequest::ProcessReadiness(_request) => {
+                // S21-10 P09 WIP: the readiness synthesis (supervisor phase
+                // plus plane health, deliberately separate from repository
+                // generation status) is not wired in this checkpoint. The
+                // refusal is typed and explicit: never a silent success and
+                // never a fabricated readiness verdict.
+                SearchPlaneControlIpcResponse::Error(core_error_to_ipc(CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::ProcessNotReady,
+                    message: "control: process readiness synthesis is not wired yet".to_string(),
+                }))
+            }
         }
     }
 }
@@ -768,6 +779,7 @@ mod tests {
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
+            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)) => {
                 Err(format!("expected repo-map mutation ack, got {other:?}").into())
             }

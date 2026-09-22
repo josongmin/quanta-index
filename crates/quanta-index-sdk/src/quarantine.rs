@@ -25,7 +25,8 @@ impl<'a> QuarantineNamespace<'a> {
                     QuarantineInventoryRequest,
                 ))?;
         match response {
-            SearchPlaneControlIpcResponse::QuarantineInventory(inventory) => Ok(inventory),
+            SearchPlaneControlIpcResponse::QuarantineInventory(inventory) => Ok(inventory)
+            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_),
             other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
             | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)

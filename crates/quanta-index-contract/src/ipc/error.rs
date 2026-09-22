@@ -96,6 +96,7 @@ define_search_plane_error_codes! {
         CandidateIdentityInvalid => "CANDIDATE_IDENTITY_INVALID",
         CatalogBusy => "CATALOG_BUSY",
         CatalogRowCorrupt => "CATALOG_ROW_CORRUPT",
+        ControlAuthorizationDenied => "CONTROL_AUTHORIZATION_DENIED",
         CompositeActivationCasConflict => "COMPOSITE_ACTIVATION_CAS_CONFLICT",
         CursorContextMismatch => "CURSOR_CONTEXT_MISMATCH",
         CursorExpired => "CURSOR_EXPIRED",

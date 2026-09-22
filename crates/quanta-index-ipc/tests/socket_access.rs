@@ -55,6 +55,7 @@ struct CountingStub {
 impl IpcDispatcher<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse> for CountingStub {
     fn dispatch(
         &self,
+        _context: &quanta_index_ipc::DispatchContextV1,
         request: SearchPlaneControlIpcRequest,
         _budget: &RequestBudgetV1,
     ) -> SearchPlaneControlIpcResponse {
@@ -75,7 +76,8 @@ impl IpcDispatcher<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse> 
             | SearchPlaneControlIpcRequest::GenerationStatus(_)
             | SearchPlaneControlIpcRequest::MetricsSnapshot(_)
             | SearchPlaneControlIpcRequest::QuarantineInventory(_)
-            | SearchPlaneControlIpcRequest::QuarantineDiscard(_)) => {
+            | SearchPlaneControlIpcRequest::QuarantineDiscard(_)
+            | SearchPlaneControlIpcRequest::ProcessReadiness(_)) => {
                 SearchPlaneControlIpcResponse::Error(quanta_index_contract::SearchPlaneIpcError {
                     code: quanta_index_contract::SearchPlaneErrorCodeV2::Internal,
                     message: format!("only CurrentGeneration is stubbed, got {other:?}"),
@@ -163,6 +165,7 @@ impl Served {
             thread::spawn(move || {
                 uds.run::<SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponseEnvelope, SearchPlaneControlIpcResponse, CountingStub>(
                     &dispatcher,
+                    quanta_index_ipc::IpcPlane::Control,
                     ACCEPT_IDLE,
                 )
             })
@@ -230,7 +233,8 @@ fn expect_snapshot(response: SearchPlaneControlIpcResponse, repo: &str) -> TestR
         | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
         | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
         | SearchPlaneControlIpcResponse::QuarantineInventory(_)
-        | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)) => {
+        | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
+        | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)) => {
             Err(format!("expected a snapshot for {repo}, got {other:?}").into())
         }
     }
