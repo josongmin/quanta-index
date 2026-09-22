@@ -3,9 +3,11 @@
 //! Every wire entrypoint the SDK exposes declares, before its payload
 //! moves into an envelope, exactly one closed expected-response variant
 //! plus the request context that produced it. After the response's
-//! request id is confirmed, the dispatcher checks the intrinsic shape
-//! (already enforced by the contract decoders) and then binds the
-//! response contextually: the read identity a response reports must be
+//! request id is confirmed, the dispatcher binds the response: the
+//! contract decoders already enforce the intrinsic shape for bytes on
+//! the socket, and binding re-checks the ranking and projection policy
+//! for typed transports that skip the decoder. The read identity a
+//! response reports must be
 //! the identity the request asked for, every candidate must belong to
 //! that identity, page windows must agree with the rows they describe,
 //! and mutation ACKs must echo the operation they acknowledge. A
@@ -19,16 +21,19 @@
 
 use crate::error::ResponseBindingAxis;
 use quanta_index_contract::{
-    BatchPublishReceipt, ClusterMembershipBatchReadRequestV1, GenerationPin, GenerationSelector,
-    HistoryQueryRequest, HybridQueryRequest, HybridSeedQueryRequest, ManifestGeneration, RepoId,
-    RepoMapActivateGenerationRequest, RepoMapActivateGenerationRequestV2, RepoMapMutationAck,
-    RepoMapMutationPhaseV2, RepoMapPublishBundleRequestV2, RepoMapQueryRequest,
-    RepoMapQueryResponse, RepoMapTerminalReceiptV2, RevisionId, RuntimeMetadataQueryRequest,
+    BatchPublishReceipt, ClusterMembershipBatchReadRequestV1, FileOwnerProjectionErrorV1,
+    FileOwnerProjectionRow, GenerationPin, GenerationSelector, HistoryQueryRequest,
+    HybridCandidatePolicyErrorV1, HybridQueryRequest, HybridSeedQueryRequest, LexicalCandidate,
+    ManifestGeneration, RepoId, RepoMapActivateGenerationRequest,
+    RepoMapActivateGenerationRequestV2, RepoMapMutationAck, RepoMapMutationPhaseV2,
+    RepoMapPublishBundleRequestV2, RepoMapQueryRequest, RepoMapQueryResponse,
+    RepoMapTerminalReceiptV2, RevisionId, RuntimeMetadataQueryRequest,
     SearchCorpusGenerationIdentityV1, SearchPlaneActivateSearchCorpusGenerationCasRequest,
     SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse, SearchPlaneExplainQueryRequest,
     SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcResponse, SearchPlaneRollbackSearchCorpusGenerationCasRequest,
     SemanticQueryRequest, StructuralQueryRequest, SymbolQueryRequest, TextQueryRequest,
+    validate_file_owner_projection_v1, validate_hybrid_results_v1,
 };
 
 use crate::SdkError;
@@ -528,6 +533,69 @@ fn check_cap(route: &'static str, top_k: u32, rows: usize) -> Result<(), SdkErro
     }
 }
 
+/// Re-check the contract ranking policy on a typed response. The wire
+/// decoder enforces it for bytes on the socket; typed transports (stubs,
+/// in-process peers) skip the decoder, so binding holds the same line.
+/// Labels name the failure kind only, never a payload field.
+fn check_ranking_order(results: &[quanta_index_contract::HybridCandidateV1]) -> Result<(), SdkError> {
+    validate_hybrid_results_v1(results).map_err(|error| {
+        let actual = match error {
+            HybridCandidatePolicyErrorV1::FusedScoreNotPositiveFinite { .. } => {
+                "a row with an invalid fused score"
+            }
+            HybridCandidatePolicyErrorV1::ContributionCountOutOfRange { .. } => {
+                "a row with an invalid lane contribution count"
+            }
+            HybridCandidatePolicyErrorV1::ContributionsNotInLaneOrder => {
+                "a row with unordered lane contributions"
+            }
+            HybridCandidatePolicyErrorV1::RankIsZero { .. } => "a row with a zero lane rank",
+            HybridCandidatePolicyErrorV1::RawScoreNotFinite { .. } => {
+                "a row with a non-finite lane score"
+            }
+            HybridCandidatePolicyErrorV1::CandidateScoreIsNotPreferredLaneScore { .. } => {
+                "a row whose score disagrees with its preferred lane score"
+            }
+            HybridCandidatePolicyErrorV1::ResultsNotInRankingOrder { .. } => {
+                "rows outside fused-score ranking order"
+            }
+            HybridCandidatePolicyErrorV1::DuplicateCandidateId { .. } => {
+                "a repeated candidate identity"
+            }
+        };
+        binding_error(
+            "hybrid",
+            ResponseBindingAxis::RankingOrder,
+            "a hybrid ranking in fused-score order with unique candidate identities",
+            actual,
+        )
+    })
+}
+
+/// Re-check the file-owner projection pairing on a typed response, for
+/// the same typed-transport reason as [`check_ranking_order`].
+fn check_projection_pairing(
+    results: &[LexicalCandidate],
+    file_owner_rows: Option<&[FileOwnerProjectionRow]>,
+) -> Result<(), SdkError> {
+    validate_file_owner_projection_v1(results, file_owner_rows).map_err(|error| {
+        let actual = match error {
+            FileOwnerProjectionErrorV1::RowCountMismatch { .. } => {
+                "a projection with a different row count"
+            }
+            FileOwnerProjectionErrorV1::CandidateMismatch { .. } => {
+                "a projection row naming another candidate"
+            }
+        };
+        binding_error(
+            "text",
+            ResponseBindingAxis::ProjectionPairing,
+            "owner projection rows pairing one to one with the results",
+            actual,
+        )
+    })
+}
+
 fn check_variant(
     binding: &QueryCallBinding,
     expected: ExpectedQueryResponseV1,
@@ -565,7 +633,8 @@ pub(crate) fn bind_query_response(
                 "text",
                 binding.top_k.unwrap_or(u32::MAX),
                 payload.results.len(),
-            )
+            )?;
+            check_projection_pairing(&payload.results, payload.file_owner_rows.as_deref())
         }
         SearchPlaneQueryIpcResponse::Symbol(payload) => {
             check_variant(binding, ExpectedQueryResponseV1::Symbol)?;
@@ -605,7 +674,8 @@ pub(crate) fn bind_query_response(
                 "hybrid",
                 binding.top_k.unwrap_or(u32::MAX),
                 payload.results.len(),
-            )
+            )?;
+            check_ranking_order(&payload.results)
         }
         SearchPlaneQueryIpcResponse::HybridSeed(payload) => {
             check_variant(binding, ExpectedQueryResponseV1::HybridSeed)?;
@@ -1225,6 +1295,7 @@ pub const SDK_WIRE_ROUTES_V1: &[SdkWireRouteV1] = &[
             "candidate_identity",
             "window",
             "cardinality",
+            "projection_pairing",
         ],
     },
     SdkWireRouteV1 {
@@ -1263,6 +1334,7 @@ pub const SDK_WIRE_ROUTES_V1: &[SdkWireRouteV1] = &[
             "selector_domain",
             "window",
             "cardinality",
+            "ranking_order",
         ],
     },
     SdkWireRouteV1 {

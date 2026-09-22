@@ -275,6 +275,8 @@ pub quanta_index_sdk::ResponseBindingAxis::CandidateIdentity
 pub quanta_index_sdk::ResponseBindingAxis::Cardinality
 pub quanta_index_sdk::ResponseBindingAxis::CasExpectation
 pub quanta_index_sdk::ResponseBindingAxis::Order
+pub quanta_index_sdk::ResponseBindingAxis::ProjectionPairing
+pub quanta_index_sdk::ResponseBindingAxis::RankingOrder
 pub quanta_index_sdk::ResponseBindingAxis::ReadIdentity
 pub quanta_index_sdk::ResponseBindingAxis::SelectorDomain
 pub quanta_index_sdk::ResponseBindingAxis::Sequence

@@ -316,6 +316,106 @@ fn rows_over_request_cap_fails_closed() {
     );
 }
 
+fn owner_hit(candidate_id: &str, score: f32) -> quanta_index_contract::LexicalCandidate {
+    quanta_index_contract::LexicalCandidate {
+        candidate_id: candidate_id.to_string(),
+        repo_id: repo_id(),
+        revision_id: revision_id(),
+        manifest_generation: ManifestGeneration::new(7),
+        repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+        start_line: 1,
+        end_line: 2,
+        score,
+        snippet: "needle".to_string(),
+        snippet_hit_offset: None,
+        highlights: vec![],
+    }
+}
+
+fn owner_projection_row(
+    candidate: &quanta_index_contract::LexicalCandidate,
+) -> quanta_index_contract::FileOwnerProjectionRow {
+    quanta_index_contract::FileOwnerProjectionRow {
+        candidate_id: candidate.candidate_id.clone(),
+        repo_id: candidate.repo_id.clone(),
+        revision_id: candidate.revision_id.clone(),
+        manifest_generation: candidate.manifest_generation,
+        repo_relative_path: candidate.repo_relative_path.clone(),
+        owners: vec!["ada".to_string()],
+    }
+}
+
+fn owner_hybrid_row(
+    candidate_id: &str,
+    fused_score: f64,
+) -> quanta_index_contract::HybridCandidateV1 {
+    quanta_index_contract::HybridCandidateV1 {
+        candidate: owner_hit(candidate_id, 0.9),
+        fused_score,
+        contributions: vec![quanta_index_contract::HybridLaneContributionV1 {
+            lane: quanta_index_contract::HybridLaneV1::Lexical,
+            rank: 1,
+            raw_score: 0.9,
+        }],
+    }
+}
+
+#[test]
+fn swapped_owner_projection_fails_closed() {
+    let dir = temp_dir("projection");
+    let first = owner_hit("cand-1", 2.0);
+    let second = owner_hit("cand-2", 1.0);
+    let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
+        generation: pin(repo_id()),
+        results: vec![first.clone(), second.clone()],
+        window: quanta_index_contract::QueryResultWindowV2::exact_probe(2),
+        file_owner_rows: Some(vec![
+            owner_projection_row(&second),
+            owner_projection_row(&first),
+        ]),
+        next_cursor: None,
+    });
+    let error = run_scripted(&dir, text_request(Some(pin(repo_id())), None), response)
+        .expect_err("a swapped owner projection must be refused");
+    // Projection pairing is intrinsic shape: the contract codec refuses
+    // it before the SDK's contextual layer ever runs.
+    assert!(
+        matches!(error, SdkError::Transport(_)),
+        "a swapped projection must fail closed on the wire: {error:?}"
+    );
+}
+
+#[test]
+fn unordered_hybrid_ranking_fails_closed() {
+    let dir = temp_dir("hybrid-order");
+    let response = SearchPlaneQueryIpcResponse::Hybrid(quanta_index_contract::HybridQueryResponse {
+        generation: pin(repo_id()),
+        results: vec![
+            owner_hybrid_row("cand-a", 1.0),
+            owner_hybrid_row("cand-b", 2.0),
+        ],
+        window: quanta_index_contract::QueryResultWindowV2::exact_probe(2),
+        explanation: quanta_index_contract::SearchExplanation::default(),
+    });
+    let (socket, _rx) = scripted_query_server(&dir, vec![response]);
+    let client = client_on(&dir, socket);
+    let error = client
+        .search()
+        .hybrid()
+        .sourcegraph("needle")
+        .semantic_text("where the needle is kept")
+        .pinned(pin(repo_id()))
+        .top_k(7)
+        .execute()
+        .expect_err("an unordered hybrid ranking must be refused");
+    // Ranking order is intrinsic shape: the contract codec refuses it
+    // before the SDK's contextual layer ever runs.
+    assert!(
+        matches!(error, SdkError::Transport(_)),
+        "an unordered ranking must fail closed on the wire: {error:?}"
+    );
+}
+
 #[test]
 fn matching_positive_response_passes_binding() {
     let dir = temp_dir("positive");

@@ -93,6 +93,12 @@ pub enum ResponseBindingAxis {
     CasExpectation,
     /// A mutation ACK's durable sequence is not positive.
     Sequence,
+    /// Ranked rows violate the response's intrinsic ranking policy:
+    /// order, per-row validity or identity uniqueness.
+    RankingOrder,
+    /// A paired file-owner projection does not pair one to one with
+    /// the ranked candidates in order.
+    ProjectionPairing,
 }
 
 impl ResponseBindingAxis {
@@ -110,6 +116,8 @@ impl ResponseBindingAxis {
             Self::TargetIdentity => "target_identity",
             Self::CasExpectation => "cas_expectation",
             Self::Sequence => "sequence",
+            Self::RankingOrder => "ranking_order",
+            Self::ProjectionPairing => "projection_pairing",
         }
     }
 }

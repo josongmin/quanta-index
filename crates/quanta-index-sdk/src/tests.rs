@@ -4608,3 +4608,172 @@ fn hybrid_explain_carries_the_row_and_both_queries() {
         Some("where the needle is kept")
     );
 }
+
+fn binding_hit(candidate_id: &str, score: f32) -> quanta_index_contract::LexicalCandidate {
+    quanta_index_contract::LexicalCandidate {
+        candidate_id: candidate_id.to_string(),
+        repo_id: repo_id(),
+        revision_id: revision_id(),
+        manifest_generation: ManifestGeneration::new(7),
+        repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+        start_line: 10,
+        end_line: 20,
+        score,
+        snippet: "fn sample() {}".to_string(),
+        snippet_hit_offset: None,
+        highlights: Vec::new(),
+    }
+}
+
+fn binding_owner_row(
+    candidate: &quanta_index_contract::LexicalCandidate,
+) -> quanta_index_contract::FileOwnerProjectionRow {
+    quanta_index_contract::FileOwnerProjectionRow {
+        candidate_id: candidate.candidate_id.clone(),
+        repo_id: candidate.repo_id.clone(),
+        revision_id: candidate.revision_id.clone(),
+        manifest_generation: candidate.manifest_generation,
+        repo_relative_path: candidate.repo_relative_path.clone(),
+        owners: vec!["ada".to_string()],
+    }
+}
+
+fn binding_hybrid_row(
+    candidate_id: &str,
+    fused_score: f64,
+) -> quanta_index_contract::HybridCandidateV1 {
+    quanta_index_contract::HybridCandidateV1 {
+        candidate: binding_hit(candidate_id, 0.9),
+        fused_score,
+        contributions: vec![quanta_index_contract::HybridLaneContributionV1 {
+            lane: quanta_index_contract::HybridLaneV1::Lexical,
+            rank: 1,
+            raw_score: 0.9,
+        }],
+    }
+}
+
+fn execute_text_with(
+    response: SearchPlaneQueryIpcResponse,
+) -> Result<TextQueryResponse, crate::SdkError> {
+    let query = Arc::new(StubQueryTransport::new(response));
+    let client = QuantaIndex::from_transports(query, unused_control(), unused_ingest());
+    client
+        .lexical()
+        .query()
+        .native("needle")
+        .pinned(sample_generation_pin())
+        .top_k(7)
+        .execute()
+}
+
+/// S21-07: a swapped owner projection is refused on the projection
+/// axis even though the variant, pin, window and cap all match.
+#[test]
+fn text_swapped_owner_projection_is_refused_on_the_projection_axis() {
+    let first = binding_hit("cand-1", 2.0);
+    let second = binding_hit("cand-2", 1.0);
+    let response = SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
+        generation: sample_generation_pin(),
+        results: vec![first.clone(), second.clone()],
+        window: QueryResultWindowV2::exact_probe(2),
+        file_owner_rows: Some(vec![binding_owner_row(&second), binding_owner_row(&first)]),
+        next_cursor: None,
+    });
+    let error = execute_text_with(response).expect_err("a swapped projection must be refused");
+    assert!(
+        matches!(
+            error,
+            crate::SdkError::Binding {
+                axis: crate::ResponseBindingAxis::ProjectionPairing,
+                ..
+            }
+        ),
+        "expected projection-pairing refusal, got {error:?}"
+    );
+}
+
+/// S21-07: an exactly paired projection passes binding.
+#[test]
+fn text_exact_owner_projection_passes_binding() {
+    let first = binding_hit("cand-1", 2.0);
+    let second = binding_hit("cand-2", 1.0);
+    let response = SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
+        generation: sample_generation_pin(),
+        results: vec![first.clone(), second.clone()],
+        window: QueryResultWindowV2::exact_probe(2),
+        file_owner_rows: Some(vec![binding_owner_row(&first), binding_owner_row(&second)]),
+        next_cursor: None,
+    });
+    let page = ok_or_fail!(execute_text_with(response));
+    assert_eq!(page.results.len(), 2);
+}
+
+fn execute_hybrid_with(
+    results: Vec<quanta_index_contract::HybridCandidateV1>,
+) -> Result<quanta_index_contract::HybridQueryResponse, crate::SdkError> {
+    let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Hybrid(
+        quanta_index_contract::HybridQueryResponse {
+            generation: sample_generation_pin(),
+            results,
+            window: QueryResultWindowV2::exact_probe(2),
+            explanation: sample_explanation(),
+        },
+    )));
+    let client = QuantaIndex::from_transports(query, unused_control(), unused_ingest());
+    client
+        .search()
+        .hybrid()
+        .sourcegraph("needle")
+        .semantic_text("where the needle is kept")
+        .pinned(sample_generation_pin())
+        .top_k(7)
+        .execute()
+}
+
+/// S21-07: typed transports skip the wire decoder, so binding holds
+/// the ranking line itself: rows outside fused-score order are refused.
+#[test]
+fn hybrid_ranking_outside_fused_score_order_is_refused_on_the_ranking_axis() {
+    let error = execute_hybrid_with(vec![
+        binding_hybrid_row("cand-a", 1.0),
+        binding_hybrid_row("cand-b", 2.0),
+    ])
+    .expect_err("an unordered ranking must be refused");
+    assert!(
+        matches!(
+            error,
+            crate::SdkError::Binding {
+                axis: crate::ResponseBindingAxis::RankingOrder,
+                ..
+            }
+        ),
+        "expected ranking-order refusal, got {error:?}"
+    );
+}
+
+/// S21-07: a repeated candidate identity is refused, and the refusal
+/// names the kind only — never the repeated identity itself.
+#[test]
+fn hybrid_duplicate_identity_is_refused_without_payload_leakage() {
+    let error = execute_hybrid_with(vec![
+        binding_hybrid_row("cand-dup", 2.0),
+        binding_hybrid_row("cand-dup", 1.0),
+    ])
+    .expect_err("a duplicated identity must be refused");
+    assert!(
+        matches!(
+            error,
+            crate::SdkError::Binding {
+                axis: crate::ResponseBindingAxis::RankingOrder,
+                ..
+            }
+        ),
+        "expected ranking-order refusal, got {error:?}"
+    );
+    let rendered = format!("{error}");
+    assert!(
+        !rendered.contains("cand-dup"),
+        "a binding refusal must not leak the payload identity: {rendered}"
+    );
+}

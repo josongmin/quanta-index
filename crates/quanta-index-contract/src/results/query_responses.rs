@@ -535,6 +535,61 @@ pub fn validate_hybrid_results_v1(
     Ok(())
 }
 
+/// Why a [`TextQueryResponse`]'s file-owner projection does not pair one
+/// to one with its ranked results (S21-07).
+#[derive(Clone, Debug, PartialEq)]
+pub enum FileOwnerProjectionErrorV1 {
+    RowCountMismatch { rows: usize, results: usize },
+    CandidateMismatch { position: usize },
+}
+
+impl fmt::Display for FileOwnerProjectionErrorV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RowCountMismatch { rows, results } => write!(
+                formatter,
+                "file owner projection rows do not pair one to one with the results: \
+                 {rows} rows for {results} results"
+            ),
+            Self::CandidateMismatch { position } => write!(
+                formatter,
+                "file owner projection row {position} does not match the ranked candidate \
+                 at the same position"
+            ),
+        }
+    }
+}
+
+/// Check that `file_owner_rows` pairs one to one with `results`: absent
+/// is fine, present must carry exactly one row per result, each row
+/// naming the same candidate identity in the same order. A swapped or
+/// foreign projection row is a malformed page, never a partial one.
+pub fn validate_file_owner_projection_v1(
+    results: &[LexicalCandidate],
+    file_owner_rows: Option<&[FileOwnerProjectionRow]>,
+) -> Result<(), FileOwnerProjectionErrorV1> {
+    let Some(rows) = file_owner_rows else {
+        return Ok(());
+    };
+    if rows.len() != results.len() {
+        return Err(FileOwnerProjectionErrorV1::RowCountMismatch {
+            rows: rows.len(),
+            results: results.len(),
+        });
+    }
+    for (position, (candidate, row)) in results.iter().zip(rows.iter()).enumerate() {
+        if row.candidate_id != candidate.candidate_id
+            || row.repo_id != candidate.repo_id
+            || row.revision_id != candidate.revision_id
+            || row.manifest_generation != candidate.manifest_generation
+            || row.repo_relative_path != candidate.repo_relative_path
+        {
+            return Err(FileOwnerProjectionErrorV1::CandidateMismatch { position });
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SeedLane {
     Exact,
@@ -1491,6 +1546,8 @@ impl Serialize for TextQueryResponse {
     where
         S: Serializer,
     {
+        validate_file_owner_projection_v1(&self.results, self.file_owner_rows.as_deref())
+            .map_err(serde::ser::Error::custom)?;
         let mut field_count = 3usize;
         if self.file_owner_rows.is_some() {
             field_count = field_count.saturating_add(1);
@@ -1581,13 +1638,8 @@ impl<'de> Visitor<'de> for TextQueryResponseVisitor {
             next_cursor.as_ref(),
         )
         .map_err(de::Error::custom)?;
-        if let Some(rows) = &file_owner_rows
-            && rows.len() != results.len()
-        {
-            return Err(de::Error::custom(
-                "file owner projection rows do not pair one to one with the results",
-            ));
-        }
+        validate_file_owner_projection_v1(&results, file_owner_rows.as_deref())
+            .map_err(de::Error::custom)?;
         Ok(TextQueryResponse {
             generation,
             results,
@@ -2571,5 +2623,122 @@ mod tests {
         let decoded: SeedCandidate = serde_json::from_value(encoded)
             .expect("legacy candidate without digest remains readable");
         assert!(decoded.authority_digest.is_none());
+    }
+
+    fn projection_fixture_row(candidate_id: &str, score: f32) -> LexicalCandidate {
+        LexicalCandidate {
+            candidate_id: candidate_id.to_string(),
+            repo_id: RepoId::new("repo-seed").expect("static fixture ID satisfies canonical policy"),
+            revision_id: RevisionId::new("rev-seed")
+                .expect("static fixture ID satisfies canonical policy"),
+            manifest_generation: ManifestGeneration::new(7),
+            repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+            start_line: 1,
+            end_line: 2,
+            score,
+            snippet: "needle".to_string(),
+            snippet_hit_offset: None,
+            highlights: Vec::new(),
+        }
+    }
+
+    fn projection_fixture_owner(candidate: &LexicalCandidate) -> FileOwnerProjectionRow {
+        FileOwnerProjectionRow {
+            candidate_id: candidate.candidate_id.clone(),
+            repo_id: candidate.repo_id.clone(),
+            revision_id: candidate.revision_id.clone(),
+            manifest_generation: candidate.manifest_generation,
+            repo_relative_path: candidate.repo_relative_path.clone(),
+            owners: vec!["ada".to_string()],
+        }
+    }
+
+    #[test]
+    fn file_owner_projection_absent_is_valid() {
+        let results = vec![projection_fixture_row("cand-1", 2.0)];
+        assert!(validate_file_owner_projection_v1(&results, None).is_ok());
+    }
+
+    #[test]
+    fn file_owner_projection_exact_pairing_is_valid() {
+        let results = vec![
+            projection_fixture_row("cand-1", 2.0),
+            projection_fixture_row("cand-2", 1.0),
+        ];
+        let rows = vec![
+            projection_fixture_owner(&results[0]),
+            projection_fixture_owner(&results[1]),
+        ];
+        assert!(validate_file_owner_projection_v1(&results, Some(&rows)).is_ok());
+    }
+
+    #[test]
+    fn file_owner_projection_count_mismatch_fails() {
+        let results = vec![
+            projection_fixture_row("cand-1", 2.0),
+            projection_fixture_row("cand-2", 1.0),
+        ];
+        let rows = vec![projection_fixture_owner(&results[0])];
+        assert_eq!(
+            validate_file_owner_projection_v1(&results, Some(&rows)),
+            Err(FileOwnerProjectionErrorV1::RowCountMismatch { rows: 1, results: 2 })
+        );
+    }
+
+    #[test]
+    fn file_owner_projection_swapped_rows_fail() {
+        let results = vec![
+            projection_fixture_row("cand-1", 2.0),
+            projection_fixture_row("cand-2", 1.0),
+        ];
+        let rows = vec![
+            projection_fixture_owner(&results[1]),
+            projection_fixture_owner(&results[0]),
+        ];
+        assert_eq!(
+            validate_file_owner_projection_v1(&results, Some(&rows)),
+            Err(FileOwnerProjectionErrorV1::CandidateMismatch { position: 0 })
+        );
+    }
+
+    #[test]
+    fn text_response_with_swapped_projection_refuses_encode_and_decode() {
+        let results = vec![
+            projection_fixture_row("cand-1", 2.0),
+            projection_fixture_row("cand-2", 1.0),
+        ];
+        let valid = TextQueryResponse {
+            generation: sample_generation_pin(),
+            results: results.clone(),
+            window: QueryResultWindowV2::exact_probe(2),
+            file_owner_rows: Some(vec![
+                projection_fixture_owner(&results[0]),
+                projection_fixture_owner(&results[1]),
+            ]),
+            next_cursor: None,
+        };
+        let mut swapped = serde_json::to_value(&valid).expect("valid page must serialize");
+        let rows = swapped
+            .get_mut("file_owner_rows")
+            .and_then(serde_json::Value::as_array_mut)
+            .expect("projection rows serialize as an array");
+        assert_eq!(rows.len(), 2);
+        rows.swap(0, 1);
+        assert!(
+            serde_json::from_value::<TextQueryResponse>(swapped).is_err(),
+            "a swapped projection must fail decode"
+        );
+
+        let mistyped = TextQueryResponse {
+            file_owner_rows: Some(vec![
+                projection_fixture_owner(&results[1]),
+                projection_fixture_owner(&results[0]),
+            ]),
+            ..valid
+        };
+        assert!(
+            serde_json::to_value(&mistyped).is_err(),
+            "a swapped projection must fail encode"
+        );
     }
 }
