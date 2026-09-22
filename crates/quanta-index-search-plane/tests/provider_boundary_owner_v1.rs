@@ -42,6 +42,7 @@ struct SpyEmbedder {
     calls: AtomicUsize,
     vector: Vec<f32>,
     fail_with: Mutex<Option<CoreError>>,
+    cancel_during_call: bool,
 }
 
 impl SpyEmbedder {
@@ -50,6 +51,14 @@ impl SpyEmbedder {
             calls: AtomicUsize::new(0),
             vector: vec![1.0],
             fail_with: Mutex::new(None),
+            cancel_during_call: false,
+        }
+    }
+
+    fn returns_after_cancellation() -> Self {
+        Self {
+            cancel_during_call: true,
+            ..Self::unit()
         }
     }
 
@@ -58,6 +67,7 @@ impl SpyEmbedder {
             calls: AtomicUsize::new(0),
             vector: vec![1.0],
             fail_with: Mutex::new(Some(err)),
+            cancel_during_call: false,
         }
     }
 
@@ -70,9 +80,12 @@ impl QueryTextEmbedderPort for SpyEmbedder {
     fn embed_query(
         &self,
         _query_text: &str,
-        _budget: &RequestBudgetV1,
+        budget: &RequestBudgetV1,
     ) -> Result<Vec<f32>, CoreError> {
         let _ = self.calls.fetch_add(1, Ordering::SeqCst);
+        if self.cancel_during_call {
+            budget.cancel_handle().cancel();
+        }
         if let Some(err) = self.fail_with.lock().expect("spy mutex").clone() {
             return Err(err);
         }
@@ -368,6 +381,42 @@ fn cancelled_call_settles_and_leaves_no_detached_work() {
     assert_eq!(snap.live_tickets, 0, "cancellation settles its reservation");
     assert_eq!(snap.inflight_requests, 0);
     assert_eq!(snap.inflight_bytes, 0);
+}
+
+/// Native inference cannot always stop mid-call. A vector returned after the
+/// peer cancelled must never become a success receipt or a served result.
+#[test]
+fn completed_vector_after_peer_cancellation_is_not_a_success() {
+    let spy = Arc::new(SpyEmbedder::returns_after_cancellation());
+    let ledger = open_ledger();
+    let boundary = loopback_boundary(Arc::clone(&spy), Arc::clone(&ledger));
+    let err = boundary
+        .embed_query_admitted("valid query text", &request_budget())
+        .expect_err("a cancelled request must not serve a late vector");
+    assert_eq!(refused_code(&err), "REQUEST_CANCELLED");
+    assert_eq!(spy.calls(), 1);
+    let snapshot = ledger.snapshot().expect("snapshot");
+    assert_eq!(snapshot.live_tickets, 0);
+    assert_eq!(snapshot.inflight_requests, 0);
+    let audit = ledger.audit_tail(1).expect("audit tail");
+    assert_eq!(audit.len(), 1);
+    assert_eq!(audit[0].kind, ProviderSettlementKindV1::Cancelled);
+}
+
+#[test]
+fn cancelled_before_provider_admission_costs_zero_calls() {
+    let spy = Arc::new(SpyEmbedder::unit());
+    let ledger = open_ledger();
+    let boundary = loopback_boundary(Arc::clone(&spy), Arc::clone(&ledger));
+    let budget = request_budget();
+    budget.cancel_handle().cancel();
+    let err = boundary
+        .embed_query_admitted("valid query text", &budget)
+        .expect_err("pre-cancelled request must not enter provider I/O");
+    assert_eq!(refused_code(&err), "REQUEST_CANCELLED");
+    assert_eq!(spy.calls(), 0);
+    assert_eq!(ledger.snapshot().expect("snapshot").live_tickets, 0);
+    assert!(ledger.audit_tail(1).expect("audit tail").is_empty());
 }
 
 /// A failing (non-cancelled) provider call settles `Failed` and the next

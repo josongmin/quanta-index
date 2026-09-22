@@ -265,12 +265,18 @@ impl ProviderBoundaryQueryEmbedder {
                 "semantic admission: query text byte length conversion failed: {err}"
             ))
         })?;
+        budget.checkpoint(EMBED_CHECKPOINT)?;
         let ticket = self.ledger.reserve(
             SemanticInputClass::QueryText,
             &ProviderWorkEstimateV1::loopback(inflight_bytes),
             &self.supervisor_id,
         )?;
-        let embedded = self.inner.embed_query(query_text, budget);
+        // A synchronous native provider can finish after the peer cancelled.
+        // Reject its late vector before a Success receipt is committed.
+        let embedded = self
+            .inner
+            .embed_query(query_text, budget)
+            .and_then(|vector| budget.checkpoint(EMBED_CHECKPOINT).map(|()| vector));
         match embedded {
             Ok(vector) => {
                 let outcome = quanta_index_core::EmbeddingOutcomeV1::from_local_vector(
