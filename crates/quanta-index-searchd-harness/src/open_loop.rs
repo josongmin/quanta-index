@@ -2,6 +2,7 @@
 //! fixed before dispatch; queueing and scheduler lag remain in end-to-end
 //! latency, so a slow daemon cannot silently reduce the offered load.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
@@ -97,13 +98,13 @@ fn scheduled_offset(index: u128, rate: u32) -> AnyResult<Duration> {
     Ok(Duration::from_nanos(u64::try_from(nanos)?))
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum Outcome {
     Served { result_count: u64 },
     InvalidResult,
     TypedError { code: SearchPlaneErrorCodeV2 },
     Timeout,
-    TransportError,
+    TransportError { kind: String },
     QueueDeadline,
 }
 
@@ -129,6 +130,7 @@ pub(crate) struct LoadPoint {
     pub unexpected_typed_errors: u64,
     pub timeouts: u64,
     pub transport_errors: u64,
+    pub transport_error_kinds: BTreeMap<String, u64>,
     pub invalid_results: u64,
     pub dropped_queue_full: u64,
     pub dropped_scheduler_late: u64,
@@ -154,6 +156,7 @@ impl LoadPoint {
             "unexpected_typed_errors": self.unexpected_typed_errors,
             "timeouts": self.timeouts,
             "transport_errors": self.transport_errors,
+            "transport_error_kinds": self.transport_error_kinds,
             "invalid_results": self.invalid_results,
             "dropped_queue_full": self.dropped_queue_full,
             "dropped_scheduler_late": self.dropped_scheduler_late,
@@ -179,6 +182,18 @@ fn request(pin: &GenerationPin) -> SearchPlaneQueryIpcRequest {
         top_k: TOP_K,
         cursor: None,
     })
+}
+
+fn transport_kind(error: &IpcError) -> String {
+    match error {
+        IpcError::Io(err) => format!("io::{:?}", err.kind()),
+        IpcError::Truncated => "truncated".to_string(),
+        IpcError::Oversized(_) => "oversized".to_string(),
+        IpcError::EmptyFrame => "empty_frame".to_string(),
+        IpcError::Encode(_) => "encode".to_string(),
+        IpcError::Decode(_) => "decode".to_string(),
+        _ => "policy_or_socket".to_string(),
+    }
 }
 
 fn dispatch(
@@ -230,7 +245,9 @@ fn dispatch(
             _ => Outcome::InvalidResult,
         },
         Err(IpcError::Timeout { .. } | IpcError::ClientIoDeadlineElapsed) => Outcome::Timeout,
-        Err(_) => Outcome::TransportError,
+        Err(error) => Outcome::TransportError {
+            kind: transport_kind(&error),
+        },
     };
     Completion {
         outcome,
@@ -258,6 +275,7 @@ fn summarize(
     let mut unexpected_typed_errors = 0_u64;
     let mut timeouts = 0_u64;
     let mut transport_errors = 0_u64;
+    let mut transport_error_kinds = BTreeMap::<String, u64>::new();
     let mut invalid_results = 0_u64;
     let mut dropped_deadline = 0_u64;
     let mut last_result_count = None;
@@ -282,7 +300,10 @@ fn summarize(
                 codes.push(code.as_wire_str().to_string());
             }
             Outcome::Timeout => timeouts += 1,
-            Outcome::TransportError => transport_errors += 1,
+            Outcome::TransportError { kind } => {
+                transport_errors += 1;
+                *transport_error_kinds.entry(kind).or_default() += 1;
+            }
             Outcome::InvalidResult => invalid_results += 1,
             Outcome::QueueDeadline => dropped_deadline += 1,
         }
@@ -307,6 +328,7 @@ fn summarize(
         unexpected_typed_errors,
         timeouts,
         transport_errors,
+        transport_error_kinds,
         invalid_results,
         dropped_queue_full,
         dropped_scheduler_late,
@@ -647,6 +669,44 @@ mod tests {
         assert_eq!(point.unexpected_typed_errors, 1);
         assert_eq!(point.dropped_queue_full, 1);
         assert!(point.saturated);
+        Ok(())
+    }
+
+    #[test]
+    fn transport_failures_keep_their_kind() -> AnyResult<()> {
+        let point = summarize(
+            1,
+            Duration::from_secs(1),
+            1,
+            0,
+            0,
+            vec![Completion {
+                outcome: Outcome::TransportError {
+                    kind: "io::ConnectionReset".to_string(),
+                },
+                elapsed_ms: Some(5.0),
+                dispatch_lag_ms: 0.0,
+            }],
+            1.0,
+        )?;
+        assert_eq!(point.transport_errors, 1);
+        assert_eq!(point.transport_error_kinds["io::ConnectionReset"], 1);
+        assert!(
+            !Report {
+                config: Config {
+                    seed: 1,
+                    rates_qps: vec![1],
+                    duration: Duration::from_secs(1),
+                    workers: 1,
+                    queue_capacity: 1,
+                    request_timeout: Duration::from_secs(1),
+                },
+                corpus_digest: String::new(),
+                model_revision: None,
+                points: vec![point],
+            }
+            .passed()
+        );
         Ok(())
     }
 
