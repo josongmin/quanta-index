@@ -259,6 +259,45 @@ pub fn run_offline_state_command_with_v1(
     fault: &dyn StateMigrationFaultPort,
 ) -> Result<OfflineStateCommandOutcomeV1> {
     let catalog = CatalogSnapshotAdapter;
+    let produced = match command.operation {
+        OfflineStateOperationV1::Backup => run_offline_backup_v1(
+            &producing_request_v1(command)?,
+            &catalog,
+            &RootDeepOpenAdapter,
+            fault,
+        )?,
+        OfflineStateOperationV1::Restore => run_offline_restore_v1(
+            &producing_request_v1(command)?,
+            &catalog,
+            &RootDeepOpenAdapter,
+            fault,
+        )?,
+        OfflineStateOperationV1::Migrate => run_offline_migrate_v1(
+            &producing_request_v1(command)?,
+            &LegacyStateImporterV1,
+            &catalog,
+            &RootDeepOpenAdapter,
+            fault,
+        )?,
+        // `verify-state` names one root; its arm returns the verified
+        // outcome directly rather than through a produced-root receipt, and
+        // so it never requires a destination.
+        OfflineStateOperationV1::Verify => {
+            return Ok(OfflineStateCommandOutcomeV1::Verified(
+                run_offline_verify_v1(&command.source_root, &catalog)?,
+            ));
+        }
+    };
+    Ok(OfflineStateCommandOutcomeV1::Produced(Box::new(produced)))
+}
+
+/// The engine request for one *producing* offline command.
+///
+/// Only the three producing operations reach this, so a missing destination
+/// is refused typed here rather than reaching the engine.
+fn producing_request_v1(
+    command: &OfflineStateCommandV1,
+) -> Result<OfflineStateRequestV1, CoreError> {
     let destination = command
         .destination_root
         .clone()
@@ -269,34 +308,11 @@ pub fn run_offline_state_command_with_v1(
                 command.operation.command_name()
             ),
         })?;
-    let request = OfflineStateRequestV1 {
+    Ok(OfflineStateRequestV1 {
         operation: command.operation,
         source_root: command.source_root.clone(),
         destination_root: destination,
-    };
-    let produced = match command.operation {
-        OfflineStateOperationV1::Backup => {
-            run_offline_backup_v1(&request, &catalog, &RootDeepOpenAdapter, fault)?
-        }
-        OfflineStateOperationV1::Restore => {
-            run_offline_restore_v1(&request, &catalog, &RootDeepOpenAdapter, fault)?
-        }
-        OfflineStateOperationV1::Migrate => run_offline_migrate_v1(
-            &request,
-            &LegacyStateImporterV1,
-            &catalog,
-            &RootDeepOpenAdapter,
-            fault,
-        )?,
-        // `verify-state` names one root; its arm returns the verified
-        // outcome directly rather than through a produced-root receipt.
-        OfflineStateOperationV1::Verify => {
-            return Ok(OfflineStateCommandOutcomeV1::Verified(
-                run_offline_verify_v1(&command.source_root, &catalog)?,
-            ));
-        }
-    };
-    Ok(OfflineStateCommandOutcomeV1::Produced(Box::new(produced)))
+    })
 }
 
 /// Render an outcome as the operator-facing line the CLI prints.

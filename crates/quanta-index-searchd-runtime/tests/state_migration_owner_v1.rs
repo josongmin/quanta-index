@@ -795,6 +795,26 @@ fn verify_state_refuses_a_frozen_root_whose_catalog_was_replaced() -> TestResult
 }
 
 #[test]
+fn verify_state_runs_from_the_command_surface_without_a_destination() -> TestResult {
+    let source = private_root()?;
+    let backup_parent = private_root()?;
+    build_live_root(source.path())?;
+    let backup = backup_parent.path().join("backup-root");
+    make_backup(source.path(), &backup)?;
+    let verify = OfflineStateCommandV1 {
+        operation: OfflineStateOperationV1::Verify,
+        source_root: backup,
+        destination_root: None,
+    };
+    let outcome = run_offline_state_command_with_v1(&verify, &NoStateMigrationFaultsV1)?;
+    assert!(
+        render_offline_outcome_v1(&verify, &outcome).starts_with("verify-state:"),
+        "verify-state must be reachable from the command surface"
+    );
+    Ok(())
+}
+
+#[test]
 fn restore_refuses_a_backup_root_without_a_backup_manifest() -> TestResult {
     let backup = private_root()?;
     let parent = private_root()?;

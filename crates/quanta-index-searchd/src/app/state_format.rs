@@ -765,8 +765,19 @@ fn lexical_normalize(path: &Path) -> Option<String> {
 #[cfg(unix)]
 pub fn refuse_non_private_source_root_v1(root: &Path) -> Result<(), CoreError> {
     use std::os::unix::fs::MetadataExt as _;
-    let metadata =
-        fs::symlink_metadata(root).map_err(|error| storage("inspect source root", root, &error))?;
+    let metadata = match fs::symlink_metadata(root) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(refuse(
+                SearchPlaneErrorCodeV2::NotFound,
+                format!(
+                    "offline state source root {} does not exist",
+                    root.display()
+                ),
+            ));
+        }
+        Err(error) => return Err(storage("inspect source root", root, &error)),
+    };
     if !metadata.is_dir() {
         return Err(refuse(
             SearchPlaneErrorCodeV2::StateRootFormatUnsupported,
