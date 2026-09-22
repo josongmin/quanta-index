@@ -1558,7 +1558,7 @@ fn stop_signalled(wake: &UnixStream) -> bool {
 fn drain_wake_byte(wake: &UnixStream) {
     let fd = std::os::fd::AsFd::as_fd(wake);
     let mut byte = [0_u8; 1];
-    let _drained = recv(&fd, &mut byte, RecvFlags::empty());
+    let _drained = recv(fd, &mut byte, RecvFlags::empty());
 }
 
 fn poll_timeout() -> Timespec {
@@ -3113,8 +3113,10 @@ mod tests {
         assert_test_ok(&result);
     }
 
+    /// A panicking watcher is never a successful disarm.
+    ///
     /// A watcher that panics after detecting a disconnect must not be
-    /// reported as a successful HungUp or Stopped observation. The
+    /// reported as a successful `HungUp` or `Stopped` observation. The
     /// cancellation callback is the existing owner boundary that can
     /// fail on the watcher thread; no production mutation hook is needed.
     #[test]
