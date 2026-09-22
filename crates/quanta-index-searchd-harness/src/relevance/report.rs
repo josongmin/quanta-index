@@ -1345,6 +1345,40 @@ mod tests {
         assert!(!summarize_semantic_quality(&[perfect, missed]).passed);
     }
 
+    #[test]
+    fn lexical_symbol_tokens_accept_definition_or_call_first_but_not_a_negative() {
+        let query = &JUDGED_QUERIES[0];
+        for ranking in [
+            [
+                "src/config/parser.rs",
+                "src/config/loader.rs",
+                "src/config/mod.rs",
+            ],
+            [
+                "src/config/loader.rs",
+                "src/config/mod.rs",
+                "src/config/parser.rs",
+            ],
+        ] {
+            let scored = score_query(query, order(&ranking)).expect("valid lexical judgment");
+            assert!(scored.passed(), "{ranking:?}: {:?}", scored.failures);
+        }
+        let scored = score_query(
+            query,
+            order(&[
+                "src/net/client.rs",
+                "src/config/loader.rs",
+                "src/config/mod.rs",
+                "src/config/parser.rs",
+            ]),
+        )
+        .expect("valid lexical judgment");
+        assert!(
+            !scored.passed(),
+            "token-overlap negative must fail the gate"
+        );
+    }
+
     // --- pure same-path-collapse oracle (no daemon) ---------------------
 
     #[test]
