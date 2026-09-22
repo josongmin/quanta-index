@@ -862,7 +862,8 @@ mod tests {
         let value = mixed.to_json().expect("serializes");
         assert_eq!(value["rows"][0]["scenario_id"], "concurrency.c8.lexical");
         assert_eq!(value["rows"][0]["qps"], 2.0);
-        assert_eq!(value["rows"][5]["scenario_id"], "concurrency.c8.slow");
+        assert_eq!(value["rows"][5]["scenario_id"], "concurrency.c8.fast");
+        assert_eq!(value["rows"][6]["scenario_id"], "concurrency.c8.slow");
         assert_eq!(value["detail"]["head_of_line_ratio_p50"], 1.5);
         assert_ne!(
             alone.provenance.config_digest, mixed.provenance.config_digest,

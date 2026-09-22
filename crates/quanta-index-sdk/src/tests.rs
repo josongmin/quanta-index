@@ -4853,14 +4853,14 @@ fn text_exact_owner_projection_passes_binding() {
 fn execute_hybrid_with(
     results: Vec<quanta_index_contract::HybridCandidateV1>,
 ) -> Result<quanta_index_contract::HybridQueryResponse, crate::SdkError> {
-    let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Hybrid(
-        quanta_index_contract::HybridQueryResponse {
+    let query = Arc::new(StubQueryTransport::new(
+        SearchPlaneQueryIpcResponse::Hybrid(quanta_index_contract::HybridQueryResponse {
             generation: sample_generation_pin(),
             results,
             window: QueryResultWindowV2::exact_probe(2),
             explanation: sample_explanation(),
-        },
-    )));
+        }),
+    ));
     let client = QuantaIndex::from_transports(query, unused_control(), unused_ingest());
     client
         .search()

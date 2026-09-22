@@ -37,9 +37,9 @@ use quanta_index_core::{
     RepoTopicIngestPort, RequestBudgetV1, SealedGenerationReclaimPort, SealedGenerationScanPort,
     SearchCorpusBatchBuildPort, SearchCorpusIngestPort, SemanticContentRootsPort,
     SemanticEgressPolicyV1, SemanticIndexOpenPort, SemanticIngestPort,
-    SemanticScopeStreamBuildPort, StructuralError,
-    StructuralMatchBinding, StructuralMatchCandidate, StructuralReadiness, TextEmbeddingProvider,
-    TrackDiskUsagePort, WriterIdleSweepPort,
+    SemanticScopeStreamBuildPort, StructuralError, StructuralMatchBinding,
+    StructuralMatchCandidate, StructuralReadiness, TextEmbeddingProvider, TrackDiskUsagePort,
+    WriterIdleSweepPort,
 };
 use quanta_index_embed::{
     CachingEmbeddingProvider, EmbeddingCacheIdentityV1, FileEmbeddingCache,
@@ -61,8 +61,7 @@ use quanta_index_search_plane::{
     DirectStructuralMaterializer, HashingQueryTextEmbedder, HistoryIngestPort,
     HistoryTextIndexParts, Ledger, ObservabilityScrape, ProviderBoundaryQueryEmbedder,
     QuarantineService, QuarantineServiceParts, QueryObsSink, QueryTextEmbedderPort,
-    RuntimeMetadataIngestPort,
-    SEARCH_OWNED_SEMANTIC_DIMENSION, SearchCorpusAuthorityInspectPort,
+    RuntimeMetadataIngestPort, SEARCH_OWNED_SEMANTIC_DIMENSION, SearchCorpusAuthorityInspectPort,
     SearchCorpusAuthorityWritePort, SearchCorpusLifecycleOwner, SearchCorpusLifecycleParts,
     SearchCorpusMaterializerParts, SearchPlaneControlDispatcher, SearchPlaneControlDispatcherParts,
     SearchPlaneDispatcher, SearchPlaneIngestDispatcher, SnapshotRegistries, StructuralIngestPort,
@@ -2112,8 +2111,7 @@ mod tests {
             &test_grant(),
         )
         .map_err(|err| format!("a granted composition must succeed: {err:?}"))?;
-        let Some(quanta_index_core::SemanticEgressPolicyV1::External(grant)) =
-            source_egress_policy
+        let Some(quanta_index_core::SemanticEgressPolicyV1::External(grant)) = source_egress_policy
         else {
             return Err("a granted OpenAi composition must carry the external policy".into());
         };
@@ -2140,8 +2138,7 @@ mod tests {
             &test_grant(),
         )
         .map_err(|err| format!("a granted composition must succeed: {err:?}"))?;
-        let pool = provider_attempt_pool
-            .ok_or("an OpenAi composition must own an attempt pool")?;
+        let pool = provider_attempt_pool.ok_or("an OpenAi composition must own an attempt pool")?;
         pool.shutdown();
         match query.embed_query("needle", &RequestBudgetV1::unbounded()) {
             Err(quanta_index_core::CoreError::Typed { code, .. }) => {

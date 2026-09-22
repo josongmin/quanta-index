@@ -2635,7 +2635,8 @@ mod tests {
     fn projection_fixture_row(candidate_id: &str, score: f32) -> LexicalCandidate {
         LexicalCandidate {
             candidate_id: candidate_id.to_string(),
-            repo_id: RepoId::new("repo-seed").expect("static fixture ID satisfies canonical policy"),
+            repo_id: RepoId::new("repo-seed")
+                .expect("static fixture ID satisfies canonical policy"),
             revision_id: RevisionId::new("rev-seed")
                 .expect("static fixture ID satisfies canonical policy"),
             manifest_generation: ManifestGeneration::new(7),
@@ -2696,7 +2697,10 @@ mod tests {
         let rows = vec![projection_fixture_owner(&results[0])];
         assert_eq!(
             validate_file_owner_projection_v1(&results, Some(&rows)),
-            Err(FileOwnerProjectionErrorV1::RowCountMismatch { rows: 1, results: 2 })
+            Err(FileOwnerProjectionErrorV1::RowCountMismatch {
+                rows: 1,
+                results: 2
+            })
         );
     }
 

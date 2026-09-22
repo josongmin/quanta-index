@@ -97,9 +97,11 @@ impl ProviderAttemptPool {
         let handle = std::thread::Builder::new()
             .name(name.clone())
             .spawn(work)
-            .map_err(|err| CoreError::InvalidContract(format!(
-                "provider attempt pool: could not start attempt thread: {err}"
-            )))?;
+            .map_err(|err| {
+                CoreError::InvalidContract(format!(
+                    "provider attempt pool: could not start attempt thread: {err}"
+                ))
+            })?;
         live.push(TrackedAttempt {
             name,
             handle: Some(handle),
@@ -149,10 +151,7 @@ impl ProviderAttemptPool {
             }
             if start.elapsed() >= deadline {
                 let unfinished = live.iter().map(|attempt| attempt.name.clone()).collect();
-                return ProviderAttemptDrainReport {
-                    joined,
-                    unfinished,
-                };
+                return ProviderAttemptDrainReport { joined, unfinished };
             }
             drop(live);
             std::thread::sleep(DRAIN_POLL_INTERVAL);

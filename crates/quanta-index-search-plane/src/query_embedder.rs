@@ -291,9 +291,11 @@ impl ProviderBoundaryQueryEmbedder {
                             observed_cost_micros: 0,
                             observed_usage_tokens: 0,
                         };
-                        let receipt: ProviderSettlementReceiptV1 = self
-                            .ledger
-                            .settle(&ticket, ProviderSettlementKindV1::Success, usage)?;
+                        let receipt: ProviderSettlementReceiptV1 = self.ledger.settle(
+                            &ticket,
+                            ProviderSettlementKindV1::Success,
+                            usage,
+                        )?;
                         self.record_audit(
                             &receipt,
                             outcome.observed_model_id.as_deref(),
@@ -302,9 +304,11 @@ impl ProviderBoundaryQueryEmbedder {
                         Ok((vector, outcome))
                     }
                     Err(refusal) => {
-                        let receipt: ProviderSettlementReceiptV1 = self
-                            .ledger
-                            .settle(&ticket, ProviderSettlementKindV1::Failed, zero_usage())?;
+                        let receipt: ProviderSettlementReceiptV1 = self.ledger.settle(
+                            &ticket,
+                            ProviderSettlementKindV1::Failed,
+                            zero_usage(),
+                        )?;
                         self.record_audit(&receipt, None, 0)?;
                         Err(refusal)
                     }

@@ -537,7 +537,9 @@ fn check_cap(route: &'static str, top_k: u32, rows: usize) -> Result<(), SdkErro
 /// decoder enforces it for bytes on the socket; typed transports (stubs,
 /// in-process peers) skip the decoder, so binding holds the same line.
 /// Labels name the failure kind only, never a payload field.
-fn check_ranking_order(results: &[quanta_index_contract::HybridCandidateV1]) -> Result<(), SdkError> {
+fn check_ranking_order(
+    results: &[quanta_index_contract::HybridCandidateV1],
+) -> Result<(), SdkError> {
     validate_hybrid_results_v1(results).map_err(|error| {
         let actual = match error {
             HybridCandidatePolicyErrorV1::FusedScoreNotPositiveFinite { .. } => {
