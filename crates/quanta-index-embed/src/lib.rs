@@ -8,6 +8,7 @@
 
 mod cache;
 mod openai;
+mod pool;
 mod telemetry;
 
 pub use cache::{
@@ -20,6 +21,7 @@ pub use openai::{
     DEFAULT_MAX_RETRIES, DEFAULT_TIMEOUT, EmbeddingTransport, HttpResponse, MAX_CONCURRENCY,
     OpenAiEmbeddingProvider, OpenAiProviderConfig, ReqwestBlockingTransport,
 };
+pub use pool::{ProviderAttemptDrainReport, ProviderAttemptPool};
 pub use telemetry::{
     OpenAiEmbedStatsSnapshot, OpenAiEmbedTelemetrySource, OpenAiRequestSample,
     REQUEST_SAMPLE_CAPACITY, reset_openai_embed_stats, snapshot_openai_embed_stats,

@@ -9,6 +9,7 @@ use quanta_index_core::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::pool::ProviderAttemptPool;
 use crate::telemetry;
 
 const EMBEDDINGS_PATH: &str = "/v1/embeddings";
@@ -211,6 +212,9 @@ pub struct OpenAiEmbeddingProvider {
     /// Shared with the thread each attempt runs on, so an attempt a
     /// cancelled budget abandons can finish on its own.
     transport: Arc<dyn EmbeddingTransport>,
+    /// The supervisor-owned attempt pool (S21-09): every attempt thread
+    /// spawns through it, so no per-request thread is ever detached.
+    attempts: Arc<ProviderAttemptPool>,
     api_key: Arc<str>,
     model: String,
     model_id: String,
@@ -274,8 +278,13 @@ impl OpenAiEmbeddingProvider {
             return Err(invalid("openai: timeout must be non-zero"));
         }
         let model_id = format!("openai:{}", config.model);
+        // Concurrency was validated above, so the pool cap cannot fail;
+        // the composition root swaps in the supervised pool anyway.
+        let attempts = ProviderAttemptPool::new(config.concurrency)
+            .map_err(|err| invalid(&format!("openai: {err:?}")))?;
         Ok(Self {
             transport: Arc::from(transport),
+            attempts: Arc::new(attempts),
             api_key: Arc::from(config.api_key),
             model: config.model,
             model_id,
@@ -289,6 +298,22 @@ impl OpenAiEmbeddingProvider {
             concurrency: config.concurrency,
             retry_sleeper: Arc::new(BudgetPollSleeper),
         })
+    }
+
+    /// Swap in the supervisor-owned attempt pool (S21-09). The pool the
+    /// runtime passes here is the same one the supervised drain joins, so
+    /// attempts stay owned from spawn to shutdown.
+    #[must_use]
+    pub fn with_attempt_pool(mut self, attempts: Arc<ProviderAttemptPool>) -> Self {
+        self.attempts = attempts;
+        self
+    }
+
+    /// Attempts currently tracked by this provider's pool, for gauges
+    /// and tests.
+    #[must_use]
+    pub fn live_attempts(&self) -> usize {
+        self.attempts.live_attempts()
     }
 
     /// Build a provider over the real in-process blocking reqwest transport,
@@ -451,20 +476,16 @@ impl OpenAiEmbeddingProvider {
         let url = url.to_string();
         let body = body.to_string();
         let (done, outcome) = mpsc::channel();
-        let spawned = std::thread::Builder::new()
-            .name("openai-embed-attempt".to_string())
-            .spawn(move || {
+        // Tracked, never detached (S21-09): the pool bounds inflight
+        // attempts, refuses past shutdown, and owns the thread until it
+        // ends or the supervised drain escalates it by name.
+        self.attempts
+            .spawn_tracked("openai-embed-attempt", move || {
                 let result = transport.post_embeddings(&url, &api_key, &body, timeout);
                 // The requester may have left: a failed send means exactly
                 // that, and the result is dropped with the receiver.
                 let _abandoned = done.send(result);
-            });
-        if let Err(error) = spawned {
-            return Err(typed(
-                LexicalErrorCode::SemProviderTransport,
-                &format!("openai: could not start the embedding attempt: {error}"),
-            ));
-        }
+            })?;
         loop {
             match outcome.recv_timeout(BUDGET_POLL_INTERVAL) {
                 Ok(result) => return result,
@@ -956,6 +977,35 @@ mod tests {
     ) -> OpenAiEmbeddingProvider {
         OpenAiEmbeddingProvider::new(config, Box::new(transport))
             .expect("provider builds with a non-empty key/model/dim")
+    }
+
+    // S21-09: attempts spawn through the supervised pool, so a shut-down
+    // pool refuses before any HTTP — zero transport calls, typed refusal.
+    #[test]
+    fn shutdown_pool_refuses_attempts_with_zero_transport_calls() {
+        use std::sync::atomic::Ordering;
+
+        use quanta_index_contract::SearchPlaneErrorCodeV2;
+
+        use crate::pool::ProviderAttemptPool;
+
+        let transport = ScriptedTransport::new(vec![Ok(HttpResponse {
+            status: 200,
+            body: "{\"data\":[{\"embedding\":[0.5,0.5]}]}".to_string(),
+        })]);
+        let calls = transport.calls_handle();
+        let pool = Arc::new(ProviderAttemptPool::new(2).expect("valid pool"));
+        pool.shutdown();
+        let provider = provider_with(cfg(2), transport).with_attempt_pool(Arc::clone(&pool));
+        let err = provider
+            .embed_batch(&["alpha"])
+            .expect_err("a shut-down pool must refuse");
+        let CoreError::Typed { code, .. } = err else {
+            panic!("pool refusal must be typed");
+        };
+        assert_eq!(code, SearchPlaneErrorCodeV2::RequestCancelled);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(provider.live_attempts(), 0);
     }
 
     #[test]

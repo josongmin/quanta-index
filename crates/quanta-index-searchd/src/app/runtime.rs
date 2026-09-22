@@ -43,7 +43,7 @@ use quanta_index_core::{
 };
 use quanta_index_embed::{
     CachingEmbeddingProvider, EmbeddingCacheIdentityV1, FileEmbeddingCache,
-    OpenAiEmbedTelemetrySource, OpenAiEmbeddingProvider,
+    OpenAiEmbedTelemetrySource, OpenAiEmbeddingProvider, ProviderAttemptPool,
 };
 use quanta_index_ipc::{IpcDispatcher, IpcServerCounters, ServerAdmissionPolicy};
 use quanta_index_lq_structural::{
@@ -546,12 +546,15 @@ const PROVIDER_SUPERVISOR_ID: &str = "searchd-provider-supervisor";
 /// `provider_ledger` is the process-global provider work ledger the query
 /// boundary reserves against (S21-08); `source_egress_policy` gates the
 /// corpus derivation batches (`None` is a local-only composition).
+/// `provider_attempt_pool` is the supervisor-owned attempt pool (S21-09),
+/// present exactly when the composition can spawn attempt threads.
 struct SemanticEmbedders {
     query: Arc<dyn QueryTextEmbedderPort + Send + Sync>,
     corpus: Arc<dyn TextEmbeddingProvider + Send + Sync>,
     metric_sources: Vec<Arc<dyn MetricSourcePort>>,
     provider_ledger: Arc<ProviderBudgetLedger>,
     source_egress_policy: Option<SemanticEgressPolicyV1>,
+    provider_attempt_pool: Option<Arc<ProviderAttemptPool>>,
 }
 
 /// Resolve the (query embedder, corpus embedder) pair for a profile.
@@ -586,6 +589,7 @@ fn build_semantic_embedders(
                 metric_sources: Vec::new(),
                 provider_ledger,
                 source_egress_policy: None,
+                provider_attempt_pool: None,
             })
         }
         SemanticEmbedderProfile::OpenAi {
@@ -603,6 +607,12 @@ fn build_semantic_embedders(
                 *dimension,
                 api_key.clone(),
             ))?;
+            // The supervisor-owned attempt pool (S21-09): one per process,
+            // shared by the provider (spawn path) and the supervised drain
+            // child (join path). Capped by the same concurrency knob that
+            // bounds the batch fanout.
+            let attempt_pool = Arc::new(ProviderAttemptPool::new(tuning.concurrency)?);
+            let openai = openai.with_attempt_pool(Arc::clone(&attempt_pool));
             // Raw provider output is unit-normalized by the shared wrapper
             // before either the cache or a path sees it (QI-BB-031).
             let normalized = L2UnitEmbeddingProvider::new(openai)?;
@@ -637,7 +647,12 @@ fn build_semantic_embedders(
             } else {
                 Arc::new(normalized)
             };
-            let egress_grant = grant.to_grant("openai", model, model_revision);
+            // The grant declares the composed provider's own model identity
+            // (prefix included), which is exactly what the boundary's
+            // declared-model gate compares against — never the bare
+            // profile string.
+            let egress_grant =
+                grant.to_grant("openai", provider.model_id(), provider.model_revision());
             egress_grant.validate()?;
             let policy = SemanticEgressPolicyV1::External(egress_grant);
             let inner: Arc<dyn QueryTextEmbedderPort + Send + Sync> =
@@ -653,6 +668,7 @@ fn build_semantic_embedders(
                 metric_sources,
                 provider_ledger,
                 source_egress_policy: Some(policy),
+                provider_attempt_pool: Some(attempt_pool),
             })
         }
         SemanticEmbedderProfile::Unavailable => {
@@ -665,6 +681,7 @@ fn build_semantic_embedders(
                 metric_sources: Vec::new(),
                 provider_ledger,
                 source_egress_policy: None,
+                provider_attempt_pool: None,
             })
         }
     }
@@ -1098,6 +1115,10 @@ pub struct SearchdRuntime {
     /// records every settlement into. Read by readiness probes and the
     /// metrics scrape.
     pub provider_ledger: Arc<ProviderBudgetLedger>,
+    /// The supervisor-owned provider attempt pool (S21-09), present
+    /// exactly when the composition can spawn attempt threads. The
+    /// daemon entry drains it as a supervised child.
+    pub provider_attempt_pool: Option<Arc<ProviderAttemptPool>>,
     pub semantic_boot: semantic_boot::SemanticBootReport,
     /// What boot inventoried, quarantined and proved (QI-BB-026).
     pub boot_inventory: BootInventoryReportV1,
@@ -1371,6 +1392,7 @@ impl SearchdRuntime {
             metric_sources: embedder_metric_sources,
             provider_ledger,
             source_egress_policy,
+            provider_attempt_pool,
         } = build_semantic_embedders(
             config.semantic_embedder_profile(),
             &leased_state_root,
@@ -1619,6 +1641,7 @@ impl SearchdRuntime {
             repo_map_snapshot_port,
             query_obs_store,
             provider_ledger,
+            provider_attempt_pool,
             semantic_boot: boot_report,
             boot_inventory,
             process_memory_envelope,
@@ -1948,6 +1971,7 @@ mod tests {
             query,
             provider_ledger,
             source_egress_policy,
+            provider_attempt_pool,
             ..
         } = super::build_semantic_embedders(
             &profile,
@@ -1959,6 +1983,10 @@ mod tests {
         assert!(
             source_egress_policy.is_none(),
             "a local composition carries no source egress policy"
+        );
+        assert!(
+            provider_attempt_pool.is_none(),
+            "a local composition spawns no attempt threads"
         );
 
         let err = query
@@ -2038,8 +2066,40 @@ mod tests {
         else {
             return Err("a granted OpenAi composition must carry the external policy".into());
         };
-        assert_eq!(grant.model_id, "text-embedding-3-small");
+        assert_eq!(grant.model_id, "openai:text-embedding-3-small");
         assert!(!grant.source_content_consent);
+        Ok(())
+    }
+
+    // S21-09 production wiring: the OpenAi composition shares one
+    // supervisor-owned attempt pool between the provider (spawn path)
+    // and the supervised drain (join path). Shutting the pool down
+    // refuses new attempts before any HTTP.
+    #[test]
+    fn openai_composition_shares_the_supervised_attempt_pool() -> TestRes {
+        let dir = tempfile::tempdir()?;
+        let super::SemanticEmbedders {
+            query,
+            provider_attempt_pool,
+            ..
+        } = super::build_semantic_embedders(
+            &openai_profile(false),
+            dir.path(),
+            &test_budget(),
+            &test_grant(),
+        )
+        .map_err(|err| format!("a granted composition must succeed: {err:?}"))?;
+        let pool = provider_attempt_pool
+            .ok_or("an OpenAi composition must own an attempt pool")?;
+        pool.shutdown();
+        match query.embed_query("needle", &RequestBudgetV1::unbounded()) {
+            Err(quanta_index_core::CoreError::Typed { code, .. }) => {
+                assert_eq!(code.as_wire_str(), "REQUEST_CANCELLED");
+            }
+            other => {
+                return Err(format!("a shut-down pool must refuse, got {other:?}").into());
+            }
+        }
         Ok(())
     }
 

@@ -245,5 +245,8 @@ crate quanta_index_core
 ├── mod request_budget: pub
 │   ├── enum BudgetInterruptionV1: pub
 │   ├── struct CancelHandleV1: pub
+│   ├── struct CancelSharedV1: pub(self)
+│   ├── struct CancelWaiterGuardV1: pub
+│   ├── struct CancelWaiterSetV1: pub(self)
 │   └── struct RequestBudgetV1: pub
 └── mod timeref: pub

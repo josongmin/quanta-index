@@ -1,6 +1,6 @@
 //! Daemon entry (SEP-21 P08 / S21-09): one `SearchdSupervisor` owns the
-//! accept loops, the maintenance timer, and the runtime guards for the
-//! whole serving interval.
+//! accept loops, the maintenance timer, the provider attempt drain, and
+//! the runtime guards for the whole serving interval.
 //!
 //! The old partial destructure — which moved the three servers out of
 //! `SearchdRuntime` and dropped the maintenance timer, corpus lifecycle
@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 
+use quanta_index_embed::ProviderAttemptPool;
 use quanta_index_ipc::{IpcDispatcher, RequestEnvelope, ResponseEnvelope};
 
 use crate::app::maintenance::MaintenanceTimer;
@@ -93,6 +94,10 @@ pub fn supervise_runtime(
     hard_deadline: Duration,
     root: &CancelRoot,
 ) -> SupervisionOutcome {
+    // The supervised provider pool, when this composition has one: an
+    // `openai` runtime drains its attempt threads as a supervised child
+    // (S21-09); local-only compositions have nothing to drain.
+    let attempt_pool = runtime.provider_attempt_pool.clone();
     let (servers, maintenance, guards, _boot_notices) =
         runtime.into_servers_maintenance_guards_and_boot_notices();
     let RuntimeServers {
@@ -109,7 +114,7 @@ pub fn supervise_runtime(
 
     // Startup is all-or-rollback: any spawn failure tears down exactly
     // what was started, in reverse order, before the guards drop.
-    let startups = [
+    let mut startups = vec![
         spawn_accept_child(
             &mut supervisor,
             "query-accept",
@@ -130,6 +135,9 @@ pub fn supervise_runtime(
         ),
         spawn_maintenance_child(&mut supervisor, maintenance),
     ];
+    if let Some(pool) = attempt_pool {
+        startups.push(spawn_provider_child(&mut supervisor, pool, hard_deadline));
+    }
     for startup in startups {
         if let Err(failure) = startup {
             return supervisor.rollback(failure.name);
@@ -180,6 +188,42 @@ where
                     Err(anyhow::Error::new(error))
                 }
             }
+        },
+    )
+}
+
+/// Register the provider attempt drain as a supervised child (S21-09):
+/// the stop closure shuts the pool down, the adapted body drains it
+/// under the hard deadline and reports `Failed` when attempts are still
+/// running — the receipt then names `provider-attempts` instead of
+/// claiming a graceful shutdown it did not perform.
+fn spawn_provider_child(
+    supervisor: &mut SearchdSupervisor<RuntimeGuards>,
+    pool: Arc<ProviderAttemptPool>,
+    hard_deadline: Duration,
+) -> Result<(), ChildSpawnFailure> {
+    let pool_for_stop = Arc::clone(&pool);
+    supervisor.spawn_child(
+        "provider-attempts",
+        Box::new(move || pool_for_stop.shutdown()),
+        move |context: ChildContext| {
+            let adapter = std::thread::Builder::new()
+                .name("supervised-provider-drain".to_string())
+                .spawn(move || {
+                    // Park until the supervisor asks for shutdown, then
+                    // drain: attempts keep running while serving.
+                    while !context.shutdown().load(Ordering::Acquire) {
+                        std::thread::sleep(SHUTDOWN_POLL_IDLE);
+                    }
+                    let report = pool.drain(hard_deadline);
+                    let kind = if report.unfinished.is_empty() {
+                        ChildExitKind::Completed
+                    } else {
+                        ChildExitKind::Failed
+                    };
+                    context.report_exit(kind);
+                });
+            adapter.map_err(anyhow::Error::new)
         },
     )
 }
