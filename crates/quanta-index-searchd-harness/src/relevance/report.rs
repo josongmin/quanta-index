@@ -159,6 +159,7 @@ pub struct RelevanceReport {
 const MIN_PARAPHRASE_MRR_AT_10: f64 = 0.65;
 const MIN_PARAPHRASE_NDCG_AT_10: f64 = 0.70;
 const MIN_PARAPHRASE_TOP1_RATE: f64 = 0.50;
+const REQUIRED_PARAPHRASE_CASES: usize = 12;
 
 #[derive(Clone, Debug)]
 pub struct SemanticQualitySummary {
@@ -189,7 +190,7 @@ fn summarize_semantic_quality(cases: &[SemanticCaseMetrics]) -> SemanticQualityS
         mean_mrr_at_10,
         mean_ndcg_at_10,
         mean_recall_at_20,
-        passed: !cases.is_empty()
+        passed: cases.len() == REQUIRED_PARAPHRASE_CASES
             && mean_mrr_at_10 >= MIN_PARAPHRASE_MRR_AT_10
             && mean_ndcg_at_10 >= MIN_PARAPHRASE_NDCG_AT_10
             && crate::relevance::metrics::usize_to_f64(top1_count) / count
@@ -1332,7 +1333,13 @@ mod tests {
             on_topic_rank: Some(1),
         };
         assert!(!summarize_semantic_quality(&[]).passed);
-        assert!(summarize_semantic_quality(&[perfect.clone(), perfect.clone()]).passed);
+        assert!(
+            !summarize_semantic_quality(&[perfect.clone(), perfect.clone()]).passed,
+            "a partial paraphrase run must not pass on high scores"
+        );
+        assert!(!summarize_semantic_quality(&vec![perfect.clone(); 11]).passed);
+        assert!(summarize_semantic_quality(&vec![perfect.clone(); 12]).passed);
+        assert!(!summarize_semantic_quality(&vec![perfect.clone(); 13]).passed);
         let missed = SemanticCaseMetrics {
             produced_order: vec!["hard-negative.rs".to_string()],
             mrr_at_10: 0.0,
