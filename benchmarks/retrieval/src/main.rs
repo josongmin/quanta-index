@@ -397,6 +397,18 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     let chunk_start = Instant::now();
     let selection = chunk_with_strategy(&required(args, "strategy")?, args, &files)?;
     let chunk_elapsed = chunk_start.elapsed();
+    let mut chunks_by_id = BTreeMap::new();
+    for chunk in selection.chunks.values().flatten() {
+        if chunks_by_id
+            .insert(chunk.chunk_id.clone(), chunk.clone())
+            .is_some()
+        {
+            return Err(BenchError::Protocol(format!(
+                "duplicate published chunk ID: {}",
+                chunk.chunk_id
+            )));
+        }
+    }
 
     let generation = optional_u64(args, "generation", 0)?;
     if generation == 0 {
@@ -530,6 +542,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         &outcomes,
         top_k,
         &by_path,
+        &chunks_by_id,
     )?;
     verify_checkout(&repo, &manifest)?;
     write_json(&out, &record)?;

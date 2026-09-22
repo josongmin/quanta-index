@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use serde_json::{Map, Value};
 
-use crate::chunking::count_tokens;
+use crate::chunking::{Chunk, count_tokens};
 use crate::corpus::SourceFile;
 use crate::sdk::{QueryOutcome, RankedHit};
 use crate::{BenchError, BenchResult, sha256_hex};
@@ -400,19 +400,37 @@ fn prove_hit(
     hit: &RankedHit,
     rank: usize,
     files: &BTreeMap<String, SourceFile>,
+    chunks_by_id: &BTreeMap<String, Chunk>,
 ) -> BenchResult<Value> {
     let file = files.get(&hit.path).ok_or_else(|| {
         BenchError::Protocol(format!("SDK hit outside admitted universe: {}", hit.path))
     })?;
-    if hit.start_line == 0 || hit.end_line == 0 || hit.start_line > hit.end_line {
+    let (start_line, end_line) = if hit.start_line == 0 && hit.end_line == 0 {
+        let chunk = chunks_by_id.get(&hit.candidate_id).ok_or_else(|| {
+            BenchError::Protocol(format!(
+                "SDK unanchored hit has no published chunk ID: {}",
+                hit.candidate_id
+            ))
+        })?;
+        if chunk.path != hit.path || chunk.text != hit.snippet {
+            return Err(BenchError::Protocol(format!(
+                "SDK unanchored hit differs from published chunk: {}",
+                hit.candidate_id
+            )));
+        }
+        (chunk.start_line, chunk.end_line)
+    } else {
+        (hit.start_line, hit.end_line)
+    };
+    if start_line == 0 || end_line == 0 || start_line > end_line {
         return Err(BenchError::Protocol(format!(
             "SDK hit has an inverted line span: {}:{}-{}",
-            hit.path, hit.start_line, hit.end_line
+            hit.path, start_line, end_line
         )));
     }
     let (start, end) = file.line_span_bytes(
-        usize::try_from(hit.start_line).unwrap_or(usize::MAX),
-        usize::try_from(hit.end_line).unwrap_or(0),
+        usize::try_from(start_line).unwrap_or(usize::MAX),
+        usize::try_from(end_line).unwrap_or(0),
     )?;
     let block = &file.bytes[start..end];
     let text = std::str::from_utf8(block)
@@ -432,15 +450,12 @@ fn prove_hit(
     );
     assert!(
         candidate
-            .insert(
-                "start_line".to_string(),
-                Value::Number(hit.start_line.into()),
-            )
+            .insert("start_line".to_string(), Value::Number(start_line.into()),)
             .is_none()
     );
     assert!(
         candidate
-            .insert("end_line".to_string(), Value::Number(hit.end_line.into()))
+            .insert("end_line".to_string(), Value::Number(end_line.into()))
             .is_none()
     );
     assert!(
@@ -506,6 +521,7 @@ pub fn result_value(
     outcome: &QueryOutcome,
     top_k: u32,
     files: &BTreeMap<String, SourceFile>,
+    chunks_by_id: &BTreeMap<String, Chunk>,
 ) -> BenchResult<Value> {
     let mut result = Map::new();
     assert!(
@@ -585,7 +601,7 @@ pub fn result_value(
             };
             let mut candidates = Vec::with_capacity(hits.len());
             for (index, hit) in hits.iter().enumerate() {
-                candidates.push(prove_hit(hit, index + 1, files)?);
+                candidates.push(prove_hit(hit, index + 1, files, chunks_by_id)?);
             }
             assert!(
                 result
@@ -645,6 +661,7 @@ pub fn runner_record(
     outcomes: &BTreeMap<(String, String), QueryOutcome>,
     top_k: u32,
     files: &BTreeMap<String, SourceFile>,
+    chunks_by_id: &BTreeMap<String, Chunk>,
 ) -> BenchResult<Value> {
     let mut routes: Vec<&String> = provenance.keys().collect();
     routes.sort();
@@ -789,7 +806,14 @@ pub fn runner_record(
                 .ok_or_else(|| {
                     BenchError::Protocol(format!("missing outcome for ({}, {route})", task.task_id))
                 })?;
-            results.push(result_value(&task.task_id, route, outcome, top_k, files)?);
+            results.push(result_value(
+                &task.task_id,
+                route,
+                outcome,
+                top_k,
+                files,
+                chunks_by_id,
+            )?);
         }
     }
     assert!(
@@ -861,5 +885,55 @@ mod tests {
                 .is_none()
         );
         assert!(exact_keys(&object, &["task_id", "query", "query_sha256"], "task").is_err());
+    }
+
+    #[test]
+    fn unanchored_semantic_hit_uses_only_the_exact_published_chunk() {
+        let text = "fn main() {}\n";
+        let path = "src/lib.rs";
+        let file = SourceFile {
+            path: path.to_string(),
+            bytes: text.as_bytes().to_vec(),
+            text: text.to_string(),
+            line_starts: vec![0],
+            sha256: sha256_hex(text.as_bytes()),
+        };
+        let files = BTreeMap::from([(path.to_string(), file)]);
+        let chunk = Chunk {
+            path: path.to_string(),
+            start_byte: 0,
+            end_byte: u32::try_from(text.len()).expect("short fixture"),
+            start_line: 1,
+            end_line: 1,
+            text: text.to_string(),
+            strategy: "whole_file".to_string(),
+            version: "test".to_string(),
+            config: "test".to_string(),
+            chunk_id: "chunk-id".to_string(),
+            fallback: false,
+        };
+        let chunks = BTreeMap::from([("chunk-id".to_string(), chunk)]);
+        let hit = RankedHit {
+            candidate_id: "chunk-id".to_string(),
+            path: path.to_string(),
+            start_line: 0,
+            end_line: 0,
+            snippet: text.to_string(),
+            score: 1.0,
+        };
+        let candidate = prove_hit(&hit, 1, &files, &chunks).expect("anchored by published ID");
+        assert_eq!(candidate["start_line"], 1);
+        assert_eq!(candidate["end_line"], 1);
+        assert_eq!(candidate["block_sha256"], sha256_hex(text.as_bytes()));
+
+        let mut changed = hit.clone();
+        changed.snippet = "not the published chunk".to_string();
+        assert!(prove_hit(&changed, 1, &files, &chunks).is_err());
+        changed = hit.clone();
+        changed.candidate_id = "unknown".to_string();
+        assert!(prove_hit(&changed, 1, &files, &chunks).is_err());
+        changed = hit;
+        changed.end_line = 1;
+        assert!(prove_hit(&changed, 1, &files, &chunks).is_err());
     }
 }

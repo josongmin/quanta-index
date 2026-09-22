@@ -432,9 +432,11 @@ pub fn publish_and_activate(
 /// One ranked SDK hit normalized across routes.
 #[derive(Debug, Clone)]
 pub struct RankedHit {
+    pub candidate_id: String,
     pub path: String,
     pub start_line: u32,
     pub end_line: u32,
+    pub snippet: String,
     pub score: f64,
 }
 
@@ -458,18 +460,22 @@ pub enum QueryOutcome {
 
 fn lexical_hit(candidate: &LexicalCandidate) -> RankedHit {
     RankedHit {
+        candidate_id: candidate.candidate_id.clone(),
         path: candidate.repo_relative_path.as_str().to_string(),
         start_line: candidate.start_line,
         end_line: candidate.end_line,
+        snippet: candidate.snippet.clone(),
         score: f64::from(candidate.score),
     }
 }
 
 fn hybrid_hit(candidate: &HybridCandidateV1) -> RankedHit {
     RankedHit {
+        candidate_id: candidate.candidate.candidate_id.clone(),
         path: candidate.candidate.repo_relative_path.as_str().to_string(),
         start_line: candidate.candidate.start_line,
         end_line: candidate.candidate.end_line,
+        snippet: candidate.candidate.snippet.clone(),
         score: candidate.fused_score,
     }
 }
