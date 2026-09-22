@@ -61,6 +61,7 @@ use quanta_index_search_plane::{
     BoundedQueryObsStore, MetricSample, ObsError, ResponsePayloadBudget,
 };
 use quanta_index_searchd::app::searchd::drive;
+use quanta_index_searchd::app::semantic_boot::SemanticBootReport;
 use quanta_index_searchd::app::{
     BootInventoryReportV1, KernelResidentMemoryProbe, MaintenancePolicy, ProcessMemoryCeilings,
     SearchdConfig, SemanticEmbedderProfile, SocketAccessPolicies, SocketRole,
@@ -121,6 +122,7 @@ type DriverHandles = (
     DriverJoin,
     Arc<BoundedQueryObsStore>,
     BootInventoryReportV1,
+    SemanticBootReport,
 );
 
 /// Everything one daemon start is configured with.
@@ -275,6 +277,9 @@ struct DriverState {
     /// What this daemon start inventoried, quarantined and proved
     /// (QI-BB-026).
     boot_inventory: BootInventoryReportV1,
+    /// The semantic track's boot report: migration outcome plus the
+    /// sealed-generation seed counts (LDB-E2E-01).
+    semantic_boot: SemanticBootReport,
 }
 
 /// Test-only response shape.
@@ -674,6 +679,27 @@ impl E2eRuntime {
         &self.embedder_profile
     }
 
+    /// Boot over a caller-owned state root instead of a harness tempdir
+    /// (TOPT-03): the daemon creates and serves `state_root`, but the
+    /// caller owns the directory lifecycle. Used by the long-path proof,
+    /// where the root must be deliberately deep.
+    pub fn boot_in(state_root: &Path) -> AnyResult<Self> {
+        let mut runtime = Self::boot()?;
+        drop(runtime.tempdir.take());
+        runtime.state_root = state_root.to_path_buf();
+        Ok(runtime)
+    }
+
+    /// Stop the driver and release the state root, returning the driver's
+    /// terminal result (TOPT-03): explicit tests call `stop` and surface
+    /// a driver failure as their error; `Drop` remains the unwind path
+    /// that never masks a scenario failure already in flight.
+    pub fn stop(mut self) -> AnyResult<()> {
+        self.stop_driver()?;
+        drop(self.tempdir.take());
+        Ok(())
+    }
+
     /// Stop the driver (if running) and reconstruct a publisher over the
     /// same `state_root` so further ingest is possible, then leave the
     /// driver stopped so first query lazy-starts a fresh runtime.
@@ -743,6 +769,13 @@ impl E2eRuntime {
         self.driver.as_ref().map(|driver| &driver.boot_inventory)
     }
 
+    /// The running daemon's semantic boot report (migration outcome and
+    /// seed counts), or `None` while the driver is stopped.
+    #[must_use]
+    pub fn semantic_boot_report(&self) -> Option<&SemanticBootReport> {
+        self.driver.as_ref().map(|driver| &driver.semantic_boot)
+    }
+
     fn ensure_driver(&mut self) -> AnyResult<PathBuf> {
         if self.driver.is_none() {
             let (
@@ -753,6 +786,7 @@ impl E2eRuntime {
                 join,
                 query_obs_store,
                 boot_inventory,
+                semantic_boot,
             ) = start_driver(&DriverSpec {
                 state_root: &self.state_root,
                 embedder_profile: &self.embedder_profile,
@@ -778,6 +812,7 @@ impl E2eRuntime {
                 shutdown,
                 join: Some(join),
                 boot_inventory,
+                semantic_boot,
             });
         }
         self.driver
@@ -3377,6 +3412,7 @@ fn start_driver(spec: &DriverSpec<'_>) -> AnyResult<DriverHandles> {
     let ingest_socket = runtime.ingest_server.socket_path().to_path_buf();
     let query_obs_store = Arc::clone(&runtime.query_obs_store);
     let boot_inventory = runtime.boot_inventory.clone();
+    let semantic_boot = runtime.semantic_boot;
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_for_drive = Arc::clone(&shutdown);
     let join = thread::Builder::new()
@@ -3410,6 +3446,7 @@ fn start_driver(spec: &DriverSpec<'_>) -> AnyResult<DriverHandles> {
         join,
         query_obs_store,
         boot_inventory,
+        semantic_boot,
     ))
 }
 

@@ -455,16 +455,32 @@ fn p08_lease_child_entry() {
         panic!("the report path is provided");
     };
     match role.to_str() {
-        Some("holder") => hold_the_lease(&root, &report),
+        Some("holder") => {
+            let Some(release) = std::env::var_os("QUANTA_INDEX_P08_LEASE_RELEASE")
+                .map(std::path::PathBuf::from)
+            else {
+                panic!("the release path is provided");
+            };
+            hold_the_lease(&root, &report, &release);
+        }
         Some("second") => attempt_the_lease(&root, &report),
         _ => panic!("unknown lease role"),
     }
 }
 
 /// Holder side: acquire, prove the lock file's fstat invariants
-/// (expected owner, exact mode, regular, one link), report, hold
-/// briefly.
-fn hold_the_lease(root: &std::path::Path, report: &std::path::Path) {
+/// (expected owner, exact mode, regular, one link), report, then hold
+/// until the parent's acknowledged release — no fixed hold duration.
+///
+/// The release is a file the parent creates after the second process is
+/// refused; the holder exits promptly once it appears. The bound panics
+/// the holder (failing the child proof) instead of hanging when the
+/// parent never releases.
+fn hold_the_lease(
+    root: &std::path::Path,
+    report: &std::path::Path,
+    release: &std::path::Path,
+) {
     use std::os::unix::fs::MetadataExt;
     let lease = quanta_index_searchd::app::runtime::StateRootLease::acquire(root)
         .expect("the first process acquires the lease");
@@ -483,7 +499,15 @@ fn hold_the_lease(root: &std::path::Path, report: &std::path::Path) {
         "the lock is owned by this uid"
     );
     std::fs::write(report, b"held\n").expect("the report is written");
-    std::thread::sleep(Duration::from_secs(3));
+    let deadline = std::time::Instant::now()
+        .checked_add(Duration::from_secs(10))
+        .expect("the release deadline is representable");
+    while !release.exists() {
+        if std::time::Instant::now() >= deadline {
+            panic!("the parent never released the lease");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
     drop(lease);
 }
 
@@ -517,6 +541,7 @@ fn run_two_process_lease_parent() {
     }
     let holder_report = temp.path().join("holder-report");
     let second_report = temp.path().join("second-report");
+    let release = temp.path().join("holder-release");
     let exe = std::env::current_exe().expect("this test binary exists");
     let base_env = |role: &str, report: &std::path::Path| {
         let mut command = Command::new(&exe);
@@ -531,6 +556,7 @@ fn run_two_process_lease_parent() {
     };
 
     let mut holder = base_env("holder", &holder_report)
+        .env("QUANTA_INDEX_P08_LEASE_RELEASE", &release)
         .spawn()
         .expect("the holder child spawns");
     // Wait for the holder to actually hold the lease.
@@ -558,9 +584,25 @@ fn run_two_process_lease_parent() {
         "the second process is refused while the first serves: {second_outcome}"
     );
 
-    // After every child of the first process ends, the lease is
-    // acquirable again.
-    let holder_status = holder.wait().expect("the holder exits");
+    // Acknowledged release: the holder holds only until the refusal
+    // above is proven, then exits promptly on the release file — no
+    // fixed hold duration. The bounded wait fails (killing a stuck
+    // holder) instead of hanging when the holder never exits.
+    std::fs::write(&release, b"release\n").expect("the release is written");
+    let exit_deadline = std::time::Instant::now()
+        .checked_add(Duration::from_secs(10))
+        .expect("the exit deadline is representable");
+    let holder_status = loop {
+        match holder.try_wait().expect("the holder is waitable") {
+            Some(status) => break status,
+            None if std::time::Instant::now() >= exit_deadline => {
+                let _killed = holder.kill();
+                let _reaped = holder.wait();
+                panic!("the holder exits promptly after release");
+            }
+            None => std::thread::sleep(Duration::from_millis(20)),
+        }
+    };
     assert!(holder_status.success(), "the holder ran its proof");
     let reacquired = quanta_index_searchd::app::runtime::StateRootLease::acquire(&root);
     assert!(

@@ -196,6 +196,25 @@ fn text_query(request_id: u64, repo: &str) -> SearchPlaneQueryIpcRequestEnvelope
     }
 }
 
+/// Wait until the peer watch itself has detected `expected` hang-ups.
+/// The bound fails the test instead of hanging when the watch never
+/// reports; the cadence only re-reads the counter.
+fn wait_hangup_detected(server: &Harness, expected: u64) -> TestResult {
+    let deadline = Instant::now()
+        .checked_add(HANDSHAKE_BOUND)
+        .ok_or("clock overflow")?;
+    while server.uds.counters().snapshot().peer_hangup_detected < expected {
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "the peer watch must detect {expected} hang-up(s) before the bound"
+            )
+            .into());
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    Ok(())
+}
+
 fn send(
     socket: &std::path::Path,
     repo: &str,
@@ -426,13 +445,13 @@ fn a_peer_that_pipelines_then_hangs_up_still_cancels_the_running_dispatch() -> T
     client.write_all(&encode_request(&text_query(2, "pipelined"))?)?;
     client.flush()?;
     server.wait_entered()?;
-    // Give the watch its first poll (it sees the pipelined frame now),
-    // then hang up and give it a second interval to see that through the
-    // probe. The assertion below is a count the watch either produced or
-    // did not; the sleeps only bound how long it had.
-    thread::sleep(Duration::from_millis(120));
+    // The pipelined frame sits in the socket buffer, so the watch enters
+    // probe mode on its first observation whether that lands before or
+    // after the hang-up; either way the send probe confirms the departure.
     drop(client);
-    thread::sleep(Duration::from_millis(200));
+    // Wait for the watch-thread detection event instead of sleeping out
+    // poll intervals: the test proceeds the moment the watch reports.
+    wait_hangup_detected(&server, 1)?;
     let _release = server.release.wait();
     // The held connection thread counts the hang-up after its dispatch
     // returns; wait for that count rather than assume the interleaving.

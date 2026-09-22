@@ -21,8 +21,25 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from manifest import DEFAULT_MANIFEST_PATH, ManifestError, load_manifest
+from compare_dsl_bench import ArtifactRefused, MIN_SAMPLES_FOR_AUTHORITY, load_artifact
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def require_clean_worktree(repo_root: Path) -> None:
+    """Refuse a capture before it can attribute dirty-source timings to HEAD."""
+    completed = subprocess.run(
+        ["git", "-C", str(repo_root), "status", "--porcelain", "--untracked-files=normal"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(f"git status failed: {completed.stderr.strip()}")
+    if completed.stdout:
+        raise RuntimeError(
+            "worktree is dirty: benchmark producers require a clean checkout before capture"
+        )
 
 
 def load_profiles(path: Path = DEFAULT_MANIFEST_PATH) -> dict[str, dict[str, object]]:
@@ -51,6 +68,12 @@ def parse_args(
     ):
         child = subparsers.add_parser(command, help=help_text)
         child.add_argument("profile", choices=sorted(profiles))
+        if command == "run":
+            child.add_argument(
+                "--cold-samples",
+                type=int,
+                help="DSL authority cold samples; accepted only for dsl-authority (minimum 20)",
+            )
     preflight = subparsers.add_parser(
         "preflight", help="capture a host-contention receipt before a local timing run"
     )
@@ -78,6 +101,57 @@ def validate(repo_root: Path, artifact_profile: str) -> int:
         cwd=repo_root,
         check=False,
     ).returncode
+
+
+def require_declared_baselines(repo_root: Path, profile: dict[str, object], manifest: dict[str, object]) -> None:
+    """Refuse an expensive comparison run that cannot finish without its baselines."""
+    families = manifest["families"]
+    names = profile["families"]
+    assert isinstance(families, dict) and isinstance(names, list)
+    for name in names:
+        family = families[name]
+        assert isinstance(family, dict)
+        baseline = family["baseline"]
+        if baseline is None:
+            continue
+        assert isinstance(baseline, dict)
+        path = repo_root / baseline["path"]
+        if not path.is_file():
+            raise RuntimeError(
+                f"missing declared baseline for {name}: {path}; capture and admit a baseline before running this comparison profile"
+            )
+        try:
+            artifact = load_artifact(path, role="baseline")
+        except ArtifactRefused as exc:
+            raise RuntimeError(f"declared baseline for {name} is invalid: {exc}") from exc
+        expected_mode = name.removeprefix("dsl-")
+        if artifact.mode != expected_mode:
+            raise RuntimeError(
+                f"declared baseline for {name} has mode {artifact.mode!r}, expected {expected_mode!r}"
+            )
+        floor = MIN_SAMPLES_FOR_AUTHORITY[artifact.mode]
+        if any(row.early_stop_reason is not None or row.samples < floor for row in artifact.rows.values()):
+            raise RuntimeError(
+                f"declared baseline for {name} has unmeasured rows or fewer than {floor} samples"
+            )
+
+
+def require_clean_preflight_receipt(receipt: Path, profile: str) -> None:
+    """A diagnostic contention override cannot qualify a benchmark run."""
+    try:
+        payload = json.loads(receipt.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"cannot read timing preflight receipt {receipt}: {exc}") from exc
+    if not isinstance(payload, dict) or (
+        payload.get("schema_version") != 1
+        or payload.get("kind") != "quanta-index-timing-preflight"
+        or payload.get("run_id") != f"benchctl:{profile}"
+    ):
+        raise RuntimeError(f"timing preflight receipt is not bound to profile {profile!r}")
+    if payload.get("status") != "clean" or payload.get("foreign_rust_processes") != []:
+        raise RuntimeError(
+            f"timing preflight status {payload.get('status')!r} is not clean; diagnostic overrides cannot qualify"
+        )
 
 
 def preflight(
@@ -222,6 +296,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "summarize":
         return summarize(repo_root, profile, manifest)
     if args.command == "run":
+        cold_samples = args.cold_samples
+        if cold_samples is not None:
+            if args.profile != "dsl-authority":
+                print("ERROR: --cold-samples is only valid for dsl-authority", file=sys.stderr)
+                return 2
+            if cold_samples < 20:
+                print("ERROR: --cold-samples must be at least 20 for authority comparison", file=sys.stderr)
+                return 2
+        try:
+            require_declared_baselines(repo_root, profile, manifest)
+            require_clean_worktree(repo_root)
+        except RuntimeError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
         receipt = repo_root / "artifacts" / "benchmark-receipts" / args.profile / "preflight.json"
         preflight_result = preflight(repo_root, args.profile, receipt, manifest)
         if preflight_result:
@@ -230,6 +318,11 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return preflight_result
+        try:
+            require_clean_preflight_receipt(receipt, args.profile)
+        except RuntimeError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
         recipes = profile["recipes"]
         assert isinstance(recipes, list)
         if not recipes:
@@ -237,7 +330,10 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         for recipe in recipes:
             assert isinstance(recipe, str)
-            completed = subprocess.run(["just", recipe], cwd=repo_root, check=False)
+            command = ["just", recipe]
+            if recipe == "rust-bench-dsl-cold" and cold_samples is not None:
+                command.append(str(cold_samples))
+            completed = subprocess.run(command, cwd=repo_root, check=False)
             if completed.returncode:
                 print(f"ERROR: producer recipe {recipe!r} failed", file=sys.stderr)
                 return completed.returncode

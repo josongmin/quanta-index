@@ -5,7 +5,8 @@ use anyhow::Result;
 use quanta_index_core::{
     EMBEDDING_CACHE_LEDGER_BYTES_PER_ENTRY, IngestResourcePolicy, IntegrityScrubPolicyV1,
     LexicalExecutionBudgetV1, LexicalWriterPolicy, MAX_EMBEDDING_DIMENSION,
-    ProcessMemoryEnvelopeV1, RegexMatchCachePolicy, SemanticStreamWindowPolicy,
+    ProcessMemoryEnvelopeV1, ProviderWorkBudgetV1, RegexMatchCachePolicy,
+    SemanticEgressGrantV1, SemanticStreamWindowPolicy,
 };
 use quanta_index_embed::{
     DEFAULT_CONCURRENCY, DEFAULT_MAX_BATCH, DEFAULT_MAX_ESTIMATED_TOKENS_PER_REQUEST,
@@ -87,6 +88,97 @@ impl OpenAiEmbedderTuning {
             .with_max_retries(self.max_retries)
             .with_timeout(self.timeout)
             .with_concurrency(self.concurrency)
+    }
+}
+
+/// Process-global provider work caps (S21-08 step 4), surfaced as daemon
+/// env so the release authority — not the code — bounds external
+/// egress, work and cost. Every cap must be non-zero; the ledger holds
+/// the composition to that at boot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProviderWorkBudgetConfig {
+    /// Concurrent provider requests (`QUANTA_INDEX_PROVIDER_MAX_INFLIGHT_REQUESTS`).
+    pub inflight_requests_cap: u64,
+    /// Bytes of request text inflight together
+    /// (`QUANTA_INDEX_PROVIDER_MAX_INFLIGHT_BYTES`).
+    pub inflight_bytes_cap: u64,
+    /// Process-lifetime spend ceiling in micros of the provider's cost
+    /// unit (`QUANTA_INDEX_PROVIDER_COST_CEILING_MICROS`). Generous by
+    /// default; operators running billable providers set a real ceiling.
+    pub total_cost_micros_ceiling: u64,
+    /// Retry attempts one reservation may spend
+    /// (`QUANTA_INDEX_PROVIDER_MAX_RETRY_ATTEMPTS`).
+    pub retry_attempts_cap: u32,
+}
+
+impl Default for ProviderWorkBudgetConfig {
+    fn default() -> Self {
+        Self {
+            inflight_requests_cap: 16,
+            inflight_bytes_cap: 4_194_304,
+            total_cost_micros_ceiling: 1_000_000_000_000,
+            retry_attempts_cap: 3,
+        }
+    }
+}
+
+impl ProviderWorkBudgetConfig {
+    /// The ledger budget this config describes.
+    #[must_use]
+    pub const fn to_budget(&self) -> ProviderWorkBudgetV1 {
+        ProviderWorkBudgetV1 {
+            inflight_requests_cap: self.inflight_requests_cap,
+            inflight_bytes_cap: self.inflight_bytes_cap,
+            total_cost_micros_ceiling: self.total_cost_micros_ceiling,
+            retry_attempts_cap: self.retry_attempts_cap,
+        }
+    }
+}
+
+/// External egress grant fields (S21-08 step 2), surfaced as daemon env.
+///
+/// Every field but the consent flag defaults to empty, which is an
+/// *incomplete* grant: an `openai` composition refuses boot until the
+/// operator names the tenant, endpoint, region, retention and profile
+/// that authorize the egress. Source-content consent defaults to refused.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ProviderEgressGrantConfig {
+    /// Authorizing tenant (`QUANTA_INDEX_PROVIDER_TENANT`).
+    pub tenant_id: String,
+    /// Provider endpoint (`QUANTA_INDEX_PROVIDER_ENDPOINT`).
+    pub endpoint: String,
+    /// Serving region (`QUANTA_INDEX_PROVIDER_REGION`).
+    pub region: String,
+    /// Provider-side retention class (`QUANTA_INDEX_PROVIDER_RETENTION`).
+    pub retention: String,
+    /// Release profile that authorized this egress (`QUANTA_INDEX_PROVIDER_PROFILE`).
+    pub profile: String,
+    /// Separate explicit source-content consent
+    /// (`QUANTA_INDEX_PROVIDER_SOURCE_CONTENT_CONSENT`).
+    pub source_content_consent: bool,
+}
+
+impl ProviderEgressGrantConfig {
+    /// The egress grant for one embedder profile: the operator-named
+    /// fields plus the profile's provider, model and revision.
+    #[must_use]
+    pub fn to_grant(
+        &self,
+        provider_id: &str,
+        model_id: &str,
+        model_revision: &str,
+    ) -> SemanticEgressGrantV1 {
+        SemanticEgressGrantV1 {
+            tenant_id: self.tenant_id.clone(),
+            provider_id: provider_id.to_string(),
+            endpoint: self.endpoint.clone(),
+            region: self.region.clone(),
+            retention: self.retention.clone(),
+            model_id: model_id.to_string(),
+            model_revision: model_revision.to_string(),
+            profile: self.profile.clone(),
+            source_content_consent: self.source_content_consent,
+        }
     }
 }
 
@@ -320,6 +412,10 @@ pub struct SearchdConfig {
     /// How the integrity scrub is paced as maintenance (QI-BB-017): at most
     /// one bounded step per interval, on the maintenance timer.
     integrity_scrub_policy: IntegrityScrubPolicyV1,
+    /// Process-global provider work caps (S21-08 step 4).
+    provider_work_budget: ProviderWorkBudgetConfig,
+    /// External egress grant fields (S21-08 step 2).
+    provider_egress_grant: ProviderEgressGrantConfig,
 }
 
 /// One env-driven policy family: the knobs it reads and the setter that
@@ -506,6 +602,32 @@ pub(crate) const ENV_POLICY_FAMILIES: &[EnvPolicyFamily] = &[
             Ok(config.with_integrity_scrub_policy(integrity_scrub_policy_from_lookup(lookup)?))
         },
     },
+    EnvPolicyFamily {
+        name: "provider work budget",
+        env_vars: &[
+            "QUANTA_INDEX_PROVIDER_MAX_INFLIGHT_REQUESTS",
+            "QUANTA_INDEX_PROVIDER_MAX_INFLIGHT_BYTES",
+            "QUANTA_INDEX_PROVIDER_COST_CEILING_MICROS",
+            "QUANTA_INDEX_PROVIDER_MAX_RETRY_ATTEMPTS",
+        ],
+        apply: |config, lookup| {
+            Ok(config.with_provider_work_budget(provider_budget_from_env_with(lookup)?))
+        },
+    },
+    EnvPolicyFamily {
+        name: "provider egress grant",
+        env_vars: &[
+            "QUANTA_INDEX_PROVIDER_TENANT",
+            "QUANTA_INDEX_PROVIDER_ENDPOINT",
+            "QUANTA_INDEX_PROVIDER_REGION",
+            "QUANTA_INDEX_PROVIDER_RETENTION",
+            "QUANTA_INDEX_PROVIDER_PROFILE",
+            "QUANTA_INDEX_PROVIDER_SOURCE_CONTENT_CONSENT",
+        ],
+        apply: |config, lookup| {
+            Ok(config.with_provider_egress_grant(provider_grant_from_env_with(lookup)?))
+        },
+    },
 ];
 
 /// Env vars the state-root resolution reads, outside every policy family.
@@ -535,6 +657,8 @@ impl SearchdConfig {
             maintenance_policy: MaintenancePolicy::DEFAULT,
             query_response_budget: ResponsePayloadBudget::DEFAULT,
             integrity_scrub_policy: IntegrityScrubPolicyV1::DEFAULT,
+            provider_work_budget: ProviderWorkBudgetConfig::default(),
+            provider_egress_grant: ProviderEgressGrantConfig::default(),
         }
     }
 
@@ -738,6 +862,28 @@ impl SearchdConfig {
     #[must_use]
     pub const fn with_integrity_scrub_policy(mut self, policy: IntegrityScrubPolicyV1) -> Self {
         self.integrity_scrub_policy = policy;
+        self
+    }
+
+    #[must_use]
+    pub fn provider_work_budget(&self) -> &ProviderWorkBudgetConfig {
+        &self.provider_work_budget
+    }
+
+    #[must_use]
+    pub fn with_provider_work_budget(mut self, budget: ProviderWorkBudgetConfig) -> Self {
+        self.provider_work_budget = budget;
+        self
+    }
+
+    #[must_use]
+    pub fn provider_egress_grant(&self) -> &ProviderEgressGrantConfig {
+        &self.provider_egress_grant
+    }
+
+    #[must_use]
+    pub fn with_provider_egress_grant(mut self, grant: ProviderEgressGrantConfig) -> Self {
+        self.provider_egress_grant = grant;
         self
     }
 
@@ -1424,6 +1570,134 @@ fn openai_tuning_from_raw(
     })
 }
 
+/// Resolve the provider work budget from an injected lookup (S21-08).
+fn provider_budget_from_env_with(lookup: &EnvLookup<'_>) -> Result<ProviderWorkBudgetConfig> {
+    provider_budget_from_raw(
+        lookup("QUANTA_INDEX_PROVIDER_MAX_INFLIGHT_REQUESTS")?.as_deref(),
+        lookup("QUANTA_INDEX_PROVIDER_MAX_INFLIGHT_BYTES")?.as_deref(),
+        lookup("QUANTA_INDEX_PROVIDER_COST_CEILING_MICROS")?.as_deref(),
+        lookup("QUANTA_INDEX_PROVIDER_MAX_RETRY_ATTEMPTS")?.as_deref(),
+    )
+}
+
+/// Pure assembler: maps the raw budget knob strings onto their fields.
+/// Any unset knob falls back to the documented default; a zero cap is
+/// refused — a zero-sum budget would admit nothing.
+fn provider_budget_from_raw(
+    inflight_requests: Option<&str>,
+    inflight_bytes: Option<&str>,
+    cost_ceiling_micros: Option<&str>,
+    retry_attempts: Option<&str>,
+) -> Result<ProviderWorkBudgetConfig> {
+    let defaults = ProviderWorkBudgetConfig::default();
+    Ok(ProviderWorkBudgetConfig {
+        inflight_requests_cap: parse_provider_cap_u64(
+            "QUANTA_INDEX_PROVIDER_MAX_INFLIGHT_REQUESTS",
+            inflight_requests,
+            defaults.inflight_requests_cap,
+        )?,
+        inflight_bytes_cap: parse_provider_cap_u64(
+            "QUANTA_INDEX_PROVIDER_MAX_INFLIGHT_BYTES",
+            inflight_bytes,
+            defaults.inflight_bytes_cap,
+        )?,
+        total_cost_micros_ceiling: parse_provider_cap_u64(
+            "QUANTA_INDEX_PROVIDER_COST_CEILING_MICROS",
+            cost_ceiling_micros,
+            defaults.total_cost_micros_ceiling,
+        )?,
+        retry_attempts_cap: parse_provider_cap_u32(
+            "QUANTA_INDEX_PROVIDER_MAX_RETRY_ATTEMPTS",
+            retry_attempts,
+            defaults.retry_attempts_cap,
+        )?,
+    })
+}
+
+fn parse_provider_cap_u64(name: &str, raw: Option<&str>, default: u64) -> Result<u64> {
+    match raw {
+        None | Some("") => Ok(default),
+        Some(value) => {
+            let parsed = value.trim().parse::<u64>().map_err(|err| {
+                anyhow::anyhow!("invalid {name} '{value}': {err}")
+            })?;
+            if parsed == 0 {
+                return Err(anyhow::anyhow!("{name} must be >= 1, got 0"));
+            }
+            Ok(parsed)
+        }
+    }
+}
+
+fn parse_provider_cap_u32(name: &str, raw: Option<&str>, default: u32) -> Result<u32> {
+    match raw {
+        None | Some("") => Ok(default),
+        Some(value) => {
+            let parsed = value.trim().parse::<u32>().map_err(|err| {
+                anyhow::anyhow!("invalid {name} '{value}': {err}")
+            })?;
+            if parsed == 0 {
+                return Err(anyhow::anyhow!("{name} must be >= 1, got 0"));
+            }
+            Ok(parsed)
+        }
+    }
+}
+
+/// Resolve the external egress grant fields from an injected lookup
+/// (S21-08). Unset fields stay empty: an incomplete grant, refused at
+/// composition for any profile that needs external egress.
+fn provider_grant_from_env_with(lookup: &EnvLookup<'_>) -> Result<ProviderEgressGrantConfig> {
+    provider_grant_from_raw(
+        lookup("QUANTA_INDEX_PROVIDER_TENANT")?.as_deref(),
+        lookup("QUANTA_INDEX_PROVIDER_ENDPOINT")?.as_deref(),
+        lookup("QUANTA_INDEX_PROVIDER_REGION")?.as_deref(),
+        lookup("QUANTA_INDEX_PROVIDER_RETENTION")?.as_deref(),
+        lookup("QUANTA_INDEX_PROVIDER_PROFILE")?.as_deref(),
+        lookup("QUANTA_INDEX_PROVIDER_SOURCE_CONTENT_CONSENT")?.as_deref(),
+    )
+}
+
+/// Pure assembler: maps the raw grant knob strings onto their fields.
+fn provider_grant_from_raw(
+    tenant: Option<&str>,
+    endpoint: Option<&str>,
+    region: Option<&str>,
+    retention: Option<&str>,
+    profile: Option<&str>,
+    source_content_consent: Option<&str>,
+) -> Result<ProviderEgressGrantConfig> {
+    Ok(ProviderEgressGrantConfig {
+        tenant_id: provider_grant_string(tenant),
+        endpoint: provider_grant_string(endpoint),
+        region: provider_grant_string(region),
+        retention: provider_grant_string(retention),
+        profile: provider_grant_string(profile),
+        source_content_consent: parse_provider_bool(
+            "QUANTA_INDEX_PROVIDER_SOURCE_CONTENT_CONSENT",
+            source_content_consent,
+            false,
+        )?,
+    })
+}
+
+fn provider_grant_string(raw: Option<&str>) -> String {
+    raw.unwrap_or("").trim().to_string()
+}
+
+fn parse_provider_bool(name: &str, raw: Option<&str>, default: bool) -> Result<bool> {
+    match raw {
+        None | Some("") => Ok(default),
+        Some(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "on" | "yes" => Ok(true),
+            "0" | "false" | "off" | "no" => Ok(false),
+            other => Err(anyhow::anyhow!(
+                "invalid {name} '{other}' (expected true|false|on|off|1|0)"
+            )),
+        },
+    }
+}
+
 fn parse_embed_concurrency(raw: Option<&str>, default: usize) -> Result<usize> {
     match raw {
         None | Some("") => Ok(default),
@@ -1612,6 +1886,19 @@ mod tests {
             ("QUANTA_INDEX_QUERY_RESPONSE_MAX_BYTES", "1048576"),
             ("QUANTA_INDEX_INTEGRITY_SCRUB_INTERVAL_MS", "750"),
             ("QUANTA_INDEX_INTEGRITY_SCRUB_MAX_BYTES_PER_STEP", "4096"),
+            ("QUANTA_INDEX_PROVIDER_MAX_INFLIGHT_REQUESTS", "5"),
+            ("QUANTA_INDEX_PROVIDER_MAX_INFLIGHT_BYTES", "8192"),
+            ("QUANTA_INDEX_PROVIDER_COST_CEILING_MICROS", "999"),
+            ("QUANTA_INDEX_PROVIDER_MAX_RETRY_ATTEMPTS", "7"),
+            ("QUANTA_INDEX_PROVIDER_TENANT", "fence-tenant"),
+            (
+                "QUANTA_INDEX_PROVIDER_ENDPOINT",
+                "https://fence.example/v1",
+            ),
+            ("QUANTA_INDEX_PROVIDER_REGION", "fence-region"),
+            ("QUANTA_INDEX_PROVIDER_RETENTION", "fence-30d"),
+            ("QUANTA_INDEX_PROVIDER_PROFILE", "fence-release"),
+            ("QUANTA_INDEX_PROVIDER_SOURCE_CONTENT_CONSENT", "true"),
         ])
     }
 
@@ -2614,6 +2901,87 @@ mod tests {
         assert_eq!(
             explicit,
             IntegrityScrubPolicyV1::new(250, 1024).expect("a positive policy")
+        );
+    }
+
+    #[test]
+    fn provider_budget_knobs_map_to_fields_with_zero_refused() {
+        let unset = provider_budget_from_raw(None, None, None, None).expect("unset is default");
+        assert_eq!(unset, ProviderWorkBudgetConfig::default());
+        unset
+            .to_budget()
+            .validate()
+            .expect("the default budget validates");
+
+        let explicit =
+            provider_budget_from_raw(Some("5"), Some("8192"), Some("999"), Some("7"))
+                .expect("explicit knobs parse");
+        assert_eq!(
+            explicit,
+            ProviderWorkBudgetConfig {
+                inflight_requests_cap: 5,
+                inflight_bytes_cap: 8192,
+                total_cost_micros_ceiling: 999,
+                retry_attempts_cap: 7,
+            }
+        );
+
+        for raw in [
+            (Some("0"), None, None, None),
+            (None, Some("0"), None, None),
+            (None, None, Some("0"), None),
+            (None, None, None, Some("0")),
+        ] {
+            assert!(
+                provider_budget_from_raw(raw.0, raw.1, raw.2, raw.3).is_err(),
+                "a zero cap must fail closed"
+            );
+        }
+        assert!(provider_budget_from_raw(Some("nope"), None, None, None).is_err());
+    }
+
+    #[test]
+    fn provider_grant_knobs_map_to_fields_with_consent_default_refused() {
+        let unset = provider_grant_from_raw(None, None, None, None, None, None)
+            .expect("unset grant parses");
+        assert_eq!(unset, ProviderEgressGrantConfig::default());
+        assert!(!unset.source_content_consent);
+        assert!(
+            unset
+                .to_grant("openai", "model", "rev")
+                .validate()
+                .is_err(),
+            "an unset grant is incomplete and must fail validation"
+        );
+
+        let explicit = provider_grant_from_raw(
+            Some("tenant"),
+            Some("https://example/v1"),
+            Some("region"),
+            Some("30d"),
+            Some("release"),
+            Some("yes"),
+        )
+        .expect("explicit grant parses");
+        assert_eq!(
+            explicit,
+            ProviderEgressGrantConfig {
+                tenant_id: "tenant".to_string(),
+                endpoint: "https://example/v1".to_string(),
+                region: "region".to_string(),
+                retention: "30d".to_string(),
+                profile: "release".to_string(),
+                source_content_consent: true,
+            }
+        );
+        let grant = explicit.to_grant("openai", "text-embedding-3-small", "rev-1");
+        grant.validate().expect("a complete grant validates");
+        assert_eq!(grant.provider_id, "openai");
+        assert_eq!(grant.model_id, "text-embedding-3-small");
+
+        assert!(
+            provider_grant_from_raw(None, None, None, None, None, Some("maybe")).is_err(),
+            "an unparseable consent flag must fail closed"
         );
     }
 }

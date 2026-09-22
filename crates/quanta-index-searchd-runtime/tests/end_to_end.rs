@@ -22,8 +22,7 @@
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::path::Path;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -46,10 +45,9 @@ use quanta_index_contract::{
     StructuralTombstoneScope, StructuralTreeRecord, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_ipc::send_request;
+use quanta_index_searchd_harness::E2eRuntime;
 use quanta_index_searchd::app::config::OpenAiEmbedderTuning;
-use quanta_index_searchd::app::searchd::drive;
-use quanta_index_searchd::app::{SearchdConfig, SemanticEmbedderProfile};
-use quanta_index_searchd_runtime::build_runtime;
+use quanta_index_searchd::app::SemanticEmbedderProfile;
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::frontdoor_scenarios::{
@@ -57,15 +55,49 @@ use crate::frontdoor_scenarios::{
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
-static NEXT_SOCKET_ID: AtomicU64 = AtomicU64::new(0);
+static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 const READINESS_TIMEOUT: Duration = Duration::from_secs(15);
-const SOCKET_APPEAR_TIMEOUT: Duration = Duration::from_secs(5);
-type RuntimeHandles = (
-    std::path::PathBuf,
-    std::path::PathBuf,
-    Arc<AtomicBool>,
-    DriverJoin,
-);
+
+/// Harness-owned three-socket scenario fixture (TOPT-03: runtime fixture
+/// ownership).
+///
+/// The daemon's tempdir, three-socket builder, and driver thread all live in
+/// [`E2eRuntime`]: boot binds query/control/ingest and waits for all three,
+/// and dropping the runtime performs the acknowledged lease-release (signal
+/// the driver, join it — which drops the old runtime and releases the
+/// state-root lease — before the tempdir is removed). Stale-socket cleanup
+/// tolerates races (`NotFound` is not an error). Tests therefore return
+/// `Err(..)` directly on failure paths with no manual shutdown/join
+/// bookkeeping; teardown is owned by the harness.
+struct ScenarioFixture {
+    runtime: E2eRuntime,
+    query_socket: std::path::PathBuf,
+    ingest_socket: std::path::PathBuf,
+}
+
+impl ScenarioFixture {
+    fn boot() -> Result<Self, Box<dyn Error>> {
+        Self::boot_with_profile(SemanticEmbedderProfile::default())
+    }
+
+    fn boot_with_profile(profile: SemanticEmbedderProfile) -> Result<Self, Box<dyn Error>> {
+        let mut runtime = E2eRuntime::boot_with_embedder_profile(profile)?;
+        // Eager start surfaces a boot refusal here and binds all three
+        // sockets before any byte is published.
+        runtime.start()?;
+        let (query_socket, ingest_socket) = {
+            let (query, _, ingest) = runtime
+                .socket_paths()
+                .ok_or_else(|| "fixture: driver started without socket paths".to_string())?;
+            (query.to_path_buf(), ingest.to_path_buf())
+        };
+        Ok(Self {
+            runtime,
+            query_socket,
+            ingest_socket,
+        })
+    }
+}
 
 struct RepoMetadataPayload<'a> {
     fork: bool,
@@ -304,36 +336,6 @@ fn repo_metadata_payload(
     Ok(buf)
 }
 
-fn unique_socket_paths() -> (std::path::PathBuf, std::path::PathBuf) {
-    let pid = std::process::id();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let sequence = NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed);
-    let query = std::env::temp_dir().join(format!("qi-query-test-{pid}-{nanos}-{sequence}.sock"));
-    let control =
-        std::env::temp_dir().join(format!("qi-control-test-{pid}-{nanos}-{sequence}.sock"));
-    (query, control)
-}
-
-fn build_config(state_root: &Path) -> SearchdConfig {
-    let mut cfg = SearchdConfig::from_state_root(state_root.to_path_buf())
-        .try_with_search_corpus_history_retention_limits(
-            8,
-            16 * 1024 * 1024,
-            128,
-            256 * 1024 * 1024,
-        )
-        .expect("valid test retention policy");
-    // The unit socket path under tmpdir state root can exceed the 104-byte
-    // AF_UNIX limit on macOS for long temp paths; use a flat path in
-    // /tmp instead.
-    let (query_socket, control_socket) = unique_socket_paths();
-    cfg = SearchdConfig::with_socket_overrides(cfg, query_socket, control_socket);
-    cfg
-}
-
 fn send_query_request(
     socket: &Path,
     request: &SearchPlaneQueryIpcRequestEnvelope,
@@ -362,80 +364,6 @@ where
     false
 }
 
-type DriverJoin = thread::JoinHandle<anyhow::Result<()>>;
-
-fn start_runtime(state_root: &Path, thread_name: &str) -> Result<RuntimeHandles, Box<dyn Error>> {
-    let config = build_config(state_root);
-    let runtime = build_runtime(config)?;
-    let query_socket = runtime.query_server.socket_path().to_path_buf();
-    let ingest_socket = runtime.ingest_server.socket_path().to_path_buf();
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let shutdown_for_drive = Arc::clone(&shutdown);
-    let join = thread::Builder::new()
-        .name(thread_name.into())
-        .spawn(move || drive(runtime, &shutdown_for_drive))?;
-    if !wait_until(SOCKET_APPEAR_TIMEOUT, || {
-        query_socket.exists() && ingest_socket.exists()
-    }) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err(format!(
-            "sockets never appeared query={} ingest={}",
-            query_socket.display(),
-            ingest_socket.display()
-        )
-        .into());
-    }
-    Ok((query_socket, ingest_socket, shutdown, join))
-}
-
-/// Hermetic semantic smoke: force the deterministic hash embedder explicitly so the
-/// real daemon/query path is proven without ambient env drift or live-network deps.
-fn start_runtime_with_hash(
-    state_root: &Path,
-    thread_name: &str,
-) -> Result<RuntimeHandles, Box<dyn Error>> {
-    let mut config = SearchdConfig::from_state_root(state_root.to_path_buf())
-        .try_with_search_corpus_history_retention_limits(
-            8,
-            16 * 1024 * 1024,
-            128,
-            256 * 1024 * 1024,
-        )
-        .expect("valid test retention policy");
-    let (query_socket, control_socket) = unique_socket_paths();
-    config = SearchdConfig::with_socket_overrides(config, query_socket, control_socket);
-    config = config.with_semantic_embedder_profile(SemanticEmbedderProfile::Hash {
-        dimension: quanta_index_search_plane::SEARCH_OWNED_SEMANTIC_DIMENSION,
-    });
-    let runtime = build_runtime(config)?;
-    let query_socket = runtime.query_server.socket_path().to_path_buf();
-    let ingest_socket = runtime.ingest_server.socket_path().to_path_buf();
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let shutdown_for_drive = Arc::clone(&shutdown);
-    let join = thread::Builder::new()
-        .name(thread_name.into())
-        .spawn(move || drive(runtime, &shutdown_for_drive))?;
-    if !wait_until(SOCKET_APPEAR_TIMEOUT, || {
-        query_socket.exists() && ingest_socket.exists()
-    }) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err("hash semantic smoke: sockets never appeared".into());
-    }
-    Ok((query_socket, ingest_socket, shutdown, join))
-}
-
-fn stop_runtime(shutdown: Arc<AtomicBool>, join: DriverJoin) -> TestResult {
-    shutdown.store(true, Ordering::Release);
-    drop(shutdown);
-    match join.join() {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(err)) => Err(err.into()),
-        Err(panic) => Err(format!("driver panic: {panic:?}").into()),
-    }
-}
-
 fn scope_key(path: &str) -> SearchScopeKey {
     SearchScopeKey {
         doc_surface: SearchScopeSurface::Chunk,
@@ -450,7 +378,7 @@ fn dispatch_ingest(socket: &Path, payload: SearchPlaneIngestIpcRequest) -> TestR
     let response = send_ingest_request(
         socket,
         &SearchPlaneIngestIpcRequestEnvelope {
-            request_id: NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed),
+            request_id: NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed),
             payload,
         },
     )?;
@@ -868,10 +796,9 @@ fn verify_publish_dispatch_sourcegraph_roundtrip(socket: &Path) -> TestResult {
 
 #[test]
 fn publish_dispatch_queries_share_one_indexed_fixture() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
-    let (socket, ingest_socket, shutdown, join) =
-        start_runtime(state_root, "searchd-publish-dispatch-shared-test")?;
+    let fixture = ScenarioFixture::boot()?;
+    let socket = fixture.query_socket.clone();
+    let ingest_socket = fixture.ingest_socket.clone();
     publish_search_corpus_chunks(
         &ingest_socket,
         vec![
@@ -890,17 +817,14 @@ fn publish_dispatch_queries_share_one_indexed_fixture() -> TestResult {
             .map_err(|error| -> Box<dyn Error> { format!("sourcegraph: {error}").into() })?;
         Ok(())
     })();
-    let shutdown_result = stop_runtime(shutdown, join);
-    verification?;
-    shutdown_result
+    verification
 }
 
 #[test]
 fn sourcegraph_path_and_lang_filters_execute_against_indexed_metadata() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
-    let (socket, ingest_socket, shutdown, join) =
-        start_runtime(state_root, "searchd-sourcegraph-metadata-test")?;
+    let fixture = ScenarioFixture::boot()?;
+    let socket = fixture.query_socket.clone();
+    let ingest_socket = fixture.ingest_socket.clone();
     publish_search_corpus_chunks(
         &ingest_socket,
         vec![
@@ -930,8 +854,6 @@ fn sourcegraph_path_and_lang_filters_execute_against_indexed_metadata() -> TestR
             .map(|resp| !matches!(resp.payload, SearchPlaneQueryIpcResponse::Error(_)))
             .unwrap_or(false)
     }) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err("sourcegraph metadata query never became ready".into());
     }
 
@@ -939,27 +861,19 @@ fn sourcegraph_path_and_lang_filters_execute_against_indexed_metadata() -> TestR
     let results = match response.payload {
         SearchPlaneQueryIpcResponse::Text(lexical) => lexical.results,
         other => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
             return Err(format!("expected Text, got {other:?}").into());
         }
     };
     if results.len() != 1 {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!("expected 1 metadata-filtered hit, got {results:?}").into());
     }
     let candidate = results
         .first()
         .ok_or_else(|| "metadata-filtered result missing first candidate".to_string())?;
     if candidate.candidate_id != "alpha" {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!("expected alpha, got {}", candidate.candidate_id).into());
     }
     if candidate.repo_relative_path.as_str() != "src/lib.rs" {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!(
             "expected src/lib.rs path, got {}",
             candidate.repo_relative_path.as_str()
@@ -967,8 +881,6 @@ fn sourcegraph_path_and_lang_filters_execute_against_indexed_metadata() -> TestR
         .into());
     }
     if candidate.start_line != 3 || candidate.end_line != 8 {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!(
             "expected line span 3..8, got {}..{}",
             candidate.start_line, candidate.end_line
@@ -976,7 +888,7 @@ fn sourcegraph_path_and_lang_filters_execute_against_indexed_metadata() -> TestR
         .into());
     }
 
-    stop_runtime(shutdown, join)
+    Ok(())
 }
 
 fn verify_history_generation_not_ready(socket: &Path) -> TestResult {
@@ -1011,10 +923,9 @@ fn verify_history_producer_unavailable_without_lexical_fallback(socket: &Path) -
 
 #[test]
 fn history_query_returns_typed_shard_unavailable_when_diff_shard_missing() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
-    let (socket, ingest_socket, shutdown, join) =
-        start_runtime(state_root, "searchd-history-shard-unavailable-test")?;
+    let fixture = ScenarioFixture::boot()?;
+    let socket = fixture.query_socket.clone();
+    let ingest_socket = fixture.ingest_socket.clone();
     publish_search_corpus_chunks(
         &ingest_socket,
         vec![chunk_record("history-lex", "history shard lexical proof")?],
@@ -1027,8 +938,6 @@ fn history_query_returns_typed_shard_unavailable_when_diff_shard_missing() -> Te
             .map(|resp| matches!(resp.payload, SearchPlaneQueryIpcResponse::Text(_)))
             .unwrap_or(false)
     }) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err("history lexical proof never became ready".into());
     }
 
@@ -1038,25 +947,20 @@ fn history_query_returns_typed_shard_unavailable_when_diff_shard_missing() -> Te
         READINESS_TIMEOUT,
     )?;
     if err.code.as_wire_str() != "HISTORY_SHARD_UNAVAILABLE" {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!("expected HISTORY_SHARD_UNAVAILABLE, got {}", err.code).into());
     }
     if !err.message.contains("diff shard is unavailable") {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!("unexpected shard-unavailable message: {}", err.message).into());
     }
 
-    stop_runtime(shutdown, join)
+    Ok(())
 }
 
 #[test]
 fn end_to_end_widened_history_and_runtime_queries_roundtrip_exact_truth() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
-    let (socket, ingest_socket, shutdown, join) =
-        start_runtime(state_root, "searchd-frontdoor-history-runtime-matrix")?;
+    let fixture = ScenarioFixture::boot()?;
+    let socket = fixture.query_socket.clone();
+    let ingest_socket = fixture.ingest_socket.clone();
     publish_search_corpus_chunks(
         &ingest_socket,
         vec![
@@ -1171,8 +1075,6 @@ fn end_to_end_widened_history_and_runtime_queries_roundtrip_exact_truth() -> Tes
                 if err.code.as_wire_str() != expected_error.code
                     || !err.message.contains(expected_error.message_contains)
                 {
-                    shutdown.store(true, Ordering::Release);
-                    drop(join.join());
                     return Err(format!(
                         "{} typed error drifted: expected code={} fragment={:?}, got code={} message={}",
                         scenario.name,
@@ -1197,16 +1099,12 @@ fn end_to_end_widened_history_and_runtime_queries_roundtrip_exact_truth() -> Tes
                         })
                         .unwrap_or(false)
                 }) {
-                    shutdown.store(true, Ordering::Release);
-                    drop(join.join());
                     return Err(format!("{} never became ready", scenario.name).into());
                 }
                 let response = send_query_request(&socket, &request)?;
                 let history = match response.payload {
                     SearchPlaneQueryIpcResponse::History(history) => history,
                     other => {
-                        shutdown.store(true, Ordering::Release);
-                        drop(join.join());
                         return Err(
                             format!("{} expected History, got {other:?}", scenario.name).into()
                         );
@@ -1222,8 +1120,6 @@ fn end_to_end_widened_history_and_runtime_queries_roundtrip_exact_truth() -> Tes
                     .map(|sha| (*sha).to_string())
                     .collect::<Vec<_>>();
                 if observed != expected || !history.diffs.is_empty() {
-                    shutdown.store(true, Ordering::Release);
-                    drop(join.join());
                     return Err(format!(
                         "{} commit drifted: expected {:?}, got commits={:?} diffs={:?}",
                         scenario.name, expected, observed, history.diffs
@@ -1244,16 +1140,12 @@ fn end_to_end_widened_history_and_runtime_queries_roundtrip_exact_truth() -> Tes
                         })
                         .unwrap_or(false)
                 }) {
-                    shutdown.store(true, Ordering::Release);
-                    drop(join.join());
                     return Err(format!("{} never became ready", scenario.name).into());
                 }
                 let response = send_query_request(&socket, &request)?;
                 let history = match response.payload {
                     SearchPlaneQueryIpcResponse::History(history) => history,
                     other => {
-                        shutdown.store(true, Ordering::Release);
-                        drop(join.join());
                         return Err(
                             format!("{} expected History, got {other:?}", scenario.name).into()
                         );
@@ -1269,8 +1161,6 @@ fn end_to_end_widened_history_and_runtime_queries_roundtrip_exact_truth() -> Tes
                     .map(|path| (*path).to_string())
                     .collect::<Vec<_>>();
                 if observed != expected || !history.commits.is_empty() {
-                    shutdown.store(true, Ordering::Release);
-                    drop(join.join());
                     return Err(format!(
                         "{} diff drifted: expected {:?}, got diffs={:?} commits={:?}",
                         scenario.name, expected, observed, history.commits
@@ -1294,8 +1184,6 @@ fn end_to_end_widened_history_and_runtime_queries_roundtrip_exact_truth() -> Tes
                         })
                         .unwrap_or(false)
                 }) {
-                    shutdown.store(true, Ordering::Release);
-                    drop(join.join());
                     return Err(format!("{} never became ready", scenario.name).into());
                 }
                 let response = send_query_request(&socket, &request)?;
@@ -1304,8 +1192,6 @@ fn end_to_end_widened_history_and_runtime_queries_roundtrip_exact_truth() -> Tes
                         runtime,
                     ) => runtime,
                     other => {
-                        shutdown.store(true, Ordering::Release);
-                        drop(join.join());
                         return Err(format!(
                             "{} expected RuntimeMetadata, got {other:?}",
                             scenario.name
@@ -1323,8 +1209,6 @@ fn end_to_end_widened_history_and_runtime_queries_roundtrip_exact_truth() -> Tes
                     .map(|id| (*id).to_string())
                     .collect::<Vec<_>>();
                 if observed != expected {
-                    shutdown.store(true, Ordering::Release);
-                    drop(join.join());
                     return Err(format!(
                         "{} runtime candidate drifted: expected {:?}, got {:?}",
                         scenario.name, expected, observed
@@ -1335,7 +1219,7 @@ fn end_to_end_widened_history_and_runtime_queries_roundtrip_exact_truth() -> Tes
         }
     }
 
-    stop_runtime(shutdown, join)
+    Ok(())
 }
 
 fn verify_hybrid_requires_joint_materialization(socket: &Path) -> TestResult {
@@ -1372,10 +1256,9 @@ fn verify_hybrid_requires_joint_materialization(socket: &Path) -> TestResult {
 
 #[test]
 fn hybrid_query_succeeds_when_both_tracks_sealed() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
-
-    let (socket, ingest_socket, shutdown, join) = start_runtime(state_root, "searchd-test-driver")?;
+    let fixture = ScenarioFixture::boot()?;
+    let socket = fixture.query_socket.clone();
+    let ingest_socket = fixture.ingest_socket.clone();
     let alpha = chunk_record("alpha", "sphinx quartz")?;
     let beta = chunk_record("beta", "sphinx riddles")?;
     publish_search_corpus_chunks(&ingest_socket, vec![alpha, beta], None)?;
@@ -1405,8 +1288,6 @@ fn hybrid_query_succeeds_when_both_tracks_sealed() -> TestResult {
             .map(|r| !matches!(r.payload, SearchPlaneQueryIpcResponse::Error(_)))
             .unwrap_or(false)
     }) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err("joint materialization never reached".into());
     }
 
@@ -1433,14 +1314,10 @@ fn hybrid_query_succeeds_when_both_tracks_sealed() -> TestResult {
     let candidates = match response.payload {
         SearchPlaneQueryIpcResponse::Hybrid(h) => h.results,
         other => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
             return Err(format!("expected Hybrid, got {other:?}").into());
         }
     };
     if candidates.is_empty() {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err("hybrid returned no candidates".into());
     }
     let top_id = candidates
@@ -1448,12 +1325,10 @@ fn hybrid_query_succeeds_when_both_tracks_sealed() -> TestResult {
         .map(|row| row.candidate.candidate_id.clone())
         .unwrap_or_default();
     if top_id != "alpha" {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!("expected alpha top, got {top_id}").into());
     }
 
-    stop_runtime(shutdown, join)
+    Ok(())
 }
 
 fn verify_hybrid_generation_pin_mismatch(socket: &Path) -> TestResult {
@@ -1594,10 +1469,9 @@ fn verify_hybrid_visibility_filter(socket: &Path) -> TestResult {
 
 #[test]
 fn repo_metadata_filters_share_one_indexed_fixture() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
-    let (socket, ingest_socket, shutdown, join) =
-        start_runtime(state_root, "searchd-repo-metadata-filters-shared-test")?;
+    let fixture = ScenarioFixture::boot()?;
+    let socket = fixture.query_socket.clone();
+    let ingest_socket = fixture.ingest_socket.clone();
     publish_search_corpus_chunks(
         &ingest_socket,
         vec![chunk_record("alpha", "needle")?],
@@ -1625,9 +1499,7 @@ fn repo_metadata_filters_share_one_indexed_fixture() -> TestResult {
         }
         Ok(())
     })();
-    let shutdown_result = stop_runtime(shutdown, join);
-    verification?;
-    shutdown_result
+    verification
 }
 
 fn verify_semantic_requires_materialization(socket: &Path) -> TestResult {
@@ -1700,46 +1572,6 @@ fn verify_semantic_without_lexical_scope(socket: &Path) -> TestResult {
 }
 
 /// Boot the real daemon with an explicit `OpenAi` embedder profile.
-fn start_runtime_with_openai(
-    state_root: &Path,
-    thread_name: &str,
-    api_key: String,
-) -> Result<RuntimeHandles, Box<dyn Error>> {
-    let mut config = SearchdConfig::from_state_root(state_root.to_path_buf())
-        .try_with_search_corpus_history_retention_limits(
-            8,
-            16 * 1024 * 1024,
-            128,
-            256 * 1024 * 1024,
-        )
-        .expect("valid test retention policy");
-    let (query_socket, control_socket) = unique_socket_paths();
-    config = SearchdConfig::with_socket_overrides(config, query_socket, control_socket);
-    config = config.with_semantic_embedder_profile(SemanticEmbedderProfile::OpenAi {
-        model: "text-embedding-3-small".to_string(),
-        model_revision: "live".to_string(),
-        dimension: 1536,
-        api_key,
-        tuning: OpenAiEmbedderTuning::default(),
-    });
-    let runtime = build_runtime(config)?;
-    let query_socket = runtime.query_server.socket_path().to_path_buf();
-    let ingest_socket = runtime.ingest_server.socket_path().to_path_buf();
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let shutdown_for_drive = Arc::clone(&shutdown);
-    let join = thread::Builder::new()
-        .name(thread_name.into())
-        .spawn(move || drive(runtime, &shutdown_for_drive))?;
-    if !wait_until(SOCKET_APPEAR_TIMEOUT, || {
-        query_socket.exists() && ingest_socket.exists()
-    }) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err("openai e2e: sockets never appeared".into());
-    }
-    Ok((query_socket, ingest_socket, shutdown, join))
-}
-
 /// Manual release proof (gated, real `OpenAI` API).
 ///
 /// Full daemon -> corpus embed -> lancedb cosine -> ranked results. The query
@@ -1762,10 +1594,15 @@ fn openai_semantic_paraphrase_outranks_unrelated_v1() -> TestResult {
         _ => return Err("OPENAI_API_KEY must be set to run this gated test".into()),
     };
 
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
-    let (socket, ingest_socket, shutdown, join) =
-        start_runtime_with_openai(state_root, "searchd-openai-paraphrase-e2e", api_key)?;
+    let fixture = ScenarioFixture::boot_with_profile(SemanticEmbedderProfile::OpenAi {
+        model: "text-embedding-3-small".to_string(),
+        model_revision: "live".to_string(),
+        dimension: 1536,
+        api_key,
+        tuning: OpenAiEmbedderTuning::default(),
+    })?;
+    let socket = fixture.query_socket.clone();
+    let ingest_socket = fixture.ingest_socket.clone();
 
     // Zero meaningful lexical overlap with the query "the cat is sleeping":
     // cat-doc uses kitten/dozed/windowsill; finance-doc uses revenue/dividends.
@@ -1800,8 +1637,6 @@ fn openai_semantic_paraphrase_outranks_unrelated_v1() -> TestResult {
             .map(|resp| !matches!(resp.payload, SearchPlaneQueryIpcResponse::Error(_)))
             .unwrap_or(false)
     }) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err("openai semantic query never became ready".into());
     }
 
@@ -1809,15 +1644,11 @@ fn openai_semantic_paraphrase_outranks_unrelated_v1() -> TestResult {
     let results = match response.payload {
         SearchPlaneQueryIpcResponse::Semantic(semantic) => {
             if semantic.generation != pin {
-                shutdown.store(true, Ordering::Release);
-                drop(join.join());
                 return Err("openai semantic response did not echo request pin".into());
             }
             semantic.results
         }
         other => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
             return Err(format!("expected Semantic response, got {other:?}").into());
         }
     };
@@ -1831,27 +1662,21 @@ fn openai_semantic_paraphrase_outranks_unrelated_v1() -> TestResult {
     // the semantically-related doc ranks strictly above the unrelated one. With
     // the hash embedder this ordering is not derivable (token-overlap tie).
     if ranked.len() != 2 {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!("expected both docs ranked, got {ranked:?}").into());
     }
     if ranked.first().map(String::as_str) != Some("cat-doc") {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!(
             "neural ranking failed: a paraphrase query should rank 'cat-doc' first; got {ranked:?}"
         )
         .into());
     }
     if ranked.get(1).map(String::as_str) != Some("finance-doc") {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(
             format!("expected unrelated 'finance-doc' ranked second, got {ranked:?}").into(),
         );
     }
 
-    stop_runtime(shutdown, join)
+    Ok(())
 }
 
 fn verify_semantic_search_owned_text_derivation(socket: &Path) -> TestResult {
@@ -1896,10 +1721,11 @@ fn verify_semantic_search_owned_text_derivation(socket: &Path) -> TestResult {
 
 #[test]
 fn semantic_query_uses_search_owned_text_derivation_with_explicit_hash_profile() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
-    let (socket, ingest_socket, shutdown, join) =
-        start_runtime_with_hash(state_root, "searchd-semantic-explicit-hash-test")?;
+    // The harness default embedder is the explicit hash profile at the
+    // search-owned dimension, so plain boot is this test's fixture.
+    let fixture = ScenarioFixture::boot()?;
+    let socket = fixture.query_socket.clone();
+    let ingest_socket = fixture.ingest_socket.clone();
 
     publish_search_corpus_chunks(
         &ingest_socket,
@@ -1928,8 +1754,6 @@ fn semantic_query_uses_search_owned_text_derivation_with_explicit_hash_profile()
             .map(|resp| !matches!(resp.payload, SearchPlaneQueryIpcResponse::Error(_)))
             .unwrap_or(false)
     }) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err("semantic explicit hash query never became ready".into());
     }
 
@@ -1937,26 +1761,20 @@ fn semantic_query_uses_search_owned_text_derivation_with_explicit_hash_profile()
     let semantic = match response.payload {
         SearchPlaneQueryIpcResponse::Semantic(semantic) => semantic,
         other => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
             return Err(format!("expected semantic response, got {other:?}").into());
         }
     };
     if semantic.generation != GenerationPin::new(repo(), revision(), generation()) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err("semantic explicit hash response did not echo request pin".into());
     }
     if !matches!(semantic.results.as_slice(), [only] if only.candidate_id == "alpha") {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!(
             "expected explicit-hash semantic query to rank alpha first, got {semantic:?}"
         )
         .into());
     }
 
-    stop_runtime(shutdown, join)
+    Ok(())
 }
 
 fn verify_semantic_generation_pin_mismatch(socket: &Path) -> TestResult {
@@ -2054,11 +1872,10 @@ fn verify_semantic_scoped_unindexed_lexical_scope(socket: &Path) -> TestResult {
 
 #[test]
 fn semantic_query_with_lexical_scope_returns_intersection_only() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
+    let fixture = ScenarioFixture::boot()?;
+    let socket = fixture.query_socket.clone();
+    let ingest_socket = fixture.ingest_socket.clone();
     let pin = GenerationPin::new(repo(), revision(), generation());
-    let (socket, ingest_socket, shutdown, join) =
-        start_runtime(state_root, "searchd-semantic-scope-test")?;
     let alpha = chunk_record("alpha", "scope needle")?;
     let beta = chunk_record("beta", "scope miss")?;
     let gamma = chunk_record("gamma", "outside needle")?;
@@ -2090,8 +1907,6 @@ fn semantic_query_with_lexical_scope_returns_intersection_only() -> TestResult {
             .map(|resp| !matches!(resp.payload, SearchPlaneQueryIpcResponse::Error(_)))
             .unwrap_or(false)
     }) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err("semantic scoped query never became ready".into());
     }
 
@@ -2099,8 +1914,6 @@ fn semantic_query_with_lexical_scope_returns_intersection_only() -> TestResult {
     let results = match response.payload {
         SearchPlaneQueryIpcResponse::Semantic(semantic) => semantic.results,
         other => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
             return Err(format!("expected Semantic, got {other:?}").into());
         }
     };
@@ -2109,21 +1922,18 @@ fn semantic_query_with_lexical_scope_returns_intersection_only() -> TestResult {
         .map(|candidate| candidate.candidate_id.clone())
         .collect();
     if ids != ["alpha".to_string()] {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!("expected scoped semantic intersection [alpha], got {ids:?}").into());
     }
 
-    stop_runtime(shutdown, join)
+    Ok(())
 }
 
 #[test]
 fn semantic_scoped_query_ignores_out_of_scope_global_nearest_hit() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
+    let fixture = ScenarioFixture::boot()?;
+    let socket = fixture.query_socket.clone();
+    let ingest_socket = fixture.ingest_socket.clone();
     let pin = GenerationPin::new(repo(), revision(), generation());
-    let (socket, ingest_socket, shutdown, join) =
-        start_runtime(state_root, "searchd-semantic-scope-starvation-test")?;
     let alpha = chunk_record("alpha", "focus alpha")?;
     let beta = chunk_record("beta", "scope focus")?;
     let gamma = chunk_record("gamma", "scope gamma")?;
@@ -2155,8 +1965,6 @@ fn semantic_scoped_query_ignores_out_of_scope_global_nearest_hit() -> TestResult
             .map(|resp| !matches!(resp.payload, SearchPlaneQueryIpcResponse::Error(_)))
             .unwrap_or(false)
     }) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err("semantic scoped query never became ready".into());
     }
 
@@ -2164,8 +1972,6 @@ fn semantic_scoped_query_ignores_out_of_scope_global_nearest_hit() -> TestResult
     let results = match response.payload {
         SearchPlaneQueryIpcResponse::Semantic(semantic) => semantic.results,
         other => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
             return Err(format!("expected Semantic, got {other:?}").into());
         }
     };
@@ -2174,12 +1980,10 @@ fn semantic_scoped_query_ignores_out_of_scope_global_nearest_hit() -> TestResult
         .map(|candidate| candidate.candidate_id.clone())
         .collect();
     if ids != ["beta".to_string()] {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!("expected scoped semantic [beta], got {ids:?}").into());
     }
 
-    stop_runtime(shutdown, join)
+    Ok(())
 }
 
 fn verify_semantic_empty_text_refusal(socket: &Path) -> TestResult {
@@ -2220,10 +2024,9 @@ fn verify_semantic_empty_text_refusal(socket: &Path) -> TestResult {
 
 #[test]
 fn default_indexed_queries_share_one_fixture() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
-    let (socket, ingest_socket, shutdown, join) =
-        start_runtime(state_root, "searchd-default-indexed-queries-shared-test")?;
+    let fixture = ScenarioFixture::boot()?;
+    let socket = fixture.query_socket.clone();
+    let ingest_socket = fixture.ingest_socket.clone();
     publish_search_corpus_chunks(
         &ingest_socket,
         vec![
@@ -2264,42 +2067,18 @@ fn default_indexed_queries_share_one_fixture() -> TestResult {
         }
         Ok(())
     })();
-    let shutdown_result = stop_runtime(shutdown, join);
-    verification?;
-    shutdown_result
+    verification
 }
 
 #[test]
 fn semantic_query_fails_closed_when_runtime_has_no_query_embedder() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
-    let mut config = SearchdConfig::from_state_root(state_root.to_path_buf())
-        .try_with_search_corpus_history_retention_limits(
-            8,
-            16 * 1024 * 1024,
-            128,
-            256 * 1024 * 1024,
-        )
-        .expect("valid test retention policy")
-        .with_provider_unavailable_query_text_embedder();
-    let (query_socket, control_socket) = unique_socket_paths();
-    config = SearchdConfig::with_socket_overrides(config, query_socket, control_socket);
-    let runtime = build_runtime(config)?;
-    let socket = runtime.query_server.socket_path().to_path_buf();
-    let ingest_socket = runtime.ingest_server.socket_path().to_path_buf();
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let shutdown_for_drive = Arc::clone(&shutdown);
-    let join = thread::Builder::new()
-        .name("searchd-sem-provider-unavailable-test".into())
-        .spawn(move || drive(runtime, &shutdown_for_drive))?;
-
-    if !wait_until(SOCKET_APPEAR_TIMEOUT, || {
-        socket.exists() && ingest_socket.exists()
-    }) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err("semantic provider-unavailable sockets never appeared".into());
-    }
+    // The harness owns the degraded-config profile outright: no query-time
+    // embedder, so semantic/hybrid queries fail closed while the corpus
+    // still hash-derives and the generation materializes.
+    let fixture =
+        ScenarioFixture::boot_with_profile(SemanticEmbedderProfile::Unavailable)?;
+    let socket = fixture.query_socket.clone();
+    let ingest_socket = fixture.ingest_socket.clone();
 
     let alpha = chunk_record("alpha", "semantic alpha")?;
     publish_search_corpus_chunks(&ingest_socket, vec![alpha], None)?;
@@ -2325,8 +2104,6 @@ fn semantic_query_fails_closed_when_runtime_has_no_query_embedder() -> TestResul
             })
             .unwrap_or(false)
     }) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err("semantic provider-unavailable query never progressed past NOT_READY".into());
     }
 
@@ -2334,18 +2111,14 @@ fn semantic_query_fails_closed_when_runtime_has_no_query_embedder() -> TestResul
     let err = match response.payload {
         SearchPlaneQueryIpcResponse::Error(err) => err,
         other => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
             return Err(format!("expected Error, got {other:?}").into());
         }
     };
     if err.code.as_wire_str() != "SEM_PROVIDER_UNAVAILABLE" {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!("expected SEM_PROVIDER_UNAVAILABLE, got {}", err.code).into());
     }
 
-    stop_runtime(shutdown, join)
+    Ok(())
 }
 
 /// QI-BB-025: `top_k = 0` is refused under one code from a typed and from a
@@ -2462,10 +2235,9 @@ fn patch_every_top_k(value: &mut ciborium::Value, top_k: u32) -> usize {
 /// first.
 #[test]
 fn hybrid_query_admits_a_semantic_only_relevant_hit_beside_the_lexical_hits() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
-    let (socket, ingest_socket, shutdown, join) =
-        start_runtime(state_root, "searchd-hybrid-outsider-test")?;
+    let fixture = ScenarioFixture::boot()?;
+    let socket = fixture.query_socket.clone();
+    let ingest_socket = fixture.ingest_socket.clone();
     // Lexical lane (`riddle`): beta only. Dense lane (`focus alpha`): alpha
     // first, beta second, gamma last. Fused at top_k=2: beta (both lanes),
     // then alpha on dense relevance alone; gamma, ranked last by the one
@@ -2501,8 +2273,6 @@ fn hybrid_query_admits_a_semantic_only_relevant_hit_beside_the_lexical_hits() ->
             .map(|resp| !matches!(resp.payload, SearchPlaneQueryIpcResponse::Error(_)))
             .unwrap_or(false)
     }) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err("hybrid query never became ready".into());
     }
 
@@ -2510,8 +2280,6 @@ fn hybrid_query_admits_a_semantic_only_relevant_hit_beside_the_lexical_hits() ->
     let results = match response.payload {
         SearchPlaneQueryIpcResponse::Hybrid(hybrid) => hybrid.results,
         other => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
             return Err(format!("expected Hybrid, got {other:?}").into());
         }
     };
@@ -2520,21 +2288,15 @@ fn hybrid_query_admits_a_semantic_only_relevant_hit_beside_the_lexical_hits() ->
         .map(|row| row.candidate.candidate_id.clone())
         .collect();
     if ids.first().map(String::as_str) != Some("beta") {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!("expected beta top, got {ids:?}").into());
     }
     if !ids.iter().any(|id| id == "alpha") {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!(
             "the dense-only relevant hit must enter the hybrid top-k, got {ids:?}"
         )
         .into());
     }
     if ids.iter().any(|id| id == "gamma") {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!(
             "a hit one lane ranked last must not outrank the fused pair at top_k=2: {ids:?}"
         )
@@ -2545,12 +2307,10 @@ fn hybrid_query_admits_a_semantic_only_relevant_hit_beside_the_lexical_hits() ->
     // lane, at its rank 1. The fused score is the RRF of exactly those
     // ranks, recomputed here under the plane's k = 60.
     if let Err(err) = check_hybrid_lane_provenance(&results) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(err);
     }
 
-    stop_runtime(shutdown, join)
+    Ok(())
 }
 
 /// The lanes that placed `id` in a fused list, with the rank each gave it.
@@ -2611,10 +2371,9 @@ fn check_hybrid_lane_provenance(results: &[HybridCandidateV1]) -> Result<(), Box
 
 #[test]
 fn hybrid_query_repeated_tied_scope_query_keeps_stable_order() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
-    let (socket, ingest_socket, shutdown, join) =
-        start_runtime(state_root, "searchd-hybrid-tie-determinism-test")?;
+    let fixture = ScenarioFixture::boot()?;
+    let socket = fixture.query_socket.clone();
+    let ingest_socket = fixture.ingest_socket.clone();
     let alpha = chunk_record("alpha", "scope tie")?;
     let beta = chunk_record("beta", "scope tie")?;
     publish_search_corpus_chunks(&ingest_socket, vec![alpha, beta], None)?;
@@ -2645,8 +2404,6 @@ fn hybrid_query_repeated_tied_scope_query_keeps_stable_order() -> TestResult {
             .map(|resp| !matches!(resp.payload, SearchPlaneQueryIpcResponse::Error(_)))
             .unwrap_or(false)
     }) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err("hybrid tie determinism query never became ready".into());
     }
 
@@ -2665,20 +2422,16 @@ fn hybrid_query_repeated_tied_scope_query_keeps_stable_order() -> TestResult {
     let first_ids = query_ids(send_query_request(&socket, &request)?)?;
     let second_ids = query_ids(send_query_request(&socket, &request)?)?;
     if first_ids != second_ids {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!(
             "hybrid tie ordering drifted across repeated queries: first={first_ids:?} second={second_ids:?}"
         )
         .into());
     }
     if first_ids.len() != 2 {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!("expected 2 tied hybrid results, got {first_ids:?}").into());
     }
 
-    stop_runtime(shutdown, join)
+    Ok(())
 }
 
 fn verify_structural_generation_not_ready(socket: &Path) -> TestResult {
@@ -2719,10 +2472,9 @@ fn verify_structural_generation_not_ready(socket: &Path) -> TestResult {
 
 #[test]
 fn structural_query_returns_typed_shard_unavailable_error() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
-    let (socket, ingest_socket, shutdown, join) =
-        start_runtime(state_root, "searchd-structural-shard-unavailable-test")?;
+    let fixture = ScenarioFixture::boot()?;
+    let socket = fixture.query_socket.clone();
+    let ingest_socket = fixture.ingest_socket.clone();
     publish_search_corpus_chunks(
         &ingest_socket,
         vec![
@@ -2807,15 +2559,13 @@ fn structural_query_returns_typed_shard_unavailable_error() -> TestResult {
         }
     });
     if !saw_expected {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!(
             "expected STR_SHARD_UNAVAILABLE after orphaning structural chunk authority, observed {observed:?}"
         )
         .into());
     }
 
-    stop_runtime(shutdown, join)
+    Ok(())
 }
 
 /// Composition-wiring assertion (MINOR 6).
@@ -3268,10 +3018,9 @@ fn verify_structural_typed_holes(socket: &Path) -> TestResult {
 
 #[test]
 fn structural_ready_queries_share_one_indexed_fixture() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
-    let (socket, ingest_socket, shutdown, join) =
-        start_runtime(state_root, "searchd-structural-ready-shared-test")?;
+    let fixture = ScenarioFixture::boot()?;
+    let socket = fixture.query_socket.clone();
+    let ingest_socket = fixture.ingest_socket.clone();
     publish_structural_ready_fixture(&ingest_socket)?;
     seal_lexical(&ingest_socket)?;
     seal_structural(&ingest_socket)?;
@@ -3296,9 +3045,7 @@ fn structural_ready_queries_share_one_indexed_fixture() -> TestResult {
         }
         Ok(())
     })();
-    let shutdown_result = stop_runtime(shutdown, join);
-    verification?;
-    shutdown_result
+    verification
 }
 
 fn verify_structural_typed_hole_kind_refusal(socket: &Path) -> TestResult {
@@ -3336,10 +3083,8 @@ fn verify_structural_typed_hole_kind_refusal(socket: &Path) -> TestResult {
 
 #[test]
 fn request_validation_refusals_share_one_runtime() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
-    let (socket, _ingest_socket, shutdown, join) =
-        start_runtime(state_root, "searchd-request-refusals-shared-test")?;
+    let fixture = ScenarioFixture::boot()?;
+    let socket = fixture.query_socket.clone();
 
     let verification: TestResult = (|| {
         let verify_history_generation_not_ready_fn: fn(&Path) -> TestResult =
@@ -3389,9 +3134,7 @@ fn request_validation_refusals_share_one_runtime() -> TestResult {
         }
         Ok(())
     })();
-    let shutdown_result = stop_runtime(shutdown, join);
-    verification?;
-    shutdown_result
+    verification
 }
 
 fn lex_query(needle: &str) -> SearchPlaneQueryIpcRequestEnvelope {

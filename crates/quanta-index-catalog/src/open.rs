@@ -2,19 +2,32 @@
 //! table's schema, so a catalog is whole from its first open.
 
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use quanta_index_core::CoreError;
 
-use crate::connection::{SqliteCatalog, engine_error, open_connection};
+use crate::connection::{
+    CatalogClockPort, SqliteCatalog, SystemCatalogClock, engine_error, open_connection,
+};
 
 impl SqliteCatalog {
     /// Open (creating if needed) the catalog under `state_root/catalog/`.
     ///
     /// `busy_timeout` is how long a write waits on a held lock before it is
-    /// answered typed; the caller maps it from its own deadline.
+    /// answered typed; the caller maps it from its own deadline. Lease
+    /// decisions read the wall clock.
     pub fn open(state_root: &Path, busy_timeout: Duration) -> Result<Self, CoreError> {
+        Self::open_with_clock(state_root, busy_timeout, Arc::new(SystemCatalogClock))
+    }
+
+    /// Open with an explicit lease-decision clock (TOPT-01 / PO-3):
+    /// production passes [`SystemCatalogClock`], tests a scripted clock.
+    pub fn open_with_clock(
+        state_root: &Path,
+        busy_timeout: Duration,
+        clock: Arc<dyn CatalogClockPort>,
+    ) -> Result<Self, CoreError> {
         let (connection, path) = open_connection(state_root, busy_timeout)?;
         connection
             .execute_batch(crate::idempotency::SCHEMA)
@@ -42,6 +55,7 @@ impl SqliteCatalog {
         Ok(Self {
             connection: Mutex::new(connection),
             path,
+            clock,
         })
     }
 }

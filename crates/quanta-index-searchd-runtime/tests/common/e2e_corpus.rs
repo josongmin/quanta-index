@@ -2,9 +2,9 @@
 //!
 //! Tiny corpus that intentionally varies repo/path/language/content so a
 //! single ingest can exercise multiple filter dimensions in later E2E
-//! tickets (repo, path, lang, content). The smoke self-test only needs
-//! "at least one keyword present"; the broader columns sit here so each
-//! follow-up ticket does not need its own fixture file.
+//! tickets (repo, path, lang, content). The smoke self-test asserts the
+//! exact candidate identity set below; the broader columns sit here so
+//! each follow-up ticket does not need its own fixture file.
 
 use anyhow::Result as AnyResult;
 
@@ -71,4 +71,41 @@ pub(super) fn ingest_all(rt: &mut E2eRuntime, rows: &[CorpusRow]) -> AnyResult<(
         rt.ingest_text(row.repo, row.path, row.content)?;
     }
     Ok(())
+}
+
+/// The smoke query text. Exactly one corpus row carries it (see
+/// [`SMOKE_NEEDLE_RUST_IDENTITY`]); the other rows carry lookalike or
+/// unrelated content so a wrong-row match cannot hide.
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "sibling test modules import this private-module harness surface"
+)]
+pub(super) const SMOKE_NEEDLE_RUST: &str = "smoke_needle_rust";
+
+/// Fixture contract: the exact `(repo, path)` identity set a
+/// [`SMOKE_NEEDLE_RUST`] query must return. `alpha` carries the rust
+/// needle; `beta` carries the python needle; `gamma` carries no needle.
+/// The smoke oracle asserts this set exactly — missing rows and extras
+/// both fail — and the consistency test below keeps the contract pinned
+/// to the corpus contents.
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "sibling test modules import this private-module harness surface"
+)]
+pub(super) const SMOKE_NEEDLE_RUST_IDENTITY: &[(&str, &str)] = &[("repo-e2e", "src/lib.rs")];
+
+#[test]
+fn smoke_needle_contract_matches_corpus_contents() {
+    let mut derived: Vec<(&str, &str)> = SMOKE_CORPUS
+        .iter()
+        .filter(|row| row.content.contains(SMOKE_NEEDLE_RUST))
+        .map(|row| (row.repo, row.path))
+        .collect();
+    derived.sort_unstable();
+    let mut expected = SMOKE_NEEDLE_RUST_IDENTITY.to_vec();
+    expected.sort_unstable();
+    assert_eq!(
+        derived, expected,
+        "the smoke identity contract must pin exactly the rows carrying the needle"
+    );
 }

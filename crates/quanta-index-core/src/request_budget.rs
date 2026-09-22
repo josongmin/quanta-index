@@ -36,15 +36,86 @@ pub enum BudgetInterruptionV1 {
     Cancelled,
 }
 
+/// Shared cancellation state: the flag every checkpoint reads, plus the
+/// waiter wake-ups `cancel` fires exactly once (TOPT-02 / PO-4).
+///
+/// A waiter registers a `wake` closure, then checks the flag; `cancel`
+/// invokes every registered closure after flipping the flag, so a waiter
+/// blocked on its own condvar wakes the moment the budget is cancelled
+/// instead of re-reading the flag on a poll quantum. The closures are
+/// cloned out before invocation, so a `wake` may lock its own mutex
+/// without nesting inside the registry lock.
+struct CancelSharedV1 {
+    cancelled: AtomicBool,
+    waiters: std::sync::Mutex<CancelWaiterSetV1>,
+}
+
+impl std::fmt::Debug for CancelSharedV1 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let live = self.waiters.lock().map(|set| set.wake.len()).unwrap_or(0);
+        f.debug_struct("CancelSharedV1")
+            .field("cancelled", &self.cancelled.load(Ordering::Acquire))
+            .field("live_waiters", &live)
+            .finish()
+    }
+}
+
+#[derive(Default)]
+struct CancelWaiterSetV1 {
+    next_id: u64,
+    wake: Vec<(u64, std::sync::Arc<dyn Fn() + Send + Sync>)>,
+}
+
 /// Cancels the budget it was taken from. Held by whoever watches the peer.
 #[derive(Clone, Debug)]
 pub struct CancelHandleV1 {
-    cancelled: Arc<AtomicBool>,
+    shared: Arc<CancelSharedV1>,
 }
 
 impl CancelHandleV1 {
     pub fn cancel(&self) {
-        self.cancelled.store(true, Ordering::Release);
+        if self.shared.cancelled.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let wake = {
+            let waiters = self.shared.waiters.lock().map(|mut set| {
+                let wake: Vec<std::sync::Arc<dyn Fn() + Send + Sync>> = set
+                    .wake
+                    .iter()
+                    .map(|(_, woken)| Arc::clone(woken))
+                    .collect();
+                set.wake.clear();
+                wake
+            });
+            waiters.unwrap_or_default()
+        };
+        for woken in wake {
+            woken();
+        }
+    }
+}
+
+/// One live cancellation waiter: removed from the registry by id when
+/// dropped, on every return and panic path; `cancel` clears fired
+/// waiters. Removal is exact, so the registry holds live waiters only.
+pub struct CancelWaiterGuardV1 {
+    shared: Arc<CancelSharedV1>,
+    id: u64,
+}
+
+impl std::fmt::Debug for CancelWaiterGuardV1 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CancelWaiterGuardV1")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for CancelWaiterGuardV1 {
+    fn drop(&mut self) {
+        if let Ok(mut set) = self.shared.waiters.lock() {
+            set.wake.retain(|(id, _)| *id != self.id);
+        }
     }
 }
 
@@ -52,7 +123,7 @@ impl CancelHandleV1 {
 #[derive(Clone, Debug)]
 pub struct RequestBudgetV1 {
     deadline: Instant,
-    cancelled: Arc<AtomicBool>,
+    shared: Arc<CancelSharedV1>,
 }
 
 impl RequestBudgetV1 {
@@ -61,7 +132,10 @@ impl RequestBudgetV1 {
     pub fn until(deadline: Instant) -> Self {
         Self {
             deadline,
-            cancelled: Arc::new(AtomicBool::new(false)),
+            shared: Arc::new(CancelSharedV1 {
+                cancelled: AtomicBool::new(false),
+                waiters: std::sync::Mutex::new(CancelWaiterSetV1::default()),
+            }),
         }
     }
 
@@ -86,8 +160,42 @@ impl RequestBudgetV1 {
     #[must_use]
     pub fn cancel_handle(&self) -> CancelHandleV1 {
         CancelHandleV1 {
-            cancelled: Arc::clone(&self.cancelled),
+            shared: Arc::clone(&self.shared),
         }
+    }
+
+    /// Register `wake` to run once when this budget is cancelled.
+    ///
+    /// The caller must check [`Self::interrupted_at`] after registering:
+    /// a budget cancelled before registration never fires its waiters, so
+    /// the flag check is what observes a pre-registration cancel. The
+    /// registration lives until the returned guard drops.
+    pub fn cancel_waiter(&self, wake: Arc<dyn Fn() + Send + Sync>) -> CancelWaiterGuardV1 {
+        let id = {
+            let mut set = self
+                .shared
+                .waiters
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let id = set.next_id;
+            set.next_id = set.next_id.wrapping_add(1);
+            set.wake.push((id, wake));
+            id
+        };
+        CancelWaiterGuardV1 {
+            shared: Arc::clone(&self.shared),
+            id,
+        }
+    }
+
+    /// Live waiter registrations. Test-only census for the RAII proof.
+    #[cfg(test)]
+    fn live_waiters(&self) -> usize {
+        self.shared
+            .waiters
+            .lock()
+            .map(|set| set.wake.len())
+            .unwrap_or(0)
     }
 
     #[must_use]
@@ -103,7 +211,7 @@ impl RequestBudgetV1 {
 
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::Acquire)
+        self.shared.cancelled.load(Ordering::Acquire)
     }
 
     /// What, if anything, has interrupted this request by now.
@@ -228,5 +336,71 @@ mod tests {
         let budget = RequestBudgetV1::unbounded();
         assert!(budget.checkpoint("anywhere").is_ok());
         assert!(budget.remaining() > Duration::from_secs(365 * 24 * 3600));
+    }
+
+    #[test]
+    fn cancel_fires_each_waiter_exactly_once() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let budget = RequestBudgetV1::for_duration(Duration::from_secs(60));
+        let fired = Arc::new(AtomicUsize::new(0));
+        let first = {
+            let fired = Arc::clone(&fired);
+            budget.cancel_waiter(Arc::new(move || {
+                let _prior = fired.fetch_add(1, Ordering::SeqCst);
+            }))
+        };
+        let second = {
+            let fired = Arc::clone(&fired);
+            budget.cancel_waiter(Arc::new(move || {
+                let _prior = fired.fetch_add(10, Ordering::SeqCst);
+            }))
+        };
+        assert_eq!(budget.live_waiters(), 2);
+        budget.cancel_handle().cancel();
+        assert_eq!(fired.load(Ordering::SeqCst), 11);
+        assert_eq!(budget.live_waiters(), 0, "fired waiters are cleared");
+        budget.cancel_handle().cancel();
+        assert_eq!(
+            fired.load(Ordering::SeqCst),
+            11,
+            "a second cancel fires nothing"
+        );
+        drop(first);
+        drop(second);
+    }
+
+    #[test]
+    fn a_dropped_waiter_is_removed_without_cancel() {
+        use std::sync::Arc;
+
+        let budget = RequestBudgetV1::for_duration(Duration::from_secs(60));
+        let guard = budget.cancel_waiter(Arc::new(|| {}));
+        assert_eq!(budget.live_waiters(), 1);
+        drop(guard);
+        assert_eq!(budget.live_waiters(), 0);
+    }
+
+    #[test]
+    fn a_waiter_registered_after_cancel_never_fires() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let budget = RequestBudgetV1::for_duration(Duration::from_secs(60));
+        budget.cancel_handle().cancel();
+        let fired = Arc::new(AtomicBool::new(false));
+        let waiter = {
+            let fired = Arc::clone(&fired);
+            budget.cancel_waiter(Arc::new(move || {
+                fired.store(true, Ordering::SeqCst);
+            }))
+        };
+        // The flag check after registration is what observes a
+        // pre-registration cancel; the waiter itself stays silent.
+        assert!(budget.interrupted_at("late").is_some());
+        assert!(!fired.load(Ordering::SeqCst));
+        drop(waiter);
+        assert_eq!(budget.live_waiters(), 0);
     }
 }

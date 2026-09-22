@@ -24,6 +24,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use quanta_index_core::RequestBudgetV1;
@@ -1235,14 +1236,15 @@ where
             // A dispatch without a live watch would run with a cancellation
             // that can never fire; refusing the connection is the honest
             // alternative.
-            let watch = match PeerWatch::arm(&stream, budget.cancel_handle()) {
+            let watch = match PeerWatch::arm(&stream, budget.cancel_handle(), Arc::clone(counters))
+            {
                 Ok(watch) => watch,
                 Err(err) => {
                     return ConnectionCloseReason::PeerWatchFailed(err.to_string());
                 }
             };
             let response_payload = dispatcher.dispatch(&context, request_payload, &budget);
-            let peer_hung_up = watch.disarm();
+            let peer_hung_up = matches!(watch.disarm(), PeerWatchOutcome::HungUp);
             (response_payload, peer_hung_up)
         };
         drop(permit);
@@ -1301,6 +1303,69 @@ fn write_response<ResponseEnvelopeT: serde::Serialize>(
     Ok(())
 }
 
+/// How one watch run ended: the two terminal reasons are distinct types,
+/// never one boolean the caller has to interpret.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PeerWatchOutcome {
+    /// The peer hung up while watched; its budget was cancelled.
+    HungUp,
+    /// The watch stopped with the peer still able to receive.
+    Stopped,
+}
+
+/// The watch thread's lifecycle, observed without touching production
+/// state (TOPT-02 / R4).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WatchEvent {
+    /// The watcher completed its first observation and stays watching.
+    /// A first observation that already sees a hang-up reports
+    /// `PeerDisconnected` instead, and a stop that wins before the first
+    /// observation reports `Stopped`: `Armed` means the watch is live.
+    Armed,
+    /// The watcher confirmed a hang-up and cancelled the budget.
+    PeerDisconnected,
+    /// The watcher stopped with the peer still present.
+    Stopped,
+    /// The owner reaped the watcher thread.
+    Joined,
+}
+
+/// A bounded, never-blocking sink for [`WatchEvent`].
+///
+/// Production arms its watches with [`WatchObserver::null`], whose sends
+/// go nowhere; tests arm with [`WatchObserver::channel`] and wait on the
+/// receiver instead of sleeping out poll intervals. The observer only
+/// receives events — it cannot mutate the watch.
+#[derive(Clone, Default)]
+struct WatchObserver {
+    events: Option<mpsc::SyncSender<WatchEvent>>,
+}
+
+impl WatchObserver {
+    fn null() -> Self {
+        Self { events: None }
+    }
+
+    #[cfg(test)]
+    fn channel() -> (Self, mpsc::Receiver<WatchEvent>) {
+        // Four lifecycle events per watch; the bound only contains a test
+        // that stopped draining.
+        let (events, received) = mpsc::sync_channel(16);
+        (
+            Self {
+                events: Some(events),
+            },
+            received,
+        )
+    }
+
+    fn fire(&self, event: WatchEvent) {
+        if let Some(events) = &self.events {
+            let _dropped = events.try_send(event);
+        }
+    }
+}
+
 /// Watches a connection for a hang-up while its request is dispatching.
 ///
 /// The dispatch runs synchronously on the connection thread, so a second
@@ -1313,53 +1378,108 @@ fn write_response<ResponseEnvelopeT: serde::Serialize>(
 /// and half-closed is still waiting for the response. The watch confirms a
 /// hang-up by asking whether the peer can still receive (a zero-byte send,
 /// which fails with `EPIPE` only once the peer's read side is gone), and
-/// after a half-close or a pipelined frame it keeps asking at the poll
-/// interval. The watch ends when the dispatch returns.
+/// after a half-close or a pipelined frame it keeps asking at the probe
+/// cadence. The watch ends when the dispatch returns.
+///
+/// Stopping is event-driven: the watched poll set carries a wake FD beside
+/// the peer socket, and disarming signals it before joining, so the join
+/// never waits out a poll quantum. The poll timeout and the probe cadence
+/// remain only as a defensive fallback — the kernel reports no event when
+/// a half-closed peer's read side goes away, so the send probe is still
+/// what notices that transition.
 struct PeerWatch {
     stop: Arc<AtomicBool>,
     hung_up: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
+    /// The write end of the wake pair; the watcher thread owns the read
+    /// end. Both close exactly once with their owners.
+    wake: Option<UnixStream>,
+    observer: WatchObserver,
 }
 
 impl PeerWatch {
+    /// Defensive poll/probe bound: `poll` returns at once on peer events
+    /// and on the wake FD, so this only paces the send probe after a
+    /// half-close and bounds a stuck poll.
     const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
     fn arm(
         stream: &UnixStream,
         cancel: quanta_index_core::CancelHandleV1,
+        counters: Arc<IpcServerCounters>,
+    ) -> std::io::Result<Self> {
+        Self::arm_with_observer(stream, cancel, counters, WatchObserver::null())
+    }
+
+    fn arm_with_observer(
+        stream: &UnixStream,
+        cancel: quanta_index_core::CancelHandleV1,
+        counters: Arc<IpcServerCounters>,
+        observer: WatchObserver,
     ) -> std::io::Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         let hung_up = Arc::new(AtomicBool::new(false));
         let watched = stream.try_clone()?;
+        let (wake_read, wake_write) = UnixStream::pair()?;
         let thread = {
             let stop = Arc::clone(&stop);
             let hung_up = Arc::clone(&hung_up);
+            let observer = observer.clone();
             std::thread::Builder::new()
                 .name("uds-peer-watch".to_string())
                 .spawn(move || {
                     // Once the socket stays readable (a half-close or a
                     // pipelined frame), polling would spin; the send probe
-                    // alone tells a waiting peer from a departed one.
+                    // alone tells a waiting peer from a departed one. The
+                    // probe wait is a wake-FD poll, so a stop still lands
+                    // at once instead of at the end of a sleep.
                     let mut probe_only = false;
-                    while !stop.load(Ordering::Acquire) {
-                        let state = if probe_only {
-                            std::thread::sleep(Self::POLL_INTERVAL);
-                            if peer_can_receive(&watched) {
-                                PeerState::Alive
-                            } else {
-                                PeerState::HungUp
+                    let mut armed = false;
+                    loop {
+                        if stop.load(Ordering::Acquire) {
+                            observer.fire(WatchEvent::Stopped);
+                            return;
+                        }
+                        if probe_only {
+                            if stop_signalled(&wake_read) && stop.load(Ordering::Acquire) {
+                                observer.fire(WatchEvent::Stopped);
+                                return;
                             }
-                        } else {
-                            peer_state(&watched)
-                        };
-                        match state {
+                            if peer_can_receive(&watched) {
+                                continue;
+                            }
+                            hung_up.store(true, Ordering::Release);
+                            counters.peer_hangup_detected();
+                            observer.fire(WatchEvent::PeerDisconnected);
+                            cancel.cancel();
+                            return;
+                        }
+                        match peer_state(&watched, &wake_read) {
                             PeerState::Alive => {}
                             PeerState::HalfClosed | PeerState::Pipelined => probe_only = true,
+                            PeerState::StopRequested => {
+                                if stop.load(Ordering::Acquire) {
+                                    observer.fire(WatchEvent::Stopped);
+                                    return;
+                                }
+                                // A wake byte with no stop is impossible —
+                                // the only writer sets the flag first — so
+                                // drain defensively and keep watching rather
+                                // than spin on the readable FD.
+                                drain_wake_byte(&wake_read);
+                                continue;
+                            }
                             PeerState::HungUp => {
                                 hung_up.store(true, Ordering::Release);
+                                counters.peer_hangup_detected();
+                                observer.fire(WatchEvent::PeerDisconnected);
                                 cancel.cancel();
                                 return;
                             }
+                        }
+                        if !armed {
+                            armed = true;
+                            observer.fire(WatchEvent::Armed);
                         }
                     }
                 })?
@@ -1368,16 +1488,35 @@ impl PeerWatch {
             stop,
             hung_up,
             thread: Some(thread),
+            wake: Some(wake_write),
+            observer,
         })
     }
 
-    /// Stop watching; reports whether the peer hung up while we watched.
-    fn disarm(mut self) -> bool {
+    /// Stop the watcher and join its thread — at most once, whether the
+    /// owner disarms or unwinds past the watch.
+    fn stop_and_join(&mut self) {
         self.stop.store(true, Ordering::Release);
         if let Some(thread) = self.thread.take() {
+            if let Some(mut wake) = self.wake.take() {
+                // The watcher may already have returned (and closed the
+                // read end with its thread): a failed write then means
+                // exactly that, and the join below still reaps it.
+                let _signalled = wake.write_all(&[1]);
+            }
             let _joined = thread.join();
+            self.observer.fire(WatchEvent::Joined);
         }
-        self.hung_up.load(Ordering::Acquire)
+    }
+
+    /// Stop watching; reports how the watch run ended.
+    fn disarm(mut self) -> PeerWatchOutcome {
+        self.stop_and_join();
+        if self.hung_up.load(Ordering::Acquire) {
+            PeerWatchOutcome::HungUp
+        } else {
+            PeerWatchOutcome::Stopped
+        }
     }
 }
 
@@ -1386,10 +1525,7 @@ impl Drop for PeerWatch {
     /// dispatcher unwinding (S21-09): the watcher thread is stopped and
     /// joined, never left spinning without an owner.
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
-        if let Some(thread) = self.thread.take() {
-            let _joined = thread.join();
-        }
+        self.stop_and_join();
     }
 }
 
@@ -1399,6 +1535,30 @@ enum PeerState {
     HalfClosed,
     Pipelined,
     HungUp,
+    /// The wake FD fired: the owner is stopping the watch.
+    StopRequested,
+}
+
+/// Block up to one poll interval for the owner's stop signal.
+fn stop_signalled(wake: &UnixStream) -> bool {
+    let fd = std::os::fd::AsFd::as_fd(wake);
+    let mut fds = [PollFd::new(&fd, PollFlags::IN)];
+    matches!(poll(&mut fds, Some(&poll_timeout())), Ok(count) if count > 0)
+}
+
+/// Best-effort drain of one wake byte; only the defensive path uses it.
+fn drain_wake_byte(wake: &UnixStream) {
+    let fd = std::os::fd::AsFd::as_fd(wake);
+    let mut byte = [0_u8; 1];
+    let _drained = recv(&fd, &mut byte, RecvFlags::empty());
+}
+
+fn poll_timeout() -> Timespec {
+    Timespec {
+        tv_sec: 0,
+        tv_nsec: i64::try_from(PeerWatch::POLL_INTERVAL.as_nanos())
+            .map_or(50_000_000, |nanos| nanos),
+    }
 }
 
 /// Whether the peer can still receive: a zero-byte send succeeds while
@@ -1429,15 +1589,16 @@ fn peer_probe_send_flags() -> SendFlags {
 }
 
 /// One bounded poll of the watched socket, for a peer not yet seen to
-/// half-close.
-fn peer_state(stream: &UnixStream) -> PeerState {
+/// half-close. The wake FD rides in the same poll set so a stop lands
+/// at once instead of at the end of the timeout.
+fn peer_state(stream: &UnixStream, wake: &UnixStream) -> PeerState {
     let fd = std::os::fd::AsFd::as_fd(stream);
-    let mut fds = [PollFd::new(&fd, PollFlags::IN | PollFlags::HUP)];
-    let timeout = Timespec {
-        tv_sec: 0,
-        tv_nsec: i64::try_from(PeerWatch::POLL_INTERVAL.as_nanos())
-            .map_or(50_000_000, |nanos| nanos),
-    };
+    let wake_fd = std::os::fd::AsFd::as_fd(wake);
+    let mut fds = [
+        PollFd::new(&fd, PollFlags::IN | PollFlags::HUP),
+        PollFd::new(&wake_fd, PollFlags::IN),
+    ];
+    let timeout = poll_timeout();
     let closed_or_gone = |stream: &UnixStream| {
         if peer_can_receive(stream) {
             PeerState::HalfClosed
@@ -1448,6 +1609,13 @@ fn peer_state(stream: &UnixStream) -> PeerState {
     match poll(&mut fds, Some(&timeout)) {
         Ok(0) | Err(Errno::INTR) => PeerState::Alive,
         Ok(_) => {
+            if fds
+                .get(1)
+                .map_or(PollFlags::empty(), PollFd::revents)
+                .contains(PollFlags::IN)
+            {
+                return PeerState::StopRequested;
+            }
             let revents = fds.first().map_or(PollFlags::empty(), PollFd::revents);
             if revents.contains(PollFlags::IN) {
                 // Readable: either pipelined data or the peer's end-of-file.
@@ -1686,10 +1854,10 @@ fn classify_client_io_error(
 mod tests {
     use super::{
         ClientIoPolicy, ConnectionCloseReason, IpcDispatcher, IpcError, IpcPlane,
-        IpcServerCounters, PeerCredentials, PeerWatch, RequestEnvelope, ResponseEnvelope,
-        SocketPathIdentity, UdsServer, connect_before_deadline, connect_requires_completion_wait,
-        create_connect_socket, decode_response, encode_request, handle_connection, send_request,
-        wait_for_connect,
+        IpcServerCounters, PeerCredentials, PeerWatch, PeerWatchOutcome, RequestEnvelope,
+        ResponseEnvelope, SocketPathIdentity, UdsServer, WatchEvent, WatchObserver,
+        connect_before_deadline, connect_requires_completion_wait, create_connect_socket,
+        decode_response, encode_request, handle_connection, send_request, wait_for_connect,
     };
     use crate::socket_access::{PRIVATE_DIRECTORY_MODE, PRIVATE_SOCKET_MODE};
     use rustix::fs::{OFlags, fcntl_getfl};
@@ -1724,6 +1892,22 @@ mod tests {
 
     fn test_policy() -> ServerAdmissionPolicy {
         ServerAdmissionPolicy::DEFAULT
+    }
+
+    /// Failure-containment bound for watch-event waits: the test fails
+    /// instead of hanging when the watch never reports.
+    const WATCH_EVENT_BOUND: Duration = Duration::from_secs(30);
+
+    fn expect_watch_event(received: &mpsc::Receiver<WatchEvent>, expected: WatchEvent) -> TestRes {
+        let observed = received.recv_timeout(WATCH_EVENT_BOUND).map_err(|err| {
+            format!("test must observe watch {expected:?} before the bound: {err}")
+        })?;
+        if observed != expected {
+            return Err(format!(
+                "expected watch {expected:?}, observed {observed:?}"
+            ));
+        }
+        Ok(())
     }
 
     struct ByteStringRequest(Vec<u8>);
@@ -2830,6 +3014,163 @@ mod tests {
         assert_test_ok(&result);
     }
 
+    /// Disarming a watch on a live peer reports `Stopped`: the wake FD
+    /// lands at once, the thread is joined, and the budget is untouched.
+    #[test]
+    fn peer_watch_disarm_with_a_live_peer_reports_stopped() {
+        let result = (|| -> TestRes {
+            let (_client, server) = UnixStream::pair().map_err(|err| err.to_string())?;
+            let budget = RequestBudgetV1::for_duration(Duration::from_secs(60));
+            let (observer, received) = WatchObserver::channel();
+            let watch = PeerWatch::arm_with_observer(
+                &server,
+                budget.cancel_handle(),
+                test_counters(),
+                observer,
+            )
+            .map_err(|err| err.to_string())?;
+            expect_watch_event(&received, WatchEvent::Armed)?;
+            let outcome = watch.disarm();
+            if outcome != PeerWatchOutcome::Stopped {
+                return Err(format!("a live peer disarms Stopped, got {outcome:?}"));
+            }
+            expect_watch_event(&received, WatchEvent::Stopped)?;
+            expect_watch_event(&received, WatchEvent::Joined)?;
+            if budget.is_cancelled() {
+                return Err("disarming a live peer must not cancel".to_string());
+            }
+            Ok(())
+        })();
+        assert_test_ok(&result);
+    }
+
+    /// A peer that closes mid-watch reports `PeerDisconnected`: the hang-up
+    /// is counted on the watch thread, the budget is cancelled, and a
+    /// disarm after the close still reports `HungUp`.
+    #[test]
+    fn peer_watch_hangup_reports_disconnect_and_cancels() {
+        let result = (|| -> TestRes {
+            let (client, server) = UnixStream::pair().map_err(|err| err.to_string())?;
+            let budget = RequestBudgetV1::for_duration(Duration::from_secs(60));
+            let counters = test_counters();
+            let (observer, received) = WatchObserver::channel();
+            let watch = PeerWatch::arm_with_observer(
+                &server,
+                budget.cancel_handle(),
+                Arc::clone(&counters),
+                observer,
+            )
+            .map_err(|err| err.to_string())?;
+            expect_watch_event(&received, WatchEvent::Armed)?;
+            drop(client);
+            expect_watch_event(&received, WatchEvent::PeerDisconnected)?;
+            if !budget.is_cancelled() {
+                return Err("a hang-up must cancel the budget".to_string());
+            }
+            if counters.snapshot().peer_hangup_detected != 1 {
+                return Err("a hang-up is detected exactly once".to_string());
+            }
+            let outcome = watch.disarm();
+            if outcome != PeerWatchOutcome::HungUp {
+                return Err(format!("a closed peer disarms HungUp, got {outcome:?}"));
+            }
+            expect_watch_event(&received, WatchEvent::Joined)?;
+            Ok(())
+        })();
+        assert_test_ok(&result);
+    }
+
+    /// A half-close is never a hang-up: the close predates every arm, so
+    /// each watch's first observation deterministically sees it, and every
+    /// disarm still reports `Stopped` without cancelling.
+    #[test]
+    fn peer_watch_half_close_never_cancels_across_repeated_arms() {
+        let result = (|| -> TestRes {
+            for _ in 0..8 {
+                let (client, server) = UnixStream::pair().map_err(|err| err.to_string())?;
+                client
+                    .shutdown(Shutdown::Write)
+                    .map_err(|err| err.to_string())?;
+                let budget = RequestBudgetV1::for_duration(Duration::from_secs(60));
+                let (observer, received) = WatchObserver::channel();
+                let watch = PeerWatch::arm_with_observer(
+                    &server,
+                    budget.cancel_handle(),
+                    test_counters(),
+                    observer,
+                )
+                .map_err(|err| err.to_string())?;
+                // The half-close predates the arm: `Armed` proves the
+                // watch observed it and stayed watching.
+                expect_watch_event(&received, WatchEvent::Armed)?;
+                let outcome = watch.disarm();
+                if outcome != PeerWatchOutcome::Stopped {
+                    return Err(format!("a half-close disarms Stopped, got {outcome:?}"));
+                }
+                expect_watch_event(&received, WatchEvent::Stopped)?;
+                expect_watch_event(&received, WatchEvent::Joined)?;
+                if budget.is_cancelled() {
+                    return Err("a half-close must not cancel the budget".to_string());
+                }
+                drop(client);
+            }
+            Ok(())
+        })();
+        assert_test_ok(&result);
+    }
+
+    /// Dropping a watch without disarming — the panicking-dispatcher path —
+    /// still stops and joins the watcher thread.
+    #[test]
+    fn peer_watch_drop_without_disarm_stops_and_joins() {
+        let result = (|| -> TestRes {
+            let (_client, server) = UnixStream::pair().map_err(|err| err.to_string())?;
+            let budget = RequestBudgetV1::for_duration(Duration::from_secs(60));
+            let (observer, received) = WatchObserver::channel();
+            let watch = PeerWatch::arm_with_observer(
+                &server,
+                budget.cancel_handle(),
+                test_counters(),
+                observer,
+            )
+            .map_err(|err| err.to_string())?;
+            expect_watch_event(&received, WatchEvent::Armed)?;
+            drop(watch);
+            expect_watch_event(&received, WatchEvent::Stopped)?;
+            expect_watch_event(&received, WatchEvent::Joined)?;
+            if budget.is_cancelled() {
+                return Err("dropping a live watch must not cancel".to_string());
+            }
+            Ok(())
+        })();
+        assert_test_ok(&result);
+    }
+
+    /// Repeated arm/disarm cycles leave no thread or FD behind: a leak
+    /// would exhaust the process and fail the run instead of this
+    /// assertion.
+    #[test]
+    fn peer_watch_repeated_arms_leave_no_thread_or_fd_behind() {
+        let result = (|| -> TestRes {
+            let counters = test_counters();
+            for _ in 0..256 {
+                let (_client, server) = UnixStream::pair().map_err(|err| err.to_string())?;
+                let budget = RequestBudgetV1::for_duration(Duration::from_secs(60));
+                let watch = PeerWatch::arm(&server, budget.cancel_handle(), Arc::clone(&counters))
+                    .map_err(|err| err.to_string())?;
+                let outcome = watch.disarm();
+                if outcome != PeerWatchOutcome::Stopped {
+                    return Err(format!("a live peer disarms Stopped, got {outcome:?}"));
+                }
+            }
+            if counters.snapshot().peer_hangup_detected != 0 {
+                return Err("no hang-up was ever detected".to_string());
+            }
+            Ok(())
+        })();
+        assert_test_ok(&result);
+    }
+
     /// A mid-dispatch hang-up cancels the request's budget (QI-BB-002).
     ///
     /// The peer watch notices the hang-up, the dispatcher sees the
@@ -2837,8 +3178,10 @@ mod tests {
     /// hang-up instead of a failed write.
     /// A peer that sent its request and shut its write side is waiting for
     /// the response, not gone: the watch must not cancel it, and the
-    /// response must still cross the wire. The dispatch is held long enough
-    /// that the watch certainly polls after the half-close.
+    /// response must still cross the wire. The never-cancel invariant
+    /// itself is proven at the owner level across repeated deterministic
+    /// arms; this test keeps the wiring: the response still crosses and
+    /// the close reason stays honest.
     #[test]
     fn a_half_closed_peer_is_not_a_hang_up_and_still_gets_its_response() {
         let result = (|| -> TestRes {
@@ -2884,8 +3227,6 @@ mod tests {
             entered_rx
                 .recv()
                 .map_err(|err| format!("test must observe dispatcher entry: {err}"))?;
-            // Several poll intervals pass with the half-close visible.
-            thread::sleep(PeerWatch::POLL_INTERVAL.saturating_mul(4));
             let _wait = gate.wait();
 
             let response = decode_response::<TestResponseEnvelope, _>(&mut client)

@@ -128,7 +128,16 @@ mod tests {
 
     #[test]
     fn backoff_bound_saturates_instead_of_wrapping() {
-        assert_eq!(backoff_bound(u32::MAX), Duration::MAX);
+        // 2^attempt saturates at u32::MAX, so the extreme bound is exactly
+        // 250ms * u32::MAX: finite, exact, and past every real attempt.
+        assert_eq!(
+            backoff_bound(u32::MAX),
+            Duration::new(1_073_741_823, 750_000_000)
+        );
+        assert!(
+            backoff_bound(u32::MAX) > backoff_bound(31),
+            "the attempt schedule never wraps below a real attempt"
+        );
     }
 
     #[test]
@@ -150,7 +159,7 @@ mod tests {
             "entropy folds modulo the bound"
         );
         assert_eq!(
-            backoff_delay_with_entropy(0, bound_nanos + 7),
+            backoff_delay_with_entropy(0, bound_nanos.saturating_add(7)),
             Duration::from_nanos(7),
             "entropy folds modulo the bound"
         );

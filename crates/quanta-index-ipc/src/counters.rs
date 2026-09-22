@@ -49,6 +49,12 @@ pub struct IpcServerCounters {
     requests_dispatched: AtomicU64,
     /// Dispatched requests whose peer was gone when the answer was ready.
     peer_hangups: AtomicU64,
+    /// Hang-ups the peer watch itself detected mid-dispatch, counted on the
+    /// watch thread the moment the hang-up is confirmed (TOPT-02 / R4).
+    /// Unlike `peer_hangups` — accounted by the connection thread after its
+    /// dispatch returns — this is the event-driven signal tests wait for
+    /// instead of sleeping out the watch's poll interval.
+    peer_hangup_detected: AtomicU64,
 }
 
 /// One consistent-enough read of [`IpcServerCounters`]: each field is
@@ -69,6 +75,7 @@ pub struct IpcServerCountersSnapshot {
     pub requests_refused_shutting_down: u64,
     pub requests_dispatched: u64,
     pub peer_hangups: u64,
+    pub peer_hangup_detected: u64,
 }
 
 impl IpcServerCounters {
@@ -95,6 +102,7 @@ impl IpcServerCounters {
             requests_refused_shutting_down: AtomicU64::new(0),
             requests_dispatched: AtomicU64::new(0),
             peer_hangups: AtomicU64::new(0),
+            peer_hangup_detected: AtomicU64::new(0),
         }
     }
 
@@ -122,6 +130,7 @@ impl IpcServerCounters {
                 .load(Ordering::Acquire),
             requests_dispatched: self.requests_dispatched.load(Ordering::Acquire),
             peer_hangups: self.peer_hangups.load(Ordering::Acquire),
+            peer_hangup_detected: self.peer_hangup_detected.load(Ordering::Acquire),
         }
     }
 
@@ -198,6 +207,11 @@ impl IpcServerCounters {
         }
     }
 
+    /// The peer watch confirmed a hang-up mid-dispatch.
+    pub(crate) fn peer_hangup_detected(&self) {
+        let _prior = self.peer_hangup_detected.fetch_add(1, Ordering::AcqRel);
+    }
+
     fn metric_name(&self, suffix: &str) -> String {
         format!("ipc_{}_{suffix}", self.plane)
     }
@@ -262,6 +276,10 @@ impl MetricSourcePort for IpcServerCounters {
             MetricPointV1::counter(
                 self.metric_name("peer_hangups_total"),
                 snapshot.peer_hangups,
+            ),
+            MetricPointV1::counter(
+                self.metric_name("peer_hangup_detected_total"),
+                snapshot.peer_hangup_detected,
             ),
         ])
     }

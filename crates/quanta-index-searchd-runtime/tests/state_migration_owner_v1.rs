@@ -34,6 +34,7 @@ use quanta_index_searchd::app::state_migration::{
     CatalogFreezeV1, CatalogSnapshotPort, CatalogSnapshotV1, OfflineStateCommandV1,
     OfflineStateOperationV1, OfflineStateRequestV1, run_offline_verify_v1,
 };
+use quanta_index_searchd_harness::E2eRuntime;
 use quanta_index_searchd_runtime::state_migration::{
     render_offline_outcome_v1, run_offline_state_command_with_v1,
 };
@@ -205,19 +206,6 @@ fn make_backup(source: &Path, destination: &Path) -> TestResult {
     Ok(())
 }
 
-fn socket_paths() -> (PathBuf, PathBuf, PathBuf) {
-    let pid = std::process::id();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_nanos());
-    let dir = std::env::temp_dir();
-    (
-        dir.join(format!("qi-p10-q-{pid}-{nanos}.sock")),
-        dir.join(format!("qi-p10-c-{pid}-{nanos}.sock")),
-        dir.join(format!("qi-p10-i-{pid}-{nanos}.sock")),
-    )
-}
-
 // ---------------------------------------------------------------------------
 // Legacy layout: refused at boot, never migrated on the hot path
 // ---------------------------------------------------------------------------
@@ -277,27 +265,12 @@ fn production_boot_refuses_a_legacy_root_instead_of_migrating() -> TestResult {
     fs::create_dir_all(root.path().join("semantic"))?;
     fs::write(root.path().join("semantic/journal.cbor"), b"legacy-journal")?;
 
-    let (query_socket, control_socket, ingest_socket) = socket_paths();
-    let mut config =
-        quanta_index_searchd::app::SearchdConfig::from_state_root(root.path().to_path_buf())
-            .try_with_search_corpus_history_retention_limits(
-                8,
-                16 * 1024 * 1024,
-                128,
-                256 * 1024 * 1024,
-            )
-            .expect("valid test retention policy");
-    config = quanta_index_searchd::app::SearchdConfig::with_socket_overrides(
-        config,
-        query_socket,
-        control_socket,
-    );
-    config = quanta_index_searchd::app::SearchdConfig::with_ingest_socket_override(
-        config,
-        ingest_socket,
-    );
-    let error = match quanta_index_searchd_runtime::build_runtime(config) {
-        Ok(_runtime) => {
+    // The boot refusal runs through the harness-owned runtime (TOPT-03):
+    // sockets and retention come from the harness builder, and `start`
+    // surfaces the refusal synchronously instead of a client observing it.
+    let mut runtime = E2eRuntime::boot_in(root.path())?;
+    let error = match runtime.start() {
+        Ok(()) => {
             return Err("boot must refuse a legacy state root".into());
         }
         Err(error) => error,
@@ -456,6 +429,7 @@ fn an_interruption_before_the_manifest_leaves_no_manifest_and_converges_on_retry
 fn a_crash_after_the_cutover_rename_leaves_the_complete_new_root() -> TestResult {
     let source = private_root()?;
     let destination_parent = private_root()?;
+    let expected_parent = private_root()?;
     build_live_root(source.path())?;
     let destination = destination_parent.path().join("frozen");
 
@@ -469,9 +443,201 @@ fn a_crash_after_the_cutover_rename_leaves_the_complete_new_root() -> TestResult
         destination.join("state-backup-manifest-v1.txt").is_file(),
         "the rename publishes the complete new root, never a mixture"
     );
+    assert!(
+        !staging_directory_for_v1(&destination).exists(),
+        "no staging residue may survive the cutover"
+    );
+
+    // The expected root: the same source backed up with no fault. Both
+    // manifests describe identical bytes, so completeness is digest
+    // equivalence — not "the object list is non-empty".
+    let expected_root = expected_parent.path().join("expected");
+    make_backup(source.path(), &expected_root)?;
+    let expected = read_root_manifest_v1(&expected_root.join("state-backup-manifest-v1.txt"))?;
     let manifest = read_root_manifest_v1(&destination.join("state-backup-manifest-v1.txt"))?;
-    assert!(!manifest.objects.is_empty());
-    assert!(!staging_directory_for_v1(&destination).exists());
+    assert_eq!(
+        manifest.format_version, expected.format_version,
+        "post-cutover format version must match the clean backup"
+    );
+    assert_eq!(
+        manifest.root_format, expected.root_format,
+        "post-cutover root format must match the clean backup"
+    );
+    assert_eq!(
+        manifest.catalog_rows, expected.catalog_rows,
+        "post-cutover catalog row count must match the clean backup"
+    );
+
+    // Object equivalence modulo the deep-open reconciliation outputs.
+    // The backup's deep open reconciles the staged root before the
+    // manifest is written — a real, run-specific mutation (fresh root
+    // uuid, quarantine incidents, rewritten catalog snapshot bytes) — so
+    // those entries cannot be byte-identical across runs. Every other
+    // entry is a pure copy of the source and must match the clean backup
+    // in identity, size, and digest exactly; the reconciliation outputs
+    // must match in shape (same count, same stable names).
+    let (mut stable, reconciled): (Vec<_>, Vec<_>) = manifest
+        .objects
+        .iter()
+        .partition(|entry| !is_reconciliation_output(&entry.relative_path));
+    let (mut expected_stable, expected_reconciled): (Vec<_>, Vec<_>) = expected
+        .objects
+        .iter()
+        .partition(|entry| !is_reconciliation_output(&entry.relative_path));
+    stable.sort();
+    expected_stable.sort();
+    assert_eq!(
+        stable, expected_stable,
+        "every copied object must match the clean backup in path, size, and digest"
+    );
+    assert_eq!(
+        reconciled.len(),
+        expected_reconciled.len(),
+        "the reconciliation must publish the same object shape on both runs"
+    );
+    let mut reconciled_names: Vec<&str> = reconciled
+        .iter()
+        .map(|entry| entry.relative_path.as_str())
+        .collect();
+    let mut expected_reconciled_names: Vec<&str> = expected_reconciled
+        .iter()
+        .map(|entry| entry.relative_path.as_str())
+        .collect();
+    reconciled_names.sort_unstable();
+    expected_reconciled_names.sort_unstable();
+    // Stable reconciliation names (the catalog snapshot, the root uuid)
+    // are present on both sides; quarantine incident names embed
+    // run-specific hashes and are compared by count, not spelling.
+    for name in ["catalog/catalog-v1.sqlite", "repo-map/root-uuid.bin"] {
+        assert!(
+            reconciled_names.contains(&name),
+            "post-cutover reconciliation must publish {name}"
+        );
+        assert!(
+            expected_reconciled_names.contains(&name),
+            "clean-backup reconciliation must publish {name}"
+        );
+    }
+    let incidents = reconciled_names
+        .iter()
+        .filter(|name| name.starts_with("repo-map/quarantine/"))
+        .count();
+    let expected_incidents = expected_reconciled_names
+        .iter()
+        .filter(|name| name.starts_with("repo-map/quarantine/"))
+        .count();
+    assert_eq!(
+        incidents, expected_incidents,
+        "both runs must quarantine the same incident count"
+    );
+
+    // Directories likewise, modulo the run-specific incident leaves.
+    let mut directories: Vec<&str> = manifest
+        .directories
+        .iter()
+        .map(String::as_str)
+        .filter(|dir| !is_incident_dir(dir))
+        .collect();
+    let mut expected_directories: Vec<&str> = expected
+        .directories
+        .iter()
+        .map(String::as_str)
+        .filter(|dir| !is_incident_dir(dir))
+        .collect();
+    directories.sort_unstable();
+    expected_directories.sort_unstable();
+    assert_eq!(
+        directories, expected_directories,
+        "post-cutover directories must match the clean backup outside incident leaves"
+    );
+
+    // The production offline verifier re-proves the published root
+    // against its own manifest and catalog: every advertised object
+    // exists with the exact size and digest, nothing extra exists, and
+    // the catalog snapshot digests to the manifest identity.
+    let verified = run_offline_verify_v1(&destination, &CatalogVerifierV1)?;
+    assert_eq!(
+        verified.catalog_digest_hex, manifest.catalog_digest_hex,
+        "the verifier must re-prove the published catalog identity"
+    );
+    assert_eq!(verified.catalog_rows, manifest.catalog_rows);
+    assert_eq!(
+        verified.manifest_digest_hex,
+        manifest.manifest_digest_hex(),
+        "the verifier must re-prove the published manifest digest"
+    );
+    assert_eq!(
+        verified.objects,
+        u64::try_from(manifest.objects.len()).map_or(u64::MAX, |count| count),
+        "the verifier must account for every published object"
+    );
+    Ok(())
+}
+
+/// Entries the backup's deep open rewrites per run: the reconciled
+/// catalog snapshot bytes, the fresh root uuid, and quarantine
+/// incidents. Exempt from cross-run digest equality; still covered by
+/// the verifier's internal consistency proof.
+fn is_reconciliation_output(relative_path: &str) -> bool {
+    relative_path.starts_with("catalog/")
+        || relative_path == "repo-map/root-uuid.bin"
+        || relative_path.starts_with("repo-map/quarantine/")
+}
+
+/// Run-specific quarantine incident leaves under the stable
+/// `repo-map/quarantine/incidents/sha256/` fanout.
+fn is_incident_dir(dir: &str) -> bool {
+    const FANOUT: &str = "repo-map/quarantine/incidents/sha256/";
+    dir.len() > FANOUT.len() && dir.starts_with(FANOUT)
+}
+
+/// Mutation control for the completeness oracle: deleting or corrupting a
+/// single published object must fail production verification, and
+/// restoring it must pass again — proving the failure names the mutation,
+/// not the fixture.
+#[test]
+fn deleting_or_corrupting_one_published_object_fails_verification() -> TestResult {
+    let source = private_root()?;
+    let destination_parent = private_root()?;
+    build_live_root(source.path())?;
+    let destination = destination_parent.path().join("published");
+    make_backup(source.path(), &destination)?;
+    let _verified = run_offline_verify_v1(&destination, &CatalogVerifierV1)?;
+
+    let manifest = read_root_manifest_v1(&destination.join("state-backup-manifest-v1.txt"))?;
+    let victim = manifest
+        .objects
+        .first()
+        .ok_or("the fixture publishes at least one object")?;
+    let victim_path = destination.join(&victim.relative_path);
+    let original = fs::read(&victim_path)?;
+
+    // Delete: the verifier must report the missing manifest object.
+    fs::remove_file(&victim_path)?;
+    let error = run_offline_verify_v1(&destination, &CatalogVerifierV1)
+        .expect_err("a deleted object must fail verification");
+    assert!(
+        format!("{error:?}").contains(&victim.relative_path),
+        "the failure must name the deleted object: {error:?}"
+    );
+    fs::write(&victim_path, &original)?;
+    let _verified = run_offline_verify_v1(&destination, &CatalogVerifierV1)?;
+
+    // Corrupt: the verifier must report the digest mismatch.
+    let mut corrupted = original.clone();
+    let last = corrupted.len().saturating_sub(1);
+    if let Some(tail) = corrupted.get_mut(last) {
+        *tail ^= 0xFF;
+    }
+    fs::write(&victim_path, &corrupted)?;
+    let error = run_offline_verify_v1(&destination, &CatalogVerifierV1)
+        .expect_err("a corrupted object must fail verification");
+    assert!(
+        format!("{error:?}").contains(&victim.relative_path),
+        "the failure must name the corrupted object: {error:?}"
+    );
+    fs::write(&victim_path, &original)?;
+    let _verified = run_offline_verify_v1(&destination, &CatalogVerifierV1)?;
     Ok(())
 }
 

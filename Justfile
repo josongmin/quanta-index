@@ -394,9 +394,7 @@ rust-bench-dsl-cold samples="20":
 
 # Authority refresh: run warm and cold producers serially, then gate against baselines.
 rust-bench-dsl-refresh samples="20":
-    @just rust-bench-dsl-warm
-    @just rust-bench-dsl-cold {{samples}}
-    @just rust-bench-dsl-compare
+    python3 tools/benchmark/benchctl.py run dsl-authority --cold-samples {{samples}}
 
 # Relative-regression gate. It fails typed until reviewed canonical baselines exist.
 rust-bench-dsl-compare:
@@ -576,18 +574,7 @@ rust-verify-quality-ui:
 # substitute for per-dimension closeout. All registered quality dimensions are now
 # live; a future dimension would be added as `pending` until its rail lands.
 rust-verify-quality-all:
-    @just rust-verify-quality-relevance
-    @just rust-verify-quality-ambiguity
-    @just rust-verify-quality-snippet
-    @just rust-verify-quality-scale
-    @just rust-verify-quality-tail
-    @just rust-verify-quality-ann
-    @just rust-verify-quality-concurrency
-    @just rust-verify-quality-freshness
-    @just rust-verify-quality-open-loop
-    @just rust-verify-quality-ops
-    @just rust-verify-quality-ui
-    python3 tools/ci/lint/check-bench-artifacts.py --profile quality-full --require --skip-baselines
+    python3 tools/benchmark/benchctl.py run quality-full
     mkdir -p artifacts/search-quality/integration/latest
     python3 tools/benchmark/quality_integration_summary.py --out artifacts/search-quality/integration/latest/summary.json
 

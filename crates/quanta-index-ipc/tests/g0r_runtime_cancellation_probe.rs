@@ -231,6 +231,7 @@ impl IpcDispatcher<u64, u64> for GatedDispatcher {
 
 struct Server {
     socket: std::path::PathBuf,
+    uds: Arc<UdsServer>,
     shutdown: quanta_index_ipc::ShutdownHandle,
     join: Option<thread::JoinHandle<Result<(), IpcError>>>,
     entered: mpsc::Receiver<u64>,
@@ -251,8 +252,8 @@ fn start_server() -> Result<Server, Box<dyn Error>> {
         <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
     )?;
     let socket = dir.path().join("g0r.sock");
-    let server = UdsServer::bind(&socket)?;
-    let shutdown = server.shutdown_handle();
+    let uds = Arc::new(UdsServer::bind(&socket)?);
+    let shutdown = uds.shutdown_handle();
     let (entered_tx, entered_rx) = mpsc::channel();
     let release = Arc::new(Barrier::new(2));
     let completed = Arc::new(AtomicU64::new(0));
@@ -267,15 +268,19 @@ fn start_server() -> Result<Server, Box<dyn Error>> {
         completion_sequence: Arc::clone(&completion_sequence),
         cancelled_observed: Arc::clone(&cancelled_observed),
     });
-    let join = thread::spawn(move || {
-        server.run::<ProbeRequest, u64, ProbeResponse, u64, GatedDispatcher>(
-            &dispatcher,
-            quanta_index_ipc::IpcPlane::Query,
-            ACCEPT_IDLE,
-        )
-    });
+    let join = {
+        let uds = Arc::clone(&uds);
+        thread::spawn(move || {
+            uds.run::<ProbeRequest, u64, ProbeResponse, u64, GatedDispatcher>(
+                &dispatcher,
+                quanta_index_ipc::IpcPlane::Query,
+                ACCEPT_IDLE,
+            )
+        })
+    };
     Ok(Server {
         socket,
+        uds,
         shutdown,
         join: Some(join),
         entered: entered_rx,
@@ -318,6 +323,25 @@ fn send(
         },
         policy,
     )
+}
+
+/// Wait until the peer watch itself has detected `expected` hang-ups.
+/// The bound fails the probe instead of hanging when the watch never
+/// reports; the cadence only re-reads the counter.
+fn wait_hangup_detected(server: &Server, expected: u64) -> ProbeResult {
+    let deadline = Instant::now()
+        .checked_add(HANDSHAKE_BOUND)
+        .ok_or("clock overflow")?;
+    while server.uds.counters().snapshot().peer_hangup_detected < expected {
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "the peer watch must detect {expected} hang-up(s) before the bound"
+            )
+            .into());
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    Ok(())
 }
 
 /// Spawn a client that sends a `HOLD` request and reports how it ended.
@@ -422,8 +446,9 @@ fn a_disconnected_peer_cancels_its_dispatch_budget() -> ProbeResult {
     let abandoned = holder
         .join()
         .map_err(|panic| format!("holder thread panicked: {panic:?}"))?;
-    // Give the watch its poll interval to see the hang-up before release.
-    thread::sleep(Duration::from_millis(200));
+    // Wait for the watch-thread detection event instead of sleeping out
+    // the poll interval: the test proceeds the moment the watch reports.
+    wait_hangup_detected(&server, 1)?;
     let completions_while_abandoned = server.completed.load(Ordering::SeqCst);
 
     let _released = server.release.wait();

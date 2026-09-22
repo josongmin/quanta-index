@@ -111,3 +111,160 @@ def test_preflight_requires_linux_before_a_canonical_profile_runs(monkeypatch, t
     calls.clear()
     assert MODULE.preflight(REPO_ROOT, "systems", tmp_path / "receipt.json", manifest) == 0
     assert "--expected-os" not in calls[0]
+
+
+def test_run_refuses_a_dirty_worktree_before_any_producer(monkeypatch, capsys) -> None:
+    def dirty(_repo_root: Path) -> None:
+        raise RuntimeError("worktree is dirty: benchmark producers require a clean checkout before capture")
+
+    monkeypatch.setattr(MODULE, "require_clean_worktree", dirty)
+    monkeypatch.setattr(
+        MODULE,
+        "preflight",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("preflight must not run")),
+    )
+
+    assert MODULE.main(["run", "quality-full"]) == 2
+    assert "worktree is dirty" in capsys.readouterr().err
+
+
+def test_run_rejects_invalid_dsl_cold_sample_override_before_producers(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        MODULE,
+        "require_clean_worktree",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("clean-worktree check must not run")),
+    )
+    monkeypatch.setattr(
+        MODULE,
+        "preflight",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("preflight must not run")),
+    )
+    monkeypatch.setattr(
+        MODULE.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("producer must not run")),
+    )
+
+    assert MODULE.main(["run", "dsl-authority", "--cold-samples", "19"]) == 2
+    assert "at least 20" in capsys.readouterr().err
+
+
+def test_run_refuses_contended_override_before_producers(monkeypatch, tmp_path: Path, capsys) -> None:
+    manifest_path = tmp_path / "tools" / "benchmark" / "manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(
+        (REPO_ROOT / "tools" / "benchmark" / "manifest.json").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(MODULE, "require_clean_worktree", lambda _repo_root: None)
+
+    def contended(_repo_root, _profile, receipt, _manifest):
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        receipt.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "kind": "quanta-index-timing-preflight",
+                    "run_id": "benchctl:quality-full",
+                    "status": "contended_override",
+                    "foreign_rust_processes": [{"pid": 42}],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return 0
+
+    monkeypatch.setattr(MODULE, "preflight", contended)
+    monkeypatch.setattr(
+        MODULE.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("producer must not run")),
+    )
+
+    assert MODULE.main(["--repo-root", str(tmp_path), "run", "quality-full"]) == 2
+    assert "contended_override" in capsys.readouterr().err
+
+
+def test_run_refuses_missing_declared_baseline_before_preflight(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    manifest_path = tmp_path / "tools" / "benchmark" / "manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(
+        (REPO_ROOT / "tools" / "benchmark" / "manifest.json").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(MODULE, "require_clean_worktree", lambda _repo_root: None)
+    monkeypatch.setattr(
+        MODULE,
+        "preflight",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("preflight must not run")),
+    )
+
+    assert MODULE.main(["--repo-root", str(tmp_path), "run", "dsl-authority"]) == 2
+    assert "baseline" in capsys.readouterr().err
+
+
+def test_run_refuses_invalid_declared_baseline_before_preflight(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    manifest_path = tmp_path / "tools" / "benchmark" / "manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(
+        (REPO_ROOT / "tools" / "benchmark" / "manifest.json").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    baseline = tmp_path / "tools" / "benchmark" / "baselines" / "warm-matrix.json"
+    baseline.parent.mkdir(parents=True)
+    baseline.write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
+    monkeypatch.setattr(MODULE, "require_clean_worktree", lambda _repo_root: None)
+    monkeypatch.setattr(
+        MODULE,
+        "preflight",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("preflight must not run")),
+    )
+
+    assert MODULE.main(["--repo-root", str(tmp_path), "run", "dsl-authority"]) == 2
+    assert "schema_version 1" in capsys.readouterr().err
+
+
+def test_clean_preflight_runs_exact_profile_recipes(monkeypatch, tmp_path: Path) -> None:
+    manifest_path = tmp_path / "tools" / "benchmark" / "manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(
+        (REPO_ROOT / "tools" / "benchmark" / "manifest.json").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(MODULE, "require_clean_worktree", lambda _repo_root: None)
+
+    def clean(_repo_root, _profile, receipt, _manifest):
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        receipt.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "kind": "quanta-index-timing-preflight",
+                    "run_id": "benchctl:systems",
+                    "status": "clean",
+                    "foreign_rust_processes": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return 0
+
+    calls: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(MODULE, "preflight", clean)
+    monkeypatch.setattr(MODULE, "validate", lambda *_args: 0)
+    monkeypatch.setattr(MODULE.subprocess, "run", fake_run)
+
+    assert MODULE.main(["--repo-root", str(tmp_path), "run", "systems"]) == 0
+    assert calls == [
+        ["just", "rust-verify-quality-freshness"],
+        ["just", "rust-verify-quality-open-loop"],
+    ]

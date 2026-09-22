@@ -631,6 +631,9 @@ fn payload_digest_of_parts(parts: &[&[u8]]) -> [u8; 32] {
     hasher.finalize().into()
 }
 
+/// A uniqueness token for fence comparisons, not a time decision: it
+/// stays on the wall clock directly while lease-deadline decisions read
+/// the sampled transaction `now` (TOPT-01 / PO-3).
 fn fence_token_now() -> Result<u64, CoreError> {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1005,7 +1008,7 @@ impl IdempotencyCatalogPort for SqliteCatalog {
         if is_invalidated_for_floor(&transaction, &path, &key.identity_digest(), &gc_payload)? {
             return Err(replay_floor(key));
         }
-        let now = quanta_index_core::now_unix_ms();
+        let now = self.clock.now_unix_ms();
         let outcome = match read_row(&transaction, &path, key)? {
             None => prepare_fresh(
                 &transaction,
@@ -1146,7 +1149,7 @@ impl IdempotencyCatalogPort for SqliteCatalog {
         if is_invalidated_for_floor(&transaction, &path, &key.identity_digest(), &gc_payload)? {
             return Err(replay_floor(key));
         }
-        let now = quanta_index_core::now_unix_ms();
+        let now = self.clock.now_unix_ms();
         let outcome = match read_row(&transaction, &path, key)? {
             None => {
                 let fence = fence_token_now()?;
@@ -1576,7 +1579,7 @@ impl IdempotencyCatalogPort for SqliteCatalog {
         let Some(stored) = read_row(&transaction, &path, key)? else {
             return Ok(OperationInspectV1::Absent);
         };
-        let now = quanta_index_core::now_unix_ms();
+        let now = self.clock.now_unix_ms();
         let expired = stored.lease_deadline_ms <= now;
         match stored.state {
             OperationJournalStateV1::Claimed | OperationJournalStateV1::Applying if !expired => {
@@ -1857,7 +1860,7 @@ impl MutationCoordinatorPort for SqliteCatalog {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| engine_error("begin lease transaction", &path, &error))?;
-        let now = quanta_index_core::now_unix_ms();
+        let now = self.clock.now_unix_ms();
         let deadline = now.saturating_add(lease_ms);
         let existing: Option<(String, i64, i64)> = transaction
             .query_row(

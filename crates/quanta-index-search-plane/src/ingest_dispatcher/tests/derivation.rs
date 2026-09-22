@@ -209,6 +209,7 @@ fn corpus_derivation_embeds_one_window_per_provider_call_under_a_narrow_window()
                 idempotency: memory_catalog(),
                 resource_policy: IngestResourcePolicy::DEFAULT,
                 semantic_stream_policy: policy,
+                source_egress_policy: None,
                 auxiliary_catalog: memory_aux_catalog(),
                 auxiliary_coordinator: AuxiliaryMutationCoordinator::shared(),
             },

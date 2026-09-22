@@ -31,12 +31,13 @@ use quanta_index_core::{
     GenerationIdentityValidatePort, HistoryTextIndexPort, IdempotencyCatalogPort,
     IncompleteGenerationDiscardPort, IntegrityScrubPort, L2UnitEmbeddingProvider,
     LexicalIndexOpenPort, MetricSourcePort, MutationCoordinatorPort, ProcessMemoryProbePort,
-    QuarantinedGenerationDiscardPort, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
-    RepoMapBundleIngestPort, RepoMapGenerationActivatePort, RepoMapOpenReportV1,
-    RepoMapQuarantinePort, RepoMapSnapshotAcquirePort, RepoMetaIngestPort, RepoTopicIngestPort,
-    RequestBudgetV1, SealedGenerationReclaimPort, SealedGenerationScanPort,
+    ProviderBudgetLedger, QuarantinedGenerationDiscardPort, RepoCommitRecencyIngestPort,
+    RepoDescriptionIngestPort, RepoMapBundleIngestPort, RepoMapGenerationActivatePort,
+    RepoMapOpenReportV1, RepoMapQuarantinePort, RepoMapSnapshotAcquirePort, RepoMetaIngestPort,
+    RepoTopicIngestPort, RequestBudgetV1, SealedGenerationReclaimPort, SealedGenerationScanPort,
     SearchCorpusBatchBuildPort, SearchCorpusIngestPort, SemanticContentRootsPort,
-    SemanticIndexOpenPort, SemanticIngestPort, SemanticScopeStreamBuildPort, StructuralError,
+    SemanticEgressPolicyV1, SemanticIndexOpenPort, SemanticIngestPort,
+    SemanticScopeStreamBuildPort, StructuralError,
     StructuralMatchBinding, StructuralMatchCandidate, StructuralReadiness, TextEmbeddingProvider,
     TrackDiskUsagePort, WriterIdleSweepPort,
 };
@@ -57,8 +58,9 @@ use quanta_index_search_plane::{
     BoundedQueryObsStore, CursorKeyStore, DirectHistoryMaterializer,
     DirectRuntimeMetadataMaterializer, DirectSearchCorpusMaterializer, DirectSemanticMaterializer,
     DirectStructuralMaterializer, HashingQueryTextEmbedder, HistoryIngestPort,
-    HistoryTextIndexParts, Ledger, ObservabilityScrape, QuarantineService, QuarantineServiceParts,
-    QueryObsSink, QueryTextEmbedderPort, RuntimeMetadataIngestPort,
+    HistoryTextIndexParts, Ledger, ObservabilityScrape, ProviderBoundaryQueryEmbedder,
+    QuarantineService, QuarantineServiceParts, QueryObsSink, QueryTextEmbedderPort,
+    RuntimeMetadataIngestPort,
     SEARCH_OWNED_SEMANTIC_DIMENSION, SearchCorpusAuthorityInspectPort,
     SearchCorpusAuthorityWritePort, SearchCorpusLifecycleOwner, SearchCorpusLifecycleParts,
     SearchCorpusMaterializerParts, SearchPlaneControlDispatcher, SearchPlaneControlDispatcherParts,
@@ -67,7 +69,9 @@ use quanta_index_search_plane::{
 use regex::Regex;
 
 use crate::app::boot_inventory::{self, BootInventoryReportV1, HalfSealedPair};
-use crate::app::config::{SearchdConfig, SemanticEmbedderProfile};
+use crate::app::config::{
+    ProviderEgressGrantConfig, ProviderWorkBudgetConfig, SearchdConfig, SemanticEmbedderProfile,
+};
 use crate::app::integrity_scrub::{PacedIntegrityScrubV1, ScrubSchedulerV1, ScrubTalliesV1};
 use crate::app::ipc_dispatcher::{
     SearchPlaneControlIpcAdapter, SearchPlaneIngestIpcAdapter, SearchPlaneQueryIpcAdapter,
@@ -526,6 +530,12 @@ impl QueryTextEmbedderPort for QueryEmbedderAdapter {
     }
 }
 
+/// The supervisor id provider reservations enroll to (S21-08). The name
+/// is fixed at composition so reserved work always has an owner; the
+/// supervisor that actually spawns/registers/cancels/joins it is P08
+/// (S21-09).
+const PROVIDER_SUPERVISOR_ID: &str = "searchd-provider-supervisor";
+
 /// The query-side and corpus-side embedders resolved for one profile.
 ///
 /// Both halves are backed by the same provider for `Hash`/`OpenAi` so model
@@ -533,27 +543,49 @@ impl QueryTextEmbedderPort for QueryEmbedderAdapter {
 /// the corpus still hash-derives (the deliberate degraded-config contract).
 /// `metric_sources` carries whatever the profile built that keeps its own
 /// accounting (the embedding cache), for the metrics scrape (QI-BB-015).
+/// `provider_ledger` is the process-global provider work ledger the query
+/// boundary reserves against (S21-08); `source_egress_policy` gates the
+/// corpus derivation batches (`None` is a local-only composition).
 struct SemanticEmbedders {
     query: Arc<dyn QueryTextEmbedderPort + Send + Sync>,
     corpus: Arc<dyn TextEmbeddingProvider + Send + Sync>,
     metric_sources: Vec<Arc<dyn MetricSourcePort>>,
+    provider_ledger: Arc<ProviderBudgetLedger>,
+    source_egress_policy: Option<SemanticEgressPolicyV1>,
 }
 
 /// Resolve the (query embedder, corpus embedder) pair for a profile.
 ///
 /// See [`SemanticEmbedders`] for the identity contract the pair upholds.
+/// The query half sits behind the provider boundary (S21-08): admission,
+/// the declared-model gate and the global reservation run before any
+/// provider I/O, and every settlement lands in the ledger's audit ring.
+/// An `OpenAi` profile whose egress grant is incomplete refuses boot —
+/// external egress without an explicit grant never serves.
 fn build_semantic_embedders(
     profile: &SemanticEmbedderProfile,
     state_root: &Path,
+    budget: &ProviderWorkBudgetConfig,
+    grant: &ProviderEgressGrantConfig,
 ) -> Result<SemanticEmbedders, CoreError> {
+    let provider_ledger = Arc::new(ProviderBudgetLedger::new(budget.to_budget())?);
     match profile {
         SemanticEmbedderProfile::Hash { dimension } => {
             let provider: Arc<dyn TextEmbeddingProvider + Send + Sync> =
                 Arc::new(HashingQueryTextEmbedder::new(*dimension));
+            let inner: Arc<dyn QueryTextEmbedderPort + Send + Sync> =
+                Arc::new(QueryEmbedderAdapter(Arc::clone(&provider)));
             Ok(SemanticEmbedders {
-                query: Arc::new(QueryEmbedderAdapter(Arc::clone(&provider))),
+                query: Arc::new(ProviderBoundaryQueryEmbedder::new(
+                    inner,
+                    Arc::clone(&provider_ledger),
+                    SemanticEgressPolicyV1::Loopback,
+                    PROVIDER_SUPERVISOR_ID,
+                )),
                 corpus: provider,
                 metric_sources: Vec::new(),
+                provider_ledger,
+                source_egress_policy: None,
             })
         }
         SemanticEmbedderProfile::OpenAi {
@@ -605,10 +637,22 @@ fn build_semantic_embedders(
             } else {
                 Arc::new(normalized)
             };
+            let egress_grant = grant.to_grant("openai", model, model_revision);
+            egress_grant.validate()?;
+            let policy = SemanticEgressPolicyV1::External(egress_grant);
+            let inner: Arc<dyn QueryTextEmbedderPort + Send + Sync> =
+                Arc::new(QueryEmbedderAdapter(Arc::clone(&provider)));
             Ok(SemanticEmbedders {
-                query: Arc::new(QueryEmbedderAdapter(Arc::clone(&provider))),
+                query: Arc::new(ProviderBoundaryQueryEmbedder::new(
+                    inner,
+                    Arc::clone(&provider_ledger),
+                    policy.clone(),
+                    PROVIDER_SUPERVISOR_ID,
+                )),
                 corpus: provider,
                 metric_sources,
+                provider_ledger,
+                source_egress_policy: Some(policy),
             })
         }
         SemanticEmbedderProfile::Unavailable => {
@@ -619,6 +663,8 @@ fn build_semantic_embedders(
                 query: Arc::new(ProviderUnavailableQueryTextEmbedder),
                 corpus,
                 metric_sources: Vec::new(),
+                provider_ledger,
+                source_egress_policy: None,
             })
         }
     }
@@ -1318,8 +1364,15 @@ impl SearchdRuntime {
             query: query_text_embedder,
             corpus: corpus_embedder,
             metric_sources: embedder_metric_sources,
-        } = build_semantic_embedders(config.semantic_embedder_profile(), &leased_state_root)
-            .map_err(anyhow::Error::from)?;
+            source_egress_policy,
+            ..
+        } = build_semantic_embedders(
+            config.semantic_embedder_profile(),
+            &leased_state_root,
+            config.provider_work_budget(),
+            config.provider_egress_grant(),
+        )
+        .map_err(anyhow::Error::from)?;
         let semantic_materializer =
             Arc::new(DirectSemanticMaterializer::new(Arc::clone(&sem_build_port)));
         let direct_sem_ingest_port: Arc<dyn SemanticIngestPort + Send + Sync> =
@@ -1347,6 +1400,7 @@ impl SearchdRuntime {
                     idempotency: Arc::clone(&idempotency),
                     resource_policy: config.ingest_resource_policy(),
                     semantic_stream_policy: config.semantic_stream_window_policy(),
+                    source_egress_policy,
                     auxiliary_catalog: Arc::clone(&auxiliary_parts.catalog),
                     auxiliary_coordinator: Arc::clone(&auxiliary_parts.coordinator),
                 },
@@ -1718,6 +1772,23 @@ mod tests {
         }
     }
 
+    fn test_budget() -> super::ProviderWorkBudgetConfig {
+        super::ProviderWorkBudgetConfig::default()
+    }
+
+    /// A complete egress grant: every field the engine requires, without
+    /// source-content consent unless the case opts in.
+    fn test_grant() -> super::ProviderEgressGrantConfig {
+        super::ProviderEgressGrantConfig {
+            tenant_id: "unit-test-tenant".to_string(),
+            endpoint: "https://unit.test/v1".to_string(),
+            region: "unit-test-region".to_string(),
+            retention: "unit-test-30d".to_string(),
+            profile: "unit-test-release".to_string(),
+            source_content_consent: false,
+        }
+    }
+
     // CASE-COVERS (positive half of the identity-coupling invariant): the query
     // embedder and corpus embedder that `build_semantic_embedders` returns for the
     // SAME provider profile MUST advertise the SAME model identity. This is the
@@ -1739,8 +1810,13 @@ mod tests {
             query: query_embedder,
             corpus: corpus_embedder,
             ..
-        } = super::build_semantic_embedders(&openai_profile(false), dir.path())
-            .map_err(|err| format!("offline construction must succeed: {err:?}"))?;
+        } = super::build_semantic_embedders(
+            &openai_profile(false),
+            dir.path(),
+            &test_budget(),
+            &test_grant(),
+        )
+        .map_err(|err| format!("offline construction must succeed: {err:?}"))?;
 
         // Positive: matched identity across the two sides (id AND version).
         if query_embedder.model_id() != corpus_embedder.model_id() {
@@ -1805,6 +1881,8 @@ mod tests {
         } = super::build_semantic_embedders(
             &super::SemanticEmbedderProfile::Unavailable,
             dir.path(),
+            &test_budget(),
+            &super::ProviderEgressGrantConfig::default(),
         )
         .map_err(|err| format!("unavailable-profile construction must succeed: {err:?}"))?;
 
@@ -1848,6 +1926,117 @@ mod tests {
         Ok(())
     }
 
+    // S21-08 production wiring: the Hash query half sits behind the
+    // provider boundary — a tokenless query is refused before any
+    // provider I/O (and before any reservation, so the audit ring stays
+    // empty), while a valid query settles and records its audit identity.
+    #[test]
+    fn hash_profile_query_sits_behind_the_provider_boundary() -> TestRes {
+        use quanta_index_search_plane::SEARCH_OWNED_SEMANTIC_DIMENSION;
+
+        let profile = super::SemanticEmbedderProfile::Hash {
+            dimension: SEARCH_OWNED_SEMANTIC_DIMENSION,
+        };
+        let dir = tempfile::tempdir()?;
+        let super::SemanticEmbedders {
+            query,
+            provider_ledger,
+            source_egress_policy,
+            ..
+        } = super::build_semantic_embedders(
+            &profile,
+            dir.path(),
+            &test_budget(),
+            &super::ProviderEgressGrantConfig::default(),
+        )
+        .map_err(|err| format!("hash composition must succeed: {err:?}"))?;
+        assert!(
+            source_egress_policy.is_none(),
+            "a local composition carries no source egress policy"
+        );
+
+        let err = query
+            .embed_query("   ", &RequestBudgetV1::unbounded())
+            .expect_err("a tokenless query must be refused pre-I/O");
+        let quanta_index_core::CoreError::Typed { code, .. } = err else {
+            return Err("tokenless refusal must be typed".into());
+        };
+        assert_eq!(code.as_wire_str(), "EMPTY_QUERY");
+        assert!(
+            provider_ledger
+                .audit_tail(8)
+                .map_err(|err| format!("audit tail must read: {err:?}"))?
+                .is_empty(),
+            "a refusal before reservation records no audit event"
+        );
+
+        let vector = query
+            .embed_query("needle", &RequestBudgetV1::unbounded())
+            .map_err(|err| format!("a valid query must embed: {err:?}"))?;
+        assert_eq!(vector.len(), SEARCH_OWNED_SEMANTIC_DIMENSION);
+        let tail = provider_ledger
+            .audit_tail(8)
+            .map_err(|err| format!("audit tail must read: {err:?}"))?;
+        assert_eq!(tail.len(), 1, "one settled call records one audit event");
+        let event = &tail[0];
+        assert_eq!(
+            event.kind,
+            quanta_index_core::ProviderSettlementKindV1::Success
+        );
+        assert_eq!(
+            event.declared_model_id,
+            quanta_index_search_plane::SEARCH_OWNED_SEMANTIC_MODEL_ID
+        );
+        assert_eq!(event.observed_dimension, SEARCH_OWNED_SEMANTIC_DIMENSION);
+        Ok(())
+    }
+
+    // S21-08 production wiring: an OpenAi profile without a complete
+    // egress grant refuses boot — external egress without an explicit
+    // grant never serves.
+    #[test]
+    fn openai_profile_without_a_complete_grant_refuses_boot() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        match super::build_semantic_embedders(
+            &openai_profile(false),
+            dir.path(),
+            &test_budget(),
+            &super::ProviderEgressGrantConfig::default(),
+        ) {
+            Err(quanta_index_core::CoreError::Typed { code, .. }) => {
+                assert_eq!(code.as_wire_str(), "PROVIDER_EGRESS_DENIED");
+            }
+            Err(other) => panic!("grant refusal must be typed, got {other:?}"),
+            Ok(_) => panic!("an incomplete grant must refuse boot"),
+        }
+    }
+
+    // S21-08 production wiring: an OpenAi profile with a complete grant
+    // composes the external policy for both the query boundary and the
+    // corpus derivation gate.
+    #[test]
+    fn openai_profile_with_a_complete_grant_composes_external_policy() -> TestRes {
+        let dir = tempfile::tempdir()?;
+        let super::SemanticEmbedders {
+            source_egress_policy,
+            ..
+        } = super::build_semantic_embedders(
+            &openai_profile(false),
+            dir.path(),
+            &test_budget(),
+            &test_grant(),
+        )
+        .map_err(|err| format!("a granted composition must succeed: {err:?}"))?;
+        let Some(quanta_index_core::SemanticEgressPolicyV1::External(grant)) =
+            source_egress_policy
+        else {
+            return Err("a granted OpenAi composition must carry the external policy".into());
+        };
+        assert_eq!(grant.model_id, "text-embedding-3-small");
+        assert!(!grant.source_content_consent);
+        Ok(())
+    }
+
     // A1 HERMETIC SEMANTIC SMOKE (searchd real vector path, NO network): the
     // `Hash` profile is the deterministic hermetic embedder searchd defaults to
     // when `QUANTA_INDEX_EMBEDDER` is unset / `hash` (see
@@ -1878,8 +2067,13 @@ mod tests {
             query: query_embedder,
             corpus: corpus_embedder,
             ..
-        } = super::build_semantic_embedders(&profile, dir.path())
-            .map_err(|err| format!("hermetic hash embedder construction must succeed: {err:?}"))?;
+        } = super::build_semantic_embedders(
+            &profile,
+            dir.path(),
+            &test_budget(),
+            &super::ProviderEgressGrantConfig::default(),
+        )
+        .map_err(|err| format!("hermetic hash embedder construction must succeed: {err:?}"))?;
 
         // (1) Query + corpus share ONE model identity by construction (no drift
         // between the vector the query path embeds and the vectors the corpus
@@ -1967,8 +2161,13 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         // `expect` only needs the CoreError (Err) to be Debug; the Ok tuple of
         // trait objects is not, so we bind it rather than format it.
-        let _embedders = super::build_semantic_embedders(&openai_profile(true), dir.path())
-            .expect("offline construction must succeed");
+        let _embedders = super::build_semantic_embedders(
+            &openai_profile(true),
+            dir.path(),
+            &test_budget(),
+            &test_grant(),
+        )
+        .expect("offline construction must succeed");
         assert!(
             dir.path().join("embed-cache").is_dir(),
             "cache_enabled=true must materialize the embed-cache dir"
@@ -1978,8 +2177,13 @@ mod tests {
     #[test]
     fn build_semantic_embedders_skips_cache_dir_when_cache_disabled() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let _embedders = super::build_semantic_embedders(&openai_profile(false), dir.path())
-            .expect("offline construction must succeed");
+        let _embedders = super::build_semantic_embedders(
+            &openai_profile(false),
+            dir.path(),
+            &test_budget(),
+            &test_grant(),
+        )
+        .expect("offline construction must succeed");
         assert!(
             !dir.path().join("embed-cache").exists(),
             "cache_enabled=false must NOT create the embed-cache dir (bare provider)"

@@ -304,6 +304,7 @@ fn search_corpus_materializer(
             idempotency: catalog,
             resource_policy: IngestResourcePolicy::DEFAULT,
             semantic_stream_policy: SemanticStreamWindowPolicy::DEFAULT,
+            source_egress_policy: None,
             auxiliary_catalog: memory_aux_catalog(),
             auxiliary_coordinator: AuxiliaryMutationCoordinator::shared(),
         },

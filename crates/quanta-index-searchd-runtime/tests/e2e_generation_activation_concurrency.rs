@@ -12,23 +12,19 @@
 )]
 
 use std::error::Error;
-use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use quanta_index_contract::{
     ChunkId, ChunkRecord, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
     SearchCorpusGenerationIdentityV1, SearchScopeKey, SearchScopeSurface, lex::LanguageCode,
 };
 use quanta_index_sdk::{ConnectOptions, QuantaIndex, RepoMetaBatch, SearchCorpusBatch};
-use quanta_index_searchd::app::SearchdConfig;
-use quanta_index_searchd::app::searchd::drive;
-use quanta_index_searchd_runtime::build_runtime;
+use quanta_index_searchd_harness::E2eRuntime;
 
 type TestResult = Result<(), Box<dyn Error>>;
-type DriverJoin = thread::JoinHandle<anyhow::Result<()>>;
 
 const REPO: &str = "repo-generation-activation-concurrency";
 const REVISION: &str = "revision-generation-activation-concurrency";
@@ -38,82 +34,54 @@ const RESULT_COUNT: usize = 32;
 const NEEDLE: &str = "generation_activation_concurrency_needle";
 const SOCKET_TIMEOUT: Duration = Duration::from_secs(5);
 
-static NEXT_SOCKET_ID: AtomicU64 = AtomicU64::new(0);
-
+/// Harness-owned concurrency fixture (TOPT-03: runtime fixture ownership).
+///
+/// `E2eRuntime::boot` binds query/control/ingest under the same retention
+/// policy the old `config_for` spelled out (8 generations, 16 MiB pair
+/// bytes, 128 pairs, 256 MiB total). The test keeps its own query loop
+/// and transition-window waits: those are scenario synchronization, not
+/// lifecycle. Explicit `stop` surfaces a driver failure; drop remains the
+/// unwind path.
 struct RunningRuntime {
-    state_root: tempfile::TempDir,
+    runtime: E2eRuntime,
     query_socket: std::path::PathBuf,
     control_socket: std::path::PathBuf,
     ingest_socket: std::path::PathBuf,
-    shutdown: Arc<AtomicBool>,
-    join: Option<DriverJoin>,
 }
 
 impl RunningRuntime {
     fn start() -> Result<Self, Box<dyn Error>> {
-        let state_root = quanta_index_searchd_harness::private_tempdir()?;
-        let runtime = build_runtime(config_for(state_root.path()))?;
-        let query_socket = runtime.query_server.socket_path().to_path_buf();
-        let control_socket = runtime.control_server.socket_path().to_path_buf();
-        let ingest_socket = runtime.ingest_server.socket_path().to_path_buf();
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let driver_shutdown = Arc::clone(&shutdown);
-        let join = thread::Builder::new()
-            .name("generation-activation-concurrency-driver".to_string())
-            .spawn(move || drive(runtime, &driver_shutdown))?;
-
-        if !wait_until(SOCKET_TIMEOUT, || {
-            query_socket.exists() && control_socket.exists() && ingest_socket.exists()
-        }) {
-            shutdown.store(true, Ordering::Release);
-            return match join.join() {
-                Ok(Ok(())) => Err("searchd sockets were not published before timeout".into()),
-                Ok(Err(error)) => Err(error.into()),
-                Err(panic) => Err(format!("searchd driver panicked: {panic:?}").into()),
-            };
-        }
-
+        let mut runtime = E2eRuntime::boot()?;
+        runtime.start()?;
+        let (query_socket, control_socket, ingest_socket) = runtime
+            .socket_paths()
+            .ok_or_else(|| "fixture: driver started without socket paths".to_string())
+            .map(|(query, control, ingest)| {
+                (
+                    query.to_path_buf(),
+                    control.to_path_buf(),
+                    ingest.to_path_buf(),
+                )
+            })?;
         Ok(Self {
-            state_root,
+            runtime,
             query_socket,
             control_socket,
             ingest_socket,
-            shutdown,
-            join: Some(join),
         })
     }
 
     fn connect(&self) -> Result<QuantaIndex, Box<dyn Error>> {
         Ok(QuantaIndex::connect(
-            ConnectOptions::from_state_root(self.state_root.path())
+            ConnectOptions::from_state_root(self.runtime.state_root())
                 .with_query_socket(&self.query_socket)
                 .with_control_socket(&self.control_socket)
                 .with_ingest_socket(&self.ingest_socket),
         )?)
     }
 
-    fn stop(mut self) -> TestResult {
-        self.shutdown.store(true, Ordering::Release);
-        let join = self
-            .join
-            .take()
-            .ok_or("searchd driver join handle was already consumed")?;
-        match join.join() {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(error)) => Err(error.into()),
-            Err(panic) => Err(format!("searchd driver panicked: {panic:?}").into()),
-        }
-    }
-}
-
-impl Drop for RunningRuntime {
-    fn drop(&mut self) {
-        self.shutdown.store(true, Ordering::Release);
-        if let Some(join) = self.join.take() {
-            // Explicit test completion reports driver errors; Drop only keeps
-            // the daemon from leaking when an earlier assertion fails.
-            drop(join.join());
-        }
+    fn stop(self) -> TestResult {
+        Ok(self.runtime.stop()?)
     }
 }
 
@@ -127,31 +95,6 @@ fn revision() -> RevisionId {
 
 fn generation(raw: u64) -> ManifestGeneration {
     ManifestGeneration::new(raw)
-}
-
-fn config_for(state_root: &Path) -> SearchdConfig {
-    let sequence = NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_nanos());
-    let prefix = format!(
-        "qi-generation-activation-concurrency-{}-{nanos}-{sequence}",
-        std::process::id()
-    );
-    let temp = std::env::temp_dir();
-    SearchdConfig::from_state_root(state_root.to_path_buf())
-        .try_with_search_corpus_history_retention_limits(
-            8,
-            16 * 1024 * 1024,
-            128,
-            256 * 1024 * 1024,
-        )
-        .expect("valid test retention policy")
-        .with_socket_overrides(
-            temp.join(format!("{prefix}-query.sock")),
-            temp.join(format!("{prefix}-control.sock")),
-        )
-        .with_ingest_socket_override(temp.join(format!("{prefix}-ingest.sock")))
 }
 
 fn wait_until<F>(timeout: Duration, mut predicate: F) -> bool

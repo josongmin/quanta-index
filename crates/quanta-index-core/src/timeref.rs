@@ -1,21 +1,46 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Parse a search time reference against an explicit `now` (TOPT-01 /
+/// PO-1): the deterministic owner. Absolute shapes ignore `now_ms`;
+/// relative shapes subtract from it with checked arithmetic, so zero
+/// yields `now_ms` and underflow yields `None`.
 #[must_use]
-pub fn parse_search_timeref_ms(value: &str) -> Option<u64> {
+pub fn parse_search_timeref_ms_at(value: &str, now_ms: u64) -> Option<u64> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return None;
     }
+    if let Some(ms) = parse_absolute_timeref_ms(trimmed) {
+        return Some(ms);
+    }
+    if let Some(ms) = parse_human_relative_timeref_ms_at(trimmed, now_ms) {
+        return Some(ms);
+    }
+    parse_duration_timeref_ms_at(trimmed, now_ms)
+}
+
+#[must_use]
+pub fn parse_search_timeref_ms(value: &str) -> Option<u64> {
+    // The composition edge: absolute shapes parse without any clock, and
+    // relative shapes sample the wall clock exactly once. A clock that
+    // reads before the epoch still parses absolute shapes, exactly as
+    // before; only relative shapes need `now`.
+    if let Some(now_ms) = now_ms() {
+        return parse_search_timeref_ms_at(value, now_ms);
+    }
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    parse_absolute_timeref_ms(trimmed)
+}
+
+/// Absolute shapes: RFC-3339 and named-month dates. Clock-free.
+fn parse_absolute_timeref_ms(trimmed: &str) -> Option<u64> {
     if let Some(ms) = parse_rfc3339_timeref_ms(trimmed) {
         return Some(ms);
     }
-    if let Some(ms) = parse_named_month_date_ms(trimmed) {
-        return Some(ms);
-    }
-    if let Some(ms) = parse_human_relative_timeref_ms(trimmed) {
-        return Some(ms);
-    }
-    parse_duration_timeref_ms(trimmed)
+    parse_named_month_date_ms(trimmed)
 }
 
 #[must_use]
@@ -166,13 +191,13 @@ fn month_name_to_number(value: &str) -> Option<u32> {
     }
 }
 
-fn parse_human_relative_timeref_ms(value: &str) -> Option<u64> {
+fn parse_human_relative_timeref_ms_at(value: &str, now_ms: u64) -> Option<u64> {
     let normalized = value
         .split_whitespace()
         .map(str::to_ascii_lowercase)
         .collect::<Vec<_>>();
     if normalized.as_slice() == ["yesterday"] {
-        return now_ms()?.checked_sub(86_400_000);
+        return now_ms.checked_sub(86_400_000);
     }
     let [amount_token, unit_token, ago_token] = normalized.as_slice() else {
         return None;
@@ -193,10 +218,10 @@ fn parse_human_relative_timeref_ms(value: &str) -> Option<u64> {
         "year" | "years" => 31_536_000_000,
         _ => return None,
     };
-    now_ms()?.checked_sub(amount.checked_mul(unit_ms)?)
+    now_ms.checked_sub(amount.checked_mul(unit_ms)?)
 }
 
-fn parse_duration_timeref_ms(value: &str) -> Option<u64> {
+fn parse_duration_timeref_ms_at(value: &str, now_ms: u64) -> Option<u64> {
     let split_at = value.as_bytes().iter().position(|b| !b.is_ascii_digit())?;
     let (digits, unit) = value.split_at(split_at);
     if digits.is_empty() {
@@ -216,7 +241,7 @@ fn parse_duration_timeref_ms(value: &str) -> Option<u64> {
         _ => return None,
     };
     let duration_ms = amount.checked_mul(unit_ms)?;
-    now_ms()?.checked_sub(duration_ms)
+    now_ms.checked_sub(duration_ms)
 }
 
 fn now_ms() -> Option<u64> {
@@ -292,7 +317,13 @@ fn days_from_civil(year: u32, month: u32, day: u32) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_rev_at_time_spec, parse_rev_at_time_spec, parse_search_timeref_ms};
+    use super::{
+        is_rev_at_time_spec, parse_rev_at_time_spec, parse_search_timeref_ms,
+        parse_search_timeref_ms_at,
+    };
+
+    /// Fixed `now` for the deterministic matrix: 2023-11-14T22:13:20Z.
+    const FIXED_NOW_MS: u64 = 1_700_000_000_000;
 
     #[test]
     fn parses_rfc3339_and_date_only() {
@@ -330,6 +361,98 @@ mod tests {
         assert!(parse_search_timeref_ms("7d").is_some());
         assert!(parse_search_timeref_ms("1y").is_some());
         assert!(parse_search_timeref_ms("12mo").is_some());
+    }
+
+    #[test]
+    fn relative_units_subtract_exactly_at_fixed_time() {
+        // Every human unit, singular and plural, at fixed `now`.
+        let cases = [
+            ("1 second ago", 1_000),
+            ("2 seconds ago", 2_000),
+            ("1 minute ago", 60_000),
+            ("2 minutes ago", 120_000),
+            ("1 hour ago", 3_600_000),
+            ("3 hours ago", 10_800_000),
+            ("1 day ago", 86_400_000),
+            ("3 days ago", 259_200_000),
+            ("1 week ago", 604_800_000),
+            ("2 weeks ago", 1_209_600_000),
+            ("1 month ago", 2_592_000_000),
+            ("12 months ago", 31_104_000_000),
+            ("1 year ago", 31_536_000_000),
+            ("2 years ago", 63_072_000_000),
+            ("yesterday", 86_400_000),
+        ];
+        for (text, delta_ms) in cases {
+            assert_eq!(
+                parse_search_timeref_ms_at(text, FIXED_NOW_MS),
+                Some(FIXED_NOW_MS.saturating_sub(delta_ms)),
+                "human phrase {text:?} subtracts exactly"
+            );
+        }
+        // Every duration shorthand at fixed `now`.
+        let shorthands = [
+            ("1s", 1_000),
+            ("30s", 30_000),
+            ("1m", 60_000),
+            ("5m", 300_000),
+            ("1h", 3_600_000),
+            ("7d", 604_800_000),
+            ("2w", 1_209_600_000),
+            ("1mo", 2_592_000_000),
+            ("12mo", 31_104_000_000),
+            ("1y", 31_536_000_000),
+        ];
+        for (text, delta_ms) in shorthands {
+            assert_eq!(
+                parse_search_timeref_ms_at(text, FIXED_NOW_MS),
+                Some(FIXED_NOW_MS.saturating_sub(delta_ms)),
+                "duration {text:?} subtracts exactly"
+            );
+        }
+    }
+
+    #[test]
+    fn zero_durations_yield_now_and_underflow_yields_none() {
+        assert_eq!(
+            parse_search_timeref_ms_at("0s", FIXED_NOW_MS),
+            Some(FIXED_NOW_MS),
+            "a zero duration is exactly now"
+        );
+        assert_eq!(
+            parse_search_timeref_ms_at("0 seconds ago", FIXED_NOW_MS),
+            Some(FIXED_NOW_MS),
+            "a zero human amount is exactly now"
+        );
+        // Underflow past the epoch is `None`, never a wrap.
+        assert_eq!(parse_search_timeref_ms_at("7d", 0), None);
+        assert_eq!(parse_search_timeref_ms_at("1 second ago", 999), None);
+        assert_eq!(parse_search_timeref_ms_at("yesterday", 86_399_999), None);
+        // Amount/unit multiplication overflow is `None`, never a wrap.
+        assert_eq!(
+            parse_search_timeref_ms_at("18446744073709551615y", FIXED_NOW_MS),
+            None
+        );
+        assert_eq!(
+            parse_search_timeref_ms_at("18446744073709551615 years ago", FIXED_NOW_MS),
+            None
+        );
+        // Exact-boundary subtraction still yields `Some(0)`.
+        assert_eq!(parse_search_timeref_ms_at("1000s", 1_000_000), Some(0));
+    }
+
+    #[test]
+    fn absolute_shapes_ignore_the_clock() {
+        assert_eq!(
+            parse_search_timeref_ms_at("2024-06-01", 0),
+            Some(1_717_200_000_000)
+        );
+        assert_eq!(
+            parse_search_timeref_ms_at("june 25 2017", u64::MAX),
+            Some(1_498_348_800_000)
+        );
+        assert_eq!(parse_search_timeref_ms_at("", FIXED_NOW_MS), None);
+        assert_eq!(parse_search_timeref_ms_at("   ", FIXED_NOW_MS), None);
     }
 
     #[test]

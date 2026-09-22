@@ -313,7 +313,7 @@ pub struct SnapshotRegistry<H: ?Sized> {
     state: Mutex<RegistryState<H>>,
 }
 
-impl<H: ?Sized + Send + Sync> SnapshotRegistry<H> {
+impl<H: ?Sized + Send + Sync + 'static> SnapshotRegistry<H> {
     #[must_use]
     pub const fn new(policy: SnapshotRegistryPolicy) -> Self {
         Self {
@@ -380,7 +380,7 @@ impl<H: ?Sized + Send + Sync> SnapshotRegistry<H> {
             if let Some(flight) = state.in_flight.get(key).map(Arc::clone) {
                 state.stats.coalesced = state.stats.coalesced.saturating_add(1);
                 drop(state);
-                return match flight.await_outcome(budget, AWAIT_FLIGHT_CHECKPOINT) {
+                return match Flight::await_outcome(&flight, budget, AWAIT_FLIGHT_CHECKPOINT) {
                     Ok(handle) => Ok(SnapshotAcquired {
                         handle,
                         outcome: SnapshotAcquireOutcome::Coalesced,

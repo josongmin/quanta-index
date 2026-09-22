@@ -303,13 +303,14 @@ impl HistoryTextHandles {
     ) -> Result<Arc<dyn HistoryTextSearcher>, CoreError> {
         match claim {
             HistoryTextClaim::Resident(handle) => Ok(handle),
-            HistoryTextClaim::Await(flight) => flight
-                .await_outcome(budget, AWAIT_OPEN_CHECKPOINT)
-                .map_err(|failure| match failure {
-                    AwaitFlightFailure::Flight(error) | AwaitFlightFailure::Interrupted(error) => {
-                        error
+            HistoryTextClaim::Await(flight) => {
+                Flight::await_outcome(&flight, budget, AWAIT_OPEN_CHECKPOINT).map_err(|failure| {
+                    match failure {
+                        AwaitFlightFailure::Flight(error)
+                        | AwaitFlightFailure::Interrupted(error) => error,
                     }
-                }),
+                })
+            }
             HistoryTextClaim::Open {
                 generation,
                 epoch,

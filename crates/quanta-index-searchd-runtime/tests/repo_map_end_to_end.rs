@@ -21,8 +21,6 @@
 
 use std::error::Error;
 use std::path::Path;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -42,13 +40,66 @@ use quanta_index_contract::{
     SearchPlaneQueryIpcResponseEnvelope, SymbolId,
 };
 use quanta_index_ipc::send_request;
-use quanta_index_searchd::app::SearchdConfig;
-use quanta_index_searchd::app::searchd::drive;
-use quanta_index_searchd_runtime::build_runtime;
+use quanta_index_searchd_harness::E2eRuntime;
 
 type TestResult = Result<(), Box<dyn Error>>;
-static NEXT_SOCKET_ID: AtomicU64 = AtomicU64::new(0);
 const READINESS_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Harness-owned three-socket scenario fixture (TOPT-03: runtime fixture
+/// ownership).
+///
+/// The daemon's tempdir, three-socket builder, and driver thread all live in
+/// [`E2eRuntime`]: boot binds query/control/ingest and waits for all three,
+/// and dropping the runtime performs the acknowledged lease-release (signal
+/// the driver, join it — which drops the old runtime and releases the
+/// state-root lease — before the tempdir is removed). Stale-socket cleanup
+/// tolerates races (`NotFound` is not an error). Tests therefore return
+/// `Err(..)` directly on failure paths with no manual shutdown/join
+/// bookkeeping; teardown is owned by the harness.
+struct ScenarioFixture {
+    runtime: E2eRuntime,
+    query_socket: std::path::PathBuf,
+    control_socket: std::path::PathBuf,
+    ingest_socket: std::path::PathBuf,
+}
+
+impl ScenarioFixture {
+    fn boot() -> Result<Self, Box<dyn Error>> {
+        let mut runtime = E2eRuntime::boot()?;
+        // Eager start surfaces a boot refusal here and binds all three
+        // sockets before any byte is published.
+        runtime.start()?;
+        Self::wrap(runtime)
+    }
+
+    /// Acknowledged restart: the old driver is signalled and joined (dropping
+    /// the old runtime and releasing the state-root lease) before a fresh
+    /// runtime is built over the same state root — no sleep-based handoff.
+    fn restart(self) -> Result<Self, Box<dyn Error>> {
+        let mut runtime = self.runtime.reopen();
+        runtime.start()?;
+        Self::wrap(runtime)
+    }
+
+    fn wrap(runtime: E2eRuntime) -> Result<Self, Box<dyn Error>> {
+        let (query_socket, control_socket, ingest_socket) = {
+            let (query, control, ingest) = runtime
+                .socket_paths()
+                .ok_or_else(|| "fixture: driver started without socket paths".to_string())?;
+            (
+                query.to_path_buf(),
+                control.to_path_buf(),
+                ingest.to_path_buf(),
+            )
+        };
+        Ok(Self {
+            runtime,
+            query_socket,
+            control_socket,
+            ingest_socket,
+        })
+    }
+}
 
 fn repo() -> RepoId {
     RepoId::new("repo-repomap-e2e").expect("static fixture ID satisfies canonical policy")
@@ -71,34 +122,6 @@ fn rust_language() -> Result<LanguageCode, Box<dyn Error>> {
 fn symbol_kind(name: &str) -> Result<SymbolKindCode, Box<dyn Error>> {
     SymbolKindCode::new(name)
         .map_err(|err| format!("invalid hard-coded test symbol kind `{name}`: {err}").into())
-}
-
-fn unique_socket_paths() -> (std::path::PathBuf, std::path::PathBuf) {
-    let pid = std::process::id();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let sequence = NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed);
-    let query =
-        std::env::temp_dir().join(format!("qi-repomap-query-{pid}-{nanos}-{sequence}.sock"));
-    let control =
-        std::env::temp_dir().join(format!("qi-repomap-control-{pid}-{nanos}-{sequence}.sock"));
-    (query, control)
-}
-
-fn build_config(state_root: &Path) -> SearchdConfig {
-    let mut cfg = SearchdConfig::from_state_root(state_root.to_path_buf())
-        .try_with_search_corpus_history_retention_limits(
-            8,
-            16 * 1024 * 1024,
-            128,
-            256 * 1024 * 1024,
-        )
-        .expect("valid test retention policy");
-    let (query_socket, control_socket) = unique_socket_paths();
-    cfg = SearchdConfig::with_socket_overrides(cfg, query_socket, control_socket);
-    cfg
 }
 
 fn send_query_request(
@@ -340,33 +363,10 @@ fn assert_repo_map_transport_surface(
 
 #[test]
 fn repo_map_query_roundtrip_through_searchd_socket() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let config = build_config(dir.path());
-    let runtime = build_runtime(config)?;
-    let query_socket = runtime.query_server.socket_path().to_path_buf();
-    let control_socket = runtime.control_server.socket_path().to_path_buf();
-    let ingest_socket = runtime.ingest_server.socket_path().to_path_buf();
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let shutdown_for_drive = Arc::clone(&shutdown);
-    let join = thread::Builder::new()
-        .name("searchd-repomap-test-driver".into())
-        .spawn(move || drive(runtime, &shutdown_for_drive))?;
-
-    if !wait_until(Duration::from_secs(2), || query_socket.exists()) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err("socket never appeared".into());
-    }
-    if !wait_until(Duration::from_secs(2), || control_socket.exists()) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err("control socket never appeared".into());
-    }
-    if !wait_until(Duration::from_secs(2), || ingest_socket.exists()) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err("ingest socket never appeared".into());
-    }
+    let fixture = ScenarioFixture::boot()?;
+    let query_socket = fixture.query_socket.clone();
+    let control_socket = fixture.control_socket.clone();
+    let ingest_socket = fixture.ingest_socket.clone();
     let source = repo_map_bundle()?;
     let publish_request = RepoMapPublishBundleRequestV2::new(source.clone())?;
     let publish_envelope = SearchPlaneIngestIpcRequestEnvelope {
@@ -384,8 +384,6 @@ fn repo_map_query_roundtrip_through_searchd_socket() -> TestResult {
             receipt
         }
         other => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
             return Err(format!("repo-map V2 publish did not ack: {other:?}").into());
         }
     };
@@ -394,8 +392,6 @@ fn repo_map_query_roundtrip_through_searchd_socket() -> TestResult {
     let mut expected_replay = publish.clone();
     expected_replay.mutation.replayed = true;
     if replay.payload != SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(expected_replay) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!("repo-map V2 replay changed the terminal receipt: {replay:?}").into());
     }
 
@@ -415,8 +411,6 @@ fn repo_map_query_roundtrip_through_searchd_socket() -> TestResult {
         SearchPlaneIngestIpcResponse::Error(ref error)
             if error.code == quanta_index_contract::SearchPlaneErrorCodeV2::CandidateCommitmentConflict
     ) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!("repo-map V2 substituted source was not refused: {refusal:?}").into());
     }
 
@@ -436,8 +430,6 @@ fn repo_map_query_roundtrip_through_searchd_socket() -> TestResult {
                 && receipt.source_bundle_digest == publish.source_bundle_digest
                 && receipt.mutation.new_candidate_commitment == publish.mutation.new_candidate_commitment
     ) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!("repo-map V2 activate did not bind publish: {activate:?}").into());
     }
     if !wait_until(READINESS_TIMEOUT, || {
@@ -450,8 +442,6 @@ fn repo_map_query_roundtrip_through_searchd_socket() -> TestResult {
             })
             .unwrap_or(false)
     }) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err("repo-map query path never became ready".into());
     }
 
@@ -460,52 +450,20 @@ fn repo_map_query_roundtrip_through_searchd_socket() -> TestResult {
     let repo_map = match response.payload {
         SearchPlaneQueryIpcResponse::RepoMapQuery(repo_map) => repo_map,
         other => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
             return Err(format!("expected RepoMapQuery response, got {other:?}").into());
         }
     };
     assert_repo_map_transport_surface(&repo_map)?;
 
-    shutdown.store(true, Ordering::Release);
-    match join.join() {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(err)) => Err(err.into()),
-        Err(panic) => Err(format!("driver panic: {panic:?}").into()),
-    }
+    Ok(())
 }
 
 #[test]
 fn repo_map_query_survives_runtime_restart_from_persisted_state() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
-
-    let config = build_config(state_root);
-    let runtime = build_runtime(config)?;
-    let query_socket = runtime.query_server.socket_path().to_path_buf();
-    let control_socket = runtime.control_server.socket_path().to_path_buf();
-    let ingest_socket = runtime.ingest_server.socket_path().to_path_buf();
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let shutdown_for_drive = Arc::clone(&shutdown);
-    let join = thread::Builder::new()
-        .name("searchd-repomap-persist-seed-driver".into())
-        .spawn(move || drive(runtime, &shutdown_for_drive))?;
-
-    if !wait_until(Duration::from_secs(2), || query_socket.exists()) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err("socket never appeared".into());
-    }
-    if !wait_until(Duration::from_secs(2), || control_socket.exists()) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err("control socket never appeared".into());
-    }
-    if !wait_until(Duration::from_secs(2), || ingest_socket.exists()) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err("ingest socket never appeared".into());
-    }
+    let fixture = ScenarioFixture::boot()?;
+    let query_socket = fixture.query_socket.clone();
+    let control_socket = fixture.control_socket.clone();
+    let ingest_socket = fixture.ingest_socket.clone();
     let source = repo_map_bundle()?;
     let publish_request = RepoMapPublishBundleRequestV2::new(source.clone())?;
     let publish_envelope = SearchPlaneIngestIpcRequestEnvelope {
@@ -521,8 +479,6 @@ fn repo_map_query_survives_runtime_restart_from_persisted_state() -> TestResult 
             receipt
         }
         other => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
             return Err(format!("repo-map V2 seed publish failed: {other:?}").into());
         }
     };
@@ -542,50 +498,20 @@ fn repo_map_query_survives_runtime_restart_from_persisted_state() -> TestResult 
             receipt
         }
         other => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
             return Err(format!("repo-map V2 seed activation failed: {other:?}").into());
         }
     };
 
-    shutdown.store(true, Ordering::Release);
-    match join.join() {
-        Ok(Ok(())) => {}
-        Ok(Err(err)) => return Err(err.into()),
-        Err(panic) => return Err(format!("driver panic: {panic:?}").into()),
-    }
-
-    let config = build_config(state_root);
-    let runtime = build_runtime(config)?;
-    let query_socket = runtime.query_server.socket_path().to_path_buf();
-    let control_socket = runtime.control_server.socket_path().to_path_buf();
-    let ingest_socket = runtime.ingest_server.socket_path().to_path_buf();
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let shutdown_for_drive = Arc::clone(&shutdown);
-    let join = thread::Builder::new()
-        .name("searchd-repomap-persist-restore-driver".into())
-        .spawn(move || drive(runtime, &shutdown_for_drive))?;
-
-    if !wait_until(Duration::from_secs(2), || query_socket.exists()) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err("socket never appeared after restart".into());
-    }
-    if !wait_until(Duration::from_secs(2), || {
-        control_socket.exists() && ingest_socket.exists()
-    }) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err("repo-map V2 mutation sockets never appeared after restart".into());
-    }
+    let fixture = fixture.restart()?;
+    let query_socket = fixture.query_socket.clone();
+    let control_socket = fixture.control_socket.clone();
+    let ingest_socket = fixture.ingest_socket.clone();
     let replay = send_ingest_request(&ingest_socket, &publish_envelope)?;
     let mut expected_publish_replay = publish;
     expected_publish_replay.mutation.replayed = true;
     if replay.payload
         != SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(expected_publish_replay)
     {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!("repo-map V2 restart publish replay drifted: {replay:?}").into());
     }
     let activate_replay = send_control_request(&control_socket, &activate_envelope)?;
@@ -594,8 +520,6 @@ fn repo_map_query_survives_runtime_restart_from_persisted_state() -> TestResult 
     if activate_replay.payload
         != SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(expected_activation_replay)
     {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(
             format!("repo-map V2 restart activation replay drifted: {activate_replay:?}").into(),
         );
@@ -610,8 +534,6 @@ fn repo_map_query_survives_runtime_restart_from_persisted_state() -> TestResult 
             })
             .unwrap_or(false)
     }) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err("repo-map persisted query path never became ready".into());
     }
 
@@ -620,8 +542,6 @@ fn repo_map_query_survives_runtime_restart_from_persisted_state() -> TestResult 
     let repo_map = match response.payload {
         SearchPlaneQueryIpcResponse::RepoMapQuery(repo_map) => repo_map,
         other => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
             return Err(
                 format!("expected RepoMapQuery response after restart, got {other:?}").into(),
             );
@@ -629,87 +549,37 @@ fn repo_map_query_survives_runtime_restart_from_persisted_state() -> TestResult 
     };
     assert_repo_map_transport_surface(&repo_map)?;
 
-    shutdown.store(true, Ordering::Release);
-    match join.join() {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(err)) => Err(err.into()),
-        Err(panic) => Err(format!("driver panic: {panic:?}").into()),
-    }
+    Ok(())
 }
 
 #[test]
 fn repo_map_query_without_materialized_snapshot_fails_closed() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let config = build_config(dir.path());
-    let runtime = build_runtime(config)?;
-    let query_socket = runtime.query_server.socket_path().to_path_buf();
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let shutdown_for_drive = Arc::clone(&shutdown);
-    let join = thread::Builder::new()
-        .name("searchd-repomap-missing-test-driver".into())
-        .spawn(move || drive(runtime, &shutdown_for_drive))?;
-
-    if !wait_until(Duration::from_secs(2), || query_socket.exists()) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err("socket never appeared".into());
-    }
+    let fixture = ScenarioFixture::boot()?;
+    let query_socket = fixture.query_socket.clone();
 
     let response = send_query_request(&query_socket, &repo_map_request())
         .map_err(|err| format!("repo-map missing-snapshot query failed: {err}"))?;
     let err = match response.payload {
         SearchPlaneQueryIpcResponse::Error(err) => err,
         other => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
             return Err(format!("expected error response, got {other:?}").into());
         }
     };
     assert_eq!(err.code.as_wire_str(), "NOT_FOUND");
     assert!(err.message.contains("no activated generation"));
 
-    shutdown.store(true, Ordering::Release);
-    match join.join() {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(err)) => Err(err.into()),
-        Err(panic) => Err(format!("driver panic: {panic:?}").into()),
-    }
+    Ok(())
 }
 
 #[test]
 fn cross_socket_requests_fail_closed() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let config = build_config(dir.path());
-    let runtime = build_runtime(config)?;
-    let query_socket = runtime.query_server.socket_path().to_path_buf();
-    let control_socket = runtime.control_server.socket_path().to_path_buf();
-    let ingest_socket = runtime.ingest_server.socket_path().to_path_buf();
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let shutdown_for_drive = Arc::clone(&shutdown);
-    let join = thread::Builder::new()
-        .name("searchd-repomap-cross-socket-driver".into())
-        .spawn(move || drive(runtime, &shutdown_for_drive))?;
-
-    if !wait_until(Duration::from_secs(2), || query_socket.exists()) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err("query socket never appeared".into());
-    }
-    if !wait_until(Duration::from_secs(2), || control_socket.exists()) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err("control socket never appeared".into());
-    }
-    if !wait_until(Duration::from_secs(2), || ingest_socket.exists()) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err("ingest socket never appeared".into());
-    }
+    let fixture = ScenarioFixture::boot()?;
+    let query_socket = fixture.query_socket.clone();
+    let control_socket = fixture.control_socket.clone();
+    let ingest_socket = fixture.ingest_socket.clone();
 
     match send_ingest_request(&query_socket, &repo_map_ingest_envelope()?) {
         Ok(unexpected) => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
             return Err(format!(
                 "ingest envelope on query socket must fail closed, got {unexpected:?}"
             )
@@ -720,8 +590,6 @@ fn cross_socket_requests_fail_closed() -> TestResult {
 
     match send_query_request(&control_socket, &repo_map_request()) {
         Ok(unexpected) => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
             return Err(format!(
                 "query envelope on control socket must fail closed, got {unexpected:?}"
             )
@@ -730,10 +598,5 @@ fn cross_socket_requests_fail_closed() -> TestResult {
         Err(err) => check_connection_fatal(err)?,
     }
 
-    shutdown.store(true, Ordering::Release);
-    match join.join() {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(err)) => Err(err.into()),
-        Err(panic) => Err(format!("driver panic: {panic:?}").into()),
-    }
+    Ok(())
 }

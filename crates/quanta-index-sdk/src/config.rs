@@ -154,6 +154,20 @@ impl ConnectOptions {
     }
 
     fn resolve_state_root(&self) -> Result<Option<PathBuf>, SdkError> {
+        self.resolve_state_root_with(&SystemEnv)
+    }
+
+    /// Deterministic state-root resolution over an explicit environment
+    /// view (TOPT-01 / PO-2). Precedence, exactly as before: explicit
+    /// option, then no-root when any socket is pinned, then the
+    /// state-root variable, the cache-root variable, then the platform
+    /// default under `HOME`. A missing or non-Unicode `HOME` is a usage
+    /// error; a missing or non-Unicode `QUANTA_INDEX_*` variable falls
+    /// through to the next source.
+    pub(crate) fn resolve_state_root_with(
+        &self,
+        env: &dyn EnvLookup,
+    ) -> Result<Option<PathBuf>, SdkError> {
         if let Some(root) = &self.state_root {
             return Ok(Some(root.clone()));
         }
@@ -163,22 +177,54 @@ impl ConnectOptions {
         {
             return Ok(None);
         }
-        if let Ok(explicit) = std::env::var("QUANTA_INDEX_STATE_ROOT") {
+        if let Ok(explicit) = env.get("QUANTA_INDEX_STATE_ROOT") {
             return Ok(Some(PathBuf::from(explicit)));
         }
-        if let Ok(cache_root) = std::env::var("QUANTA_INDEX_CACHE_ROOT") {
+        if let Ok(cache_root) = env.get("QUANTA_INDEX_CACHE_ROOT") {
             return Ok(Some(PathBuf::from(cache_root).join("state")));
         }
-        let home = std::env::var("HOME").map_err(|_err| {
+        let home = env.get("HOME").map_err(|_err| {
             SdkError::Usage(
                 "cannot resolve default state root: set state root, HOME, or QUANTA_INDEX_*"
                     .to_string(),
             )
         })?;
-        #[cfg(target_os = "macos")]
-        let root = PathBuf::from(home).join("Library/Caches/quanta-index/state");
-        #[cfg(not(target_os = "macos"))]
-        let root = PathBuf::from(home).join(".cache/quanta-index/state");
-        Ok(Some(root))
+        Ok(Some(default_state_root_from_home(&home)))
+    }
+}
+
+/// The platform default state root under `home`, isolated from
+/// precedence so the fallback is testable without the environment.
+fn default_state_root_from_home(home: &str) -> PathBuf {
+    #[cfg(target_os = "macos")]
+    let root = PathBuf::from(home).join("Library/Caches/quanta-index/state");
+    #[cfg(not(target_os = "macos"))]
+    let root = PathBuf::from(home).join(".cache/quanta-index/state");
+    root
+}
+
+/// Read-only environment view for state-root resolution.
+pub(crate) trait EnvLookup {
+    fn get(&self, name: &str) -> Result<String, EnvLookupError>;
+}
+
+/// Why an environment lookup failed: absent, or present but not Unicode.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum EnvLookupError {
+    Missing,
+    NotUnicode,
+}
+
+/// The production environment view: the real process environment at the
+/// composition edge.
+pub(crate) struct SystemEnv;
+
+impl EnvLookup for SystemEnv {
+    fn get(&self, name: &str) -> Result<String, EnvLookupError> {
+        match std::env::var(name) {
+            Ok(value) => Ok(value),
+            Err(std::env::VarError::NotPresent) => Err(EnvLookupError::Missing),
+            Err(std::env::VarError::NotUnicode(_)) => Err(EnvLookupError::NotUnicode),
+        }
     }
 }

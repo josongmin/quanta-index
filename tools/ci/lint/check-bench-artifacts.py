@@ -102,22 +102,6 @@ LATENCY_KEYS = ("p50_ms", "p95_ms", "p99_ms", "samples")
 MODES = ("warm", "cold")
 UNTIMED_DIMENSIONS = ("relevance", "relevance-openai-ab", "ambiguity", "snippet", "ops", "ui")
 CONCURRENCY_COUNTS = (1, 8, 32)
-VERDICT_DIMENSIONS = frozenset(
-    (
-        "relevance",
-        "relevance-openai-ab",
-        "ambiguity",
-        "snippet",
-        "scale",
-        "tail",
-        "ann",
-        "concurrency",
-        "freshness",
-        "open-loop",
-        "ops",
-        "ui",
-    )
-)
 @dataclass(frozen=True)
 class Refusal:
     path: Path
@@ -446,7 +430,7 @@ def check_families(
                                     f"{dimension}: rows[{index}] needs at least {minimum} samples",
                                 )
                             )
-                if dimension in VERDICT_DIMENSIONS:
+                if family["requires_verdict"]:
                     detail = payload.get("detail")
                     if not isinstance(detail, dict) or detail.get("passed") is not True:
                         refusals.append(

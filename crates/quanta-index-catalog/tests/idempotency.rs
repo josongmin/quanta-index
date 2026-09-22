@@ -15,21 +15,29 @@
 //! 6. Forgetting a generation drops exactly its records, records one
 //!    invalidation per dropped key, and a retry of a forgotten key is
 //!    refused below the replay floor.
+//! 7. Lease decisions read a scripted clock: claim, recover, and
+//!    mutation-enter pin now < deadline, == deadline, and > deadline
+//!    exactly, and each transaction samples the clock exactly once
+//!    (TOPT-01 / PO-3).
 
 #![forbid(unsafe_code)]
 
+use std::collections::VecDeque;
 use std::error::Error;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use quanta_index_catalog::{CATALOG_FILE_NAME, SqliteCatalog, catalog_dir};
+use quanta_index_catalog::{CATALOG_FILE_NAME, CatalogClockPort, SqliteCatalog, catalog_dir};
 use quanta_index_contract::{
     BatchPublishReceipt, IngestOperationKindV1, ManifestGeneration, RepoId, RepoMapMutationAck,
     RepoMapMutationPhaseV2, RepoMapTerminalReceiptV2, RevisionId, SearchPlaneErrorCodeV2,
 };
 use quanta_index_core::{
     BATCH_DIGEST_CONFLICT_CODE, CATALOG_BUSY_CODE, CATALOG_ROW_CORRUPT_CODE, ClaimOutcomeV1,
-    CoreError, IdempotencyCatalogPort, IdempotencyKeyV1, OPERATION_FENCE_LOST_CODE,
-    OPERATION_REPLAY_FLOOR_CODE, OperationInspectV1, PreparedMutationV1,
+    CoreError, IdempotencyCatalogPort, IdempotencyKeyV1, MutationCoordinatorPort,
+    OPERATION_FENCE_LOST_CODE, OPERATION_REPLAY_FLOOR_CODE, OperationInspectV1,
+    OperationJournalStateV1, PreparedMutationV1,
 };
 
 const LONG_LEASE_MS: u64 = i64::MAX.unsigned_abs();
@@ -713,4 +721,243 @@ impl ClaimedOrFail for ClaimOutcomeV1 {
             }
         }
     }
+}
+
+/// Scripted Unix-millisecond clock: each transaction consumes the next
+/// sample, exhaustion repeats the last sample so the script stays total,
+/// and every sample is counted.
+struct ScriptedClock {
+    script: Mutex<VecDeque<u64>>,
+    samples: AtomicU64,
+    last: AtomicU64,
+}
+
+impl ScriptedClock {
+    fn new(script: &[u64]) -> Self {
+        let last = script.last().copied().unwrap_or(0);
+        Self {
+            script: Mutex::new(script.iter().copied().collect()),
+            samples: AtomicU64::new(0),
+            last: AtomicU64::new(last),
+        }
+    }
+
+    fn samples(&self) -> u64 {
+        self.samples.load(Ordering::SeqCst)
+    }
+}
+
+impl CatalogClockPort for ScriptedClock {
+    fn now_unix_ms(&self) -> u64 {
+        let _prior = self.samples.fetch_add(1, Ordering::SeqCst);
+        let next = match self.script.lock() {
+            Ok(mut script) => script.pop_front(),
+            Err(_) => None,
+        };
+        match next {
+            Some(now) => {
+                self.last.store(now, Ordering::SeqCst);
+                now
+            }
+            None => self.last.load(Ordering::SeqCst),
+        }
+    }
+}
+
+fn open_scripted(
+    temp: &tempfile::TempDir,
+    clock: Arc<ScriptedClock>,
+) -> Result<SqliteCatalog, CoreError> {
+    SqliteCatalog::open_with_clock(temp.path(), Duration::from_millis(100), clock)
+}
+
+fn busy_code(error: &CoreError) -> Result<(), Box<dyn Error>> {
+    match typed_code(error) {
+        Some(code) if code == CATALOG_BUSY_CODE => Ok(()),
+        other => Err(format!("expected CATALOG_BUSY, got {other:?}").into()),
+    }
+}
+
+#[test]
+fn claim_boundary_follows_the_scripted_now() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let clock = Arc::new(ScriptedClock::new(&[1_000, 1_999, 2_000, 2_001]));
+    let catalog = open_scripted(&temp, Arc::clone(&clock))?;
+    let key = key(
+        IngestOperationKindV1::SearchCorpus,
+        11,
+        "digest-clock-claim",
+    );
+    let body = [7_u8; 32];
+
+    // Fresh claim at t=1000 with deadline 2000.
+    match catalog.claim_prepared(&key, &body, "clock-owner", 2_000, &body)? {
+        ClaimOutcomeV1::Claimed(claim) => {
+            if claim.lease_deadline_ms != 2_000 {
+                return Err("fresh claim must persist the caller deadline".into());
+            }
+        }
+        ClaimOutcomeV1::Replay { .. } | ClaimOutcomeV1::ReplayRepoMap { .. } => {
+            return Err("expected a fresh claim, got a replay".into());
+        }
+    }
+    // now < deadline: the live claim refuses its own owner as busy.
+    match catalog.claim_prepared(&key, &body, "clock-owner", 2_000, &body) {
+        Err(error) => busy_code(&error)?,
+        Ok(outcome) => {
+            return Err(format!("a live claim must refuse busy, got {outcome:?}").into());
+        }
+    }
+    // now == deadline: the lease lapsed exactly, so the owner takes over.
+    match catalog.claim_prepared(&key, &body, "clock-owner", 2_000, &body)? {
+        ClaimOutcomeV1::Claimed(_) => {}
+        ClaimOutcomeV1::Replay { .. } | ClaimOutcomeV1::ReplayRepoMap { .. } => {
+            return Err("an exactly-lapsed claim must take over, got a replay".into());
+        }
+    }
+    // now > deadline: the owner takes over again.
+    match catalog.claim_prepared(&key, &body, "clock-owner", 2_000, &body)? {
+        ClaimOutcomeV1::Claimed(_) => {}
+        ClaimOutcomeV1::Replay { .. } | ClaimOutcomeV1::ReplayRepoMap { .. } => {
+            return Err("a lapsed claim must take over, got a replay".into());
+        }
+    }
+    if clock.samples() != 4 {
+        return Err(format!(
+            "four transactions must sample exactly four times, got {}",
+            clock.samples()
+        )
+        .into());
+    }
+    Ok(())
+}
+
+#[test]
+fn recover_boundary_follows_the_scripted_now() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    // Each key is claimed fresh (t=1000, deadline 2000), then recovered
+    // at its probe time; recovery mutates expired rows, so each probe
+    // needs its own key.
+    let clock = Arc::new(ScriptedClock::new(&[
+        1_000, 1_999, //
+        1_000, 2_000, //
+        1_000, 2_001, //
+    ]));
+    let catalog = open_scripted(&temp, Arc::clone(&clock))?;
+    let body = [9_u8; 32];
+    for (index, digest) in ["digest-live", "digest-equal", "digest-past"]
+        .iter()
+        .enumerate()
+    {
+        let key = key(IngestOperationKindV1::SearchCorpus, 21, digest);
+        match catalog.claim_prepared(&key, &body, "clock-owner", 2_000, &body)? {
+            ClaimOutcomeV1::Claimed(_) => {}
+            ClaimOutcomeV1::Replay { .. } | ClaimOutcomeV1::ReplayRepoMap { .. } => {
+                return Err("expected a fresh claim, got a replay".into());
+            }
+        }
+        match catalog.recover(&key)? {
+            OperationInspectV1::InFlight {
+                state,
+                owner,
+                lease_deadline_ms,
+                ..
+            } if index == 0 => {
+                if state != OperationJournalStateV1::Claimed
+                    || owner != "clock-owner"
+                    || lease_deadline_ms != 2_000
+                {
+                    return Err("a live recover must report the intact claim".into());
+                }
+            }
+            OperationInspectV1::Absent if index > 0 => {}
+            other => {
+                return Err(format!("probe {index} recovered wrong: {other:?}").into());
+            }
+        }
+    }
+    if clock.samples() != 6 {
+        return Err(format!(
+            "six transactions must sample exactly six times, got {}",
+            clock.samples()
+        )
+        .into());
+    }
+    Ok(())
+}
+
+#[test]
+fn mutation_enter_boundary_and_deadline_arithmetic() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let clock = Arc::new(ScriptedClock::new(&[1_000, 1_499, 1_500, 2_001, 2_002]));
+    let catalog = open_scripted(&temp, Arc::clone(&clock))?;
+
+    // Enter at t=1000 with a 500ms lease: the deadline is exactly 1500.
+    let first = catalog.enter("scope-clock", "worker-1", 500)?;
+    if first.deadline_ms != 1_500 {
+        return Err(format!("deadline must be now + lease, got {}", first.deadline_ms).into());
+    }
+    // now < deadline with another owner: busy.
+    match catalog.enter("scope-clock", "worker-2", 500) {
+        Err(error) => busy_code(&error)?,
+        Ok(lease) => {
+            return Err(format!("a live lease must refuse busy, got {lease:?}").into());
+        }
+    }
+    // now == deadline: the lease lapsed exactly, so the rival takes over
+    // with a deadline computed from the probe time.
+    let second = catalog.enter("scope-clock", "worker-2", 500)?;
+    if second.deadline_ms != 2_000 {
+        return Err(format!(
+            "takeover deadline must be now + lease, got {}",
+            second.deadline_ms
+        )
+        .into());
+    }
+    // now > deadline: a third worker takes over.
+    let third = catalog.enter("scope-clock", "worker-3", 500)?;
+    if third.deadline_ms != 2_501 || third.owner != "worker-3" {
+        return Err(format!("a lapsed lease must take over, got {third:?}").into());
+    }
+    // The same owner re-enters a live lease without waiting for expiry.
+    let fourth = catalog.enter("scope-clock", "worker-3", 100)?;
+    if fourth.deadline_ms != 2_102 {
+        return Err(format!(
+            "same-owner re-enter must recompute the deadline, got {}",
+            fourth.deadline_ms
+        )
+        .into());
+    }
+    if clock.samples() != 5 {
+        return Err(format!(
+            "five transactions must sample exactly five times, got {}",
+            clock.samples()
+        )
+        .into());
+    }
+    Ok(())
+}
+
+#[test]
+fn scripted_clock_steps_between_transactions_without_resampling() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let clock = Arc::new(ScriptedClock::new(&[1_000, 2_000]));
+    let catalog = open_scripted(&temp, Arc::clone(&clock))?;
+    let first = catalog.enter("scope-a", "worker-1", 500)?;
+    let second = catalog.enter("scope-b", "worker-1", 500)?;
+    if first.deadline_ms != 1_500 || second.deadline_ms != 2_500 {
+        return Err(format!(
+            "independent transactions must see stepped times, got {} and {}",
+            first.deadline_ms, second.deadline_ms
+        )
+        .into());
+    }
+    if clock.samples() != 2 {
+        return Err(format!(
+            "two transactions must sample exactly twice, got {}",
+            clock.samples()
+        )
+        .into());
+    }
+    Ok(())
 }

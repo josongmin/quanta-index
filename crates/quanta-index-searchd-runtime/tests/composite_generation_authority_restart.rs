@@ -13,10 +13,6 @@
 
 use std::error::Error;
 use std::path::Path;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use quanta_index_contract::{
     SearchPlaneErrorCodeV2, SearchPlaneRollbackSearchCorpusGenerationCasRequest,
@@ -27,15 +23,12 @@ use quanta_index_sdk::{
     RepoRelativePath, RevisionId, SdkError, SearchCorpusBatch, SearchCorpusGenerationIdentityV1,
     SearchPlaneTrackKind, SearchScopeKey, SearchScopeSurface,
 };
-use quanta_index_searchd::app::SearchdConfig;
-use quanta_index_searchd::app::searchd::drive;
-use quanta_index_searchd_runtime::build_runtime;
+use quanta_index_searchd_harness::E2eRuntime;
 
 use crate::searchd_binary_process::SearchdBinaryProcess;
 use crate::searchd_lease_probe;
 
 type TestResult = Result<(), Box<dyn Error>>;
-type DriverJoin = thread::JoinHandle<anyhow::Result<()>>;
 
 const REPO: &str = "repo-composite-restart";
 const REVISION: &str = "revision-composite-restart";
@@ -45,81 +38,56 @@ const G2: u64 = 42;
 const G0_DIGEST: &str = "manifest:composite-restart:g0";
 const G1_DIGEST: &str = "manifest:composite-restart:g1";
 const G2_DIGEST: &str = "manifest:composite-restart:g2";
-const SOCKET_TIMEOUT: Duration = Duration::from_secs(30);
 const ERR_ROLLBACK_TARGET_UNOPENABLE: SearchPlaneErrorCodeV2 =
     SearchPlaneErrorCodeV2::RollbackTargetUnopenable;
 const ERR_ROLLBACK_CAS_CONFLICT: SearchPlaneErrorCodeV2 =
     SearchPlaneErrorCodeV2::RollbackCasConflict;
 const ERR_STATE_ROOT_IN_USE: SearchPlaneErrorCodeV2 = SearchPlaneErrorCodeV2::StateRootInUse;
 
-static NEXT_SOCKET_ID: AtomicU64 = AtomicU64::new(0);
+/// Boot a daemon over a caller-owned `state_root` and start its driver,
+/// returning the running harness: the lease is held from `start` until
+/// the runtime stops or drops (TOPT-03: runtime fixture ownership).
+fn boot_started(state_root: &Path) -> anyhow::Result<E2eRuntime> {
+    let mut runtime = E2eRuntime::boot_in(state_root)?;
+    runtime.start()?;
+    Ok(runtime)
+}
 
+/// Harness-owned restart fixture (TOPT-03: runtime fixture ownership).
+///
+/// `E2eRuntime::boot_in` serves the caller-owned `state_root` under the
+/// same retention policy the old `config_for` spelled out (8 generations,
+/// 16 MiB pair bytes, 128 pairs, 256 MiB total), with unique harness-owned
+/// sockets: the directory outlives each boot, so a stop plus a fresh
+/// start replays a restart over the same root. Explicit `stop` surfaces a
+/// driver failure as the test error; drop remains the unwind path.
 struct RunningRuntime {
     client: QuantaIndex,
-    shutdown: Arc<AtomicBool>,
-    join: Option<DriverJoin>,
+    runtime: E2eRuntime,
 }
 
 impl RunningRuntime {
-    fn start(state_root: &Path, label: &str) -> Result<Self, Box<dyn Error>> {
-        let runtime = build_runtime(config_for(state_root))?;
-        let query_socket = runtime.query_server.socket_path().to_path_buf();
-        let control_socket = runtime.control_server.socket_path().to_path_buf();
-        let ingest_socket = runtime.ingest_server.socket_path().to_path_buf();
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let driver_shutdown = Arc::clone(&shutdown);
-        let join = thread::Builder::new()
-            .name(label.to_string())
-            .spawn(move || drive(runtime, &driver_shutdown))?;
-
-        if !wait_until(SOCKET_TIMEOUT, || {
-            query_socket.exists() && control_socket.exists() && ingest_socket.exists()
-        }) {
-            shutdown.store(true, Ordering::Release);
-            return match join.join() {
-                Ok(Ok(())) => Err("searchd sockets were not published before timeout".into()),
-                Ok(Err(error)) => Err(error.into()),
-                Err(panic) => Err(format!("searchd driver panicked: {panic:?}").into()),
-            };
-        }
-
+    fn start(state_root: &Path) -> Result<Self, Box<dyn Error>> {
+        let runtime = boot_started(state_root).map_err(anyhow_to_box)?;
+        let (query, control, ingest) = runtime
+            .socket_paths()
+            .ok_or_else(|| "fixture: driver started without socket paths".to_string())?;
         let client = QuantaIndex::connect(
             ConnectOptions::from_state_root(state_root)
-                .with_query_socket(query_socket)
-                .with_control_socket(control_socket)
-                .with_ingest_socket(ingest_socket),
+                .with_query_socket(query)
+                .with_control_socket(control)
+                .with_ingest_socket(ingest),
         )?;
-        Ok(Self {
-            client,
-            shutdown,
-            join: Some(join),
-        })
+        Ok(Self { client, runtime })
     }
 
-    fn stop(mut self) -> TestResult {
-        self.shutdown.store(true, Ordering::Release);
-        let join = self
-            .join
-            .take()
-            .ok_or("searchd driver join handle was already consumed")?;
-        match join.join() {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(error)) => Err(error.into()),
-            Err(panic) => Err(format!("searchd driver panicked: {panic:?}").into()),
-        }
+    fn stop(self) -> TestResult {
+        self.runtime.stop().map_err(anyhow_to_box)
     }
 }
 
-impl Drop for RunningRuntime {
-    fn drop(&mut self) {
-        self.shutdown.store(true, Ordering::Release);
-        if let Some(join) = self.join.take() {
-            // Explicit tests call `stop` and surface driver failures. This is
-            // only the unwind/early-return cleanup path where Drop cannot
-            // return a second error without masking the primary failure.
-            drop(join.join());
-        }
-    }
+fn anyhow_to_box(error: anyhow::Error) -> Box<dyn Error> {
+    error.into()
 }
 
 fn repo() -> RepoId {
@@ -132,45 +100,6 @@ fn revision() -> RevisionId {
 
 fn generation(raw: u64) -> ManifestGeneration {
     ManifestGeneration::new(raw)
-}
-
-fn config_for(state_root: &Path) -> SearchdConfig {
-    let sequence = NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_nanos());
-    let prefix = format!(
-        "qi-composite-authority-{}-{nanos}-{sequence}",
-        std::process::id()
-    );
-    let temp = std::env::temp_dir();
-    SearchdConfig::from_state_root(state_root.to_path_buf())
-        .try_with_search_corpus_history_retention_limits(
-            8,
-            16 * 1024 * 1024,
-            128,
-            256 * 1024 * 1024,
-        )
-        .expect("valid test retention policy")
-        .with_socket_overrides(
-            temp.join(format!("{prefix}-query.sock")),
-            temp.join(format!("{prefix}-control.sock")),
-        )
-        .with_ingest_socket_override(temp.join(format!("{prefix}-ingest.sock")))
-}
-
-fn wait_until<F>(timeout: Duration, mut predicate: F) -> bool
-where
-    F: FnMut() -> bool,
-{
-    let start = Instant::now();
-    while start.elapsed() < timeout {
-        if predicate() {
-            return true;
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
-    false
 }
 
 fn batch(raw_generation: u64, digest: &str) -> Result<SearchCorpusBatch, Box<dyn Error>> {
@@ -415,11 +344,11 @@ fn publish_and_activate_for(
 #[test]
 fn sealed_composite_history_survives_restart_and_admits_predecessor_rollback() -> TestResult {
     let directory = quanta_index_searchd_harness::private_tempdir()?;
-    let first_process = RunningRuntime::start(directory.path(), "composite-history-first")?;
+    let first_process = RunningRuntime::start(directory.path())?;
     let activated = publish_two_generations(&first_process.client)?;
     first_process.stop()?;
 
-    let second_process = RunningRuntime::start(directory.path(), "composite-history-second")?;
+    let second_process = RunningRuntime::start(directory.path())?;
     rollback_g2_to_g1(&second_process.client, &activated)?;
     let current = current_composite(&second_process.client)?;
     current
@@ -441,7 +370,7 @@ enum MissingTargetTrack {
 
 fn assert_missing_target_rejected(track: MissingTargetTrack) -> TestResult {
     let directory = quanta_index_searchd_harness::private_tempdir()?;
-    let first_process = RunningRuntime::start(directory.path(), "missing-target-first")?;
+    let first_process = RunningRuntime::start(directory.path())?;
     let activated = publish_two_generations(&first_process.client)?;
     first_process.stop()?;
 
@@ -459,7 +388,7 @@ fn assert_missing_target_rejected(track: MissingTargetTrack) -> TestResult {
     };
     std::fs::remove_dir_all(&target_root)?;
 
-    let second_process = RunningRuntime::start(directory.path(), "missing-target-second")?;
+    let second_process = RunningRuntime::start(directory.path())?;
     let rollback = rollback_g2_to_g1(&second_process.client, &activated);
     let Err(SdkError::Remote { code, .. }) = rollback else {
         return Err(format!(
@@ -722,9 +651,9 @@ fn real_child_process_state_root_lease_rejects_second_owner_and_releases_v1() ->
 #[test]
 fn state_root_has_one_live_runtime_owner_and_releases_lease_on_drop() -> TestResult {
     let directory = quanta_index_searchd_harness::private_tempdir()?;
-    let first = build_runtime(config_for(directory.path()))?;
+    let first = boot_started(directory.path()).map_err(anyhow_to_box)?;
 
-    let second = build_runtime(config_for(directory.path()));
+    let second = boot_started(directory.path());
     let Err(error) = second else {
         return Err("a second runtime concurrently acquired the same state root".into());
     };
@@ -736,7 +665,7 @@ fn state_root_has_one_live_runtime_owner_and_releases_lease_on_drop() -> TestRes
     }
 
     drop(first);
-    let released = build_runtime(config_for(directory.path()))?;
+    let released = boot_started(directory.path()).map_err(anyhow_to_box)?;
     drop(released);
     Ok(())
 }

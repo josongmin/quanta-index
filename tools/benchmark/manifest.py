@@ -15,7 +15,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MANIFEST_PATH = ROOT / "tools" / "benchmark" / "manifest.json"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class ManifestError(ValueError):
@@ -70,6 +70,7 @@ def load_manifest(path: Path = DEFAULT_MANIFEST_PATH) -> dict[str, Any]:
             "minimum_samples",
             "host_policy",
             "baseline",
+            "requires_verdict",
         }
         if set(family) != expected:
             raise ManifestError(f"family {name!r} must contain exactly {sorted(expected)}")
@@ -88,6 +89,8 @@ def load_manifest(path: Path = DEFAULT_MANIFEST_PATH) -> dict[str, Any]:
             )
         if family["host_policy"] not in {"any", "local-diagnostic", "canonical-linux"}:
             raise ManifestError(f"family {name!r}.host_policy is not registered")
+        if type(family["requires_verdict"]) is not bool:
+            raise ManifestError(f"family {name!r}.requires_verdict must be a boolean")
         baseline = family["baseline"]
         if baseline is not None:
             baseline_obj = _object(baseline, f"family {name!r}.baseline")

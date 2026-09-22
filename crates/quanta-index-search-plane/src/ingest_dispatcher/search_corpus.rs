@@ -14,8 +14,8 @@ use quanta_index_core::{
     GenerationIdentityValidatePort, IdempotencyCatalogPort, IncompleteGenerationDiscardPort,
     IngestBatchFootprint, IngestResourcePolicy, MetricPointV1, MetricSourcePort,
     SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort, SearchCorpusBatchBuildPort,
-    SearchCorpusIngestPort, SemanticContentRootsPort, SemanticIngestPort, SemanticScopeSource as _,
-    SemanticStreamWindowPolicy, TextEmbeddingProvider, count_from_usize,
+    SearchCorpusIngestPort, SemanticContentRootsPort, SemanticEgressPolicyV1, SemanticIngestPort,
+    SemanticScopeSource as _, SemanticStreamWindowPolicy, TextEmbeddingProvider, count_from_usize,
 };
 
 use crate::auxiliary_authority::{structural_chunks_delta_rows, structural_chunks_transition};
@@ -76,6 +76,10 @@ pub struct DirectSearchCorpusMaterializer {
     /// The window the derived semantic source embeds and issues in, so at
     /// most one window of vectors is resident during a build (QI-BB-021).
     semantic_stream_policy: SemanticStreamWindowPolicy,
+    /// Source-content egress composition (S21-08): `Some` gates every
+    /// derived batch on the external grant before the first window is
+    /// embedded; `None` is a local (hash) composition with no egress.
+    source_egress_policy: Option<SemanticEgressPolicyV1>,
     auxiliary_catalog: Arc<dyn AuxiliaryAuthorityCatalogPort + Send + Sync>,
     auxiliary_coordinator: Arc<AuxiliaryMutationCoordinator>,
     operation_locks: [Mutex<()>; SEARCH_CORPUS_LOCK_STRIPES_V1],
@@ -235,6 +239,9 @@ pub struct SearchCorpusMaterializerParts {
     /// The window the semantic source embeds and issues in (QI-BB-021); the
     /// semantic build admits every window against the same policy.
     pub semantic_stream_policy: SemanticStreamWindowPolicy,
+    /// Source-content egress composition (S21-08): `Some` gates every
+    /// derived batch on the external grant; `None` is local-only.
+    pub source_egress_policy: Option<SemanticEgressPolicyV1>,
     /// The structural chunk universe of every generation is durable in the
     /// auxiliary catalog before the generation is finalized, and auxiliary
     /// generations are forgotten with retention (QI-BB-020).
@@ -276,6 +283,7 @@ impl DirectSearchCorpusMaterializer {
             idempotency,
             resource_policy,
             semantic_stream_policy,
+            source_egress_policy,
             auxiliary_catalog,
             auxiliary_coordinator,
         } = parts;
@@ -298,6 +306,7 @@ impl DirectSearchCorpusMaterializer {
             resource_stats: Mutex::new(IngestResourceStats::default()),
             gc_stats: Mutex::new(SearchCorpusGcStats::default()),
             semantic_stream_policy,
+            source_egress_policy,
             auxiliary_catalog,
             auxiliary_coordinator,
             operation_locks: std::array::from_fn(|_index| Mutex::new(())),
@@ -552,6 +561,7 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
                 self.semantic_embedder.as_ref(),
                 self.semantic_derivation_mode,
                 self.semantic_stream_policy,
+                self.source_egress_policy.as_ref(),
             )?;
             let semantic_receipt = self
                 .semantic_ingest

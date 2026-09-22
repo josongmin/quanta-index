@@ -11,6 +11,15 @@ clean; a HEAD-matching artifact captured before local source edits cannot be
 requalified as evidence for the dirty tree.
 `benchctl summarize <profile>` is read-only and labels observed files
 `present_unvalidated`; it is deliberately not a qualification command.
+`just rust-verify-quality-all` delegates its producer order to `benchctl run
+quality-full`, so it has the same clean-worktree admission before a producer
+can write timing-bearing evidence.
+`just rust-bench-dsl-refresh <samples>` likewise delegates to `benchctl run
+dsl-authority`; authority comparison accepts no fewer than 20 cold samples.
+`benchctl run` requires declared baselines before starting a comparison run and
+requires a clean host preflight receipt; contention overrides are diagnostic.
+The integration summary independently validates its required artifacts before
+writing a green aggregate.
 For local PREP after benchmark-control-plane changes, run
 `just benchmark-prep-local`. It validates benchmark-harness Rust formatting,
 benchmark Python contracts, all harness library tests, and producer-binary

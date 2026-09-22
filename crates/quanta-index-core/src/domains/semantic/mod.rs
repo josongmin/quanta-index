@@ -7,12 +7,13 @@ mod service;
 mod stream;
 
 pub use admission::{
-    AdmittedSemanticInputV1, EmbeddingOutcomeV1, PROVIDER_BUDGET_EXHAUSTED_CODE,
-    PROVIDER_EGRESS_DENIED_CODE, PROVIDER_WORK_CANCELLED_CODE, ProviderBudgetLedger,
-    ProviderBudgetSnapshotV1, ProviderReservationTicketV1, ProviderSettlementKindV1,
-    ProviderSettlementReceiptV1, ProviderSettlementUsageV1, ProviderSupervisorEnrollmentV1,
-    ProviderWorkBudgetV1, ProviderWorkEstimateV1, SemanticAdmissionEngine, SemanticEgressGrantV1,
-    SemanticEgressPolicyV1, SemanticInputClass,
+    AdmittedSemanticInputV1, EmbeddingOutcomeV1, PROVIDER_AUDIT_RING_CAP,
+    PROVIDER_BUDGET_EXHAUSTED_CODE, PROVIDER_EGRESS_DENIED_CODE, PROVIDER_WORK_CANCELLED_CODE,
+    ProviderAuditEventV1, ProviderBudgetLedger, ProviderBudgetSnapshotV1,
+    ProviderReservationTicketV1, ProviderSettlementKindV1, ProviderSettlementReceiptV1,
+    ProviderSettlementUsageV1, ProviderSupervisorEnrollmentV1, ProviderWorkBudgetV1,
+    ProviderWorkEstimateV1, SemanticAdmissionEngine, SemanticEgressGrantV1, SemanticEgressPolicyV1,
+    SemanticInputClass,
 };
 pub use inbound::SemanticQueryPort;
 pub use outbound::{

@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "families": {
     "dsl-warm": {
       "dimension": "dsl-warm",
@@ -7,6 +7,7 @@
       "producer": "rust-bench-dsl-warm",
       "minimum_samples": 200,
       "host_policy": "canonical-linux",
+      "requires_verdict": false,
       "baseline": {
         "path": "tools/benchmark/baselines/warm-matrix.json",
         "comparator": "dsl-latency",
@@ -19,6 +20,7 @@
       "producer": "rust-bench-dsl-cold",
       "minimum_samples": 20,
       "host_policy": "canonical-linux",
+      "requires_verdict": false,
       "baseline": {
         "path": "tools/benchmark/baselines/cold-matrix.json",
         "comparator": "dsl-latency",
@@ -31,6 +33,7 @@
       "producer": "rust-verify-quality-relevance",
       "minimum_samples": null,
       "host_policy": "any",
+      "requires_verdict": true,
       "baseline": null
     },
     "ambiguity": {
@@ -39,6 +42,7 @@
       "producer": "rust-verify-quality-ambiguity",
       "minimum_samples": null,
       "host_policy": "local-diagnostic",
+      "requires_verdict": true,
       "baseline": null
     },
     "snippet": {
@@ -47,6 +51,7 @@
       "producer": "rust-verify-quality-snippet",
       "minimum_samples": null,
       "host_policy": "local-diagnostic",
+      "requires_verdict": true,
       "baseline": null
     },
     "scale": {
@@ -55,6 +60,7 @@
       "producer": "rust-verify-quality-scale",
       "minimum_samples": 32,
       "host_policy": "local-diagnostic",
+      "requires_verdict": true,
       "baseline": null
     },
     "tail": {
@@ -63,6 +69,7 @@
       "producer": "rust-verify-quality-tail",
       "minimum_samples": 64,
       "host_policy": "local-diagnostic",
+      "requires_verdict": true,
       "baseline": null
     },
     "ann": {
@@ -71,6 +78,7 @@
       "producer": "rust-verify-quality-ann",
       "minimum_samples": 64,
       "host_policy": "local-diagnostic",
+      "requires_verdict": true,
       "baseline": null
     },
     "concurrency": {
@@ -79,6 +87,7 @@
       "producer": "rust-verify-quality-concurrency",
       "minimum_samples": 16,
       "host_policy": "local-diagnostic",
+      "requires_verdict": true,
       "baseline": null
     },
     "freshness": {
@@ -87,6 +96,7 @@
       "producer": "rust-verify-quality-freshness",
       "minimum_samples": 20,
       "host_policy": "local-diagnostic",
+      "requires_verdict": true,
       "baseline": null
     },
     "open-loop": {
@@ -95,6 +105,7 @@
       "producer": "rust-verify-quality-open-loop",
       "minimum_samples": null,
       "host_policy": "local-diagnostic",
+      "requires_verdict": true,
       "baseline": null
     },
     "ops": {
@@ -103,6 +114,7 @@
       "producer": "rust-verify-quality-ops",
       "minimum_samples": null,
       "host_policy": "local-diagnostic",
+      "requires_verdict": true,
       "baseline": null
     },
     "ui": {
@@ -111,6 +123,7 @@
       "producer": "rust-verify-quality-ui",
       "minimum_samples": null,
       "host_policy": "local-diagnostic",
+      "requires_verdict": true,
       "baseline": null
     },
     "relevance-openai-ab": {
@@ -119,6 +132,7 @@
       "producer": "rust-capture-quality-relevance-openai-ab",
       "minimum_samples": null,
       "host_policy": "any",
+      "requires_verdict": true,
       "baseline": null
     },
     "scan-vs-index": {
@@ -127,6 +141,7 @@
       "producer": "recorded-experiment",
       "minimum_samples": 1,
       "host_policy": "local-diagnostic",
+      "requires_verdict": false,
       "baseline": null
     }
   },

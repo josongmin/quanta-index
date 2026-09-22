@@ -3,9 +3,10 @@ use std::sync::Arc;
 use quanta_index_contract::EmbeddingNormalization;
 use quanta_index_contract::lex::LexicalErrorCode;
 use quanta_index_core::{
-    CoreError, EMBED_CHECKPOINT, ProviderBudgetLedger, ProviderSettlementKindV1,
-    ProviderSettlementUsageV1, ProviderWorkEstimateV1, RequestBudgetV1, SemanticAdmissionEngine,
-    SemanticEgressPolicyV1, SemanticInputClass, SemanticPolicy, TextEmbeddingProvider,
+    CoreError, EMBED_CHECKPOINT, ProviderAuditEventV1, ProviderBudgetLedger,
+    ProviderSettlementKindV1, ProviderSettlementReceiptV1, ProviderSettlementUsageV1,
+    ProviderWorkEstimateV1, RequestBudgetV1, SemanticAdmissionEngine, SemanticEgressPolicyV1,
+    SemanticInputClass, SemanticPolicy, TextEmbeddingProvider,
 };
 
 /// Output dimension of the search-owned hash embedder.
@@ -204,7 +205,7 @@ fn stable_fnv1a64(bytes: &[u8]) -> u64 {
 /// against the global caps. The supervisor enrollment handle is created at
 /// reservation; the actual spawn/register/cancel/join is P08 (S21-09).
 pub struct ProviderBoundaryQueryEmbedder {
-    inner: Arc<dyn QueryTextEmbedderPort>,
+    inner: Arc<dyn QueryTextEmbedderPort + Send + Sync>,
     ledger: Arc<ProviderBudgetLedger>,
     policy: SemanticEgressPolicyV1,
     supervisor_id: String,
@@ -216,7 +217,7 @@ impl ProviderBoundaryQueryEmbedder {
     /// reserved work always has an owner.
     #[must_use]
     pub fn new(
-        inner: Arc<dyn QueryTextEmbedderPort>,
+        inner: Arc<dyn QueryTextEmbedderPort + Send + Sync>,
         ledger: Arc<ProviderBudgetLedger>,
         policy: SemanticEgressPolicyV1,
         supervisor_id: &str,
@@ -284,15 +285,21 @@ impl ProviderBoundaryQueryEmbedder {
                             observed_cost_micros: 0,
                             observed_usage_tokens: 0,
                         };
-                        let _: quanta_index_core::ProviderSettlementReceiptV1 = self
+                        let receipt: ProviderSettlementReceiptV1 = self
                             .ledger
                             .settle(&ticket, ProviderSettlementKindV1::Success, usage)?;
+                        self.record_audit(
+                            &receipt,
+                            outcome.observed_model_id.as_deref(),
+                            outcome.observed_dimension,
+                        )?;
                         Ok((vector, outcome))
                     }
                     Err(refusal) => {
-                        let _: quanta_index_core::ProviderSettlementReceiptV1 = self
+                        let receipt: ProviderSettlementReceiptV1 = self
                             .ledger
                             .settle(&ticket, ProviderSettlementKindV1::Failed, zero_usage())?;
+                        self.record_audit(&receipt, None, 0)?;
                         Err(refusal)
                     }
                 }
@@ -308,11 +315,61 @@ impl ProviderBoundaryQueryEmbedder {
                 } else {
                     ProviderSettlementKindV1::Failed
                 };
-                let _: quanta_index_core::ProviderSettlementReceiptV1 =
+                let receipt: ProviderSettlementReceiptV1 =
                     self.ledger.settle(&ticket, kind, zero_usage())?;
+                self.record_audit(&receipt, None, 0)?;
                 Err(err)
             }
         }
+    }
+
+    /// The ledger this boundary reserves against and records audit events
+    /// into: the composition root shares one per process.
+    #[must_use]
+    pub fn ledger(&self) -> &Arc<ProviderBudgetLedger> {
+        &self.ledger
+    }
+
+    /// Record one settlement's audit identity (S21-08 step 7): the ticket,
+    /// the terminal kind, observed usage and the declared/observed model
+    /// pair. Redaction-safe by construction — no request text.
+    fn record_audit(
+        &self,
+        receipt: &ProviderSettlementReceiptV1,
+        observed_model_id: Option<&str>,
+        observed_dimension: usize,
+    ) -> Result<(), CoreError> {
+        self.ledger.record_audit(ProviderAuditEventV1 {
+            ticket_id: receipt.ticket_id,
+            kind: receipt.kind,
+            observed: receipt.observed,
+            declared_model_id: self.inner.model_id().to_string(),
+            observed_model_id: observed_model_id.map(str::to_string),
+            observed_dimension,
+        })
+    }
+}
+
+impl QueryTextEmbedderPort for ProviderBoundaryQueryEmbedder {
+    /// The production query path (S21-08): full admission, reservation
+    /// and settlement around the inner embedder, behind the port the
+    /// routes already call. The audit identity lands in the ledger ring;
+    /// only the vector crosses the port.
+    fn embed_query(
+        &self,
+        query_text: &str,
+        budget: &RequestBudgetV1,
+    ) -> Result<Vec<f32>, CoreError> {
+        self.embed_query_admitted(query_text, budget)
+            .map(|(vector, _outcome)| vector)
+    }
+
+    fn model_id(&self) -> &str {
+        self.inner.model_id()
+    }
+
+    fn model_revision(&self) -> &str {
+        self.inner.model_revision()
     }
 }
 

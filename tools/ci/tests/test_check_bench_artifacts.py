@@ -310,6 +310,31 @@ def test_required_evidence_refuses_failed_verdict_and_early_stop(tmp_path: Path)
     assert any("contains an early stop" in refusal.reason for refusal in refusals)
 
 
+def test_new_quality_family_requires_its_manifest_verdict(tmp_path: Path) -> None:
+    manifest = copy.deepcopy(MODULE.MANIFEST)
+    manifest["families"]["new-quality"] = {
+        "dimension": "new-quality",
+        "artifact_glob": "artifacts/search-quality/new-quality/latest/summary.json",
+        "producer": "rust-verify-quality-new",
+        "minimum_samples": None,
+        "host_policy": "local-diagnostic",
+        "baseline": None,
+        "requires_verdict": True,
+    }
+    value = artifact("new-quality")
+    value["detail"] = {}
+    write(tmp_path / "artifacts/search-quality/new-quality/latest/summary.json", value)
+
+    refusals, _, _ = MODULE.check_families(
+        tmp_path,
+        (("new-quality", manifest["families"]["new-quality"]["artifact_glob"]),),
+        head=HEAD,
+        require=True,
+        manifest=manifest,
+    )
+    assert any("required rail verdict is not true" in refusal.reason for refusal in refusals)
+
+
 def test_authority_sample_floor_and_open_loop_ladder(tmp_path: Path) -> None:
     cold = artifact("dsl-cold")
     cold["rows"][0]["latency"]["samples"] = 19

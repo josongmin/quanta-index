@@ -32,8 +32,9 @@ use quanta_index_contract::{
     validate_semantic_source_record_v1,
 };
 use quanta_index_core::{
-    CoreError, SemanticBatchIdentityV1, SemanticBatchMutationsV1, SemanticGenerationContractV1,
-    SemanticIngestHeaderV1, SemanticScopeSource, SemanticScopeWindowV1, SemanticStreamTallyV1,
+    CoreError, SemanticAdmissionEngine, SemanticBatchIdentityV1, SemanticBatchMutationsV1,
+    SemanticEgressPolicyV1, SemanticGenerationContractV1, SemanticIngestHeaderV1,
+    SemanticInputClass, SemanticScopeSource, SemanticScopeWindowV1, SemanticStreamTallyV1,
     SemanticStreamWindowPolicy, SemanticWindowFillV1, SemanticWindowIssuerV1,
     SemanticWindowPlacementV1, TextEmbeddingProvider,
 };
@@ -187,7 +188,18 @@ impl<'a> DerivedSemanticScopeSource<'a> {
         model_contract: EmbeddingModelContract,
         policy: SemanticStreamWindowPolicy,
         pending: VecDeque<PendingOwnerScope<'a>>,
+        source_egress: Option<&'a SemanticEgressPolicyV1>,
     ) -> Result<Self, CoreError> {
+        // Source-content egress gate (S21-08): when the composition routes
+        // derivation through an external provider, the batch needs an
+        // explicit external grant with source-content consent before the
+        // first window is embedded. `None` is a local (hash) composition
+        // with no egress, which keeps the input-matrix-only behavior; the
+        // per-text matrix still runs in `embed_window` either way.
+        if let Some(egress) = source_egress {
+            let _admitted =
+                SemanticAdmissionEngine::admit(SemanticInputClass::SourceContent, egress)?;
+        }
         let dimension = usize::try_from(model_contract.dimension).map_err(|err| {
             CoreError::InvalidContract(format!(
                 "semantic derivation: model contract dimension overflow: {err}"
@@ -408,14 +420,21 @@ pub(crate) fn derive_semantic_stream_with_mode_v1<'a>(
     embedder: &'a dyn TextEmbeddingProvider,
     mode: SemanticDerivationModeV1,
     policy: SemanticStreamWindowPolicy,
+    source_egress: Option<&'a SemanticEgressPolicyV1>,
 ) -> Result<DerivedSemanticStreamV1<'a>, CoreError> {
     match mode {
         SemanticDerivationModeV1::LegacyAllChunkText => {
-            derive_semantic_stream_from_search_corpus_batch(batch, embedder, policy)
+            derive_semantic_stream_from_search_corpus_batch(batch, embedder, policy, source_egress)
         }
         SemanticDerivationModeV1::SemanticSourcesWithLegacyFallback
         | SemanticDerivationModeV1::SemanticSourcesOnly => {
-            derive_semantic_stream_from_semantic_sources_v1(batch, embedder, mode, policy)
+            derive_semantic_stream_from_semantic_sources_v1(
+                batch,
+                embedder,
+                mode,
+                policy,
+                source_egress,
+            )
         }
     }
 }
@@ -433,6 +452,7 @@ pub(crate) fn derive_semantic_stream_from_search_corpus_batch<'a>(
     batch: &'a SearchCorpusIngestBatch,
     embedder: &'a dyn TextEmbeddingProvider,
     policy: SemanticStreamWindowPolicy,
+    source_egress: Option<&'a SemanticEgressPolicyV1>,
 ) -> Result<DerivedSemanticStreamV1<'a>, CoreError> {
     batch
         .validate_surface_mutations_v1()
@@ -476,6 +496,7 @@ pub(crate) fn derive_semantic_stream_from_search_corpus_batch<'a>(
         header.contract.model_contract.clone(),
         policy,
         pending,
+        source_egress,
     )?;
     Ok(DerivedSemanticStreamV1 { header, source })
 }
@@ -485,6 +506,7 @@ pub(crate) fn derive_semantic_stream_from_semantic_sources_v1<'a>(
     embedder: &'a dyn TextEmbeddingProvider,
     mode: SemanticDerivationModeV1,
     policy: SemanticStreamWindowPolicy,
+    source_egress: Option<&'a SemanticEgressPolicyV1>,
 ) -> Result<DerivedSemanticStreamV1<'a>, CoreError> {
     batch
         .validate_surface_mutations_v1()
@@ -517,8 +539,12 @@ pub(crate) fn derive_semantic_stream_from_semantic_sources_v1<'a>(
                     SEMANTIC_SOURCE_POLICY_DIGEST,
                     Some(SEMANTIC_SOURCE_FALLBACK_VIEW_POLICY_DIGEST),
                 )?;
-                let mut legacy =
-                    derive_semantic_stream_from_search_corpus_batch(batch, embedder, policy)?;
+                let mut legacy = derive_semantic_stream_from_search_corpus_batch(
+                    batch,
+                    embedder,
+                    policy,
+                    source_egress,
+                )?;
                 legacy.header.batch.batch_digest = format!(
                     "{}:semantic-derive:legacy-fallback-empty-semantic-sources",
                     batch.batch_digest
@@ -533,7 +559,12 @@ pub(crate) fn derive_semantic_stream_from_semantic_sources_v1<'a>(
                 "semantic derivation: semantic sources required in semantic_only mode".to_string(),
             )),
             SemanticDerivationModeV1::LegacyAllChunkText => {
-                derive_semantic_stream_from_search_corpus_batch(batch, embedder, policy)
+                derive_semantic_stream_from_search_corpus_batch(
+                    batch,
+                    embedder,
+                    policy,
+                    source_egress,
+                )
             }
         };
     }
@@ -560,6 +591,7 @@ pub(crate) fn derive_semantic_stream_from_semantic_sources_v1<'a>(
         header.contract.model_contract.clone(),
         policy,
         pending,
+        source_egress,
     )?;
     Ok(DerivedSemanticStreamV1 { header, source })
 }
@@ -1104,6 +1136,7 @@ mod tests {
     use quanta_index_core::{
         SEMANTIC_STREAM_OWNER_SCOPE_OVER_WINDOW_CODE, SEMANTIC_STREAM_WINDOW_SCOPES,
         SEMANTIC_STREAM_WINDOW_STILL_RESIDENT_CODE, SEMANTIC_STREAM_WINDOW_VECTOR_BYTES,
+        SemanticEgressGrantV1,
     };
 
     /// Derive under the production window and drain the stream into one
@@ -1118,6 +1151,7 @@ mod tests {
             embedder,
             mode,
             SemanticStreamWindowPolicy::DEFAULT,
+            None,
         )?)
     }
 
@@ -1131,6 +1165,7 @@ mod tests {
             embedder,
             mode,
             SemanticStreamWindowPolicy::DEFAULT,
+            None,
         )?)
     }
     use quanta_index_contract::{
@@ -1884,6 +1919,7 @@ mod tests {
             &embedder,
             SemanticDerivationModeV1::LegacyAllChunkText,
             policy,
+            None,
         )?;
         if derived.source.pending_owner_scopes() != 5 {
             return Err("five chunks are five owner scopes".into());
@@ -1971,6 +2007,7 @@ mod tests {
             &embedder,
             SemanticDerivationModeV1::LegacyAllChunkText,
             policy,
+            None,
         )?;
         let mut rows_per_window = Vec::new();
         while let Some(window) = derived.source.next_window()? {
@@ -2001,6 +2038,7 @@ mod tests {
             &embedder,
             SemanticDerivationModeV1::SemanticSourcesOnly,
             policy,
+            None,
         )?;
         match derived.source.next_window() {
             Err(CoreError::Typed { code, .. })
@@ -2030,6 +2068,7 @@ mod tests {
             &embedder,
             SemanticDerivationModeV1::LegacyAllChunkText,
             policy,
+            None,
         )?;
         let first = derived
             .source
@@ -2085,13 +2124,14 @@ mod tests {
             (&typed, SemanticDerivationModeV1::SemanticSourcesOnly),
         ] {
             let streamed = drain_semantic_stream_v1(derive_semantic_stream_with_mode_v1(
-                batch, &embedder, mode, one_owner,
+                batch, &embedder, mode, one_owner, None,
             )?)?;
             let whole = drain_semantic_stream_v1(derive_semantic_stream_with_mode_v1(
                 batch,
                 &embedder,
                 mode,
                 SemanticStreamWindowPolicy::DEFAULT,
+                None,
             )?)?;
             // Fragments of one legacy path merge back into the path's rows;
             // compare rows, not fragment boundaries.
@@ -2135,6 +2175,7 @@ mod tests {
             &embedder,
             SemanticDerivationModeV1::SemanticSourcesOnly,
             SemanticStreamWindowPolicy::DEFAULT,
+            None,
         ) {
             Err(CoreError::InvalidContract(message)) if message.contains("CardText") => {}
             Err(other) => {
@@ -2149,6 +2190,59 @@ mod tests {
         if !embedder.calls()?.is_empty() {
             return Err("a refused batch costs no provider call".into());
         }
+        Ok(())
+    }
+
+    // S21-08: source content without an explicit external grant is refused
+    // before the first window, so the provider is never called for it; a
+    // consented grant admits the batch.
+    #[test]
+    fn source_content_without_consent_costs_no_provider_call() -> TestRes {
+        let embedder = RecordingEmbedder::new();
+        let batch = fixture_search_batch()?;
+        let denied = SemanticEgressPolicyV1::Denied;
+        match derive_semantic_stream_with_mode_v1(
+            &batch,
+            &embedder,
+            SemanticDerivationModeV1::SemanticSourcesOnly,
+            SemanticStreamWindowPolicy::DEFAULT,
+            Some(&denied),
+        ) {
+            Err(CoreError::Typed { code, .. })
+                if code.as_wire_str() == "PROVIDER_EGRESS_DENIED" => {}
+            Err(other) => {
+                return Err(
+                    format!("a denied source batch must fail closed, got {other:?}").into(),
+                );
+            }
+            Ok(_derived) => {
+                return Err("a denied source batch must fail closed, got a stream".into());
+            }
+        }
+        if !embedder.calls()?.is_empty() {
+            return Err("a refused batch costs no provider call".into());
+        }
+
+        let grant = SemanticEgressGrantV1 {
+            tenant_id: "unit-test-tenant".to_string(),
+            provider_id: "openai".to_string(),
+            endpoint: "https://unit.test/v1".to_string(),
+            region: "unit-test-region".to_string(),
+            retention: "unit-test-30d".to_string(),
+            model_id: "text-embedding-3-small".to_string(),
+            model_revision: "unit-test".to_string(),
+            profile: "unit-test-release".to_string(),
+            source_content_consent: true,
+        };
+        let policy = SemanticEgressPolicyV1::External(grant);
+        let _derived = derive_semantic_stream_with_mode_v1(
+            &batch,
+            &embedder,
+            SemanticDerivationModeV1::SemanticSourcesOnly,
+            SemanticStreamWindowPolicy::DEFAULT,
+            Some(&policy),
+        )
+        .map_err(|err| format!("a consented batch must derive: {err:?}"))?;
         Ok(())
     }
 }

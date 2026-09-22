@@ -44,3 +44,46 @@ def test_profile_recipes_are_the_exact_non_experimental_family_producers() -> No
             if families[name]["producer"] != "recorded-experiment"
         }
         assert set(profile["recipes"]) == expected, profile_name
+
+
+def test_quality_all_delegates_to_the_manifest_control_plane() -> None:
+    justfile = JUSTFILE.read_text(encoding="utf-8")
+    match = re.search(
+        r"^rust-verify-quality-all:\n(?P<body>.*?)(?=^[a-z0-9][a-z0-9-]*(?:\s+[^:]*)?:|\Z)",
+        justfile,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert match is not None
+    body = match.group("body")
+    assert "python3 tools/benchmark/benchctl.py run quality-full" in body
+    assert "@just rust-verify-quality-" not in body
+
+
+def test_dsl_refresh_delegates_to_the_manifest_control_plane() -> None:
+    justfile = JUSTFILE.read_text(encoding="utf-8")
+    match = re.search(
+        r"^rust-bench-dsl-refresh\s+samples=\"20\":\n(?P<body>.*?)(?=^[a-z0-9][a-z0-9-]*(?:\s+[^:]*)?:|\Z)",
+        justfile,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert match is not None
+    body = match.group("body")
+    assert "python3 tools/benchmark/benchctl.py run dsl-authority --cold-samples {{samples}}" in body
+    assert "@just rust-bench-dsl-" not in body
+
+
+def test_manifest_requires_explicit_verdict_policy_for_each_family(tmp_path: Path) -> None:
+    import json
+
+    module = _load_manifest_module()
+    payload = json.loads((REPO_ROOT / "tools/benchmark/manifest.json").read_text(encoding="utf-8"))
+    del payload["families"]["tail"]["requires_verdict"]
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    try:
+        module.load_manifest(path)
+    except module.ManifestError as error:
+        assert "requires_verdict" in str(error)
+    else:
+        raise AssertionError("manifest accepted a family without verdict policy")

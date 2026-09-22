@@ -9,6 +9,7 @@
 //! vector produces a typed failure and never a success, a cache entry or a
 //! receipt.
 
+use std::collections::VecDeque;
 use std::sync::Mutex;
 
 use quanta_index_contract::SearchPlaneErrorCodeV2;
@@ -320,6 +321,27 @@ pub struct ProviderSettlementReceiptV1 {
     pub observed: ProviderSettlementUsageV1,
 }
 
+/// How many settled provider calls the ledger's audit ring keeps (S21-08
+/// step 7). Bounded so a busy process cannot grow it without limit; the
+/// newest settlements evict the oldest.
+pub const PROVIDER_AUDIT_RING_CAP: usize = 128;
+
+/// One settled provider call's audit identity (S21-08 step 7).
+///
+/// Model ids, the terminal kind and observed usage only — never request
+/// text, vectors or credentials — so the ring is safe to scrape, log and
+/// keep. Recorded by the provider boundary on every settlement path,
+/// including refusals-after-reservation and cancellations.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProviderAuditEventV1 {
+    pub ticket_id: u64,
+    pub kind: ProviderSettlementKindV1,
+    pub observed: ProviderSettlementUsageV1,
+    pub declared_model_id: String,
+    pub observed_model_id: Option<String>,
+    pub observed_dimension: usize,
+}
+
 /// Process-global snapshot of the provider work ledger.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub struct ProviderBudgetSnapshotV1 {
@@ -334,6 +356,7 @@ pub struct ProviderBudgetSnapshotV1 {
 #[derive(Debug, Default)]
 struct LedgerInner {
     snapshot: ProviderBudgetSnapshotV1,
+    audit: VecDeque<ProviderAuditEventV1>,
 }
 
 /// The process-global bounded provider work ledger (S21-08 steps 4, 7).
@@ -542,6 +565,34 @@ impl ProviderBudgetLedger {
         Ok(inner.snapshot)
     }
 
+    /// Record one settled call's audit identity (S21-08 step 7). The ring
+    /// keeps the newest [`PROVIDER_AUDIT_RING_CAP`] events; older ones are
+    /// evicted, never grown past the cap.
+    pub fn record_audit(&self, event: ProviderAuditEventV1) -> Result<(), CoreError> {
+        let mut inner = self.inner.lock().map_err(|err| {
+            CoreError::Storage(format!(
+                "semantic admission: provider budget ledger lock poisoned: {err}"
+            ))
+        })?;
+        inner.audit.push_back(event);
+        while inner.audit.len() > PROVIDER_AUDIT_RING_CAP {
+            drop(inner.audit.pop_front());
+        }
+        Ok(())
+    }
+
+    /// The newest audit events, oldest first, at most `limit`. Empty when
+    /// nothing has settled yet; refusals before reservation record nothing.
+    pub fn audit_tail(&self, limit: usize) -> Result<Vec<ProviderAuditEventV1>, CoreError> {
+        let inner = self.inner.lock().map_err(|err| {
+            CoreError::Storage(format!(
+                "semantic admission: provider budget ledger lock poisoned: {err}"
+            ))
+        })?;
+        let skip = inner.audit.len().saturating_sub(limit);
+        Ok(inner.audit.iter().skip(skip).cloned().collect())
+    }
+
     fn exhausted(cap: &str) -> CoreError {
         CoreError::Typed {
             code: PROVIDER_BUDGET_EXHAUSTED_CODE,
@@ -694,5 +745,64 @@ impl EmbeddingOutcomeV1 {
             usage_tokens: None,
             cost_micros: None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_budget() -> ProviderWorkBudgetV1 {
+        ProviderWorkBudgetV1 {
+            inflight_requests_cap: 8,
+            inflight_bytes_cap: 4096,
+            total_cost_micros_ceiling: 1_000_000,
+            retry_attempts_cap: 2,
+        }
+    }
+
+    fn test_event(ticket_id: u64) -> ProviderAuditEventV1 {
+        ProviderAuditEventV1 {
+            ticket_id,
+            kind: ProviderSettlementKindV1::Success,
+            observed: ProviderSettlementUsageV1 {
+                observed_cost_micros: 10,
+                observed_usage_tokens: 7,
+            },
+            declared_model_id: "search-owned-hash-text-v1".to_string(),
+            observed_model_id: Some("search-owned-hash-text-v1".to_string()),
+            observed_dimension: 64,
+        }
+    }
+
+    #[test]
+    fn audit_ring_starts_empty_and_reads_back_in_order() {
+        let ledger = ProviderBudgetLedger::new(test_budget()).expect("valid budget");
+        assert!(ledger.audit_tail(8).expect("tail reads").is_empty());
+        ledger.record_audit(test_event(1)).expect("record");
+        ledger.record_audit(test_event(2)).expect("record");
+        let tail = ledger.audit_tail(8).expect("tail reads");
+        assert_eq!(tail.len(), 2);
+        assert_eq!(tail[0].ticket_id, 1);
+        assert_eq!(tail[1].ticket_id, 2);
+        let last_one = ledger.audit_tail(1).expect("tail reads");
+        assert_eq!(last_one.len(), 1);
+        assert_eq!(last_one[0].ticket_id, 2);
+    }
+
+    #[test]
+    fn audit_ring_evicts_oldest_past_the_cap() {
+        let ledger = ProviderBudgetLedger::new(test_budget()).expect("valid budget");
+        for ticket_id in 0..(PROVIDER_AUDIT_RING_CAP + 4) {
+            let ticket_id = u64::try_from(ticket_id).expect("test range fits u64");
+            ledger.record_audit(test_event(ticket_id)).expect("record");
+        }
+        let tail = ledger
+            .audit_tail(PROVIDER_AUDIT_RING_CAP + 4)
+            .expect("tail reads");
+        assert_eq!(tail.len(), PROVIDER_AUDIT_RING_CAP);
+        assert_eq!(tail[0].ticket_id, 4);
+        let last = u64::try_from(PROVIDER_AUDIT_RING_CAP + 3).expect("test range fits u64");
+        assert_eq!(tail[PROVIDER_AUDIT_RING_CAP - 1].ticket_id, last);
     }
 }

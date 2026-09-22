@@ -3,9 +3,9 @@
 
 Aggregates the per-dimension search-quality rails into one integration summary
 *without erasing dimension boundaries*. Each dimension keeps its own claim type
-and blocking/advisory status. Dimensions whose rail is not yet implemented are
-recorded as ``pending`` — never as passing — so the aggregate can never overclaim
-quality closure from partial rails (per MEASUREMENT_MATRIX.md / NO-GO-RULES.md).
+and blocking/advisory status. The canonical ``quality-full`` profile supplies
+the live family set, so the aggregate cannot silently omit a newly registered
+authority rail (per MEASUREMENT_MATRIX.md / NO-GO-RULES.md).
 
 This script is read-only over the per-dimension ``summary.json`` artifacts; it
 does not run rails itself (the Justfile recipe runs the live rails first).
@@ -21,24 +21,28 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-ARTIFACT_ROOT = ROOT / "artifacts" / "search-quality"
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 
-# (dimension, owner_ticket, blocking, status, artifact filename/glob). `live`
-# dimensions must have a passing current-source artifact; `pending` dimensions
-# are declared but not yet implemented.
-DIMENSIONS = [
-    ("relevance", "J7Q-01A", True, "live", "summary.json"),
-    ("ambiguity", "J7Q-06", True, "live", "summary.json"),
-    ("snippet", "J7Q-02", True, "live", "summary.json"),
-    ("scale", "J7Q-03", True, "live", "summary.json"),
-    ("tail", "J7Q-04", True, "live", "summary.json"),
-    ("ann", "QI-BB-027", True, "live", "summary.json"),
-    ("concurrency", "QI-BB-010", True, "live", "summary-c*.json"),
-    ("freshness", "BQ-05", True, "live", "summary.json"),
-    ("open-loop", "BQ-06", True, "live", "summary.json"),
-    ("ops", "J7Q-05", True, "live", "summary.json"),
-    ("ui", "J7Q-07", True, "live", "summary.json"),
-]
+from manifest import ManifestError, load_manifest
+
+QUALITY_PROFILE = "quality-full"
+# The manifest owns the live family set and artifact globs. Tickets stay here
+# because they are report labels, not producer or artifact authority.
+QUALITY_TICKETS = {
+    "relevance": "J7Q-01A",
+    "ambiguity": "J7Q-06",
+    "snippet": "J7Q-02",
+    "scale": "J7Q-03",
+    "tail": "J7Q-04",
+    "ann": "QI-BB-027",
+    "concurrency": "QI-BB-010",
+    "freshness": "BQ-05",
+    "open-loop": "BQ-06",
+    "ops": "J7Q-05",
+    "ui": "J7Q-07",
+}
 FULL_HEAD_RE = re.compile(r"^[0-9a-f]{40}$")
 CONCURRENCY_ARTIFACTS = {"summary-c1.json", "summary-c8.json", "summary-c32.json"}
 
@@ -56,8 +60,63 @@ def resolve_head() -> str:
     return head
 
 
-def load_summaries(dimension: str, filename: str) -> list[tuple[Path, dict]]:
-    paths = sorted((ARTIFACT_ROOT / dimension / "latest").glob(filename))
+def validate_evidence() -> int:
+    """Apply the canonical artifact gate before publishing an aggregate verdict."""
+    validator = SCRIPT_DIR.parent / "ci" / "lint" / "check-bench-artifacts.py"
+    return subprocess.run(
+        [
+            sys.executable,
+            str(validator),
+            "--repo-root",
+            str(ROOT),
+            "--profile",
+            QUALITY_PROFILE,
+            "--require",
+            "--require-clean-worktree",
+            "--skip-baselines",
+        ],
+        cwd=ROOT,
+        check=False,
+    ).returncode
+
+
+def quality_dimensions() -> list[tuple[str, str, bool, str, str]]:
+    """Resolve the aggregate's live families from the canonical manifest."""
+    try:
+        manifest = load_manifest(ROOT / "tools" / "benchmark" / "manifest.json")
+    except ManifestError as exc:
+        raise RuntimeError(f"invalid benchmark manifest: {exc}") from exc
+    profiles = manifest["profiles"]
+    families = manifest["families"]
+    assert isinstance(profiles, dict) and isinstance(families, dict)
+    profile = profiles.get(QUALITY_PROFILE)
+    if not isinstance(profile, dict):
+        raise RuntimeError(f"benchmark manifest has no {QUALITY_PROFILE!r} profile")
+    names = profile["families"]
+    assert isinstance(names, list)
+    name_set = set(names)
+    missing_tickets = sorted(name_set - set(QUALITY_TICKETS))
+    stale_tickets = sorted(set(QUALITY_TICKETS) - name_set)
+    if missing_tickets or stale_tickets:
+        details = []
+        if missing_tickets:
+            details.append(f"missing ticket(s): {', '.join(missing_tickets)}")
+        if stale_tickets:
+            details.append(f"stale ticket(s): {', '.join(stale_tickets)}")
+        raise RuntimeError(f"quality summary metadata drift ({'; '.join(details)})")
+    dimensions: list[tuple[str, str, bool, str, str]] = []
+    for name in names:
+        assert isinstance(name, str)
+        family = families[name]
+        assert isinstance(family, dict)
+        artifact_glob = family["artifact_glob"]
+        assert isinstance(artifact_glob, str)
+        dimensions.append((name, QUALITY_TICKETS[name], True, "live", artifact_glob))
+    return dimensions
+
+
+def load_summaries(artifact_glob: str) -> list[tuple[Path, dict]]:
+    paths = sorted(ROOT.glob(artifact_glob))
     summaries: list[tuple[Path, dict]] = []
     for path in paths:
         try:
@@ -94,7 +153,7 @@ def build() -> tuple[dict, bool]:
     head = resolve_head()
     rows = []
     all_live_passed = True
-    for dimension, ticket, blocking, status, filename in DIMENSIONS:
+    for dimension, ticket, blocking, status, artifact_glob in quality_dimensions():
         row = {
             "dimension": dimension,
             "owner_ticket": ticket,
@@ -102,7 +161,7 @@ def build() -> tuple[dict, bool]:
             "status": status,
         }
         if status == "live":
-            summaries = load_summaries(dimension, filename)
+            summaries = load_summaries(artifact_glob)
             if (
                 dimension == "concurrency"
                 and {path.name for path, _ in summaries} != CONCURRENCY_ARTIFACTS
@@ -158,6 +217,10 @@ def main() -> int:
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
 
+    validation = validate_evidence()
+    if validation:
+        print("quality integration RED: required evidence did not validate", file=sys.stderr)
+        return validation
     try:
         doc, all_live_passed = build()
     except RuntimeError as exc:

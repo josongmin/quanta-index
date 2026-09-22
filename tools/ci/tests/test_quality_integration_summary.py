@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -57,11 +58,26 @@ def test_schema_one_verdict_is_never_quality_authority() -> None:
     assert MODULE.rail_verdict(summary, dimension="ops", head=HEAD) is None
 
 
+def test_quality_dimensions_follow_the_canonical_quality_full_profile() -> None:
+    manifest = MODULE.load_manifest(REPO_ROOT / "tools" / "benchmark" / "manifest.json")
+    profile = manifest["profiles"]["quality-full"]
+    dimensions = MODULE.quality_dimensions()
+
+    assert [dimension for dimension, *_ in dimensions] == profile["families"]
+    assert [glob for *_, glob in dimensions] == [
+        manifest["families"][name]["artifact_glob"] for name in profile["families"]
+    ]
+
+
 def test_build_fails_closed_when_a_live_artifact_is_stale(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(MODULE, "ARTIFACT_ROOT", tmp_path / "artifacts" / "search-quality")
+    monkeypatch.setattr(MODULE, "ROOT", tmp_path)
     monkeypatch.setattr(MODULE, "resolve_head", lambda: HEAD)
-    monkeypatch.setattr(MODULE, "DIMENSIONS", [("tail", "J7Q-04", True, "live", "summary.json")])
-    path = MODULE.ARTIFACT_ROOT / "tail" / "latest" / "summary.json"
+    monkeypatch.setattr(
+        MODULE,
+        "quality_dimensions",
+        lambda: [("tail", "J7Q-04", True, "live", "artifacts/search-quality/tail/latest/summary.json")],
+    )
+    path = tmp_path / "artifacts" / "search-quality" / "tail" / "latest" / "summary.json"
     path.parent.mkdir(parents=True)
     path.write_text(
         json.dumps(_schema_two("tail", head="fedcba9876543210fedcba9876543210fedcba98"))
@@ -73,14 +89,62 @@ def test_build_fails_closed_when_a_live_artifact_is_stale(tmp_path: Path, monkey
 
 
 def test_build_requires_every_concurrency_level(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(MODULE, "ARTIFACT_ROOT", tmp_path / "artifacts" / "search-quality")
+    monkeypatch.setattr(MODULE, "ROOT", tmp_path)
     monkeypatch.setattr(MODULE, "resolve_head", lambda: HEAD)
     monkeypatch.setattr(
-        MODULE, "DIMENSIONS", [("concurrency", "QI-BB-010", True, "live", "summary-c*.json")]
+        MODULE,
+        "quality_dimensions",
+        lambda: [
+            (
+                "concurrency",
+                "QI-BB-010",
+                True,
+                "live",
+                "artifacts/search-quality/concurrency/latest/summary-c*.json",
+            )
+        ],
     )
-    path = MODULE.ARTIFACT_ROOT / "concurrency" / "latest" / "summary-c8.json"
+    path = tmp_path / "artifacts" / "search-quality" / "concurrency" / "latest" / "summary-c8.json"
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps(_schema_two("concurrency")))
     doc, passed = MODULE.build()
     assert not passed
     assert "c1/c8/c32" in doc["dimensions"][0]["error"]
+
+
+def test_cli_refuses_invalid_evidence_before_writing_green(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    manifest = tmp_path / "tools" / "benchmark" / "manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        (REPO_ROOT / "tools" / "benchmark" / "manifest.json").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (tmp_path / ".gitignore").write_text("artifacts/\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "tools/benchmark/manifest.json", ".gitignore"], check=True)
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "-c", "user.name=Bench Test", "-c", "user.email=bench@example.invalid", "commit", "-qm", "fixture"],
+        check=True,
+    )
+    head = subprocess.run(
+        ["git", "-C", str(tmp_path), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    tail = tmp_path / "artifacts" / "search-quality" / "tail" / "latest" / "summary.json"
+    tail.parent.mkdir(parents=True)
+    tail.write_text(json.dumps(_schema_two("tail", head=head)), encoding="utf-8")
+    monkeypatch.setattr(MODULE, "ROOT", tmp_path)
+    monkeypatch.setattr(sys, "argv", ["quality_integration_summary.py", "--out", str(tmp_path / "summary.json")])
+    monkeypatch.setattr(MODULE, "resolve_head", lambda: head)
+    monkeypatch.setattr(
+        MODULE,
+        "quality_dimensions",
+        lambda: [("tail", "J7Q-04", True, "live", "artifacts/search-quality/tail/latest/summary.json")],
+    )
+
+    assert MODULE.main() == 1
+    assert not (tmp_path / "summary.json").exists()

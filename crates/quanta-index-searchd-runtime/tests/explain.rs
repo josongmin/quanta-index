@@ -19,9 +19,8 @@
 )]
 
 use std::error::Error;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -37,20 +36,47 @@ use quanta_index_contract::{
     TextQuerySyntax,
 };
 use quanta_index_ipc::send_request;
-use quanta_index_searchd::app::SearchdConfig;
-use quanta_index_searchd::app::searchd::drive;
-use quanta_index_searchd_runtime::build_runtime;
+use quanta_index_searchd_harness::E2eRuntime;
 
 type TestResult = Result<(), Box<dyn Error>>;
-type RuntimeHandles = (
-    PathBuf,
-    PathBuf,
-    Arc<AtomicBool>,
-    thread::JoinHandle<anyhow::Result<()>>,
-);
-static NEXT_SOCKET_ID: AtomicU64 = AtomicU64::new(0);
+static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 const READINESS_TIMEOUT: Duration = Duration::from_secs(5);
-const SOCKET_APPEAR_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Harness-owned three-socket scenario fixture (TOPT-03: runtime fixture
+/// ownership).
+///
+/// The daemon's tempdir, three-socket builder, and driver thread all live in
+/// [`E2eRuntime`]: boot binds query/control/ingest and waits for all three,
+/// and dropping the runtime performs the acknowledged lease-release (signal
+/// the driver, join it — which drops the old runtime and releases the
+/// state-root lease — before the tempdir is removed). Tests therefore
+/// return `Err(..)` directly on failure paths with no manual
+/// shutdown/join bookkeeping; teardown is owned by the harness.
+struct ScenarioFixture {
+    runtime: E2eRuntime,
+    query_socket: std::path::PathBuf,
+    ingest_socket: std::path::PathBuf,
+}
+
+impl ScenarioFixture {
+    fn boot() -> Result<Self, Box<dyn Error>> {
+        let mut runtime = E2eRuntime::boot()?;
+        // Eager start surfaces a boot refusal here and binds all three
+        // sockets before any byte is published.
+        runtime.start()?;
+        let (query_socket, ingest_socket) = {
+            let (query, _, ingest) = runtime
+                .socket_paths()
+                .ok_or_else(|| "fixture: driver started without socket paths".to_string())?;
+            (query.to_path_buf(), ingest.to_path_buf())
+        };
+        Ok(Self {
+            runtime,
+            query_socket,
+            ingest_socket,
+        })
+    }
+}
 
 fn repo() -> RepoId {
     RepoId::new("repo-exp").expect("static fixture ID satisfies canonical policy")
@@ -81,36 +107,6 @@ fn chunk_record(id: &str, text: &str) -> Result<ChunkRecord, Box<dyn Error>> {
         parent_chunk_id: None,
         source_repo_id: None,
     })
-}
-
-fn unique_socket_paths() -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
-    let pid = std::process::id();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let sequence = NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed);
-    let query =
-        std::env::temp_dir().join(format!("qi-explain-query-{pid}-{nanos}-{sequence}.sock"));
-    let control =
-        std::env::temp_dir().join(format!("qi-explain-control-{pid}-{nanos}-{sequence}.sock"));
-    let ingest =
-        std::env::temp_dir().join(format!("qi-explain-ingest-{pid}-{nanos}-{sequence}.sock"));
-    (query, control, ingest)
-}
-
-fn build_config(state_root: &Path) -> SearchdConfig {
-    let mut cfg = SearchdConfig::from_state_root(state_root.to_path_buf())
-        .try_with_search_corpus_history_retention_limits(
-            8,
-            16 * 1024 * 1024,
-            128,
-            256 * 1024 * 1024,
-        )
-        .expect("valid test retention policy");
-    let (query_socket, control_socket, ingest_socket) = unique_socket_paths();
-    cfg = SearchdConfig::with_socket_overrides(cfg, query_socket, control_socket);
-    SearchdConfig::with_ingest_socket_override(cfg, ingest_socket)
 }
 
 fn send_query_request(
@@ -178,31 +174,6 @@ fn scope_key(path: &str) -> SearchScopeKey {
     }
 }
 
-fn start_runtime(state_root: &Path, thread_name: &str) -> Result<RuntimeHandles, Box<dyn Error>> {
-    let config = build_config(state_root);
-    let runtime = build_runtime(config)?;
-    let query_socket = runtime.query_server.socket_path().to_path_buf();
-    let ingest_socket = runtime.ingest_server.socket_path().to_path_buf();
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let shutdown_for_drive = Arc::clone(&shutdown);
-    let join = thread::Builder::new()
-        .name(thread_name.into())
-        .spawn(move || drive(runtime, &shutdown_for_drive))?;
-    if !wait_until(SOCKET_APPEAR_TIMEOUT, || {
-        query_socket.exists() && ingest_socket.exists()
-    }) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err(format!(
-            "sockets never appeared query={} ingest={}",
-            query_socket.display(),
-            ingest_socket.display()
-        )
-        .into());
-    }
-    Ok((query_socket, ingest_socket, shutdown, join))
-}
-
 fn dispatch_ingest(socket: &Path, payload: SearchPlaneIngestIpcRequest) -> TestResult {
     // Like every producer, stamp the canonical batch digest before sending
     // (QI-BB-032); the search plane refuses any other digest.
@@ -210,7 +181,7 @@ fn dispatch_ingest(socket: &Path, payload: SearchPlaneIngestIpcRequest) -> TestR
     let response = send_ingest_request(
         socket,
         &SearchPlaneIngestIpcRequestEnvelope {
-            request_id: NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed),
+            request_id: NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed),
             payload,
         },
     )?;
@@ -273,9 +244,9 @@ fn seal_lexical(socket: &Path) -> TestResult {
 
 #[test]
 fn explain_reports_present_candidate() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
-    let (socket, ingest_socket, shutdown, join) = start_runtime(state_root, "explain-test")?;
+    let fixture = ScenarioFixture::boot()?;
+    let socket = fixture.query_socket.clone();
+    let ingest_socket = fixture.ingest_socket.clone();
     publish_chunk(
         &ingest_socket,
         chunk_record("explain-c1", "quick brown fox jumps")?,
@@ -288,8 +259,6 @@ fn explain_reports_present_candidate() -> TestResult {
             .map(|r| !matches!(r.payload, SearchPlaneQueryIpcResponse::Error(_)))
             .unwrap_or(false)
     }) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err("dispatcher never sealed".into());
     }
 
@@ -301,14 +270,10 @@ fn explain_reports_present_candidate() -> TestResult {
             .next()
             .ok_or_else(|| Box::<dyn Error>::from("lexical query returned zero candidates"))?,
         other => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
             return Err(format!("expected Lexical, got {other:?}").into());
         }
     };
     if candidate.candidate_id != "explain-c1" {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!("expected explain-c1, got {}", candidate.candidate_id).into());
     }
 
@@ -316,16 +281,12 @@ fn explain_reports_present_candidate() -> TestResult {
     let (presence, explanation) = match explain_resp.payload {
         SearchPlaneQueryIpcResponse::Explain(exp) => (exp.presence, exp.explanation),
         other => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
             return Err(format!("expected Explain, got {other:?}").into());
         }
     };
     if presence != quanta_index_contract::CandidatePresenceV1::Indexed
         || explanation.strategy != "presence_lookup"
     {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!(
             "expected a typed indexed presence from an exact lookup, got {presence:?} / {}",
             explanation.strategy
@@ -333,8 +294,6 @@ fn explain_reports_present_candidate() -> TestResult {
         .into());
     }
     if !explanation.summary.contains("present") {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!(
             "expected 'present' in explanation summary, got: {}",
             explanation.summary
@@ -342,8 +301,6 @@ fn explain_reports_present_candidate() -> TestResult {
         .into());
     }
     if !explanation.summary.contains("explain-c1") {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!(
             "expected candidate id in summary, got: {}",
             explanation.summary
@@ -351,20 +308,14 @@ fn explain_reports_present_candidate() -> TestResult {
         .into());
     }
 
-    shutdown.store(true, Ordering::Release);
-    match join.join() {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(e)) => Err(e.into()),
-        Err(panic) => Err(format!("driver panic: {panic:?}").into()),
-    }
+    Ok(())
 }
 
 #[test]
 fn explain_rejects_generation_mismatch() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let state_root = dir.path();
-    let (socket, ingest_socket, shutdown, join) =
-        start_runtime(state_root, "explain-mismatch-test")?;
+    let fixture = ScenarioFixture::boot()?;
+    let socket = fixture.query_socket.clone();
+    let ingest_socket = fixture.ingest_socket.clone();
     publish_chunk(
         &ingest_socket,
         chunk_record("c-mismatch", "alpha bravo charlie")?,
@@ -377,8 +328,6 @@ fn explain_rejects_generation_mismatch() -> TestResult {
             .map(|r| !matches!(r.payload, SearchPlaneQueryIpcResponse::Error(_)))
             .unwrap_or(false)
     }) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err("dispatcher never sealed".into());
     }
 
@@ -400,21 +349,12 @@ fn explain_rejects_generation_mismatch() -> TestResult {
     let err = match resp.payload {
         SearchPlaneQueryIpcResponse::Error(e) => e,
         other => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
             return Err(format!("expected Error, got {other:?}").into());
         }
     };
     if err.code.as_wire_str() != "INVALID_REQUEST" {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
         return Err(format!("expected INVALID_REQUEST, got {}", err.code).into());
     }
 
-    shutdown.store(true, Ordering::Release);
-    match join.join() {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(e)) => Err(e.into()),
-        Err(panic) => Err(format!("driver panic: {panic:?}").into()),
-    }
+    Ok(())
 }

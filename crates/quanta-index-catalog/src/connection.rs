@@ -9,12 +9,34 @@
 //! connection would only add lock contention.
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use quanta_index_contract::ManifestGeneration;
 use quanta_index_core::CoreError;
 use rusqlite::{Connection, OpenFlags};
+
+/// Unix-millisecond clock for catalog lease decisions (TOPT-01 / PO-3).
+///
+/// Every idempotency transaction samples its `now` once from this port
+/// and threads the sample through its claim/recovery/mutation-lease
+/// decisions, so tests pin time exactly. Production uses
+/// [`SystemCatalogClock`]; tests inject a scripted clock. Durable lease
+/// semantics stay Unix milliseconds — never a process-local monotonic
+/// clock.
+pub trait CatalogClockPort: Send + Sync {
+    fn now_unix_ms(&self) -> u64;
+}
+
+/// The production catalog clock: the wall clock at the composition edge.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SystemCatalogClock;
+
+impl CatalogClockPort for SystemCatalogClock {
+    fn now_unix_ms(&self) -> u64 {
+        quanta_index_core::now_unix_ms()
+    }
+}
 
 /// The catalog database file, under `state_root/catalog/`.
 pub const CATALOG_FILE_NAME: &str = "catalog-v1.sqlite";
@@ -31,6 +53,7 @@ pub fn catalog_dir(state_root: &Path) -> PathBuf {
 pub struct SqliteCatalog {
     pub(crate) connection: Mutex<Connection>,
     pub(crate) path: PathBuf,
+    pub(crate) clock: Arc<dyn CatalogClockPort>,
 }
 
 impl std::fmt::Debug for SqliteCatalog {

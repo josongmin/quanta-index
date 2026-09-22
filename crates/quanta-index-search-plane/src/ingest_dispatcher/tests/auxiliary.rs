@@ -263,6 +263,7 @@ fn sealing_materializer(
         idempotency: memory_catalog(),
         resource_policy: IngestResourcePolicy::DEFAULT,
         semantic_stream_policy: SemanticStreamWindowPolicy::DEFAULT,
+        source_egress_policy: None,
         auxiliary_catalog: aux.catalog.clone(),
         auxiliary_coordinator: Arc::clone(&aux.coordinator),
     })

@@ -10,7 +10,7 @@
     reason = "integration-test helpers outside `#[test]` fns assert fixture setup with `expect`; the workspace already permits this inside test fns and a helper that cannot set up its fixture has no caller to propagate to"
 )]
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use quanta_index_contract::{
     BatchIngestMode, CapabilityStatusV1, EmbeddingDistanceMetric, EmbeddingId,
@@ -21,25 +21,11 @@ use quanta_index_contract::{
 };
 use quanta_index_core::GenerationStorageKeyV1;
 use quanta_index_core::domains::generation::GenerationQuarantineReasonV1;
-use quanta_index_searchd::app::SearchdConfig;
 use quanta_index_searchd::app::semantic_boot::SemanticMigrationOutcome;
-use quanta_index_searchd_runtime::build_runtime;
+use quanta_index_searchd_harness::E2eRuntime;
 use quanta_index_semantic::{SemanticAdapter, build_resident_batch_v1};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
-
-fn socket_paths() -> (PathBuf, PathBuf, PathBuf) {
-    let pid = std::process::id();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_nanos());
-    let dir = std::env::temp_dir();
-    (
-        dir.join(format!("qi-bootrep-q-{pid}-{nanos}.sock")),
-        dir.join(format!("qi-bootrep-c-{pid}-{nanos}.sock")),
-        dir.join(format!("qi-bootrep-i-{pid}-{nanos}.sock")),
-    )
-}
 
 #[test]
 #[expect(
@@ -47,28 +33,20 @@ fn socket_paths() -> (PathBuf, PathBuf, PathBuf) {
     reason = "test asserts the assembled boot report via assert macros"
 )]
 fn fresh_runtime_exposes_empty_semantic_boot_report() -> TestResult {
-    let temp = quanta_index_searchd_harness::private_tempdir()?;
-    let (query_socket, control_socket, ingest_socket) = socket_paths();
-    let mut config = SearchdConfig::from_state_root(temp.path().to_path_buf())
-        .try_with_search_corpus_history_retention_limits(
-            8,
-            16 * 1024 * 1024,
-            128,
-            256 * 1024 * 1024,
-        )
-        .expect("valid test retention policy");
-    config = SearchdConfig::with_socket_overrides(config, query_socket, control_socket);
-    config = SearchdConfig::with_ingest_socket_override(config, ingest_socket);
-
-    let runtime = build_runtime(config)?;
+    // The boot report comes from the harness-owned runtime (TOPT-03):
+    // sockets and retention are the harness builder's, and the daemon
+    // start that the report describes is the same start under test.
+    let mut runtime = E2eRuntime::boot()?;
+    runtime.start()?;
+    let report = runtime
+        .semantic_boot_report()
+        .ok_or("a started daemon reports its semantic boot")?;
 
     // No legacy journal and no durable generations on a fresh state root, so the
     // boot path reports a direct (no-migration) open with zero seeded generations.
-    assert_eq!(
-        runtime.semantic_boot.migration,
-        SemanticMigrationOutcome::NoLegacyJournal
-    );
-    assert_eq!(runtime.semantic_boot.seed.sealed_generations, 0);
+    assert_eq!(report.migration, SemanticMigrationOutcome::NoLegacyJournal);
+    assert_eq!(report.seed.sealed_generations, 0);
+    runtime.stop()?;
     Ok(())
 }
 
@@ -138,20 +116,6 @@ fn fixture_batch(generation: ManifestGeneration) -> Result<SemanticIngestBatch, 
     })
 }
 
-fn build_config(state_root: &Path) -> SearchdConfig {
-    let (query_socket, control_socket, ingest_socket) = socket_paths();
-    let mut config = SearchdConfig::from_state_root(state_root.to_path_buf())
-        .try_with_search_corpus_history_retention_limits(
-            8,
-            16 * 1024 * 1024,
-            128,
-            256 * 1024 * 1024,
-        )
-        .expect("valid test retention policy");
-    config = SearchdConfig::with_socket_overrides(config, query_socket, control_socket);
-    SearchdConfig::with_ingest_socket_override(config, ingest_socket)
-}
-
 /// A corrupted generation nothing activates and nothing retains is an
 /// orphan, not fatal and not seeded.
 ///
@@ -202,19 +166,28 @@ fn runtime_boot_inventories_a_corrupted_inactive_semantic_generation() -> TestRe
         .map_err(|err| format!("encode manifest cbor: {err}"))?;
     std::fs::write(&manifest_path, &tampered)?;
 
-    let runtime = build_runtime(build_config(&state_root))?;
-    assert_eq!(runtime.semantic_boot.seed.sealed_generations, 0);
-    assert_eq!(runtime.semantic_boot.seed.quarantined_generations, 0);
-    assert_eq!(runtime.boot_inventory.semantic.sealed_generations, 0);
-    assert!(runtime.boot_inventory.semantic.quarantined.is_empty());
+    // The harness serves the caller-owned root the adapter seeded
+    // above (TOPT-03); the daemon start under test is a real start, so
+    // its reports describe bound sockets, not phantom paths.
+    let mut runtime = E2eRuntime::boot_in(&state_root)?;
+    runtime.start()?;
+    let report = runtime
+        .semantic_boot_report()
+        .ok_or("a started daemon reports its semantic boot")?;
+    assert_eq!(report.seed.sealed_generations, 0);
+    assert_eq!(report.seed.quarantined_generations, 0);
+    let inventory = runtime
+        .boot_inventory()
+        .ok_or("a started daemon reports its boot inventory")?;
+    assert_eq!(inventory.semantic.sealed_generations, 0);
+    assert!(inventory.semantic.quarantined.is_empty());
     // The runtime names directories under the canonical state root.
     let generation_dir = std::fs::canonicalize(
         manifest_path
             .parent()
             .ok_or("the manifest lives in its generation directory")?,
     )?;
-    let orphaned: Vec<(SearchPlaneTrackKind, &Path, GenerationQuarantineReasonV1)> = runtime
-        .boot_inventory
+    let orphaned: Vec<(SearchPlaneTrackKind, &Path, GenerationQuarantineReasonV1)> = inventory
         .semantic
         .orphaned
         .iter()
@@ -229,8 +202,9 @@ fn runtime_boot_inventories_a_corrupted_inactive_semantic_generation() -> TestRe
         )]
     );
     assert_eq!(
-        runtime.boot_inventory.active_pairs_validated, 0,
+        inventory.active_pairs_validated, 0,
         "nothing is active, so boot proves nothing"
     );
+    runtime.stop()?;
     Ok(())
 }
