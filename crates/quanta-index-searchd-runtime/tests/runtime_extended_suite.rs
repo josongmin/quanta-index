@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+#[path = "common/fail_closed_wait.rs"]
+mod fail_closed_wait;
 #[path = "common/searchd_binary_process.rs"]
 mod searchd_binary_process;
 #[path = "common/searchd_lease_probe.rs"]
@@ -25,6 +27,8 @@ mod e2e_ingest_resource_envelope;
 mod e2e_integrity_scrub;
 #[path = "e2e_lexical_sealed_overlays.rs"]
 mod e2e_lexical_sealed_overlays;
+#[path = "e2e_long_state_root_sockets.rs"]
+mod e2e_long_state_root_sockets;
 #[path = "e2e_metrics_scrape.rs"]
 mod e2e_metrics_scrape;
 #[path = "e2e_process_envelope.rs"]

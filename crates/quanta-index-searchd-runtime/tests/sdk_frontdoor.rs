@@ -48,6 +48,9 @@ use quanta_index_searchd::app::SearchdConfig;
 use quanta_index_searchd::app::searchd::drive;
 use quanta_index_searchd_runtime::build_runtime;
 
+use crate::fail_closed_wait::{
+    RealTicker, UnexpectedSuccess, WaitError, wait_for, wait_for_terminal_error,
+};
 use crate::frontdoor_scenarios::{
     SDK_FRONTDOOR_SCENARIOS, SdkFrontdoorExpectation, SdkFrontdoorSurface,
 };
@@ -1305,88 +1308,126 @@ fn assert_structural_single_binding(
     Ok(())
 }
 
-fn wait_for_sdk_ready<T, F>(timeout: Duration, mut run: F) -> Result<T, SdkError>
-where
-    F: FnMut() -> Result<T, SdkError>,
-{
-    let start = Instant::now();
-    loop {
-        match run() {
-            Ok(value) => return Ok(value),
-            Err(SdkError::Remote { code, message, .. })
-                if code.as_wire_str() == "NOT_READY" && start.elapsed() < timeout =>
-            {
-                drop(message);
-                thread::sleep(Duration::from_millis(10));
-            }
-            Err(err) => return Err(err),
-        }
-    }
+/// Poll cadence shared by the SDK frontdoor waits: the TH-1 repair
+/// keeps the historical 10ms cadence and changes only the timeout
+/// contract underneath it.
+const SDK_WAIT_POLL: Duration = Duration::from_millis(10);
+
+/// Timeout evidence names the predicate class and the exact wait call
+/// site, so a spent wait points at the observation that never arrived.
+fn wait_description(what: &str, caller: &std::panic::Location<'_>) -> String {
+    format!(
+        "{what} (wait called at {}:{})",
+        caller.file(),
+        caller.line()
+    )
 }
 
-fn wait_for_sdk_observation<T, F, P>(timeout: Duration, run: F, ready: P) -> Result<T, SdkError>
+#[track_caller]
+fn wait_for_sdk_ready<T, F>(timeout: Duration, run: F) -> Result<T, WaitError<SdkError>>
 where
+    T: std::fmt::Debug,
+    F: FnMut() -> Result<T, SdkError>,
+{
+    wait_for(
+        &RealTicker::new(),
+        timeout,
+        SDK_WAIT_POLL,
+        &wait_description(
+            "sdk ready (first non-NOT_READY response)",
+            std::panic::Location::caller(),
+        ),
+        run,
+        |_| true,
+        |error| matches!(error, SdkError::Remote { code, .. } if code.as_wire_str() == "NOT_READY"),
+    )
+}
+
+#[track_caller]
+fn wait_for_sdk_observation<T, F, P>(
+    timeout: Duration,
+    run: F,
+    ready: P,
+) -> Result<T, WaitError<SdkError>>
+where
+    T: std::fmt::Debug,
     F: FnMut() -> Result<T, SdkError>,
     P: FnMut(&T) -> bool,
 {
-    wait_for_sdk_observation_with_retry_codes(timeout, &["NOT_READY"], run, ready)
+    wait_for_sdk_observation_at(
+        std::panic::Location::caller(),
+        timeout,
+        &["NOT_READY"],
+        run,
+        ready,
+    )
 }
 
+#[track_caller]
 fn wait_for_sdk_observation_with_retry_codes<T, F, P>(
     timeout: Duration,
     retry_codes: &[&str],
-    mut run: F,
-    mut ready: P,
-) -> Result<T, SdkError>
+    run: F,
+    ready: P,
+) -> Result<T, WaitError<SdkError>>
 where
+    T: std::fmt::Debug,
     F: FnMut() -> Result<T, SdkError>,
     P: FnMut(&T) -> bool,
 {
-    let start = Instant::now();
-    loop {
-        match run() {
-            Ok(value) if ready(&value) || start.elapsed() >= timeout => return Ok(value),
-            Ok(_value) => thread::sleep(Duration::from_millis(10)),
-            Err(SdkError::Remote { code, message, .. })
-                if retry_codes
-                    .iter()
-                    .any(|candidate| code.as_wire_str() == *candidate)
-                    && start.elapsed() < timeout =>
-            {
-                drop(message);
-                thread::sleep(Duration::from_millis(10));
-            }
-            Err(err) => return Err(err),
-        }
-    }
+    wait_for_sdk_observation_at(
+        std::panic::Location::caller(),
+        timeout,
+        retry_codes,
+        run,
+        ready,
+    )
 }
 
+fn wait_for_sdk_observation_at<T, F, P>(
+    caller: &std::panic::Location<'_>,
+    timeout: Duration,
+    retry_codes: &[&str],
+    run: F,
+    ready: P,
+) -> Result<T, WaitError<SdkError>>
+where
+    T: std::fmt::Debug,
+    F: FnMut() -> Result<T, SdkError>,
+    P: FnMut(&T) -> bool,
+{
+    wait_for(
+        &RealTicker::new(),
+        timeout,
+        SDK_WAIT_POLL,
+        &wait_description("sdk observation satisfying ready", caller),
+        run,
+        ready,
+        |error| matches!(error, SdkError::Remote { code, .. } if retry_codes.contains(&code.as_wire_str())),
+    )
+}
+
+#[track_caller]
 fn wait_for_sdk_terminal_error<T, F>(
     timeout: Duration,
     retry_codes: &[&str],
-    mut run: F,
-) -> Result<SdkError, Box<dyn Error>>
+    run: F,
+) -> Result<SdkError, WaitError<UnexpectedSuccess<T>>>
 where
+    T: std::fmt::Debug,
     F: FnMut() -> Result<T, SdkError>,
 {
-    let start = Instant::now();
-    loop {
-        match run() {
-            Ok(_) => {
-                return Err("query unexpectedly succeeded while waiting for typed error".into());
-            }
-            Err(SdkError::Remote { code, message, .. })
-                if retry_codes
-                    .iter()
-                    .any(|candidate| code.as_wire_str() == *candidate)
-                    && start.elapsed() < timeout =>
-            {
-                drop(message);
-                thread::sleep(Duration::from_millis(10));
-            }
-            Err(err) => return Ok(err),
-        }
-    }
+    wait_for_terminal_error(
+        &RealTicker::new(),
+        timeout,
+        SDK_WAIT_POLL,
+        &wait_description(
+            "terminal sdk error (no retryable code, no success)",
+            std::panic::Location::caller(),
+        ),
+        run,
+        |error| matches!(error, SdkError::Remote { code, .. } if retry_codes.contains(&code.as_wire_str())),
+    )
 }
 
 fn assert_single_symbol_candidate(
@@ -1460,16 +1501,21 @@ fn assert_repo_map_happy_path(
     Ok(())
 }
 
+#[track_caller]
 fn wait_for_symbol_query<F>(
     timeout: Duration,
     run: F,
-) -> Result<quanta_index_contract::SymbolQueryResponse, SdkError>
+) -> Result<quanta_index_contract::SymbolQueryResponse, WaitError<SdkError>>
 where
     F: FnMut() -> Result<quanta_index_contract::SymbolQueryResponse, SdkError>,
 {
-    wait_for_sdk_observation(timeout, run, |response| {
-        response.generation == pin() && response.results.len() == 1
-    })
+    wait_for_sdk_observation_at(
+        std::panic::Location::caller(),
+        timeout,
+        &["NOT_READY"],
+        run,
+        |response| response.generation == pin() && response.results.len() == 1,
+    )
 }
 
 #[test]

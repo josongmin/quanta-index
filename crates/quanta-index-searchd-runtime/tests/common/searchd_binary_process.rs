@@ -178,10 +178,7 @@ pub(super) fn daemon_socket_paths(state_root: &Path) -> [PathBuf; 3] {
 
 pub(super) fn searchd_command(state_root: &Path, max_generations: usize) -> Command {
     let mut command = Command::new(searchd_binary_path());
-    let _configured = command
-        .arg("serve")
-        .arg("--state-root")
-        .arg(state_root);
+    let _configured = command.arg("serve").arg("--state-root").arg(state_root);
     apply_searchd_env(&mut command, max_generations);
     command
 }
@@ -238,8 +235,7 @@ mod tests {
         // status instead of timing out or masking it.
         let root = tempfile::tempdir().expect("socket fixture root");
         let mut child = Command::new("false").spawn().expect("spawn false");
-        let error =
-            wait_for_sockets(root.path(), &mut child).expect_err("no sockets ever appear");
+        let error = wait_for_sockets(root.path(), &mut child).expect_err("no sockets ever appear");
         let text = error.to_string();
         assert!(
             text.contains("exited before opening sockets") && text.contains("exit status: 1"),

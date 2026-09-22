@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use std::error::Error;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use quanta_index_contract::{
     MetricsSnapshotV1, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse, TextQuerySyntax,
@@ -25,6 +25,8 @@ use quanta_index_core::{
 };
 use quanta_index_searchd::app::ProcessMemoryCeilings;
 use quanta_index_searchd_harness::E2eRuntime;
+
+use crate::fail_closed_wait::{RealTicker, wait_for};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -37,6 +39,7 @@ impl ProcessMemoryProbePort for ScriptedProbe {
     }
 }
 
+#[derive(Debug)]
 struct Scrape {
     counters: BTreeMap<String, u64>,
     gauges: BTreeMap<String, f64>,
@@ -103,21 +106,26 @@ fn typed_code(response: &SearchPlaneIngestIpcResponse) -> Option<&str> {
     }
 }
 
-/// Wait, bounded, until `condition` holds against fresh scrapes; the
-/// assertion is on what the scrape says, never on the wait.
+/// Wait, bounded, until `condition` holds against fresh scrapes
+/// (TOPT-06/TH-2): a spent wait is a typed timeout naming `what` and
+/// carrying the last scrape — never the stale scrape as success. A
+/// scrape failure itself is terminal and returns at once.
 fn wait_for_scrape(
     rt: &mut E2eRuntime,
     bound: Duration,
+    what: &str,
     condition: impl Fn(&Scrape) -> bool,
 ) -> Result<Scrape, Box<dyn Error>> {
-    let started = Instant::now();
-    loop {
-        let scrape = Scrape::take(rt)?;
-        if condition(&scrape) || started.elapsed() > bound {
-            return Ok(scrape);
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    wait_for(
+        &RealTicker::new(),
+        bound,
+        Duration::from_millis(10),
+        what,
+        || Scrape::take(rt),
+        condition,
+        |_| false,
+    )
+    .map_err(|error| Box::<dyn Error>::from(error))
 }
 
 /// The resident-memory gate: a writer is refused typed while the daemon
@@ -229,11 +237,16 @@ fn an_idle_writer_is_released_by_the_daemons_timer_without_another_batch() -> Te
         .saturating_mul(4)
         .saturating_add(rt.maintenance_policy().tick().saturating_mul(4))
         .saturating_add(Duration::from_secs(5));
-    let swept = wait_for_scrape(&mut rt, bound, |scrape| {
-        scrape
-            .gauge("lexical_writers_open")
-            .is_ok_and(|open| open < 1.0)
-    })?;
+    let swept = wait_for_scrape(
+        &mut rt,
+        bound,
+        "the timer releasing the idle writer (lexical_writers_open < 1)",
+        |scrape| {
+            scrape
+                .gauge("lexical_writers_open")
+                .is_ok_and(|open| open < 1.0)
+        },
+    )?;
     expect_eq(
         &format!("the timer released the idle writer within {bound:?}"),
         &swept.gauge("lexical_writers_open")?,
@@ -286,18 +299,23 @@ fn the_generation_disk_gauges_match_an_independent_walk_after_a_seal() -> TestRe
         .tick()
         .saturating_mul(10)
         .saturating_add(Duration::from_secs(5));
-    let scrape = wait_for_scrape(&mut rt, bound, |scrape| {
-        scrape
-            .gauge("search_corpus_lexical_generation_disk_bytes")
-            .is_ok_and(|bytes| {
-                bytes.to_bits() == quanta_index_core::count_as_f64(lexical).to_bits()
-            })
-            && scrape
-                .gauge("search_corpus_semantic_generation_disk_bytes")
+    let scrape = wait_for_scrape(
+        &mut rt,
+        bound,
+        "the disk gauges matching the independent walk",
+        |scrape| {
+            scrape
+                .gauge("search_corpus_lexical_generation_disk_bytes")
                 .is_ok_and(|bytes| {
-                    bytes.to_bits() == quanta_index_core::count_as_f64(semantic).to_bits()
+                    bytes.to_bits() == quanta_index_core::count_as_f64(lexical).to_bits()
                 })
-    })?;
+                && scrape
+                    .gauge("search_corpus_semantic_generation_disk_bytes")
+                    .is_ok_and(|bytes| {
+                        bytes.to_bits() == quanta_index_core::count_as_f64(semantic).to_bits()
+                    })
+        },
+    )?;
     // Re-walk at assertion time: the tree is quiescent after activation,
     // so the gauge must equal what the walk sees now.
     let lexical_now = walk_bytes(&rt.state_root().join("indexes/lexical"))?;

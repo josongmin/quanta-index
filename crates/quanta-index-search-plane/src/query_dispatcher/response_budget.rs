@@ -92,8 +92,9 @@ fn encoded_len<T: Serialize>(value: &T, what: &str) -> Result<u64, CoreError> {
 /// `page` as it fits `budget`: whole when it fits, else its longest
 /// prefix that does, continued by a cursor at the prefix's last row.
 ///
-/// The cut is found from the rows' encoded sizes and then proved by
-/// measuring the page it produces, so the answer never exceeds the budget.
+/// The row bytes bound which prefixes could possibly fit. Check those
+/// prefixes from longest to shortest with their actual cursor and window:
+/// cursor size depends on the last row, so it is not monotone in page length.
 pub(super) fn fit_ranked_page<P: RankedPage>(
     page: P,
     budget: ResponsePayloadBudget,
@@ -104,25 +105,15 @@ pub(super) fn fit_ranked_page<P: RankedPage>(
     if whole <= limit {
         return Ok(page);
     }
-    let mut row_bytes: Vec<u64> = Vec::with_capacity(page.rows().len());
-    for (index, row) in page.rows().iter().enumerate() {
-        row_bytes.push(encoded_len(row, "ranked row")?.saturating_add(page.paired_bytes(index)?));
-    }
-    let rows_total = row_bytes
-        .iter()
-        .fold(0_u64, |total, bytes| total.saturating_add(*bytes));
-    // What the page costs without its rows, plus room for the cursor the
-    // cut adds: bounded by the largest row, whose key a cursor repeats.
-    let cursor_room = row_bytes.iter().copied().max().map_or(0, |bytes| bytes);
-    let skeleton = whole.saturating_sub(rows_total).saturating_add(cursor_room);
     let mut returned = 0_usize;
-    let mut used = skeleton;
-    for bytes in &row_bytes {
-        let next = used.saturating_add(*bytes);
+    let mut row_bytes_total = 0_u64;
+    for (index, row) in page.rows().iter().enumerate() {
+        let row_bytes = encoded_len(row, "ranked row")?.saturating_add(page.paired_bytes(index)?);
+        let next = row_bytes_total.saturating_add(row_bytes);
         if next > limit {
             break;
         }
-        used = next;
+        row_bytes_total = next;
         returned = returned.saturating_add(1);
     }
     let window = page.window().clone();

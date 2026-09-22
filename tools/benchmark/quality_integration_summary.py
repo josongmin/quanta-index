@@ -3,7 +3,7 @@
 
 Aggregates the per-dimension search-quality rails into one integration summary
 *without erasing dimension boundaries*. Each dimension keeps its own claim type
-and blocking/advisory status. The canonical ``quality-full`` profile supplies
+and an explicit blocking status. The canonical ``quality-full`` profile supplies
 the live family set, so the aggregate cannot silently omit a newly registered
 authority rail (per MEASUREMENT_MATRIX.md / NO-GO-RULES.md).
 
@@ -25,7 +25,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from manifest import ManifestError, load_manifest
+from manifest import ManifestError, load_manifest  # noqa: E402
 
 QUALITY_PROFILE = "quality-full"
 # The manifest owns the live family set and artifact globs. Tickets stay here
@@ -80,7 +80,7 @@ def validate_evidence() -> int:
     ).returncode
 
 
-def quality_dimensions() -> list[tuple[str, str, bool, str, str]]:
+def quality_dimensions() -> list[tuple[str, str, str]]:
     """Resolve the aggregate's live families from the canonical manifest."""
     try:
         manifest = load_manifest(ROOT / "tools" / "benchmark" / "manifest.json")
@@ -104,14 +104,14 @@ def quality_dimensions() -> list[tuple[str, str, bool, str, str]]:
         if stale_tickets:
             details.append(f"stale ticket(s): {', '.join(stale_tickets)}")
         raise RuntimeError(f"quality summary metadata drift ({'; '.join(details)})")
-    dimensions: list[tuple[str, str, bool, str, str]] = []
+    dimensions: list[tuple[str, str, str]] = []
     for name in names:
         assert isinstance(name, str)
         family = families[name]
         assert isinstance(family, dict)
         artifact_glob = family["artifact_glob"]
         assert isinstance(artifact_glob, str)
-        dimensions.append((name, QUALITY_TICKETS[name], True, "live", artifact_glob))
+        dimensions.append((name, QUALITY_TICKETS[name], artifact_glob))
     return dimensions
 
 
@@ -153,49 +153,45 @@ def build() -> tuple[dict, bool]:
     head = resolve_head()
     rows = []
     all_live_passed = True
-    for dimension, ticket, blocking, status, artifact_glob in quality_dimensions():
+    for dimension, ticket, artifact_glob in quality_dimensions():
         row = {
             "dimension": dimension,
             "owner_ticket": ticket,
-            "blocking": blocking,
-            "status": status,
+            "blocking": True,
+            "status": "live",
         }
-        if status == "live":
-            summaries = load_summaries(artifact_glob)
-            if (
-                dimension == "concurrency"
-                and {path.name for path, _ in summaries} != CONCURRENCY_ARTIFACTS
-            ):
-                row["passed"] = False
-                row["error"] = "required concurrency c1/c8/c32 artifacts incomplete"
-                all_live_passed = False
-            elif not summaries:
-                # A dimension declared live but missing its artifact is a
-                # fail-closed integration error, not a silent pass.
-                row["passed"] = False
-                row["error"] = "declared live but summary artifact missing"
-                all_live_passed = False
-            else:
-                row["artifacts"] = [
-                    str(path.relative_to(ROOT)) if path.is_relative_to(ROOT) else str(path)
-                    for path, _ in summaries
-                ]
-                verdicts = [
-                    rail_verdict(summary, dimension=dimension, head=head)
-                    for _, summary in summaries
-                ]
-                if any(verdict is None for verdict in verdicts):
-                    # A parsed artifact without a verdict is malformed: surface it
-                    # as a flagged failure rather than silently scoring it FAIL.
-                    passed = False
-                    row["error"] = "artifact present but missing 'passed' verdict"
-                else:
-                    passed = all(verdicts)
-                row["passed"] = passed
-                if not passed:
-                    all_live_passed = False
+        summaries = load_summaries(artifact_glob)
+        if (
+            dimension == "concurrency"
+            and {path.name for path, _ in summaries} != CONCURRENCY_ARTIFACTS
+        ):
+            row["passed"] = False
+            row["error"] = "required concurrency c1/c8/c32 artifacts incomplete"
+            all_live_passed = False
+        elif not summaries:
+            # A registered dimension without its artifact is a fail-closed
+            # integration error, not a silent pass.
+            row["passed"] = False
+            row["error"] = "declared live but summary artifact missing"
+            all_live_passed = False
         else:
-            row["passed"] = None  # pending: explicitly not evaluated
+            row["artifacts"] = [
+                str(path.relative_to(ROOT)) if path.is_relative_to(ROOT) else str(path)
+                for path, _ in summaries
+            ]
+            verdicts = [
+                rail_verdict(summary, dimension=dimension, head=head) for _, summary in summaries
+            ]
+            if any(verdict is None for verdict in verdicts):
+                # A parsed artifact without a verdict is malformed: surface it
+                # as a flagged failure rather than silently scoring it FAIL.
+                passed = False
+                row["error"] = "artifact present but missing 'passed' verdict"
+            else:
+                passed = all(verdicts)
+            row["passed"] = passed
+            if not passed:
+                all_live_passed = False
         rows.append(row)
 
     doc = {
@@ -204,8 +200,8 @@ def build() -> tuple[dict, bool]:
         "git_head": head,
         "live_dimensions_passed": all_live_passed,
         "note": (
-            "aggregate of live per-dimension rails; pending dimensions are NOT "
-            "evaluated and this summary is not a substitute for per-dimension closeout"
+            "aggregate of every registered quality-full dimension; this summary "
+            "is not a substitute for per-dimension closeout"
         ),
         "dimensions": rows,
     }
@@ -230,11 +226,9 @@ def main() -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(doc, indent=2) + "\n")
 
-    live = [d for d in doc["dimensions"] if d["status"] == "live"]
-    pending = [d for d in doc["dimensions"] if d["status"] == "pending"]
-    print(f"quality integration: {len(live)} live, {len(pending)} pending")
+    print(f"quality integration: {len(doc['dimensions'])} live")
     for d in doc["dimensions"]:
-        mark = {True: "PASS", False: "FAIL", None: "pending"}[d["passed"]]
+        mark = "PASS" if d["passed"] else "FAIL"
         print(f"  [{mark}] {d['dimension']} ({d['owner_ticket']})")
     if not all_live_passed:
         print("quality integration RED: a live dimension failed", file=sys.stderr)

@@ -75,7 +75,7 @@ def test_build_fails_closed_when_a_live_artifact_is_stale(tmp_path: Path, monkey
     monkeypatch.setattr(
         MODULE,
         "quality_dimensions",
-        lambda: [("tail", "J7Q-04", True, "live", "artifacts/search-quality/tail/latest/summary.json")],
+        lambda: [("tail", "J7Q-04", "artifacts/search-quality/tail/latest/summary.json")],
     )
     path = tmp_path / "artifacts" / "search-quality" / "tail" / "latest" / "summary.json"
     path.parent.mkdir(parents=True)
@@ -85,6 +85,8 @@ def test_build_fails_closed_when_a_live_artifact_is_stale(tmp_path: Path, monkey
     doc, passed = MODULE.build()
     assert not passed
     assert doc["dimensions"][0]["passed"] is False
+    assert doc["dimensions"][0]["status"] == "live"
+    assert doc["dimensions"][0]["blocking"] is True
     assert "missing 'passed' verdict" in doc["dimensions"][0]["error"]
 
 
@@ -98,8 +100,6 @@ def test_build_requires_every_concurrency_level(tmp_path: Path, monkeypatch) -> 
             (
                 "concurrency",
                 "QI-BB-010",
-                True,
-                "live",
                 "artifacts/search-quality/concurrency/latest/summary-c*.json",
             )
         ],
@@ -123,9 +123,23 @@ def test_cli_refuses_invalid_evidence_before_writing_green(
         encoding="utf-8",
     )
     (tmp_path / ".gitignore").write_text("artifacts/\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(tmp_path), "add", "tools/benchmark/manifest.json", ".gitignore"], check=True)
     subprocess.run(
-        ["git", "-C", str(tmp_path), "-c", "user.name=Bench Test", "-c", "user.email=bench@example.invalid", "commit", "-qm", "fixture"],
+        ["git", "-C", str(tmp_path), "add", "tools/benchmark/manifest.json", ".gitignore"],
+        check=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(tmp_path),
+            "-c",
+            "user.name=Bench Test",
+            "-c",
+            "user.email=bench@example.invalid",
+            "commit",
+            "-qm",
+            "fixture",
+        ],
         check=True,
     )
     head = subprocess.run(
@@ -138,12 +152,14 @@ def test_cli_refuses_invalid_evidence_before_writing_green(
     tail.parent.mkdir(parents=True)
     tail.write_text(json.dumps(_schema_two("tail", head=head)), encoding="utf-8")
     monkeypatch.setattr(MODULE, "ROOT", tmp_path)
-    monkeypatch.setattr(sys, "argv", ["quality_integration_summary.py", "--out", str(tmp_path / "summary.json")])
+    monkeypatch.setattr(
+        sys, "argv", ["quality_integration_summary.py", "--out", str(tmp_path / "summary.json")]
+    )
     monkeypatch.setattr(MODULE, "resolve_head", lambda: head)
     monkeypatch.setattr(
         MODULE,
         "quality_dimensions",
-        lambda: [("tail", "J7Q-04", True, "live", "artifacts/search-quality/tail/latest/summary.json")],
+        lambda: [("tail", "J7Q-04", "artifacts/search-quality/tail/latest/summary.json")],
     )
 
     assert MODULE.main() == 1

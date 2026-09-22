@@ -247,6 +247,41 @@ fn a_page_past_the_byte_budget_is_cut_and_continued() -> TestResult {
 }
 
 #[test]
+fn a_large_later_row_cannot_refuse_a_fitting_prefix() -> TestResult {
+    let mut all = rows(3, 8);
+    all[2].snippet = "x".repeat(8_000);
+    let budget = ResponsePayloadBudget::new(3_500)?;
+    let dispatcher = stub_dispatcher(all.clone())?.with_response_budget(budget);
+    let first = text(dispatcher.dispatch(request(3, None), &RequestBudgetV1::unbounded()))?;
+    if ids(&first.results) != ids(&all[..2])
+        || first.window.has_more() != Some(true)
+        || first.next_cursor.is_none()
+    {
+        return Err(format!("a fitting prefix was not continued: {first:?}").into());
+    }
+    let encoded = quanta_index_ipc::cbor_payload_len(&first)?;
+    if encoded > budget.max_payload_bytes() {
+        return Err(format!("the prefix encodes to {encoded} bytes").into());
+    }
+    Ok(())
+}
+
+#[test]
+fn a_fitting_first_row_is_not_refused_by_cursor_reservation() -> TestResult {
+    let budget = ResponsePayloadBudget::new(2_300)?;
+    let dispatcher = stub_dispatcher(rows(2, 1_000))?.with_response_budget(budget);
+    let first = text(dispatcher.dispatch(request(2, None), &RequestBudgetV1::unbounded()))?;
+    if first.results.len() != 1 || first.window.has_more() != Some(true) {
+        return Err(format!("the first fitting row was not continued: {first:?}").into());
+    }
+    let encoded = quanta_index_ipc::cbor_payload_len(&first)?;
+    if encoded > budget.max_payload_bytes() {
+        return Err(format!("the prefix encodes to {encoded} bytes").into());
+    }
+    Ok(())
+}
+
+#[test]
 fn a_first_row_larger_than_the_budget_is_refused_typed() -> TestResult {
     let dispatcher =
         stub_dispatcher(rows(2, 1_000))?.with_response_budget(ResponsePayloadBudget::new(200)?);

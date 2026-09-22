@@ -4,6 +4,8 @@ use quanta_index_searchd_harness as e2e_harness;
 
 #[path = "common/e2e_corpus.rs"]
 mod e2e_corpus;
+#[path = "common/fail_closed_wait.rs"]
+mod fail_closed_wait;
 #[path = "common/frontdoor_scenarios.rs"]
 mod frontdoor_scenarios;
 #[path = "common/searchd_binary_process.rs"]

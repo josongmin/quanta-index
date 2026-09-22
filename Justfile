@@ -571,8 +571,8 @@ rust-verify-quality-ui:
 # (relevance, ambiguity, snippet, scale, tail, ANN, concurrency, freshness,
 # open-loop, ops, ui) and records an
 # integration summary WITHOUT erasing dimension boundaries. This is not a
-# substitute for per-dimension closeout. All registered quality dimensions are now
-# live; a future dimension would be added as `pending` until its rail lands.
+# substitute for per-dimension closeout. A new dimension must have a producer,
+# manifest registration, and ticket metadata before joining the aggregate.
 rust-verify-quality-all:
     python3 tools/benchmark/benchctl.py run quality-full
     mkdir -p artifacts/search-quality/integration/latest

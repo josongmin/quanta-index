@@ -154,10 +154,16 @@ fn serve_one(
     Ok(())
 }
 
-fn temp_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("sdk-binding-owner-{tag}-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("create temp dir");
-    dir
+/// A uniquely-named binding directory under RAII custody (TOPT-06/TH-3):
+/// the guard lives across the server and client lifetimes, and dropping
+/// it removes the directory with every socket in it — on success, on
+/// assertion failure, and on server-thread error alike. Random names
+/// make a stale path unable to collide with a rerun.
+fn temp_dir(tag: &str) -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix(&format!("sdk-binding-owner-{tag}-"))
+        .tempdir()
+        .expect("create temp dir")
 }
 
 /// A full-profile client on this temp root; control and ingest endpoints
@@ -188,8 +194,8 @@ fn wrong_variant_fails_closed() {
     let dir = temp_dir("variant");
     // Correct id, correct repo pin, but a `text` response to a `symbol`
     // call: refused on the variant axis.
-    let (socket, _rx) = scripted_query_server(&dir, vec![text_response(pin(repo_id()))]);
-    let client = client_on(&dir, socket);
+    let (socket, _rx) = scripted_query_server(dir.path(), vec![text_response(pin(repo_id()))]);
+    let client = client_on(dir.path(), socket);
     let error = client
         .reader()
         .symbol_request(symbol_request())
@@ -207,7 +213,7 @@ fn wrong_variant_fails_closed() {
 fn wrong_repo_pin_fails_closed() {
     let dir = temp_dir("pin");
     let error = run_scripted(
-        &dir,
+        dir.path(),
         text_request(Some(pin(repo_id())), None),
         text_response(pin(other_repo_id())),
     )
@@ -225,7 +231,7 @@ fn wrong_repo_pin_fails_closed() {
 fn active_selector_out_of_domain_fails_closed() {
     let dir = temp_dir("active");
     let error = run_scripted(
-        &dir,
+        dir.path(),
         text_request(
             None,
             Some(GenerationSelector::Active {
@@ -255,8 +261,12 @@ fn foreign_candidate_fails_closed() {
         file_owner_rows: None,
         next_cursor: None,
     });
-    let error = run_scripted(&dir, text_request(Some(pin(repo_id())), None), response)
-        .expect_err("a candidate from another generation must be refused");
+    let error = run_scripted(
+        dir.path(),
+        text_request(Some(pin(repo_id())), None),
+        response,
+    )
+    .expect_err("a candidate from another generation must be refused");
     assert!(matches!(
         error,
         Binding {
@@ -276,8 +286,12 @@ fn window_disagreeing_with_rows_fails_closed() {
         file_owner_rows: None,
         next_cursor: None,
     });
-    let error = run_scripted(&dir, text_request(Some(pin(repo_id())), None), response)
-        .expect_err("a window that disagrees with the page must be refused");
+    let error = run_scripted(
+        dir.path(),
+        text_request(Some(pin(repo_id())), None),
+        response,
+    )
+    .expect_err("a window that disagrees with the page must be refused");
     // Window-vs-rows consistency is intrinsic shape: the contract
     // decoder refuses it before the SDK's contextual layer ever runs.
     assert!(
@@ -298,7 +312,7 @@ fn rows_over_request_cap_fails_closed() {
     });
     let mut request = text_request(Some(pin(repo_id())), None);
     request.top_k = 1;
-    let error = run_scripted(&dir, request, response)
+    let error = run_scripted(dir.path(), request, response)
         .expect_err("more rows than the request cap must be refused");
     // Either the SDK's contextual cardinality check refuses the page,
     // or the intrinsic decoder already refused it: both fail closed.
@@ -375,8 +389,12 @@ fn swapped_owner_projection_fails_closed() {
         ]),
         next_cursor: None,
     });
-    let error = run_scripted(&dir, text_request(Some(pin(repo_id())), None), response)
-        .expect_err("a swapped owner projection must be refused");
+    let error = run_scripted(
+        dir.path(),
+        text_request(Some(pin(repo_id())), None),
+        response,
+    )
+    .expect_err("a swapped owner projection must be refused");
     // Projection pairing is intrinsic shape: the contract codec refuses
     // it before the SDK's contextual layer ever runs.
     assert!(
@@ -397,8 +415,8 @@ fn unordered_hybrid_ranking_fails_closed() {
         window: quanta_index_contract::QueryResultWindowV2::exact_probe(2),
         explanation: quanta_index_contract::SearchExplanation::default(),
     });
-    let (socket, _rx) = scripted_query_server(&dir, vec![response]);
-    let client = client_on(&dir, socket);
+    let (socket, _rx) = scripted_query_server(dir.path(), vec![response]);
+    let client = client_on(dir.path(), socket);
     let error = client
         .search()
         .hybrid()
@@ -419,8 +437,8 @@ fn unordered_hybrid_ranking_fails_closed() {
 #[test]
 fn matching_positive_response_passes_binding() {
     let dir = temp_dir("positive");
-    let (socket, rx) = scripted_query_server(&dir, vec![text_response(pin(repo_id()))]);
-    let client = client_on(&dir, socket);
+    let (socket, rx) = scripted_query_server(dir.path(), vec![text_response(pin(repo_id()))]);
+    let client = client_on(dir.path(), socket);
     let response = client
         .reader()
         .lexical_request(text_request(Some(pin(repo_id())), None))
@@ -435,7 +453,7 @@ fn matching_positive_response_passes_binding() {
 #[test]
 fn query_only_profile_needs_no_control_or_ingest_sockets() {
     let dir = temp_dir("query-only");
-    let (socket, _rx) = scripted_query_server(&dir, vec![text_response(pin(repo_id()))]);
+    let (socket, _rx) = scripted_query_server(dir.path(), vec![text_response(pin(repo_id()))]);
     // Only the query socket is named; the query-only profile must not
     // require, resolve or fabricate the other two.
     let options = ConnectOptions::default().with_query_socket(socket);
@@ -449,11 +467,38 @@ fn query_only_profile_needs_no_control_or_ingest_sockets() {
 
     // The full profile with the same options still refuses: least
     // privilege is opt-in, not a silent downgrade.
-    let options =
-        ConnectOptions::default().with_query_socket(temp_dir("full-refuses").join("q.sock"));
+    let full = temp_dir("full-refuses");
+    let options = ConnectOptions::default().with_query_socket(full.path().join("q.sock"));
     assert!(
         QuantaIndex::connect(options).is_err(),
         "the full profile must keep requiring control and ingest endpoints"
+    );
+}
+
+// ------------------------------------------------------- custody evidence
+
+#[test]
+fn binding_directory_and_sockets_disappear_with_their_guard() {
+    // TOPT-06/TH-3 proof: the guard owns the directory, and the bound
+    // socket file with it — dropping the guard removes both, and two
+    // guards with the same tag never share a path, so a stale path
+    // cannot collide with a rerun.
+    let dir = temp_dir("custody");
+    let (socket, _rx) = scripted_query_server(dir.path(), vec![text_response(pin(repo_id()))]);
+    assert!(socket.exists(), "the socket is bound");
+    let path = dir.path().to_path_buf();
+    drop(dir);
+    assert!(
+        !socket.exists() && !path.exists(),
+        "guard drop removes the socket and its directory"
+    );
+
+    let first = temp_dir("custody");
+    let second = temp_dir("custody");
+    assert_ne!(
+        first.path(),
+        second.path(),
+        "same-tag guards never share a path"
     );
 }
 

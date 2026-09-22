@@ -4446,6 +4446,7 @@ dependencies = [
  "quanta-index-contract",
  "quanta-index-ipc",
  "serde",
+ "tempfile",
  "thiserror 1.0.69",
 ]
 
