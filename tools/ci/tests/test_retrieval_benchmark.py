@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 from pathlib import Path
 
@@ -468,6 +469,7 @@ def test_v2_hand_calculated_rank_metrics(tmp_path):
     loaded = record_v2(repo, suite, run, suite_path, runner_path)
     report = ev.evaluate(*loaded, "lexical", "hybrid")
     assert report["schema_version"] == 2
+    assert report["rank_metric_version"] == "rb-rank-v2-first-coverage"
     assert report["graded"] is True
     assert report["primary_metric"] == "ndcg_at_10"
     routes = report["rank_metrics"]["routes"]
@@ -502,6 +504,16 @@ def test_v2_hand_calculated_rank_metrics(tmp_path):
     assert len(report["per_query"]) == 4
     assert report["rank_metrics"]["comparison"]["sample_count"] == 1
     assert report["rank_metrics"]["comparison"]["primary_delta_ci_95"]["status"] == ev.NOT_APPLICABLE
+
+
+def test_ndcg_credits_each_gold_span_once_even_when_chunks_overlap():
+    label = {"path": "src/lib.rs", "start_line": 3, "end_line": 3, "grade": 3}
+    candidates = [
+        {"path": "src/lib.rs", "start_line": 1, "end_line": 3},
+        {"path": "src/lib.rs", "start_line": 2, "end_line": 4},
+    ]
+    assert ev.ndcg_at_k(candidates, [label], 10) == pytest.approx(1.0)
+    assert ev.ndcg_at_k(list(reversed(candidates)), [label], 10) == pytest.approx(1.0)
 
 
 def test_v2_bcy_budget_prefix_and_out_of_budget_not_credited(tmp_path):
@@ -842,14 +854,23 @@ def test_v2_unsafe_candidate_path_rejected(tmp_path):
         record_v2(repo, suite, run, suite_path, runner_path)
 
 
-def test_v2_duplicate_candidate_block_rejected(tmp_path):
+def test_v2_duplicate_line_spans_are_retained_and_credited_once(tmp_path):
     repo, suite, run, suite_path, runner_path, files = fixture_v2(tmp_path)
     dup = dict(run["results"][1]["candidates"][0])
     dup["rank"] = 2
     run["results"][1]["candidates"][1] = dup
     run["results"][1]["candidates"][2]["rank"] = 3
-    with pytest.raises(ev.EvidenceError, match="duplicate candidate block"):
-        record_v2(repo, suite, run, suite_path, runner_path)
+    loaded = record_v2(repo, suite, run, suite_path, runner_path)
+    report = ev.evaluate(*loaded, "lexical", "hybrid")
+    row = next(
+        row
+        for row in report["per_query"]
+        if row["task_id"] == "T1" and row["route"] == "hybrid"
+    )
+    assert row["candidates"] == 3
+    assert row["ndcg_at_10"] == pytest.approx(
+        (7.0 + 1.0 / math.log2(4)) / (7.0 + 1.0 / math.log2(3))
+    )
 
 
 def test_v2_error_result_with_candidates_rejected(tmp_path):

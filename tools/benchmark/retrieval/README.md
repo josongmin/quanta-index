@@ -152,7 +152,13 @@ its gold line span cannot earn block credit.
 V2 adds span-aware Recall@1/5/10/20, MRR@10, graded NDCG@10 (only when every
 eval answerable gold label carries a reviewed grade, else `not_applicable`),
 file-only recall as a secondary view, and both chunk-level and deterministic
-same-file-collapsed rankings (best chunk per file). Primary metric is
+same-file-collapsed rankings (best chunk per file). NDCG credits each gold span
+only on its first covering candidate: overlapping chunks cannot earn the same
+gain twice or inflate NDCG above 1. The report labels this scoring contract
+`rb-rank-v2-first-coverage`; older reports without that marker are not
+comparable on overlapping-chunk suites. V2 retains repeated line spans from
+distinct chunks in their original ranks; they consume rank and context budget
+but earn no second relevance gain. Primary metric is
 `ndcg_at_10` when graded, else `recall_at_10`. Reports include per-query rows,
 per-route status counts and mean latency, sample counts, and a 95% normal
 confidence interval on paired deltas when the sample reaches 20, else an

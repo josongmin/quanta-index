@@ -7,9 +7,12 @@
 //! editing this module.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 use std::path::Path;
 use std::time::Duration;
 
+use serde::Deserialize;
+use serde::de::{self, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Value};
 
 use crate::chunking::{Chunk, count_tokens};
@@ -20,6 +23,80 @@ use crate::{BenchError, BenchResult, sha256_hex};
 pub const RUNNER_SCHEMA_VERSION: u64 = 2;
 pub const TOKENIZER: &str = "qi-regex-v1";
 pub const TOKENIZER_BUDGET_VERSION: &str = "qb-v1";
+
+/// Parse the raw pack without discarding repeated JSON keys. A repeated
+/// `tasks` key could otherwise hide an earlier gold-bearing value from the
+/// post-parse blindness check while leaving those bytes visible to the runner.
+struct UniqueJson(Value);
+
+impl<'de> Deserialize<'de> for UniqueJson {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(UniqueJsonVisitor)
+    }
+}
+
+struct UniqueJsonVisitor;
+
+impl<'de> Visitor<'de> for UniqueJsonVisitor {
+    type Value = UniqueJson;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("JSON without repeated object keys")
+    }
+
+    fn visit_bool<E: de::Error>(self, value: bool) -> Result<Self::Value, E> {
+        Ok(UniqueJson(Value::Bool(value)))
+    }
+
+    fn visit_i64<E: de::Error>(self, value: i64) -> Result<Self::Value, E> {
+        Ok(UniqueJson(Value::Number(value.into())))
+    }
+
+    fn visit_u64<E: de::Error>(self, value: u64) -> Result<Self::Value, E> {
+        Ok(UniqueJson(Value::Number(value.into())))
+    }
+
+    fn visit_f64<E: de::Error>(self, value: f64) -> Result<Self::Value, E> {
+        let number = serde_json::Number::from_f64(value)
+            .ok_or_else(|| E::custom("non-finite JSON number"))?;
+        Ok(UniqueJson(Value::Number(number)))
+    }
+
+    fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
+        Ok(UniqueJson(Value::String(value.to_string())))
+    }
+
+    fn visit_string<E: de::Error>(self, value: String) -> Result<Self::Value, E> {
+        Ok(UniqueJson(Value::String(value)))
+    }
+
+    fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+        Ok(UniqueJson(Value::Null))
+    }
+
+    fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+        Ok(UniqueJson(Value::Null))
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut sequence: A) -> Result<Self::Value, A::Error> {
+        let mut items = Vec::new();
+        while let Some(UniqueJson(item)) = sequence.next_element()? {
+            items.push(item);
+        }
+        Ok(UniqueJson(Value::Array(items)))
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut entries: A) -> Result<Self::Value, A::Error> {
+        let mut object = Map::new();
+        while let Some((key, UniqueJson(value))) = entries.next_entry::<String, UniqueJson>()? {
+            if object.contains_key(&key) {
+                return Err(de::Error::custom(format!("duplicate JSON key: {key}")));
+            }
+            let _previous = object.insert(key, value);
+        }
+        Ok(UniqueJson(Value::Object(object)))
+    }
+}
 
 /// One blind query-pack task.
 #[derive(Debug, Clone)]
@@ -148,7 +225,7 @@ pub fn load_query_pack(path: &Path) -> BenchResult<QueryPack> {
         path: path.display().to_string(),
         message: err.to_string(),
     })?;
-    let value: Value = serde_json::from_str(&raw).map_err(|err| BenchError::Json {
+    let UniqueJson(value) = serde_json::from_str(&raw).map_err(|err| BenchError::Json {
         path: path.display().to_string(),
         message: err.to_string(),
     })?;
@@ -405,14 +482,20 @@ fn prove_hit(
     let file = files.get(&hit.path).ok_or_else(|| {
         BenchError::Protocol(format!("SDK hit outside admitted universe: {}", hit.path))
     })?;
+    let chunk = chunks_by_id.get(&hit.candidate_id).ok_or_else(|| {
+        BenchError::Protocol(format!(
+            "SDK hit has no published chunk ID: {}",
+            hit.candidate_id
+        ))
+    })?;
+    if chunk.path != hit.path {
+        return Err(BenchError::Protocol(format!(
+            "SDK hit path differs from published chunk: {}",
+            hit.candidate_id
+        )));
+    }
     let (start_line, end_line) = if hit.start_line == 0 && hit.end_line == 0 {
-        let chunk = chunks_by_id.get(&hit.candidate_id).ok_or_else(|| {
-            BenchError::Protocol(format!(
-                "SDK unanchored hit has no published chunk ID: {}",
-                hit.candidate_id
-            ))
-        })?;
-        if chunk.path != hit.path || chunk.text != hit.snippet {
+        if chunk.text != hit.snippet {
             return Err(BenchError::Protocol(format!(
                 "SDK unanchored hit differs from published chunk: {}",
                 hit.candidate_id
@@ -420,6 +503,12 @@ fn prove_hit(
         }
         (chunk.start_line, chunk.end_line)
     } else {
+        if (hit.start_line, hit.end_line) != (chunk.start_line, chunk.end_line) {
+            return Err(BenchError::Protocol(format!(
+                "SDK hit span differs from published chunk: {}:{}-{} (published {}-{})",
+                hit.path, hit.start_line, hit.end_line, chunk.start_line, chunk.end_line
+            )));
+        }
         (hit.start_line, hit.end_line)
     };
     if start_line == 0 || end_line == 0 || start_line > end_line {
@@ -858,6 +947,16 @@ mod tests {
     }
 
     #[test]
+    fn repeated_pack_keys_are_rejected_before_gold_can_be_hidden() {
+        let raw = r#"{"tasks":[{"gold":[{"path":"secret"}]}],"tasks":[],"routes":[]}"#;
+        let error = serde_json::from_str::<UniqueJson>(raw)
+            .err()
+            .expect("duplicate key must fail");
+        assert!(error.to_string().contains("duplicate JSON key: tasks"));
+        assert!(serde_json::from_str::<UniqueJson>(r#"{"x":{"a":1,"a":2}}"#).is_err());
+    }
+
+    #[test]
     fn pack_contract_rejects_unknown_fields_that_could_leak_labels() {
         let mut object = Map::new();
         assert!(
@@ -889,23 +988,26 @@ mod tests {
 
     #[test]
     fn unanchored_semantic_hit_uses_only_the_exact_published_chunk() {
-        let text = "fn main() {}\n";
+        let chunk_text = "fn main() {}\n";
+        let text = "fn main() {}\nfn second() {}\n";
         let path = "src/lib.rs";
         let file = SourceFile {
             path: path.to_string(),
             bytes: text.as_bytes().to_vec(),
             text: text.to_string(),
-            line_starts: vec![0],
+            line_starts: vec![0, chunk_text.len()],
             sha256: sha256_hex(text.as_bytes()),
         };
-        let files = BTreeMap::from([(path.to_string(), file)]);
+        let mut other = file.clone();
+        other.path = "other.rs".to_string();
+        let files = BTreeMap::from([(path.to_string(), file), (other.path.clone(), other)]);
         let chunk = Chunk {
             path: path.to_string(),
             start_byte: 0,
-            end_byte: u32::try_from(text.len()).expect("short fixture"),
+            end_byte: u32::try_from(chunk_text.len()).expect("short fixture"),
             start_line: 1,
             end_line: 1,
-            text: text.to_string(),
+            text: chunk_text.to_string(),
             strategy: "whole_file".to_string(),
             version: "test".to_string(),
             config: "test".to_string(),
@@ -918,13 +1020,13 @@ mod tests {
             path: path.to_string(),
             start_line: 0,
             end_line: 0,
-            snippet: text.to_string(),
+            snippet: chunk_text.to_string(),
             score: 1.0,
         };
         let candidate = prove_hit(&hit, 1, &files, &chunks).expect("anchored by published ID");
         assert_eq!(candidate["start_line"], 1);
         assert_eq!(candidate["end_line"], 1);
-        assert_eq!(candidate["block_sha256"], sha256_hex(text.as_bytes()));
+        assert_eq!(candidate["block_sha256"], sha256_hex(chunk_text.as_bytes()));
 
         let mut changed = hit.clone();
         changed.snippet = "not the published chunk".to_string();
@@ -935,5 +1037,17 @@ mod tests {
         changed = hit;
         changed.end_line = 1;
         assert!(prove_hit(&changed, 1, &files, &chunks).is_err());
+
+        let mut anchored = changed.clone();
+        anchored.start_line = 1;
+        assert!(prove_hit(&anchored, 1, &files, &chunks).is_ok());
+        anchored.candidate_id = "unknown".to_string();
+        assert!(prove_hit(&anchored, 1, &files, &chunks).is_err());
+        anchored.candidate_id = "chunk-id".to_string();
+        anchored.path = "other.rs".to_string();
+        assert!(prove_hit(&anchored, 1, &files, &chunks).is_err());
+        anchored.path = path.to_string();
+        anchored.end_line = 2;
+        assert!(prove_hit(&anchored, 1, &files, &chunks).is_err());
     }
 }
