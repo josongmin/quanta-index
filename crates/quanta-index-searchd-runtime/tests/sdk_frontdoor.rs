@@ -17,8 +17,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use quanta_index_contract::lex::{
-    LanguageCode, SymbolKindCode, SymbolKindFamily, SymbolRecord, SymbolRelationship, SymbolSpan,
-    compute_parse_tree_source_hash,
+    LanguageCode, LexicalErrorCode, SymbolKindCode, SymbolKindFamily, SymbolRecord,
+    SymbolRelationship, SymbolSpan, compute_parse_tree_source_hash,
 };
 use quanta_index_contract::{
     ChunkId, ChunkRecord, FileContributorIdentityEntry, GenerationPin, GenerationSelector,
@@ -30,9 +30,10 @@ use quanta_index_contract::{
     RepoMapSourceBundle, RepoMapSymbolNode, RevisionId, RuntimeCatalogIngestBatch,
     RuntimeChangedRecord, RuntimeDocFacetRecord, RuntimeEdgeAuthorityRecord,
     RuntimeMetadataQueryRequest, RuntimeSnapshotRecord, SearchCorpusGenerationIdentityV1,
-    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
-    SearchPlaneIngestIpcResponseEnvelope, SearchPlaneTrackKind, SemanticQueryRequest,
-    StructuralQueryRequest, SymbolId, SymbolQueryRequest, TextQueryRequest, TextQuerySyntax,
+    SearchPlaneErrorCodeV2, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope,
+    SearchPlaneIngestIpcResponse, SearchPlaneIngestIpcResponseEnvelope, SearchPlaneTrackKind,
+    SemanticQueryRequest, StructuralQueryRequest, SymbolId, SymbolQueryRequest, TextQueryRequest,
+    TextQuerySyntax,
 };
 use quanta_index_ipc::send_request;
 use quanta_index_sdk::{
@@ -4326,4 +4327,85 @@ fn sdk_binary_process_dsl_roundtrip() -> TestResult {
     })();
     let stop = runtime.stop();
     result.and(stop)
+}
+
+// ---------------------------------------------------------------------------
+// TH-1 adapter proofs (TOPT-06): the SDK wait adapters classify by wire
+// code and fail closed. Scripted closures, no daemon: each runs in
+// milliseconds under a short bound.
+// ---------------------------------------------------------------------------
+
+/// A scripted remote refusal behind no transport at all.
+fn scripted_remote(code: SearchPlaneErrorCodeV2) -> SdkError {
+    SdkError::Remote {
+        code,
+        message: "scripted".to_string(),
+        repair: None,
+    }
+}
+
+#[test]
+fn sdk_wait_never_ready_script_returns_typed_timeout() {
+    let calls = AtomicU64::new(0);
+    let error = wait_for_sdk_ready(Duration::from_millis(100), || {
+        let _prior = calls.fetch_add(1, Ordering::SeqCst);
+        Err::<(), SdkError>(scripted_remote(SearchPlaneErrorCodeV2::NotReady))
+    })
+    .expect_err("a never-ready script fails");
+    let WaitError::Timeout(timeout) = error else {
+        panic!("a never-ready script times out typed, got {error:?}");
+    };
+    assert!(
+        timeout.attempts >= 2,
+        "NOT_READY retries instead of failing at once: {}",
+        timeout.attempts
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), timeout.attempts);
+    assert!(
+        timeout.expected.contains("sdk_frontdoor.rs"),
+        "the timeout names its wait call site: {}",
+        timeout.expected
+    );
+    let last = timeout.last.expect("the last NOT_READY is evidence");
+    assert!(
+        last.contains("NotReady"),
+        "the last observation names the code: {last}"
+    );
+}
+
+#[test]
+fn sdk_wait_non_retryable_error_returns_terminal_at_once() {
+    let calls = AtomicU64::new(0);
+    let error = wait_for_sdk_ready(Duration::from_millis(100), || {
+        let _prior = calls.fetch_add(1, Ordering::SeqCst);
+        Err::<(), SdkError>(scripted_remote(SearchPlaneErrorCodeV2::Lexical(
+            LexicalErrorCode::QueryTimeout,
+        )))
+    })
+    .expect_err("a terminal error fails");
+    assert!(
+        matches!(error, WaitError::Terminal(_)),
+        "a non-retryable code is terminal, never retried: {error:?}"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "a terminal error returns without sleeping"
+    );
+}
+
+#[test]
+fn sdk_wait_not_ready_then_ready_recovers() {
+    let calls = AtomicU64::new(0);
+    let value = wait_for_sdk_ready(Duration::from_secs(5), || {
+        let call = calls.fetch_add(1, Ordering::SeqCst).saturating_add(1);
+        if call < 3 {
+            Err(scripted_remote(SearchPlaneErrorCodeV2::NotReady))
+        } else {
+            Ok("ready")
+        }
+    })
+    .expect("NOT_READY then ready returns the value");
+    assert_eq!(value, "ready");
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
 }

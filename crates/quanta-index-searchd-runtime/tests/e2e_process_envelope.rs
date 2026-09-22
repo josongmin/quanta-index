@@ -26,7 +26,7 @@ use quanta_index_core::{
 use quanta_index_searchd::app::ProcessMemoryCeilings;
 use quanta_index_searchd_harness::E2eRuntime;
 
-use crate::fail_closed_wait::{RealTicker, WaitError, wait_for};
+use crate::fail_closed_wait::{RealTicker, WaitError, WaitTimeout, wait_for};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -392,5 +392,43 @@ fn an_envelope_over_its_ceiling_refuses_boot_typed_before_any_socket() -> TestRe
     if rt.socket_paths().is_some() || rt.boot_inventory().is_some() {
         return Err("a refused boot leaves no running driver".into());
     }
+    Ok(())
+}
+
+/// TH-2 adapter proof (TOPT-06): a scrape predicate that never holds
+/// returns a typed timeout carrying the last scrape — never the stale
+/// scrape as success. The bound is short but the verdict cannot flake:
+/// a never-true predicate times out however the bound elapses.
+#[test]
+fn scrape_wait_never_true_predicate_returns_typed_timeout() -> TestResult {
+    let mut rt = E2eRuntime::boot()?;
+    // Boot the daemon outside the bound: the first scrape lazy-starts
+    // it, and boot time must not consume the attempt budget below.
+    let _warmed = Scrape::take(&mut rt)?;
+    let error = wait_for_scrape(
+        &mut rt,
+        Duration::from_millis(100),
+        "the scrape that never satisfies",
+        |_| false,
+    )
+    .expect_err("a never-true predicate fails");
+    let timeout = error
+        .downcast_ref::<WaitTimeout>()
+        .ok_or_else(|| format!("a spent scrape wait is a typed timeout, got {error:?}"))?;
+    assert!(
+        timeout.attempts >= 2,
+        "the scrape retries instead of failing at once: {}",
+        timeout.attempts
+    );
+    assert!(
+        timeout.expected.contains("never satisfies"),
+        "the timeout names its predicate: {}",
+        timeout.expected
+    );
+    let last = timeout.last.as_ref().ok_or("the last scrape is evidence")?;
+    assert!(
+        last.contains("Scrape"),
+        "the last observation is a scrape, not a render failure: {last}"
+    );
     Ok(())
 }
