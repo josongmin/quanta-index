@@ -140,38 +140,6 @@ impl core::marker::Unpin for quanta_index_sdk::binding::ExpectedQueryResponseV1
 impl core::marker::UnsafeUnpin for quanta_index_sdk::binding::ExpectedQueryResponseV1
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::binding::ExpectedQueryResponseV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::binding::ExpectedQueryResponseV1
-pub enum quanta_index_sdk::binding::ResponseBindingAxis
-pub quanta_index_sdk::binding::ResponseBindingAxis::BatchCommitment
-pub quanta_index_sdk::binding::ResponseBindingAxis::CandidateIdentity
-pub quanta_index_sdk::binding::ResponseBindingAxis::Cardinality
-pub quanta_index_sdk::binding::ResponseBindingAxis::CasExpectation
-pub quanta_index_sdk::binding::ResponseBindingAxis::Order
-pub quanta_index_sdk::binding::ResponseBindingAxis::ReadIdentity
-pub quanta_index_sdk::binding::ResponseBindingAxis::SelectorDomain
-pub quanta_index_sdk::binding::ResponseBindingAxis::Sequence
-pub quanta_index_sdk::binding::ResponseBindingAxis::TargetIdentity
-pub quanta_index_sdk::binding::ResponseBindingAxis::Variant
-pub quanta_index_sdk::binding::ResponseBindingAxis::Window
-impl quanta_index_sdk::binding::ResponseBindingAxis
-pub const fn quanta_index_sdk::binding::ResponseBindingAxis::as_str(self) -> &'static str
-impl core::clone::Clone for quanta_index_sdk::binding::ResponseBindingAxis
-pub fn quanta_index_sdk::binding::ResponseBindingAxis::clone(&self) -> quanta_index_sdk::binding::ResponseBindingAxis
-impl core::cmp::Eq for quanta_index_sdk::binding::ResponseBindingAxis
-impl core::cmp::PartialEq for quanta_index_sdk::binding::ResponseBindingAxis
-pub fn quanta_index_sdk::binding::ResponseBindingAxis::eq(&self, other: &quanta_index_sdk::binding::ResponseBindingAxis) -> bool
-impl core::fmt::Debug for quanta_index_sdk::binding::ResponseBindingAxis
-pub fn quanta_index_sdk::binding::ResponseBindingAxis::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::fmt::Display for quanta_index_sdk::binding::ResponseBindingAxis
-pub fn quanta_index_sdk::binding::ResponseBindingAxis::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for quanta_index_sdk::binding::ResponseBindingAxis
-impl core::marker::StructuralPartialEq for quanta_index_sdk::binding::ResponseBindingAxis
-impl core::marker::Freeze for quanta_index_sdk::binding::ResponseBindingAxis
-impl core::marker::Send for quanta_index_sdk::binding::ResponseBindingAxis
-impl core::marker::Sync for quanta_index_sdk::binding::ResponseBindingAxis
-impl core::marker::Unpin for quanta_index_sdk::binding::ResponseBindingAxis
-impl core::marker::UnsafeUnpin for quanta_index_sdk::binding::ResponseBindingAxis
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::binding::ResponseBindingAxis
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::binding::ResponseBindingAxis
 pub struct quanta_index_sdk::binding::SdkWireRouteV1
 pub quanta_index_sdk::binding::SdkWireRouteV1::bound_axes: &'static [&'static str]
 pub quanta_index_sdk::binding::SdkWireRouteV1::expected_kind: &'static str
@@ -313,30 +281,30 @@ pub quanta_index_sdk::ResponseBindingAxis::Sequence
 pub quanta_index_sdk::ResponseBindingAxis::TargetIdentity
 pub quanta_index_sdk::ResponseBindingAxis::Variant
 pub quanta_index_sdk::ResponseBindingAxis::Window
-impl quanta_index_sdk::binding::ResponseBindingAxis
-pub const fn quanta_index_sdk::binding::ResponseBindingAxis::as_str(self) -> &'static str
-impl core::clone::Clone for quanta_index_sdk::binding::ResponseBindingAxis
-pub fn quanta_index_sdk::binding::ResponseBindingAxis::clone(&self) -> quanta_index_sdk::binding::ResponseBindingAxis
-impl core::cmp::Eq for quanta_index_sdk::binding::ResponseBindingAxis
-impl core::cmp::PartialEq for quanta_index_sdk::binding::ResponseBindingAxis
-pub fn quanta_index_sdk::binding::ResponseBindingAxis::eq(&self, other: &quanta_index_sdk::binding::ResponseBindingAxis) -> bool
-impl core::fmt::Debug for quanta_index_sdk::binding::ResponseBindingAxis
-pub fn quanta_index_sdk::binding::ResponseBindingAxis::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::fmt::Display for quanta_index_sdk::binding::ResponseBindingAxis
-pub fn quanta_index_sdk::binding::ResponseBindingAxis::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for quanta_index_sdk::binding::ResponseBindingAxis
-impl core::marker::StructuralPartialEq for quanta_index_sdk::binding::ResponseBindingAxis
-impl core::marker::Freeze for quanta_index_sdk::binding::ResponseBindingAxis
-impl core::marker::Send for quanta_index_sdk::binding::ResponseBindingAxis
-impl core::marker::Sync for quanta_index_sdk::binding::ResponseBindingAxis
-impl core::marker::Unpin for quanta_index_sdk::binding::ResponseBindingAxis
-impl core::marker::UnsafeUnpin for quanta_index_sdk::binding::ResponseBindingAxis
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::binding::ResponseBindingAxis
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::binding::ResponseBindingAxis
+impl quanta_index_sdk::ResponseBindingAxis
+pub const fn quanta_index_sdk::ResponseBindingAxis::as_str(self) -> &'static str
+impl core::clone::Clone for quanta_index_sdk::ResponseBindingAxis
+pub fn quanta_index_sdk::ResponseBindingAxis::clone(&self) -> quanta_index_sdk::ResponseBindingAxis
+impl core::cmp::Eq for quanta_index_sdk::ResponseBindingAxis
+impl core::cmp::PartialEq for quanta_index_sdk::ResponseBindingAxis
+pub fn quanta_index_sdk::ResponseBindingAxis::eq(&self, other: &quanta_index_sdk::ResponseBindingAxis) -> bool
+impl core::fmt::Debug for quanta_index_sdk::ResponseBindingAxis
+pub fn quanta_index_sdk::ResponseBindingAxis::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for quanta_index_sdk::ResponseBindingAxis
+pub fn quanta_index_sdk::ResponseBindingAxis::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_sdk::ResponseBindingAxis
+impl core::marker::StructuralPartialEq for quanta_index_sdk::ResponseBindingAxis
+impl core::marker::Freeze for quanta_index_sdk::ResponseBindingAxis
+impl core::marker::Send for quanta_index_sdk::ResponseBindingAxis
+impl core::marker::Sync for quanta_index_sdk::ResponseBindingAxis
+impl core::marker::Unpin for quanta_index_sdk::ResponseBindingAxis
+impl core::marker::UnsafeUnpin for quanta_index_sdk::ResponseBindingAxis
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::ResponseBindingAxis
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::ResponseBindingAxis
 pub enum quanta_index_sdk::SdkError
 pub quanta_index_sdk::SdkError::Binding
 pub quanta_index_sdk::SdkError::Binding::actual: alloc::string::String
-pub quanta_index_sdk::SdkError::Binding::axis: quanta_index_sdk::binding::ResponseBindingAxis
+pub quanta_index_sdk::SdkError::Binding::axis: quanta_index_sdk::ResponseBindingAxis
 pub quanta_index_sdk::SdkError::Binding::expected: alloc::string::String
 pub quanta_index_sdk::SdkError::Binding::route: &'static str
 pub quanta_index_sdk::SdkError::PlaneUnavailable
