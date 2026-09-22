@@ -44,7 +44,7 @@ use crate::model::{RepoMapIndexedSnapshot, RepoMapSnapshot};
 use crate::object_store::{
     AFTER_CATALOG_COMMIT, LEGACY_V1_DIR_NAMES, RepoMapObjectStore, exit_at_crash_boundary,
 };
-use crate::reader::PinnedRepoMapSnapshotV1;
+use crate::pinned::{PinnedRepoMapSnapshotV1, RepoMapPinLease, RepoMapStoreKeyV1};
 
 #[derive(Debug)]
 pub struct RepoMapGenerationStore {
@@ -79,76 +79,11 @@ pub struct RepoMapGcOutcomeV1 {
     pub deferred_pinned: u64,
 }
 
-/// An RAII pin on one logical generation (S21-05).
-#[derive(Debug)]
-///
-/// Created inside the acquisition critical section; dropped when the
-/// pinned snapshot handle (and the read view holding it) goes away — by
-/// normal return, cancellation or panic unwind alike — at which point the
-/// reference is returned to the pin table and GC may proceed.
-pub(crate) struct RepoMapPinLease {
-    pins: Arc<RwLock<BTreeMap<RepoMapStoreKeyV1, u64>>>,
-    key: RepoMapStoreKeyV1,
-}
-
-impl RepoMapPinLease {
-    pub(crate) fn new(
-        pins: Arc<RwLock<BTreeMap<RepoMapStoreKeyV1, u64>>>,
-        key: RepoMapStoreKeyV1,
-    ) -> Result<Self, CoreError> {
-        let mut guard = pins
-            .write()
-            .map_err(|err| storage_poisoned("pin table", &err))?;
-        let count = guard.entry(key.clone()).or_insert(0);
-        *count = count.saturating_add(1);
-        drop(guard);
-        Ok(Self { pins, key })
-    }
-}
-
-impl Drop for RepoMapPinLease {
-    fn drop(&mut self) {
-        // A drop cannot propagate a poisoned-table error; the table is
-        // per-process state and a poison means the process is already
-        // failing loudly elsewhere. Keep counts best-effort here and
-        // fail-closed on the read paths that matter.
-        if let Ok(mut guard) = self.pins.write()
-            && let Some(count) = guard.get_mut(&self.key)
-        {
-            *count = count.saturating_sub(1);
-            if *count == 0 {
-                let _removed = guard.remove(&self.key);
-            }
-        }
-    }
-}
-
 /// A store opened from its root and catalog, with what the open found.
 #[derive(Debug)]
 pub struct OpenedRepoMapStore {
     pub store: RepoMapGenerationStore,
     pub report: RepoMapOpenReportV1,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub(crate) struct RepoMapStoreKeyV1 {
-    repo_id: String,
-    revision_id: String,
-    manifest_generation: u64,
-}
-
-impl RepoMapStoreKeyV1 {
-    fn new(
-        repo_id: &RepoId,
-        revision_id: &RevisionId,
-        manifest_generation: ManifestGeneration,
-    ) -> Self {
-        Self {
-            repo_id: repo_id.as_str().to_string(),
-            revision_id: revision_id.as_str().to_string(),
-            manifest_generation: manifest_generation.get(),
-        }
-    }
 }
 
 fn storage_poisoned(what: &str, err: &dyn std::fmt::Display) -> CoreError {

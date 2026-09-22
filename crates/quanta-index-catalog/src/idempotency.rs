@@ -588,6 +588,173 @@ fn check_claim(
     Ok(())
 }
 
+/// Recover every unfinished journal row at catalog open (S21-04 crash
+/// recovery).
+///
+/// The state root has exactly one writer process at a time — the daemon
+/// lease enforces it — so a `Prepared`, `Claimed` or `Applying` row found
+/// while opening the catalog belongs to a process that crashed or was
+/// killed mid-operation. Such a row can never reach a terminal state on
+/// its own, and leaving it behind would answer every retry with
+/// `CATALOG_BUSY` until its lease expired.
+///
+/// Each unfinished row is therefore aborted here, inside one
+/// `BEGIN IMMEDIATE` transaction: an `OperationAborted` event attributes
+/// the transition in the generic ledger, and the row itself becomes
+/// `Aborted`, which `claim_prepared` already treats as superseded. The
+/// committed/refused history is untouched.
+pub(crate) fn recover_unfinished_rows(
+    connection: &mut Connection,
+    path: &Path,
+) -> Result<u64, CoreError> {
+    use quanta_index_core::OperationJournalStateV1 as State;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| engine_error("begin crash recovery", path, &error))?;
+    let unfinished = [
+        State::Prepared.as_code(),
+        State::Claimed.as_code(),
+        State::Applying.as_code(),
+    ];
+    let mut recovered: u64 = 0;
+    for state_code in unfinished {
+        let keys = unfinished_keys(&transaction, path, state_code)?;
+        for key in keys {
+            let stored = read_row(&transaction, path, &key)?
+                .ok_or_else(|| corrupt_row(&key, "unfinished row vanished mid-recovery"))?;
+            let identity = key.identity_digest();
+            let payload = payload_digest_of_parts(&[&stored.fence_token.to_le_bytes()]);
+            let sequence = append_sequence_event(
+                &transaction,
+                SequenceEventKindV1::OperationAborted,
+                &identity,
+                &payload,
+            )?;
+            let aborted = StoredRowWitness {
+                state: State::Aborted,
+                receipt_digest: None,
+                durable_sequence: Some(
+                    u64::try_from(sequence)
+                        .map_err(|_error| corrupt_row(&key, "aborted sequence does not fit u64"))?,
+                ),
+                refusal_code: None,
+                refusal_message: None,
+                ..StoredRowWitness {
+                    key: &key,
+                    body_sha256: stored.body_sha256,
+                    state: stored.state,
+                    owner: stored.owner.clone(),
+                    lease_deadline_ms: stored.lease_deadline_ms,
+                    fence_token: stored.fence_token,
+                    input_commitment: stored.input_commitment,
+                    receipt_digest: stored.receipt_digest,
+                    durable_sequence: stored.durable_sequence,
+                    refusal_code: stored.refusal_code.clone(),
+                    refusal_message: stored.refusal_message.clone(),
+                }
+            };
+            let _written = transaction
+                .execute(
+                    "UPDATE idempotency_v2 SET state = ?1, durable_sequence = ?2, row_sha256 = ?3
+                     WHERE kind = ?4 AND repo_id = ?5 AND revision_id = ?6 AND generation = ?7
+                       AND batch_digest = ?8",
+                    params![
+                        State::Aborted.as_code(),
+                        sequence,
+                        row_digest_of(&aborted).as_slice(),
+                        key.kind.as_code_str(),
+                        key.repo_id.as_str(),
+                        key.revision_id.as_str(),
+                        i64::try_from(key.generation.get()).map_err(|_error| {
+                            corrupt_row(&key, "generation does not fit the catalog")
+                        })?,
+                        key.batch_digest.as_str(),
+                    ],
+                )
+                .map_err(|error| engine_error("abort unfinished journal row", path, &error))?;
+            recovered = recovered.saturating_add(1);
+        }
+    }
+    transaction
+        .commit()
+        .map_err(|error| engine_error("commit crash recovery", path, &error))?;
+    Ok(recovered)
+}
+
+fn unfinished_keys(
+    transaction: &rusqlite::Transaction<'_>,
+    path: &Path,
+    state_code: i64,
+) -> Result<Vec<IdempotencyKeyV1>, CoreError> {
+    let mut statement = transaction
+        .prepare(
+            "SELECT kind, repo_id, revision_id, generation, batch_digest
+             FROM idempotency_v2 WHERE state = ?1",
+        )
+        .map_err(|error| engine_error("prepare unfinished row scan", path, &error))?;
+    let rows = statement
+        .query_map(params![state_code], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })
+        .map_err(|error| engine_error("scan unfinished rows", path, &error))?;
+    let mut keys = Vec::new();
+    for row in rows {
+        let (kind, repo_id, revision_id, generation, batch_digest) =
+            row.map_err(|error| engine_error("read unfinished row", path, &error))?;
+        let kind = quanta_index_core::ingest_kind_from_code_str(kind.as_str())?;
+        let generation = u64::try_from(generation).map_err(|_error| {
+            CoreError::Storage("catalog: negative generation in journal".to_string())
+        })?;
+        keys.push(IdempotencyKeyV1 {
+            kind,
+            repo_id: RepoId::new(repo_id.as_str()).map_err(|error| {
+                CoreError::Storage(format!(
+                    "catalog: journal row holds an invalid repo ID: {error}"
+                ))
+            })?,
+            revision_id: RevisionId::new(revision_id.as_str()).map_err(|error| {
+                CoreError::Storage(format!(
+                    "catalog: journal row holds an invalid revision ID: {error}"
+                ))
+            })?,
+            generation: ManifestGeneration::new(generation),
+            batch_digest,
+        });
+    }
+    Ok(keys)
+}
+
+/// Release every durable mutation lease at catalog open (S21-04/S21-10
+/// crash recovery).
+///
+/// The state root admits one writer process at a time, so a lease row
+/// found while opening belongs to a process that is gone: it can never
+/// release its own lease and would answer every later mutation with
+/// `CATALOG_BUSY` until its deadline passed. Clearing the table here
+/// restores the invariant "one live writer" for the process that is
+/// actually running.
+pub(crate) fn release_stale_mutation_leases(
+    connection: &mut Connection,
+    path: &Path,
+) -> Result<u64, CoreError> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| engine_error("begin lease recovery", path, &error))?;
+    let released = transaction
+        .execute("DELETE FROM mutation_lease_v1", [])
+        .map_err(|error| engine_error("release stale mutation leases", path, &error))?;
+    transaction
+        .commit()
+        .map_err(|error| engine_error("commit lease recovery", path, &error))?;
+    Ok(u64::try_from(released).map_or(u64::MAX, |released| released))
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "the INSERT binds one value per journal column; one argument per column keeps the statement auditable"

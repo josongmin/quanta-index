@@ -53,7 +53,7 @@ fn idempotency_rows(rt: &E2eRuntime) -> Result<u64, Box<dyn Error>> {
     let connection =
         rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let rows: i64 =
-        connection.query_row("SELECT COUNT(*) FROM idempotency_v1", [], |row| row.get(0))?;
+        connection.query_row("SELECT COUNT(*) FROM idempotency_v2", [], |row| row.get(0))?;
     Ok(u64::try_from(rows)?)
 }
 

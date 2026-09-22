@@ -17,8 +17,7 @@
 //! request, and the exhaustive matches below make a new wire variant a
 //! compile error until it is bound.
 
-use core::fmt;
-
+use crate::error::ResponseBindingAxis;
 use quanta_index_contract::{
     BatchPublishReceipt, ClusterMembershipBatchReadRequestV1, GenerationPin, GenerationSelector,
     HistoryQueryRequest, HybridQueryRequest, HybridSeedQueryRequest, ManifestGeneration, RepoId,
@@ -140,61 +139,6 @@ impl ExpectedIngestResponseV1 {
             Self::RuntimeCatalogReceipt => "runtime_catalog_receipt",
             Self::StructuralReceipt => "structural_receipt",
         }
-    }
-}
-
-/// Which contextual axis a response failed to bind on. The error carries
-/// only the route, this axis and kind labels — never a payload field.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ResponseBindingAxis {
-    /// The response variant is not the one this call declared.
-    Variant,
-    /// A pinned response read identity differs from the requested pin.
-    ReadIdentity,
-    /// An active-selector response resolved outside the requested
-    /// repo/revision domain.
-    SelectorDomain,
-    /// A candidate row belongs to another generation than the page's.
-    CandidateIdentity,
-    /// The page window disagrees with the rows it describes.
-    Window,
-    /// The response order differs from the requested order.
-    Order,
-    /// The returned row count exceeds the request cap.
-    Cardinality,
-    /// A receipt digest or generation differs from the published batch.
-    BatchCommitment,
-    /// An ACK's target identity differs from the requested target.
-    TargetIdentity,
-    /// A CAS ACK's prior-state commitment differs from the expectation
-    /// the request carried.
-    CasExpectation,
-    /// A mutation ACK's durable sequence is not positive.
-    Sequence,
-}
-
-impl ResponseBindingAxis {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Variant => "variant",
-            Self::ReadIdentity => "read_identity",
-            Self::SelectorDomain => "selector_domain",
-            Self::CandidateIdentity => "candidate_identity",
-            Self::Window => "window",
-            Self::Order => "order",
-            Self::Cardinality => "cardinality",
-            Self::BatchCommitment => "batch_commitment",
-            Self::TargetIdentity => "target_identity",
-            Self::CasExpectation => "cas_expectation",
-            Self::Sequence => "sequence",
-        }
-    }
-}
-
-impl fmt::Display for ResponseBindingAxis {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
     }
 }
 

@@ -1434,12 +1434,27 @@ fn assert_repo_map_happy_path(
     if response.entries.len() != 1 || response.dropped_entries_count == 0 {
         return Err(format!("unexpected repo-map inclusion set: {response:?}").into());
     }
+    // The legacy per-chunk token hint (and the budget-floor degradation it
+    // could trigger) was replaced by P02A's compiled envelope: the entry
+    // records the compiled-projection evidence and the page reports its
+    // drops explicitly instead of inferring them from a hint. Assert the
+    // honest drop accounting rather than the removed heuristic.
     if !response
+        .drop_reason_codes
+        .iter()
+        .any(|code| code == "top_k_exhausted")
+    {
+        return Err(format!("missing repo-map drop reason: {response:?}").into());
+    }
+    if response
         .degraded_reason_codes
         .iter()
-        .any(|code| code == "token_budget_floor_applied")
+        .any(|code| code == "token_budget_floor_applied" || code == "focus_subjects_unresolved")
     {
-        return Err(format!("missing repo-map degraded reason: {response:?}").into());
+        return Err(format!(
+            "a strict compiled projection must not report retired degraded reasons: {response:?}"
+        )
+        .into());
     }
     Ok(())
 }

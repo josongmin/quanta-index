@@ -25,11 +25,11 @@ mod transport;
 
 pub use batch::{BatchMode, BatchReceipt};
 pub use binding::{
-    ExpectedQueryResponseV1, ResponseBindingAxis, SDK_WIRE_ROUTE_EXCLUSIONS_V1, SDK_WIRE_ROUTES_V1,
-    SdkWireRouteV1,
+    ExpectedQueryResponseV1, SDK_WIRE_ROUTE_EXCLUSIONS_V1, SDK_WIRE_ROUTES_V1, SdkWireRouteV1,
 };
 pub use client::{ControlClient, ProducerClient, QuantaIndex, ReaderClient};
 pub use config::{ClientProfile, ConnectOptions};
+pub use error::ResponseBindingAxis;
 pub use error::SdkError;
 pub use generations::GenerationNamespace;
 pub use history::{

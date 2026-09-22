@@ -33,6 +33,11 @@ impl SqliteCatalog {
         // (SEP-21-002).
         crate::sequence::seed_allocator(&connection, &path)?;
         let mut connection = connection;
+        // Crash recovery (S21-04): the state root admits one writer at a
+        // time, so any unfinished journal row found here belongs to a dead
+        // process and is aborted before the catalog answers anything.
+        let _recovered = crate::idempotency::recover_unfinished_rows(&mut connection, &path)?;
+        let _leases = crate::idempotency::release_stale_mutation_leases(&mut connection, &path)?;
         crate::sequence::reconcile(&mut connection, &path)?;
         Ok(Self {
             connection: Mutex::new(connection),
