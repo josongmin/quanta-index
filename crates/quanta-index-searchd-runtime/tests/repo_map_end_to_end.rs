@@ -461,7 +461,6 @@ fn repo_map_query_roundtrip_through_searchd_socket() -> TestResult {
 #[test]
 fn repo_map_query_survives_runtime_restart_from_persisted_state() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
-    let query_socket = fixture.query_socket.clone();
     let control_socket = fixture.control_socket.clone();
     let ingest_socket = fixture.ingest_socket.clone();
     let source = repo_map_bundle()?;
@@ -576,7 +575,6 @@ fn cross_socket_requests_fail_closed() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let query_socket = fixture.query_socket.clone();
     let control_socket = fixture.control_socket.clone();
-    let ingest_socket = fixture.ingest_socket.clone();
 
     match send_ingest_request(&query_socket, &repo_map_ingest_envelope()?) {
         Ok(unexpected) => {

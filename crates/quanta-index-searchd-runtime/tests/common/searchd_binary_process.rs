@@ -198,7 +198,9 @@ pub(super) fn remove_socket_files(state_root: &Path) -> std::io::Result<()> {
 mod tests {
     use std::process::Command;
 
-    use super::{socket_accepts_connection, terminate_child, wait_for_sockets};
+    use super::{
+        remove_socket_files, socket_accepts_connection, terminate_child, wait_for_sockets,
+    };
 
     #[test]
     fn regular_file_does_not_satisfy_searchd_socket_readiness() {
@@ -226,6 +228,26 @@ mod tests {
         // interleaving reports `Ok`.
         let mut child = Command::new("true").spawn().expect("spawn true");
         terminate_child(&mut child).expect("racing-exit cleanup is Ok");
+    }
+
+    #[test]
+    fn socket_cleanup_removes_bound_entries_and_tolerates_absence() {
+        // TOPT-06/item-5 proof: stop removes the three daemon sockets,
+        // and a second cleanup (drop after stop, refused boot) is `Ok`.
+        let root = tempfile::tempdir().expect("socket fixture root");
+        let plane = root.path().join("search-plane");
+        std::fs::create_dir(&plane).expect("socket directory");
+        for name in ["query.sock", "control.sock", "ingest.sock"] {
+            std::fs::write(plane.join(name), b"stale").expect("stale socket entry");
+        }
+        remove_socket_files(root.path()).expect("entries are removed");
+        for name in ["query.sock", "control.sock", "ingest.sock"] {
+            assert!(
+                !plane.join(name).exists(),
+                "cleanup removes every socket entry"
+            );
+        }
+        remove_socket_files(root.path()).expect("absent sockets are not an error");
     }
 
     #[test]

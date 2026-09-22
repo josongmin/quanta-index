@@ -118,6 +118,7 @@ pub(super) fn fit_ranked_page<P: RankedPage>(
     }
     let window = page.window().clone();
     let generation = page.generation();
+    let mut cut = page.clone();
     loop {
         let Some(last) = returned.checked_sub(1) else {
             return Err(too_large(whole, limit));
@@ -129,7 +130,7 @@ pub(super) fn fit_ranked_page<P: RankedPage>(
         };
         let cursor = LexicalCursor::at(generation, key);
         let token = mint(&cursor)?;
-        let cut = page.clone().cut(
+        cut = cut.cut(
             returned,
             crate::query_dispatcher::window::cut_pageable_window_v2(&window, returned)?,
             token,

@@ -26,7 +26,7 @@ use quanta_index_core::{
 use quanta_index_searchd::app::ProcessMemoryCeilings;
 use quanta_index_searchd_harness::E2eRuntime;
 
-use crate::fail_closed_wait::{RealTicker, wait_for};
+use crate::fail_closed_wait::{RealTicker, WaitError, wait_for};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -116,7 +116,7 @@ fn wait_for_scrape(
     what: &str,
     condition: impl Fn(&Scrape) -> bool,
 ) -> Result<Scrape, Box<dyn Error>> {
-    wait_for(
+    match wait_for(
         &RealTicker::new(),
         bound,
         Duration::from_millis(10),
@@ -124,8 +124,13 @@ fn wait_for_scrape(
         || Scrape::take(rt),
         condition,
         |_| false,
-    )
-    .map_err(|error| Box::<dyn Error>::from(error))
+    ) {
+        Ok(scrape) => Ok(scrape),
+        // A boxed scrape failure is already the terminal error: return
+        // it unwrapped, never rendered-and-reboxed.
+        Err(WaitError::Terminal(boxed)) => Err(boxed),
+        Err(WaitError::Timeout(timeout)) => Err(Box::new(timeout) as Box<dyn Error>),
+    }
 }
 
 /// The resident-memory gate: a writer is refused typed while the daemon

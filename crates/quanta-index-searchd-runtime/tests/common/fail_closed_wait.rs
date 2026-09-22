@@ -95,7 +95,7 @@ impl<E: fmt::Display> fmt::Display for WaitError<E> {
     }
 }
 
-impl<E: std::error::Error + fmt::Debug> std::error::Error for WaitError<E> {
+impl<E: std::error::Error + fmt::Debug + 'static> std::error::Error for WaitError<E> {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Timeout(timeout) => Some(timeout),
@@ -152,7 +152,7 @@ where
 {
     let start = ticker.now();
     let mut attempts = 0_u64;
-    let mut last: Option<String> = None;
+    let mut last: Option<String>;
     loop {
         attempts += 1;
         match run() {
@@ -196,7 +196,7 @@ where
 {
     let start = ticker.now();
     let mut attempts = 0_u64;
-    let mut last: Option<String> = None;
+    let mut last: Option<String>;
     loop {
         attempts += 1;
         match run() {
@@ -222,6 +222,7 @@ where
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
+    use std::time::Duration;
 
     use super::{UnexpectedSuccess, WaitError, WaitTicker, wait_for, wait_for_terminal_error};
 
@@ -307,7 +308,7 @@ mod tests {
         assert_eq!(timeout.attempts, 4);
         assert!(timeout.elapsed >= Duration::from_millis(25));
         assert_eq!(timeout.expected, "the value that never comes");
-        let last = timeout.last.expect("the last value is evidence");
+        let last = timeout.last.as_ref().expect("the last value is evidence");
         assert!(last.contains('1'), "the last value is kept: {last}");
         let rendered = timeout.to_string();
         assert!(
@@ -330,7 +331,7 @@ mod tests {
         )
         .expect_err("a terminal error fails");
         assert!(
-            matches!(error, WaitError::Terminal(message) if message == "REFUSED"),
+            matches!(&error, WaitError::Terminal(message) if message.as_str() == "REFUSED"),
             "the terminal error passes through unwrapped: {error:?}"
         );
         assert_eq!(ticker.sleeps.get(), 0);
@@ -373,7 +374,7 @@ mod tests {
         )
         .expect_err("a success while waiting for an error fails");
         assert!(
-            matches!(error, WaitError::Terminal(UnexpectedSuccess(7))),
+            matches!(&error, WaitError::Terminal(UnexpectedSuccess(7))),
             "the unexpected value is terminal evidence: {error:?}"
         );
         assert_eq!(ticker.sleeps.get(), 0);

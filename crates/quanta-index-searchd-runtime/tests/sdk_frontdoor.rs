@@ -13,10 +13,8 @@
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use quanta_index_contract::lex::{
     LanguageCode, SymbolKindCode, SymbolKindFamily, SymbolRecord, SymbolRelationship, SymbolSpan,
@@ -44,9 +42,7 @@ use quanta_index_sdk::{
     RepoTopicBatch, SdkError, SearchCorpusBatch, SearchScopeKey, SearchScopeSurface,
     StructuralBatch,
 };
-use quanta_index_searchd::app::SearchdConfig;
-use quanta_index_searchd::app::searchd::drive;
-use quanta_index_searchd_runtime::build_runtime;
+use quanta_index_searchd_harness::E2eRuntime;
 
 use crate::fail_closed_wait::{
     RealTicker, UnexpectedSuccess, WaitError, wait_for, wait_for_terminal_error,
@@ -57,18 +53,64 @@ use crate::frontdoor_scenarios::{
 use crate::searchd_binary_process::SearchdBinaryProcess;
 
 type TestResult = Result<(), Box<dyn Error>>;
-type DriverJoin = thread::JoinHandle<anyhow::Result<()>>;
-type SdkFrontdoorRuntime = (tempfile::TempDir, QuantaIndex, Arc<AtomicBool>, DriverJoin);
-type SdkFrontdoorRuntimeWithIngest = (
-    tempfile::TempDir,
-    QuantaIndex,
-    PathBuf,
-    Arc<AtomicBool>,
-    DriverJoin,
-);
 
-static NEXT_SOCKET_ID: AtomicU64 = AtomicU64::new(0);
+static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(0);
 const SOCKET_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Harness-owned SDK frontdoor fixture (TOPT-06: the last direct-runtime
+/// builder joins the TOPT-03 owner; waits over it are fail-closed per
+/// TH-1). Boot binds query/control/ingest under the same retention
+/// policy the old `build_config` spelled out; explicit `stop` surfaces
+/// a driver failure, drop owns unwind cleanup — no manual shutdown tails.
+struct SdkFrontdoorRuntime {
+    runtime: E2eRuntime,
+    client: QuantaIndex,
+    ingest_socket: PathBuf,
+}
+
+impl SdkFrontdoorRuntime {
+    fn start() -> Result<Self, Box<dyn Error>> {
+        let mut runtime = E2eRuntime::boot()?;
+        runtime.start()?;
+        Self::connect(runtime)
+    }
+
+    /// Serve a caller-owned root (the multigen restart): the directory
+    /// outlives each boot, so stop plus start replays a restart.
+    fn start_at(state_root: &Path) -> Result<Self, Box<dyn Error>> {
+        let mut runtime = E2eRuntime::boot_in(state_root)?;
+        runtime.start()?;
+        Self::connect(runtime)
+    }
+
+    fn connect(runtime: E2eRuntime) -> Result<Self, Box<dyn Error>> {
+        let (query, control, ingest) = runtime
+            .socket_paths()
+            .ok_or_else(|| "fixture: driver started without socket paths".to_string())
+            .map(|(query, control, ingest)| {
+                (
+                    query.to_path_buf(),
+                    control.to_path_buf(),
+                    ingest.to_path_buf(),
+                )
+            })?;
+        let client = QuantaIndex::connect(
+            ConnectOptions::from_state_root(runtime.state_root())
+                .with_query_socket(query)
+                .with_control_socket(control)
+                .with_ingest_socket(ingest.clone()),
+        )?;
+        Ok(Self {
+            runtime,
+            client,
+            ingest_socket: ingest,
+        })
+    }
+
+    fn stop(self) -> TestResult {
+        Ok(self.runtime.stop()?)
+    }
+}
 
 fn repo() -> RepoId {
     RepoId::new("repo-sdk").expect("static fixture ID satisfies canonical policy")
@@ -105,109 +147,6 @@ fn commit_sha() -> CommitSha {
     ])
 }
 
-fn unique_socket_paths() -> (PathBuf, PathBuf, PathBuf) {
-    let pid = std::process::id();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let sequence = NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed);
-    let query = std::env::temp_dir().join(format!("qi-sdk-query-{pid}-{nanos}-{sequence}.sock"));
-    let control =
-        std::env::temp_dir().join(format!("qi-sdk-control-{pid}-{nanos}-{sequence}.sock"));
-    let ingest = std::env::temp_dir().join(format!("qi-sdk-ingest-{pid}-{nanos}-{sequence}.sock"));
-    (query, control, ingest)
-}
-
-fn build_config(state_root: &Path) -> SearchdConfig {
-    let (query_socket, control_socket, ingest_socket) = unique_socket_paths();
-    SearchdConfig::from_state_root(state_root.to_path_buf())
-        .try_with_search_corpus_history_retention_limits(
-            8,
-            16 * 1024 * 1024,
-            128,
-            256 * 1024 * 1024,
-        )
-        .expect("valid test retention policy")
-        .with_socket_overrides(query_socket, control_socket)
-        .with_ingest_socket_override(ingest_socket)
-}
-
-fn start_sdk_frontdoor_runtime_at_state_root(
-    state_root: &Path,
-    thread_name: &str,
-) -> Result<(QuantaIndex, Arc<AtomicBool>, DriverJoin), Box<dyn Error>> {
-    let runtime = build_runtime(build_config(state_root))?;
-    let query_socket = runtime.query_server.socket_path().to_path_buf();
-    let control_socket = runtime.control_server.socket_path().to_path_buf();
-    let ingest_socket = runtime.ingest_server.socket_path().to_path_buf();
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let shutdown_for_drive = Arc::clone(&shutdown);
-    let join = thread::Builder::new()
-        .name(thread_name.into())
-        .spawn(move || drive(runtime, &shutdown_for_drive))?;
-
-    if !wait_until(SOCKET_TIMEOUT, || {
-        query_socket.exists() && control_socket.exists() && ingest_socket.exists()
-    }) {
-        stop_runtime(&shutdown, join)?;
-        return Err("sdk frontdoor sockets never appeared".into());
-    }
-
-    let client = match QuantaIndex::connect(
-        ConnectOptions::from_state_root(state_root)
-            .with_query_socket(query_socket)
-            .with_control_socket(control_socket)
-            .with_ingest_socket(ingest_socket),
-    ) {
-        Ok(client) => client,
-        Err(err) => {
-            stop_runtime(&shutdown, join)?;
-            return Err(format!("sdk frontdoor connect failed: {err}").into());
-        }
-    };
-
-    Ok((client, shutdown, join))
-}
-
-fn start_sdk_frontdoor_runtime(thread_name: &str) -> Result<SdkFrontdoorRuntime, Box<dyn Error>> {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let (client, shutdown, join) =
-        start_sdk_frontdoor_runtime_at_state_root(dir.path(), thread_name)?;
-
-    Ok((dir, client, shutdown, join))
-}
-
-fn start_sdk_frontdoor_runtime_with_ingest(
-    thread_name: &str,
-) -> Result<SdkFrontdoorRuntimeWithIngest, Box<dyn Error>> {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let runtime = build_runtime(build_config(dir.path()))?;
-    let query_socket = runtime.query_server.socket_path().to_path_buf();
-    let control_socket = runtime.control_server.socket_path().to_path_buf();
-    let ingest_socket = runtime.ingest_server.socket_path().to_path_buf();
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let shutdown_for_drive = Arc::clone(&shutdown);
-    let join = thread::Builder::new()
-        .name(thread_name.into())
-        .spawn(move || drive(runtime, &shutdown_for_drive))?;
-
-    if !wait_until(SOCKET_TIMEOUT, || {
-        query_socket.exists() && control_socket.exists() && ingest_socket.exists()
-    }) {
-        stop_runtime(&shutdown, join)?;
-        return Err("sdk frontdoor sockets never appeared".into());
-    }
-
-    let client = QuantaIndex::connect(
-        ConnectOptions::from_state_root(dir.path())
-            .with_query_socket(query_socket)
-            .with_control_socket(control_socket)
-            .with_ingest_socket(ingest_socket.clone()),
-    )?;
-    Ok((dir, client, ingest_socket, shutdown, join))
-}
-
 fn dispatch_ingest(socket: &Path, payload: SearchPlaneIngestIpcRequest) -> TestResult {
     // Like every producer, stamp the canonical batch digest before sending
     // (QI-BB-032); the search plane refuses any other digest.
@@ -215,7 +154,7 @@ fn dispatch_ingest(socket: &Path, payload: SearchPlaneIngestIpcRequest) -> TestR
     let response: SearchPlaneIngestIpcResponseEnvelope = send_request(
         socket,
         &SearchPlaneIngestIpcRequestEnvelope {
-            request_id: NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed),
+            request_id: NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed),
             payload,
         },
         quanta_index_ipc::ClientIoPolicy::default(),
@@ -237,29 +176,6 @@ fn dispatch_ingest(socket: &Path, payload: SearchPlaneIngestIpcRequest) -> TestR
         | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
         | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_) => Ok(()),
-    }
-}
-
-fn wait_until<F>(timeout: Duration, mut cond: F) -> bool
-where
-    F: FnMut() -> bool,
-{
-    let start = Instant::now();
-    while start.elapsed() < timeout {
-        if cond() {
-            return true;
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
-    false
-}
-
-fn stop_runtime(shutdown: &Arc<AtomicBool>, join: DriverJoin) -> TestResult {
-    shutdown.store(true, Ordering::Release);
-    match join.join() {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(err)) => Err(err.into()),
-        Err(panic) => Err(format!("driver panic: {panic:?}").into()),
     }
 }
 
@@ -1520,30 +1436,8 @@ where
 
 #[test]
 fn sdk_publish_frontdoor_routes_ingest_batches() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let runtime = build_runtime(build_config(dir.path()))?;
-    let query_socket = runtime.query_server.socket_path().to_path_buf();
-    let control_socket = runtime.control_server.socket_path().to_path_buf();
-    let ingest_socket = runtime.ingest_server.socket_path().to_path_buf();
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let shutdown_for_drive = Arc::clone(&shutdown);
-    let join = thread::Builder::new()
-        .name("sdk-frontdoor-publish".into())
-        .spawn(move || drive(runtime, &shutdown_for_drive))?;
-
-    if !wait_until(SOCKET_TIMEOUT, || {
-        query_socket.exists() && control_socket.exists() && ingest_socket.exists()
-    }) {
-        stop_runtime(&shutdown, join)?;
-        return Err("sdk frontdoor sockets never appeared".into());
-    }
-
-    let client = QuantaIndex::connect(
-        ConnectOptions::from_state_root(dir.path())
-            .with_query_socket(query_socket)
-            .with_control_socket(control_socket)
-            .with_ingest_socket(ingest_socket),
-    )?;
+    let fixture = SdkFrontdoorRuntime::start()?;
+    let client = &fixture.client;
 
     let lexical_receipt = client.search_corpus().publish(&lexical_batch()?)?;
     let history_receipt = client.history().publish(&history_batch())?;
@@ -1555,79 +1449,50 @@ fn sdk_publish_frontdoor_routes_ingest_batches() -> TestResult {
         || lexical_receipt.accepted_replace_scopes != 3
         || lexical_receipt.accepted_tombstone_scopes != 0
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected search-corpus receipt: {lexical_receipt:?}").into());
     }
     if history_receipt.generation != generation()
         || history_receipt.accepted_replace_scopes != 4
         || history_receipt.accepted_tombstone_scopes != 0
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected history receipt: {history_receipt:?}").into());
     }
     if dirty_receipt.generation != generation()
         || dirty_receipt.accepted_replace_scopes != 1
         || dirty_receipt.accepted_tombstone_scopes != 1
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected dirty receipt: {dirty_receipt:?}").into());
     }
     if structural_receipt.generation != generation()
         || structural_receipt.accepted_replace_scopes != 1
         || structural_receipt.accepted_tombstone_scopes != 0
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected structural receipt: {structural_receipt:?}").into());
     }
     if repo_map_receipt.repo_id != repo()
         || repo_map_receipt.revision_id != revision()
         || repo_map_receipt.manifest_generation != generation()
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected repo-map receipt: {repo_map_receipt:?}").into());
     }
 
-    stop_runtime(&shutdown, join)
+    fixture.stop()
 }
 
 #[test]
 fn sdk_search_frontdoor_routes_lexical_semantic_hybrid_explain_and_repomap_truth() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let runtime = build_runtime(build_config(dir.path()))?;
-    let query_socket = runtime.query_server.socket_path().to_path_buf();
-    let control_socket = runtime.control_server.socket_path().to_path_buf();
-    let ingest_socket = runtime.ingest_server.socket_path().to_path_buf();
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let shutdown_for_drive = Arc::clone(&shutdown);
-    let join = thread::Builder::new()
-        .name("sdk-frontdoor-search".into())
-        .spawn(move || drive(runtime, &shutdown_for_drive))?;
-
-    if !wait_until(SOCKET_TIMEOUT, || {
-        query_socket.exists() && control_socket.exists() && ingest_socket.exists()
-    }) {
-        stop_runtime(&shutdown, join)?;
-        return Err("sdk frontdoor sockets never appeared".into());
-    }
-
-    let client = QuantaIndex::connect(
-        ConnectOptions::from_state_root(dir.path())
-            .with_query_socket(query_socket)
-            .with_control_socket(control_socket)
-            .with_ingest_socket(ingest_socket),
-    )?;
+    let fixture = SdkFrontdoorRuntime::start()?;
+    let client = &fixture.client;
 
     let corpus_batch = lexical_batch()?;
     let _corpus_active = publish_and_activate_sdk_search_corpus(&client, &corpus_batch)?;
     let repo_map_receipt = client.repomap().publish(&repo_map_bundle()?)?;
     if repo_map_receipt.manifest_generation != generation() {
-        stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected repo-map publish ack: {repo_map_receipt:?}").into());
     }
 
     let repo_map_activation = client.repomap().activate(repo_map_activate_request())?;
     if repo_map_activation.manifest_generation != generation() {
-        stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected repo-map activate ack: {repo_map_activation:?}").into());
     }
 
@@ -1653,7 +1518,6 @@ fn sdk_search_frontdoor_routes_lexical_semantic_hybrid_explain_and_repomap_truth
         || lexical_candidate.candidate_id != "chunk-dirty"
         || lexical_candidate.repo_relative_path.as_str() != "src/lib.rs"
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected lexical response: {lexical:?}").into());
     }
 
@@ -1679,7 +1543,6 @@ fn sdk_search_frontdoor_routes_lexical_semantic_hybrid_explain_and_repomap_truth
         || lexical_select_path_paths
             != BTreeSet::from(["src/alpha.rs".to_string(), "src/beta.rs".to_string()])
     {
-        stop_runtime(&shutdown, join)?;
         return Err(
             format!("unexpected select:path lexical response: {lexical_select_path:?}").into(),
         );
@@ -1711,7 +1574,6 @@ fn sdk_search_frontdoor_routes_lexical_semantic_hybrid_explain_and_repomap_truth
             .iter()
             .any(|candidate| !candidate.snippet.contains("sphinx"))
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!(
             "unexpected select:content.match lexical response: {lexical_select_content_match:?}"
         )
@@ -1740,7 +1602,6 @@ fn sdk_search_frontdoor_routes_lexical_semantic_hybrid_explain_and_repomap_truth
         || lexical_native_select_path_paths
             != BTreeSet::from(["src/alpha.rs".to_string(), "src/beta.rs".to_string()])
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!(
             "unexpected native select:path lexical response: {lexical_native_select_path:?}"
         )
@@ -1773,7 +1634,6 @@ fn sdk_search_frontdoor_routes_lexical_semantic_hybrid_explain_and_repomap_truth
             .iter()
             .any(|candidate| !candidate.snippet.contains("sphinx"))
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!(
             "unexpected native select:content.match lexical response: \
              {lexical_native_select_content_match:?}"
@@ -1788,7 +1648,6 @@ fn sdk_search_frontdoor_routes_lexical_semantic_hybrid_explain_and_repomap_truth
         || !explain.explanation.summary.contains("present")
         || !explain.explanation.summary.contains("chunk-dirty")
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected explain response: {explain:?}").into());
     }
 
@@ -1813,7 +1672,6 @@ fn sdk_search_frontdoor_routes_lexical_semantic_hybrid_explain_and_repomap_truth
         || semantic_top.candidate_id != "alpha"
         || semantic.explanation.summary.is_empty()
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected semantic response: {semantic:?}").into());
     }
 
@@ -1839,7 +1697,6 @@ fn sdk_search_frontdoor_routes_lexical_semantic_hybrid_explain_and_repomap_truth
         || hybrid_top.entity_id != "alpha"
         || hybrid.explanation.summary.is_empty()
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected hybrid-seed response: {hybrid:?}").into());
     }
 
@@ -1876,7 +1733,6 @@ fn sdk_search_frontdoor_routes_lexical_semantic_hybrid_explain_and_repomap_truth
         || true_hybrid_top.fused_score.to_bits() != true_hybrid_rrf.to_bits()
         || true_hybrid.explanation.summary.is_empty()
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected hybrid response: {true_hybrid:?}").into());
     }
     let hybrid_explain = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
@@ -1908,7 +1764,6 @@ fn sdk_search_frontdoor_routes_lexical_semantic_hybrid_explain_and_repomap_truth
         || !reconciled("dense")
         || !reconciled("fused")
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected hybrid explain response: {hybrid_explain:?}").into());
     }
 
@@ -1919,35 +1774,13 @@ fn sdk_search_frontdoor_routes_lexical_semantic_hybrid_explain_and_repomap_truth
     )?;
     assert_repo_map_happy_path(&repo_map)?;
 
-    stop_runtime(&shutdown, join)
+    fixture.stop()
 }
 
 #[test]
 fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let runtime = build_runtime(build_config(dir.path()))?;
-    let query_socket = runtime.query_server.socket_path().to_path_buf();
-    let control_socket = runtime.control_server.socket_path().to_path_buf();
-    let ingest_socket = runtime.ingest_server.socket_path().to_path_buf();
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let shutdown_for_drive = Arc::clone(&shutdown);
-    let join = thread::Builder::new()
-        .name("sdk-frontdoor-query".into())
-        .spawn(move || drive(runtime, &shutdown_for_drive))?;
-
-    if !wait_until(SOCKET_TIMEOUT, || {
-        query_socket.exists() && control_socket.exists() && ingest_socket.exists()
-    }) {
-        stop_runtime(&shutdown, join)?;
-        return Err("sdk frontdoor sockets never appeared".into());
-    }
-
-    let client = QuantaIndex::connect(
-        ConnectOptions::from_state_root(dir.path())
-            .with_query_socket(query_socket)
-            .with_control_socket(control_socket)
-            .with_ingest_socket(ingest_socket),
-    )?;
+    let fixture = SdkFrontdoorRuntime::start()?;
+    let client = &fixture.client;
 
     let corpus_batch = lexical_batch()?;
     let _corpus_active = publish_and_activate_sdk_search_corpus(&client, &corpus_batch)?;
@@ -1975,7 +1808,6 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         || history_commit.commits.len() != 1
         || !history_commit.diffs.is_empty()
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected history commit response: {history_commit:?}").into());
     }
     let commit = history_commit
@@ -1983,7 +1815,6 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         .first()
         .ok_or_else(|| "missing history commit candidate".to_string())?;
     if commit.author != "alice" || commit.message != "fix: sample" {
-        stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected history commit candidate: {commit:?}").into());
     }
 
@@ -2007,7 +1838,6 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         || !history_diff.commits.is_empty()
         || history_diff.diffs.len() != 1
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected history diff response: {history_diff:?}").into());
     }
 
@@ -2069,7 +1899,6 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         |response| response.generation == pin() && response.results.len() == 1,
     )?;
     if runtime_query.generation != pin() || runtime_query.results.len() != 1 {
-        stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected runtime response: {runtime_query:?}").into());
     }
     let runtime_candidate = runtime_query
@@ -2079,7 +1908,6 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
     if runtime_candidate.candidate_id != "chunk-dirty"
         || runtime_candidate.repo_relative_path.as_str() != "src/lib.rs"
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected runtime candidate: {runtime_candidate:?}").into());
     }
 
@@ -2097,7 +1925,6 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         |response| response.generation == pin() && response.results.len() == 1,
     )?;
     if structural_query.generation != pin() || structural_query.results.len() != 1 {
-        stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected structural response: {structural_query:?}").into());
     }
     let structural_candidate = structural_query
@@ -2106,7 +1933,6 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         .ok_or_else(|| "missing structural candidate".to_string())?;
     if structural_candidate.candidate_id != "chunk-tree" || structural_candidate.bindings.len() != 1
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected structural candidate: {structural_candidate:?}").into());
     }
     let structural_binding = structural_candidate
@@ -2117,7 +1943,6 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         || structural_binding.start_byte != 0
         || structural_binding.end_byte != 10
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected structural binding: {structural_binding:?}").into());
     }
 
@@ -2135,7 +1960,6 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         |response| response.generation == pin() && response.results.len() == 1,
     )?;
     if structural_pinned_query.generation != pin() || structural_pinned_query.results.len() != 1 {
-        stop_runtime(&shutdown, join)?;
         return Err(
             format!("unexpected pinned structural response: {structural_pinned_query:?}").into(),
         );
@@ -2147,7 +1971,6 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
     if structural_pinned_candidate.candidate_id != "chunk-tree"
         || structural_pinned_candidate.bindings.len() != 1
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!(
             "unexpected pinned structural candidate: {structural_pinned_candidate:?}"
         )
@@ -2168,7 +1991,6 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         |response| response.generation == pin() && response.results.len() == 1,
     )?;
     if structural_root_kind.generation != pin() || structural_root_kind.results.len() != 1 {
-        stop_runtime(&shutdown, join)?;
         return Err(
             format!("unexpected structural root-kind response: {structural_root_kind:?}").into(),
         );
@@ -2180,7 +2002,6 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
     if structural_root_kind_candidate.candidate_id != "chunk-tree"
         || !structural_root_kind_candidate.bindings.is_empty()
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!(
             "unexpected structural root-kind candidate: {structural_root_kind_candidate:?}"
         )
@@ -2203,7 +2024,6 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
     if structural_root_kind_capture.generation != pin()
         || structural_root_kind_capture.results.len() != 1
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!(
             "unexpected structural root-kind+capture response: {structural_root_kind_capture:?}"
         )
@@ -2216,7 +2036,6 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
     if structural_root_kind_capture_candidate.candidate_id != "chunk-tree"
         || structural_root_kind_capture_candidate.bindings.len() != 1
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!(
             "unexpected structural root-kind+capture candidate: \
              {structural_root_kind_capture_candidate:?}"
@@ -2231,7 +2050,6 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         || structural_root_kind_capture_binding.start_byte != 0
         || structural_root_kind_capture_binding.end_byte != 10
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!(
             "unexpected structural root-kind+capture binding: \
              {structural_root_kind_capture_binding:?}"
@@ -2265,7 +2083,6 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         || structural_boolean_and_binding.start_byte != 0
         || structural_boolean_and_binding.end_byte != 10
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!(
             "unexpected structural boolean AND candidate/binding: \
              {structural_boolean_and_candidate:?}"
@@ -2287,7 +2104,6 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         |response| response.generation == pin() && response.results.len() == 1,
     )?;
     if structural_child_capture.generation != pin() || structural_child_capture.results.len() != 1 {
-        stop_runtime(&shutdown, join)?;
         return Err(format!(
             "unexpected structural child-capture response: {structural_child_capture:?}"
         )
@@ -2306,7 +2122,6 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         || structural_child_capture_binding.start_byte != 3
         || structural_child_capture_binding.end_byte != 7
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!(
             "unexpected structural child-capture candidate/binding: \
              {structural_child_capture_candidate:?}"
@@ -2340,7 +2155,6 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         || structural_typed_expr_binding.start_byte != 3
         || structural_typed_expr_binding.end_byte != 7
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!(
             "unexpected structural typed-expr candidate/binding: \
              {structural_typed_expr_candidate:?}"
@@ -2374,7 +2188,6 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         || structural_typed_item_binding.start_byte != 0
         || structural_typed_item_binding.end_byte != 10
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!(
             "unexpected structural typed-item candidate/binding: \
              {structural_typed_item_candidate:?}"
@@ -2408,7 +2221,6 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         || structural_typed_stmt_binding.start_byte != 8
         || structural_typed_stmt_binding.end_byte != 10
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!(
             "unexpected structural typed-stmt candidate/binding: \
              {structural_typed_stmt_candidate:?}"
@@ -2444,7 +2256,6 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         || structural_where_inside_outside_binding.start_byte != 3
         || structural_where_inside_outside_binding.end_byte != 7
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!(
             "unexpected structural where/inside/outside candidate/binding: \
              {structural_where_inside_outside_candidate:?}"
@@ -2478,7 +2289,6 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         || structural_variadic_binding.start_byte != 3
         || structural_variadic_binding.end_byte != 7
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!(
             "unexpected structural variadic candidate/binding: {structural_variadic_candidate:?}"
         )
@@ -2503,7 +2313,6 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
     if structural_filtered_native.generation != pin()
         || structural_filtered_native.results.len() != 1
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!(
             "unexpected filtered native structural response: {structural_filtered_native:?}"
         )
@@ -2522,7 +2331,6 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         || structural_filtered_native_binding.start_byte != 3
         || structural_filtered_native_binding.end_byte != 7
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!(
             "unexpected filtered native structural candidate/binding: \
              {structural_filtered_native_candidate:?}"
@@ -2538,7 +2346,6 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         .top_k(2)
         .execute()
     else {
-        stop_runtime(&shutdown, join)?;
         return Err("unsupported-lang structural query unexpectedly succeeded".into());
     };
     expect_remote_code(structural_err, "STR_LANG_NOT_SUPPORTED")?;
@@ -2557,7 +2364,6 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         |response| response.generation == pin() && response.results.len() == 1,
     )?;
     if structural_file_query.generation != pin() || structural_file_query.results.len() != 1 {
-        stop_runtime(&shutdown, join)?;
         return Err(
             format!("unexpected structural file response: {structural_file_query:?}").into(),
         );
@@ -2577,7 +2383,6 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         |response| response.generation == pin() && response.results.len() == 1,
     )?;
     if structural_repo_query.generation != pin() || structural_repo_query.results.len() != 1 {
-        stop_runtime(&shutdown, join)?;
         return Err(
             format!("unexpected structural repo response: {structural_repo_query:?}").into(),
         );
@@ -2599,7 +2404,6 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
     if structural_repo_file_lang_query.generation != pin()
         || structural_repo_file_lang_query.results.len() != 1
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!(
             "unexpected structural repo+file+lang response: \
                  {structural_repo_file_lang_query:?}"
@@ -2613,7 +2417,6 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
     if structural_repo_file_lang_candidate.candidate_id != "chunk-tree"
         || structural_repo_file_lang_candidate.bindings.len() != 1
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!(
             "unexpected structural repo+file+lang candidate: \
              {structural_repo_file_lang_candidate:?}"
@@ -2637,7 +2440,6 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         |response| response.generation == pin() && response.results.len() == 1,
     )?;
     if structural_sourcegraph.generation != pin() || structural_sourcegraph.results.len() != 1 {
-        stop_runtime(&shutdown, join)?;
         return Err(format!(
             "unexpected Sourcegraph structural response: {structural_sourcegraph:?}"
         )
@@ -2656,7 +2458,6 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         || structural_sourcegraph_binding.start_byte != 3
         || structural_sourcegraph_binding.end_byte != 7
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!(
             "unexpected Sourcegraph structural candidate/binding: \
              {structural_sourcegraph_candidate:?}"
@@ -2682,7 +2483,6 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
     if structural_sourcegraph_regex.generation != pin()
         || structural_sourcegraph_regex.results.len() != 1
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!(
             "unexpected Sourcegraph structural regex response: {structural_sourcegraph_regex:?}"
         )
@@ -2703,7 +2503,6 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         || structural_sourcegraph_regex_binding.start_byte != 3
         || structural_sourcegraph_regex_binding.end_byte != 7
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!(
             "unexpected Sourcegraph structural regex candidate/binding: \
              {structural_sourcegraph_regex_candidate:?}"
@@ -2719,7 +2518,6 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         .top_k(2)
         .execute()?;
     if structural_repo_miss.generation != pin() || !structural_repo_miss.results.is_empty() {
-        stop_runtime(&shutdown, join)?;
         return Err(
             format!("unexpected structural repo-miss response: {structural_repo_miss:?}").into(),
         );
@@ -2733,7 +2531,6 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         .top_k(2)
         .execute()
     else {
-        stop_runtime(&shutdown, join)?;
         return Err("invalid-filter structural query unexpectedly succeeded".into());
     };
     expect_remote_code(structural_invalid_request_err, "STR_INVALID_REQUEST")?;
@@ -2746,7 +2543,6 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         .top_k(2)
         .execute()
     else {
-        stop_runtime(&shutdown, join)?;
         return Err("invalid Sourcegraph structural filter unexpectedly succeeded".into());
     };
     expect_remote_code(
@@ -2768,7 +2564,6 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         |response| response.generation == pin() && response.results.len() == 1,
     )?;
     if structural_native_pinned.generation != pin() || structural_native_pinned.results.len() != 1 {
-        stop_runtime(&shutdown, join)?;
         return Err(format!(
             "unexpected pinned structural native response: {structural_native_pinned:?}"
         )
@@ -2779,7 +2574,6 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         .first()
         .ok_or_else(|| "missing pinned structural native candidate".to_string())?;
     if structural_native_pinned_candidate.candidate_id != "chunk-tree" {
-        stop_runtime(&shutdown, join)?;
         return Err(format!(
             "unexpected pinned structural native candidate: \
              {structural_native_pinned_candidate:?}"
@@ -2787,13 +2581,14 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         .into());
     }
 
-    stop_runtime(&shutdown, join)
+    fixture.stop()
 }
 
 #[test]
 fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResult {
-    let (_dir, client, ingest_socket, shutdown, join) =
-        start_sdk_frontdoor_runtime_with_ingest("sdk-frontdoor-widened-query-matrix")?;
+    let fixture = SdkFrontdoorRuntime::start()?;
+    let client = &fixture.client;
+    let ingest_socket = &fixture.ingest_socket;
 
     // The repo-metadata overlays belong to the generation's sealed
     // contract, so they are published before the seal (QI-BB-030); a
@@ -2853,7 +2648,6 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                         .map(|id| (*id).to_string())
                         .collect::<Vec<_>>();
                     if observed != expected {
-                        stop_runtime(&shutdown, join)?;
                         return Err(format!(
                             "{} lexical candidate drift: expected {:?}, got {:?}",
                             scenario.name, expected, observed
@@ -2889,7 +2683,6 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                         .map(|id| (*id).to_string())
                         .collect::<Vec<_>>();
                     if observed != expected {
-                        stop_runtime(&shutdown, join)?;
                         return Err(format!(
                             "{} symbol candidate drift: expected {:?}, got {:?}",
                             scenario.name, expected, observed
@@ -2928,7 +2721,6 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                         .map(|id| (*id).to_string())
                         .collect::<Vec<_>>();
                     if observed != expected {
-                        stop_runtime(&shutdown, join)?;
                         return Err(format!(
                             "{} structural candidate drift: expected {:?}, got {:?}",
                             scenario.name, expected, observed
@@ -2967,7 +2759,6 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                         .map(|id| (*id).to_string())
                         .collect::<Vec<_>>();
                     if observed != expected {
-                        stop_runtime(&shutdown, join)?;
                         return Err(format!(
                             "{} runtime candidate drift: expected {:?}, got {:?}",
                             scenario.name, expected, observed
@@ -2976,7 +2767,6 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                     }
                 }
                 SdkFrontdoorSurface::History => {
-                    stop_runtime(&shutdown, join)?;
                     return Err(format!(
                         "{} used candidate-id expectation on history surface",
                         scenario.name
@@ -2986,7 +2776,6 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
             },
             SdkFrontdoorExpectation::CommitShas(expected_shas) => {
                 if scenario.surface != SdkFrontdoorSurface::History {
-                    stop_runtime(&shutdown, join)?;
                     return Err(format!(
                         "{} used commit expectation on non-history surface",
                         scenario.name
@@ -3025,7 +2814,6 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                     .map(|sha| (*sha).to_string())
                     .collect::<Vec<_>>();
                 if observed != expected || !response.diffs.is_empty() {
-                    stop_runtime(&shutdown, join)?;
                     return Err(format!(
                         "{} history commit drift: expected {:?}, got commits={:?} diffs={:?}",
                         scenario.name, expected, observed, response.diffs
@@ -3097,7 +2885,6 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                     )?,
                     other
                     @ (SdkFrontdoorSurface::Symbol | SdkFrontdoorSurface::RuntimeMetadata) => {
-                        stop_runtime(&shutdown, join)?;
                         return Err(format!(
                             "{} typed error expectation on unsupported SDK surface {:?}",
                             scenario.name, other
@@ -3116,7 +2903,6 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                     | SdkError::Remote { .. }
                     | SdkError::Binding { .. }
                     | SdkError::PlaneUnavailable { .. }) => {
-                        stop_runtime(&shutdown, join)?;
                         return Err(format!(
                             "{} typed error drifted: expected code={} fragment={:?}, got {other:?}",
                             scenario.name, expected_error.code, expected_error.message_contains
@@ -3128,12 +2914,13 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
         }
     }
 
-    stop_runtime(&shutdown, join)
+    fixture.stop()
 }
 
 #[test]
 fn sdk_text_frontdoor_rebinds_rev_at_time_generation_truth() -> TestResult {
-    let (_dir, client, shutdown, join) = start_sdk_frontdoor_runtime("sdk-frontdoor-rev-at-time")?;
+    let fixture = SdkFrontdoorRuntime::start()?;
+    let client = &fixture.client;
 
     let ancestor_batch = rev_at_time_lexical_batch(
         rev_at_time_ancestor_revision(),
@@ -3167,11 +2954,9 @@ fn sdk_text_frontdoor_rebinds_rev_at_time_generation_truth() -> TestResult {
         |response| response.generation == rev_at_time_head_pin() && response.results.len() == 1,
     )?;
     let [head_candidate] = head.results.as_slice() else {
-        stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected future rev:at.time response: {head:?}").into());
     };
     if head_candidate.candidate_id != "chunk-rev-at-time-head" {
-        stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected future rev:at.time response: {head:?}").into());
     }
 
@@ -3189,11 +2974,9 @@ fn sdk_text_frontdoor_rebinds_rev_at_time_generation_truth() -> TestResult {
         |response| response.generation == rev_at_time_ancestor_pin() && response.results.len() == 1,
     )?;
     let [relative_candidate] = relative.results.as_slice() else {
-        stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected human relative rev:at.time response: {relative:?}").into());
     };
     if relative_candidate.candidate_id != "chunk-rev-at-time-ancestor" {
-        stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected human relative rev:at.time response: {relative:?}").into());
     }
 
@@ -3211,11 +2994,9 @@ fn sdk_text_frontdoor_rebinds_rev_at_time_generation_truth() -> TestResult {
         |response| response.generation == rev_at_time_ancestor_pin() && response.results.len() == 1,
     )?;
     let [named_candidate] = named.results.as_slice() else {
-        stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected named relative rev:at.time response: {named:?}").into());
     };
     if named_candidate.candidate_id != "chunk-rev-at-time-ancestor" {
-        stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected named relative rev:at.time response: {named:?}").into());
     }
 
@@ -3233,7 +3014,6 @@ fn sdk_text_frontdoor_rebinds_rev_at_time_generation_truth() -> TestResult {
         |response| response.generation == rev_at_time_head_pin() && response.results.is_empty(),
     )?;
     if !calendar.results.is_empty() {
-        stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected calendar rev:at.time response: {calendar:?}").into());
     }
 
@@ -3249,35 +3029,13 @@ fn sdk_text_frontdoor_rebinds_rev_at_time_generation_truth() -> TestResult {
     )?;
     expect_remote_code(invalid, "HISTORY_INVALID_TIMEREF")?;
 
-    stop_runtime(&shutdown, join)
+    fixture.stop()
 }
 
 #[test]
 fn sdk_history_query_frontdoor_surfaces_typed_absent_and_shard_errors() -> TestResult {
-    let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let runtime = build_runtime(build_config(dir.path()))?;
-    let query_socket = runtime.query_server.socket_path().to_path_buf();
-    let control_socket = runtime.control_server.socket_path().to_path_buf();
-    let ingest_socket = runtime.ingest_server.socket_path().to_path_buf();
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let shutdown_for_drive = Arc::clone(&shutdown);
-    let join = thread::Builder::new()
-        .name("sdk-frontdoor-history-errors".into())
-        .spawn(move || drive(runtime, &shutdown_for_drive))?;
-
-    if !wait_until(SOCKET_TIMEOUT, || {
-        query_socket.exists() && control_socket.exists() && ingest_socket.exists()
-    }) {
-        stop_runtime(&shutdown, join)?;
-        return Err("sdk frontdoor sockets never appeared".into());
-    }
-
-    let client = QuantaIndex::connect(
-        ConnectOptions::from_state_root(dir.path())
-            .with_query_socket(query_socket)
-            .with_control_socket(control_socket)
-            .with_ingest_socket(ingest_socket),
-    )?;
+    let fixture = SdkFrontdoorRuntime::start()?;
+    let client = &fixture.client;
 
     let generation_not_ready = expect_sdk_error(
         client
@@ -3320,13 +3078,13 @@ fn sdk_history_query_frontdoor_surfaces_typed_absent_and_shard_errors() -> TestR
     )?;
     expect_remote_code(shard_unavailable, "HISTORY_SHARD_UNAVAILABLE")?;
 
-    stop_runtime(&shutdown, join)
+    fixture.stop()
 }
 
 #[test]
 fn sdk_structural_sourcegraph_frontdoor_supports_boolean_and_typed_hole_truth() -> TestResult {
-    let (_dir, client, shutdown, join) =
-        start_sdk_frontdoor_runtime("sdk-frontdoor-structural-sourcegraph-v2")?;
+    let fixture = SdkFrontdoorRuntime::start()?;
+    let client = &fixture.client;
 
     publish_sdk_search_corpus_ready(&client)?;
     let _structural_receipt = client.structural().publish(&structural_batch()?)?;
@@ -3404,13 +3162,13 @@ fn sdk_structural_sourcegraph_frontdoor_supports_boolean_and_typed_hole_truth() 
         "sdk structural Sourcegraph boolean NOT",
     )?;
 
-    stop_runtime(&shutdown, join)
+    fixture.stop()
 }
 
 #[test]
 fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
-    let (_dir, client, shutdown, join) =
-        start_sdk_frontdoor_runtime("sdk-frontdoor-dsl-fail-closed")?;
+    let fixture = SdkFrontdoorRuntime::start()?;
+    let client = &fixture.client;
 
     publish_sdk_search_corpus_ready(&client)?;
     let _structural_receipt = client.structural().publish(&structural_batch()?)?;
@@ -3436,7 +3194,6 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
         | SdkError::Remote { .. }
         | SdkError::Binding { .. }
         | SdkError::PlaneUnavailable { .. }) => {
-            stop_runtime(&shutdown, join)?;
             return Err(format!("unexpected lexical timeout error: {other:?}").into());
         }
     }
@@ -3461,7 +3218,6 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
     if lexical_follow_up.generation != pin()
         || lexical_follow_up_candidate.candidate_id != "chunk-dirty"
     {
-        stop_runtime(&shutdown, join)?;
         return Err(
             format!("unexpected lexical follow-up after timeout: {lexical_follow_up:?}").into(),
         );
@@ -3488,7 +3244,6 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
         | SdkError::Remote { .. }
         | SdkError::Binding { .. }
         | SdkError::PlaneUnavailable { .. }) => {
-            stop_runtime(&shutdown, join)?;
             return Err(format!("unexpected structural timeout error: {other:?}").into());
         }
     }
@@ -3514,7 +3269,6 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
         | SdkError::Remote { .. }
         | SdkError::Binding { .. }
         | SdkError::PlaneUnavailable { .. }) => {
-            stop_runtime(&shutdown, join)?;
             return Err(format!("unexpected typed-hole error: {other:?}").into());
         }
     }
@@ -3563,7 +3317,6 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
         },
     )?;
     if mixed_or.results.len() != 1 {
-        stop_runtime(&shutdown, join)?;
         return Err(format!(
             "sdk mixed lexical/structural OR expected one surviving candidate, got {:?}",
             mixed_or.results
@@ -3575,7 +3328,6 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
         .first()
         .ok_or_else(|| "sdk mixed lexical/structural boolean OR: missing candidate".to_string())?;
     if mixed_or.generation != pin() || mixed_or_candidate.candidate_id != "chunk-tree" {
-        stop_runtime(&shutdown, join)?;
         return Err(format!(
             "sdk mixed lexical/structural boolean OR: unexpected response {mixed_or:?}"
         )
@@ -3599,7 +3351,6 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
         "sdk mixed lexical/structural boolean AND NOT: missing candidate".to_string()
     })?;
     if mixed_and_not.generation != pin() || mixed_and_not_candidate.candidate_id != "chunk-tree" {
-        stop_runtime(&shutdown, join)?;
         return Err(format!(
             "sdk mixed lexical/structural boolean AND NOT: unexpected response {mixed_and_not:?}"
         )
@@ -3628,14 +3379,12 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
     )?;
     for candidate in &pure_negative.results {
         if candidate.candidate_id == "chunk-tree" {
-            stop_runtime(&shutdown, join)?;
             return Err(format!(
                 "pure-negative root must exclude function_item matches, got {candidate:?}"
             )
             .into());
         }
         if !candidate.bindings.is_empty() {
-            stop_runtime(&shutdown, join)?;
             return Err(format!(
                 "pure-negative universe placeholder must not invent bindings, got {candidate:?}"
             )
@@ -3664,7 +3413,6 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
         | SdkError::Remote { .. }
         | SdkError::Binding { .. }
         | SdkError::PlaneUnavailable { .. }) => {
-            stop_runtime(&shutdown, join)?;
             return Err(format!("unexpected patterntype error: {other:?}").into());
         }
     }
@@ -3692,13 +3440,13 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
         "sdk structural follow-up after typed errors",
     )?;
 
-    stop_runtime(&shutdown, join)
+    fixture.stop()
 }
 
 #[test]
 fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
-    let (_dir, client, shutdown, join) =
-        start_sdk_frontdoor_runtime("sdk-frontdoor-contract-exact")?;
+    let fixture = SdkFrontdoorRuntime::start()?;
+    let client = &fixture.client;
 
     let corpus_batch = lexical_batch()?;
     let _corpus_active = publish_and_activate_sdk_search_corpus(&client, &corpus_batch)?;
@@ -3728,7 +3476,6 @@ fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
         || lexical_candidate.candidate_id != "chunk-dirty"
         || lexical_candidate.repo_relative_path.as_str() != "src/lib.rs"
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected contract-exact lexical response: {lexical:?}").into());
     }
 
@@ -3772,7 +3519,6 @@ fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
         || history_commit.author != "alice"
         || history_commit.message != "fix: sample"
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected contract-exact history response: {history:?}").into());
     }
 
@@ -3798,7 +3544,6 @@ fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
         .first()
         .ok_or_else(|| "missing contract-exact runtime candidate".to_string())?;
     if runtime.generation != pin() || runtime_top.candidate_id != "chunk-dirty" {
-        stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected contract-exact runtime response: {runtime:?}").into());
     }
 
@@ -3839,7 +3584,6 @@ fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
         || structural_binding.start_byte != 3
         || structural_binding.end_byte != 7
     {
-        stop_runtime(&shutdown, join)?;
         return Err(
             format!("unexpected contract-exact structural response: {structural:?}").into(),
         );
@@ -3874,7 +3618,6 @@ fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
         || semantic_top.candidate_id != "alpha"
         || semantic.explanation.summary.is_empty()
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected contract-exact semantic response: {semantic:?}").into());
     }
 
@@ -3907,23 +3650,22 @@ fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
         || hybrid_top.entity_id != "alpha"
         || hybrid.explanation.summary.is_empty()
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected contract-exact hybrid-seed response: {hybrid:?}").into());
     }
 
-    stop_runtime(&shutdown, join)
+    fixture.stop()
 }
 
 #[test]
 fn sdk_search_corpus_frontdoor_promotes_composite_generation_identity() -> TestResult {
-    let (_dir, client, shutdown, join) = start_sdk_frontdoor_runtime("sdk-frontdoor-generations")?;
+    let fixture = SdkFrontdoorRuntime::start()?;
+    let client = &fixture.client;
 
     let initial_status = client.generations().status(repo(), revision())?;
     if initial_status.repo_id != repo()
         || initial_status.revision_id != revision()
         || !initial_status.tracks.is_empty()
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected initial generation status: {initial_status:?}").into());
     }
 
@@ -3946,7 +3688,6 @@ fn sdk_search_corpus_frontdoor_promotes_composite_generation_identity() -> TestR
         || composite_active.semantic.manifest_generation != generation()
         || composite_active.semantic.manifest_digest != corpus_batch.manifest_digest()
     {
-        stop_runtime(&shutdown, join)?;
         return Err(
             format!("unexpected composite activation identity: {composite_active:?}").into(),
         );
@@ -3963,7 +3704,6 @@ fn sdk_search_corpus_frontdoor_promotes_composite_generation_identity() -> TestR
         || lexical_snapshot.manifest_generation != generation()
         || lexical_snapshot.manifest_digest != corpus_batch.manifest_digest()
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected lexical generation snapshot: {lexical_snapshot:?}").into());
     }
 
@@ -3971,7 +3711,6 @@ fn sdk_search_corpus_frontdoor_promotes_composite_generation_identity() -> TestR
         client.generations().status(repo(), revision())
     })?;
     if final_status.repo_id != repo() || final_status.revision_id != revision() {
-        stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected final generation status: {final_status:?}").into());
     }
     match final_status.tracks.as_slice() {
@@ -3981,19 +3720,18 @@ fn sdk_search_corpus_frontdoor_promotes_composite_generation_identity() -> TestR
                 && semantic.track == SearchPlaneTrackKind::Semantic
                 && semantic.manifest_digest == corpus_batch.manifest_digest() => {}
         _ => {
-            stop_runtime(&shutdown, join)?;
             return Err(format!("unexpected final generation track set: {final_status:?}").into());
         }
     }
 
-    stop_runtime(&shutdown, join)
+    fixture.stop()
 }
 
 #[test]
 fn sdk_tombstone_only_generation_replaces_active_composite_and_removes_both_query_views()
 -> TestResult {
-    let (_dir, client, shutdown, join) =
-        start_sdk_frontdoor_runtime("sdk-frontdoor-tombstone-only")?;
+    let fixture = SdkFrontdoorRuntime::start()?;
+    let client = &fixture.client;
 
     let first_generation = lexical_batch()?;
     let _first_active = publish_and_activate_sdk_search_corpus(&client, &first_generation)?;
@@ -4026,7 +3764,6 @@ fn sdk_tombstone_only_generation_replaces_active_composite_and_removes_both_quer
         || activation.active.lexical.manifest_digest != tombstone_only.manifest_digest()
         || activation.active.semantic.manifest_digest != tombstone_only.manifest_digest()
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!(
             "unexpected tombstone-only sealed composite promotion: receipt={receipt:?} activation={activation:?}"
         )
@@ -4052,7 +3789,6 @@ fn sdk_tombstone_only_generation_replaces_active_composite_and_removes_both_quer
             .iter()
             .any(|candidate| candidate.candidate_id == "alpha")
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!(
             "tombstone-only lexical generation retained removed alpha scope: {lexical:?}"
         )
@@ -4078,20 +3814,19 @@ fn sdk_tombstone_only_generation_replaces_active_composite_and_removes_both_quer
             .iter()
             .any(|candidate| candidate.candidate_id == "alpha")
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!(
             "tombstone-only semantic generation retained removed alpha scope: {semantic:?}"
         )
         .into());
     }
 
-    stop_runtime(&shutdown, join)
+    fixture.stop()
 }
 
 #[test]
 fn sdk_builder_variant_frontdoors_route_native_inline_vector_and_pinned_truth() -> TestResult {
-    let (_dir, client, shutdown, join) =
-        start_sdk_frontdoor_runtime("sdk-frontdoor-builder-variants")?;
+    let fixture = SdkFrontdoorRuntime::start()?;
+    let client = &fixture.client;
 
     let corpus_batch = lexical_batch()?;
     let _corpus_active = publish_and_activate_sdk_search_corpus(&client, &corpus_batch)?;
@@ -4118,7 +3853,6 @@ fn sdk_builder_variant_frontdoors_route_native_inline_vector_and_pinned_truth() 
         || lexical_native_candidate.candidate_id != "chunk-dirty"
         || lexical_native_candidate.repo_relative_path.as_str() != "src/lib.rs"
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected lexical native response: {lexical_native:?}").into());
     }
 
@@ -4143,7 +3877,6 @@ fn sdk_builder_variant_frontdoors_route_native_inline_vector_and_pinned_truth() 
         || runtime_native_candidate.candidate_id != "chunk-dirty"
         || runtime_native_candidate.repo_relative_path.as_str() != "src/lib.rs"
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected runtime native response: {runtime_native:?}").into());
     }
 
@@ -4170,7 +3903,6 @@ fn sdk_builder_variant_frontdoors_route_native_inline_vector_and_pinned_truth() 
         || semantic_inline_top.candidate_id != "alpha"
         || semantic_inline.explanation.summary.is_empty()
     {
-        stop_runtime(&shutdown, join)?;
         return Err(
             format!("unexpected semantic inline-vector response: {semantic_inline:?}").into(),
         );
@@ -4198,13 +3930,12 @@ fn sdk_builder_variant_frontdoors_route_native_inline_vector_and_pinned_truth() 
         || hybrid_inline_top.entity_id != "alpha"
         || hybrid_inline.explanation.summary.is_empty()
     {
-        stop_runtime(&shutdown, join)?;
         return Err(
             format!("unexpected hybrid inline-vector seed response: {hybrid_inline:?}").into(),
         );
     }
 
-    stop_runtime(&shutdown, join)
+    fixture.stop()
 }
 
 #[test]
@@ -4213,8 +3944,8 @@ fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_comp
     let complex_timeout = Duration::from_secs(30);
     let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path().to_path_buf();
-    let (client, shutdown, join) =
-        start_sdk_frontdoor_runtime_at_state_root(&state_root, "sdk-frontdoor-multigen-v1")?;
+    let fixture = SdkFrontdoorRuntime::start_at(&state_root)?;
+    let client = &fixture.client;
 
     let corpus_batch_v1 = lexical_batch()?;
     let _corpus_active_v1 = publish_and_activate_sdk_search_corpus(&client, &corpus_batch_v1)?;
@@ -4240,7 +3971,6 @@ fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_comp
     if lexical_active_v1.generation != pin()
         || lexical_active_v1_candidate.candidate_id != "chunk-dirty"
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected active v1 lexical response: {lexical_active_v1:?}").into());
     }
 
@@ -4268,7 +3998,6 @@ fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_comp
     if lexical_pinned_v2.generation != pin_two()
         || lexical_pinned_v2_candidate.candidate_id != "chunk-dirty-v2"
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected pinned v2 lexical response: {lexical_pinned_v2:?}").into());
     }
 
@@ -4291,7 +4020,6 @@ fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_comp
         .ok_or_else(|| "missing pinned v2 semantic candidate".to_string())?;
     if semantic_pinned_v2.generation != pin_two() || semantic_pinned_v2_top.candidate_id != "gamma"
     {
-        stop_runtime(&shutdown, join)?;
         return Err(
             format!("unexpected pinned v2 semantic response: {semantic_pinned_v2:?}").into(),
         );
@@ -4317,15 +4045,14 @@ fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_comp
     if structural_pinned_v2.generation != pin_two()
         || structural_pinned_v2_candidate.candidate_id != "chunk-tree-v2"
     {
-        stop_runtime(&shutdown, join)?;
         return Err(
             format!("unexpected pinned v2 structural response: {structural_pinned_v2:?}").into(),
         );
     }
 
-    stop_runtime(&shutdown, join)?;
-    let (client, shutdown, join) =
-        start_sdk_frontdoor_runtime_at_state_root(&state_root, "sdk-frontdoor-multigen-v2")?;
+    fixture.stop()?;
+    let fixture = SdkFrontdoorRuntime::start_at(&state_root)?;
+    let client = &fixture.client;
 
     let lexical_active_after_restart = wait_for_sdk_observation(
         complex_timeout,
@@ -4347,7 +4074,6 @@ fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_comp
     if lexical_active_after_restart.generation != pin_two()
         || lexical_active_after_restart_candidate.candidate_id != "chunk-dirty-v2"
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!(
             "unexpected restarted active v2 lexical response: {lexical_active_after_restart:?}"
         )
@@ -4374,7 +4100,6 @@ fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_comp
     if lexical_pinned_v2_after_restart.generation != pin_two()
         || lexical_pinned_v2_after_restart_candidate.candidate_id != "chunk-dirty-v2"
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!(
             "unexpected restarted pinned v2 lexical response: \
              {lexical_pinned_v2_after_restart:?}"
@@ -4403,7 +4128,6 @@ fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_comp
     if semantic_pinned_v2_after_restart.generation != pin_two()
         || semantic_pinned_v2_after_restart_top.candidate_id != "gamma"
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!(
             "unexpected restarted pinned v2 semantic response: \
              {semantic_pinned_v2_after_restart:?}"
@@ -4431,7 +4155,6 @@ fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_comp
     if structural_pinned_v2_after_restart.generation != pin_two()
         || structural_pinned_v2_after_restart_candidate.candidate_id != "chunk-tree-v2"
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!(
             "unexpected restarted pinned v2 structural response: \
              {structural_pinned_v2_after_restart:?}"
@@ -4447,7 +4170,6 @@ fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_comp
     if lexical_snapshot_v2.manifest_generation != generation_two()
         || lexical_snapshot_v2.manifest_digest != "manifest:lexical-v2"
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!(
             "unexpected post-restart lexical generation snapshot: {lexical_snapshot_v2:?}"
         )
@@ -4462,7 +4184,6 @@ fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_comp
     if semantic_snapshot_v2.manifest_generation != lexical_snapshot_v2.manifest_generation
         || semantic_snapshot_v2.manifest_digest != lexical_snapshot_v2.manifest_digest
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!(
             "restart split the active composite corpus: lexical={lexical_snapshot_v2:?} semantic={semantic_snapshot_v2:?}"
         )
@@ -4489,7 +4210,6 @@ fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_comp
     if lexical_active_v2.generation != pin_two()
         || lexical_active_v2_candidate.candidate_id != "chunk-dirty-v2"
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected active v2 lexical response: {lexical_active_v2:?}").into());
     }
 
@@ -4513,14 +4233,13 @@ fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_comp
     if lexical_pinned_v1_after_flip.generation != pin()
         || lexical_pinned_v1_after_flip_candidate.candidate_id != "chunk-dirty"
     {
-        stop_runtime(&shutdown, join)?;
         return Err(format!(
             "unexpected pinned v1 lexical response after flip: {lexical_pinned_v1_after_flip:?}"
         )
         .into());
     }
 
-    stop_runtime(&shutdown, join)
+    fixture.stop()
 }
 
 #[test]
@@ -4583,7 +4302,10 @@ fn sdk_binary_process_dsl_roundtrip() -> TestResult {
                     .top_k(5)
                     .execute()
             },
-            |response| response.generation == pin() && response.results.len() == 1,
+            // The predicate query correlates two source rows (TOPT-06:
+            // the old timeout-as-Ok wait masked this `len == 1` never
+            // becoming ready; the assertion below always wanted both).
+            |response| response.generation == pin() && response.results.len() == 2,
         )?;
         let predicate_paths = predicate
             .results

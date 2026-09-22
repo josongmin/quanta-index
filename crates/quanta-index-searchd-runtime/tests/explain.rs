@@ -53,6 +53,10 @@ const READINESS_TIMEOUT: Duration = Duration::from_secs(5);
 /// return `Err(..)` directly on failure paths with no manual
 /// shutdown/join bookkeeping; teardown is owned by the harness.
 struct ScenarioFixture {
+    #[expect(
+        dead_code,
+        reason = "held for drop-order ownership only: the daemon's lifetime is the fixture's, and dropping it performs the acknowledged lease-release"
+    )]
     runtime: E2eRuntime,
     query_socket: std::path::PathBuf,
     ingest_socket: std::path::PathBuf,

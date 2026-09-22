@@ -10,15 +10,16 @@
 use std::sync::{Arc, Mutex};
 
 use quanta_index_contract::{
-    ContinuationTokenV2, ERR_RESULT_TOO_LARGE, LexicalCandidate, LexicalCursor, ManifestGeneration,
-    QueryConstraintSetV1, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
-    TextQueryRequest, TextQueryResponse, TextQuerySyntax,
+    CandidateCountV1, ContinuationTokenV2, ERR_RESULT_TOO_LARGE, FileOwnerProjectionRow,
+    LexicalCandidate, LexicalCursor, ManifestGeneration, QueryConstraintSetV1, QueryResultWindowV2,
+    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, TextQueryRequest, TextQueryResponse,
+    TextQuerySyntax,
 };
 use quanta_index_core::RequestBudgetV1;
 
 use crate::observability::NoopQueryObsSink;
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
-use crate::query_dispatcher::response_budget::ResponsePayloadBudget;
+use crate::query_dispatcher::response_budget::{ResponsePayloadBudget, fit_ranked_page};
 use crate::query_dispatcher::tests::support::common::{
     TestResult, candidate, dispatcher_with_obs, ipc_error_from, ready_pin,
 };
@@ -262,6 +263,50 @@ fn a_large_later_row_cannot_refuse_a_fitting_prefix() -> TestResult {
     let encoded = quanta_index_ipc::cbor_payload_len(&first)?;
     if encoded > budget.max_payload_bytes() {
         return Err(format!("the prefix encodes to {encoded} bytes").into());
+    }
+    Ok(())
+}
+
+#[test]
+fn a_large_later_owner_projection_cannot_refuse_a_fitting_paired_prefix() -> TestResult {
+    let results = rows(3, 8);
+    let file_owner_rows = results
+        .iter()
+        .enumerate()
+        .map(|(index, candidate)| FileOwnerProjectionRow {
+            candidate_id: candidate.candidate_id.clone(),
+            repo_id: candidate.repo_id.clone(),
+            revision_id: candidate.revision_id.clone(),
+            manifest_generation: candidate.manifest_generation,
+            repo_relative_path: candidate.repo_relative_path.clone(),
+            owners: if index == 2 {
+                vec!["owner".repeat(1_600)]
+            } else {
+                Vec::new()
+            },
+        })
+        .collect();
+    let page = TextQueryResponse {
+        generation: ready_pin(),
+        results,
+        window: QueryResultWindowV2::pageable(3, CandidateCountV1::Exact(3), false, vec![])?,
+        file_owner_rows: Some(file_owner_rows),
+        next_cursor: None,
+    };
+    let budget = ResponsePayloadBudget::new(3_500)?;
+    let cut = fit_ranked_page(page, budget, |_boundary| {
+        Ok(ContinuationTokenV2::new("opaque").expect("nonempty fixture token"))
+    })?;
+    if cut.results.len() != 2
+        || cut.file_owner_rows.as_ref().map(Vec::len) != Some(2)
+        || cut.window.has_more() != Some(true)
+        || cut.next_cursor.is_none()
+    {
+        return Err(format!("paired prefix was not continued: {cut:?}").into());
+    }
+    let encoded = quanta_index_ipc::cbor_payload_len(&cut)?;
+    if encoded > budget.max_payload_bytes() {
+        return Err(format!("paired prefix encodes to {encoded} bytes").into());
     }
     Ok(())
 }
