@@ -24,6 +24,7 @@ pub use quanta_index_contract_base::query::{
     QueryConstraintIntersectionV1, QueryConstraintSetV1, TextQueryRequest, TextQuerySyntax,
     validate_lexical_page_v1,
 };
+pub use quanta_index_contract_base::results::{ContinuationTokenError, ContinuationTokenV2};
 pub use requests::*;
 pub use runtime_metadata_cursor::*;
 pub use structural_cursor::*;

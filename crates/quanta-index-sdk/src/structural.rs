@@ -1,9 +1,9 @@
 use quanta_index_contract::lex::ParseTreeRecord;
 use quanta_index_contract::{
-    ChunkId, GenerationPin, GenerationSelector, ManifestGeneration, RepoId, RevisionId,
-    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse, SearchPlaneQueryIpcRequest,
-    SearchPlaneQueryIpcResponse, SearchPlaneStructuralQueryResponse, SearchScopeKey,
-    StructuralCursorV1, StructuralIngestBatch, StructuralQueryRequest, StructuralReplaceScope,
+    ChunkId, ContinuationTokenV2, GenerationPin, GenerationSelector, ManifestGeneration, RepoId,
+    RevisionId, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse,
+    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, SearchPlaneStructuralQueryResponse,
+    SearchScopeKey, StructuralIngestBatch, StructuralQueryRequest, StructuralReplaceScope,
     StructuralTombstoneScope, StructuralTreeRecord, TextQuerySyntax,
 };
 
@@ -278,7 +278,7 @@ pub struct StructuralQueryBuilder<
 > {
     client: &'a QuantaIndex,
     state: TextQueryBuilderState,
-    cursor: Option<StructuralCursorV1>,
+    cursor: Option<ContinuationTokenV2>,
 }
 
 impl<'a> StructuralQueryBuilder<'a> {
@@ -315,7 +315,7 @@ impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
     /// walk whose epoch the plane no longer retains is refused
     /// `AUX_EPOCH_EXPIRED` and must start over.
     #[must_use]
-    pub fn after(mut self, cursor: StructuralCursorV1) -> Self {
+    pub fn after(mut self, cursor: ContinuationTokenV2) -> Self {
         self.cursor = Some(cursor);
         self
     }

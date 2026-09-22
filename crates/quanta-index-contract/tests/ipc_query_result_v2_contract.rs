@@ -7,10 +7,10 @@ use quanta_index_contract::results::{
     EngineTouched, PlannerStage, PlannerTraceEntry, SearchExplanation,
 };
 use quanta_index_contract::{
-    AuxEpochV1, DiffCandidate, DiffHunkSide, ExplainCandidateV1, GenerationPin, HighlightSpan,
-    HybridCandidateV1, HybridLaneContributionV1, HybridLaneV1, HybridQueryRequest,
-    HybridQueryResponse, HybridSeedQueryRequest, LexicalCandidate, LqQuery, LqSpan,
-    ManifestGeneration, QueryConstraintSetV1, QueryResultWindowV1, QueryResultWindowV2, RepoId,
+    AuxEpochV1, ContinuationTokenV2, DiffCandidate, DiffHunkSide, ExplainCandidateV1,
+    GenerationPin, HighlightSpan, HybridCandidateV1, HybridLaneContributionV1, HybridLaneV1,
+    HybridQueryRequest, HybridQueryResponse, HybridSeedQueryRequest, LexicalCandidate, LqQuery,
+    LqSpan, ManifestGeneration, QueryConstraintSetV1, QueryResultWindowV2, RepoId,
     RepoRelativePath, RevisionId, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope,
     SearchPlaneQueryIpcResponse, SemanticCorpusKindV1, SemanticQueryRequest, SemanticQueryResponse,
     SemanticSeedCorpusBudgetV1, StructuralQueryRequest, SymbolCandidate, TextQueryRequest,
@@ -30,6 +30,10 @@ where
     T: for<'de> serde::Deserialize<'de>,
 {
     Ok(ciborium::de::from_reader(bytes)?)
+}
+
+fn token(label: &str) -> Result<ContinuationTokenV2, Box<dyn std::error::Error>> {
+    Ok(ContinuationTokenV2::new(format!("signed-{label}"))?)
 }
 
 fn roundtrip_eq<T>(value: &T) -> TestRes
@@ -766,8 +770,7 @@ fn search_plane_ipc_response_v2_semantic_roundtrips_explanation() -> TestRes {
     let response = SearchPlaneQueryIpcResponse::Semantic(SemanticQueryResponse {
         generation: generation_pin(),
         results: vec![lexical_candidate()],
-        window: QueryResultWindowV1::exact(1),
-        window_v2: QueryResultWindowV2::exact_probe(1),
+        window: QueryResultWindowV2::exact_probe(1),
         explanation: explanation_v2(),
     });
 
@@ -793,8 +796,7 @@ fn search_plane_ipc_response_v2_hybrid_roundtrips_explanation() -> TestRes {
     let response = SearchPlaneQueryIpcResponse::Hybrid(HybridQueryResponse {
         generation: generation_pin(),
         results: vec![hybrid_candidate()],
-        window: QueryResultWindowV1::exact(1),
-        window_v2: QueryResultWindowV2::exact_probe(1),
+        window: QueryResultWindowV2::exact_probe(1),
         explanation: explanation_v2(),
     });
 
@@ -821,7 +823,7 @@ fn search_plane_ipc_response_v2_symbol_roundtrips_kind_truth() -> TestRes {
         SearchPlaneQueryIpcResponse::Symbol(quanta_index_contract::SymbolQueryResponse {
             generation: generation_pin(),
             results: vec![symbol_candidate()?],
-            window: QueryResultWindowV1::exact(1),
+            window: QueryResultWindowV2::exact_probe(1),
             next_cursor: None,
         });
 
@@ -854,7 +856,7 @@ fn search_plane_ipc_response_v2_sourcegraph_roundtrips_text_candidates() -> Test
     let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
         generation: generation_pin(),
         results: vec![lexical_candidate()],
-        window: QueryResultWindowV1::exact(1),
+        window: QueryResultWindowV2::exact_probe(1),
         file_owner_rows: None,
         next_cursor: None,
     });
@@ -940,20 +942,15 @@ fn search_plane_ipc_response_v2_history_variant_roundtrips() -> TestRes {
             order: quanta_index_contract::HistoryOrderV1::Recency,
             commits: vec![history_commit_candidate()],
             diffs: Vec::new(),
-            window: QueryResultWindowV1::new(
+            window: QueryResultWindowV2::pageable(
                 1,
                 quanta_index_contract::CandidateCountV1::Exact(3),
                 true,
+                Vec::new(),
             )?,
             read_epoch: quanta_index_contract::AuxEpochV1::new(9),
             examined: 7,
-            next_cursor: Some(quanta_index_contract::HistoryCursor {
-                order: quanta_index_contract::HistoryCursorOrderV1::Recency,
-                committer_time_ms: 1_717_171_717_000,
-                sha: CommitSha::from_bytes([1u8; 20]),
-                file_path: None,
-                aux_epoch: quanta_index_contract::AuxEpochV1::new(9),
-            }),
+            next_cursor: Some(token("history-commit-page")?),
         },
     );
     roundtrip_eq(&commit_page)?;
@@ -963,7 +960,7 @@ fn search_plane_ipc_response_v2_history_variant_roundtrips() -> TestRes {
             order: quanta_index_contract::HistoryOrderV1::Recency,
             commits: Vec::new(),
             diffs: vec![history_diff_candidate()],
-            window: QueryResultWindowV1::exact(1),
+            window: QueryResultWindowV2::exact_probe(1),
             read_epoch: quanta_index_contract::AuxEpochV1::GENESIS,
             examined: 1,
             next_cursor: None,
@@ -979,13 +976,7 @@ fn search_plane_ipc_response_v2_history_variant_roundtrips() -> TestRes {
 fn search_plane_ipc_response_v2_history_page_rejects_inconsistent_shapes() -> TestRes {
     let generation = generation_pin();
     let read_epoch = quanta_index_contract::AuxEpochV1::new(4);
-    let cursor = quanta_index_contract::HistoryCursor {
-        order: quanta_index_contract::HistoryCursorOrderV1::Recency,
-        committer_time_ms: 5,
-        sha: CommitSha::from_bytes([1u8; 20]),
-        file_path: None,
-        aux_epoch: read_epoch,
-    };
+    let cursor = token("history-page")?;
     let cases: Vec<(&str, quanta_index_contract::SearchPlaneHistoryQueryResponse)> = vec![
         (
             "has_more without a cursor",
@@ -994,10 +985,11 @@ fn search_plane_ipc_response_v2_history_page_rejects_inconsistent_shapes() -> Te
                 order: quanta_index_contract::HistoryOrderV1::Recency,
                 commits: vec![history_commit_candidate()],
                 diffs: Vec::new(),
-                window: QueryResultWindowV1::new(
+                window: QueryResultWindowV2::pageable(
                     1,
                     quanta_index_contract::CandidateCountV1::Exact(3),
                     true,
+                    Vec::new(),
                 )?,
                 read_epoch,
                 examined: 3,
@@ -1011,7 +1003,7 @@ fn search_plane_ipc_response_v2_history_page_rejects_inconsistent_shapes() -> Te
                 order: quanta_index_contract::HistoryOrderV1::Recency,
                 commits: vec![history_commit_candidate()],
                 diffs: Vec::new(),
-                window: QueryResultWindowV1::exact(1),
+                window: QueryResultWindowV2::exact_probe(1),
                 read_epoch,
                 examined: 1,
                 next_cursor: Some(cursor.clone()),
@@ -1024,7 +1016,7 @@ fn search_plane_ipc_response_v2_history_page_rejects_inconsistent_shapes() -> Te
                 order: quanta_index_contract::HistoryOrderV1::Recency,
                 commits: vec![history_commit_candidate()],
                 diffs: vec![history_diff_candidate()],
-                window: QueryResultWindowV1::exact(2),
+                window: QueryResultWindowV2::exact_probe(2),
                 read_epoch,
                 examined: 2,
                 next_cursor: None,
@@ -1037,27 +1029,10 @@ fn search_plane_ipc_response_v2_history_page_rejects_inconsistent_shapes() -> Te
                 order: quanta_index_contract::HistoryOrderV1::Recency,
                 commits: vec![history_commit_candidate()],
                 diffs: Vec::new(),
-                window: QueryResultWindowV1::exact(2),
+                window: QueryResultWindowV2::exact_probe(2),
                 read_epoch,
                 examined: 2,
                 next_cursor: None,
-            },
-        ),
-        (
-            "a cursor naming another epoch than the page read",
-            quanta_index_contract::SearchPlaneHistoryQueryResponse {
-                generation,
-                order: quanta_index_contract::HistoryOrderV1::Recency,
-                commits: vec![history_commit_candidate()],
-                diffs: Vec::new(),
-                window: QueryResultWindowV1::new(
-                    1,
-                    quanta_index_contract::CandidateCountV1::Exact(3),
-                    true,
-                )?,
-                read_epoch: quanta_index_contract::AuxEpochV1::new(5),
-                examined: 3,
-                next_cursor: Some(cursor),
             },
         ),
     ];
@@ -1100,36 +1075,25 @@ fn search_plane_ipc_v2_history_relevance_pages_and_requests_round_trip() -> Test
         order: HistoryOrderV1::Relevance,
         commits: vec![first, second],
         diffs: Vec::new(),
-        window: QueryResultWindowV1::new(
+        window: QueryResultWindowV2::pageable(
             2,
             quanta_index_contract::CandidateCountV1::Exact(9),
             true,
+            Vec::new(),
         )?,
         read_epoch: quanta_index_contract::AuxEpochV1::new(3),
         examined: 20,
-        next_cursor: Some(HistoryCursor {
+        next_cursor: Some(token("history-relevance-page")?),
+    });
+    roundtrip_eq(&page)?;
+    let typed_boundary = HistoryCursor {
             order: HistoryCursorOrderV1::Relevance { score: last },
             committer_time_ms: 1_717_171_717_000,
             sha: CommitSha::from_bytes([7u8; 20]),
             file_path: None,
             aux_epoch: quanta_index_contract::AuxEpochV1::new(3),
-        }),
-    });
-    roundtrip_eq(&page)?;
-    let decoded: SearchPlaneQueryIpcResponse = decode(&encode(&page)?)?;
-    let SearchPlaneQueryIpcResponse::History(decoded) = decoded else {
-        return Err("a history page decodes as one".into());
     };
-    let Some(HistoryCursor {
-        order: HistoryCursorOrderV1::Relevance { score },
-        ..
-    }) = decoded.next_cursor
-    else {
-        return Err("the cursor carries its score".into());
-    };
-    if score.get().to_bits() != last.get().to_bits() {
-        return Err("the cursor's score round-trips bit for bit".into());
-    }
+    roundtrip_eq(&typed_boundary)?;
     let mut diff = history_diff_candidate();
     diff.score = Some(top);
     let diff_page = SearchPlaneQueryIpcResponse::History(SearchPlaneHistoryQueryResponse {
@@ -1137,7 +1101,7 @@ fn search_plane_ipc_v2_history_relevance_pages_and_requests_round_trip() -> Test
         order: HistoryOrderV1::Relevance,
         commits: Vec::new(),
         diffs: vec![diff],
-        window: QueryResultWindowV1::exact(1),
+        window: QueryResultWindowV2::exact_probe(1),
         read_epoch: quanta_index_contract::AuxEpochV1::new(3),
         examined: 1,
         next_cursor: None,
@@ -1188,7 +1152,7 @@ fn search_plane_ipc_v2_history_refuses_order_and_score_disagreements() -> TestRe
     scored.score = Some(score);
     let page = |order: HistoryOrderV1,
                 commit: quanta_index_contract::CommitCandidate,
-                cursor: Option<HistoryCursor>|
+                cursor: Option<ContinuationTokenV2>|
      -> Result<SearchPlaneHistoryQueryResponse, Box<dyn std::error::Error>> {
         let has_more = cursor.is_some();
         Ok(SearchPlaneHistoryQueryResponse {
@@ -1196,10 +1160,11 @@ fn search_plane_ipc_v2_history_refuses_order_and_score_disagreements() -> TestRe
             order,
             commits: vec![commit],
             diffs: Vec::new(),
-            window: QueryResultWindowV1::new(
+            window: QueryResultWindowV2::pageable(
                 1,
                 quanta_index_contract::CandidateCountV1::Exact(if has_more { 3 } else { 1 }),
                 has_more,
+                Vec::new(),
             )?,
             read_epoch: quanta_index_contract::AuxEpochV1::new(2),
             examined: 3,
@@ -1225,18 +1190,6 @@ fn search_plane_ipc_v2_history_refuses_order_and_score_disagreements() -> TestRe
         (
             "a recency page with a scored row",
             page(HistoryOrderV1::Recency, scored.clone(), None)?,
-        ),
-        (
-            "a recency page continued by a relevance cursor",
-            page(
-                HistoryOrderV1::Recency,
-                history_commit_candidate(),
-                Some(relevance_cursor.clone()),
-            )?,
-        ),
-        (
-            "a relevance page continued by a recency cursor",
-            page(HistoryOrderV1::Relevance, scored, Some(recency_cursor))?,
         ),
     ];
     for (label, page) in cases {
@@ -1275,7 +1228,7 @@ fn search_plane_ipc_response_v2_lexical_rejects_duplicate_results() -> TestRes {
     let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
         generation: generation_pin(),
         results: vec![lexical_candidate()],
-        window: QueryResultWindowV1::exact(1),
+        window: QueryResultWindowV2::exact_probe(1),
         file_owner_rows: None,
         next_cursor: None,
     });
@@ -1321,7 +1274,7 @@ fn search_plane_ipc_response_v2_roundtrips_file_owner_projection_rows() -> TestR
     let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
         generation: generation_pin(),
         results: vec![lexical_candidate()],
-        window: QueryResultWindowV1::exact(1),
+        window: QueryResultWindowV2::exact_probe(1),
         file_owner_rows: Some(vec![quanta_index_contract::FileOwnerProjectionRow {
             candidate_id: "lex-1".to_string(),
             repo_id: RepoId::new("repo-a").expect("static fixture ID satisfies canonical policy"),
@@ -1362,7 +1315,7 @@ fn search_plane_ipc_response_v2_symbol_rejects_duplicate_symbol_kind() -> TestRe
         SearchPlaneQueryIpcResponse::Symbol(quanta_index_contract::SymbolQueryResponse {
             generation: generation_pin(),
             results: vec![symbol_candidate()?],
-            window: QueryResultWindowV1::exact(1),
+            window: QueryResultWindowV2::exact_probe(1),
             next_cursor: None,
         });
     let bytes = mutate_ipc_response_wire(&response, |wire| {
@@ -1409,8 +1362,7 @@ fn search_plane_ipc_response_v2_semantic_rejects_duplicate_generation() -> TestR
     let response = SearchPlaneQueryIpcResponse::Semantic(SemanticQueryResponse {
         generation: generation_pin(),
         results: vec![lexical_candidate()],
-        window: QueryResultWindowV1::exact(1),
-        window_v2: QueryResultWindowV2::exact_probe(1),
+        window: QueryResultWindowV2::exact_probe(1),
         explanation: explanation_v2(),
     });
     let bytes = mutate_ipc_response_wire(&response, |wire| {
@@ -1429,8 +1381,7 @@ fn search_plane_ipc_response_v2_hybrid_rejects_duplicate_explanation() -> TestRe
     let response = SearchPlaneQueryIpcResponse::Hybrid(HybridQueryResponse {
         generation: generation_pin(),
         results: vec![hybrid_candidate()],
-        window: QueryResultWindowV1::exact(1),
-        window_v2: QueryResultWindowV2::exact_probe(1),
+        window: QueryResultWindowV2::exact_probe(1),
         explanation: explanation_v2(),
     });
     let bytes = mutate_ipc_response_wire(&response, |wire| {
@@ -1448,7 +1399,7 @@ fn text_response_with_lexical_candidate() -> SearchPlaneQueryIpcResponse {
     SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
         generation: generation_pin(),
         results: vec![lexical_candidate()],
-        window: QueryResultWindowV1::exact(1),
+        window: QueryResultWindowV2::exact_probe(1),
         file_owner_rows: None,
         next_cursor: None,
     })
@@ -1744,7 +1695,7 @@ fn search_plane_ipc_response_v2_aux_read_epoch_is_required_and_round_trips() -> 
         SearchPlaneQueryIpcResponse::RuntimeMetadata(SearchPlaneRuntimeMetadataQueryResponse {
             generation: generation_pin(),
             results: vec![lexical_candidate()],
-            window: QueryResultWindowV1::exact(1),
+            window: QueryResultWindowV2::exact_probe(1),
             read_epoch: AuxEpochV1::new(3),
             universe_epoch: AuxEpochV1::new(2),
             examined: 1,
@@ -1755,7 +1706,7 @@ fn search_plane_ipc_response_v2_aux_read_epoch_is_required_and_round_trips() -> 
         SearchPlaneQueryIpcResponse::Structural(SearchPlaneStructuralQueryResponse {
             generation: generation_pin(),
             results: Vec::new(),
-            window: QueryResultWindowV1::exact(0),
+            window: QueryResultWindowV2::exact_probe(0),
             read_epoch: AuxEpochV1::GENESIS,
             examined: 0,
             next_cursor: None,
@@ -1766,7 +1717,7 @@ fn search_plane_ipc_response_v2_aux_read_epoch_is_required_and_round_trips() -> 
         order: quanta_index_contract::HistoryOrderV1::Recency,
         commits: Vec::new(),
         diffs: vec![history_diff_candidate()],
-        window: QueryResultWindowV1::exact(1),
+        window: QueryResultWindowV2::exact_probe(1),
         read_epoch: AuxEpochV1::new(17),
         examined: 1,
         next_cursor: None,
@@ -1844,15 +1795,16 @@ fn runtime_page_with_continuation() -> Result<
         quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
             generation: generation_pin(),
             results: vec![lexical_candidate_named("a"), lexical_candidate_named("b")],
-            window: QueryResultWindowV1::new(
+            window: QueryResultWindowV2::pageable(
                 2,
                 quanta_index_contract::CandidateCountV1::AtLeast(3),
                 true,
+                Vec::new(),
             )?,
             read_epoch: AuxEpochV1::new(4),
             universe_epoch: AuxEpochV1::new(11),
             examined: 3,
-            next_cursor: Some(runtime_cursor("b")),
+            next_cursor: Some(token("b")?),
         },
     )
 }
@@ -1866,14 +1818,15 @@ fn structural_page_with_continuation()
             structural_candidate_named("a"),
             structural_candidate_named("b"),
         ],
-        window: QueryResultWindowV1::new(
+        window: QueryResultWindowV2::pageable(
             2,
             quanta_index_contract::CandidateCountV1::Exact(5),
             true,
+            Vec::new(),
         )?,
         read_epoch: AuxEpochV1::new(6),
         examined: 5,
-        next_cursor: Some(structural_cursor("b")),
+        next_cursor: Some(token("b")?),
     })
 }
 
@@ -1963,7 +1916,7 @@ fn keyset_cursors_round_trip_and_decode_fail_closed() -> TestRes {
     // A duplicated field is refused on the CBOR wire too.
     let bytes = mutate_ipc_request_wire(
         &SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
-            cursor: Some(structural_cursor("a")),
+            cursor: Some(token("a")?),
             ..sourcegraph_structural_request()
         }),
         |wire| {
@@ -2000,11 +1953,11 @@ fn keyset_page_requests_carry_the_cursor_only_when_present() -> TestRes {
     }
     let continued = quanta_index_contract::RuntimeMetadataQueryRequest {
         text_query: sourcegraph_text_request(),
-        cursor: Some(runtime_cursor("chunk://alpha")),
+        cursor: Some(token("chunk://alpha")?),
     };
     roundtrip_eq(&SearchPlaneQueryIpcRequest::RuntimeMetadata(continued))?;
     let continued = StructuralQueryRequest {
-        cursor: Some(structural_cursor("chunk://alpha")),
+        cursor: Some(token("chunk://alpha")?),
         ..sourcegraph_structural_request()
     };
     roundtrip_eq(&SearchPlaneQueryIpcRequest::Structural(continued))?;
@@ -2053,7 +2006,7 @@ fn keyset_pages_round_trip_with_and_without_a_continuation() -> TestRes {
     }
     let final_page = quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
         results: vec![lexical_candidate_named("z")],
-        window: QueryResultWindowV1::exact(1),
+        window: QueryResultWindowV2::exact_probe(1),
         examined: 9,
         next_cursor: None,
         ..runtime_page
@@ -2075,7 +2028,7 @@ fn keyset_pages_round_trip_with_and_without_a_continuation() -> TestRes {
     ))?;
     let final_page = quanta_index_contract::SearchPlaneStructuralQueryResponse {
         results: Vec::new(),
-        window: QueryResultWindowV1::exact(0),
+        window: QueryResultWindowV2::exact_probe(0),
         examined: 0,
         next_cursor: None,
         ..structural_page
@@ -2106,17 +2059,18 @@ fn keyset_pages_reject_inconsistent_shapes() -> TestRes {
         (
             "a cursor without has_more",
             quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
-                window: QueryResultWindowV1::exact(2),
+                window: QueryResultWindowV2::exact_probe(2),
                 ..base.clone()
             },
         ),
         (
             "a window that does not count the rows",
             quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
-                window: QueryResultWindowV1::new(
+                window: QueryResultWindowV2::pageable(
                     1,
                     quanta_index_contract::CandidateCountV1::AtLeast(3),
                     true,
+                    Vec::new(),
                 )?,
                 ..base.clone()
             },
@@ -2125,7 +2079,7 @@ fn keyset_pages_reject_inconsistent_shapes() -> TestRes {
             "rows out of candidate-id order",
             quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
                 results: vec![lexical_candidate_named("b"), lexical_candidate_named("a")],
-                next_cursor: Some(runtime_cursor("a")),
+                next_cursor: Some(token("a")?),
                 ..base.clone()
             },
         ),
@@ -2134,27 +2088,6 @@ fn keyset_pages_reject_inconsistent_shapes() -> TestRes {
             quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
                 results: vec![lexical_candidate_named("b"), lexical_candidate_named("b")],
                 ..base.clone()
-            },
-        ),
-        (
-            "a cursor that is not the last row",
-            quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
-                next_cursor: Some(runtime_cursor("a")),
-                ..base.clone()
-            },
-        ),
-        (
-            "a cursor naming another runtime epoch than the page read",
-            quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
-                read_epoch: AuxEpochV1::new(5),
-                ..base.clone()
-            },
-        ),
-        (
-            "a cursor naming another universe epoch than the page read",
-            quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
-                universe_epoch: AuxEpochV1::new(12),
-                ..base
             },
         ),
     ];
@@ -2182,17 +2115,18 @@ fn keyset_pages_reject_inconsistent_shapes() -> TestRes {
         (
             "a cursor without has_more",
             quanta_index_contract::SearchPlaneStructuralQueryResponse {
-                window: QueryResultWindowV1::exact(2),
+                window: QueryResultWindowV2::exact_probe(2),
                 ..base.clone()
             },
         ),
         (
             "a window that does not count the rows",
             quanta_index_contract::SearchPlaneStructuralQueryResponse {
-                window: QueryResultWindowV1::new(
+                window: QueryResultWindowV2::pageable(
                     3,
                     quanta_index_contract::CandidateCountV1::Exact(5),
                     true,
+                    Vec::new(),
                 )?,
                 ..base.clone()
             },
@@ -2204,22 +2138,8 @@ fn keyset_pages_reject_inconsistent_shapes() -> TestRes {
                     structural_candidate_named("b"),
                     structural_candidate_named("a"),
                 ],
-                next_cursor: Some(structural_cursor("a")),
+                next_cursor: Some(token("a")?),
                 ..base.clone()
-            },
-        ),
-        (
-            "a cursor that is not the last row",
-            quanta_index_contract::SearchPlaneStructuralQueryResponse {
-                next_cursor: Some(structural_cursor("a")),
-                ..base.clone()
-            },
-        ),
-        (
-            "a cursor naming another epoch than the page read",
-            quanta_index_contract::SearchPlaneStructuralQueryResponse {
-                read_epoch: AuxEpochV1::new(7),
-                ..base
             },
         ),
     ];

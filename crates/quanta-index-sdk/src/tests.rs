@@ -7,10 +7,11 @@ use quanta_index_contract::lex::{
     SymbolSpan, compute_parse_tree_source_hash,
 };
 use quanta_index_contract::{
-    BatchPublishReceipt, CapabilityStatusV1, ChunkId, ChunkRecord, DiffHunkSide,
+    BatchPublishReceipt, CapabilityStatusV1, ChunkId, ChunkRecord, ContinuationTokenV2,
+    DiffHunkSide,
     ExactRepoRelativePathV1, GenerationSelector, GenerationSnapshot, HistoryQueryRequest,
     HybridSeedQueryResponse, ManifestGeneration, OwnerDocKind, PlannerStage, PlannerTraceEntry,
-    ExhaustionProofV1, QueryResultWindowV1, QueryResultWindowV2, RepoId, RepoMapChunkExactness,
+    QueryResultWindowV2, RepoId, RepoMapChunkExactness,
     RepoMapExactnessSummary, RepoMapGraphCoverageClass, RepoMapItemIndexAvailability,
     RepoMapMutationAck, RepoMapRedactionState, RepoRelativePath, RevisionId,
     RuntimeMetadataQueryRequest, SearchCorpusGenerationIdentityV1, SearchExplanation,
@@ -666,7 +667,7 @@ fn unused_query() -> Arc<StubQueryTransport> {
         TextQueryResponse {
             generation: sample_generation_pin(),
             results: vec![],
-            window: QueryResultWindowV1::exact(0),
+            window: QueryResultWindowV2::exact_probe(0),
             file_owner_rows: None,
             next_cursor: None,
         },
@@ -1066,8 +1067,7 @@ fn semantic_query_builder_emits_active_selector_and_query_text() {
         SearchPlaneQueryIpcResponse::Semantic(SemanticQueryResponse {
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
-            window: QueryResultWindowV1::exact(1),
-            window_v2: QueryResultWindowV2::exact_exhausted(1, ExhaustionProofV1::ProbeExhausted { fetched: 1 }, Vec::new()),
+            window: QueryResultWindowV2::exact_probe(1),
             explanation: sample_explanation(),
         }),
     ));
@@ -1108,8 +1108,7 @@ fn semantic_scope_sourcegraph_query_preserves_scope_wire_fields() {
         SearchPlaneQueryIpcResponse::Semantic(SemanticQueryResponse {
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
-            window: QueryResultWindowV1::exact(1),
-            window_v2: QueryResultWindowV2::exact_exhausted(1, ExhaustionProofV1::ProbeExhausted { fetched: 1 }, Vec::new()),
+            window: QueryResultWindowV2::exact_probe(1),
             explanation: sample_explanation(),
         }),
     ));
@@ -1159,7 +1158,7 @@ fn lexical_query_builder_carries_top_k_to_wire_contract() {
         TextQueryResponse {
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
-            window: QueryResultWindowV1::exact(1),
+            window: QueryResultWindowV2::exact_probe(1),
             file_owner_rows: None,
             next_cursor: None,
         },
@@ -1198,7 +1197,7 @@ fn lexical_constraint_setters_preserve_path_and_language_axes_v1() {
         TextQueryResponse {
             generation: sample_generation_pin(),
             results: Vec::new(),
-            window: QueryResultWindowV1::exact(0),
+            window: QueryResultWindowV2::exact_probe(0),
             file_owner_rows: None,
             next_cursor: None,
         },
@@ -1250,8 +1249,7 @@ fn semantic_hybrid_seed_and_symbol_setters_preserve_both_constraint_axes_v1() {
         SearchPlaneQueryIpcResponse::Semantic(SemanticQueryResponse {
             generation: sample_generation_pin(),
             results: Vec::new(),
-            window: QueryResultWindowV1::exact(0),
-            window_v2: QueryResultWindowV2::exact_exhausted(0, ExhaustionProofV1::ProbeExhausted { fetched: 0 }, Vec::new()),
+            window: QueryResultWindowV2::exact_probe(0),
             explanation: sample_explanation(),
         }),
     ));
@@ -1304,8 +1302,7 @@ fn semantic_hybrid_seed_and_symbol_setters_preserve_both_constraint_axes_v1() {
             generation: sample_generation_pin(),
             manifest_digest: "manifest-digest".to_string(),
             seed_candidates: Vec::new(),
-            window: QueryResultWindowV1::exact(0),
-            window_v2: QueryResultWindowV2::exact_exhausted(0, ExhaustionProofV1::ProbeExhausted { fetched: 0 }, Vec::new()),
+            window: QueryResultWindowV2::exact_probe(0),
             explanation: sample_explanation(),
         }),
     ));
@@ -1346,7 +1343,7 @@ fn semantic_hybrid_seed_and_symbol_setters_preserve_both_constraint_axes_v1() {
         SearchPlaneQueryIpcResponse::Symbol(quanta_index_contract::SymbolQueryResponse {
             generation: sample_generation_pin(),
             results: Vec::new(),
-            window: QueryResultWindowV1::exact(0),
+            window: QueryResultWindowV2::exact_probe(0),
             next_cursor: None,
         }),
     ));
@@ -1385,7 +1382,7 @@ fn lexical_query_request_forwards_contract_dto_unchanged() {
         TextQueryResponse {
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
-            window: QueryResultWindowV1::exact(1),
+            window: QueryResultWindowV2::exact_probe(1),
             file_owner_rows: None,
             next_cursor: None,
         },
@@ -1417,7 +1414,7 @@ fn symbol_query_request_forwards_contract_dto_unchanged() {
         SearchPlaneQueryIpcResponse::Symbol(quanta_index_contract::SymbolQueryResponse {
             generation: sample_generation_pin(),
             results: vec![sample_symbol_hit()],
-            window: QueryResultWindowV1::exact(1),
+            window: QueryResultWindowV2::exact_probe(1),
             next_cursor: None,
         }),
     ));
@@ -1454,8 +1451,7 @@ fn hybrid_seed_search_builder_dispatches_hybrid_seed_request_with_semantic_text(
             generation: sample_generation_pin(),
             manifest_digest: "manifest-digest".to_string(),
             seed_candidates: vec![sample_hybrid_seed_candidate()],
-            window: QueryResultWindowV1::exact(1),
-            window_v2: QueryResultWindowV2::exact_exhausted(1, ExhaustionProofV1::ProbeExhausted { fetched: 1 }, Vec::new()),
+            window: QueryResultWindowV2::exact_probe(1),
             explanation: sample_explanation(),
         }),
     ));
@@ -1509,8 +1505,7 @@ fn semantic_query_request_forwards_contract_dto_unchanged() {
         SearchPlaneQueryIpcResponse::Semantic(SemanticQueryResponse {
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
-            window: QueryResultWindowV1::exact(1),
-            window_v2: QueryResultWindowV2::exact_exhausted(1, ExhaustionProofV1::ProbeExhausted { fetched: 1 }, Vec::new()),
+            window: QueryResultWindowV2::exact_probe(1),
             explanation: sample_explanation(),
         }),
     ));
@@ -1549,8 +1544,7 @@ fn hybrid_seed_request_forwards_contract_dto_unchanged() {
             generation: sample_generation_pin(),
             manifest_digest: "manifest-digest".to_string(),
             seed_candidates: vec![sample_hybrid_seed_candidate()],
-            window: QueryResultWindowV1::exact(1),
-            window_v2: QueryResultWindowV2::exact_exhausted(1, ExhaustionProofV1::ProbeExhausted { fetched: 1 }, Vec::new()),
+            window: QueryResultWindowV2::exact_probe(1),
             explanation: sample_explanation(),
         }),
     ));
@@ -1588,7 +1582,7 @@ fn lexical_sourcegraph_query_builder_dispatches_text_query_request() {
         TextQueryResponse {
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
-            window: QueryResultWindowV1::exact(1),
+            window: QueryResultWindowV2::exact_probe(1),
             file_owner_rows: None,
             next_cursor: None,
         },
@@ -2005,7 +1999,7 @@ fn reader_client_routes_lexical_query_surface() {
         TextQueryResponse {
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
-            window: QueryResultWindowV1::exact(1),
+            window: QueryResultWindowV2::exact_probe(1),
             file_owner_rows: None,
             next_cursor: None,
         },
@@ -3191,7 +3185,7 @@ fn history_query_routes_through_typed_query_variant() {
             order: quanta_index_contract::HistoryOrderV1::Recency,
             commits: vec![],
             diffs: vec![],
-            window: quanta_index_contract::QueryResultWindowV1::exact(0),
+            window: QueryResultWindowV2::exact_probe(0),
             read_epoch: quanta_index_contract::AuxEpochV1::new(1),
             examined: 0,
             next_cursor: None,
@@ -3232,7 +3226,7 @@ fn history_sourcegraph_query_preserves_rev_filter_and_syntax() {
             order: quanta_index_contract::HistoryOrderV1::Relevance,
             commits: vec![],
             diffs: vec![],
-            window: quanta_index_contract::QueryResultWindowV1::exact(0),
+            window: QueryResultWindowV2::exact_probe(0),
             read_epoch: quanta_index_contract::AuxEpochV1::new(1),
             examined: 0,
             next_cursor: None,
@@ -3276,7 +3270,7 @@ fn history_query_request_forwards_contract_dto_unchanged() {
             order: quanta_index_contract::HistoryOrderV1::Relevance,
             commits: vec![],
             diffs: vec![],
-            window: quanta_index_contract::QueryResultWindowV1::exact(0),
+            window: QueryResultWindowV2::exact_probe(0),
             read_epoch: quanta_index_contract::AuxEpochV1::new(1),
             examined: 0,
             next_cursor: None,
@@ -3313,7 +3307,7 @@ fn runtime_query_routes_through_typed_query_variant() {
         SearchPlaneQueryIpcResponse::RuntimeMetadata(SearchPlaneRuntimeMetadataQueryResponse {
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
-            window: QueryResultWindowV1::exact(1),
+            window: QueryResultWindowV2::exact_probe(1),
             read_epoch: quanta_index_contract::AuxEpochV1::new(1),
             universe_epoch: quanta_index_contract::AuxEpochV1::new(1),
             examined: 1,
@@ -3356,7 +3350,7 @@ fn runtime_query_request_forwards_contract_dto_unchanged() {
         SearchPlaneQueryIpcResponse::RuntimeMetadata(SearchPlaneRuntimeMetadataQueryResponse {
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
-            window: QueryResultWindowV1::exact(1),
+            window: QueryResultWindowV2::exact_probe(1),
             read_epoch: quanta_index_contract::AuxEpochV1::new(1),
             universe_epoch: quanta_index_contract::AuxEpochV1::new(1),
             examined: 1,
@@ -3390,7 +3384,7 @@ fn structural_query_routes_through_typed_query_variant() {
         SearchPlaneQueryIpcResponse::Structural(SearchPlaneStructuralQueryResponse {
             generation: sample_generation_pin(),
             results: vec![],
-            window: QueryResultWindowV1::exact(0),
+            window: QueryResultWindowV2::exact_probe(0),
             read_epoch: quanta_index_contract::AuxEpochV1::new(1),
             examined: 0,
             next_cursor: None,
@@ -3429,7 +3423,7 @@ fn structural_query_request_forwards_contract_dto_unchanged() {
         SearchPlaneQueryIpcResponse::Structural(SearchPlaneStructuralQueryResponse {
             generation: sample_generation_pin(),
             results: vec![],
-            window: QueryResultWindowV1::exact(0),
+            window: QueryResultWindowV2::exact_probe(0),
             read_epoch: quanta_index_contract::AuxEpochV1::new(1),
             examined: 0,
             next_cursor: None,
@@ -3465,7 +3459,7 @@ fn structural_native_query_preserves_syntax() {
         SearchPlaneQueryIpcResponse::Structural(SearchPlaneStructuralQueryResponse {
             generation: sample_generation_pin(),
             results: vec![],
-            window: QueryResultWindowV1::exact(0),
+            window: QueryResultWindowV2::exact_probe(0),
             read_epoch: quanta_index_contract::AuxEpochV1::new(1),
             examined: 0,
             next_cursor: None,
@@ -3511,7 +3505,7 @@ fn structural_sourcegraph_query_preserves_syntax() {
         SearchPlaneQueryIpcResponse::Structural(SearchPlaneStructuralQueryResponse {
             generation: sample_generation_pin(),
             results: vec![],
-            window: QueryResultWindowV1::exact(0),
+            window: QueryResultWindowV2::exact_probe(0),
             read_epoch: quanta_index_contract::AuxEpochV1::new(1),
             examined: 0,
             next_cursor: None,
@@ -4285,7 +4279,7 @@ fn text_query_builder_accepts_the_public_maximum_top_k() {
                 ManifestGeneration::new(7),
             ),
             results: vec![],
-            window: QueryResultWindowV1::exact(0),
+            window: QueryResultWindowV2::exact_probe(0),
             file_owner_rows: None,
             next_cursor: None,
         },
@@ -4347,16 +4341,12 @@ fn hybrid_seed_builder_refuses_out_of_range_top_k_before_any_round_trip() {
 /// request carries no cursor.
 #[test]
 fn runtime_query_builder_carries_the_cursor_it_continues_from() {
-    let cursor = crate::RuntimeMetadataCursorV1 {
-        candidate_id: "chunk://alpha".to_string(),
-        aux_epoch: quanta_index_contract::AuxEpochV1::new(4),
-        universe_epoch: quanta_index_contract::AuxEpochV1::new(9),
-    };
+    let cursor = ok_or_fail!(ContinuationTokenV2::new("signed-runtime-page"));
     let query = Arc::new(StubQueryTransport::new(
         SearchPlaneQueryIpcResponse::RuntimeMetadata(SearchPlaneRuntimeMetadataQueryResponse {
             generation: sample_generation_pin(),
             results: vec![],
-            window: QueryResultWindowV1::exact(0),
+            window: QueryResultWindowV2::exact_probe(0),
             read_epoch: quanta_index_contract::AuxEpochV1::new(4),
             universe_epoch: quanta_index_contract::AuxEpochV1::new(9),
             examined: 0,
@@ -4389,7 +4379,7 @@ fn runtime_query_builder_carries_the_cursor_it_continues_from() {
         SearchPlaneQueryIpcResponse::RuntimeMetadata(SearchPlaneRuntimeMetadataQueryResponse {
             generation: sample_generation_pin(),
             results: vec![],
-            window: QueryResultWindowV1::exact(0),
+            window: QueryResultWindowV2::exact_probe(0),
             read_epoch: quanta_index_contract::AuxEpochV1::new(4),
             universe_epoch: quanta_index_contract::AuxEpochV1::new(9),
             examined: 0,
@@ -4423,15 +4413,12 @@ fn runtime_query_builder_carries_the_cursor_it_continues_from() {
 /// page returned onto the wire untouched (QI-BB-025 W4).
 #[test]
 fn structural_query_builder_carries_the_cursor_it_continues_from() {
-    let cursor = crate::StructuralCursorV1 {
-        candidate_id: "chunk://alpha".to_string(),
-        aux_epoch: quanta_index_contract::AuxEpochV1::new(6),
-    };
+    let cursor = ok_or_fail!(ContinuationTokenV2::new("signed-structural-page"));
     let query = Arc::new(StubQueryTransport::new(
         SearchPlaneQueryIpcResponse::Structural(SearchPlaneStructuralQueryResponse {
             generation: sample_generation_pin(),
             results: vec![],
-            window: QueryResultWindowV1::exact(0),
+            window: QueryResultWindowV2::exact_probe(0),
             read_epoch: quanta_index_contract::AuxEpochV1::new(6),
             examined: 0,
             next_cursor: None,
@@ -4469,8 +4456,7 @@ fn hybrid_builder_assembles_a_hybrid_request_with_both_lanes() {
         SearchPlaneQueryIpcResponse::Hybrid(quanta_index_contract::HybridQueryResponse {
             generation: sample_generation_pin(),
             results: Vec::new(),
-            window: QueryResultWindowV1::exact(0),
-            window_v2: QueryResultWindowV2::exact_exhausted(0, ExhaustionProofV1::ProbeExhausted { fetched: 0 }, Vec::new()),
+            window: QueryResultWindowV2::exact_probe(0),
             explanation: sample_explanation(),
         }),
     ));

@@ -1302,7 +1302,7 @@ fn dispatch_lexical_request(request: SearchPlaneQueryIpcRequest) -> SearchPlaneQ
     SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
         generation: generation.clone(),
         results: vec![stub_candidate(generation)],
-        window: QueryResultWindowV1::exact(1),
+        window: QueryResultWindowV2::exact_probe(1),
         file_owner_rows: None,
         next_cursor: None,
     })
@@ -1419,7 +1419,7 @@ fn dispatch_semantic_request(request: SearchPlaneQueryIpcRequest) -> SearchPlane
     SearchPlaneQueryIpcResponse::Semantic(SemanticQueryResponse {
         generation: expected_generation.clone(),
         results: vec![stub_candidate(expected_generation)],
-        window: QueryResultWindowV1::exact(1),
+        window: QueryResultWindowV2::exact_probe(1),
         window_v2: QueryResultWindowV2::exact_exhausted(1, ExhaustionProofV1::ProbeExhausted { fetched: 1 }, Vec::new()),
         explanation: stub_explanation("semantic explanation", vec![EngineTouched::Semantic]),
     })
@@ -1450,7 +1450,7 @@ fn dispatch_hybrid_request(request: SearchPlaneQueryIpcRequest) -> SearchPlaneQu
     SearchPlaneQueryIpcResponse::Hybrid(HybridQueryResponse {
         generation: expected_generation.clone(),
         results: vec![stub_hybrid_candidate(expected_generation)],
-        window: QueryResultWindowV1::exact(1),
+        window: QueryResultWindowV2::exact_probe(1),
         window_v2: QueryResultWindowV2::exact_exhausted(1, ExhaustionProofV1::ProbeExhausted { fetched: 1 }, Vec::new()),
         explanation,
     })
@@ -1525,7 +1525,7 @@ fn dispatch_hybrid_seed_request(
             ],
             degraded_reasons: Vec::new(),
         }],
-        window: QueryResultWindowV1::exact(1),
+        window: QueryResultWindowV2::exact_probe(1),
         window_v2: QueryResultWindowV2::exact_exhausted(1, ExhaustionProofV1::ProbeExhausted { fetched: 1 }, Vec::new()),
         explanation: stub_explanation(
             "hybrid seed explanation",

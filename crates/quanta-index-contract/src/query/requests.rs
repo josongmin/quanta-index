@@ -7,12 +7,11 @@ use serde::{
 };
 
 use crate::SemanticCorpusKindV1;
-use crate::{HybridCandidateV1, LexicalCandidate};
+use crate::{ContinuationTokenV2, HybridCandidateV1, LexicalCandidate};
 use quanta_index_contract_base::query::wire_top_k;
 
 use super::{
-    GenerationPin, GenerationSelector, HistoryCursor, HistoryOrderV1, LexicalCursor,
-    QueryConstraintSetV1, RuntimeMetadataCursorV1, StructuralCursorV1, TextQueryRequest,
+    GenerationPin, GenerationSelector, HistoryOrderV1, QueryConstraintSetV1, TextQueryRequest,
     TextQuerySyntax,
 };
 
@@ -584,8 +583,8 @@ pub struct SymbolQueryRequest {
     /// `top_k` fails-closed at deserialization via `missing_field`. No
     /// caller-side default — the SDK builder enforces this is set.
     pub top_k: u32,
-    /// Continue after this row of an earlier page, as for text queries.
-    pub cursor: Option<LexicalCursor>,
+    /// Continue the walk the opaque token names, as for text queries.
+    pub cursor: Option<ContinuationTokenV2>,
 }
 
 impl From<SymbolQueryRequest> for TextQueryRequest {
@@ -651,7 +650,7 @@ impl<'de> Deserialize<'de> for SymbolQueryRequest {
 pub struct HistoryQueryRequest {
     pub text_query: TextQueryRequest,
     pub order: HistoryOrderV1,
-    pub cursor: Option<HistoryCursor>,
+    pub cursor: Option<ContinuationTokenV2>,
 }
 
 const HISTORY_QUERY_REQUEST_FIELDS: &[&str] = &["text_query", "order", "cursor"];
@@ -687,7 +686,7 @@ impl<'de> Visitor<'de> for HistoryQueryRequestVisitor {
     {
         let mut text_query: Option<TextQueryRequest> = None;
         let mut order: Option<HistoryOrderV1> = None;
-        let mut cursor: Option<HistoryCursor> = None;
+        let mut cursor: Option<ContinuationTokenV2> = None;
         let mut cursor_seen = false;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
@@ -742,7 +741,7 @@ impl<'de> Deserialize<'de> for HistoryQueryRequest {
 /// Manual serde for a `{ text_query, cursor? }` keyset page request.
 ///
 /// `cursor` is absent on the wire when `None`; when present it is the
-/// route's own cursor type and decoded fail-closed with it.
+/// opaque continuation token and decoded fail-closed with it.
 macro_rules! impl_text_query_page_request_serde {
     ($ty:ident, $fields:ident, $visitor:ident, $cursor_ty:ty) => {
         impl Serialize for $ty {
@@ -827,7 +826,7 @@ macro_rules! impl_text_query_page_request_serde {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeMetadataQueryRequest {
     pub text_query: TextQueryRequest,
-    pub cursor: Option<RuntimeMetadataCursorV1>,
+    pub cursor: Option<ContinuationTokenV2>,
 }
 
 const RUNTIME_METADATA_QUERY_REQUEST_FIELDS: &[&str] = &["text_query", "cursor"];
@@ -835,7 +834,7 @@ impl_text_query_page_request_serde!(
     RuntimeMetadataQueryRequest,
     RUNTIME_METADATA_QUERY_REQUEST_FIELDS,
     RuntimeMetadataQueryRequestVisitor,
-    RuntimeMetadataCursorV1
+    ContinuationTokenV2
 );
 
 /// A structural query: the text query and, for every page after the
@@ -851,7 +850,7 @@ impl_text_query_page_request_serde!(
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StructuralQueryRequest {
     pub text_query: TextQueryRequest,
-    pub cursor: Option<StructuralCursorV1>,
+    pub cursor: Option<ContinuationTokenV2>,
 }
 
 const STRUCTURAL_QUERY_REQUEST_FIELDS: &[&str] = &["text_query", "cursor"];
@@ -859,7 +858,7 @@ impl_text_query_page_request_serde!(
     StructuralQueryRequest,
     STRUCTURAL_QUERY_REQUEST_FIELDS,
     StructuralQueryRequestVisitor,
-    StructuralCursorV1
+    ContinuationTokenV2
 );
 
 /// The candidate an explain names: the row as the route that ranked it

@@ -7,8 +7,9 @@ use std::collections::BTreeMap;
 
 use quanta_index_contract::lex::SymbolRecord;
 use quanta_index_contract::{
-    ChunkRecord, ClusterMembershipReplaceV1, GenerationSelector, LexicalCursor, ManifestGeneration,
-    RepoId, RevisionId, SearchCorpusGenerationIdentityV1, SearchCorpusIngestBatch,
+    ChunkRecord, ClusterMembershipReplaceV1, ContinuationTokenV2, GenerationSelector,
+    ManifestGeneration, RepoId, RevisionId, SearchCorpusGenerationIdentityV1,
+    SearchCorpusIngestBatch,
     SearchCorpusReplaceScope, SearchCorpusTombstoneScope,
     SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
     SearchPlaneControlIpcResponse, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse,
@@ -820,7 +821,7 @@ impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
     /// Continue after the last row of a previous page: pass that page's
     /// `next_cursor` and pin its generation (QI-BB-005).
     #[must_use]
-    pub fn after(self, cursor: LexicalCursor) -> Self {
+    pub fn after(self, cursor: ContinuationTokenV2) -> Self {
         self.transition(|state| {
             state.after = Some(cursor);
         })

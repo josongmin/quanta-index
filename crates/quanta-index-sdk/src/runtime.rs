@@ -1,7 +1,7 @@
 use quanta_index_contract::lex::DirtyRecord;
 use quanta_index_contract::{
-    ChunkId, DirtyDelete, DirtyIngestBatch, DirtyMutation, GenerationPin, GenerationSelector,
-    ManifestGeneration, RepoId, RevisionId, RuntimeMetadataCursorV1, RuntimeMetadataQueryRequest,
+    ChunkId, ContinuationTokenV2, DirtyDelete, DirtyIngestBatch, DirtyMutation, GenerationPin,
+    GenerationSelector, ManifestGeneration, RepoId, RevisionId, RuntimeMetadataQueryRequest,
     SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcResponse, SearchPlaneRuntimeMetadataQueryResponse, TextQuerySyntax,
 };
@@ -163,7 +163,7 @@ pub struct RuntimeQueryBuilder<
 > {
     client: &'a QuantaIndex,
     state: TextQueryBuilderState,
-    cursor: Option<RuntimeMetadataCursorV1>,
+    cursor: Option<ContinuationTokenV2>,
 }
 
 impl<'a> RuntimeQueryBuilder<'a> {
@@ -200,7 +200,7 @@ impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
     /// walk whose epoch the plane no longer retains is refused
     /// `AUX_EPOCH_EXPIRED` and must start over.
     #[must_use]
-    pub fn after(mut self, cursor: RuntimeMetadataCursorV1) -> Self {
+    pub fn after(mut self, cursor: ContinuationTokenV2) -> Self {
         self.cursor = Some(cursor);
         self
     }

@@ -110,27 +110,54 @@ pub(super) fn finalize_probe_window_v1<T>(
         .map_err(|err| CoreError::InvalidContract(format!("query result window: {err}")))
 }
 
-pub(super) fn fused_window_v1(
-    top_k: u32,
+/// Lift the legacy page arithmetic into the single V2 completeness
+/// authority. This is the only bridge while adapters still return V1
+/// probe/count facts; public responses never expose both windows.
+pub(super) fn pageable_window_v2(
+    window: QueryResultWindowV1,
+    lane: &'static str,
+) -> Result<QueryResultWindowV2, CoreError> {
+    let returned = window.returned();
+    let candidate_count = window.candidate_count();
+    QueryResultWindowV2::pageable(
+        returned,
+        candidate_count,
+        window.has_more(),
+        vec![LaneTraceV1::new(lane, true, returned > 0).with_candidates(candidate_count)],
+    )
+    .map_err(|error| CoreError::InvalidContract(format!("pageable result window v2: {error}")))
+}
+
+/// Reframe an already valid pageable window after the response byte budget
+/// cuts it to a strict prefix. The cut proves a continuation regardless of
+/// whether the pre-cut page had exhausted its backend universe.
+pub(super) fn cut_pageable_window_v2(
+    window: &QueryResultWindowV2,
     returned: usize,
-    observed_universe: usize,
-    lane_limit_reached: bool,
-) -> Result<QueryResultWindowV1, CoreError> {
-    let requested = usize::try_from(top_k)
-        .map_err(|err| CoreError::InvalidContract(format!("query top_k overflow: {err}")))?;
-    if lane_limit_reached && returned != requested {
-        return Err(CoreError::InvalidContract(
-            "hybrid result window observed a capped lane before filling the requested page"
-                .to_string(),
-        ));
-    }
-    let observed = if observed_universe > requested || lane_limit_reached {
-        requested.saturating_add(1)
-    } else {
-        returned
+) -> Result<QueryResultWindowV2, CoreError> {
+    let returned = u32::try_from(returned)
+        .map_err(|error| CoreError::InvalidContract(format!("cut page rows: {error}")))?;
+    let minimum = u64::from(returned).saturating_add(1);
+    let candidate_count = match window.candidate_count() {
+        CandidateCountV1::Exact(total) => CandidateCountV1::Exact(total.max(minimum)),
+        CandidateCountV1::AtLeast(lower) => CandidateCountV1::AtLeast(lower.max(minimum)),
     };
-    QueryResultWindowV1::from_probe(top_k, observed)
-        .map_err(|err| CoreError::InvalidContract(format!("query result window: {err}")))
+    QueryResultWindowV2::new(
+        returned,
+        candidate_count,
+        ExecutionOutcomeV2::LowerBound { continuation: true },
+        CoverageV1::new(
+            match window.coverage().examined() {
+                ExaminedUniverseV1::Exact(exact) => ExaminedUniverseV1::Exact(exact),
+                ExaminedUniverseV1::AtLeast(lower) => ExaminedUniverseV1::AtLeast(lower),
+                ExaminedUniverseV1::Unknown => ExaminedUniverseV1::Unknown,
+            },
+            None,
+            window.coverage().lanes().to_vec(),
+        ),
+        None,
+    )
+    .map_err(|error| CoreError::InvalidContract(format!("cut page window v2: {error}")))
 }
 
 /// A lane count as `u64`, failing closed instead of saturating.

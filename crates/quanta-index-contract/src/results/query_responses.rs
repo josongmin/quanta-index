@@ -7,12 +7,10 @@ use serde::{
 };
 
 use crate::{
-    AuxEpochV1, CommitCandidate, DiffCandidate, GenerationPin, HistoryCursor, HistoryOrderV1,
-    LexicalCandidate, LexicalCursor, LexicalRowOrderKey, ManifestGeneration, OwnerDocKind,
-    QueryResultWindowV1, QueryResultWindowV2, RepoId, RepoRelativePath, RevisionId,
-    RuntimeMetadataCursorV1, SemanticCorpusKindV1, StructuralCandidate, StructuralCursorV1,
+    AuxEpochV1, CommitCandidate, ContinuationTokenV2, DiffCandidate, GenerationPin, HistoryOrderV1,
+    LexicalCandidate, LexicalRowOrderKey, ManifestGeneration, OwnerDocKind, QueryResultWindowV2,
+    RepoId, RepoRelativePath, RevisionId, SemanticCorpusKindV1, StructuralCandidate,
     lex::{SymbolKindCode, SymbolKindFamily},
-    validate_lexical_page_v1,
 };
 
 use super::{CandidatePresenceV1, SearchExplanation};
@@ -20,16 +18,18 @@ use super::{CandidatePresenceV1, SearchExplanation};
 /// One ranked page of text rows.
 ///
 /// The rows are in the ranked lexical order ([`LexicalRowOrderKey`]);
-/// when the window says more rows exist, `next_cursor` names the last row
-/// and a request carrying it continues strictly after it (QI-BB-005
-/// 보완 #4). The decoder holds a page to that fail-closed.
+/// when the window's outcome authorizes a continuation,
+/// `next_cursor` carries the opaque token continuing it, and a request
+/// carrying that token continues strictly after the last row. The
+/// decoder holds a page to that fail-closed: the token is present
+/// exactly when the outcome says more rows exist.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextQueryResponse {
     pub generation: GenerationPin,
     pub results: Vec<LexicalCandidate>,
-    pub window: QueryResultWindowV1,
+    pub window: QueryResultWindowV2,
     pub file_owner_rows: Option<Vec<FileOwnerProjectionRow>>,
-    pub next_cursor: Option<LexicalCursor>,
+    pub next_cursor: Option<ContinuationTokenV2>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -244,8 +244,8 @@ impl SymbolCandidate {
 pub struct SymbolQueryResponse {
     pub generation: GenerationPin,
     pub results: Vec<SymbolCandidate>,
-    pub window: QueryResultWindowV1,
-    pub next_cursor: Option<LexicalCursor>,
+    pub window: QueryResultWindowV2,
+    pub next_cursor: Option<ContinuationTokenV2>,
 }
 
 const SYMBOL_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "results", "window", "next_cursor"];
@@ -270,11 +270,11 @@ const FILE_OWNER_PROJECTION_ROW_FIELDS: &[&str] = &[
 pub struct SemanticQueryResponse {
     pub generation: GenerationPin,
     pub results: Vec<LexicalCandidate>,
-    pub window: QueryResultWindowV1,
-    /// Typed execution outcome and coverage (S21-06): a bounded top-k
-    /// page that filled without an observed continuation is
-    /// `CappedUnknown`, never exact.
-    pub window_v2: QueryResultWindowV2,
+    /// The single completeness authority (S21-06): the typed execution
+    /// outcome and coverage. A bounded top-k page that filled without
+    /// an observed continuation is `CappedUnknown`, never exact. The
+    /// semantic route is not pageable and never carries a continuation.
+    pub window: QueryResultWindowV2,
     pub explanation: SearchExplanation,
 }
 
@@ -282,7 +282,6 @@ const SEMANTIC_QUERY_RESPONSE_FIELDS: &[&str] = &[
     "generation",
     "results",
     "window",
-    "window_v2",
     "explanation",
 ];
 
@@ -296,11 +295,11 @@ const SEMANTIC_QUERY_RESPONSE_FIELDS: &[&str] = &[
 pub struct HybridQueryResponse {
     pub generation: GenerationPin,
     pub results: Vec<HybridCandidateV1>,
-    pub window: QueryResultWindowV1,
-    /// Typed execution outcome and coverage (S21-06): a capped dense
+    /// The single completeness authority (S21-06): a capped dense
     /// admission, an interrupted scan or an approximate method stays
-    /// typed here and can never be read as exact exhaustion.
-    pub window_v2: QueryResultWindowV2,
+    /// typed here and can never be read as exact exhaustion. The hybrid
+    /// route is not pageable and never carries a continuation.
+    pub window: QueryResultWindowV2,
     pub explanation: SearchExplanation,
 }
 
@@ -308,7 +307,6 @@ const HYBRID_QUERY_RESPONSE_FIELDS: &[&str] = &[
     "generation",
     "results",
     "window",
-    "window_v2",
     "explanation",
 ];
 
@@ -709,10 +707,9 @@ pub struct HybridSeedQueryResponse {
     pub generation: GenerationPin,
     pub manifest_digest: String,
     pub seed_candidates: Vec<SeedCandidate>,
-    pub window: QueryResultWindowV1,
-    /// Typed execution outcome and coverage (S21-06), as
-    /// [`HybridQueryResponse::window_v2`].
-    pub window_v2: QueryResultWindowV2,
+    /// The single completeness authority (S21-06), as
+    /// [`HybridQueryResponse::window`].
+    pub window: QueryResultWindowV2,
     pub explanation: SearchExplanation,
 }
 
@@ -721,7 +718,6 @@ const HYBRID_SEED_QUERY_RESPONSE_FIELDS: &[&str] = &[
     "manifest_digest",
     "seed_candidates",
     "window",
-    "window_v2",
     "explanation",
 ];
 const SEED_CONTRIBUTION_V2_FIELDS: &[&str] = &["lane", "rank", "raw_score", "corpus_kind"];
@@ -742,26 +738,25 @@ const SEED_CANDIDATE_V2_FIELDS: &[&str] = &[
 /// One page of history results (QI-BB-023).
 ///
 /// Exactly one of `commits` / `diffs` is populated, by the query's
-/// `type:`. Both are in the request's `order` — the total order documented
-/// on [`HistoryOrderV1`] and [`HistoryCursor`] — which the page echoes;
+/// `type:`. Both are in the request's `order`, which the page echoes;
 /// under `relevance` every row carries its score, under `recency` none
-/// does. `window` counts that page: `returned` is the rows on it,
-/// `candidate_count` the exact number of matches after the request's
-/// cursor, `has_more` whether a next page exists, in which case
-/// `next_cursor` positions it under the same order. `examined` is how
-/// many records the plane evaluated to answer. `read_epoch` is the
-/// history authority epoch the page was cut from (QI-BB-020 W2): the
-/// current one for a fresh walk, the cursor's for a continuation;
-/// `next_cursor` carries it forward.
+/// does. `window` is the single completeness authority: `returned` is
+/// the rows on it and the outcome says whether a next page exists, in
+/// which case `next_cursor` carries the opaque token continuing it.
+/// `examined` is how many records the plane evaluated to answer.
+/// `read_epoch` is the history authority epoch the page was cut from
+/// (QI-BB-020 W2): the current one for a fresh walk, the token's for a
+/// continuation. The token binds the order and the epoch inside; the
+/// wire carries neither beside it.
 pub struct SearchPlaneHistoryQueryResponse {
     pub generation: GenerationPin,
     pub order: HistoryOrderV1,
     pub commits: Vec<CommitCandidate>,
     pub diffs: Vec<DiffCandidate>,
-    pub window: QueryResultWindowV1,
+    pub window: QueryResultWindowV2,
     pub read_epoch: AuxEpochV1,
     pub examined: u64,
-    pub next_cursor: Option<HistoryCursor>,
+    pub next_cursor: Option<ContinuationTokenV2>,
 }
 
 const SEARCH_PLANE_HISTORY_QUERY_RESPONSE_FIELDS: &[&str] = &[
@@ -814,10 +809,10 @@ impl<'de> Visitor<'de> for SearchPlaneHistoryQueryResponseVisitor {
         let mut order: Option<HistoryOrderV1> = None;
         let mut commits: Option<Vec<CommitCandidate>> = None;
         let mut diffs: Option<Vec<DiffCandidate>> = None;
-        let mut window: Option<QueryResultWindowV1> = None;
+        let mut window: Option<QueryResultWindowV2> = None;
         let mut read_epoch: Option<AuxEpochV1> = None;
         let mut examined: Option<u64> = None;
-        let mut next_cursor: Option<HistoryCursor> = None;
+        let mut next_cursor: Option<ContinuationTokenV2> = None;
         let mut next_cursor_seen = false;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
@@ -908,15 +903,6 @@ impl<'de> Visitor<'de> for SearchPlaneHistoryQueryResponseVisitor {
                 HistoryOrderV1::Relevance | HistoryOrderV1::Recency => {}
             }
         }
-        // The continuation positions the same order the page is in.
-        if next_cursor
-            .as_ref()
-            .is_some_and(|cursor| cursor.order.order() != order)
-        {
-            return Err(de::Error::custom(
-                "history page next_cursor was issued under another order than the page",
-            ));
-        }
         let returned = usize::try_from(window.returned()).map_err(|error| {
             de::Error::custom(format!(
                 "query result window returned count cannot fit usize: {error}"
@@ -927,22 +913,14 @@ impl<'de> Visitor<'de> for SearchPlaneHistoryQueryResponseVisitor {
                 "query result window returned count does not match history rows",
             ));
         }
-        if window.has_more() != next_cursor.is_some() {
+        // The token is present exactly when the outcome authorizes a
+        // continuation; order and epoch agreement live inside the token.
+        if continuation_authorized(&window) != next_cursor.is_some() {
             return Err(de::Error::custom(
-                "history page has_more and next_cursor disagree",
+                "history page outcome and next_cursor disagree",
             ));
         }
         let read_epoch = read_epoch.ok_or_else(|| de::Error::missing_field("read_epoch"))?;
-        // The continuation is cut from the epoch this page read; a cursor
-        // naming another epoch could not have been issued by this page.
-        if next_cursor
-            .as_ref()
-            .is_some_and(|cursor| cursor.aux_epoch != read_epoch)
-        {
-            return Err(de::Error::custom(
-                "history page next_cursor names an epoch other than read_epoch",
-            ));
-        }
         Ok(SearchPlaneHistoryQueryResponse {
             generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
             order,
@@ -969,9 +947,18 @@ impl<'de> Deserialize<'de> for SearchPlaneHistoryQueryResponse {
     }
 }
 
+/// Whether the window's outcome authorizes a continuation token: only
+/// an observed continuation does. Every other outcome — exhausted,
+/// capped, partial, approximate, or a lower bound without an observed
+/// row — travels tokenless.
+fn continuation_authorized(window: &QueryResultWindowV2) -> bool {
+    window.outcome().has_more() == Some(true)
+}
+
 /// Manual serde for a ranked lexical page without projection rows:
 /// `{ generation, results, window, next_cursor? }`, held to the ranked
-/// order and its continuation rule by [`validate_lexical_page_v1`].
+/// order and the single continuation authority: the opaque token is
+/// present exactly when the window's outcome authorizes it.
 macro_rules! impl_ranked_lexical_page_serde {
     ($ty:ident, $fields:ident, $visitor:ident, $result_ty:ty) => {
         impl Serialize for $ty {
@@ -979,6 +966,13 @@ macro_rules! impl_ranked_lexical_page_serde {
             where
                 S: Serializer,
             {
+                check_ranked_page_v2(
+                    &self.window,
+                    self.results.len(),
+                    self.results.iter().map(<$result_ty>::order_key),
+                    self.next_cursor.as_ref(),
+                )
+                .map_err(serde::ser::Error::custom)?;
                 let field_count = if self.next_cursor.is_some() { 4 } else { 3 };
                 let mut state = serializer.serialize_struct(stringify!($ty), field_count)?;
                 state.serialize_field("generation", &self.generation)?;
@@ -1006,8 +1000,8 @@ macro_rules! impl_ranked_lexical_page_serde {
             {
                 let mut generation: Option<GenerationPin> = None;
                 let mut results: Option<Vec<$result_ty>> = None;
-                let mut window: Option<QueryResultWindowV1> = None;
-                let mut next_cursor: Option<LexicalCursor> = None;
+                let mut window: Option<QueryResultWindowV2> = None;
+                let mut next_cursor: Option<ContinuationTokenV2> = None;
                 let mut next_cursor_seen = false;
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
@@ -1045,11 +1039,10 @@ macro_rules! impl_ranked_lexical_page_serde {
                     generation.ok_or_else(|| de::Error::missing_field("generation"))?;
                 let results = results.ok_or_else(|| de::Error::missing_field("results"))?;
                 let window = window.ok_or_else(|| de::Error::missing_field("window"))?;
-                check_ranked_lexical_page(
+                check_ranked_page_v2(
                     &window,
                     results.len(),
                     results.iter().map(<$result_ty>::order_key),
-                    &generation,
                     next_cursor.as_ref(),
                 )
                 .map_err(de::Error::custom)?;
@@ -1073,29 +1066,31 @@ macro_rules! impl_ranked_lexical_page_serde {
     };
 }
 
-/// Manual serde for one keyset page (QI-BB-025 W4): `{ generation,
-/// results, window, <epochs...>, examined, next_cursor? }`.
+/// Manual serde for one keyset page (QI-BB-025 W4, S21-06): `{
+/// generation, results, window, <epochs...>, examined, next_cursor? }`.
 ///
 /// The rows are in the route's total order — `candidate_id` ascending —
 /// and the decoder holds the page to it fail-closed: `window.returned`
-/// counts the rows, the rows strictly ascend by candidate id, `has_more`
-/// and `next_cursor` agree, `next_cursor` names the last row, and every
-/// epoch the cursor carries equals the epoch the page reports for it
-/// (each `(response_epoch, cursor_epoch)` pair in `epochs`).
+/// counts the rows, the rows strictly ascend by candidate id, and the
+/// opaque token is present exactly when the window's outcome authorizes
+/// a continuation. Order and epoch agreement live inside the token,
+/// verified by the cursor codec against the executing request — never
+/// as cursor-shaped fields beside it.
 macro_rules! impl_keyset_page_response_serde {
     (
         $ty:ident,
         $fields:ident,
         $visitor:ident,
         $result_ty:ty,
-        $cursor_ty:ty,
-        epochs = [$(($response_epoch:ident, $cursor_epoch:ident)),+ $(,)?]
+        epochs = [$($response_epoch:ident),+ $(,)?]
     ) => {
         impl Serialize for $ty {
             fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
             where
                 S: Serializer,
             {
+                check_keyset_page_v2(&self.window, self.results.len(), self.next_cursor.as_ref())
+                    .map_err(serde::ser::Error::custom)?;
                 let field_count = if self.next_cursor.is_some() {
                     $fields.len()
                 } else {
@@ -1129,10 +1124,10 @@ macro_rules! impl_keyset_page_response_serde {
             {
                 let mut generation: Option<GenerationPin> = None;
                 let mut results: Option<Vec<$result_ty>> = None;
-                let mut window: Option<QueryResultWindowV1> = None;
+                let mut window: Option<QueryResultWindowV2> = None;
                 $(let mut $response_epoch: Option<AuxEpochV1> = None;)+
                 let mut examined: Option<u64> = None;
-                let mut next_cursor: Option<$cursor_ty> = None;
+                let mut next_cursor: Option<ContinuationTokenV2> = None;
                 let mut next_cursor_seen = false;
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
@@ -1184,17 +1179,9 @@ macro_rules! impl_keyset_page_response_serde {
                 }
                 let results = results.ok_or_else(|| de::Error::missing_field("results"))?;
                 let window = window.ok_or_else(|| de::Error::missing_field("window"))?;
-                let returned = usize::try_from(window.returned()).map_err(|error| {
-                    de::Error::custom(format!(
-                        "query result window returned count cannot fit usize: {error}"
-                    ))
-                })?;
-                if returned != results.len() {
-                    return Err(de::Error::custom(
-                        "query result window returned count does not match results length",
-                    ));
-                }
-                // The page is in the total order the cursor positions.
+                check_keyset_page_v2(&window, results.len(), next_cursor.as_ref())
+                    .map_err(de::Error::custom)?;
+                // The page is in the total order the token continues.
                 if results
                     .iter()
                     .zip(results.iter().skip(1))
@@ -1203,31 +1190,6 @@ macro_rules! impl_keyset_page_response_serde {
                     return Err(de::Error::custom(
                         "keyset page rows are not strictly ascending by candidate id",
                     ));
-                }
-                if window.has_more() != next_cursor.is_some() {
-                    return Err(de::Error::custom(
-                        "keyset page has_more and next_cursor disagree",
-                    ));
-                }
-                if let Some(cursor) = &next_cursor {
-                    // The cursor is the last row's key, in the epochs this
-                    // page read; anything else could not have been issued
-                    // by this page.
-                    if results.last().map(|row| row.candidate_id.as_str())
-                        != Some(cursor.candidate_id.as_str())
-                    {
-                        return Err(de::Error::custom(
-                            "keyset page next_cursor does not name the last row",
-                        ));
-                    }
-                    $(
-                        if Some(cursor.$cursor_epoch) != $response_epoch {
-                            return Err(de::Error::custom(concat!(
-                                "keyset page next_cursor names an epoch other than ",
-                                stringify!($response_epoch),
-                            )));
-                        }
-                    )+
                 }
                 Ok($ty {
                     generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
@@ -1255,7 +1217,29 @@ macro_rules! impl_keyset_page_response_serde {
     };
 }
 
-/// Serde for a `{ generation, results, window, explanation }` response.
+/// The wire rule every keyset page shares: `returned` counts the rows
+/// and the opaque token is present exactly when the window's outcome
+/// authorizes a continuation.
+fn check_keyset_page_v2(
+    window: &QueryResultWindowV2,
+    rows: usize,
+    next_cursor: Option<&ContinuationTokenV2>,
+) -> Result<(), String> {
+    let returned = usize::try_from(window.returned())
+        .map_err(|error| format!("query result window returned count cannot fit usize: {error}"))?;
+    if returned != rows {
+        return Err(
+            "query result window returned count does not match results length".to_string(),
+        );
+    }
+    if continuation_authorized(window) != next_cursor.is_some() {
+        return Err("keyset page outcome and next_cursor disagree: the token is present exactly when the outcome authorizes a continuation".to_string());
+    }
+    Ok(())
+}
+
+/// Serde for a `{ generation, results, window, explanation }` response:
+/// the single V2 window is the only completeness authority.
 ///
 /// `validate_results` is the cross-row invariant the list must satisfy,
 /// checked on encode and decode; the four-argument form has none, so any
@@ -1283,11 +1267,10 @@ macro_rules! impl_generation_results_explanation_response_serde {
                 S: Serializer,
             {
                 ($validate_results)(&self.results).map_err(serde::ser::Error::custom)?;
-                let mut state = serializer.serialize_struct(stringify!($ty), 5)?;
+                let mut state = serializer.serialize_struct(stringify!($ty), 4)?;
                 state.serialize_field("generation", &self.generation)?;
                 state.serialize_field("results", &self.results)?;
                 state.serialize_field("window", &self.window)?;
-                state.serialize_field("window_v2", &self.window_v2)?;
                 state.serialize_field("explanation", &self.explanation)?;
                 state.end()
             }
@@ -1308,8 +1291,7 @@ macro_rules! impl_generation_results_explanation_response_serde {
             {
                 let mut generation: Option<GenerationPin> = None;
                 let mut results: Option<Vec<$result_ty>> = None;
-                let mut window: Option<QueryResultWindowV1> = None;
-                let mut window_v2: Option<QueryResultWindowV2> = None;
+                let mut window: Option<QueryResultWindowV2> = None;
                 let mut explanation: Option<SearchExplanation> = None;
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
@@ -1330,12 +1312,6 @@ macro_rules! impl_generation_results_explanation_response_serde {
                                 return Err(de::Error::duplicate_field("window"));
                             }
                             window = Some(map.next_value()?);
-                        }
-                        "window_v2" => {
-                            if window_v2.is_some() {
-                                return Err(de::Error::duplicate_field("window_v2"));
-                            }
-                            window_v2 = Some(map.next_value()?);
                         }
                         "explanation" => {
                             if explanation.is_some() {
@@ -1365,7 +1341,6 @@ macro_rules! impl_generation_results_explanation_response_serde {
                     generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
                     results,
                     window,
-                    window_v2: window_v2.ok_or_else(|| de::Error::missing_field("window_v2"))?,
                     explanation: explanation
                         .ok_or_else(|| de::Error::missing_field("explanation"))?,
                 })
@@ -1490,22 +1465,37 @@ impl<'de> Deserialize<'de> for FileOwnerProjectionRow {
     }
 }
 
-/// The checks every ranked lexical page shares: the window counts the
-/// rows, and the rows and continuation obey [`validate_lexical_page_v1`].
-fn check_ranked_lexical_page<'a>(
-    window: &QueryResultWindowV1,
+/// Check one ranked page against its V2 window: `returned` counts the
+/// rows, every row carries a finite score in strict page order, and the
+/// opaque token is present exactly when the window's outcome authorizes
+/// a continuation. Cursor-content agreement (last row, generation) lives
+/// inside the token, verified by the cursor codec — never on the wire.
+fn check_ranked_page_v2<'a>(
+    window: &QueryResultWindowV2,
     rows: usize,
     keys: impl IntoIterator<Item = LexicalRowOrderKey<'a>>,
-    generation: &GenerationPin,
-    next_cursor: Option<&LexicalCursor>,
+    next_cursor: Option<&ContinuationTokenV2>,
 ) -> Result<(), String> {
+    use core::cmp::Ordering;
     let returned = usize::try_from(window.returned())
         .map_err(|error| format!("query result window returned count cannot fit usize: {error}"))?;
     if returned != rows {
         return Err("query result window returned count does not match results length".to_string());
     }
-    validate_lexical_page_v1(window, keys, generation.manifest_generation, next_cursor)
-        .map_err(str::to_string)
+    let mut last: Option<LexicalRowOrderKey<'a>> = None;
+    for row in keys {
+        if !row.score.is_finite() {
+            return Err("a ranked row carries a non-finite score".to_string());
+        }
+        if last.is_some_and(|previous| previous.order(&row) != Ordering::Less) {
+            return Err("ranked rows are not in page order".to_string());
+        }
+        last = Some(row);
+    }
+    if continuation_authorized(window) != next_cursor.is_some() {
+        return Err("ranked page outcome and next_cursor disagree: the token is present exactly when the outcome authorizes a continuation".to_string());
+    }
+    Ok(())
 }
 
 impl Serialize for TextQueryResponse {
@@ -1549,10 +1539,10 @@ impl<'de> Visitor<'de> for TextQueryResponseVisitor {
     {
         let mut generation: Option<GenerationPin> = None;
         let mut results: Option<Vec<LexicalCandidate>> = None;
-        let mut window: Option<QueryResultWindowV1> = None;
+        let mut window: Option<QueryResultWindowV2> = None;
         let mut file_owner_rows: Option<Vec<FileOwnerProjectionRow>> = None;
         let mut file_owner_rows_seen = false;
-        let mut next_cursor: Option<LexicalCursor> = None;
+        let mut next_cursor: Option<ContinuationTokenV2> = None;
         let mut next_cursor_seen = false;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
@@ -1596,11 +1586,10 @@ impl<'de> Visitor<'de> for TextQueryResponseVisitor {
         let generation = generation.ok_or_else(|| de::Error::missing_field("generation"))?;
         let results = results.ok_or_else(|| de::Error::missing_field("results"))?;
         let window = window.ok_or_else(|| de::Error::missing_field("window"))?;
-        check_ranked_lexical_page(
+        check_ranked_page_v2(
             &window,
             results.len(),
             results.iter().map(LexicalCandidate::order_key),
-            &generation,
             next_cursor.as_ref(),
         )
         .map_err(de::Error::custom)?;
@@ -2151,12 +2140,11 @@ impl Serialize for HybridSeedQueryResponse {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("HybridSeedQueryResponse", 6)?;
+        let mut state = serializer.serialize_struct("HybridSeedQueryResponse", 5)?;
         state.serialize_field("generation", &self.generation)?;
         state.serialize_field("manifest_digest", &self.manifest_digest)?;
         state.serialize_field("seed_candidates", &self.seed_candidates)?;
         state.serialize_field("window", &self.window)?;
-        state.serialize_field("window_v2", &self.window_v2)?;
         state.serialize_field("explanation", &self.explanation)?;
         state.end()
     }
@@ -2178,8 +2166,7 @@ impl<'de> Visitor<'de> for HybridSeedQueryResponseVisitor {
         let mut generation: Option<GenerationPin> = None;
         let mut manifest_digest: Option<String> = None;
         let mut seed_candidates: Option<Vec<SeedCandidate>> = None;
-        let mut window: Option<QueryResultWindowV1> = None;
-        let mut window_v2: Option<QueryResultWindowV2> = None;
+        let mut window: Option<QueryResultWindowV2> = None;
         let mut explanation: Option<SearchExplanation> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
@@ -2207,12 +2194,6 @@ impl<'de> Visitor<'de> for HybridSeedQueryResponseVisitor {
                     }
                     window = Some(map.next_value()?);
                 }
-                "window_v2" => {
-                    if window_v2.is_some() {
-                        return Err(de::Error::duplicate_field("window_v2"));
-                    }
-                    window_v2 = Some(map.next_value()?);
-                }
                 "explanation" => {
                     if explanation.is_some() {
                         return Err(de::Error::duplicate_field("explanation"));
@@ -2230,7 +2211,6 @@ impl<'de> Visitor<'de> for HybridSeedQueryResponseVisitor {
         let seed_candidates =
             seed_candidates.ok_or_else(|| de::Error::missing_field("seed_candidates"))?;
         let window = window.ok_or_else(|| de::Error::missing_field("window"))?;
-        let window_v2 = window_v2.ok_or_else(|| de::Error::missing_field("window_v2"))?;
         let returned = usize::try_from(window.returned()).map_err(|error| {
             de::Error::custom(format!(
                 "hybrid seed window returned count cannot fit usize: {error}"
@@ -2247,7 +2227,6 @@ impl<'de> Visitor<'de> for HybridSeedQueryResponseVisitor {
                 .ok_or_else(|| de::Error::missing_field("manifest_digest"))?,
             seed_candidates,
             window,
-            window_v2,
             explanation: explanation.ok_or_else(|| de::Error::missing_field("explanation"))?,
         })
     }
@@ -2266,31 +2245,28 @@ impl<'de> Deserialize<'de> for HybridSeedQueryResponse {
     }
 }
 
-/// One page of runtime-metadata results (QI-BB-025 W4).
+/// One page of runtime-metadata results (QI-BB-025 W4, S21-06).
 ///
-/// `results` are in candidate-id order — the total order documented on
-/// [`RuntimeMetadataCursorV1`] — and `window` counts that page:
-/// `returned` is the rows on it, `candidate_count` the matches after the
-/// request's cursor as far as the walk looked (at least `returned + 1`
-/// when the walk stopped at its continuation probe, exact when it
-/// exhausted the candidate stream), `has_more` whether a next page
-/// exists, in which case `next_cursor` positions it. `examined` is how
-/// many candidates the walk visited after its cursor to answer.
+/// `results` are in candidate-id order and `window` is the single
+/// completeness authority: `returned` is the rows on it and the outcome
+/// says whether a next page exists, in which case `next_cursor` carries
+/// the opaque token continuing it. `examined` is how many candidates
+/// the walk visited after its cursor to answer.
 ///
 /// `read_epoch` is the runtime-metadata authority epoch the page's
 /// predicates were evaluated against and `universe_epoch` the structural
 /// authority epoch its chunk universe was joined from (QI-BB-020 W2):
 /// the current ones, taken in one ledger read, for a fresh walk; the
-/// cursor's for a continuation. `next_cursor` carries both forward.
+/// token's for a continuation. The token binds both inside.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchPlaneRuntimeMetadataQueryResponse {
     pub generation: GenerationPin,
     pub results: Vec<LexicalCandidate>,
-    pub window: QueryResultWindowV1,
+    pub window: QueryResultWindowV2,
     pub read_epoch: AuxEpochV1,
     pub universe_epoch: AuxEpochV1,
     pub examined: u64,
-    pub next_cursor: Option<RuntimeMetadataCursorV1>,
+    pub next_cursor: Option<ContinuationTokenV2>,
 }
 
 const SEARCH_PLANE_RUNTIME_METADATA_QUERY_RESPONSE_FIELDS: &[&str] = &[
@@ -2307,33 +2283,30 @@ impl_keyset_page_response_serde!(
     SEARCH_PLANE_RUNTIME_METADATA_QUERY_RESPONSE_FIELDS,
     SearchPlaneRuntimeMetadataQueryResponseVisitor,
     LexicalCandidate,
-    RuntimeMetadataCursorV1,
-    epochs = [(read_epoch, aux_epoch), (universe_epoch, universe_epoch)]
+    epochs = [read_epoch, universe_epoch]
 );
 
-/// One page of structural results (QI-BB-025 W4).
+/// One page of structural results (QI-BB-025 W4, S21-06).
 ///
-/// `results` are in candidate-id order — the total order documented on
-/// [`StructuralCursorV1`] — and `window` counts that page: `returned` is
-/// the rows on it, `candidate_count` the exact number of matched
-/// candidates after the request's cursor (evaluation materializes the
-/// whole match set, so the count is never a bound), `has_more` whether a
-/// next page exists, in which case `next_cursor` positions it.
-/// `examined` is how many matched candidates the page selection walked.
+/// `results` are in candidate-id order and `window` is the single
+/// completeness authority: `returned` is the rows on it and the outcome
+/// says whether a next page exists, in which case `next_cursor` carries
+/// the opaque token continuing it. `examined` is how many matched
+/// candidates the page selection walked.
 ///
 /// `read_epoch` is the structural authority epoch every leaf of the
 /// query — the pinned universe, each parse-tree match, each symbol
 /// projection — was evaluated against (QI-BB-020 W2): the current one
-/// for a fresh walk, the cursor's for a continuation; `next_cursor`
-/// carries it forward.
+/// for a fresh walk, the token's for a continuation. The token binds it
+/// inside.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchPlaneStructuralQueryResponse {
     pub generation: GenerationPin,
     pub results: Vec<StructuralCandidate>,
-    pub window: QueryResultWindowV1,
+    pub window: QueryResultWindowV2,
     pub read_epoch: AuxEpochV1,
     pub examined: u64,
-    pub next_cursor: Option<StructuralCursorV1>,
+    pub next_cursor: Option<ContinuationTokenV2>,
 }
 
 const SEARCH_PLANE_STRUCTURAL_QUERY_RESPONSE_FIELDS: &[&str] = &[
@@ -2349,8 +2322,7 @@ impl_keyset_page_response_serde!(
     SEARCH_PLANE_STRUCTURAL_QUERY_RESPONSE_FIELDS,
     SearchPlaneStructuralQueryResponseVisitor,
     StructuralCandidate,
-    StructuralCursorV1,
-    epochs = [(read_epoch, aux_epoch)]
+    epochs = [read_epoch]
 );
 
 /// What the search plane says about one candidate (QI-BB-022).
@@ -2451,7 +2423,7 @@ impl<'de> Deserialize<'de> for SearchPlaneExplainQueryResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{GenerationPin, ManifestGeneration, RepoId, RevisionId};
+    use crate::{ExhaustionProofV1, GenerationPin, ManifestGeneration, RepoId, RevisionId};
 
     fn sample_generation_pin() -> GenerationPin {
         GenerationPin::new(
@@ -2553,8 +2525,12 @@ mod tests {
             "seed_candidates": [serde_json::to_value(sample_seed_candidate())
                 .expect("seed candidate must serialize")],
             "seed_candidates_v2": [],
-            "window": serde_json::to_value(QueryResultWindowV1::exact(1))
-                .expect("window must serialize"),
+            "window": serde_json::to_value(QueryResultWindowV2::exact_exhausted(
+                1,
+                ExhaustionProofV1::ProbeExhausted { fetched: 1 },
+                Vec::new(),
+            ))
+            .expect("window must serialize"),
             "explanation": serde_json::to_value(SearchExplanation::default())
                 .expect("default explanation must serialize")
         });
@@ -2567,8 +2543,11 @@ mod tests {
             generation: sample_generation_pin(),
             manifest_digest: "a".repeat(64),
             seed_candidates: vec![sample_seed_candidate()],
-            window: QueryResultWindowV1::exact(1),
-            window_v2: QueryResultWindowV2::exact_probe(1),
+            window: QueryResultWindowV2::exact_exhausted(
+                1,
+                ExhaustionProofV1::ProbeExhausted { fetched: 1 },
+                Vec::new(),
+            ),
             explanation: SearchExplanation::default(),
         };
 

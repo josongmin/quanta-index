@@ -4,9 +4,9 @@
 )]
 
 use quanta_index_contract::{
-    GenerationPin, GenerationSelector, HybridQueryRequest, HybridSeedQueryRequest, LexicalCursor,
-    QueryConstraintSetV1, SemanticQueryRequest, SemanticSeedCorpusBudgetV1, TextQueryRequest,
-    TextQuerySyntax,
+    ContinuationTokenV2, GenerationPin, GenerationSelector, HybridQueryRequest,
+    HybridSeedQueryRequest, QueryConstraintSetV1, SemanticQueryRequest,
+    SemanticSeedCorpusBudgetV1, TextQueryRequest, TextQuerySyntax,
 };
 
 use crate::{QuantaIndex, SdkError};
@@ -17,9 +17,9 @@ pub(crate) struct TextQueryBuilderState {
     pub(crate) constraints: QueryConstraintSetV1,
     pub(crate) selection: Option<GenerationSelector>,
     pub(crate) top_k: Option<u32>,
-    /// The last row of the previous ranked page, for a text or symbol
-    /// continuation; routes that do not page refuse one typed.
-    pub(crate) after: Option<LexicalCursor>,
+    /// Opaque server-minted continuation for a text or symbol page;
+    /// routes that do not page refuse one typed.
+    pub(crate) after: Option<ContinuationTokenV2>,
 }
 
 impl TextQueryBuilderState {

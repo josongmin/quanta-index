@@ -2,7 +2,7 @@
 //! the request budget, and per-route metric emission. Route bodies live
 //! under `routes/`.
 
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Instant;
 
 use quanta_index_contract::{
@@ -21,6 +21,8 @@ use quanta_index_lq_obs::{Dimensions, MetricKind, MetricSample};
 use crate::history_text::HistoryTextIndexParts;
 use crate::observability::{NoopQueryObsSink, QueryObsSink};
 use crate::query_dispatcher::errors::core_error_to_ipc;
+use crate::query_dispatcher::continuation::CursorAuthorityV2;
+use crate::query_dispatcher::cursor_key::CursorKeyStore;
 use crate::query_dispatcher::metrics::{
     QueryRoute, classify_error_metric_name, elapsed_millis_metric, examined_candidates_metric,
     interruption_route_suffix, metric_count_value,
@@ -57,6 +59,10 @@ pub struct SearchPlaneDispatcher {
     /// How many encoded bytes one ranked lexical page may take before it
     /// is cut and continued by its cursor (QI-BB-005 보완 #5).
     pub(super) response_budget: ResponsePayloadBudget,
+    /// One continuation authority for all pageable routes. Product
+    /// composition installs the persistent state-root key before serving;
+    /// owner-local composition initializes a process-local authority lazily.
+    pub(super) cursor_authority: OnceLock<CursorAuthorityV2>,
 }
 
 pub type SearchPlaneQueryService = SearchPlaneDispatcher;
@@ -114,6 +120,7 @@ impl SearchPlaneDispatcher {
             obs_sink,
             history_text: None,
             response_budget: ResponsePayloadBudget::DEFAULT,
+            cursor_authority: OnceLock::new(),
         }
     }
 
@@ -130,6 +137,27 @@ impl SearchPlaneDispatcher {
     pub const fn with_response_budget(mut self, budget: ResponsePayloadBudget) -> Self {
         self.response_budget = budget;
         self
+    }
+
+    /// Install the persistent cursor signing key held under the product
+    /// state root. This must run before the dispatcher is shared.
+    #[must_use]
+    pub fn with_cursor_key_store(self, keys: CursorKeyStore) -> Self {
+        let _installed = self
+            .cursor_authority
+            .set(CursorAuthorityV2::persistent(keys));
+        self
+    }
+
+    pub(super) fn cursors(&self) -> Result<&CursorAuthorityV2, CoreError> {
+        if let Some(authority) = self.cursor_authority.get() {
+            return Ok(authority);
+        }
+        let authority = CursorAuthorityV2::process_local()?;
+        let _raced = self.cursor_authority.set(authority);
+        self.cursor_authority.get().ok_or_else(|| {
+            CoreError::Storage("cursor authority initialization did not publish".to_string())
+        })
     }
 
     /// Serve one query under its request budget (QI-BB-002).
@@ -241,7 +269,7 @@ impl SearchPlaneDispatcher {
         &self,
         route: QueryRoute,
         pin: &GenerationPin,
-        window: &quanta_index_contract::QueryResultWindowV1,
+        window: &quanta_index_contract::QueryResultWindowV2,
     ) {
         self.emit_metric(
             Some(pin),

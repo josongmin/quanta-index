@@ -11,7 +11,7 @@
 //! continuation keep the transport's typed refusal as their bound.
 
 use quanta_index_contract::{
-    CandidateCountV1, LexicalCursor, LexicalRowOrderKey, QueryResultWindowV1, SymbolCandidate,
+    ContinuationTokenV2, LexicalCursor, LexicalRowOrderKey, QueryResultWindowV2, SymbolCandidate,
     SymbolQueryResponse, TextQueryResponse,
 };
 use quanta_index_core::CoreError;
@@ -71,14 +71,19 @@ pub(super) trait RankedPage: Serialize + Clone {
     /// (a projection row paired with it).
     fn paired_bytes(&self, index: usize) -> Result<u64, CoreError>;
 
-    fn window(&self) -> QueryResultWindowV1;
+    fn window(&self) -> &QueryResultWindowV2;
 
     fn last_key(&self, returned: usize) -> Option<LexicalRowOrderKey<'_>>;
 
     fn generation(&self) -> quanta_index_contract::ManifestGeneration;
 
     /// Keep the first `returned` rows under `window`, continued by `cursor`.
-    fn cut(self, returned: usize, window: QueryResultWindowV1, cursor: LexicalCursor) -> Self;
+    fn cut(
+        self,
+        returned: usize,
+        window: QueryResultWindowV2,
+        cursor: ContinuationTokenV2,
+    ) -> Self;
 }
 
 fn encoded_len<T: Serialize>(value: &T, what: &str) -> Result<u64, CoreError> {
@@ -88,21 +93,6 @@ fn encoded_len<T: Serialize>(value: &T, what: &str) -> Result<u64, CoreError> {
 
 /// The window of a page cut to `returned` rows because the bytes ran out:
 /// more rows exist, and at least one more than were returned.
-fn cut_window(
-    window: QueryResultWindowV1,
-    returned: usize,
-) -> Result<QueryResultWindowV1, CoreError> {
-    let returned_u32 = u32::try_from(returned)
-        .map_err(|err| CoreError::InvalidContract(format!("cut page rows: {err}")))?;
-    let at_least = u64::from(returned_u32).saturating_add(1);
-    let count = match window.candidate_count() {
-        CandidateCountV1::Exact(total) => CandidateCountV1::Exact(total),
-        CandidateCountV1::AtLeast(lower) => CandidateCountV1::AtLeast(lower.max(at_least)),
-    };
-    QueryResultWindowV1::new(returned_u32, count, true)
-        .map_err(|err| CoreError::InvalidContract(format!("cut page window: {err}")))
-}
-
 /// `page` as it fits `budget`: whole when it fits, else its longest
 /// prefix that does, continued by a cursor at the prefix's last row.
 ///
@@ -111,6 +101,7 @@ fn cut_window(
 pub(super) fn fit_ranked_page<P: RankedPage>(
     page: P,
     budget: ResponsePayloadBudget,
+    mint: impl Fn(&LexicalCursor) -> Result<ContinuationTokenV2, CoreError>,
 ) -> Result<P, CoreError> {
     let limit = budget.max_payload_bytes();
     let whole = encoded_len(&page, "ranked page")?;
@@ -138,7 +129,7 @@ pub(super) fn fit_ranked_page<P: RankedPage>(
         used = next;
         returned = returned.saturating_add(1);
     }
-    let window = page.window();
+    let window = page.window().clone();
     let generation = page.generation();
     loop {
         let Some(last) = returned.checked_sub(1) else {
@@ -150,9 +141,14 @@ pub(super) fn fit_ranked_page<P: RankedPage>(
             )));
         };
         let cursor = LexicalCursor::at(generation, key);
+        let token = mint(&cursor)?;
         let cut = page
             .clone()
-            .cut(returned, cut_window(window, returned)?, cursor);
+            .cut(
+                returned,
+                crate::query_dispatcher::window::cut_pageable_window_v2(&window, returned)?,
+                token,
+            );
         if encoded_len(&cut, "cut ranked page")? <= limit {
             return Ok(cut);
         }
@@ -183,8 +179,8 @@ impl RankedPage for TextQueryResponse {
             .map_or(Ok(0), |row| encoded_len(row, "file owner row"))
     }
 
-    fn window(&self) -> QueryResultWindowV1 {
-        self.window
+    fn window(&self) -> &QueryResultWindowV2 {
+        &self.window
     }
 
     fn last_key(&self, returned: usize) -> Option<LexicalRowOrderKey<'_>> {
@@ -198,7 +194,12 @@ impl RankedPage for TextQueryResponse {
         self.generation.manifest_generation
     }
 
-    fn cut(mut self, returned: usize, window: QueryResultWindowV1, cursor: LexicalCursor) -> Self {
+    fn cut(
+        mut self,
+        returned: usize,
+        window: QueryResultWindowV2,
+        cursor: ContinuationTokenV2,
+    ) -> Self {
         self.results.truncate(returned);
         if let Some(rows) = self.file_owner_rows.as_mut() {
             rows.truncate(returned);
@@ -220,8 +221,8 @@ impl RankedPage for SymbolQueryResponse {
         Ok(0)
     }
 
-    fn window(&self) -> QueryResultWindowV1 {
-        self.window
+    fn window(&self) -> &QueryResultWindowV2 {
+        &self.window
     }
 
     fn last_key(&self, returned: usize) -> Option<LexicalRowOrderKey<'_>> {
@@ -235,7 +236,12 @@ impl RankedPage for SymbolQueryResponse {
         self.generation.manifest_generation
     }
 
-    fn cut(mut self, returned: usize, window: QueryResultWindowV1, cursor: LexicalCursor) -> Self {
+    fn cut(
+        mut self,
+        returned: usize,
+        window: QueryResultWindowV2,
+        cursor: ContinuationTokenV2,
+    ) -> Self {
         self.results.truncate(returned);
         self.window = window;
         self.next_cursor = Some(cursor);

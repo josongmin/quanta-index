@@ -14,10 +14,10 @@ use std::error::Error;
 
 use quanta_index_contract::lex::SymbolKindCode;
 use quanta_index_contract::{
-    CandidateCountV1, FileOwnerProjectionRow, GenerationPin, LexicalCandidate, LexicalCursor,
-    ManifestGeneration, QueryConstraintSetV1, QueryResultWindowV1, RepoId, RepoRelativePath,
-    RevisionId, SymbolCandidate, SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest,
-    TextQueryResponse, TextQuerySyntax,
+    CandidateCountV1, ContinuationTokenV2, FileOwnerProjectionRow, GenerationPin,
+    LexicalCandidate, LexicalCursor, ManifestGeneration, QueryConstraintSetV1,
+    QueryResultWindowV2, RepoId, RepoRelativePath, RevisionId, SymbolCandidate,
+    SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -68,15 +68,19 @@ fn cursor_at(row: &LexicalCandidate) -> LexicalCursor {
     LexicalCursor::at(ManifestGeneration::new(7), row.order_key())
 }
 
+fn token(label: &str) -> Result<ContinuationTokenV2, Box<dyn Error>> {
+    Ok(ContinuationTokenV2::new(format!("signed-{label}"))?)
+}
+
 fn continued(results: Vec<LexicalCandidate>) -> Result<TextQueryResponse, Box<dyn Error>> {
-    let last = results.last().ok_or("rows")?;
     Ok(TextQueryResponse {
         generation: pin(),
-        next_cursor: Some(cursor_at(last)),
-        window: QueryResultWindowV1::new(
+        next_cursor: Some(token("text-page")?),
+        window: QueryResultWindowV2::pageable(
             u32::try_from(results.len())?,
             CandidateCountV1::AtLeast(u64::try_from(results.len())?.saturating_add(1)),
             true,
+            Vec::new(),
         )?,
         results,
         file_owner_rows: None,
@@ -107,7 +111,7 @@ fn a_continued_page_and_a_final_page_round_trip() -> TestResult {
     let last_page = TextQueryResponse {
         generation: pin(),
         results: rows(),
-        window: QueryResultWindowV1::exact(3),
+        window: QueryResultWindowV2::exact_probe(3),
         file_owner_rows: None,
         next_cursor: None,
     };
@@ -124,18 +128,8 @@ fn the_decoder_refuses_every_page_that_would_skip_or_repeat() -> TestResult {
     refused_text(&no_cursor, "more rows without a cursor")?;
 
     let mut stray_cursor = continued(rows())?;
-    stray_cursor.window = QueryResultWindowV1::exact(3);
+    stray_cursor.window = QueryResultWindowV2::exact_probe(3);
     refused_text(&stray_cursor, "a cursor on the last page")?;
-
-    let mut not_last = continued(rows())?;
-    not_last.next_cursor = rows().first().map(cursor_at);
-    refused_text(&not_last, "a cursor that is not the page's last row")?;
-
-    let mut foreign = continued(rows())?;
-    if let Some(cursor) = foreign.next_cursor.as_mut() {
-        cursor.manifest_generation = ManifestGeneration::new(8);
-    }
-    refused_text(&foreign, "a cursor from another generation")?;
 
     let mut shuffled = rows();
     shuffled.swap(0, 1);
@@ -196,7 +190,7 @@ fn symbol_requests_and_pages_share_the_text_rules() -> TestResult {
         generation: Some(pin()),
         generation_selector: None,
         top_k: 3,
-        cursor: rows().last().map(cursor_at),
+        cursor: Some(token("symbol-request")?),
     };
     let mut bytes = Vec::new();
     ciborium::into_writer(&request, &mut bytes)?;
@@ -224,8 +218,13 @@ fn symbol_requests_and_pages_share_the_text_rules() -> TestResult {
     let results = rows().iter().map(symbol).collect::<Result<Vec<_>, _>>()?;
     let page = SymbolQueryResponse {
         generation: pin(),
-        next_cursor: rows().last().map(cursor_at),
-        window: QueryResultWindowV1::new(3, CandidateCountV1::AtLeast(4), true)?,
+        next_cursor: Some(token("symbol-page")?),
+        window: QueryResultWindowV2::pageable(
+            3,
+            CandidateCountV1::AtLeast(4),
+            true,
+            Vec::new(),
+        )?,
         results,
     };
     let mut bytes = Vec::new();

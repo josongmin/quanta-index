@@ -54,7 +54,7 @@ use quanta_index_lq_structural::{
 };
 use quanta_index_search_plane::{
     ActivationPromotionParts, AuxiliaryMaterializerParts, AuxiliaryMutationCoordinator,
-    BoundedQueryObsStore, DirectHistoryMaterializer, DirectRuntimeMetadataMaterializer,
+    BoundedQueryObsStore, CursorKeyStore, DirectHistoryMaterializer, DirectRuntimeMetadataMaterializer,
     DirectSearchCorpusMaterializer, DirectSemanticMaterializer, DirectStructuralMaterializer,
     HashingQueryTextEmbedder, HistoryIngestPort, HistoryTextIndexParts, Ledger,
     ObservabilityScrape, QuarantineService, QuarantineServiceParts, QueryObsSink,
@@ -1438,6 +1438,7 @@ impl SearchdRuntime {
             Arc::clone(&query_obs_store),
             metric_sources,
         ));
+        let cursor_keys = CursorKeyStore::open(&leased_state_root).map_err(anyhow::Error::from)?;
         let query_dispatcher = Arc::new(
             SearchPlaneDispatcher::new_with_obs(
                 Arc::clone(&lex_open_port),
@@ -1450,6 +1451,7 @@ impl SearchdRuntime {
                 query_text_embedder,
                 query_obs_sink,
             )
+            .with_cursor_key_store(cursor_keys)
             .with_history_text(history_text)
             .with_response_budget(config.query_response_budget()),
         );

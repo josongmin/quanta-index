@@ -23,14 +23,16 @@ use std::ops::Bound;
 
 use imbl::OrdMap;
 use quanta_index_contract::{
-    AuxEpochV1, ChunkId, ChunkRecord, GenerationPin, LexicalCandidate, LqFilter, LqQuery,
-    LqYesNoOnly, QueryResultWindowV1, RuntimeMetadataCursorV1, RuntimeMetadataQueryRequest,
-    SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneTrackKind,
+    AuxEpochV1, ChunkId, ChunkRecord, CursorAuxEpochKindV2, CursorAuxEpochV2, CursorRouteV2,
+    GenerationPin, LexicalCandidate, LqFilter, LqQuery, LqYesNoOnly, QueryResultWindowV1,
+    RuntimeMetadataCursorV1, RuntimeMetadataQueryRequest, SearchPlaneRuntimeMetadataQueryResponse,
+    SearchPlaneTrackKind,
 };
 use quanta_index_core::{CoreError, QueryRouteV1, RequestBudgetV1, validate_query_top_k};
 
 use crate::lower_lexical_text_query;
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
+use crate::query_dispatcher::continuation::{CursorRequestContextV2, require_token_pin};
 use crate::query_dispatcher::errors::{runtime_catalog_head_missing, runtime_snapshot_unknown};
 use crate::query_dispatcher::keyset_page::{KeysetPageCollector, StreamEnd};
 use crate::query_dispatcher::read_view::{AuxEpochPinsV1, ReadViewRequestV1};
@@ -42,6 +44,7 @@ use crate::query_dispatcher::text_plane::{
 use crate::query_dispatcher::timeref::{
     parse_runtime_changed_scope_ms, parse_runtime_stale_scope_ms,
 };
+use crate::query_dispatcher::window::pageable_window_v2;
 use crate::readiness::{
     AuxRead, ChangedDocState, DirtyDocState, DocFacetState, RuntimeMetadataState,
     StructuralAuthorityState,
@@ -57,16 +60,44 @@ impl SearchPlaneDispatcher {
         let _accepted_top_k = validate_query_top_k(request.text_query.top_k)?;
         let lowered = lower_lexical_text_query(&request.text_query)?;
         validate_runtime_metadata_query(&lowered)?;
-        let pin = resolve_optional_selection(
-            self.activation_catalog.as_ref(),
-            request.text_query.generation.clone(),
-            request.text_query.generation_selector.as_ref(),
-            SearchPlaneTrackKind::Lexical,
-            "runtime metadata",
-        )?
-        .ok_or_else(|| {
-            CoreError::InvalidContract("runtime metadata: generation selector required".to_string())
-        })?;
+        let opened = request
+            .cursor
+            .as_ref()
+            .map(|token| self.cursors()?.open::<RuntimeMetadataCursorV1>(token))
+            .transpose()?;
+        let pin = if let Some(opened) = &opened {
+            require_token_pin(
+                request.text_query.generation.as_ref(),
+                request.text_query.generation_selector.as_ref(),
+                &opened.binding().pin,
+            )?;
+            opened.binding().pin.clone()
+        } else {
+            resolve_optional_selection(
+                self.activation_catalog.as_ref(),
+                request.text_query.generation.clone(),
+                request.text_query.generation_selector.as_ref(),
+                SearchPlaneTrackKind::Lexical,
+                "runtime metadata",
+            )?
+            .ok_or_else(|| {
+                CoreError::InvalidContract(
+                    "runtime metadata: generation selector required".to_string(),
+                )
+            })?
+        };
+        let cursor_context = CursorRequestContextV2 {
+            route: CursorRouteV2::RuntimeMetadata,
+            pin: &pin,
+            query: &lowered,
+            constraints: &request.text_query.constraints,
+            order: "candidate_id_asc_v1",
+            cap: request.text_query.top_k,
+        };
+        if let Some(opened) = &opened {
+            self.cursors()?.require_context(opened, &cursor_context)?;
+        }
+        let boundary = opened.as_ref().map(|cursor| &cursor.boundary);
         // Both snapshots are the read view's, taken under one read lock
         // and scanned outside it (QI-BB-020): a long scan never holds up
         // an ingest, an ingest never holds up a query.
@@ -79,8 +110,8 @@ impl SearchPlaneDispatcher {
             )
             .with_epochs(AuxEpochPinsV1 {
                 history: None,
-                runtime: request.cursor.as_ref().map(|cursor| cursor.aux_epoch),
-                structural: request.cursor.as_ref().map(|cursor| cursor.universe_epoch),
+                runtime: boundary.map(|cursor| cursor.aux_epoch),
+                structural: boundary.map(|cursor| cursor.universe_epoch),
             }),
             budget,
         )?;
@@ -101,16 +132,37 @@ impl SearchPlaneDispatcher {
             &read.universe.state,
             epochs,
             request.text_query.top_k,
-            request.cursor.as_ref(),
+            boundary,
         )?;
+        let window = pageable_window_v2(page.window, "runtime_metadata")?;
+        let next_cursor = page
+            .next_cursor
+            .as_ref()
+            .map(|cursor| {
+                self.cursors()?.mint(
+                    cursor,
+                    &cursor_context,
+                    vec![
+                        CursorAuxEpochV2 {
+                            kind: CursorAuxEpochKindV2::RuntimeMetadata,
+                            epoch: epochs.runtime.get(),
+                        },
+                        CursorAuxEpochV2 {
+                            kind: CursorAuxEpochKindV2::Structural,
+                            epoch: epochs.universe.get(),
+                        },
+                    ],
+                )
+            })
+            .transpose()?;
         Ok(SearchPlaneRuntimeMetadataQueryResponse {
             generation: pin,
             results: page.results,
-            window: page.window,
+            window,
             read_epoch: epochs.runtime,
             universe_epoch: epochs.universe,
             examined: page.examined,
-            next_cursor: page.next_cursor,
+            next_cursor,
         })
     }
 }

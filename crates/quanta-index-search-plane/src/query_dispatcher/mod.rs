@@ -29,6 +29,7 @@
 //!   depend on `timeref` / `errors`; the rest depend only on `errors`.
 
 mod cursor_key;
+mod continuation;
 mod dense_admission;
 mod dispatcher;
 mod errors;

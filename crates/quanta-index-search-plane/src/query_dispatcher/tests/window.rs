@@ -3,8 +3,7 @@ use quanta_index_core::{CoreError, LexicalSearchPageV1};
 
 use crate::query_dispatcher::tests::support::common::{build_probe_query, candidate};
 use crate::query_dispatcher::window::{
-    finalize_probe_window_v1, fused_window_v1, lexical_fetch_limit_v1, lexical_page_window_v1,
-    probe_top_k_v1,
+    finalize_probe_window_v1, lexical_fetch_limit_v1, lexical_page_window_v1, probe_top_k_v1,
 };
 
 #[test]
@@ -22,10 +21,6 @@ fn query_window_uses_one_continuation_row_and_never_requires_full_count_v1() {
     assert_eq!(window.returned(), 3);
     assert_eq!(window.candidate_count(), CandidateCountV1::AtLeast(4));
     assert!(window.has_more());
-    let fused = fused_window_v1(100, 100, 100, true).expect("capped lane is a lower bound");
-    assert_eq!(fused.candidate_count(), CandidateCountV1::AtLeast(101));
-    assert!(fused.has_more());
-    assert!(fused_window_v1(100, 99, 99, true).is_err());
     assert_eq!(
         probe_top_k_v1(9_999).expect("one-row probe within ceiling"),
         10_000

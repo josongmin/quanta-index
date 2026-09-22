@@ -11,7 +11,7 @@ use std::path::Path;
 
 use quanta_index_contract::{
     CursorBindingV2, CursorEnvelopeError, CursorEnvelopeV2, CursorKeyV2, CursorTtlPolicyV2,
-    GenerationPin, ManifestGeneration, RepoId, RevisionId, SearchPlaneErrorCodeV2,
+    SearchPlaneErrorCodeV2,
 };
 use quanta_index_core::CoreError;
 
@@ -22,6 +22,13 @@ const CURSOR_KEY_FILE_MODE: u32 = 0o600;
 const CURSOR_KEY_FILE_LEN: usize = 40;
 
 /// The server-held cursor key plus the TTL policy it mints under.
+///
+/// Decode order is base64, canonical bytes, version, key lookup, HMAC,
+/// expiry, then request-context binding — every step fail-closed before
+/// any read-view acquisition. Mint and verify are the only token
+/// operations; no route constructs or parses a token on its own (the
+/// shared continuation authority lives in
+/// `crate::query_dispatcher::continuation`).
 #[derive(Clone, Debug)]
 pub struct CursorKeyStore {
     key: CursorKeyV2,
@@ -29,6 +36,26 @@ pub struct CursorKeyStore {
 }
 
 impl CursorKeyStore {
+    /// Create a process-local signing authority. This is suitable for
+    /// owner-local composition and tests; the product root must replace it
+    /// with [`Self::open`] so continuations survive process restarts.
+    pub fn ephemeral() -> Result<Self, CoreError> {
+        let raw = fresh_entropy(CURSOR_KEY_FILE_LEN)?;
+        let (id_bytes, key_bytes) = raw.split_at(8);
+        let id = u64::from_be_bytes(
+            id_bytes
+                .try_into()
+                .map_err(|_| invalid("cursor key id has the wrong length"))?,
+        );
+        let key = key_bytes
+            .try_into()
+            .map_err(|_| invalid("cursor key material has the wrong length"))?;
+        Ok(Self {
+            key: CursorKeyV2::new(id, key),
+            ttl: CursorTtlPolicyV2::standard(),
+        })
+    }
+
     /// Load the key from `state_root/keys/cursor-v2.key`, creating it with
     /// fresh OS entropy on first open. Fails closed when the file exists
     /// with the wrong length or a looser mode, or when entropy or the
@@ -72,6 +99,14 @@ impl CursorKeyStore {
         })
     }
 
+    /// The key id, for diagnostics.
+    #[must_use]
+    pub const fn key_id(&self) -> u64 {
+        self.key.id()
+    }
+}
+
+impl CursorKeyStore {
     /// Mint a continuation token for `binding` at `now_unix` under the
     /// standard TTL (or a clamped explicit request).
     pub fn mint(
@@ -120,12 +155,6 @@ impl CursorKeyStore {
                     .to_string(),
             })
         }
-    }
-
-    /// The key id, for diagnostics.
-    #[must_use]
-    pub const fn key_id(&self) -> u64 {
-        self.key.id()
     }
 }
 
@@ -223,7 +252,10 @@ mod tests {
     use std::path::PathBuf;
 
     use super::CursorKeyStore;
-    use quanta_index_contract::{CursorBindingV2, CursorRouteV2, SearchPlaneErrorCodeV2};
+    use quanta_index_contract::{
+        CursorBindingV2, CursorRouteV2, GenerationPin, ManifestGeneration, RepoId, RevisionId,
+        SearchPlaneErrorCodeV2,
+    };
     use quanta_index_core::CoreError;
 
     fn temp_dir(name: &str) -> PathBuf {
@@ -254,6 +286,8 @@ mod tests {
             aux_epochs: Vec::new(),
         }
     }
+
+
 
     #[test]
     fn key_is_persistent_and_owner_only() {

@@ -12,7 +12,7 @@ use quanta_index_contract::lex::LexicalErrorCode;
 use quanta_index_contract::{
     EarlyStopReason, EngineTouched, GenerationPin, HybridCandidateV1, HybridQueryRequest,
     HybridSeedQueryRequest, LexicalCandidate, OwnerDocKind, PlannerStage, PlannerTraceEntry,
-    QueryResultWindowV1, QueryResultWindowV2, SearchExplanation, SearchPlaneTrackKind,
+    QueryResultWindowV2, SearchExplanation, SearchPlaneTrackKind,
     SeedCandidate, SeedContribution, SeedFusionIdentity, SeedLane, SemanticCorpusKindV1,
     SemanticQueryRequest, SemanticSeedCorpusBudgetV1,
 };
@@ -40,7 +40,6 @@ fn dense_lane_trace_entry_v1(dense_lane: &DenseLaneContractV1) -> PlannerTraceEn
 pub(super) struct HybridFusion {
     pub(super) pin: GenerationPin,
     pub(super) fused: Vec<HybridCandidateV1>,
-    pub(super) window: QueryResultWindowV1,
     /// Typed outcome and coverage (S21-06): the dense admission outcome
     /// survives fusion here instead of collapsing into row counts.
     pub(super) window_v2: QueryResultWindowV2,

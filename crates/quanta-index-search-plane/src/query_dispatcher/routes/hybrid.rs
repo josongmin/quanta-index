@@ -22,7 +22,7 @@ use crate::query_dispatcher::semantic_query::{
     resolve_hybrid_request_selection,
 };
 use crate::query_dispatcher::window::{
-    fused_window_v1, fused_window_v2, hybrid_probe_top_k_v1, lane_count_u64,
+    fused_window_v2, hybrid_probe_top_k_v1, lane_count_u64,
 };
 
 /// Lane traces for the fused window: lexical and dense lanes carry their
@@ -180,7 +180,6 @@ impl SearchPlaneDispatcher {
             &filter_trace,
         );
         attach_read_view_trace(&mut explanation, view.identity());
-        let window = fused_window_v1(top_k, fused.len(), fused_universe_size, lane_limit_reached)?;
         let window_v2 = fused_window_v2(
             top_k,
             fused.len(),
@@ -198,7 +197,6 @@ impl SearchPlaneDispatcher {
         Ok(HybridFusion {
             pin,
             fused,
-            window,
             window_v2,
             explanation,
         })
@@ -224,8 +222,7 @@ impl SearchPlaneDispatcher {
         Ok(HybridQueryResponse {
             generation: fusion.pin,
             results: fusion.fused,
-            window: fusion.window,
-            window_v2: fusion.window_v2,
+            window: fusion.window_v2,
             explanation: fusion.explanation,
         })
     }

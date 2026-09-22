@@ -3256,7 +3256,7 @@ mod tests {
                     symbol_kind,
                     symbol_kind_family: Some(SymbolKindFamily::Callable),
                 }],
-                window: QueryResultWindowV1::exact(1),
+                window: QueryResultWindowV2::exact_probe(1),
                 next_cursor: None,
             }),
         };

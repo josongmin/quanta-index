@@ -24,7 +24,7 @@ use crate::query_dispatcher::semantic_query::{
     resolve_hybrid_seed_request_selection,
 };
 use crate::query_dispatcher::window::{
-    fused_window_v1, fused_window_v2, hybrid_probe_top_k_v1, lane_count_u64,
+    fused_window_v2, hybrid_probe_top_k_v1, lane_count_u64,
 };
 
 impl SearchPlaneDispatcher {
@@ -211,12 +211,6 @@ impl SearchPlaneDispatcher {
             },
         );
         attach_read_view_trace(&mut explanation, view.identity());
-        let window = fused_window_v1(
-            request.top_k,
-            seed_candidates.len(),
-            fused_entity_universe,
-            primary_lane_limit_reached,
-        )?;
         // Aggregate dense admission: one capped lane caps the whole
         // window; a filled lane proves a continuation; exhausted lanes
         // prove only their own universe.
@@ -250,8 +244,7 @@ impl SearchPlaneDispatcher {
             generation: pin,
             manifest_digest,
             seed_candidates,
-            window,
-            window_v2,
+            window: window_v2,
             explanation,
         })
     }

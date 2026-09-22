@@ -755,6 +755,58 @@ impl QueryResultWindowV2 {
         }
     }
 
+    /// Exact probe result with no lane trace. Primarily useful to construct
+    /// contract fixtures; runtime owners should carry their executed lanes.
+    #[must_use]
+    pub fn exact_probe(returned: u32) -> Self {
+        Self::exact_exhausted(
+            returned,
+            ExhaustionProofV1::ProbeExhausted { fetched: returned },
+            Vec::new(),
+        )
+    }
+
+    /// Build the V2 authority from a pageable adapter observation. A
+    /// continuation is a lower-bound proof; no continuation is exact only
+    /// when the adapter supplied an exact count equal to the returned rows.
+    pub fn pageable(
+        returned: u32,
+        candidate_count: CandidateCountV1,
+        continuation: bool,
+        lanes: Vec<LaneTraceV1>,
+    ) -> Result<Self, &'static str> {
+        let (outcome, proof) = if continuation {
+            (ExecutionOutcomeV2::LowerBound { continuation: true }, None)
+        } else {
+            match candidate_count {
+                CandidateCountV1::Exact(exact) if exact == u64::from(returned) => (
+                    ExecutionOutcomeV2::ExactExhausted,
+                    Some(ExhaustionProofV1::ExactCount { total: exact }),
+                ),
+                CandidateCountV1::Exact(_) => {
+                    return Err("a page without continuation has an exact count above returned rows");
+                }
+                CandidateCountV1::AtLeast(_) => (
+                    ExecutionOutcomeV2::LowerBound {
+                        continuation: false,
+                    },
+                    None,
+                ),
+            }
+        };
+        let examined = match candidate_count {
+            CandidateCountV1::Exact(exact) => ExaminedUniverseV1::Exact(exact),
+            CandidateCountV1::AtLeast(lower) => ExaminedUniverseV1::AtLeast(lower),
+        };
+        Self::new(
+            returned,
+            candidate_count,
+            outcome,
+            CoverageV1::new(examined, proof, lanes),
+            (returned == 0).then_some(EmptyProvenanceV2::AvailableEmpty),
+        )
+    }
+
     #[must_use]
     pub const fn returned(&self) -> u32 {
         self.returned

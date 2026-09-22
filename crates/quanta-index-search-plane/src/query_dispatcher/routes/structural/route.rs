@@ -20,14 +20,16 @@
 use std::sync::Arc;
 
 use quanta_index_contract::{
-    AuxEpochV1, LqQuery, QueryResultWindowV1, SearchPlaneStructuralQueryResponse,
-    StructuralCandidate, StructuralCursorV1, StructuralQueryRequest,
+    AuxEpochV1, CursorAuxEpochKindV2, CursorAuxEpochV2, CursorRouteV2, LqQuery,
+    QueryResultWindowV1, SearchPlaneStructuralQueryResponse, StructuralCandidate,
+    StructuralCursorV1, StructuralQueryRequest,
 };
 use quanta_index_core::{
     CoreError, QueryRouteV1, RequestBudgetV1, StructuralService, validate_query_top_k,
 };
 
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
+use crate::query_dispatcher::continuation::{CursorRequestContextV2, require_token_pin};
 use crate::query_dispatcher::errors::structural_invalid_request;
 use crate::query_dispatcher::keyset_page::{KeysetPageCollector, StreamEnd};
 use crate::query_dispatcher::read_view::{AuxEpochPinsV1, QueryReadViewV2, ReadViewRequestV1};
@@ -44,6 +46,7 @@ use crate::query_dispatcher::routes::structural::lowering::{
 use crate::query_dispatcher::routes::structural::projection::project_structural_page;
 use crate::query_dispatcher::routes::structural::read::StructuralRead;
 use crate::query_dispatcher::routes::structural::universe::build_pinned_structural_universe;
+use crate::query_dispatcher::window::pageable_window_v2;
 
 impl SearchPlaneDispatcher {
     pub(crate) fn structural(
@@ -53,8 +56,49 @@ impl SearchPlaneDispatcher {
     ) -> Result<SearchPlaneStructuralQueryResponse, CoreError> {
         budget.checkpoint("structural:entry")?;
         let _accepted_top_k = validate_query_top_k(request.text_query.top_k)?;
-        let (pin, lowered) =
-            lower_structural_query_request(self.activation_catalog.as_ref(), request)?;
+        let opened = request
+            .cursor
+            .as_ref()
+            .map(|token| self.cursors()?.open::<StructuralCursorV1>(token))
+            .transpose()?;
+        if let Some(opened) = &opened {
+            require_token_pin(
+                request.text_query.generation.as_ref(),
+                request.text_query.generation_selector.as_ref(),
+                &opened.binding().pin,
+            )?;
+        }
+        let pinned_request = StructuralQueryRequest {
+            text_query: quanta_index_contract::TextQueryRequest {
+                generation: opened
+                    .as_ref()
+                    .map(|cursor| cursor.binding().pin.clone())
+                    .or_else(|| request.text_query.generation.clone()),
+                generation_selector: opened
+                    .as_ref()
+                    .map(|_| None)
+                    .unwrap_or_else(|| request.text_query.generation_selector.clone()),
+                cursor: None,
+                ..request.text_query.clone()
+            },
+            cursor: None,
+        };
+        let (pin, lowered) = lower_structural_query_request(
+            self.activation_catalog.as_ref(),
+            &pinned_request,
+        )?;
+        let cursor_context = CursorRequestContextV2 {
+            route: CursorRouteV2::Structural,
+            pin: &pin,
+            query: &lowered,
+            constraints: &request.text_query.constraints,
+            order: "candidate_id_asc_v1",
+            cap: request.text_query.top_k,
+        };
+        if let Some(opened) = &opened {
+            self.cursors()?.require_context(opened, &cursor_context)?;
+        }
+        let boundary = opened.as_ref().map(|cursor| &cursor.boundary);
         // The whole query — the pinned universe, every parse-tree leaf the
         // producer executes, every symbol projection — reads one structural
         // snapshot, the view's (QI-BB-020 W2): the cursor's epoch for a
@@ -69,7 +113,7 @@ impl SearchPlaneDispatcher {
             .with_epochs(AuxEpochPinsV1 {
                 history: None,
                 runtime: None,
-                structural: request.cursor.as_ref().map(|cursor| cursor.aux_epoch),
+                structural: boundary.map(|cursor| cursor.aux_epoch),
             }),
             budget,
         )?;
@@ -84,16 +128,31 @@ impl SearchPlaneDispatcher {
             read,
             &lowered,
             request.text_query.top_k,
-            request.cursor.as_ref(),
+            boundary,
             budget,
         )?;
+        let window = pageable_window_v2(page.window, "structural")?;
+        let next_cursor = page
+            .next_cursor
+            .as_ref()
+            .map(|cursor| {
+                self.cursors()?.mint(
+                    cursor,
+                    &cursor_context,
+                    vec![CursorAuxEpochV2 {
+                        kind: CursorAuxEpochKindV2::Structural,
+                        epoch: structural.epoch.get(),
+                    }],
+                )
+            })
+            .transpose()?;
         Ok(SearchPlaneStructuralQueryResponse {
             generation: pin,
             results: page.results,
-            window: page.window,
+            window,
             read_epoch: structural.epoch,
             examined: page.examined,
-            next_cursor: page.next_cursor,
+            next_cursor,
         })
     }
 

@@ -68,7 +68,7 @@ pub(super) fn interruption_route_suffix(code: Code) -> Option<&'static str> {
 /// The window's candidate count is a lower bound of what the route
 /// observed, exact when the page was not cut.
 pub(super) fn examined_candidates_metric(
-    window: &quanta_index_contract::QueryResultWindowV1,
+    window: &quanta_index_contract::QueryResultWindowV2,
 ) -> f64 {
     quanta_index_core::count_as_f64(window.candidate_count().lower_bound())
 }

@@ -10,9 +10,9 @@
 use std::sync::{Arc, Mutex};
 
 use quanta_index_contract::{
-    ERR_RESULT_TOO_LARGE, LexicalCandidate, LexicalCursor, ManifestGeneration,
-    QueryConstraintSetV1, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
-    TextQueryRequest, TextQueryResponse, TextQuerySyntax,
+    ContinuationTokenV2, ERR_RESULT_TOO_LARGE, LexicalCandidate, LexicalCursor,
+    ManifestGeneration, QueryConstraintSetV1, SearchPlaneQueryIpcRequest,
+    SearchPlaneQueryIpcResponse, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
 };
 use quanta_index_core::RequestBudgetV1;
 
@@ -38,7 +38,7 @@ fn rows(count: usize, snippet_bytes: usize) -> Vec<LexicalCandidate> {
         .collect()
 }
 
-fn request(top_k: u32, cursor: Option<LexicalCursor>) -> SearchPlaneQueryIpcRequest {
+fn request(top_k: u32, cursor: Option<ContinuationTokenV2>) -> SearchPlaneQueryIpcRequest {
     SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
         syntax: TextQuerySyntax::Native,
         query_text: "needle".to_string(),
@@ -89,25 +89,24 @@ fn walk(
     top_k: u32,
 ) -> Result<Vec<Vec<String>>, Box<dyn std::error::Error>> {
     let mut pages: Vec<Vec<String>> = Vec::new();
-    let mut cursor: Option<LexicalCursor> = None;
+    let mut cursor: Option<ContinuationTokenV2> = None;
     for _ in 0..64 {
         let page = text(dispatcher.dispatch(
             request(top_k, cursor.clone()),
             &RequestBudgetV1::unbounded(),
         ))?;
         pages.push(ids(&page.results));
-        let expected = page
-            .window
-            .has_more()
-            .then(|| page.results.last())
-            .flatten()
-            .map(|last| LexicalCursor::at(ManifestGeneration::new(9), last.order_key()));
-        if page.next_cursor != expected {
-            return Err(format!(
-                "the continuation must be the last row exactly when more exist: {:?} vs {expected:?}",
-                page.next_cursor
-            )
-            .into());
+        if page.window.has_more() == Some(true) {
+            let token = page.next_cursor.as_ref().ok_or("continued page has no token")?;
+            let opened = dispatcher.cursors()?.open::<LexicalCursor>(token)?;
+            let expected = page.results.last().ok_or("continued page has no row")?;
+            if opened.boundary
+                != LexicalCursor::at(ManifestGeneration::new(9), expected.order_key())
+            {
+                return Err("the signed continuation boundary is not the last row".into());
+            }
+        } else if page.next_cursor.is_some() {
+            return Err("a final page carries a continuation token".into());
         }
         match page.next_cursor {
             Some(next) => cursor = Some(next),
@@ -143,8 +142,12 @@ fn the_cursor_reaches_the_searcher_and_another_generations_is_refused_first() ->
         Arc::new(RejectSemanticOpener),
         Arc::new(NoopQueryObsSink),
     )?;
-    let row = rows(1, 8).into_iter().next().ok_or("a row")?;
-    let cursor = LexicalCursor::at(ManifestGeneration::new(9), row.order_key());
+    let first = text(dispatcher.dispatch(
+        request(1, None),
+        &RequestBudgetV1::unbounded(),
+    ))?;
+    let cursor = first.next_cursor.ok_or("first page continues")?;
+    let decoded = dispatcher.cursors()?.open::<LexicalCursor>(&cursor)?.boundary;
     let _page = text(dispatcher.dispatch(
         request(2, Some(cursor.clone())),
         &RequestBudgetV1::unbounded(),
@@ -154,16 +157,21 @@ fn the_cursor_reaches_the_searcher_and_another_generations_is_refused_first() ->
         .map_err(|err| format!("state: {err}"))?
         .search_afters
         .clone();
-    if afters != vec![Some(cursor.clone())] {
+    if afters != vec![None, Some(decoded)] {
         return Err(format!("the searcher saw {afters:?}").into());
     }
 
-    let mut foreign = cursor;
-    foreign.manifest_generation = ManifestGeneration::new(10);
+    let mut foreign = request(2, Some(cursor));
+    let SearchPlaneQueryIpcRequest::Text(foreign_request) = &mut foreign else {
+        return Err("text request fixture drifted".into());
+    };
+    let mut foreign_pin = ready_pin();
+    foreign_pin.manifest_generation = ManifestGeneration::new(10);
+    foreign_request.generation = Some(foreign_pin);
     let (code, _message) = ipc_error_from(
-        dispatcher.dispatch(request(2, Some(foreign)), &RequestBudgetV1::unbounded()),
+        dispatcher.dispatch(foreign, &RequestBudgetV1::unbounded()),
     )?;
-    if code != quanta_index_contract::SearchPlaneErrorCodeV2::QueryCursorGenerationMismatch {
+    if code != quanta_index_contract::SearchPlaneErrorCodeV2::CursorContextMismatch {
         return Err(format!("a foreign cursor answered `{code}`").into());
     }
     let searches = state
@@ -171,7 +179,7 @@ fn the_cursor_reaches_the_searcher_and_another_generations_is_refused_first() ->
         .map_err(|err| format!("state: {err}"))?
         .search_top_ks
         .len();
-    if searches != 1 {
+    if searches != 2 {
         return Err(format!("the refusal came after a search: {searches} searches").into());
     }
     Ok(())
@@ -190,9 +198,12 @@ fn a_page_past_the_byte_budget_is_cut_and_continued() -> TestResult {
     if encoded > budget.max_payload_bytes() {
         return Err(format!("the cut page encodes to {encoded} bytes").into());
     }
-    if first.results.is_empty() || first.results.len() >= all.len() || !first.window.has_more() {
+    if first.results.is_empty()
+        || first.results.len() >= all.len()
+        || first.window.has_more() != Some(true)
+    {
         return Err(format!(
-            "six 1 KB rows cannot fit 3.5 KB, but one can: {} rows, has_more {}",
+            "six 1 KB rows cannot fit 3.5 KB, but one can: {} rows, has_more {:?}",
             first.results.len(),
             first.window.has_more()
         )
@@ -228,16 +239,12 @@ fn a_cursor_on_a_route_that_does_not_page_is_refused() -> TestResult {
         runtime_query_request,
     };
     let dispatcher = runtime_metadata_dispatcher_with_ledger(ready_runtime_metadata_ledger(1, 1))?;
-    let row = rows(1, 8).into_iter().next().ok_or("a row")?;
     let SearchPlaneQueryIpcRequest::RuntimeMetadata(mut runtime) =
         runtime_query_request(TextQuerySyntax::Native, "dirty:yes")
     else {
         return Err("the helper builds a runtime-metadata request".into());
     };
-    runtime.text_query.cursor = Some(LexicalCursor::at(
-        ManifestGeneration::new(9),
-        row.order_key(),
-    ));
+    runtime.text_query.cursor = Some(ContinuationTokenV2::new("signed-nested-text")?);
     let (code, _message) = ipc_error_from(dispatcher.dispatch(
         SearchPlaneQueryIpcRequest::RuntimeMetadata(runtime),
         &RequestBudgetV1::unbounded(),

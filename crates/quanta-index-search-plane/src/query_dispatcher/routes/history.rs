@@ -23,13 +23,15 @@
 
 use quanta_index_contract::lex::CommitSha;
 use quanta_index_contract::{
-    AuxEpochV1, HistoryCursor, HistoryCursorOrderV1, HistoryOrderV1, HistoryQueryRequest, LqFilter,
-    LqQuery, QueryResultWindowV1, SearchPlaneHistoryQueryResponse, SearchPlaneTrackKind,
+    AuxEpochV1, CursorAuxEpochKindV2, CursorAuxEpochV2, CursorRouteV2, HistoryCursor,
+    HistoryCursorOrderV1, HistoryOrderV1, HistoryQueryRequest, LqFilter, LqQuery,
+    QueryResultWindowV1, SearchPlaneHistoryQueryResponse, SearchPlaneTrackKind,
 };
 use quanta_index_core::{CoreError, QueryRouteV1, RequestBudgetV1, validate_query_top_k};
 
 use crate::lower_lexical_text_query;
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
+use crate::query_dispatcher::continuation::{CursorRequestContextV2, require_token_pin};
 use crate::query_dispatcher::errors::{history_cursor_order_mismatch, history_shard_unavailable};
 use crate::query_dispatcher::read_view::{AuxEpochPinsV1, ReadViewRequestV1};
 use crate::query_dispatcher::routes::history_records::{
@@ -43,7 +45,7 @@ use crate::query_dispatcher::text_plane::{
     ExecutableTextPlanePolicy, validate_executable_text_query,
 };
 use crate::query_dispatcher::timeref::parse_history_timeref_ms;
-use crate::query_dispatcher::window::top_k_limit;
+use crate::query_dispatcher::window::{pageable_window_v2, top_k_limit};
 use crate::readiness::HistoryAuthorityState;
 
 impl SearchPlaneDispatcher {
@@ -56,21 +58,50 @@ impl SearchPlaneDispatcher {
         let _accepted_top_k = validate_query_top_k(request.text_query.top_k)?;
         let lowered = lower_lexical_text_query(&request.text_query)?;
         validate_history_query(&lowered)?;
-        ensure_cursor_continues_order(request.order, request.cursor.as_ref())?;
-        let pin = resolve_optional_selection(
-            self.activation_catalog.as_ref(),
-            request.text_query.generation.clone(),
-            request.text_query.generation_selector.as_ref(),
-            SearchPlaneTrackKind::Lexical,
-            "history",
-        )?
-        .ok_or_else(|| {
-            CoreError::InvalidContract("history: generation selector required".to_string())
-        })?;
+        let opened = request
+            .cursor
+            .as_ref()
+            .map(|token| self.cursors()?.open::<HistoryCursor>(token))
+            .transpose()?;
+        ensure_cursor_continues_order(
+            request.order,
+            opened.as_ref().map(|cursor| &cursor.boundary),
+        )?;
+        let pin = if let Some(opened) = &opened {
+            require_token_pin(
+                request.text_query.generation.as_ref(),
+                request.text_query.generation_selector.as_ref(),
+                &opened.binding().pin,
+            )?;
+            opened.binding().pin.clone()
+        } else {
+            resolve_optional_selection(
+                self.activation_catalog.as_ref(),
+                request.text_query.generation.clone(),
+                request.text_query.generation_selector.as_ref(),
+                SearchPlaneTrackKind::Lexical,
+                "history",
+            )?
+            .ok_or_else(|| {
+                CoreError::InvalidContract("history: generation selector required".to_string())
+            })?
+        };
+        let cursor_context = CursorRequestContextV2 {
+            route: CursorRouteV2::History,
+            pin: &pin,
+            query: &lowered,
+            constraints: &request.text_query.constraints,
+            order: request.order.as_code_str(),
+            cap: request.text_query.top_k,
+        };
+        if let Some(opened) = &opened {
+            self.cursors()?.require_context(opened, &cursor_context)?;
+        }
+        let boundary = opened.as_ref().map(|cursor| &cursor.boundary);
         let view = self.acquire_read_view(
             &ReadViewRequestV1::declare("history", QueryRouteV1::History, Some(&lowered), &pin)
                 .with_epochs(AuxEpochPinsV1 {
-                    history: request.cursor.as_ref().map(|cursor| cursor.aux_epoch),
+                    history: boundary.map(|cursor| cursor.aux_epoch),
                     runtime: None,
                     structural: None,
                 })
@@ -86,26 +117,41 @@ impl SearchPlaneDispatcher {
                 &read.state,
                 read.epoch,
                 request.text_query.top_k,
-                request.cursor.as_ref(),
+                boundary,
             )?,
             HistoryOrderV1::Relevance => execute_history_relevance(
                 &lowered,
                 read,
                 view.history_text()?.as_ref(),
                 request.text_query.top_k,
-                request.cursor.as_ref(),
+                boundary,
                 budget,
             )?,
         };
+        let window = pageable_window_v2(page.window, "history")?;
+        let next_cursor = page
+            .next_cursor
+            .as_ref()
+            .map(|cursor| {
+                self.cursors()?.mint(
+                    cursor,
+                    &cursor_context,
+                    vec![CursorAuxEpochV2 {
+                        kind: CursorAuxEpochKindV2::History,
+                        epoch: read.epoch.get(),
+                    }],
+                )
+            })
+            .transpose()?;
         Ok(SearchPlaneHistoryQueryResponse {
             generation: pin,
             order: request.order,
             commits: page.commits,
             diffs: page.diffs,
-            window: page.window,
+            window,
             read_epoch: read.epoch,
             examined: page.examined,
-            next_cursor: page.next_cursor,
+            next_cursor,
         })
     }
 }

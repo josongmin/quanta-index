@@ -1,8 +1,9 @@
 use quanta_index_contract::lex::{CommitRecord, CommitSha, DiffHunkRecord};
 use quanta_index_contract::{
     FileContributorEntry, FileContributorIdentityEntry, FileContributorIngestBatch,
-    FileOwnershipEntry, FileOwnershipIngestBatch, GenerationPin, GenerationSelector, HistoryCursor,
-    HistoryDiffHunkUpsert, HistoryIngestBatch, HistoryOrderV1, HistoryQueryRequest,
+    ContinuationTokenV2, FileOwnershipEntry, FileOwnershipIngestBatch, GenerationPin,
+    GenerationSelector, HistoryDiffHunkUpsert, HistoryIngestBatch, HistoryOrderV1,
+    HistoryQueryRequest,
     HistoryRefDelete, HistoryRefMutation, HistoryRefUpsert, HistoryTagMutation, ManifestGeneration,
     RepoCommitRecencyEntry, RepoCommitRecencyIngestBatch, RepoDescriptionEntry,
     RepoDescriptionIngestBatch, RepoId, RepoMetaEntry, RepoMetaIngestBatch, RepoRelativePath,
@@ -832,7 +833,7 @@ pub struct HistoryQueryBuilder<
     client: &'a QuantaIndex,
     state: TextQueryBuilderState,
     order: Option<HistoryOrderV1>,
-    cursor: Option<HistoryCursor>,
+    cursor: Option<ContinuationTokenV2>,
 }
 
 impl<'a> HistoryQueryBuilder<'a> {
@@ -882,7 +883,7 @@ impl<
     /// cursor is passed through untouched; a walk whose epoch the plane no
     /// longer retains is refused `AUX_EPOCH_EXPIRED` and must start over.
     #[must_use]
-    pub fn after(mut self, cursor: HistoryCursor) -> Self {
+    pub fn after(mut self, cursor: ContinuationTokenV2) -> Self {
         self.cursor = Some(cursor);
         self
     }
