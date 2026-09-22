@@ -45,9 +45,9 @@ use quanta_index_contract::{
     StructuralTombstoneScope, StructuralTreeRecord, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_ipc::send_request;
-use quanta_index_searchd_harness::E2eRuntime;
-use quanta_index_searchd::app::config::OpenAiEmbedderTuning;
 use quanta_index_searchd::app::SemanticEmbedderProfile;
+use quanta_index_searchd::app::config::OpenAiEmbedderTuning;
+use quanta_index_searchd_harness::E2eRuntime;
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::frontdoor_scenarios::{
@@ -2075,8 +2075,7 @@ fn semantic_query_fails_closed_when_runtime_has_no_query_embedder() -> TestResul
     // The harness owns the degraded-config profile outright: no query-time
     // embedder, so semantic/hybrid queries fail closed while the corpus
     // still hash-derives and the generation materializes.
-    let fixture =
-        ScenarioFixture::boot_with_profile(SemanticEmbedderProfile::Unavailable)?;
+    let fixture = ScenarioFixture::boot_with_profile(SemanticEmbedderProfile::Unavailable)?;
     let socket = fixture.query_socket.clone();
     let ingest_socket = fixture.ingest_socket.clone();
 

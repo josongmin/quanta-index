@@ -406,15 +406,16 @@ fn swapped_owner_projection_fails_closed() {
 #[test]
 fn unordered_hybrid_ranking_fails_closed() {
     let dir = temp_dir("hybrid-order");
-    let response = SearchPlaneQueryIpcResponse::Hybrid(quanta_index_contract::HybridQueryResponse {
-        generation: pin(repo_id()),
-        results: vec![
-            owner_hybrid_row("cand-a", 1.0),
-            owner_hybrid_row("cand-b", 2.0),
-        ],
-        window: quanta_index_contract::QueryResultWindowV2::exact_probe(2),
-        explanation: quanta_index_contract::SearchExplanation::default(),
-    });
+    let response =
+        SearchPlaneQueryIpcResponse::Hybrid(quanta_index_contract::HybridQueryResponse {
+            generation: pin(repo_id()),
+            results: vec![
+                owner_hybrid_row("cand-a", 1.0),
+                owner_hybrid_row("cand-b", 2.0),
+            ],
+            window: quanta_index_contract::QueryResultWindowV2::exact_probe(2),
+            explanation: quanta_index_contract::SearchExplanation::default(),
+        });
     let (socket, _rx) = scripted_query_server(dir.path(), vec![response]);
     let client = client_on(dir.path(), socket);
     let error = client

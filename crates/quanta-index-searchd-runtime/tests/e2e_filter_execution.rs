@@ -85,7 +85,9 @@ fn rev_filter_admits_matching_ref_and_excludes_others(mut rt: &mut E2eRuntime) -
     Ok(())
 }
 
-fn author_filter_admits_matching_author_and_excludes_others(mut rt: &mut E2eRuntime) -> AnyResult<()> {
+fn author_filter_admits_matching_author_and_excludes_others(
+    mut rt: &mut E2eRuntime,
+) -> AnyResult<()> {
     let admitted = history_commit_count(&mut rt, "type:commit author:alice needle_token")?;
     ensure!(
         admitted == 1,
@@ -99,7 +101,9 @@ fn author_filter_admits_matching_author_and_excludes_others(mut rt: &mut E2eRunt
     Ok(())
 }
 
-fn committer_filter_admits_matching_committer_and_excludes_others(mut rt: &mut E2eRuntime) -> AnyResult<()> {
+fn committer_filter_admits_matching_committer_and_excludes_others(
+    mut rt: &mut E2eRuntime,
+) -> AnyResult<()> {
     let admitted = history_commit_count(&mut rt, "type:commit committer:bob needle_token")?;
     ensure!(
         admitted == 1,
@@ -113,7 +117,9 @@ fn committer_filter_admits_matching_committer_and_excludes_others(mut rt: &mut E
     Ok(())
 }
 
-fn message_filter_admits_matching_message_and_excludes_others(mut rt: &mut E2eRuntime) -> AnyResult<()> {
+fn message_filter_admits_matching_message_and_excludes_others(
+    mut rt: &mut E2eRuntime,
+) -> AnyResult<()> {
     let admitted = history_commit_count(&mut rt, "type:commit message:needle_token needle_token")?;
     ensure!(
         admitted == 1,
@@ -680,7 +686,9 @@ fn timeout_option_is_typed_refused_off_the_regex_surface(rt: &mut E2eRuntime) ->
     Ok(())
 }
 
-fn repo_has_content_predicate_executes_on_sourcegraph_surface(rt: &mut E2eRuntime) -> AnyResult<()> {
+fn repo_has_content_predicate_executes_on_sourcegraph_surface(
+    rt: &mut E2eRuntime,
+) -> AnyResult<()> {
     let admitted = rt.query_text(
         TextQuerySyntax::Sourcegraph,
         "repo:has.content(corp-a) shared_oracle_needle",
@@ -712,7 +720,9 @@ fn repo_has_content_predicate_executes_on_sourcegraph_surface(rt: &mut E2eRuntim
     Ok(())
 }
 
-fn repo_has_commit_after_predicate_executes_on_sourcegraph_surface(rt: &mut E2eRuntime) -> AnyResult<()> {
+fn repo_has_commit_after_predicate_executes_on_sourcegraph_surface(
+    rt: &mut E2eRuntime,
+) -> AnyResult<()> {
     for query in [
         r#"repo:has.commit.after("2025-01-01T00:00:00Z") shared_oracle_needle"#,
         r#"repo:has.commit.after("2025-01-01") shared_oracle_needle"#,
@@ -748,8 +758,9 @@ fn repo_has_commit_after_predicate_executes_on_sourcegraph_surface(rt: &mut E2eR
     Ok(())
 }
 
-fn repo_contains_commit_after_alias_executes_with_human_timeref_and_boolean_scope(rt: &mut E2eRuntime) -> AnyResult<()>
-{
+fn repo_contains_commit_after_alias_executes_with_human_timeref_and_boolean_scope(
+    rt: &mut E2eRuntime,
+) -> AnyResult<()> {
     for query in [
         r#"repo:contains.commit.after("June 25 2025") shared_oracle_needle"#,
         "repo:contains.commit.after(yesterday) shared_oracle_needle",
@@ -855,7 +866,9 @@ fn repo_has_meta_predicate_executes_on_sourcegraph_surface(rt: &mut E2eRuntime) 
     Ok(())
 }
 
-fn repo_has_meta_key_only_existence_executes_on_sourcegraph_surface(rt: &mut E2eRuntime) -> AnyResult<()> {
+fn repo_has_meta_key_only_existence_executes_on_sourcegraph_surface(
+    rt: &mut E2eRuntime,
+) -> AnyResult<()> {
     // SGX-03: `repo:has.meta(key)` gates repos that have the key PRESENT with any
     // value — genuine existence (contains_key), not a wildcard or empty-string
     // match. Corpus: corp-a={license, tier}, corp-b={license}.
@@ -923,7 +936,9 @@ fn repo_has_meta_key_only_existence_executes_on_sourcegraph_surface(rt: &mut E2e
     Ok(())
 }
 
-fn repo_has_meta_tag_existence_executes_on_sourcegraph_surface(rt: &mut E2eRuntime) -> AnyResult<()> {
+fn repo_has_meta_tag_existence_executes_on_sourcegraph_surface(
+    rt: &mut E2eRuntime,
+) -> AnyResult<()> {
     // SGX-03: `repo:has.meta(tag:)` (empty value) is the key-existence shape —
     // `repo:has.meta(tier:)` gates repos where key `tier` is present (corp-a),
     // NOT repos with an empty-string `tier` value.
@@ -945,8 +960,9 @@ fn repo_has_meta_tag_existence_executes_on_sourcegraph_surface(rt: &mut E2eRunti
     Ok(())
 }
 
-fn repo_has_meta_regex_family_executes_on_sourcegraph_surface(rt: &mut E2eRuntime) -> AnyResult<()> {
-
+fn repo_has_meta_regex_family_executes_on_sourcegraph_surface(
+    rt: &mut E2eRuntime,
+) -> AnyResult<()> {
     let regex_pair = rt.query_text(
         TextQuerySyntax::Sourcegraph,
         "repo:has.meta(/license/:/apache.*/) shared_oracle_needle",
@@ -1055,7 +1071,9 @@ fn repo_has_meta_invalid_regex_typed_fails(rt: &mut E2eRuntime) -> AnyResult<()>
     Ok(())
 }
 
-fn repo_has_description_predicate_executes_on_sourcegraph_surface(rt: &mut E2eRuntime) -> AnyResult<()> {
+fn repo_has_description_predicate_executes_on_sourcegraph_surface(
+    rt: &mut E2eRuntime,
+) -> AnyResult<()> {
     // SGX-02: Sourcegraph's `repo:has.description(<regex>)` filters repos by their
     // producer-published description text, matched as a regex. The description is
     // a distinct source-repo keyed authority (RepoDescriptionIngestBatch ->
@@ -1322,7 +1340,9 @@ fn repo_has_topic_predicate_executes_on_sourcegraph_surface() -> AnyResult<()> {
     Ok(())
 }
 
-fn select_file_owners_projects_owner_rows_on_sourcegraph_surface(rt: &mut E2eRuntime) -> AnyResult<()> {
+fn select_file_owners_projects_owner_rows_on_sourcegraph_surface(
+    rt: &mut E2eRuntime,
+) -> AnyResult<()> {
     let result = rt.query_text(
         TextQuerySyntax::Sourcegraph,
         "select:file.owners shared_oracle_needle",
@@ -1364,7 +1384,6 @@ fn select_file_owners_projects_owner_rows_on_sourcegraph_surface(rt: &mut E2eRun
 }
 
 fn file_has_contributor_executes_on_sourcegraph_surface(rt: &mut E2eRuntime) -> AnyResult<()> {
-
     let admitted = rt.query_text(
         TextQuerySyntax::Sourcegraph,
         "file:has.contributor(alice) shared_oracle_needle",
@@ -1399,9 +1418,9 @@ fn file_has_contributor_executes_on_sourcegraph_surface(rt: &mut E2eRuntime) -> 
     Ok(())
 }
 
-fn file_has_contributor_supports_name_and_email_regex_without_canonical_fallback(rt: &mut E2eRuntime) -> AnyResult<()>
-{
-
+fn file_has_contributor_supports_name_and_email_regex_without_canonical_fallback(
+    rt: &mut E2eRuntime,
+) -> AnyResult<()> {
     let prefix = rt.query_text(
         TextQuerySyntax::Sourcegraph,
         "file:has.contributor(alic) shared_oracle_needle",
@@ -1486,7 +1505,6 @@ fn file_has_contributor_supports_name_and_email_regex_without_canonical_fallback
 }
 
 fn file_has_owner_executes_on_sourcegraph_surface(rt: &mut E2eRuntime) -> AnyResult<()> {
-
     let admitted = rt.query_text(
         TextQuerySyntax::Sourcegraph,
         "file:has.owner(@alice) shared_oracle_needle",
@@ -1538,7 +1556,6 @@ fn file_has_owner_executes_on_sourcegraph_surface(rt: &mut E2eRuntime) -> AnyRes
 }
 
 fn file_has_owner_executes_inside_boolean_scope(rt: &mut E2eRuntime) -> AnyResult<()> {
-
     let or_query = rt.query_text(
         TextQuerySyntax::Sourcegraph,
         "file:has.owner(@alice) OR missing_corpus_token",
@@ -1734,7 +1751,9 @@ fn repo_has_file_scalar_path_executes_on_sourcegraph_surface(rt: &mut E2eRuntime
     Ok(())
 }
 
-fn repo_has_file_matcher_combinations_execute_on_sourcegraph_surface(rt: &mut E2eRuntime) -> AnyResult<()> {
+fn repo_has_file_matcher_combinations_execute_on_sourcegraph_surface(
+    rt: &mut E2eRuntime,
+) -> AnyResult<()> {
     for (query, expected) in [
         (
             "repo:has.file(path:src/gate-a.rs, name:gate-a.rs) shared_oracle_needle",
@@ -1874,7 +1893,9 @@ fn repo_contains_file_alias_executes_on_sourcegraph_surface(rt: &mut E2eRuntime)
     Ok(())
 }
 
-fn repo_has_file_path_content_correlates_per_document_on_sourcegraph_surface(rt: &mut E2eRuntime) -> AnyResult<()> {
+fn repo_has_file_path_content_correlates_per_document_on_sourcegraph_surface(
+    rt: &mut E2eRuntime,
+) -> AnyResult<()> {
     // SGX-01: `repo:has.file(path:... content:...)` gates a repo only when ONE
     // file satisfies BOTH path AND content — true per-document correlation, not a
     // repo-level cross-product. Corpus: corp-a has src/gate-a.rs (contains the
@@ -1955,7 +1976,9 @@ fn repo_has_file_path_content_correlates_per_document_on_sourcegraph_surface(rt:
     Ok(())
 }
 
-fn file_contains_content_alias_executes_on_sourcegraph_surface(rt: &mut E2eRuntime) -> AnyResult<()> {
+fn file_contains_content_alias_executes_on_sourcegraph_surface(
+    rt: &mut E2eRuntime,
+) -> AnyResult<()> {
     let admitted = rt.query_text(
         TextQuerySyntax::Sourcegraph,
         "file:contains.content(\"lemon yellow banana\")",
@@ -1987,7 +2010,9 @@ fn file_contains_content_alias_executes_on_sourcegraph_surface(rt: &mut E2eRunti
     Ok(())
 }
 
-fn repo_contains_content_alias_executes_on_sourcegraph_surface(rt: &mut E2eRuntime) -> AnyResult<()> {
+fn repo_contains_content_alias_executes_on_sourcegraph_surface(
+    rt: &mut E2eRuntime,
+) -> AnyResult<()> {
     let admitted = rt.query_text(
         TextQuerySyntax::Sourcegraph,
         "repo:contains.content(\"gate-a only\") shared_oracle_needle",
@@ -2087,7 +2112,9 @@ fn numeric_content_predicates_execute_on_sourcegraph_surface() -> AnyResult<()> 
     Ok(())
 }
 
-fn scoped_file_content_predicates_execute_on_sourcegraph_surface(rt: &mut E2eRuntime) -> AnyResult<()> {
+fn scoped_file_content_predicates_execute_on_sourcegraph_surface(
+    rt: &mut E2eRuntime,
+) -> AnyResult<()> {
     let path_hit = rt.query_text(
         TextQuerySyntax::Sourcegraph,
         "file:has.content(path:docs/colors.md, \"lemon yellow banana\")",
@@ -2192,7 +2219,9 @@ fn scoped_file_content_predicates_execute_on_sourcegraph_surface(rt: &mut E2eRun
     Ok(())
 }
 
-fn scoped_file_content_predicates_execute_under_or_not_and_name_scope(rt: &mut E2eRuntime) -> AnyResult<()> {
+fn scoped_file_content_predicates_execute_under_or_not_and_name_scope(
+    rt: &mut E2eRuntime,
+) -> AnyResult<()> {
     for (query, expected) in [
         (
             "file:contains(path:docs/colors.md, \"lemon yellow banana\") OR missing_corpus_token",
@@ -2261,7 +2290,9 @@ fn scoped_file_content_predicates_execute_under_or_not_and_name_scope(rt: &mut E
     Ok(())
 }
 
-fn repo_has_file_predicate_under_or_and_not_executes_on_sourcegraph_surface(rt: &mut E2eRuntime) -> AnyResult<()> {
+fn repo_has_file_predicate_under_or_and_not_executes_on_sourcegraph_surface(
+    rt: &mut E2eRuntime,
+) -> AnyResult<()> {
     let admitted = rt.query_text(
         TextQuerySyntax::Sourcegraph,
         "repo:has.file(path:src/gate-a.rs) OR missing_corpus_token",
@@ -2294,7 +2325,9 @@ fn repo_has_file_predicate_under_or_and_not_executes_on_sourcegraph_surface(rt: 
     Ok(())
 }
 
-fn repo_has_content_phrase_and_raw_string_execute_on_sourcegraph_surface(rt: &mut E2eRuntime) -> AnyResult<()> {
+fn repo_has_content_phrase_and_raw_string_execute_on_sourcegraph_surface(
+    rt: &mut E2eRuntime,
+) -> AnyResult<()> {
     for query in [
         r#"repo:has.content("gate-a only") shared_oracle_needle"#,
         "repo:has.content('gate-a only') shared_oracle_needle",
@@ -2313,7 +2346,9 @@ fn repo_has_content_phrase_and_raw_string_execute_on_sourcegraph_surface(rt: &mu
     Ok(())
 }
 
-fn repo_has_content_predicate_under_or_and_not_executes_on_sourcegraph_surface(rt: &mut E2eRuntime) -> AnyResult<()> {
+fn repo_has_content_predicate_under_or_and_not_executes_on_sourcegraph_surface(
+    rt: &mut E2eRuntime,
+) -> AnyResult<()> {
     let admitted = rt.query_text(
         TextQuerySyntax::Sourcegraph,
         r#"repo:has.content("gate-a only") OR missing_corpus_token"#,
@@ -2452,7 +2487,9 @@ fn context_filter_admits_member_context_and_excludes_others(rt: &mut E2eRuntime)
     Ok(())
 }
 
-fn sourcegraph_legacy_index_and_boost_execute_on_active_stack(rt: &mut E2eRuntime) -> AnyResult<()> {
+fn sourcegraph_legacy_index_and_boost_execute_on_active_stack(
+    rt: &mut E2eRuntime,
+) -> AnyResult<()> {
     let baseline = rt.query_text(TextQuerySyntax::Sourcegraph, "parity_needle_alpha", 10);
     ensure!(
         baseline.typed_error.is_none(),
