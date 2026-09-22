@@ -29,6 +29,10 @@ use anyhow::Result as AnyResult;
 use quanta_index_contract::TextQuerySyntax;
 use serde_json::{Value, json};
 
+use crate::artifact::{
+    BenchArtifactV1, BenchMode, BenchProvenanceV1, BenchRowV1, BenchSyntax, GitHeadV1, HostV1,
+    PhaseDurationsV1, ResourceUsageV1, ResultShape, RouteFamily, config_digest, corpus_digest,
+};
 use crate::harness::E2eRuntime;
 
 /// Repo id the ops fixture is ingested under.
@@ -227,37 +231,84 @@ fn snapshot_json(snapshot: &OpsSnapshot) -> Value {
     })
 }
 
-/// The CLI-snapshot record: the machine-readable diagnosis surfaces, verbatim.
-#[must_use]
-pub fn cli_snapshots_json(report: &OpsReport) -> Value {
+/// The CLI-snapshot supplement: not an authority artifact.
+fn cli_snapshots_supplement_json(report: &OpsReport, git_head: &GitHeadV1) -> Value {
     json!({
-        "schema_version": 1,
+        "kind": "quanta-index-benchmark-supplement",
+        "supplement_schema_version": 1,
         "dimension": "ops",
+        "git_head": git_head.as_str(),
         "surfaces": report.snapshots.iter().map(snapshot_json).collect::<Vec<_>>(),
         "snapshot_note": "read-only operator-diagnosis surfaces captured machine-readably; route/generation/typed-error provenance is asserted preserved, never collapsed to a human-only string",
     })
 }
 
-/// Build the ops summary value.
-#[must_use]
-pub fn summary_json(report: &OpsReport, git_rev: &str) -> Value {
-    json!({
-        "schema_version": 1,
-        "dimension": "ops",
-        "git_rev": git_rev,
-        "passed": report.passed,
-        "blocking_signal": "every captured diagnosis surface must preserve its provenance (engines, generation, typed-error code, perf metrics); a swallowed provenance fails the rail",
-        "surfaces": report.snapshots.iter().map(snapshot_json).collect::<Vec<_>>(),
+/// The current-source authority envelope for operator diagnosis surfaces.
+pub fn artifact(
+    report: &OpsReport,
+    git_head: GitHeadV1,
+    host: HostV1,
+) -> AnyResult<BenchArtifactV1> {
+    let corpus = vec![(
+        "src/ops.rs".to_string(),
+        "fn ops_probe() {\n    // ops_diagnosis_needle marker for the operator rail\n}\n"
+            .to_string(),
+    )];
+    Ok(BenchArtifactV1 {
+        dimension: "ops".to_string(),
+        mode: BenchMode::Warm,
+        concurrency: 1,
+        provenance: BenchProvenanceV1 {
+            git_head,
+            corpus_digest: corpus_digest("ops", &corpus),
+            config_digest: config_digest(
+                "ops",
+                &[("surfaces", report.snapshots.len().to_string())],
+            ),
+            model_revision: None,
+        },
+        host,
+        resources: ResourceUsageV1::observe_self()?,
+        phases: PhaseDurationsV1::default(),
+        disk_amplification: None,
+        rows: report
+            .snapshots
+            .iter()
+            .map(|snapshot| BenchRowV1 {
+                scenario_id: format!("ops.{}", snapshot.surface),
+                route_family: RouteFamily::RuntimeCatalog,
+                syntax: BenchSyntax::Native,
+                result_shape: ResultShape::Candidates,
+                latency: None,
+                qps: None,
+                error_count: if snapshot.provenance_ok { 0 } else { 1 },
+                timeout_count: 0,
+                result_count: Some(1),
+                typed_error_code: None,
+                engine_touched: vec!["operator_surface".to_string()],
+                early_stop_reason: None,
+            })
+            .collect(),
+        detail: json!({
+            "passed": report.passed,
+            "blocking_signal": "every captured diagnosis surface must preserve its provenance (engines, generation, typed-error code, perf metrics); a swallowed provenance fails the rail",
+            "surfaces": report.snapshots.iter().map(snapshot_json).collect::<Vec<_>>(),
+        }),
     })
 }
 
 /// Write the two canonical ops artifacts under `dir`:
 /// `summary.json` and `cli_snapshots.json`.
-pub fn write_artifacts(report: &OpsReport, dir: &Path, git_rev: &str) -> AnyResult<()> {
-    crate::artifact::write_json_pretty(&dir.join("summary.json"), &summary_json(report, git_rev))?;
+pub fn write_artifacts(
+    report: &OpsReport,
+    dir: &Path,
+    git_head: GitHeadV1,
+    host: HostV1,
+) -> AnyResult<()> {
+    artifact(report, git_head.clone(), host)?.write_to(&dir.join("summary.json"))?;
     crate::artifact::write_json_pretty(
         &dir.join("cli_snapshots.json"),
-        &cli_snapshots_json(report),
+        &cli_snapshots_supplement_json(report, &git_head),
     )?;
     Ok(())
 }
@@ -309,12 +360,25 @@ mod tests {
             snapshots: vec![ok, bad],
             passed: false,
         };
-        assert_eq!(summary_json(&pass_report, "rev")["passed"], true);
-        assert_eq!(summary_json(&fail_report, "rev")["passed"], false);
-        let surfaces = summary_json(&fail_report, "rev")["surfaces"]
+        assert!(pass_report.passed);
+        assert!(!fail_report.passed);
+        let surfaces = cli_snapshots_supplement_json(
+            &fail_report,
+            &GitHeadV1::parse(&"a".repeat(40)).expect("head"),
+        )["surfaces"]
             .as_array()
             .expect("surfaces array")
             .len();
         assert_eq!(surfaces, 2);
+        let artifact = artifact(
+            &pass_report,
+            GitHeadV1::parse(&"a".repeat(40)).expect("head"),
+            HostV1::observe().expect("host"),
+        )
+        .expect("authority artifact")
+        .to_json()
+        .expect("json");
+        assert_eq!(artifact["schema_version"], 2);
+        assert_eq!(artifact["detail"]["passed"], true);
     }
 }

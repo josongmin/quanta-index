@@ -13,13 +13,17 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use quanta_index_searchd_harness::artifact::{GitHeadV1, HostV1};
 use quanta_index_searchd_harness::snippet::{run_snippet_report, write_artifacts};
 
 /// The exact head of a clean worktree, or a refusal: a verdict artifact
 /// that cannot say which source it judged is not written (QI-BB-010).
-fn git_head() -> Result<String, quanta_index_searchd_harness::artifact::BenchProvenanceError> {
-    quanta_index_searchd_harness::artifact::GitHeadV1::resolve(std::path::Path::new("."))
-        .map(|head| head.as_str().to_string())
+fn provenance()
+-> Result<(GitHeadV1, HostV1), quanta_index_searchd_harness::artifact::BenchProvenanceError> {
+    Ok((
+        GitHeadV1::resolve(std::path::Path::new("."))?,
+        HostV1::observe()?,
+    ))
 }
 
 fn parse_out_dir() -> PathBuf {
@@ -37,8 +41,8 @@ fn parse_out_dir() -> PathBuf {
 )]
 fn main() -> ExitCode {
     let out_dir = parse_out_dir();
-    let rev = match git_head() {
-        Ok(head) => head,
+    let (git_head, host) = match provenance() {
+        Ok(value) => value,
         Err(err) => {
             eprintln!("snippet_matrix: {err}");
             return ExitCode::FAILURE;
@@ -53,7 +57,7 @@ fn main() -> ExitCode {
         }
     };
 
-    if let Err(err) = write_artifacts(&report, &out_dir, &rev) {
+    if let Err(err) = write_artifacts(&report, &out_dir, git_head, host) {
         eprintln!(
             "snippet_matrix: failed to write artifacts under {}: {err:#}",
             out_dir.display()

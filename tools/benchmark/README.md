@@ -1,10 +1,22 @@
 # Benchmark tooling
 
 The registered evidence CLI is `python3 tools/benchmark/benchctl.py list`.
+Its sole profile/family/path/baseline control plane is
+`tools/benchmark/manifest.json`; producers remain the referenced Just recipes.
 `run systems` executes the freshness and open-loop producers and then requires
 their current-HEAD artifacts. `validate systems` checks existing artifacts
 without rerunning them. `quality-full` additionally includes these rails.
-The open-loop correctness verdict requires a healthy first offered-load point
+`benchctl run` and `benchctl validate` also require the target checkout to be
+clean; a HEAD-matching artifact captured before local source edits cannot be
+requalified as evidence for the dirty tree.
+`benchctl summarize <profile>` is read-only and labels observed files
+`present_unvalidated`; it is deliberately not a qualification command.
+The `dsl-authority` profile is canonical-Linux-only: it writes an
+`unsupported_host` preflight receipt and refuses before producer execution on
+any other OS. Local macOS runs remain available only for diagnostic families.
+The open-loop qualification default uses seeded-Poisson arrivals; the prior
+deterministic periodic schedule remains an explicit diagnostic mode only. The
+correctness verdict requires a healthy first offered-load point
 and no malformed response or unexpected typed error. Timeout, drop and socket
 refusal above saturation are recorded as capacity loss with error-kind counts,
 not hidden or interpreted as a passing latency SLO. A capacity threshold needs
@@ -36,8 +48,9 @@ committed ratchet reference.
 ## Artifact schema (the contract): `BenchArtifactV1`
 
 Every benchmark and relevance artifact — the DSL warm/cold matrices, the
-  scale, tail, concurrency, freshness and open-loop rails, the relevance rail and its OpenAI A/B
-capture, and the scan-vs-index experiment — is one `BenchArtifactV1`
+  ambiguity, snippet, scale, tail, ANN, concurrency, freshness, open-loop,
+  ops, and UI rails, the relevance rail and its OpenAI A/B capture, and the
+  scan-vs-index experiment — is one `BenchArtifactV1`
 envelope, written by exactly one writer
 (`crates/quanta-index-searchd-harness/src/artifact.rs`, QI-BB-010). A
 measurement that cannot say which source, corpus, configuration, model and
@@ -104,6 +117,11 @@ host it came from is not evidence, so the envelope is:
   fails the comparison; absent measurement is never a zero-regression result.
 - `detail` is the dimension's own shape (tier manifest, per-route budgets,
   judged queries, per-client-count tallies).
+
+Route labels are semantic ownership labels, not result-shape aliases:
+`lexical`, `semantic`, `hybrid`, `symbol`, `repomap`, `structural`, `history`,
+and `runtime_catalog` remain distinct. A route with no qualified tail budget is
+emitted without inheriting an unrelated lexical threshold.
 
 ### Stale-artifact gate
 
@@ -172,7 +190,10 @@ just rust-bench-dsl-refresh 20  # warm -> cold -> compare, serialized authority 
 just rust-bench-dsl-compare     # gate both matrices against tools/benchmark/baselines/
 python3 tools/ci/lint/check-bench-artifacts.py --profile dsl-authority --require --skip-baselines
 python3 tools/benchmark/benchctl.py list  # list producer/validator authority profiles
-python3 tools/benchmark/benchctl.py run dsl-authority  # serially produce, then validate
+python3 tools/benchmark/benchctl.py preflight dsl-authority --receipt artifacts/benchmark-receipts/dsl-authority/preflight.json
+python3 tools/benchmark/benchctl.py run dsl-authority  # clean-host preflight, serial producer, validate, compare
+python3 tools/benchmark/benchctl.py compare dsl-authority  # validate then run declared baseline comparators
+python3 tools/benchmark/benchctl.py summarize systems  # observed artifacts only; never a pass claim
 just rust-verify-quality-concurrency  # 1/8/32 clients + slow client -> concurrency/latest/summary-c*.json
 ```
 
@@ -224,7 +245,8 @@ A green fast hellgate is not restart/replay proof.
 
 ```
 python3 tools/benchmark/compare_dsl_bench.py <baseline.json> <current.json> \
-    [--update-baseline] [--rel-threshold F] [--abs-threshold-ms F]
+    [--update-baseline] [--rel-threshold F] [--abs-threshold-ms F] \
+    [--p95-rel-threshold F] [--p95-abs-threshold-ms F]
 ```
 
 - Both artifacts must be schema-2 `BenchArtifactV1` with a full `git_head`;
@@ -234,14 +256,15 @@ python3 tools/benchmark/compare_dsl_bench.py <baseline.json> <current.json> \
   one with `--update-baseline`, which itself refuses a stale current).
 - Both artifacts must share the same top-level `mode`; a mismatch exits 2.
 - Matches scenarios by `scenario_id`.
-- Blocking metric:
-  - `warm`: compare **p50**
-  - `cold`: compare **p50**
-- `p95` / `p99` deltas are printed as `ADVISORY` lines; they do not fail the
-  gate.
+- Blocking metrics on both warm and cold artifacts:
+  - **p50**: steady-state / first-query central tendency
+  - **p95**: agent-loop tail; retrieval calls compound inside one turn
+- Only `p99` remains an `ADVISORY` line.
 - New scenarios (in current, not baseline) fail until a reviewed baseline update.
 - Scenarios missing from current fail.
-- `--update-baseline` writes current over the baseline verbatim and exits 0.
+- `--update-baseline --preflight-receipt <receipt.json>` atomically writes the
+  current artifact only when the candidate is Linux, complete, and the receipt
+  is clean for the same OS/architecture/CPU-count host class.
 - Exit codes: `0` ok, `1` regression / missing-fail, `2` usage / mode-mismatch.
 
 ### `run_dsl_cold_matrix.py` — cold-matrix orchestrator
@@ -277,8 +300,11 @@ A scenario regresses iff **both** legs are exceeded on the mode's blocking metri
 
 - **warm:** `p50 rel > +10%` **AND** `abs > +1.0 ms`
 - **cold:** `p50 rel > +10%` **AND** `abs > +5.0 ms`
+- **warm:** `p95 rel > +20%` **AND** `abs > +5.0 ms`
+- **cold:** `p95 rel > +20%` **AND** `abs > +10.0 ms`
 
-Explicit `--rel-threshold` / `--abs-threshold-ms` override the mode defaults.
+`--rel-threshold` / `--abs-threshold-ms` override p50 defaults;
+`--p95-rel-threshold` / `--p95-abs-threshold-ms` override p95 defaults.
 
 ## Appendix: scan-vs-index scaling experiment (NOT a gate)
 

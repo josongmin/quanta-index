@@ -70,12 +70,12 @@ def load_summaries(dimension: str, filename: str) -> list[tuple[Path, dict]]:
 def rail_verdict(summary: dict, *, dimension: str, head: str) -> bool | None:
     """The rail's pass/fail verdict, wherever the artifact keeps it.
 
-    A benchmark rail's ``summary.json`` is a ``BenchArtifactV1`` (schema 2,
-    QI-BB-010) whose dimension-specific verdict lives under ``detail.passed``;
-    the verdict-record rails keep ``passed`` at the top level. Neither shape
-    is defaulted: an artifact with no verdict is ``None``.
+    Every live rail's ``summary.json`` is a schema-2 ``BenchArtifactV1`` whose
+    dimension-specific verdict lives under ``detail.passed``. A schema-1
+    top-level ``passed`` field is deliberately not accepted: it lacks the
+    common provenance/resource envelope and cannot close an aggregate rail.
     """
-    if isinstance(summary.get("schema_version"), int) and summary["schema_version"] >= 2:
+    if summary.get("schema_version") == 2:
         provenance = summary.get("provenance")
         if (
             summary.get("dimension") != dimension
@@ -87,13 +87,6 @@ def rail_verdict(summary: dict, *, dimension: str, head: str) -> bool | None:
         if isinstance(detail, dict) and isinstance(detail.get("passed"), bool):
             return detail["passed"]
         return None
-    if (
-        summary.get("schema_version") == 1
-        and summary.get("dimension") == dimension
-        and summary.get("git_rev") == head
-        and isinstance(summary.get("passed"), bool)
-    ):
-        return summary["passed"]
     return None
 
 

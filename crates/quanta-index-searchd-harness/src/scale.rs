@@ -685,7 +685,8 @@ fn tier_params_json(params: &TierParams) -> Value {
 #[must_use]
 pub fn tier_manifest_json() -> Value {
     json!({
-        "schema_version": 1,
+        "kind": "quanta-index-scale-tier-manifest",
+        "manifest_schema_version": 1,
         "dimension": "scale",
         "query_token": SCALE_QUERY_TOKEN,
         "tiers": TIER_MANIFEST.iter().map(tier_params_json).collect::<Vec<_>>(),
@@ -970,7 +971,8 @@ mod tests {
     #[test]
     fn manifest_json_schema_is_well_formed() {
         let value = tier_manifest_json();
-        assert_eq!(value["schema_version"], 1);
+        assert_eq!(value["kind"], "quanta-index-scale-tier-manifest");
+        assert_eq!(value["manifest_schema_version"], 1);
         assert_eq!(value["dimension"], "scale");
         assert_eq!(value["query_token"], SCALE_QUERY_TOKEN);
         let tiers = value["tiers"].as_array().expect("tiers is an array");

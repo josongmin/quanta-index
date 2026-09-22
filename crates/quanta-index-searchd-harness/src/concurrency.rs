@@ -1,7 +1,7 @@
 //! Concurrency rail (QI-BB-010 #4): 1 / 8 / 32 clients, a slow one, mixed routes.
 //!
 //! The rail drives 1 / 8 / 32 concurrent clients over the query socket, a
-//! slow client mixed in, and mixed lexical / semantic / hybrid routes with a
+//! slow client mixed in, and mixed lexical / semantic / hybrid / symbol routes with a
 //! count worst case — one `BenchArtifactV1` per client count.
 //!
 //! One daemon serves one sealed, activated generation of the seeded medium
@@ -34,7 +34,8 @@ use anyhow::Result as AnyResult;
 use quanta_index_contract::{
     GenerationPin, HybridQueryRequest, QueryConstraintSetV1, SearchPlaneErrorCodeV2,
     SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
-    SearchPlaneQueryIpcResponseEnvelope, SemanticQueryRequest, TextQueryRequest, TextQuerySyntax,
+    SearchPlaneQueryIpcResponseEnvelope, SemanticQueryRequest, SymbolQueryRequest,
+    TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_ipc::{ClientIoPolicy, IpcError, send_request};
 use serde_json::{Value, json};
@@ -79,15 +80,17 @@ pub enum MixedRoute {
     Lexical,
     Semantic,
     Hybrid,
+    Symbol,
     /// The lexical route with `count:yes`, the exact-count worst case.
     LexicalCount,
 }
 
 impl MixedRoute {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::Lexical,
         Self::Semantic,
         Self::Hybrid,
+        Self::Symbol,
         Self::LexicalCount,
     ];
 
@@ -97,12 +100,18 @@ impl MixedRoute {
             Self::Lexical => "lexical",
             Self::Semantic => "semantic",
             Self::Hybrid => "hybrid",
+            Self::Symbol => "symbol",
             Self::LexicalCount => "lexical_count",
         }
     }
 
     const fn route_family(self) -> RouteFamily {
-        RouteFamily::Lexical
+        match self {
+            Self::Lexical | Self::LexicalCount => RouteFamily::Lexical,
+            Self::Semantic => RouteFamily::Semantic,
+            Self::Hybrid => RouteFamily::Hybrid,
+            Self::Symbol => RouteFamily::Symbol,
+        }
     }
 }
 
@@ -143,6 +152,15 @@ fn fast_request(route: MixedRoute, pin: &GenerationPin) -> SearchPlaneQueryIpcRe
             generation_selector: None,
             top_k: FAST_TOP_K,
         }),
+        MixedRoute::Symbol => SearchPlaneQueryIpcRequest::Symbol(SymbolQueryRequest {
+            syntax: TextQuerySyntax::Native,
+            query_text: FAST_QUERY_TOKEN.to_string(),
+            constraints: QueryConstraintSetV1::unconstrained(),
+            generation: Some(pin.clone()),
+            generation_selector: None,
+            top_k: FAST_TOP_K,
+            cursor: None,
+        }),
     }
 }
 
@@ -169,10 +187,10 @@ struct RequestSample {
 fn result_count_of(response: &SearchPlaneQueryIpcResponse) -> Option<u64> {
     let rows = match response {
         SearchPlaneQueryIpcResponse::Text(page) => page.results.len(),
+        SearchPlaneQueryIpcResponse::Symbol(page) => page.results.len(),
         SearchPlaneQueryIpcResponse::Semantic(page) => page.results.len(),
         SearchPlaneQueryIpcResponse::Hybrid(page) => page.results.len(),
-        SearchPlaneQueryIpcResponse::Symbol(_)
-        | SearchPlaneQueryIpcResponse::HybridSeed(_)
+        SearchPlaneQueryIpcResponse::HybridSeed(_)
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
         | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
@@ -437,6 +455,12 @@ pub fn run_concurrency_report(seed: u64, requests_per_client: u32) -> AnyResult<
     for (path, content) in &corpus {
         rt.ingest_text(CONCURRENCY_REPO, path, content)?;
     }
+    rt.ingest_symbol(
+        CONCURRENCY_REPO,
+        "repo0/src/file_0.rs",
+        "concurrency-scale-needle",
+        FAST_QUERY_TOKEN,
+    )?;
     let sealed = rt.seal()?;
     rt.activate_last_sealed_generation()?;
     let pin = GenerationPin::new(rt.repo(), rt.revision(), sealed);
@@ -695,6 +719,18 @@ mod tests {
             wall_ms,
             outcome,
         }
+    }
+
+    #[test]
+    fn mixed_routes_keep_their_artifact_route_family() {
+        assert_eq!(MixedRoute::Lexical.route_family(), RouteFamily::Lexical);
+        assert_eq!(
+            MixedRoute::LexicalCount.route_family(),
+            RouteFamily::Lexical
+        );
+        assert_eq!(MixedRoute::Semantic.route_family(), RouteFamily::Semantic);
+        assert_eq!(MixedRoute::Hybrid.route_family(), RouteFamily::Hybrid);
+        assert_eq!(MixedRoute::Symbol.route_family(), RouteFamily::Symbol);
     }
 
     #[test]

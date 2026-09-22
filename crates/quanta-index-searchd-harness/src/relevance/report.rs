@@ -739,7 +739,11 @@ fn judgments_json(report: &RelevanceReport) -> Value {
             })
         })
         .collect();
-    json!({ "schema_version": 1, "queries": rows })
+    json!({
+        "kind": "quanta-index-relevance-judgments",
+        "supplement_schema_version": 1,
+        "queries": rows,
+    })
 }
 
 /// The relevance artifact's detail: every route and query verdict and the
@@ -759,12 +763,11 @@ pub fn detail_json(report: &RelevanceReport) -> Value {
     })
 }
 
-/// The artifact's route family for a judged route. Both judged routes rank
-/// chunk candidates of the lexical result shape; the route itself is named
-/// in `engine_touched` and the scenario id.
+/// The artifact's actual retrieval route, independent of its result shape.
 const fn relevance_route_family(route: RelevanceRoute) -> RouteFamily {
     match route {
-        RelevanceRoute::Lexical | RelevanceRoute::Semantic => RouteFamily::Lexical,
+        RelevanceRoute::Lexical => RouteFamily::Lexical,
+        RelevanceRoute::Semantic => RouteFamily::Semantic,
     }
 }
 
@@ -867,7 +870,8 @@ fn overlap_comparison_json(capture: &OverlapCapture, capture_date: &str) -> Valu
 /// filling; the buckets, query text, and quanta orderings are already proven.
 fn sourcegraph_overlap_json(report: &RelevanceReport, capture_date: &str) -> Value {
     json!({
-        "schema_version": 1,
+        "kind": "quanta-index-sourcegraph-overlap-supplement",
+        "supplement_schema_version": 1,
         "status": "unprovisioned",
         "owner_ticket": "J7Q-01B",
         "external_floor_met": false,
@@ -962,7 +966,11 @@ fn openai_ab_cases_json(report: &OpenAiSemanticAbReport) -> Value {
             })
         })
         .collect();
-    json!({ "schema_version": 1, "cases": rows })
+    json!({
+        "kind": "quanta-index-relevance-openai-ab-cases",
+        "supplement_schema_version": 1,
+        "cases": rows,
+    })
 }
 
 fn openai_provider_stats_json(stats: &OpenAiEmbedStatsSnapshot) -> Value {
@@ -1047,7 +1055,7 @@ fn openai_ab_detail_json(report: &OpenAiSemanticAbReport) -> Value {
 fn openai_ab_row(case: &SemanticAbCase) -> BenchRowV1 {
     BenchRowV1 {
         scenario_id: format!("relevance-openai-ab.{}", case.id),
-        route_family: RouteFamily::Lexical,
+        route_family: RouteFamily::Semantic,
         syntax: BenchSyntax::Native,
         result_shape: if case.openai.produced_order.is_empty() {
             ResultShape::Empty

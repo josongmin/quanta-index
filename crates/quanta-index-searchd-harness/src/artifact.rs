@@ -42,6 +42,10 @@ pub const BENCH_ARTIFACT_SCHEMA_VERSION: u32 = 2;
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum RouteFamily {
     Lexical,
+    Semantic,
+    Hybrid,
+    Symbol,
+    RepoMap,
     History,
     RuntimeCatalog,
     Structural,
@@ -53,6 +57,10 @@ impl RouteFamily {
     pub fn as_str(&self) -> &'static str {
         match self {
             RouteFamily::Lexical => "lexical",
+            RouteFamily::Semantic => "semantic",
+            RouteFamily::Hybrid => "hybrid",
+            RouteFamily::Symbol => "symbol",
+            RouteFamily::RepoMap => "repomap",
             RouteFamily::History => "history",
             RouteFamily::RuntimeCatalog => "runtime_catalog",
             RouteFamily::Structural => "structural",
@@ -880,6 +888,14 @@ mod tests {
     #[test]
     fn empty_samples_yield_none() {
         assert!(LatencySummary::from_samples_ms(&[]).is_none());
+    }
+
+    #[test]
+    fn route_family_labels_preserve_retrieval_ownership() {
+        assert_eq!(RouteFamily::Semantic.as_str(), "semantic");
+        assert_eq!(RouteFamily::Hybrid.as_str(), "hybrid");
+        assert_eq!(RouteFamily::Symbol.as_str(), "symbol");
+        assert_eq!(RouteFamily::RepoMap.as_str(), "repomap");
     }
 
     #[test]

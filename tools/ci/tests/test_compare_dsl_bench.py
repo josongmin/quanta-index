@@ -14,8 +14,8 @@ Covers the Layer-3 DSL query-latency regression gate over `BenchArtifactV1`
 7. mode mismatch -> exit 2
 8. NEW scenarios require a reviewed baseline
 9. MISSING scenario always fails
-10. cold artifacts still require >=20 samples for tail advisories
-11. warm/cold p95-only drift is advisory; blocking metric is p50
+10. cold artifacts still require >=20 samples for tail checks
+11. p95 is a looser blocking rail and p99 remains advisory
 12. provenance gate: a current artifact not at HEAD, an old-schema artifact,
     a short/unknown head, a config-digest mismatch and a missing baseline
     are refused (exit 2), never compared
@@ -127,6 +127,22 @@ def _artifact(
 def _write_artifact(path: Path, mode: str, rows: list[dict], **overrides) -> None:
     path.write_text(
         json.dumps(_artifact(mode, rows, **overrides), indent=2) + "\n", encoding="utf-8"
+    )
+
+
+def _write_clean_preflight(path: Path, *, host: dict | None = None, status: str = "clean") -> None:
+    host = host or {"os": "linux", "arch": "x86_64", "cpu_count": 8}
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "kind": "quanta-index-timing-preflight",
+                "status": status,
+                "host": host,
+                "foreign_rust_processes": [],
+            }
+        ),
+        encoding="utf-8",
     )
 
 
@@ -269,7 +285,7 @@ def test_clear_regression_exits_one(tmp_path: Path) -> None:
     assert "--update-baseline" in result.stdout
 
 
-def test_warm_p95_only_drift_is_advisory(tmp_path: Path) -> None:
+def test_warm_p95_only_drift_is_blocking(tmp_path: Path) -> None:
     baseline = tmp_path / "baseline.json"
     current = tmp_path / "current.json"
     base = _row("lexical.keyword.native", 10.0)
@@ -279,12 +295,11 @@ def test_warm_p95_only_drift_is_advisory(tmp_path: Path) -> None:
     _write_artifact(baseline, "warm", [base])
     _write_artifact(current, "warm", [cur])
     result = _run(str(baseline), str(current))
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "ADVISORY lexical.keyword.native: p95" in result.stdout
-    assert "REGRESSION" not in result.stdout
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "REGRESSION lexical.keyword.native: p95" in result.stdout
 
 
-def test_cold_p95_only_drift_is_advisory(tmp_path: Path) -> None:
+def test_cold_p95_only_drift_is_blocking(tmp_path: Path) -> None:
     baseline = tmp_path / "baseline.json"
     current = tmp_path / "current.json"
     base = _row("history.diff_added.native", 10.0, mode="cold", samples=20)
@@ -294,9 +309,38 @@ def test_cold_p95_only_drift_is_advisory(tmp_path: Path) -> None:
     _write_artifact(baseline, "cold", [base])
     _write_artifact(current, "cold", [cur])
     result = _run(str(baseline), str(current))
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "REGRESSION history.diff_added.native: p95" in result.stdout
+
+
+def test_p95_requires_both_its_looser_relative_and_absolute_legs(tmp_path: Path) -> None:
+    baseline = tmp_path / "baseline.json"
+    current = tmp_path / "current.json"
+    base = _row("lexical.keyword.native", 20.0)
+    cur = _row("lexical.keyword.native", 24.0)
+    base["latency"]["p50_ms"] = 5.0
+    cur["latency"]["p50_ms"] = 5.1
+    _write_artifact(baseline, "warm", [base])
+    _write_artifact(current, "warm", [cur])
+    result = _run(str(baseline), str(current))
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "ADVISORY history.diff_added.native: p95" in result.stdout
     assert "REGRESSION" not in result.stdout
+
+
+def test_p99_only_drift_remains_advisory(tmp_path: Path) -> None:
+    baseline = tmp_path / "baseline.json"
+    current = tmp_path / "current.json"
+    base = _row("lexical.keyword.native", 10.0)
+    cur = _row("lexical.keyword.native", 10.1)
+    base["latency"]["p50_ms"] = cur["latency"]["p50_ms"] = 5.0
+    base["latency"]["p95_ms"] = cur["latency"]["p95_ms"] = 10.0
+    base["latency"]["p99_ms"] = 11.0
+    cur["latency"]["p99_ms"] = 30.0
+    _write_artifact(baseline, "warm", [base])
+    _write_artifact(current, "warm", [cur])
+    result = _run(str(baseline), str(current))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "ADVISORY lexical.keyword.native: p99" in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -378,7 +422,11 @@ def test_update_baseline_overwrites_and_exits_zero(tmp_path: Path) -> None:
     fail_result = _run(str(baseline), str(current))
     assert fail_result.returncode == 1, fail_result.stdout
 
-    update_result = _run(str(baseline), str(current), "--update-baseline")
+    receipt = tmp_path / "preflight.json"
+    _write_clean_preflight(receipt)
+    update_result = _run(
+        str(baseline), str(current), "--update-baseline", "--preflight-receipt", str(receipt)
+    )
     assert update_result.returncode == 0, update_result.stdout + update_result.stderr
     assert "updated baseline" in update_result.stdout
     assert baseline.read_text(encoding="utf-8") == current.read_text(encoding="utf-8")
@@ -400,6 +448,24 @@ def test_update_baseline_refuses_unmeasured_candidate(tmp_path: Path) -> None:
     assert result.returncode == 2, result.stdout + result.stderr
     assert "baseline candidate" in result.stderr
     assert not baseline.exists()
+
+
+def test_update_baseline_requires_clean_matching_preflight(tmp_path: Path) -> None:
+    baseline = tmp_path / "baseline.json"
+    current = tmp_path / "current.json"
+    _write_artifact(current, "warm", [_row("lexical.keyword.native", 1.00)])
+    missing = _run(str(baseline), str(current), "--update-baseline")
+    assert missing.returncode == 2
+    assert "requires --preflight-receipt" in missing.stderr
+    receipt = tmp_path / "preflight.json"
+    _write_clean_preflight(receipt, status="blocked")
+    blocked = _run(str(baseline), str(current), "--update-baseline", "--preflight-receipt", str(receipt))
+    assert blocked.returncode == 2
+    assert "is not clean" in blocked.stderr
+    _write_clean_preflight(receipt, host={"os": "linux", "arch": "x86_64", "cpu_count": 4})
+    mismatch = _run(str(baseline), str(current), "--update-baseline", "--preflight-receipt", str(receipt))
+    assert mismatch.returncode == 2
+    assert "does not match candidate host class" in mismatch.stderr
 
 
 # ---------------------------------------------------------------------------
@@ -521,7 +587,11 @@ def test_a_missing_baseline_is_a_typed_refusal(tmp_path: Path) -> None:
     assert result.returncode == 2, result.stdout + result.stderr
     assert "no such artifact" in result.stderr and "--update-baseline" in result.stderr
     # Recording it at HEAD makes the next comparison possible.
-    update = _run(str(baseline), str(current), "--update-baseline")
+    receipt = tmp_path / "preflight.json"
+    _write_clean_preflight(receipt)
+    update = _run(
+        str(baseline), str(current), "--update-baseline", "--preflight-receipt", str(receipt)
+    )
     assert update.returncode == 0, update.stdout + update.stderr
     assert _run(str(baseline), str(current)).returncode == 0
 
@@ -650,6 +720,8 @@ def test_invalid_thresholds_are_refused(tmp_path: Path) -> None:
         ("--rel-threshold", "nan"),
         ("--rel-threshold", "-1"),
         ("--abs-threshold-ms", "inf"),
+        ("--p95-rel-threshold", "nan"),
+        ("--p95-abs-threshold-ms", "-1"),
     ):
         result = _run(str(baseline), str(current), flag, value)
         assert result.returncode == 2, result.stdout + result.stderr

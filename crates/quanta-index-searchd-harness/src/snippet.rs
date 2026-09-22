@@ -42,6 +42,11 @@ use anyhow::Result as AnyResult;
 use quanta_index_contract::{LexicalCandidate, TextQuerySyntax};
 use serde_json::{Value, json};
 
+use crate::artifact::{
+    BenchArtifactV1, BenchMode, BenchProvenanceV1, BenchRowV1, BenchSyntax, GitHeadV1, HostV1,
+    PhaseDurationsV1, ResourceUsageV1, ResultShape, RouteFamily, config_digest, corpus_digest,
+    saturating_u64,
+};
 use crate::harness::E2eRuntime;
 
 /// Repo id under which the snippet fixture is ingested.
@@ -581,29 +586,90 @@ fn golden_window_json(score: &SnippetScore) -> Value {
     })
 }
 
-/// Write the two canonical snippet artifacts under `dir`.
-pub fn write_artifacts(report: &SnippetReport, dir: &Path, git_rev: &str) -> AnyResult<()> {
+fn artifact_detail(report: &SnippetReport) -> Value {
     let scores: Vec<Value> = report.scores.iter().map(score_json).collect();
+    json!({
+        "passed": report.passed,
+        "max_snippet_len": MAX_SNIPPET_LEN,
+        "min_leading_context": MIN_LEADING_CONTEXT,
+        "scores": scores,
+        "gate_note": "snippet quality is hit-centered window + bounded length + deterministic truncation, NOT substring presence; the engine snippet is graded as-emitted, never post-processed to pass",
+    })
+}
+
+/// The current-source snippet verdict envelope. The supplemental golden record
+/// remains separate because it is a content oracle, not a second authority.
+pub fn artifact(
+    report: &SnippetReport,
+    git_head: GitHeadV1,
+    host: HostV1,
+) -> AnyResult<BenchArtifactV1> {
+    let corpus = SNIPPET_CORPUS
+        .iter()
+        .map(|fixture| (fixture.path.to_string(), fixture.content.to_string()))
+        .collect::<Vec<_>>();
+    Ok(BenchArtifactV1 {
+        dimension: "snippet".to_string(),
+        mode: BenchMode::Warm,
+        concurrency: 1,
+        provenance: BenchProvenanceV1 {
+            git_head,
+            corpus_digest: corpus_digest("snippet", &corpus),
+            config_digest: config_digest(
+                "snippet",
+                &[
+                    ("max_snippet_len", MAX_SNIPPET_LEN.to_string()),
+                    ("min_leading_context", MIN_LEADING_CONTEXT.to_string()),
+                    ("queries", SNIPPET_QUERIES.len().to_string()),
+                ],
+            ),
+            model_revision: None,
+        },
+        host,
+        resources: ResourceUsageV1::observe_self()?,
+        phases: PhaseDurationsV1::default(),
+        disk_amplification: None,
+        rows: report
+            .scores
+            .iter()
+            .map(|score| BenchRowV1 {
+                scenario_id: score.id.to_string(),
+                route_family: RouteFamily::Lexical,
+                syntax: BenchSyntax::Native,
+                result_shape: if score.matched_path.is_some() {
+                    ResultShape::Candidates
+                } else {
+                    ResultShape::Empty
+                },
+                latency: None,
+                qps: None,
+                error_count: saturating_u64(score.failures.len()),
+                timeout_count: 0,
+                result_count: Some(if score.matched_path.is_some() { 1 } else { 0 }),
+                typed_error_code: None,
+                engine_touched: vec!["lexical".to_string()],
+                early_stop_reason: None,
+            })
+            .collect(),
+        detail: artifact_detail(report),
+    })
+}
+
+/// Write the authority envelope and the supplemental golden-window record.
+pub fn write_artifacts(
+    report: &SnippetReport,
+    dir: &Path,
+    git_head: GitHeadV1,
+    host: HostV1,
+) -> AnyResult<()> {
     let golden: Vec<Value> = report.scores.iter().map(golden_window_json).collect();
-    crate::artifact::write_json_pretty(
-        &dir.join("summary.json"),
-        &json!({
-            "schema_version": 1,
-            "dimension": "snippet",
-            "git_rev": git_rev,
-            "passed": report.passed,
-            "max_snippet_len": MAX_SNIPPET_LEN,
-            "min_leading_context": MIN_LEADING_CONTEXT,
-            "scores": scores,
-            "gate_note": "snippet quality is hit-centered window + bounded length + deterministic truncation, NOT substring presence; the engine snippet is graded as-emitted, never post-processed to pass",
-        }),
-    )?;
+    artifact(report, git_head.clone(), host)?.write_to(&dir.join("summary.json"))?;
     crate::artifact::write_json_pretty(
         &dir.join("golden_windows.json"),
         &json!({
-            "schema_version": 1,
+            "schema_version": 2,
             "dimension": "snippet",
-            "git_rev": git_rev,
+            "git_head": git_head.as_str(),
             "windows": golden,
             "oracle_note": "oracle_window is the ideal hit-centered, bounded window compute_snippet_window would emit for (observed_snippet, needle); with the engine truncating, observed_snippet and oracle_window converge on the long_line intent, and any divergence marks an unwindowed-snippet regression",
         }),
@@ -820,6 +886,20 @@ mod tests {
             long.snippet.is_some(),
             "long-line snippet must be retrieved to be measurable: {:?}",
             long.failures
+        );
+        let artifact = artifact(
+            &report,
+            GitHeadV1::parse(&"a".repeat(40)).expect("head"),
+            HostV1::observe().expect("host"),
+        )
+        .expect("authority artifact")
+        .to_json()
+        .expect("json");
+        assert_eq!(artifact["schema_version"], 2);
+        assert_eq!(artifact["detail"]["passed"], report.passed);
+        assert_eq!(
+            artifact["rows"].as_array().map(Vec::len),
+            Some(SNIPPET_QUERIES.len())
         );
     }
 }

@@ -31,9 +31,28 @@ const TOP_K: u32 = 10;
 const MAX_TOTAL_REQUESTS: u128 = 100_000;
 const MIN_DELIVERY_RATIO: f64 = 0.95;
 
+/// Arrival process used to schedule requests independently of completions.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ArrivalModel {
+    /// Legacy fixed-spacing diagnostic schedule.
+    DeterministicPeriodic,
+    /// Seeded exponential inter-arrivals, the qualification default.
+    SeededPoisson,
+}
+
+impl ArrivalModel {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::DeterministicPeriodic => "deterministic_periodic",
+            Self::SeededPoisson => "seeded_poisson",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct Config {
     pub seed: u64,
+    pub arrival_model: ArrivalModel,
     pub rates_qps: Vec<u32>,
     pub duration: Duration,
     pub workers: usize,
@@ -96,6 +115,59 @@ fn scheduled_offset(index: u128, rate: u32) -> AnyResult<Duration> {
         .context("scheduled offset overflow")?
         / u128::from(rate);
     Ok(Duration::from_nanos(u64::try_from(nanos)?))
+}
+
+/// Small deterministic PRNG sufficient for schedule generation. It is local to
+/// the benchmark contract so an ambient thread RNG cannot alter a replay.
+fn next_random(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    let mut value = *state;
+    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^ (value >> 31)
+}
+
+fn poisson_offsets(duration: Duration, rate: u32, seed: u64) -> AnyResult<Vec<Duration>> {
+    let expected = scheduled_count(duration, rate)?;
+    let maximum = expected
+        .checked_mul(2)
+        .and_then(|value| value.checked_add(128))
+        .context("Poisson schedule limit overflow")?;
+    let mut state = seed ^ u64::from(rate).rotate_left(17);
+    let mut elapsed_secs = 0.0_f64;
+    let duration_secs = duration.as_secs_f64();
+    let mut offsets = Vec::new();
+    while elapsed_secs < duration_secs {
+        // Map 53 random bits into (0, 1] so ln is finite and zero intervals
+        // cannot create duplicate scheduled arrivals.
+        let random = next_random(&mut state) >> 11;
+        let high = u32::try_from(random >> 21).context("Poisson random high bits overflow")?;
+        let low = u32::try_from(random & ((1_u64 << 21) - 1))
+            .context("Poisson random low bits overflow")?;
+        let unit = (f64::from(high) * 2_097_152.0 + f64::from(low)) / 9_007_199_254_740_992.0;
+        let open_unit = unit.clamp(f64::MIN_POSITIVE, 1.0);
+        elapsed_secs += -open_unit.ln() / f64::from(rate);
+        if elapsed_secs >= duration_secs {
+            break;
+        }
+        if u128::try_from(offsets.len()).context("Poisson schedule length overflow")? >= maximum {
+            anyhow::bail!("Poisson schedule exceeded its bounded replay limit");
+        }
+        offsets.push(Duration::from_secs_f64(elapsed_secs));
+    }
+    Ok(offsets)
+}
+
+fn scheduled_offsets(config: &Config, rate: u32) -> AnyResult<Vec<Duration>> {
+    match config.arrival_model {
+        ArrivalModel::DeterministicPeriodic => {
+            let count = scheduled_count(config.duration, rate)?;
+            (0..count)
+                .map(|index| scheduled_offset(index, rate))
+                .collect()
+        }
+        ArrivalModel::SeededPoisson => poisson_offsets(config.duration, rate, config.seed),
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -351,7 +423,8 @@ fn measure_point(
     config: &Config,
     rate: u32,
 ) -> AnyResult<LoadPoint> {
-    let offered = u64::try_from(scheduled_count(config.duration, rate)?)?;
+    let offsets = scheduled_offsets(config, rate)?;
+    let offered = u64::try_from(offsets.len())?;
     let (sender, receiver) = mpsc::sync_channel::<OfferedRequest>(config.queue_capacity);
     let shared_receiver = Arc::new(Mutex::new(receiver));
     let (results_sender, results_receiver) = mpsc::channel::<Completion>();
@@ -387,8 +460,8 @@ fn measure_point(
     let started = Instant::now();
     let mut dropped_queue_full = 0_u64;
     let mut dropped_scheduler_late = 0_u64;
-    for index in 0..offered {
-        let scheduled = started + scheduled_offset(u128::from(index), rate)?;
+    for (index, offset) in offsets.into_iter().enumerate() {
+        let scheduled = started + offset;
         if let Some(wait) = scheduled.checked_duration_since(Instant::now()) {
             thread::sleep(wait);
         }
@@ -398,7 +471,7 @@ fn measure_point(
             continue;
         }
         match sender.try_send(OfferedRequest {
-            id: index + 1,
+            id: u64::try_from(index)? + 1,
             scheduled,
         }) {
             Ok(()) => {}
@@ -540,6 +613,7 @@ pub(crate) fn artifact(
                 DIMENSION,
                 &[
                     ("seed", config.seed.to_string()),
+                    ("arrival_model", config.arrival_model.as_str().to_string()),
                     (
                         "rates_qps",
                         config
@@ -570,7 +644,7 @@ pub(crate) fn artifact(
         rows,
         detail: json!({
             "passed": report.passed(),
-            "arrival_model": "deterministic_periodic",
+            "arrival_model": config.arrival_model.as_str(),
             "latency_origin": "scheduled_arrival",
             "latency_sample_scope": "completed_requests_including_errors_and_timeouts_excluding_drops",
             "duration_ms": config.duration.as_millis(),
@@ -592,6 +666,28 @@ mod tests {
         assert_eq!(scheduled_count(Duration::from_millis(250), 10)?, 3);
         assert_eq!(scheduled_offset(0, 10)?, Duration::ZERO);
         assert_eq!(scheduled_offset(2, 10)?, Duration::from_millis(200));
+        Ok(())
+    }
+
+    #[test]
+    fn seeded_poisson_schedule_is_replayable_and_not_fixed_spacing() -> AnyResult<()> {
+        let config = Config {
+            seed: 7,
+            arrival_model: ArrivalModel::SeededPoisson,
+            rates_qps: vec![10],
+            duration: Duration::from_secs(1),
+            workers: 1,
+            queue_capacity: 1,
+            request_timeout: Duration::from_secs(1),
+        };
+        let first = scheduled_offsets(&config, 10)?;
+        assert_eq!(first, scheduled_offsets(&config, 10)?);
+        assert!(!first.is_empty());
+        assert!(
+            first
+                .windows(2)
+                .any(|pair| pair[1] - pair[0] != Duration::from_millis(100))
+        );
         Ok(())
     }
 
@@ -702,6 +798,7 @@ mod tests {
             !Report {
                 config: Config {
                     seed: 1,
+                    arrival_model: ArrivalModel::SeededPoisson,
                     rates_qps: vec![1],
                     duration: Duration::from_secs(1),
                     workers: 1,
@@ -757,6 +854,7 @@ mod tests {
         let report = Report {
             config: Config {
                 seed: 1,
+                arrival_model: ArrivalModel::SeededPoisson,
                 rates_qps: vec![1, 2],
                 duration: Duration::from_secs(1),
                 workers: 1,
@@ -785,6 +883,9 @@ mod tests {
     fn bounded_real_runtime_smoke() -> AnyResult<()> {
         let report = run(Config {
             seed: 1,
+            // This smoke test verifies the bounded executor. Keep its offered
+            // count deterministic; qualification runs use SeededPoisson.
+            arrival_model: ArrivalModel::DeterministicPeriodic,
             rates_qps: vec![10],
             duration: Duration::from_millis(200),
             workers: 2,

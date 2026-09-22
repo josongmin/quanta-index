@@ -23,12 +23,13 @@ refused with instructions to re-capture it.
 
 Blocking metrics:
 
-- warm: ``p50`` (steady-state central tendency)
-- cold: ``p50`` (first-query central tendency)
+- warm/cold ``p50``: central-tendency regression, ``>10%`` and ``>1ms`` / ``>5ms``
+- warm/cold ``p95``: agent-loop tail regression, ``>20%`` and ``>5ms`` / ``>10ms``
 
-``p95``/``p99`` remain in the artifact as observability signals, but they are
-advisory-only because same-commit workstation reruns still show ambient tail
-drift long after the central tendency has stabilized.
+``p99`` remains advisory.  A coding-agent turn commonly compounds several
+retrieval calls, so allowing an unbounded p95 regression while only gating p50
+would admit a user-visible regression.  The p95 policy is deliberately looser
+than p50 to tolerate normal tail variance on the canonical host.
 
 Why both thresholds: noise on sub-millisecond scenarios easily produces large
 relative swings; we only care about meaningful regressions, so a delta must
@@ -45,9 +46,11 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import re
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -57,9 +60,11 @@ DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 # Mode-aware default thresholds applied to the blocking metric. Explicit
 # --rel-threshold / --abs-threshold-ms flags override these.
-DEFAULT_REL_THRESHOLD = 0.10
-DEFAULT_ABS_THRESHOLD_MS = {"warm": 1.0, "cold": 5.0}
-DEFAULT_BLOCKING_METRIC = {"warm": "p50", "cold": "p50"}
+DEFAULT_P50_REL_THRESHOLD = 0.10
+DEFAULT_P50_ABS_THRESHOLD_MS = {"warm": 1.0, "cold": 5.0}
+DEFAULT_P95_REL_THRESHOLD = 0.20
+DEFAULT_P95_ABS_THRESHOLD_MS = {"warm": 5.0, "cold": 10.0}
+BLOCKING_METRICS = ("p50", "p95")
 MIN_SAMPLES_FOR_AUTHORITY = {"warm": 200, "cold": 20}
 
 
@@ -113,19 +118,36 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--update-baseline",
         action="store_true",
-        help="overwrite baseline with current (after the provenance gate) and exit 0",
+        help="overwrite baseline with current after canonical-host and clean-preflight admission",
+    )
+    parser.add_argument(
+        "--preflight-receipt",
+        type=Path,
+        help="clean timing receipt required with --update-baseline",
     )
     parser.add_argument(
         "--rel-threshold",
         type=float,
         default=None,
-        help="relative growth threshold on the blocking metric (default: 0.10 = 10%%)",
+        help="relative growth threshold on p50 (default: 0.10 = 10%%)",
     )
     parser.add_argument(
         "--abs-threshold-ms",
         type=float,
         default=None,
-        help="absolute growth threshold in ms (default: warm 1.0ms, cold 5.0ms)",
+        help="absolute growth threshold in ms on p50 (default: warm 1.0ms, cold 5.0ms)",
+    )
+    parser.add_argument(
+        "--p95-rel-threshold",
+        type=float,
+        default=None,
+        help="relative growth threshold on p95 (default: 0.20 = 20%%)",
+    )
+    parser.add_argument(
+        "--p95-abs-threshold-ms",
+        type=float,
+        default=None,
+        help="absolute growth threshold in ms on p95 (default: warm 5.0ms, cold 10.0ms)",
     )
     return parser.parse_args()
 
@@ -435,12 +457,56 @@ def require_complete_baseline_candidate(artifact: Artifact) -> None:
             )
 
 
+def require_clean_preflight(receipt_path: Path | None, artifact: Artifact) -> None:
+    """Bind a baseline ratchet to a clean preflight on the measured host class."""
+    if receipt_path is None:
+        raise ArtifactRefused("--update-baseline requires --preflight-receipt")
+    try:
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ArtifactRefused(f"cannot load preflight receipt {receipt_path}: {exc}") from exc
+    if not isinstance(receipt, dict):
+        raise ArtifactRefused("preflight receipt is not an object")
+    if receipt.get("schema_version") != 1 or receipt.get("kind") != "quanta-index-timing-preflight":
+        raise ArtifactRefused("preflight receipt is not quanta-index-timing-preflight schema 1")
+    if receipt.get("status") != "clean":
+        raise ArtifactRefused(f"preflight receipt status {receipt.get('status')!r} is not clean")
+    if receipt.get("foreign_rust_processes") != []:
+        raise ArtifactRefused("clean preflight receipt still names foreign Rust processes")
+    host = receipt.get("host")
+    if not isinstance(host, dict):
+        raise ArtifactRefused("preflight receipt host is not an object")
+    expected = artifact.host_identity[:3]
+    actual = (host.get("os"), host.get("arch"), host.get("cpu_count"))
+    if actual != expected:
+        raise ArtifactRefused(
+            f"preflight host {actual!r} does not match candidate host class {expected!r}"
+        )
+
+
+def atomically_write_baseline(destination: Path, content: str) -> None:
+    """Do not leave a committed baseline truncated if admission is interrupted."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", dir=destination.parent, prefix=f".{destination.name}.", delete=False
+    ) as handle:
+        temporary = Path(handle.name)
+        handle.write(content)
+    try:
+        os.replace(temporary, destination)
+    except OSError:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
 def main() -> int:
     args = parse_args()
 
     for flag, value in (
         ("--rel-threshold", args.rel_threshold),
         ("--abs-threshold-ms", args.abs_threshold_ms),
+        ("--p95-rel-threshold", args.p95_rel_threshold),
+        ("--p95-abs-threshold-ms", args.p95_abs_threshold_ms),
     ):
         if value is not None and (not math.isfinite(value) or value < 0):
             print(f"ERROR: {flag} must be finite and non-negative", file=sys.stderr)
@@ -456,11 +522,8 @@ def main() -> int:
             )
         if args.update_baseline:
             require_complete_baseline_candidate(current)
-            args.baseline.parent.mkdir(parents=True, exist_ok=True)
-            args.baseline.write_text(
-                args.current.read_text(encoding="utf-8"),
-                encoding="utf-8",
-            )
+            require_clean_preflight(args.preflight_receipt, current)
+            atomically_write_baseline(args.baseline, args.current.read_text(encoding="utf-8"))
             print(f"updated baseline {args.baseline} at head {head}")
             return 0
         baseline = load_artifact(args.baseline, role="baseline")
@@ -477,15 +540,30 @@ def main() -> int:
         return 2
 
     mode = current.mode
-    rel_threshold = args.rel_threshold if args.rel_threshold is not None else DEFAULT_REL_THRESHOLD
-    abs_threshold_ms = (
+    p50_rel_threshold = (
+        args.rel_threshold if args.rel_threshold is not None else DEFAULT_P50_REL_THRESHOLD
+    )
+    p50_abs_threshold_ms = (
         args.abs_threshold_ms
         if args.abs_threshold_ms is not None
-        else DEFAULT_ABS_THRESHOLD_MS.get(mode, 1.0)
+        else DEFAULT_P50_ABS_THRESHOLD_MS.get(mode, 1.0)
     )
-    blocking_metric = DEFAULT_BLOCKING_METRIC.get(mode, "p95")
+    p95_rel_threshold = (
+        args.p95_rel_threshold
+        if args.p95_rel_threshold is not None
+        else DEFAULT_P95_REL_THRESHOLD
+    )
+    p95_abs_threshold_ms = (
+        args.p95_abs_threshold_ms
+        if args.p95_abs_threshold_ms is not None
+        else DEFAULT_P95_ABS_THRESHOLD_MS.get(mode, 5.0)
+    )
+    thresholds = {
+        "p50": (p50_rel_threshold, p50_abs_threshold_ms),
+        "p95": (p95_rel_threshold, p95_abs_threshold_ms),
+    }
 
-    regressed: list[tuple[str, float, float, float, float]] = []
+    regressed: list[tuple[str, str, float, float, float, float]] = []
     missing_measured: list[str] = []
     unmeasured_current: list[tuple[str, str]] = []
     new_scenarios: list[str] = []
@@ -494,8 +572,9 @@ def main() -> int:
 
     all_scenarios = sorted(set(baseline.rows) | set(current.rows))
     print(
-        f"mode={mode}  blocking-metric={blocking_metric}  rel-threshold={rel_threshold * 100:.0f}%  "
-        f"abs-threshold={abs_threshold_ms:.2f}ms  baseline-head={baseline.git_head[:12]}  "
+        f"mode={mode}  p50-threshold={p50_rel_threshold * 100:.0f}%/{p50_abs_threshold_ms:.2f}ms  "
+        f"p95-threshold={p95_rel_threshold * 100:.0f}%/{p95_abs_threshold_ms:.2f}ms  "
+        f"baseline-head={baseline.git_head[:12]}  "
         f"current-head={current.git_head[:12]}"
     )
     print(f"{'scenario':40s} {'baseline':>10s} {'current':>10s} {'delta':>10s} {'rel':>8s}")
@@ -538,54 +617,71 @@ def main() -> int:
             )
             continue
 
-        base_ms = metric_value(base, blocking_metric)
-        cur_ms = metric_value(cur, blocking_metric)
+        base_ms = metric_value(base, "p50")
+        cur_ms = metric_value(cur, "p50")
         assert base_ms is not None and cur_ms is not None
         delta = cur_ms - base_ms
         rel = (delta / base_ms) if base_ms > 0 else float("inf") if delta > 0 else 0.0
         rel_pct = f"{rel * 100:+.1f}%" if base_ms > 0 else "  inf"
         marker = ""
-        if rel > rel_threshold and delta > abs_threshold_ms:
-            regressed.append((scenario_id, base_ms, cur_ms, delta, rel))
-            marker = " <-- REGRESSION"
+        p50_rel_threshold, p50_abs_threshold_ms = thresholds["p50"]
+        if rel > p50_rel_threshold and delta > p50_abs_threshold_ms:
+            regressed.append((scenario_id, "p50", base_ms, cur_ms, delta, rel))
+            marker = " <-- P50_REGRESSION"
         print(
             f"{scenario_id:40s} {base_ms:>8.2f}ms {cur_ms:>8.2f}ms "
             f"{delta:>+8.2f}ms {rel_pct:>8s}{marker}"
         )
 
-        for advisory_metric in ("p95", "p99"):
-            if advisory_metric == blocking_metric:
+        for metric in BLOCKING_METRICS:
+            if metric == "p50":
                 continue
-            base_advisory = metric_value(base, advisory_metric)
-            cur_advisory = metric_value(cur, advisory_metric)
-            if base_advisory is None or cur_advisory is None:
-                continue
-            advisory_delta = cur_advisory - base_advisory
-            advisory_rel = (
-                (advisory_delta / base_advisory)
-                if base_advisory > 0
+            base_metric = metric_value(base, metric)
+            cur_metric = metric_value(cur, metric)
+            assert base_metric is not None and cur_metric is not None
+            metric_delta = cur_metric - base_metric
+            metric_rel = (
+                (metric_delta / base_metric)
+                if base_metric > 0
                 else float("inf")
-                if advisory_delta > 0
+                if metric_delta > 0
                 else 0.0
             )
-            if advisory_rel > rel_threshold and advisory_delta > abs_threshold_ms:
-                advisories.append(
-                    (
-                        scenario_id,
-                        advisory_metric,
-                        base_advisory,
-                        cur_advisory,
-                        advisory_delta,
-                        advisory_rel,
-                    )
+            metric_rel_threshold, metric_abs_threshold_ms = thresholds[metric]
+            if metric_rel > metric_rel_threshold and metric_delta > metric_abs_threshold_ms:
+                regressed.append(
+                    (scenario_id, metric, base_metric, cur_metric, metric_delta, metric_rel)
                 )
+
+        base_advisory = metric_value(base, "p99")
+        cur_advisory = metric_value(cur, "p99")
+        assert base_advisory is not None and cur_advisory is not None
+        advisory_delta = cur_advisory - base_advisory
+        advisory_rel = (
+            (advisory_delta / base_advisory)
+            if base_advisory > 0
+            else float("inf")
+            if advisory_delta > 0
+            else 0.0
+        )
+        if advisory_rel > p95_rel_threshold and advisory_delta > p95_abs_threshold_ms:
+            advisories.append(
+                (
+                    scenario_id,
+                    "p99",
+                    base_advisory,
+                    cur_advisory,
+                    advisory_delta,
+                    advisory_rel,
+                )
+            )
 
     failures = 0
     if regressed:
         print()
-        for scenario_id, base_ms, cur_ms, delta, rel in regressed:
+        for scenario_id, metric, base_ms, cur_ms, delta, rel in regressed:
             print(
-                f"REGRESSION {scenario_id}: {blocking_metric} {base_ms:.2f}ms -> {cur_ms:.2f}ms "
+                f"REGRESSION {scenario_id}: {metric} {base_ms:.2f}ms -> {cur_ms:.2f}ms "
                 f"({delta:+.2f}ms, {rel * 100:+.1f}%)"
             )
         failures += len(regressed)
@@ -642,8 +738,7 @@ def main() -> int:
         if unmeasured_n:
             parts.append(f"{unmeasured_n} unmeasured")
         print(
-            f"FAIL: {', '.join(parts)} scenario(s) over thresholds "
-            f"({blocking_metric} rel > {rel_threshold * 100:.0f}% AND abs > {abs_threshold_ms:.2f}ms)."
+            f"FAIL: {', '.join(parts)} scenario(s) over p50/p95 thresholds."
         )
         print("To accept a deliberate change: re-run with --update-baseline.")
         return 1

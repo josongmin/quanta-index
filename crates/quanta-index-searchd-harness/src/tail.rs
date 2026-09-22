@@ -117,41 +117,23 @@ pub const ROUTE_TAIL_BUDGETS: &[RouteTailBudget] = &[
     BUDGET_ADVERSARIAL,
 ];
 
-/// Look up the declared budget for a route family.
+/// Look up the declared budget for a deterministic DSL-scenario route family.
 ///
-/// Total by construction: the match is exhaustive over [`RouteFamily`], so every
-/// route resolves to its declared budget without a fallible lookup.
+/// Semantic and hybrid requests have independent request shapes and no DSL
+/// scenario oracle. They must not silently inherit lexical thresholds.
 #[must_use]
-pub fn budget_for(route: RouteFamily) -> RouteTailBudget {
-    match route {
+pub fn budget_for(route: RouteFamily) -> Option<RouteTailBudget> {
+    Some(match route {
         RouteFamily::Lexical => BUDGET_LEXICAL,
         RouteFamily::History => BUDGET_HISTORY,
         RouteFamily::RuntimeCatalog => BUDGET_RUNTIME_CATALOG,
         RouteFamily::Structural => BUDGET_STRUCTURAL,
         RouteFamily::Adversarial => BUDGET_ADVERSARIAL,
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Percentiles (nearest-rank over an ascending-sorted sample).
-// ---------------------------------------------------------------------------
-
-/// Nearest-rank percentile of an ascending-sorted latency slice.
-///
-/// `q` is a percentile in `0..=100`; the index is `floor(q * (n - 1) / 100)`,
-/// which is always in range for a non-empty slice. Saturating index math keeps
-/// it total; `get` keeps the read panic-free.
-#[expect(
-    clippy::integer_division,
-    reason = "nearest-rank index is an intentional floor over a small (<= TAIL_SAMPLES) sorted slice; q <= 100 and n >= 1 keep the index in range"
-)]
-fn percentile_ms(sorted_ms: &[f64], q: usize) -> f64 {
-    let n = sorted_ms.len();
-    if n == 0 {
-        return 0.0;
-    }
-    let idx = q.saturating_mul(n.saturating_sub(1)) / 100;
-    sorted_ms.get(idx).copied().unwrap_or(0.0)
+        RouteFamily::Semantic
+        | RouteFamily::Hybrid
+        | RouteFamily::Symbol
+        | RouteFamily::RepoMap => return None,
+    })
 }
 
 /// Convert an elapsed `Instant` span to milliseconds.
@@ -221,7 +203,6 @@ pub fn measure_route_tails(rt: &mut E2eRuntime) -> AnyResult<Vec<RouteTailMeasur
             let _outcome = run_scenario_query(rt, scenario);
             samples_ms.push(elapsed_ms(started));
         }
-        samples_ms.sort_by(f64::total_cmp);
         let latency = LatencySummary::from_samples_ms(&samples_ms).ok_or_else(|| {
             anyhow::anyhow!(
                 "tail: route `{}` collected no samples",
@@ -232,9 +213,11 @@ pub fn measure_route_tails(rt: &mut E2eRuntime) -> AnyResult<Vec<RouteTailMeasur
             route: budget.route,
             scenario_id: scenario.id,
             sample_count: samples_ms.len(),
-            p50_ms: percentile_ms(&samples_ms, 50),
-            p95_ms: percentile_ms(&samples_ms, 95),
-            p99_ms: percentile_ms(&samples_ms, 99),
+            // `LatencySummary` is the artifact's percentile SSOT. Reusing it
+            // keeps the diagnostic detail and emitted `BenchRowV1` identical.
+            p50_ms: latency.p50_ms,
+            p95_ms: latency.p95_ms,
+            p99_ms: latency.p99_ms,
             result_count: truth.result_count,
             row: bench_row(scenario, truth, Some(latency)),
         });
@@ -295,7 +278,8 @@ fn budget_json(budget: &RouteTailBudget) -> Value {
 #[must_use]
 pub fn route_budgets_json() -> Value {
     json!({
-        "schema_version": 1,
+        "kind": "quanta-index-tail-budget-manifest",
+        "manifest_schema_version": 1,
         "dimension": "tail",
         "host_class": "macbook-advisory",
         "policy_note": "per-route budgets are route-aware (no global threshold); p50 is the blocking-candidate signal and p95/p99 are explicit advisory thresholds. This increment documents the budgets and records verdicts as advisory on this host; the canonical blocking enforcement is the Linux perf runner's.",
@@ -304,7 +288,7 @@ pub fn route_budgets_json() -> Value {
 }
 
 fn measurement_json(measurement: &RouteTailMeasurement) -> Value {
-    let budget = budget_for(measurement.route);
+    let budget = budget_for(measurement.route).expect("tail measurement has a DSL route budget");
     json!({
         "route": measurement.route.as_str(),
         "scenario_id": measurement.scenario_id,
@@ -412,7 +396,7 @@ mod tests {
             RouteFamily::Structural,
             RouteFamily::Adversarial,
         ] {
-            let budget = budget_for(route);
+            let budget = budget_for(route).expect("DSL route has a tail budget");
             assert_eq!(budget.route, route, "budget routed to wrong family");
             assert!(
                 budget.p50_ms <= budget.p95_ms && budget.p95_ms <= budget.p99_ms,
@@ -421,26 +405,27 @@ mod tests {
             );
         }
         assert_eq!(ROUTE_TAIL_BUDGETS.len(), 5, "exactly five route budgets");
+        assert!(budget_for(RouteFamily::Semantic).is_none());
+        assert!(budget_for(RouteFamily::Hybrid).is_none());
+        assert!(budget_for(RouteFamily::Symbol).is_none());
+        assert!(budget_for(RouteFamily::RepoMap).is_none());
     }
 
     #[test]
-    fn percentile_is_nearest_rank_and_in_range() {
-        let sorted: Vec<f64> = (0..100).map(f64::from).collect();
-        assert_eq!(percentile_ms(&sorted, 0), 0.0);
-        assert_eq!(percentile_ms(&sorted, 50), 49.0, "floor(50*99/100)=49");
-        assert_eq!(percentile_ms(&sorted, 99), 98.0, "floor(99*99/100)=98");
-        assert_eq!(percentile_ms(&sorted, 100), 99.0, "top rank");
-    }
-
-    #[test]
-    fn percentile_empty_is_zero() {
-        assert_eq!(percentile_ms(&[], 95), 0.0);
+    fn tail_detail_reuses_artifact_nearest_rank_percentiles() {
+        let samples: Vec<f64> = (1..=TAIL_SAMPLES).map(|value| value as f64).collect();
+        let summary =
+            LatencySummary::from_samples_ms(&samples).expect("tail samples are non-empty");
+        assert_eq!(summary.p50_ms, 32.0);
+        assert_eq!(summary.p95_ms, 61.0);
+        assert_eq!(summary.p99_ms, 64.0);
     }
 
     #[test]
     fn route_budgets_json_is_well_formed() {
         let value = route_budgets_json();
-        assert_eq!(value["schema_version"], 1);
+        assert_eq!(value["kind"], "quanta-index-tail-budget-manifest");
+        assert_eq!(value["manifest_schema_version"], 1);
         assert_eq!(value["dimension"], "tail");
         let routes = value["routes"].as_array().expect("routes is an array");
         assert_eq!(routes.len(), 5);

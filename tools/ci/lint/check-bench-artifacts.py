@@ -39,6 +39,17 @@ from dataclasses import dataclass
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+BENCHMARK_DIR = REPO_ROOT / "tools" / "benchmark"
+if str(BENCHMARK_DIR) not in sys.path:
+    sys.path.insert(0, str(BENCHMARK_DIR))
+
+from manifest import (  # noqa: E402
+    ManifestError,
+    baseline_families,
+    fresh_families,
+    load_manifest,
+    profile_families,
+)
 
 #: The schema every benchmark artifact must carry, mirroring
 #: ``BENCH_ARTIFACT_SCHEMA_VERSION`` in ``artifact.rs``.
@@ -47,53 +58,13 @@ CURRENT_SCHEMA_VERSION = 2
 FULL_HEAD_RE = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
-#: Fresh-run artifact families (gitignored ``artifacts/``): held to HEAD.
-FRESH_FAMILIES: tuple[tuple[str, str], ...] = (
-    ("dsl-warm", "artifacts/dsl-bench/warm-matrix.json"),
-    ("dsl-cold", "artifacts/dsl-bench/cold-matrix.json"),
-    ("scale", "artifacts/search-quality/scale/latest/summary.json"),
-    ("tail", "artifacts/search-quality/tail/latest/summary.json"),
-    ("ann", "artifacts/search-quality/ann/latest/summary.json"),
-    ("relevance", "artifacts/search-quality/relevance/latest/summary.json"),
-    ("relevance-openai-ab", "artifacts/search-quality/relevance/openai-ab/latest/summary.json"),
-    ("concurrency", "artifacts/search-quality/concurrency/latest/summary-c*.json"),
-    ("scan-vs-index", "artifacts/experiments/scan-vs-index/*.json"),
-    ("freshness", "artifacts/search-quality/freshness/latest/summary.json"),
-    ("open-loop", "artifacts/search-quality/open-loop/latest/summary.json"),
-)
-
-#: Committed baselines: held to the shape and a full head, not HEAD equality.
-BASELINE_FAMILIES: tuple[tuple[str, str], ...] = (
-    ("dsl-warm", "tools/benchmark/baselines/warm-matrix.json"),
-    ("dsl-cold", "tools/benchmark/baselines/cold-matrix.json"),
-)
-
-
-def load_family_profiles() -> dict[str, tuple[str, ...]]:
-    """Read profile membership from the bench CLI registry."""
-    path = REPO_ROOT / "tools/benchmark/profiles.json"
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    profiles = payload.get("profiles")
-    if not isinstance(profiles, dict) or not profiles:
-        raise ValueError(f"{path}: no profiles")
-    known = dict(FRESH_FAMILIES)
-    result: dict[str, tuple[str, ...]] = {}
-    for name, profile in profiles.items():
-        if not isinstance(name, str) or not isinstance(profile, dict):
-            raise ValueError(f"{path}: malformed profile")
-        families = profile.get("families")
-        if (
-            not isinstance(families, list)
-            or not families
-            or not all(isinstance(family, str) and family in known for family in families)
-            or len(set(families)) != len(families)
-        ):
-            raise ValueError(f"{path}: profile {name!r} has invalid artifact families")
-        result[name] = tuple(families)
-    return result
-
-
-FAMILY_PROFILES = load_family_profiles()
+try:
+    MANIFEST = load_manifest()
+except ManifestError as exc:
+    raise RuntimeError(f"invalid benchmark manifest: {exc}") from exc
+FRESH_FAMILIES = fresh_families(MANIFEST)
+BASELINE_FAMILIES = baseline_families(MANIFEST)
+FAMILY_PROFILES = profile_families(MANIFEST)
 
 ENVELOPE_KEYS = (
     "schema_version",
@@ -112,6 +83,7 @@ PROVENANCE_KEYS = ("git_head", "corpus_digest", "config_digest", "model_revision
 HOST_KEYS = ("os", "arch", "cpu_count", "mem_bytes", "hostname_hash")
 RESOURCE_KEYS = ("peak_rss_bytes",)
 PHASE_KEYS = ("build_ms", "update_ms", "gc_ms")
+DISK_AMPLIFICATION_KEYS = ("bytes_written", "changed_bytes", "ratio")
 ROW_KEYS = (
     "scenario_id",
     "route_family",
@@ -128,23 +100,24 @@ ROW_KEYS = (
 )
 LATENCY_KEYS = ("p50_ms", "p95_ms", "p99_ms", "samples")
 MODES = ("warm", "cold")
-UNTIMED_DIMENSIONS = ("relevance", "relevance-openai-ab")
+UNTIMED_DIMENSIONS = ("relevance", "relevance-openai-ab", "ambiguity", "snippet", "ops", "ui")
 CONCURRENCY_COUNTS = (1, 8, 32)
 VERDICT_DIMENSIONS = frozenset(
     (
         "relevance",
         "relevance-openai-ab",
+        "ambiguity",
+        "snippet",
         "scale",
         "tail",
         "ann",
         "concurrency",
         "freshness",
         "open-loop",
+        "ops",
+        "ui",
     )
 )
-AUTHORITY_SAMPLE_MIN = {"dsl-warm": 200, "dsl-cold": 20, "freshness": 20}
-
-
 @dataclass(frozen=True)
 class Refusal:
     path: Path
@@ -170,10 +143,38 @@ def resolve_head(repo_root: Path) -> str:
     return head
 
 
+def require_clean_worktree(repo_root: Path) -> None:
+    """Refuse current-source evidence after source has diverged from its HEAD."""
+    completed = subprocess.run(
+        ["git", "-C", str(repo_root), "status", "--porcelain", "--untracked-files=normal"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(f"git status failed: {completed.stderr.strip()}")
+    if completed.stdout:
+        raise RuntimeError(
+            "worktree is dirty: current-source benchmark evidence requires a clean checkout"
+        )
+
+
 def _missing(obj: object, keys: tuple[str, ...], where: str) -> list[str]:
     if not isinstance(obj, dict):
         return [f"{where} is not an object"]
     return [f"{where} is missing `{key}`" for key in keys if key not in obj]
+
+
+def _unexpected(obj: object, keys: tuple[str, ...], where: str) -> list[str]:
+    """Reject fields no current Rust serializer can have emitted.
+
+    The artifact envelope is a versioned producer contract, not an extensible
+    transport object.  Accepting an unknown field here lets a future/foreign
+    producer look schema-2-compatible without an explicit schema bump.
+    """
+    if not isinstance(obj, dict):
+        return []
+    return [f"{where} has unexpected `{key}`" for key in sorted(set(obj) - set(keys))]
 
 
 def _non_negative_number(value: object) -> bool:
@@ -193,6 +194,7 @@ def _validate_rows(rows: list[object], *, dimension: str) -> list[str]:
     for index, row in enumerate(rows):
         where = f"rows[{index}]"
         reasons.extend(_missing(row, ROW_KEYS, where))
+        reasons.extend(_unexpected(row, ROW_KEYS, where))
         if not isinstance(row, dict):
             continue
         scenario_id = row.get("scenario_id")
@@ -239,6 +241,7 @@ def _validate_rows(rows: list[object], *, dimension: str) -> list[str]:
             reasons.append(f"{where}.latency is not an object for a measured row")
             continue
         reasons.extend(_missing(latency, LATENCY_KEYS, f"{where}.latency"))
+        reasons.extend(_unexpected(latency, LATENCY_KEYS, f"{where}.latency"))
         percentiles: list[float] = []
         for key in ("p50_ms", "p95_ms", "p99_ms"):
             value = latency.get(key)
@@ -259,6 +262,7 @@ def check_envelope(
     *,
     dimension: str,
     head: str | None,
+    host_policy: str = "any",
 ) -> list[str]:
     """Every reason `payload` is not an acceptable artifact for `dimension`.
 
@@ -266,6 +270,7 @@ def check_envelope(
     baseline, which must still carry a full head.
     """
     reasons = _missing(payload, ENVELOPE_KEYS, "envelope")
+    reasons.extend(_unexpected(payload, ENVELOPE_KEYS, "envelope"))
     if not isinstance(payload, dict):
         return reasons
     schema = payload.get("schema_version")
@@ -285,6 +290,7 @@ def check_envelope(
 
     provenance = payload.get("provenance")
     reasons.extend(_missing(provenance, PROVENANCE_KEYS, "provenance"))
+    reasons.extend(_unexpected(provenance, PROVENANCE_KEYS, "provenance"))
     if isinstance(provenance, dict):
         git_head = provenance.get("git_head")
         if not isinstance(git_head, str) or not FULL_HEAD_RE.match(git_head):
@@ -303,24 +309,60 @@ def check_envelope(
 
     host = payload.get("host")
     reasons.extend(_missing(host, HOST_KEYS, "host"))
+    reasons.extend(_unexpected(host, HOST_KEYS, "host"))
     if isinstance(host, dict):
         for key in ("cpu_count", "mem_bytes"):
             value = host.get(key)
             if not isinstance(value, int) or isinstance(value, bool) or value < 1:
                 reasons.append(f"host.{key} {value!r} is not a positive integer")
-        for key in ("os", "arch", "hostname_hash"):
+        for key in ("os", "arch"):
             value = host.get(key)
             if not isinstance(value, str) or not value:
                 reasons.append(f"host.{key} {value!r} is not a name")
+        hostname_hash = host.get("hostname_hash")
+        if not isinstance(hostname_hash, str) or not DIGEST_RE.match(hostname_hash):
+            reasons.append(f"host.hostname_hash {hostname_hash!r} is not a sha256: digest")
+        if host_policy == "canonical-linux" and host.get("os") != "linux":
+            reasons.append("canonical-linux artifact was not measured on Linux")
 
     resources = payload.get("resources")
     reasons.extend(_missing(resources, RESOURCE_KEYS, "resources"))
+    reasons.extend(_unexpected(resources, RESOURCE_KEYS, "resources"))
     if isinstance(resources, dict):
         peak = resources.get("peak_rss_bytes")
         if not isinstance(peak, int) or isinstance(peak, bool) or peak < 1:
             reasons.append(f"resources.peak_rss_bytes {peak!r} is not a positive integer")
 
-    reasons.extend(_missing(payload.get("phases"), PHASE_KEYS, "phases"))
+    phases = payload.get("phases")
+    reasons.extend(_missing(phases, PHASE_KEYS, "phases"))
+    reasons.extend(_unexpected(phases, PHASE_KEYS, "phases"))
+    if isinstance(phases, dict):
+        for key in PHASE_KEYS:
+            value = phases.get(key)
+            if value is not None and not _non_negative_number(value):
+                reasons.append(f"phases.{key} is not a finite non-negative number or null")
+
+    amplification = payload.get("disk_amplification")
+    if amplification is not None:
+        reasons.extend(_missing(amplification, DISK_AMPLIFICATION_KEYS, "disk_amplification"))
+        reasons.extend(_unexpected(amplification, DISK_AMPLIFICATION_KEYS, "disk_amplification"))
+        if isinstance(amplification, dict):
+            bytes_written = amplification.get("bytes_written")
+            changed_bytes = amplification.get("changed_bytes")
+            for key, value in (("bytes_written", bytes_written), ("changed_bytes", changed_bytes)):
+                if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                    reasons.append(f"disk_amplification.{key} is not a non-negative integer")
+            ratio = amplification.get("ratio")
+            if changed_bytes == 0:
+                if ratio is not None:
+                    reasons.append("disk_amplification.ratio must be null when changed_bytes is zero")
+            elif isinstance(bytes_written, int) and isinstance(changed_bytes, int):
+                expected_ratio = bytes_written / changed_bytes
+                if not isinstance(ratio, (int, float)) or isinstance(ratio, bool) or ratio != expected_ratio:
+                    reasons.append("disk_amplification.ratio does not equal bytes_written / changed_bytes")
+
+    if not isinstance(payload.get("detail"), dict):
+        reasons.append("detail is not an object")
 
     rows = payload.get("rows")
     if not isinstance(rows, list):
@@ -345,6 +387,7 @@ def check_families(
     *,
     head: str | None,
     require: bool,
+    manifest: dict[str, object] = MANIFEST,
 ) -> tuple[list[Refusal], list[Path], list[str]]:
     """Refusals, the artifacts checked, and the families with no artifact."""
     refusals: list[Refusal] = []
@@ -376,11 +419,19 @@ def check_families(
             except (OSError, json.JSONDecodeError) as exc:
                 refusals.append(Refusal(path, f"unreadable: {exc}"))
                 continue
-            for reason in check_envelope(payload, dimension=dimension, head=head):
+            raw_families = manifest["families"]
+            assert isinstance(raw_families, dict)
+            family = raw_families.get(dimension)
+            assert isinstance(family, dict)
+            host_policy = family["host_policy"]
+            assert isinstance(host_policy, str)
+            for reason in check_envelope(
+                payload, dimension=dimension, head=head, host_policy=host_policy
+            ):
                 refusals.append(Refusal(path, reason))
             if require and isinstance(payload, dict):
                 rows = payload.get("rows")
-                minimum = AUTHORITY_SAMPLE_MIN.get(dimension)
+                minimum = family["minimum_samples"]
                 if minimum is not None and isinstance(rows, list):
                     for index, row in enumerate(rows):
                         latency = row.get("latency") if isinstance(row, dict) else None
@@ -405,6 +456,7 @@ def check_families(
                     detail = payload.get("detail")
                     if (
                         not isinstance(detail, dict)
+                        or detail.get("arrival_model") != "seeded_poisson"
                         or type(detail.get("duration_ms")) is not int
                         or detail["duration_ms"] < 10_000
                         or not isinstance(detail.get("points"), list)
@@ -412,8 +464,8 @@ def check_families(
                     ):
                         refusals.append(
                             Refusal(
-                                path,
-                                "open-loop: authority needs >=10 s and >=4 offered-load points",
+                            path,
+                            "open-loop: authority needs seeded_poisson, >=10 s and >=4 offered-load points",
                             )
                         )
                 if isinstance(rows, list) and any(
@@ -426,16 +478,38 @@ def check_families(
     return refusals, checked, absent
 
 
-def select_families(profile: str | None) -> tuple[tuple[str, str], ...]:
+def select_families(
+    profile: str | None,
+    *,
+    fresh: tuple[tuple[str, str], ...] = FRESH_FAMILIES,
+    profiles: dict[str, tuple[str, ...]] = FAMILY_PROFILES,
+) -> tuple[tuple[str, str], ...]:
     """Resolve an explicit evidence profile without changing family ownership."""
     if profile is None:
-        return FRESH_FAMILIES
-    names = FAMILY_PROFILES[profile]
-    by_name = dict(FRESH_FAMILIES)
+        return fresh
+    names = profiles[profile]
+    by_name = dict(fresh)
     return tuple((name, by_name[name]) for name in names)
 
 
-def parse_args(argv: list[str] | None) -> argparse.Namespace:
+def control_plane(repo_root: Path) -> tuple[
+    dict[str, object], tuple[tuple[str, str], ...], tuple[tuple[str, str], ...], dict[str, tuple[str, ...]]
+]:
+    """Load the manifest belonging to the checkout being gated."""
+    manifest = load_manifest(repo_root / "tools" / "benchmark" / "manifest.json")
+    return (
+        manifest,
+        fresh_families(manifest),
+        baseline_families(manifest),
+        profile_families(manifest),
+    )
+
+
+def parse_args(
+    argv: list[str] | None,
+    *,
+    profiles: dict[str, tuple[str, ...]] = FAMILY_PROFILES,
+) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
         "--repo-root",
@@ -445,7 +519,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--profile",
-        choices=sorted(FAMILY_PROFILES),
+        choices=sorted(profiles),
         help="require/check only one named evidence profile (default: every fresh family)",
     )
     parser.add_argument(
@@ -459,6 +533,11 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="fail when a fresh family has no artifact (the perf evidence gate)",
     )
     parser.add_argument(
+        "--require-clean-worktree",
+        action="store_true",
+        help="refuse qualification unless --repo-root has no tracked or untracked source changes",
+    )
+    parser.add_argument(
         "--skip-baselines",
         action="store_true",
         help="do not check the committed baselines",
@@ -467,9 +546,20 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
-    repo_root: Path = args.repo_root.resolve()
+    bootstrap = argparse.ArgumentParser(add_help=False)
+    bootstrap.add_argument("--repo-root", type=Path, default=REPO_ROOT)
+    bootstrap_args, _ = bootstrap.parse_known_args(argv)
+    repo_root: Path = bootstrap_args.repo_root.resolve()
     try:
+        manifest, fresh, baselines, profiles = control_plane(repo_root)
+    except ManifestError as exc:
+        print(f"ERROR: invalid benchmark manifest: {exc}", file=sys.stderr)
+        return 2
+    args = parse_args(argv, profiles=profiles)
+    repo_root = args.repo_root.resolve()
+    try:
+        if args.require_clean_worktree:
+            require_clean_worktree(repo_root)
         head = args.head if args.head is not None else resolve_head(repo_root)
     except RuntimeError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
@@ -478,13 +568,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: --head {head!r} is not 40 lowercase hex characters", file=sys.stderr)
         return 2
 
-    fresh_families = select_families(args.profile)
+    selected_families = select_families(args.profile, fresh=fresh, profiles=profiles)
     refusals, checked, absent = check_families(
-        repo_root, fresh_families, head=head, require=args.require
+        repo_root, selected_families, head=head, require=args.require, manifest=manifest
     )
     if not args.skip_baselines:
         baseline_refusals, baseline_checked, baseline_absent = check_families(
-            repo_root, BASELINE_FAMILIES, head=None, require=False
+            repo_root, baselines, head=None, require=False, manifest=manifest
         )
         refusals.extend(baseline_refusals)
         checked.extend(baseline_checked)

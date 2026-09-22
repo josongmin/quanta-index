@@ -1,0 +1,165 @@
+{
+  "schema_version": 1,
+  "families": {
+    "dsl-warm": {
+      "dimension": "dsl-warm",
+      "artifact_glob": "artifacts/dsl-bench/warm-matrix.json",
+      "producer": "rust-bench-dsl-warm",
+      "minimum_samples": 200,
+      "host_policy": "canonical-linux",
+      "baseline": {
+        "path": "tools/benchmark/baselines/warm-matrix.json",
+        "comparator": "dsl-latency",
+        "admission": "canonical-linux"
+      }
+    },
+    "dsl-cold": {
+      "dimension": "dsl-cold",
+      "artifact_glob": "artifacts/dsl-bench/cold-matrix.json",
+      "producer": "rust-bench-dsl-cold",
+      "minimum_samples": 20,
+      "host_policy": "canonical-linux",
+      "baseline": {
+        "path": "tools/benchmark/baselines/cold-matrix.json",
+        "comparator": "dsl-latency",
+        "admission": "canonical-linux"
+      }
+    },
+    "relevance": {
+      "dimension": "relevance",
+      "artifact_glob": "artifacts/search-quality/relevance/latest/summary.json",
+      "producer": "rust-verify-quality-relevance",
+      "minimum_samples": null,
+      "host_policy": "any",
+      "baseline": null
+    },
+    "ambiguity": {
+      "dimension": "ambiguity",
+      "artifact_glob": "artifacts/search-quality/ambiguity/latest/summary.json",
+      "producer": "rust-verify-quality-ambiguity",
+      "minimum_samples": null,
+      "host_policy": "local-diagnostic",
+      "baseline": null
+    },
+    "snippet": {
+      "dimension": "snippet",
+      "artifact_glob": "artifacts/search-quality/snippet/latest/summary.json",
+      "producer": "rust-verify-quality-snippet",
+      "minimum_samples": null,
+      "host_policy": "local-diagnostic",
+      "baseline": null
+    },
+    "scale": {
+      "dimension": "scale",
+      "artifact_glob": "artifacts/search-quality/scale/latest/summary.json",
+      "producer": "rust-verify-quality-scale",
+      "minimum_samples": 32,
+      "host_policy": "local-diagnostic",
+      "baseline": null
+    },
+    "tail": {
+      "dimension": "tail",
+      "artifact_glob": "artifacts/search-quality/tail/latest/summary.json",
+      "producer": "rust-verify-quality-tail",
+      "minimum_samples": 64,
+      "host_policy": "local-diagnostic",
+      "baseline": null
+    },
+    "ann": {
+      "dimension": "ann",
+      "artifact_glob": "artifacts/search-quality/ann/latest/summary.json",
+      "producer": "rust-verify-quality-ann",
+      "minimum_samples": 64,
+      "host_policy": "local-diagnostic",
+      "baseline": null
+    },
+    "concurrency": {
+      "dimension": "concurrency",
+      "artifact_glob": "artifacts/search-quality/concurrency/latest/summary-c*.json",
+      "producer": "rust-verify-quality-concurrency",
+      "minimum_samples": 16,
+      "host_policy": "local-diagnostic",
+      "baseline": null
+    },
+    "freshness": {
+      "dimension": "freshness",
+      "artifact_glob": "artifacts/search-quality/freshness/latest/summary.json",
+      "producer": "rust-verify-quality-freshness",
+      "minimum_samples": 20,
+      "host_policy": "local-diagnostic",
+      "baseline": null
+    },
+    "open-loop": {
+      "dimension": "open-loop",
+      "artifact_glob": "artifacts/search-quality/open-loop/latest/summary.json",
+      "producer": "rust-verify-quality-open-loop",
+      "minimum_samples": null,
+      "host_policy": "local-diagnostic",
+      "baseline": null
+    },
+    "ops": {
+      "dimension": "ops",
+      "artifact_glob": "artifacts/search-quality/ops/latest/summary.json",
+      "producer": "rust-verify-quality-ops",
+      "minimum_samples": null,
+      "host_policy": "local-diagnostic",
+      "baseline": null
+    },
+    "ui": {
+      "dimension": "ui",
+      "artifact_glob": "artifacts/search-quality/ui/latest/summary.json",
+      "producer": "rust-verify-quality-ui",
+      "minimum_samples": null,
+      "host_policy": "local-diagnostic",
+      "baseline": null
+    },
+    "relevance-openai-ab": {
+      "dimension": "relevance-openai-ab",
+      "artifact_glob": "artifacts/search-quality/relevance/openai-ab/latest/summary.json",
+      "producer": "rust-capture-quality-relevance-openai-ab",
+      "minimum_samples": null,
+      "host_policy": "any",
+      "baseline": null
+    },
+    "scan-vs-index": {
+      "dimension": "scan-vs-index",
+      "artifact_glob": "artifacts/experiments/scan-vs-index/*.json",
+      "producer": "recorded-experiment",
+      "minimum_samples": 1,
+      "host_policy": "local-diagnostic",
+      "baseline": null
+    }
+  },
+  "profiles": {
+    "dsl-authority": {
+      "families": ["dsl-warm", "dsl-cold"],
+      "recipes": ["rust-bench-dsl-warm", "rust-bench-dsl-cold"],
+      "description": "Warm and true-cold DSL latency artifacts"
+    },
+    "quality-core": {
+      "families": ["relevance", "ambiguity", "snippet", "scale", "tail"],
+      "recipes": ["rust-verify-quality-relevance", "rust-verify-quality-ambiguity", "rust-verify-quality-snippet", "rust-verify-quality-scale", "rust-verify-quality-tail"],
+      "description": "Core search quality, scale, and latency-tail evidence"
+    },
+    "quality-full": {
+      "families": ["relevance", "ambiguity", "snippet", "scale", "tail", "ann", "concurrency", "freshness", "open-loop", "ops", "ui"],
+      "recipes": ["rust-verify-quality-relevance", "rust-verify-quality-ambiguity", "rust-verify-quality-snippet", "rust-verify-quality-scale", "rust-verify-quality-tail", "rust-verify-quality-ann", "rust-verify-quality-concurrency", "rust-verify-quality-freshness", "rust-verify-quality-open-loop", "rust-verify-quality-ops", "rust-verify-quality-ui"],
+      "description": "All live search-quality authority rails"
+    },
+    "systems": {
+      "families": ["freshness", "open-loop"],
+      "recipes": ["rust-verify-quality-freshness", "rust-verify-quality-open-loop"],
+      "description": "Ingest freshness and offered-load diagnostic evidence"
+    },
+    "semantic-ab": {
+      "families": ["relevance-openai-ab"],
+      "recipes": ["rust-capture-quality-relevance-openai-ab"],
+      "description": "Provider semantic A/B capture; requires OPENAI_API_KEY"
+    },
+    "experiments": {
+      "families": ["scan-vs-index"],
+      "recipes": [],
+      "description": "Validate recorded scan versus index artifacts; no default producer"
+    }
+  }
+}

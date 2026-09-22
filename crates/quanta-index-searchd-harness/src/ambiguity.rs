@@ -26,6 +26,12 @@ use quanta_index_contract::{
 use quanta_index_search_plane::repair_for_code;
 use serde_json::{Value, json};
 
+use crate::artifact::{
+    BenchArtifactV1, BenchMode, BenchProvenanceV1, BenchRowV1, BenchSyntax, GitHeadV1, HostV1,
+    PhaseDurationsV1, ResourceUsageV1, ResultShape, RouteFamily, config_digest, corpus_digest,
+    saturating_u64,
+};
+
 /// The bridge error codes the rail audits, paired with whether each is expected
 /// to be caller-repairable.
 ///
@@ -178,23 +184,83 @@ fn audit_json(audit: &CodeAudit) -> Value {
     })
 }
 
-/// Write the two canonical ambiguity artifacts under `dir`.
-pub fn write_artifacts(report: &AmbiguityReport, dir: &Path, git_rev: &str) -> AnyResult<()> {
+fn artifact_detail(report: &AmbiguityReport) -> Value {
     let payloads: Vec<Value> = report.audits.iter().map(audit_json).collect();
+    json!({
+        "passed": report.passed,
+        "audited_codes": report.audits.len(),
+        "audits": payloads,
+        "fail_closed_note": "repair is advisory metadata on a still-failing code/message; no query is rewritten",
+    })
+}
+
+/// The schema-2 ambiguity verdict envelope, bound to the exact error-code
+/// payloads audited by this run.
+pub fn artifact(
+    report: &AmbiguityReport,
+    git_head: GitHeadV1,
+    host: HostV1,
+) -> AnyResult<BenchArtifactV1> {
+    let corpus = report
+        .audits
+        .iter()
+        .map(|audit| (audit.code.to_string(), audit_json(audit).to_string()))
+        .collect::<Vec<_>>();
+    Ok(BenchArtifactV1 {
+        dimension: "ambiguity".to_string(),
+        mode: BenchMode::Warm,
+        concurrency: 1,
+        provenance: BenchProvenanceV1 {
+            git_head,
+            corpus_digest: corpus_digest("ambiguity", &corpus),
+            config_digest: config_digest(
+                "ambiguity",
+                &[("audited_codes", report.audits.len().to_string())],
+            ),
+            model_revision: None,
+        },
+        host,
+        resources: ResourceUsageV1::observe_self()?,
+        phases: PhaseDurationsV1::default(),
+        disk_amplification: None,
+        rows: report
+            .audits
+            .iter()
+            .map(|audit| BenchRowV1 {
+                scenario_id: format!("ambiguity.{}", audit.code),
+                route_family: RouteFamily::Lexical,
+                syntax: BenchSyntax::Native,
+                result_shape: ResultShape::TypedError,
+                latency: None,
+                qps: None,
+                error_count: saturating_u64(audit.failures.len()),
+                timeout_count: 0,
+                result_count: None,
+                typed_error_code: Some(audit.code.to_string()),
+                engine_touched: vec!["search_plane_error_contract".to_string()],
+                early_stop_reason: None,
+            })
+            .collect(),
+        detail: artifact_detail(report),
+    })
+}
+
+/// Write the authority envelope and its supplemental error-payload record.
+pub fn write_artifacts(
+    report: &AmbiguityReport,
+    dir: &Path,
+    git_head: GitHeadV1,
+    host: HostV1,
+) -> AnyResult<()> {
+    let payloads: Vec<Value> = report.audits.iter().map(audit_json).collect();
+    artifact(report, git_head.clone(), host)?.write_to(&dir.join("summary.json"))?;
     crate::artifact::write_json_pretty(
         &dir.join("error_payloads.json"),
-        &json!({ "schema_version": 1, "payloads": payloads }),
-    )?;
-    crate::artifact::write_json_pretty(
-        &dir.join("summary.json"),
         &json!({
-            "schema_version": 1,
+            "schema_version": 2,
             "dimension": "ambiguity",
-            "git_rev": git_rev,
-            "passed": report.passed,
-            "audited_codes": report.audits.len(),
-            "audits": payloads,
-            "fail_closed_note": "repair is advisory metadata on a still-failing code/message; no query is rewritten",
+            "git_head": git_head.as_str(),
+            "payloads": payloads,
         }),
     )?;
     Ok(())
@@ -215,6 +281,20 @@ mod tests {
                 .iter()
                 .flat_map(|a| a.failures.clone())
                 .collect::<Vec<_>>()
+        );
+        let artifact = artifact(
+            &report,
+            GitHeadV1::parse(&"a".repeat(40)).expect("head"),
+            HostV1::observe().expect("host"),
+        )
+        .expect("authority artifact")
+        .to_json()
+        .expect("json");
+        assert_eq!(artifact["schema_version"], 2);
+        assert_eq!(artifact["detail"]["passed"], true);
+        assert_eq!(
+            artifact["rows"].as_array().map(Vec::len),
+            Some(report.audits.len())
         );
     }
 

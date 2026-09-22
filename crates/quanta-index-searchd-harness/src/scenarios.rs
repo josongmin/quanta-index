@@ -160,6 +160,10 @@ const fn ok_scenario(
             Some(match route_family {
                 RouteFamily::Structural => HellgateLane::StructuralRoute,
                 RouteFamily::Lexical
+                | RouteFamily::Semantic
+                | RouteFamily::Hybrid
+                | RouteFamily::Symbol
+                | RouteFamily::RepoMap
                 | RouteFamily::History
                 | RouteFamily::RuntimeCatalog
                 | RouteFamily::Adversarial => HellgateLane::TextRoute,
@@ -196,6 +200,10 @@ const fn ok_scenario_warm_override(
             Some(match route_family {
                 RouteFamily::Structural => HellgateLane::StructuralRoute,
                 RouteFamily::Lexical
+                | RouteFamily::Semantic
+                | RouteFamily::Hybrid
+                | RouteFamily::Symbol
+                | RouteFamily::RepoMap
                 | RouteFamily::History
                 | RouteFamily::RuntimeCatalog
                 | RouteFamily::Adversarial => HellgateLane::TextRoute,

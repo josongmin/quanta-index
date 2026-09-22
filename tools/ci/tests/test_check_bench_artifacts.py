@@ -98,6 +98,16 @@ def write(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
 
 
+def install_manifest(repo_root: Path) -> None:
+    """A target checkout owns its benchmark control plane."""
+    destination = repo_root / "tools" / "benchmark" / "manifest.json"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(
+        (REPO_ROOT / "tools" / "benchmark" / "manifest.json").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+
 def test_a_complete_artifact_at_head_passes() -> None:
     assert MODULE.check_envelope(artifact(), dimension="dsl-warm", head=HEAD) == []
 
@@ -120,6 +130,20 @@ def test_an_unknown_or_short_head_is_refused_even_for_a_baseline() -> None:
 
 def test_a_baseline_is_held_to_the_shape_not_head_equality() -> None:
     assert MODULE.check_envelope(artifact(head=OTHER_HEAD), dimension="dsl-warm", head=None) == []
+
+
+def test_canonical_linux_artifact_refuses_a_non_linux_host() -> None:
+    payload = artifact()
+    payload["host"]["os"] = "darwin"
+
+    reasons = MODULE.check_envelope(
+        payload,
+        dimension="dsl-warm",
+        head=HEAD,
+        host_policy="canonical-linux",
+    )
+
+    assert "canonical-linux artifact was not measured on Linux" in reasons
 
 
 def test_missing_fields_are_named() -> None:
@@ -156,6 +180,43 @@ def test_a_wrong_dimension_a_bad_digest_and_empty_rows_are_refused() -> None:
     assert "rows is empty: nothing was measured" in reasons
 
 
+def test_exact_producer_shape_and_numeric_envelope_contract_are_enforced() -> None:
+    broken = artifact()
+    broken["unexpected"] = True
+    broken["provenance"]["foreign"] = "ignored-by-old-gate"
+    broken["host"]["hostname_hash"] = "anonymous"
+    broken["phases"]["build_ms"] = float("inf")
+    broken["detail"] = []
+    broken["disk_amplification"] = {
+        "bytes_written": 9,
+        "changed_bytes": 4,
+        "ratio": 2.0,
+        "extra": True,
+    }
+    reasons = MODULE.check_envelope(broken, dimension="dsl-warm", head=HEAD)
+    for fragment in (
+        "envelope has unexpected `unexpected`",
+        "provenance has unexpected `foreign`",
+        "host.hostname_hash 'anonymous' is not a sha256: digest",
+        "phases.build_ms is not a finite non-negative number or null",
+        "detail is not an object",
+        "disk_amplification has unexpected `extra`",
+        "disk_amplification.ratio does not equal bytes_written / changed_bytes",
+    ):
+        assert fragment in reasons, (fragment, reasons)
+
+
+def test_zero_change_disk_amplification_requires_null_ratio() -> None:
+    broken = artifact()
+    broken["disk_amplification"] = {
+        "bytes_written": 9,
+        "changed_bytes": 0,
+        "ratio": 0.0,
+    }
+    reasons = MODULE.check_envelope(broken, dimension="dsl-warm", head=HEAD)
+    assert "disk_amplification.ratio must be null when changed_bytes is zero" in reasons
+
+
 def test_row_contract_refuses_duplicate_invalid_percentile_and_bad_early_stop() -> None:
     broken = artifact()
     duplicate = copy.deepcopy(broken["rows"][0])
@@ -183,6 +244,7 @@ def test_absence_passes_by_default_and_fails_under_require(tmp_path: Path) -> No
 
 
 def test_named_profile_scopes_required_evidence(tmp_path: Path, capsys) -> None:
+    install_manifest(tmp_path)
     write(tmp_path / "artifacts/dsl-bench/warm-matrix.json", artifact())
     write(tmp_path / "artifacts/dsl-bench/cold-matrix.json", artifact("dsl-cold"))
     assert (
@@ -215,13 +277,21 @@ def test_relevance_rows_are_intentionally_untimed() -> None:
     )
 
 
+def test_contract_quality_rails_are_intentionally_untimed_but_verdict_bound() -> None:
+    for dimension in ("ambiguity", "snippet", "ops", "ui"):
+        value = artifact(dimension=dimension)
+        value["rows"][0]["latency"] = None
+        assert MODULE.check_envelope(value, dimension=dimension, head=HEAD) == []
+
+
 def test_required_concurrency_profile_needs_all_client_counts(tmp_path: Path) -> None:
     write(
         tmp_path / "artifacts/search-quality/concurrency/latest/summary-c8.json",
         artifact("concurrency"),
     )
+    family_paths = dict(MODULE.FRESH_FAMILIES)
     refusals, _, _ = MODULE.check_families(
-        tmp_path, (("concurrency", MODULE.FRESH_FAMILIES[7][1]),), head=HEAD, require=True
+        tmp_path, (("concurrency", family_paths["concurrency"]),), head=HEAD, require=True
     )
     assert {refusal.path.name for refusal in refusals} == {"summary-c1.json", "summary-c32.json"}
 
@@ -232,8 +302,9 @@ def test_required_evidence_refuses_failed_verdict_and_early_stop(tmp_path: Path)
     value["rows"][0]["latency"] = None
     value["rows"][0]["early_stop_reason"] = "fixture_missing"
     write(tmp_path / "artifacts/search-quality/tail/latest/summary.json", value)
+    family_paths = dict(MODULE.FRESH_FAMILIES)
     refusals, _, _ = MODULE.check_families(
-        tmp_path, (("tail", MODULE.FRESH_FAMILIES[3][1]),), head=HEAD, require=True
+        tmp_path, (("tail", family_paths["tail"]),), head=HEAD, require=True
     )
     assert any("required rail verdict is not true" in refusal.reason for refusal in refusals)
     assert any("contains an early stop" in refusal.reason for refusal in refusals)
@@ -244,7 +315,12 @@ def test_authority_sample_floor_and_open_loop_ladder(tmp_path: Path) -> None:
     cold["rows"][0]["latency"]["samples"] = 19
     write(tmp_path / "artifacts/dsl-bench/cold-matrix.json", cold)
     load = artifact("open-loop")
-    load["detail"] = {"passed": True, "duration_ms": 1000, "points": [{}, {}]}
+    load["detail"] = {
+        "passed": True,
+        "arrival_model": "deterministic_periodic",
+        "duration_ms": 1000,
+        "points": [{}, {}],
+    }
     write(tmp_path / "artifacts/search-quality/open-loop/latest/summary.json", load)
     refusals, _, _ = MODULE.check_families(
         tmp_path,
@@ -256,10 +332,11 @@ def test_authority_sample_floor_and_open_loop_ladder(tmp_path: Path) -> None:
         require=True,
     )
     assert any("needs at least 20 samples" in refusal.reason for refusal in refusals)
-    assert any("authority needs >=10 s" in refusal.reason for refusal in refusals)
+    assert any("authority needs seeded_poisson" in refusal.reason for refusal in refusals)
 
 
 def test_the_cli_walks_fresh_families_and_baselines(tmp_path: Path, capsys) -> None:
+    install_manifest(tmp_path)
     write(tmp_path / "artifacts/dsl-bench/warm-matrix.json", artifact())
     write(
         tmp_path / "artifacts/search-quality/concurrency/latest/summary-c8.json",
@@ -290,11 +367,28 @@ def test_the_cli_walks_fresh_families_and_baselines(tmp_path: Path, capsys) -> N
 
 
 def test_the_cli_refuses_a_malformed_head(tmp_path: Path, capsys) -> None:
+    install_manifest(tmp_path)
     assert MODULE.main(["--repo-root", str(tmp_path), "--head", "unknown"]) == 2
     assert "not 40 lowercase hex" in capsys.readouterr().err
 
 
+def test_clean_worktree_requirement_refuses_any_git_status_output(monkeypatch, tmp_path: Path) -> None:
+    class Completed:
+        returncode = 0
+        stdout = " M crates/owner.rs\n"
+        stderr = ""
+
+    monkeypatch.setattr(MODULE.subprocess, "run", lambda *_args, **_kwargs: Completed())
+    try:
+        MODULE.require_clean_worktree(tmp_path)
+    except RuntimeError as exc:
+        assert "worktree is dirty" in str(exc)
+    else:
+        raise AssertionError("dirty worktree unexpectedly qualified")
+
+
 def test_the_gate_refuses_the_repository_when_a_stale_artifact_is_present(tmp_path: Path) -> None:
+    install_manifest(tmp_path)
     # A copy of a good artifact with one byte of the head changed is stale:
     # the gate is not fooled by an otherwise complete envelope.
     stale = copy.deepcopy(artifact())

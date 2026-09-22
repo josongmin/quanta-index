@@ -36,6 +36,11 @@ use anyhow::Result as AnyResult;
 use quanta_index_contract::{CandidatePresenceV1, EarlyStopReason, HighlightSpan, TextQuerySyntax};
 use serde_json::{Value, json};
 
+use crate::artifact::{
+    BenchArtifactV1, BenchMode, BenchProvenanceV1, BenchRowV1, BenchSyntax, GitHeadV1, HostV1,
+    PhaseDurationsV1, ResourceUsageV1, ResultShape, RouteFamily, config_digest, corpus_digest,
+    saturating_u64,
+};
 use crate::harness::E2eRuntime;
 
 /// Repo id the UI fixtures are ingested under.
@@ -477,12 +482,13 @@ fn explanation_sections_json(capture: &ExplanationSectionsCapture) -> Value {
     })
 }
 
-/// The consumer-facing contract snapshot: the typed UI fields per probe.
-#[must_use]
-pub fn contract_snapshots_json(report: &UiReport) -> Value {
+/// The UI contract snapshot supplement: never an authority artifact.
+fn contract_snapshots_supplement_json(report: &UiReport, git_head: &GitHeadV1) -> Value {
     json!({
-        "schema_version": 1,
+        "kind": "quanta-index-benchmark-supplement",
+        "supplement_schema_version": 1,
         "dimension": "ui",
+        "git_head": git_head.as_str(),
         "fields_under_test": ["snippet", "snippet_hit_offset", "highlights", "explanation_sections"],
         "snapshot_note": "snippet_hit_offset + highlights are the typed UI anchors (J7Q-07); a consumer slices snippet at offset/spans to land on hits, with no regex parsing of raw text. explanation_sections exposes the typed planner stages / engines / strategy a consumer renders as sections without parsing the summary string",
         "snapshots": report.scores.iter().map(score_json).collect::<Vec<_>>(),
@@ -490,27 +496,98 @@ pub fn contract_snapshots_json(report: &UiReport) -> Value {
     })
 }
 
-/// Build the UI summary value.
-#[must_use]
-pub fn summary_json(report: &UiReport, git_rev: &str) -> Value {
-    json!({
-        "schema_version": 1,
-        "dimension": "ui",
-        "git_rev": git_rev,
-        "passed": report.passed,
-        "blocking_signal": "every served candidate must carry a typed snippet_hit_offset that points exactly at the matched needle (a missing/wrong anchor fails the rail), AND the explain route must surface its typed explanation sections (planner stages / engines / strategy) route-specifically",
-        "scores": report.scores.iter().map(score_json).collect::<Vec<_>>(),
-        "explanation_sections": explanation_sections_json(&report.explanation),
+/// The current-source authority envelope for consumer-facing UI contracts.
+pub fn artifact(
+    report: &UiReport,
+    git_head: GitHeadV1,
+    host: HostV1,
+) -> AnyResult<BenchArtifactV1> {
+    let corpus = UI_PROBES
+        .iter()
+        .map(|probe| (probe.path.to_string(), probe.content.to_string()))
+        .collect::<Vec<_>>();
+    let mut rows = report
+        .scores
+        .iter()
+        .map(|score| BenchRowV1 {
+            scenario_id: score.id.to_string(),
+            route_family: RouteFamily::Lexical,
+            syntax: BenchSyntax::Native,
+            result_shape: if score.snippet.is_some() {
+                ResultShape::Candidates
+            } else {
+                ResultShape::Empty
+            },
+            latency: None,
+            qps: None,
+            error_count: saturating_u64(score.failures.len()),
+            timeout_count: 0,
+            result_count: Some(if score.snippet.is_some() { 1 } else { 0 }),
+            typed_error_code: None,
+            engine_touched: vec!["lexical".to_string()],
+            early_stop_reason: None,
+        })
+        .collect::<Vec<_>>();
+    rows.push(BenchRowV1 {
+        scenario_id: "ui.explanation_sections".to_string(),
+        route_family: RouteFamily::Lexical,
+        syntax: BenchSyntax::Native,
+        result_shape: if report.explanation.passed() {
+            ResultShape::Candidates
+        } else {
+            ResultShape::Empty
+        },
+        latency: None,
+        qps: None,
+        error_count: saturating_u64(report.explanation.failures.len()),
+        timeout_count: 0,
+        result_count: Some(if report.explanation.passed() { 1 } else { 0 }),
+        typed_error_code: None,
+        engine_touched: vec!["lexical".to_string()],
+        early_stop_reason: None,
+    });
+    Ok(BenchArtifactV1 {
+        dimension: "ui".to_string(),
+        mode: BenchMode::Warm,
+        concurrency: 1,
+        provenance: BenchProvenanceV1 {
+            git_head,
+            corpus_digest: corpus_digest("ui", &corpus),
+            config_digest: config_digest(
+                "ui",
+                &[
+                    ("probes", UI_PROBES.len().to_string()),
+                    ("top_k", TOP_K.to_string()),
+                ],
+            ),
+            model_revision: None,
+        },
+        host,
+        resources: ResourceUsageV1::observe_self()?,
+        phases: PhaseDurationsV1::default(),
+        disk_amplification: None,
+        rows,
+        detail: json!({
+            "passed": report.passed,
+            "blocking_signal": "every served candidate must carry a typed snippet_hit_offset that points exactly at the matched needle, and explain must surface route-specific typed sections",
+            "scores": report.scores.iter().map(score_json).collect::<Vec<_>>(),
+            "explanation_sections": explanation_sections_json(&report.explanation),
+        }),
     })
 }
 
 /// Write the two canonical UI artifacts under `dir`:
 /// `summary.json` and `contract_snapshots.json`.
-pub fn write_artifacts(report: &UiReport, dir: &Path, git_rev: &str) -> AnyResult<()> {
-    crate::artifact::write_json_pretty(&dir.join("summary.json"), &summary_json(report, git_rev))?;
+pub fn write_artifacts(
+    report: &UiReport,
+    dir: &Path,
+    git_head: GitHeadV1,
+    host: HostV1,
+) -> AnyResult<()> {
+    artifact(report, git_head.clone(), host)?.write_to(&dir.join("summary.json"))?;
     crate::artifact::write_json_pretty(
         &dir.join("contract_snapshots.json"),
-        &contract_snapshots_json(report),
+        &contract_snapshots_supplement_json(report, &git_head),
     )?;
     Ok(())
 }
@@ -560,18 +637,20 @@ mod tests {
             },
             passed: true,
         };
-        let value = summary_json(&report, "deadbeef");
+        assert!(report.passed);
+        let head = GitHeadV1::parse(&"a".repeat(40)).expect("head");
+        let value = contract_snapshots_supplement_json(&report, &head);
         assert_eq!(value["dimension"], "ui");
-        assert_eq!(value["passed"], true);
-        assert_eq!(value["scores"][0]["snippet_hit_offset"], 2);
-        assert_eq!(value["scores"][0]["highlights"][0]["start"], 2);
-        assert_eq!(value["scores"][0]["highlights"][0]["len"], 6);
+        assert_eq!(value["snapshots"][0]["snippet_hit_offset"], 2);
+        assert_eq!(value["snapshots"][0]["highlights"][0]["start"], 2);
+        assert_eq!(value["snapshots"][0]["highlights"][0]["len"], 6);
         assert_eq!(value["explanation_sections"]["planner_stages"][0], "plan");
         assert_eq!(
             value["explanation_sections"]["strategy"],
             "lexical_score_trace"
         );
-        let snaps = contract_snapshots_json(&report);
+        let head = GitHeadV1::parse(&"a".repeat(40)).expect("head");
+        let snaps = contract_snapshots_supplement_json(&report, &head);
         assert_eq!(snaps["fields_under_test"][1], "snippet_hit_offset");
         assert_eq!(snaps["fields_under_test"][2], "highlights");
         assert_eq!(snaps["fields_under_test"][3], "explanation_sections");
@@ -580,6 +659,17 @@ mod tests {
             "lexical"
         );
         assert_eq!(snaps["explanation_sections"]["passed"], true);
+        let artifact = artifact(
+            &report,
+            GitHeadV1::parse(&"a".repeat(40)).expect("head"),
+            HostV1::observe().expect("host"),
+        )
+        .expect("authority artifact")
+        .to_json()
+        .expect("json");
+        assert_eq!(artifact["schema_version"], 2);
+        assert_eq!(artifact["detail"]["passed"], true);
+        assert_eq!(artifact["rows"].as_array().map(Vec::len), Some(2));
     }
 
     #[test]

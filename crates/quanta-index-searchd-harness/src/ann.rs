@@ -346,10 +346,10 @@ pub fn artifact(
     let latency = LatencySummary::from_samples_ms(&report.latencies_ms);
     let row = BenchRowV1 {
         scenario_id: format!("ann.recall_at_{}", config.k),
-        // The family of the result shape (chunk candidates), as the judged
-        // relevance routes record it; the dense lane is named in
-        // `engine_touched`.
-        route_family: RouteFamily::Lexical,
+        // ANN is a dense retrieval rail. Candidate shape does not make its
+        // route lexical; downstream evaluators must be able to separate the
+        // semantic lane from lexical text retrieval.
+        route_family: RouteFamily::Semantic,
         syntax: BenchSyntax::Native,
         result_shape: ResultShape::Candidates,
         latency,
@@ -488,6 +488,7 @@ mod tests {
             .expect("json");
         assert_eq!(json["schema_version"], 2);
         assert_eq!(json["dimension"], DIMENSION);
+        assert_eq!(json["rows"][0]["route_family"], "semantic");
         assert_eq!(json["detail"]["normalization"], "l2_unit");
         assert_eq!(json["detail"]["k"], 5);
         assert!(

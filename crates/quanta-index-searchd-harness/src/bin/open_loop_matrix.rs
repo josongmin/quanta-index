@@ -13,6 +13,7 @@ use quanta_index_searchd_harness::artifact::{GitHeadV1, HostV1};
 fn parse_args() -> AnyResult<(open_loop::Config, PathBuf)> {
     let mut config = open_loop::Config {
         seed: 0x4f50_454e_4c4f_4f50,
+        arrival_model: open_loop::ArrivalModel::SeededPoisson,
         rates_qps: vec![25, 50, 100, 200],
         duration: Duration::from_secs(10),
         workers: 32,
@@ -27,6 +28,15 @@ fn parse_args() -> AnyResult<(open_loop::Config, PathBuf)> {
             .with_context(|| format!("{flag} requires a value"))?;
         match flag.as_str() {
             "--seed" => config.seed = raw.parse()?,
+            "--arrival-model" => {
+                config.arrival_model = match raw.as_str() {
+                    "seeded-poisson" => open_loop::ArrivalModel::SeededPoisson,
+                    "deterministic-periodic" => open_loop::ArrivalModel::DeterministicPeriodic,
+                    _ => anyhow::bail!(
+                        "--arrival-model must be seeded-poisson or deterministic-periodic"
+                    ),
+                }
+            }
             "--rates-qps" => {
                 config.rates_qps = raw
                     .split(',')

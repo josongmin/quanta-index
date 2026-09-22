@@ -50,9 +50,9 @@ def test_schema_two_verdict_requires_matching_dimension_and_head() -> None:
     )
 
 
-def test_schema_one_verdict_requires_matching_full_head() -> None:
+def test_schema_one_verdict_is_never_quality_authority() -> None:
     summary = {"schema_version": 1, "dimension": "ops", "git_rev": HEAD, "passed": True}
-    assert MODULE.rail_verdict(summary, dimension="ops", head=HEAD) is True
+    assert MODULE.rail_verdict(summary, dimension="ops", head=HEAD) is None
     summary["git_rev"] = HEAD[:12]
     assert MODULE.rail_verdict(summary, dimension="ops", head=HEAD) is None
 
