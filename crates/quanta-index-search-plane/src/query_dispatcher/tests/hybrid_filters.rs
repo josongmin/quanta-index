@@ -413,7 +413,7 @@ fn hybrid_dense_lane_refills_until_admitted_rows_fill_top_k() -> TestResult {
     }
     if response.window.returned() != 2
         || response.window.candidate_count() != CandidateCountV1::AtLeast(50)
-        || response.window.has_more().is_some()
+        || response.window.has_more() != Some(true)
     {
         return Err(format!(
             "window must say more admitted rows exist: {:?}",

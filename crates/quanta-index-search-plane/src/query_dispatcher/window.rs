@@ -205,7 +205,7 @@ pub(super) fn fused_window_v2(
             ExecutionOutcomeV2::CappedUnknown { cap: internal_cap }
         }
         Some(DenseAdmissionOutcomeV1::Exhausted) => ExecutionOutcomeV2::LowerBound {
-            continuation: false,
+            continuation: fused_continuation,
         },
         Some(DenseAdmissionOutcomeV1::NotNeeded) => {
             if returned < requested {
