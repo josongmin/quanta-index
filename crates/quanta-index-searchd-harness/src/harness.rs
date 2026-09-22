@@ -2403,7 +2403,9 @@ impl E2eRuntime {
                 },
                 cursor,
             }),
-            query_response_ready_allow_structural_not_ready,
+            // A pinned structural query must surface a missing structural
+            // generation as its typed refusal, not retry it as boot warmup.
+            query_response_ready,
             |payload| match payload {
                 SearchPlaneQueryIpcResponse::Structural(page) => Ok(page),
                 other @ (SearchPlaneQueryIpcResponse::Text(_)

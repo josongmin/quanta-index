@@ -50,13 +50,23 @@ struct CancelSharedV1 {
     waiters: std::sync::Mutex<CancelWaiterSetV1>,
 }
 
+impl CancelSharedV1 {
+    fn lock_waiters(&self) -> std::sync::MutexGuard<'_, CancelWaiterSetV1> {
+        // A poisoned registry must not suppress cancellation wake-ups.
+        match self.waiters.lock() {
+            Ok(waiters) => waiters,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+}
+
 impl std::fmt::Debug for CancelSharedV1 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let live = self.waiters.lock().map_or(0, |set| set.wake.len());
+        let live = self.lock_waiters().wake.len();
         f.debug_struct("CancelSharedV1")
             .field("cancelled", &self.cancelled.load(Ordering::Acquire))
             .field("live_waiters", &live)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -78,18 +88,14 @@ impl CancelHandleV1 {
             return;
         }
         let wake = {
-            self.shared.waiters.lock().map_or_else(
-                |_| Vec::new(),
-                |mut set| {
-                    let wake: Vec<std::sync::Arc<dyn Fn() + Send + Sync>> = set
-                        .wake
-                        .iter()
-                        .map(|(_, woken)| Arc::clone(woken))
-                        .collect();
-                    set.wake.clear();
-                    wake
-                },
-            )
+            let mut waiters = self.shared.lock_waiters();
+            let wake = waiters
+                .wake
+                .iter()
+                .map(|(_, woken)| Arc::clone(woken))
+                .collect::<Vec<_>>();
+            waiters.wake.clear();
+            wake
         };
         for woken in wake {
             woken();
@@ -115,9 +121,10 @@ impl std::fmt::Debug for CancelWaiterGuardV1 {
 
 impl Drop for CancelWaiterGuardV1 {
     fn drop(&mut self) {
-        if let Ok(mut set) = self.shared.waiters.lock() {
-            set.wake.retain(|(id, _)| *id != self.id);
-        }
+        self.shared
+            .lock_waiters()
+            .wake
+            .retain(|(id, _)| *id != self.id);
     }
 }
 
@@ -174,10 +181,7 @@ impl RequestBudgetV1 {
     /// registration lives until the returned guard drops.
     pub fn cancel_waiter(&self, wake: Arc<dyn Fn() + Send + Sync>) -> CancelWaiterGuardV1 {
         let id = {
-            let mut set = match self.shared.waiters.lock() {
-                Ok(set) => set,
-                Err(poisoned) => poisoned.into_inner(),
-            };
+            let mut set = self.shared.lock_waiters();
             let id = set.next_id;
             set.next_id = set.next_id.wrapping_add(1);
             set.wake.push((id, wake));
@@ -192,7 +196,7 @@ impl RequestBudgetV1 {
     /// Live waiter registrations. Test-only census for the RAII proof.
     #[cfg(test)]
     fn live_waiters(&self) -> usize {
-        self.shared.waiters.lock().map_or(0, |set| set.wake.len())
+        self.shared.lock_waiters().wake.len()
     }
 
     #[must_use]
@@ -377,6 +381,31 @@ mod tests {
         assert_eq!(budget.live_waiters(), 1);
         drop(guard);
         assert_eq!(budget.live_waiters(), 0);
+    }
+
+    #[test]
+    fn poisoned_waiter_registry_still_wakes_and_clears_on_cancel() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let budget = RequestBudgetV1::for_duration(Duration::from_secs(60));
+        let fired = Arc::new(AtomicBool::new(false));
+        let waiter = {
+            let fired = Arc::clone(&fired);
+            budget.cancel_waiter(Arc::new(move || fired.store(true, Ordering::SeqCst)))
+        };
+        let shared = Arc::clone(&budget.shared);
+        let poisoned = std::thread::spawn(move || {
+            let _held = shared.waiters.lock().expect("fresh waiter registry");
+            panic!("poison the waiter registry");
+        })
+        .join();
+        assert!(poisoned.is_err());
+
+        budget.cancel_handle().cancel();
+        assert!(fired.load(Ordering::SeqCst));
+        assert_eq!(budget.live_waiters(), 0);
+        drop(waiter);
     }
 
     #[test]

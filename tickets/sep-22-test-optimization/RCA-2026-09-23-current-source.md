@@ -49,15 +49,35 @@ while the tests ran, so no immutable same-source digest is claimed.
 | SDK wait adapter assertions depended on scheduler timing | Three scripted tests used `RealTicker` with a 100 ms window and asserted a retry count; a deschedule could turn an intended retry into a false-red. | Inject `WaitTicker` into the adapter tests and advance a virtual clock. The production-facing wrapper continues to use `RealTicker`. The live scrape test asserts timeout type and predicate evidence, not a minimum number of 100 ms polls. | SDK selector 3/3; extended scrape selector 1/1. |
 | File-owner projection failed response encoding | The lexical projector used the source-repo authority ID as the projection row's `repo_id`, although the wire contract requires each row to carry the paired ranked candidate's identity. Multi-repo fixture queries then returned `Remote(InvalidRequest)` after CBOR encoding failed. | Keep source-repo ID only for authority lookup; copy `candidate.repo_id` into the projection row. Include typed-error evidence in the E2E assertion. | Exact E2E RED with `file owner projection row 0 does not match`; after owner repair the same selector passed 1/1, and daemon-fast passed 61/61. |
 
-The shared `fail_closed_wait` helper remains unresolved as a **contract
-choice**, not an accepted code fix. Current code checks the deadline between
-poll calls, so an in-flight ready value or terminal refusal can be accepted
-after the deadline. A strict-deadline change and two RED tests were reverted
-by another writer. Decide whether the contract is a hard completion deadline
-or a poll-start/admission deadline, then update both implementation and tests
-under one owner; do not silently reapply the reverted change.
+The shared `fail_closed_wait` helper checks its deadline between poll calls.
+An in-flight ready value or terminal refusal can therefore complete after the
+nominal duration. TOPT-06 requires a typed timeout for a spent retry wait, but
+does not specify a hard completion deadline for an in-flight call. The earlier
+strict-deadline change was reverted; this is **not a confirmed open defect**
+and needs no user contract decision for this packet.
 
 The focused checks above do not satisfy the `TOPT-08` full-rail or performance
 gates. A prior `just fmt-check` was red on unrelated concurrent edits; a later
 package-scoped `./scripts/cargow fmt --check -p quanta-index-lexical -p
 quanta-index-searchd-harness -p quanta-index-searchd-runtime` passed.
+
+## Integration-gate regressions found later on Sep 23
+
+- `test-daemon` exposed a route-specific harness classification bug. A pinned
+  structural query returned `StrGenerationNotReady`, but the structural page
+  path used the text warmup predicate and retried that terminal refusal for
+  15 seconds. The result became `HARNESS_START` instead of the daemon's typed
+  error. The exact test failed before the fix; the structural page owner now
+  uses the ordinary readiness predicate. The same selector passed afterward,
+  and the eight `e2e_perf_chaos::structural_` cases passed (one nextest `LEAK`
+  warning under a heavily contended host).
+- A concurrent Clippy cleanup changed the cancellation registry's poisoned
+  lock path to an empty wake list. That can mark a request cancelled while
+  leaving an already registered waiter asleep. The request-budget owner now
+  recovers the poisoned guard for registration, cancellation, cleanup, and
+  census; a poison-injection test passed 1/1. This is a correctness repair,
+  not a lint-only change.
+
+The prior 203-case `test-daemon` run failed on the structural classification
+and stopped with 48 cases not run. It is not a full green receipt. Re-run the
+broader rail only after writer reconciliation on a stable source.

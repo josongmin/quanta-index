@@ -1107,8 +1107,9 @@ fn structural_missing_parse_tree_fails_typed_generation_not_ready() -> AnyResult
         .ok_or_else(|| anyhow::anyhow!("expected typed structural readiness error"))?;
     if error.code.as_str() != "STR_GENERATION_NOT_READY" {
         return Err(anyhow::anyhow!(
-            "expected STR_GENERATION_NOT_READY, got {}",
-            error.code
+            "expected STR_GENERATION_NOT_READY, got {}: {}",
+            error.code,
+            error.message
         ));
     }
     assert_closed_metric_suffix(
