@@ -627,6 +627,7 @@ crate quanta_index_contract
 │   │   │   └── type Value: pub(self)
 │   │   └── struct WeightsHashError: pub
 │   └── mod query_responses: pub(self)
+│       ├── enum FileOwnerProjectionErrorV1: pub
 │       ├── struct FileOwnerProjectionRow: pub
 │       ├── struct FileOwnerProjectionRowVisitor: pub(self)
 │       │   └── type Value: pub(self)
