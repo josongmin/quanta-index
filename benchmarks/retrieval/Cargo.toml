@@ -1,0 +1,29 @@
+[package]
+name = "quanta-index-retrieval-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "quanta_index_retrieval_bench"
+path = "src/lib.rs"
+
+[[bin]]
+name = "quanta-index-retrieval-bench"
+path = "src/main.rs"
+
+[dependencies]
+quanta-index-contract = { version = "0.1.0", path = "../../crates/quanta-index-contract" }
+quanta-index-ipc = { version = "0.1.0", path = "../../crates/quanta-index-ipc" }
+quanta-index-sdk = { version = "0.1.0", path = "../../crates/quanta-index-sdk" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

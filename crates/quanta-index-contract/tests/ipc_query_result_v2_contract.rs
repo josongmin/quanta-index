@@ -1258,17 +1258,19 @@ fn text_response_rejects_missing_or_contradictory_window() -> TestRes {
     })?;
     expect_decode_error_contains::<SearchPlaneQueryIpcResponse>(&missing, "window")?;
 
+    // The V2 window carries no `has_more`: continuation is authorized by
+    // the outcome. Smuggling a token onto an exact page contradicts it.
     let contradictory = mutate_ipc_response_wire(&response, |wire| {
         let response_fields = map_fields_mut(wire)?;
         let payload = field_value_mut(response_fields, "payload")?;
         let payload_fields = map_fields_mut(payload)?;
-        let window = field_value_mut(payload_fields, "window")?;
-        let window_fields = map_fields_mut(window)?;
-        let has_more = field_value_mut(window_fields, "has_more")?;
-        *has_more = ciborium::Value::Bool(true);
+        payload_fields.push((
+            ciborium::Value::Text("next_cursor".to_owned()),
+            ciborium::Value::Text("signed-x".to_owned()),
+        ));
         Ok(())
     })?;
-    expect_decode_error_contains::<SearchPlaneQueryIpcResponse>(&contradictory, "contradict")
+    expect_decode_error_contains::<SearchPlaneQueryIpcResponse>(&contradictory, "disagree")
 }
 
 #[test]
@@ -1278,12 +1280,14 @@ fn search_plane_ipc_response_v2_roundtrips_file_owner_projection_rows() -> TestR
         results: vec![lexical_candidate()],
         window: QueryResultWindowV2::exact_probe(1),
         file_owner_rows: Some(vec![quanta_index_contract::FileOwnerProjectionRow {
-            candidate_id: "lex-1".to_string(),
-            repo_id: RepoId::new("repo-a").expect("static fixture ID satisfies canonical policy"),
-            revision_id: RevisionId::new("rev-a")
+            // S21-07 pairing: the row must name the ranked candidate's
+            // identity (see `lexical_candidate` below).
+            candidate_id: "cand-1".to_string(),
+            repo_id: RepoId::new("repo-1").expect("static fixture ID satisfies canonical policy"),
+            revision_id: RevisionId::new("rev-1")
                 .expect("static fixture ID satisfies canonical policy"),
             manifest_generation: ManifestGeneration::new(7),
-            repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+            repo_relative_path: RepoRelativePath::new("src/search.rs"),
             owners: vec!["@alice".to_string(), "@acme/platform".to_string()],
         }]),
         next_cursor: None,
@@ -1915,26 +1919,30 @@ fn keyset_cursors_round_trip_and_decode_fail_closed() -> TestRes {
             return Err(format!("structural cursor: {label} must not decode").into());
         }
     }
-    // A duplicated field is refused on the CBOR wire too.
-    let bytes = mutate_ipc_request_wire(
-        &SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
-            cursor: Some(token("a")?),
-            ..sourcegraph_structural_request()
-        }),
-        |wire| {
-            let request_fields = map_fields_mut(wire)?;
-            let payload = field_value_mut(request_fields, "payload")?;
-            let payload_fields = map_fields_mut(payload)?;
-            let cursor = field_value_mut(payload_fields, "cursor")?;
-            let cursor_fields = map_fields_mut(cursor)?;
-            cursor_fields.push((
-                ciborium::Value::Text("aux_epoch".to_owned()),
-                ciborium::Value::Integer(6.into()),
-            ));
-            Ok(())
-        },
-    )?;
-    expect_decode_error_contains::<SearchPlaneQueryIpcRequest>(&bytes, "duplicate field")
+    // The cursor rides the wire as an opaque token string, not a map:
+    // duplicating the `cursor` key or emptying the token refuses the
+    // request.
+    let request = SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
+        cursor: Some(token("a")?),
+        ..sourcegraph_structural_request()
+    });
+    let bytes = mutate_ipc_request_wire(&request, |wire| {
+        let request_fields = map_fields_mut(wire)?;
+        let payload = field_value_mut(request_fields, "payload")?;
+        let payload_fields = map_fields_mut(payload)?;
+        duplicate_text_field(payload_fields, "cursor")
+    })?;
+    expect_decode_error_contains::<SearchPlaneQueryIpcRequest>(&bytes, "duplicate field")?;
+
+    let bytes = mutate_ipc_request_wire(&request, |wire| {
+        let request_fields = map_fields_mut(wire)?;
+        let payload = field_value_mut(request_fields, "payload")?;
+        let payload_fields = map_fields_mut(payload)?;
+        let cursor = field_value_mut(payload_fields, "cursor")?;
+        *cursor = ciborium::Value::Text(String::new());
+        Ok(())
+    })?;
+    expect_decode_error_contains::<SearchPlaneQueryIpcRequest>(&bytes, "non-empty continuation token")
 }
 
 /// A page request carries its cursor only when it has one, and the two
@@ -2044,26 +2052,62 @@ fn keyset_pages_round_trip_with_and_without_a_continuation() -> TestRes {
 /// A page cannot claim a continuation it does not position, position one
 /// that is not its last row, count rows it does not hold, leave its
 /// order, or hand out a cursor for an epoch it did not read.
+
+/// An inconsistent page must never cross the wire: the codec refuses it
+/// at encode, at decode, or at both, and the refusal must name the
+/// violated page invariant.
+fn expect_page_refused(
+    label: &str,
+    response: &SearchPlaneQueryIpcResponse,
+    fragment: &str,
+) -> TestRes {
+    match encode(response) {
+        Ok(bytes) => match decode::<SearchPlaneQueryIpcResponse>(&bytes) {
+            Ok(decoded) => Err(format!("{label}: inconsistent page accepted: {decoded:?}").into()),
+            Err(err) => {
+                let message = err.to_string();
+                if !message.contains(fragment) {
+                    return Err(format!(
+                        "{label}: decode refusal missed `{fragment}`: {message}"
+                    )
+                    .into());
+                }
+                Ok(())
+            }
+        },
+        Err(err) => {
+            let message = err.to_string();
+            if !message.contains(fragment) {
+                return Err(format!("{label}: encode refusal missed `{fragment}`: {message}").into());
+            }
+            Ok(())
+        }
+    }
+}
+
 #[test]
 fn keyset_pages_reject_inconsistent_shapes() -> TestRes {
     let base = runtime_page_with_continuation()?;
     let runtime_cases: Vec<(
         &str,
         quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse,
+        &str,
     )> = vec![
         (
-            "has_more without a cursor",
+            "an authorizing outcome without a token",
             quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
                 next_cursor: None,
                 ..base.clone()
             },
+            "disagree",
         ),
         (
-            "a cursor without has_more",
+            "a token without an authorizing outcome",
             quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
                 window: QueryResultWindowV2::exact_probe(2),
                 ..base.clone()
             },
+            "disagree",
         ),
         (
             "a window that does not count the rows",
@@ -2076,6 +2120,7 @@ fn keyset_pages_reject_inconsistent_shapes() -> TestRes {
                 )?,
                 ..base.clone()
             },
+            "does not match results length",
         ),
         (
             "rows out of candidate-id order",
@@ -2084,6 +2129,7 @@ fn keyset_pages_reject_inconsistent_shapes() -> TestRes {
                 next_cursor: Some(token("a")?),
                 ..base.clone()
             },
+            "strictly ascending",
         ),
         (
             "a duplicated row",
@@ -2091,35 +2137,38 @@ fn keyset_pages_reject_inconsistent_shapes() -> TestRes {
                 results: vec![lexical_candidate_named("b"), lexical_candidate_named("b")],
                 ..base.clone()
             },
+            "strictly ascending",
         ),
     ];
-    for (label, page) in runtime_cases {
-        let bytes = encode(&SearchPlaneQueryIpcResponse::RuntimeMetadata(page))?;
-        if decode::<SearchPlaneQueryIpcResponse>(&bytes).is_ok() {
-            return Err(
-                format!("runtime-metadata: {label}: an inconsistent page must not decode").into(),
-            );
-        }
+    for (label, page, fragment) in runtime_cases {
+        expect_page_refused(
+            &format!("runtime-metadata: {label}"),
+            &SearchPlaneQueryIpcResponse::RuntimeMetadata(page),
+            fragment,
+        )?;
     }
 
     let base = structural_page_with_continuation()?;
     let structural_cases: Vec<(
         &str,
         quanta_index_contract::SearchPlaneStructuralQueryResponse,
+        &str,
     )> = vec![
         (
-            "has_more without a cursor",
+            "an authorizing outcome without a token",
             quanta_index_contract::SearchPlaneStructuralQueryResponse {
                 next_cursor: None,
                 ..base.clone()
             },
+            "disagree",
         ),
         (
-            "a cursor without has_more",
+            "a token without an authorizing outcome",
             quanta_index_contract::SearchPlaneStructuralQueryResponse {
                 window: QueryResultWindowV2::exact_probe(2),
                 ..base.clone()
             },
+            "disagree",
         ),
         (
             "a window that does not count the rows",
@@ -2132,6 +2181,7 @@ fn keyset_pages_reject_inconsistent_shapes() -> TestRes {
                 )?,
                 ..base.clone()
             },
+            "does not match results length",
         ),
         (
             "rows out of candidate-id order",
@@ -2143,15 +2193,15 @@ fn keyset_pages_reject_inconsistent_shapes() -> TestRes {
                 next_cursor: Some(token("a")?),
                 ..base.clone()
             },
+            "strictly ascending",
         ),
     ];
-    for (label, page) in structural_cases {
-        let bytes = encode(&SearchPlaneQueryIpcResponse::Structural(page))?;
-        if decode::<SearchPlaneQueryIpcResponse>(&bytes).is_ok() {
-            return Err(
-                format!("structural: {label}: an inconsistent page must not decode").into(),
-            );
-        }
+    for (label, page, fragment) in structural_cases {
+        expect_page_refused(
+            &format!("structural: {label}"),
+            &SearchPlaneQueryIpcResponse::Structural(page),
+            fragment,
+        )?;
     }
 
     // Every required field is required: dropping `examined` or an epoch

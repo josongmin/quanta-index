@@ -4558,6 +4558,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "quanta-index-retrieval-bench"
+version = "0.1.0"
+dependencies = [
+ "quanta-index-contract",
+ "quanta-index-ipc",
+ "quanta-index-sdk",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "quanta-index-scan-experiment"
 version = "0.1.0"
 dependencies = [

@@ -8,7 +8,7 @@ use crate::searcher::snippets::snippet_center_terms;
 use crate::{ManualPage, QueryDocKind, TEXT_DOC_KIND, TantivySearcher};
 use quanta_index_contract::{
     CandidatePresenceV1, FileOwnerProjectionRow, LexicalCandidate, LqQuery, QueryConstraintSetV1,
-    RepoId, SymbolCandidate,
+    SymbolCandidate,
 };
 use quanta_index_core::{
     CoreError, LexicalArtifactIdentityV1, LexicalCandidateExplanationV1, LexicalPageSpec,
@@ -189,11 +189,9 @@ impl LexicalSearcher for TantivySearcher {
                 .unwrap_or_default();
             rows.push(FileOwnerProjectionRow {
                 candidate_id: candidate.candidate_id.clone(),
-                repo_id: RepoId::new(source_repo_id).map_err(|error| {
-                    CoreError::Storage(format!(
-                        "lexical: file owner projection has invalid source repo ID: {error}"
-                    ))
-                })?,
+                // The source repo selects the ownership authority. The
+                // projection identity must still pair with the ranked row.
+                repo_id: candidate.repo_id.clone(),
                 revision_id: candidate.revision_id.clone(),
                 manifest_generation: candidate.manifest_generation,
                 repo_relative_path: candidate.repo_relative_path.clone(),

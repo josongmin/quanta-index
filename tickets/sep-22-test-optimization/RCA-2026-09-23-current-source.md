@@ -36,3 +36,28 @@ passed for the four repaired owner files before the final test-name-only rename.
   host; then execute TOPT-08's broader rails and compare only source-matched
   uncontended samples. Keep these tickets open until their own acceptance
   criteria are satisfied.
+
+## Additional owner repairs and audit (later on Sep 23)
+
+These are focused dirty-tree receipts, not a replacement for TOPT-00 or
+TOPT-08. Other writers advanced `HEAD` and edited the workspace manifests
+while the tests ran, so no immutable same-source digest is claimed.
+
+| Finding | Root cause | Owner repair | Focused receipt |
+|---|---|---|---|
+| Harness readiness could exceed 15 seconds and mislabel a late ready response | The readiness loop gave each IPC request its full 30-second timeout and made one more request after the 15-second wait expired. | `wait_for_query_response` bounds every IPC attempt by the earliest readiness, request, and caller deadline; it no longer makes the post-timeout request. Transport errors retain their actual typed message. | `quanta-index-searchd-harness` deadline unit test 1/1; `just rust-profile test-daemon-fast` 61/61. |
+| SDK wait adapter assertions depended on scheduler timing | Three scripted tests used `RealTicker` with a 100 ms window and asserted a retry count; a deschedule could turn an intended retry into a false-red. | Inject `WaitTicker` into the adapter tests and advance a virtual clock. The production-facing wrapper continues to use `RealTicker`. The live scrape test asserts timeout type and predicate evidence, not a minimum number of 100 ms polls. | SDK selector 3/3; extended scrape selector 1/1. |
+| File-owner projection failed response encoding | The lexical projector used the source-repo authority ID as the projection row's `repo_id`, although the wire contract requires each row to carry the paired ranked candidate's identity. Multi-repo fixture queries then returned `Remote(InvalidRequest)` after CBOR encoding failed. | Keep source-repo ID only for authority lookup; copy `candidate.repo_id` into the projection row. Include typed-error evidence in the E2E assertion. | Exact E2E RED with `file owner projection row 0 does not match`; after owner repair the same selector passed 1/1, and daemon-fast passed 61/61. |
+
+The shared `fail_closed_wait` helper remains unresolved as a **contract
+choice**, not an accepted code fix. Current code checks the deadline between
+poll calls, so an in-flight ready value or terminal refusal can be accepted
+after the deadline. A strict-deadline change and two RED tests were reverted
+by another writer. Decide whether the contract is a hard completion deadline
+or a poll-start/admission deadline, then update both implementation and tests
+under one owner; do not silently reapply the reverted change.
+
+The focused checks above do not satisfy the `TOPT-08` full-rail or performance
+gates. A prior `just fmt-check` was red on unrelated concurrent edits; a later
+package-scoped `./scripts/cargow fmt --check -p quanta-index-lexical -p
+quanta-index-searchd-harness -p quanta-index-searchd-runtime` passed.

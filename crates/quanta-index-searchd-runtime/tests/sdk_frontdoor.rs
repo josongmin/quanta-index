@@ -10,6 +10,7 @@
     reason = "integration polling uses explicit Result fallback checks"
 )]
 
+use std::cell::Cell;
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::path::{Path, PathBuf};
@@ -46,7 +47,7 @@ use quanta_index_sdk::{
 use quanta_index_searchd_harness::E2eRuntime;
 
 use crate::fail_closed_wait::{
-    RealTicker, UnexpectedSuccess, WaitError, wait_for, wait_for_terminal_error,
+    RealTicker, UnexpectedSuccess, WaitError, WaitTicker, wait_for, wait_for_terminal_error,
 };
 use crate::frontdoor_scenarios::{
     SDK_FRONTDOOR_SCENARIOS, SdkFrontdoorExpectation, SdkFrontdoorSurface,
@@ -1246,8 +1247,21 @@ where
     T: std::fmt::Debug,
     F: FnMut() -> Result<T, SdkError>,
 {
+    wait_for_sdk_ready_with_ticker(&RealTicker::new(), timeout, run)
+}
+
+#[track_caller]
+fn wait_for_sdk_ready_with_ticker<T, F>(
+    ticker: &dyn WaitTicker,
+    timeout: Duration,
+    run: F,
+) -> Result<T, WaitError<SdkError>>
+where
+    T: std::fmt::Debug,
+    F: FnMut() -> Result<T, SdkError>,
+{
     wait_for(
-        &RealTicker::new(),
+        ticker,
         timeout,
         SDK_WAIT_POLL,
         &wait_description(
@@ -4331,9 +4345,25 @@ fn sdk_binary_process_dsl_roundtrip() -> TestResult {
 
 // ---------------------------------------------------------------------------
 // TH-1 adapter proofs (TOPT-06): the SDK wait adapters classify by wire
-// code and fail closed. Scripted closures, no daemon: each runs in
-// milliseconds under a short bound.
+// code and fail closed. Scripted closures and a virtual clock exercise
+// the real adapter without daemon startup or wall-clock waits.
 // ---------------------------------------------------------------------------
+
+#[derive(Default)]
+struct ScriptedWaitTicker {
+    elapsed: Cell<Duration>,
+}
+
+impl WaitTicker for ScriptedWaitTicker {
+    fn now(&self) -> Duration {
+        self.elapsed.get()
+    }
+
+    fn sleep(&self, duration: Duration) {
+        self.elapsed
+            .set(self.elapsed.get().saturating_add(duration));
+    }
+}
 
 /// A scripted remote refusal behind no transport at all.
 fn scripted_remote(code: SearchPlaneErrorCodeV2) -> SdkError {
@@ -4346,8 +4376,9 @@ fn scripted_remote(code: SearchPlaneErrorCodeV2) -> SdkError {
 
 #[test]
 fn sdk_wait_never_ready_script_returns_typed_timeout() {
+    let ticker = ScriptedWaitTicker::default();
     let calls = AtomicU64::new(0);
-    let error = wait_for_sdk_ready(Duration::from_millis(100), || {
+    let error = wait_for_sdk_ready_with_ticker(&ticker, Duration::from_millis(25), || {
         let _prior = calls.fetch_add(1, Ordering::SeqCst);
         Err::<(), SdkError>(scripted_remote(SearchPlaneErrorCodeV2::NotReady))
     })
@@ -4356,9 +4387,8 @@ fn sdk_wait_never_ready_script_returns_typed_timeout() {
         panic!("a never-ready script times out typed, got {error:?}");
     };
     assert!(
-        timeout.attempts >= 2,
-        "NOT_READY retries instead of failing at once: {}",
-        timeout.attempts
+        timeout.attempts > 1,
+        "a virtual-clock NOT_READY script exercises retry"
     );
     assert_eq!(calls.load(Ordering::SeqCst), timeout.attempts);
     assert!(
@@ -4375,8 +4405,9 @@ fn sdk_wait_never_ready_script_returns_typed_timeout() {
 
 #[test]
 fn sdk_wait_non_retryable_error_returns_terminal_at_once() {
+    let ticker = ScriptedWaitTicker::default();
     let calls = AtomicU64::new(0);
-    let error = wait_for_sdk_ready(Duration::from_millis(100), || {
+    let error = wait_for_sdk_ready_with_ticker(&ticker, Duration::from_millis(25), || {
         let _prior = calls.fetch_add(1, Ordering::SeqCst);
         Err::<(), SdkError>(scripted_remote(SearchPlaneErrorCodeV2::Lexical(
             LexicalErrorCode::QueryTimeout,
@@ -4396,8 +4427,9 @@ fn sdk_wait_non_retryable_error_returns_terminal_at_once() {
 
 #[test]
 fn sdk_wait_not_ready_then_ready_recovers() {
+    let ticker = ScriptedWaitTicker::default();
     let calls = AtomicU64::new(0);
-    let value = wait_for_sdk_ready(Duration::from_secs(5), || {
+    let value = wait_for_sdk_ready_with_ticker(&ticker, Duration::from_secs(5), || {
         let call = calls.fetch_add(1, Ordering::SeqCst).saturating_add(1);
         if call < 3 {
             Err(scripted_remote(SearchPlaneErrorCodeV2::NotReady))

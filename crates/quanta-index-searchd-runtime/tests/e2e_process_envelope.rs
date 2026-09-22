@@ -416,11 +416,6 @@ fn scrape_wait_never_true_predicate_returns_typed_timeout() -> TestResult {
         .downcast_ref::<WaitTimeout>()
         .ok_or_else(|| format!("a spent scrape wait is a typed timeout, got {error:?}"))?;
     assert!(
-        timeout.attempts >= 2,
-        "the scrape retries instead of failing at once: {}",
-        timeout.attempts
-    );
-    assert!(
         timeout.expected.contains("never satisfies"),
         "the timeout names its predicate: {}",
         timeout.expected

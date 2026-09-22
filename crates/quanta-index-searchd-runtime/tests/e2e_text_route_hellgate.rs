@@ -832,8 +832,9 @@ fn verify_file_owner_contributor_and_projection(rt: &mut E2eRuntime) -> AnyResul
                 "src/gate-a.rs",
                 "src/gate-b.py",
             ],
-        "select:file.owners must preserve lexical candidate set, got {:?}",
+        "select:file.owners must preserve lexical candidate set, got {:?}, typed_error={:?}",
         sorted_candidate_paths(&owners),
+        owners.typed_error,
     );
     ensure!(
         sorted_file_owner_projection(&owners)

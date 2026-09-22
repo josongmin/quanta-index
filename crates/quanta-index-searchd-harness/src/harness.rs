@@ -2185,12 +2185,12 @@ impl E2eRuntime {
                 };
             }
         };
-        let (readiness_reached, response) =
+        let response =
             wait_for_query_response(&socket, &envelope, self.client_io, query_response_ready);
         let response: SearchPlaneQueryIpcResponseEnvelope = match response {
             Ok(r) => r,
             Err(err) => {
-                let query_result = self.semantic_transport_error(readiness_reached, err);
+                let query_result = self.semantic_transport_error(err);
                 return E2eHistoryResult {
                     commit_ids: Vec::new(),
                     diff_paths: Vec::new(),
@@ -2436,12 +2436,11 @@ impl E2eRuntime {
             payload,
         };
         let socket = self.ensure_driver()?;
-        let (readiness_reached, response) =
-            wait_for_query_response(&socket, &envelope, self.client_io, ready);
+        let response = wait_for_query_response(&socket, &envelope, self.client_io, ready);
         let response = match response {
             Ok(response) => response,
             Err(err) => {
-                let failure = self.semantic_transport_error(readiness_reached, err);
+                let failure = self.semantic_transport_error(err);
                 return Err(anyhow::anyhow!(
                     "e2e-harness: keyset page transport failure: {}",
                     failure
@@ -2518,7 +2517,7 @@ impl E2eRuntime {
         // test does. For an invalid-contract request (no pin), the runtime
         // returns INVALID_REQUEST immediately, which already satisfies the
         // "non-NOT_READY" predicate.
-        let (readiness_reached, response) = wait_for_query_response(
+        let response = wait_for_query_response(
             &socket,
             &envelope,
             self.client_io,
@@ -2526,7 +2525,7 @@ impl E2eRuntime {
         );
         let response: SearchPlaneQueryIpcResponseEnvelope = match response {
             Ok(r) => r,
-            Err(err) => return self.semantic_transport_error(readiness_reached, err),
+            Err(err) => return self.semantic_transport_error(err),
         };
         match response.payload {
             SearchPlaneQueryIpcResponse::Text(text) => E2eQueryResult {
@@ -2673,11 +2672,11 @@ impl E2eRuntime {
                 };
             }
         };
-        let (readiness_reached, response) =
+        let response =
             wait_for_query_response(&socket, &envelope, self.client_io, query_response_ready);
         let response: SearchPlaneQueryIpcResponseEnvelope = match response {
             Ok(r) => r,
-            Err(err) => return self.semantic_transport_error(readiness_reached, err),
+            Err(err) => return self.semantic_transport_error(err),
         };
         match response.payload {
             SearchPlaneQueryIpcResponse::Semantic(semantic) => E2eQueryResult {
@@ -2769,11 +2768,11 @@ impl E2eRuntime {
                 };
             }
         };
-        let (readiness_reached, response) =
+        let response =
             wait_for_query_response(&socket, &envelope, self.client_io, query_response_ready);
         let response: SearchPlaneQueryIpcResponseEnvelope = match response {
             Ok(r) => r,
-            Err(err) => return self.semantic_transport_error(readiness_reached, err),
+            Err(err) => return self.semantic_transport_error(err),
         };
         match response.payload {
             SearchPlaneQueryIpcResponse::Hybrid(hybrid) => E2eQueryResult {
@@ -2843,12 +2842,12 @@ impl E2eRuntime {
             payload,
         };
         let socket = self.ensure_driver()?;
-        let (readiness_reached, response) =
+        let response =
             wait_for_query_response(&socket, &envelope, self.client_io, query_response_ready);
         let response = match response {
             Ok(response) => response,
             Err(err) => {
-                let failure = self.semantic_transport_error(readiness_reached, err);
+                let failure = self.semantic_transport_error(err);
                 return Err(anyhow::anyhow!(
                     "e2e-harness: route probe transport failure: {}",
                     failure
@@ -2890,16 +2889,8 @@ impl E2eRuntime {
             .ok_or_else(|| anyhow::anyhow!("e2e-harness: no chunk id recorded for path `{path}`"))
     }
 
-    fn semantic_transport_error(
-        &mut self,
-        readiness_reached: bool,
-        err: impl std::fmt::Display,
-    ) -> E2eQueryResult {
-        let mut message = if readiness_reached {
-            err.to_string()
-        } else {
-            format!("readiness timeout before IPC response: {err}")
-        };
+    fn semantic_transport_error(&mut self, err: IpcError) -> E2eQueryResult {
+        let mut message = err.to_string();
         if let Some(mut driver) = self.driver.take() {
             driver.shutdown.store(true, Ordering::Release);
             if let Some(join) = driver.join.take() {
@@ -3024,11 +3015,11 @@ impl E2eRuntime {
                 };
             }
         };
-        let (readiness_reached, response) =
+        let response =
             wait_for_query_response(&socket, &envelope, self.client_io, query_response_ready);
         let response: SearchPlaneQueryIpcResponseEnvelope = match response {
             Ok(r) => r,
-            Err(err) => return explain_transport_error(readiness_reached, err),
+            Err(err) => return explain_transport_error(err),
         };
         match response.payload {
             SearchPlaneQueryIpcResponse::Explain(explain) => E2eExplainResult {
@@ -3387,78 +3378,126 @@ fn cap_observation(observed: String) -> String {
     format!("{prefix}…[truncated]")
 }
 
+/// Preserve both the caller's per-request limit and the readiness window.
+/// Every IPC attempt receives the earliest deadline, never a fresh full
+/// request timeout after the readiness window has already been spent.
+fn readiness_attempt_deadline(
+    client_io: ClientIoPolicy,
+    now: Instant,
+    readiness_deadline: Instant,
+) -> Instant {
+    let request_deadline = now
+        .checked_add(client_io.request_timeout())
+        .unwrap_or(readiness_deadline);
+    readiness_deadline
+        .min(request_deadline)
+        .min(client_io.absolute_deadline().unwrap_or(readiness_deadline))
+}
+
 fn wait_for_query_response(
     socket: &Path,
     envelope: &SearchPlaneQueryIpcRequestEnvelope,
     client_io: ClientIoPolicy,
     ready: impl Fn(&SearchPlaneQueryIpcResponseEnvelope) -> bool,
-) -> (bool, Result<SearchPlaneQueryIpcResponseEnvelope, IpcError>) {
-    let mut cached_response: Option<SearchPlaneQueryIpcResponseEnvelope> = None;
+) -> Result<SearchPlaneQueryIpcResponseEnvelope, IpcError> {
+    let readiness_deadline = Instant::now()
+        .checked_add(READINESS_TIMEOUT)
+        .expect("the bounded readiness deadline is representable");
     let mut attempts = 0_u64;
     let mut last = String::from("no attempt completed");
-    let readiness_reached = wait_until(
-        READINESS_TIMEOUT,
-        READINESS_POLL_INTERVAL,
-        || {
-            attempts = attempts.saturating_add(1);
-            match send_request::<_, SearchPlaneQueryIpcResponseEnvelope>(
-                socket, envelope, client_io,
-            ) {
-                Ok(response) => {
-                    if ready(&response) {
-                        cached_response = Some(response);
-                        return true;
-                    }
-                    last = format!(
-                        "not-ready {}",
-                        describe_query_response_payload(&response.payload)
-                    );
-                    false
-                }
-                Err(transport_error) => {
-                    last = format!("transport error: {transport_error}");
-                    false
-                }
+    loop {
+        let now = Instant::now();
+        if now >= readiness_deadline {
+            break;
+        }
+        let attempt_deadline = readiness_attempt_deadline(client_io, now, readiness_deadline);
+        let attempt_io = match ClientIoPolicy::try_with_deadline(attempt_deadline) {
+            Ok(policy) => policy,
+            Err(_) if Instant::now() >= readiness_deadline => break,
+            Err(error) if client_io.absolute_deadline().is_some() => return Err(error),
+            Err(error) => {
+                // A stricter per-attempt budget can expire while this
+                // thread is descheduled. It does not spend the shared
+                // readiness window or authorize a terminal response.
+                last = format!("transport error: {error}");
+                continue;
             }
-        },
-    );
-    if let Some(response) = cached_response {
-        return (readiness_reached, Ok(response));
-    }
-    // Timeout: one final attempt for the freshest evidence, but the
-    // verdict stays a typed timeout — a spent wait never returns a
-    // not-ready payload for callers to file as a remote refusal.
-    attempts = attempts.saturating_add(1);
-    match send_request::<_, SearchPlaneQueryIpcResponseEnvelope>(socket, envelope, client_io) {
-        Ok(response) => {
-            last = format!(
-                "not-ready {}",
-                describe_query_response_payload(&response.payload)
-            );
+        };
+        attempts = attempts.saturating_add(1);
+        match send_request::<_, SearchPlaneQueryIpcResponseEnvelope>(socket, envelope, attempt_io) {
+            Ok(response) => {
+                let observed = describe_query_response_payload(&response.payload);
+                if ready(&response) {
+                    if Instant::now() < readiness_deadline {
+                        return Ok(response);
+                    }
+                    last = format!("ready after deadline {observed}");
+                    break;
+                }
+                last = format!("not-ready {observed}");
+            }
+            Err(transport_error) => {
+                last = format!("transport error: {transport_error}");
+            }
         }
-        Err(transport_error) => {
-            last = format!("transport error: {transport_error}");
+        let remaining = readiness_deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
         }
+        thread::sleep(READINESS_POLL_INTERVAL.min(remaining));
     }
-    (
-        false,
-        Err(IpcError::ReadinessTimeout {
-            timeout: READINESS_TIMEOUT,
-            attempts,
-            last: cap_observation(last),
-        }),
-    )
+    Err(IpcError::ReadinessTimeout {
+        timeout: READINESS_TIMEOUT,
+        attempts,
+        last: cap_observation(last),
+    })
 }
 
-fn explain_transport_error(
-    readiness_reached: bool,
-    err: impl std::fmt::Display,
-) -> E2eExplainResult {
-    let message = if readiness_reached {
-        err.to_string()
-    } else {
-        format!("readiness timeout before IPC response: {err}")
-    };
+#[cfg(test)]
+mod readiness_deadline_tests {
+    use std::time::{Duration, Instant};
+
+    use quanta_index_ipc::ClientIoPolicy;
+
+    use super::readiness_attempt_deadline;
+
+    #[test]
+    fn every_attempt_uses_the_earliest_owner_deadline() {
+        let now = Instant::now();
+        let readiness_deadline = now + Duration::from_secs(15);
+        let long_io = ClientIoPolicy::try_new(Duration::from_secs(30))
+            .expect("a positive request timeout is valid");
+        assert_eq!(
+            readiness_attempt_deadline(long_io, now, readiness_deadline),
+            readiness_deadline,
+            "a 30-second IPC limit cannot extend a 15-second readiness window"
+        );
+
+        let short_io = ClientIoPolicy::try_new(Duration::from_secs(2))
+            .expect("a positive request timeout is valid");
+        assert_eq!(
+            readiness_attempt_deadline(short_io, now, readiness_deadline),
+            now + Duration::from_secs(2),
+            "a stricter per-request limit remains effective"
+        );
+
+        let caller_deadline = now + Duration::from_secs(3_600);
+        let absolute_io = ClientIoPolicy::try_with_deadline(caller_deadline)
+            .expect("a future absolute deadline is valid");
+        assert_eq!(
+            readiness_attempt_deadline(
+                absolute_io,
+                Instant::now(),
+                now + Duration::from_secs(7_200)
+            ),
+            caller_deadline,
+            "a caller's absolute deadline remains effective"
+        );
+    }
+}
+
+fn explain_transport_error(err: IpcError) -> E2eExplainResult {
+    let message = err.to_string();
     E2eExplainResult {
         presence: None,
         explanation: None,
