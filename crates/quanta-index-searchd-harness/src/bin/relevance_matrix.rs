@@ -16,9 +16,10 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::Result as AnyResult;
+use quanta_index_searchd::app::SemanticEmbedderProfile;
 use quanta_index_searchd_harness::artifact::{GitHeadV1, HostV1};
 use quanta_index_searchd_harness::relevance::report::{
-    RelevanceReport, run_relevance_report, write_artifacts,
+    RelevanceReport, run_relevance_report_with_profile, write_artifacts,
 };
 
 /// Capture date stamped on the Sourcegraph overlap rows (J7Q-01B).
@@ -62,13 +63,23 @@ fn parse_args() -> AnyResult<(PathBuf, bool)> {
 }
 
 fn run(out_dir: &Path, capture_date: &str, diagnostic: bool) -> AnyResult<RelevanceReport> {
+    let profile = SemanticEmbedderProfile::from_env()?;
+    if !diagnostic
+        && out_dir.ends_with("artifacts/search-quality/relevance/latest")
+        && profile.selector() != "potion-code"
+    {
+        return Err(anyhow::anyhow!(
+            "canonical relevance/latest requires potion-code; use a separate output directory for {}",
+            profile.selector()
+        ));
+    }
     if diagnostic {
-        return run_relevance_report();
+        return run_relevance_report_with_profile(profile);
     }
     // Provenance first: a run that cannot be attributed is not started.
     let git_head = GitHeadV1::resolve(Path::new("."))?;
     let host = HostV1::observe()?;
-    let report = run_relevance_report()?;
+    let report = run_relevance_report_with_profile(profile)?;
     write_artifacts(&report, out_dir, git_head, host, capture_date)?;
     Ok(report)
 }

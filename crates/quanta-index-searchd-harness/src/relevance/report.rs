@@ -542,7 +542,8 @@ pub fn run_relevance_report() -> AnyResult<RelevanceReport> {
     run_relevance_report_with_profile(SemanticEmbedderProfile::from_env()?)
 }
 
-fn run_relevance_report_with_profile(
+/// Run the same judged corpus under an explicitly resolved query/corpus model.
+pub fn run_relevance_report_with_profile(
     profile: SemanticEmbedderProfile,
 ) -> AnyResult<RelevanceReport> {
     if matches!(profile, SemanticEmbedderProfile::Unavailable) {
