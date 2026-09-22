@@ -223,7 +223,11 @@ mod tests {
     fn names_are_distinct_across_predicates_and_aliases() {
         let mut names = BTreeSet::new();
         for predicate in LexicalPredicateV1::ALL {
-            assert!(names.insert(predicate.name()), "{}: name taken", predicate.name());
+            assert!(
+                names.insert(predicate.name()),
+                "{}: name taken",
+                predicate.name()
+            );
         }
         for alias in LexicalPredicateAliasV1::ALL {
             assert!(names.insert(alias.name()), "{}: name taken", alias.name());

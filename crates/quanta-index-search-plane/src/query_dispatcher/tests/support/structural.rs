@@ -302,7 +302,12 @@ pub(crate) fn ready_ledger_with_structural_boolean_chunks() -> Arc<RwLock<Ledger
         generation,
         None,
     );
-    ledger.record_track_seal(&repo_id, &revision_id, SearchPlaneTrackKind::Lexical, generation);
+    ledger.record_track_seal(
+        &repo_id,
+        &revision_id,
+        SearchPlaneTrackKind::Lexical,
+        generation,
+    );
     ledger.record_track_materialized(
         &repo_id,
         &revision_id,

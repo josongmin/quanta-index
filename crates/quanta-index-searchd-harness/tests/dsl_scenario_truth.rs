@@ -14,7 +14,10 @@ fn warm_matrix_scenarios_match_golden_truth() -> AnyResult<()> {
         let outcome = run_scenario_query(&mut runtime, scenario);
         validate_scenario_outcome(scenario, ScenarioTruthMode::SharedWarmFixture, &outcome)
             .map_err(|err| {
-                anyhow::anyhow!("warm scenario {} drifted from golden truth: {err:#}", scenario.id)
+                anyhow::anyhow!(
+                    "warm scenario {} drifted from golden truth: {err:#}",
+                    scenario.id
+                )
             })?;
     }
     Ok(())
@@ -31,7 +34,10 @@ fn cold_matrix_shard_matches_golden_truth(shard: usize) -> AnyResult<()> {
         let outcome = run_scenario_query(&mut runtime, scenario);
         validate_scenario_outcome(scenario, ScenarioTruthMode::IsolatedFixture, &outcome).map_err(
             |err| {
-                anyhow::anyhow!("cold scenario {} drifted from golden truth: {err:#}", scenario.id)
+                anyhow::anyhow!(
+                    "cold scenario {} drifted from golden truth: {err:#}",
+                    scenario.id
+                )
             },
         )?;
     }

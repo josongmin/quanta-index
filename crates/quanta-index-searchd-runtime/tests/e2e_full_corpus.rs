@@ -254,8 +254,12 @@ fn parse_loaded_fixture(root: &Value, path: &Path) -> AnyResult<LoadedFixture> {
         .get("repo_metadata")
         .map(|value| parse_repo_metadata(value, path))
         .transpose()?;
-    let structural =
-        parse_structural_specs(table.get("structural"), table.get("structural_tree"), &out, path)?;
+    let structural = parse_structural_specs(
+        table.get("structural"),
+        table.get("structural_tree"),
+        &out,
+        path,
+    )?;
     let history = parse_history_specs(table.get("history"), path)?;
     let repo_commit_recency =
         parse_repo_commit_recency_specs(table.get("repo_commit_recency"), path)?;
@@ -292,7 +296,10 @@ fn require_string(
             "fixture {} field `{field}` must be string, got {other:?}",
             path.display()
         )),
-        None => Err(anyhow::anyhow!("fixture {} missing `{field}`", path.display())),
+        None => Err(anyhow::anyhow!(
+            "fixture {} missing `{field}`",
+            path.display()
+        )),
     }
 }
 
@@ -322,7 +329,10 @@ fn require_bool(
             "fixture {} field `{field}` must be boolean, got {other:?}",
             path.display()
         )),
-        None => Err(anyhow::anyhow!("fixture {} missing `{field}`", path.display())),
+        None => Err(anyhow::anyhow!(
+            "fixture {} missing `{field}`",
+            path.display()
+        )),
     }
 }
 
@@ -339,7 +349,10 @@ fn require_u64(table: &toml::map::Map<String, Value>, field: &str, path: &Path) 
             "fixture {} field `{field}` must be integer, got {other:?}",
             path.display()
         )),
-        None => Err(anyhow::anyhow!("fixture {} missing `{field}`", path.display())),
+        None => Err(anyhow::anyhow!(
+            "fixture {} missing `{field}`",
+            path.display()
+        )),
     }
 }
 
@@ -412,7 +425,10 @@ fn require_string_array(
             "fixture {} field `{field}` must be array<string>, got {other:?}",
             path.display()
         )),
-        None => Err(anyhow::anyhow!("fixture {} missing `{field}`", path.display())),
+        None => Err(anyhow::anyhow!(
+            "fixture {} missing `{field}`",
+            path.display()
+        )),
     }
 }
 
@@ -457,7 +473,10 @@ fn parse_structural_specs(
         })?;
         for row in rows {
             let table = row.as_table().ok_or_else(|| {
-                anyhow::anyhow!("fixture {} [[structural]] row must be a table", path.display())
+                anyhow::anyhow!(
+                    "fixture {} [[structural]] row must be a table",
+                    path.display()
+                )
             })?;
             out.push(FixtureStructuralSpec::Shorthand {
                 path: require_string(table, "path", path)?,
@@ -511,7 +530,10 @@ fn parse_structural_node(
     context: &str,
 ) -> AnyResult<FixtureStructuralNodeSpec> {
     let table = value.as_table().ok_or_else(|| {
-        anyhow::anyhow!("fixture {} structural node `{context}` must be a table", path.display())
+        anyhow::anyhow!(
+            "fixture {} structural node `{context}` must be a table",
+            path.display()
+        )
     })?;
     let kind = require_string(table, "kind", path)?;
     let start_byte = require_u32(table, "start_byte", path)?;
@@ -837,7 +859,10 @@ fn parse_repo_meta_specs(
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
         let table = row.as_table().ok_or_else(|| {
-            anyhow::anyhow!("fixture {} [[repo_meta]] row must be a table", path.display())
+            anyhow::anyhow!(
+                "fixture {} [[repo_meta]] row must be a table",
+                path.display()
+            )
         })?;
         out.push(FixtureRepoMetaSpec {
             source_repo_id: require_string(table, "source_repo_id", path)?,
@@ -866,7 +891,10 @@ fn parse_repo_topic_specs(
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
         let table = row.as_table().ok_or_else(|| {
-            anyhow::anyhow!("fixture {} [[repo_topic]] row must be a table", path.display())
+            anyhow::anyhow!(
+                "fixture {} [[repo_topic]] row must be a table",
+                path.display()
+            )
         })?;
         out.push(FixtureRepoTopicSpec {
             source_repo_id: require_string(table, "source_repo_id", path)?,
@@ -894,7 +922,10 @@ fn parse_file_ownership_specs(
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
         let table = row.as_table().ok_or_else(|| {
-            anyhow::anyhow!("fixture {} [[file_ownership]] row must be a table", path.display())
+            anyhow::anyhow!(
+                "fixture {} [[file_ownership]] row must be a table",
+                path.display()
+            )
         })?;
         let owners = match table.get("owners") {
             Some(Value::Array(items)) => items
@@ -947,7 +978,10 @@ fn parse_file_contributor_specs(
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
         let table = row.as_table().ok_or_else(|| {
-            anyhow::anyhow!("fixture {} [[file_contributor]] row must be a table", path.display())
+            anyhow::anyhow!(
+                "fixture {} [[file_contributor]] row must be a table",
+                path.display()
+            )
         })?;
         let contributors = match table.get("contributors") {
             Some(Value::Array(items)) => items
@@ -1038,7 +1072,10 @@ fn parse_runtime_catalog_spec(
         return Ok(None);
     };
     let table = value.as_table().ok_or_else(|| {
-        anyhow::anyhow!("fixture {} [runtime_catalog] must be a table", path.display())
+        anyhow::anyhow!(
+            "fixture {} [runtime_catalog] must be a table",
+            path.display()
+        )
     })?;
     let changed_key = table
         .get("changed")
@@ -1102,7 +1139,10 @@ fn parse_runtime_facet_specs(value: &Value, path: &Path) -> AnyResult<Vec<E2eRun
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
         let table = row.as_table().ok_or_else(|| {
-            anyhow::anyhow!("fixture {} runtime_catalog.facet row must be a table", path.display())
+            anyhow::anyhow!(
+                "fixture {} runtime_catalog.facet row must be a table",
+                path.display()
+            )
         })?;
         out.push(E2eRuntimeFacetSpec {
             path: require_string(table, "path", path)?,
@@ -1435,7 +1475,10 @@ fn ensure_runtime_row_config(row: &CorpusRow) -> Result<(), String> {
     match row.classification {
         Some(RowClassification::Runtime) => {
             if !matches!(&row.gate, Gate::Active) {
-                return Err(format!("row {} runtime classification must use gate=active", row.id));
+                return Err(format!(
+                    "row {} runtime classification must use gate=active",
+                    row.id
+                ));
             }
             if row.fixture.is_none()
                 || row.top_k.is_none()
@@ -1461,9 +1504,11 @@ fn ensure_runtime_row_config(row: &CorpusRow) -> Result<(), String> {
                     row.id
                 ));
             }
-            if matches!(row.runtime_route, Some(RuntimeRoute::History | RuntimeRoute::Structural))
-                && (!row.expected_engines_touched.is_empty()
-                    || !row.expected_summary_substrings.is_empty())
+            if matches!(
+                row.runtime_route,
+                Some(RuntimeRoute::History | RuntimeRoute::Structural)
+            ) && (!row.expected_engines_touched.is_empty()
+                || !row.expected_summary_substrings.is_empty())
             {
                 return Err(format!(
                     "row {} uses history/structural route but also carries explanation provenance fields",
@@ -1564,14 +1609,20 @@ fn expected_shape_matches_ids(row: &CorpusRow, observed: &[String]) -> Result<()
             if observed.is_empty() {
                 Ok(())
             } else {
-                Err(format!("row {} expected empty result set, got ids={observed:?}", row.id))
+                Err(format!(
+                    "row {} expected empty result set, got ids={observed:?}",
+                    row.id
+                ))
             }
         }
         ExpectedShape::Single => {
             if observed.len() == 1 {
                 Ok(())
             } else {
-                Err(format!("row {} expected single result, got ids={observed:?}", row.id))
+                Err(format!(
+                    "row {} expected single result, got ids={observed:?}",
+                    row.id
+                ))
             }
         }
         ExpectedShape::Multi { min, max } => {
@@ -1684,7 +1735,10 @@ fn explain_candidates(
             ));
         }
         let explanation = explain.explanation.ok_or_else(|| {
-            format!("candidate={} missing explanation on explain surface", candidate.candidate_id)
+            format!(
+                "candidate={} missing explanation on explain surface",
+                candidate.candidate_id
+            )
         })?;
         out.push((candidate.candidate_id.clone(), explanation));
     }
@@ -2336,7 +2390,10 @@ root = { kind = "function_item", start_byte = 0, end_byte = 10, start_line = 1, 
 "#;
     let root = raw.parse::<Value>()?;
     let fixture = parse_loaded_fixture(&root, Path::new("inline-structural.toml"))?;
-    if !matches!(fixture.structural.as_slice(), [FixtureStructuralSpec::Tree(_)]) {
+    if !matches!(
+        fixture.structural.as_slice(),
+        [FixtureStructuralSpec::Tree(_)]
+    ) {
         return Err(anyhow::anyhow!(
             "expected a single structural Tree spec, got {} spec(s)",
             fixture.structural.len()
@@ -2365,7 +2422,9 @@ root = { kind = "function_item", start_byte = 0, end_byte = 10, start_line = 1, 
         return Err(anyhow::anyhow!("missing child kind must fail closed"));
     };
     if !err.to_string().contains("missing `kind`") {
-        return Err(anyhow::anyhow!("expected `missing `kind`` error, got: {err}"));
+        return Err(anyhow::anyhow!(
+            "expected `missing `kind`` error, got: {err}"
+        ));
     }
     Ok(())
 }
@@ -2387,10 +2446,14 @@ root = { kind = "function_item", start_byte = 0, end_byte = 9, start_line = 1, e
 "#;
     let root = raw.parse::<Value>()?;
     let Err(err) = parse_loaded_fixture(&root, Path::new("inline-structural-nesting.toml")) else {
-        return Err(anyhow::anyhow!("child outside parent span must fail closed"));
+        return Err(anyhow::anyhow!(
+            "child outside parent span must fail closed"
+        ));
     };
     if !err.to_string().contains("not nested within parent span") {
-        return Err(anyhow::anyhow!("expected `not nested within parent span` error, got: {err}"));
+        return Err(anyhow::anyhow!(
+            "expected `not nested within parent span` error, got: {err}"
+        ));
     }
     Ok(())
 }

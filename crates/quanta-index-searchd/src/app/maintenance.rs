@@ -114,8 +114,14 @@ fn tick(parts: &MaintenanceParts, tallies: &MaintenanceTallies) {
 fn refresh_disk_usage(parts: &MaintenanceParts, tallies: &MaintenanceTallies) {
     let _prior = tallies.disk_refreshes.fetch_add(1, Ordering::AcqRel);
     for (port, gauge) in [
-        (&parts.lexical_disk_usage, &tallies.lexical_generation_disk_bytes),
-        (&parts.semantic_disk_usage, &tallies.semantic_generation_disk_bytes),
+        (
+            &parts.lexical_disk_usage,
+            &tallies.lexical_generation_disk_bytes,
+        ),
+        (
+            &parts.semantic_disk_usage,
+            &tallies.semantic_generation_disk_bytes,
+        ),
     ] {
         match port.track_disk_bytes() {
             Ok(bytes) => gauge.store(bytes, Ordering::Release),
@@ -300,13 +306,29 @@ mod tests {
         }
         let ticks = tallies.ticks();
         assert!(ticks >= 3, "the timer ticked: {ticks}");
-        assert_eq!(sweeps.0.load(Ordering::Acquire), ticks, "one sweep per tick");
-        assert_eq!(tallies.idle_writer_releases(), ticks * 2, "every sweep's releases are counted");
-        assert_eq!(tallies.lexical_generation_disk_bytes(), 30, "ticks refresh the gauge");
+        assert_eq!(
+            sweeps.0.load(Ordering::Acquire),
+            ticks,
+            "one sweep per tick"
+        );
+        assert_eq!(
+            tallies.idle_writer_releases(),
+            ticks * 2,
+            "every sweep's releases are counted"
+        );
+        assert_eq!(
+            tallies.lexical_generation_disk_bytes(),
+            30,
+            "ticks refresh the gauge"
+        );
         drop(timer);
         let after_drop = sweeps.0.load(Ordering::Acquire);
         std::thread::sleep(Duration::from_millis(50));
-        assert_eq!(sweeps.0.load(Ordering::Acquire), after_drop, "a dropped timer sweeps no more");
+        assert_eq!(
+            sweeps.0.load(Ordering::Acquire),
+            after_drop,
+            "a dropped timer sweeps no more"
+        );
     }
 
     #[test]

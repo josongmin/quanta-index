@@ -567,19 +567,29 @@ mod tests {
         assert_eq!(value["scores"][0]["highlights"][0]["start"], 2);
         assert_eq!(value["scores"][0]["highlights"][0]["len"], 6);
         assert_eq!(value["explanation_sections"]["planner_stages"][0], "plan");
-        assert_eq!(value["explanation_sections"]["strategy"], "lexical_score_trace");
+        assert_eq!(
+            value["explanation_sections"]["strategy"],
+            "lexical_score_trace"
+        );
         let snaps = contract_snapshots_json(&report);
         assert_eq!(snaps["fields_under_test"][1], "snippet_hit_offset");
         assert_eq!(snaps["fields_under_test"][2], "highlights");
         assert_eq!(snaps["fields_under_test"][3], "explanation_sections");
-        assert_eq!(snaps["explanation_sections"]["engines_touched"][0], "lexical");
+        assert_eq!(
+            snaps["explanation_sections"]["engines_touched"][0],
+            "lexical"
+        );
         assert_eq!(snaps["explanation_sections"]["passed"], true);
     }
 
     #[test]
     fn seeded_ui_rail_runs_and_anchors_every_probe() {
         let report = run_ui_report().expect("ui rail runs");
-        assert_eq!(report.scores.len(), UI_PROBES.len(), "every probe must be scored");
+        assert_eq!(
+            report.scores.len(),
+            UI_PROBES.len(),
+            "every probe must be scored"
+        );
         for score in &report.scores {
             assert!(
                 score.passed(),
@@ -605,7 +615,11 @@ mod tests {
             );
             // Every highlight span must cover the needle exactly, and the span
             // set must cover every occurrence (multi-hit coverage).
-            assert!(!score.highlights.is_empty(), "{}: no highlight spans", score.id);
+            assert!(
+                !score.highlights.is_empty(),
+                "{}: no highlight spans",
+                score.id
+            );
             for span in &score.highlights {
                 let start = usize_from_offset(span.start);
                 let end = start.saturating_add(usize_from_offset(span.len));
@@ -627,7 +641,11 @@ mod tests {
         }
         // The explain route must surface its typed sections route-specifically.
         let explanation = &report.explanation;
-        assert!(explanation.passed(), "explanation sections failed: {:?}", explanation.failures);
+        assert!(
+            explanation.passed(),
+            "explanation sections failed: {:?}",
+            explanation.failures
+        );
         assert!(
             explanation.planner_stages.contains(&"plan")
                 && explanation.planner_stages.contains(&"merge"),

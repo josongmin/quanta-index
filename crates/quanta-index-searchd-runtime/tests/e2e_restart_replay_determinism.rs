@@ -19,9 +19,21 @@ use crate::e2e_harness::{
 };
 
 fn ingest_fixture(rt: &mut E2eRuntime) -> AnyResult<()> {
-    rt.ingest_text("repo-e2e", "src/lib.rs", "fn restart_alpha_needle() {} // restart")?;
-    rt.ingest_text("repo-e2e", "src/helper.rs", "fn restart_beta_needle() {} // restart restart")?;
-    rt.ingest_text("repo-e2e", "docs/readme.md", "restart restart restart alpha docs")?;
+    rt.ingest_text(
+        "repo-e2e",
+        "src/lib.rs",
+        "fn restart_alpha_needle() {} // restart",
+    )?;
+    rt.ingest_text(
+        "repo-e2e",
+        "src/helper.rs",
+        "fn restart_beta_needle() {} // restart restart",
+    )?;
+    rt.ingest_text(
+        "repo-e2e",
+        "docs/readme.md",
+        "restart restart restart alpha docs",
+    )?;
     Ok(())
 }
 
@@ -256,7 +268,10 @@ fn history_rev_delete_batch(rt: &E2eRuntime, file_path: &str) -> HistoryIngestBa
             file_path,
             rt.current_generation().get()
         )),
-        batch_digest: format!("history-delete-batch:{file_path}:{}", rt.current_generation().get()),
+        batch_digest: format!(
+            "history-delete-batch:{file_path}:{}",
+            rt.current_generation().get()
+        ),
         commits: vec![CommitRecord {
             wire_version: 1,
             sha: commit_sha,
@@ -779,7 +794,9 @@ fn reopen_preserves_runtime_dirty_no_clean_complement() -> AnyResult<()> {
 
     let before = query_runtime_dirty_ids(&mut rt, "dirty:no clean")?;
     if before.len() != 1 {
-        return Err(anyhow::anyhow!("runtime dirty:no fixture failed before reopen: {before:?}"));
+        return Err(anyhow::anyhow!(
+            "runtime dirty:no fixture failed before reopen: {before:?}"
+        ));
     }
 
     let mut rt = rt.reopen();
@@ -835,7 +852,9 @@ fn reopen_preserves_runtime_dirty_evict_empty_state() -> AnyResult<()> {
 
     let before = query_runtime_dirty_ids(&mut rt, "dirty:yes todo")?;
     if before.len() != 1 {
-        return Err(anyhow::anyhow!("runtime dirty fixture failed before evict: {before:?}"));
+        return Err(anyhow::anyhow!(
+            "runtime dirty fixture failed before evict: {before:?}"
+        ));
     }
 
     rt.ingest_text("repo-e2e", path, content)?;

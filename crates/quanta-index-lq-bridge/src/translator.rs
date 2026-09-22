@@ -283,9 +283,9 @@ fn lower_filter(f: &SgFilter, metadata: &mut BridgeMetadata) -> Result<LowerOutc
         }
         // Normalized: `content:` becomes a pattern leaf attached to
         // the body.
-        SgFilter::Content(v) => {
-            Ok(LowerOutcome::ContentPattern(LqExpr::Leaf(LqLeaf::Keyword(v.to_string()))))
-        }
+        SgFilter::Content(v) => Ok(LowerOutcome::ContentPattern(LqExpr::Leaf(LqLeaf::Keyword(
+            v.to_string(),
+        )))),
         SgFilter::Index(v) => apply_bridge_filter("index", v, metadata),
         SgFilter::Boost(v) => apply_bridge_filter("boost", v, metadata),
         SgFilter::Context(v) => apply_bridge_filter("context", v, metadata),
@@ -554,7 +554,9 @@ fn read_quoted_bridge_arg(
         buf.push(ch);
         pos = pos.saturating_add(ch.len_utf8());
     }
-    Err(predicate_arg_error("bridge: unterminated quoted predicate argument"))
+    Err(predicate_arg_error(
+        "bridge: unterminated quoted predicate argument",
+    ))
 }
 
 fn read_bare_bridge_arg(bytes: &[u8], start: usize) -> Result<(usize, String), BridgeError> {
@@ -574,7 +576,9 @@ fn read_bare_bridge_arg(bytes: &[u8], start: usize) -> Result<(usize, String), B
 
 fn next_utf8_char(bytes: &[u8]) -> Result<char, BridgeError> {
     let text = core::str::from_utf8(bytes).map_err(|err| {
-        BridgeError::translate_fail(format!("bridge: invalid UTF-8 in predicate argument: {err}"))
+        BridgeError::translate_fail(format!(
+            "bridge: invalid UTF-8 in predicate argument: {err}"
+        ))
     })?;
     text.chars()
         .next()
@@ -1030,7 +1034,10 @@ mod tests {
         ] {
             let lowered = run(sg);
             assert_eq!(lowered.options.index_mode, Some(expected));
-            assert_eq!(lowered.expr, LqExpr::Leaf(LqLeaf::Keyword("foo".to_string())));
+            assert_eq!(
+                lowered.expr,
+                LqExpr::Leaf(LqLeaf::Keyword("foo".to_string()))
+            );
         }
     }
 
@@ -1059,7 +1066,11 @@ mod tests {
 
     #[test]
     fn invalid_visibility_value_is_refused() {
-        match translate_query(parse("visibility:team foo"), &ver(), "visibility:team foo".len()) {
+        match translate_query(
+            parse("visibility:team foo"),
+            &ver(),
+            "visibility:team foo".len(),
+        ) {
             Ok(_) => assert!(false, "visibility:team must refuse"),
             Err(e) => assert_eq!(e.code, BridgeErrorCode::BridgeUnsupportedDirective),
         }
@@ -1113,7 +1124,10 @@ mod tests {
     #[test]
     fn file_predicate_lowers_to_executable_phrase_leaf() {
         let lowered = run(r#"file:contains("TODO")"#);
-        assert_eq!(lowered.expr, LqExpr::Leaf(LqLeaf::Phrase("TODO".to_string())));
+        assert_eq!(
+            lowered.expr,
+            LqExpr::Leaf(LqLeaf::Phrase("TODO".to_string()))
+        );
     }
 
     #[test]
@@ -1140,7 +1154,10 @@ mod tests {
     #[test]
     fn phrase_and_regex_preserve_pattern_kind() {
         let phrase = run("\"hello world\"");
-        assert_eq!(phrase.expr, LqExpr::Leaf(LqLeaf::Phrase("hello world".to_string())));
+        assert_eq!(
+            phrase.expr,
+            LqExpr::Leaf(LqLeaf::Phrase("hello world".to_string()))
+        );
 
         let regex = run("/h.llo/");
         assert_eq!(regex.expr, LqExpr::Leaf(LqLeaf::Regex("h.llo".to_string())));

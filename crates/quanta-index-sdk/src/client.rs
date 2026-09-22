@@ -184,6 +184,7 @@ impl QuantaIndex {
             payload @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
             | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
+            | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
@@ -219,6 +220,7 @@ impl QuantaIndex {
             }),
             payload @ (SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
             | quanta_index_contract::SearchPlaneIngestIpcResponse::HistoryReceipt(_)
             | quanta_index_contract::SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(
                 _,
@@ -279,6 +281,9 @@ impl QuantaIndex {
                 "search_corpus_rollback_cas_ack"
             }
             SearchPlaneControlIpcResponse::RepoMapMutationAck(_) => "repomap_mutation_ack",
+            SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_) => {
+                "repomap_terminal_receipt_v2"
+            }
             SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_) => {
                 "current_generation_snapshot"
             }
@@ -296,6 +301,9 @@ impl QuantaIndex {
         match response {
             SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_) => "search_corpus_receipt",
             SearchPlaneIngestIpcResponse::RepoMapReceipt(_) => "repomap_receipt",
+            SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_) => {
+                "repomap_terminal_receipt_v2"
+            }
             SearchPlaneIngestIpcResponse::HistoryReceipt(_) => "history_receipt",
             SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_) => {
                 "repo_commit_recency_receipt"
@@ -315,12 +323,18 @@ impl QuantaIndex {
     fn from_resolved(resolved: crate::config::ResolvedConnectOptions) -> Self {
         // `state_root` is resolved for config validation only; the client talks
         // to the daemon over sockets and never touches the state root itself.
-        let query_transport =
-            Arc::new(UdsQueryTransport::new(resolved.query_socket, resolved.io_policy));
-        let control_transport =
-            Arc::new(UdsControlTransport::new(resolved.control_socket, resolved.io_policy));
-        let ingest_transport =
-            Arc::new(UdsIngestTransport::new(resolved.ingest_socket, resolved.io_policy));
+        let query_transport = Arc::new(UdsQueryTransport::new(
+            resolved.query_socket,
+            resolved.io_policy,
+        ));
+        let control_transport = Arc::new(UdsControlTransport::new(
+            resolved.control_socket,
+            resolved.io_policy,
+        ));
+        let ingest_transport = Arc::new(UdsIngestTransport::new(
+            resolved.ingest_socket,
+            resolved.io_policy,
+        ));
         Self {
             inner: Arc::new(QuantaIndexInner {
                 query_transport,
@@ -522,6 +536,13 @@ impl<'a> ProducerClient<'a> {
     ) -> Result<quanta_index_contract::RepoMapMutationAck, SdkError> {
         self.client.repomap().publish(bundle)
     }
+
+    pub fn publish_repomap_v2(
+        &self,
+        request: quanta_index_contract::RepoMapPublishBundleRequestV2,
+    ) -> Result<quanta_index_contract::RepoMapTerminalReceiptV2, SdkError> {
+        self.client.repomap().publish_v2(request)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -565,6 +586,13 @@ impl<'a> ControlClient<'a> {
         request: quanta_index_contract::RepoMapActivateGenerationRequest,
     ) -> Result<quanta_index_contract::RepoMapMutationAck, SdkError> {
         self.client.repomap().activate(request)
+    }
+
+    pub fn activate_repomap_v2(
+        &self,
+        request: quanta_index_contract::RepoMapActivateGenerationRequestV2,
+    ) -> Result<quanta_index_contract::RepoMapTerminalReceiptV2, SdkError> {
+        self.client.repomap().activate_v2(request)
     }
 
     /// The daemon's metrics snapshot (QI-BB-015).

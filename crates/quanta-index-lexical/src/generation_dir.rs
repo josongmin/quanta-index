@@ -39,7 +39,10 @@ pub(crate) fn read_lexical_delta_base(
         }
     };
     let raw: u64 = ciborium::from_reader(bytes.as_slice()).map_err(|error| {
-        CoreError::Storage(format!("lexical: decode delta base marker {}: {error}", path.display()))
+        CoreError::Storage(format!(
+            "lexical: decode delta base marker {}: {error}",
+            path.display()
+        ))
     })?;
     Ok(Some(ManifestGeneration::new(raw)))
 }
@@ -55,7 +58,11 @@ pub(crate) fn persist_lexical_delta_base(
             base_generation.get()
         ))
     })?;
-    write_atomic_durable(&lexical_delta_base_path(generation_dir), &bytes, "delta base marker")
+    write_atomic_durable(
+        &lexical_delta_base_path(generation_dir),
+        &bytes,
+        "delta base marker",
+    )
 }
 
 /// Whether this directory already holds a materialized lexical index.
@@ -71,7 +78,10 @@ pub(crate) fn lexical_index_content_exists(generation_dir: &Path) -> bool {
 /// by atomic rename (`write_atomic_durable`), both of which leave a hard link
 /// pointing at the bytes it was created for.
 pub(crate) fn is_generation_local_entry(file_name: &str) -> bool {
-    matches!(file_name, TANTIVY_INDEX_META_FILE_NAME | TANTIVY_MANAGED_FILE_NAME)
+    matches!(
+        file_name,
+        TANTIVY_INDEX_META_FILE_NAME | TANTIVY_MANAGED_FILE_NAME
+    )
 }
 
 /// Whether an entry belongs to a live writer and must not be inherited at all.

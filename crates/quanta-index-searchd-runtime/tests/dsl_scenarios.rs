@@ -192,7 +192,9 @@ fn start_runtime(state_root: &Path, thread_name: &str) -> Result<RuntimeHandles,
     let join = thread::Builder::new()
         .name(thread_name.into())
         .spawn(move || drive(runtime, &shutdown_for_drive))?;
-    if !wait_until(SOCKET_APPEAR_TIMEOUT, || query_socket.exists() && ingest_socket.exists()) {
+    if !wait_until(SOCKET_APPEAR_TIMEOUT, || {
+        query_socket.exists() && ingest_socket.exists()
+    }) {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
         return Err(format!(
@@ -344,9 +346,11 @@ fn sort_ids(mut ids: Vec<String>) -> Vec<String> {
 }
 
 fn wait_for_non_error(socket: &Path, request: &SearchPlaneQueryIpcRequestEnvelope) -> bool {
-    wait_until(READINESS_TIMEOUT, || match send_query_request(socket, request) {
-        Ok(response) => !matches!(response.payload, SearchPlaneQueryIpcResponse::Error(_)),
-        Err(_) => false,
+    wait_until(READINESS_TIMEOUT, || {
+        match send_query_request(socket, request) {
+            Ok(response) => !matches!(response.payload, SearchPlaneQueryIpcResponse::Error(_)),
+            Err(_) => false,
+        }
     })
 }
 
@@ -622,24 +626,29 @@ fn sourcegraph_phrase_and_regex_patterns_execute_live() -> TestResult {
     )?;
     seal_lexical(&ingest_socket)?;
 
-    let request =
-        lexical_request(11, TextQuerySyntax::Sourcegraph, "\"sphinx of quartz\" OR /riddle[0-9]+/");
-    if !wait_until(READINESS_TIMEOUT, || match send_query_request(&socket, &request) {
-        Ok(response) => match response.payload {
-            SearchPlaneQueryIpcResponse::Text(_)
-            | SearchPlaneQueryIpcResponse::Symbol(_)
-            | SearchPlaneQueryIpcResponse::Semantic(_)
-            | SearchPlaneQueryIpcResponse::Hybrid(_)
-            | SearchPlaneQueryIpcResponse::HybridSeed(_)
-            | SearchPlaneQueryIpcResponse::History(_)
-            | SearchPlaneQueryIpcResponse::Structural(_)
-            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
-            | SearchPlaneQueryIpcResponse::Explain(_)
-            | quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
-            | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => true,
-            SearchPlaneQueryIpcResponse::Error(err) => err.code.as_wire_str() != "NOT_READY",
-        },
-        Err(_) => false,
+    let request = lexical_request(
+        11,
+        TextQuerySyntax::Sourcegraph,
+        "\"sphinx of quartz\" OR /riddle[0-9]+/",
+    );
+    if !wait_until(READINESS_TIMEOUT, || {
+        match send_query_request(&socket, &request) {
+            Ok(response) => match response.payload {
+                SearchPlaneQueryIpcResponse::Text(_)
+                | SearchPlaneQueryIpcResponse::Symbol(_)
+                | SearchPlaneQueryIpcResponse::Semantic(_)
+                | SearchPlaneQueryIpcResponse::Hybrid(_)
+                | SearchPlaneQueryIpcResponse::HybridSeed(_)
+                | SearchPlaneQueryIpcResponse::History(_)
+                | SearchPlaneQueryIpcResponse::Structural(_)
+                | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+                | SearchPlaneQueryIpcResponse::Explain(_)
+                | quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
+                | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => true,
+                SearchPlaneQueryIpcResponse::Error(err) => err.code.as_wire_str() != "NOT_READY",
+            },
+            Err(_) => false,
+        }
     }) {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
@@ -671,8 +680,11 @@ fn sourcegraph_phrase_and_regex_patterns_execute_live() -> TestResult {
         return Err(format!("unexpected Sourcegraph phrase/regex ids: {ids:?}").into());
     }
 
-    let regexp_option_request =
-        lexical_request(12, TextQuerySyntax::Sourcegraph, "patterntype:regexp riddle[0-9]+");
+    let regexp_option_request = lexical_request(
+        12,
+        TextQuerySyntax::Sourcegraph,
+        "patterntype:regexp riddle[0-9]+",
+    );
     if !wait_for_non_error(&socket, &regexp_option_request) {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
@@ -724,8 +736,11 @@ fn lq_phrase_and_regex_patterns_execute_live() -> TestResult {
     )?;
     seal_lexical(&ingest_socket)?;
 
-    let phrase_request =
-        lexical_request(2, TextQuerySyntax::Native, "\"sphinx of quartz\" OR riddle42");
+    let phrase_request = lexical_request(
+        2,
+        TextQuerySyntax::Native,
+        "\"sphinx of quartz\" OR riddle42",
+    );
     if !wait_for_non_error(&socket, &phrase_request) {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
@@ -862,9 +877,11 @@ fn semantic_scoped_query_with_complex_scope_excludes_outsiders_and_explains_scop
     if explanation.strategy != "semantic_scoped" {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
-        return Err(
-            format!("unexpected semantic explanation strategy: {}", explanation.strategy).into()
-        );
+        return Err(format!(
+            "unexpected semantic explanation strategy: {}",
+            explanation.strategy
+        )
+        .into());
     }
     if explanation.engines_touched != vec![EngineTouched::Lexical, EngineTouched::Semantic] {
         shutdown.store(true, Ordering::Release);
@@ -987,9 +1004,11 @@ fn hybrid_query_reports_complex_scope_explanation_accounting() -> TestResult {
     if explanation.strategy != "rrf" {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
-        return Err(
-            format!("unexpected hybrid explanation strategy: {}", explanation.strategy).into()
-        );
+        return Err(format!(
+            "unexpected hybrid explanation strategy: {}",
+            explanation.strategy
+        )
+        .into());
     }
     if explanation.engines_touched != vec![EngineTouched::Lexical, EngineTouched::Semantic] {
         shutdown.store(true, Ordering::Release);
@@ -1027,9 +1046,11 @@ fn hybrid_query_reports_complex_scope_explanation_accounting() -> TestResult {
     if explanation.summary != "hybrid fused 2 lexical and 4 semantic candidates into 2 results" {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
-        return Err(
-            format!("unexpected hybrid explanation summary: {}", explanation.summary).into()
-        );
+        return Err(format!(
+            "unexpected hybrid explanation summary: {}",
+            explanation.summary
+        )
+        .into());
     }
 
     stop_runtime(shutdown, join)

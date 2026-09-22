@@ -610,7 +610,10 @@ mod tests {
             match HybridFilterPlanV1::plan(&query(vec![filter])) {
                 Err(CoreError::Typed { code, message }) => {
                     assert_eq!(code, HYBRID_FILTER_UNSUPPORTED_CODE, "{name}");
-                    assert!(message.contains(&format!("`{name}` filter")), "{name}: {message}");
+                    assert!(
+                        message.contains(&format!("`{name}` filter")),
+                        "{name}: {message}"
+                    );
                 }
                 other => panic!("{name}: expected a typed refusal, got {other:?}"),
             }

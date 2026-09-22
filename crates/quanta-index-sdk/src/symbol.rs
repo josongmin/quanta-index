@@ -163,8 +163,9 @@ fn dispatch_symbol_query_request_v1(
     client: &QuantaIndex,
     request: quanta_index_contract::SymbolQueryRequest,
 ) -> Result<SymbolQueryResponse, SdkError> {
-    let response = client
-        .dispatch_query(quanta_index_contract::SearchPlaneQueryIpcRequest::Symbol(request))?;
+    let response = client.dispatch_query(
+        quanta_index_contract::SearchPlaneQueryIpcRequest::Symbol(request),
+    )?;
     match response {
         quanta_index_contract::SearchPlaneQueryIpcResponse::Symbol(results) => Ok(results),
         other @ (quanta_index_contract::SearchPlaneQueryIpcResponse::Text(_)

@@ -361,7 +361,7 @@ fn one_scope_delta_rewrites_touched_shards_and_links_the_rest() -> TestResult {
     }
     if linked.is_empty() {
         return Err(
-            "no shard of the delta is the base's inode; untouched shards were rewritten".into()
+            "no shard of the delta is the base's inode; untouched shards were rewritten".into(),
         );
     }
     if delta_shards.len() != written.len().saturating_add(linked.len()) {
@@ -409,8 +409,11 @@ fn one_scope_delta_rewrites_touched_shards_and_links_the_rest() -> TestResult {
     {
         return Err("the delta must serve the replacement".into());
     }
-    if leaf_hit_ids(&adapter, g2, LqLeaf::Phrase(format!("{EDGE_MID_MARKER} phraseanchor")))?
-        != vec![scope_chunk(EDGE_MID)]
+    if leaf_hit_ids(
+        &adapter,
+        g2,
+        LqLeaf::Phrase(format!("{EDGE_MID_MARKER} phraseanchor")),
+    )? != vec![scope_chunk(EDGE_MID)]
     {
         return Err("the delta must serve an inherited shard's phrase".into());
     }
@@ -476,11 +479,23 @@ fn boundary_documents_answer_like_an_independent_rebuild() -> TestResult {
         "rewrittenlow",
     ] {
         probes.push((format!("regex {marker}"), LqLeaf::Regex(marker.to_string())));
-        probes.push((format!("keyword {marker}"), LqLeaf::Keyword(marker.to_string())));
-        probes.push((format!("phrase {marker}"), LqLeaf::Phrase(format!("{marker} phraseanchor"))));
-        probes.push((format!("raw {marker}"), LqLeaf::RawString(format!("{marker}_tail"))));
+        probes.push((
+            format!("keyword {marker}"),
+            LqLeaf::Keyword(marker.to_string()),
+        ));
+        probes.push((
+            format!("phrase {marker}"),
+            LqLeaf::Phrase(format!("{marker} phraseanchor")),
+        ));
+        probes.push((
+            format!("raw {marker}"),
+            LqLeaf::RawString(format!("{marker}_tail")),
+        ));
     }
-    probes.push(("regex all edges".to_string(), LqLeaf::Regex("edge[a-z]+marker".to_string())));
+    probes.push((
+        "regex all edges".to_string(),
+        LqLeaf::Regex("edge[a-z]+marker".to_string()),
+    ));
     probes.push((
         "regex neighbours of the boundaries".to_string(),
         LqLeaf::Regex("quartz_0(?:204[5-9]|409[4-7])".to_string()),
@@ -491,7 +506,9 @@ fn boundary_documents_answer_like_an_independent_rebuild() -> TestResult {
         let incremental = leaf_hit_ids(&adapter, g2, leaf.clone())?;
         let rebuilt = leaf_hit_ids(&adapter, g9, leaf)?;
         if incremental != rebuilt {
-            divergences.push(format!("{label}: incremental={incremental:?} rebuild={rebuilt:?}"));
+            divergences.push(format!(
+                "{label}: incremental={incremental:?} rebuild={rebuilt:?}"
+            ));
         }
     }
     if !divergences.is_empty() {
@@ -508,13 +525,19 @@ fn boundary_documents_answer_like_an_independent_rebuild() -> TestResult {
     {
         return Err("the oracle must not hold the tombstoned high edge".into());
     }
-    if leaf_hit_ids(&adapter, g9, LqLeaf::Phrase("edgemovedmarker phraseanchor".to_string()))?
-        != vec![scope_chunk(EDGE_MID)]
+    if leaf_hit_ids(
+        &adapter,
+        g9,
+        LqLeaf::Phrase("edgemovedmarker phraseanchor".to_string()),
+    )? != vec![scope_chunk(EDGE_MID)]
     {
         return Err("the oracle must hold the moved mid edge".into());
     }
-    if leaf_hit_ids(&adapter, g9, LqLeaf::RawString("addedmarker_tail".to_string()))?
-        != vec![scope_chunk(new_index)]
+    if leaf_hit_ids(
+        &adapter,
+        g9,
+        LqLeaf::RawString("addedmarker_tail".to_string()),
+    )? != vec![scope_chunk(new_index)]
     {
         return Err("the oracle must hold the added scope".into());
     }
@@ -554,7 +577,13 @@ fn open_code(adapter: &LexicalAdapter, generation: ManifestGeneration) -> Option
 }
 
 /// The manifest's wire row, as the refusal oracle rewrites it.
-type ManifestRow = (u32, u64, (u16, u16), u64, Vec<(u64, u64, u64, u64, u64, [u8; 32])>);
+type ManifestRow = (
+    u32,
+    u64,
+    (u16, u16),
+    u64,
+    Vec<(u64, u64, u64, u64, u64, [u8; 32])>,
+);
 
 fn read_manifest_row(generation_dir: &Path) -> Result<ManifestRow, Box<dyn Error>> {
     let bytes = std::fs::read(
@@ -589,19 +618,27 @@ fn write_manifest_row(generation_dir: &Path, row: &ManifestRow) -> TestResult {
 fn a_text_authority_that_disagrees_with_its_manifest_never_seals_or_opens() -> TestResult {
     type Fault = fn(&Path, &mut ManifestRow) -> TestResult;
     let cases: Vec<(&str, &str, Fault)> = vec![
-        ("duplicate shard", "GENERATION_SIDECAR_CORRUPT", |_dir, row| {
-            let first = row.4.first().copied().ok_or("a shard")?;
-            row.4.push(first);
-            Ok(())
-        }),
-        ("listed shard without its file", "GENERATION_SIDECAR_CORRUPT", |dir, row| {
-            let shard = row.4.first().ok_or("a shard")?;
-            std::fs::remove_file(
-                dir.join(TEXT_AUTHORITY_DIR)
-                    .join(shard_file_name(shard.0, &shard.5)),
-            )?;
-            Ok(())
-        }),
+        (
+            "duplicate shard",
+            "GENERATION_SIDECAR_CORRUPT",
+            |_dir, row| {
+                let first = row.4.first().copied().ok_or("a shard")?;
+                row.4.push(first);
+                Ok(())
+            },
+        ),
+        (
+            "listed shard without its file",
+            "GENERATION_SIDECAR_CORRUPT",
+            |dir, row| {
+                let shard = row.4.first().ok_or("a shard")?;
+                std::fs::remove_file(
+                    dir.join(TEXT_AUTHORITY_DIR)
+                        .join(shard_file_name(shard.0, &shard.5)),
+                )?;
+                Ok(())
+            },
+        ),
         (
             "manifest that lists no shard for the index's documents",
             "GENERATION_SIDECAR_CORRUPT",
@@ -651,10 +688,14 @@ fn a_text_authority_that_disagrees_with_its_manifest_never_seals_or_opens() -> T
                 Ok(())
             },
         ),
-        ("another normalizer", "GENERATION_NORMALIZER_UNSUPPORTED", |_dir, row| {
-            row.2 = (row.2.0.wrapping_add(7), row.2.1);
-            Ok(())
-        }),
+        (
+            "another normalizer",
+            "GENERATION_NORMALIZER_UNSUPPORTED",
+            |_dir, row| {
+                row.2 = (row.2.0.wrapping_add(7), row.2.1);
+                Ok(())
+            },
+        ),
     ];
     for (label, expected_code, fault) in cases {
         let temp = tempfile::tempdir()?;
@@ -674,18 +715,18 @@ fn a_text_authority_that_disagrees_with_its_manifest_never_seals_or_opens() -> T
             .map_err(|err| -> Box<dyn Error> { format!("{label}: seal: {err}").into() })?;
         if code != expected_code {
             return Err(
-                format!("{label}: seal refused with {code}, expected {expected_code}").into()
+                format!("{label}: seal refused with {code}, expected {expected_code}").into(),
             );
         }
         // Never sealed, so never opened: the identity was never written.
         if open_code(&adapter, g1).as_deref() != Some("GENERATION_IDENTITY_INCOMPLETE") {
             return Err(
-                format!("{label}: a refused seal must leave the generation unopenable").into()
+                format!("{label}: a refused seal must leave the generation unopenable").into(),
             );
         }
         if adapter.validate_generation_identity(&identity(g1)).is_ok() {
             return Err(
-                format!("{label}: the validator must not admit an unsealed generation").into()
+                format!("{label}: the validator must not admit an unsealed generation").into(),
             );
         }
     }
@@ -729,7 +770,7 @@ fn a_delta_refuses_to_build_on_a_shard_whose_digest_changed() -> TestResult {
     let code = typed_code(delta)?;
     if code != "GENERATION_SIDECAR_CORRUPT" {
         return Err(
-            format!("the delta refused with {code}, expected GENERATION_SIDECAR_CORRUPT").into()
+            format!("the delta refused with {code}, expected GENERATION_SIDECAR_CORRUPT").into(),
         );
     }
     if open_code(&adapter, g2).as_deref() != Some("GENERATION_IDENTITY_INCOMPLETE") {
@@ -746,8 +787,10 @@ fn snapshot_text_authority(generation_dir: &Path) -> Result<Vec<NamedFileBytes>,
     let mut files = Vec::new();
     for entry in std::fs::read_dir(generation_dir.join(TEXT_AUTHORITY_DIR))? {
         let entry = entry?;
-        files
-            .push((entry.file_name().to_string_lossy().into_owned(), std::fs::read(entry.path())?));
+        files.push((
+            entry.file_name().to_string_lossy().into_owned(),
+            std::fs::read(entry.path())?,
+        ));
     }
     files.sort();
     Ok(files)
@@ -819,7 +862,11 @@ fn a_publish_that_crashed_after_its_commit_is_caught_up_by_a_rebuild() -> TestRe
             LqLeaf::Regex("caughtupsentinel".to_string()),
             vec![scope_chunk(3)],
         ),
-        ("retired text", LqLeaf::Regex("quartz_00003".to_string()), Vec::new()),
+        (
+            "retired text",
+            LqLeaf::Regex("quartz_00003".to_string()),
+            Vec::new(),
+        ),
         (
             "phrase over every live document",
             LqLeaf::Phrase("ipsum dolor sit".to_string()),

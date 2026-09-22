@@ -184,7 +184,10 @@ impl<'de> Visitor<'de> for RepoMapCompileRefusalVisitor {
                     observed = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(other, REPOMAP_COMPILE_REFUSAL_FIELDS));
+                    return Err(de::Error::unknown_field(
+                        other,
+                        REPOMAP_COMPILE_REFUSAL_FIELDS,
+                    ));
                 }
             }
         }
@@ -362,7 +365,10 @@ impl<'de> Visitor<'de> for RepoMapCompilerBudgetVisitor {
                     max_work_units = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(other, REPOMAP_COMPILER_BUDGET_FIELDS));
+                    return Err(de::Error::unknown_field(
+                        other,
+                        REPOMAP_COMPILER_BUDGET_FIELDS,
+                    ));
                 }
             }
         }
@@ -385,7 +391,9 @@ impl<'de> Visitor<'de> for RepoMapCompilerBudgetVisitor {
             || budget.max_materialized_bytes == 0
             || budget.max_work_units == 0
         {
-            return Err(de::Error::custom("compiler budget ceiling must be positive"));
+            return Err(de::Error::custom(
+                "compiler budget ceiling must be positive",
+            ));
         }
         Ok(budget)
     }
@@ -522,7 +530,10 @@ impl<'de> Visitor<'de> for RepoMapResourceReceiptVisitor {
                     budget = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(other, REPOMAP_RESOURCE_RECEIPT_FIELDS));
+                    return Err(de::Error::unknown_field(
+                        other,
+                        REPOMAP_RESOURCE_RECEIPT_FIELDS,
+                    ));
                 }
             }
         }

@@ -367,7 +367,9 @@ fn check_two_page_walk<R, C>(rt: &mut E2eRuntime, route: &KeysetRoute<R, C>) -> 
         || (route.cursor)(&second).is_some()
         || window.candidate_count() != CandidateCountV1::Exact(1)
     {
-        failures.push(format!("{name}: the last page is exact and final, got {window:?}"));
+        failures.push(format!(
+            "{name}: the last page is exact and final, got {window:?}"
+        ));
     }
     failures
 }
@@ -436,10 +438,14 @@ fn window_contradiction(
 ) -> Option<String> {
     let returned = u64::from(window.returned());
     let Ok(rows) = u64::try_from(returned_rows) else {
-        return Some(format!("{returned_rows} returned rows do not fit the wire count"));
+        return Some(format!(
+            "{returned_rows} returned rows do not fit the wire count"
+        ));
     };
     if returned != rows {
-        return Some(format!("window.returned={returned} but {rows} rows were returned"));
+        return Some(format!(
+            "window.returned={returned} but {rows} rows were returned"
+        ));
     }
     let lower_bound = window.candidate_count().lower_bound();
     if lower_bound < returned {
@@ -530,7 +536,11 @@ fn every_route_refuses_out_of_range_top_k_with_one_code_from_typed_and_raw_calle
     let lexical = route_named("lexical")?;
     let primed = probe(&mut rt, lexical, 1)?;
     if primed.typed_error.is_some() {
-        return Err(format!("the fixture serves before refusals: {:?}", primed.typed_error).into());
+        return Err(format!(
+            "the fixture serves before refusals: {:?}",
+            primed.typed_error
+        )
+        .into());
     }
     let Some((query_socket, _, _)) = rt
         .socket_paths()
@@ -688,7 +698,10 @@ fn fixture_gives_every_route_at_least_one_row() -> TestResult {
         match observed.typed_error {
             Some(error) => failures.push(format!("{}: did not serve: {error}", route.name)),
             None if observed.returned_rows == 0 => {
-                failures.push(format!("{}: served zero rows; fixture is blind", route.name));
+                failures.push(format!(
+                    "{}: served zero rows; fixture is blind",
+                    route.name
+                ));
             }
             None => {}
         }
@@ -844,9 +857,11 @@ fn the_public_maximum_reports_the_continuation_over_ten_thousand_and_one_rows() 
         }
     }
     if seen.len() != rows || pages != 2 {
-        return Err(
-            format!("the walk visited {} of {rows} rows over {pages} pages", seen.len()).into()
-        );
+        return Err(format!(
+            "the walk visited {} of {rows} rows over {pages} pages",
+            seen.len()
+        )
+        .into());
     }
     Ok(())
 }

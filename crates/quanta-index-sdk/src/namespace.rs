@@ -225,7 +225,9 @@ mod tests {
             &self,
             _request: SearchPlaneControlIpcRequestEnvelope,
         ) -> Result<SearchPlaneControlIpcResponseEnvelope, SdkError> {
-            Err(SdkError::Protocol("control transport unused in test".into()))
+            Err(SdkError::Protocol(
+                "control transport unused in test".into(),
+            ))
         }
     }
 

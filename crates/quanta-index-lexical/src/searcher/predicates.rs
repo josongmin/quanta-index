@@ -201,7 +201,10 @@ impl TantivySearcher {
         options: &LqOptions,
         budget: &RequestBudgetV1,
     ) -> Result<Box<dyn Query>, CoreError> {
-        Ok(self.with_doc_kind(self.compile_leaf(leaf, options, false, budget)?, TEXT_DOC_KIND))
+        Ok(self.with_doc_kind(
+            self.compile_leaf(leaf, options, false, budget)?,
+            TEXT_DOC_KIND,
+        ))
     }
 
     pub(crate) fn collect_repo_ids_for_repo_has_content(
@@ -572,14 +575,14 @@ impl TantivySearcher {
             return Ok(out);
         }
         let contributor_regex = match &arg.contributor {
-            ContributorPattern::Regex(source) => {
-                Some(RegexExecutor::compile(source).map_err(|err| CoreError::Typed {
+            ContributorPattern::Regex(source) => Some(RegexExecutor::compile(source).map_err(
+                |err| CoreError::Typed {
                     code: crate::query_errors::regex_wire_code(err.code),
                     message: format!(
                         "lexical: file.has.contributor regex {source:?} failed to compile: {err}"
                     ),
-                })?)
-            }
+                },
+            )?),
             ContributorPattern::Exact(_) => None,
         };
         let hits = budgeted_search(
@@ -669,7 +672,10 @@ impl TantivySearcher {
                         .to_string(),
                 ));
             };
-            clauses.push((Occur::Must, self.exact_text_query(self.fields.language, &normalized)));
+            clauses.push((
+                Occur::Must,
+                self.exact_text_query(self.fields.language, &normalized),
+            ));
         }
         if clauses.is_empty() {
             return Ok(None);

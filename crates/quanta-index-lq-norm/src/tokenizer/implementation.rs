@@ -673,8 +673,10 @@ impl<'a> Lexer<'a> {
 
     fn read_identifier_or_filter(&mut self, start: usize) -> Result<LqToken, LqParseError> {
         while let Some(&b) = self.src.get(self.pos) {
-            if matches!(b, b' ' | b'\t' | b'\n' | b'\r' | b'(' | b')' | b':' | b'"' | b'\'' | b'/')
-            {
+            if matches!(
+                b,
+                b' ' | b'\t' | b'\n' | b'\r' | b'(' | b')' | b':' | b'"' | b'\'' | b'/'
+            ) {
                 break;
             }
             self.advance_one();
@@ -940,7 +942,10 @@ mod tests {
 
     #[test]
     fn unclosed_phrase_returns_unclosed_quote() {
-        assert_eq!(err_code(r#""unterminated"#), LqParseErrorCode::UnclosedQuote);
+        assert_eq!(
+            err_code(r#""unterminated"#),
+            LqParseErrorCode::UnclosedQuote
+        );
     }
 
     #[test]

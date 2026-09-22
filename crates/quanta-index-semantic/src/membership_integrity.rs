@@ -95,7 +95,7 @@ pub(crate) fn cluster_membership_commitment_v1(
                 || row.membership_digest.is_empty()
             {
                 return Err(
-                    "cluster membership sidecar contains an empty authority field".to_string()
+                    "cluster membership sidecar contains an empty authority field".to_string(),
                 );
             }
             if row.authority_digest != first.authority_digest

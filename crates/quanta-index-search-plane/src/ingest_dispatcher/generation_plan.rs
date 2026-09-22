@@ -118,7 +118,10 @@ impl SealedGenerationBuildPlanV1 {
     /// The tracks that are sealed but not exact, with the validator's code.
     fn corrupt_tracks(
         &self,
-    ) -> Vec<(&GenerationSnapshot, quanta_index_contract::SearchPlaneErrorCodeV2)> {
+    ) -> Vec<(
+        &GenerationSnapshot,
+        quanta_index_contract::SearchPlaneErrorCodeV2,
+    )> {
         let mut tracks = Vec::new();
         if let PhysicalGenerationStateV1::Corrupt { code } = &self.lexical_state {
             tracks.push((&self.lexical, *code));
@@ -166,8 +169,11 @@ impl SealedGenerationBuildPlanV1 {
                     ),
                 });
             }
-            let key =
-                SnapshotKey::new(&track.repo_id, &track.revision_id, track.manifest_generation);
+            let key = SnapshotKey::new(
+                &track.repo_id,
+                &track.revision_id,
+                track.manifest_generation,
+            );
             let (port, fence) = match track.track {
                 SearchPlaneTrackKind::Lexical => (lexical_reclaim, snapshots.lexical.retire(&key)?),
                 SearchPlaneTrackKind::Semantic => {

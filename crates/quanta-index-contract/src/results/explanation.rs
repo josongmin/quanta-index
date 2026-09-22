@@ -494,7 +494,10 @@ impl Visitor<'_> for CandidatePresenceVisitor {
         match value {
             "indexed" => Ok(CandidatePresenceV1::Indexed),
             "not_indexed" => Ok(CandidatePresenceV1::NotIndexed),
-            other => Err(de::Error::unknown_variant(other, &["indexed", "not_indexed"])),
+            other => Err(de::Error::unknown_variant(
+                other,
+                &["indexed", "not_indexed"],
+            )),
         }
     }
 }

@@ -162,7 +162,9 @@ impl WriterCache {
         self.admission.admit_writer_open()?;
         let index = open_or_create_index(fields, path)?;
         let heap_bytes = usize::try_from(self.policy.writer_heap_bytes()).map_err(|err| {
-            CoreError::Storage(format!("lexical: writer heap does not fit this platform: {err}"))
+            CoreError::Storage(format!(
+                "lexical: writer heap does not fit this platform: {err}"
+            ))
         })?;
         let writer: IndexWriter = index
             .writer_with_num_threads(writer_threads_for_heap(heap_bytes), heap_bytes)
@@ -201,7 +203,9 @@ impl WriterCache {
 /// made explicit so the envelope's per-writer term is the whole story.
 pub(crate) fn writer_threads_for_heap(heap_bytes: usize) -> usize {
     let by_heap = usize::try_from(LEXICAL_WRITER_HEAP_BYTES_MIN)
-        .map_or(1, |minimum| heap_bytes.checked_div(minimum).map_or(1, |threads| threads))
+        .map_or(1, |minimum| {
+            heap_bytes.checked_div(minimum).map_or(1, |threads| threads)
+        })
         .max(1);
     let by_machine = std::thread::available_parallelism().map_or(1, usize::from);
     by_heap.min(by_machine).min(WRITER_THREADS_MAX)

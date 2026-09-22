@@ -56,8 +56,13 @@ use crate::searchd_binary_process::SearchdBinaryProcess;
 type TestResult = Result<(), Box<dyn Error>>;
 type DriverJoin = thread::JoinHandle<anyhow::Result<()>>;
 type SdkFrontdoorRuntime = (tempfile::TempDir, QuantaIndex, Arc<AtomicBool>, DriverJoin);
-type SdkFrontdoorRuntimeWithIngest =
-    (tempfile::TempDir, QuantaIndex, PathBuf, Arc<AtomicBool>, DriverJoin);
+type SdkFrontdoorRuntimeWithIngest = (
+    tempfile::TempDir,
+    QuantaIndex,
+    PathBuf,
+    Arc<AtomicBool>,
+    DriverJoin,
+);
 
 static NEXT_SOCKET_ID: AtomicU64 = AtomicU64::new(0);
 const SOCKET_TIMEOUT: Duration = Duration::from_secs(5);
@@ -226,6 +231,7 @@ fn dispatch_ingest(socket: &Path, payload: SearchPlaneIngestIpcRequest) -> TestR
         | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
         | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+        | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
         | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_) => Ok(()),
     }
@@ -556,15 +562,17 @@ fn now_epoch_ms() -> Result<u64, Box<dyn Error>> {
 
 fn repo_commit_recency_batch() -> Result<RepoCommitRecencyBatch, Box<dyn Error>> {
     let now_ms = now_epoch_ms()?;
-    Ok(RepoCommitRecencyBatch::new(repo(), revision(), generation())
-        .entry(
-            RepoId::new("corp-a").expect("static fixture ID satisfies canonical policy"),
-            now_ms.saturating_sub(6 * 60 * 60 * 1000),
-        )
-        .entry(
-            RepoId::new("corp-b").expect("static fixture ID satisfies canonical policy"),
-            1_700_000_000_000,
-        ))
+    Ok(
+        RepoCommitRecencyBatch::new(repo(), revision(), generation())
+            .entry(
+                RepoId::new("corp-a").expect("static fixture ID satisfies canonical policy"),
+                now_ms.saturating_sub(6 * 60 * 60 * 1000),
+            )
+            .entry(
+                RepoId::new("corp-b").expect("static fixture ID satisfies canonical policy"),
+                1_700_000_000_000,
+            ),
+    )
 }
 
 fn repo_meta_batch() -> RepoMetaBatch {
@@ -685,11 +693,19 @@ fn rev_at_time_head_generation() -> ManifestGeneration {
 }
 
 fn rev_at_time_ancestor_pin() -> GenerationPin {
-    GenerationPin::new(repo(), rev_at_time_ancestor_revision(), rev_at_time_ancestor_generation())
+    GenerationPin::new(
+        repo(),
+        rev_at_time_ancestor_revision(),
+        rev_at_time_ancestor_generation(),
+    )
 }
 
 fn rev_at_time_head_pin() -> GenerationPin {
-    GenerationPin::new(repo(), rev_at_time_head_revision(), rev_at_time_head_generation())
+    GenerationPin::new(
+        repo(),
+        rev_at_time_head_revision(),
+        rev_at_time_head_generation(),
+    )
 }
 
 fn rev_at_time_lexical_batch(
@@ -928,12 +944,14 @@ fn repo_map_bundle() -> Result<RepoMapSourceBundle, Box<dyn Error>> {
         caller: RepoMapNodeRef::Symbol(SymbolId::new("symbol://beta")),
         callee: RepoMapNodeRef::Symbol(SymbolId::new("symbol://gamma")),
     }))
-    .with_edge(RepoMapEdge::Import(quanta_index_contract::RepoMapImportEdge {
-        importer: RepoMapNodeRef::File(quanta_index_contract::FileId::new(
-            "file://src/service/mod.rs",
-        )),
-        imported: RepoMapNodeRef::File(quanta_index_contract::FileId::new("file://src/lib.rs")),
-    }))
+    .with_edge(RepoMapEdge::Import(
+        quanta_index_contract::RepoMapImportEdge {
+            importer: RepoMapNodeRef::File(quanta_index_contract::FileId::new(
+                "file://src/service/mod.rs",
+            )),
+            imported: RepoMapNodeRef::File(quanta_index_contract::FileId::new("file://src/lib.rs")),
+        },
+    ))
     .with_edge(RepoMapEdge::OwnsChunk(RepoMapOwnsChunkEdge {
         owner: RepoMapNodeRef::Symbol(SymbolId::new("symbol://alpha")),
         chunk: RepoMapNodeRef::Chunk(ChunkId::new("chunk://alpha")),
@@ -943,7 +961,9 @@ fn repo_map_bundle() -> Result<RepoMapSourceBundle, Box<dyn Error>> {
         chunk: RepoMapNodeRef::Chunk(ChunkId::new("chunk://beta")),
     }))
     .with_edge(RepoMapEdge::OwnsChunk(RepoMapOwnsChunkEdge {
-        owner: RepoMapNodeRef::File(quanta_index_contract::FileId::new("file://tests/repo_map.rs")),
+        owner: RepoMapNodeRef::File(quanta_index_contract::FileId::new(
+            "file://tests/repo_map.rs",
+        )),
         chunk: RepoMapNodeRef::Chunk(ChunkId::new("chunk://repomap-test")),
     })))
 }
@@ -1193,7 +1213,9 @@ fn current_sdk_search_corpus_or_none(
                 semantic_content,
             };
             identity.validate_v1().map_err(|error| {
-                SdkError::Protocol(format!("current search corpus identity is invalid: {error}"))
+                SdkError::Protocol(format!(
+                    "current search corpus identity is invalid: {error}"
+                ))
             })?;
             Ok(Some(identity))
         }
@@ -1275,7 +1297,7 @@ fn assert_structural_single_binding(
         || binding.end_byte != expected_end_byte
     {
         return Err(
-            format!("{context}: unexpected structural candidate/binding: {candidate:?}").into()
+            format!("{context}: unexpected structural candidate/binding: {candidate:?}").into(),
         );
     }
     Ok(())
@@ -1596,7 +1618,7 @@ fn sdk_search_frontdoor_routes_lexical_semantic_hybrid_explain_and_repomap_truth
     {
         stop_runtime(&shutdown, join)?;
         return Err(
-            format!("unexpected select:path lexical response: {lexical_select_path:?}").into()
+            format!("unexpected select:path lexical response: {lexical_select_path:?}").into(),
         );
     }
 
@@ -2052,7 +2074,7 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
     if structural_pinned_query.generation != pin() || structural_pinned_query.results.len() != 1 {
         stop_runtime(&shutdown, join)?;
         return Err(
-            format!("unexpected pinned structural response: {structural_pinned_query:?}").into()
+            format!("unexpected pinned structural response: {structural_pinned_query:?}").into(),
         );
     }
     let structural_pinned_candidate = structural_pinned_query
@@ -2085,7 +2107,7 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
     if structural_root_kind.generation != pin() || structural_root_kind.results.len() != 1 {
         stop_runtime(&shutdown, join)?;
         return Err(
-            format!("unexpected structural root-kind response: {structural_root_kind:?}").into()
+            format!("unexpected structural root-kind response: {structural_root_kind:?}").into(),
         );
     }
     let structural_root_kind_candidate = structural_root_kind
@@ -2474,7 +2496,7 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
     if structural_file_query.generation != pin() || structural_file_query.results.len() != 1 {
         stop_runtime(&shutdown, join)?;
         return Err(
-            format!("unexpected structural file response: {structural_file_query:?}").into()
+            format!("unexpected structural file response: {structural_file_query:?}").into(),
         );
     }
 
@@ -2494,7 +2516,7 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
     if structural_repo_query.generation != pin() || structural_repo_query.results.len() != 1 {
         stop_runtime(&shutdown, join)?;
         return Err(
-            format!("unexpected structural repo response: {structural_repo_query:?}").into()
+            format!("unexpected structural repo response: {structural_repo_query:?}").into(),
         );
     }
 
@@ -2636,7 +2658,7 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
     if structural_repo_miss.generation != pin() || !structural_repo_miss.results.is_empty() {
         stop_runtime(&shutdown, join)?;
         return Err(
-            format!("unexpected structural repo-miss response: {structural_repo_miss:?}").into()
+            format!("unexpected structural repo-miss response: {structural_repo_miss:?}").into(),
         );
     }
 
@@ -2664,7 +2686,10 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         stop_runtime(&shutdown, join)?;
         return Err("invalid Sourcegraph structural filter unexpectedly succeeded".into());
     };
-    expect_remote_code(structural_sourcegraph_invalid_request_err, "STR_INVALID_REQUEST")?;
+    expect_remote_code(
+        structural_sourcegraph_invalid_request_err,
+        "STR_INVALID_REQUEST",
+    )?;
 
     let structural_native_pinned = wait_for_sdk_observation(
         SOCKET_TIMEOUT,
@@ -3371,7 +3396,7 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
     {
         stop_runtime(&shutdown, join)?;
         return Err(
-            format!("unexpected lexical follow-up after timeout: {lexical_follow_up:?}").into()
+            format!("unexpected lexical follow-up after timeout: {lexical_follow_up:?}").into(),
         );
     }
 
@@ -3742,7 +3767,9 @@ fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
         || structural_binding.end_byte != 7
     {
         stop_runtime(&shutdown, join)?;
-        return Err(format!("unexpected contract-exact structural response: {structural:?}").into());
+        return Err(
+            format!("unexpected contract-exact structural response: {structural:?}").into(),
+        );
     }
 
     let semantic_request = SemanticQueryRequest {
@@ -3848,7 +3875,7 @@ fn sdk_search_corpus_frontdoor_promotes_composite_generation_identity() -> TestR
     {
         stop_runtime(&shutdown, join)?;
         return Err(
-            format!("unexpected composite activation identity: {composite_active:?}").into()
+            format!("unexpected composite activation identity: {composite_active:?}").into(),
         );
     }
 
@@ -3867,8 +3894,9 @@ fn sdk_search_corpus_frontdoor_promotes_composite_generation_identity() -> TestR
         return Err(format!("unexpected lexical generation snapshot: {lexical_snapshot:?}").into());
     }
 
-    let final_status =
-        wait_for_sdk_ready(SOCKET_TIMEOUT, || client.generations().status(repo(), revision()))?;
+    let final_status = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
+        client.generations().status(repo(), revision())
+    })?;
     if final_status.repo_id != repo() || final_status.revision_id != revision() {
         stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected final generation status: {final_status:?}").into());
@@ -4071,7 +4099,7 @@ fn sdk_builder_variant_frontdoors_route_native_inline_vector_and_pinned_truth() 
     {
         stop_runtime(&shutdown, join)?;
         return Err(
-            format!("unexpected semantic inline-vector response: {semantic_inline:?}").into()
+            format!("unexpected semantic inline-vector response: {semantic_inline:?}").into(),
         );
     }
 
@@ -4099,7 +4127,7 @@ fn sdk_builder_variant_frontdoors_route_native_inline_vector_and_pinned_truth() 
     {
         stop_runtime(&shutdown, join)?;
         return Err(
-            format!("unexpected hybrid inline-vector seed response: {hybrid_inline:?}").into()
+            format!("unexpected hybrid inline-vector seed response: {hybrid_inline:?}").into(),
         );
     }
 
@@ -4192,7 +4220,7 @@ fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_comp
     {
         stop_runtime(&shutdown, join)?;
         return Err(
-            format!("unexpected pinned v2 semantic response: {semantic_pinned_v2:?}").into()
+            format!("unexpected pinned v2 semantic response: {semantic_pinned_v2:?}").into(),
         );
     }
 
@@ -4218,7 +4246,7 @@ fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_comp
     {
         stop_runtime(&shutdown, join)?;
         return Err(
-            format!("unexpected pinned v2 structural response: {structural_pinned_v2:?}").into()
+            format!("unexpected pinned v2 structural response: {structural_pinned_v2:?}").into(),
         );
     }
 

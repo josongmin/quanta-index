@@ -191,10 +191,11 @@ fn typed(
 ) -> Result<(SearchPlaneErrorCodeV2, String), Box<dyn Error>> {
     match result {
         Err(CoreError::Typed { code, message }) => Ok((*code, message.clone())),
-        Ok(hits) => {
-            Err(format!("expected a typed interruption, the lane served {} hits", hits.len())
-                .into())
-        }
+        Ok(hits) => Err(format!(
+            "expected a typed interruption, the lane served {} hits",
+            hits.len()
+        )
+        .into()),
         Err(other) => Err(format!("expected a typed interruption, got {other:?}").into()),
     }
 }
@@ -313,8 +314,10 @@ fn an_interrupted_budget_is_refused_inside_the_lane_before_the_query_is_issued()
             &format!("{infix}: expired global search"),
         )?;
         let queries = counter(&adapter, &format!("semantic_dense_queries_{infix}_total"))?;
-        let interruptions =
-            counter(&adapter, &format!("semantic_budget_interruptions_{infix}_total"))?;
+        let interruptions = counter(
+            &adapter,
+            &format!("semantic_budget_interruptions_{infix}_total"),
+        )?;
         if queries != 0 || interruptions != 3 {
             return Err(format!(
                 "{infix}: three refused requests are three interruptions and no query handed to the library, the scrape says queries={queries} interruptions={interruptions}"
@@ -380,7 +383,12 @@ fn a_cancellation_while_the_query_is_pending_drops_it_and_the_handle_serves_agai
         })
     };
     let held = held.map_err(|_panic| "the held search panicked")?;
-    expect_interruption(&held, REQUEST_CANCELLED_CODE, "semantic:exact", "the held search")?;
+    expect_interruption(
+        &held,
+        REQUEST_CANCELLED_CODE,
+        "semantic:exact",
+        "the held search",
+    )?;
     let after_hold = tallies(&adapter)?;
     if after_hold.exact_queries != 0 || after_hold.exact_interruptions != 1 {
         return Err(format!(

@@ -84,16 +84,28 @@ impl Dimensions {
 /// stateful, dimension-validation is per-sample.
 pub fn validate_dimensions(d: &Dimensions) -> Result<(), ObsError> {
     if d.ticket_id.is_empty() {
-        return Err(ObsError::new(ObsErrorCode::ObsInvalidMetric, "ticket_id must not be empty"));
+        return Err(ObsError::new(
+            ObsErrorCode::ObsInvalidMetric,
+            "ticket_id must not be empty",
+        ));
     }
     if d.wave_id.is_empty() {
-        return Err(ObsError::new(ObsErrorCode::ObsInvalidMetric, "wave_id must not be empty"));
+        return Err(ObsError::new(
+            ObsErrorCode::ObsInvalidMetric,
+            "wave_id must not be empty",
+        ));
     }
     if d.tenant_id.is_empty() {
-        return Err(ObsError::new(ObsErrorCode::ObsInvalidMetric, "tenant_id must not be empty"));
+        return Err(ObsError::new(
+            ObsErrorCode::ObsInvalidMetric,
+            "tenant_id must not be empty",
+        ));
     }
     if d.repo_id.is_empty() {
-        return Err(ObsError::new(ObsErrorCode::ObsInvalidMetric, "repo_id must not be empty"));
+        return Err(ObsError::new(
+            ObsErrorCode::ObsInvalidMetric,
+            "repo_id must not be empty",
+        ));
     }
     check_cap("ticket_id", &d.ticket_id)?;
     check_cap("wave_id", &d.wave_id)?;

@@ -212,7 +212,9 @@ impl ProcessMemoryCeilings {
 
     pub fn new(ceiling_bytes: u64, rss_ceiling_bytes: Option<u64>) -> Result<Self> {
         if ceiling_bytes == 0 {
-            return Err(anyhow::anyhow!("the process memory ceiling must be at least one byte"));
+            return Err(anyhow::anyhow!(
+                "the process memory ceiling must be at least one byte"
+            ));
         }
         if rss_ceiling_bytes == Some(0) {
             return Err(anyhow::anyhow!(
@@ -1467,7 +1469,9 @@ fn parse_embed_batch(raw: Option<&str>, default: usize) -> Result<usize> {
                 anyhow::anyhow!("invalid QUANTA_INDEX_EMBED_BATCH '{value}': {err}")
             })?;
             if parsed == 0 {
-                return Err(anyhow::anyhow!("QUANTA_INDEX_EMBED_BATCH must be >= 1, got 0"));
+                return Err(anyhow::anyhow!(
+                    "QUANTA_INDEX_EMBED_BATCH must be >= 1, got 0"
+                ));
             }
             Ok(parsed)
         }
@@ -1508,7 +1512,9 @@ fn parse_embed_timeout(raw: Option<&str>, default: Duration) -> Result<Duration>
                 anyhow::anyhow!("invalid QUANTA_INDEX_EMBED_TIMEOUT_SECS '{value}': {err}")
             })?;
             if secs == 0 {
-                return Err(anyhow::anyhow!("QUANTA_INDEX_EMBED_TIMEOUT_SECS must be >= 1, got 0"));
+                return Err(anyhow::anyhow!(
+                    "QUANTA_INDEX_EMBED_TIMEOUT_SECS must be >= 1, got 0"
+                ));
             }
             Ok(Duration::from_secs(secs))
         }
@@ -1553,8 +1559,14 @@ mod tests {
         BTreeMap::from([
             ("QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_GENERATIONS", "3"),
             ("QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_BYTES", "4096"),
-            ("QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_REVISION_PAIRS", "17"),
-            ("QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_TOTAL_BYTES", "65536"),
+            (
+                "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_REVISION_PAIRS",
+                "17",
+            ),
+            (
+                "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_TOTAL_BYTES",
+                "65536",
+            ),
             ("QUANTA_INDEX_EMBEDDER", "openai"),
             (ALLOW_DEV_EMBEDDER_ENV, "1"),
             ("QUANTA_INDEX_EMBED_DIM", "256"),
@@ -1655,7 +1667,11 @@ mod tests {
         // (1) The source fence.
         let mut declared: BTreeMap<&str, &str> = BTreeMap::new();
         for family in ENV_POLICY_FAMILIES {
-            assert!(!family.env_vars.is_empty(), "{} names its knobs", family.name);
+            assert!(
+                !family.env_vars.is_empty(),
+                "{} names its knobs",
+                family.name
+            );
             for var in family.env_vars {
                 assert!(
                     declared.insert(var, family.name).is_none(),
@@ -1705,7 +1721,10 @@ mod tests {
         let from_env = SearchdConfig::from_lookup(None, &env_lookup)
             .expect("the env entry point resolves every family");
         assert_eq!(with_state_root.state_root(), explicit_root.as_path());
-        assert_eq!(from_env.state_root(), Path::new("/tmp/quanta-index-chain-env"));
+        assert_eq!(
+            from_env.state_root(),
+            Path::new("/tmp/quanta-index-chain-env")
+        );
         // Same policies from the same env, whichever way the root came.
         let normalized = from_env
             .clone()
@@ -1725,11 +1744,26 @@ mod tests {
                 .max_in_flight_per_repo(),
             2
         );
-        assert_eq!(with_state_root.lexical_writer_policy().idle_after(), Duration::from_secs(7));
-        assert_ne!(with_state_root.socket_access_policies(), &SocketAccessPolicies::PRIVATE);
-        assert_eq!(with_state_root.process_memory_ceilings().ceiling_bytes(), 3_221_225_472);
-        assert_eq!(with_state_root.maintenance_policy().tick(), Duration::from_millis(1500));
-        assert_eq!(with_state_root.query_response_budget().max_payload_bytes(), 1_048_576);
+        assert_eq!(
+            with_state_root.lexical_writer_policy().idle_after(),
+            Duration::from_secs(7)
+        );
+        assert_ne!(
+            with_state_root.socket_access_policies(),
+            &SocketAccessPolicies::PRIVATE
+        );
+        assert_eq!(
+            with_state_root.process_memory_ceilings().ceiling_bytes(),
+            3_221_225_472
+        );
+        assert_eq!(
+            with_state_root.maintenance_policy().tick(),
+            Duration::from_millis(1500)
+        );
+        assert_eq!(
+            with_state_root.query_response_budget().max_payload_bytes(),
+            1_048_576
+        );
         let SemanticEmbedderProfile::OpenAi {
             model,
             model_revision,
@@ -1744,7 +1778,10 @@ mod tests {
             (model.as_str(), model_revision.as_str(), *dimension),
             ("text-embedding-3-large", "rev-2026-09", 256)
         );
-        assert_eq!(tuning.cache_retention.max_entry_age(), Duration::from_secs(3600));
+        assert_eq!(
+            tuning.cache_retention.max_entry_age(),
+            Duration::from_secs(3600)
+        );
         assert_eq!(tuning.cache_retention.max_total_bytes(), 8192);
     }
 
@@ -1784,7 +1821,10 @@ mod tests {
     fn an_unset_embedder_is_refused_unless_the_dev_embedder_is_allowed_by_name() {
         let unset = semantic_embedder_profile_from_lookup(&|_name| Ok(None))
             .expect_err("an unset embedder does not silently serve the hash profile");
-        assert!(unset.to_string().contains(ALLOW_DEV_EMBEDDER_ENV), "{unset}");
+        assert!(
+            unset.to_string().contains(ALLOW_DEV_EMBEDDER_ENV),
+            "{unset}"
+        );
         let allowed = semantic_embedder_profile_from_lookup(&|name| {
             Ok((name == ALLOW_DEV_EMBEDDER_ENV).then(|| "1".to_string()))
         })
@@ -1820,7 +1860,10 @@ mod tests {
     fn the_process_memory_envelope_sums_the_policies_and_a_low_ceiling_is_refused_typed() {
         let config = SearchdConfig::from_state_root(PathBuf::from("/tmp/quanta-index-envelope"));
         let envelope = config.process_memory_envelope().expect("the defaults fit");
-        assert_eq!(envelope.lexical_writer_bytes, LexicalWriterPolicy::DEFAULT.envelope_bytes());
+        assert_eq!(
+            envelope.lexical_writer_bytes,
+            LexicalWriterPolicy::DEFAULT.envelope_bytes()
+        );
         assert_eq!(
             envelope.snapshot_registry_bytes,
             SnapshotRegistryPolicy::DEFAULT.max_resident_bytes()
@@ -1829,7 +1872,10 @@ mod tests {
             envelope.regex_match_cache_bytes,
             RegexMatchCachePolicy::DEFAULT.max_resident_bytes()
         );
-        assert_eq!(envelope.embedding_cache_ledger_bytes, 0, "no cache under the hash profile");
+        assert_eq!(
+            envelope.embedding_cache_ledger_bytes, 0,
+            "no cache under the hash profile"
+        );
         assert_eq!(
             envelope.semantic_stream_window_bytes,
             SemanticStreamWindowPolicy::DEFAULT.max_vector_bytes()
@@ -1890,7 +1936,10 @@ mod tests {
     #[test]
     fn socket_access_defaults_to_private_everywhere_and_the_builder_sets_it() {
         let config = SearchdConfig::from_state_root(PathBuf::from("/tmp/quanta-index-cfg-test"));
-        assert_eq!(config.socket_access_policies(), &SocketAccessPolicies::PRIVATE);
+        assert_eq!(
+            config.socket_access_policies(),
+            &SocketAccessPolicies::PRIVATE
+        );
         let shared = SocketAccessPolicies::new(
             quanta_index_ipc::SocketAccessPolicy::Shared(
                 quanta_index_ipc::SharedSocketAccess::new(
@@ -1909,7 +1958,10 @@ mod tests {
     fn provider_unavailable_builder_sets_unavailable_profile() {
         let config = SearchdConfig::from_state_root(PathBuf::from("/tmp/quanta-index-cfg-test"))
             .with_provider_unavailable_query_text_embedder();
-        assert_eq!(config.semantic_embedder_profile(), &SemanticEmbedderProfile::Unavailable);
+        assert_eq!(
+            config.semantic_embedder_profile(),
+            &SemanticEmbedderProfile::Unavailable
+        );
     }
 
     #[test]
@@ -2049,8 +2101,14 @@ mod tests {
             )
             .expect("one knob layers over the default");
         assert_eq!(slots_only.dispatch_slots(), 2);
-        assert_eq!(slots_only.max_connections(), ServerAdmissionPolicy::DEFAULT.max_connections());
-        assert_eq!(slots_only.dispatch_budget(), ServerAdmissionPolicy::DEFAULT.dispatch_budget());
+        assert_eq!(
+            slots_only.max_connections(),
+            ServerAdmissionPolicy::DEFAULT.max_connections()
+        );
+        assert_eq!(
+            slots_only.dispatch_budget(),
+            ServerAdmissionPolicy::DEFAULT.dispatch_budget()
+        );
 
         let zero_wait = query_admission_policy_from_lookup(&|name| {
             Ok((name == QUEUE_WAIT).then(|| "0".to_string()))
@@ -2117,7 +2175,10 @@ mod tests {
         })
         .expect("one knob layers over the default");
         assert_eq!(bytes_only.max_resident_bytes(), 4096);
-        assert_eq!(bytes_only.max_entries(), RegexMatchCachePolicy::DEFAULT.max_entries());
+        assert_eq!(
+            bytes_only.max_entries(),
+            RegexMatchCachePolicy::DEFAULT.max_entries()
+        );
         let zero = regex_match_cache_policy_from_lookup(&|name| {
             Ok((name == BYTES).then(|| "0".to_string()))
         })
@@ -2140,7 +2201,10 @@ mod tests {
         })
         .expect("one knob layers over the default");
         assert_eq!(wider.max_writers(), 4);
-        assert_eq!(wider.idle_after(), LexicalWriterPolicy::DEFAULT.idle_after());
+        assert_eq!(
+            wider.idle_after(),
+            LexicalWriterPolicy::DEFAULT.idle_after()
+        );
         let idle = lexical_writer_policy_from_lookup(&|name| {
             Ok((name == IDLE_SECS).then(|| "5".to_string()))
         })
@@ -2172,12 +2236,18 @@ mod tests {
     #[test]
     fn unset_tuning_falls_back_to_provider_defaults() {
         // None for every knob -> exactly the provider defaults (no drift).
-        assert_eq!(parse_embed_batch(None, DEFAULT_MAX_BATCH).expect("ok"), DEFAULT_MAX_BATCH);
+        assert_eq!(
+            parse_embed_batch(None, DEFAULT_MAX_BATCH).expect("ok"),
+            DEFAULT_MAX_BATCH
+        );
         assert_eq!(
             parse_embed_max_retries(None, DEFAULT_MAX_RETRIES).expect("ok"),
             DEFAULT_MAX_RETRIES
         );
-        assert_eq!(parse_embed_timeout(None, DEFAULT_TIMEOUT).expect("ok"), DEFAULT_TIMEOUT);
+        assert_eq!(
+            parse_embed_timeout(None, DEFAULT_TIMEOUT).expect("ok"),
+            DEFAULT_TIMEOUT
+        );
         assert!(parse_embed_cache_enabled(None, true).expect("ok"));
         // Empty string is treated as unset, not an error.
         assert_eq!(parse_embed_batch(Some(""), 256).expect("ok"), 256);
@@ -2192,14 +2262,26 @@ mod tests {
     fn batch_knob_parses_and_rejects_zero_and_garbage() {
         assert_eq!(parse_embed_batch(Some("32"), 256).expect("ok"), 32);
         assert_eq!(parse_embed_batch(Some("  8 "), 256).expect("trim"), 8);
-        assert!(parse_embed_batch(Some("0"), 256).is_err(), "0 batch rejected");
-        assert!(parse_embed_batch(Some("nope"), 256).is_err(), "garbage rejected");
+        assert!(
+            parse_embed_batch(Some("0"), 256).is_err(),
+            "0 batch rejected"
+        );
+        assert!(
+            parse_embed_batch(Some("nope"), 256).is_err(),
+            "garbage rejected"
+        );
     }
 
     #[test]
     fn estimated_token_knob_parses_and_rejects_zero_and_garbage() {
-        assert_eq!(parse_embed_max_estimated_tokens(Some("2048"), 4096).expect("ok"), 2048);
-        assert_eq!(parse_embed_max_estimated_tokens(Some("  512 "), 4096).expect("trim"), 512);
+        assert_eq!(
+            parse_embed_max_estimated_tokens(Some("2048"), 4096).expect("ok"),
+            2048
+        );
+        assert_eq!(
+            parse_embed_max_estimated_tokens(Some("  512 "), 4096).expect("trim"),
+            512
+        );
         assert!(parse_embed_max_estimated_tokens(Some("0"), 4096).is_err());
         assert!(parse_embed_max_estimated_tokens(Some("x"), 4096).is_err());
     }
@@ -2219,7 +2301,10 @@ mod tests {
             parse_embed_timeout(Some("10"), DEFAULT_TIMEOUT).expect("ok"),
             Duration::from_secs(10)
         );
-        assert!(parse_embed_timeout(Some("0"), DEFAULT_TIMEOUT).is_err(), "0s rejected");
+        assert!(
+            parse_embed_timeout(Some("0"), DEFAULT_TIMEOUT).is_err(),
+            "0s rejected"
+        );
         assert!(parse_embed_timeout(Some("abc"), DEFAULT_TIMEOUT).is_err());
     }
 
@@ -2245,10 +2330,16 @@ mod tests {
     #[test]
     fn cache_knob_parses_truthy_and_falsy_forms() {
         for truthy in ["1", "true", "TRUE", "on", "yes"] {
-            assert!(parse_embed_cache_enabled(Some(truthy), false).expect("ok"), "{truthy}");
+            assert!(
+                parse_embed_cache_enabled(Some(truthy), false).expect("ok"),
+                "{truthy}"
+            );
         }
         for falsy in ["0", "false", "OFF", "no"] {
-            assert!(!parse_embed_cache_enabled(Some(falsy), true).expect("ok"), "{falsy}");
+            assert!(
+                !parse_embed_cache_enabled(Some(falsy), true).expect("ok"),
+                "{falsy}"
+            );
         }
         assert!(parse_embed_cache_enabled(Some("maybe"), true).is_err());
     }
@@ -2288,7 +2379,11 @@ mod tests {
             "MAX_EST_TOKENS knob -> max_estimated_tokens_per_request"
         );
         assert_eq!(tuning.max_retries, 2, "MAX_RETRIES knob -> max_retries");
-        assert_eq!(tuning.timeout, Duration::from_secs(11), "TIMEOUT_SECS knob -> timeout");
+        assert_eq!(
+            tuning.timeout,
+            Duration::from_secs(11),
+            "TIMEOUT_SECS knob -> timeout"
+        );
         assert!(!tuning.cache_enabled, "CACHE=off -> cache_enabled false");
         assert_eq!(tuning.concurrency, 5, "CONCURRENCY knob -> concurrency");
     }
@@ -2342,7 +2437,10 @@ mod tests {
         let zero = |name: &str| -> Result<Option<String>> {
             Ok((name == "QUANTA_INDEX_EMBED_CACHE_MAX_BYTES").then(|| "0".to_string()))
         };
-        assert!(openai_tuning_from_env_with(&zero).is_err(), "zero is refused");
+        assert!(
+            openai_tuning_from_env_with(&zero).is_err(),
+            "zero is refused"
+        );
     }
 
     #[test]
@@ -2367,7 +2465,10 @@ mod tests {
         let zero = |name: &str| -> Result<Option<String>> {
             Ok((name == "QUANTA_INDEX_INGEST_MAX_RECORDS").then(|| "0".to_string()))
         };
-        assert!(ingest_resource_policy_from_lookup(&zero).is_err(), "zero is refused");
+        assert!(
+            ingest_resource_policy_from_lookup(&zero).is_err(),
+            "zero is refused"
+        );
     }
 
     #[test]
@@ -2391,7 +2492,10 @@ mod tests {
             Ok((name == "QUANTA_INDEX_SEMANTIC_STREAM_WINDOW_VECTOR_BYTES")
                 .then(|| "0".to_string()))
         };
-        assert!(semantic_stream_window_policy_from_lookup(&zero).is_err(), "zero is refused");
+        assert!(
+            semantic_stream_window_policy_from_lookup(&zero).is_err(),
+            "zero is refused"
+        );
         let garbage = |name: &str| -> Result<Option<String>> {
             Ok((name == "QUANTA_INDEX_SEMANTIC_STREAM_WINDOW_SCOPES").then(|| "many".to_string()))
         };
@@ -2426,14 +2530,23 @@ mod tests {
             tuning.max_estimated_tokens_per_request, 1234,
             "QUANTA_INDEX_EMBED_MAX_EST_TOKENS -> max_estimated_tokens_per_request"
         );
-        assert_eq!(tuning.max_retries, 2, "QUANTA_INDEX_EMBED_MAX_RETRIES -> max_retries");
+        assert_eq!(
+            tuning.max_retries, 2,
+            "QUANTA_INDEX_EMBED_MAX_RETRIES -> max_retries"
+        );
         assert_eq!(
             tuning.timeout,
             Duration::from_secs(11),
             "QUANTA_INDEX_EMBED_TIMEOUT_SECS -> timeout"
         );
-        assert!(!tuning.cache_enabled, "QUANTA_INDEX_EMBED_CACHE=off -> cache_enabled=false");
-        assert_eq!(tuning.concurrency, 5, "QUANTA_INDEX_EMBED_CONCURRENCY -> concurrency");
+        assert!(
+            !tuning.cache_enabled,
+            "QUANTA_INDEX_EMBED_CACHE=off -> cache_enabled=false"
+        );
+        assert_eq!(
+            tuning.concurrency, 5,
+            "QUANTA_INDEX_EMBED_CONCURRENCY -> concurrency"
+        );
     }
 
     #[test]
@@ -2498,6 +2611,9 @@ mod tests {
             })
         })
         .expect("both knobs set is an explicit policy");
-        assert_eq!(explicit, IntegrityScrubPolicyV1::new(250, 1024).expect("a positive policy"));
+        assert_eq!(
+            explicit,
+            IntegrityScrubPolicyV1::new(250, 1024).expect("a positive policy")
+        );
     }
 }

@@ -99,7 +99,10 @@ impl ResultSurface {
     /// response rather than an empty success.
     #[must_use]
     pub const fn is_typed_unavailable(self) -> bool {
-        matches!(self, Self::Commit | Self::Diff | Self::Repo | Self::Structural)
+        matches!(
+            self,
+            Self::Commit | Self::Diff | Self::Repo | Self::Structural
+        )
     }
 }
 
@@ -154,7 +157,10 @@ impl fmt::Display for SymbolPlannerError {
         match self {
             Self::EmptyNeedle => f.write_str("symbol planner: needle must be non-empty"),
             Self::NeedleTooLong { len, cap } => {
-                write!(f, "symbol planner: needle length {len} bytes exceeds cap {cap}")
+                write!(
+                    f,
+                    "symbol planner: needle length {len} bytes exceeds cap {cap}"
+                )
             }
             Self::UnsupportedKind { name } => {
                 write!(f, "symbol planner: unsupported kind filter `{name}`")
@@ -426,7 +432,10 @@ mod tests {
         if let Ok(plan) = outcome {
             assert_eq!(plan.needle, "foo");
             assert_eq!(plan.kind_filter, None);
-            assert_eq!(plan.candidate_cap, SymbolPolicy::defaults().default_candidate_cap);
+            assert_eq!(
+                plan.candidate_cap,
+                SymbolPolicy::defaults().default_candidate_cap
+            );
             let trace = plan.trace.build();
             assert_eq!(trace.resolved_surface, ResultSurface::Symbol);
             assert!(!trace.surface_unavailable);
@@ -474,7 +483,10 @@ mod tests {
             Err(SymbolPlannerError::UnsupportedSurface { reason, .. })
                 if *reason == "conflicting select+type"
         );
-        assert!(matched, "expected UnsupportedSurface conflicting select+type, got {outcome:?}");
+        assert!(
+            matched,
+            "expected UnsupportedSurface conflicting select+type, got {outcome:?}"
+        );
     }
 
     #[test]

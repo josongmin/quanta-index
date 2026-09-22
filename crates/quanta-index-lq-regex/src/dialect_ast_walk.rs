@@ -399,7 +399,10 @@ mod tests {
         match ast_walk_filter("foo(") {
             Ok(()) => {}
             Err(e) => {
-                assert!(false, "expected Ok(()) (downstream parse_hir surfaces ParseFail), got {e}")
+                assert!(
+                    false,
+                    "expected Ok(()) (downstream parse_hir surfaces ParseFail), got {e}"
+                )
             }
         }
     }
@@ -411,7 +414,10 @@ mod tests {
         match ast_walk_filter("foo(?=bar)") {
             Ok(()) => {}
             Err(e) => {
-                assert!(false, "AST walk should not classify lookaround; expected Ok(()), got {e}")
+                assert!(
+                    false,
+                    "AST walk should not classify lookaround; expected Ok(()), got {e}"
+                )
             }
         }
     }
@@ -421,7 +427,10 @@ mod tests {
         match ast_walk_filter(r"(foo)\1") {
             Ok(()) => {}
             Err(e) => {
-                assert!(false, "AST walk should not classify backref; expected Ok(()), got {e}")
+                assert!(
+                    false,
+                    "AST walk should not classify backref; expected Ok(()), got {e}"
+                )
             }
         }
     }

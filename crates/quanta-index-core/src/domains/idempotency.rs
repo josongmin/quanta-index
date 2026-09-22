@@ -239,8 +239,14 @@ impl OperationJournalStateV1 {
         matches!(
             (from, to),
             (S::Prepared, S::Claimed | S::Refused | S::Aborted)
-                | (S::Claimed, S::Applying | S::Refused | S::Aborted | S::Uncertain)
-                | (S::Applying, S::Committed | S::Refused | S::Aborted | S::Uncertain)
+                | (
+                    S::Claimed,
+                    S::Applying | S::Refused | S::Aborted | S::Uncertain
+                )
+                | (
+                    S::Applying,
+                    S::Committed | S::Refused | S::Aborted | S::Uncertain
+                )
                 | (S::Uncertain, S::Committed | S::Aborted)
         )
     }
@@ -260,7 +266,9 @@ pub fn now_unix_ms() -> u64 {
         // A pre-epoch clock reads as the epoch; a duration wider than u64
         // milliseconds cannot occur on supported targets, saturate instead
         // of truncating.
-        .map_or(0, |since| u64::try_from(since.as_millis()).map_or(u64::MAX, |millis| millis))
+        .map_or(0, |since| {
+            u64::try_from(since.as_millis()).map_or(u64::MAX, |millis| millis)
+        })
 }
 
 /// The immutable claim one publish mutates under (SEP-21-002).

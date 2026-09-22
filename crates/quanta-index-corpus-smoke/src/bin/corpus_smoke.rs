@@ -293,7 +293,10 @@ mod tests {
             assert!(false, "expected Err");
             return;
         };
-        assert!(matches!(err, CliError::MissingRequiredFlag { flag: "--corpus" }));
+        assert!(matches!(
+            err,
+            CliError::MissingRequiredFlag { flag: "--corpus" }
+        ));
     }
 
     #[test]
@@ -303,7 +306,10 @@ mod tests {
             assert!(false, "expected Err");
             return;
         };
-        assert!(matches!(err, CliError::MissingRequiredFlag { flag: "--output" }));
+        assert!(matches!(
+            err,
+            CliError::MissingRequiredFlag { flag: "--output" }
+        ));
     }
 
     #[test]

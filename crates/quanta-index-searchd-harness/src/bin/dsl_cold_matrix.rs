@@ -87,7 +87,10 @@ fn run_scenario(scenario: &DslBenchScenario) -> ExitCode {
     let mut runtime = match prepare_cold_runtime(scenario) {
         Ok(runtime) => runtime,
         Err(err) => {
-            emit_stderr(&format!("dsl_cold_matrix: prepare failed for {}: {err:#}", scenario.id));
+            emit_stderr(&format!(
+                "dsl_cold_matrix: prepare failed for {}: {err:#}",
+                scenario.id
+            ));
             return ExitCode::FAILURE;
         }
     };
@@ -159,7 +162,9 @@ fn result_shape_of(text: &str) -> AnyResult<ResultShape> {
         "typed_error" => ResultShape::TypedError,
         "empty" => ResultShape::Empty,
         other => {
-            return Err(anyhow::anyhow!("sample result_shape {other:?} is not a shape"));
+            return Err(anyhow::anyhow!(
+                "sample result_shape {other:?} is not a shape"
+            ));
         }
     })
 }
@@ -222,7 +227,10 @@ fn assemble(out: &Path, samples_per_scenario: usize) -> AnyResult<()> {
     for sample in &samples {
         let parsed = parse_sample(sample)?;
         if scenario_by_id(&parsed.scenario_id).is_none() {
-            return Err(anyhow::anyhow!("sample names unknown scenario {:?}", parsed.scenario_id));
+            return Err(anyhow::anyhow!(
+                "sample names unknown scenario {:?}",
+                parsed.scenario_id
+            ));
         }
         by_scenario
             .entry(parsed.scenario_id.clone())
@@ -266,7 +274,11 @@ fn assemble(out: &Path, samples_per_scenario: usize) -> AnyResult<()> {
             .collect::<AnyResult<Vec<f64>>>()?;
         let latency = LatencySummary::from_samples_ms(&latencies)
             .ok_or_else(|| anyhow::anyhow!("scenario {} has no latencies", scenario.id))?;
-        rows.push(bench_row(scenario, clone_outcome(&last.outcome), Some(latency)));
+        rows.push(bench_row(
+            scenario,
+            clone_outcome(&last.outcome),
+            Some(latency),
+        ));
     }
     let artifact = BenchArtifactV1 {
         dimension: DIMENSION.to_string(),

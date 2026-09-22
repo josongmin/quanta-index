@@ -290,9 +290,9 @@ fn commit_text_authority(
     manifest: &TextAuthorityManifest,
 ) -> Result<Vec<SealedArtifactCommitmentV1>, CoreError> {
     let mut files = Vec::with_capacity(manifest.shards.len().saturating_add(1));
-    files.push(
-        measurer.hash(&format!("{TEXT_AUTHORITY_DIR_NAME}/{TEXT_AUTHORITY_MANIFEST_FILE_NAME}"))?,
-    );
+    files.push(measurer.hash(&format!(
+        "{TEXT_AUTHORITY_DIR_NAME}/{TEXT_AUTHORITY_MANIFEST_FILE_NAME}"
+    ))?);
     for shard in &manifest.shards {
         let name = format!("{TEXT_AUTHORITY_DIR_NAME}/{}", shard.file_name());
         let committed = measurer.commit(&name)?;

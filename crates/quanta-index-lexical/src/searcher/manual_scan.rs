@@ -500,8 +500,10 @@ impl TantivySearcher {
                     ));
                 };
                 let doc_language = self.doc_language(&TantivyDocument::new(), repo_relative_path);
-                Ok(language_from_path_hint(repo_relative_path).or(doc_language.as_deref())
-                    == Some(language.as_str()))
+                Ok(
+                    language_from_path_hint(repo_relative_path).or(doc_language.as_deref())
+                        == Some(language.as_str()),
+                )
             }
             LqFilter::Fork { .. }
             | LqFilter::Archived { .. }

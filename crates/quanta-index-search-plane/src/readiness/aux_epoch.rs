@@ -477,7 +477,7 @@ mod tests {
             || ring.retained() != 1
         {
             return Err(
-                format!("a refused mutation leaves the registry as it was: {ring:?}").into()
+                format!("a refused mutation leaves the registry as it was: {ring:?}").into(),
             );
         }
         Ok(())

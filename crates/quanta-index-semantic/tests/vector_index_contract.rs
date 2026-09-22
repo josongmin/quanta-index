@@ -282,9 +282,11 @@ fn library_view(generation_dir: &Path) -> Result<LibraryView, Box<dyn Error>> {
             .await
             .map_err(|err| format!("index_stats: {err}"))?
         {
-            Some(stats) => {
-                Some((stats.num_indexed_rows, stats.num_unindexed_rows, stats.num_indices))
-            }
+            Some(stats) => Some((
+                stats.num_indexed_rows,
+                stats.num_unindexed_rows,
+                stats.num_indices,
+            )),
             None => None,
         };
         Ok::<LibraryView, Box<dyn Error>>(LibraryView { names, stats })
@@ -469,10 +471,14 @@ fn a_delta_beyond_the_append_budget_retrains_one_index_covering_every_row() -> T
         )
         .into());
     }
-    let hits = searcher.search(&unit_vector(1_042, DIMENSION), 3, &RequestBudgetV1::unbounded())?;
+    let hits = searcher.search(
+        &unit_vector(1_042, DIMENSION),
+        3,
+        &RequestBudgetV1::unbounded(),
+    )?;
     if hits.first().map(|hit| hit.candidate_id.as_str()) != Some("new-1042") {
         return Err(
-            format!("a delta-only row must be served through the rebuilt index: {hits:?}").into()
+            format!("a delta-only row must be served through the rebuilt index: {hits:?}").into(),
         );
     }
     Ok(())
@@ -736,7 +742,10 @@ fn losing_or_damaging_the_index_files_refuses_both_doors_and_a_restart() -> Test
             .ok_or("the index file is not empty")?,
     )?;
     for (door, result) in [
-        ("validate", adapter.validate_generation_identity(&identity(generation))),
+        (
+            "validate",
+            adapter.validate_generation_identity(&identity(generation)),
+        ),
         (
             "open",
             adapter
@@ -745,7 +754,9 @@ fn losing_or_damaging_the_index_files_refuses_both_doors_and_a_restart() -> Test
         ),
     ] {
         if typed_code(&result).as_deref() != Some("GENERATION_SIDECAR_CORRUPT") {
-            return Err(format!("{door} must refuse a truncated index file, got {result:?}").into());
+            return Err(
+                format!("{door} must refuse a truncated index file, got {result:?}").into(),
+            );
         }
     }
     std::fs::write(first, &original)?;
@@ -762,7 +773,10 @@ fn losing_or_damaging_the_index_files_refuses_both_doors_and_a_restart() -> Test
     *last ^= 0xFF;
     std::fs::write(first, &damaged)?;
     for (door, result) in [
-        ("validate", adapter.validate_generation_identity(&identity(generation))),
+        (
+            "validate",
+            adapter.validate_generation_identity(&identity(generation)),
+        ),
         (
             "open",
             adapter
@@ -791,7 +805,10 @@ fn losing_or_damaging_the_index_files_refuses_both_doors_and_a_restart() -> Test
     }
     let restarted = SemanticAdapter::with_state_root(root.clone())?;
     for (door, result) in [
-        ("validate", adapter.validate_generation_identity(&identity(generation))),
+        (
+            "validate",
+            adapter.validate_generation_identity(&identity(generation)),
+        ),
         (
             "open",
             adapter
@@ -829,7 +846,10 @@ fn losing_or_damaging_the_index_files_refuses_both_doors_and_a_restart() -> Test
             .iter()
             .map(|entry| (entry.path.clone(), entry.reason))
             .collect::<Vec<_>>()
-            != vec![(damaged_dir.clone(), GenerationQuarantineReasonV1::ContentCorrupt)]
+            != vec![(
+                damaged_dir.clone(),
+                GenerationQuarantineReasonV1::ContentCorrupt,
+            )]
     {
         return Err(format!(
             "the inventory must quarantine the generation as content-corrupt: {inventory:?}"
@@ -844,7 +864,7 @@ fn losing_or_damaging_the_index_files_refuses_both_doors_and_a_restart() -> Test
         .map(|_searcher| ());
     if typed_code(&still).as_deref() != Some("GENERATION_QUARANTINED") {
         return Err(
-            format!("restoring the bytes must not lift the quarantine, got {still:?}").into()
+            format!("restoring the bytes must not lift the quarantine, got {still:?}").into(),
         );
     }
     let Some(entry) = inventory.quarantined.first() else {
@@ -1005,8 +1025,14 @@ fn a_generation_sealed_under_an_earlier_format_is_refused_typed_at_every_door() 
         .collect();
     quarantined.sort();
     let mut expected = vec![
-        (generation_dir(&root, format_8), GenerationQuarantineReasonV1::FormatUnsupported),
-        (generation_dir(&root, format_7), GenerationQuarantineReasonV1::FormatUnsupported),
+        (
+            generation_dir(&root, format_8),
+            GenerationQuarantineReasonV1::FormatUnsupported,
+        ),
+        (
+            generation_dir(&root, format_7),
+            GenerationQuarantineReasonV1::FormatUnsupported,
+        ),
     ];
     expected.sort();
     if quarantined != expected {

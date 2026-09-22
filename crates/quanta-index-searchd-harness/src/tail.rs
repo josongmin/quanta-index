@@ -223,7 +223,10 @@ pub fn measure_route_tails(rt: &mut E2eRuntime) -> AnyResult<Vec<RouteTailMeasur
         }
         samples_ms.sort_by(f64::total_cmp);
         let latency = LatencySummary::from_samples_ms(&samples_ms).ok_or_else(|| {
-            anyhow::anyhow!("tail: route `{}` collected no samples", budget.route.as_str())
+            anyhow::anyhow!(
+                "tail: route `{}` collected no samples",
+                budget.route.as_str()
+            )
         })?;
         out.push(RouteTailMeasurement {
             route: budget.route,
@@ -505,7 +508,10 @@ mod tests {
         assert_eq!(value["dimension"], "tail");
         assert_eq!(value["mode"], "warm");
         assert_eq!(value["concurrency"], 1);
-        assert_eq!(value["provenance"]["git_head"], "0123456789abcdef0123456789abcdef01234567");
+        assert_eq!(
+            value["provenance"]["git_head"],
+            "0123456789abcdef0123456789abcdef01234567"
+        );
         assert_eq!(value["provenance"]["model_revision"], "model@rev:d16");
         assert_eq!(value["rows"].as_array().map(Vec::len), Some(1));
         assert_eq!(value["rows"][0]["scenario_id"], "test.lexical");

@@ -175,8 +175,10 @@ fn assert_typed_error(
             if code == expected_code {
                 Ok(())
             } else {
-                Err(format!("expected typed code `{expected_code}`, got code `{code}`: {message}")
-                    .into())
+                Err(
+                    format!("expected typed code `{expected_code}`, got code `{code}`: {message}")
+                        .into(),
+                )
             }
         }
         other => {
@@ -191,10 +193,10 @@ fn assert_not_implemented(
 ) -> Result<(), Box<dyn Error>> {
     match outcome {
         Err(CoreError::NotImplemented(msg)) if msg.contains(expected_fragment) => Ok(()),
-        Err(CoreError::NotImplemented(msg)) => {
-            Err(format!("expected NotImplemented containing `{expected_fragment}`, got `{msg}`")
-                .into())
-        }
+        Err(CoreError::NotImplemented(msg)) => Err(format!(
+            "expected NotImplemented containing `{expected_fragment}`, got `{msg}`"
+        )
+        .into()),
         other => Err(format!(
             "expected NotImplemented containing `{expected_fragment}`, got {other:?}"
         )
@@ -323,7 +325,10 @@ fn regex_leaf_small_corpus_returns_hits_via_planner() -> TestResult {
         ("c2", "foobar is here"),
         ("c3", "no match line"),
     ])?;
-    let q = make_query_with_filters(LqExpr::Leaf(LqLeaf::Regex("foo.*r".to_string())), Vec::new());
+    let q = make_query_with_filters(
+        LqExpr::Leaf(LqLeaf::Regex("foo.*r".to_string())),
+        Vec::new(),
+    );
     let hits = searcher.search(&q, 10, &RequestBudgetV1::unbounded())?;
     // Only `foobar` (in c2) matches the per-token regex `foo.*r`. c1 has
     // `fox` which does not match (no `r` after `foo`); c3 has no matching

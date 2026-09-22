@@ -46,9 +46,11 @@ fn repo_map_dispatcher_branch_delegates_to_repo_map_query_port() -> TestResult {
         .into());
     }
     if response.snapshot_meta.snapshot_id != "dispatch-snapshot" {
-        return Err(
-            format!("unexpected snapshot id: {}", response.snapshot_meta.snapshot_id).into()
-        );
+        return Err(format!(
+            "unexpected snapshot id: {}",
+            response.snapshot_meta.snapshot_id
+        )
+        .into());
     }
     if response.entries.len() != 1 {
         return Err(format!("unexpected entry count: {}", response.entries.len()).into());
@@ -127,9 +129,11 @@ fn repo_map_dispatch_emits_closed_obs_metrics() -> TestResult {
             || sample.dimensions.repo_id.as_ref() != "repo-map-ipc"
             || sample.dimensions.generation_id != 9
         {
-            return Err(
-                format!("unexpected repo-map obs dimensions: {:?}", sample.dimensions).into()
-            );
+            return Err(format!(
+                "unexpected repo-map obs dimensions: {:?}",
+                sample.dimensions
+            )
+            .into());
         }
     }
     Ok(())

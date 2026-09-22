@@ -148,9 +148,10 @@ fn parse_args() -> Result<Args> {
 }
 
 fn sibling_index_dir(out_dir: &Path) -> PathBuf {
-    let mut name = out_dir
-        .file_name()
-        .map_or_else(|| "scan-experiment".to_string(), |raw| raw.to_string_lossy().into_owned());
+    let mut name = out_dir.file_name().map_or_else(
+        || "scan-experiment".to_string(),
+        |raw| raw.to_string_lossy().into_owned(),
+    );
     name.push_str(".index");
     out_dir
         .parent()
@@ -249,9 +250,12 @@ fn generate_corpus(args: &Args) -> Result<Corpus> {
         }
         let text = chunk_text(args.chunk_bytes, index < args.needle_count);
         corpus_bytes = corpus_bytes.saturating_add(text.len()).saturating_add(1);
-        current
-            .chunks
-            .push(chunk_record(index, &current.repo_relative_path, &text, &language));
+        current.chunks.push(chunk_record(
+            index,
+            &current.repo_relative_path,
+            &text,
+            &language,
+        ));
         current.body.push_str(&text);
         current.body.push('\n');
     }
@@ -462,7 +466,15 @@ fn run() -> Result<BenchArtifactV1> {
     let searcher = adapter.open(&repo, &revision, generation)?;
     let measurement = measure_query(searcher.as_ref(), args.samples)?;
 
-    let artifact = artifact(&args, &corpus, git_head, host, build_ms, index_bytes, &measurement)?;
+    let artifact = artifact(
+        &args,
+        &corpus,
+        git_head,
+        host,
+        build_ms,
+        index_bytes,
+        &measurement,
+    )?;
     if let Some(out) = &args.artifact_out {
         artifact.write_to(out)?;
     }

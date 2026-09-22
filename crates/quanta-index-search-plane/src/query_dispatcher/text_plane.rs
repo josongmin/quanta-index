@@ -340,8 +340,18 @@ mod tests {
         let cases: [(&LqLeaf, &str, &LqOptions, bool); 12] = [
             (&keyword("fix"), "Fix typo", &folded, true),
             (&keyword("fix"), "prefix", &folded, false),
-            (&keyword("fix"), "fix bug", &options(Some(LqCase::Insensitive)), true),
-            (&keyword("fix"), "Fix typo", &options(Some(LqCase::Sensitive)), false),
+            (
+                &keyword("fix"),
+                "fix bug",
+                &options(Some(LqCase::Insensitive)),
+                true,
+            ),
+            (
+                &keyword("fix"),
+                "Fix typo",
+                &options(Some(LqCase::Sensitive)),
+                false,
+            ),
             (&keyword("ΟΔΟΣ"), "οδοσ σου", &folded, true),
             (&keyword("οδος"), "ΟΔΟΣ", &folded, false),
             (&keyword("café"), "CAFE\u{301} au lait", &folded, true),
@@ -366,8 +376,12 @@ mod tests {
 
     #[test]
     fn a_literal_without_a_token_is_refused_typed() -> TestResult {
-        match leaf_matches_text("test", &LqLeaf::Keyword("👍".to_string()), "👍", &options(None))
-        {
+        match leaf_matches_text(
+            "test",
+            &LqLeaf::Keyword("👍".to_string()),
+            "👍",
+            &options(None),
+        ) {
             Err(CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::LexTextQueryNoTokens,
                 ..
@@ -379,7 +393,11 @@ mod tests {
     #[test]
     fn filter_patterns_are_nfc_substrings_under_the_case_mode() {
         assert!(matches_text("alice", "Alice Liddell", &options(None)));
-        assert!(!matches_text("alice", "Alice Liddell", &options(Some(LqCase::Sensitive))));
+        assert!(!matches_text(
+            "alice",
+            "Alice Liddell",
+            &options(Some(LqCase::Sensitive))
+        ));
         assert!(matches_text("café", "CAFE\u{301}", &options(None)));
         assert!(matches_text("src/", "src/lib.rs", &options(None)));
     }

@@ -48,7 +48,10 @@ impl HistoryTextIndexAdapter {
         }
         let bytes = tree_bytes(path)?;
         std::fs::remove_dir_all(path).map_err(|err| {
-            CoreError::Storage(format!("history text index: remove {}: {err}", path.display()))
+            CoreError::Storage(format!(
+                "history text index: remove {}: {err}",
+                path.display()
+            ))
         })?;
         fsync_parent(path)?;
         Ok(HistoryTextDiscardOutcomeV1::Discarded { bytes })

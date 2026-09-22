@@ -148,7 +148,10 @@ fn every_ranked_candidate_explains_to_exactly_its_emitted_score_in_rank_order() 
         &[
             upsert("first-other", "nothing relevant at all")?,
             upsert("dense", "needle needle needle haystack")?,
-            upsert("sparse", "needle in a very long haystack of many other words here")?,
+            upsert(
+                "sparse",
+                "needle in a very long haystack of many other words here",
+            )?,
             upsert("other", "still nothing relevant")?,
             upsert("twice", "needle haystack needle")?,
             upsert("last-other", "nothing relevant at the end")?,

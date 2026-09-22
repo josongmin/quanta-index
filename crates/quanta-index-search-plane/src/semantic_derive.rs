@@ -369,7 +369,11 @@ fn semantic_header_v1(
     corpus_policy_digest: Option<String>,
 ) -> SemanticIngestHeaderV1 {
     SemanticIngestHeaderV1 {
-        pin: GenerationPin::new(batch.repo_id.clone(), batch.revision_id.clone(), batch.generation),
+        pin: GenerationPin::new(
+            batch.repo_id.clone(),
+            batch.revision_id.clone(),
+            batch.generation,
+        ),
         contract: SemanticGenerationContractV1 {
             mode: batch.mode,
             base_generation: batch.base_generation,
@@ -1311,7 +1315,7 @@ mod tests {
 
         if !derived.replace_scopes.is_empty() || !derived.tombstone_scopes.is_empty() {
             return Err(
-                "seal-only derivation must not produce replacement or tombstone scopes".into()
+                "seal-only derivation must not produce replacement or tombstone scopes".into(),
             );
         }
         if !derived.required_corpora.is_empty() {
@@ -1343,7 +1347,7 @@ mod tests {
 
         if !derived.replace_scopes.is_empty() || !derived.tombstone_scopes.is_empty() {
             return Err(
-                "clear-only derivation must not produce replacement or tombstone scopes".into()
+                "clear-only derivation must not produce replacement or tombstone scopes".into(),
             );
         }
         if !derived.required_corpora.is_empty() {
@@ -1481,7 +1485,7 @@ mod tests {
             != Some(SEMANTIC_SOURCE_FALLBACK_VIEW_POLICY_DIGEST)
         {
             return Err(
-                "fallback replacement must retain its distinct embedding view policy".into()
+                "fallback replacement must retain its distinct embedding view policy".into(),
             );
         }
         Ok(())
@@ -2125,7 +2129,7 @@ mod tests {
             Err(CoreError::InvalidContract(message)) if message.contains("CardText") => {}
             Err(other) => {
                 return Err(
-                    format!("invalid semantic source must fail closed, got {other:?}").into()
+                    format!("invalid semantic source must fail closed, got {other:?}").into(),
                 );
             }
             Ok(_derived) => {

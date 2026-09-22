@@ -104,8 +104,10 @@ fn parse_out_path() -> PathBuf {
     let mut args = std::env::args().skip(1);
     match (args.next().as_deref(), args.next()) {
         (Some("--out"), Some(path)) => PathBuf::from(path),
-        _ => std::env::var_os("DSL_BENCH_WARM_OUT")
-            .map_or_else(|| PathBuf::from("artifacts/dsl-bench/warm-matrix.json"), PathBuf::from),
+        _ => std::env::var_os("DSL_BENCH_WARM_OUT").map_or_else(
+            || PathBuf::from("artifacts/dsl-bench/warm-matrix.json"),
+            PathBuf::from,
+        ),
     }
 }
 

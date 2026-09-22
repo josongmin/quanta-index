@@ -157,14 +157,21 @@ mod tests {
         let service = StructuralService::new(producer);
         let request = dummy_request();
         let result = service.query(&request);
-        assert!(matches!(result, Err(StructuralError::ParseTreeProducerUnavailable)));
-        assert_eq!(code_or_debug(&result), "STR_PRODUCER_PARSE_TREE_UNAVAILABLE");
+        assert!(matches!(
+            result,
+            Err(StructuralError::ParseTreeProducerUnavailable)
+        ));
+        assert_eq!(
+            code_or_debug(&result),
+            "STR_PRODUCER_PARSE_TREE_UNAVAILABLE"
+        );
     }
 
     #[test]
     fn generation_not_ready_maps_to_stable_code() {
-        let producer =
-            Arc::new(FakeProducer::with_readiness(StructuralReadiness::GenerationNotReady));
+        let producer = Arc::new(FakeProducer::with_readiness(
+            StructuralReadiness::GenerationNotReady,
+        ));
         let service = StructuralService::new(producer);
         let request = dummy_request();
         let result = service.query(&request);
@@ -174,8 +181,9 @@ mod tests {
 
     #[test]
     fn shard_unavailable_maps_to_stable_code() {
-        let producer =
-            Arc::new(FakeProducer::with_readiness(StructuralReadiness::ShardUnavailable));
+        let producer = Arc::new(FakeProducer::with_readiness(
+            StructuralReadiness::ShardUnavailable,
+        ));
         let service = StructuralService::new(producer);
         let request = dummy_request();
         let result = service.query(&request);
@@ -185,9 +193,11 @@ mod tests {
 
     #[test]
     fn invalid_request_readiness_maps_to_stable_code() {
-        let producer = Arc::new(FakeProducer::with_readiness(StructuralReadiness::InvalidRequest(
-            "search-plane structural producer requires a pinned generation".into(),
-        )));
+        let producer = Arc::new(FakeProducer::with_readiness(
+            StructuralReadiness::InvalidRequest(
+                "search-plane structural producer requires a pinned generation".into(),
+            ),
+        ));
         let service = StructuralService::new(producer);
         let request = dummy_request();
         let result = service.query(&request);
@@ -201,10 +211,11 @@ mod tests {
 
     #[test]
     fn producer_execution_readiness_maps_to_stable_code() {
-        let producer =
-            Arc::new(FakeProducer::with_readiness(StructuralReadiness::ProducerExecution(
+        let producer = Arc::new(FakeProducer::with_readiness(
+            StructuralReadiness::ProducerExecution(
                 "structural ledger poisoned during readiness: simulated".into(),
-            )));
+            ),
+        ));
         let service = StructuralService::new(producer);
         let request = dummy_request();
         let result = service.query(&request);
@@ -251,7 +262,10 @@ mod tests {
         let service = StructuralService::new(producer);
         let request = dummy_request();
         let response = service.query(&request);
-        assert!(response.is_ok(), "expected ready structural response, got {response:?}");
+        assert!(
+            response.is_ok(),
+            "expected ready structural response, got {response:?}"
+        );
         if let Ok(response) = response {
             assert_eq!(response.candidates, expected);
         }

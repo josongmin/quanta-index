@@ -179,17 +179,26 @@ fn every_ceiling_admits_at_the_bound_and_refuses_one_over() -> TestResult {
     let at_records = IngestResourcePolicy::new(3, u64::MAX, u64::MAX)?;
     let _admitted = at_records.admit_search_corpus_batch(&batch, DIMENSION)?;
     let over_records = IngestResourcePolicy::new(2, u64::MAX, u64::MAX)?;
-    expect_refusal(over_records.admit_search_corpus_batch(&batch, DIMENSION), "records")?;
+    expect_refusal(
+        over_records.admit_search_corpus_batch(&batch, DIMENSION),
+        "records",
+    )?;
 
     let at_text = IngestResourcePolicy::new(usize::MAX, 6, u64::MAX)?;
     let _admitted = at_text.admit_search_corpus_batch(&batch, DIMENSION)?;
     let over_text = IngestResourcePolicy::new(usize::MAX, 5, u64::MAX)?;
-    expect_refusal(over_text.admit_search_corpus_batch(&batch, DIMENSION), "text")?;
+    expect_refusal(
+        over_text.admit_search_corpus_batch(&batch, DIMENSION),
+        "text",
+    )?;
 
     let at_vectors = IngestResourcePolicy::new(usize::MAX, u64::MAX, vector_bytes)?;
     let _admitted = at_vectors.admit_search_corpus_batch(&batch, DIMENSION)?;
     let over_vectors = IngestResourcePolicy::new(usize::MAX, u64::MAX, vector_bytes - 1)?;
-    expect_refusal(over_vectors.admit_search_corpus_batch(&batch, DIMENSION), "vectors")?;
+    expect_refusal(
+        over_vectors.admit_search_corpus_batch(&batch, DIMENSION),
+        "vectors",
+    )?;
     Ok(())
 }
 

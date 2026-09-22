@@ -221,7 +221,10 @@ fn a_both_lane_hybrid_row_reconciles_every_axis_against_the_index() -> TestResul
             &explanation,
             "explain.rrf_k=60; carried_ranks=lexical#1,dense#2; rederived_ranks=lexical#1,dense#2",
         )
-        || !trace_says(&explanation, "explain.dense_lane=rederived; cosine=0.500000")
+        || !trace_says(
+            &explanation,
+            "explain.dense_lane=rederived; cosine=0.500000",
+        )
         || !trace_says(&explanation, "explain.fused_page_position=1")
     {
         return Err(format!("both-lane trace: {explanation:?}").into());
@@ -525,7 +528,10 @@ fn the_rerun_dense_lane_admits_candidates_through_the_same_filter_plan() -> Test
         Some(DENSE_QUERY),
     ))?;
     if axes(&explanation) != (true, true, false)
-        || !trace_says(&explanation, "explain.dense_lane=rederived; cosine=0.900000")
+        || !trace_says(
+            &explanation,
+            "explain.dense_lane=rederived; cosine=0.900000",
+        )
         || !trace_says(
             &explanation,
             "explain.rrf_k=60; carried_ranks=dense#1; rederived_ranks=lexical#absent,dense#absent",

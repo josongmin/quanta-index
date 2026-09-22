@@ -162,7 +162,7 @@ fn walk_from(
             (false, None) => return Ok(seen),
             (has_more, next) => {
                 return Err(
-                    format!("{what}: has_more={has_more} and cursor={next:?} disagree").into()
+                    format!("{what}: has_more={has_more} and cursor={next:?} disagree").into(),
                 );
             }
         }
@@ -197,9 +197,11 @@ fn a_page_walk_never_mixes_epochs_and_the_epoch_survives_a_restart() -> TestResu
     let walk_epoch = first.read_epoch.ok_or("a served page names its epoch")?;
     let expected_first: Vec<String> = (1..=COMMITS).rev().take(10).map(sha_of).collect();
     if first.commit_ids != expected_first {
-        return Err(
-            format!("page one is the ten newest commits, got {:?}", first.commit_ids).into()
-        );
+        return Err(format!(
+            "page one is the ten newest commits, got {:?}",
+            first.commit_ids
+        )
+        .into());
     }
     let cursor = first
         .next_cursor
@@ -236,7 +238,7 @@ fn a_page_walk_never_mixes_epochs_and_the_epoch_survives_a_restart() -> TestResu
     let walked_set: BTreeSet<String> = walked.iter().cloned().collect();
     if walked_set != original {
         return Err(
-            format!("the walk must be exactly epoch {walk_epoch}'s rows: {walked:?}").into()
+            format!("the walk must be exactly epoch {walk_epoch}'s rows: {walked:?}").into(),
         );
     }
     if walked.iter().any(|sha| late.contains(sha)) {

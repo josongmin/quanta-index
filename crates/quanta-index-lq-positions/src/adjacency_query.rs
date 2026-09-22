@@ -42,7 +42,10 @@ pub fn query_adjacency<S: TermPostingSource + ?Sized>(
     if cfg.window_tokens == 0 || cfg.window_tokens > MAX_WINDOW_TOKENS {
         return Err(PositionsError::new(
             PositionsErrorCode::WindowOutOfRange,
-            format!("window_tokens={} outside [1..={}]", cfg.window_tokens, MAX_WINDOW_TOKENS),
+            format!(
+                "window_tokens={} outside [1..={}]",
+                cfg.window_tokens, MAX_WINDOW_TOKENS
+            ),
         ));
     }
 

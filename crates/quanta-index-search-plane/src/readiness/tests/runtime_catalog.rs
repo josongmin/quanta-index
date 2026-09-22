@@ -12,17 +12,32 @@ use crate::readiness::tests::support::{
 #[test]
 fn runtime_catalog_batch_replaces_previous_snapshot_state() -> TestResult {
     let mut ledger = Ledger::default();
-    install_chunk_with_id(&mut ledger, "changed-1", "src/changed.rs", "fn changed() {}")?;
+    install_chunk_with_id(
+        &mut ledger,
+        "changed-1",
+        "src/changed.rs",
+        "fn changed() {}",
+    )?;
     install_chunk_with_id(&mut ledger, "facet-1", "src/facet.rs", "fn facet() {}")?;
     install_chunk_with_id(&mut ledger, "snap-1", "src/snap.rs", "fn snap() {}")?;
-    install_chunk_with_id(&mut ledger, "affected-1", "src/affected.rs", "fn affected() {}")?;
+    install_chunk_with_id(
+        &mut ledger,
+        "affected-1",
+        "src/affected.rs",
+        "fn affected() {}",
+    )?;
     install_chunk_with_id(
         &mut ledger,
         "invalidated-1",
         "src/invalidated.rs",
         "fn invalidated() {}",
     )?;
-    install_chunk_with_id(&mut ledger, "changed-2", "src/changed2.rs", "fn changed2() {}")?;
+    install_chunk_with_id(
+        &mut ledger,
+        "changed-2",
+        "src/changed2.rs",
+        "fn changed2() {}",
+    )?;
 
     ledger.apply_runtime_catalog_batch(
         &RuntimeCatalogIngestBatch {
@@ -111,7 +126,12 @@ fn runtime_catalog_batch_replaces_previous_snapshot_state() -> TestResult {
 #[test]
 fn runtime_catalog_batch_rejects_older_epoch_replay() -> TestResult {
     let mut ledger = Ledger::default();
-    install_chunk_with_id(&mut ledger, "changed-1", "src/changed.rs", "fn changed() {}")?;
+    install_chunk_with_id(
+        &mut ledger,
+        "changed-1",
+        "src/changed.rs",
+        "fn changed() {}",
+    )?;
     ledger.apply_runtime_catalog_batch(
         &RuntimeCatalogIngestBatch {
             repo_id: repo_id(),
@@ -172,7 +192,12 @@ fn runtime_catalog_batch_rejects_older_epoch_replay() -> TestResult {
 #[test]
 fn runtime_catalog_batch_rejects_conflicting_same_epoch_replay() -> TestResult {
     let mut ledger = Ledger::default();
-    install_chunk_with_id(&mut ledger, "changed-1", "src/changed.rs", "fn changed() {}")?;
+    install_chunk_with_id(
+        &mut ledger,
+        "changed-1",
+        "src/changed.rs",
+        "fn changed() {}",
+    )?;
     ledger.apply_runtime_catalog_batch(
         &RuntimeCatalogIngestBatch {
             repo_id: repo_id(),

@@ -616,7 +616,10 @@ impl<'de> serde::Deserialize<'de> for SgQuery {
 pub fn parse_sourcegraph(raw: &str) -> Result<SgQuery, BridgeError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Err(BridgeError::unsupported_directive("", "empty Sourcegraph query"));
+        return Err(BridgeError::unsupported_directive(
+            "",
+            "empty Sourcegraph query",
+        ));
     }
     let mut p = Parser::new(trimmed);
     let q = p.parse_or()?;
@@ -1453,8 +1456,9 @@ mod tests {
 
     #[test]
     fn parses_repo_predicate() {
-        let q =
-            unwrap_ok(parse_sourcegraph(r#"repo:has.file(path:src/lib.rs, name:"Cargo.toml")"#));
+        let q = unwrap_ok(parse_sourcegraph(
+            r#"repo:has.file(path:src/lib.rs, name:"Cargo.toml")"#,
+        ));
         let SgQuery::Predicate {
             scope,
             name,

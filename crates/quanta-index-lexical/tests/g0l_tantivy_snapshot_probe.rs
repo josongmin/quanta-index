@@ -171,7 +171,10 @@ fn ranking_divergence(left: &[(String, f32)], right: &[(String, f32)]) -> Option
     }
     for (rank, (left_row, right_row)) in left.iter().zip(right.iter()).enumerate() {
         if left_row.0 != right_row.0 {
-            return Some(format!("rank {rank}: doc `{}` vs `{}`", left_row.0, right_row.0));
+            return Some(format!(
+                "rank {rank}: doc `{}` vs `{}`",
+                left_row.0, right_row.0
+            ));
         }
         let difference = (left_row.1 - right_row.1).abs();
         if difference > SCORE_TOLERANCE {
@@ -185,7 +188,10 @@ fn ranking_divergence(left: &[(String, f32)], right: &[(String, f32)]) -> Option
 }
 
 fn term_hit_count(searcher: &Searcher, field: Field, value: &str) -> Result<usize, Box<dyn Error>> {
-    let query = TermQuery::new(Term::from_field_text(field, value), IndexRecordOption::Basic);
+    let query = TermQuery::new(
+        Term::from_field_text(field, value),
+        IndexRecordOption::Basic,
+    );
     Ok(searcher.search(&query, &TopDocs::with_limit(64))?.len())
 }
 
@@ -364,7 +370,7 @@ fn committed_segment_files_are_immutable_across_later_commits() -> ProbeResult {
     }
     if !rewritten.is_empty() {
         return Err(
-            format!("tantivy rewrote committed segment files in place: {rewritten:?}").into()
+            format!("tantivy rewrote committed segment files in place: {rewritten:?}").into(),
         );
     }
     Ok(())
@@ -426,7 +432,7 @@ fn hard_linked_base_supports_a_delta_without_rewriting_base_bytes() -> ProbeResu
             }
         }
         return Err(
-            format!("delta generation mutated base generation bytes: changed={changed:?}").into()
+            format!("delta generation mutated base generation bytes: changed={changed:?}").into(),
         );
     }
 
@@ -492,7 +498,10 @@ fn pinned_searcher_survives_delete_commit_and_garbage_collection() -> ProbeResul
         &[
             ("pinned_num_docs", pinned_docs.to_string()),
             ("pinned_num_docs_after_gc", pinned.num_docs().to_string()),
-            ("gc_deleted_files", collected.deleted_files.len().to_string()),
+            (
+                "gc_deleted_files",
+                collected.deleted_files.len().to_string(),
+            ),
         ],
     );
 

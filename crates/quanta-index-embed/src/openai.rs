@@ -210,7 +210,10 @@ impl OpenAiEmbeddingProvider {
         transport: Box<dyn EmbeddingTransport>,
     ) -> Result<Self, CoreError> {
         if config.api_key.trim().is_empty() {
-            return Err(typed(LexicalErrorCode::SemProviderAuth, "openai: API key is empty"));
+            return Err(typed(
+                LexicalErrorCode::SemProviderAuth,
+                "openai: API key is empty",
+            ));
         }
         if config.model.trim().is_empty() {
             return Err(invalid("openai: model is empty"));
@@ -235,7 +238,9 @@ impl OpenAiEmbeddingProvider {
             return Err(invalid("openai: max_batch must be at least 1"));
         }
         if config.max_estimated_tokens_per_request == 0 {
-            return Err(invalid("openai: max_estimated_tokens_per_request must be at least 1"));
+            return Err(invalid(
+                "openai: max_estimated_tokens_per_request must be at least 1",
+            ));
         }
         if config.concurrency == 0 || config.concurrency > MAX_CONCURRENCY {
             return Err(invalid(&format!(
@@ -948,8 +953,10 @@ mod tests {
     #[test]
     fn embed_batch_returns_vectors_in_input_order() {
         // Response intentionally out of order; provider must reorder by index.
-        let transport =
-            ScriptedTransport::new(vec![Ok(ok_body(&[(1, vec![0.0, 1.0]), (0, vec![1.0, 0.0])]))]);
+        let transport = ScriptedTransport::new(vec![Ok(ok_body(&[
+            (1, vec![0.0, 1.0]),
+            (0, vec![1.0, 0.0]),
+        ]))]);
         let provider = provider_with(cfg(2), transport);
         let vectors = provider.embed_batch(&["a", "b"]).expect("embed ok");
         assert_eq!(vectors, vec![vec![1.0, 0.0], vec![0.0, 1.0]]);
@@ -1053,10 +1060,16 @@ mod tests {
         let out = provider.embed_batch(&refs).expect("concurrent embed ok");
         // Output order MUST match input order despite concurrent completion.
         let expected: Vec<Vec<f32>> = (0_u8..10).map(|n| vec![f32::from(n)]).collect();
-        assert_eq!(out, expected, "concurrent dispatch must preserve input order");
+        assert_eq!(
+            out, expected,
+            "concurrent dispatch must preserve input order"
+        );
         // Concurrency actually happened: peak in-flight > 1 (bounded by 4).
         let observed_peak = peak.load(Ordering::SeqCst);
-        assert!(observed_peak >= 2, "batches must overlap; peak in-flight was {observed_peak}");
+        assert!(
+            observed_peak >= 2,
+            "batches must overlap; peak in-flight was {observed_peak}"
+        );
         assert!(
             observed_peak <= 4,
             "concurrency must stay bounded by the knob; peak was {observed_peak}"
@@ -1123,7 +1136,11 @@ mod tests {
             .lock()
             .expect("probe: request sizes mutex")
             .clone();
-        assert_eq!(sizes.len(), DEFAULT_CONCURRENCY, "a window is window / max_batch requests");
+        assert_eq!(
+            sizes.len(),
+            DEFAULT_CONCURRENCY,
+            "a window is window / max_batch requests"
+        );
         assert!(
             sizes.iter().all(|size| *size == DEFAULT_MAX_BATCH),
             "every request of a window carries max_batch inputs: {sizes:?}"
@@ -1132,7 +1149,11 @@ mod tests {
             peak.load(Ordering::SeqCst) <= DEFAULT_CONCURRENCY,
             "in-flight requests never exceed the concurrency knob"
         );
-        assert_eq!(in_flight.load(Ordering::SeqCst), 0, "nothing is left in flight");
+        assert_eq!(
+            in_flight.load(Ordering::SeqCst),
+            0,
+            "nothing is left in flight"
+        );
     }
 
     #[test]
@@ -1232,7 +1253,11 @@ mod tests {
         let provider = provider_with(cfg(2), transport);
         let vectors = provider.embed_batch(&[]).expect("empty ok");
         assert!(vectors.is_empty());
-        assert_eq!(calls.load(Ordering::SeqCst), 0, "empty input must make no HTTP calls");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "empty input must make no HTTP calls"
+        );
     }
 
     #[test]
@@ -1273,7 +1298,11 @@ mod tests {
             .embed_batch(&["a"])
             .expect("recovers after one 429");
         assert_eq!(vectors, vec![vec![0.5, 0.5]]);
-        assert_eq!(calls.load(Ordering::SeqCst), 2, "one 429 then success = two calls");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "one 429 then success = two calls"
+        );
     }
 
     #[test]
@@ -1319,7 +1348,11 @@ mod tests {
         let calls = transport.calls_handle();
         let provider = provider_with(cfg(2).with_max_retries(0), transport);
         assert!(provider.embed_batch(&["a"]).is_err());
-        assert_eq!(calls.load(Ordering::SeqCst), 1, "max_retries=0 must not retry");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "max_retries=0 must not retry"
+        );
     }
 
     #[test]
@@ -1346,17 +1379,30 @@ mod tests {
             Ok(ok_body(&[(0, vec![0.0, 1.0])])),
         ]);
         let split_calls = split_transport.calls_handle();
-        let split = provider_with(cfg(2).with_max_batch(1).with_concurrency(1), split_transport);
+        let split = provider_with(
+            cfg(2).with_max_batch(1).with_concurrency(1),
+            split_transport,
+        );
         let vectors = split.embed_batch(&["a", "b"]).expect("batched ok");
         assert_eq!(vectors, vec![vec![1.0, 0.0], vec![0.0, 1.0]]);
-        assert_eq!(split_calls.load(Ordering::SeqCst), 2, "max_batch=1 -> 2 requests");
+        assert_eq!(
+            split_calls.load(Ordering::SeqCst),
+            2,
+            "max_batch=1 -> 2 requests"
+        );
 
-        let one_transport =
-            ScriptedTransport::new(vec![Ok(ok_body(&[(0, vec![1.0, 0.0]), (1, vec![0.0, 1.0])]))]);
+        let one_transport = ScriptedTransport::new(vec![Ok(ok_body(&[
+            (0, vec![1.0, 0.0]),
+            (1, vec![0.0, 1.0]),
+        ]))]);
         let one_calls = one_transport.calls_handle();
         let one = provider_with(cfg(2), one_transport); // default max_batch (256)
         let _vectors = one.embed_batch(&["a", "b"]).expect("single batch ok");
-        assert_eq!(one_calls.load(Ordering::SeqCst), 1, "default batch -> 1 request");
+        assert_eq!(
+            one_calls.load(Ordering::SeqCst),
+            1,
+            "default batch -> 1 request"
+        );
     }
 
     #[test]
@@ -1571,8 +1617,10 @@ mod tests {
             release: Arc::clone(&release),
             calls: Arc::clone(&calls),
         };
-        let provider =
-            provider_with(cfg(2).with_max_retries(retries).with_timeout(timeout), transport);
+        let provider = provider_with(
+            cfg(2).with_max_retries(retries).with_timeout(timeout),
+            transport,
+        );
         (provider, entered_rx, release, calls)
     }
 
@@ -1604,7 +1652,11 @@ mod tests {
         // The attempt is still parked: the provider did not wait for it.
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         let _released = release.wait();
-        assert_eq!(calls.load(Ordering::SeqCst), 1, "no retry after a cancellation");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "no retry after a cancellation"
+        );
     }
 
     /// Every attempt's HTTP timeout is capped by what the budget has left.

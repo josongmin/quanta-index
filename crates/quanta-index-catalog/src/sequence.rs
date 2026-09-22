@@ -243,18 +243,26 @@ fn read_allocator(
         0 => false,
         1 => true,
         other => {
-            return Err(corrupt(&format!("exhausted flag is {other}, expected 0 or 1")));
+            return Err(corrupt(&format!(
+                "exhausted flag is {other}, expected 0 or 1"
+            )));
         }
     };
     let stored = blob32("allocator row digest", &digest)?;
     if allocator_digest(next, exhausted) != stored {
-        return Err(corrupt("sequence allocator row does not match its own digest"));
+        return Err(corrupt(
+            "sequence allocator row does not match its own digest",
+        ));
     }
     if exhausted && next.is_some() {
-        return Err(corrupt("sequence allocator is exhausted but still names a next value"));
+        return Err(corrupt(
+            "sequence allocator is exhausted but still names a next value",
+        ));
     }
     if !exhausted && next.is_none() {
-        return Err(corrupt("sequence allocator is not exhausted but names no next value"));
+        return Err(corrupt(
+            "sequence allocator is not exhausted but names no next value",
+        ));
     }
     Ok(AllocatorRow { next, exhausted })
 }
@@ -363,7 +371,11 @@ pub(crate) fn reconcile(
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(|error| engine_error("begin sequence reconcile", path, &error))?;
     let max: Option<i64> = transaction
-        .query_row("SELECT MAX(sequence) FROM catalog_sequence_event_v2", [], |row| row.get(0))
+        .query_row(
+            "SELECT MAX(sequence) FROM catalog_sequence_event_v2",
+            [],
+            |row| row.get(0),
+        )
         .map_err(|error| engine_error("read ledger maximum", path, &error))?;
     let (expected_next, expected_exhausted) = match max {
         None => (Some(1_i64), false),

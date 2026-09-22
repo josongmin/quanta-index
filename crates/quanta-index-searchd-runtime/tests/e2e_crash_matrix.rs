@@ -142,7 +142,10 @@ fn generation_dir(state_root: &Path, track_root: &str, generation: u64) -> PathB
         &RepoId::new(REPO).expect("test fixture ID satisfies canonical policy"),
         &RevisionId::new(REVISION).expect("test fixture ID satisfies canonical policy"),
     )
-    .generation_dir(&state_root.join(track_root), ManifestGeneration::new(generation))
+    .generation_dir(
+        &state_root.join(track_root),
+        ManifestGeneration::new(generation),
+    )
 }
 
 /// Entries the reclaim area of `track_root` holds.
@@ -639,7 +642,9 @@ fn an_interrupted_removal_is_finished_at_boot() -> TestResult {
         .chain(&quarantined.semantic)
         .any(|entry| entry.path.contains(RECLAIM_AREA_DIR_NAME))
     {
-        return Err(format!("the reclaim area is not a quarantine finding: {quarantined:?}").into());
+        return Err(
+            format!("the reclaim area is not a quarantine finding: {quarantined:?}").into(),
+        );
     }
     retained_whole_and_retired_unknown(&state_root, &client)?;
     drop(client);

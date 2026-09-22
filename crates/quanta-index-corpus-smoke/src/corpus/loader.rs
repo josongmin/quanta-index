@@ -680,9 +680,11 @@ fn validate_runtime_row_contract(row: &CorpusRow) -> Result<(), CorpusLoadError>
                     ));
                 }
             }
-            if matches!(row.runtime_route, Some(RuntimeRoute::History | RuntimeRoute::Structural))
-                && (!row.expected_engines_touched.is_empty()
-                    || !row.expected_summary_substrings.is_empty())
+            if matches!(
+                row.runtime_route,
+                Some(RuntimeRoute::History | RuntimeRoute::Structural)
+            ) && (!row.expected_engines_touched.is_empty()
+                || !row.expected_summary_substrings.is_empty())
             {
                 return Err(invalid(
                     "history/structural runtime rows must not carry explanation provenance assertions"
@@ -693,13 +695,17 @@ fn validate_runtime_row_contract(row: &CorpusRow) -> Result<(), CorpusLoadError>
         }
         Some(RowClassification::TypedUnavailable) => {
             if !matches!(row.gate, Gate::Active) {
-                return Err(invalid("typed_unavailable rows must use gate=active".to_string()));
+                return Err(invalid(
+                    "typed_unavailable rows must use gate=active".to_string(),
+                ));
             }
             Ok(())
         }
         Some(RowClassification::ParserOnly) => {
             if !matches!(row.gate, Gate::Pending { .. }) {
-                return Err(invalid("parser_only rows must use gate=pending".to_string()));
+                return Err(invalid(
+                    "parser_only rows must use gate=pending".to_string(),
+                ));
             }
             Ok(())
         }
@@ -875,7 +881,10 @@ mod tests {
         assert_eq!(row.classification, Some(RowClassification::Runtime));
         assert_eq!(row.runtime_route, Some(RuntimeRoute::RuntimeMetadata));
         assert_eq!(row.fixture.as_deref(), Some("docs.toml"));
-        assert_eq!(row.expected_ids, Some(vec!["alpha".to_string(), "beta".to_string()]));
+        assert_eq!(
+            row.expected_ids,
+            Some(vec!["alpha".to_string(), "beta".to_string()])
+        );
         assert_eq!(row.top_k, Some(7));
         assert_eq!(row.runtime_error_code, None);
         assert_eq!(row.runtime_error_message_contains, None);
@@ -1144,7 +1153,10 @@ mod tests {
             kind = "single"
         "#;
         let err = expect_err(parse_corpus(raw, p()));
-        assert!(matches!(err, CorpusLoadError::MissingField { field: "query", .. }));
+        assert!(matches!(
+            err,
+            CorpusLoadError::MissingField { field: "query", .. }
+        ));
     }
 
     #[test]

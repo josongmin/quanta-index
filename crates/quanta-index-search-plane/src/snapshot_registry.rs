@@ -697,7 +697,9 @@ mod tests {
             handles.push(join.join().map_err(|_panic| "acquire thread panicked")??);
         }
         if opens.load(Ordering::SeqCst) != 1 {
-            return Err(format!("opened {} times for one key", opens.load(Ordering::SeqCst)).into());
+            return Err(
+                format!("opened {} times for one key", opens.load(Ordering::SeqCst)).into(),
+            );
         }
         let Some(first) = handles.first() else {
             return Err("no handles".into());
@@ -844,7 +846,9 @@ mod tests {
         if stats.entries != 1 || stats.await_interruptions != 2 || stats.open_failures != 0 {
             return Err(format!("the flight must land after its waiters left: {stats:?}").into());
         }
-        let hit = get(&registry, &key(5), || Err(CoreError::Storage("must hit".into())))?;
+        let hit = get(&registry, &key(5), || {
+            Err(CoreError::Storage("must hit".into()))
+        })?;
         if !Arc::ptr_eq(&landed, &hit) {
             return Err("the landed handle is not the resident one".into());
         }
@@ -924,7 +928,9 @@ mod tests {
         if registry.promote(&key(2), &promoted)? != SnapshotPromoteOutcome::Retained {
             return Err("a handle within budget must be retained".into());
         }
-        let served = get(&registry, &key(2), || Err(CoreError::Storage("must hit".into())))?;
+        let served = get(&registry, &key(2), || {
+            Err(CoreError::Storage("must hit".into()))
+        })?;
         if !Arc::ptr_eq(&served, &promoted.handle) {
             return Err("the promoted handle was not the one served".into());
         }
@@ -951,10 +957,14 @@ mod tests {
     fn eviction_is_least_recently_used_and_honors_both_limits() -> TestResult {
         let registry = SnapshotRegistry::new(policy(3, 100));
         for generation in 1..=3 {
-            let _handle = get(&registry, &key(generation), || Ok(opened(&key(generation), 30)))?;
+            let _handle = get(&registry, &key(generation), || {
+                Ok(opened(&key(generation), 30))
+            })?;
         }
         // Touch 1 so 2 becomes the least recently used.
-        let _touch = get(&registry, &key(1), || Err(CoreError::Storage("must hit".into())))?;
+        let _touch = get(&registry, &key(1), || {
+            Err(CoreError::Storage("must hit".into()))
+        })?;
         // Entry limit: the fourth key evicts exactly one entry, key 2.
         let _fourth = get(&registry, &key(4), || Ok(opened(&key(4), 30)))?;
         let stats = registry.stats()?;
@@ -1008,7 +1018,9 @@ mod tests {
                 return Err(format!("evicted key reported {reported:?}").into());
             }
         }
-        let held_two = get(&registry, &key(2), || Err(CoreError::Storage("must hit".into())))?;
+        let held_two = get(&registry, &key(2), || {
+            Err(CoreError::Storage("must hit".into()))
+        })?;
         match registry.retire(&key(2))? {
             SnapshotRetireOutcome::StillReferenced { holders: 2 } => {}
             reported @ (SnapshotRetireOutcome::NotResident

@@ -147,8 +147,10 @@ fn a_stored_row_scores_its_exact_cosine_through_the_exact_lane_on_both_generatio
         (ann_generation(), ANN_ROWS, "approximate"),
     ] {
         let searcher = adapter.open(&repo(), &revision(), generation)?;
-        let lane_is_approximate =
-            matches!(searcher.dense_lane().index, DenseIndexV1::Approximate { .. });
+        let lane_is_approximate = matches!(
+            searcher.dense_lane().index,
+            DenseIndexV1::Approximate { .. }
+        );
         if lane_is_approximate != (expected_index == "approximate") {
             return Err(format!(
                 "generation {} must serve through an {expected_index} lane: {:?}",
@@ -260,10 +262,9 @@ fn an_expired_budget_refuses_the_lookup_before_the_query_is_issued() -> TestResu
             }
             Ok(())
         }
-        other => {
-            Err(format!("expected a typed deadline refusal in the exact lane, got {other:?}")
-                .into())
-        }
+        other => Err(
+            format!("expected a typed deadline refusal in the exact lane, got {other:?}").into(),
+        ),
     }
 }
 

@@ -311,7 +311,10 @@ mod tests {
 
     #[test]
     fn plan_limit_exceeded_wire_form() {
-        assert_eq!(PositionsErrorCode::PlanLimitExceeded.as_code_str(), "PLAN_LIMIT_EXCEEDED");
+        assert_eq!(
+            PositionsErrorCode::PlanLimitExceeded.as_code_str(),
+            "PLAN_LIMIT_EXCEEDED"
+        );
         assert_eq!(
             PositionsErrorCode::from_code_str("PLAN_LIMIT_EXCEEDED"),
             Some(PositionsErrorCode::PlanLimitExceeded)

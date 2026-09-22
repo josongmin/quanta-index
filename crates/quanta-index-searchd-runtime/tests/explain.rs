@@ -42,7 +42,12 @@ use quanta_index_searchd::app::searchd::drive;
 use quanta_index_searchd_runtime::build_runtime;
 
 type TestResult = Result<(), Box<dyn Error>>;
-type RuntimeHandles = (PathBuf, PathBuf, Arc<AtomicBool>, thread::JoinHandle<anyhow::Result<()>>);
+type RuntimeHandles = (
+    PathBuf,
+    PathBuf,
+    Arc<AtomicBool>,
+    thread::JoinHandle<anyhow::Result<()>>,
+);
 static NEXT_SOCKET_ID: AtomicU64 = AtomicU64::new(0);
 const READINESS_TIMEOUT: Duration = Duration::from_secs(5);
 const SOCKET_APPEAR_TIMEOUT: Duration = Duration::from_secs(5);
@@ -183,7 +188,9 @@ fn start_runtime(state_root: &Path, thread_name: &str) -> Result<RuntimeHandles,
     let join = thread::Builder::new()
         .name(thread_name.into())
         .spawn(move || drive(runtime, &shutdown_for_drive))?;
-    if !wait_until(SOCKET_APPEAR_TIMEOUT, || query_socket.exists() && ingest_socket.exists()) {
+    if !wait_until(SOCKET_APPEAR_TIMEOUT, || {
+        query_socket.exists() && ingest_socket.exists()
+    }) {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
         return Err(format!(
@@ -269,7 +276,10 @@ fn explain_reports_present_candidate() -> TestResult {
     let dir = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) = start_runtime(state_root, "explain-test")?;
-    publish_chunk(&ingest_socket, chunk_record("explain-c1", "quick brown fox jumps")?)?;
+    publish_chunk(
+        &ingest_socket,
+        chunk_record("explain-c1", "quick brown fox jumps")?,
+    )?;
     seal_lexical(&ingest_socket)?;
 
     let pin = GenerationPin::new(repo(), revision(), generation());
@@ -334,9 +344,11 @@ fn explain_reports_present_candidate() -> TestResult {
     if !explanation.summary.contains("explain-c1") {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
-        return Err(
-            format!("expected candidate id in summary, got: {}", explanation.summary).into()
-        );
+        return Err(format!(
+            "expected candidate id in summary, got: {}",
+            explanation.summary
+        )
+        .into());
     }
 
     shutdown.store(true, Ordering::Release);
@@ -353,7 +365,10 @@ fn explain_rejects_generation_mismatch() -> TestResult {
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "explain-mismatch-test")?;
-    publish_chunk(&ingest_socket, chunk_record("c-mismatch", "alpha bravo charlie")?)?;
+    publish_chunk(
+        &ingest_socket,
+        chunk_record("c-mismatch", "alpha bravo charlie")?,
+    )?;
     seal_lexical(&ingest_socket)?;
 
     let pin = GenerationPin::new(repo(), revision(), generation());

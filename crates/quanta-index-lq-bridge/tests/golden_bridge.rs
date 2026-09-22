@@ -33,7 +33,10 @@ where
     F: Fn(&LqFilter) -> bool,
 {
     let filters = filters_for(raw);
-    assert!(filters.iter().any(predicate), "expected {label} on `{raw}`, got {filters:?}");
+    assert!(
+        filters.iter().any(predicate),
+        "expected {label} on `{raw}`, got {filters:?}"
+    );
 }
 
 fn ver() -> SourcegraphVersionTag {
@@ -369,7 +372,10 @@ fn row6d_file_contains_content_alias_lowers_to_content_leaf() {
             return;
         }
     };
-    assert_eq!(lq.expr, LqExpr::Leaf(LqLeaf::Phrase("lemon yellow banana".to_string())));
+    assert_eq!(
+        lq.expr,
+        LqExpr::Leaf(LqLeaf::Phrase("lemon yellow banana".to_string()))
+    );
 }
 
 #[test]
@@ -473,10 +479,14 @@ fn row19_adopted_runtime_meta_surface_filter() {
 
 #[test]
 fn row20_adopted_runtime_invalidated_by_filter() {
-    assert_filter_present("invalidated_by:rebuild=lexical needle", "invalidated_by:", |filter| {
-        matches!(
-            filter,
-            LqFilter::InvalidatedBy { source } if source == "rebuild=lexical"
-        )
-    });
+    assert_filter_present(
+        "invalidated_by:rebuild=lexical needle",
+        "invalidated_by:",
+        |filter| {
+            matches!(
+                filter,
+                LqFilter::InvalidatedBy { source } if source == "rebuild=lexical"
+            )
+        },
+    );
 }

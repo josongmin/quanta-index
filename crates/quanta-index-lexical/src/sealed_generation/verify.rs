@@ -96,7 +96,10 @@ fn read_committed(
         if error.kind() == std::io::ErrorKind::NotFound {
             crate::index_store::sidecar_corrupt(generation_dir, &artifact.name, "missing")
         } else {
-            CoreError::Storage(format!("lexical: read committed file {}: {error}", path.display()))
+            CoreError::Storage(format!(
+                "lexical: read committed file {}: {error}",
+                path.display()
+            ))
         }
     })?;
     let length = crate::channel_payloads::count_from_len(bytes.len())?;
@@ -113,7 +116,11 @@ fn read_committed(
         } else {
             "content digest differs from the committed digest"
         };
-        return Err(crate::index_store::sidecar_corrupt(generation_dir, &artifact.name, reason));
+        return Err(crate::index_store::sidecar_corrupt(
+            generation_dir,
+            &artifact.name,
+            reason,
+        ));
     }
     Ok(bytes)
 }
@@ -170,7 +177,11 @@ fn verify_index_segments(
             return Err(crate::index_store::sidecar_corrupt(
                 generation_dir,
                 &artifact.name,
-                &format!("{} bytes on disk, {} committed", metadata.len(), artifact.bytes),
+                &format!(
+                    "{} bytes on disk, {} committed",
+                    metadata.len(),
+                    artifact.bytes
+                ),
             ));
         }
     }

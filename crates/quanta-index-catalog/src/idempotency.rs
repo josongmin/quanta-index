@@ -115,7 +115,9 @@ struct StoredRow {
 
 fn sequence_u64(sequence: i64) -> Result<u64, CoreError> {
     u64::try_from(sequence).map_err(|error| {
-        CoreError::Storage(format!("catalog: durable sequence {sequence} is negative: {error}"))
+        CoreError::Storage(format!(
+            "catalog: durable sequence {sequence} is negative: {error}"
+        ))
     })
 }
 
@@ -389,7 +391,10 @@ fn read_row(
     match state {
         OperationJournalStateV1::Committed => {
             if receipt_cbor.is_none() || receipt_digest.is_none() || refusal_code.is_some() {
-                return Err(corrupt_row(key, "committed row lacks receipt or carries a refusal"));
+                return Err(corrupt_row(
+                    key,
+                    "committed row lacks receipt or carries a refusal",
+                ));
             }
         }
         OperationJournalStateV1::Refused => {
@@ -406,7 +411,10 @@ fn read_row(
         | OperationJournalStateV1::Aborted
         | OperationJournalStateV1::Uncertain => {
             if receipt_cbor.is_some() || refusal_code.is_some() {
-                return Err(corrupt_row(key, "non-terminal row carries terminal payload"));
+                return Err(corrupt_row(
+                    key,
+                    "non-terminal row carries terminal payload",
+                ));
             }
         }
     }
@@ -668,7 +676,9 @@ fn inspect_stored(stored: &StoredRow) -> Result<OperationInspectV1, CoreError> {
                 (stored.durable_sequence, stored.receipt_digest)
                 && receipt_digest(stored.receipt_cbor.as_deref().unwrap_or(&[])) != digest
             {
-                return Err(corrupt_row_wip("receipt bytes do not match the receipt digest"));
+                return Err(corrupt_row_wip(
+                    "receipt bytes do not match the receipt digest",
+                ));
             }
             OperationInspectV1::Committed {
                 receipt,
@@ -712,8 +722,9 @@ fn corrupt_row_wip(what: &str) -> CoreError {
 impl IdempotencyCatalogPort for SqliteCatalog {
     fn inspect(&self, key: &IdempotencyKeyV1) -> Result<OperationInspectV1, CoreError> {
         let connection = self.lock()?;
-        read_row(&connection, &self.path, key)?
-            .map_or(Ok(OperationInspectV1::Absent), |stored| inspect_stored(&stored))
+        read_row(&connection, &self.path, key)?.map_or(Ok(OperationInspectV1::Absent), |stored| {
+            inspect_stored(&stored)
+        })
     }
 
     fn claim_prepared(
@@ -899,7 +910,10 @@ impl IdempotencyCatalogPort for SqliteCatalog {
             .ok_or_else(|| fence_lost(&claim.key, "mark_applying found no record"))?;
         check_claim(&stored, claim, "mark_applying met a drifted record")?;
         if stored.state != OperationJournalStateV1::Claimed {
-            return Err(fence_lost(&claim.key, "mark_applying met a non-claimed record"));
+            return Err(fence_lost(
+                &claim.key,
+                "mark_applying met a non-claimed record",
+            ));
         }
         let _written = write_row(
             &transaction,
@@ -941,7 +955,10 @@ impl IdempotencyCatalogPort for SqliteCatalog {
             stored.state,
             OperationJournalStateV1::Claimed | OperationJournalStateV1::Applying
         ) {
-            return Err(fence_lost(&claim.key, "record_refused met a record outside its claim"));
+            return Err(fence_lost(
+                &claim.key,
+                "record_refused met a record outside its claim",
+            ));
         }
         let payload = payload_digest_of_parts(&[code.as_bytes(), message.as_bytes()]);
         let sequence = append_sequence_event(
@@ -991,7 +1008,10 @@ impl IdempotencyCatalogPort for SqliteCatalog {
             stored.state,
             OperationJournalStateV1::Applying | OperationJournalStateV1::Uncertain
         ) {
-            return Err(fence_lost(&claim.key, "commit met a record outside its apply"));
+            return Err(fence_lost(
+                &claim.key,
+                "commit met a record outside its apply",
+            ));
         }
         let payload = payload_digest_of_parts(&[&receipt_cbor]);
         let sequence = append_sequence_event(
@@ -1037,7 +1057,10 @@ impl IdempotencyCatalogPort for SqliteCatalog {
                 | OperationJournalStateV1::Applying
                 | OperationJournalStateV1::Uncertain
         ) {
-            return Err(fence_lost(&claim.key, "mark_uncertain met a record outside its claim"));
+            return Err(fence_lost(
+                &claim.key,
+                "mark_uncertain met a record outside its claim",
+            ));
         }
         let _written = write_row(
             &transaction,
@@ -1147,7 +1170,9 @@ impl IdempotencyCatalogPort for SqliteCatalog {
             )
             .map_err(|error| engine_error("prepare generations for pair", &self.path, &error))?;
         let rows = statement
-            .query_map(params![repo_id.as_str(), revision_id.as_str()], |row| row.get::<_, i64>(0))
+            .query_map(params![repo_id.as_str(), revision_id.as_str()], |row| {
+                row.get::<_, i64>(0)
+            })
             .map_err(|error| engine_error("list generations for pair", &self.path, &error))?;
         let mut generations = Vec::new();
         for row in rows {

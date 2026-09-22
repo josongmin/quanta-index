@@ -150,7 +150,11 @@ impl BridgeError {
     /// offending filter name (e.g. `"r"`, `"colorscheme"`).
     #[must_use]
     pub fn unsupported_filter(filter: &str, detail: impl Into<Box<str>>) -> Self {
-        Self::new(BridgeErrorCode::BridgeUnsupportedFilter, Some(Box::<str>::from(filter)), detail)
+        Self::new(
+            BridgeErrorCode::BridgeUnsupportedFilter,
+            Some(Box::<str>::from(filter)),
+            detail,
+        )
     }
 
     /// Convenience constructor for `BRIDGE_UNSUPPORTED_DIRECTIVE` with
@@ -167,13 +171,21 @@ impl BridgeError {
     /// Convenience constructor for `BRIDGE_AMBIGUOUS_FILTER`.
     #[must_use]
     pub fn ambiguous_filter(filter: &str, detail: impl Into<Box<str>>) -> Self {
-        Self::new(BridgeErrorCode::BridgeAmbiguousFilter, Some(Box::<str>::from(filter)), detail)
+        Self::new(
+            BridgeErrorCode::BridgeAmbiguousFilter,
+            Some(Box::<str>::from(filter)),
+            detail,
+        )
     }
 
     /// Convenience constructor for `BRIDGE_VERSION_PIN`.
     #[must_use]
     pub fn version_pin(raw: &str, detail: impl Into<Box<str>>) -> Self {
-        Self::new(BridgeErrorCode::BridgeVersionPin, Some(Box::<str>::from(raw)), detail)
+        Self::new(
+            BridgeErrorCode::BridgeVersionPin,
+            Some(Box::<str>::from(raw)),
+            detail,
+        )
     }
 
     /// Convenience constructor for `BRIDGE_TRANSLATE_FAIL`.

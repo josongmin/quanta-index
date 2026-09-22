@@ -259,7 +259,10 @@ mod tests {
         let high = index_of(&[(5, &["alpha"])]);
         let sharded = ShardedPositionsIndex::new(vec![&high, &low]);
         let mut postings = sharded.term_postings("alpha").expect("both hold alpha");
-        assert_eq!(postings.next().expect("first entry").expect("ok").doc_id, DocId(5));
+        assert_eq!(
+            postings.next().expect("first entry").expect("ok").doc_id,
+            DocId(5)
+        );
         let err = postings
             .next()
             .expect("second entry")

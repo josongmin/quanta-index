@@ -296,7 +296,11 @@ impl ActivationPromotionParts {
         };
         let recorded = match door_findings.quarantine_door_finding(target) {
             Ok(DoorFindingOutcome::Quarantined { quarantined }) => {
-                format!("quarantined as {} at {}", quarantined.reason, quarantined.path.display())
+                format!(
+                    "quarantined as {} at {}",
+                    quarantined.reason,
+                    quarantined.path.display()
+                )
             }
             Ok(DoorFindingOutcome::NotReproduced) => {
                 "the re-proof admitted the generation; nothing was quarantined".to_string()
@@ -648,7 +652,11 @@ mod tests {
             if let Some(refusal) = self.refusal {
                 return Err(refusal.error(candidate));
             }
-            self.open(&candidate.repo_id, &candidate.revision_id, candidate.manifest_generation)
+            self.open(
+                &candidate.repo_id,
+                &candidate.revision_id,
+                candidate.manifest_generation,
+            )
         }
     }
 
@@ -677,7 +685,11 @@ mod tests {
             if let Some(refusal) = self.refusal {
                 return Err(refusal.error(candidate));
             }
-            self.open(&candidate.repo_id, &candidate.revision_id, candidate.manifest_generation)
+            self.open(
+                &candidate.repo_id,
+                &candidate.revision_id,
+                candidate.manifest_generation,
+            )
         }
     }
 
@@ -698,7 +710,11 @@ mod tests {
     fn promotion_refusing(
         refusal: Option<(SearchPlaneTrackKind, DoorRefusal)>,
         findings: ScriptedFinding,
-    ) -> (ActivationPromotionParts, Arc<RecordingDoorFindings>, Arc<RecordingDoorFindings>) {
+    ) -> (
+        ActivationPromotionParts,
+        Arc<RecordingDoorFindings>,
+        Arc<RecordingDoorFindings>,
+    ) {
         let refusal_on = |track| {
             refusal
                 .filter(|(refused, _how)| *refused == track)
@@ -1176,7 +1192,10 @@ mod tests {
         };
         assert_eq!(active_a.lexical().manifest_generation.get(), 17);
         assert_eq!(active_b.lexical().manifest_generation.get(), 23);
-        assert_ne!(active_a.lexical().manifest_digest, active_b.lexical().manifest_digest);
+        assert_ne!(
+            active_a.lexical().manifest_digest,
+            active_b.lexical().manifest_digest
+        );
         Ok(())
     }
 }

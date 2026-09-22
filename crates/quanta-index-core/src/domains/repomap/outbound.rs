@@ -1,4 +1,7 @@
-use quanta_index_contract::{RepoMapActivateGenerationRequest, RepoMapSourceBundle};
+use quanta_index_contract::{
+    RepoMapActivateGenerationRequest, RepoMapActivateGenerationRequestV2,
+    RepoMapPublishBundleRequestV2, RepoMapSourceBundle, RepoMapTerminalReceiptV2,
+};
 
 use crate::CoreError;
 
@@ -30,6 +33,15 @@ pub trait RepoMapBundleIngestPort: Send + Sync {
         &self,
         bundle: &RepoMapSourceBundle,
     ) -> Result<RepoMapMutationReceiptV1, CoreError>;
+
+    fn ingest_bundle_v2(
+        &self,
+        _request: &RepoMapPublishBundleRequestV2,
+    ) -> Result<RepoMapTerminalReceiptV2, CoreError> {
+        Err(CoreError::InvalidContract(
+            "repomap V2 publish is unsupported by this ingest owner".to_string(),
+        ))
+    }
 }
 
 /// The `RepoMap` store's quarantine, listed and discarded one file at a
@@ -55,6 +67,15 @@ pub trait RepoMapGenerationActivatePort: Send + Sync {
         &self,
         request: &RepoMapActivateGenerationRequest,
     ) -> Result<RepoMapMutationReceiptV1, CoreError>;
+
+    fn activate_generation_v2(
+        &self,
+        _request: &RepoMapActivateGenerationRequestV2,
+    ) -> Result<RepoMapTerminalReceiptV2, CoreError> {
+        Err(CoreError::InvalidContract(
+            "repomap V2 activation is unsupported by this activation owner".to_string(),
+        ))
+    }
 }
 
 /// What a `RepoMap` store found on disk when it opened (QI-BB-008).

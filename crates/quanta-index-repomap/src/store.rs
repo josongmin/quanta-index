@@ -23,7 +23,11 @@ use quanta_index_contract::{
     CandidateCommitmentV1, LogicalGenerationIdentityV1, ManifestGeneration, RepoId,
     RepositoryRevisionIdentityV1, RevisionId,
 };
-use quanta_index_contract::{RepoMapActivateGenerationRequest, RepoMapSourceBundle};
+use quanta_index_contract::{
+    RepoMapActivateGenerationRequest, RepoMapActivateGenerationRequestV2, RepoMapMutationAck,
+    RepoMapMutationPhaseV2, RepoMapPublishBundleRequestV2, RepoMapSourceBundle,
+    RepoMapTerminalReceiptV2, canonical_repo_map_source_bundle_digest_v2,
+};
 use quanta_index_core::{
     CoreError, QuarantineDiscardOutcomeV1, QuarantinedRepoMapFileV1, RepoMapBundleIngestPort,
     RepoMapGenerationActivatePort, RepoMapMutationReceiptV1, RepoMapOpenReportV1,
@@ -298,7 +302,9 @@ impl RepoMapGenerationStore {
         let incident_digest = *evidence
             .digest()
             .map_err(|error| {
-                CoreError::Storage(format!("repomap quarantine evidence digest refused: {error}"))
+                CoreError::Storage(format!(
+                    "repomap quarantine evidence digest refused: {error}"
+                ))
             })?
             .as_bytes();
         let source_path = relative.to_string_lossy().into_owned();
@@ -387,6 +393,14 @@ impl RepoMapGenerationStore {
         &self,
         bundle: &RepoMapSourceBundle,
     ) -> Result<RepoMapMutationReceiptV1, CoreError> {
+        self.ingest_bundle_with_meta_v2(bundle, CandidateProjectionMetaV1::from_bundle(bundle))
+    }
+
+    fn ingest_bundle_with_meta_v2(
+        &self,
+        bundle: &RepoMapSourceBundle,
+        meta: CandidateProjectionMetaV1,
+    ) -> Result<RepoMapMutationReceiptV1, CoreError> {
         if bundle.manifest_digest.trim().is_empty() {
             return Err(CoreError::InvalidContract(
                 "repomap ingest: manifest_digest must not be empty".to_string(),
@@ -406,6 +420,7 @@ impl RepoMapGenerationStore {
             .objects
             .as_ref()
             .ok_or_else(|| legacy_root_refusal(&self.root))?;
+        let meta_json = meta.to_json()?;
         // Compile (typed refusal ⇒ zero object/catalog/registry mutation)
         // and seal the immutable object; only then commit the catalog row.
         let candidate = RepoMapGraphCompiler::with_default_budget()
@@ -413,8 +428,11 @@ impl RepoMapGenerationStore {
             .map_err(|refusal| {
                 CoreError::InvalidContract(format!("repomap compile refused: {refusal}"))
             })?;
-        let identity =
-            logical_identity(&bundle.repo_id, &bundle.revision_id, bundle.manifest_generation);
+        let identity = logical_identity(
+            &bundle.repo_id,
+            &bundle.revision_id,
+            bundle.manifest_generation,
+        );
         let envelope = candidate.envelope(identity).map_err(|error| {
             CoreError::InvalidContract(format!("repomap candidate envelope refused: {error}"))
         })?;
@@ -426,8 +444,6 @@ impl RepoMapGenerationStore {
             CoreError::Storage(format!("repomap object address refused: {error}"))
         })?;
         let content_digest = envelope.artifact().content_digest();
-        let meta = CandidateProjectionMetaV1::from_bundle(bundle);
-        let meta_json = meta.to_json()?;
         let outcome = self.catalog.seal_repomap_candidate(
             bundle.repo_id.as_str(),
             bundle.revision_id.as_str(),
@@ -473,6 +489,76 @@ impl RepoMapGenerationStore {
             outcome.terminal_sequence,
             outcome.replayed,
         ))
+    }
+
+    pub fn ingest_bundle_v2(
+        &self,
+        request: &RepoMapPublishBundleRequestV2,
+    ) -> Result<RepoMapTerminalReceiptV2, CoreError> {
+        let computed = canonical_repo_map_source_bundle_digest_v2(&request.bundle)
+            .map_err(|error| CoreError::InvalidContract(format!("repomap V2 ingest: {error}")))?;
+        if computed != request.source_bundle_digest {
+            return Err(CoreError::InvalidContract(format!(
+                "repomap V2 ingest: source bundle digest mismatch: expected={} observed={}",
+                request.source_bundle_digest, computed
+            )));
+        }
+        let meta =
+            CandidateProjectionMetaV1::from_bundle_with_source_digest_v2(&request.bundle, computed);
+        let receipt = self.ingest_bundle_with_meta_v2(&request.bundle, meta)?;
+        self.validate_published_candidate_custody_v2(
+            &request.bundle,
+            request.source_bundle_digest.as_str(),
+        )?;
+        Ok(terminal_publish_receipt_v2(
+            &request.bundle,
+            request.source_bundle_digest.clone(),
+            receipt,
+        ))
+    }
+
+    /// Re-read the durable catalog row before issuing a V2 terminal receipt.
+    ///
+    /// Candidate replay is keyed by the compiled candidate commitment. Some
+    /// source-bundle axes do not change those compiled bytes, so commitment
+    /// equality alone cannot authorize a receipt for the replaying request.
+    /// The receipt is issued only when the catalog-retained axes are exactly
+    /// those of this request.
+    fn validate_published_candidate_custody_v2(
+        &self,
+        bundle: &RepoMapSourceBundle,
+        source_bundle_digest: &str,
+    ) -> Result<(), CoreError> {
+        let candidate = self
+            .catalog
+            .repomap_candidate_row(
+                bundle.repo_id.as_str(),
+                bundle.revision_id.as_str(),
+                bundle.manifest_generation.get(),
+            )?
+            .ok_or_else(|| {
+                CoreError::Storage(
+                    "repomap V2 ingest: candidate disappeared after durable seal".to_string(),
+                )
+            })?;
+        let meta = CandidateProjectionMetaV1::from_json(candidate.projection_meta.as_str())?;
+        if meta.manifest_digest.as_deref() != Some(bundle.manifest_digest.as_str())
+            || meta.snapshot_id != bundle.snapshot_id
+            || meta.projection_version != bundle.projection_version
+            || meta.authority_digest != bundle.authority_digest
+            || meta.source_bundle_digest.as_deref() != Some(source_bundle_digest)
+        {
+            return Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::CandidateCommitmentConflict,
+                message: format!(
+                    "repomap V2 ingest: durable candidate custody differs from replay request for repo={} revision={} generation={}",
+                    bundle.repo_id.as_str(),
+                    bundle.revision_id.as_str(),
+                    bundle.manifest_generation.get(),
+                ),
+            });
+        }
+        Ok(())
     }
 
     /// Insert a snapshot without a sealed candidate.
@@ -573,7 +659,15 @@ impl RepoMapGenerationStore {
             }
         }
         if outcome.replayed {
-            return Ok(receipt(None, commitment, outcome.epoch, outcome.terminal_sequence, true));
+            return Ok(receipt(
+                outcome
+                    .prior_candidate_commitment
+                    .map(CandidateCommitmentV1::from_bytes),
+                commitment,
+                outcome.epoch,
+                outcome.terminal_sequence,
+                true,
+            ));
         }
         {
             let mut activated = self
@@ -581,7 +675,10 @@ impl RepoMapGenerationStore {
                 .write()
                 .map_err(|err| storage_poisoned("activation map", &err))?;
             let _prior = activated.insert(
-                (request.repo_id.as_str().to_string(), request.revision_id.as_str().to_string()),
+                (
+                    request.repo_id.as_str().to_string(),
+                    request.revision_id.as_str().to_string(),
+                ),
                 request.manifest_generation.get(),
             );
         }
@@ -594,6 +691,59 @@ impl RepoMapGenerationStore {
             outcome.terminal_sequence,
             false,
         ))
+    }
+
+    pub fn activate_generation_v2(
+        &self,
+        request: &RepoMapActivateGenerationRequestV2,
+    ) -> Result<RepoMapTerminalReceiptV2, CoreError> {
+        let identity = &request.request_v1;
+        let candidate = self
+            .catalog
+            .repomap_candidate_row(
+                identity.repo_id.as_str(),
+                identity.revision_id.as_str(),
+                identity.manifest_generation.get(),
+            )?
+            .ok_or_else(|| {
+                CoreError::NotFound(format!(
+                    "repomap V2 activate: no snapshot for repo={} revision={} generation={}",
+                    identity.repo_id.as_str(),
+                    identity.revision_id.as_str(),
+                    identity.manifest_generation.get()
+                ))
+            })?;
+        let meta = CandidateProjectionMetaV1::from_json(candidate.projection_meta.as_str())?;
+        let durable_manifest_digest = meta.manifest_digest.clone().ok_or_else(|| {
+            CoreError::InvalidContract(
+                "repomap V2 activate: candidate predates strong manifest custody".to_string(),
+            )
+        })?;
+        let durable_source_digest = meta.source_bundle_digest.clone().ok_or_else(|| {
+            CoreError::InvalidContract(
+                "repomap V2 activate: candidate predates strong source-bundle custody".to_string(),
+            )
+        })?;
+        if durable_manifest_digest != identity.manifest_digest
+            || meta.snapshot_id != request.snapshot_id
+            || meta.projection_version != request.projection_version
+            || meta.authority_digest != request.authority_digest
+            || durable_source_digest != request.source_bundle_digest
+        {
+            return Err(CoreError::InvalidContract(
+                "repomap V2 activate: request axes differ from the sealed candidate".to_string(),
+            ));
+        }
+        let receipt = self.activate_generation(identity)?;
+        Ok(RepoMapTerminalReceiptV2 {
+            phase: RepoMapMutationPhaseV2::Activate,
+            mutation: mutation_ack_v1(identity, receipt),
+            manifest_digest: durable_manifest_digest,
+            snapshot_id: meta.snapshot_id,
+            projection_version: meta.projection_version,
+            authority_digest: meta.authority_digest,
+            source_bundle_digest: durable_source_digest,
+        })
     }
 
     pub fn read_query_snapshot(
@@ -628,7 +778,10 @@ impl RepoMapGenerationStore {
         repo_id: &RepoId,
         revision_id: &RevisionId,
     ) -> Result<Option<u64>, CoreError> {
-        let key = (repo_id.as_str().to_string(), revision_id.as_str().to_string());
+        let key = (
+            repo_id.as_str().to_string(),
+            revision_id.as_str().to_string(),
+        );
         let guard = self
             .activated
             .read()
@@ -659,7 +812,10 @@ impl RepoMapGenerationStore {
         &self,
         request: &quanta_index_contract::RepoMapQueryRequest,
     ) -> Result<(), CoreError> {
-        let key = (request.repo_id.as_str().to_string(), request.revision_id.as_str().to_string());
+        let key = (
+            request.repo_id.as_str().to_string(),
+            request.revision_id.as_str().to_string(),
+        );
         let guard = self
             .activated
             .read()
@@ -700,12 +856,63 @@ fn receipt(
     }
 }
 
+fn mutation_ack_v1(
+    identity: &RepoMapActivateGenerationRequest,
+    receipt: RepoMapMutationReceiptV1,
+) -> RepoMapMutationAck {
+    RepoMapMutationAck {
+        repo_id: identity.repo_id.clone(),
+        revision_id: identity.revision_id.clone(),
+        manifest_generation: identity.manifest_generation,
+        prior_candidate_commitment: receipt.prior_candidate_commitment,
+        new_candidate_commitment: receipt.new_candidate_commitment,
+        activation_epoch: receipt.activation_epoch,
+        terminal_sequence: receipt.terminal_sequence,
+        replayed: receipt.replayed,
+    }
+}
+
+fn terminal_publish_receipt_v2(
+    bundle: &RepoMapSourceBundle,
+    source_bundle_digest: String,
+    receipt: RepoMapMutationReceiptV1,
+) -> RepoMapTerminalReceiptV2 {
+    RepoMapTerminalReceiptV2 {
+        phase: RepoMapMutationPhaseV2::Publish,
+        mutation: RepoMapMutationAck {
+            repo_id: bundle.repo_id.clone(),
+            revision_id: bundle.revision_id.clone(),
+            manifest_generation: bundle.manifest_generation,
+            // Publish seals a candidate but does not mutate the active head.
+            // Keeping activation context out of the V2 publish receipt makes
+            // an ACK-loss replay independent of later activation changes.
+            prior_candidate_commitment: None,
+            new_candidate_commitment: receipt.new_candidate_commitment,
+            activation_epoch: 0,
+            terminal_sequence: receipt.terminal_sequence,
+            replayed: receipt.replayed,
+        },
+        manifest_digest: bundle.manifest_digest.clone(),
+        snapshot_id: bundle.snapshot_id.clone(),
+        projection_version: bundle.projection_version,
+        authority_digest: bundle.authority_digest.clone(),
+        source_bundle_digest,
+    }
+}
+
 impl RepoMapBundleIngestPort for RepoMapGenerationStore {
     fn ingest_bundle(
         &self,
         bundle: &RepoMapSourceBundle,
     ) -> Result<RepoMapMutationReceiptV1, CoreError> {
         Self::ingest_bundle(self, bundle)
+    }
+
+    fn ingest_bundle_v2(
+        &self,
+        request: &RepoMapPublishBundleRequestV2,
+    ) -> Result<RepoMapTerminalReceiptV2, CoreError> {
+        Self::ingest_bundle_v2(self, request)
     }
 }
 
@@ -761,9 +968,11 @@ impl RepoMapQuarantinePort for RepoMapGenerationStore {
             .catalog
             .discard_repomap_quarantine_payload(&incident.incident_digest)?;
         let payload_bytes = objects
-            .read_quarantine_payload(quanta_index_contract::QuarantinePayloadDigestV1::from_bytes(
-                incident.payload_digest,
-            ))?
+            .read_quarantine_payload(
+                quanta_index_contract::QuarantinePayloadDigestV1::from_bytes(
+                    incident.payload_digest,
+                ),
+            )?
             .map_or(0_usize, |bytes| bytes.len());
         let reclaimed = u64::try_from(payload_bytes).map_or(0, |bytes| bytes);
         let _reclaimed = objects.reclaim_quarantine_payload(
@@ -779,6 +988,13 @@ impl RepoMapGenerationActivatePort for RepoMapGenerationStore {
         request: &RepoMapActivateGenerationRequest,
     ) -> Result<RepoMapMutationReceiptV1, CoreError> {
         Self::activate_generation(self, request)
+    }
+
+    fn activate_generation_v2(
+        &self,
+        request: &RepoMapActivateGenerationRequestV2,
+    ) -> Result<RepoMapTerminalReceiptV2, CoreError> {
+        Self::activate_generation_v2(self, request)
     }
 }
 

@@ -435,7 +435,10 @@ mod tests {
     fn dense_admission_refill_doubles_to_the_ceiling_then_stops() {
         let ceiling = HybridOrchestratorPolicy::dense_admission_examine_ceiling();
         assert_eq!(ceiling, quanta_index_contract::INTERNAL_FETCH_CEILING);
-        assert_eq!(HybridOrchestratorPolicy::next_dense_admission_fetch(100), Some(200));
+        assert_eq!(
+            HybridOrchestratorPolicy::next_dense_admission_fetch(100),
+            Some(200)
+        );
         assert_eq!(
             HybridOrchestratorPolicy::next_dense_admission_fetch(6_400),
             Some(ceiling),
@@ -446,7 +449,10 @@ mod tests {
             None,
             "a fetch of the ceiling ends the loop"
         );
-        assert_eq!(HybridOrchestratorPolicy::next_dense_admission_fetch(u32::MAX), None);
+        assert_eq!(
+            HybridOrchestratorPolicy::next_dense_admission_fetch(u32::MAX),
+            None
+        );
     }
 
     #[test]

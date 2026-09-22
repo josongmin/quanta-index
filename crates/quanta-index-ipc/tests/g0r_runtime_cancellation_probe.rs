@@ -426,7 +426,10 @@ fn a_disconnected_peer_cancels_its_dispatch_budget() -> ProbeResult {
         "disconnect_cancels",
         &[
             ("abandoned_client_outcome", describe(&abandoned)),
-            ("completions_while_abandoned", completions_while_abandoned.to_string()),
+            (
+                "completions_while_abandoned",
+                completions_while_abandoned.to_string(),
+            ),
             ("cancelled_observed", cancelled_observed.to_string()),
             ("follow_up_outcome", describe(&follow_up)),
         ],

@@ -96,7 +96,10 @@ impl<'de> Visitor<'de> for RuntimeMetadataCursorV1Visitor {
                     universe_epoch = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(other, RUNTIME_METADATA_CURSOR_V1_FIELDS));
+                    return Err(de::Error::unknown_field(
+                        other,
+                        RUNTIME_METADATA_CURSOR_V1_FIELDS,
+                    ));
                 }
             }
         }

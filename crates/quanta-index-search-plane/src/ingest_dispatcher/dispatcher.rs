@@ -314,6 +314,12 @@ impl SearchPlaneIngestDispatcher {
                     }
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
+            }
+            SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(request) => {
+                match self.repomap.ingest_bundle_v2(&request) {
+                    Ok(receipt) => SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(receipt),
+                    Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
+                }
             } // QI-LXB-01 / QI-HIST-01 / QI-RT-02 / QI-STR-02: history /
               // dirty / structural batches now have first-class arms above.
               // No fallback arm needed.

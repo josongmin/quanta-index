@@ -112,8 +112,12 @@ fn every_pin_state_has_exactly_one_outcome() -> TestResult {
                 materialized_head: case.materialized.map(g),
                 sealed_head: case.sealed.map(g),
             };
-            let observed =
-                outcome(validate_pinned_generation_v1("test", &pin(case.pin), track, readiness))?;
+            let observed = outcome(validate_pinned_generation_v1(
+                "test",
+                &pin(case.pin),
+                track,
+                readiness,
+            ))?;
             if observed != case.expected {
                 return Err(format!(
                     "{track:?}: retained={} materialized={:?} sealed={:?} pin={}: expected {:?}, observed {observed:?}",

@@ -69,25 +69,46 @@ impl SearchPlaneDispatcher {
         key: &SnapshotKey,
         outcome: SnapshotAcquireOutcome,
     ) {
-        let dimensions =
-            Dimensions::new("LXE-10", "8", "local", key.repo_id.as_str(), key.generation.get());
+        let dimensions = Dimensions::new(
+            "LXE-10",
+            "8",
+            "local",
+            key.repo_id.as_str(),
+            key.generation.get(),
+        );
         let (name, kind, value) = match outcome {
             SnapshotAcquireOutcome::Hit => match track {
                 "lexical" => ("lq_snapshot_lexical_hit_total", MetricKind::Counter, 1.0),
                 _ => ("lq_snapshot_semantic_hit_total", MetricKind::Counter, 1.0),
             },
             SnapshotAcquireOutcome::Coalesced => match track {
-                "lexical" => ("lq_snapshot_lexical_coalesced_total", MetricKind::Counter, 1.0),
-                _ => ("lq_snapshot_semantic_coalesced_total", MetricKind::Counter, 1.0),
+                "lexical" => (
+                    "lq_snapshot_lexical_coalesced_total",
+                    MetricKind::Counter,
+                    1.0,
+                ),
+                _ => (
+                    "lq_snapshot_semantic_coalesced_total",
+                    MetricKind::Counter,
+                    1.0,
+                ),
             },
             SnapshotAcquireOutcome::Miss { cold_open_nanos } => {
                 let millis = u64::try_from(cold_open_nanos.div_euclid(1_000_000))
-                    .map_or(f64::MAX, |value| u32::try_from(value).map_or(f64::MAX, f64::from));
+                    .map_or(f64::MAX, |value| {
+                        u32::try_from(value).map_or(f64::MAX, f64::from)
+                    });
                 match track {
-                    "lexical" => {
-                        ("lq_snapshot_lexical_cold_open_ms", MetricKind::Histogram, millis)
-                    }
-                    _ => ("lq_snapshot_semantic_cold_open_ms", MetricKind::Histogram, millis),
+                    "lexical" => (
+                        "lq_snapshot_lexical_cold_open_ms",
+                        MetricKind::Histogram,
+                        millis,
+                    ),
+                    _ => (
+                        "lq_snapshot_semantic_cold_open_ms",
+                        MetricKind::Histogram,
+                        millis,
+                    ),
                 }
             }
         };

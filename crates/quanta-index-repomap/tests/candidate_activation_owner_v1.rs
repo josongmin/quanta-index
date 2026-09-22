@@ -31,13 +31,14 @@ use std::time::Duration;
 
 use quanta_index_catalog::SqliteCatalog;
 use quanta_index_contract::{
-    FileId, ManifestGeneration, RepoId, RepoMapActivateGenerationRequest, RepoMapExactnessSummary,
-    RepoMapFileNode, RepoMapGraphCoverage, RepoMapGraphCoverageClass, RepoMapItemIndexAvailability,
-    RepoMapNode, RepoMapQueryRequest, RepoMapRedactionState, RepoMapSourceBundle, RepoRelativePath,
-    RevisionId,
+    FileId, ManifestGeneration, RepoId, RepoMapActivateGenerationRequest,
+    RepoMapActivateGenerationRequestV2, RepoMapExactnessSummary, RepoMapFileNode,
+    RepoMapGraphCoverage, RepoMapGraphCoverageClass, RepoMapItemIndexAvailability,
+    RepoMapMutationPhaseV2, RepoMapNode, RepoMapPublishBundleRequestV2, RepoMapQueryRequest,
+    RepoMapRedactionState, RepoMapSourceBundle, RepoRelativePath, RevisionId,
 };
 use quanta_index_core::{CoreError, RepoMapMutationReceiptV1, RepoMapQuarantinePort};
-use quanta_index_repomap::RepoMapGenerationStore;
+use quanta_index_repomap::{CandidateProjectionMetaV1, RepoMapGenerationStore};
 use tempfile::TempDir;
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -213,7 +214,10 @@ fn closed_transition_table_publish_activate_supersede_and_illegal_refusals() -> 
     // Activated -> (same) replay of the original activation receipt.
     let replay_activation = store.activate_generation(&activate_request(1))?;
     assert!(replay_activation.replayed);
-    assert_eq!(replay_activation.terminal_sequence, activation.terminal_sequence);
+    assert_eq!(
+        replay_activation.terminal_sequence,
+        activation.terminal_sequence
+    );
 
     // Activate a fresh generation: supersedes, binds prior commitment.
     let seal_two = publish(store, 2, "g2")?;
@@ -224,8 +228,21 @@ fn closed_transition_table_publish_activate_supersede_and_illegal_refusals() -> 
         supersede.prior_candidate_commitment.as_deref(),
         Some(seal.new_candidate_commitment.as_str())
     );
+    let supersede_replay = store.activate_generation(&activate_request(2))?;
+    assert!(supersede_replay.replayed);
+    assert_eq!(
+        supersede_replay.prior_candidate_commitment, supersede.prior_candidate_commitment,
+        "activation replay must reproduce the original prior commitment"
+    );
+    assert_eq!(
+        supersede_replay.terminal_sequence,
+        supersede.terminal_sequence
+    );
     assert!(query(store, 2).is_ok());
-    assert!(query(store, 1).is_err(), "superseded generation must not serve");
+    assert!(
+        query(store, 1).is_err(),
+        "superseded generation must not serve"
+    );
     drop(seal_two);
 
     // Activating an absent generation: typed NotFound.
@@ -274,6 +291,187 @@ fn global_terminal_sequence_is_strictly_monotonic_across_operations() -> TestRes
 }
 
 #[test]
+fn v2_receipts_bind_full_bundle_and_replay_after_restart() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().to_path_buf();
+    let source = bundle(1, "g1");
+    let publish_request = RepoMapPublishBundleRequestV2::new(source.clone())?;
+    let activate_request = RepoMapActivateGenerationRequestV2::for_bundle(&source)?;
+
+    let (publish, activate) = {
+        let (_catalog, store) = open_fixture(&root)?;
+        let publish = store.ingest_bundle_v2(&publish_request)?;
+        assert_eq!(publish.phase, RepoMapMutationPhaseV2::Publish);
+        assert!(publish.mutation.prior_candidate_commitment.is_none());
+        assert_eq!(publish.mutation.activation_epoch, 0);
+        assert_eq!(
+            publish.source_bundle_digest,
+            publish_request.source_bundle_digest
+        );
+        let activate = store.activate_generation_v2(&activate_request)?;
+        assert_eq!(activate.phase, RepoMapMutationPhaseV2::Activate);
+        assert_eq!(activate.source_bundle_digest, publish.source_bundle_digest);
+        assert_eq!(
+            activate.mutation.new_candidate_commitment,
+            publish.mutation.new_candidate_commitment
+        );
+        assert!(activate.mutation.terminal_sequence > publish.mutation.terminal_sequence);
+        (publish, activate)
+    };
+
+    let (_catalog, reopened) = open_fixture(&root)?;
+    let publish_replay = reopened.ingest_bundle_v2(&publish_request)?;
+    let activate_replay = reopened.activate_generation_v2(&activate_request)?;
+    assert!(publish_replay.mutation.replayed);
+    assert!(activate_replay.mutation.replayed);
+    let mut expected_publish_replay = publish;
+    expected_publish_replay.mutation.replayed = true;
+    assert_eq!(publish_replay, expected_publish_replay);
+    let mut expected_activate_replay = activate;
+    expected_activate_replay.mutation.replayed = true;
+    assert_eq!(activate_replay, expected_activate_replay);
+    Ok(())
+}
+
+#[test]
+fn v1_replay_remains_compatible_and_cannot_upgrade_legacy_custody_to_v2() -> TestResult {
+    let fixture = fixture()?;
+    let source = bundle(1, "g1");
+    let first = fixture.store.ingest_bundle(&source)?;
+    let durable_before = fixture
+        .catalog
+        .repomap_candidate_row("repo-p03", "rev-p03", 1)?
+        .expect("V1 publish sealed the candidate");
+    assert!(!durable_before.projection_meta.contains("manifest_digest"));
+    assert!(
+        !durable_before
+            .projection_meta
+            .contains("source_bundle_digest")
+    );
+
+    let replay = fixture.store.ingest_bundle(&source)?;
+    assert!(replay.replayed, "exact V1 replay must remain compatible");
+    assert_eq!(replay.terminal_sequence, first.terminal_sequence);
+    assert_eq!(
+        fixture
+            .catalog
+            .repomap_candidate_row("repo-p03", "rev-p03", 1)?
+            .expect("V1 replay preserved the candidate"),
+        durable_before
+    );
+
+    let strong_request = RepoMapPublishBundleRequestV2::new(source)?;
+    let upgrade_error = fixture
+        .store
+        .ingest_bundle_v2(&strong_request)
+        .expect_err("legacy V1 custody cannot be relabeled as a V2 strong publish");
+    assert_typed(
+        &upgrade_error,
+        quanta_index_contract::SearchPlaneErrorCodeV2::CandidateCommitmentConflict,
+    );
+    assert_eq!(
+        fixture
+            .catalog
+            .repomap_candidate_row("repo-p03", "rev-p03", 1)?
+            .expect("V2 upgrade refusal preserved the legacy candidate"),
+        durable_before
+    );
+    Ok(())
+}
+
+#[test]
+fn projection_meta_rejects_partial_or_malformed_v2_strong_custody() -> TestResult {
+    let source = bundle(1, "g1");
+    let legacy_meta = CandidateProjectionMetaV1::from_bundle(&source);
+    let mut partial: serde_json::Value = serde_json::from_str(&legacy_meta.to_json()?)?;
+    partial["manifest_digest"] = serde_json::Value::String(source.manifest_digest.clone());
+    let error = CandidateProjectionMetaV1::from_json(&serde_json::to_string(&partial)?)
+        .expect_err("one strong-custody field without its pair is corrupt");
+    assert_typed(
+        &error,
+        quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+    );
+
+    let mut wrong_types: serde_json::Value = serde_json::from_str(&legacy_meta.to_json()?)?;
+    wrong_types["manifest_digest"] = serde_json::json!(7);
+    wrong_types["source_bundle_digest"] = serde_json::json!(["sha256:invalid"]);
+    let error = CandidateProjectionMetaV1::from_json(&serde_json::to_string(&wrong_types)?)
+        .expect_err("present non-string strong-custody fields cannot decode as legacy custody");
+    assert_typed(
+        &error,
+        quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+    );
+
+    let mut malformed_digests: serde_json::Value = serde_json::from_str(&legacy_meta.to_json()?)?;
+    malformed_digests["manifest_digest"] = serde_json::json!("not-a-manifest-digest");
+    malformed_digests["source_bundle_digest"] =
+        serde_json::json!(format!("sha256:{}", "A".repeat(64)));
+    let error = CandidateProjectionMetaV1::from_json(&serde_json::to_string(&malformed_digests)?)
+        .expect_err("malformed strong-custody digest strings must fail catalog decode");
+    assert_typed(
+        &error,
+        quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+    );
+    Ok(())
+}
+
+#[test]
+fn v2_refuses_digest_and_activation_axis_substitution() -> TestResult {
+    let fixture = fixture()?;
+    let source = bundle(1, "g1");
+    let mut corrupt_publish = RepoMapPublishBundleRequestV2::new(source.clone())?;
+    corrupt_publish.source_bundle_digest = format!("sha256:{}", "0".repeat(64));
+    assert!(fixture.store.ingest_bundle_v2(&corrupt_publish).is_err());
+    assert!(
+        fixture
+            .catalog
+            .repomap_candidate_row("repo-p03", "rev-p03", 1)?
+            .is_none(),
+        "digest refusal must happen before candidate mutation"
+    );
+
+    let publish = RepoMapPublishBundleRequestV2::new(source.clone())?;
+    let _receipt = fixture.store.ingest_bundle_v2(&publish)?;
+    let durable_before = fixture
+        .catalog
+        .repomap_candidate_row("repo-p03", "rev-p03", 1)?
+        .expect("V2 publish sealed the candidate");
+    let mut substituted_source = source.clone();
+    substituted_source.snapshot_id.push_str("-foreign");
+    let substituted_publish = RepoMapPublishBundleRequestV2::new(substituted_source)?;
+    let replay_error = fixture
+        .store
+        .ingest_bundle_v2(&substituted_publish)
+        .expect_err("same commitment with substituted custody axes must fail");
+    assert_typed(
+        &replay_error,
+        quanta_index_contract::SearchPlaneErrorCodeV2::CandidateCommitmentConflict,
+    );
+    let durable_after = fixture
+        .catalog
+        .repomap_candidate_row("repo-p03", "rev-p03", 1)?
+        .expect("replay refusal preserves the durable candidate");
+    assert_eq!(durable_after, durable_before);
+
+    let mut foreign_activate = RepoMapActivateGenerationRequestV2::for_bundle(&source)?;
+    foreign_activate.snapshot_id.push_str("-foreign");
+    assert!(
+        fixture
+            .store
+            .activate_generation_v2(&foreign_activate)
+            .is_err()
+    );
+    assert!(
+        fixture
+            .catalog
+            .repomap_activation_row("repo-p03", "rev-p03")?
+            .is_none(),
+        "axis refusal must happen before activation mutation"
+    );
+    Ok(())
+}
+
+#[test]
 fn corruption_durable_invalidation_and_no_resurrection() -> TestResult {
     let dir = tempfile::tempdir()?;
     let root = dir.path().to_path_buf();
@@ -296,7 +494,10 @@ fn corruption_durable_invalidation_and_no_resurrection() -> TestResult {
     // Boot reconcile: durable invalidation, unserveable.
     eprintln!("STAGE: reopening after corruption");
     let (catalog, store) = open_fixture(&root)?;
-    assert!(query(store.as_ref(), 1).is_err(), "corrupt object must not serve");
+    assert!(
+        query(store.as_ref(), 1).is_err(),
+        "corrupt object must not serve"
+    );
     let activation = catalog.repomap_activation_row("repo-p03", "rev-p03")?;
     let activation = activation.expect("activation row survives invalidation");
     assert!(!activation.active, "corruption must durably invalidate");
@@ -323,7 +524,10 @@ fn find_single_object(objects_dir: &std::path::Path) -> Result<std::path::PathBu
     let mut found: Option<std::path::PathBuf> = None;
     for entry in walk(objects_dir)? {
         if entry.extension().and_then(|ext| ext.to_str()) == Some("cbor") {
-            assert!(found.replace(entry.clone()).is_none(), "fixture holds exactly one object");
+            assert!(
+                found.replace(entry.clone()).is_none(),
+                "fixture holds exactly one object"
+            );
         }
     }
     Ok(found.ok_or("no sealed object found")?)
@@ -378,7 +582,10 @@ fn quarantine_projection_exact_byte_replay_and_tombstone_discard() -> TestResult
         .join("sha256")
         .join(incident_hex.get(..2).unwrap_or_default())
         .join(incident_hex.get(2..4).unwrap_or_default())
-        .join(format!("{}.cbor", incident_hex.get(4..).unwrap_or_default()));
+        .join(format!(
+            "{}.cbor",
+            incident_hex.get(4..).unwrap_or_default()
+        ));
     eprintln!(
         "STAGE: expect path {} exists={}",
         incident_path.display(),
@@ -393,7 +600,10 @@ fn quarantine_projection_exact_byte_replay_and_tombstone_discard() -> TestResult
     // sequence/time); the incident row is the authority.
     let incidents_again = catalog.repomap_quarantine_incidents()?;
     assert_eq!(incidents_again.len(), 1);
-    assert_eq!(incidents_again.first().map(|row| row.sequence), Some(incident.sequence));
+    assert_eq!(
+        incidents_again.first().map(|row| row.sequence),
+        Some(incident.sequence)
+    );
 
     // Listing + journaled tombstone discard: payload-only reclaim.
     let mut listed = store.as_ref().quarantined_files()?;
@@ -417,10 +627,17 @@ fn quarantine_projection_exact_byte_replay_and_tombstone_discard() -> TestResult
     }
     // The incident/event row survives; a second discard is Absent.
     let incidents_after = catalog.repomap_quarantine_incidents()?;
-    assert_eq!(incidents_after.len(), 1, "the incident row is never deleted");
+    assert_eq!(
+        incidents_after.len(),
+        1,
+        "the incident row is never deleted"
+    );
     assert!(incidents_after.first().expect("one").discarded);
     let again = store.as_ref().discard_quarantined_file(&entry)?;
-    assert!(matches!(again, quanta_index_core::QuarantineDiscardOutcomeV1::Absent));
+    assert!(matches!(
+        again,
+        quanta_index_core::QuarantineDiscardOutcomeV1::Absent
+    ));
     drop(original);
     Ok(())
 }

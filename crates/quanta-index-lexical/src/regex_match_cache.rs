@@ -336,7 +336,10 @@ mod tests {
         assert_eq!(cache.stats().entries, 1);
         assert!(cache.get(&key(&first, "foo")).is_none());
         assert!(cache.get(&key(&first, "bar")).is_none());
-        assert_eq!(cache.get(&key(&second, "foo")).as_deref(), Some(&*members(&[3])));
+        assert_eq!(
+            cache.get(&key(&second, "foo")).as_deref(),
+            Some(&*members(&[3]))
+        );
         assert_eq!(
             cache.stats().resident_bytes,
             entry_bytes(&key(&second, "foo"), &members(&[3])),

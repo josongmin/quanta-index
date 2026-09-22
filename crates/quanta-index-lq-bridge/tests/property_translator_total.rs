@@ -32,8 +32,10 @@ fn ver() -> SourcegraphVersionTag {
 }
 
 fn name_strategy() -> BoxedStrategy<String> {
-    prop::string::string_regex("[A-Za-z0-9_./-]{1,20}")
-        .map_or_else(|_| Just("x".to_string()).boxed(), proptest::strategy::Strategy::boxed)
+    prop::string::string_regex("[A-Za-z0-9_./-]{1,20}").map_or_else(
+        |_| Just("x".to_string()).boxed(),
+        proptest::strategy::Strategy::boxed,
+    )
 }
 
 fn sg_filter_strategy() -> impl Strategy<Value = SgFilter> {

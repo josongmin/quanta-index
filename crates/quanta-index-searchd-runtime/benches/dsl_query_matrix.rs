@@ -46,14 +46,20 @@ fn warm_samples() -> anyhow::Result<usize> {
     };
     match raw.parse::<usize>() {
         Ok(n) if n > 0 => Ok(n),
-        Ok(n) => Err(anyhow::anyhow!("DSL_BENCH_WARM_SAMPLES={n}: must be at least 1")),
-        Err(err) => Err(anyhow::anyhow!("DSL_BENCH_WARM_SAMPLES={raw:?}: not an integer: {err}")),
+        Ok(n) => Err(anyhow::anyhow!(
+            "DSL_BENCH_WARM_SAMPLES={n}: must be at least 1"
+        )),
+        Err(err) => Err(anyhow::anyhow!(
+            "DSL_BENCH_WARM_SAMPLES={raw:?}: not an integer: {err}"
+        )),
     }
 }
 
 fn warm_out_path() -> PathBuf {
-    std::env::var_os("DSL_BENCH_WARM_OUT")
-        .map_or_else(|| PathBuf::from("artifacts/dsl-bench/warm-matrix.json"), PathBuf::from)
+    std::env::var_os("DSL_BENCH_WARM_OUT").map_or_else(
+        || PathBuf::from("artifacts/dsl-bench/warm-matrix.json"),
+        PathBuf::from,
+    )
 }
 
 fn elapsed_ms(started: Instant) -> f64 {
@@ -91,7 +97,11 @@ fn main() -> anyhow::Result<()> {
                 samples.push(elapsed_ms(started));
             }
             validate_scenario_outcome(scenario, ScenarioTruthMode::SharedWarmFixture, &last)?;
-            rows.push(bench_row(scenario, last, LatencySummary::from_samples_ms(&samples)));
+            rows.push(bench_row(
+                scenario,
+                last,
+                LatencySummary::from_samples_ms(&samples),
+            ));
         }
         group.finish();
     }

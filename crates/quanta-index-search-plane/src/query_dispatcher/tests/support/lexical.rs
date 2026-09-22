@@ -45,7 +45,11 @@ impl LexicalIndexOpenPort for RejectLexicalOpener {
         &self,
         candidate: &GenerationSnapshot,
     ) -> Result<Box<dyn LexicalSearcher>, CoreError> {
-        self.open(&candidate.repo_id, &candidate.revision_id, candidate.manifest_generation)
+        self.open(
+            &candidate.repo_id,
+            &candidate.revision_id,
+            candidate.manifest_generation,
+        )
     }
 }
 
@@ -196,7 +200,11 @@ impl LexicalIndexOpenPort for StubLexicalOpener {
         &self,
         candidate: &GenerationSnapshot,
     ) -> Result<Box<dyn LexicalSearcher>, CoreError> {
-        self.open(&candidate.repo_id, &candidate.revision_id, candidate.manifest_generation)
+        self.open(
+            &candidate.repo_id,
+            &candidate.revision_id,
+            candidate.manifest_generation,
+        )
     }
 }
 
@@ -439,7 +447,11 @@ impl LexicalIndexOpenPort for RecordingLexicalOpener {
         &self,
         candidate: &GenerationSnapshot,
     ) -> Result<Box<dyn LexicalSearcher>, CoreError> {
-        self.open(&candidate.repo_id, &candidate.revision_id, candidate.manifest_generation)
+        self.open(
+            &candidate.repo_id,
+            &candidate.revision_id,
+            candidate.manifest_generation,
+        )
     }
 }
 

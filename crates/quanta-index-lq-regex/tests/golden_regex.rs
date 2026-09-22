@@ -17,12 +17,24 @@ impl DocResolver for Map {
 
 fn corpus() -> (Map, Vec<DocId>) {
     let docs: &[(DocId, &[u8])] = &[
-        (DocId(1), b"fn handle_request(req: &Request) -> Response { todo() }"),
-        (DocId(2), b"fn handle_response(resp: &Response) -> () { ok() }"),
+        (
+            DocId(1),
+            b"fn handle_request(req: &Request) -> Response { todo() }",
+        ),
+        (
+            DocId(2),
+            b"fn handle_response(resp: &Response) -> () { ok() }",
+        ),
         (DocId(3), b"pub fn other(arg: i32) -> bool { true }"),
         (DocId(4), b"struct Handler { state: u64 }"),
-        (DocId(5), b"impl Handler { fn new() -> Self { Self::default() } }"),
-        (DocId(6), b"// fn fake_in_comment shouldn't match anchored search"),
+        (
+            DocId(5),
+            b"impl Handler { fn new() -> Self { Self::default() } }",
+        ),
+        (
+            DocId(6),
+            b"// fn fake_in_comment shouldn't match anchored search",
+        ),
         (DocId(7), b"fn foo() {}"),
         (DocId(8), b"// fn foo - not a function definition"),
     ];

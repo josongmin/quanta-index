@@ -340,7 +340,10 @@ mod tests {
 
     #[test]
     fn adjacency_config_default_uses_8() {
-        assert_eq!(AdjacencyConfig::default().window_tokens, DEFAULT_WINDOW_TOKENS);
+        assert_eq!(
+            AdjacencyConfig::default().window_tokens,
+            DEFAULT_WINDOW_TOKENS
+        );
         assert_eq!(DEFAULT_WINDOW_TOKENS, 8);
     }
 

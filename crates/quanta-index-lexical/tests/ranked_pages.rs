@@ -205,16 +205,22 @@ fn full_ranking(searcher: &dyn LexicalSearcher) -> Result<Vec<LexicalCandidate>,
         })
         .collect();
     if ids(&full).into_iter().collect::<BTreeSet<_>>() != expected || full.len() != expected.len() {
-        return Err(format!("the full ranking is not the matching chunks: {:?}", ids(&full)).into());
+        return Err(format!(
+            "the full ranking is not the matching chunks: {:?}",
+            ids(&full)
+        )
+        .into());
     }
     if full
         .iter()
         .zip(full.iter().skip(1))
         .any(|(left, right)| left.order_key().order(&right.order_key()) != Ordering::Less)
     {
-        return Err(
-            format!("the full ranking is not in strict page order: {:?}", ids(&full)).into()
-        );
+        return Err(format!(
+            "the full ranking is not in strict page order: {:?}",
+            ids(&full)
+        )
+        .into());
     }
     // Every chunk that carries the needle once has the same text, so the
     // same score, bit for bit.
@@ -344,7 +350,11 @@ fn a_projection_pages_through_each_files_first_row() -> TestResult {
     };
     let after = page(searcher.as_ref(), &projected, 2, Some(cursor_at(fourth)))?;
     if after.exact_total != Some(u64::from(FILES).saturating_sub(4)) {
-        return Err(format!("the projected total after four files: {:?}", after.exact_total).into());
+        return Err(format!(
+            "the projected total after four files: {:?}",
+            after.exact_total
+        )
+        .into());
     }
     Ok(())
 }

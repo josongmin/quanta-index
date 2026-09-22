@@ -711,7 +711,10 @@ impl<'de> Visitor<'de> for HistoryQueryRequestVisitor {
                     cursor = map.next_value()?;
                 }
                 other => {
-                    return Err(de::Error::unknown_field(other, HISTORY_QUERY_REQUEST_FIELDS));
+                    return Err(de::Error::unknown_field(
+                        other,
+                        HISTORY_QUERY_REQUEST_FIELDS,
+                    ));
                 }
             }
         }
@@ -977,7 +980,10 @@ impl<'de> Visitor<'de> for ExplainCandidateV1Visitor {
             None if EXPLAIN_CANDIDATE_V1_VARIANTS.contains(&kind.as_str()) => {
                 Err(de::Error::missing_field("payload"))
             }
-            None => Err(de::Error::unknown_variant(kind.as_str(), EXPLAIN_CANDIDATE_V1_VARIANTS)),
+            None => Err(de::Error::unknown_variant(
+                kind.as_str(),
+                EXPLAIN_CANDIDATE_V1_VARIANTS,
+            )),
         }
     }
 }

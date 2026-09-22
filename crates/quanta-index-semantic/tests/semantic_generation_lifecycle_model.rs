@@ -166,7 +166,9 @@ impl LifecycleModel {
             .get_mut(&generation)
             .ok_or_else(|| format!("model failed to create generation {generation}"))?;
         if state.sealed {
-            return Err(format!("model refuses mutation of sealed generation {generation}"));
+            return Err(format!(
+                "model refuses mutation of sealed generation {generation}"
+            ));
         }
         for tombstone in tombstones {
             let _removed = state.records_by_owner.remove(tombstone.owner);
@@ -253,7 +255,13 @@ impl LifecycleModel {
                     seal,
                 );
                 build_resident_batch_v1(adapter, &batch)?;
-                self.apply_build(generation, base_generation, &replacements, &tombstones, seal)?;
+                self.apply_build(
+                    generation,
+                    base_generation,
+                    &replacements,
+                    &tombstones,
+                    seal,
+                )?;
             }
             LifecycleCommand::AssertUnsealedCannotActivate { generation } => {
                 let state = self
@@ -282,7 +290,10 @@ impl LifecycleModel {
                 let previous = self
                     .active_generation
                     .ok_or("rollback requires an active model generation")?;
-                assert_ne!(previous, target, "rollback target must differ from active generation");
+                assert_ne!(
+                    previous, target,
+                    "rollback target must differ from active generation"
+                );
                 self.assert_open_matches(adapter, target)?;
                 self.active_generation = Some(target);
             }

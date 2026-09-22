@@ -408,7 +408,7 @@ fn lq_query_cbor_decode_rejects_missing_lq_version() -> TestRes {
             let message = err.to_string();
             if !message.contains("lq_version") {
                 return Err(
-                    format!("missing-field error did not mention lq_version: {message}").into()
+                    format!("missing-field error did not mention lq_version: {message}").into(),
                 );
             }
             Ok(())
@@ -460,9 +460,11 @@ fn search_plane_ipc_request_v2_semantic_roundtrips_nested_lexical_scope() -> Tes
             .lexical_scope
             .ok_or_else(|| "expected lexical_scope".to_string())?;
         if lexical_scope.syntax != TextQuerySyntax::Sourcegraph {
-            return Err(
-                format!("expected sourcegraph syntax, got {:?}", lexical_scope.syntax).into()
-            );
+            return Err(format!(
+                "expected sourcegraph syntax, got {:?}",
+                lexical_scope.syntax
+            )
+            .into());
         }
         if inner.top_k != 25 {
             return Err(format!("expected top_k=25, got {}", inner.top_k).into());
@@ -486,9 +488,11 @@ fn search_plane_ipc_request_v2_hybrid_roundtrips_lexical_subquery() -> TestRes {
     let decoded: SearchPlaneQueryIpcRequest = decode(&encode(&request)?)?;
     if let SearchPlaneQueryIpcRequest::Hybrid(inner) = decoded {
         if inner.text_query.syntax != TextQuerySyntax::Sourcegraph {
-            return Err(
-                format!("expected sourcegraph syntax, got {:?}", inner.text_query.syntax).into()
-            );
+            return Err(format!(
+                "expected sourcegraph syntax, got {:?}",
+                inner.text_query.syntax
+            )
+            .into());
         }
         if inner.top_k != 50 {
             return Err(format!("expected top_k=50, got {}", inner.top_k).into());
@@ -545,7 +549,9 @@ fn search_plane_ipc_request_v2_sourcegraph_roundtrips_text_variant() -> TestRes 
             return Err(format!("unexpected sourcegraph syntax: {:?}", inner.syntax).into());
         }
         if inner.query_text.as_str() != "repo:quanta-index lang:rust SearchPlane" {
-            return Err(format!("unexpected sourcegraph query_text: {:?}", inner.query_text).into());
+            return Err(
+                format!("unexpected sourcegraph query_text: {:?}", inner.query_text).into(),
+            );
         }
         if inner.generation != Some(generation_pin()) || inner.generation_selector.is_some() {
             return Err(format!("unexpected sourcegraph pin: {inner:?}").into());
@@ -660,7 +666,7 @@ fn query_constraint_wire_is_order_invariant_and_deduplicated() -> TestRes {
     right.constraints = QueryConstraintSetV1::from_languages([python, rust]);
     if encode(&left)? != encode(&right)? {
         return Err(
-            "query constraint wire encoding must be order-invariant and deduplicated".into()
+            "query constraint wire encoding must be order-invariant and deduplicated".into(),
         );
     }
     Ok(())
@@ -703,14 +709,16 @@ fn search_plane_ipc_request_v2_semantic_rejects_duplicate_nested_lexical_syntax(
 
 #[test]
 fn search_plane_ipc_request_v2_hybrid_rejects_duplicate_top_k() -> TestRes {
-    let bytes =
-        mutate_ipc_request_wire(&SearchPlaneQueryIpcRequest::Hybrid(hybrid_request()), |wire| {
+    let bytes = mutate_ipc_request_wire(
+        &SearchPlaneQueryIpcRequest::Hybrid(hybrid_request()),
+        |wire| {
             let request_fields = map_fields_mut(wire)?;
             let payload = field_value_mut(request_fields, "payload")?;
             let payload_fields = map_fields_mut(payload)?;
             duplicate_text_field(payload_fields, "top_k")?;
             Ok(())
-        })?;
+        },
+    )?;
 
     expect_decode_error_contains::<SearchPlaneQueryIpcRequest>(&bytes, "top_k")
 }
@@ -736,8 +744,9 @@ fn search_plane_ipc_request_v2_semantic_rejects_legacy_query_vector_ref_field() 
 
 #[test]
 fn search_plane_ipc_request_v2_hybrid_rejects_legacy_semantic_vector_ref_field() -> TestRes {
-    let bytes =
-        mutate_ipc_request_wire(&SearchPlaneQueryIpcRequest::Hybrid(hybrid_request()), |wire| {
+    let bytes = mutate_ipc_request_wire(
+        &SearchPlaneQueryIpcRequest::Hybrid(hybrid_request()),
+        |wire| {
             let request_fields = map_fields_mut(wire)?;
             let payload = field_value_mut(request_fields, "payload")?;
             let payload_fields = map_fields_mut(payload)?;
@@ -746,7 +755,8 @@ fn search_plane_ipc_request_v2_hybrid_rejects_legacy_semantic_vector_ref_field()
                 ciborium::Value::Text("legacy-handle".to_owned()),
             ));
             Ok(())
-        })?;
+        },
+    )?;
 
     expect_decode_error_contains::<SearchPlaneQueryIpcRequest>(&bytes, "semantic_vector_ref")
 }
@@ -819,7 +829,7 @@ fn search_plane_ipc_response_v2_symbol_roundtrips_kind_truth() -> TestRes {
     if let SearchPlaneQueryIpcResponse::Symbol(inner) = decoded {
         if inner.results.len() != 1 {
             return Err(
-                format!("expected one symbol candidate, got {}", inner.results.len()).into()
+                format!("expected one symbol candidate, got {}", inner.results.len()).into(),
             );
         }
         let first = inner
@@ -852,12 +862,16 @@ fn search_plane_ipc_response_v2_sourcegraph_roundtrips_text_candidates() -> Test
     let decoded: SearchPlaneQueryIpcResponse = decode(&encode(&response)?)?;
     if let SearchPlaneQueryIpcResponse::Text(inner) = decoded {
         if inner.generation != generation_pin() {
-            return Err(format!("unexpected sourcegraph generation: {:?}", inner.generation).into());
+            return Err(
+                format!("unexpected sourcegraph generation: {:?}", inner.generation).into(),
+            );
         }
         if inner.results.len() != 1 {
-            return Err(
-                format!("expected one sourcegraph candidate, got {}", inner.results.len()).into()
-            );
+            return Err(format!(
+                "expected one sourcegraph candidate, got {}",
+                inner.results.len()
+            )
+            .into());
         }
         Ok(())
     } else {
@@ -1645,11 +1659,13 @@ fn explain_response_round_trips_its_presence_and_rejects_a_missing_one() -> Test
         CandidatePresenceV1::Indexed,
         CandidatePresenceV1::NotIndexed,
     ] {
-        roundtrip_eq(&SearchPlaneQueryIpcResponse::Explain(SearchPlaneExplainQueryResponse {
-            generation: generation_pin(),
-            presence,
-            explanation: explanation_v2(),
-        }))?;
+        roundtrip_eq(&SearchPlaneQueryIpcResponse::Explain(
+            SearchPlaneExplainQueryResponse {
+                generation: generation_pin(),
+                presence,
+                explanation: explanation_v2(),
+            },
+        ))?;
     }
     let bytes = mutate_ipc_response_wire(
         &SearchPlaneQueryIpcResponse::Explain(SearchPlaneExplainQueryResponse {
@@ -1820,19 +1836,21 @@ fn runtime_page_with_continuation() -> Result<
     quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse,
     Box<dyn std::error::Error>,
 > {
-    Ok(quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
-        generation: generation_pin(),
-        results: vec![lexical_candidate_named("a"), lexical_candidate_named("b")],
-        window: QueryResultWindowV1::new(
-            2,
-            quanta_index_contract::CandidateCountV1::AtLeast(3),
-            true,
-        )?,
-        read_epoch: AuxEpochV1::new(4),
-        universe_epoch: AuxEpochV1::new(11),
-        examined: 3,
-        next_cursor: Some(runtime_cursor("b")),
-    })
+    Ok(
+        quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
+            generation: generation_pin(),
+            results: vec![lexical_candidate_named("a"), lexical_candidate_named("b")],
+            window: QueryResultWindowV1::new(
+                2,
+                quanta_index_contract::CandidateCountV1::AtLeast(3),
+                true,
+            )?,
+            read_epoch: AuxEpochV1::new(4),
+            universe_epoch: AuxEpochV1::new(11),
+            examined: 3,
+            next_cursor: Some(runtime_cursor("b")),
+        },
+    )
 }
 
 /// A well-formed structural page with a continuation.
@@ -1916,13 +1934,22 @@ fn keyset_cursors_round_trip_and_decode_fail_closed() -> TestRes {
         }
     }
     let structural_refusals = [
-        ("missing aux_epoch", serde_json::json!({ "candidate_id": "a" })),
-        ("missing candidate_id", serde_json::json!({ "aux_epoch": 1 })),
+        (
+            "missing aux_epoch",
+            serde_json::json!({ "candidate_id": "a" }),
+        ),
+        (
+            "missing candidate_id",
+            serde_json::json!({ "aux_epoch": 1 }),
+        ),
         (
             "unknown field",
             serde_json::json!({ "candidate_id": "a", "aux_epoch": 1, "universe_epoch": 1 }),
         ),
-        ("null epoch", serde_json::json!({ "candidate_id": "a", "aux_epoch": null })),
+        (
+            "null epoch",
+            serde_json::json!({ "candidate_id": "a", "aux_epoch": null }),
+        ),
     ];
     for (label, wrong) in structural_refusals {
         if serde_json::from_value::<quanta_index_contract::StructuralCursorV1>(wrong).is_ok() {
@@ -1983,7 +2010,10 @@ fn keyset_page_requests_carry_the_cursor_only_when_present() -> TestRes {
     let mut crossed = serde_json::to_value(sourcegraph_structural_request())?;
     let fields = crossed.as_object_mut().ok_or("the request is a map")?;
     if fields
-        .insert("cursor".to_owned(), serde_json::to_value(runtime_cursor("chunk://alpha"))?)
+        .insert(
+            "cursor".to_owned(),
+            serde_json::to_value(runtime_cursor("chunk://alpha"))?,
+        )
         .is_some()
     {
         return Err("the fixture carries no cursor".into());
@@ -1999,7 +2029,9 @@ fn keyset_page_requests_carry_the_cursor_only_when_present() -> TestRes {
 #[test]
 fn keyset_pages_round_trip_with_and_without_a_continuation() -> TestRes {
     let runtime_page = runtime_page_with_continuation()?;
-    roundtrip_eq(&SearchPlaneQueryIpcResponse::RuntimeMetadata(runtime_page.clone()))?;
+    roundtrip_eq(&SearchPlaneQueryIpcResponse::RuntimeMetadata(
+        runtime_page.clone(),
+    ))?;
     let json = serde_json::to_value(&runtime_page)?;
     let fields = json.as_object().ok_or("the page is a map")?;
     for name in [
@@ -2022,7 +2054,9 @@ fn keyset_pages_round_trip_with_and_without_a_continuation() -> TestRes {
         next_cursor: None,
         ..runtime_page
     };
-    roundtrip_eq(&SearchPlaneQueryIpcResponse::RuntimeMetadata(final_page.clone()))?;
+    roundtrip_eq(&SearchPlaneQueryIpcResponse::RuntimeMetadata(
+        final_page.clone(),
+    ))?;
     let json = serde_json::to_value(&final_page)?;
     if json
         .as_object()
@@ -2032,7 +2066,9 @@ fn keyset_pages_round_trip_with_and_without_a_continuation() -> TestRes {
     }
 
     let structural_page = structural_page_with_continuation()?;
-    roundtrip_eq(&SearchPlaneQueryIpcResponse::Structural(structural_page.clone()))?;
+    roundtrip_eq(&SearchPlaneQueryIpcResponse::Structural(
+        structural_page.clone(),
+    ))?;
     let final_page = quanta_index_contract::SearchPlaneStructuralQueryResponse {
         results: Vec::new(),
         window: QueryResultWindowV1::exact(0),
@@ -2052,7 +2088,10 @@ fn keyset_pages_round_trip_with_and_without_a_continuation() -> TestRes {
 #[test]
 fn keyset_pages_reject_inconsistent_shapes() -> TestRes {
     let base = runtime_page_with_continuation()?;
-    let runtime_cases: Vec<(&str, quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse)> = vec![
+    let runtime_cases: Vec<(
+        &str,
+        quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse,
+    )> = vec![
         (
             "has_more without a cursor",
             quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
@@ -2119,13 +2158,16 @@ fn keyset_pages_reject_inconsistent_shapes() -> TestRes {
         let bytes = encode(&SearchPlaneQueryIpcResponse::RuntimeMetadata(page))?;
         if decode::<SearchPlaneQueryIpcResponse>(&bytes).is_ok() {
             return Err(
-                format!("runtime-metadata: {label}: an inconsistent page must not decode").into()
+                format!("runtime-metadata: {label}: an inconsistent page must not decode").into(),
             );
         }
     }
 
     let base = structural_page_with_continuation()?;
-    let structural_cases: Vec<(&str, quanta_index_contract::SearchPlaneStructuralQueryResponse)> = vec![
+    let structural_cases: Vec<(
+        &str,
+        quanta_index_contract::SearchPlaneStructuralQueryResponse,
+    )> = vec![
         (
             "has_more without a cursor",
             quanta_index_contract::SearchPlaneStructuralQueryResponse {
@@ -2180,7 +2222,9 @@ fn keyset_pages_reject_inconsistent_shapes() -> TestRes {
     for (label, page) in structural_cases {
         let bytes = encode(&SearchPlaneQueryIpcResponse::Structural(page))?;
         if decode::<SearchPlaneQueryIpcResponse>(&bytes).is_ok() {
-            return Err(format!("structural: {label}: an inconsistent page must not decode").into());
+            return Err(
+                format!("structural: {label}: an inconsistent page must not decode").into(),
+            );
         }
     }
 

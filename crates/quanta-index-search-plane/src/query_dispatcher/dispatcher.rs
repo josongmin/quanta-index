@@ -77,7 +77,9 @@ impl SearchPlaneDispatcher {
             structural_producer,
             ledger,
             activation_catalog,
-            Arc::new(HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION)),
+            Arc::new(HashingQueryTextEmbedder::new(
+                SEARCH_OWNED_SEMANTIC_DIMENSION,
+            )),
             Arc::new(NoopQueryObsSink),
         )
     }
@@ -168,12 +170,14 @@ impl SearchPlaneDispatcher {
         request: &ClusterMembershipBatchReadRequestV1,
         budget: &RequestBudgetV1,
     ) -> SearchPlaneQueryIpcResponse {
-        self.observed_route(QueryRoute::ClusterMembershipRead, Some(&request.generation), || {
-            match self.cluster_membership_batch_read(request, budget) {
+        self.observed_route(
+            QueryRoute::ClusterMembershipRead,
+            Some(&request.generation),
+            || match self.cluster_membership_batch_read(request, budget) {
                 Ok(outcome) => SearchPlaneQueryIpcResponse::ClusterMembershipRead(outcome),
                 Err(error) => SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(error)),
-            }
-        })
+            },
+        )
     }
 
     /// Run one route under its intake, latency and outcome metrics
@@ -218,7 +222,12 @@ impl SearchPlaneDispatcher {
         } else {
             "served_total"
         };
-        self.emit_metric(requested_pin, &route.metric_name(outcome), MetricKind::Counter, 1.0);
+        self.emit_metric(
+            requested_pin,
+            &route.metric_name(outcome),
+            MetricKind::Counter,
+            1.0,
+        );
         response
     }
 
@@ -297,29 +306,29 @@ impl SearchPlaneDispatcher {
         budget: &RequestBudgetV1,
     ) -> SearchPlaneQueryIpcResponse {
         let requested_pin = request.generation.clone();
-        self.observed_route(QueryRoute::Semantic, requested_pin.as_ref(), || {
-            match self.semantic_query(request, budget) {
-                Ok(response) => {
-                    self.emit_planner_metric(&response.generation);
-                    self.emit_engine_fanout_metric(
-                        &response.generation,
-                        response.explanation.engines_touched.len(),
-                    );
-                    self.emit_early_stop_metric(
-                        &response.generation,
-                        response.explanation.early_stop_reason,
-                    );
-                    self.emit_examined_candidates_metric(
-                        QueryRoute::Semantic,
-                        &response.generation,
-                        &response.window,
-                    );
-                    SearchPlaneQueryIpcResponse::Semantic(response)
-                }
-                Err(err) => {
-                    self.emit_error_metric(requested_pin.as_ref(), &err);
-                    SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err))
-                }
+        self.observed_route(QueryRoute::Semantic, requested_pin.as_ref(), || match self
+            .semantic_query(request, budget)
+        {
+            Ok(response) => {
+                self.emit_planner_metric(&response.generation);
+                self.emit_engine_fanout_metric(
+                    &response.generation,
+                    response.explanation.engines_touched.len(),
+                );
+                self.emit_early_stop_metric(
+                    &response.generation,
+                    response.explanation.early_stop_reason,
+                );
+                self.emit_examined_candidates_metric(
+                    QueryRoute::Semantic,
+                    &response.generation,
+                    &response.window,
+                );
+                SearchPlaneQueryIpcResponse::Semantic(response)
+            }
+            Err(err) => {
+                self.emit_error_metric(requested_pin.as_ref(), &err);
+                SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err))
             }
         })
     }
@@ -556,8 +565,9 @@ impl SearchPlaneDispatcher {
         kind: MetricKind,
         value: f64,
     ) {
-        let (repo_id, generation_id) = pin
-            .map_or(("unresolved", 0), |pin| (pin.repo_id.as_str(), pin.manifest_generation.get()));
+        let (repo_id, generation_id) = pin.map_or(("unresolved", 0), |pin| {
+            (pin.repo_id.as_str(), pin.manifest_generation.get())
+        });
         self.obs_sink.emit(MetricSample::new(
             name,
             kind,
@@ -599,6 +609,11 @@ impl SearchPlaneDispatcher {
     }
 
     fn emit_error_metric(&self, pin: Option<&GenerationPin>, err: &CoreError) {
-        self.emit_metric(pin, classify_error_metric_name(err), MetricKind::Counter, 1.0);
+        self.emit_metric(
+            pin,
+            classify_error_metric_name(err),
+            MetricKind::Counter,
+            1.0,
+        );
     }
 }

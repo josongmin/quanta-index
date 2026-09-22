@@ -133,7 +133,12 @@ impl MemoryIdempotencyCatalog {
             key,
             (
                 body_sha256,
-                Some(("crashed-worker".to_string(), 0, 0, OperationJournalStateV1::Applying)),
+                Some((
+                    "crashed-worker".to_string(),
+                    0,
+                    0,
+                    OperationJournalStateV1::Applying,
+                )),
                 None,
             ),
         );
@@ -224,7 +229,10 @@ impl IdempotencyCatalogPort for MemoryIdempotencyCatalog {
             }
             Some((stored, _, _)) if *stored != *body_sha256 => Err(CoreError::Typed {
                 code: quanta_index_core::BATCH_DIGEST_CONFLICT_CODE,
-                message: format!("{} batch_digest={} body differs", key.kind, key.batch_digest),
+                message: format!(
+                    "{} batch_digest={} body differs",
+                    key.kind, key.batch_digest
+                ),
             }),
             Some((_, _, Some((receipt, durable_sequence)))) => Ok(ClaimOutcomeV1::Replay {
                 receipt: receipt.clone(),
@@ -259,10 +267,14 @@ impl IdempotencyCatalogPort for MemoryIdempotencyCatalog {
             .lock()
             .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?;
         let Some((_, Some((owner, fence, _, state)), _)) = records.get_mut(&claim.key) else {
-            return Err(CoreError::InvalidContract("mark_applying before claim".into()));
+            return Err(CoreError::InvalidContract(
+                "mark_applying before claim".into(),
+            ));
         };
         if *owner != claim.owner || *fence != claim.fence_token {
-            return Err(CoreError::InvalidContract("mark_applying under a stale fence".into()));
+            return Err(CoreError::InvalidContract(
+                "mark_applying under a stale fence".into(),
+            ));
         }
         *state = OperationJournalStateV1::Applying;
         Ok(())
@@ -282,10 +294,14 @@ impl IdempotencyCatalogPort for MemoryIdempotencyCatalog {
             .lock()
             .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?;
         let Some((_, Some((owner, fence, _, state)), _)) = records.get_mut(&claim.key) else {
-            return Err(CoreError::InvalidContract("record_refused before claim".into()));
+            return Err(CoreError::InvalidContract(
+                "record_refused before claim".into(),
+            ));
         };
         if *owner != claim.owner || *fence != claim.fence_token {
-            return Err(CoreError::InvalidContract("record_refused under a stale fence".into()));
+            return Err(CoreError::InvalidContract(
+                "record_refused under a stale fence".into(),
+            ));
         }
         *state = OperationJournalStateV1::Refused;
         self.next_sequence_value()
@@ -309,7 +325,9 @@ impl IdempotencyCatalogPort for MemoryIdempotencyCatalog {
             return Err(CoreError::InvalidContract("commit before claim".into()));
         };
         if *body != claim.body_sha256 || *owner != claim.owner || *fence != claim.fence_token {
-            return Err(CoreError::InvalidContract("commit under a stale fence".into()));
+            return Err(CoreError::InvalidContract(
+                "commit under a stale fence".into(),
+            ));
         }
         if committed.is_some() {
             return Err(CoreError::InvalidContract("commit twice".into()));
@@ -330,10 +348,14 @@ impl IdempotencyCatalogPort for MemoryIdempotencyCatalog {
             .lock()
             .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?;
         let Some((_, Some((owner, fence, _, state)), _)) = records.get_mut(&claim.key) else {
-            return Err(CoreError::InvalidContract("mark_uncertain before claim".into()));
+            return Err(CoreError::InvalidContract(
+                "mark_uncertain before claim".into(),
+            ));
         };
         if *owner != claim.owner || *fence != claim.fence_token {
-            return Err(CoreError::InvalidContract("mark_uncertain under a stale fence".into()));
+            return Err(CoreError::InvalidContract(
+                "mark_uncertain under a stale fence".into(),
+            ));
         }
         *state = OperationJournalStateV1::Uncertain;
         Ok(())
@@ -522,11 +544,13 @@ impl SearchCorpusAuthorityWritePort for RecordingSearchCorpusAuthority {
                 .map(|(_, _, observed_generation, _)| *observed_generation)
                 .collect::<Vec<_>>()
         };
-        Ok(SearchCorpusHistoryRetentionReceiptV1::retaining_generations_v1(
-            repo_id,
-            revision_id,
-            retained_generations,
-        ))
+        Ok(
+            SearchCorpusHistoryRetentionReceiptV1::retaining_generations_v1(
+                repo_id,
+                revision_id,
+                retained_generations,
+            ),
+        )
     }
 }
 
@@ -835,7 +859,9 @@ impl SealedGenerationReclaimPort for ScriptedSealedReclaim {
         }
         let failing =
             self.failing_listings
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| left.checked_sub(1));
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                    left.checked_sub(1)
+                });
         if failing.is_ok() {
             return Err(CoreError::Storage(
                 "scripted reclaim: injected listing failure".to_string(),
@@ -1498,7 +1524,11 @@ pub(super) fn multi_scope_corpus_batch()
                     chunk_record_v("a-2", "a.rs", "alpha two")?,
                 ],
             ),
-            scope_with_chunks("b.rs", "scope:b", vec![chunk_record_v("b-1", "b.rs", "beta one")?]),
+            scope_with_chunks(
+                "b.rs",
+                "scope:b",
+                vec![chunk_record_v("b-1", "b.rs", "beta one")?],
+            ),
             scope_with_chunks(
                 "c.rs",
                 "scope:c",

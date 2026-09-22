@@ -262,8 +262,9 @@ fn every_shape_that_could_name_the_unlisted_is_refused_at_decode() -> TestRes {
     )?;
     // The detail is informational and may be empty; the adapters match on
     // path and reason.
-    let decoded: QuarantinedGenerationEntryV1 =
-        decode(&forged(&entry, |value| set_text(field(value, "detail")?, ""))?)?;
+    let decoded: QuarantinedGenerationEntryV1 = decode(&forged(&entry, |value| {
+        set_text(field(value, "detail")?, "")
+    })?)?;
     if !decoded.detail.is_empty() {
         return Err("an empty detail decodes as empty".into());
     }
@@ -288,9 +289,10 @@ fn every_shape_that_could_name_the_unlisted_is_refused_at_decode() -> TestRes {
     expect_refused::<QuarantinedGenerationEntryV1>(
         "a generation entry with a duplicate path",
         &forged(&entry, |value| {
-            value
-                .as_map_mut()?
-                .push((Value::Text("path".to_string()), Value::Text("/elsewhere".to_string())));
+            value.as_map_mut()?.push((
+                Value::Text("path".to_string()),
+                Value::Text("/elsewhere".to_string()),
+            ));
             Some(())
         })?,
     )?;
@@ -308,11 +310,14 @@ fn every_shape_that_could_name_the_unlisted_is_refused_at_decode() -> TestRes {
     ] {
         expect_refused::<QuarantinedRepoMapFileEntryV1>(
             &format!("a repo-map file name {file_name:?}"),
-            &forged(&file, |value| set_text(field(value, "file_name")?, file_name))?,
+            &forged(&file, |value| {
+                set_text(field(value, "file_name")?, file_name)
+            })?,
         )?;
     }
-    let decoded: QuarantinedRepoMapFileEntryV1 =
-        decode(&forged(&file, |value| set_text(field(value, "reason")?, ""))?)?;
+    let decoded: QuarantinedRepoMapFileEntryV1 = decode(&forged(&file, |value| {
+        set_text(field(value, "reason")?, "")
+    })?)?;
     if !decoded.reason.is_empty() {
         return Err("an empty repo-map reason decodes as empty".into());
     }
@@ -323,13 +328,19 @@ fn every_shape_that_could_name_the_unlisted_is_refused_at_decode() -> TestRes {
     expect_refused::<QuarantineInventoryV1>(
         "a semantic entry filed under lexical",
         &forged(&value, |value| {
-            set_text(field(item(field(value, "lexical")?, 0)?, "track")?, "semantic")
+            set_text(
+                field(item(field(value, "lexical")?, 0)?, "track")?,
+                "semantic",
+            )
         })?,
     )?;
     expect_refused::<QuarantineInventoryV1>(
         "a lexical entry filed under semantic",
         &forged(&value, |value| {
-            set_text(field(item(field(value, "semantic")?, 0)?, "track")?, "lexical")
+            set_text(
+                field(item(field(value, "semantic")?, 0)?, "track")?,
+                "lexical",
+            )
         })?,
     )?;
     expect_refused::<QuarantineInventoryV1>(
@@ -347,7 +358,10 @@ fn every_shape_that_could_name_the_unlisted_is_refused_at_decode() -> TestRes {
     expect_refused::<QuarantineDiscardRequest>(
         "a discard of a nested repo-map file name",
         &forged(&request, |value| {
-            set_text(field(field(field(value, "target")?, "payload")?, "file_name")?, "../x")
+            set_text(
+                field(field(field(value, "target")?, "payload")?, "file_name")?,
+                "../x",
+            )
         })?,
     )?;
     expect_refused::<QuarantineDiscardRequest>(
@@ -356,7 +370,12 @@ fn every_shape_that_could_name_the_unlisted_is_refused_at_decode() -> TestRes {
             &QuarantineDiscardRequest {
                 target: QuarantineTargetV1::Generation(lexical_entry()),
             },
-            |value| set_text(field(field(field(value, "target")?, "payload")?, "path")?, ""),
+            |value| {
+                set_text(
+                    field(field(field(value, "target")?, "payload")?, "path")?,
+                    "",
+                )
+            },
         )?,
     )?;
 
@@ -369,7 +388,9 @@ fn every_shape_that_could_name_the_unlisted_is_refused_at_decode() -> TestRes {
     )?;
     expect_refused::<QuarantineTargetV1>(
         "a target kind with the other variant's payload",
-        &forged(&target, |value| set_text(field(value, "kind")?, "RepoMapFile"))?,
+        &forged(&target, |value| {
+            set_text(field(value, "kind")?, "RepoMapFile")
+        })?,
     )?;
     expect_refused::<QuarantineTargetV1>(
         "a target without its payload",
@@ -400,7 +421,9 @@ fn every_shape_that_could_name_the_unlisted_is_refused_at_decode() -> TestRes {
     let discarded = QuarantineDiscardOutcomeDtoV1::Discarded { bytes: 3 };
     expect_refused::<QuarantineDiscardOutcomeDtoV1>(
         "an unknown outcome kind",
-        &forged(&discarded, |value| set_text(field(value, "kind")?, "Skipped"))?,
+        &forged(&discarded, |value| {
+            set_text(field(value, "kind")?, "Skipped")
+        })?,
     )?;
     expect_refused::<QuarantineDiscardOutcomeDtoV1>(
         "a Discarded outcome without its bytes",
@@ -413,7 +436,9 @@ fn every_shape_that_could_name_the_unlisted_is_refused_at_decode() -> TestRes {
     )?;
     expect_refused::<QuarantineDiscardOutcomeDtoV1>(
         "an Absent outcome carrying bytes",
-        &forged(&discarded, |value| set_text(field(value, "kind")?, "Absent"))?,
+        &forged(&discarded, |value| {
+            set_text(field(value, "kind")?, "Absent")
+        })?,
     )?;
     expect_refused::<QuarantineDiscardOutcomeDtoV1>(
         "negative bytes",

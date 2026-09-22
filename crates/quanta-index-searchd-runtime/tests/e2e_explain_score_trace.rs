@@ -28,7 +28,11 @@ const BOOSTED_QUERY: &str = "needle boost:2.5";
 
 fn ingest_fixture(rt: &mut E2eRuntime) -> TestResult {
     rt.ingest_text("repo", "src/dense.rs", "needle needle needle haystack")?;
-    rt.ingest_text("repo", "src/sparse.rs", "needle in a very long haystack of many other words")?;
+    rt.ingest_text(
+        "repo",
+        "src/sparse.rs",
+        "needle in a very long haystack of many other words",
+    )?;
     rt.ingest_text("repo", "src/twice.rs", "needle haystack needle")?;
     rt.ingest_text("repo", "src/other.rs", "nothing relevant here")?;
     let _sealed = rt.seal()?;
@@ -249,8 +253,12 @@ fn verify_hybrid_both_lane(rt: &mut E2eRuntime) -> TestResult {
     const HYBRID_TOP_K: u32 = 10;
     // The same text drives both lanes, so the needle documents are seen by
     // both: the lexical lane by term, the dense lane by the hashed vector.
-    let hybrid =
-        rt.query_hybrid(TextQuerySyntax::Sourcegraph, PLAIN_QUERY, PLAIN_QUERY, HYBRID_TOP_K);
+    let hybrid = rt.query_hybrid(
+        TextQuerySyntax::Sourcegraph,
+        PLAIN_QUERY,
+        PLAIN_QUERY,
+        HYBRID_TOP_K,
+    );
     if let Some(error) = hybrid.typed_error {
         return Err(format!("hybrid query refused: {error}").into());
     }
@@ -516,7 +524,10 @@ fn explain_score_traces_share_one_indexed_fixture() -> TestResult {
         ("boost", verify_boost),
         ("presence", verify_presence),
         ("hybrid_both_lane", verify_hybrid_both_lane),
-        ("unmatched_candidate_filters", verify_unmatched_candidate_filters),
+        (
+            "unmatched_candidate_filters",
+            verify_unmatched_candidate_filters,
+        ),
     ] {
         verify(&mut rt).map_err(|error| -> Box<dyn Error> { format!("{name}: {error}").into() })?;
     }

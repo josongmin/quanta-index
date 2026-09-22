@@ -587,9 +587,9 @@ impl<'a> HistoryNamespace<'a> {
         batch: &RepoCommitRecencyBatch,
     ) -> Result<BatchReceipt, SdkError> {
         let wire = batch.to_wire_batch()?;
-        let response = self
-            .client
-            .dispatch_ingest(SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(wire))?;
+        let response = self.client.dispatch_ingest(
+            SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(wire),
+        )?;
         match response {
             SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(receipt) => Ok(receipt),
             other @ (SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
@@ -602,6 +602,7 @@ impl<'a> HistoryNamespace<'a> {
             | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
             | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "repo commit recency receipt",
@@ -627,6 +628,7 @@ impl<'a> HistoryNamespace<'a> {
             | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
             | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "repo meta receipt",
@@ -652,6 +654,7 @@ impl<'a> HistoryNamespace<'a> {
             | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
             | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "repo topic receipt",
@@ -665,9 +668,9 @@ impl<'a> HistoryNamespace<'a> {
         batch: &RepoDescriptionBatch,
     ) -> Result<BatchReceipt, SdkError> {
         let wire = batch.to_wire_batch()?;
-        let response = self
-            .client
-            .dispatch_ingest(SearchPlaneIngestIpcRequest::PublishRepoDescriptionBatch(wire))?;
+        let response = self.client.dispatch_ingest(
+            SearchPlaneIngestIpcRequest::PublishRepoDescriptionBatch(wire),
+        )?;
         match response {
             SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(receipt) => Ok(receipt),
             other @ (SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
@@ -681,6 +684,7 @@ impl<'a> HistoryNamespace<'a> {
             | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "repo description receipt",
                 QuantaIndex::ingest_response_kind(&other),
@@ -708,6 +712,7 @@ impl<'a> HistoryNamespace<'a> {
             | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
             | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "file ownership receipt",
@@ -721,9 +726,9 @@ impl<'a> HistoryNamespace<'a> {
         batch: &FileContributorBatch,
     ) -> Result<BatchReceipt, SdkError> {
         let wire = batch.to_wire_batch()?;
-        let response = self
-            .client
-            .dispatch_ingest(SearchPlaneIngestIpcRequest::PublishFileContributorBatch(wire))?;
+        let response = self.client.dispatch_ingest(
+            SearchPlaneIngestIpcRequest::PublishFileContributorBatch(wire),
+        )?;
         match response {
             SearchPlaneIngestIpcResponse::FileContributorReceipt(receipt) => Ok(receipt),
             other @ (SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
@@ -736,6 +741,7 @@ impl<'a> HistoryNamespace<'a> {
             | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
             | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "file contributor receipt",
@@ -776,6 +782,7 @@ impl crate::NamespaceIngest for HistoryNs {
             | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
             | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "history receipt",

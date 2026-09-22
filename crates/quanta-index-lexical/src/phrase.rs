@@ -130,18 +130,31 @@ impl fmt::Display for PhrasePlannerError {
         match self {
             Self::EmptyPhrase => f.write_str("phrase planner: empty phrase"),
             Self::TokenTooLong { bytes, max } => {
-                write!(f, "phrase planner: token of {bytes} bytes exceeds the {max}-byte term cap",)
+                write!(
+                    f,
+                    "phrase planner: token of {bytes} bytes exceeds the {max}-byte term cap",
+                )
             }
             Self::TooFewTokens {
                 count,
                 min_required,
-            } => write!(f, "phrase planner: too few tokens (got {count}, need {min_required})",),
+            } => write!(
+                f,
+                "phrase planner: too few tokens (got {count}, need {min_required})",
+            ),
             Self::UnsupportedSlop {
                 requested,
                 max_allowed,
-            } => write!(f, "phrase planner: unsupported slop {requested} (max {max_allowed})",),
+            } => write!(
+                f,
+                "phrase planner: unsupported slop {requested} (max {max_allowed})",
+            ),
             Self::UnsupportedField { field, reason } => {
-                write!(f, "phrase planner: unsupported field `{}` ({reason})", field.as_str(),)
+                write!(
+                    f,
+                    "phrase planner: unsupported field `{}` ({reason})",
+                    field.as_str(),
+                )
             }
         }
     }
@@ -351,7 +364,12 @@ mod tests {
     #[test]
     fn single_token_phrase_plans_content_insensitive() {
         let opts = LqOptions::defaults();
-        let outcome = plan_phrase("Hello", &opts, &PhrasePolicy::defaults(), PhraseField::Content);
+        let outcome = plan_phrase(
+            "Hello",
+            &opts,
+            &PhrasePolicy::defaults(),
+            PhraseField::Content,
+        );
         assert!(outcome.is_ok(), "expected Ok, got {outcome:?}");
         if let Ok(plan) = outcome {
             assert_eq!(plan.tokens, vec!["hello".to_string()]);
@@ -367,15 +385,24 @@ mod tests {
     #[test]
     fn empty_text_is_empty_phrase() {
         let opts = LqOptions::defaults();
-        let outcome = plan_phrase("   ", &opts, &PhrasePolicy::defaults(), PhraseField::Content);
+        let outcome = plan_phrase(
+            "   ",
+            &opts,
+            &PhrasePolicy::defaults(),
+            PhraseField::Content,
+        );
         assert_eq!(outcome, Err(PhrasePlannerError::EmptyPhrase));
     }
 
     #[test]
     fn case_sensitive_option_propagates() {
         let opts = opts_with_case(Some(LqCase::Sensitive));
-        let outcome =
-            plan_phrase("Foo Bar", &opts, &PhrasePolicy::defaults(), PhraseField::Content);
+        let outcome = plan_phrase(
+            "Foo Bar",
+            &opts,
+            &PhrasePolicy::defaults(),
+            PhraseField::Content,
+        );
         assert!(outcome.is_ok(), "expected Ok, got {outcome:?}");
         if let Ok(plan) = outcome {
             assert!(plan.case_sensitive);
@@ -396,14 +423,22 @@ mod tests {
         assert!(outcome.is_ok(), "expected Ok, got {outcome:?}");
         if let Ok(plan) = outcome {
             // punctuation is a boundary, the fold is Unicode, the text is NFC.
-            assert_eq!(plan.tokens, vec!["foo".to_string(), "bar".to_string(), "café".to_string()]);
+            assert_eq!(
+                plan.tokens,
+                vec!["foo".to_string(), "bar".to_string(), "café".to_string()]
+            );
         }
     }
 
     #[test]
     fn token_less_and_over_long_phrases_are_typed_errors() {
         let opts = LqOptions::defaults();
-        let outcome = plan_phrase("👍 ...", &opts, &PhrasePolicy::defaults(), PhraseField::Content);
+        let outcome = plan_phrase(
+            "👍 ...",
+            &opts,
+            &PhrasePolicy::defaults(),
+            PhraseField::Content,
+        );
         assert_eq!(outcome, Err(PhrasePlannerError::EmptyPhrase));
         let long = "a".repeat(crate::normalize::MAX_TOKEN_BYTES.saturating_add(1));
         let outcome = plan_phrase(
@@ -424,8 +459,12 @@ mod tests {
     #[test]
     fn symbol_field_is_unsupported() {
         let opts = LqOptions::defaults();
-        let outcome =
-            plan_phrase("anything", &opts, &PhrasePolicy::defaults(), PhraseField::Symbol);
+        let outcome = plan_phrase(
+            "anything",
+            &opts,
+            &PhrasePolicy::defaults(),
+            PhraseField::Symbol,
+        );
         match outcome {
             Err(PhrasePlannerError::UnsupportedField { field, reason }) => {
                 assert_eq!(field, PhraseField::Symbol);
@@ -491,7 +530,10 @@ mod tests {
         let snapshot = trace.build();
         assert_eq!(snapshot.candidate_count, 12);
         assert_eq!(snapshot.verify_count, 3);
-        assert_eq!(snapshot.early_stop_reason, Some(EarlyStopReason::CandidateCapHit));
+        assert_eq!(
+            snapshot.early_stop_reason,
+            Some(EarlyStopReason::CandidateCapHit)
+        );
         assert_eq!(snapshot.field, PhraseField::Content);
         assert_eq!(snapshot.normalized_tokens.len(), 2);
     }

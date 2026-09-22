@@ -150,8 +150,10 @@ fn semantic_dispatch_embeds_query_text() -> TestResult {
             .map_err(|err| format!("semantic state poisoned: {err}"))?;
         (guard.search_vectors.clone(), guard.scoped_vectors.clone())
     };
-    let expected = default_query_embedder()
-        .embed_query("focus alpha", &quanta_index_core::RequestBudgetV1::unbounded())?;
+    let expected = default_query_embedder().embed_query(
+        "focus alpha",
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     if search_vectors.as_slice() != [expected] {
         return Err(format!("unexpected semantic vectors: {search_vectors:?}").into());
     }

@@ -211,9 +211,11 @@ impl RepoMapGraphCompiler {
         let mut edges = Vec::new();
         for edge in &bundle.edges {
             let (kind, source, target) = match edge {
-                RepoMapEdge::Contains(contains) => {
-                    (RepoMapEdgeKind::Contains, &contains.container, &contains.contained)
-                }
+                RepoMapEdge::Contains(contains) => (
+                    RepoMapEdgeKind::Contains,
+                    &contains.container,
+                    &contains.contained,
+                ),
                 RepoMapEdge::Call(call) => (RepoMapEdgeKind::Call, &call.caller, &call.callee),
                 RepoMapEdge::Import(import) => {
                     (RepoMapEdgeKind::Import, &import.importer, &import.imported)
@@ -221,9 +223,11 @@ impl RepoMapGraphCompiler {
                 RepoMapEdge::OwnsChunk(owns) => {
                     (RepoMapEdgeKind::OwnsChunk, &owns.owner, &owns.chunk)
                 }
-                RepoMapEdge::DependsOn(depends) => {
-                    (RepoMapEdgeKind::DependsOn, &depends.dependent, &depends.dependency)
-                }
+                RepoMapEdge::DependsOn(depends) => (
+                    RepoMapEdgeKind::DependsOn,
+                    &depends.dependent,
+                    &depends.dependency,
+                ),
             };
             if !identities.contains(source) || !identities.contains(target) {
                 return Err(refusal(
@@ -397,7 +401,12 @@ fn check_cap(
     observed: u64,
 ) -> Result<(), RepoMapCompileRefusalV1> {
     if observed > limit {
-        return Err(refusal(RepoMapCompileStageV1::Budget, code, Some(limit), observed));
+        return Err(refusal(
+            RepoMapCompileStageV1::Budget,
+            code,
+            Some(limit),
+            observed,
+        ));
     }
     Ok(())
 }
@@ -508,7 +517,10 @@ fn hex_nibble(byte: u8) -> Option<u8> {
 
 /// Validated chunk statistics: (`by_owner_path`, `by_subject_ref`). Dangling
 /// `OwnsChunk` endpoints were already refused by the edge validation stage.
-type ChunkStatsTables = (BTreeMap<String, ChunkStatsV1>, BTreeMap<String, ChunkStatsV1>);
+type ChunkStatsTables = (
+    BTreeMap<String, ChunkStatsV1>,
+    BTreeMap<String, ChunkStatsV1>,
+);
 
 fn validated_chunk_stats(
     bundle: &RepoMapSourceBundle,
@@ -519,7 +531,10 @@ fn validated_chunk_stats(
     for node in &bundle.nodes {
         if let RepoMapNode::Chunk(chunk) = node {
             let inserted = chunks.insert(chunk.chunk_id.as_str(), chunk);
-            debug_assert!(inserted.is_none(), "duplicate chunk identities were already refused");
+            debug_assert!(
+                inserted.is_none(),
+                "duplicate chunk identities were already refused"
+            );
         }
     }
     for chunk in chunks.values() {
@@ -536,7 +551,10 @@ fn validated_chunk_stats(
                 continue;
             };
             if let Some(chunk) = chunks.get(chunk_id.as_str()) {
-                accumulate_chunk(by_subject.entry(node_ref_key(&owns.owner)).or_default(), chunk)?;
+                accumulate_chunk(
+                    by_subject.entry(node_ref_key(&owns.owner)).or_default(),
+                    chunk,
+                )?;
             }
         }
     }
@@ -772,6 +790,10 @@ pub struct CandidateProjectionMetaV1 {
     pub snapshot_id: String,
     pub projection_version: u32,
     pub authority_digest: String,
+    /// Present for candidates sealed by the current store owner. Legacy
+    /// catalog rows remain readable but cannot satisfy V2 activation.
+    pub manifest_digest: Option<String>,
+    pub source_bundle_digest: Option<String>,
     pub item_index_availability: RepoMapItemIndexAvailability,
     pub graph_coverage_class: RepoMapGraphCoverageClass,
     pub exactness_summary: RepoMapExactnessSummary,
@@ -785,6 +807,8 @@ impl CandidateProjectionMetaV1 {
             snapshot_id: bundle.snapshot_id.clone(),
             projection_version: bundle.projection_version,
             authority_digest: bundle.authority_digest.clone(),
+            manifest_digest: None,
+            source_bundle_digest: None,
             item_index_availability: bundle.graph_coverage.item_index_availability,
             graph_coverage_class: bundle.graph_coverage.graph_coverage_class,
             exactness_summary: bundle.exactness_summary,
@@ -792,18 +816,48 @@ impl CandidateProjectionMetaV1 {
         }
     }
 
+    #[must_use]
+    pub fn from_bundle_with_source_digest_v2(
+        bundle: &RepoMapSourceBundle,
+        source_bundle_digest: String,
+    ) -> Self {
+        let mut meta = Self::from_bundle(bundle);
+        meta.manifest_digest = Some(bundle.manifest_digest.clone());
+        meta.source_bundle_digest = Some(source_bundle_digest);
+        meta
+    }
+
     /// Canonical JSON column form. Enum fields use their wire strings.
     pub fn to_json(&self) -> Result<String, quanta_index_core::CoreError> {
-        serde_json::to_string(&serde_json::json!({
-            "snapshot_id": self.snapshot_id,
-            "projection_version": self.projection_version,
-            "authority_digest": self.authority_digest,
-            "item_index_availability": self.item_index_availability.as_code_str(),
-            "graph_coverage_class": self.graph_coverage_class.as_code_str(),
-            "exactness_summary": self.exactness_summary.as_code_str(),
-            "redaction_state": self.redaction_state.as_code_str(),
-        }))
-        .map_err(|err| {
+        let value = match (&self.manifest_digest, &self.source_bundle_digest) {
+            (None, None) => serde_json::json!({
+                "snapshot_id": self.snapshot_id,
+                "projection_version": self.projection_version,
+                "authority_digest": self.authority_digest,
+                "item_index_availability": self.item_index_availability.as_code_str(),
+                "graph_coverage_class": self.graph_coverage_class.as_code_str(),
+                "exactness_summary": self.exactness_summary.as_code_str(),
+                "redaction_state": self.redaction_state.as_code_str(),
+            }),
+            (Some(manifest_digest), Some(source_bundle_digest)) => serde_json::json!({
+                "snapshot_id": self.snapshot_id,
+                "projection_version": self.projection_version,
+                "authority_digest": self.authority_digest,
+                "manifest_digest": manifest_digest,
+                "source_bundle_digest": source_bundle_digest,
+                "item_index_availability": self.item_index_availability.as_code_str(),
+                "graph_coverage_class": self.graph_coverage_class.as_code_str(),
+                "exactness_summary": self.exactness_summary.as_code_str(),
+                "redaction_state": self.redaction_state.as_code_str(),
+            }),
+            _ => {
+                return Err(quanta_index_core::CoreError::Storage(
+                    "repomap projection meta strong custody fields must be both present or both absent"
+                        .to_string(),
+                ));
+            }
+        };
+        serde_json::to_string(&value).map_err(|err| {
             quanta_index_core::CoreError::Storage(format!(
                 "repomap projection meta encode failed: {err}"
             ))
@@ -841,6 +895,23 @@ impl CandidateProjectionMetaV1 {
                     message: format!("repomap projection meta is missing string `{field}`"),
                 })
         }
+        fn optional_plain_str(
+            value: &serde_json::Value,
+            field: &str,
+        ) -> Result<Option<String>, quanta_index_core::CoreError> {
+            let Some(field_value) = value.get(field) else {
+                return Ok(None);
+            };
+            field_value
+                .as_str()
+                .map(|text| Some(text.to_owned()))
+                .ok_or_else(|| quanta_index_core::CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                    message: format!(
+                        "repomap projection meta field `{field}` is present but not a string"
+                    ),
+                })
+        }
         let value: serde_json::Value =
             serde_json::from_str(value).map_err(|err| quanta_index_core::CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
@@ -856,10 +927,48 @@ impl CandidateProjectionMetaV1 {
                 message: "repomap projection meta is missing `projection_version`".to_string(),
             });
         };
+        let manifest_digest = optional_plain_str(&value, "manifest_digest")?;
+        let source_bundle_digest = optional_plain_str(&value, "source_bundle_digest")?;
+        if manifest_digest.is_some() != source_bundle_digest.is_some() {
+            return Err(quanta_index_core::CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                message: "repomap projection meta has a partial V2 strong-custody binding"
+                    .to_string(),
+            });
+        }
+        if let (Some(manifest_digest), Some(source_bundle_digest)) =
+            (&manifest_digest, &source_bundle_digest)
+        {
+            producer_digest(manifest_digest).map_err(|_| quanta_index_core::CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                message: "repomap projection meta has an invalid V2 manifest custody digest"
+                    .to_string(),
+            })?;
+            let source_hex = source_bundle_digest
+                .strip_prefix("sha256:")
+                .ok_or_else(|| quanta_index_core::CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                    message: "repomap projection meta has a non-canonical V2 source-bundle digest"
+                        .to_string(),
+                })?;
+            if source_hex.len() != 64
+                || !source_hex
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            {
+                return Err(quanta_index_core::CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                    message: "repomap projection meta has a non-canonical V2 source-bundle digest"
+                        .to_string(),
+                });
+            }
+        }
         Ok(Self {
             snapshot_id: plain_str(&value, "snapshot_id")?,
             projection_version,
             authority_digest: plain_str(&value, "authority_digest")?,
+            manifest_digest,
+            source_bundle_digest,
             item_index_availability: enum_str(&value, "item_index_availability")?,
             graph_coverage_class: enum_str(&value, "graph_coverage_class")?,
             exactness_summary: enum_str(&value, "exactness_summary")?,
@@ -909,7 +1018,10 @@ pub fn snapshot_from_projection(
 pub fn decode_compiled_payload(
     bytes: &[u8],
 ) -> Result<
-    (CompiledRepoMapGraphV1, Vec<CompiledRepoMapProjectionEntryV1>),
+    (
+        CompiledRepoMapGraphV1,
+        Vec<CompiledRepoMapProjectionEntryV1>,
+    ),
     quanta_index_core::CoreError,
 > {
     let refuse = |detail: String| -> quanta_index_core::CoreError {
@@ -924,7 +1036,9 @@ pub fn decode_compiled_payload(
     // (nodes, edges, projection) each under its own definite array header.
     let version = reader.array_header("payload").map_err(refuse)?;
     if version != 2 {
-        return Err(refuse(format!("payload schema version {version}, expected 2")));
+        return Err(refuse(format!(
+            "payload schema version {version}, expected 2"
+        )));
     }
     let nodes_len = reader.array_header("nodes").map_err(refuse)?;
     if !matches!(nodes_len, 0..=2_000_000) {
@@ -934,7 +1048,9 @@ pub fn decode_compiled_payload(
     for _ in 0..nodes_len {
         let entry_len = reader.array_header("node").map_err(refuse)?;
         if entry_len != 3 {
-            return Err(refuse(format!("node array holds {entry_len} items, expected 3")));
+            return Err(refuse(format!(
+                "node array holds {entry_len} items, expected 3"
+            )));
         }
         let identity = reader.node_ref("node.identity").map_err(refuse)?;
         let degree_in = reader.u32_value("node.degree_in").map_err(refuse)?;
@@ -953,7 +1069,9 @@ pub fn decode_compiled_payload(
     for _ in 0..edges_len {
         let entry_len = reader.array_header("edge").map_err(refuse)?;
         if entry_len != 3 {
-            return Err(refuse(format!("edge array holds {entry_len} items, expected 3")));
+            return Err(refuse(format!(
+                "edge array holds {entry_len} items, expected 3"
+            )));
         }
         let kind = reader.edge_kind("edge.kind").map_err(refuse)?;
         let source = reader.node_ref("edge.source").map_err(refuse)?;
@@ -966,13 +1084,17 @@ pub fn decode_compiled_payload(
     }
     let projection_len = reader.array_header("projection").map_err(refuse)?;
     if !matches!(projection_len, 0..=2_000_000) {
-        return Err(refuse(format!("projection table holds {projection_len} entries")));
+        return Err(refuse(format!(
+            "projection table holds {projection_len} entries"
+        )));
     }
     let mut projection = Vec::new();
     for _ in 0..projection_len {
         let entry_len = reader.array_header("projection-entry").map_err(refuse)?;
         if entry_len != 5 {
-            return Err(refuse(format!("projection entry holds {entry_len} items, expected 5")));
+            return Err(refuse(format!(
+                "projection entry holds {entry_len} items, expected 5"
+            )));
         }
         let subject = reader.node_ref("projection.subject").map_err(refuse)?;
         let doc_type = reader.doc_type("projection.doc_type").map_err(refuse)?;
@@ -1134,7 +1256,9 @@ impl<'a> CompileCborReader<'a> {
     fn node_ref(&mut self, label: &str) -> Result<RepoMapNodeRef, String> {
         let entry_len = self.array_header(label)?;
         if entry_len != 2 {
-            return Err(format!("{label}: array holds {entry_len} items, expected 2"));
+            return Err(format!(
+                "{label}: array holds {entry_len} items, expected 2"
+            ));
         }
         let variant = self.text(label)?;
         let id = self.text(label)?;

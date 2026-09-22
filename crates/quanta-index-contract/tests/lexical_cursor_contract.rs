@@ -92,8 +92,10 @@ fn round_trip_text(response: &TextQueryResponse) -> Result<TextQueryResponse, Bo
 fn refused_text(response: &TextQueryResponse, why: &str) -> TestResult {
     let mut bytes = Vec::new();
     ciborium::into_writer(response, &mut bytes)?;
-    ciborium::from_reader::<TextQueryResponse, _>(bytes.as_slice())
-        .map_or_else(|_refused| Ok(()), |decoded| Err(format!("{why}: decoded {decoded:?}").into()))
+    ciborium::from_reader::<TextQueryResponse, _>(bytes.as_slice()).map_or_else(
+        |_refused| Ok(()),
+        |decoded| Err(format!("{why}: decoded {decoded:?}").into()),
+    )
 }
 
 #[test]

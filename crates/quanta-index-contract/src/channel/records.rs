@@ -38,10 +38,16 @@ impl Serialize for ChunkStructuralMetadata {
         let mut state = serializer.serialize_struct("ChunkStructuralMetadata", 6)?;
         state.serialize_field("variant_tag", self.variant_tag.as_ref())?;
         state.serialize_field("structural_kind_tag", self.structural_kind_tag.as_ref())?;
-        state.serialize_field("structural_pattern_kind", self.structural_pattern_kind.as_ref())?;
+        state.serialize_field(
+            "structural_pattern_kind",
+            self.structural_pattern_kind.as_ref(),
+        )?;
         state.serialize_field("structural_name", self.structural_name.as_ref())?;
         state.serialize_field("structural_scope", self.structural_scope.as_ref())?;
-        state.serialize_field("structural_matched_node", self.structural_matched_node.as_ref())?;
+        state.serialize_field(
+            "structural_matched_node",
+            self.structural_matched_node.as_ref(),
+        )?;
         state.end()
     }
 }
@@ -104,7 +110,10 @@ impl<'de> Visitor<'de> for ChunkStructuralMetadataVisitor {
                     structural_matched_node = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(other, CHUNK_STRUCTURAL_METADATA_FIELDS));
+                    return Err(de::Error::unknown_field(
+                        other,
+                        CHUNK_STRUCTURAL_METADATA_FIELDS,
+                    ));
                 }
             }
         }
@@ -422,7 +431,10 @@ impl Serialize for EmbeddingRecord {
         state.serialize_field("start_line", &self.start_line)?;
         state.serialize_field("end_line", &self.end_line)?;
         state.serialize_field("snippet", self.snippet.as_ref())?;
-        state.serialize_field("embedding_input_digest", self.embedding_input_digest.as_ref())?;
+        state.serialize_field(
+            "embedding_input_digest",
+            self.embedding_input_digest.as_ref(),
+        )?;
         state.serialize_field("vector_digest", self.vector_digest.as_ref())?;
         state.serialize_field("view_kind", self.view_kind.as_ref())?;
         state.serialize_field("vector", &self.vector)?;
@@ -639,7 +651,10 @@ impl<'de> Visitor<'de> for EmbeddingRecordVisitor {
         }
         let vector = vector.ok_or_else(|| de::Error::missing_field("vector"))?;
         if vector.is_empty() {
-            return Err(de::Error::invalid_length(0, &"a non-empty embedding vector"));
+            return Err(de::Error::invalid_length(
+                0,
+                &"a non-empty embedding vector",
+            ));
         }
         Ok(EmbeddingRecord {
             embedding_id: embedding_id.ok_or_else(|| de::Error::missing_field("embedding_id"))?,
@@ -812,7 +827,10 @@ mod tests {
             let Value::Map(entries) = &mut wire else {
                 return Err("chunk record wire shape must remain a map".into());
             };
-            entries.push((Value::Text(field.to_string()), Value::Text(value.to_string())));
+            entries.push((
+                Value::Text(field.to_string()),
+                Value::Text(value.to_string()),
+            ));
             bytes.clear();
             ciborium::into_writer(&wire, &mut bytes)?;
             let err = match ciborium::from_reader::<ChunkRecord, _>(bytes.as_slice()) {
@@ -874,7 +892,7 @@ mod tests {
         let decoded: EmbeddingRecord = ciborium::from_reader(bytes.as_slice())?;
         if decoded != record {
             return Err(
-                format!("decoded embedding record mismatch: {decoded:?} != {record:?}").into()
+                format!("decoded embedding record mismatch: {decoded:?} != {record:?}").into(),
             );
         }
         Ok(())

@@ -42,13 +42,16 @@ impl TrackDiskUsagePort for LexicalAdapter {
         if !self.state_root.exists() {
             return Ok(0);
         }
-        unique_inode_tree_bytes(std::slice::from_ref(&self.state_root), &is_writer_lock_entry)
-            .map_err(|err| {
-                CoreError::Storage(format!(
-                    "lexical: measure state root {}: {err}",
-                    self.state_root.display()
-                ))
-            })
+        unique_inode_tree_bytes(
+            std::slice::from_ref(&self.state_root),
+            &is_writer_lock_entry,
+        )
+        .map_err(|err| {
+            CoreError::Storage(format!(
+                "lexical: measure state root {}: {err}",
+                self.state_root.display()
+            ))
+        })
     }
 }
 
@@ -115,13 +118,19 @@ impl MetricSourcePort for LexicalAdapter {
                 "lexical_regex_cache_refused_cardinality_total",
                 regex.refused_cardinality,
             ),
-            MetricPointV1::counter("lexical_regex_cache_refused_bytes_total", regex.refused_bytes),
+            MetricPointV1::counter(
+                "lexical_regex_cache_refused_bytes_total",
+                regex.refused_bytes,
+            ),
             MetricPointV1::counter("lexical_regex_match_sets_built_total", regex.sets_built),
             MetricPointV1::counter(
                 "lexical_regex_match_set_members_built_total",
                 regex.members_built,
             ),
-            MetricPointV1::counter("lexical_regex_match_set_bytes_built_total", regex.bytes_built),
+            MetricPointV1::counter(
+                "lexical_regex_match_set_bytes_built_total",
+                regex.bytes_built,
+            ),
         ])
     }
 }
@@ -174,8 +183,12 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
                     generation: base,
                 })
             });
-            let measured =
-                seal_generation(&generation_dir, &self.fields, &candidate, base_dir.as_deref())?;
+            let measured = seal_generation(
+                &generation_dir,
+                &self.fields,
+                &candidate,
+                base_dir.as_deref(),
+            )?;
             self.record_seal_measurement(measured)?;
             persist_lexical_sealed_identity(&generation_dir, &candidate)?;
         }

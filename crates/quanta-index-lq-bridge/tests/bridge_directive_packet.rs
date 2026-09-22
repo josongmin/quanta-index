@@ -50,7 +50,10 @@ fn scope_results_directive_survives_bridge_candidate_envelope() {
 
 #[test]
 fn with_lexical_directive_survives_bridge_candidate_envelope() {
-    assert_directive_packet("with:lexical into:codeql /strcpy\\(/", LqDirective::WithLexical);
+    assert_directive_packet(
+        "with:lexical into:codeql /strcpy\\(/",
+        LqDirective::WithLexical,
+    );
 }
 
 #[test]

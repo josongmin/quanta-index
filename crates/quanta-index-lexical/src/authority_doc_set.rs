@@ -131,7 +131,10 @@ impl Weight for AuthorityDocSetWeight {
                 "document {doc} is not a member of the text-authority restriction"
             )));
         }
-        Ok(Explanation::new("text-authority doc-id restriction", scorer.score()))
+        Ok(Explanation::new(
+            "text-authority doc-id restriction",
+            scorer.score(),
+        ))
     }
 }
 
@@ -453,10 +456,15 @@ mod tests {
         let oracle = stored_members(&searcher, &fields, &members);
         let weight =
             AuthorityDocSetQuery::new(fields.text_authority_doc_id, Arc::new(members.clone()))
-                .weight(tantivy::query::EnableScoring::disabled_from_searcher(&searcher))
+                .weight(tantivy::query::EnableScoring::disabled_from_searcher(
+                    &searcher,
+                ))
                 .expect("weight");
         for (reader, expected) in searcher.segment_readers().iter().zip(&oracle) {
-            assert!(expected.len() >= 2, "every segment holds members: {oracle:?}");
+            assert!(
+                expected.len() >= 2,
+                "every segment holds members: {oracle:?}"
+            );
             let first = *expected.first().expect("a member");
             let last = *expected.last().expect("a member");
             assert!(!expected.contains(&(first + 1)));
@@ -496,7 +504,9 @@ mod tests {
         let index = Index::create_in_ram(fields.schema.clone());
         let searcher = searcher(&index);
         let refused = AuthorityDocSetQuery::new(fields.doc_kind, Arc::new(RoaringBitmap::new()))
-            .weight(tantivy::query::EnableScoring::disabled_from_searcher(&searcher));
+            .weight(tantivy::query::EnableScoring::disabled_from_searcher(
+                &searcher,
+            ));
         assert!(refused.is_err());
     }
 }

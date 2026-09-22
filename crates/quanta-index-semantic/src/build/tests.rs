@@ -323,7 +323,10 @@ fn assert_recovered_promotion_state(
 
     let before_recovery = GenerationContract::decode(&std::fs::read(&contract_path)?)?;
     assert_eq!(before_recovery.required_corpora, vec!["SymbolCard"]);
-    assert!(staged_contract_path.exists(), "crash must leave staged contract");
+    assert!(
+        staged_contract_path.exists(),
+        "crash must leave staged contract"
+    );
     match boundary {
         PRE_DATASET_PROMOTION => {
             assert!(
@@ -492,7 +495,13 @@ fn subprocess_crash_during_generation_promotion_recovers_complete_pair() -> Test
 #[test]
 fn semantic_scope_authority_allows_distinct_owners_on_same_path() -> TestResult {
     let generation = ManifestGeneration::new(45);
-    let mut batch = batch(generation, "src/shared.rs", "symbol-a", vec![1.0, 0.0, 0.0], false)?;
+    let mut batch = batch(
+        generation,
+        "src/shared.rs",
+        "symbol-a",
+        vec![1.0, 0.0, 0.0],
+        false,
+    )?;
     batch.replace_scopes.push(SemanticReplaceScope {
         scope: scope("src/shared.rs"),
         scope_digest: "scope:src/shared.rs:module-b".to_string(),
@@ -537,8 +546,13 @@ fn generation_contract_accumulates_corpora_across_mutation_and_seal_batches() ->
     let temp = tempdir()?;
     let generation_dir = temp.path().join("generation");
     let generation = ManifestGeneration::new(46);
-    let mut symbol_batch =
-        batch(generation, "src/shared.rs", "symbol-a", vec![1.0, 0.0, 0.0], false)?;
+    let mut symbol_batch = batch(
+        generation,
+        "src/shared.rs",
+        "symbol-a",
+        vec![1.0, 0.0, 0.0],
+        false,
+    )?;
     symbol_batch.required_corpora = vec![SemanticCorpusKindV1::SymbolCard];
     symbol_batch.corpus_policy_digest = Some("semantic-source.v1".to_string());
     let symbol_contract = ensure_generation_contract(
@@ -549,8 +563,13 @@ fn generation_contract_accumulates_corpora_across_mutation_and_seal_batches() ->
     assert!(!layout::build_contract_path(&generation_dir).exists());
     persist_generation_contract(&generation_dir, &symbol_contract)?;
 
-    let mut module_batch =
-        batch(generation, "src/shared.rs", "module-b", vec![0.0, 1.0, 0.0], false)?;
+    let mut module_batch = batch(
+        generation,
+        "src/shared.rs",
+        "module-b",
+        vec![0.0, 1.0, 0.0],
+        false,
+    )?;
     module_batch.replace_scopes[0].embeddings[0].owner_kind = OwnerDocKind::Module;
     module_batch.replace_scopes[0].embeddings[0].owner_id = "module-b".into();
     module_batch.replace_scopes[0].embeddings[0].corpus_kind = SemanticCorpusKindV1::ModuleCard;
@@ -560,9 +579,13 @@ fn generation_contract_accumulates_corpora_across_mutation_and_seal_batches() ->
         &generation_dir,
         &SemanticIngestHeaderV1::of_batch(&module_batch),
     )?;
-    assert_eq!(merged_contract.required_corpora, vec!["ModuleCard", "SymbolCard"]);
-    let still_symbol_only =
-        GenerationContract::decode(&std::fs::read(layout::build_contract_path(&generation_dir))?)?;
+    assert_eq!(
+        merged_contract.required_corpora,
+        vec!["ModuleCard", "SymbolCard"]
+    );
+    let still_symbol_only = GenerationContract::decode(&std::fs::read(
+        layout::build_contract_path(&generation_dir),
+    )?)?;
     assert_eq!(still_symbol_only.required_corpora, vec!["SymbolCard"]);
     persist_generation_contract(&generation_dir, &merged_contract)?;
 
@@ -575,11 +598,15 @@ fn generation_contract_accumulates_corpora_across_mutation_and_seal_batches() ->
         &generation_dir,
         &SemanticIngestHeaderV1::of_batch(&seal_batch),
     )?;
-    assert_eq!(sealed_contract.required_corpora, merged_contract.required_corpora);
+    assert_eq!(
+        sealed_contract.required_corpora,
+        merged_contract.required_corpora
+    );
     persist_generation_contract(&generation_dir, &sealed_contract)?;
 
-    let persisted =
-        GenerationContract::decode(&std::fs::read(layout::build_contract_path(&generation_dir))?)?;
+    let persisted = GenerationContract::decode(&std::fs::read(layout::build_contract_path(
+        &generation_dir,
+    ))?)?;
     assert_eq!(persisted.required_corpora, sealed_contract.required_corpora);
     Ok(())
 }
@@ -590,8 +617,13 @@ fn generation_contract_recovery_distinguishes_pre_and_post_dataset_promotion() -
     let generation_dir = temp.path().join("generation");
     std::fs::create_dir_all(layout::dataset_dir(&generation_dir))?;
     let generation = ManifestGeneration::new(49);
-    let mut symbol_batch =
-        batch(generation, "src/recovery.rs", "symbol-a", vec![1.0, 0.0, 0.0], false)?;
+    let mut symbol_batch = batch(
+        generation,
+        "src/recovery.rs",
+        "symbol-a",
+        vec![1.0, 0.0, 0.0],
+        false,
+    )?;
     symbol_batch.required_corpora = vec![SemanticCorpusKindV1::SymbolCard];
     symbol_batch.corpus_policy_digest = Some("semantic-source.v1".to_string());
     let symbol_contract =
@@ -605,8 +637,9 @@ fn generation_contract_recovery_distinguishes_pre_and_post_dataset_promotion() -
     let staged_path = stage_generation_contract(&generation_dir, &merged_contract)?;
     recover_dataset_artifacts(&generation_dir)?;
     assert!(!staged_path.exists());
-    let pre_promotion_recovered =
-        GenerationContract::decode(&std::fs::read(layout::build_contract_path(&generation_dir))?)?;
+    let pre_promotion_recovered = GenerationContract::decode(&std::fs::read(
+        layout::build_contract_path(&generation_dir),
+    )?)?;
     assert_eq!(pre_promotion_recovered.required_corpora, vec!["SymbolCard"]);
 
     let staged_path = stage_generation_contract(&generation_dir, &merged_contract)?;
@@ -614,9 +647,13 @@ fn generation_contract_recovery_distinguishes_pre_and_post_dataset_promotion() -
     recover_dataset_artifacts(&generation_dir)?;
     assert!(!staged_path.exists());
     assert!(!generation_dir.join(BACKUP_DIR_NAME).exists());
-    let post_promotion_recovered =
-        GenerationContract::decode(&std::fs::read(layout::build_contract_path(&generation_dir))?)?;
-    assert_eq!(post_promotion_recovered.required_corpora, vec!["ModuleCard", "SymbolCard"]);
+    let post_promotion_recovered = GenerationContract::decode(&std::fs::read(
+        layout::build_contract_path(&generation_dir),
+    )?)?;
+    assert_eq!(
+        post_promotion_recovered.required_corpora,
+        vec!["ModuleCard", "SymbolCard"]
+    );
     Ok(())
 }
 
@@ -628,8 +665,13 @@ fn failed_append_does_not_advance_generation_corpus_policy() -> TestResult {
         .enable_all()
         .build()?;
     let generation = ManifestGeneration::new(47);
-    let mut symbol_batch =
-        batch(generation, "src/policy.rs", "symbol-a", vec![1.0, 0.0, 0.0], false)?;
+    let mut symbol_batch = batch(
+        generation,
+        "src/policy.rs",
+        "symbol-a",
+        vec![1.0, 0.0, 0.0],
+        false,
+    )?;
     symbol_batch.replace_scopes[0].embeddings[0].owner_kind = OwnerDocKind::Symbol;
     symbol_batch.replace_scopes[0].embeddings[0].owner_id = "symbol-a".into();
     symbol_batch.replace_scopes[0].embeddings[0].corpus_kind = SemanticCorpusKindV1::SymbolCard;
@@ -637,8 +679,13 @@ fn failed_append_does_not_advance_generation_corpus_policy() -> TestResult {
     symbol_batch.corpus_policy_digest = Some("semantic-source.v1".to_string());
     build(&runtime, &root, &symbol_batch)?;
 
-    let mut module_batch =
-        batch(generation, "src/policy.rs", "module-b", vec![0.0, 1.0, 0.0], false)?;
+    let mut module_batch = batch(
+        generation,
+        "src/policy.rs",
+        "module-b",
+        vec![0.0, 1.0, 0.0],
+        false,
+    )?;
     module_batch.replace_scopes[0].embeddings[0].owner_kind = OwnerDocKind::Module;
     module_batch.replace_scopes[0].embeddings[0].owner_id = "module-b".into();
     module_batch.replace_scopes[0].embeddings[0].corpus_kind = SemanticCorpusKindV1::ModuleCard;
@@ -650,8 +697,9 @@ fn failed_append_does_not_advance_generation_corpus_policy() -> TestResult {
     assert!(matches!(failure, Err(CoreError::Storage(_))));
 
     let generation_dir = layout::generation_dir(&root, &repo_id(), &revision_id(), generation);
-    let persisted =
-        GenerationContract::decode(&std::fs::read(layout::build_contract_path(&generation_dir))?)?;
+    let persisted = GenerationContract::decode(&std::fs::read(layout::build_contract_path(
+        &generation_dir,
+    ))?)?;
     assert_eq!(persisted.required_corpora, vec!["SymbolCard"]);
     Ok(())
 }
@@ -665,8 +713,13 @@ fn failed_contract_promotion_rolls_back_dataset_and_policy() -> TestResult {
         .build()?;
     let generation = ManifestGeneration::new(48);
     let generation_dir = layout::generation_dir(&root, &repo_id(), &revision_id(), generation);
-    let mut symbol_batch =
-        batch(generation, "src/transaction.rs", "symbol-a", vec![1.0, 0.0, 0.0], false)?;
+    let mut symbol_batch = batch(
+        generation,
+        "src/transaction.rs",
+        "symbol-a",
+        vec![1.0, 0.0, 0.0],
+        false,
+    )?;
     symbol_batch.replace_scopes[0].embeddings[0].owner_kind = OwnerDocKind::Symbol;
     symbol_batch.replace_scopes[0].embeddings[0].owner_id = "symbol-a".into();
     symbol_batch.replace_scopes[0].embeddings[0].corpus_kind = SemanticCorpusKindV1::SymbolCard;
@@ -674,8 +727,13 @@ fn failed_contract_promotion_rolls_back_dataset_and_policy() -> TestResult {
     symbol_batch.corpus_policy_digest = Some("semantic-source.v1".to_string());
     build(&runtime, &root, &symbol_batch)?;
 
-    let mut module_batch =
-        batch(generation, "src/transaction.rs", "module-b", vec![0.0, 1.0, 0.0], false)?;
+    let mut module_batch = batch(
+        generation,
+        "src/transaction.rs",
+        "module-b",
+        vec![0.0, 1.0, 0.0],
+        false,
+    )?;
     module_batch.replace_scopes[0].embeddings[0].owner_kind = OwnerDocKind::Module;
     module_batch.replace_scopes[0].embeddings[0].owner_id = "module-b".into();
     module_batch.replace_scopes[0].embeddings[0].corpus_kind = SemanticCorpusKindV1::ModuleCard;
@@ -687,8 +745,9 @@ fn failed_contract_promotion_rolls_back_dataset_and_policy() -> TestResult {
     failpoint::set_contract_promotion_fail_dir(None);
     assert!(matches!(failure, Err(CoreError::Storage(_))));
 
-    let persisted =
-        GenerationContract::decode(&std::fs::read(layout::build_contract_path(&generation_dir))?)?;
+    let persisted = GenerationContract::decode(&std::fs::read(layout::build_contract_path(
+        &generation_dir,
+    ))?)?;
     assert_eq!(persisted.required_corpora, vec!["SymbolCard"]);
     assert!(
         !layout::build_contract_path(&generation_dir)
@@ -777,8 +836,10 @@ fn failed_append_does_not_delete_prior_rows() -> TestResult {
         &runtime,
         open_generation(&root, &repo_id(), &revision_id(), generation),
     )?;
-    let hits =
-        crate::run_blocking(&runtime, loaded.search_async(&[1.0, 0.0, 0.0], 5, unbounded_watch()))?;
+    let hits = crate::run_blocking(
+        &runtime,
+        loaded.search_async(&[1.0, 0.0, 0.0], 5, unbounded_watch()),
+    )?;
     let ids: Vec<String> = hits
         .into_iter()
         .map(|candidate| candidate.candidate_id)
@@ -838,11 +899,19 @@ fn scv2_02_v4_round_trip_preserves_metadata_fields() -> TestResult {
     assert_eq!(manifest.present_corpora, vec!["SymbolCard".to_string()]);
     assert_eq!(manifest.required_corpora, vec!["SymbolCard".to_string()]);
     assert_eq!(manifest.card_schema_versions, vec![1]);
-    assert_eq!(manifest.render_policy_digests, vec!["render:meta-1".to_string()]);
-    assert_eq!(manifest.corpus_policy_digest, Some("policy:semantic:v1".to_string()));
+    assert_eq!(
+        manifest.render_policy_digests,
+        vec!["render:meta-1".to_string()]
+    );
+    assert_eq!(
+        manifest.corpus_policy_digest,
+        Some("policy:semantic:v1".to_string())
+    );
 
-    let connection =
-        crate::run_blocking(&runtime, open_connection(&layout::dataset_dir(&generation_dir)))?;
+    let connection = crate::run_blocking(
+        &runtime,
+        open_connection(&layout::dataset_dir(&generation_dir)),
+    )?;
     let table = crate::run_blocking(&runtime, connection.open_table(TABLE_NAME).execute())?;
     let stream = crate::run_blocking(&runtime, table.query().execute())?;
     let batches: Vec<arrow_array::RecordBatch> =
@@ -977,7 +1046,10 @@ fn scv2_02_same_path_delete_one_owner_keeps_other() -> TestResult {
             unbounded_watch(),
         ),
     )?;
-    assert!(removed.is_empty(), "deleted semantic scope must be gone: {removed:?}");
+    assert!(
+        removed.is_empty(),
+        "deleted semantic scope must be gone: {removed:?}"
+    );
     let kept = crate::run_blocking(
         &runtime,
         loaded.search_hits_filtered_async(
@@ -1117,13 +1189,24 @@ fn delta_empty_seal_preserves_required_raw_corpus_coverage() -> TestResult {
     let base_generation = ManifestGeneration::new(51);
     let delta_generation = ManifestGeneration::new(52);
 
-    let mut base = batch(base_generation, "src/base.rs", "base-raw", vec![1.0, 0.0, 0.0], false)?;
+    let mut base = batch(
+        base_generation,
+        "src/base.rs",
+        "base-raw",
+        vec![1.0, 0.0, 0.0],
+        false,
+    )?;
     base.required_corpora = vec![SemanticCorpusKindV1::RawCodeFallback];
     build(&runtime, &root, &base)?;
     build(&runtime, &root, &seal_existing_generation_batch(base))?;
 
-    let mut delta =
-        batch(delta_generation, "src/base.rs", "delta-raw", vec![0.0, 1.0, 0.0], false)?;
+    let mut delta = batch(
+        delta_generation,
+        "src/base.rs",
+        "delta-raw",
+        vec![0.0, 1.0, 0.0],
+        false,
+    )?;
     delta.mode = BatchIngestMode::Delta;
     delta.base_generation = Some(base_generation);
     delta.required_corpora = vec![SemanticCorpusKindV1::RawCodeFallback];
@@ -1452,16 +1535,20 @@ fn cluster_membership_same_seal_replace_base_clone_and_tombstone_v1() -> TestRes
         .build()?;
     let replacement_dir =
         layout::generation_dir(&root, &repo_id(), &revision_id(), replacement_generation);
-    let connection =
-        crate::run_blocking(&runtime, open_connection(&layout::dataset_dir(&replacement_dir)))?;
+    let connection = crate::run_blocking(
+        &runtime,
+        open_connection(&layout::dataset_dir(&replacement_dir)),
+    )?;
     let membership_table = crate::run_blocking(
         &runtime,
         connection
             .open_table(CLUSTER_MEMBERSHIP_TABLE_NAME)
             .execute(),
     )?;
-    let _delete_result =
-        crate::run_blocking(&runtime, membership_table.delete("member_symbol_id = 'symbol:d'"))?;
+    let _delete_result = crate::run_blocking(
+        &runtime,
+        membership_table.delete("member_symbol_id = 'symbol:d'"),
+    )?;
     assert!(
         crate::run_blocking(
             &runtime,
@@ -1474,7 +1561,10 @@ fn cluster_membership_same_seal_replace_base_clone_and_tombstone_v1() -> TestRes
     let base_dir = layout::generation_dir(&root, &repo_id(), &revision_id(), base_generation);
     let base_connection =
         crate::run_blocking(&runtime, open_connection(&layout::dataset_dir(&base_dir)))?;
-    crate::run_blocking(&runtime, base_connection.drop_table(CLUSTER_MEMBERSHIP_TABLE_NAME, &[]))?;
+    crate::run_blocking(
+        &runtime,
+        base_connection.drop_table(CLUSTER_MEMBERSHIP_TABLE_NAME, &[]),
+    )?;
     assert!(
         crate::run_blocking(
             &runtime,
@@ -1504,11 +1594,19 @@ fn sealed_manifest_rejects_same_row_count_content_mutation() -> TestResult {
     build(
         &runtime,
         &root,
-        &batch(generation, "src/root.rs", "emb-root", vec![1.0, 0.0, 0.0], true)?,
+        &batch(
+            generation,
+            "src/root.rs",
+            "emb-root",
+            vec![1.0, 0.0, 0.0],
+            true,
+        )?,
     )?;
     let generation_dir = layout::generation_dir(&root, &repo_id(), &revision_id(), generation);
-    let connection =
-        crate::run_blocking(&runtime, open_connection(&layout::dataset_dir(&generation_dir)))?;
+    let connection = crate::run_blocking(
+        &runtime,
+        open_connection(&layout::dataset_dir(&generation_dir)),
+    )?;
     let table = crate::run_blocking(&runtime, connection.open_table(TABLE_NAME).execute())?;
     let update = crate::run_blocking(
         &runtime,
@@ -1763,7 +1861,11 @@ fn streamed_windows_stay_bounded_and_seal_to_the_all_at_once_manifest() -> TestR
     assert_eq!(tally.windows, 7);
     assert_eq!(tally.rows, 14);
     assert_eq!(tally.peak_vector_bytes, two_rows);
-    assert_eq!(residency.peak_windows(), 1, "at most one window was resident at any time");
+    assert_eq!(
+        residency.peak_windows(),
+        1,
+        "at most one window was resident at any time"
+    );
     assert_eq!(
         residency.peak_vector_bytes(),
         two_rows,
@@ -1833,8 +1935,15 @@ fn a_refused_third_window_seals_nothing_and_leaves_no_partial_rows() -> TestResu
     let generation_dir = layout::generation_dir(&root, &repo_id(), &revision_id(), generation);
 
     // Batch one: two owners, promoted unsealed.
-    build(&runtime, &root, &streamed_batch(generation, streamed_scopes(2, 1)?, false))?;
-    assert_eq!(crate::run_blocking(&runtime, promoted_row_count(&root, generation))?, 2);
+    build(
+        &runtime,
+        &root,
+        &streamed_batch(generation, streamed_scopes(2, 1)?, false),
+    )?;
+    assert_eq!(
+        crate::run_blocking(&runtime, promoted_row_count(&root, generation))?,
+        2
+    );
 
     // Batch two: three more owners, the third breaking the L2Unit contract,
     // streamed one owner per window and sealing.
@@ -1855,16 +1964,25 @@ fn a_refused_third_window_seals_nothing_and_leaves_no_partial_rows() -> TestResu
     let header = SemanticIngestHeaderV1::of_batch(&sealing);
     let one_owner = SemanticStreamWindowPolicy::new(1, SEMANTIC_STREAM_WINDOW_VECTOR_BYTES)?;
     let mut source = ResidentScopeSource::new(&sealing.replace_scopes, one_owner)?;
-    let Err(error) =
-        build_stream(&runtime, &root, one_owner, &header, &mut source, &SealTalliesV1::default())
-    else {
+    let Err(error) = build_stream(
+        &runtime,
+        &root,
+        one_owner,
+        &header,
+        &mut source,
+        &SealTalliesV1::default(),
+    ) else {
         return Err("a window breaking the contract must abort the build".into());
     };
     assert!(
         matches!(&error, CoreError::Typed { message, .. } if message.contains("second-2")),
         "the refusal names the offending embedding: {error:?}"
     );
-    assert_eq!(source.tally().windows, 3, "the third window was issued and refused");
+    assert_eq!(
+        source.tally().windows,
+        3,
+        "the third window was issued and refused"
+    );
     assert!(
         !layout::sealed_marker_path(&generation_dir).exists()
             && !layout::manifest_path(&generation_dir).exists(),

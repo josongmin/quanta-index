@@ -187,12 +187,12 @@ fn expect_admitted(doors: &Doors, what: &str) -> TestResult {
 fn expect_doors_open(doors: &Doors, what: &str) -> TestResult {
     if let Err(err) = &doors.validate {
         return Err(
-            format!("{what}: validator must admit a layout-intact generation: {err}").into()
+            format!("{what}: validator must admit a layout-intact generation: {err}").into(),
         );
     }
     if let Some(code) = typed_code(&doors.open) {
         return Err(
-            format!("{what}: open must admit a layout-intact generation, got {code}").into()
+            format!("{what}: open must admit a layout-intact generation, got {code}").into(),
         );
     }
     Ok(())
@@ -318,7 +318,9 @@ fn shape_defects_are_refused_at_the_doors_and_byte_defects_by_the_scrub() -> Tes
     for position in 0..files.len() {
         let files = dataset_files(&generation_dir)?;
         let Some(file) = files.get(position) else {
-            return Err(format!("a resealed generation has fewer files at round {position}").into());
+            return Err(
+                format!("a resealed generation has fewer files at round {position}").into(),
+            );
         };
         let name = file.display().to_string();
         let original = std::fs::read(file)?;
@@ -330,14 +332,16 @@ fn shape_defects_are_refused_at_the_doors_and_byte_defects_by_the_scrub() -> Tes
         let report = adapter.scrub(&identity(generation), None, UNBOUNDED)?;
         let IntegrityScrubOutcomeV1::Corrupt { quarantined } = &report.outcome else {
             return Err(
-                format!("{name} bit-flipped: the scrub must find it, got {report:?}").into()
+                format!("{name} bit-flipped: the scrub must find it, got {report:?}").into(),
             );
         };
         if quarantined.reason != GenerationQuarantineReasonV1::ContentCorrupt
             || quarantined.path != generation_dir
             || !quarantined.detail.contains("content digest differs")
         {
-            return Err(format!("{name} bit-flipped: unexpected quarantine {quarantined:?}").into());
+            return Err(
+                format!("{name} bit-flipped: unexpected quarantine {quarantined:?}").into(),
+            );
         }
         // The scrub read every committed file up to and including the
         // damaged one, and no more: its bytes are accounted for.
@@ -386,7 +390,7 @@ fn shape_defects_are_refused_at_the_doors_and_byte_defects_by_the_scrub() -> Tes
                 .any(|record| record.generation == generation)
         {
             return Err(
-                format!("{name}: the inventory must not seed a quarantined generation").into()
+                format!("{name}: the inventory must not seed a quarantined generation").into(),
             );
         }
         // Discarding the quarantine removes the whole generation; it is
@@ -571,7 +575,7 @@ fn a_door_finding_is_quarantined_only_by_the_adapters_re_proof() -> TestResult {
             DoorFindingOutcome::NotReproduced => {}
             other @ DoorFindingOutcome::Quarantined { .. } => {
                 return Err(
-                    format!("{what}: an intact generation was quarantined: {other:?}").into()
+                    format!("{what}: an intact generation was quarantined: {other:?}").into(),
                 );
             }
         }
@@ -615,7 +619,7 @@ fn a_door_finding_is_quarantined_only_by_the_adapters_re_proof() -> TestResult {
             || !quarantined.detail.starts_with("a door found ")
         {
             return Err(
-                format!("{what}: the quarantine names the wrong entry: {quarantined:?}").into()
+                format!("{what}: the quarantine names the wrong entry: {quarantined:?}").into(),
             );
         }
         std::fs::write(&file, &original)?;
@@ -626,14 +630,16 @@ fn a_door_finding_is_quarantined_only_by_the_adapters_re_proof() -> TestResult {
         )?;
         let inventory = inventory_persisted_generations(&root)?;
         let [entry] = inventory.quarantined.as_slice() else {
-            return Err(format!("{what}: the inventory lists one quarantine: {inventory:?}").into());
+            return Err(
+                format!("{what}: the inventory lists one quarantine: {inventory:?}").into(),
+            );
         };
         if !inventory.sealed.is_empty()
             || entry.path != dir
             || entry.reason != GenerationQuarantineReasonV1::ContentCorrupt
         {
             return Err(
-                format!("{what}: the inventory did not quarantine it: {inventory:?}").into()
+                format!("{what}: the inventory did not quarantine it: {inventory:?}").into(),
             );
         }
         match adapter.quarantine_door_finding(&identity(generation))? {
@@ -717,7 +723,10 @@ fn a_scrub_resumed_over_a_reclaimed_generation_is_refused_not_quarantined() -> T
         return Err(format!("a one-byte first step pauses: {first:?}").into());
     };
     let reclaimed = adapter.reclaim_sealed_generation(&identity(generation))?;
-    if !matches!(reclaimed, SealedGenerationReclaimOutcomeV1::Reclaimed { .. }) {
+    if !matches!(
+        reclaimed,
+        SealedGenerationReclaimOutcomeV1::Reclaimed { .. }
+    ) {
         return Err(format!("the sealed generation is reclaimed: {reclaimed:?}").into());
     }
     match adapter.scrub(&identity(generation), Some(cursor), one_byte) {
@@ -777,7 +786,10 @@ fn an_interrupted_reclaim_is_out_of_the_namespace_and_finished_once() -> TestRes
     seal(&adapter, first)?;
     seal(&adapter, second)?;
     let reclaimed = adapter.reclaim_sealed_generation(&identity(first))?;
-    if !matches!(reclaimed, SealedGenerationReclaimOutcomeV1::Reclaimed { .. }) {
+    if !matches!(
+        reclaimed,
+        SealedGenerationReclaimOutcomeV1::Reclaimed { .. }
+    ) {
         return Err(format!("the first generation is reclaimed: {reclaimed:?}").into());
     }
     let area = root.join(RECLAIM_AREA_DIR_NAME);

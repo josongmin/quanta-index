@@ -299,14 +299,39 @@ mod tests {
             ("private/self", &private, peer(SELF_UID, OTHER_GID), true),
             ("private/other", &private, peer(OTHER_UID, OTHER_GID), false),
             ("private/root", &private, peer(0, 0), false),
-            ("private/shared gid", &private, peer(OTHER_UID, SHARED_GID), false),
+            (
+                "private/shared gid",
+                &private,
+                peer(OTHER_UID, SHARED_GID),
+                false,
+            ),
             ("group/self", &group_only, peer(SELF_UID, OTHER_GID), true),
-            ("group/member", &group_only, peer(OTHER_UID, SHARED_GID), true),
-            ("group/stranger", &group_only, peer(OTHER_UID, OTHER_GID), false),
-            ("group/listed elsewhere", &group_only, peer(LISTED_UID, OTHER_GID), false),
+            (
+                "group/member",
+                &group_only,
+                peer(OTHER_UID, SHARED_GID),
+                true,
+            ),
+            (
+                "group/stranger",
+                &group_only,
+                peer(OTHER_UID, OTHER_GID),
+                false,
+            ),
+            (
+                "group/listed elsewhere",
+                &group_only,
+                peer(LISTED_UID, OTHER_GID),
+                false,
+            ),
             ("uids/self", &uids_only, peer(SELF_UID, OTHER_GID), true),
             ("uids/listed", &uids_only, peer(LISTED_UID, OTHER_GID), true),
-            ("uids/stranger", &uids_only, peer(OTHER_UID, SHARED_GID), false),
+            (
+                "uids/stranger",
+                &uids_only,
+                peer(OTHER_UID, SHARED_GID),
+                false,
+            ),
             ("both/member", &both, peer(OTHER_UID, SHARED_GID), true),
             ("both/listed", &both, peer(LISTED_UID, OTHER_GID), true),
             ("both/stranger", &both, peer(OTHER_UID, OTHER_GID), false),
@@ -338,16 +363,40 @@ mod tests {
     #[test]
     fn modes_follow_the_widest_admitted_peer() {
         let cases: [(SocketAccessPolicy, u32, u32); 5] = [
-            (SocketAccessPolicy::Private, PRIVATE_SOCKET_MODE, PRIVATE_DIRECTORY_MODE),
-            (shared(Some(SHARED_GID), &[]), GROUP_SOCKET_MODE, GROUP_DIRECTORY_MODE),
-            (shared(None, &[LISTED_UID]), WORLD_SOCKET_MODE, WORLD_DIRECTORY_MODE),
-            (shared(Some(SHARED_GID), &[LISTED_UID]), WORLD_SOCKET_MODE, WORLD_DIRECTORY_MODE),
-            (shared(None, &[]), PRIVATE_SOCKET_MODE, PRIVATE_DIRECTORY_MODE),
+            (
+                SocketAccessPolicy::Private,
+                PRIVATE_SOCKET_MODE,
+                PRIVATE_DIRECTORY_MODE,
+            ),
+            (
+                shared(Some(SHARED_GID), &[]),
+                GROUP_SOCKET_MODE,
+                GROUP_DIRECTORY_MODE,
+            ),
+            (
+                shared(None, &[LISTED_UID]),
+                WORLD_SOCKET_MODE,
+                WORLD_DIRECTORY_MODE,
+            ),
+            (
+                shared(Some(SHARED_GID), &[LISTED_UID]),
+                WORLD_SOCKET_MODE,
+                WORLD_DIRECTORY_MODE,
+            ),
+            (
+                shared(None, &[]),
+                PRIVATE_SOCKET_MODE,
+                PRIVATE_DIRECTORY_MODE,
+            ),
         ];
         for (policy, socket_mode, directory_mode) in cases {
             assert_eq!(policy.socket_mode(), socket_mode, "{policy:?}");
             assert_eq!(policy.directory_mode(), directory_mode, "{policy:?}");
-            assert_eq!(policy.admits_others(), socket_mode != PRIVATE_SOCKET_MODE, "{policy:?}");
+            assert_eq!(
+                policy.admits_others(),
+                socket_mode != PRIVATE_SOCKET_MODE,
+                "{policy:?}"
+            );
         }
         assert_eq!(shared(Some(SHARED_GID), &[]).group(), Some(SHARED_GID));
         assert_eq!(SocketAccessPolicy::Private.group(), None);
@@ -365,8 +414,14 @@ mod tests {
         let listed = shared(None, &[LISTED_UID]);
         assert_eq!(SocketAccessPolicy::widest([]), private);
         assert_eq!(SocketAccessPolicy::widest([&private, &private]), private);
-        assert_eq!(SocketAccessPolicy::widest([&group, &private, &private]), group);
-        assert_eq!(SocketAccessPolicy::widest([&private, &group, &listed]), listed);
+        assert_eq!(
+            SocketAccessPolicy::widest([&group, &private, &private]),
+            group
+        );
+        assert_eq!(
+            SocketAccessPolicy::widest([&private, &group, &listed]),
+            listed
+        );
         assert_eq!(
             SocketAccessPolicy::widest([&private, &group, &listed]).directory_mode(),
             WORLD_DIRECTORY_MODE

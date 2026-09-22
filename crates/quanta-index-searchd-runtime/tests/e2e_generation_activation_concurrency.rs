@@ -134,8 +134,10 @@ fn config_for(state_root: &Path) -> SearchdConfig {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_nanos());
-    let prefix =
-        format!("qi-generation-activation-concurrency-{}-{nanos}-{sequence}", std::process::id());
+    let prefix = format!(
+        "qi-generation-activation-concurrency-{}-{nanos}-{sequence}",
+        std::process::id()
+    );
     let temp = std::env::temp_dir();
     SearchdConfig::from_state_root(state_root.to_path_buf())
         .try_with_search_corpus_history_retention_limits(
@@ -292,7 +294,9 @@ fn query_active_generation(client: &QuantaIndex) -> Result<u64, Box<dyn Error>> 
     let response = client
         .lexical()
         .query()
-        .sourcegraph(format!("repo:has.meta(epoch:g{G1}) OR repo:has.meta(epoch:g{G2}) {NEEDLE}"))
+        .sourcegraph(format!(
+            "repo:has.meta(epoch:g{G1}) OR repo:has.meta(epoch:g{G2}) {NEEDLE}"
+        ))
         .active(repo(), revision())
         .top_k(u32::try_from(RESULT_COUNT)?)
         .execute()?;
@@ -341,9 +345,11 @@ fn concurrent_queries_observe_only_complete_predicate_authority_generations() ->
         }
 
         transition_open.store(true, Ordering::Release);
-        if !wait_until(SOCKET_TIMEOUT, || transition_queries.load(Ordering::Acquire) > 0) {
+        if !wait_until(SOCKET_TIMEOUT, || {
+            transition_queries.load(Ordering::Acquire) > 0
+        }) {
             return Err(
-                "query loop did not enter the publish/seal/activate transition window".into()
+                "query loop did not enter the publish/seal/activate transition window".into(),
             );
         }
         let active_g2 = publish_and_activate(&publisher, G2, Some(active_g1.clone()))?;
@@ -352,7 +358,7 @@ fn concurrent_queries_observe_only_complete_predicate_authority_generations() ->
         }
         if !wait_until(SOCKET_TIMEOUT, || g2_seen.load(Ordering::Acquire)) {
             return Err(
-                "query client never observed the activated generation two result set".into()
+                "query client never observed the activated generation two result set".into(),
             );
         }
         Ok(())

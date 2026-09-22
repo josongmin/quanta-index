@@ -166,7 +166,7 @@ fn recency_and_relevance_count_the_same_rows_for_the_same_query() -> TestResult 
                 ) => {}
         other => {
             return Err(
-                format!("a raw string alone is unscorable under relevance, got {other:?}").into()
+                format!("a raw string alone is unscorable under relevance, got {other:?}").into(),
             );
         }
     }

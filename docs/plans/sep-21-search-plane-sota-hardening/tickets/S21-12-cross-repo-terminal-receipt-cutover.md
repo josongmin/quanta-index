@@ -143,3 +143,18 @@ preparation부터 daemon terminal commit까지 하나의 mandatory commitment ch
 - query-only SDK profile and mutation-capable SDK profile를 각각 compile/run evidence로 분리한다.
 - Semantica current snapshot은 `observed_at`, HEAD, dirty-path digest, dependency resolution을 receipt에 포함하고
   closeout 직전 재-freeze한다.
+
+## 2026-09-21 static implementation delta
+
+- Observed quanta-index HEAD: `4ee230efb927884663c671e623b25cf8892142da`. Runtime, Cargo, daemon, tests, and QBC are `NOT_RUN` by explicit user instruction.
+- V1 `RepoMapMutationAck` and its wire decoder remain unchanged. The parallel V2 surface adds `PublishRepoMapBundleV2`, `RepoMapActivateV2`, and phase-tagged `RepoMapTerminalReceiptV2`.
+- The V2 publish request carries the exact full source-bundle digest. The daemon recomputes it before mutation. Candidate `projection_meta` durably retains manifest digest plus source-bundle digest, while legacy rows remain readable and are rejected for V2 activation.
+- V2 activation compares repo/revision/generation, manifest digest, snapshot id, projection version, authority digest, and source-bundle digest with immutable candidate metadata before activation.
+- Publish and activate responses bind those axes to candidate commitment, activation epoch, terminal sequence, and replay status. The SDK exposes separate `publish_v2` and `activate_v2` methods; V1 methods remain compatibility-only.
+- Static hostile review found and closed a same-commitment replay substitution: compiled candidate bytes can remain identical while manifest/snapshot/projection/authority custody changes. Catalog replay now requires exact durable object address, content digest, byte size, and projection metadata; the RepoMap owner also re-reads and compares every retained axis before issuing the V2 publish terminal receipt.
+- V1 and V2 persistence are separated at the RepoMap owner. V1 keeps the exact legacy projection-metadata JSON shape, including omission of the two V2 custody keys, so upgrade-time V1 replay remains byte-compatible. V2 seals both strong fields together. A V2 call cannot relabel an existing V1 row; it receives a typed candidate conflict and leaves the durable row unchanged.
+- V2 publish receipts now use phase-correct stable activation fields: publish does not mutate the active head, so `prior_candidate_commitment=None` and `activation_epoch=0`. Later activation changes therefore cannot rewrite an ACK-loss publish replay. Publish and activate restart replays must equal their original receipts on every field except `mutation.replayed`, which changes to `true`.
+- Activation replay now forwards the catalog-reconstructed original `prior_candidate_commitment`; the store no longer discards it in the replay branch. This preserves full receipt identity for superseding activation after restart.
+- Projection metadata decoding rejects one-sided keys, present-but-non-string values, invalid manifest digests, and non-canonical source-bundle digests as `CatalogRowCorrupt`; malformed V2 custody cannot fall through as a legacy V1 row or authorize V2 activation.
+- Added source-only contract and owner selectors for per-axis source digest sensitivity, strict duplicate/unknown-field refusal, same-commitment axis substitution, durable-row preservation, restart replay, activation replay prior-commitment stability, and terminal-sequence stability. These selectors are not executed.
+- Cross-version wire refusal, response-loss restart replay, daemon binary attestation, cross-repo qualification, deployment, activation, and rollback evidence remain unexecuted.

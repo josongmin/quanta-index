@@ -73,9 +73,11 @@ pub(super) fn resolve_semantic_request_selection(
     request: &SemanticQueryRequest,
 ) -> Result<SemanticSelection, CoreError> {
     let outer_selection = match request.generation_selector.as_ref() {
-        Some(selector) => {
-            Some(resolve_semantic_selector_selection(activation_catalog, selector, "semantic")?)
-        }
+        Some(selector) => Some(resolve_semantic_selector_selection(
+            activation_catalog,
+            selector,
+            "semantic",
+        )?),
         None => None,
     };
     let scope_pin = match request.lexical_scope.as_ref() {
@@ -118,9 +120,9 @@ pub(super) fn resolve_semantic_request_selection(
             expected_manifest_digest: None,
         }),
         (None, Some(selection), _) => Ok(selection),
-        (None, None, None) => {
-            Err(CoreError::InvalidContract("semantic: generation pin required".to_string()))
-        }
+        (None, None, None) => Err(CoreError::InvalidContract(
+            "semantic: generation pin required".to_string(),
+        )),
     }
 }
 
@@ -135,9 +137,11 @@ pub(super) fn resolve_hybrid_request_selection(
         "hybrid text_query",
     )?;
     let semantic_selection = match request.generation_selector.as_ref() {
-        Some(selector) => {
-            Some(resolve_semantic_selector_selection(activation_catalog, selector, "hybrid")?)
-        }
+        Some(selector) => Some(resolve_semantic_selector_selection(
+            activation_catalog,
+            selector,
+            "hybrid",
+        )?),
         None => None,
     };
     match (request.generation.clone(), semantic_selection) {
@@ -644,7 +648,10 @@ mod seed_fusion_tests {
             .map(|contribution| contribution.lane)
             .collect();
         assert_eq!(lanes, vec![SeedLane::Bm25, SeedLane::Dense], "{alpha:?}");
-        assert_eq!(alpha.corpus_kind, Some(SemanticCorpusKindV1::RawCodeFallback));
+        assert_eq!(
+            alpha.corpus_kind,
+            Some(SemanticCorpusKindV1::RawCodeFallback)
+        );
         assert_eq!(alpha.seed_rank, 1, "two lanes outrank one: {seeds:?}");
         assert_eq!(
             seeds

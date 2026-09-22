@@ -104,9 +104,9 @@ fn track_from_code(code: &str) -> Result<SearchPlaneTrackKind, CoreError> {
         "Lexical" => Ok(SearchPlaneTrackKind::Lexical),
         "Semantic" => Ok(SearchPlaneTrackKind::Semantic),
         "Structural" => Ok(SearchPlaneTrackKind::Structural),
-        other => {
-            Err(corrupt(format!("catalog: auxiliary track row names unknown track {other:?}")))
-        }
+        other => Err(corrupt(format!(
+            "catalog: auxiliary track row names unknown track {other:?}"
+        ))),
     }
 }
 
@@ -232,13 +232,21 @@ struct RawRow {
 
 fn verified_row(raw: RawRow) -> Result<AuxiliaryRowV1, CoreError> {
     let domain = AuxiliaryDomainV1::from_code_str(&raw.domain).ok_or_else(|| {
-        corrupt(format!("catalog: auxiliary row names unknown domain {:?}", raw.domain))
+        corrupt(format!(
+            "catalog: auxiliary row names unknown domain {:?}",
+            raw.domain
+        ))
     })?;
     let family = AuxiliaryRowFamilyV1::from_code_str(&raw.family).ok_or_else(|| {
-        corrupt(format!("catalog: auxiliary row names unknown family {:?}", raw.family))
+        corrupt(format!(
+            "catalog: auxiliary row names unknown family {:?}",
+            raw.family
+        ))
     })?;
     let generation = u64::try_from(raw.generation).map_err(|error| {
-        corrupt(format!("catalog: auxiliary row generation is negative: {error}"))
+        corrupt(format!(
+            "catalog: auxiliary row generation is negative: {error}"
+        ))
     })?;
     let key = AuxiliaryRowKeyV1 {
         domain,

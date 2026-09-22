@@ -435,7 +435,10 @@ mod tests {
             .err()
             .ok_or("a cancelled budget refuses")?;
         assert_eq!(typed_code(&err), Some(REQUEST_CANCELLED_CODE));
-        assert!(err.to_string().contains("checkpoint `lexical:collect`"), "{err}");
+        assert!(
+            err.to_string().contains("checkpoint `lexical:collect`"),
+            "{err}"
+        );
         let walked = advanced.load(Ordering::Relaxed);
         assert!(
             walked <= TICK_INTERVAL,
@@ -496,7 +499,10 @@ mod tests {
         .err()
         .ok_or("a passed deadline refuses")?;
         assert_eq!(typed_code(&err), Some(REQUEST_DEADLINE_EXCEEDED_CODE));
-        assert!(err.to_string().contains("checkpoint `lexical:collect`"), "{err}");
+        assert!(
+            err.to_string().contains("checkpoint `lexical:collect`"),
+            "{err}"
+        );
         Ok(())
     }
 }

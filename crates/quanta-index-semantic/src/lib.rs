@@ -434,7 +434,10 @@ fn read_sealed_scope_manifest(
     }
     let manifest_path = layout::manifest_path(&generation_dir);
     let manifest = SemanticManifest::decode(&std::fs::read(&manifest_path).map_err(|error| {
-        CoreError::Storage(format!("semantic: read manifest {}: {error}", manifest_path.display()))
+        CoreError::Storage(format!(
+            "semantic: read manifest {}: {error}",
+            manifest_path.display()
+        ))
     })?)?;
     manifest.validate_scope(
         &candidate.repo_id,
@@ -825,7 +828,12 @@ pub fn validate_persisted_generation_v2(
         })?;
     let _loaded = run_blocking(
         &runtime,
-        open_generation(semantic_root, &record.repo_id, &record.revision_id, record.generation),
+        open_generation(
+            semantic_root,
+            &record.repo_id,
+            &record.revision_id,
+            record.generation,
+        ),
     )?;
     Ok(ValidatedPersistedSemanticGenerationV2 {
         repo_id: record.repo_id.clone(),
@@ -984,7 +992,9 @@ fn inventory_generation_dir(
     let repo_id = RepoId::new(manifest.repo_id.clone())
         .map_err(|error| unreadable(format!("semantic manifest has invalid repo ID: {error}")))?;
     let revision_id = RevisionId::new(manifest.revision_id.clone()).map_err(|error| {
-        unreadable(format!("semantic manifest has invalid revision ID: {error}"))
+        unreadable(format!(
+            "semantic manifest has invalid revision ID: {error}"
+        ))
     })?;
     let generation = ManifestGeneration::new(manifest.generation);
     if let Err(err) = manifest.validate_scope(&repo_id, &revision_id, generation) {
@@ -1074,7 +1084,10 @@ fn discard_quarantined_directory(
 ) -> Result<QuarantineDiscardOutcomeV1, CoreError> {
     let not_quarantined = |why: String| CoreError::Typed {
         code: quanta_index_contract::SearchPlaneErrorCodeV2::QuarantineTargetNotQuarantined,
-        message: format!("semantic: refusing to discard {}: {why}", entry.path.display()),
+        message: format!(
+            "semantic: refusing to discard {}: {why}",
+            entry.path.display()
+        ),
     };
     let Some(current) = quarantined_now
         .iter()
@@ -1165,7 +1178,10 @@ fn dir_entry(entry: std::io::Result<std::fs::DirEntry>) -> Result<std::fs::DirEn
 
 fn is_dir(entry: &std::fs::DirEntry) -> Result<bool, CoreError> {
     let file_type = entry.file_type().map_err(|err| {
-        CoreError::Storage(format!("semantic: file type {}: {err}", entry.path().display()))
+        CoreError::Storage(format!(
+            "semantic: file type {}: {err}",
+            entry.path().display()
+        ))
     })?;
     Ok(file_type.is_dir())
 }
@@ -1340,7 +1356,10 @@ mod incomplete_generation_discard_tests {
             panic!("one quarantine record expected");
         };
         assert_eq!(entry.path, legacy_family);
-        assert_eq!(entry.reason, GenerationQuarantineReasonV1::NonCanonicalLayout);
+        assert_eq!(
+            entry.reason,
+            GenerationQuarantineReasonV1::NonCanonicalLayout
+        );
         assert_eq!(entry.track, SearchPlaneTrackKind::Semantic);
     }
 }

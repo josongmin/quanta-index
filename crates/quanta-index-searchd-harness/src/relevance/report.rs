@@ -346,11 +346,12 @@ fn check_invariants(query: &JudgedQuery, order: &[String]) -> Vec<String> {
     if let Some(top1) = query.ordering.top1 {
         match order.first() {
             Some(first) if first == top1 => {}
-            Some(first) => {
-                failures.push(format!("top1 invariant: expected `{top1}` at rank 1, got `{first}`"))
-            }
-            None => failures
-                .push(format!("top1 invariant: expected `{top1}` at rank 1, got empty ranking")),
+            Some(first) => failures.push(format!(
+                "top1 invariant: expected `{top1}` at rank 1, got `{first}`"
+            )),
+            None => failures.push(format!(
+                "top1 invariant: expected `{top1}` at rank 1, got empty ranking"
+            )),
         }
     }
 
@@ -394,11 +395,16 @@ fn score_query(query: &JudgedQuery, order: Vec<String>) -> AnyResult<QueryScore>
     let mut failures = check_invariants(query, &order);
     let thresholds = thresholds_for(query.route);
     if mrr < thresholds.min_mrr_at_10 {
-        failures.push(format!("MRR@10 {mrr:.4} below threshold {:.4}", thresholds.min_mrr_at_10));
+        failures.push(format!(
+            "MRR@10 {mrr:.4} below threshold {:.4}",
+            thresholds.min_mrr_at_10
+        ));
     }
     if ndcg < thresholds.min_ndcg_at_10 {
-        failures
-            .push(format!("NDCG@10 {ndcg:.4} below threshold {:.4}", thresholds.min_ndcg_at_10));
+        failures.push(format!(
+            "NDCG@10 {ndcg:.4} below threshold {:.4}",
+            thresholds.min_ndcg_at_10
+        ));
     }
     if recall < thresholds.min_recall_at_20 {
         failures.push(format!(
@@ -464,7 +470,10 @@ fn capture_overlap_bucket(
 ) -> OverlapCapture {
     let result = rt.query_text(to_text_syntax(bucket.syntax), bucket.query, TOP_K);
     let (quanta_ordering, quanta_capture_error) = match result.typed_error {
-        Some(error) => (Vec::new(), Some(format!("{}: {}", error.code, error.message))),
+        Some(error) => (
+            Vec::new(),
+            Some(format!("{}: {}", error.code, error.message)),
+        ),
         None => (
             result
                 .candidates
@@ -807,7 +816,10 @@ pub fn artifact(
                     ("recall_k", RECALL_K.to_string()),
                     ("top_k", TOP_K.to_string()),
                     ("judged_queries", JUDGED_QUERIES.len().to_string()),
-                    ("semantic_gated_queries", SEMANTIC_GATED_QUERIES.len().to_string()),
+                    (
+                        "semantic_gated_queries",
+                        SEMANTIC_GATED_QUERIES.len().to_string(),
+                    ),
                 ],
             ),
             model_revision: report.model_revision.clone(),
@@ -1196,7 +1208,10 @@ mod tests {
         ]);
         let first = collapse_same_repo_path(input.clone());
         let second = collapse_same_repo_path(input);
-        assert_eq!(first, second, "collapse is a pure function: same input must yield same output");
+        assert_eq!(
+            first, second,
+            "collapse is a pure function: same input must yield same output"
+        );
     }
 
     #[test]
@@ -1438,7 +1453,11 @@ mod tests {
             "{:?}",
             score.failures
         );
-        assert!(score.failures.iter().any(|f| f.contains("Recall@20")), "{:?}", score.failures);
+        assert!(
+            score.failures.iter().any(|f| f.contains("Recall@20")),
+            "{:?}",
+            score.failures
+        );
     }
 
     #[test]

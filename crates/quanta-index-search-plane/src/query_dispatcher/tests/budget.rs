@@ -57,7 +57,10 @@ fn every_route_refuses_an_interrupted_budget_at_entry_without_opening() -> TestR
                 cursor: None,
             }),
         ),
-        ("semantic:entry", SearchPlaneQueryIpcRequest::Semantic(semantic_focus_request())),
+        (
+            "semantic:entry",
+            SearchPlaneQueryIpcRequest::Semantic(semantic_focus_request()),
+        ),
         (
             "hybrid:entry",
             SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
@@ -80,7 +83,10 @@ fn every_route_refuses_an_interrupted_budget_at_entry_without_opening() -> TestR
                 cursor: None,
             }),
         ),
-        ("repo-map:entry", SearchPlaneQueryIpcRequest::RepoMapQuery(repo_map_request())),
+        (
+            "repo-map:entry",
+            SearchPlaneQueryIpcRequest::RepoMapQuery(repo_map_request()),
+        ),
     ];
     let cancelled = RequestBudgetV1::unbounded();
     cancelled.cancel_handle().cancel();
@@ -89,12 +95,12 @@ fn every_route_refuses_an_interrupted_budget_at_entry_without_opening() -> TestR
             .map_err(Box::<dyn std::error::Error>::from)?;
         if code != REQUEST_CANCELLED_CODE {
             return Err(
-                format!("{checkpoint}: expected REQUEST_CANCELLED, got {code}: {message}").into()
+                format!("{checkpoint}: expected REQUEST_CANCELLED, got {code}: {message}").into(),
             );
         }
         if !message.contains(&format!("checkpoint `{checkpoint}`")) {
             return Err(
-                format!("{checkpoint}: interruption must name its checkpoint: {message}").into()
+                format!("{checkpoint}: interruption must name its checkpoint: {message}").into(),
             );
         }
     }
@@ -116,7 +122,7 @@ fn every_route_refuses_an_interrupted_budget_at_entry_without_opening() -> TestR
         .count();
     if per_route_cancelled != 8 {
         return Err(
-            format!("expected 8 per-route cancelled samples, got {per_route_cancelled}").into()
+            format!("expected 8 per-route cancelled samples, got {per_route_cancelled}").into(),
         );
     }
     if samples.iter().any(|sample| {
@@ -150,7 +156,10 @@ fn the_request_budget_reaches_the_dense_lane_on_every_dense_route() -> TestResul
         cursor: None,
     };
     let routes: Vec<(&str, SearchPlaneQueryIpcRequest)> = vec![
-        ("semantic", SearchPlaneQueryIpcRequest::Semantic(semantic_focus_request())),
+        (
+            "semantic",
+            SearchPlaneQueryIpcRequest::Semantic(semantic_focus_request()),
+        ),
         (
             "hybrid",
             SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
@@ -203,7 +212,7 @@ fn the_request_budget_reaches_the_dense_lane_on_every_dense_route() -> TestResul
         }
         if !budget.is_cancelled() {
             return Err(
-                format!("{route}: the lane cancelled the request's budget, not a copy").into()
+                format!("{route}: the lane cancelled the request's budget, not a copy").into(),
             );
         }
         let dense_searches = {
@@ -225,7 +234,7 @@ fn the_request_budget_reaches_the_dense_lane_on_every_dense_route() -> TestResul
             .count();
         if interrupted != 1 {
             return Err(
-                format!("{route}: expected one cancelled-error sample, got {interrupted}").into()
+                format!("{route}: expected one cancelled-error sample, got {interrupted}").into(),
             );
         }
     }

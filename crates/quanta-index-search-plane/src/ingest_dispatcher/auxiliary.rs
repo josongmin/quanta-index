@@ -307,8 +307,11 @@ impl HistoryIngestPort for DirectHistoryMaterializer {
             drop(guard);
             (epoch, current)
         };
-        let delta =
-            history_transition(current.as_ref().map(|read| read.state.as_ref()), epoch, batch)?;
+        let delta = history_transition(
+            current.as_ref().map(|read| read.state.as_ref()),
+            epoch,
+            batch,
+        )?;
         let text_build = self
             .history_text
             .as_ref()

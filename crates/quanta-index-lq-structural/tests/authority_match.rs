@@ -205,8 +205,10 @@ fn authority_root_kind_exact_miss_returns_empty() {
 fn authority_group_wrapped_root_capture_binds_root_span() {
     let source = "fn main() {}";
     let tree = tree("rust", "function_item", 0, 12, source);
-    let pattern =
-        compile_block(vec![group(vec![literal(" "), metavar("node"), literal(" ")])], "rust");
+    let pattern = compile_block(
+        vec![group(vec![literal(" "), metavar("node"), literal(" ")])],
+        "rust",
+    );
     let matcher = TruthfulSubsetAuthorityMatcher::new();
     let got = match matcher
         .match_authority(lower(&pattern), StructuralAuthorityView::new(source, &tree))
@@ -552,9 +554,10 @@ fn authority_where_constraint_filters_by_bound_source_text() {
         "rust",
     );
     let matcher = TruthfulSubsetAuthorityMatcher::new();
-    let equal = match matcher
-        .match_authority(lower(&pattern), StructuralAuthorityView::new(equal_source, &equal_tree))
-    {
+    let equal = match matcher.match_authority(
+        lower(&pattern),
+        StructuralAuthorityView::new(equal_source, &equal_tree),
+    ) {
         Ok(v) => v,
         Err(e) => fatal(&format!("{e}")),
     };
@@ -582,7 +585,13 @@ fn authority_where_regex_constraint_filters_by_bound_source_text() {
         Err(err) => fatal(&format!("test source length must fit u32: {err}")),
     };
     let matching_tree = tree("rust", "identifier", 0, matching_end, matching_source);
-    let non_matching_tree = tree("rust", "identifier", 0, non_matching_end, non_matching_source);
+    let non_matching_tree = tree(
+        "rust",
+        "identifier",
+        0,
+        non_matching_end,
+        non_matching_source,
+    );
     let pattern = compile_exprs(
         vec![
             LqStructuralExpr::Pattern(vec![metavar("name")]),
@@ -653,9 +662,10 @@ fn authority_inside_and_outside_constraints_follow_ancestor_chain() {
         "rust",
     );
     let matcher = TruthfulSubsetAuthorityMatcher::new();
-    let nested = match matcher
-        .match_authority(lower(&pattern), StructuralAuthorityView::new(nested_source, &nested_tree))
-    {
+    let nested = match matcher.match_authority(
+        lower(&pattern),
+        StructuralAuthorityView::new(nested_source, &nested_tree),
+    ) {
         Ok(v) => v,
         Err(e) => fatal(&format!("{e}")),
     };
@@ -666,9 +676,10 @@ fn authority_inside_and_outside_constraints_follow_ancestor_chain() {
         Ok(v) => v,
         Err(e) => fatal(&format!("{e}")),
     };
-    let trait_nested = match matcher
-        .match_authority(lower(&pattern), StructuralAuthorityView::new(trait_source, &trait_tree))
-    {
+    let trait_nested = match matcher.match_authority(
+        lower(&pattern),
+        StructuralAuthorityView::new(trait_source, &trait_tree),
+    ) {
         Ok(v) => v,
         Err(e) => fatal(&format!("{e}")),
     };
@@ -688,7 +699,10 @@ fn authority_pattern_lowering_rejects_still_unsupported_composite_shape() {
         "rust",
     );
     let lowered = lower(&pattern);
-    assert_eq!(lowered.kind(), quanta_index_lq_structural::StructuralAuthorityPatternKind::Tree);
+    assert_eq!(
+        lowered.kind(),
+        quanta_index_lq_structural::StructuralAuthorityPatternKind::Tree
+    );
 }
 
 #[test]
@@ -705,7 +719,10 @@ fn authority_pattern_lowering_rejects_ambiguous_child_sequence_shape() {
         "rust",
     );
     let lowered = lower(&pattern);
-    assert_eq!(lowered.kind(), quanta_index_lq_structural::StructuralAuthorityPatternKind::Tree);
+    assert_eq!(
+        lowered.kind(),
+        quanta_index_lq_structural::StructuralAuthorityPatternKind::Tree
+    );
 }
 
 #[test]

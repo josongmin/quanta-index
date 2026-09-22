@@ -77,7 +77,13 @@ fn record(
 
 /// A chunk row: its own owner, as the legacy derivation emits them.
 fn chunk(id: &str, path: &str) -> Result<EmbeddingRecord, Box<dyn std::error::Error>> {
-    record(id, path, OwnerDocKind::Chunk, id, SemanticCorpusKindV1::RawCodeFallback)
+    record(
+        id,
+        path,
+        OwnerDocKind::Chunk,
+        id,
+        SemanticCorpusKindV1::RawCodeFallback,
+    )
 }
 
 fn scope(path: &str, embeddings: Vec<EmbeddingRecord>) -> SemanticReplaceScope {
@@ -260,7 +266,10 @@ fn resident_scopes_stream_by_owner_under_the_scope_ceiling() -> TestResult {
     }
     let expected: Vec<(Vec<String>, Vec<String>)> = vec![
         (vec!["a.rs".into()], vec!["a-1".into(), "a-2".into()]),
-        (vec!["a.rs".into(), "b.rs".into()], vec!["a-3".into(), "b-1".into()]),
+        (
+            vec!["a.rs".into(), "b.rs".into()],
+            vec!["a-3".into(), "b-1".into()],
+        ),
         (vec!["c.rs".into()], vec!["c-1".into()]),
     ];
     if seen != expected {

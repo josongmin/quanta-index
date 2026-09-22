@@ -60,7 +60,10 @@ fn ingest_files(
         let last = first.saturating_add(FILES_PER_BATCH).min(count);
         let contents: Vec<(String, String)> = (first..last)
             .map(|index| {
-                (format!("src/g{generation}/item_{index:03}.rs"), file_content(generation, index))
+                (
+                    format!("src/g{generation}/item_{index:03}.rs"),
+                    file_content(generation, index),
+                )
             })
             .collect();
         let chunks: Vec<[E2eTextChunkSpec<'_>; 1]> = contents
@@ -91,8 +94,10 @@ fn semantic_generation_dir(
     let semantic_root = std::fs::canonicalize(rt.state_root())?
         .join("indexes")
         .join("semantic");
-    Ok(GenerationStorageKeyV1::for_repo_revision(&rt.repo(), &rt.revision())
-        .generation_dir(&semantic_root, generation))
+    Ok(
+        GenerationStorageKeyV1::for_repo_revision(&rt.repo(), &rt.revision())
+            .generation_dir(&semantic_root, generation),
+    )
 }
 
 /// Bytes of every index file below the generation's `dataset/` tree, keyed
@@ -124,10 +129,10 @@ fn index_bytes_by_inode(generation_dir: &Path) -> Result<BTreeMap<u64, u64>, Box
 }
 
 fn served(result: &E2eQueryResult, what: &str) -> Result<(), Box<dyn Error>> {
-    result
-        .typed_error
-        .as_ref()
-        .map_or_else(|| Ok(()), |error| Err(format!("{what} was refused: {error}").into()))
+    result.typed_error.as_ref().map_or_else(
+        || Ok(()),
+        |error| Err(format!("{what} was refused: {error}").into()),
+    )
 }
 
 /// The plan-stage trace entry naming the dense lane, if any.
@@ -154,9 +159,11 @@ fn a_delta_seal_appends_to_the_inherited_ann_index_and_the_trace_says_so() -> Te
     // g1: past the floor, so the seal trains the policy index.
     let base_ids = ingest_files(&mut rt, 1, BASE_FILES)?;
     if base_ids.len() != usize::try_from(BASE_FILES)? {
-        return Err(
-            format!("base ingest returned {} ids for {BASE_FILES} files", base_ids.len()).into()
-        );
+        return Err(format!(
+            "base ingest returned {} ids for {BASE_FILES} files",
+            base_ids.len()
+        )
+        .into());
     }
     let base = rt.seal()?;
     rt.activate_last_sealed_generation()?;

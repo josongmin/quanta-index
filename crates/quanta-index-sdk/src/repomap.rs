@@ -1,8 +1,9 @@
 use quanta_index_contract::{
-    RepoMapActivateGenerationRequest, RepoMapMutationAck, RepoMapQueryRequest,
-    RepoMapQueryResponse, RepoMapSourceBundle, SearchPlaneControlIpcRequest,
-    SearchPlaneControlIpcResponse, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse,
-    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
+    RepoMapActivateGenerationRequest, RepoMapActivateGenerationRequestV2, RepoMapMutationAck,
+    RepoMapPublishBundleRequestV2, RepoMapQueryRequest, RepoMapQueryResponse, RepoMapSourceBundle,
+    RepoMapTerminalReceiptV2, SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse,
+    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse, SearchPlaneQueryIpcRequest,
+    SearchPlaneQueryIpcResponse,
 };
 
 use crate::{QuantaIndex, SdkError};
@@ -51,6 +52,22 @@ impl<'a> RepoMapNamespace<'a> {
         <RepoMapNs as crate::NamespaceIngest>::publish(self.client, bundle)
     }
 
+    pub fn publish_v2(
+        &self,
+        request: RepoMapPublishBundleRequestV2,
+    ) -> Result<RepoMapTerminalReceiptV2, SdkError> {
+        let response = self
+            .client
+            .dispatch_ingest(SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(request))?;
+        match response {
+            SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(receipt) => Ok(receipt),
+            other => Err(SdkError::unexpected_response(
+                "repomap V2 publish receipt",
+                QuantaIndex::ingest_response_kind(&other),
+            )),
+        }
+    }
+
     pub fn activate(
         &self,
         request: RepoMapActivateGenerationRequest,
@@ -63,6 +80,7 @@ impl<'a> RepoMapNamespace<'a> {
             other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
             | SearchPlaneControlIpcResponse::Error(_)
+            | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
@@ -73,6 +91,22 @@ impl<'a> RepoMapNamespace<'a> {
                     QuantaIndex::control_response_kind(&other),
                 ))
             }
+        }
+    }
+
+    pub fn activate_v2(
+        &self,
+        request: RepoMapActivateGenerationRequestV2,
+    ) -> Result<RepoMapTerminalReceiptV2, SdkError> {
+        let response = self
+            .client
+            .dispatch_control(SearchPlaneControlIpcRequest::RepoMapActivateV2(request))?;
+        match response {
+            SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(receipt) => Ok(receipt),
+            other => Err(SdkError::unexpected_response(
+                "repomap V2 activate receipt",
+                QuantaIndex::control_response_kind(&other),
+            )),
         }
     }
 }
@@ -95,8 +129,9 @@ impl crate::NamespaceIngest for RepoMapNs {
         client: &QuantaIndex,
         bundle: &RepoMapSourceBundle,
     ) -> Result<RepoMapMutationAck, SdkError> {
-        let response = client
-            .dispatch_ingest(SearchPlaneIngestIpcRequest::PublishRepoMapBundle(bundle.clone()))?;
+        let response = client.dispatch_ingest(
+            SearchPlaneIngestIpcRequest::PublishRepoMapBundle(bundle.clone()),
+        )?;
         match response {
             SearchPlaneIngestIpcResponse::RepoMapReceipt(ack) => Ok(ack),
             other @ (SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
@@ -110,6 +145,7 @@ impl crate::NamespaceIngest for RepoMapNs {
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "repomap receipt",
                 QuantaIndex::ingest_response_kind(&other),

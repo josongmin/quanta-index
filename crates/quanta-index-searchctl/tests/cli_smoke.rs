@@ -653,7 +653,8 @@ impl IpcDispatcher<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>
             SearchPlaneControlIpcRequest::QuarantineDiscard(request) => quarantine_discard(request),
             other @ (SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(_)
             | SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(_)
-            | SearchPlaneControlIpcRequest::RepoMapActivate(_)) => control_error_response(
+            | SearchPlaneControlIpcRequest::RepoMapActivate(_)
+            | SearchPlaneControlIpcRequest::RepoMapActivateV2(_)) => control_error_response(
                 SearchPlaneErrorCodeV2::Internal,
                 format!("doctor mock received unexpected control request: {other:?}"),
             ),
@@ -760,7 +761,7 @@ searchd_obs_errors_recorded_total 0\n\
 searchd_obs_errors_dropped_total 0\n";
     if stdout != expected {
         return Err(
-            format!("unexpected exposition:\n{stdout}\n--- expected ---\n{expected}").into()
+            format!("unexpected exposition:\n{stdout}\n--- expected ---\n{expected}").into(),
         );
     }
     Ok(())
@@ -1354,7 +1355,10 @@ fn dispatch_explain_hybrid_request(
     if payload.semantic_query_text.as_deref() != Some("where main lives") {
         return error_response(
             SearchPlaneErrorCodeV2::Internal,
-            format!("unexpected explain dense query: {:?}", payload.semantic_query_text),
+            format!(
+                "unexpected explain dense query: {:?}",
+                payload.semantic_query_text
+            ),
         );
     }
     let mut explanation = stub_explanation("hybrid lane trace", vec![EngineTouched::Lexical]);
@@ -1475,7 +1479,10 @@ fn dispatch_hybrid_seed_request(
     if payload.semantic_query_text.as_str() != "0.25 0.5 -0.75" {
         return error_response(
             SearchPlaneErrorCodeV2::Internal,
-            format!("unexpected hybrid semantic query text: {:?}", payload.semantic_query_text),
+            format!(
+                "unexpected hybrid semantic query text: {:?}",
+                payload.semantic_query_text
+            ),
         );
     }
     if payload.top_k != 3 {

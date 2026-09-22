@@ -86,11 +86,12 @@ fn audit_one(code: LexicalErrorCode, expected_repairable: bool) -> CodeAudit {
         (None, false) => {
             // Correct: internal invariant break carries no repair.
         }
-        (Some(_), false) => failures
-            .push(format!("{code_str}: expected NO repair (internal) but a hint was produced")),
-        (None, true) => {
-            failures.push(format!("{code_str}: expected a repair hint but none was produced"))
-        }
+        (Some(_), false) => failures.push(format!(
+            "{code_str}: expected NO repair (internal) but a hint was produced"
+        )),
+        (None, true) => failures.push(format!(
+            "{code_str}: expected a repair hint but none was produced"
+        )),
     }
 
     CodeAudit {

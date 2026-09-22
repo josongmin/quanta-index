@@ -524,7 +524,9 @@ fn measure_adapter_phases(rt: &E2eRuntime) -> AnyResult<AdapterPhaseTimingV1> {
         )?;
         execute_samples.push(elapsed_ms(started));
         if page.candidates.is_empty() {
-            return Err(anyhow::anyhow!("scale: the adapter-only query returned an empty page"));
+            return Err(anyhow::anyhow!(
+                "scale: the adapter-only query returned an empty page"
+            ));
         }
     }
     Ok(AdapterPhaseTimingV1 {
@@ -809,8 +811,14 @@ pub fn artifact(
                     ("repo_count", params.repo_count.to_string()),
                     ("files_per_repo", params.files_per_repo.to_string()),
                     ("avg_file_lines", params.avg_file_lines.to_string()),
-                    ("hit_density_per_mille", params.hit_density_per_mille.to_string()),
-                    ("symbol_density_per_mille", params.symbol_density_per_mille.to_string()),
+                    (
+                        "hit_density_per_mille",
+                        params.hit_density_per_mille.to_string(),
+                    ),
+                    (
+                        "symbol_density_per_mille",
+                        params.symbol_density_per_mille.to_string(),
+                    ),
                     ("top_k", SCALE_TOP_K.to_string()),
                     ("warm_query_samples", WARM_QUERY_SAMPLES.to_string()),
                     ("history_max_generations", "1".to_string()),
@@ -871,9 +879,21 @@ mod tests {
         ] {
             let params = params_for(tier);
             assert_eq!(params.tier, tier);
-            assert!(params.repo_count >= 1, "tier {} has no repos", tier.as_str());
-            assert!(params.files_per_repo >= 1, "tier {} has no files", tier.as_str());
-            assert!(params.avg_file_lines >= 1, "tier {} has zero lines", tier.as_str());
+            assert!(
+                params.repo_count >= 1,
+                "tier {} has no repos",
+                tier.as_str()
+            );
+            assert!(
+                params.files_per_repo >= 1,
+                "tier {} has no files",
+                tier.as_str()
+            );
+            assert!(
+                params.avg_file_lines >= 1,
+                "tier {} has zero lines",
+                tier.as_str()
+            );
         }
         assert_eq!(TIER_MANIFEST.len(), 4, "exactly four declared tiers");
     }
@@ -912,7 +932,10 @@ mod tests {
         // Compare the first file of each (paths overlap at repo0/file_0).
         let small_first = &small.first().expect("small non-empty").1;
         let medium_first = &medium.first().expect("medium non-empty").1;
-        assert_ne!(small_first, medium_first, "tier tag must perturb the content stream");
+        assert_ne!(
+            small_first, medium_first,
+            "tier tag must perturb the content stream"
+        );
     }
 
     #[test]
@@ -927,7 +950,10 @@ mod tests {
     fn every_file_carries_the_query_token() {
         let corpus = generate_corpus(ScaleTier::Small, 99);
         for (path, content) in &corpus {
-            assert!(content.contains(SCALE_QUERY_TOKEN), "file {path} missing planted query token");
+            assert!(
+                content.contains(SCALE_QUERY_TOKEN),
+                "file {path} missing planted query token"
+            );
         }
     }
 
@@ -1019,7 +1045,10 @@ mod tests {
         assert_eq!(tier["daemon_phases_ms"]["cold_open_ms"], 1.0);
         assert_eq!(tier["adapter_only_phases_ms"]["execute_ms"], 0.05);
         assert_eq!(tier["delta"]["reclaimed_bytes"], 8_000);
-        assert!(tier.get("open_ms").is_none(), "the misnamed activation field is gone");
+        assert!(
+            tier.get("open_ms").is_none(),
+            "the misnamed activation field is gone"
+        );
         let advisory = value["declared_advisory_tiers"]
             .as_array()
             .expect("advisory array");

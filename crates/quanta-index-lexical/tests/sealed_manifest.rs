@@ -165,11 +165,20 @@ fn query(term: &str) -> LqQuery {
 /// The `FullBundle` repo-metadata payload: the wire map the adapter decodes.
 fn repo_metadata_bundle_payload(context: &str) -> Result<Vec<u8>, Box<dyn Error>> {
     let mut visibility = Vec::new();
-    ciborium::into_writer(&quanta_index_contract::LqVisibility::Private, &mut visibility)?;
+    ciborium::into_writer(
+        &quanta_index_contract::LqVisibility::Private,
+        &mut visibility,
+    )?;
     let visibility: ciborium::Value = ciborium::from_reader(visibility.as_slice())?;
     let wire = ciborium::Value::Map(vec![
-        (ciborium::Value::Text("fork".to_string()), ciborium::Value::Bool(false)),
-        (ciborium::Value::Text("archived".to_string()), ciborium::Value::Bool(false)),
+        (
+            ciborium::Value::Text("fork".to_string()),
+            ciborium::Value::Bool(false),
+        ),
+        (
+            ciborium::Value::Text("archived".to_string()),
+            ciborium::Value::Bool(false),
+        ),
         (ciborium::Value::Text("visibility".to_string()), visibility),
         (
             ciborium::Value::Text("contexts".to_string()),
@@ -495,7 +504,10 @@ fn both_doors_refuse_a_sidecar_that_does_not_match_the_manifest() -> TestResult 
     let generation = ManifestGeneration::new(1);
     let stale_generation = ManifestGeneration::new(2);
     adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
-    adapter.build_batch(&sealed_batch(stale_generation, "fn two() { sealed_needle other }")?)?;
+    adapter.build_batch(&sealed_batch(
+        stale_generation,
+        "fn two() { sealed_needle other }",
+    )?)?;
     expect_admitted(&knock(&adapter, generation), "intact")?;
 
     let dir = generation_dir(&root, generation);
@@ -515,7 +527,10 @@ fn both_doors_refuse_a_sidecar_that_does_not_match_the_manifest() -> TestResult 
         )?;
 
         let half = original.len().div_euclid(2);
-        std::fs::write(&path, original.get(..half).ok_or("sidecar shorter than half")?)?;
+        std::fs::write(
+            &path,
+            original.get(..half).ok_or("sidecar shorter than half")?,
+        )?;
         expect_refused(
             &knock(&adapter, generation),
             &format!("{name} truncated"),
@@ -622,9 +637,11 @@ fn an_identity_that_does_not_match_the_manifest_is_refused() -> TestResult {
         return Err(format!("open answered {:?}", doors.open.as_ref().map(|_| "served")).into());
     }
     if typed_open_code(&doors.proven).as_deref() != Some("GENERATION_IDENTITY_DIGEST_MISMATCH") {
-        return Err(
-            format!("proven open answered {:?}", doors.proven.as_ref().map(|_| "served")).into()
-        );
+        return Err(format!(
+            "proven open answered {:?}",
+            doors.proven.as_ref().map(|_| "served")
+        )
+        .into());
     }
     std::fs::write(&identity_path, &original)?;
     expect_admitted(&knock(&adapter, generation), "identity restored")
@@ -676,7 +693,10 @@ fn both_doors_refuse_an_overlay_that_does_not_match_the_manifest() -> TestResult
         )?;
 
         let half = original.len().div_euclid(2);
-        std::fs::write(&path, original.get(..half).ok_or("overlay shorter than half")?)?;
+        std::fs::write(
+            &path,
+            original.get(..half).ok_or("overlay shorter than half")?,
+        )?;
         expect_refused(
             &knock(&adapter, generation),
             &format!("{name} truncated"),
@@ -739,7 +759,10 @@ fn both_doors_refuse_an_overlay_the_seal_did_not_commit_to() -> TestResult {
             "GENERATION_SIDECAR_CORRUPT",
         )?;
         std::fs::remove_file(&path)?;
-        expect_admitted(&knock(&adapter, generation), &format!("{name} removed again"))?;
+        expect_admitted(
+            &knock(&adapter, generation),
+            &format!("{name} removed again"),
+        )?;
     }
     Ok(())
 }
@@ -865,7 +888,10 @@ fn segment_files_are_length_proved_at_the_doors() -> TestResult {
         )?;
 
         let half = original.len().div_euclid(2);
-        std::fs::write(&path, original.get(..half).ok_or("segment shorter than half")?)?;
+        std::fs::write(
+            &path,
+            original.get(..half).ok_or("segment shorter than half")?,
+        )?;
         expect_refused(
             &knock(&adapter, generation),
             &format!("{name} truncated"),
@@ -950,7 +976,7 @@ fn a_same_length_flip_is_found_by_the_scrub_and_quarantines_the_generation() -> 
         })
     {
         return Err(
-            format!("the inventory did not quarantine the generation: {inventory:?}").into()
+            format!("the inventory did not quarantine the generation: {inventory:?}").into(),
         );
     }
     if !adapter.scrub_candidates()?.is_empty() {
@@ -1029,7 +1055,7 @@ fn a_door_finding_is_quarantined_only_by_the_adapters_re_proof() -> TestResult {
             DoorFindingOutcome::NotReproduced => {}
             other @ DoorFindingOutcome::Quarantined { .. } => {
                 return Err(
-                    format!("{what}: an intact generation was quarantined: {other:?}").into()
+                    format!("{what}: an intact generation was quarantined: {other:?}").into(),
                 );
             }
         }
@@ -1067,7 +1093,7 @@ fn a_door_finding_is_quarantined_only_by_the_adapters_re_proof() -> TestResult {
             || !quarantined.detail.starts_with("a door found ")
         {
             return Err(
-                format!("{what}: the quarantine names the wrong entry: {quarantined:?}").into()
+                format!("{what}: the quarantine names the wrong entry: {quarantined:?}").into(),
             );
         }
         std::fs::write(&file, &original)?;
@@ -1078,14 +1104,16 @@ fn a_door_finding_is_quarantined_only_by_the_adapters_re_proof() -> TestResult {
         )?;
         let inventory = adapter.inventory_sealed_generations()?;
         let [entry] = inventory.quarantined.as_slice() else {
-            return Err(format!("{what}: the inventory lists one quarantine: {inventory:?}").into());
+            return Err(
+                format!("{what}: the inventory lists one quarantine: {inventory:?}").into(),
+            );
         };
         if !inventory.sealed.is_empty()
             || entry.path != dir
             || entry.reason != GenerationQuarantineReasonV1::ContentCorrupt
         {
             return Err(
-                format!("{what}: the inventory did not quarantine it: {inventory:?}").into()
+                format!("{what}: the inventory did not quarantine it: {inventory:?}").into(),
             );
         }
         match adapter.quarantine_door_finding(&identity(generation))? {
@@ -1151,7 +1179,9 @@ fn an_intact_generation_scrubs_in_bounded_resumable_steps() -> TestResult {
             }
             IntegrityScrubOutcomeV1::Completed => break,
             IntegrityScrubOutcomeV1::Corrupt { quarantined } => {
-                return Err(format!("an intact generation was quarantined: {quarantined:?}").into());
+                return Err(
+                    format!("an intact generation was quarantined: {quarantined:?}").into(),
+                );
             }
         }
     }
@@ -1192,7 +1222,10 @@ fn a_scrub_resumed_over_a_reclaimed_generation_is_refused_not_quarantined() -> T
         return Err(format!("a one-byte first step pauses: {first:?}").into());
     };
     let reclaimed = adapter.reclaim_sealed_generation(&identity(generation))?;
-    if !matches!(reclaimed, SealedGenerationReclaimOutcomeV1::Reclaimed { .. }) {
+    if !matches!(
+        reclaimed,
+        SealedGenerationReclaimOutcomeV1::Reclaimed { .. }
+    ) {
         return Err(format!("the sealed generation is reclaimed: {reclaimed:?}").into());
     }
     match adapter.scrub(&identity(generation), Some(cursor), one_byte) {
@@ -1252,7 +1285,10 @@ fn an_interrupted_reclaim_is_out_of_the_namespace_and_finished_once() -> TestRes
     adapter.build_batch(&sealed_batch(first, "fn one() { sealed_needle }")?)?;
     adapter.build_batch(&sealed_batch(second, "fn two() { sealed_needle }")?)?;
     let reclaimed = adapter.reclaim_sealed_generation(&identity(first))?;
-    if !matches!(reclaimed, SealedGenerationReclaimOutcomeV1::Reclaimed { .. }) {
+    if !matches!(
+        reclaimed,
+        SealedGenerationReclaimOutcomeV1::Reclaimed { .. }
+    ) {
         return Err(format!("the first generation is reclaimed: {reclaimed:?}").into());
     }
     let area = root.join(RECLAIM_AREA_DIR_NAME);
@@ -1319,7 +1355,10 @@ fn an_interrupted_overlay_publish_leaves_nothing_the_seal_commits_to() -> TestRe
     if names.iter().any(|name| name.contains(".tmp-")) {
         return Err(format!("a temporary survived the seal: {names:?}").into());
     }
-    expect_admitted(&knock(&adapter, generation), "sealed after a crashed publish")
+    expect_admitted(
+        &knock(&adapter, generation),
+        "sealed after a crashed publish",
+    )
 }
 
 /// A generation that indexed nothing still seals to an openable state: the

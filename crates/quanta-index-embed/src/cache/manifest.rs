@@ -189,21 +189,36 @@ mod tests {
         let encoded = encode_manifest(&records);
         assert_eq!(decode_manifest(&encoded).as_ref(), Ok(&records));
         let truncated = encoded.get(..encoded.len() - 1).expect("shorter");
-        assert_eq!(decode_manifest(truncated), Err(ManifestDecodeError::Truncated));
+        assert_eq!(
+            decode_manifest(truncated),
+            Err(ManifestDecodeError::Truncated)
+        );
         let mut trailing = encoded.clone();
         trailing.push(0);
-        assert_eq!(decode_manifest(&trailing), Err(ManifestDecodeError::TrailingBytes));
+        assert_eq!(
+            decode_manifest(&trailing),
+            Err(ManifestDecodeError::TrailingBytes)
+        );
         let mut foreign = encoded.clone();
         if let Some(first) = foreign.first_mut() {
             *first = b'X';
         }
-        assert_eq!(decode_manifest(&foreign), Err(ManifestDecodeError::ForeignMagic));
+        assert_eq!(
+            decode_manifest(&foreign),
+            Err(ManifestDecodeError::ForeignMagic)
+        );
         let mut future = encoded.clone();
         if let Some(format) = future.get_mut(4) {
             *format = 9;
         }
-        assert_eq!(decode_manifest(&future), Err(ManifestDecodeError::UnknownFormat(9)));
+        assert_eq!(
+            decode_manifest(&future),
+            Err(ManifestDecodeError::UnknownFormat(9))
+        );
         assert_eq!(decode_manifest(&[]), Err(ManifestDecodeError::Truncated));
-        assert_eq!(decode_manifest(&encode_manifest(&BTreeMap::new())), Ok(BTreeMap::new()));
+        assert_eq!(
+            decode_manifest(&encode_manifest(&BTreeMap::new())),
+            Ok(BTreeMap::new())
+        );
     }
 }

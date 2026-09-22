@@ -60,7 +60,12 @@ type TestResult = Result<(), Box<dyn Error>>;
 static NEXT_SOCKET_ID: AtomicU64 = AtomicU64::new(0);
 const READINESS_TIMEOUT: Duration = Duration::from_secs(15);
 const SOCKET_APPEAR_TIMEOUT: Duration = Duration::from_secs(5);
-type RuntimeHandles = (std::path::PathBuf, std::path::PathBuf, Arc<AtomicBool>, DriverJoin);
+type RuntimeHandles = (
+    std::path::PathBuf,
+    std::path::PathBuf,
+    Arc<AtomicBool>,
+    DriverJoin,
+);
 
 struct RepoMetadataPayload<'a> {
     fork: bool,
@@ -369,7 +374,9 @@ fn start_runtime(state_root: &Path, thread_name: &str) -> Result<RuntimeHandles,
     let join = thread::Builder::new()
         .name(thread_name.into())
         .spawn(move || drive(runtime, &shutdown_for_drive))?;
-    if !wait_until(SOCKET_APPEAR_TIMEOUT, || query_socket.exists() && ingest_socket.exists()) {
+    if !wait_until(SOCKET_APPEAR_TIMEOUT, || {
+        query_socket.exists() && ingest_socket.exists()
+    }) {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
         return Err(format!(
@@ -409,7 +416,9 @@ fn start_runtime_with_hash(
     let join = thread::Builder::new()
         .name(thread_name.into())
         .spawn(move || drive(runtime, &shutdown_for_drive))?;
-    if !wait_until(SOCKET_APPEAR_TIMEOUT, || query_socket.exists() && ingest_socket.exists()) {
+    if !wait_until(SOCKET_APPEAR_TIMEOUT, || {
+        query_socket.exists() && ingest_socket.exists()
+    }) {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
         return Err("hash semantic smoke: sockets never appeared".into());
@@ -1023,8 +1032,11 @@ fn history_query_returns_typed_shard_unavailable_when_diff_shard_missing() -> Te
         return Err("history lexical proof never became ready".into());
     }
 
-    let err =
-        wait_for_typed_error(&socket, &history_query("type:diff history"), READINESS_TIMEOUT)?;
+    let err = wait_for_typed_error(
+        &socket,
+        &history_query("type:diff history"),
+        READINESS_TIMEOUT,
+    )?;
     if err.code.as_wire_str() != "HISTORY_SHARD_UNAVAILABLE" {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
@@ -1602,7 +1614,10 @@ fn repo_metadata_filters_share_one_indexed_fixture() -> TestResult {
         let verify_sourcegraph_context_filter_fn: fn(&Path) -> TestResult =
             verify_sourcegraph_context_filter;
         for (name, verify) in [
-            ("sourcegraph_context_filter", verify_sourcegraph_context_filter_fn),
+            (
+                "sourcegraph_context_filter",
+                verify_sourcegraph_context_filter_fn,
+            ),
             ("hybrid_visibility_filter", verify_hybrid_visibility_filter),
         ] {
             verify(&socket)
@@ -1633,9 +1648,11 @@ fn verify_semantic_requires_materialization(socket: &Path) -> TestResult {
         other => return Err(format!("expected Error, got {other:?}").into()),
     };
     if err.code.as_wire_str() != "SEMANTIC_GENERATION_NOT_MATERIALIZED" {
-        return Err(
-            format!("expected SEMANTIC_GENERATION_NOT_MATERIALIZED, got {}", err.code).into()
-        );
+        return Err(format!(
+            "expected SEMANTIC_GENERATION_NOT_MATERIALIZED, got {}",
+            err.code
+        )
+        .into());
     }
     Ok(())
 }
@@ -1713,7 +1730,9 @@ fn start_runtime_with_openai(
     let join = thread::Builder::new()
         .name(thread_name.into())
         .spawn(move || drive(runtime, &shutdown_for_drive))?;
-    if !wait_until(SOCKET_APPEAR_TIMEOUT, || query_socket.exists() && ingest_socket.exists()) {
+    if !wait_until(SOCKET_APPEAR_TIMEOUT, || {
+        query_socket.exists() && ingest_socket.exists()
+    }) {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
         return Err("openai e2e: sockets never appeared".into());
@@ -1828,7 +1847,7 @@ fn openai_semantic_paraphrase_outranks_unrelated_v1() -> TestResult {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
         return Err(
-            format!("expected unrelated 'finance-doc' ranked second, got {ranked:?}").into()
+            format!("expected unrelated 'finance-doc' ranked second, got {ranked:?}").into(),
         );
     }
 
@@ -1866,9 +1885,11 @@ fn verify_semantic_search_owned_text_derivation(socket: &Path) -> TestResult {
         .first()
         .ok_or_else(|| "semantic default derivation returned no results".to_string())?;
     if first.candidate_id != "derivation-alpha" {
-        return Err(
-            format!("expected derivation-alpha candidate, got {}", first.candidate_id).into()
-        );
+        return Err(format!(
+            "expected derivation-alpha candidate, got {}",
+            first.candidate_id
+        )
+        .into());
     }
     Ok(())
 }
@@ -2220,10 +2241,19 @@ fn default_indexed_queries_share_one_fixture() -> TestResult {
         let verify_semantic_without_lexical_scope_fn: fn(&Path) -> TestResult =
             verify_semantic_without_lexical_scope;
         for (name, verify) in [
-            ("without_lexical_scope", verify_semantic_without_lexical_scope_fn),
-            ("scoped_unindexed_lexical_scope", verify_semantic_scoped_unindexed_lexical_scope),
+            (
+                "without_lexical_scope",
+                verify_semantic_without_lexical_scope_fn,
+            ),
+            (
+                "scoped_unindexed_lexical_scope",
+                verify_semantic_scoped_unindexed_lexical_scope,
+            ),
             ("empty_text_refusal", verify_semantic_empty_text_refusal),
-            ("search_owned_text_derivation", verify_semantic_search_owned_text_derivation),
+            (
+                "search_owned_text_derivation",
+                verify_semantic_search_owned_text_derivation,
+            ),
             (
                 "history_producer_unavailable_without_lexical_fallback",
                 verify_history_producer_unavailable_without_lexical_fallback,
@@ -2263,7 +2293,9 @@ fn semantic_query_fails_closed_when_runtime_has_no_query_embedder() -> TestResul
         .name("searchd-sem-provider-unavailable-test".into())
         .spawn(move || drive(runtime, &shutdown_for_drive))?;
 
-    if !wait_until(SOCKET_APPEAR_TIMEOUT, || socket.exists() && ingest_socket.exists()) {
+    if !wait_until(SOCKET_APPEAR_TIMEOUT, || {
+        socket.exists() && ingest_socket.exists()
+    }) {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
         return Err("semantic provider-unavailable sockets never appeared".into());
@@ -2377,7 +2409,7 @@ fn verify_hybrid_zero_top_k_refusal(socket: &Path) -> TestResult {
         Ok(SearchPlaneQueryIpcResponse::Error(error)) => error.code,
         other => {
             return Err(
-                format!("raw bytes with top_k=0 must be answered typed, got {other:?}").into()
+                format!("raw bytes with top_k=0 must be answered typed, got {other:?}").into(),
             );
         }
     };
@@ -2756,8 +2788,8 @@ fn structural_query_returns_typed_shard_unavailable_error() -> TestResult {
         }),
     };
     let mut observed: Option<String> = None;
-    let saw_expected =
-        wait_until(READINESS_TIMEOUT, || match send_query_request(&socket, &request) {
+    let saw_expected = wait_until(READINESS_TIMEOUT, || {
+        match send_query_request(&socket, &request) {
             Ok(response) => match response.payload {
                 SearchPlaneQueryIpcResponse::Error(err) => {
                     observed = Some(err.code.as_wire_str().to_string());
@@ -2772,7 +2804,8 @@ fn structural_query_returns_typed_shard_unavailable_error() -> TestResult {
                 observed = Some(format!("{err}"));
                 false
             }
-        });
+        }
+    });
     if !saw_expected {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
@@ -2836,14 +2869,14 @@ fn verify_structural_composition_wiring(socket: &Path) -> TestResult {
                 ))
             }
         }
-        SearchPlaneQueryIpcResponse::Structural(_) => {
-            Err("structural composition wiring: expected Error, got Structural \
+        SearchPlaneQueryIpcResponse::Structural(_) => Err(
+            "structural composition wiring: expected Error, got Structural \
                  (no structural generation was materialized for this test)"
-                .to_string())
-        }
-        other => {
-            Err(format!("structural composition wiring: expected Error response, got {other:?}"))
-        }
+                .to_string(),
+        ),
+        other => Err(format!(
+            "structural composition wiring: expected Error response, got {other:?}"
+        )),
     };
 
     result.map_err(Into::into)
@@ -2867,27 +2900,29 @@ fn verify_structural_sourcegraph_match(socket: &Path) -> TestResult {
         }),
     };
     let mut observed: Option<String> = None;
-    let saw_ready = wait_until(READINESS_TIMEOUT, || match send_query_request(socket, &request) {
-        Ok(response) => match response.payload {
-            SearchPlaneQueryIpcResponse::Structural(structural) => {
-                observed = Some(format!("{structural:?}"));
-                structural.generation == pin && structural.results.len() == 1
-            }
-            SearchPlaneQueryIpcResponse::Error(err)
-                if err.code.as_wire_str() == "NOT_READY"
-                    || err.code.as_wire_str() == "STR_GENERATION_NOT_READY" =>
-            {
-                observed = Some(err.code.as_wire_str().to_string());
+    let saw_ready = wait_until(READINESS_TIMEOUT, || {
+        match send_query_request(socket, &request) {
+            Ok(response) => match response.payload {
+                SearchPlaneQueryIpcResponse::Structural(structural) => {
+                    observed = Some(format!("{structural:?}"));
+                    structural.generation == pin && structural.results.len() == 1
+                }
+                SearchPlaneQueryIpcResponse::Error(err)
+                    if err.code.as_wire_str() == "NOT_READY"
+                        || err.code.as_wire_str() == "STR_GENERATION_NOT_READY" =>
+                {
+                    observed = Some(err.code.as_wire_str().to_string());
+                    false
+                }
+                other => {
+                    observed = Some(format!("{other:?}"));
+                    false
+                }
+            },
+            Err(err) => {
+                observed = Some(err.to_string());
                 false
             }
-            other => {
-                observed = Some(format!("{other:?}"));
-                false
-            }
-        },
-        Err(err) => {
-            observed = Some(err.to_string());
-            false
         }
     });
     if !saw_ready {
@@ -2919,7 +2954,7 @@ fn verify_structural_sourcegraph_match(socket: &Path) -> TestResult {
         || binding.end_byte != 7
     {
         return Err(
-            format!("unexpected structural Sourcegraph candidate/binding: {candidate:?}").into()
+            format!("unexpected structural Sourcegraph candidate/binding: {candidate:?}").into(),
         );
     }
     Ok(())
@@ -2945,27 +2980,29 @@ fn verify_structural_sourcegraph_regex_match(socket: &Path) -> TestResult {
         }),
     };
     let mut observed: Option<String> = None;
-    let saw_ready = wait_until(READINESS_TIMEOUT, || match send_query_request(socket, &request) {
-        Ok(response) => match response.payload {
-            SearchPlaneQueryIpcResponse::Structural(structural) => {
-                observed = Some(format!("{structural:?}"));
-                structural.generation == pin && structural.results.len() == 1
-            }
-            SearchPlaneQueryIpcResponse::Error(err)
-                if err.code.as_wire_str() == "NOT_READY"
-                    || err.code.as_wire_str() == "STR_GENERATION_NOT_READY" =>
-            {
-                observed = Some(err.code.as_wire_str().to_string());
+    let saw_ready = wait_until(READINESS_TIMEOUT, || {
+        match send_query_request(socket, &request) {
+            Ok(response) => match response.payload {
+                SearchPlaneQueryIpcResponse::Structural(structural) => {
+                    observed = Some(format!("{structural:?}"));
+                    structural.generation == pin && structural.results.len() == 1
+                }
+                SearchPlaneQueryIpcResponse::Error(err)
+                    if err.code.as_wire_str() == "NOT_READY"
+                        || err.code.as_wire_str() == "STR_GENERATION_NOT_READY" =>
+                {
+                    observed = Some(err.code.as_wire_str().to_string());
+                    false
+                }
+                other => {
+                    observed = Some(format!("{other:?}"));
+                    false
+                }
+            },
+            Err(err) => {
+                observed = Some(err.to_string());
                 false
             }
-            other => {
-                observed = Some(format!("{other:?}"));
-                false
-            }
-        },
-        Err(err) => {
-            observed = Some(err.to_string());
-            false
         }
     });
     if !saw_ready {
@@ -3052,8 +3089,8 @@ fn verify_structural_sourcegraph_select_refusal(socket: &Path) -> TestResult {
         }),
     };
     let mut observed: Option<String> = None;
-    let saw_expected =
-        wait_until(READINESS_TIMEOUT, || match send_query_request(socket, &request) {
+    let saw_expected = wait_until(READINESS_TIMEOUT, || {
+        match send_query_request(socket, &request) {
             Ok(response) => match response.payload {
                 SearchPlaneQueryIpcResponse::Error(err)
                     if err.code.as_wire_str() == "NOT_READY"
@@ -3076,7 +3113,8 @@ fn verify_structural_sourcegraph_select_refusal(socket: &Path) -> TestResult {
                 observed = Some(err.to_string());
                 false
             }
-        });
+        }
+    });
     if !saw_expected {
         return Err(format!(
             "expected STR_INVALID_REQUEST for structural SG select filter, observed {observed:?}"
@@ -3111,7 +3149,7 @@ fn verify_structural_timeout_refusal(socket: &Path) -> TestResult {
     };
     if err.code.as_wire_str() != "STR_INVALID_REQUEST" || !err.message.contains("timeout option") {
         return Err(
-            format!("expected STR_INVALID_REQUEST structural timeout error, got {err:?}").into()
+            format!("expected STR_INVALID_REQUEST structural timeout error, got {err:?}").into(),
         );
     }
     Ok(())
@@ -3135,8 +3173,8 @@ fn verify_structural_typed_holes(socket: &Path) -> TestResult {
         }),
     };
     let mut observed_expr: Option<String> = None;
-    let saw_expr =
-        wait_until(READINESS_TIMEOUT, || match send_query_request(socket, &expr_request) {
+    let saw_expr = wait_until(READINESS_TIMEOUT, || {
+        match send_query_request(socket, &expr_request) {
             Ok(response) => match response.payload {
                 SearchPlaneQueryIpcResponse::Structural(structural) => {
                     observed_expr = Some(format!("{structural:?}"));
@@ -3158,7 +3196,8 @@ fn verify_structural_typed_holes(socket: &Path) -> TestResult {
                 observed_expr = Some(err.to_string());
                 false
             }
-        });
+        }
+    });
     if !saw_expr {
         return Err(format!(
             "typed expr structural query never became ready; observed {observed_expr:?}"
@@ -3242,8 +3281,14 @@ fn structural_ready_queries_share_one_indexed_fixture() -> TestResult {
             verify_structural_sourcegraph_match;
         for (name, verify) in [
             ("sourcegraph_match", verify_structural_sourcegraph_match_fn),
-            ("sourcegraph_regex_match", verify_structural_sourcegraph_regex_match),
-            ("sourcegraph_select_refusal", verify_structural_sourcegraph_select_refusal),
+            (
+                "sourcegraph_regex_match",
+                verify_structural_sourcegraph_regex_match,
+            ),
+            (
+                "sourcegraph_select_refusal",
+                verify_structural_sourcegraph_select_refusal,
+            ),
             ("typed_holes", verify_structural_typed_holes),
         ] {
             verify(&socket)
@@ -3283,7 +3328,7 @@ fn verify_structural_typed_hole_kind_refusal(socket: &Path) -> TestResult {
         || !err.message.contains("typed hole kind `lambda`")
     {
         return Err(
-            format!("expected STR_HOLE_KIND_UNSUPPORTED typed-hole error, got {err:?}").into()
+            format!("expected STR_HOLE_KIND_UNSUPPORTED typed-hole error, got {err:?}").into(),
         );
     }
     Ok(())
@@ -3300,20 +3345,44 @@ fn request_validation_refusals_share_one_runtime() -> TestResult {
         let verify_history_generation_not_ready_fn: fn(&Path) -> TestResult =
             verify_history_generation_not_ready;
         for (name, verify) in [
-            ("history_generation_not_ready", verify_history_generation_not_ready_fn),
+            (
+                "history_generation_not_ready",
+                verify_history_generation_not_ready_fn,
+            ),
             (
                 "hybrid_requires_joint_materialization",
                 verify_hybrid_requires_joint_materialization,
             ),
-            ("semantic_requires_materialization", verify_semantic_requires_materialization),
-            ("hybrid_generation_pin_mismatch", verify_hybrid_generation_pin_mismatch),
-            ("semantic_generation_pin_mismatch", verify_semantic_generation_pin_mismatch),
+            (
+                "semantic_requires_materialization",
+                verify_semantic_requires_materialization,
+            ),
+            (
+                "hybrid_generation_pin_mismatch",
+                verify_hybrid_generation_pin_mismatch,
+            ),
+            (
+                "semantic_generation_pin_mismatch",
+                verify_semantic_generation_pin_mismatch,
+            ),
             ("hybrid_zero_top_k", verify_hybrid_zero_top_k_refusal),
-            ("structural_generation_not_ready", verify_structural_generation_not_ready),
-            ("structural_composition_wiring", verify_structural_composition_wiring),
-            ("pattern_type_required", verify_structural_pattern_type_required),
+            (
+                "structural_generation_not_ready",
+                verify_structural_generation_not_ready,
+            ),
+            (
+                "structural_composition_wiring",
+                verify_structural_composition_wiring,
+            ),
+            (
+                "pattern_type_required",
+                verify_structural_pattern_type_required,
+            ),
             ("timeout_refusal", verify_structural_timeout_refusal),
-            ("typed_hole_kind_refusal", verify_structural_typed_hole_kind_refusal),
+            (
+                "typed_hole_kind_refusal",
+                verify_structural_typed_hole_kind_refusal,
+            ),
         ] {
             verify(&socket)
                 .map_err(|error| -> Box<dyn Error> { format!("{name}: {error}").into() })?;

@@ -439,7 +439,12 @@ fn rrf_candidates_carry_the_lane_rows_and_provenance_in_the_lane_dto_order() -> 
     }
     let contributions = rows
         .iter()
-        .map(|row| (row.candidate.candidate_id.as_str(), row.contributions.clone()))
+        .map(|row| {
+            (
+                row.candidate.candidate_id.as_str(),
+                row.contributions.clone(),
+            )
+        })
         .collect::<Vec<_>>();
     let expected = [
         (

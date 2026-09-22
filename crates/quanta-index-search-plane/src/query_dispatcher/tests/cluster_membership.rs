@@ -95,7 +95,9 @@ fn cluster_membership_dispatch_opens_one_pinned_generation_and_preserves_authori
             request.generation.manifest_generation,
         )]
     {
-        return Err(format!("membership read must open its exact pin once: {opened_pins:?}").into());
+        return Err(
+            format!("membership read must open its exact pin once: {opened_pins:?}").into(),
+        );
     }
     if recorded_requests.as_slice() != [request] {
         return Err(format!(

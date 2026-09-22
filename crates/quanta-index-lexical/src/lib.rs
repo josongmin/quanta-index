@@ -637,7 +637,10 @@ mod adapter_tests {
         let mut writer: IndexWriter = index.writer(15_000_000).expect("writer");
         let _opstamp = writer.commit().expect("commit");
         drop(writer);
-        assert!(open_sealed_index(current.path()).is_ok(), "this build's schema opens");
+        assert!(
+            open_sealed_index(current.path()).is_ok(),
+            "this build's schema opens"
+        );
     }
 
     #[test]

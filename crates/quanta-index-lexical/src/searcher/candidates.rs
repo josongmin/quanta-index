@@ -83,9 +83,13 @@ impl TantivySearcher {
                 })
             })?;
         let symbol_kind_family = match stored_text(doc, self.fields.symbol_kind_family) {
-            Some(raw) => Some(SymbolKindFamily::from_code_str(raw.as_str()).ok_or_else(|| {
-                CoreError::Storage(format!("lexical: invalid stored symbol_kind_family `{raw}`"))
-            })?),
+            Some(raw) => Some(
+                SymbolKindFamily::from_code_str(raw.as_str()).ok_or_else(|| {
+                    CoreError::Storage(format!(
+                        "lexical: invalid stored symbol_kind_family `{raw}`"
+                    ))
+                })?,
+            ),
             None => None,
         };
         Ok(SymbolCandidate {

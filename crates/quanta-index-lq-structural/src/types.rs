@@ -428,7 +428,10 @@ mod tests {
     #[test]
     fn lang_id_language_code_roundtrip() {
         for l in LangId::all() {
-            assert_eq!(LangId::from_language_code_str(l.as_language_code_str()), Some(*l));
+            assert_eq!(
+                LangId::from_language_code_str(l.as_language_code_str()),
+                Some(*l)
+            );
         }
     }
 

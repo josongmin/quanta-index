@@ -71,7 +71,10 @@ pub fn decode_u32(input: &[u8]) -> Result<(u32, usize), PositionsError> {
             PositionsError::new(PositionsErrorCode::IndexCorrupted, "varint shift overflow")
         })?;
         result = result.checked_add(shifted).ok_or_else(|| {
-            PositionsError::new(PositionsErrorCode::IndexCorrupted, "varint payload overflows u32")
+            PositionsError::new(
+                PositionsErrorCode::IndexCorrupted,
+                "varint payload overflows u32",
+            )
         })?;
         if byte & 0x80 == 0 {
             return Ok((result, i.saturating_add(1)));

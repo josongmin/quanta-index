@@ -182,7 +182,12 @@ fn case_folded_literal_regex_matches_the_same_text_as_the_keyword_route() -> Tes
     )?;
     // A shorter prefix of the same token, and an interior slice, both carry the
     // same fold partner and must behave identically.
-    assert_ids(searcher.as_ref(), LqLeaf::Regex("fresh".to_string()), &["c-a"], "regex fresh")?;
+    assert_ids(
+        searcher.as_ref(),
+        LqLeaf::Regex("fresh".to_string()),
+        &["c-a"],
+        "regex fresh",
+    )?;
     assert_ids(
         searcher.as_ref(),
         LqLeaf::Regex("sentinel".to_string()),
@@ -190,7 +195,12 @@ fn case_folded_literal_regex_matches_the_same_text_as_the_keyword_route() -> Tes
         "regex sentinel",
     )?;
     // A token with no fold partner beyond ASCII must keep working.
-    assert_ids(searcher.as_ref(), LqLeaf::Regex("gamma".to_string()), &["c-a"], "regex gamma")?;
+    assert_ids(
+        searcher.as_ref(),
+        LqLeaf::Regex("gamma".to_string()),
+        &["c-a"],
+        "regex gamma",
+    )?;
     Ok(())
 }
 

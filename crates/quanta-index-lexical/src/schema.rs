@@ -26,19 +26,27 @@ impl SchemaFields {
         let doc_kind = builder.add_text_field("doc_kind", STRING | STORED);
         let repo_relative_path =
             builder.add_text_field("repo_relative_path", STRING | STORED | FAST);
-        let repo_relative_path_query = builder
-            .add_text_field("repo_relative_path_query", tokenized_text_options(CaseMode::Folded));
-        let repo_relative_path_case = builder
-            .add_text_field("repo_relative_path_case", tokenized_text_options(CaseMode::Sensitive));
+        let repo_relative_path_query = builder.add_text_field(
+            "repo_relative_path_query",
+            tokenized_text_options(CaseMode::Folded),
+        );
+        let repo_relative_path_case = builder.add_text_field(
+            "repo_relative_path_case",
+            tokenized_text_options(CaseMode::Sensitive),
+        );
         let file_name = builder.add_text_field("file_name", STRING);
         let language = builder.add_text_field("language", STRING);
         let start_line = builder.add_u64_field("start_line", STORED | FAST);
         let end_line = builder.add_u64_field("end_line", STORED | FAST);
         let snippet = builder.add_text_field("snippet", STORED);
-        let chunk_text =
-            builder.add_text_field("chunk_text", tokenized_text_options(CaseMode::Folded) | STORED);
-        let chunk_text_case =
-            builder.add_text_field("chunk_text_case", tokenized_text_options(CaseMode::Sensitive));
+        let chunk_text = builder.add_text_field(
+            "chunk_text",
+            tokenized_text_options(CaseMode::Folded) | STORED,
+        );
+        let chunk_text_case = builder.add_text_field(
+            "chunk_text_case",
+            tokenized_text_options(CaseMode::Sensitive),
+        );
         let symbol_kind = builder.add_text_field("symbol_kind", STRING | STORED);
         let symbol_kind_family = builder.add_text_field("symbol_kind_family", STRING | STORED);
         let text_authority_doc_id =

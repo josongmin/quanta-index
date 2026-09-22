@@ -235,8 +235,11 @@ impl StructuralError {
         Self {
             code: StructuralErrorCode::StrParseFail,
             dimension: None,
-            detail: format!("STR_PARSE_FAIL{{offset={offset}, detail=\"{}\"}}", detail.as_ref())
-                .into_boxed_str(),
+            detail: format!(
+                "STR_PARSE_FAIL{{offset={offset}, detail=\"{}\"}}",
+                detail.as_ref()
+            )
+            .into_boxed_str(),
         }
     }
 }
@@ -359,7 +362,10 @@ mod tests {
     #[test]
     fn code_roundtrip() {
         for c in ALL_CODES {
-            assert_eq!(StructuralErrorCode::from_code_str(c.as_code_str()), Some(*c));
+            assert_eq!(
+                StructuralErrorCode::from_code_str(c.as_code_str()),
+                Some(*c)
+            );
         }
     }
 

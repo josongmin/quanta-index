@@ -143,7 +143,9 @@ impl RankedRowColumns {
         if column.ord_to_str(ord, &mut out)? {
             Ok(out)
         } else {
-            Err(TantivyError::InternalError(format!("`{name}` ordinal {ord} names no term")))
+            Err(TantivyError::InternalError(format!(
+                "`{name}` ordinal {ord} names no term"
+            )))
         }
     }
 

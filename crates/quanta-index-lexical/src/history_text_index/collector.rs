@@ -218,7 +218,9 @@ pub(super) struct RelevanceSegmentCollector {
 impl RelevanceSegmentCollector {
     fn collect_checked(&mut self, doc: DocId, score: Score) -> Result<(), CoreError> {
         let score = HistoryScoreV1::try_new(score).map_err(|err| {
-            CoreError::Storage(format!("history text index: document {doc} scored {score}: {err}"))
+            CoreError::Storage(format!(
+                "history text index: document {doc} scored {score}: {err}"
+            ))
         })?;
         if let Some(after) = &self.after {
             // A better score than the cursor's is at or before the cursor

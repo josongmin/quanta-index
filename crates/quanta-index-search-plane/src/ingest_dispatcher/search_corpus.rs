@@ -160,12 +160,14 @@ impl SearchCorpusGcStats {
     /// `track`.
     fn count_reclaimed(&mut self, track: SearchPlaneTrackKind, generations: u64, bytes: u64) {
         let (counted_bytes, counted_generations) = match track {
-            SearchPlaneTrackKind::Lexical => {
-                (&mut self.lexical_reclaimed_bytes, &mut self.lexical_reclaimed_generations)
-            }
-            SearchPlaneTrackKind::Semantic => {
-                (&mut self.semantic_reclaimed_bytes, &mut self.semantic_reclaimed_generations)
-            }
+            SearchPlaneTrackKind::Lexical => (
+                &mut self.lexical_reclaimed_bytes,
+                &mut self.lexical_reclaimed_generations,
+            ),
+            SearchPlaneTrackKind::Semantic => (
+                &mut self.semantic_reclaimed_bytes,
+                &mut self.semantic_reclaimed_generations,
+            ),
             SearchPlaneTrackKind::Structural => return,
         };
         *counted_bytes = counted_bytes.saturating_add(bytes);
@@ -369,7 +371,10 @@ impl MetricSourcePort for DirectSearchCorpusMaterializer {
             ),
             MetricPointV1::gauge_count("ingest_peak_text_bytes", stats.peak_text_bytes),
             MetricPointV1::gauge_count("ingest_peak_vector_bytes", stats.peak_vector_bytes),
-            MetricPointV1::counter("search_corpus_gc_reclaimed_bytes_total", gc.reclaimed_bytes()),
+            MetricPointV1::counter(
+                "search_corpus_gc_reclaimed_bytes_total",
+                gc.reclaimed_bytes(),
+            ),
             MetricPointV1::counter(
                 "search_corpus_gc_reclaimed_generations_total",
                 gc.reclaimed_generations(),
@@ -624,8 +629,16 @@ impl DirectSearchCorpusMaterializer {
         base_generation: ManifestGeneration,
     ) -> Result<(), CoreError> {
         let tracks = [
-            (SearchPlaneTrackKind::Lexical, &self.lexical_generation_validator, "lexical"),
-            (SearchPlaneTrackKind::Semantic, &self.semantic_generation_validator, "semantic"),
+            (
+                SearchPlaneTrackKind::Lexical,
+                &self.lexical_generation_validator,
+                "lexical",
+            ),
+            (
+                SearchPlaneTrackKind::Semantic,
+                &self.semantic_generation_validator,
+                "semantic",
+            ),
         ];
         for (track, validator, label) in tracks {
             // Read the ledger only long enough to copy the digest out; the
@@ -1010,7 +1023,10 @@ impl DirectSearchCorpusMaterializer {
     /// Both search-corpus tracks' reclaim ports, lexical first.
     fn reclaim_tracks(
         &self,
-    ) -> [(&Arc<dyn SealedGenerationReclaimPort + Send + Sync>, SearchPlaneTrackKind); 2] {
+    ) -> [(
+        &Arc<dyn SealedGenerationReclaimPort + Send + Sync>,
+        SearchPlaneTrackKind,
+    ); 2] {
         [
             (&self.lexical_reclaim, SearchPlaneTrackKind::Lexical),
             (&self.semantic_reclaim, SearchPlaneTrackKind::Semantic),

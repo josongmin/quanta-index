@@ -2239,7 +2239,9 @@ fn assess_history(
         | ExpectedOutcome::TypedError { .. }
         | ExpectedOutcome::ExpectedFailing { .. }) => RowReport {
             id: scenario.id,
-            failure: Some(format!("history route row has unexpected expected outcome: {other:?}")),
+            failure: Some(format!(
+                "history route row has unexpected expected outcome: {other:?}"
+            )),
         },
     }
 }
@@ -2280,11 +2282,15 @@ fn assess_expected(
             },
             Some(observed) => RowReport {
                 id: scenario.id,
-                failure: Some(format!("expected typed error code={code}, got code={observed}")),
+                failure: Some(format!(
+                    "expected typed error code={code}, got code={observed}"
+                )),
             },
             None => RowReport {
                 id: scenario.id,
-                failure: Some(format!("expected typed error code={code}, got ids={corpus_ids:?}")),
+                failure: Some(format!(
+                    "expected typed error code={code}, got ids={corpus_ids:?}"
+                )),
             },
         },
         ExpectedOutcome::HistoryCommits { .. } | ExpectedOutcome::HistoryDiffPaths { .. } => {
@@ -2347,8 +2353,12 @@ fn assess_scenario(rt: &mut E2eRuntime, scenario: &ParityScenario) -> RowReport 
                 scenario.sg_query,
                 scenario.top_k,
             );
-            let lq_result =
-                execute_history(rt, TextQuerySyntax::Native, scenario.lq_query, scenario.top_k);
+            let lq_result = execute_history(
+                rt,
+                TextQuerySyntax::Native,
+                scenario.lq_query,
+                scenario.top_k,
+            );
             assess_history(scenario, &sg_result, &lq_result)
         }
         QueryRoute::RuntimeMetadata => {
@@ -2390,7 +2400,10 @@ fn run_parity_matrix(
 #[test]
 fn dual_syntax_lowering_parity_matrix() -> AnyResult<()> {
     let mut failures = run_parity_matrix(SCENARIOS, ingest_corpus)?;
-    failures.extend(run_parity_matrix(AUTHORITY_SCENARIOS, ingest_authority_fixtures)?);
+    failures.extend(run_parity_matrix(
+        AUTHORITY_SCENARIOS,
+        ingest_authority_fixtures,
+    )?);
 
     if failures.is_empty() {
         return Ok(());
@@ -2420,9 +2433,16 @@ fn select_file_owners_dual_syntax_projection_parity() -> AnyResult<()> {
     rt.activate_last_sealed_generation()?;
     let mut rt = rt.reopen();
 
-    let sg =
-        rt.query_text(TextQuerySyntax::Sourcegraph, "select:file.owners parity_needle_alpha", 10);
-    let lq = rt.query_text(TextQuerySyntax::Native, "select:file.owners parity_needle_alpha", 10);
+    let sg = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        "select:file.owners parity_needle_alpha",
+        10,
+    );
+    let lq = rt.query_text(
+        TextQuerySyntax::Native,
+        "select:file.owners parity_needle_alpha",
+        10,
+    );
     ensure!(
         sg.typed_error.is_none(),
         "sg select:file.owners typed-error: {:?}",
@@ -2455,7 +2475,10 @@ fn select_file_owners_dual_syntax_projection_parity() -> AnyResult<()> {
                     "src/repo-commit-after-a.rs".to_string(),
                     vec!["@acme/platform".to_string(), "@alice".to_string()],
                 ),
-                ("src/repo-commit-after-b.py".to_string(), vec!["@bob".to_string()],),
+                (
+                    "src/repo-commit-after-b.py".to_string(),
+                    vec!["@bob".to_string()],
+                ),
             ],
         "select:file.owners projection rows drifted: {:?}",
         sorted_file_owner_projection_rows(&sg),
@@ -2587,7 +2610,12 @@ fn native_structural_symbol_has_name_projects_into_structural_chunk_scope() -> A
     let content = "fn ParityTypeSymbol() {}";
     rt.ingest_text("repo-e2e", "src/sym-struct.rs", content)?;
     rt.ingest_structural_function_tree("src/sym-struct.rs", content, "ParityTypeSymbol")?;
-    rt.ingest_symbol("repo-e2e", "src/sym-struct.rs", "sym-struct-needle", "ParityTypeSymbol")?;
+    rt.ingest_symbol(
+        "repo-e2e",
+        "src/sym-struct.rs",
+        "sym-struct-needle",
+        "ParityTypeSymbol",
+    )?;
     _ = rt.seal()?;
     rt.activate_last_sealed_generation()?;
     let mut rt = rt.reopen();

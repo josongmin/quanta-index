@@ -97,6 +97,7 @@ fn typed_code(response: &SearchPlaneIngestIpcResponse) -> Option<&str> {
         | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
         | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+        | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
         | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_) => None,
     }
@@ -159,7 +160,11 @@ fn a_new_writer_is_refused_typed_above_the_rss_ceiling_and_admitted_below_it() -
         &scrape.gauge("process_resident_bytes")?,
         &quanta_index_core::count_as_f64(ceiling + 1),
     )?;
-    expect_eq("no writer was opened", &scrape.gauge("lexical_writers_open")?, &0.0)?;
+    expect_eq(
+        "no writer was opened",
+        &scrape.gauge("lexical_writers_open")?,
+        &0.0,
+    )?;
 
     // Below the ceiling: the same batch is admitted and served.
     probe.0.store(ceiling - 1, Ordering::Release);

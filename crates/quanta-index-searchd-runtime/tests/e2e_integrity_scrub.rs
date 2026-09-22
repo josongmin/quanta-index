@@ -47,7 +47,10 @@ const SCRUB_INTERVAL: Duration = Duration::from_millis(100);
 /// One file per step: the smallest budget, so a pass over a generation
 /// takes as many steps as it has files and the cursor is exercised.
 fn scrub_policy() -> Result<IntegrityScrubPolicyV1, Box<dyn Error>> {
-    Ok(IntegrityScrubPolicyV1::new(u64::try_from(SCRUB_INTERVAL.as_millis())?, 1)?)
+    Ok(IntegrityScrubPolicyV1::new(
+        u64::try_from(SCRUB_INTERVAL.as_millis())?,
+        1,
+    )?)
 }
 
 fn semantic_generation_dir(
@@ -178,12 +181,15 @@ fn a_byte_defect_survives_the_doors_and_is_quarantined_by_the_scrub() -> TestRes
     // generation first, so the wait is for the semantic pass's own durable
     // receipt — the record the restart below must find.
     let receipt = semantic_generation_dir(&rt, active)?.join(SEMANTIC_SCRUB_RECEIPT);
-    let completed =
-        wait_for_scrape(&mut rt, "the semantic generation's completed scrub", |snapshot| {
+    let completed = wait_for_scrape(
+        &mut rt,
+        "the semantic generation's completed scrub",
+        |snapshot| {
             receipt.is_file()
                 && gauge(snapshot, "scrub_last_completed_unix").is_ok_and(|unix| unix > 0.0)
                 && counter(snapshot, "scrub_corruptions_total") == 0
-        })?;
+        },
+    )?;
     if counter(&completed, "scrub_runs_total") == 0 || counter(&completed, "scrub_bytes_total") == 0
     {
         return Err(format!(
@@ -252,7 +258,7 @@ fn a_byte_defect_survives_the_doors_and_is_quarantined_by_the_scrub() -> TestRes
         )]
     {
         return Err(
-            format!("the quarantine listing names the corrupt generation: {listed:?}").into()
+            format!("the quarantine listing names the corrupt generation: {listed:?}").into(),
         );
     }
     if !inventory
@@ -397,7 +403,7 @@ fn a_generation_of_an_earlier_format_is_quarantined_at_boot_with_the_format_reas
     }
     if report.semantic.sealed_generations != 1 || report.active_pairs_validated != 1 {
         return Err(
-            format!("only the current-format generation is seeded and proven: {report:?}").into()
+            format!("only the current-format generation is seeded and proven: {report:?}").into(),
         );
     }
     let listed: Vec<(String, String)> = rt

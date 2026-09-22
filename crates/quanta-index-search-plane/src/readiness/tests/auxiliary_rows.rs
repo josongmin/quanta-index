@@ -108,10 +108,20 @@ fn auxiliary_authorities_roundtrip_through_catalog_rows() -> TestResult {
     {
         return Err("runtime authority did not restore dirty-doc payload".into());
     }
-    install_chunk_with_id(&mut ledger, "changed-1", "src/changed.rs", "fn changed() {}")?;
+    install_chunk_with_id(
+        &mut ledger,
+        "changed-1",
+        "src/changed.rs",
+        "fn changed() {}",
+    )?;
     install_chunk_with_id(&mut ledger, "facet-1", "src/facet.rs", "fn facet() {}")?;
     install_chunk_with_id(&mut ledger, "snap-1", "src/snap.rs", "fn snap() {}")?;
-    install_chunk_with_id(&mut ledger, "affected-1", "src/affected.rs", "fn affected() {}")?;
+    install_chunk_with_id(
+        &mut ledger,
+        "affected-1",
+        "src/affected.rs",
+        "fn affected() {}",
+    )?;
     install_chunk_with_id(
         &mut ledger,
         "invalidated-1",

@@ -113,8 +113,11 @@ fn retained_generations_still_serve_after_gc() -> TestResult {
     let mut rt = E2eRuntime::boot_with_history_max_generations(KEEP)?;
     let sealed = seal_generations(&mut rt)?;
     let newest = sealed.last().copied().ok_or("no generation was sealed")?;
-    let result =
-        rt.query_text(TextQuerySyntax::Native, &format!("needle_{}", SEALED.saturating_sub(1)), 5);
+    let result = rt.query_text(
+        TextQuerySyntax::Native,
+        &format!("needle_{}", SEALED.saturating_sub(1)),
+        5,
+    );
     if let Some(error) = result.typed_error {
         return Err(format!("newest generation {} does not serve: {error}", newest.get()).into());
     }
@@ -281,8 +284,12 @@ fn assert_unknown_on_every_route(
     generation: ManifestGeneration,
     what: &str,
 ) -> TestResult {
-    let text =
-        rt.query_text_with_pin(TextQuerySyntax::Native, "needle_1", 5, Some(pin(rt, generation)));
+    let text = rt.query_text_with_pin(
+        TextQuerySyntax::Native,
+        "needle_1",
+        5,
+        Some(pin(rt, generation)),
+    );
     match text.typed_error {
         Some(error) if error.code.as_str() == "UNKNOWN_GENERATION" => {}
         other => {

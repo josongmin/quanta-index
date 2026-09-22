@@ -55,10 +55,10 @@ fn seeded_runtime() -> Result<E2eRuntime, Box<dyn Error>> {
 }
 
 fn served(result: &E2eQueryResult, what: &str) -> Result<(), Box<dyn Error>> {
-    result
-        .typed_error
-        .as_ref()
-        .map_or_else(|| Ok(()), |error| Err(format!("{what} was refused: {error}").into()))
+    result.typed_error.as_ref().map_or_else(
+        || Ok(()),
+        |error| Err(format!("{what} was refused: {error}").into()),
+    )
 }
 
 fn trace_details(result: &E2eQueryResult) -> Vec<(PlannerStage, String)> {
@@ -91,8 +91,11 @@ fn scoped_semantic_results_stay_inside_the_lexical_top_scope() -> TestResult {
         .into());
     }
 
-    let scoped =
-        rt.query_semantic(QUERY, OUTER_TOP_K, Some((TextQuerySyntax::Native, QUERY, NARROW_SCOPE)));
+    let scoped = rt.query_semantic(
+        QUERY,
+        OUTER_TOP_K,
+        Some((TextQuerySyntax::Native, QUERY, NARROW_SCOPE)),
+    );
     served(&scoped, "scoped semantic")?;
     if scoped.candidate_ids.is_empty() {
         return Err("scoped semantic returned nothing; fixture proved nothing".into());
@@ -138,8 +141,11 @@ fn scoped_semantic_results_stay_inside_the_lexical_top_scope() -> TestResult {
 #[test]
 fn a_wide_scope_fills_the_outer_top_k() -> TestResult {
     let mut rt = seeded_runtime()?;
-    let wide =
-        rt.query_semantic(QUERY, OUTER_TOP_K, Some((TextQuerySyntax::Native, QUERY, WIDE_SCOPE)));
+    let wide = rt.query_semantic(
+        QUERY,
+        OUTER_TOP_K,
+        Some((TextQuerySyntax::Native, QUERY, WIDE_SCOPE)),
+    );
     served(&wide, "wide-scope semantic")?;
     if wide.candidate_ids.len() != usize::try_from(OUTER_TOP_K)? {
         return Err(format!(
@@ -184,7 +190,11 @@ fn scope_top_k_shares_the_public_gate() -> TestResult {
     let (query_socket, _, _) = rt
         .socket_paths()
         .map(|(query, control, ingest)| {
-            (query.to_path_buf(), control.to_path_buf(), ingest.to_path_buf())
+            (
+                query.to_path_buf(),
+                control.to_path_buf(),
+                ingest.to_path_buf(),
+            )
         })
         .ok_or("the daemon is running")?;
     for refused in [0, PUBLIC_TOP_K_MAX + 1, u32::MAX] {
@@ -194,7 +204,7 @@ fn scope_top_k_shares_the_public_gate() -> TestResult {
             Err(err) if err.to_string().contains(TOP_K_OUT_OF_RANGE_CODE) => {}
             Err(err) => {
                 return Err(
-                    format!("scope_top_k={refused}: encode refusal names no code: {err}").into()
+                    format!("scope_top_k={refused}: encode refusal names no code: {err}").into(),
                 );
             }
         }

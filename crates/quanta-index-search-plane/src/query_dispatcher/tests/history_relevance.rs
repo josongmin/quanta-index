@@ -80,7 +80,12 @@ fn fixture() -> Vec<CommitRecord> {
         ),
         commit(4, 400, "bob", "nothing to see here"),
         commit(5, 500, "alice", "needle"),
-        commit(6, 600, "bob", "the newest one mentions the needle once among a few other words"),
+        commit(
+            6,
+            600,
+            "bob",
+            "the newest one mentions the needle once among a few other words",
+        ),
     ]
 }
 
@@ -184,9 +189,10 @@ fn page(
     top_k: u32,
     cursor: Option<HistoryCursor>,
 ) -> Result<SearchPlaneHistoryQueryResponse, String> {
-    match dispatcher
-        .dispatch(request(query_text, order, top_k, cursor), &RequestBudgetV1::unbounded())
-    {
+    match dispatcher.dispatch(
+        request(query_text, order, top_k, cursor),
+        &RequestBudgetV1::unbounded(),
+    ) {
         SearchPlaneQueryIpcResponse::History(page) => Ok(page),
         SearchPlaneQueryIpcResponse::Error(err) => Err(format!("{}: {}", err.code, err.message)),
         other => Err(format!("unexpected response {other:?}")),
@@ -203,8 +209,10 @@ fn error_code(
     order: HistoryOrderV1,
     cursor: Option<HistoryCursor>,
 ) -> Result<quanta_index_contract::SearchPlaneErrorCodeV2, String> {
-    match dispatcher.dispatch(request(query_text, order, 3, cursor), &RequestBudgetV1::unbounded())
-    {
+    match dispatcher.dispatch(
+        request(query_text, order, 3, cursor),
+        &RequestBudgetV1::unbounded(),
+    ) {
         SearchPlaneQueryIpcResponse::Error(err) => Ok(err.code),
         other => Err(format!("expected a typed error, got {other:?}")),
     }
@@ -248,8 +256,13 @@ fn relevance_ranks_by_score_and_recency_by_time_on_one_fixture() -> TestResult {
         return Err(format!("five commits mention needle: {reference:?}").into());
     }
 
-    let relevance =
-        page(&plane.dispatcher, "type:commit needle", HistoryOrderV1::Relevance, 3, None)?;
+    let relevance = page(
+        &plane.dispatcher,
+        "type:commit needle",
+        HistoryOrderV1::Relevance,
+        3,
+        None,
+    )?;
     if relevance.order != HistoryOrderV1::Relevance {
         return Err("the page echoes the order it was cut under".into());
     }
@@ -297,7 +310,13 @@ fn relevance_ranks_by_score_and_recency_by_time_on_one_fixture() -> TestResult {
         other => return Err(format!("a relevance cursor is expected, got {other:?}").into()),
     }
 
-    let recency = page(&plane.dispatcher, "type:commit needle", HistoryOrderV1::Recency, 3, None)?;
+    let recency = page(
+        &plane.dispatcher,
+        "type:commit needle",
+        HistoryOrderV1::Recency,
+        3,
+        None,
+    )?;
     let newest: Vec<CommitSha> = recency.commits.iter().map(|row| row.sha).collect();
     if newest != vec![sha(6), sha(5), sha(3)] {
         return Err(format!("recency serves the newest matches first: {newest:?}").into());
@@ -319,10 +338,21 @@ fn a_cursor_of_the_other_order_is_refused_typed() -> TestResult {
     let _receipt = plane
         .materializer
         .publish_batch(&batch("fixture", fixture()))?;
-    let relevance =
-        page(&plane.dispatcher, "type:commit needle", HistoryOrderV1::Relevance, 2, None)?;
+    let relevance = page(
+        &plane.dispatcher,
+        "type:commit needle",
+        HistoryOrderV1::Relevance,
+        2,
+        None,
+    )?;
     let relevance_cursor = relevance.next_cursor.ok_or("relevance continues")?;
-    let recency = page(&plane.dispatcher, "type:commit needle", HistoryOrderV1::Recency, 2, None)?;
+    let recency = page(
+        &plane.dispatcher,
+        "type:commit needle",
+        HistoryOrderV1::Recency,
+        2,
+        None,
+    )?;
     let recency_cursor = recency.next_cursor.ok_or("recency continues")?;
 
     let code = error_code(
@@ -333,7 +363,7 @@ fn a_cursor_of_the_other_order_is_refused_typed() -> TestResult {
     )?;
     if code != ERR_HISTORY_CURSOR_ORDER_MISMATCH {
         return Err(
-            format!("a relevance cursor on a recency walk is refused typed, got {code}").into()
+            format!("a relevance cursor on a recency walk is refused typed, got {code}").into(),
         );
     }
     let code = error_code(
@@ -344,7 +374,7 @@ fn a_cursor_of_the_other_order_is_refused_typed() -> TestResult {
     )?;
     if code != ERR_HISTORY_CURSOR_ORDER_MISMATCH {
         return Err(
-            format!("a recency cursor on a relevance walk is refused typed, got {code}").into()
+            format!("a recency cursor on a relevance walk is refused typed, got {code}").into(),
         );
     }
     // Each cursor continues its own order.
@@ -445,7 +475,13 @@ fn relevance_pages_partition_the_ranking_and_a_pruned_epoch_is_expired() -> Test
     {
         return Err(format!("the continuation is cut from epoch 1's index: {continued:?}").into());
     }
-    let fresh = page(&plane.dispatcher, "type:commit needle", HistoryOrderV1::Relevance, 1, None)?;
+    let fresh = page(
+        &plane.dispatcher,
+        "type:commit needle",
+        HistoryOrderV1::Relevance,
+        1,
+        None,
+    )?;
     if fresh.read_epoch != AuxEpochV1::new(2)
         || fresh.commits.first().map(|row| row.sha) != Some(sha(9))
     {
@@ -574,9 +610,10 @@ fn a_discard_that_fails_after_the_delta_is_durable_is_counted_and_retried() -> T
         .into());
     }
 
-    let _receipt = plane
-        .materializer
-        .publish_batch(&batch("after", vec![commit(99, 2_000, "erin", "unrelated")]))?;
+    let _receipt = plane.materializer.publish_batch(&batch(
+        "after",
+        vec![commit(99, 2_000, "erin", "unrelated")],
+    ))?;
     let (retained, durable) = retained_and_durable(&plane)?;
     if failures(&plane)? != 1 || retained != durable {
         return Err(format!(
@@ -598,11 +635,22 @@ fn relevance_without_a_wired_index_is_refused_typed_while_recency_serves() -> Te
         guard.apply_history_batch(&batch("fixture", fixture()), std::time::Instant::now())?;
     }
     let dispatcher = dispatcher_over(ledger)?;
-    let code = error_code(&dispatcher, "type:commit needle", HistoryOrderV1::Relevance, None)?;
+    let code = error_code(
+        &dispatcher,
+        "type:commit needle",
+        HistoryOrderV1::Relevance,
+        None,
+    )?;
     if code != ERR_HISTORY_RELEVANCE_UNAVAILABLE {
         return Err(format!("a plane without an index refuses relevance typed, got {code}").into());
     }
-    let recency = page(&dispatcher, "type:commit needle", HistoryOrderV1::Recency, 3, None)?;
+    let recency = page(
+        &dispatcher,
+        "type:commit needle",
+        HistoryOrderV1::Recency,
+        3,
+        None,
+    )?;
     if recency.commits.len() != 3 {
         return Err(format!("recency still serves: {recency:?}").into());
     }
@@ -615,13 +663,22 @@ fn an_unscorable_expression_is_refused_under_relevance_and_filters_under_recency
     let _receipt = plane
         .materializer
         .publish_batch(&batch("fixture", fixture()))?;
-    let code =
-        error_code(&plane.dispatcher, "type:commit 'needle'", HistoryOrderV1::Relevance, None)?;
+    let code = error_code(
+        &plane.dispatcher,
+        "type:commit 'needle'",
+        HistoryOrderV1::Relevance,
+        None,
+    )?;
     if code != HISTORY_TEXT_QUERY_UNSCORABLE_CODE {
         return Err(format!("a raw string has no score under relevance, got {code}").into());
     }
-    let recency =
-        page(&plane.dispatcher, "type:commit 'needle'", HistoryOrderV1::Recency, 10, None)?;
+    let recency = page(
+        &plane.dispatcher,
+        "type:commit 'needle'",
+        HistoryOrderV1::Recency,
+        10,
+        None,
+    )?;
     if recency.commits.len() != 5 {
         return Err(format!("a raw string filters under recency: {recency:?}").into());
     }
@@ -703,7 +760,7 @@ fn filters_apply_to_relevance_rows_and_the_count_is_exact() -> TestResult {
         .collect();
     if bob.commits.first().map(|row| row.sha) != expected.first().copied() {
         return Err(
-            format!("the filtered page keeps the oracle's order: {bob:?} vs {expected:?}").into()
+            format!("the filtered page keeps the oracle's order: {bob:?} vs {expected:?}").into(),
         );
     }
     Ok(())
@@ -719,16 +776,21 @@ fn an_epoch_index_is_rebuilt_in_full_when_the_base_has_none() -> TestResult {
             .write()
             .map_err(|err| format!("ledger poisoned: {err}"))?;
         guard.apply_history_batch(
-            &batch("pre-index", vec![commit(1, 100, "alice", "needle from before")]),
+            &batch(
+                "pre-index",
+                vec![commit(1, 100, "alice", "needle from before")],
+            ),
             std::time::Instant::now(),
         )?;
     }
-    let _receipt = plane
-        .materializer
-        .publish_batch(&batch("first-indexed", vec![commit(2, 200, "bob", "needle now")]))?;
-    let _receipt = plane
-        .materializer
-        .publish_batch(&batch("second-indexed", vec![commit(3, 300, "carol", "needle again")]))?;
+    let _receipt = plane.materializer.publish_batch(&batch(
+        "first-indexed",
+        vec![commit(2, 200, "bob", "needle now")],
+    ))?;
+    let _receipt = plane.materializer.publish_batch(&batch(
+        "second-indexed",
+        vec![commit(3, 300, "carol", "needle again")],
+    ))?;
     let builds = plane.index.builds()?;
     if builds
         != vec![
@@ -741,7 +803,13 @@ fn an_epoch_index_is_rebuilt_in_full_when_the_base_has_none() -> TestResult {
         )
         .into());
     }
-    let page = page(&plane.dispatcher, "type:commit needle", HistoryOrderV1::Relevance, 10, None)?;
+    let page = page(
+        &plane.dispatcher,
+        "type:commit needle",
+        HistoryOrderV1::Relevance,
+        10,
+        None,
+    )?;
     let shas: BTreeSet<CommitSha> = page.commits.iter().map(|row| row.sha).collect();
     if shas != BTreeSet::from([sha(1), sha(2), sha(3)]) || page.read_epoch != AuxEpochV1::new(3) {
         return Err(format!("the rebuilt index holds the pre-index rows too: {page:?}").into());

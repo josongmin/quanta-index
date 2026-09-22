@@ -213,8 +213,9 @@ fn dispatch_semantic_query_request_v1(
     client: &QuantaIndex,
     request: SemanticQueryRequest,
 ) -> Result<SemanticQueryResponse, SdkError> {
-    let response = client
-        .dispatch_query(quanta_index_contract::SearchPlaneQueryIpcRequest::Semantic(request))?;
+    let response = client.dispatch_query(
+        quanta_index_contract::SearchPlaneQueryIpcRequest::Semantic(request),
+    )?;
     match response {
         quanta_index_contract::SearchPlaneQueryIpcResponse::Semantic(results) => Ok(results),
         other @ (quanta_index_contract::SearchPlaneQueryIpcResponse::Text(_)

@@ -69,7 +69,9 @@ impl SemanticPolicy {
         }
         let norm = l2_norm_v1(vector)?;
         if norm <= 0.0 {
-            return Err(invalid_vector("semantic: embedding vector has zero norm".to_string()));
+            return Err(invalid_vector(
+                "semantic: embedding vector has zero norm".to_string(),
+            ));
         }
         if normalization == EmbeddingNormalization::L2Unit
             && (norm - 1.0).abs() > L2_UNIT_NORM_TOLERANCE
@@ -126,7 +128,9 @@ fn l2_norm_v1(vector: &[f32]) -> Result<f64, CoreError> {
         norm_sq += value * value;
     }
     if !norm_sq.is_finite() {
-        return Err(invalid_vector("semantic: embedding vector norm overflowed".to_string()));
+        return Err(invalid_vector(
+            "semantic: embedding vector norm overflowed".to_string(),
+        ));
     }
     Ok(norm_sq.sqrt())
 }

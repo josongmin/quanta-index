@@ -98,15 +98,18 @@ pub fn build_runtime_with_memory_probe(
     );
     // Retention measures its byte limits over the index bytes the two
     // adapters know how to measure (QI-BB-003), never over record sizes.
-    let index_bytes: Arc<dyn SearchCorpusIndexBytesPort> =
-        Arc::new(PairIndexBytesMeasurer::new(lex_adapter.clone(), sem_adapter.clone()));
+    let index_bytes: Arc<dyn SearchCorpusIndexBytesPort> = Arc::new(PairIndexBytesMeasurer::new(
+        lex_adapter.clone(),
+        sem_adapter.clone(),
+    ));
     let search_corpus_lifecycle = Arc::new(SearchCorpusLifecycleOwner::open(
         &state_root,
         search_corpus_history_retention,
         index_bytes,
     )?);
-    let legacy_semantic_journal_store =
-        Arc::new(LegacySemanticJournalStore::open(state_root.join("semantic"))?);
+    let legacy_semantic_journal_store = Arc::new(LegacySemanticJournalStore::open(
+        state_root.join("semantic"),
+    )?);
     // The durable idempotency catalog (QI-BB-032). Its busy budget only
     // matters against a foreign writer, which the state-root lease excludes;
     // it is bounded so a held lock is still a typed answer, never a hang.
@@ -250,7 +253,10 @@ fn writer_gate_for(
     memory_probe: &Arc<dyn ProcessMemoryProbePort>,
 ) -> (Arc<dyn WriterAdmissionPort>, Arc<dyn MetricSourcePort>) {
     if let Some(ceiling) = rss_ceiling {
-        let gate = Arc::new(ResidentMemoryWriterAdmission::new(Arc::clone(memory_probe), ceiling));
+        let gate = Arc::new(ResidentMemoryWriterAdmission::new(
+            Arc::clone(memory_probe),
+            ceiling,
+        ));
         let admission: Arc<dyn WriterAdmissionPort> = gate.clone();
         return (admission, gate);
     }

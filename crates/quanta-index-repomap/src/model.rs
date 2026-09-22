@@ -89,18 +89,31 @@ impl Serialize for RepoMapEntry {
             "projection_authority_artifact_id",
             &self.projection_authority_artifact_id,
         )?;
-        state.serialize_field("projection_authority_digest", &self.projection_authority_digest)?;
+        state.serialize_field(
+            "projection_authority_digest",
+            &self.projection_authority_digest,
+        )?;
         state.serialize_field("projection_status", &self.projection_status)?;
         state.serialize_field("redaction_state", &self.redaction_state)?;
         state.serialize_field("search_text", &self.search_text)?;
         state.serialize_field("source_symbol_count", &self.source_symbol_count)?;
         state.serialize_field("source_chunk_token_total", &self.source_chunk_token_total)?;
-        state.serialize_field("source_call_incoming_edges", &self.source_call_incoming_edges)?;
-        state.serialize_field("source_call_outgoing_edges", &self.source_call_outgoing_edges)?;
-        state
-            .serialize_field("source_import_incoming_edges", &self.source_import_incoming_edges)?;
-        state
-            .serialize_field("source_import_outgoing_edges", &self.source_import_outgoing_edges)?;
+        state.serialize_field(
+            "source_call_incoming_edges",
+            &self.source_call_incoming_edges,
+        )?;
+        state.serialize_field(
+            "source_call_outgoing_edges",
+            &self.source_call_outgoing_edges,
+        )?;
+        state.serialize_field(
+            "source_import_incoming_edges",
+            &self.source_import_incoming_edges,
+        )?;
+        state.serialize_field(
+            "source_import_outgoing_edges",
+            &self.source_import_outgoing_edges,
+        )?;
         state.end()
     }
 }
@@ -231,7 +244,9 @@ impl<'de> Visitor<'de> for RepoMapEntryVisitor {
                 }
                 "projection_authority_artifact_id" => {
                     if projection_authority_artifact_id.is_some() {
-                        return Err(de::Error::duplicate_field("projection_authority_artifact_id"));
+                        return Err(de::Error::duplicate_field(
+                            "projection_authority_artifact_id",
+                        ));
                     }
                     projection_authority_artifact_id = Some(map.next_value()?);
                 }
@@ -435,7 +450,9 @@ impl RepoMapSnapshotIndex {
         for (position, entry) in entries.iter().enumerate() {
             index
                 .folded_search_text
-                .push(quanta_index_lq_text_normalizer::fold(entry.search_text.as_str()));
+                .push(quanta_index_lq_text_normalizer::fold(
+                    entry.search_text.as_str(),
+                ));
             let _prior = index
                 .by_subject
                 .entry(entry.subject_identity.clone())

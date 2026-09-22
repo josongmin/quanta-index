@@ -140,9 +140,9 @@ pub fn declare_required_domains_v1(
             LqFilter::Content { leaf } => collect_leaf_reads(leaf, &mut leaves),
             LqFilter::Select {
                 dim: LqSelect::FileOwners,
-            } => leaves
-                .domains
-                .insert(ReadDomainV1::RepoMetadata(RepoMetadataAuthorityV1::FileOwnership)),
+            } => leaves.domains.insert(ReadDomainV1::RepoMetadata(
+                RepoMetadataAuthorityV1::FileOwnership,
+            )),
             LqFilter::Rev { spec } => {
                 if route.selects_rev_at_time() && parse_rev_at_time_spec(spec).is_some() {
                     leaves.domains.insert(ReadDomainV1::History);

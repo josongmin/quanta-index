@@ -171,7 +171,9 @@ impl OutputMode {
 /// touched; the renderers keep the arm so the refusal is the same wherever
 /// the mode arrives.
 fn prometheus_is_metrics_only(command: &str) -> CliError {
-    CliError::usage(format!("`--output prometheus` renders only `metrics`, not `{command}`"))
+    CliError::usage(format!(
+        "`--output prometheus` renders only `metrics`, not `{command}`"
+    ))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -311,22 +313,38 @@ impl ParsedCommand {
         let (kind, payload) = match subcommand.as_str() {
             "lexical" => (CommandKind::Lexical, parse_lexical(&mut common, &mut rest)?),
             "symbol" => (CommandKind::Symbol, parse_symbol(&mut common, &mut rest)?),
-            "semantic" => (CommandKind::Semantic, parse_semantic(&mut common, &mut rest)?),
+            "semantic" => (
+                CommandKind::Semantic,
+                parse_semantic(&mut common, &mut rest)?,
+            ),
             "hybrid" => (CommandKind::Hybrid, parse_hybrid(&mut common, &mut rest)?),
-            "hybrid-seed" => (CommandKind::HybridSeed, parse_hybrid_seed(&mut common, &mut rest)?),
+            "hybrid-seed" => (
+                CommandKind::HybridSeed,
+                parse_hybrid_seed(&mut common, &mut rest)?,
+            ),
             "explain" => (CommandKind::Explain, parse_explain(&mut common, &mut rest)?),
             "repomap" | "repomap-query" => {
                 (CommandKind::RepoMap, parse_repomap(&mut common, &mut rest)?)
             }
-            "runtime-metadata" => {
-                (CommandKind::RuntimeMetadata, parse_runtime_metadata(&mut common, &mut rest)?)
-            }
+            "runtime-metadata" => (
+                CommandKind::RuntimeMetadata,
+                parse_runtime_metadata(&mut common, &mut rest)?,
+            ),
             "history" => (CommandKind::History, parse_history(&mut common, &mut rest)?),
-            "structural" => (CommandKind::Structural, parse_structural(&mut common, &mut rest)?),
-            "readiness" => (CommandKind::Readiness, parse_readiness(&mut common, &mut rest)?),
+            "structural" => (
+                CommandKind::Structural,
+                parse_structural(&mut common, &mut rest)?,
+            ),
+            "readiness" => (
+                CommandKind::Readiness,
+                parse_readiness(&mut common, &mut rest)?,
+            ),
             "doctor" => (CommandKind::Doctor, parse_doctor(&mut common, &mut rest)?),
             "metrics" => (CommandKind::Metrics, parse_metrics(&mut common, &mut rest)?),
-            "quarantine" => (CommandKind::Quarantine, parse_quarantine(&mut common, &mut rest)?),
+            "quarantine" => (
+                CommandKind::Quarantine,
+                parse_quarantine(&mut common, &mut rest)?,
+            ),
             other => {
                 return Err(CliError::usage(format!(
                     "unknown subcommand `{other}`; expected lexical|symbol|semantic|hybrid|hybrid-seed|explain|repomap|runtime-metadata|history|structural|readiness|doctor|metrics|quarantine"
@@ -335,7 +353,9 @@ impl ParsedCommand {
         };
         if !rest.is_empty() {
             let extra = rest.pop_front().unwrap_or_default();
-            return Err(CliError::usage(format!("unexpected trailing argument `{extra}`")));
+            return Err(CliError::usage(format!(
+                "unexpected trailing argument `{extra}`"
+            )));
         }
         if common.output == OutputMode::Prometheus && kind != CommandKind::Metrics {
             return Err(prometheus_is_metrics_only(&subcommand));
@@ -397,7 +417,9 @@ fn parse_query_command_flags(
         if parse_local(&current, rest)? {
             continue;
         }
-        return Err(CliError::usage(format!("unknown {command} flag `{current}`")));
+        return Err(CliError::usage(format!(
+            "unknown {command} flag `{current}`"
+        )));
     }
     Ok(())
 }
@@ -414,10 +436,12 @@ fn parse_lexical(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> Cli
 fn parse_symbol(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> CliResult<CliRequest> {
     let page = parse_keyset_page_query(common, rest, "symbol")?;
     let cursor = page.cursor::<LexicalCursor>()?;
-    Ok(CliRequest::Symbol(SymbolQueryRequest::from(TextQueryRequest {
-        cursor,
-        ..page.text_query
-    })))
+    Ok(CliRequest::Symbol(SymbolQueryRequest::from(
+        TextQueryRequest {
+            cursor,
+            ..page.text_query
+        },
+    )))
 }
 
 fn parse_runtime_metadata(
@@ -485,8 +509,12 @@ fn parse_keyset_page_query_with(
     let mut query_text: Option<String> = None;
     let mut top_k: Option<u32> = None;
     let mut cursor_json: Option<String> = None;
-    parse_query_command_flags(common, &mut generation_args, rest, command, |current, rest| {
-        match current {
+    parse_query_command_flags(
+        common,
+        &mut generation_args,
+        rest,
+        command,
+        |current, rest| match current {
             "--syntax" => {
                 syntax = Some(parse_syntax(&take_value(rest, "--syntax")?)?);
                 Ok(true)
@@ -504,8 +532,8 @@ fn parse_keyset_page_query_with(
                 Ok(true)
             }
             other => parse_extra(other, rest),
-        }
-    })?;
+        },
+    )?;
     let generation = generation_args.into_generation_pin()?;
     let syntax = syntax.ok_or_else(|| CliError::usage("missing --syntax".to_string()))?;
     let query_text =
@@ -528,7 +556,9 @@ fn parse_keyset_page_query_with(
 /// The history order a `--order` value names.
 fn parse_history_order(value: &str) -> CliResult<HistoryOrderV1> {
     HistoryOrderV1::from_code_str(value).ok_or_else(|| {
-        CliError::usage(format!("invalid --order `{value}`; expected `recency` or `relevance`"))
+        CliError::usage(format!(
+            "invalid --order `{value}`; expected `recency` or `relevance`"
+        ))
     })
 }
 
@@ -638,7 +668,9 @@ fn parse_quarantine(
 ) -> CliResult<CliRequest> {
     let verb = loop {
         let Some(current) = rest.pop_front() else {
-            return Err(CliError::usage("quarantine requires `list` or `discard`".to_string()));
+            return Err(CliError::usage(
+                "quarantine requires `list` or `discard`".to_string(),
+            ));
         };
         if common.parse_flag(&current, rest)? {
             continue;
@@ -651,7 +683,9 @@ fn parse_quarantine(
                 if common.parse_flag(&current, rest)? {
                     continue;
                 }
-                return Err(CliError::usage(format!("unknown quarantine list flag `{current}`")));
+                return Err(CliError::usage(format!(
+                    "unknown quarantine list flag `{current}`"
+                )));
             }
             Ok(CliRequest::QuarantineList)
         }
@@ -682,7 +716,9 @@ fn parse_quarantine_discard(
             "--detail" => detail = Some(take_value(rest, "--detail")?),
             "--repomap-file" => repomap_file = Some(take_value(rest, "--repomap-file")?),
             other => {
-                return Err(CliError::usage(format!("unknown quarantine discard flag `{other}`")));
+                return Err(CliError::usage(format!(
+                    "unknown quarantine discard flag `{other}`"
+                )));
             }
         }
     }
@@ -752,8 +788,12 @@ fn parse_semantic(
     let mut scope_query_text: Option<String> = None;
     let mut scope_syntax: Option<TextQuerySyntax> = None;
     let mut scope_top_k: Option<u32> = None;
-    parse_query_command_flags(common, &mut generation_args, rest, "semantic", |current, rest| {
-        match current {
+    parse_query_command_flags(
+        common,
+        &mut generation_args,
+        rest,
+        "semantic",
+        |current, rest| match current {
             "--query-text" => {
                 query_text = Some(take_value(rest, "--query-text")?);
                 Ok(true)
@@ -775,8 +815,8 @@ fn parse_semantic(
                 Ok(true)
             }
             _ => Ok(false),
-        }
-    })?;
+        },
+    )?;
     let generation = generation_args.into_generation_pin()?;
     let lexical_scope = match (scope_query_text, scope_syntax) {
         (None, None) => {
@@ -804,10 +844,14 @@ fn parse_semantic(
             })
         }
         (Some(_), None) => {
-            return Err(CliError::usage("semantic scope requires --scope-syntax".to_string()));
+            return Err(CliError::usage(
+                "semantic scope requires --scope-syntax".to_string(),
+            ));
         }
         (None, Some(_)) => {
-            return Err(CliError::usage("semantic scope requires --scope-query".to_string()));
+            return Err(CliError::usage(
+                "semantic scope requires --scope-query".to_string(),
+            ));
         }
     };
     Ok(CliRequest::Semantic(SemanticQueryRequest {
@@ -833,8 +877,12 @@ fn parse_hybrid(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> CliR
     let mut syntax: Option<TextQuerySyntax> = None;
     let mut semantic_query_text: Option<String> = None;
     let mut top_k: Option<u32> = None;
-    parse_query_command_flags(common, &mut generation_args, rest, "hybrid", |current, rest| {
-        match current {
+    parse_query_command_flags(
+        common,
+        &mut generation_args,
+        rest,
+        "hybrid",
+        |current, rest| match current {
             "--query-text" => {
                 query_text = Some(take_value(rest, "--query-text")?);
                 Ok(true)
@@ -852,8 +900,8 @@ fn parse_hybrid(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> CliR
                 Ok(true)
             }
             _ => Ok(false),
-        }
-    })?;
+        },
+    )?;
     let generation = generation_args.into_generation_pin()?;
     let top_k = top_k.ok_or_else(|| CliError::usage("missing --top-k".to_string()))?;
     let text_query = TextQueryRequest {
@@ -942,8 +990,12 @@ fn parse_explain(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> Cli
     let mut query_text: Option<String> = None;
     let mut semantic_query_text: Option<String> = None;
     let mut top_k: Option<u32> = None;
-    parse_query_command_flags(common, &mut generation_args, rest, "explain", |current, rest| {
-        match current {
+    parse_query_command_flags(
+        common,
+        &mut generation_args,
+        rest,
+        "explain",
+        |current, rest| match current {
             "--candidate-json" => {
                 candidate_json = Some(take_value(rest, "--candidate-json")?);
                 Ok(true)
@@ -969,8 +1021,8 @@ fn parse_explain(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> Cli
                 Ok(true)
             }
             _ => Ok(false),
-        }
-    })?;
+        },
+    )?;
     let generation = generation_args.into_generation_pin()?;
     // The candidate is the row as the route that ranked it carried it: a
     // lexical/semantic page row, or a hybrid row with its lane provenance.
@@ -1022,10 +1074,14 @@ fn parse_explain(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> Cli
         }),
         (None, None) => None,
         (Some(_), None) => {
-            return Err(CliError::usage("--syntax requires --query-text".to_string()));
+            return Err(CliError::usage(
+                "--syntax requires --query-text".to_string(),
+            ));
         }
         (None, Some(_)) => {
-            return Err(CliError::usage("--query-text requires --syntax".to_string()));
+            return Err(CliError::usage(
+                "--query-text requires --syntax".to_string(),
+            ));
         }
     };
     match (is_hybrid, &text_query, &semantic_query_text) {
@@ -1063,8 +1119,12 @@ fn parse_repomap(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> Cli
     let mut top_k: Option<u32> = None;
     let mut token_budget: Option<u32> = None;
     let mut focus_subjects: Vec<RepoMapFocusSubjectDto> = Vec::new();
-    parse_query_command_flags(common, &mut generation_args, rest, "repomap", |current, rest| {
-        match current {
+    parse_query_command_flags(
+        common,
+        &mut generation_args,
+        rest,
+        "repomap",
+        |current, rest| match current {
             "--query-text" => {
                 query_text = Some(take_value(rest, "--query-text")?);
                 Ok(true)
@@ -1082,8 +1142,8 @@ fn parse_repomap(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> Cli
                 Ok(true)
             }
             _ => Ok(false),
-        }
-    })?;
+        },
+    )?;
     let generation = generation_args.into_generation_pin()?;
     Ok(CliRequest::RepoMap(RepoMapQueryRequest {
         repo_id: generation.repo_id,
@@ -1125,7 +1185,9 @@ fn take_value(rest: &mut VecDeque<String>, flag: &str) -> CliResult<String> {
 fn parse_u32_flag(rest: &mut VecDeque<String>, flag: &str) -> CliResult<u32> {
     let value = take_value(rest, flag)?;
     value.parse::<u32>().map_err(|err| {
-        CliError::usage(format!("{flag} requires an unsigned integer, got `{value}`: {err}"))
+        CliError::usage(format!(
+            "{flag} requires an unsigned integer, got `{value}`: {err}"
+        ))
     })
 }
 
@@ -1264,13 +1326,17 @@ fn map_sdk_error(error: SdkError) -> CliError {
 fn parse_u64_flag(rest: &mut VecDeque<String>, flag: &str) -> CliResult<u64> {
     let value = take_value(rest, flag)?;
     value.parse::<u64>().map_err(|err| {
-        CliError::usage(format!("{flag} requires an unsigned integer, got `{value}`: {err}"))
+        CliError::usage(format!(
+            "{flag} requires an unsigned integer, got `{value}`: {err}"
+        ))
     })
 }
 
 fn parse_syntax(value: &str) -> CliResult<TextQuerySyntax> {
     TextQuerySyntax::from_str_value(value).ok_or_else(|| {
-        CliError::usage(format!("unsupported syntax `{value}`; expected `native` or `sourcegraph`"))
+        CliError::usage(format!(
+            "unsupported syntax `{value}`; expected `native` or `sourcegraph`"
+        ))
     })
 }
 
@@ -1306,7 +1372,9 @@ fn parse_focus_subject(value: &str) -> CliResult<RepoMapFocusSubjectDto> {
 fn read_candidate_json(candidate_path: &str) -> CliResult<LexicalCandidate> {
     let raw = read_json_text(candidate_path, "candidate")?;
     serde_json::from_str::<LexicalCandidate>(&raw).map_err(|err| {
-        CliError::usage(format!("failed to decode candidate json from {candidate_path}: {err}"))
+        CliError::usage(format!(
+            "failed to decode candidate json from {candidate_path}: {err}"
+        ))
     })
 }
 
@@ -1339,9 +1407,10 @@ fn validate_response_kind(
     response: &SearchPlaneQueryIpcResponseEnvelope,
 ) -> CliResult<()> {
     match (&expected, &response.payload) {
-        (_, SearchPlaneQueryIpcResponse::Error(error)) => {
-            Err(CliError::remote(format!("{}: {}", error.code, error.message)))
-        }
+        (_, SearchPlaneQueryIpcResponse::Error(error)) => Err(CliError::remote(format!(
+            "{}: {}",
+            error.code, error.message
+        ))),
         (CommandKind::Lexical, SearchPlaneQueryIpcResponse::Text(_))
         | (CommandKind::Symbol, SearchPlaneQueryIpcResponse::Symbol(_))
         | (CommandKind::Semantic, SearchPlaneQueryIpcResponse::Semantic(_))
@@ -1478,7 +1547,11 @@ fn render_metrics_pretty(snapshot: &MetricsSnapshotV1) -> CliResult<String> {
     for gauge in &snapshot.gauges {
         fmt_ok(writeln!(rendered, "  {} {}", gauge.name, gauge.value))?;
     }
-    fmt_ok(writeln!(rendered, "histograms: {}", snapshot.histograms.len()))?;
+    fmt_ok(writeln!(
+        rendered,
+        "histograms: {}",
+        snapshot.histograms.len()
+    ))?;
     for histogram in &snapshot.histograms {
         fmt_ok(writeln!(
             rendered,
@@ -1515,10 +1588,22 @@ fn render_metrics_prometheus(snapshot: &MetricsSnapshotV1) -> CliResult<String> 
         render_prometheus_histogram(&mut rendered, histogram)?;
     }
     for (name, value) in [
-        ("searchd_obs_samples_recorded_total", snapshot.diagnostics.samples_recorded),
-        ("searchd_obs_samples_dropped_total", snapshot.diagnostics.samples_dropped),
-        ("searchd_obs_errors_recorded_total", snapshot.diagnostics.errors_recorded),
-        ("searchd_obs_errors_dropped_total", snapshot.diagnostics.errors_dropped),
+        (
+            "searchd_obs_samples_recorded_total",
+            snapshot.diagnostics.samples_recorded,
+        ),
+        (
+            "searchd_obs_samples_dropped_total",
+            snapshot.diagnostics.samples_dropped,
+        ),
+        (
+            "searchd_obs_errors_recorded_total",
+            snapshot.diagnostics.errors_recorded,
+        ),
+        (
+            "searchd_obs_errors_dropped_total",
+            snapshot.diagnostics.errors_dropped,
+        ),
     ] {
         fmt_ok(writeln!(rendered, "# TYPE {name} counter"))?;
         fmt_ok(writeln!(rendered, "{name} {value}"))?;
@@ -1543,8 +1628,16 @@ fn render_prometheus_histogram(
         "{}_bucket{{le=\"+Inf\"}} {}",
         histogram.name, histogram.count
     ))?;
-    fmt_ok(writeln!(rendered, "{}_sum {}", histogram.name, histogram.sum))?;
-    fmt_ok(writeln!(rendered, "{}_count {}", histogram.name, histogram.count))?;
+    fmt_ok(writeln!(
+        rendered,
+        "{}_sum {}",
+        histogram.name, histogram.sum
+    ))?;
+    fmt_ok(writeln!(
+        rendered,
+        "{}_count {}",
+        histogram.name, histogram.count
+    ))?;
     Ok(())
 }
 
@@ -1608,7 +1701,11 @@ fn render_quarantine_discard(ack: &QuarantineDiscardAck, output: OutputMode) -> 
             fmt_ok(writeln!(rendered, "kind: quarantine-discard"))?;
             let target = match &ack.target {
                 QuarantineTargetV1::Generation(entry) => {
-                    format!("{} {}", entry.track.as_code_str().to_ascii_lowercase(), entry.path)
+                    format!(
+                        "{} {}",
+                        entry.track.as_code_str().to_ascii_lowercase(),
+                        entry.path
+                    )
                 }
                 QuarantineTargetV1::RepoMapFile(entry) => format!("repo_map {}", entry.file_name),
             };
@@ -1694,7 +1791,10 @@ fn build_doctor_report(
                 if snapshot.manifest_generation == record.manifest_generation
                     && snapshot.manifest_digest == record.manifest_digest =>
             {
-                (true, "resolved: catalog listing and serve-time resolver agree".to_string())
+                (
+                    true,
+                    "resolved: catalog listing and serve-time resolver agree".to_string(),
+                )
             }
             Ok(snapshot) => (
                 false,
@@ -1773,7 +1873,11 @@ fn render_doctor(report: &DoctorReport, output: OutputMode) -> CliResult<String>
                 report.repo_id, report.revision_id
             ))?;
             fmt_ok(writeln!(rendered, "serve_ready: {}", report.serve_ready))?;
-            fmt_ok(writeln!(rendered, "all_resolvable: {}", report.all_resolvable))?;
+            fmt_ok(writeln!(
+                rendered,
+                "all_resolvable: {}",
+                report.all_resolvable
+            ))?;
             if report.tracks.is_empty() {
                 fmt_ok(writeln!(rendered, "tracks: 0 (none activated)"))?;
                 return Ok(rendered);
@@ -1859,7 +1963,11 @@ fn render_pretty(
         SearchPlaneQueryIpcResponse::Explain(payload) => {
             fmt_ok(writeln!(rendered, "kind: explain"))?;
             render_generation(&payload.generation, rendered)?;
-            fmt_ok(writeln!(rendered, "presence: {}", payload.presence.as_str()))?;
+            fmt_ok(writeln!(
+                rendered,
+                "presence: {}",
+                payload.presence.as_str()
+            ))?;
             render_explanation(&payload.explanation, rendered)?;
             Ok(())
         }
@@ -2138,7 +2246,11 @@ fn render_window_line(window: QueryResultWindowV1, rendered: &mut String) -> Cli
         quanta_index_contract::CandidateCountV1::Exact(count) => format!("{count}"),
         quanta_index_contract::CandidateCountV1::AtLeast(count) => format!(">={count}"),
     };
-    fmt_ok(writeln!(rendered, "matched: {matched} has_more: {}", window.has_more()))
+    fmt_ok(writeln!(
+        rendered,
+        "matched: {matched} has_more: {}",
+        window.has_more()
+    ))
 }
 
 /// One line for the auxiliary authority epoch a page was cut from
@@ -2236,7 +2348,11 @@ fn render_lexical_payload(
         }
     }
     if let Some(file_owner_rows) = &payload.file_owner_rows {
-        fmt_ok(writeln!(rendered, "file_owner_rows: {}", file_owner_rows.len()))?;
+        fmt_ok(writeln!(
+            rendered,
+            "file_owner_rows: {}",
+            file_owner_rows.len()
+        ))?;
         for (index, row) in file_owner_rows.iter().enumerate() {
             let display_index = index.checked_add(1).ok_or_else(|| {
                 CliError::protocol("file owner projection index overflow".to_string())
@@ -2291,9 +2407,10 @@ fn render_symbol_candidate(
     candidate: &SymbolCandidate,
     rendered: &mut String,
 ) -> CliResult<()> {
-    let family = candidate
-        .symbol_kind_family
-        .map_or("-", quanta_index_contract::lex::SymbolKindFamily::as_code_str);
+    let family = candidate.symbol_kind_family.map_or(
+        "-",
+        quanta_index_contract::lex::SymbolKindFamily::as_code_str,
+    );
     fmt_ok(writeln!(
         rendered,
         "{}. candidate_id={} path={} lines={}-{} score={} symbol_kind={} symbol_kind_family={}",
@@ -2321,7 +2438,11 @@ fn render_runtime_metadata_payload(
     fmt_ok(writeln!(rendered, "results: {}", payload.results.len()))?;
     render_keyset_page_line(payload.window, payload.examined, rendered)?;
     render_read_epoch_line(payload.read_epoch, rendered)?;
-    fmt_ok(writeln!(rendered, "universe_epoch: {}", payload.universe_epoch))?;
+    fmt_ok(writeln!(
+        rendered,
+        "universe_epoch: {}",
+        payload.universe_epoch
+    ))?;
     if let Some(cursor) = &payload.next_cursor {
         fmt_ok(writeln!(
             rendered,
@@ -2371,7 +2492,11 @@ fn render_explanation(explanation: &SearchExplanation, rendered: &mut String) ->
         .join(",");
     fmt_ok(writeln!(rendered, "engines_touched: {touched}"))?;
     if let Some(reason) = explanation.early_stop_reason {
-        fmt_ok(writeln!(rendered, "early_stop_reason: {}", early_stop_name(reason)))?;
+        fmt_ok(writeln!(
+            rendered,
+            "early_stop_reason: {}",
+            early_stop_name(reason)
+        ))?;
     }
     fmt_ok(writeln!(
         rendered,
@@ -2381,7 +2506,12 @@ fn render_explanation(explanation: &SearchExplanation, rendered: &mut String) ->
     if !explanation.planner_trace.is_empty() {
         fmt_ok(writeln!(rendered, "planner_trace:"))?;
         for PlannerTraceEntry { stage, detail } in &explanation.planner_trace {
-            fmt_ok(writeln!(rendered, "  - {}: {}", planner_stage_name(*stage), detail))?;
+            fmt_ok(writeln!(
+                rendered,
+                "  - {}: {}",
+                planner_stage_name(*stage),
+                detail
+            ))?;
         }
     }
     if !explanation.contributions.is_empty() {
@@ -2475,7 +2605,9 @@ fn hex_digit(nibble: u8) -> CliResult<char> {
         13 => Ok('d'),
         14 => Ok('e'),
         15 => Ok('f'),
-        _ => Err(CliError::protocol(format!("hex nibble out of range: {nibble}"))),
+        _ => Err(CliError::protocol(format!(
+            "hex nibble out of range: {nibble}"
+        ))),
     }
 }
 
@@ -2500,9 +2632,17 @@ fn render_remote_error_text(
     let mut text = String::new();
     fmt_ok(write!(text, "{code}: {message}"))?;
     if let Some(repair) = repair {
-        fmt_ok(write!(text, "\n  repair class: {}", repair.class.as_code_str()))?;
+        fmt_ok(write!(
+            text,
+            "\n  repair class: {}",
+            repair.class.as_code_str()
+        ))?;
         if !repair.supported_alternatives.is_empty() {
-            fmt_ok(write!(text, "\n  try: {}", repair.supported_alternatives.join(" | ")))?;
+            fmt_ok(write!(
+                text,
+                "\n  try: {}",
+                repair.supported_alternatives.join(" | ")
+            ))?;
         }
         if let Some(anchor) = &repair.docs_anchor {
             fmt_ok(write!(text, "\n  docs: {anchor}"))?;
@@ -2931,7 +3071,10 @@ mod tests {
         assert_eq!(request.syntax, TextQuerySyntax::Sourcegraph);
         assert_eq!(request.query_text.as_str(), "repo:repo lang:rust needle");
         assert_eq!(request.top_k, 11);
-        assert_eq!(request.generation.map(|pin| pin.manifest_generation.get()), Some(7));
+        assert_eq!(
+            request.generation.map(|pin| pin.manifest_generation.get()),
+            Some(7)
+        );
     }
 
     #[test]
@@ -2993,7 +3136,10 @@ mod tests {
         assert_eq!(request.syntax, TextQuerySyntax::Native);
         assert_eq!(request.query_text.as_str(), "MySymbol");
         assert_eq!(request.top_k, 5);
-        assert_eq!(request.generation.map(|pin| pin.manifest_generation.get()), Some(7));
+        assert_eq!(
+            request.generation.map(|pin| pin.manifest_generation.get()),
+            Some(7)
+        );
     }
 
     #[test]
@@ -3170,8 +3316,14 @@ mod tests {
         if let Ok(text) = text {
             assert!(text.contains("kind: runtime-metadata"));
             assert!(text.contains("results: 1"));
-            assert!(text.contains("epoch: 4"), "the read epoch is rendered: {text}");
-            assert!(text.contains("universe_epoch: 9"), "the universe epoch is rendered: {text}");
+            assert!(
+                text.contains("epoch: 4"),
+                "the read epoch is rendered: {text}"
+            );
+            assert!(
+                text.contains("universe_epoch: 9"),
+                "the universe epoch is rendered: {text}"
+            );
             assert!(
                 text.contains("order: candidate_id matched: >=2 examined: 2 has_more: true"),
                 "the probe window is rendered: {text}"
@@ -3343,7 +3495,10 @@ mod tests {
             panic!("expected structural payload");
         };
         assert_eq!(request.text_query.syntax, TextQuerySyntax::Sourcegraph);
-        assert_eq!(request.text_query.query_text.as_str(), "lang:rust fn $NAME(...) {...}");
+        assert_eq!(
+            request.text_query.query_text.as_str(),
+            "lang:rust fn $NAME(...) {...}"
+        );
         assert_eq!(request.text_query.top_k, 4);
     }
 
@@ -3437,14 +3592,26 @@ mod tests {
         let rendered = render_response(OutputMode::Pretty, &response, &mut stdout);
         assert!(rendered.is_ok());
         let text = String::from_utf8(stdout).expect("utf-8");
-        assert!(text.contains("order: recency matched: 3 examined: 9 has_more: true"), "{text}");
+        assert!(
+            text.contains("order: recency matched: 3 examined: 9 has_more: true"),
+            "{text}"
+        );
         assert!(
             text.contains("next_cursor: order=recency committer_time_ms=1700000000000 sha="),
             "{text}"
         );
-        assert!(!text.contains("score="), "a recency page renders no score: {text}");
-        assert!(text.contains("epoch: 12"), "the read epoch is rendered: {text}");
-        assert!(text.contains(" aux_epoch=12"), "the cursor carries the epoch: {text}");
+        assert!(
+            !text.contains("score="),
+            "a recency page renders no score: {text}"
+        );
+        assert!(
+            text.contains("epoch: 12"),
+            "the read epoch is rendered: {text}"
+        );
+        assert!(
+            text.contains(" aux_epoch=12"),
+            "the cursor carries the epoch: {text}"
+        );
         assert!(text.contains("kind: history"));
         assert!(text.contains("commits: 1 diffs: 0"));
         assert!(text.contains("author=alice"));
@@ -3806,8 +3973,14 @@ mod tests {
 
         for (args, needle) in [
             (vec!["quarantine"], "requires `list` or `discard`"),
-            (vec!["quarantine", "purge"], "unknown quarantine verb `purge`"),
-            (vec!["quarantine", "list", "--all"], "unknown quarantine list flag `--all`"),
+            (
+                vec!["quarantine", "purge"],
+                "unknown quarantine verb `purge`",
+            ),
+            (
+                vec!["quarantine", "list", "--all"],
+                "unknown quarantine list flag `--all`",
+            ),
             (vec!["quarantine", "discard"], "needs --track and --path"),
             (
                 vec![
@@ -3879,7 +4052,11 @@ mod tests {
                 panic!("{args:?} must be a usage error, parsed {parsed:?}");
             };
             assert_eq!(error.exit_code, EXIT_USAGE, "{args:?}: {}", error.message);
-            assert!(error.message.contains(needle), "{args:?}: {} lacks {needle:?}", error.message);
+            assert!(
+                error.message.contains(needle),
+                "{args:?}: {} lacks {needle:?}",
+                error.message
+            );
         }
     }
 
@@ -4087,7 +4264,10 @@ mod tests {
         assert!(text.is_ok());
         if let Ok(text) = text {
             assert!(text.contains("kind: structural"));
-            assert!(text.contains("epoch: 3"), "the read epoch is rendered: {text}");
+            assert!(
+                text.contains("epoch: 3"),
+                "the read epoch is rendered: {text}"
+            );
             assert!(text.contains("results: 1"));
             assert!(text.contains("candidate_id=struct-1"));
             assert!(text.contains("$NAME: bytes=10-14"));
@@ -4095,7 +4275,10 @@ mod tests {
                 text.contains("order: candidate_id matched: 1 examined: 1 has_more: false"),
                 "the exact window is rendered: {text}"
             );
-            assert!(!text.contains("next_cursor:"), "a final page prints no continuation: {text}");
+            assert!(
+                !text.contains("next_cursor:"),
+                "a final page prints no continuation: {text}"
+            );
         }
     }
 
@@ -4201,7 +4384,10 @@ mod tests {
         let rendered = render_response(OutputMode::Json, &response, &mut json);
         assert!(rendered.is_ok());
         let decoded: Result<SearchPlaneQueryIpcResponseEnvelope, _> = serde_json::from_slice(&json);
-        assert!(decoded.is_ok(), "the JSON output is the wire DTO: {decoded:?}");
+        assert!(
+            decoded.is_ok(),
+            "the JSON output is the wire DTO: {decoded:?}"
+        );
         if let Ok(decoded) = decoded {
             assert_eq!(decoded, response);
         }
@@ -4254,17 +4440,29 @@ mod tests {
         else {
             panic!("expected explain payload");
         };
-        assert_eq!(candidate, ExplainCandidateV1::Hybrid(sample_hybrid_candidate()));
+        assert_eq!(
+            candidate,
+            ExplainCandidateV1::Hybrid(sample_hybrid_candidate())
+        );
         let Some(text_query) = text_query else {
             panic!("a hybrid explain carries its text query");
         };
         assert_eq!(text_query.query_text, "needle");
-        assert_eq!(text_query.top_k, 10, "the fused top_k sizes the re-run lanes");
-        assert_eq!(semantic_query_text.as_deref(), Some("where the needle is kept"));
+        assert_eq!(
+            text_query.top_k, 10,
+            "the fused top_k sizes the re-run lanes"
+        );
+        assert_eq!(
+            semantic_query_text.as_deref(),
+            Some("where the needle is kept")
+        );
 
         // Each of the three hybrid requirements is refused by name.
         for (dropped, flag) in [
-            (vec!["--semantic-query-text", "x", "--top-k", "10"], "--query-text"),
+            (
+                vec!["--semantic-query-text", "x", "--top-k", "10"],
+                "--query-text",
+            ),
             (
                 vec![
                     "--syntax",
@@ -4324,7 +4522,11 @@ mod tests {
         assert!(both.is_err());
         if let Err(error) = both {
             assert_eq!(error.exit_code, EXIT_USAGE);
-            assert!(error.message.contains("mutually exclusive"), "{}", error.message);
+            assert!(
+                error.message.contains("mutually exclusive"),
+                "{}",
+                error.message
+            );
         }
     }
     /// A keyset route continues from the cursor a previous page printed
@@ -4364,10 +4566,18 @@ mod tests {
             assert!(written.is_ok(), "{written:?}");
             path.to_string_lossy().into_owned()
         };
-        let runtime_path = write("runtime-cursor.json", serde_json::to_vec_pretty(&runtime_cursor));
-        let structural_path =
-            write("structural-cursor.json", serde_json::to_vec_pretty(&structural_cursor));
-        let history_path = write("history-cursor.json", serde_json::to_vec_pretty(&history_cursor));
+        let runtime_path = write(
+            "runtime-cursor.json",
+            serde_json::to_vec_pretty(&runtime_cursor),
+        );
+        let structural_path = write(
+            "structural-cursor.json",
+            serde_json::to_vec_pretty(&structural_cursor),
+        );
+        let history_path = write(
+            "history-cursor.json",
+            serde_json::to_vec_pretty(&history_cursor),
+        );
         let malformed_path = dir.path().join("malformed.json");
         let written = fs::write(&malformed_path, b"{ not json");
         assert!(written.is_ok(), "{written:?}");

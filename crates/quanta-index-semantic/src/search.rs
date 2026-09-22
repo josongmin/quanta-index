@@ -83,7 +83,10 @@ fn load_generation_contract(generation_dir: &Path) -> Result<GenerationContract,
 fn read_scope_manifest(generation_dir: &Path) -> Result<SemanticManifest, CoreError> {
     let manifest_path = layout::manifest_path(generation_dir);
     let manifest_bytes = std::fs::read(&manifest_path).map_err(|err| {
-        CoreError::Storage(format!("semantic: read manifest {}: {err}", manifest_path.display()))
+        CoreError::Storage(format!(
+            "semantic: read manifest {}: {err}",
+            manifest_path.display()
+        ))
     })?;
     SemanticManifest::decode(&manifest_bytes)
 }
@@ -230,7 +233,10 @@ pub(crate) async fn open_generation(
     // even decoded, so a forged manifest is refused as a corrupt sidecar
     // rather than interpreted.
     let sealed_digest = std::fs::read_to_string(&marker_path).map_err(|err| {
-        CoreError::Storage(format!("semantic: read sealed marker {}: {err}", marker_path.display()))
+        CoreError::Storage(format!(
+            "semantic: read sealed marker {}: {err}",
+            marker_path.display()
+        ))
     })?;
     let sealed_manifest = verify_sealed_manifest(&generation_dir, &sealed_digest)?;
     let manifest = read_scope_manifest(&generation_dir)?;
@@ -419,7 +425,9 @@ fn column_as<'a, T: Array + 'static>(
     arrow_type: &str,
 ) -> Result<&'a T, CoreError> {
     let column = batch.column_by_name(name).ok_or_else(|| {
-        CoreError::Storage(format!("semantic: column `{name}` missing from lancedb result batch"))
+        CoreError::Storage(format!(
+            "semantic: column `{name}` missing from lancedb result batch"
+        ))
     })?;
     column.as_any().downcast_ref::<T>().ok_or_else(|| {
         CoreError::Storage(format!(
@@ -612,8 +620,11 @@ impl LoadedGeneration {
         request
             .validate_v1()
             .map_err(|error| CoreError::InvalidContract(error.to_string()))?;
-        let expected_pin =
-            GenerationPin::new(self.repo_id.clone(), self.revision_id.clone(), self.generation);
+        let expected_pin = GenerationPin::new(
+            self.repo_id.clone(),
+            self.revision_id.clone(),
+            self.generation,
+        );
         if request.generation != expected_pin {
             return Ok(self.cluster_membership_batch_rejection_v1(
                 request,
@@ -626,7 +637,9 @@ impl LoadedGeneration {
             if index > 0 {
                 predicate.push_str(", ");
             }
-            predicate.push_str(&crate::sql::quote_sql_string(item.cluster_record_id.as_str()));
+            predicate.push_str(&crate::sql::quote_sql_string(
+                item.cluster_record_id.as_str(),
+            ));
         }
         predicate.push(')');
         let maximum_rows = usize::try_from(quanta_index_contract::MAX_CLUSTER_MEMBERSHIP_READ_V1)
@@ -907,8 +920,12 @@ impl LoadedGeneration {
         if let Some(predicate) = filter {
             vector_query = vector_query.only_if(predicate);
         }
-        race_with_budget(watch, lane, self.issue_and_read_back(vector_query, top_k, watch, lane))
-            .await
+        race_with_budget(
+            watch,
+            lane,
+            self.issue_and_read_back(vector_query, top_k, watch, lane),
+        )
+        .await
     }
 
     /// Issue the query and read its rows back one batch at a time, ticking
@@ -999,7 +1016,10 @@ impl LoadedGeneration {
             .language_any_of
             .iter()
             .map(|language| {
-                format!("{COLUMN_LANGUAGE} = {}", crate::sql::quote_sql_string(language.as_str()))
+                format!(
+                    "{COLUMN_LANGUAGE} = {}",
+                    crate::sql::quote_sql_string(language.as_str())
+                )
             })
             .collect::<Vec<_>>();
         Some(format!("({})", clauses.join(" OR ")))
@@ -1007,7 +1027,10 @@ impl LoadedGeneration {
 
     fn exact_repo_relative_path_filter(constraints: &QueryConstraintSetV1) -> Option<String> {
         constraints.repo_relative_path_exact.as_ref().map(|path| {
-            format!("{COLUMN_REPO_RELATIVE_PATH} = {}", crate::sql::quote_sql_string(path.as_str()))
+            format!(
+                "{COLUMN_REPO_RELATIVE_PATH} = {}",
+                crate::sql::quote_sql_string(path.as_str())
+            )
         })
     }
 
@@ -1029,7 +1052,10 @@ impl LoadedGeneration {
                 .into_iter()
                 .map(build_id_in_filter)
                 .chain(corpus_kind.into_iter().map(|kind| {
-                    format!("{COLUMN_CORPUS_KIND} = {}", crate::sql::quote_sql_string(kind))
+                    format!(
+                        "{COLUMN_CORPUS_KIND} = {}",
+                        crate::sql::quote_sql_string(kind)
+                    )
                 }))
                 .chain(Self::language_any_of_filter(constraints))
                 .chain(Self::exact_repo_relative_path_filter(constraints)),
@@ -1081,9 +1107,12 @@ impl LoadedGeneration {
             .bypass_vector_index()
             .only_if(build_id_in_filter(&allowed_ids));
         let lane = DenseLaneKindV1::Exact;
-        let hits =
-            race_with_budget(watch, lane, self.issue_and_read_back(vector_query, 1, watch, lane))
-                .await?;
+        let hits = race_with_budget(
+            watch,
+            lane,
+            self.issue_and_read_back(vector_query, 1, watch, lane),
+        )
+        .await?;
         let Some(hit) = hits.into_iter().next() else {
             return Ok(None);
         };
@@ -1183,7 +1212,10 @@ impl SemanticSearcher for PersistedSemanticSearcher {
         &self,
         request: &ClusterMembershipBatchReadRequestV1,
     ) -> Result<ClusterMembershipBatchReadResponseV1, CoreError> {
-        crate::run_blocking(&self.runtime, self.loaded.cluster_membership_batch_read_async(request))
+        crate::run_blocking(
+            &self.runtime,
+            self.loaded.cluster_membership_batch_read_async(request),
+        )
     }
 
     fn search(
@@ -1403,9 +1435,18 @@ mod tests {
     )]
     fn cosine_distance_to_score_rejects_non_finite_v1() {
         // Finite distances convert to similarity = 1 - distance.
-        assert_eq!(cosine_distance_to_score_v1(0.0, "c").expect("finite ok"), 1.0);
-        assert_eq!(cosine_distance_to_score_v1(2.0, "c").expect("finite ok"), -1.0);
-        assert_eq!(cosine_distance_to_score_v1(0.5, "c").expect("finite ok"), 0.5);
+        assert_eq!(
+            cosine_distance_to_score_v1(0.0, "c").expect("finite ok"),
+            1.0
+        );
+        assert_eq!(
+            cosine_distance_to_score_v1(2.0, "c").expect("finite ok"),
+            -1.0
+        );
+        assert_eq!(
+            cosine_distance_to_score_v1(0.5, "c").expect("finite ok"),
+            0.5
+        );
 
         // NaN / +Inf / -Inf each fail closed as a storage/index-corruption error
         // (not a query-vector error, not a silent NaN score).

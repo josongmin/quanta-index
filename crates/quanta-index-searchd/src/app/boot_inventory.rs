@@ -415,7 +415,10 @@ impl MetricSourcePort for BootInventoryReportV1 {
             count_from_usize(self.repo_map.activations_without_snapshot.len()),
         ));
         for role in SocketRole::ALL {
-            points.extend(socket_access_points(role, self.socket_access.for_role(role)));
+            points.extend(socket_access_points(
+                role,
+                self.socket_access.for_role(role),
+            ));
         }
         points.push(MetricPointV1::gauge_count(
             "boot_semantic_profile_is_dev",
@@ -495,7 +498,10 @@ pub(super) fn seed_track_readiness(
             .as_ref()
             .is_none_or(|(current, _)| identity.manifest_generation.get() > current.get());
         if take_higher {
-            highest = Some((identity.manifest_generation, identity.manifest_digest.clone()));
+            highest = Some((
+                identity.manifest_generation,
+                identity.manifest_digest.clone(),
+            ));
         }
     }
     if let Some((generation, digest)) = highest {
@@ -568,7 +574,9 @@ mod tests {
                 manifest_generation: ManifestGeneration::new(generation),
                 manifest_digest: format!("digest-{generation}"),
             },
-            path: PathBuf::from(format!("/state/indexes/lexical/generation-v1-x/g{generation}")),
+            path: PathBuf::from(format!(
+                "/state/indexes/lexical/generation-v1-x/g{generation}"
+            )),
         }
     }
 
@@ -768,7 +776,9 @@ mod tests {
             &self,
             _retired: &GenerationSnapshot,
         ) -> Result<SealedGenerationReclaimOutcomeV1, CoreError> {
-            Err(CoreError::NotImplemented("boot reclaims nothing".to_string()))
+            Err(CoreError::NotImplemented(
+                "boot reclaims nothing".to_string(),
+            ))
         }
 
         fn sealed_generations_for_pair(
@@ -785,7 +795,9 @@ mod tests {
             _revision_id: &RevisionId,
             _generations: &BTreeSet<ManifestGeneration>,
         ) -> Result<SealedGenerationBytesV1, CoreError> {
-            Err(CoreError::NotImplemented("boot measures no pair".to_string()))
+            Err(CoreError::NotImplemented(
+                "boot measures no pair".to_string(),
+            ))
         }
 
         fn finish_interrupted_reclaims(&self) -> Result<FinishedReclaims, CoreError> {

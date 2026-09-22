@@ -58,9 +58,9 @@ impl ShardedTextAuthority {
     /// Bytes the decoded authority keeps on the heap, every shard summed
     /// (see [`ShardBody::heap_bytes_estimate`]).
     pub(crate) fn heap_bytes_estimate(&self) -> u64 {
-        self.shards
-            .iter()
-            .fold(0_u64, |total, shard| total.saturating_add(shard.body.heap_bytes_estimate()))
+        self.shards.iter().fold(0_u64, |total, shard| {
+            total.saturating_add(shard.body.heap_bytes_estimate())
+        })
     }
 
     /// The document with `doc_id`, if the authority holds it.

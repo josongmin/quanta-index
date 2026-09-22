@@ -121,7 +121,9 @@ type ReceiptWire = (u32, String, u64, Vec<SourceRowWire>, Vec<DurableRowWire>);
 
 fn decode_journal(bytes: &[u8]) -> Result<Journal, CoreError> {
     let (batches,): JournalWire = decode_cbor_payload(bytes).map_err(|error| {
-        CoreError::Storage(format!("legacy semantic migration: decode journal: {error}"))
+        CoreError::Storage(format!(
+            "legacy semantic migration: decode journal: {error}"
+        ))
     })?;
     Ok(Journal { batches })
 }
@@ -331,7 +333,11 @@ pub(super) fn migrate(
     let preexisting: BTreeSet<Key> = sources
         .iter()
         .filter_map(|source| {
-            let key = (source.repo_id.clone(), source.revision_id.clone(), source.generation);
+            let key = (
+                source.repo_id.clone(),
+                source.revision_id.clone(),
+                source.generation,
+            );
             before
                 .get(&key)
                 .filter(|w| w.manifest_digest() == source.manifest_digest)
@@ -339,7 +345,11 @@ pub(super) fn migrate(
         })
         .collect();
     for source in &sources {
-        let key = (source.repo_id.clone(), source.revision_id.clone(), source.generation);
+        let key = (
+            source.repo_id.clone(),
+            source.revision_id.clone(),
+            source.generation,
+        );
         if let Some(witness) = before.get(&key)
             && witness.manifest_digest() != source.manifest_digest
         {
@@ -351,7 +361,11 @@ pub(super) fn migrate(
     }
     let mut imported = 0usize;
     for batch in &batches {
-        let key = (batch.repo_id.clone(), batch.revision_id.clone(), batch.generation);
+        let key = (
+            batch.repo_id.clone(),
+            batch.revision_id.clone(),
+            batch.generation,
+        );
         if !preexisting.contains(&key) {
             // The journal's batches arrive decoded, so they stream through
             // the same build entry as a live batch, windowed by the policy
@@ -380,7 +394,11 @@ fn source_rows(batches: &[SemanticIngestBatch]) -> Result<Vec<SourceRow>, CoreEr
                 message: "journal generation has an empty manifest digest".to_string(),
             });
         }
-        let key = (batch.repo_id.clone(), batch.revision_id.clone(), batch.generation);
+        let key = (
+            batch.repo_id.clone(),
+            batch.revision_id.clone(),
+            batch.generation,
+        );
         if let Some(prior) = map.insert(key.clone(), batch.manifest_digest.clone())
             && prior != batch.manifest_digest
         {
@@ -392,12 +410,14 @@ fn source_rows(batches: &[SemanticIngestBatch]) -> Result<Vec<SourceRow>, CoreEr
     }
     Ok(map
         .into_iter()
-        .map(|((repo_id, revision_id, generation), manifest_digest)| SourceRow {
-            repo_id,
-            revision_id,
-            generation,
-            manifest_digest,
-        })
+        .map(
+            |((repo_id, revision_id, generation), manifest_digest)| SourceRow {
+                repo_id,
+                revision_id,
+                generation,
+                manifest_digest,
+            },
+        )
         .collect())
 }
 
@@ -411,11 +431,21 @@ fn witness_map_for_sources(
 ) -> Result<BTreeMap<Key, ValidatedPersistedSemanticGenerationV2>, CoreError> {
     let required: BTreeSet<Key> = sources
         .iter()
-        .map(|source| (source.repo_id.clone(), source.revision_id.clone(), source.generation))
+        .map(|source| {
+            (
+                source.repo_id.clone(),
+                source.revision_id.clone(),
+                source.generation,
+            )
+        })
         .collect();
     let mut out = BTreeMap::new();
     for record in persisted {
-        let key = (record.repo_id.clone(), record.revision_id.clone(), record.generation);
+        let key = (
+            record.repo_id.clone(),
+            record.revision_id.clone(),
+            record.generation,
+        );
         if required.contains(&key) {
             let witness = validate_persisted_generation_v2(semantic_root, record)?;
             if out.insert(key, witness).is_some() {
@@ -495,7 +525,12 @@ fn validated_migration(
 }
 
 fn read_receipt(store: &LegacySemanticJournalStore) -> Result<Option<Receipt>, CoreError> {
-    let Some(bytes) = read_bounded(&store.root, &store.receipt_path, MAX_RECEIPT_BYTES, "receipt")?
+    let Some(bytes) = read_bounded(
+        &store.root,
+        &store.receipt_path,
+        MAX_RECEIPT_BYTES,
+        "receipt",
+    )?
     else {
         return Ok(None);
     };
@@ -621,7 +656,10 @@ fn read_bounded(
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
-            return Err(CoreError::Storage(format!("{label} open {}: {error}", path.display())));
+            return Err(CoreError::Storage(format!(
+                "{label} open {}: {error}",
+                path.display()
+            )));
         }
     };
     validate_opened_file_custody(root, &file, path, true)?;
@@ -672,7 +710,10 @@ fn validate_root_custody(root: &Path) -> Result<(), CoreError> {
         return Err(CoreError::Typed {
             code:
                 quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticMigrationCustodyInvalid,
-            message: format!("migration root is not a non-symlink directory: {}", root.display()),
+            message: format!(
+                "migration root is not a non-symlink directory: {}",
+                root.display()
+            ),
         });
     }
     Ok(())
@@ -734,9 +775,13 @@ fn validate_opened_file_custody(
 fn open_read_nofollow(path: &Path) -> std::io::Result<File> {
     use rustix::fs::{Mode, OFlags, open};
 
-    open(path, OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW, Mode::empty())
-        .map(File::from)
-        .map_err(|error| std::io::Error::from_raw_os_error(error.raw_os_error()))
+    open(
+        path,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )
+    .map(File::from)
+    .map_err(|error| std::io::Error::from_raw_os_error(error.raw_os_error()))
 }
 
 #[cfg(not(unix))]

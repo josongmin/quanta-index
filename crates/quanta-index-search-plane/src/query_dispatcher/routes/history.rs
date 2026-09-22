@@ -675,11 +675,13 @@ mod history_page_tests {
         }
         if seen != vec![sha(1), sha(2), sha(3), sha(4), sha(5)] {
             return Err(
-                format!("pages must partition the matches in recency order, got {seen:?}").into()
+                format!("pages must partition the matches in recency order, got {seen:?}").into(),
             );
         }
         if pages != 3 {
-            return Err(format!("five matches at two per page is three pages, took {pages}").into());
+            return Err(
+                format!("five matches at two per page is three pages, took {pages}").into(),
+            );
         }
         let distinct: BTreeSet<CommitSha> = seen.iter().copied().collect();
         if distinct.len() != seen.len() {
@@ -815,7 +817,7 @@ mod history_page_tests {
         let first_read = resolve_history_read(&ledger, &pin, &query, None, now)?;
         if first_read.epoch != AuxEpochV1::new(1) {
             return Err(
-                format!("the first mutation is epoch 1, read {:?}", first_read.epoch).into()
+                format!("the first mutation is epoch 1, read {:?}", first_read.epoch).into(),
             );
         }
         let first = execute_history_query(&query, &first_read.state, first_read.epoch, 2, None)?;
@@ -836,7 +838,7 @@ mod history_page_tests {
             let read = resolve_history_read(&ledger, &pin, &query, Some(cursor.aux_epoch), now)?;
             if read.epoch != AuxEpochV1::new(1) {
                 return Err(
-                    format!("a continuation reads its own epoch, read {:?}", read.epoch).into()
+                    format!("a continuation reads its own epoch, read {:?}", read.epoch).into(),
                 );
             }
             let page = execute_history_query(&query, &read.state, read.epoch, 2, Some(&cursor))?;
@@ -876,7 +878,7 @@ mod history_page_tests {
             .retained;
         if retained > AUX_EPOCH_RETAIN {
             return Err(
-                format!("retained {retained} epochs exceeds the bound {AUX_EPOCH_RETAIN}").into()
+                format!("retained {retained} epochs exceeds the bound {AUX_EPOCH_RETAIN}").into(),
             );
         }
         match resolve_history_read(&ledger, &pin, &query, Some(cursor.aux_epoch), now) {

@@ -65,7 +65,10 @@ mod tests {
 
     #[test]
     fn ascending_sequence_is_canonical_v1() {
-        assert_eq!(first_canonical_order_break_v1(&[1_u8, 2, 3, 250], identity), None);
+        assert_eq!(
+            first_canonical_order_break_v1(&[1_u8, 2, 3, 250], identity),
+            None
+        );
     }
 
     #[test]

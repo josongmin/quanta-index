@@ -66,9 +66,10 @@ pub fn repair_for_code(code: SearchPlaneErrorCodeV2) -> Option<QueryErrorRepair>
         reason = "codes without a confirmed repair must return `None`, including future codes; a wildcard is the only maintainable form for this contract-sized enum"
     )]
     let (class, alternatives): (RepairClass, &[&str]) = match code {
-        SearchPlaneErrorCodeV2::Lexical(LexicalErrorCode::BridgeAmbiguousFilter) => {
-            (RepairClass::Ambiguous, &["repo:<value>", "file:<value>", "path:<value>"])
-        }
+        SearchPlaneErrorCodeV2::Lexical(LexicalErrorCode::BridgeAmbiguousFilter) => (
+            RepairClass::Ambiguous,
+            &["repo:<value>", "file:<value>", "path:<value>"],
+        ),
         SearchPlaneErrorCodeV2::Lexical(LexicalErrorCode::BridgeUnsupportedFilter) => (
             RepairClass::Unsupported,
             &["repo:<name>", "file:<glob>", "path:<glob>", "lang:<name>"],
@@ -77,20 +78,23 @@ pub fn repair_for_code(code: SearchPlaneErrorCodeV2) -> Option<QueryErrorRepair>
             RepairClass::Unsupported,
             &["remove the directive", "use an explicit filter shape"],
         ),
-        SearchPlaneErrorCodeV2::Lexical(LexicalErrorCode::BridgeVersionPin) => {
-            (RepairClass::Malformed, &["rev:<git-ref>", "remove the version pin"])
-        }
+        SearchPlaneErrorCodeV2::Lexical(LexicalErrorCode::BridgeVersionPin) => (
+            RepairClass::Malformed,
+            &["rev:<git-ref>", "remove the version pin"],
+        ),
         // A continuation named an auxiliary epoch the plane no longer
         // retains (QI-BB-020 W2): resuming is impossible without mixing
         // epochs, so the caller starts the walk over.
-        SearchPlaneErrorCodeV2::AuxEpochExpired => {
-            (RepairClass::Expired, &["restart the page walk without a cursor"])
-        }
+        SearchPlaneErrorCodeV2::AuxEpochExpired => (
+            RepairClass::Expired,
+            &["restart the page walk without a cursor"],
+        ),
         // A cursor naming an epoch this state root never produced cannot
         // have come from a page it served.
-        SearchPlaneErrorCodeV2::AuxEpochUnknown => {
-            (RepairClass::Malformed, &["restart the page walk without a cursor"])
-        }
+        SearchPlaneErrorCodeV2::AuxEpochUnknown => (
+            RepairClass::Malformed,
+            &["restart the page walk without a cursor"],
+        ),
         // A cursor of one order cannot position a walk of the other.
         SearchPlaneErrorCodeV2::HistoryCursorOrderMismatch => (
             RepairClass::Malformed,
@@ -101,9 +105,10 @@ pub fn repair_for_code(code: SearchPlaneErrorCodeV2) -> Option<QueryErrorRepair>
         ),
         // Relevance scores keyword and phrase leaves; anything else has no
         // score and runs as a filter under recency.
-        SearchPlaneErrorCodeV2::HistoryTextQueryUnscorable => {
-            (RepairClass::Unsupported, &["order: recency", "use keyword or phrase leaves"])
-        }
+        SearchPlaneErrorCodeV2::HistoryTextQueryUnscorable => (
+            RepairClass::Unsupported,
+            &["order: recency", "use keyword or phrase leaves"],
+        ),
         _ => return None,
     };
     Some(QueryErrorRepair {
@@ -251,7 +256,10 @@ mod repair_for_code_tests {
         let unknown = repair_for_code(quanta_index_core::AUX_EPOCH_UNKNOWN_CODE)
             .expect("an unknown epoch is repairable");
         assert_eq!(unknown.class, RepairClass::Malformed);
-        assert_eq!(unknown.supported_alternatives, expired.supported_alternatives);
+        assert_eq!(
+            unknown.supported_alternatives,
+            expired.supported_alternatives
+        );
     }
 
     #[test]

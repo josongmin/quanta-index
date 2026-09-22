@@ -12,10 +12,11 @@ use crate::{
     HistoryQueryRequest, HybridQueryRequest, HybridQueryResponse, HybridSeedQueryRequest,
     HybridSeedQueryResponse, MetricsSnapshotRequest, MetricsSnapshotV1, QuarantineDiscardAck,
     QuarantineDiscardRequest, QuarantineInventoryRequest, QuarantineInventoryV1,
-    RepoMapActivateGenerationRequest, RepoMapMutationAck, RepoMapQueryRequest,
-    RepoMapQueryResponse, RuntimeMetadataQueryRequest,
-    SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneExplainQueryRequest,
-    SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse, SearchPlaneIpcError,
+    RepoMapActivateGenerationRequest, RepoMapActivateGenerationRequestV2, RepoMapMutationAck,
+    RepoMapQueryRequest, RepoMapQueryResponse, RepoMapTerminalReceiptV2,
+    RuntimeMetadataQueryRequest, SearchPlaneActivateSearchCorpusGenerationCasRequest,
+    SearchPlaneExplainQueryRequest, SearchPlaneExplainQueryResponse,
+    SearchPlaneHistoryQueryResponse, SearchPlaneIpcError,
     SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneRuntimeMetadataQueryResponse,
     SearchPlaneSearchCorpusActivationCasAck, SearchPlaneSearchCorpusRollbackCasAck,
     SearchPlaneStructuralQueryResponse, SemanticQueryRequest, SemanticQueryResponse,
@@ -56,6 +57,7 @@ const SEARCH_PLANE_CONTROL_IPC_REQUEST_VARIANTS: &[&str] = &[
     "ActivateSearchCorpusGenerationCas",
     "RollbackSearchCorpusGenerationCas",
     "RepoMapActivate",
+    "RepoMapActivateV2",
     "CurrentGeneration",
     "GenerationStatus",
     "MetricsSnapshot",
@@ -66,6 +68,7 @@ const SEARCH_PLANE_CONTROL_IPC_RESPONSE_VARIANTS: &[&str] = &[
     "SearchCorpusActivationCasAck",
     "SearchCorpusRollbackCasAck",
     "RepoMapMutationAck",
+    "RepoMapTerminalReceiptV2",
     "Error",
     "CurrentGenerationSnapshot",
     "GenerationStatusReport",
@@ -136,6 +139,7 @@ pub enum SearchPlaneControlIpcRequest {
     // follow. Breaking-first per CLAUDE.md "compatibility preservation is
     // not the default".
     RepoMapActivate(RepoMapActivateGenerationRequest),
+    RepoMapActivateV2(RepoMapActivateGenerationRequestV2),
     /// QI-ACT-01: read-only generation admin query for one
     /// `(repo, revision, track)` triple.
     CurrentGeneration(CurrentGenerationRequest),
@@ -161,6 +165,7 @@ pub enum SearchPlaneControlIpcResponse {
     SearchCorpusActivationCasAck(SearchPlaneSearchCorpusActivationCasAck),
     SearchCorpusRollbackCasAck(SearchPlaneSearchCorpusRollbackCasAck),
     RepoMapMutationAck(RepoMapMutationAck),
+    RepoMapTerminalReceiptV2(RepoMapTerminalReceiptV2),
     Error(SearchPlaneIpcError),
     /// QI-ACT-01: response to [`SearchPlaneControlIpcRequest::CurrentGeneration`].
     CurrentGenerationSnapshot(GenerationSnapshot),
@@ -749,6 +754,12 @@ impl Serialize for SearchPlaneControlIpcRequest {
                 payload,
                 serializer,
             ),
+            Self::RepoMapActivateV2(payload) => serialize_adjacent_tagged(
+                "SearchPlaneControlIpcRequest",
+                "RepoMapActivateV2",
+                payload,
+                serializer,
+            ),
             Self::CurrentGeneration(payload) => serialize_adjacent_tagged(
                 "SearchPlaneControlIpcRequest",
                 "CurrentGeneration",
@@ -826,6 +837,9 @@ impl<'de> Visitor<'de> for SearchPlaneControlIpcRequestVisitor {
                         }
                         "RepoMapActivate" => {
                             SearchPlaneControlIpcRequest::RepoMapActivate(map.next_value()?)
+                        }
+                        "RepoMapActivateV2" => {
+                            SearchPlaneControlIpcRequest::RepoMapActivateV2(map.next_value()?)
                         }
                         "CurrentGeneration" => {
                             SearchPlaneControlIpcRequest::CurrentGeneration(map.next_value()?)
@@ -955,6 +969,12 @@ impl Serialize for SearchPlaneControlIpcResponse {
                 payload,
                 serializer,
             ),
+            Self::RepoMapTerminalReceiptV2(payload) => serialize_adjacent_tagged(
+                "SearchPlaneControlIpcResponse",
+                "RepoMapTerminalReceiptV2",
+                payload,
+                serializer,
+            ),
             Self::Error(payload) => serialize_adjacent_tagged(
                 "SearchPlaneControlIpcResponse",
                 "Error",
@@ -1038,6 +1058,11 @@ impl<'de> Visitor<'de> for SearchPlaneControlIpcResponseVisitor {
                         }
                         "RepoMapMutationAck" => {
                             SearchPlaneControlIpcResponse::RepoMapMutationAck(map.next_value()?)
+                        }
+                        "RepoMapTerminalReceiptV2" => {
+                            SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(
+                                map.next_value()?,
+                            )
                         }
                         "Error" => SearchPlaneControlIpcResponse::Error(map.next_value()?),
                         "CurrentGenerationSnapshot" => {
@@ -1145,7 +1170,10 @@ mod tests {
         let value = match serde_json::to_value(&envelope) {
             Ok(value) => value,
             Err(err) => {
-                assert!(false, "failed to encode query request envelope to json: {err}");
+                assert!(
+                    false,
+                    "failed to encode query request envelope to json: {err}"
+                );
                 return;
             }
         };
@@ -1169,7 +1197,10 @@ mod tests {
         let decoded_json: SearchPlaneQueryIpcRequestEnvelope = match serde_json::from_value(value) {
             Ok(decoded) => decoded,
             Err(err) => {
-                assert!(false, "failed to decode query request envelope from json: {err}");
+                assert!(
+                    false,
+                    "failed to decode query request envelope from json: {err}"
+                );
                 return;
             }
         };
@@ -1177,14 +1208,20 @@ mod tests {
         let bytes = match encode(&envelope) {
             Ok(bytes) => bytes,
             Err(err) => {
-                assert!(false, "failed to encode query request envelope to cbor: {err}");
+                assert!(
+                    false,
+                    "failed to encode query request envelope to cbor: {err}"
+                );
                 return;
             }
         };
         let decoded_cbor: SearchPlaneQueryIpcRequestEnvelope = match decode(&bytes) {
             Ok(decoded) => decoded,
             Err(err) => {
-                assert!(false, "failed to decode query request envelope from cbor: {err}");
+                assert!(
+                    false,
+                    "failed to decode query request envelope from cbor: {err}"
+                );
                 return;
             }
         };
@@ -1204,7 +1241,10 @@ mod tests {
         let value = match serde_json::to_value(&envelope) {
             Ok(value) => value,
             Err(err) => {
-                assert!(false, "failed to encode query response envelope to json: {err}");
+                assert!(
+                    false,
+                    "failed to encode query response envelope to json: {err}"
+                );
                 return;
             }
         };
@@ -1225,7 +1265,10 @@ mod tests {
         {
             Ok(decoded) => decoded,
             Err(err) => {
-                assert!(false, "failed to decode query response envelope from json: {err}");
+                assert!(
+                    false,
+                    "failed to decode query response envelope from json: {err}"
+                );
                 return;
             }
         };
@@ -1233,14 +1276,20 @@ mod tests {
         let bytes = match encode(&envelope) {
             Ok(bytes) => bytes,
             Err(err) => {
-                assert!(false, "failed to encode query response envelope to cbor: {err}");
+                assert!(
+                    false,
+                    "failed to encode query response envelope to cbor: {err}"
+                );
                 return;
             }
         };
         let decoded_cbor: SearchPlaneQueryIpcResponseEnvelope = match decode(&bytes) {
             Ok(decoded) => decoded,
             Err(err) => {
-                assert!(false, "failed to decode query response envelope from cbor: {err}");
+                assert!(
+                    false,
+                    "failed to decode query response envelope from cbor: {err}"
+                );
                 return;
             }
         };
@@ -1260,7 +1309,10 @@ mod tests {
         let value = match serde_json::to_value(&envelope) {
             Ok(value) => value,
             Err(err) => {
-                assert!(false, "failed to encode control request envelope to json: {err}");
+                assert!(
+                    false,
+                    "failed to encode control request envelope to json: {err}"
+                );
                 return;
             }
         };
@@ -1282,7 +1334,10 @@ mod tests {
         {
             Ok(decoded) => decoded,
             Err(err) => {
-                assert!(false, "failed to decode control request envelope from json: {err}");
+                assert!(
+                    false,
+                    "failed to decode control request envelope from json: {err}"
+                );
                 return;
             }
         };
@@ -1290,14 +1345,20 @@ mod tests {
         let bytes = match encode(&envelope) {
             Ok(bytes) => bytes,
             Err(err) => {
-                assert!(false, "failed to encode control request envelope to cbor: {err}");
+                assert!(
+                    false,
+                    "failed to encode control request envelope to cbor: {err}"
+                );
                 return;
             }
         };
         let decoded_cbor: SearchPlaneControlIpcRequestEnvelope = match decode(&bytes) {
             Ok(decoded) => decoded,
             Err(err) => {
-                assert!(false, "failed to decode control request envelope from cbor: {err}");
+                assert!(
+                    false,
+                    "failed to decode control request envelope from cbor: {err}"
+                );
                 return;
             }
         };
@@ -1421,7 +1482,10 @@ mod tests {
         let value = match serde_json::to_value(&envelope) {
             Ok(value) => value,
             Err(err) => {
-                assert!(false, "failed to encode control response envelope to json: {err}");
+                assert!(
+                    false,
+                    "failed to encode control response envelope to json: {err}"
+                );
                 return;
             }
         };
@@ -1445,7 +1509,10 @@ mod tests {
             match serde_json::from_value(value) {
                 Ok(decoded) => decoded,
                 Err(err) => {
-                    assert!(false, "failed to decode control response envelope from json: {err}");
+                    assert!(
+                        false,
+                        "failed to decode control response envelope from json: {err}"
+                    );
                     return;
                 }
             };
@@ -1453,14 +1520,20 @@ mod tests {
         let bytes = match encode(&envelope) {
             Ok(bytes) => bytes,
             Err(err) => {
-                assert!(false, "failed to encode control response envelope to cbor: {err}");
+                assert!(
+                    false,
+                    "failed to encode control response envelope to cbor: {err}"
+                );
                 return;
             }
         };
         let decoded_cbor: SearchPlaneControlIpcResponseEnvelope = match decode(&bytes) {
             Ok(decoded) => decoded,
             Err(err) => {
-                assert!(false, "failed to decode control response envelope from cbor: {err}");
+                assert!(
+                    false,
+                    "failed to decode control response envelope from cbor: {err}"
+                );
                 return;
             }
         };
@@ -1547,7 +1620,10 @@ mod tests {
             ),
         };
         let request_value = serde_json::to_value(&request).expect("membership request JSON");
-        assert_eq!(request_value.pointer("/payload/kind"), Some(&json!("ClusterMembershipRead")));
+        assert_eq!(
+            request_value.pointer("/payload/kind"),
+            Some(&json!("ClusterMembershipRead"))
+        );
         assert_eq!(
             serde_json::from_value::<SearchPlaneQueryIpcRequestEnvelope>(request_value)
                 .expect("membership request JSON decode"),
@@ -1581,7 +1657,10 @@ mod tests {
             ),
         };
         let response_value = serde_json::to_value(&response).expect("membership response JSON");
-        assert_eq!(response_value.pointer("/payload/kind"), Some(&json!("ClusterMembershipRead")));
+        assert_eq!(
+            response_value.pointer("/payload/kind"),
+            Some(&json!("ClusterMembershipRead"))
+        );
         assert_eq!(
             serde_json::from_value::<SearchPlaneQueryIpcResponseEnvelope>(response_value)
                 .expect("membership response JSON decode"),

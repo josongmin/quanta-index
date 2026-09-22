@@ -100,7 +100,13 @@ pub(crate) struct TextAuthorityManifest {
 
 /// Wire shape: a fixed-order CBOR array, auditable without a derive.
 /// Element 0 is the format version, read on its own before the rest.
-type ManifestRow = (u32, u64, (u16, u16), u64, Vec<(u64, u64, u64, u64, u64, [u8; 32])>);
+type ManifestRow = (
+    u32,
+    u64,
+    (u16, u16),
+    u64,
+    Vec<(u64, u64, u64, u64, u64, [u8; 32])>,
+);
 
 pub(crate) fn text_authority_dir(generation_dir: &Path) -> PathBuf {
     generation_dir.join(TEXT_AUTHORITY_DIR_NAME)
@@ -152,7 +158,10 @@ pub(crate) fn leading_format_version(
     path: &Path,
 ) -> Result<u32, CoreError> {
     let unreadable = |detail: &str| {
-        CoreError::Storage(format!("lexical: decode {what} {}: {detail}", path.display()))
+        CoreError::Storage(format!(
+            "lexical: decode {what} {}: {detail}",
+            path.display()
+        ))
     };
     let CborValue::Array(items) = value else {
         return Err(unreadable("manifest is not an array"));
@@ -247,7 +256,9 @@ impl TextAuthorityManifest {
         }
         let normalizer = TextNormalizerVersion { major, minor };
         if normalizer != TEXT_NORMALIZER_VERSION {
-            return Err(crate::index_store::normalizer_unsupported(&path, normalizer));
+            return Err(crate::index_store::normalizer_unsupported(
+                &path, normalizer,
+            ));
         }
         if max_doc_id > MAX_DOC_ID {
             return Err(manifest_corrupt(
@@ -392,8 +403,14 @@ mod tests {
         assert_eq!(shard_index_of(SHARD_DOCS - 1), 0);
         assert_eq!(shard_index_of(SHARD_DOCS), 1);
         assert_eq!(shard_index_of(2 * SHARD_DOCS), 2);
-        assert_eq!(shard_doc_range(1).expect("range"), (SHARD_DOCS, 2 * SHARD_DOCS - 1));
-        assert_eq!(shard_file_name(3, &[0xab; 32]), "shard-00000003-abababababababab.cbor");
+        assert_eq!(
+            shard_doc_range(1).expect("range"),
+            (SHARD_DOCS, 2 * SHARD_DOCS - 1)
+        );
+        assert_eq!(
+            shard_file_name(3, &[0xab; 32]),
+            "shard-00000003-abababababababab.cbor"
+        );
     }
 
     #[test]
@@ -485,8 +502,13 @@ mod tests {
             refusal_for(&other_format),
             Some(quanta_index_contract::SearchPlaneErrorCodeV2::GenerationTextAuthorityFormatUnsupported)
         );
-        let other_shard_size: ManifestRow =
-            (TEXT_AUTHORITY_FORMAT_VERSION, SHARD_DOCS.div_euclid(2), (0, 0), 0, Vec::new());
+        let other_shard_size: ManifestRow = (
+            TEXT_AUTHORITY_FORMAT_VERSION,
+            SHARD_DOCS.div_euclid(2),
+            (0, 0),
+            0,
+            Vec::new(),
+        );
         assert_eq!(
             refusal_for(&other_shard_size),
             Some(quanta_index_contract::SearchPlaneErrorCodeV2::GenerationTextAuthorityFormatUnsupported)
@@ -495,8 +517,13 @@ mod tests {
 
     #[test]
     fn another_normalizer_is_refused_by_name() {
-        let stale: ManifestRow =
-            (TEXT_AUTHORITY_FORMAT_VERSION, SHARD_DOCS, (u16::MAX, u16::MAX), 0, Vec::new());
+        let stale: ManifestRow = (
+            TEXT_AUTHORITY_FORMAT_VERSION,
+            SHARD_DOCS,
+            (u16::MAX, u16::MAX),
+            0,
+            Vec::new(),
+        );
         assert_eq!(
             refusal_for(&stale),
             Some(quanta_index_contract::SearchPlaneErrorCodeV2::GenerationNormalizerUnsupported)

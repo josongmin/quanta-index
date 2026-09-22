@@ -296,14 +296,26 @@ mod tests {
 
     #[test]
     fn parses_rfc3339_and_date_only() {
-        assert_eq!(parse_search_timeref_ms("2024-06-01"), Some(1_717_200_000_000));
-        assert_eq!(parse_search_timeref_ms("2024-06-01T12:34:56Z"), Some(1_717_245_296_000));
+        assert_eq!(
+            parse_search_timeref_ms("2024-06-01"),
+            Some(1_717_200_000_000)
+        );
+        assert_eq!(
+            parse_search_timeref_ms("2024-06-01T12:34:56Z"),
+            Some(1_717_245_296_000)
+        );
     }
 
     #[test]
     fn parses_named_month_dates() {
-        assert_eq!(parse_search_timeref_ms("june 25 2017"), Some(1_498_348_800_000));
-        assert_eq!(parse_search_timeref_ms("Jun 25, 2017"), Some(1_498_348_800_000));
+        assert_eq!(
+            parse_search_timeref_ms("june 25 2017"),
+            Some(1_498_348_800_000)
+        );
+        assert_eq!(
+            parse_search_timeref_ms("Jun 25, 2017"),
+            Some(1_498_348_800_000)
+        );
     }
 
     #[test]
@@ -326,7 +338,10 @@ mod tests {
             parse_rev_at_time_spec("at.time(2024-06-01T12:34:56Z)"),
             Some("2024-06-01T12:34:56Z")
         );
-        assert_eq!(parse_rev_at_time_spec(" at.time( June 25 2017 ) "), Some("June 25 2017"));
+        assert_eq!(
+            parse_rev_at_time_spec(" at.time( June 25 2017 ) "),
+            Some("June 25 2017")
+        );
         assert!(is_rev_at_time_spec("at.time(1 year ago)"));
         assert!(!is_rev_at_time_spec("deadbeef"));
         assert!(!is_rev_at_time_spec("at.time()"));

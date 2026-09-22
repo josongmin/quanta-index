@@ -106,9 +106,11 @@ fn a_tied_corpus_walks_page_by_page_in_path_order() -> TestResult {
         None,
     )?)?;
     if paths(&whole) != every_path() || whole.next_cursor.is_some() {
-        return Err(
-            format!("the whole page is not every file in path order: {:?}", paths(&whole)).into()
-        );
+        return Err(format!(
+            "the whole page is not every file in path order: {:?}",
+            paths(&whole)
+        )
+        .into());
     }
     for top_k in [1_u32, 2, 4] {
         let (rows, pages) = walk(&mut rt, &pin, top_k)?;
@@ -170,7 +172,13 @@ fn a_cursor_does_not_continue_in_another_generation() -> TestResult {
         return Err("the second seal is a new generation".into());
     }
     let next_pin = GenerationPin::new(rt.repo(), rt.revision(), next);
-    match rt.query_text_page(TextQuerySyntax::Native, QUERY, 2, Some(next_pin), Some(cursor))? {
+    match rt.query_text_page(
+        TextQuerySyntax::Native,
+        QUERY,
+        2,
+        Some(next_pin),
+        Some(cursor),
+    )? {
         E2eRoutePage::Refused(error)
             if error.code.as_str() == QUERY_CURSOR_GENERATION_MISMATCH_CODE =>
         {

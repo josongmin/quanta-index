@@ -300,8 +300,10 @@ mod tests {
         // Manually construct a CBOR map with the same metavar twice.
         // Use the underlying ciborium types to write a tampered map.
         use ciborium::value::Value;
-        let span_val =
-            Value::Array(vec![Value::Integer(0_u32.into()), Value::Integer(3_u32.into())]);
+        let span_val = Value::Array(vec![
+            Value::Integer(0_u32.into()),
+            Value::Integer(3_u32.into()),
+        ]);
         let map = Value::Map(vec![
             (Value::Text("X".to_owned()), span_val.clone()),
             (Value::Text("X".to_owned()), span_val),

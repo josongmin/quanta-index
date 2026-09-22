@@ -150,7 +150,11 @@ fn time_of(index: u64) -> u64 {
 fn ingest_fixture(rt: &mut E2eRuntime) -> Result<ManifestGeneration, Box<dyn Error>> {
     for commit in FIXTURE {
         let path = format!("src/relevance_{}.rs", commit.index);
-        rt.ingest_text("repo", &path, &format!("fn relevance_{}() {{}}", commit.index))?;
+        rt.ingest_text(
+            "repo",
+            &path,
+            &format!("fn relevance_{}() {{}}", commit.index),
+        )?;
         // The hunk text repeats the term as often as the message, so the
         // diff index ranks like the commit index.
         let needles = commit.message.matches("needle").count();
@@ -256,9 +260,11 @@ fn served(page: E2eHistoryResult, what: &str) -> Result<E2eHistoryResult, Box<dy
 /// `(sha, score)` per row of a relevance page.
 fn scored_rows(page: &E2eHistoryResult, what: &str) -> Result<Vec<(String, f32)>, Box<dyn Error>> {
     if page.order != Some(HistoryOrderV1::Relevance) {
-        return Err(
-            format!("{what}: the page echoes the relevance order, got {:?}", page.order).into()
-        );
+        return Err(format!(
+            "{what}: the page echoes the relevance order, got {:?}",
+            page.order
+        )
+        .into());
     }
     if page.scores.len() != page.commit_ids.len() {
         return Err(format!("{what}: one score per row").into());
@@ -363,7 +369,7 @@ fn walk_relevance(
             }
             (has_more, next) => {
                 return Err(
-                    format!("{what}: has_more={has_more} and cursor={next:?} disagree").into()
+                    format!("{what}: has_more={has_more} and cursor={next:?} disagree").into(),
                 );
             }
         }
@@ -414,7 +420,7 @@ fn relevance_ranks_by_bm25_recency_by_time_and_pages_survive_restarts_and_ingest
     let matching = u64::try_from(reference.len())?;
     if matching != 20 {
         return Err(
-            format!("twenty fixture commits mention needle, reference has {matching}").into()
+            format!("twenty fixture commits mention needle, reference has {matching}").into(),
         );
     }
 
@@ -648,7 +654,9 @@ fn relevance_ranks_by_bm25_recency_by_time_and_pages_survive_restarts_and_ingest
                     quanta_index_core::HISTORY_TEXT_QUERY_UNSCORABLE_CODE,
                 ) => {}
         other => {
-            return Err(format!("a raw string is unscorable under relevance, got {other:?}").into());
+            return Err(
+                format!("a raw string is unscorable under relevance, got {other:?}").into(),
+            );
         }
     }
     let filtered = served(

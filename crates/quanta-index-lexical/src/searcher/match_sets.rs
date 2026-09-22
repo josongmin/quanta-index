@@ -58,7 +58,10 @@ impl TantivySearcher {
                     map_trigram_error("raw substring prefilter", &err)
                 }
             })?;
-        authority_member_set(verified_doc_ids.iter().map(|doc_id| doc_id.0), "raw substring")
+        authority_member_set(
+            verified_doc_ids.iter().map(|doc_id| doc_id.0),
+            "raw substring",
+        )
     }
 
     /// The regex source as executed.
@@ -218,8 +221,13 @@ impl TantivySearcher {
         options: &LqOptions,
     ) -> Result<RoaringBitmap, CoreError> {
         let authority = self.text_authority(TextAuthorityFeature::PhrasePositions)?;
-        let plan = plan_phrase(text, options, &PhrasePolicy::defaults(), PhraseField::Content)
-            .map_err(map_phrase_plan_error)?;
+        let plan = plan_phrase(
+            text,
+            options,
+            &PhrasePolicy::defaults(),
+            PhraseField::Content,
+        )
+        .map_err(map_phrase_plan_error)?;
         let positions_index = authority.positions_index(plan.case_sensitive);
         let terms = plan.tokens.iter().map(String::as_str).collect::<Vec<_>>();
         let matches = query_phrase(&positions_index, &terms)

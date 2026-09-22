@@ -89,7 +89,10 @@ fn every_registered_predicate_declares_the_domain_it_reads() {
             "{}",
             predicate_kind.name()
         );
-        assert_eq!(lexical_predicate_v1(predicate_kind.name()), Some(predicate_kind));
+        assert_eq!(
+            lexical_predicate_v1(predicate_kind.name()),
+            Some(predicate_kind)
+        );
     }
     for alias in LexicalPredicateAliasV1::ALL {
         assert_eq!(
@@ -107,8 +110,14 @@ fn every_registered_predicate_declares_the_domain_it_reads() {
 #[test]
 fn repo_metadata_predicates_name_their_authority() {
     let cases = [
-        ("repo.has.commit.after", RepoMetadataAuthorityV1::CommitRecency),
-        ("repo.contains.commit.after", RepoMetadataAuthorityV1::CommitRecency),
+        (
+            "repo.has.commit.after",
+            RepoMetadataAuthorityV1::CommitRecency,
+        ),
+        (
+            "repo.contains.commit.after",
+            RepoMetadataAuthorityV1::CommitRecency,
+        ),
         ("repo.has.meta", RepoMetadataAuthorityV1::Meta),
         ("repo.has.topic", RepoMetadataAuthorityV1::Topic),
         ("repo.has.description", RepoMetadataAuthorityV1::Description),
@@ -134,7 +143,11 @@ fn repo_metadata_predicates_name_their_authority() {
         "repo.contains.content",
         "symbol.has.name",
     ] {
-        assert_eq!(predicate_domain_on_lexical_route(name), RequiredDomainsV1::NONE, "{name}");
+        assert_eq!(
+            predicate_domain_on_lexical_route(name),
+            RequiredDomainsV1::NONE,
+            "{name}"
+        );
     }
 }
 
@@ -173,7 +186,10 @@ fn predicates_are_found_anywhere_in_the_tree_and_in_content_filters() {
     let plan = query(
         LqExpr::All(vec![
             keyword("needle"),
-            LqExpr::Not(Box::new(LqExpr::Any(vec![predicate("repo.has.meta"), keyword("other")]))),
+            LqExpr::Not(Box::new(LqExpr::Any(vec![
+                predicate("repo.has.meta"),
+                keyword("other"),
+            ]))),
         ]),
         vec![LqFilter::Content {
             leaf: LqLeaf::Predicate {
@@ -186,7 +202,9 @@ fn predicates_are_found_anywhere_in_the_tree_and_in_content_filters() {
         declare_required_domains_v1(QueryRouteV1::Lexical, Some(&plan)),
         RequiredDomainsV1::of(ReadDomainV1::LexicalTrack)
             .with(ReadDomainV1::RepoMetadata(RepoMetadataAuthorityV1::Meta))
-            .with(ReadDomainV1::RepoMetadata(RepoMetadataAuthorityV1::FileOwnership))
+            .with(ReadDomainV1::RepoMetadata(
+                RepoMetadataAuthorityV1::FileOwnership
+            ))
     );
 }
 
@@ -200,8 +218,9 @@ fn select_file_owners_reads_the_ownership_authority() {
     );
     for route in LEXICAL_PLAN_ROUTES {
         assert!(
-            declare_required_domains_v1(route, Some(&plan))
-                .contains(ReadDomainV1::RepoMetadata(RepoMetadataAuthorityV1::FileOwnership)),
+            declare_required_domains_v1(route, Some(&plan)).contains(ReadDomainV1::RepoMetadata(
+                RepoMetadataAuthorityV1::FileOwnership
+            )),
             "{route:?}"
         );
     }
@@ -282,7 +301,9 @@ fn semantic_reads_the_lexical_track_only_when_scoped() {
         declare_required_domains_v1(QueryRouteV1::Semantic, Some(&scope)),
         RequiredDomainsV1::of(ReadDomainV1::SemanticTrack)
             .with(ReadDomainV1::LexicalTrack)
-            .with(ReadDomainV1::RepoMetadata(RepoMetadataAuthorityV1::Contributor))
+            .with(ReadDomainV1::RepoMetadata(
+                RepoMetadataAuthorityV1::Contributor
+            ))
     );
     assert_eq!(
         declare_required_domains_v1(QueryRouteV1::ClusterMembershipRead, None),
@@ -346,7 +367,10 @@ fn structural_adds_the_lexical_track_only_for_a_text_leaf() {
         declare_required_domains_v1(QueryRouteV1::Structural, Some(&pure)),
         RequiredDomainsV1::of(ReadDomainV1::StructuralChunkUniverse)
     );
-    let mixed = query(LqExpr::All(vec![structural_block(), predicate("repo.has.file")]), vec![]);
+    let mixed = query(
+        LqExpr::All(vec![structural_block(), predicate("repo.has.file")]),
+        vec![],
+    );
     assert_eq!(
         declare_required_domains_v1(QueryRouteV1::Structural, Some(&mixed)),
         RequiredDomainsV1::of(ReadDomainV1::StructuralChunkUniverse)

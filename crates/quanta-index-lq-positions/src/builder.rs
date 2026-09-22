@@ -88,7 +88,10 @@ impl PositionsBuilder {
         // cap check is exact regardless of platform width. The cap is
         // `4_096`, so `len < cap` is well below `u32::MAX`.
         let cur_len = u32::try_from(positions.len()).map_err(|_err| {
-            PositionsError::new(PositionsErrorCode::IndexCorrupted, "positions.len() exceeds u32")
+            PositionsError::new(
+                PositionsErrorCode::IndexCorrupted,
+                "positions.len() exceeds u32",
+            )
         })?;
         if cur_len >= MAX_POSITIONS_PER_CELL {
             return Err(PositionsError::plan_limit_exceeded(
@@ -366,7 +369,11 @@ impl PositionsBuilder {
             // return explicitly instead.
             drop(out_by_term.insert(term, buf));
         }
-        Ok(PositionsIndex::from_raw(self.generation, self.normalizer_version, out_by_term))
+        Ok(PositionsIndex::from_raw(
+            self.generation,
+            self.normalizer_version,
+            out_by_term,
+        ))
     }
 }
 

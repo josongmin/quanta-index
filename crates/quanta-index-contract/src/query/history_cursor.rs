@@ -172,10 +172,15 @@ impl<'de> Visitor<'de> for HistoryCursorVisitor {
                 other => return Err(de::Error::unknown_field(other, HISTORY_CURSOR_FIELDS)),
             }
         }
-        let order = match (order.ok_or_else(|| de::Error::missing_field("order"))?, score) {
+        let order = match (
+            order.ok_or_else(|| de::Error::missing_field("order"))?,
+            score,
+        ) {
             (HistoryOrderV1::Recency, None) => HistoryCursorOrderV1::Recency,
             (HistoryOrderV1::Recency, Some(_)) => {
-                return Err(de::Error::custom("a recency history cursor must not carry a score"));
+                return Err(de::Error::custom(
+                    "a recency history cursor must not carry a score",
+                ));
             }
             (HistoryOrderV1::Relevance, Some(score)) => HistoryCursorOrderV1::Relevance { score },
             (HistoryOrderV1::Relevance, None) => {

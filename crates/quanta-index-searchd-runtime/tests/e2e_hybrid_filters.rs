@@ -85,9 +85,11 @@ fn hybrid_page_in(
             window: hybrid.window,
             explanation: hybrid.explanation,
         }),
-        SearchPlaneQueryIpcResponse::Error(error) => {
-            Err(format!("hybrid `{text_query}` refused: {} {}", error.code, error.message).into())
-        }
+        SearchPlaneQueryIpcResponse::Error(error) => Err(format!(
+            "hybrid `{text_query}` refused: {} {}",
+            error.code, error.message
+        )
+        .into()),
         other => Err(format!("hybrid `{text_query}`: unexpected response {other:?}").into()),
     }
 }
@@ -170,10 +172,11 @@ fn hybrid_seed_page(
             seed.window,
             seed.explanation,
         )),
-        SearchPlaneQueryIpcResponse::Error(error) => {
-            Err(format!("hybrid-seed `{text_query}` refused: {} {}", error.code, error.message)
-                .into())
-        }
+        SearchPlaneQueryIpcResponse::Error(error) => Err(format!(
+            "hybrid-seed `{text_query}` refused: {} {}",
+            error.code, error.message
+        )
+        .into()),
         other => Err(format!("hybrid-seed `{text_query}`: unexpected response {other:?}").into()),
     }
 }
@@ -242,7 +245,7 @@ fn verify_file_filter(rt: &mut E2eRuntime, fixture: &Fixture) -> TestResult {
         .ok_or("the hybrid trace states the dense admission outcome")?;
     if admission != "hybrid.dense_admission=exhausted; examined=3; admitted=1" {
         return Err(
-            format!("the dense lane must examine all three and admit one: {admission}").into()
+            format!("the dense lane must examine all three and admit one: {admission}").into(),
         );
     }
     Ok(())
@@ -257,7 +260,11 @@ fn verify_file_filter(rt: &mut E2eRuntime, fixture: &Fixture) -> TestResult {
 fn verify_repo_filter(rt: &mut E2eRuntime, _fixture: &Fixture) -> TestResult {
     let page = hybrid_page(rt, "repo:other needle")?;
     if !page.ids.is_empty() {
-        return Err(format!("a repo the query excluded must not be served: {:?}", page.ids).into());
+        return Err(format!(
+            "a repo the query excluded must not be served: {:?}",
+            page.ids
+        )
+        .into());
     }
     if page.window != QueryResultWindowV1::exact(0)
         || page.window.candidate_count() != CandidateCountV1::Exact(0)
@@ -319,7 +326,7 @@ fn verify_refusals(rt: &mut E2eRuntime, _fixture: &Fixture) -> TestResult {
         let code = hybrid_refusal(rt, TextQuerySyntax::Sourcegraph, query)?;
         if code.as_wire_str() != "HYBRID_FILTER_UNSUPPORTED" {
             return Err(
-                format!("`{query}` must refuse HYBRID_FILTER_UNSUPPORTED, got {code}").into()
+                format!("`{query}` must refuse HYBRID_FILTER_UNSUPPORTED, got {code}").into(),
             );
         }
     }
@@ -377,7 +384,7 @@ fn verify_hybrid_seed_filters(rt: &mut E2eRuntime, fixture: &Fixture) -> TestRes
     match hybrid_seed_page(rt, "select:file needle") {
         Ok((seeds, _, _)) => {
             return Err(
-                format!("select:file must be refused on hybrid-seed, seeded {seeds:?}").into()
+                format!("select:file must be refused on hybrid-seed, seeded {seeds:?}").into(),
             );
         }
         Err(err) if err.to_string().contains("HYBRID_FILTER_UNSUPPORTED") => {}

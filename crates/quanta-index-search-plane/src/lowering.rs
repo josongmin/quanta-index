@@ -347,9 +347,9 @@ fn rewrite_sourcegraph_structural_expr(
             )),
             StructuralLeafVerdict::TypedFail => Err(structural_route_typed_fail()),
         },
-        LqExpr::Not(inner) => {
-            Ok(LqExpr::Not(Box::new(rewrite_sourcegraph_structural_expr(query_text, inner)?)))
-        }
+        LqExpr::Not(inner) => Ok(LqExpr::Not(Box::new(rewrite_sourcegraph_structural_expr(
+            query_text, inner,
+        )?))),
         LqExpr::All(children) => {
             rewrite_sourcegraph_structural_children(query_text, children, true)
         }
@@ -544,7 +544,10 @@ mod tests {
             })?;
 
         assert_eq!(lowered.lq_version, LQ_VERSION_TAG);
-        assert_eq!(lowered.expr, LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())));
+        assert_eq!(
+            lowered.expr,
+            LqExpr::Leaf(LqLeaf::Keyword("needle".to_string()))
+        );
         assert_eq!(
             lowered.filters,
             vec![
@@ -580,7 +583,7 @@ mod tests {
         let err = match lower_sourcegraph_query_text(r#"patterntype:structural "function_item""#) {
             Ok(query) => {
                 return Err(
-                    format!("expected structural SG lexical rejection, got {query:?}").into()
+                    format!("expected structural SG lexical rejection, got {query:?}").into(),
                 );
             }
             Err(err) => err,
@@ -640,7 +643,7 @@ mod tests {
         };
         if nodes.len() < 2 {
             return Err(
-                format!("expected non-trivial SG structural pattern nodes, got {nodes:?}").into()
+                format!("expected non-trivial SG structural pattern nodes, got {nodes:?}").into(),
             );
         }
         Ok(())
@@ -668,7 +671,10 @@ mod tests {
             )
             .into());
         };
-        if !matches!(nodes.as_slice(), [quanta_index_contract::LqStructuralNode::Hole { .. }]) {
+        if !matches!(
+            nodes.as_slice(),
+            [quanta_index_contract::LqStructuralNode::Hole { .. }]
+        ) {
             return Err(format!(
                 "expected synthetic single-hole regex structural pattern, got {nodes:?}"
             )
@@ -710,7 +716,7 @@ mod tests {
 
         let LqExpr::All(children) = lowered.expr else {
             return Err(
-                "expected boolean tree after SG structural phrase ambiguity lowering".into()
+                "expected boolean tree after SG structural phrase ambiguity lowering".into(),
             );
         };
         let mut saw_keyword = false;
@@ -741,7 +747,10 @@ mod tests {
                 }
             }
         }
-        assert!(saw_keyword, "expected lexical keyword sibling to stay preserved");
+        assert!(
+            saw_keyword,
+            "expected lexical keyword sibling to stay preserved"
+        );
         assert!(
             saw_structural,
             "expected quoted SG structural token to lower into structural body"
@@ -763,7 +772,9 @@ mod tests {
         })?;
 
         let LqExpr::All(children) = lowered.expr else {
-            return Err("expected boolean tree after SG structural regex ambiguity lowering".into());
+            return Err(
+                "expected boolean tree after SG structural regex ambiguity lowering".into(),
+            );
         };
         let mut saw_keyword = false;
         let mut saw_structural = false;
@@ -793,7 +804,10 @@ mod tests {
                 }
             }
         }
-        assert!(saw_keyword, "expected lexical keyword sibling to stay preserved");
+        assert!(
+            saw_keyword,
+            "expected lexical keyword sibling to stay preserved"
+        );
         assert!(
             saw_structural,
             "expected slash SG structural token to lower into structural regex body"
@@ -806,7 +820,7 @@ mod tests {
         let err = match lower_sourcegraph_structural_query_text(r"patterntype:structural /(/") {
             Ok(query) => {
                 return Err(
-                    format!("expected invalid regex structural rejection, got {query:?}").into()
+                    format!("expected invalid regex structural rejection, got {query:?}").into(),
                 );
             }
             Err(err) => err,
@@ -923,7 +937,7 @@ mod tests {
                 }
                 if !matches!(structural, LqExpr::Leaf(LqLeaf::StructuralBlock(_))) {
                     return Err(
-                        format!("expected structural block child, got {structural:?}").into()
+                        format!("expected structural block child, got {structural:?}").into(),
                     );
                 }
             }
@@ -956,7 +970,7 @@ mod tests {
                 }
                 if !matches!(structural, LqExpr::Leaf(LqLeaf::StructuralBlock(_))) {
                     return Err(
-                        format!("expected structural block child, got {structural:?}").into()
+                        format!("expected structural block child, got {structural:?}").into(),
                     );
                 }
             }
@@ -993,7 +1007,7 @@ mod tests {
                 }
                 if !matches!(structural, LqExpr::Leaf(LqLeaf::StructuralBlock(_))) {
                     return Err(
-                        format!("expected structural block child, got {structural:?}").into()
+                        format!("expected structural block child, got {structural:?}").into(),
                     );
                 }
             }
@@ -1032,7 +1046,7 @@ mod tests {
                 }
                 if !matches!(structural, LqExpr::Leaf(LqLeaf::StructuralBlock(_))) {
                     return Err(
-                        format!("expected structural block child, got {structural:?}").into()
+                        format!("expected structural block child, got {structural:?}").into(),
                     );
                 }
             }
@@ -1050,7 +1064,7 @@ mod tests {
         ) {
             Ok(query) => {
                 return Err(
-                    format!("expected repo-scoped mixed OR to fail closed, got {query:?}").into()
+                    format!("expected repo-scoped mixed OR to fail closed, got {query:?}").into(),
                 );
             }
             Err(err) => err,
@@ -1084,7 +1098,7 @@ mod tests {
                 };
                 if !matches!(structural, LqExpr::Leaf(LqLeaf::StructuralBlock(_))) {
                     return Err(
-                        format!("expected structural block child, got {structural:?}").into()
+                        format!("expected structural block child, got {structural:?}").into(),
                     );
                 }
                 if !matches!(
@@ -1119,7 +1133,7 @@ mod tests {
                 };
                 if !matches!(structural, LqExpr::Leaf(LqLeaf::StructuralBlock(_))) {
                     return Err(
-                        format!("expected structural block child, got {structural:?}").into()
+                        format!("expected structural block child, got {structural:?}").into(),
                     );
                 }
                 if !matches!(
@@ -1133,7 +1147,7 @@ mod tests {
                         )
                 ) {
                     return Err(
-                        format!("expected NOT predicate child, got {not_predicate:?}").into()
+                        format!("expected NOT predicate child, got {not_predicate:?}").into(),
                     );
                 }
             }
@@ -1177,7 +1191,7 @@ mod tests {
                 }
                 if !matches!(structural, LqExpr::Leaf(LqLeaf::StructuralBlock(_))) {
                     return Err(
-                        format!("expected structural block child, got {structural:?}").into()
+                        format!("expected structural block child, got {structural:?}").into(),
                     );
                 }
             }
@@ -1221,7 +1235,7 @@ mod tests {
                 }
                 if !matches!(structural, LqExpr::Leaf(LqLeaf::StructuralBlock(_))) {
                     return Err(
-                        format!("expected structural block child, got {structural:?}").into()
+                        format!("expected structural block child, got {structural:?}").into(),
                     );
                 }
             }
@@ -1249,7 +1263,7 @@ mod tests {
                 };
                 if !matches!(structural, LqExpr::Leaf(LqLeaf::StructuralBlock(_))) {
                     return Err(
-                        format!("expected structural block child, got {structural:?}").into()
+                        format!("expected structural block child, got {structural:?}").into(),
                     );
                 }
                 if !matches!(
@@ -1269,7 +1283,7 @@ mod tests {
                         )
                 ) {
                     return Err(
-                        format!("expected NOT file.contains child, got {not_predicate:?}").into()
+                        format!("expected NOT file.contains child, got {not_predicate:?}").into(),
                     );
                 }
             }
@@ -1313,7 +1327,7 @@ mod tests {
                 }
                 if !matches!(structural, LqExpr::Leaf(LqLeaf::StructuralBlock(_))) {
                     return Err(
-                        format!("expected structural block child, got {structural:?}").into()
+                        format!("expected structural block child, got {structural:?}").into(),
                     );
                 }
             }
@@ -1357,7 +1371,7 @@ mod tests {
                 }
                 if !matches!(structural, LqExpr::Leaf(LqLeaf::StructuralBlock(_))) {
                     return Err(
-                        format!("expected structural block child, got {structural:?}").into()
+                        format!("expected structural block child, got {structural:?}").into(),
                     );
                 }
             }
@@ -1387,7 +1401,7 @@ mod tests {
                 };
                 if !matches!(structural, LqExpr::Leaf(LqLeaf::StructuralBlock(_))) {
                     return Err(
-                        format!("expected structural block child, got {structural:?}").into()
+                        format!("expected structural block child, got {structural:?}").into(),
                     );
                 }
                 if !matches!(
@@ -1446,7 +1460,7 @@ mod tests {
                 }
                 if !matches!(structural, LqExpr::Leaf(LqLeaf::StructuralBlock(_))) {
                     return Err(
-                        format!("expected structural block child, got {structural:?}").into()
+                        format!("expected structural block child, got {structural:?}").into(),
                     );
                 }
             }
@@ -1484,7 +1498,7 @@ mod tests {
                 }
                 if !matches!(structural, LqExpr::Leaf(LqLeaf::StructuralBlock(_))) {
                     return Err(
-                        format!("expected structural block child, got {structural:?}").into()
+                        format!("expected structural block child, got {structural:?}").into(),
                     );
                 }
             }
@@ -1512,7 +1526,7 @@ mod tests {
                 };
                 if !matches!(structural, LqExpr::Leaf(LqLeaf::StructuralBlock(_))) {
                     return Err(
-                        format!("expected structural block child, got {structural:?}").into()
+                        format!("expected structural block child, got {structural:?}").into(),
                     );
                 }
                 if !matches!(
@@ -1557,7 +1571,7 @@ mod tests {
                 }
                 if !matches!(structural, LqExpr::Leaf(LqLeaf::StructuralBlock(_))) {
                     return Err(
-                        format!("expected structural block child, got {structural:?}").into()
+                        format!("expected structural block child, got {structural:?}").into(),
                     );
                 }
             }
@@ -1581,7 +1595,10 @@ mod tests {
             format!("richer bridge filter lowering must succeed: {err:?}").into()
         })?;
 
-        assert_eq!(lowered.expr, LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())));
+        assert_eq!(
+            lowered.expr,
+            LqExpr::Leaf(LqLeaf::Keyword("needle".to_string()))
+        );
         assert_eq!(
             lowered.filters,
             vec![
@@ -1621,7 +1638,10 @@ mod tests {
             },
         )?;
 
-        assert_eq!(lowered.expr, LqExpr::Leaf(LqLeaf::Keyword("fix".to_string())));
+        assert_eq!(
+            lowered.expr,
+            LqExpr::Leaf(LqLeaf::Keyword("fix".to_string()))
+        );
         assert_eq!(
             lowered.filters,
             vec![
@@ -1757,14 +1777,20 @@ mod tests {
                 format!("file:contains lowering must succeed: {err:?}").into()
             },
         )?;
-        assert_eq!(phrase.expr, LqExpr::Leaf(LqLeaf::Phrase("TODO".to_string())));
+        assert_eq!(
+            phrase.expr,
+            LqExpr::Leaf(LqLeaf::Phrase("TODO".to_string()))
+        );
 
         let regex = lower_sourcegraph_query_text(r"file:has.content(/TODO.*/)").map_err(
             |err| -> Box<dyn std::error::Error> {
                 format!("file:has.content lowering must succeed: {err:?}").into()
             },
         )?;
-        assert_eq!(regex.expr, LqExpr::Leaf(LqLeaf::Regex("TODO.*".to_string())));
+        assert_eq!(
+            regex.expr,
+            LqExpr::Leaf(LqLeaf::Regex("TODO.*".to_string()))
+        );
 
         let fallback = lower_sourcegraph_query_text("file:contains(path:src)").map_err(
             |err| -> Box<dyn std::error::Error> {

@@ -580,7 +580,10 @@ impl<'de> serde::Deserialize<'de> for LqCountBound {
                         Ok(LqCountBound::Bounded(n))
                     }
                     "all" => Ok(LqCountBound::All),
-                    other => Err(serde::de::Error::unknown_variant(other, &["bounded", "all"])),
+                    other => Err(serde::de::Error::unknown_variant(
+                        other,
+                        &["bounded", "all"],
+                    )),
                 }
             }
         }
@@ -661,9 +664,10 @@ impl<'de> serde::Deserialize<'de> for LqFileScope {
                     "name_and_path" => Ok(LqFileScope::NameAndPath),
                     "name_only" => Ok(LqFileScope::NameOnly),
                     "path_only" => Ok(LqFileScope::PathOnly),
-                    other => {
-                        Err(E::unknown_variant(other, &["name_and_path", "name_only", "path_only"]))
-                    }
+                    other => Err(E::unknown_variant(
+                        other,
+                        &["name_and_path", "name_only", "path_only"],
+                    )),
                 }
             }
         }

@@ -654,7 +654,9 @@ fn validate_constraint_refs(
 ) -> Result<(), StructuralError> {
     for constraint in constraints {
         if !bound_metavars.contains(&constraint.left.name) {
-            return Err(StructuralError::invalid_metavar(constraint.left.name.as_str()));
+            return Err(StructuralError::invalid_metavar(
+                constraint.left.name.as_str(),
+            ));
         }
         if let ConstraintOperand::Hole(hole) = &constraint.right
             && !bound_metavars.contains(&hole.name)

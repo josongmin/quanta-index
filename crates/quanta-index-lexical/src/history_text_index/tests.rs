@@ -85,7 +85,13 @@ fn search(
     after: Option<&HistoryTextHitV1>,
     limit: usize,
 ) -> Result<HistoryTextPageV1, CoreError> {
-    searcher.search(query, after, limit, admit_all(), &RequestBudgetV1::unbounded())
+    searcher.search(
+        query,
+        after,
+        limit,
+        admit_all(),
+        &RequestBudgetV1::unbounded(),
+    )
 }
 
 /// The fixture the BM25 oracle runs over.
@@ -107,7 +113,11 @@ fn oracle_fixture() -> Vec<HistoryTextDocV1> {
         ),
         commit_doc(0x14, 400, "no matching term at all in this one"),
         commit_doc(0x15, 500, "needle needle"),
-        commit_doc(0x16, 600, "Needle_x and needle: the second is a token, the first is not"),
+        commit_doc(
+            0x16,
+            600,
+            "Needle_x and needle: the second is a token, the first is not",
+        ),
         commit_doc(0x21, 700, "the needle and the thread"),
         commit_doc(0x22, 800, "the needle and the thread"),
         commit_doc(0x23, 900, "thread without the other word"),
@@ -403,7 +413,10 @@ fn bm25_top_k_equals_an_independent_reference_over_the_same_tokenizer() -> TestR
     // A negation beside a positive clause excludes without scoring.
     let except = keyword_query(
         HistoryTextKindV1::Commit,
-        LqExpr::All(vec![keyword("needle"), LqExpr::Not(Box::new(keyword("thread")))]),
+        LqExpr::All(vec![
+            keyword("needle"),
+            LqExpr::Not(Box::new(keyword("thread"))),
+        ]),
     );
     let except_page = search(searcher.as_ref(), &except, None, 20)?;
     let except_expected: Vec<(HistoryTextDocKeyV1, u64, f32)> = expected
@@ -438,7 +451,7 @@ fn bm25_top_k_equals_an_independent_reference_over_the_same_tokenizer() -> TestR
         .collect();
     if sensitive_keys != vec![0x16] {
         return Err(
-            format!("case-sensitive keyword finds the one spelling: {sensitive_keys:?}").into()
+            format!("case-sensitive keyword finds the one spelling: {sensitive_keys:?}").into(),
         );
     }
     Ok(())
@@ -450,8 +463,11 @@ fn keyset_continuation_partitions_the_ranking_without_gap_or_overlap() -> TestRe
     let port = adapter(root.path())?;
     let generation = generation();
     let docs = oracle_fixture();
-    let _receipt =
-        port.publish_epoch(&generation, AuxEpochV1::new(1), HistoryTextBuildV1::Full { docs })?;
+    let _receipt = port.publish_epoch(
+        &generation,
+        AuxEpochV1::new(1),
+        HistoryTextBuildV1::Full { docs },
+    )?;
     let searcher = port.open_epoch(&generation, AuxEpochV1::new(1))?;
     let query = keyword_query(
         HistoryTextKindV1::Commit,
@@ -516,8 +532,11 @@ fn the_admit_predicate_bounds_the_page_and_counts_exactly() -> TestRes {
     let port = adapter(root.path())?;
     let generation = generation();
     let docs = oracle_fixture();
-    let _receipt =
-        port.publish_epoch(&generation, AuxEpochV1::new(1), HistoryTextBuildV1::Full { docs })?;
+    let _receipt = port.publish_epoch(
+        &generation,
+        AuxEpochV1::new(1),
+        HistoryTextBuildV1::Full { docs },
+    )?;
     let searcher = port.open_epoch(&generation, AuxEpochV1::new(1))?;
     let query = keyword_query(HistoryTextKindV1::Commit, keyword("needle"));
     // Admit only commits at an even hundred of committer time.
@@ -581,8 +600,11 @@ fn an_incremental_epoch_shares_unchanged_segments_by_inode() -> TestRes {
     let port = adapter(root.path())?;
     let generation = generation();
     let docs = oracle_fixture();
-    let _receipt =
-        port.publish_epoch(&generation, AuxEpochV1::new(1), HistoryTextBuildV1::Full { docs })?;
+    let _receipt = port.publish_epoch(
+        &generation,
+        AuxEpochV1::new(1),
+        HistoryTextBuildV1::Full { docs },
+    )?;
     let first_dir = epoch_dir(root.path(), &generation, AuxEpochV1::new(1));
     let first_commits = kind_dir(&first_dir, HistoryTextKindV1::Commit);
     let before = file_identities(&first_commits)?;
@@ -639,7 +661,9 @@ fn an_incremental_epoch_shares_unchanged_segments_by_inode() -> TestRes {
         }
     }
     if !private.is_empty() {
-        return Err(format!("base segment files were copied instead of linked: {private:?}").into());
+        return Err(
+            format!("base segment files were copied instead of linked: {private:?}").into(),
+        );
     }
     if shared == 0 {
         return Err(format!(
@@ -652,7 +676,7 @@ fn an_incremental_epoch_shares_unchanged_segments_by_inode() -> TestRes {
             (Some((first_inode, _)), Some((second_inode, _))) if first_inode != second_inode => {}
             other => {
                 return Err(
-                    format!("{name} must be a private copy per epoch, got {other:?}").into()
+                    format!("{name} must be a private copy per epoch, got {other:?}").into(),
                 );
             }
         }
@@ -860,7 +884,10 @@ fn unscorable_expressions_are_refused_typed() -> TestRes {
     )?;
     let searcher = port.open_epoch(&generation, AuxEpochV1::new(1))?;
     let cases: Vec<(&str, HistoryTextQueryV1)> = vec![
-        ("empty", keyword_query(HistoryTextKindV1::Commit, LqExpr::Empty)),
+        (
+            "empty",
+            keyword_query(HistoryTextKindV1::Commit, LqExpr::Empty),
+        ),
         (
             "raw string",
             keyword_query(
@@ -877,7 +904,10 @@ fn unscorable_expressions_are_refused_typed() -> TestRes {
         ),
         (
             "bare negation",
-            keyword_query(HistoryTextKindV1::Commit, LqExpr::Not(Box::new(keyword("needle")))),
+            keyword_query(
+                HistoryTextKindV1::Commit,
+                LqExpr::Not(Box::new(keyword("needle"))),
+            ),
         ),
         (
             "negation only conjunction",
@@ -890,7 +920,10 @@ fn unscorable_expressions_are_refused_typed() -> TestRes {
             "negation in a disjunction",
             keyword_query(
                 HistoryTextKindV1::Commit,
-                LqExpr::Any(vec![keyword("needle"), LqExpr::Not(Box::new(keyword("thread")))]),
+                LqExpr::Any(vec![
+                    keyword("needle"),
+                    LqExpr::Not(Box::new(keyword("thread"))),
+                ]),
             ),
         ),
         (
@@ -1007,8 +1040,12 @@ fn a_raw_string_beside_a_scored_clause_is_enumerated_and_scored_by_the_clause() 
             ]),
         ),
     ] {
-        let page =
-            search(searcher.as_ref(), &keyword_query(HistoryTextKindV1::Commit, expr), None, 10)?;
+        let page = search(
+            searcher.as_ref(),
+            &keyword_query(HistoryTextKindV1::Commit, expr),
+            None,
+            10,
+        )?;
         if page.hits != keyword_only.hits {
             return Err(format!(
                 "{label}: the index enumerates the scored clause's rows with its scores:\n  got  {:?}\n  want {:?}",
@@ -1219,7 +1256,12 @@ fn exact_ranking(
     kind: HistoryTextKindV1,
 ) -> Result<Vec<ExactRow>, Box<dyn std::error::Error>> {
     let searcher = port.open_epoch(&generation(), epoch)?;
-    let page = search(searcher.as_ref(), &keyword_query(kind, keyword("needle")), None, 100)?;
+    let page = search(
+        searcher.as_ref(),
+        &keyword_query(kind, keyword("needle")),
+        None,
+        100,
+    )?;
     Ok(page
         .hits
         .into_iter()

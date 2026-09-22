@@ -13,8 +13,12 @@ use quanta_index_core::CoreError;
 pub(super) fn read_regular_file_nofollow_v1(path: &Path) -> std::io::Result<Vec<u8>> {
     use rustix::fs::{Mode, OFlags, open};
 
-    let descriptor = open(path, OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW, Mode::empty())
-        .map_err(|error| std::io::Error::from_raw_os_error(error.raw_os_error()))?;
+    let descriptor = open(
+        path,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )
+    .map_err(|error| std::io::Error::from_raw_os_error(error.raw_os_error()))?;
     let mut file = File::from(descriptor);
     if !file.metadata()?.is_file() {
         return Err(std::io::Error::other(format!(
@@ -49,7 +53,10 @@ pub(super) fn ensure_durable_directory_v1(
     parent_sync: &dyn ParentDirectorySyncPort,
 ) -> Result<(), CoreError> {
     let mut boundary = path.parent().ok_or_else(|| {
-        CoreError::Storage(format!("{owner}: durable directory has no parent: {}", path.display()))
+        CoreError::Storage(format!(
+            "{owner}: durable directory has no parent: {}",
+            path.display()
+        ))
     })?;
     while !boundary.is_dir() {
         boundary = boundary.parent().ok_or_else(|| {
@@ -108,7 +115,10 @@ pub(super) fn ensure_durable_directory_from_boundary_v1(
         }
     }
     let parent = path.parent().ok_or_else(|| {
-        CoreError::Storage(format!("{owner}: durable directory has no parent: {}", path.display()))
+        CoreError::Storage(format!(
+            "{owner}: durable directory has no parent: {}",
+            path.display()
+        ))
     })?;
     ensure_durable_directory_from_boundary_v1(parent, boundary, owner, parent_sync)?;
     match fs::create_dir(path) {
@@ -135,7 +145,10 @@ pub(super) fn sync_existing_file_parent_v1(
     parent_sync: &dyn ParentDirectorySyncPort,
 ) -> Result<(), CoreError> {
     let parent = path.parent().ok_or_else(|| {
-        CoreError::Storage(format!("{owner}: durable file has no parent: {}", path.display()))
+        CoreError::Storage(format!(
+            "{owner}: durable file has no parent: {}",
+            path.display()
+        ))
     })?;
     parent_sync.sync_parent(parent).map_err(|err| {
         CoreError::Storage(format!(
@@ -169,7 +182,10 @@ pub(super) fn atomic_replace_file_from_staging_v1(
     static STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
     let target_parent = path.parent().ok_or_else(|| {
-        CoreError::Storage(format!("{owner}: durable file has no parent: {}", path.display()))
+        CoreError::Storage(format!(
+            "{owner}: durable file has no parent: {}",
+            path.display()
+        ))
     })?;
     let target_parent_name = target_parent
         .file_name()
@@ -240,15 +256,21 @@ pub(super) fn atomic_replace_file_from_staging_v1(
         ));
     }
     if let Err(error) = parent_sync.sync_parent(target_parent) {
-        return Ok(AtomicFileWriteOutcomeV1::RenamedButParentSyncFailed(CoreError::Storage(
-            format!("{owner}: fsync target parent {}: {error}", target_parent.display()),
-        )));
+        return Ok(AtomicFileWriteOutcomeV1::RenamedButParentSyncFailed(
+            CoreError::Storage(format!(
+                "{owner}: fsync target parent {}: {error}",
+                target_parent.display()
+            )),
+        ));
     }
     match parent_sync.sync_parent(staging_dir) {
         Ok(()) => Ok(AtomicFileWriteOutcomeV1::Durable),
-        Err(error) => Ok(AtomicFileWriteOutcomeV1::RenamedButParentSyncFailed(CoreError::Storage(
-            format!("{owner}: fsync staging parent {}: {error}", staging_dir.display()),
-        ))),
+        Err(error) => Ok(AtomicFileWriteOutcomeV1::RenamedButParentSyncFailed(
+            CoreError::Storage(format!(
+                "{owner}: fsync staging parent {}: {error}",
+                staging_dir.display()
+            )),
+        )),
     }
 }
 

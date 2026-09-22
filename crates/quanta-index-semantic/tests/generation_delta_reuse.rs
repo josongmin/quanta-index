@@ -94,7 +94,11 @@ fn unit_vector(step: u16) -> Vec<f32> {
 }
 
 fn record(id: &str, path: &str, step: u16) -> Result<EmbeddingRecord, Box<dyn Error>> {
-    Ok(legacy_chunk_embedding_record_v1(id, path, unit_vector(step))?)
+    Ok(legacy_chunk_embedding_record_v1(
+        id,
+        path,
+        unit_vector(step),
+    )?)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -158,7 +162,14 @@ fn build_base(adapter: &SemanticAdapter, base: ManifestGeneration) -> TestResult
         .collect::<Result<Vec<_>, _>>()?;
     build_resident_batch_v1(
         adapter,
-        &sealed_replace_batch_v1(repo_id(), revision_id(), base, BASE_PATH, embeddings, DIMENSION),
+        &sealed_replace_batch_v1(
+            repo_id(),
+            revision_id(),
+            base,
+            BASE_PATH,
+            embeddings,
+            DIMENSION,
+        ),
     )?;
     Ok(())
 }
@@ -274,7 +285,9 @@ fn delta_generation_inherits_base_dataset_by_link_without_touching_base_bytes() 
     );
     println!("QI-BB-006-SEMANTIC-FRESH {fresh_entries:?}");
     if shared_files == 0 {
-        return Err("delta dataset shares no inode with the base: it was copied, not linked".into());
+        return Err(
+            "delta dataset shares no inode with the base: it was copied, not linked".into(),
+        );
     }
     if fresh_bytes.saturating_mul(2) > base_bytes {
         return Err(format!(
@@ -308,13 +321,13 @@ fn delta_generation_inherits_base_dataset_by_link_without_touching_base_bytes() 
     let delta_own = scoped_hit_ids(&adapter, delta, DELTA_PATH, &delta_query, 5)?;
     if delta_own != ["delta-only"] {
         return Err(
-            format!("delta generation does not serve its own new record: {delta_own:?}").into()
+            format!("delta generation does not serve its own new record: {delta_own:?}").into(),
         );
     }
     let delta_inherited = scoped_hit_ids(&adapter, delta, BASE_PATH, &base_query, 5)?;
     if delta_inherited.len() != 5 || !delta_inherited.iter().all(|id| id.starts_with("base-")) {
         return Err(
-            format!("delta generation lost inherited base records: {delta_inherited:?}").into()
+            format!("delta generation lost inherited base records: {delta_inherited:?}").into(),
         );
     }
     let base_leak = scoped_hit_ids(&adapter, base, DELTA_PATH, &delta_query, 5)?;
@@ -410,7 +423,7 @@ fn same_generation_second_batch_reuses_its_own_objects() -> TestResult {
     let first_batch = scoped_hit_ids(&adapter, generation, BASE_PATH, &unit_vector(7), 5)?;
     if first_batch.len() != 5 || !first_batch.iter().all(|id| id.starts_with("base-")) {
         return Err(
-            format!("sealed generation lost the first batch's records: {first_batch:?}").into()
+            format!("sealed generation lost the first batch's records: {first_batch:?}").into(),
         );
     }
     Ok(())

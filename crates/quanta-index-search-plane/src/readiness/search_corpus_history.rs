@@ -194,7 +194,10 @@ impl AuxiliaryAuthorityStore {
         let record =
             SearchCorpusAuthorityRecordV1::new(repo_id, revision_id, generation, manifest_digest);
         let bytes = encode_cbor_payload(&record).map_err(|err| {
-            CoreError::Storage(format!("search-corpus authority: encode {}: {err}", path.display()))
+            CoreError::Storage(format!(
+                "search-corpus authority: encode {}: {err}",
+                path.display()
+            ))
         })?;
         pair_records.push(SearchCorpusAuthorityFileV1 {
             path: path.to_path_buf(),

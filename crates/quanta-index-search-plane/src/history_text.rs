@@ -108,11 +108,13 @@ impl HistoryTextIndexParts {
             if generation >= below || known.contains(&generation) {
                 continue;
             }
-            self.settle_gc(self.retire_and_discard_generation(&AuxiliaryGenerationKeyV1 {
-                repo_id: repo_id.clone(),
-                revision_id: revision_id.clone(),
-                generation,
-            }))?;
+            self.settle_gc(
+                self.retire_and_discard_generation(&AuxiliaryGenerationKeyV1 {
+                    repo_id: repo_id.clone(),
+                    revision_id: revision_id.clone(),
+                    generation,
+                }),
+            )?;
         }
         Ok(())
     }
@@ -145,8 +147,9 @@ impl HistoryTextIndexParts {
         claim: HistoryTextClaim,
         budget: &RequestBudgetV1,
     ) -> Result<Arc<dyn HistoryTextSearcher>, CoreError> {
-        self.handles
-            .land(claim, budget, |generation, epoch| self.port.open_epoch(generation, epoch))
+        self.handles.land(claim, budget, |generation, epoch| {
+            self.port.open_epoch(generation, epoch)
+        })
     }
 
     /// Retire the handle of `epoch` and, if nothing else holds it, discard
@@ -453,7 +456,9 @@ mod tests {
         _generation: &AuxiliaryGenerationKeyV1,
         _epoch: AuxEpochV1,
     ) -> Result<Box<dyn HistoryTextSearcher>, CoreError> {
-        Err(CoreError::Storage("a claim that was not an open must not open".to_string()))
+        Err(CoreError::Storage(
+            "a claim that was not an open must not open".to_string(),
+        ))
     }
 
     /// A claim is a lookup and opens nothing; its open runs when it lands,
@@ -504,7 +509,10 @@ mod tests {
                 Ok((landed, other))
             })?;
         let shared = handles.land(second, &unbounded, never_opened)?;
-        assert!(Arc::ptr_eq(&opened, &shared), "the waiter shares the one open");
+        assert!(
+            Arc::ptr_eq(&opened, &shared),
+            "the waiter shares the one open"
+        );
         assert!(!Arc::ptr_eq(&opened, &other));
         assert_eq!(opens.load(Ordering::SeqCst), 1, "epoch 1 opened once");
         match handles.claim(&generation(), EPOCH)? {
@@ -525,7 +533,11 @@ mod tests {
         let unbounded = RequestBudgetV1::unbounded();
         let claim = parts.claim(&generation(), EPOCH)?;
         assert_eq!(parts.retire_and_discard_epoch(&generation(), EPOCH)?, None);
-        assert_eq!(index.epochs_of(&generation())?, vec![EPOCH], "nothing was discarded");
+        assert_eq!(
+            index.epochs_of(&generation())?,
+            vec![EPOCH],
+            "nothing was discarded"
+        );
         let handle = parts.land(claim, &unbounded)?;
         assert_eq!(
             parts.retire_and_discard_epoch(&generation(), EPOCH)?,
@@ -568,7 +580,10 @@ mod tests {
                 Ok(_handle) => return Err("a failed open served a handle".into()),
             }
         }
-        assert!(matches!(handles.claim(&generation(), EPOCH)?, HistoryTextClaim::Open { .. }));
+        assert!(matches!(
+            handles.claim(&generation(), EPOCH)?,
+            HistoryTextClaim::Open { .. }
+        ));
         Ok(())
     }
 

@@ -105,8 +105,10 @@ fn golden_candidates() -> Vec<StructuralAuthorityCandidate> {
 fn golden_authority_match_returns_pinned_row() {
     let source = "fn main() {}";
     let tree = tree("rust", "function_item", 0, 12, source);
-    let pattern =
-        compile_block(vec![group(vec![literal(" "), metavar("node"), literal(" ")])], "rust");
+    let pattern = compile_block(
+        vec![group(vec![literal(" "), metavar("node"), literal(" ")])],
+        "rust",
+    );
     let matcher = TruthfulSubsetAuthorityMatcher::new();
     let Ok(lowered) = (&pattern).try_into() else {
         fatal("lower");

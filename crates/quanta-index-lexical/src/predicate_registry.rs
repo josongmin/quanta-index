@@ -910,7 +910,11 @@ mod tests {
         assert_eq!(rows, content_or_repo, "one row per content/repo predicate");
         let aliases: Vec<LexicalPredicateAliasV1> =
             PREDICATE_ALIASES.iter().map(|spec| spec.alias).collect();
-        assert_eq!(aliases, LexicalPredicateAliasV1::ALL.to_vec(), "one row per alias");
+        assert_eq!(
+            aliases,
+            LexicalPredicateAliasV1::ALL.to_vec(),
+            "one row per alias"
+        );
         for alias in PREDICATE_ALIASES {
             assert!(
                 registry_spec(alias.canonical()).is_some(),
@@ -932,13 +936,28 @@ mod tests {
     #[test]
     fn registry_resolves_shipped_predicate_kinds() {
         assert_eq!(kind_of("file.contains"), Some(PredicateKind::ContentLeaf));
-        assert_eq!(kind_of("file.has.content"), Some(PredicateKind::ContentLeaf));
+        assert_eq!(
+            kind_of("file.has.content"),
+            Some(PredicateKind::ContentLeaf)
+        );
         assert_eq!(kind_of("repo.has.file"), Some(PredicateKind::RepoFileGate));
-        assert_eq!(kind_of("repo.has.commit.after"), Some(PredicateKind::RepoCommitRecencyGate));
+        assert_eq!(
+            kind_of("repo.has.commit.after"),
+            Some(PredicateKind::RepoCommitRecencyGate)
+        );
         assert_eq!(kind_of("repo.has.meta"), Some(PredicateKind::RepoMetaGate));
-        assert_eq!(kind_of("repo.has.topic"), Some(PredicateKind::RepoTopicGate));
-        assert_eq!(kind_of("file.has.owner"), Some(PredicateKind::FileOwnerGate));
-        assert_eq!(kind_of("file.has.contributor"), Some(PredicateKind::FileContributorGate));
+        assert_eq!(
+            kind_of("repo.has.topic"),
+            Some(PredicateKind::RepoTopicGate)
+        );
+        assert_eq!(
+            kind_of("file.has.owner"),
+            Some(PredicateKind::FileOwnerGate)
+        );
+        assert_eq!(
+            kind_of("file.has.contributor"),
+            Some(PredicateKind::FileContributorGate)
+        );
     }
 
     #[test]
@@ -1076,7 +1095,10 @@ mod tests {
 
     #[test]
     fn repo_topic_arg_rejects_bad_arity_and_non_textual_shapes() {
-        assert_eq!(parse_repo_topic_arg(&[]), Err(RepoTopicArgError::WrongArity));
+        assert_eq!(
+            parse_repo_topic_arg(&[]),
+            Err(RepoTopicArgError::WrongArity)
+        );
         assert_eq!(
             parse_repo_topic_arg(&[
                 LqPredicateArg::Keyword("security".to_string()),
@@ -1112,8 +1134,14 @@ mod tests {
     #[test]
     fn registry_resolves_native_aliases_to_canonical_kinds() {
         assert_eq!(kind_of("repo.has.path"), Some(PredicateKind::RepoFileGate));
-        assert_eq!(kind_of("file.contains.content"), Some(PredicateKind::ContentLeaf));
-        assert_eq!(kind_of("repo.contains.content"), Some(PredicateKind::RepoContentGate));
+        assert_eq!(
+            kind_of("file.contains.content"),
+            Some(PredicateKind::ContentLeaf)
+        );
+        assert_eq!(
+            kind_of("repo.contains.content"),
+            Some(PredicateKind::RepoContentGate)
+        );
         assert_eq!(
             kind_of("repo.contains.commit.after"),
             Some(PredicateKind::RepoCommitRecencyGate)
@@ -1157,8 +1185,14 @@ mod tests {
         // `repo:has.file(...)` and `repo:contains.path(...)` as an alias of
         // `repo:has.path(...)`. Both canonicalize onto the executable
         // `RepoFileGate` row.
-        assert_eq!(kind_of("repo.contains.file"), Some(PredicateKind::RepoFileGate));
-        assert_eq!(kind_of("repo.contains.path"), Some(PredicateKind::RepoFileGate));
+        assert_eq!(
+            kind_of("repo.contains.file"),
+            Some(PredicateKind::RepoFileGate)
+        );
+        assert_eq!(
+            kind_of("repo.contains.path"),
+            Some(PredicateKind::RepoFileGate)
+        );
     }
 
     #[test]
@@ -1287,7 +1321,10 @@ mod tests {
 
     #[test]
     fn registry_resolves_repo_has_content_kind() {
-        assert_eq!(kind_of("repo.has.content"), Some(PredicateKind::RepoContentGate));
+        assert_eq!(
+            kind_of("repo.has.content"),
+            Some(PredicateKind::RepoContentGate)
+        );
     }
 
     #[test]
@@ -1351,7 +1388,10 @@ mod tests {
 
     #[test]
     fn file_contributor_arg_rejects_bad_arity_and_non_textual_shapes() {
-        assert_eq!(parse_file_contributor_arg(&[]), Err(FileContributorArgError::WrongArity));
+        assert_eq!(
+            parse_file_contributor_arg(&[]),
+            Err(FileContributorArgError::WrongArity)
+        );
         assert_eq!(
             parse_file_contributor_arg(&[
                 LqPredicateArg::Keyword("alice".to_string()),
@@ -1418,7 +1458,10 @@ mod tests {
 
     #[test]
     fn content_scalar_arg_rejects_filter_and_bad_arity() {
-        assert_eq!(parse_content_scalar_arg(&[]), Err(ContentScalarArgError::WrongArity));
+        assert_eq!(
+            parse_content_scalar_arg(&[]),
+            Err(ContentScalarArgError::WrongArity)
+        );
         assert_eq!(
             parse_content_scalar_arg(&[
                 LqPredicateArg::Keyword("a".to_string()),
@@ -1481,7 +1524,10 @@ mod tests {
                 scope: LqFileScope::NameOnly,
             })
         );
-        assert_eq!(constraint.content, ContentScalarArg::Phrase("lemon yellow banana".to_string()));
+        assert_eq!(
+            constraint.content,
+            ContentScalarArg::Phrase("lemon yellow banana".to_string())
+        );
     }
 
     #[test]
@@ -1638,6 +1684,9 @@ mod tests {
 
     #[test]
     fn repo_file_matchers_reject_empty() {
-        assert!(matches!(parse_repo_file_matchers(&[]), Err(RepoFileArgError::NoMatcher)));
+        assert!(matches!(
+            parse_repo_file_matchers(&[]),
+            Err(RepoFileArgError::NoMatcher)
+        ));
     }
 }

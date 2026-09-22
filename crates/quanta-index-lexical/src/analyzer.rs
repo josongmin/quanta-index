@@ -100,9 +100,10 @@ impl TokenStream for NormalizedTokenStream<'_> {
 /// folding, and the term-length cap.
 pub(crate) fn register_analyzers(index: &Index) {
     for case in [CaseMode::Folded, CaseMode::Sensitive] {
-        index
-            .tokenizers()
-            .register(tokenizer_name(case), TextAnalyzer::from(NormalizingTokenizer::new(case)));
+        index.tokenizers().register(
+            tokenizer_name(case),
+            TextAnalyzer::from(NormalizingTokenizer::new(case)),
+        );
     }
 }
 
@@ -119,7 +120,12 @@ mod tests {
         let mut out = Vec::new();
         while stream.advance() {
             let token = stream.token();
-            out.push((token.text.clone(), token.position, token.offset_from, token.offset_to));
+            out.push((
+                token.text.clone(),
+                token.position,
+                token.offset_from,
+                token.offset_to,
+            ));
         }
         out
     }
@@ -134,8 +140,14 @@ mod tests {
                 ("foo_bar".to_string(), 2, 8, 15),
             ]
         );
-        assert_eq!(stream("CAFÉ", CaseMode::Sensitive), [("CAFÉ".to_string(), 0, 0, 5)]);
-        assert_eq!(stream("cafe\u{301}", CaseMode::Folded), [("café".to_string(), 0, 0, 5)]);
+        assert_eq!(
+            stream("CAFÉ", CaseMode::Sensitive),
+            [("CAFÉ".to_string(), 0, 0, 5)]
+        );
+        assert_eq!(
+            stream("cafe\u{301}", CaseMode::Folded),
+            [("café".to_string(), 0, 0, 5)]
+        );
     }
 
     #[test]

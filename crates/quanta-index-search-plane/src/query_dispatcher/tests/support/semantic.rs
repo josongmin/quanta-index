@@ -40,7 +40,11 @@ impl SemanticIndexOpenPort for RejectSemanticOpener {
         &self,
         candidate: &GenerationSnapshot,
     ) -> Result<Box<dyn SemanticSearcher>, CoreError> {
-        self.open(&candidate.repo_id, &candidate.revision_id, candidate.manifest_generation)
+        self.open(
+            &candidate.repo_id,
+            &candidate.revision_id,
+            candidate.manifest_generation,
+        )
     }
 }
 
@@ -451,7 +455,11 @@ impl SemanticIndexOpenPort for RecordingSemanticOpener {
         &self,
         candidate: &GenerationSnapshot,
     ) -> Result<Box<dyn SemanticSearcher>, CoreError> {
-        self.open(&candidate.repo_id, &candidate.revision_id, candidate.manifest_generation)
+        self.open(
+            &candidate.repo_id,
+            &candidate.revision_id,
+            candidate.manifest_generation,
+        )
     }
 }
 

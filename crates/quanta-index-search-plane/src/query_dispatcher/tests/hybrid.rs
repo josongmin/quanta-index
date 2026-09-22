@@ -189,8 +189,10 @@ fn hybrid_dispatch_embeds_semantic_query_text() -> TestResult {
             guard.search_constraints.clone(),
         )
     };
-    let expected = default_query_embedder()
-        .embed_query("scope alpha", &quanta_index_core::RequestBudgetV1::unbounded())?;
+    let expected = default_query_embedder().embed_query(
+        "scope alpha",
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     // QI-BB-018: the dense lane is independent of the lexical hits — one
     // unscoped search over the query vector, under the request's
     // constraints; never a search scoped to the lexical ids.

@@ -37,7 +37,10 @@ fn upsert_step() -> impl Strategy<Value = (u64, Vec<(String, u32)>)> {
 fn apply_steps(steps: &[(u64, Vec<(String, u32)>)]) -> Result<Vec<u8>, PositionsError> {
     let mut b = PositionsBuilder::new(1, NormalizerVersion::new(1, 0));
     for (doc, pairs) in steps {
-        b.upsert_doc(DocId(*doc), pairs.iter().map(|(t, p)| (t.as_str(), Position(*p))))?;
+        b.upsert_doc(
+            DocId(*doc),
+            pairs.iter().map(|(t, p)| (t.as_str(), Position(*p))),
+        )?;
     }
     let idx = b.finish()?;
     let mut buf: Vec<u8> = Vec::new();
@@ -52,8 +55,14 @@ fn apply_with_immediate_replay(
     // the same UpsertChunk before the next chunk arrives.
     let mut b = PositionsBuilder::new(1, NormalizerVersion::new(1, 0));
     for (doc, pairs) in steps {
-        b.upsert_doc(DocId(*doc), pairs.iter().map(|(t, p)| (t.as_str(), Position(*p))))?;
-        b.upsert_doc(DocId(*doc), pairs.iter().map(|(t, p)| (t.as_str(), Position(*p))))?;
+        b.upsert_doc(
+            DocId(*doc),
+            pairs.iter().map(|(t, p)| (t.as_str(), Position(*p))),
+        )?;
+        b.upsert_doc(
+            DocId(*doc),
+            pairs.iter().map(|(t, p)| (t.as_str(), Position(*p))),
+        )?;
     }
     let idx = b.finish()?;
     let mut buf: Vec<u8> = Vec::new();

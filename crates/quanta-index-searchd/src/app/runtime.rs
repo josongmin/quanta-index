@@ -590,8 +590,9 @@ fn build_semantic_embedders(
             })
         }
         SemanticEmbedderProfile::Unavailable => {
-            let corpus: Arc<dyn TextEmbeddingProvider + Send + Sync> =
-                Arc::new(HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION));
+            let corpus: Arc<dyn TextEmbeddingProvider + Send + Sync> = Arc::new(
+                HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION),
+            );
             Ok(SemanticEmbedders {
                 query: Arc::new(ProviderUnavailableQueryTextEmbedder),
                 corpus,
@@ -771,7 +772,11 @@ impl StructuralProducerPort for LedgerStructuralProducer {
                     StructuralAuthorityView::new(chunk.text.as_ref(), tree),
                 )
                 .map_err(map_live_authority_error)?;
-            results.extend(project_structural_candidates(chunk_id, chunk, &authority_candidates)?);
+            results.extend(project_structural_candidates(
+                chunk_id,
+                chunk,
+                &authority_candidates,
+            )?);
         }
         if requested_lang.is_none()
             && !saw_supported_lang
@@ -1295,8 +1300,9 @@ impl SearchdRuntime {
             DirectHistoryMaterializer::new(auxiliary_parts.clone())
                 .with_history_text(history_text.clone()),
         );
-        let direct_runtime_ingest_port: Arc<dyn RuntimeMetadataIngestPort + Send + Sync> =
-            Arc::new(DirectRuntimeMetadataMaterializer::new(auxiliary_parts.clone()));
+        let direct_runtime_ingest_port: Arc<dyn RuntimeMetadataIngestPort + Send + Sync> = Arc::new(
+            DirectRuntimeMetadataMaterializer::new(auxiliary_parts.clone()),
+        );
         let direct_structural_ingest_port: Arc<dyn StructuralIngestPort + Send + Sync> =
             Arc::new(DirectStructuralMaterializer::new(auxiliary_parts));
 
@@ -1363,11 +1369,15 @@ impl SearchdRuntime {
             config.maintenance_policy().tick(),
         )
         .map_err(anyhow::Error::from)?;
-        let maintenance_source: Arc<dyn MetricSourcePort> =
-            Arc::new(MaintenanceMetricSource::new(maintenance.tallies(), memory_probe));
+        let maintenance_source: Arc<dyn MetricSourcePort> = Arc::new(MaintenanceMetricSource::new(
+            maintenance.tallies(),
+            memory_probe,
+        ));
         metric_sources.push(maintenance_source);
-        let observability =
-            Arc::new(ObservabilityScrape::new(Arc::clone(&query_obs_store), metric_sources));
+        let observability = Arc::new(ObservabilityScrape::new(
+            Arc::clone(&query_obs_store),
+            metric_sources,
+        ));
         let query_dispatcher = Arc::new(
             SearchPlaneDispatcher::new_with_obs(
                 Arc::clone(&lex_open_port),
@@ -1394,8 +1404,8 @@ impl SearchdRuntime {
             ledger: Arc::clone(&ledger),
             snapshots,
         });
-        let control_dispatcher =
-            Arc::new(SearchPlaneControlDispatcher::new(SearchPlaneControlDispatcherParts {
+        let control_dispatcher = Arc::new(SearchPlaneControlDispatcher::new(
+            SearchPlaneControlDispatcherParts {
                 repo_map_activate: repo_map_generation_activate_port,
                 lifecycle: SearchCorpusLifecycleParts {
                     activation_catalog,
@@ -1405,7 +1415,8 @@ impl SearchdRuntime {
                 },
                 observability,
                 quarantine,
-            }));
+            },
+        ));
         let ingest_dispatcher = Arc::new(SearchPlaneIngestDispatcher::new(
             direct_search_corpus_ingest_port,
             direct_history_ingest_port,
@@ -1665,7 +1676,7 @@ mod tests {
         }
         if query_embedder.model_id() == quanta_index_search_plane::SEARCH_OWNED_SEMANTIC_MODEL_ID {
             return Err(
-                "OpenAi profile must NOT advertise the search-owned hash fixture identity".into()
+                "OpenAi profile must NOT advertise the search-owned hash fixture identity".into(),
             );
         }
         Ok(())
@@ -1721,13 +1732,13 @@ mod tests {
                     .as_code_str();
                 if code.as_wire_str() != expected {
                     return Err(
-                        format!("expected SEM_PROVIDER_UNAVAILABLE, got code {code}").into()
+                        format!("expected SEM_PROVIDER_UNAVAILABLE, got code {code}").into(),
                     );
                 }
             }
             other => {
                 return Err(
-                    format!("unavailable query embedder must fail closed, got {other:?}").into()
+                    format!("unavailable query embedder must fail closed, got {other:?}").into(),
                 );
             }
         }
@@ -1825,13 +1836,18 @@ mod tests {
             .embed_query(query_text, &RequestBudgetV1::unbounded())
             .map_err(|err| format!("hash query re-embed must succeed: {err:?}"))?;
         if query_vector != query_vector_again {
-            return Err("hash query derivation must be deterministic across identical input".into());
+            return Err(
+                "hash query derivation must be deterministic across identical input".into(),
+            );
         }
 
         // (4) Discrimination: a DIFFERENT text derives a DIFFERENT vector (the
         // embedder is not a constant — the negative half of the smoke).
         let other_vector = query_embedder
-            .embed_query("completely unrelated lexical payload zzz", &RequestBudgetV1::unbounded())
+            .embed_query(
+                "completely unrelated lexical payload zzz",
+                &RequestBudgetV1::unbounded(),
+            )
             .map_err(|err| format!("hash query embed (other text) must succeed: {err:?}"))?;
         if query_vector == other_vector {
             return Err(

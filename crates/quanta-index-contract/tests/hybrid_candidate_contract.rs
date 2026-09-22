@@ -281,12 +281,17 @@ fn every_row_invariant_is_refused_on_decode_and_on_encode() -> TestResult {
     })?;
     expect_refusal::<HybridCandidateV1>(&bytes, "lane order")?;
     // Rank zero.
-    let bytes =
-        mutated_row(&row, |fields| set_field(first_contribution_mut(fields)?, "rank", 0.into()))?;
+    let bytes = mutated_row(&row, |fields| {
+        set_field(first_contribution_mut(fields)?, "rank", 0.into())
+    })?;
     expect_refusal::<HybridCandidateV1>(&bytes, "rank must be at least 1")?;
     // A non-finite raw score.
     let bytes = mutated_row(&row, |fields| {
-        set_field(first_contribution_mut(fields)?, "raw_score", ciborium::Value::Float(f64::NAN))
+        set_field(
+            first_contribution_mut(fields)?,
+            "raw_score",
+            ciborium::Value::Float(f64::NAN),
+        )
     })?;
     expect_refusal::<HybridCandidateV1>(&bytes, "raw_score must be finite")?;
     // A fused score that is zero, negative, or not finite.

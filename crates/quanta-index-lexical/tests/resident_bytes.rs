@@ -206,7 +206,7 @@ fn a_hard_linked_delta_counts_shared_inodes_once() -> TestResult {
     let shared: BTreeSet<_> = base_inodes.intersection(&delta_inodes).collect();
     if shared.is_empty() {
         return Err(
-            "the delta shares no index inode with its base; the fixture must hard-link".into()
+            "the delta shares no index inode with its base; the fixture must hard-link".into(),
         );
     }
     // The per-link sum would count every hard-linked file as many times as
@@ -219,7 +219,7 @@ fn a_hard_linked_delta_counts_shared_inodes_once() -> TestResult {
     let decoded_ceiling = authority_cbor.saturating_mul(8);
     if estimate < delta_bytes {
         return Err(
-            format!("estimate {estimate} is below the delta's mapped bytes {delta_bytes}").into()
+            format!("estimate {estimate} is below the delta's mapped bytes {delta_bytes}").into(),
         );
     }
     if estimate > delta_bytes.saturating_add(decoded_ceiling) {

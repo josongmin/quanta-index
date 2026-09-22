@@ -26,7 +26,10 @@ use tantivy::schema::{Field, IndexRecordOption, TantivyDocument};
 
 impl TantivySearcher {
     pub(crate) fn exact_text_query(&self, field: Field, value: &str) -> Box<dyn Query> {
-        Box::new(TermQuery::new(Term::from_field_text(field, value), IndexRecordOption::Basic))
+        Box::new(TermQuery::new(
+            Term::from_field_text(field, value),
+            IndexRecordOption::Basic,
+        ))
     }
 
     pub(crate) fn regex_text_query(
@@ -119,9 +122,14 @@ impl TantivySearcher {
         let (first, rest) = tokens.split_first()?;
         let term = |token: &normalize::Token| Term::from_field_text(field, &token.text);
         if rest.is_empty() {
-            return Some(Box::new(TermQuery::new(term(first), IndexRecordOption::WithFreqs)));
+            return Some(Box::new(TermQuery::new(
+                term(first),
+                IndexRecordOption::WithFreqs,
+            )));
         }
-        Some(Box::new(PhraseQuery::new(tokens.iter().map(term).collect())))
+        Some(Box::new(PhraseQuery::new(
+            tokens.iter().map(term).collect(),
+        )))
     }
 
     pub(crate) fn enables_path_term_surface(expr: &LqExpr, options: &LqOptions) -> bool {
@@ -138,7 +146,12 @@ impl TantivySearcher {
         Box::new(BooleanQuery::new(
             repo_ids
                 .iter()
-                .map(|repo_id| (Occur::Should, self.exact_text_query(self.fields.repo_id, repo_id)))
+                .map(|repo_id| {
+                    (
+                        Occur::Should,
+                        self.exact_text_query(self.fields.repo_id, repo_id),
+                    )
+                })
                 .collect(),
         ))
     }
@@ -153,7 +166,10 @@ impl TantivySearcher {
             paths
                 .iter()
                 .map(|path| {
-                    (Occur::Should, self.exact_text_query(self.fields.repo_relative_path, path))
+                    (
+                        Occur::Should,
+                        self.exact_text_query(self.fields.repo_relative_path, path),
+                    )
                 })
                 .collect(),
         ))
@@ -169,7 +185,10 @@ impl TantivySearcher {
         if members.is_empty() {
             return self.match_none_query();
         }
-        Box::new(AuthorityDocSetQuery::new(self.fields.text_authority_doc_id, members))
+        Box::new(AuthorityDocSetQuery::new(
+            self.fields.text_authority_doc_id,
+            members,
+        ))
     }
 
     /// The documents of candidates named from outside the index: the dense
@@ -189,7 +208,10 @@ impl TantivySearcher {
             candidate_ids
                 .iter()
                 .map(|candidate_id| {
-                    (Occur::Should, self.exact_text_query(self.fields.candidate_id, candidate_id))
+                    (
+                        Occur::Should,
+                        self.exact_text_query(self.fields.candidate_id, candidate_id),
+                    )
                 })
                 .collect(),
         ))
@@ -206,7 +228,10 @@ impl TantivySearcher {
         let doc_kind_term = Term::from_field_text(self.fields.doc_kind, doc_kind);
         Box::new(BooleanQuery::new(vec![
             (Occur::Must, query),
-            (Occur::Must, Box::new(TermQuery::new(doc_kind_term, IndexRecordOption::Basic))),
+            (
+                Occur::Must,
+                Box::new(TermQuery::new(doc_kind_term, IndexRecordOption::Basic)),
+            ),
         ]))
     }
 
@@ -280,8 +305,10 @@ impl TantivySearcher {
         // user-facing leaf evaluation. The full caller options carry through
         // to the user-facing executor pass downstream.
         let scope_options = standard_pattern_options();
-        let compiled = self
-            .with_doc_kind(self.compile_leaf(leaf, &scope_options, false, budget)?, TEXT_DOC_KIND);
+        let compiled = self.with_doc_kind(
+            self.compile_leaf(leaf, &scope_options, false, budget)?,
+            TEXT_DOC_KIND,
+        );
         let searcher = self.reader.searcher();
         let limit = usize::try_from(searcher.num_docs()).map_err(|err| {
             CoreError::InvalidContract(format!(

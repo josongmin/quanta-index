@@ -107,10 +107,9 @@ fn main() -> ExitCode {
         }
     };
     for measurement in &report.measurements {
-        let (p50, p95, p99) = measurement
-            .fast
-            .latency
-            .map_or((0.0, 0.0, 0.0), |latency| (latency.p50_ms, latency.p95_ms, latency.p99_ms));
+        let (p50, p95, p99) = measurement.fast.latency.map_or((0.0, 0.0, 0.0), |latency| {
+            (latency.p50_ms, latency.p95_ms, latency.p99_ms)
+        });
         println!(
             "concurrency[c{}]: requests={} served={} errors={} timeouts={} qps={:.2} p50_ms={:.3} p95_ms={:.3} p99_ms={:.3} slow_served={}",
             measurement.clients,

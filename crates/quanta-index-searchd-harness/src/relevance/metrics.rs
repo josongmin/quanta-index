@@ -167,7 +167,10 @@ mod tests {
     #[test]
     fn duplicate_judgment_is_rejected() {
         let judged = vec![doc("a", 3), doc("a", 1)];
-        assert_eq!(grade_index(&judged), Err(MetricError::DuplicateJudgment("a".to_string())));
+        assert_eq!(
+            grade_index(&judged),
+            Err(MetricError::DuplicateJudgment("a".to_string()))
+        );
     }
 
     #[test]

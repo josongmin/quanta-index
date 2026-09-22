@@ -132,7 +132,9 @@ impl RepoMapCandidateStateV1 {
             2 => Ok(Self::Activated),
             3 => Ok(Self::ActivationInvalidated),
             4 => Ok(Self::Quarantined),
-            other => Err(corrupt(&format!("candidate state code {other} is not known"))),
+            other => Err(corrupt(&format!(
+                "candidate state code {other} is not known"
+            ))),
         }
     }
 }
@@ -383,7 +385,9 @@ fn read_candidate_row(
     };
     let stored = blob32("candidate row digest", &digest)?;
     if candidate_row_digest(&row) != stored {
-        return Err(corrupt("repomap candidate row does not match its own digest"));
+        return Err(corrupt(
+            "repomap candidate row does not match its own digest",
+        ));
     }
     Ok(Some(row))
 }
@@ -439,7 +443,9 @@ fn read_activation_row(
         0 => false,
         1 => true,
         other => {
-            return Err(corrupt(&format!("activation active flag is {other}, expected 0 or 1")));
+            return Err(corrupt(&format!(
+                "activation active flag is {other}, expected 0 or 1"
+            )));
         }
     };
     let row = RepoMapActivationRowV1 {
@@ -457,9 +463,97 @@ fn read_activation_row(
     };
     let stored = blob32("activation row digest", &digest)?;
     if activation_row_digest(&row) != stored {
-        return Err(corrupt("repomap activation row does not match its own digest"));
+        return Err(corrupt(
+            "repomap activation row does not match its own digest",
+        ));
     }
     Ok(Some(row))
+}
+
+fn read_replayed_prior_activation_commitment(
+    connection: &Connection,
+    repo_id: &str,
+    revision_id: &str,
+    active_epoch: u64,
+) -> Result<Option<[u8; 32]>, CoreError> {
+    let Some(prior_epoch) = active_epoch.checked_sub(1).filter(|epoch| *epoch > 0) else {
+        return Ok(None);
+    };
+    let prior_epoch = i64::try_from(prior_epoch)
+        .map_err(|_error| corrupt("prior activation epoch does not fit i64"))?;
+    let fetched = connection
+        .query_row(
+            "SELECT repo_id, revision_id, epoch, manifest_generation, candidate_commitment,
+                    active, invalidation_reason, activation_sequence, terminal_sequence,
+                    row_sha256
+             FROM repomap_activation_v1
+             WHERE repo_id = ?1 AND revision_id = ?2 AND epoch = ?3",
+            params![repo_id, revision_id, prior_epoch],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, Vec<u8>>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, i64>(8)?,
+                    row.get::<_, Vec<u8>>(9)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| {
+            engine_error(
+                "read prior repomap activation",
+                std::path::Path::new(":catalog:"),
+                &error,
+            )
+        })?;
+    let Some((
+        stored_repo,
+        stored_revision,
+        epoch,
+        generation,
+        commitment,
+        active,
+        reason,
+        activation_sequence,
+        terminal_sequence,
+        digest,
+    )) = fetched
+    else {
+        return Err(corrupt(
+            "active replay is missing its prior activation epoch",
+        ));
+    };
+    let active = match active {
+        0 => false,
+        1 => true,
+        other => return Err(corrupt(&format!("prior activation active flag is {other}"))),
+    };
+    let row = RepoMapActivationRowV1 {
+        repo_id: stored_repo,
+        revision_id: stored_revision,
+        epoch: u64::try_from(epoch)
+            .map_err(|_error| corrupt("prior activation epoch does not fit u64"))?,
+        manifest_generation: u64::try_from(generation)
+            .map_err(|_error| corrupt("prior activation generation does not fit u64"))?,
+        candidate_commitment: blob32("prior activation commitment", &commitment)?,
+        active,
+        invalidation_reason: reason,
+        activation_sequence,
+        terminal_sequence,
+    };
+    if activation_row_digest(&row) != blob32("prior activation row digest", &digest)? {
+        return Err(corrupt(
+            "prior activation row does not match its own digest",
+        ));
+    }
+    Ok((row.invalidation_reason.as_deref() == Some("superseded"))
+        .then_some(row.candidate_commitment))
 }
 
 impl SqliteCatalog {
@@ -498,6 +592,20 @@ impl SqliteCatalog {
             read_candidate_row(&transaction, repo_id, revision_id, manifest_generation)?
         {
             if existing.candidate_commitment == *candidate_commitment {
+                if existing.object_address != *object_address
+                    || existing.content_digest != *content_digest
+                    || existing.byte_size != byte_size
+                    || existing.projection_meta != projection_meta
+                {
+                    return Err(typed(
+                        quanta_index_contract::SearchPlaneErrorCodeV2::CandidateCommitmentConflict,
+                        format!(
+                            "catalog: logical generation repo={repo_id} revision={revision_id} \
+                             generation={manifest_generation} replays the compiled commitment \
+                             with different durable candidate custody"
+                        ),
+                    ));
+                }
                 return Ok(SealOutcomeV1 {
                     terminal_sequence: existing.terminal_sequence,
                     replayed: true,
@@ -643,7 +751,12 @@ impl SqliteCatalog {
             return Ok(ActivationOutcomeV1 {
                 terminal_sequence: active.terminal_sequence,
                 epoch: active.epoch,
-                prior_candidate_commitment: None,
+                prior_candidate_commitment: read_replayed_prior_activation_commitment(
+                    &transaction,
+                    repo_id,
+                    revision_id,
+                    active.epoch,
+                )?,
                 replayed: true,
             });
         }
@@ -698,14 +811,18 @@ impl SqliteCatalog {
                     ],
                 )
                 .map_err(|error| engine_error("retire superseded activation", path, &error))?;
-            let superseded =
-                read_candidate_row(&transaction, repo_id, revision_id, prior.manifest_generation)?
-                    .ok_or_else(|| {
-                        corrupt(&format!(
-                            "prior activation names generation {} with no candidate row",
-                            prior.manifest_generation
-                        ))
-                    })?;
+            let superseded = read_candidate_row(
+                &transaction,
+                repo_id,
+                revision_id,
+                prior.manifest_generation,
+            )?
+            .ok_or_else(|| {
+                corrupt(&format!(
+                    "prior activation names generation {} with no candidate row",
+                    prior.manifest_generation
+                ))
+            })?;
             let superseded_row = RepoMapCandidateRowV1 {
                 state: RepoMapCandidateStateV1::ActivationInvalidated,
                 ..superseded
@@ -1247,7 +1364,9 @@ impl SqliteCatalog {
             };
             let stored = blob32("candidate row digest", &digest)?;
             if candidate_row_digest(&candidate) != stored {
-                return Err(corrupt("repomap candidate row does not match its own digest"));
+                return Err(corrupt(
+                    "repomap candidate row does not match its own digest",
+                ));
             }
             out.push(candidate);
         }
@@ -1317,7 +1436,9 @@ impl SqliteCatalog {
             };
             let stored = blob32("incident row digest", &row_digest)?;
             if quarantine_row_digest(&incident) != stored {
-                return Err(corrupt("quarantine incident row does not match its own digest"));
+                return Err(corrupt(
+                    "quarantine incident row does not match its own digest",
+                ));
             }
             out.push(incident);
         }

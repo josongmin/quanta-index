@@ -33,7 +33,10 @@ const FILES: u32 = 32;
 const ROWS_PER_WINDOW: u32 = 8;
 /// Windows the one batch must stream through.
 const EXPECTED_WINDOWS: u32 = FILES.div_ceil(ROWS_PER_WINDOW);
-const _: () = assert!(EXPECTED_WINDOWS >= 3, "the fixture streams through at least three windows");
+const _: () = assert!(
+    EXPECTED_WINDOWS >= 3,
+    "the fixture streams through at least three windows"
+);
 const TOP_K: u32 = 3;
 
 /// One file's text: five tokens no other file shares, so the daemon's
@@ -91,10 +94,10 @@ fn gauge(snapshot: &MetricsSnapshotV1, name: &str) -> Result<f64, Box<dyn Error>
 }
 
 fn served(result: &E2eQueryResult, what: &str) -> Result<(), Box<dyn Error>> {
-    result
-        .typed_error
-        .as_ref()
-        .map_or_else(|| Ok(()), |error| Err(format!("{what} was refused: {error}").into()))
+    result.typed_error.as_ref().map_or_else(
+        || Ok(()),
+        |error| Err(format!("{what} was refused: {error}").into()),
+    )
 }
 
 #[test]

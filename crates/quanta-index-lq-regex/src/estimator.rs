@@ -151,10 +151,16 @@ fn repetition_bound(rep: &Repetition) -> Result<u64, RegexError> {
         },
     );
     let body_states = body.checked_add(1).ok_or_else(|| {
-        RegexError::plan_limit(LimitDimension::NfaStates, "repetition body + 1 overflowed u64")
+        RegexError::plan_limit(
+            LimitDimension::NfaStates,
+            "repetition body + 1 overflowed u64",
+        )
     })?;
     let total = body_states.checked_mul(max_factor).ok_or_else(|| {
-        RegexError::plan_limit(LimitDimension::NfaStates, "repetition body * max overflowed u64")
+        RegexError::plan_limit(
+            LimitDimension::NfaStates,
+            "repetition body * max overflowed u64",
+        )
     })?;
     if total > MAX_NFA_STATES {
         return Err(RegexError::plan_limit(

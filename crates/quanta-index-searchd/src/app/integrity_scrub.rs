@@ -184,8 +184,11 @@ impl ScrubSchedulerV1 {
                 error: "scrub port index out of range".to_string(),
             };
         };
-        let report = match port.scrub(&in_flight.generation, in_flight.cursor, self.policy.budget())
-        {
+        let report = match port.scrub(
+            &in_flight.generation,
+            in_flight.cursor,
+            self.policy.budget(),
+        ) {
             Ok(report) => report,
             Err(error) => {
                 self.tallies.record_error();
@@ -512,8 +515,14 @@ mod tests {
                 .find(|point| point.name == name)
                 .map(|point| point.value)
         };
-        assert_eq!(value("scrub_runs_total"), Some(quanta_index_core::MetricValueV1::Counter(3)));
-        assert_eq!(value("scrub_bytes_total"), Some(quanta_index_core::MetricValueV1::Counter(30)));
+        assert_eq!(
+            value("scrub_runs_total"),
+            Some(quanta_index_core::MetricValueV1::Counter(3))
+        );
+        assert_eq!(
+            value("scrub_bytes_total"),
+            Some(quanta_index_core::MetricValueV1::Counter(30))
+        );
         assert!(matches!(
             value("scrub_last_completed_unix"),
             Some(quanta_index_core::MetricValueV1::Gauge(unix)) if unix > 0.0
@@ -603,7 +612,10 @@ mod tests {
             counter("scrub_errors_total"),
             Some(quanta_index_core::MetricValueV1::Counter(1))
         );
-        assert_eq!(counter("scrub_runs_total"), Some(quanta_index_core::MetricValueV1::Counter(2)));
+        assert_eq!(
+            counter("scrub_runs_total"),
+            Some(quanta_index_core::MetricValueV1::Counter(2))
+        );
     }
 
     /// The first step is due one interval after the start, and after that

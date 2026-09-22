@@ -65,7 +65,10 @@ pub(crate) fn open_or_create_index(fields: &SchemaFields, path: &Path) -> Result
         ))
     })?;
     let directory = tantivy::directory::MmapDirectory::open(path).map_err(|err| {
-        CoreError::Storage(format!("lexical: open generation directory {}: {err}", path.display()))
+        CoreError::Storage(format!(
+            "lexical: open generation directory {}: {err}",
+            path.display()
+        ))
     })?;
     let index = Index::builder()
         .schema(fields.schema.clone())
@@ -92,7 +95,10 @@ pub(crate) fn write_atomic_durable(
 ) -> Result<(), CoreError> {
     static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
     let parent = path.parent().ok_or_else(|| {
-        CoreError::Storage(format!("lexical: {label} path has no parent: {}", path.display()))
+        CoreError::Storage(format!(
+            "lexical: {label} path has no parent: {}",
+            path.display()
+        ))
     })?;
     let file_name = path
         .file_name()

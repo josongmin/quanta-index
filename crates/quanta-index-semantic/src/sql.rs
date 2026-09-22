@@ -56,7 +56,10 @@ mod tests {
             "'a'' OR 1=1 --'",
             "SQL-injection-shaped input must stay inside the single-quoted literal"
         );
-        assert_eq!(quote_sql_string("'multiple''quotes'"), "'''multiple''''quotes'''",);
+        assert_eq!(
+            quote_sql_string("'multiple''quotes'"),
+            "'''multiple''''quotes'''",
+        );
     }
 
     #[test]
@@ -89,7 +92,10 @@ mod tests {
         let _a: bool = allow.insert("a".to_string());
         let _c: bool = allow.insert("c".to_string());
         // BTreeSet iteration is sorted -> the IN list is deterministic.
-        assert_eq!(build_id_in_filter(&allow), "embedding_id IN ('a', 'b', 'c')");
+        assert_eq!(
+            build_id_in_filter(&allow),
+            "embedding_id IN ('a', 'b', 'c')"
+        );
     }
 
     #[test]

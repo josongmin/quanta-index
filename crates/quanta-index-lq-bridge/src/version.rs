@@ -239,6 +239,9 @@ mod tests {
             assert!(false, "{e}");
         }
         let got: Result<SourcegraphVersionTag, _> = ciborium::de::from_reader(buf.as_slice());
-        assert!(got.is_err(), "deserialize must fail closed on malformed pin");
+        assert!(
+            got.is_err(),
+            "deserialize must fail closed on malformed pin"
+        );
     }
 }

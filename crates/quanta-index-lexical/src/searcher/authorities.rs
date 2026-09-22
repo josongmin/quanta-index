@@ -93,7 +93,10 @@ impl TantivySearcher {
         candidate_id: &str,
         surface: &str,
     ) -> Result<u32, CoreError> {
-        authority_member(stored_text_authority_doc_id(doc, &self.fields, candidate_id)?, surface)
+        authority_member(
+            stored_text_authority_doc_id(doc, &self.fields, candidate_id)?,
+            surface,
+        )
     }
 
     pub(crate) fn file_ownership_authority(&self) -> Result<&FileOwnershipShard, CoreError> {

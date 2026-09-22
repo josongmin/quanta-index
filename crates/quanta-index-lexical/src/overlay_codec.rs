@@ -92,7 +92,9 @@ pub(crate) fn encode_repo_metadata_visibility(
         CoreError::InvalidContract(format!("lexical: repo metadata encode visibility: {err}"))
     })?;
     ciborium::from_reader::<CborValue, _>(payload.as_slice()).map_err(|err| {
-        CoreError::InvalidContract(format!("lexical: repo metadata visibility wire decode: {err}"))
+        CoreError::InvalidContract(format!(
+            "lexical: repo metadata visibility wire decode: {err}"
+        ))
     })
 }
 
@@ -158,8 +160,14 @@ pub(crate) fn encode_repo_metadata_payload(
 ) -> Result<Vec<u8>, CoreError> {
     let mut payload = Vec::new();
     let wire = CborValue::Map(vec![
-        (CborValue::Text("fork".to_string()), CborValue::Bool(metadata.fork)),
-        (CborValue::Text("archived".to_string()), CborValue::Bool(metadata.archived)),
+        (
+            CborValue::Text("fork".to_string()),
+            CborValue::Bool(metadata.fork),
+        ),
+        (
+            CborValue::Text("archived".to_string()),
+            CborValue::Bool(metadata.archived),
+        ),
         (
             CborValue::Text("visibility".to_string()),
             encode_repo_metadata_visibility(&metadata.visibility)?,
@@ -293,8 +301,10 @@ pub(crate) fn encode_repo_commit_recency_snapshot(
             ])
         })
         .collect::<Vec<_>>();
-    let wire =
-        CborValue::Map(vec![(CborValue::Text("entries".to_string()), CborValue::Array(entries))]);
+    let wire = CborValue::Map(vec![(
+        CborValue::Text("entries".to_string()),
+        CborValue::Array(entries),
+    )]);
     ciborium::into_writer(&wire, &mut payload).map_err(|err| {
         CoreError::InvalidContract(format!("lexical: repo commit recency encode: {err}"))
     })?;
@@ -417,8 +427,10 @@ pub(crate) fn encode_repo_commit_recency_batch(
 ) -> Result<Vec<u8>, CoreError> {
     let mut latest_committer_time_ms_by_repo_id = BTreeMap::new();
     for entry in &batch.entries {
-        let _prior = latest_committer_time_ms_by_repo_id
-            .insert(entry.source_repo_id.as_str().to_string(), entry.latest_committer_time_ms);
+        let _prior = latest_committer_time_ms_by_repo_id.insert(
+            entry.source_repo_id.as_str().to_string(),
+            entry.latest_committer_time_ms,
+        );
     }
     encode_repo_commit_recency_snapshot(&RepoCommitRecencyShard {
         latest_committer_time_ms_by_repo_id,
@@ -435,13 +447,21 @@ pub(crate) fn encode_repo_meta_snapshot(shard: &RepoMetaShard) -> Result<Vec<u8>
                     CborValue::Text("source_repo_id".to_string()),
                     CborValue::Text(source_repo_id.clone()),
                 ),
-                (CborValue::Text("key".to_string()), CborValue::Text(key.clone())),
-                (CborValue::Text("value".to_string()), CborValue::Text(value.clone())),
+                (
+                    CborValue::Text("key".to_string()),
+                    CborValue::Text(key.clone()),
+                ),
+                (
+                    CborValue::Text("value".to_string()),
+                    CborValue::Text(value.clone()),
+                ),
             ]));
         }
     }
-    let wire =
-        CborValue::Map(vec![(CborValue::Text("entries".to_string()), CborValue::Array(entries))]);
+    let wire = CborValue::Map(vec![(
+        CborValue::Text("entries".to_string()),
+        CborValue::Array(entries),
+    )]);
     ciborium::into_writer(&wire, &mut payload)
         .map_err(|err| CoreError::InvalidContract(format!("lexical: repo meta encode: {err}")))?;
     Ok(payload)
@@ -592,8 +612,10 @@ pub(crate) fn encode_repo_topic_snapshot(shard: &RepoTopicShard) -> Result<Vec<u
             ),
         ]));
     }
-    let wire =
-        CborValue::Map(vec![(CborValue::Text("entries".to_string()), CborValue::Array(entries))]);
+    let wire = CborValue::Map(vec![(
+        CborValue::Text("entries".to_string()),
+        CborValue::Array(entries),
+    )]);
     ciborium::into_writer(&wire, &mut payload)
         .map_err(|err| CoreError::InvalidContract(format!("lexical: repo topic encode: {err}")))?;
     Ok(payload)
@@ -749,11 +771,16 @@ pub(crate) fn encode_repo_description_snapshot(
                 CborValue::Text("source_repo_id".to_string()),
                 CborValue::Text(source_repo_id.clone()),
             ),
-            (CborValue::Text("description".to_string()), CborValue::Text(description.clone())),
+            (
+                CborValue::Text("description".to_string()),
+                CborValue::Text(description.clone()),
+            ),
         ]));
     }
-    let wire =
-        CborValue::Map(vec![(CborValue::Text("entries".to_string()), CborValue::Array(entries))]);
+    let wire = CborValue::Map(vec![(
+        CborValue::Text("entries".to_string()),
+        CborValue::Array(entries),
+    )]);
     ciborium::into_writer(&wire, &mut payload).map_err(|err| {
         CoreError::InvalidContract(format!("lexical: repo description encode: {err}"))
     })?;
@@ -943,8 +970,10 @@ pub(crate) fn encode_file_ownership_snapshot(
             ]));
         }
     }
-    let wire =
-        CborValue::Map(vec![(CborValue::Text("entries".to_string()), CborValue::Array(entries))]);
+    let wire = CborValue::Map(vec![(
+        CborValue::Text("entries".to_string()),
+        CborValue::Array(entries),
+    )]);
     ciborium::into_writer(&wire, &mut payload).map_err(|err| {
         CoreError::InvalidContract(format!("lexical: file ownership encode: {err}"))
     })?;
@@ -1157,8 +1186,10 @@ pub(crate) fn encode_file_contributor_snapshot(
             ]));
         }
     }
-    let wire =
-        CborValue::Map(vec![(CborValue::Text("entries".to_string()), CborValue::Array(entries))]);
+    let wire = CborValue::Map(vec![(
+        CborValue::Text("entries".to_string()),
+        CborValue::Array(entries),
+    )]);
     ciborium::into_writer(&wire, &mut payload).map_err(|err| {
         CoreError::InvalidContract(format!("lexical: file contributor encode: {err}"))
     })?;

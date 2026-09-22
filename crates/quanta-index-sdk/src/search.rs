@@ -179,9 +179,9 @@ impl<'a> SearchNamespace<'a> {
         &self,
         request: SearchPlaneExplainQueryRequest,
     ) -> Result<SearchPlaneExplainQueryResponse, SdkError> {
-        let response = self
-            .client
-            .dispatch_query(quanta_index_contract::SearchPlaneQueryIpcRequest::Explain(request))?;
+        let response = self.client.dispatch_query(
+            quanta_index_contract::SearchPlaneQueryIpcRequest::Explain(request),
+        )?;
         match response {
             quanta_index_contract::SearchPlaneQueryIpcResponse::Explain(results) => Ok(results),
             other @ (quanta_index_contract::SearchPlaneQueryIpcResponse::Text(_)
@@ -532,8 +532,9 @@ fn dispatch_hybrid_query_request_v1(
     client: &QuantaIndex,
     request: HybridQueryRequest,
 ) -> Result<HybridQueryResponse, SdkError> {
-    let response = client
-        .dispatch_query(quanta_index_contract::SearchPlaneQueryIpcRequest::Hybrid(request))?;
+    let response = client.dispatch_query(
+        quanta_index_contract::SearchPlaneQueryIpcRequest::Hybrid(request),
+    )?;
     match response {
         quanta_index_contract::SearchPlaneQueryIpcResponse::Hybrid(results) => Ok(results),
         other @ (quanta_index_contract::SearchPlaneQueryIpcResponse::Text(_)

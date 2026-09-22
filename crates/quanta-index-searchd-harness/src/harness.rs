@@ -696,12 +696,12 @@ impl E2eRuntime {
             driver.shutdown.store(true, Ordering::Release);
             driver.join.take().map_or(Ok(()), |join| match join.join() {
                 Ok(Ok(())) => Ok(()),
-                Ok(Err(error)) => {
-                    Err(anyhow::anyhow!("e2e-harness: daemon driver returned an error: {error:#}"))
-                }
-                Err(panic) => {
-                    Err(anyhow::anyhow!("e2e-harness: daemon driver panicked: {panic:?}"))
-                }
+                Ok(Err(error)) => Err(anyhow::anyhow!(
+                    "e2e-harness: daemon driver returned an error: {error:#}"
+                )),
+                Err(panic) => Err(anyhow::anyhow!(
+                    "e2e-harness: daemon driver panicked: {panic:?}"
+                )),
             })
         } else {
             Ok(())
@@ -839,7 +839,9 @@ impl E2eRuntime {
         } else {
             (
                 BatchIngestMode::Delta,
-                Some(ManifestGeneration::new(self.generation_counter.saturating_sub(1))),
+                Some(ManifestGeneration::new(
+                    self.generation_counter.saturating_sub(1),
+                )),
             )
         }
     }
@@ -888,6 +890,7 @@ impl E2eRuntime {
             other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
             | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
+            | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
@@ -1043,6 +1046,7 @@ impl E2eRuntime {
                     other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
                     | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
                     | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
+                    | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
                     | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
                     | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
                     | SearchPlaneControlIpcResponse::QuarantineInventory(_)
@@ -1119,6 +1123,7 @@ impl E2eRuntime {
             other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
             | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
+            | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
@@ -1632,7 +1637,9 @@ impl E2eRuntime {
         &mut self,
         batch: quanta_index_contract::RepoCommitRecencyIngestBatch,
     ) -> AnyResult<()> {
-        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(batch))
+        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(
+            batch,
+        ))
     }
 
     pub fn publish_repo_meta_batch(
@@ -1653,21 +1660,27 @@ impl E2eRuntime {
         &mut self,
         batch: quanta_index_contract::RepoDescriptionIngestBatch,
     ) -> AnyResult<()> {
-        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishRepoDescriptionBatch(batch))
+        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishRepoDescriptionBatch(
+            batch,
+        ))
     }
 
     pub fn publish_file_ownership_batch(
         &mut self,
         batch: quanta_index_contract::FileOwnershipIngestBatch,
     ) -> AnyResult<()> {
-        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishFileOwnershipBatch(batch))
+        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishFileOwnershipBatch(
+            batch,
+        ))
     }
 
     pub fn publish_file_contributor_batch(
         &mut self,
         batch: quanta_index_contract::FileContributorIngestBatch,
     ) -> AnyResult<()> {
-        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishFileContributorBatch(batch))
+        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishFileContributorBatch(
+            batch,
+        ))
     }
 
     pub fn publish_structural_batch(
@@ -1838,14 +1851,16 @@ impl E2eRuntime {
         let chunk_id = self.chunk_ids_by_path.get(path).cloned().ok_or_else(|| {
             anyhow::anyhow!("e2e-harness: no lexical chunk recorded for dirty path `{path}`")
         })?;
-        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishDirtyBatch(DirtyIngestBatch {
-            repo_id: self.repo(),
-            revision_id: self.revision(),
-            generation: self.current_generation(),
-            overlay_epoch_ms: 0,
-            batch_digest: String::new(),
-            entries: vec![DirtyMutation::Delete(DirtyDelete { doc_id: chunk_id })],
-        }))?;
+        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishDirtyBatch(
+            DirtyIngestBatch {
+                repo_id: self.repo(),
+                revision_id: self.revision(),
+                generation: self.current_generation(),
+                overlay_epoch_ms: 0,
+                batch_digest: String::new(),
+                entries: vec![DirtyMutation::Delete(DirtyDelete { doc_id: chunk_id })],
+            },
+        ))?;
         Ok(())
     }
 
@@ -3310,18 +3325,23 @@ fn wait_for_query_response(
     ready: impl Fn(&SearchPlaneQueryIpcResponseEnvelope) -> bool,
 ) -> (bool, Result<SearchPlaneQueryIpcResponseEnvelope, IpcError>) {
     let mut cached_response: Option<SearchPlaneQueryIpcResponseEnvelope> = None;
-    let readiness_reached = wait_until(READINESS_TIMEOUT, READINESS_POLL_INTERVAL, || {
-        match send_request::<_, SearchPlaneQueryIpcResponseEnvelope>(socket, envelope, client_io) {
-            Ok(response) => {
-                if ready(&response) {
-                    cached_response = Some(response);
-                    return true;
+    let readiness_reached =
+        wait_until(
+            READINESS_TIMEOUT,
+            READINESS_POLL_INTERVAL,
+            || match send_request::<_, SearchPlaneQueryIpcResponseEnvelope>(
+                socket, envelope, client_io,
+            ) {
+                Ok(response) => {
+                    if ready(&response) {
+                        cached_response = Some(response);
+                        return true;
+                    }
+                    false
                 }
-                false
-            }
-            Err(_transport_error) => false,
-        }
-    });
+                Err(_transport_error) => false,
+            },
+        );
     if let Some(response) = cached_response {
         return (readiness_reached, Ok(response));
     }
@@ -3372,12 +3392,12 @@ fn start_driver(spec: &DriverSpec<'_>) -> AnyResult<DriverHandles> {
         );
         return match join.join() {
             Ok(Ok(())) => Err(anyhow::anyhow!("{socket_failure}")),
-            Ok(Err(error)) => {
-                Err(anyhow::anyhow!("{socket_failure}; daemon driver returned an error: {error:#}"))
-            }
-            Err(panic) => {
-                Err(anyhow::anyhow!("{socket_failure}; daemon driver panicked: {panic:?}"))
-            }
+            Ok(Err(error)) => Err(anyhow::anyhow!(
+                "{socket_failure}; daemon driver returned an error: {error:#}"
+            )),
+            Err(panic) => Err(anyhow::anyhow!(
+                "{socket_failure}; daemon driver panicked: {panic:?}"
+            )),
         };
     }
     Ok((
@@ -3460,9 +3480,10 @@ fn route_window_probe_from_response(
         SearchPlaneQueryIpcResponse::HybridSeed(seed) => {
             (seed.seed_candidates.len(), Some(seed.window))
         }
-        SearchPlaneQueryIpcResponse::History(history) => {
-            (history.commits.len().saturating_add(history.diffs.len()), Some(history.window))
-        }
+        SearchPlaneQueryIpcResponse::History(history) => (
+            history.commits.len().saturating_add(history.diffs.len()),
+            Some(history.window),
+        ),
         SearchPlaneQueryIpcResponse::RuntimeMetadata(runtime) => {
             (runtime.results.len(), Some(runtime.window))
         }
@@ -3693,5 +3714,6 @@ pub fn stamped_ingest_request(
             SearchPlaneIngestIpcRequest::PublishStructuralBatch(stamped(batch)?)
         }
         bundle @ SearchPlaneIngestIpcRequest::PublishRepoMapBundle(_) => bundle,
+        request @ SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(_) => request,
     })
 }

@@ -108,9 +108,9 @@ fn batch_for(indices: &[usize]) -> Result<RecordBatch, Box<dyn Error>> {
         probe_schema(),
         vec![
             Arc::new(StringArray::from(ids)),
-            Arc::new(FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
-                vectors, DIMENSION,
-            )),
+            Arc::new(
+                FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(vectors, DIMENSION),
+            ),
         ],
     )?)
 }

@@ -157,14 +157,20 @@ impl fmt::Display for CorpusLoadError {
                 field,
                 expected,
                 observed,
-            } => write!(f, "{path}: field `{field}` expected {expected}, got {observed}",),
+            } => write!(
+                f,
+                "{path}: field `{field}` expected {expected}, got {observed}",
+            ),
             Self::UnknownEnumValue {
                 path,
                 field,
                 value,
                 allowed,
             } => {
-                write!(f, "{path}: field `{field}` value `{value}` not in allowed set {allowed:?}",)
+                write!(
+                    f,
+                    "{path}: field `{field}` value `{value}` not in allowed set {allowed:?}",
+                )
             }
             Self::UnknownErrorCode { path, value } => {
                 write!(f, "{path}: unknown error code `{value}`")
@@ -174,7 +180,10 @@ impl fmt::Display for CorpusLoadError {
                 write!(f, "row `{row_id}` has gate ≠ active but no `gating_ticket`",)
             }
             Self::UnexpectedGatingTicket { row_id } => {
-                write!(f, "row `{row_id}` has gate = active but carries a `gating_ticket`",)
+                write!(
+                    f,
+                    "row `{row_id}` has gate = active but carries a `gating_ticket`",
+                )
             }
             Self::InvalidRuntimeRow { row_id, message } => {
                 write!(f, "row `{row_id}` violates runtime row contract: {message}")

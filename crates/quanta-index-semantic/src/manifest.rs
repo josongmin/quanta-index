@@ -269,7 +269,9 @@ impl AnnIndexSealV1 {
             ))
         };
         let recorded = u32::try_from(self.segments.len()).map_err(|error| {
-            invalid(&format!("more segment records than the segment count can hold: {error}"))
+            invalid(&format!(
+                "more segment records than the segment count can hold: {error}"
+            ))
         })?;
         if recorded != self.index_segments {
             return Err(invalid(&format!(
@@ -283,7 +285,10 @@ impl AnnIndexSealV1 {
                 return Err(invalid(&format!("segment {position} has no identity")));
             }
             if !seen.insert(segment.uuid.as_str()) {
-                return Err(invalid(&format!("segment {} is recorded twice", segment.uuid)));
+                return Err(invalid(&format!(
+                    "segment {} is recorded twice",
+                    segment.uuid
+                )));
             }
             if segment.hnsw_m == 0 || segment.hnsw_ef_construction == 0 {
                 return Err(invalid(&format!(
@@ -866,7 +871,10 @@ mod tests {
         for normalization in [EmbeddingNormalization::None, EmbeddingNormalization::L2Unit] {
             let mut sealed = manifest(10, exact_seal());
             sealed.normalization = normalization_token(normalization).to_string();
-            assert_eq!(sealed.normalization_contract().expect("a written token"), normalization);
+            assert_eq!(
+                sealed.normalization_contract().expect("a written token"),
+                normalization
+            );
             validate(&sealed).expect("a written token validates");
         }
         for foreign in ["", "L2Unit", "l2", "unit"] {
@@ -945,7 +953,10 @@ mod tests {
                 typed(&bytes).unwrap_or_else(|| panic!("format {foreign} must be refused typed"));
             assert_eq!(code, FORMAT_UNSUPPORTED_CODE);
             assert!(message.contains("rebuild"), "{message}");
-            assert!(message.contains(&format!("format version {foreign}")), "{message}");
+            assert!(
+                message.contains(&format!("format version {foreign}")),
+                "{message}"
+            );
         }
         // The current format with a missing field is corrupt, not foreign.
         let mut bytes = Vec::new();
@@ -957,7 +968,10 @@ mod tests {
             &mut bytes,
         )
         .expect("encode probe");
-        assert!(matches!(SemanticManifest::decode(&bytes), Err(CoreError::Storage(_))));
+        assert!(matches!(
+            SemanticManifest::decode(&bytes),
+            Err(CoreError::Storage(_))
+        ));
         // A decoded manifest whose field disagrees with the format it
         // decoded under is refused by validation as well.
         let mut stale = manifest(300, ann_seal(300));
@@ -1019,7 +1033,11 @@ mod tests {
                 with_ann(&ann_seal(300), |ann| ann.nprobes = 2),
                 300,
             ),
-            ("zero refine factor", with_ann(&ann_seal(300), |ann| ann.refine_factor = 0), 300),
+            (
+                "zero refine factor",
+                with_ann(&ann_seal(300), |ann| ann.refine_factor = 0),
+                300,
+            ),
         ];
         for (label, seal, rows) in cases {
             assert!(validate(&seal, rows).is_err(), "{label} must be refused");
@@ -1114,7 +1132,11 @@ mod tests {
         validate(&appended_seal(300, 0, 20, 1)).expect("deletions alone are inside the budget");
 
         let refused: Vec<(&str, VectorIndexSealV1, &str)> = vec![
-            ("above the ratio", appended_seal(400, 101, 0, 2), "exceed the budget"),
+            (
+                "above the ratio",
+                appended_seal(400, 101, 0, 2),
+                "exceed the budget",
+            ),
             (
                 "above the absolute cap",
                 with_lineage(&appended_seal(4_000_000, 300_000, 0, 2), |lineage| {

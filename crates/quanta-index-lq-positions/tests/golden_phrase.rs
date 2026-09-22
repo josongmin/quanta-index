@@ -21,10 +21,16 @@ fn build_corpus() -> PositionsIndex {
     // Doc 102: "handle fn request"               (order broken)
     // Doc 103: "fn handle fn handle fn handle"   (repeated pair)
     let docs: &[(DocId, &[&str])] = &[
-        (DocId(100), &["fn", "handle", "request", "response", "handle"]),
+        (
+            DocId(100),
+            &["fn", "handle", "request", "response", "handle"],
+        ),
         (DocId(101), &["fn", "parse", "stream", "handle", "reply"]),
         (DocId(102), &["handle", "fn", "request"]),
-        (DocId(103), &["fn", "handle", "fn", "handle", "fn", "handle"]),
+        (
+            DocId(103),
+            &["fn", "handle", "fn", "handle", "fn", "handle"],
+        ),
     ];
 
     let mut b = PositionsBuilder::new(7, NormalizerVersion::new(1, 0));

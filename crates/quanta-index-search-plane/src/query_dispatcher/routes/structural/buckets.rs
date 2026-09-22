@@ -145,8 +145,14 @@ fn merge_structural_match_sets(
             }
             bindings.sort_by(compare_structural_bindings);
             let (pattern_start_byte, pattern_end_byte) = std::cmp::min(
-                (left_candidate.pattern_start_byte, left_candidate.pattern_end_byte),
-                (right_candidate.pattern_start_byte, right_candidate.pattern_end_byte),
+                (
+                    left_candidate.pattern_start_byte,
+                    left_candidate.pattern_end_byte,
+                ),
+                (
+                    right_candidate.pattern_start_byte,
+                    right_candidate.pattern_end_byte,
+                ),
             );
             merged.push(StructuralMatchCandidate {
                 candidate_id: candidate_id.to_string(),

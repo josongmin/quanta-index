@@ -151,9 +151,9 @@ impl SealedGenerationVisitor for LoadedGeneration {
 /// carries: the explicit capability set a query's typed refusals are
 /// answered from.
 pub(crate) fn materialized_authorities(overlays: &[OverlayFamily]) -> RepoMetadataAuthoritiesV1 {
-    overlays
-        .iter()
-        .fold(RepoMetadataAuthoritiesV1::NONE, |set, family| match family {
+    overlays.iter().fold(
+        RepoMetadataAuthoritiesV1::NONE,
+        |set, family| match family {
             OverlayFamily::RepoMetadata => set,
             OverlayFamily::CommitRecency => set.with(RepoMetadataAuthorityV1::CommitRecency),
             OverlayFamily::Meta => set.with(RepoMetadataAuthorityV1::Meta),
@@ -161,7 +161,8 @@ pub(crate) fn materialized_authorities(overlays: &[OverlayFamily]) -> RepoMetada
             OverlayFamily::Description => set.with(RepoMetadataAuthorityV1::Description),
             OverlayFamily::FileOwnership => set.with(RepoMetadataAuthorityV1::FileOwnership),
             OverlayFamily::Contributor => set.with(RepoMetadataAuthorityV1::Contributor),
-        })
+        },
+    )
 }
 
 impl LexicalIndexOpenPort for LexicalAdapter {
@@ -178,7 +179,10 @@ impl LexicalIndexOpenPort for LexicalAdapter {
         };
         let path = self.index_path(&key);
         if !path.is_dir() {
-            return Err(CoreError::NotFound(format!("lexical: no index at {}", path.display())));
+            return Err(CoreError::NotFound(format!(
+                "lexical: no index at {}",
+                path.display()
+            )));
         }
         let identity = read_lexical_sealed_identity(&path)?;
         if identity.repo_id != *repo
