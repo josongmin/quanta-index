@@ -4607,7 +4607,6 @@ dependencies = [
  "quanta-index-contract",
  "quanta-index-ipc",
  "quanta-index-sdk",
- "serde",
  "serde_json",
  "tempfile",
 ]

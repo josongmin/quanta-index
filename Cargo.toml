@@ -135,6 +135,7 @@ lancedb = { version = "0.30", default-features = false }
 lance = { version = "=7.0.0", default-features = false }
 memchr = "2.8"
 memmap2 = "0.9.5"
+model2vec-rs = { version = "=0.3.0", default-features = false, features = ["wasm"] }
 # Safe `getpeereid(3)` wrapper for the socket peer-credential check on the
 # BSDs (macOS included); Linux uses rustix's `SO_PEERCRED`. Only `socket` +
 # `user` are enabled — the two features `nix::unistd::getpeereid` sits behind.

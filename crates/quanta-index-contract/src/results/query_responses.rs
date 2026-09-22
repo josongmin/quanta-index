@@ -560,6 +560,8 @@ impl fmt::Display for FileOwnerProjectionErrorV1 {
     }
 }
 
+impl std::error::Error for FileOwnerProjectionErrorV1 {}
+
 /// Check that `file_owner_rows` pairs one to one with `results`: absent
 /// is fine, present must carry exactly one row per result, each row
 /// naming the same candidate identity in the same order. A swapped or
