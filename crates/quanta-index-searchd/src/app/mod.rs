@@ -12,6 +12,8 @@ pub mod searchd;
 pub mod semantic_boot;
 pub mod server;
 pub mod socket_access;
+pub mod state_format;
+pub mod state_migration;
 pub mod supervisor;
 pub mod umask;
 

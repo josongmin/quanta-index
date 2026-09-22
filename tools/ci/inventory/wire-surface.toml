@@ -481,3 +481,25 @@ owner = "quanta-index-search-plane"
 path = "state_root/authorities/{history,runtime,structural}/state.cbor"
 reproduction = "migration-input-only"
 notes = "Pre-catalog whole-map CBOR snapshots read once by `AuxiliaryAuthorityStore::migrate_legacy_auxiliary_snapshots` into `auxiliary_rows_v1`, then deleted. No version field."
+
+[[artifact]]
+id = "state-root-manifest"
+owner = "quanta-index-searchd"
+path = "state_root/{state-root-manifest-v1.txt,state-backup-manifest-v1.txt}"
+reproduction = "offline-importer"
+notes = "P10 (S21-11) whole-root freeze boundary, written by the offline `backup-state`/`restore-state`/`migrate-state` commands and by nothing on the daemon path. A backup root carries `state-backup-manifest-v1.txt`; a produced state root carries `state-root-manifest-v1.txt`; a root advertising both is refused as ambiguous. The body enumerates every data object by canonical relative path, byte size and SHA-256, every directory (an empty directory is state a restore must reproduce), and the catalog's canonical logical content digest plus its row count — the restored active identities, terminal receipts, replay floor and sequence high-water all live in those rows. It is written last: after every data object is fsynced and the staging root has been deep-opened, so a crash can never advertise a manifest whose data is missing. No reader falls back to another version or to a manifest-less root; a legacy root is refused typed STATE_ROOT_FORMAT_UNSUPPORTED at boot and migrated only by the explicit offline command."
+[[artifact.version_constants]]
+file = "crates/quanta-index-searchd/src/app/state_format.rs"
+name = "STATE_ROOT_MANIFEST_FORMAT_VERSION"
+value = 1
+
+[[artifact]]
+id = "state-migration-receipt"
+owner = "quanta-index-searchd"
+path = "state_root/state-migration-receipt-v1.txt"
+reproduction = "offline-importer"
+notes = "P10 (S21-11) receipt the offline `migrate-state` command leaves in the produced root: the source root's legacy format markers, the target format, the source root digest, the imported record count, and the marker list the importer consumed. Written before the root manifest, which covers it as an object of the produced root. Migration is offline-only; the receipt is not a live-compatibility surface and nothing on the daemon path reads it."
+[[artifact.version_constants]]
+file = "crates/quanta-index-searchd/src/app/state_format.rs"
+name = "STATE_MIGRATION_RECEIPT_FORMAT_VERSION"
+value = 1

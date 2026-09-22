@@ -28,6 +28,10 @@ path = "tests/runtime_extended_suite.rs"
 name = "runtime_supervisor_owner_v1"
 path = "tests/runtime_supervisor_owner_v1.rs"
 
+[[test]]
+name = "state_migration_owner_v1"
+path = "tests/state_migration_owner_v1.rs"
+
 [lints]
 workspace = true
 
