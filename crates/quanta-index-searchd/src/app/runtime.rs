@@ -1093,6 +1093,11 @@ pub struct SearchdRuntime {
     >,
     pub repo_map_snapshot_port: Arc<dyn RepoMapSnapshotAcquirePort + Send + Sync>,
     pub query_obs_store: Arc<BoundedQueryObsStore>,
+    /// The process-global provider work ledger (S21-08): reservations,
+    /// spend accounting and the bounded audit ring the query boundary
+    /// records every settlement into. Read by readiness probes and the
+    /// metrics scrape.
+    pub provider_ledger: Arc<ProviderBudgetLedger>,
     pub semantic_boot: semantic_boot::SemanticBootReport,
     /// What boot inventoried, quarantined and proved (QI-BB-026).
     pub boot_inventory: BootInventoryReportV1,
@@ -1364,8 +1369,8 @@ impl SearchdRuntime {
             query: query_text_embedder,
             corpus: corpus_embedder,
             metric_sources: embedder_metric_sources,
+            provider_ledger,
             source_egress_policy,
-            ..
         } = build_semantic_embedders(
             config.semantic_embedder_profile(),
             &leased_state_root,
@@ -1613,6 +1618,7 @@ impl SearchdRuntime {
             ingest_server,
             repo_map_snapshot_port,
             query_obs_store,
+            provider_ledger,
             semantic_boot: boot_report,
             boot_inventory,
             process_memory_envelope,
