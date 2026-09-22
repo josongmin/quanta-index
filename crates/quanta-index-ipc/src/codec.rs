@@ -44,6 +44,16 @@ pub enum IpcError {
     InvalidClientIoTimeout,
     /// The owner-supplied absolute request deadline elapsed before dispatch.
     ClientIoDeadlineElapsed,
+    /// No ready response arrived within the readiness window: every
+    /// attempt either failed at the transport or answered not-ready.
+    /// Carries the attempt count and the last observation, so a spent
+    /// wait is typed timeout evidence — never a not-ready payload
+    /// relabeled as a remote refusal.
+    ReadinessTimeout {
+        timeout: Duration,
+        attempts: u64,
+        last: String,
+    },
     /// A server admission policy named a zero limit or more dispatch slots
     /// than connections.
     InvalidAdmissionPolicy,
@@ -93,6 +103,17 @@ impl core::fmt::Display for IpcError {
             Self::ClientIoDeadlineElapsed => {
                 f.write_str("client I/O deadline elapsed before request dispatch")
             }
+            Self::ReadinessTimeout {
+                timeout,
+                attempts,
+                last,
+            } => {
+                write!(
+                    f,
+                    "readiness timeout after {} ms and {attempts} attempts; last observed: {last}",
+                    timeout.as_millis()
+                )
+            }
             Self::InvalidAdmissionPolicy => f.write_str(
                 "server admission policy must have non-zero connections, slots, per-repository in-flight cap, budget and I/O timeout, with per-repository cap <= slots <= connections",
             ),
@@ -127,6 +148,7 @@ impl std::error::Error for IpcError {
             | Self::Timeout { .. }
             | Self::InvalidClientIoTimeout
             | Self::ClientIoDeadlineElapsed
+            | Self::ReadinessTimeout { .. }
             | Self::InvalidAdmissionPolicy
             | Self::SocketInUse(_)
             | Self::SocketPathInsecure { .. }

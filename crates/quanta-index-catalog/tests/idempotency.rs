@@ -729,16 +729,13 @@ impl ClaimedOrFail for ClaimOutcomeV1 {
 struct ScriptedClock {
     script: Mutex<VecDeque<u64>>,
     samples: AtomicU64,
-    last: AtomicU64,
 }
 
 impl ScriptedClock {
     fn new(script: &[u64]) -> Self {
-        let last = script.last().copied().unwrap_or(0);
         Self {
             script: Mutex::new(script.iter().copied().collect()),
             samples: AtomicU64::new(0),
-            last: AtomicU64::new(last),
         }
     }
 
@@ -750,18 +747,33 @@ impl ScriptedClock {
 impl CatalogClockPort for ScriptedClock {
     fn now_unix_ms(&self) -> u64 {
         let _prior = self.samples.fetch_add(1, Ordering::SeqCst);
-        let next = match self.script.lock() {
-            Ok(mut script) => script.pop_front(),
-            Err(_) => None,
-        };
-        match next {
-            Some(now) => {
-                self.last.store(now, Ordering::SeqCst);
-                now
-            }
-            None => self.last.load(Ordering::SeqCst),
-        }
+        self.script
+            .lock()
+            .expect("scripted catalog clock poisoned")
+            .pop_front()
+            .expect("scripted catalog clock exhausted")
     }
+}
+
+#[test]
+#[should_panic(expected = "scripted catalog clock exhausted")]
+fn scripted_clock_exhaustion_is_not_a_repeated_time_value() {
+    let clock = ScriptedClock::new(&[7]);
+    assert_eq!(clock.now_unix_ms(), 7);
+    let _unexpected = clock.now_unix_ms();
+}
+
+#[test]
+#[should_panic(expected = "scripted catalog clock poisoned")]
+fn scripted_clock_poison_is_not_a_repeated_time_value() {
+    let clock = Arc::new(ScriptedClock::new(&[7]));
+    let worker_clock = Arc::clone(&clock);
+    let _worker = std::thread::spawn(move || {
+        let _guard = worker_clock.script.lock().expect("first lock succeeds");
+        panic!("poison the scripted clock");
+    })
+    .join();
+    let _unexpected = clock.now_unix_ms();
 }
 
 fn open_scripted(

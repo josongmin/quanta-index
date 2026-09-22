@@ -48,6 +48,27 @@ fn require_no_typed_error(error: Option<E2eTypedError>, context: &str) -> AnyRes
     Ok(())
 }
 
+/// Require transport correlation on an explanation served over the socket
+/// (S21-10): a zero `request_id` here would mean the stamp regressed, not
+/// that the query was deterministic.
+fn require_stamped(explanation: &SearchExplanation, context: &str) -> AnyResult<()> {
+    if explanation.request_id == 0 {
+        return Err(anyhow::anyhow!(
+            "{context}: explanation carries no transport request_id"
+        ));
+    }
+    Ok(())
+}
+
+/// Strip transport correlation before comparing query determinism across
+/// requests (S21-10): `request_id` identifies the transport request, so
+/// two identical queries issued as distinct requests legitimately carry
+/// distinct ids.
+fn without_request_id(mut explanation: SearchExplanation) -> SearchExplanation {
+    explanation.request_id = 0;
+    explanation
+}
+
 fn query_ids_and_explanation(rt: &mut E2eRuntime) -> AnyResult<(Vec<String>, SearchExplanation)> {
     let result = rt.query_text(TextQuerySyntax::Native, "restart_alpha_needle", 10);
     require_no_typed_error(result.typed_error, "query_text")?;
@@ -327,7 +348,11 @@ fn reopen_preserves_lexical_ids_and_explanation() -> AnyResult<()> {
             "reopen changed lexical ids: before={before_ids:?} after={after_ids:?}"
         ));
     }
-    if before_explanation != after_explanation {
+    require_stamped(&before_explanation, "reopen before")?;
+    require_stamped(&after_explanation, "reopen after")?;
+    if without_request_id(before_explanation.clone())
+        != without_request_id(after_explanation.clone())
+    {
         return Err(anyhow::anyhow!(
             "reopen changed explanation: before={before_explanation:?} after={after_explanation:?}"
         ));
@@ -355,6 +380,10 @@ fn fresh_reingest_replays_equivalent_lexical_ids_and_explanation() -> AnyResult<
     replay.activate_last_sealed_generation()?;
     let replay = query_ids_and_explanation(&mut replay)?;
 
+    require_stamped(&baseline.1, "fresh re-ingest baseline")?;
+    require_stamped(&replay.1, "fresh re-ingest replay")?;
+    let baseline = (baseline.0, without_request_id(baseline.1));
+    let replay = (replay.0, without_request_id(replay.1));
     if baseline != replay {
         return Err(anyhow::anyhow!(
             "fresh re-ingest diverged from baseline: baseline={baseline:?} replay={replay:?}"
@@ -379,7 +408,11 @@ fn reopen_preserves_semantic_scope_ids_and_explanation() -> AnyResult<()> {
             "reopen changed semantic scoped ids: before={before_ids:?} after={after_ids:?}"
         ));
     }
-    if before_explanation != after_explanation {
+    require_stamped(&before_explanation, "semantic reopen before")?;
+    require_stamped(&after_explanation, "semantic reopen after")?;
+    if without_request_id(before_explanation.clone())
+        != without_request_id(after_explanation.clone())
+    {
         return Err(anyhow::anyhow!(
             "reopen changed semantic scoped explanation: before={before_explanation:?} after={after_explanation:?}"
         ));

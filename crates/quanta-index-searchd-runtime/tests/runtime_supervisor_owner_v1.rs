@@ -12,7 +12,8 @@
     reason = "integration-test helpers outside `#[test]` fns assert fixture setup with `expect`; the workspace already permits this inside test fns and a helper that cannot set up its fixture has no caller to propagate to"
 )]
 
-use std::process::Command;
+use std::io::{Read, Write};
+use std::process::{Command, Stdio};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -456,14 +457,7 @@ fn p08_lease_child_entry() {
         panic!("the report path is provided");
     };
     match role.to_str() {
-        Some("holder") => {
-            let Some(release) =
-                std::env::var_os("QUANTA_INDEX_P08_LEASE_RELEASE").map(std::path::PathBuf::from)
-            else {
-                panic!("the release path is provided");
-            };
-            hold_the_lease(&root, &report, &release);
-        }
+        Some("holder") => hold_the_lease(&root, &report),
         Some("second") => attempt_the_lease(&root, &report),
         Some("orphan_parent") => {
             let Some(holder_report) = std::env::var_os("QUANTA_INDEX_P08_LEASE_HOLDER_REPORT")
@@ -471,21 +465,16 @@ fn p08_lease_child_entry() {
             else {
                 panic!("the holder report path is provided");
             };
-            let Some(release) =
-                std::env::var_os("QUANTA_INDEX_P08_LEASE_RELEASE").map(std::path::PathBuf::from)
-            else {
-                panic!("the release path is provided");
-            };
-            orphan_a_holder(&root, &report, &holder_report, &release);
+            orphan_a_holder(&root, &report, &holder_report);
         }
         _ => panic!("unknown lease role"),
     }
 }
 
 /// Parent death must release the holder (TOPT-03 proof): an
-/// intermediate parent orphans a holder without ever writing the
-/// release file, so the holder's own bound — not a hang — ends it,
-/// and the lease is acquirable again with no residue.
+/// intermediate parent exits without sending the release byte. Closing
+/// its pipe makes the holder observe EOF and release the lease, with no
+/// child-side timer or polling loop.
 #[test]
 fn lease_holder_exits_when_parent_dies_without_release() {
     run_orphaned_lease_parent();
@@ -495,11 +484,10 @@ fn lease_holder_exits_when_parent_dies_without_release() {
 /// (expected owner, exact mode, regular, one link), report, then hold
 /// until the parent's acknowledged release — no fixed hold duration.
 ///
-/// The release is a file the parent creates after the second process is
-/// refused; the holder exits promptly once it appears. The bound panics
-/// the holder (failing the child proof) instead of hanging when the
-/// parent never releases.
-fn hold_the_lease(root: &std::path::Path, report: &std::path::Path, release: &std::path::Path) {
+/// The parent owns the pipe writer. It sends `R` only after the second
+/// process is refused; if the parent exits instead, EOF releases the
+/// holder without waiting for a deadline.
+fn hold_the_lease(root: &std::path::Path, report: &std::path::Path) {
     use std::os::unix::fs::MetadataExt;
     let lease = quanta_index_searchd::app::runtime::StateRootLease::acquire(root)
         .expect("the first process acquires the lease");
@@ -518,25 +506,16 @@ fn hold_the_lease(root: &std::path::Path, report: &std::path::Path, release: &st
         "the lock is owned by this uid"
     );
     std::fs::write(report, b"held\n").expect("the report is written");
-    // Test-only bound override so the parent-abort proof runs in
-    // seconds instead of tens of seconds; the default stays 10.
-    let bound_secs = std::env::var("QUANTA_INDEX_P08_LEASE_DEADLINE_SECS")
-        .ok()
-        .map(|text| {
-            text.parse::<u64>()
-                .expect("the deadline override parses as seconds")
-        })
-        .unwrap_or(10);
-    let deadline = std::time::Instant::now()
-        .checked_add(Duration::from_secs(bound_secs))
-        .expect("the release deadline is representable");
-    while !release.exists() {
-        if std::time::Instant::now() >= deadline {
-            panic!("the parent never released the lease");
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    let mut signal = [0_u8; 1];
+    let release_reason = match std::io::stdin().lock().read(&mut signal) {
+        Ok(0) => "parent-eof",
+        Ok(1) if signal[0] == b'R' => "explicit",
+        Ok(_) => panic!("the parent sent an invalid lease-release byte"),
+        Err(error) => panic!("reading the lease-release pipe failed: {error}"),
+    };
     drop(lease);
+    std::fs::write(report, format!("held\nreleased-{release_reason}\n"))
+        .expect("the terminal report is written");
 }
 
 /// Second-process side: the typed `STATE_ROOT_IN_USE` refusal is the
@@ -555,18 +534,15 @@ fn attempt_the_lease(root: &std::path::Path, report: &std::path::Path) {
 }
 
 /// Intermediate-parent side of the abort proof: spawn a holder, wait
-/// until it reports holding, then exit WITHOUT writing the release —
-/// the holder's parent is gone, so only the holder's own bound ends
-/// it. Reports `orphaned` to prove the abort happened while held.
+/// until it reports holding, then exit without sending a release byte.
+/// The OS closes the pipe writer on process exit, which is the holder's
+/// release event. Reports `orphaned` to prove the abort happened while held.
 fn orphan_a_holder(
     root: &std::path::Path,
     report: &std::path::Path,
     holder_report: &std::path::Path,
-    release: &std::path::Path,
 ) {
     let exe = std::env::current_exe().expect("this test binary exists");
-    let deadline_secs =
-        std::env::var("QUANTA_INDEX_P08_LEASE_DEADLINE_SECS").expect("the deadline is provided");
     let mut holder = Command::new(&exe);
     let _configured = holder
         .arg("--exact")
@@ -575,10 +551,8 @@ fn orphan_a_holder(
         .env("QUANTA_INDEX_P08_LEASE_ROLE", "holder")
         .env("QUANTA_INDEX_P08_LEASE_ROOT", root)
         .env("QUANTA_INDEX_P08_LEASE_REPORT", holder_report)
-        .env("QUANTA_INDEX_P08_LEASE_RELEASE", release)
-        .env("QUANTA_INDEX_P08_LEASE_DEADLINE_SECS", &deadline_secs);
-    // Deliberately never waited on or released: dropping the handle
-    // and exiting here orphans the holder mid-hold.
+        .stdin(Stdio::piped());
+    // The child remains alive while this process holds its stdin writer.
     let _child = holder.spawn().expect("the holder child spawns");
     let deadline = std::time::Instant::now()
         .checked_add(Duration::from_secs(10))
@@ -591,6 +565,9 @@ fn orphan_a_holder(
         "the holder reported holding before the abort"
     );
     std::fs::write(report, b"orphaned\n").expect("the report is written");
+    // Do not drop the Child handle first: process exit itself must close
+    // the inherited writer and cause the holder to observe EOF.
+    std::process::exit(0);
 }
 
 /// Parent side of the two-process exclusion proof: disposable temp
@@ -608,7 +585,6 @@ fn run_two_process_lease_parent() {
     }
     let holder_report = temp.path().join("holder-report");
     let second_report = temp.path().join("second-report");
-    let release = temp.path().join("holder-release");
     let exe = std::env::current_exe().expect("this test binary exists");
     let base_env = |role: &str, report: &std::path::Path| {
         let mut command = Command::new(&exe);
@@ -623,7 +599,7 @@ fn run_two_process_lease_parent() {
     };
 
     let mut holder = base_env("holder", &holder_report)
-        .env("QUANTA_INDEX_P08_LEASE_RELEASE", &release)
+        .stdin(Stdio::piped())
         .spawn()
         .expect("the holder child spawns");
     // Wait for the holder to actually hold the lease.
@@ -651,11 +627,13 @@ fn run_two_process_lease_parent() {
         "the second process is refused while the first serves: {second_outcome}"
     );
 
-    // Acknowledged release: the holder holds only until the refusal
-    // above is proven, then exits promptly on the release file — no
-    // fixed hold duration. The bounded wait fails (killing a stuck
-    // holder) instead of hanging when the holder never exits.
-    std::fs::write(&release, b"release\n").expect("the release is written");
+    // The parent owns the only writer and sends the release byte only
+    // after the typed refusal above is proven.
+    let mut release = holder.stdin.take().expect("the holder has a release pipe");
+    release
+        .write_all(b"R")
+        .expect("the release byte is written");
+    drop(release);
     let exit_deadline = std::time::Instant::now()
         .checked_add(Duration::from_secs(10))
         .expect("the exit deadline is representable");
@@ -671,6 +649,11 @@ fn run_two_process_lease_parent() {
         }
     };
     assert!(holder_status.success(), "the holder ran its proof");
+    assert_eq!(
+        std::fs::read_to_string(&holder_report).expect("the terminal report is readable"),
+        "held\nreleased-explicit\n",
+        "the holder observed the explicit release"
+    );
     let reacquired = quanta_index_searchd::app::runtime::StateRootLease::acquire(&root);
     assert!(
         reacquired.is_ok(),
@@ -679,8 +662,8 @@ fn run_two_process_lease_parent() {
 }
 
 /// Grandparent side of the abort proof: the intermediate parent exits
-/// while the holder holds, and the lease must free itself within the
-/// holder's bound — no release file is ever written.
+/// while the holder holds. The holder must report pipe EOF and release
+/// the lease; a containment deadline only bounds this parent's wait.
 fn run_orphaned_lease_parent() {
     let temp = tempfile::tempdir().expect("a disposable temp root");
     let root = temp.path().join("state");
@@ -694,7 +677,6 @@ fn run_orphaned_lease_parent() {
     }
     let holder_report = temp.path().join("holder-report");
     let orphan_report = temp.path().join("orphan-report");
-    let release = temp.path().join("holder-release");
     let exe = std::env::current_exe().expect("this test binary exists");
     let mut command = Command::new(&exe);
     let _configured = command
@@ -705,8 +687,7 @@ fn run_orphaned_lease_parent() {
         .env("QUANTA_INDEX_P08_LEASE_ROOT", &root)
         .env("QUANTA_INDEX_P08_LEASE_REPORT", &orphan_report)
         .env("QUANTA_INDEX_P08_LEASE_HOLDER_REPORT", &holder_report)
-        .env("QUANTA_INDEX_P08_LEASE_RELEASE", &release)
-        .env("QUANTA_INDEX_P08_LEASE_DEADLINE_SECS", "2");
+        .stdin(Stdio::null());
     let mut orphan = command.spawn().expect("the orphan-parent spawns");
     let orphan_status = orphan.wait().expect("the orphan-parent exits");
     assert!(orphan_status.success(), "the orphan-parent ran its proof");
@@ -718,22 +699,30 @@ fn run_orphaned_lease_parent() {
         "the abort happened while the holder held"
     );
     let held = std::fs::read_to_string(&holder_report).expect("the holder report is readable");
-    assert_eq!(held.trim(), "held", "the holder held before the abort");
-    assert!(!release.exists(), "no release was ever written");
+    assert!(
+        held.starts_with("held\n"),
+        "the holder held before the abort"
+    );
 
-    // The orphaned holder's own bound ends it; the lease frees itself.
+    // A terminal report is written only after the holder read EOF and
+    // dropped the lease. Wait for that event, not for a lease timeout.
     let deadline = std::time::Instant::now()
         .checked_add(Duration::from_secs(10))
         .expect("the deadline is representable");
-    let reacquired = loop {
-        match quanta_index_searchd::app::runtime::StateRootLease::acquire(&root) {
-            Ok(lease) => break lease,
-            Err(_) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            Err(error) => panic!("the lease frees itself after the abort: {error}"),
+    loop {
+        let report =
+            std::fs::read_to_string(&holder_report).expect("the holder report is readable");
+        if report == "held\nreleased-parent-eof\n" {
+            break;
         }
-    };
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the orphaned holder must observe parent EOF, got {report:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let reacquired = quanta_index_searchd::app::runtime::StateRootLease::acquire(&root)
+        .expect("the holder released its lease after parent EOF");
     drop(reacquired);
     let again = quanta_index_searchd::app::runtime::StateRootLease::acquire(&root);
     assert!(again.is_ok(), "no lease residue survives the abort");

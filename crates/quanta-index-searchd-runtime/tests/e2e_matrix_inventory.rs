@@ -50,9 +50,10 @@ fn verify_write_seal_reopen_query(rt: &mut E2eRuntime) -> AnyResult<()> {
 /// The exact-set comparison behind the smoke oracle, factored pure so the
 /// mutation controls below prove it rejects precisely what it names.
 fn verify_identity_set(actual: &[(&str, &str)], expected: &[(&str, &str)]) -> AnyResult<()> {
+    // Compare the full returned row inventory: deduplicating here would
+    // turn a duplicated candidate into a false-green exact-set proof.
     let mut actual = actual.to_vec();
     actual.sort_unstable();
-    actual.dedup();
     let mut expected = expected.to_vec();
     expected.sort_unstable();
     if actual != expected {
@@ -67,7 +68,7 @@ fn verify_identity_set(actual: &[(&str, &str)], expected: &[(&str, &str)]) -> An
 /// missing needle row, a wrong in-corpus row, an extra row, and an empty
 /// answer — each the precise regression WA-2 names.
 #[test]
-fn identity_oracle_rejects_missing_wrong_extra_and_empty_rows() {
+fn identity_oracle_rejects_missing_wrong_extra_duplicate_and_empty_rows() {
     let expected = SMOKE_NEEDLE_RUST_IDENTITY;
     assert!(
         verify_identity_set(expected, expected).is_ok(),
@@ -82,6 +83,10 @@ fn identity_oracle_rejects_missing_wrong_extra_and_empty_rows() {
         (
             "needle plus extra row",
             &[("repo-e2e", "src/lib.rs"), ("repo-e2e", "src/util.py")].as_slice(),
+        ),
+        (
+            "duplicate needle row",
+            &[("repo-e2e", "src/lib.rs"), ("repo-e2e", "src/lib.rs")].as_slice(),
         ),
         ("wrong repo", &[("repo-other", "src/lib.rs")].as_slice()),
     ] {

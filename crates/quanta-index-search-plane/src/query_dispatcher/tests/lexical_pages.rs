@@ -12,8 +12,8 @@ use std::sync::{Arc, Mutex};
 use quanta_index_contract::{
     CandidateCountV1, ContinuationTokenV2, ERR_RESULT_TOO_LARGE, FileOwnerProjectionRow,
     LexicalCandidate, LexicalCursor, ManifestGeneration, QueryConstraintSetV1, QueryResultWindowV2,
-    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, TextQueryRequest, TextQueryResponse,
-    TextQuerySyntax,
+    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, SymbolQueryResponse, TextQueryRequest,
+    TextQueryResponse, TextQuerySyntax,
 };
 use quanta_index_core::RequestBudgetV1;
 
@@ -23,7 +23,7 @@ use crate::query_dispatcher::response_budget::{
     RankedPage, ResponsePayloadBudget, fit_ranked_page,
 };
 use crate::query_dispatcher::tests::support::common::{
-    TestResult, candidate, dispatcher_with_obs, ipc_error_from, ready_pin,
+    TestResult, candidate, dispatcher_with_obs, ipc_error_from, ready_pin, symbol_candidate,
 };
 use crate::query_dispatcher::tests::support::lexical::{
     RecordingLexicalOpener, RecordingLexicalState, StubLexicalOpener,
@@ -364,6 +364,51 @@ fn a_shorter_prefix_can_exceed_the_budget_when_its_cursor_is_larger() -> TestRes
         || quanta_index_ipc::cbor_payload_len(&fitted)? > budget.max_payload_bytes()
     {
         return Err(format!("the longest fitting prefix was not selected: {fitted:?}").into());
+    }
+    Ok(())
+}
+
+#[test]
+fn symbol_page_budget_cut_keeps_ranked_prefix_window_and_cursor() -> TestResult {
+    let results = (0..4)
+        .map(|index| {
+            let mut row = symbol_candidate(&format!("symbol-{index:02}"), 1.0);
+            row.snippet = "x".repeat(400);
+            row
+        })
+        .collect();
+    let page = SymbolQueryResponse {
+        generation: ready_pin(),
+        results,
+        window: QueryResultWindowV2::pageable(4, CandidateCountV1::Exact(4), false, vec![])?,
+        next_cursor: None,
+    };
+    let token = ContinuationTokenV2::new("opaque")?;
+    let two = page.clone().cut(
+        2,
+        crate::query_dispatcher::window::cut_pageable_window_v2(&page.window, 2)?,
+        token.clone(),
+    );
+    let three = page.clone().cut(
+        3,
+        crate::query_dispatcher::window::cut_pageable_window_v2(&page.window, 3)?,
+        token.clone(),
+    );
+    let budget = ResponsePayloadBudget::new(quanta_index_ipc::cbor_payload_len(&two)?)?;
+    if quanta_index_ipc::cbor_payload_len(&three)? <= budget.max_payload_bytes() {
+        return Err("the three-symbol prefix must exceed the two-symbol budget".into());
+    }
+
+    let fitted = fit_ranked_page(page, budget, |_cursor| Ok(token.clone()))?;
+    if fitted.results.len() != 2
+        || fitted.results[0].candidate_id != "symbol-00"
+        || fitted.results[1].candidate_id != "symbol-01"
+        || fitted.window.returned() != 2
+        || fitted.window.candidate_count() != CandidateCountV1::Exact(4)
+        || fitted.window.has_more() != Some(true)
+        || fitted.next_cursor != Some(token)
+    {
+        return Err(format!("symbol prefix contract was not preserved: {fitted:?}").into());
     }
     Ok(())
 }

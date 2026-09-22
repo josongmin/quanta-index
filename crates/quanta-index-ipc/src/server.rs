@@ -1115,8 +1115,8 @@ enum ConnectionCloseReason {
     },
     /// A request arrived after shutdown was triggered.
     ShuttingDown,
-    /// The peer watch could not be armed, so the request could not be run
-    /// with a live cancellation; it is not run at all.
+    /// The peer watch could not be armed, or its thread failed while
+    /// dispatching. Neither condition can be reported as a clean stop.
     PeerWatchFailed(String),
 }
 
@@ -1130,7 +1130,7 @@ impl core::fmt::Display for ConnectionCloseReason {
                 write!(f, "timeout setup failed: {message}")
             }
             Self::PeerClosed => f.write_str("peer closed connection cleanly"),
-            Self::PeerWatchFailed(message) => write!(f, "peer watch setup failed: {message}"),
+            Self::PeerWatchFailed(message) => write!(f, "peer watch failed: {message}"),
             Self::RequestDecodeFailed(err) => write!(f, "request decode failed: {err}"),
             Self::ResponseEncodeFailed(err) => write!(f, "response encode failed: {err}"),
             Self::ResponseWriteFailed(message) => write!(f, "response write failed: {message}"),
@@ -1244,7 +1244,11 @@ where
                 }
             };
             let response_payload = dispatcher.dispatch(&context, request_payload, &budget);
-            let peer_hung_up = matches!(watch.disarm(), PeerWatchOutcome::HungUp);
+            let peer_hung_up = match watch.disarm() {
+                Ok(PeerWatchOutcome::HungUp) => true,
+                Ok(PeerWatchOutcome::Stopped) => false,
+                Err(error) => return ConnectionCloseReason::PeerWatchFailed(error),
+            };
             (response_payload, peer_hung_up)
         };
         drop(permit);
@@ -1495,7 +1499,7 @@ impl PeerWatch {
 
     /// Stop the watcher and join its thread — at most once, whether the
     /// owner disarms or unwinds past the watch.
-    fn stop_and_join(&mut self) {
+    fn stop_and_join(&mut self) -> Result<(), String> {
         self.stop.store(true, Ordering::Release);
         if let Some(thread) = self.thread.take() {
             if let Some(mut wake) = self.wake.take() {
@@ -1504,18 +1508,20 @@ impl PeerWatch {
                 // exactly that, and the join below still reaps it.
                 let _signalled = wake.write_all(&[1]);
             }
-            let _joined = thread.join();
+            let joined = thread.join();
             self.observer.fire(WatchEvent::Joined);
+            joined.map_err(|panic| format!("peer watch thread panicked: {panic:?}"))?;
         }
+        Ok(())
     }
 
     /// Stop watching; reports how the watch run ended.
-    fn disarm(mut self) -> PeerWatchOutcome {
-        self.stop_and_join();
+    fn disarm(mut self) -> Result<PeerWatchOutcome, String> {
+        self.stop_and_join()?;
         if self.hung_up.load(Ordering::Acquire) {
-            PeerWatchOutcome::HungUp
+            Ok(PeerWatchOutcome::HungUp)
         } else {
-            PeerWatchOutcome::Stopped
+            Ok(PeerWatchOutcome::Stopped)
         }
     }
 }
@@ -1525,7 +1531,9 @@ impl Drop for PeerWatch {
     /// dispatcher unwinding (S21-09): the watcher thread is stopped and
     /// joined, never left spinning without an owner.
     fn drop(&mut self) {
-        self.stop_and_join();
+        // A dispatcher already unwinding cannot return another error;
+        // the normal disarm path above propagates watcher failure.
+        let _result = self.stop_and_join();
     }
 }
 
@@ -1828,6 +1836,7 @@ fn classify_client_decode_error(
         | IpcError::Timeout { .. }
         | IpcError::InvalidClientIoTimeout
         | IpcError::ClientIoDeadlineElapsed
+        | IpcError::ReadinessTimeout { .. }
         | IpcError::InvalidAdmissionPolicy
         | IpcError::SocketInUse(_)
         | IpcError::SocketPathInsecure { .. }
@@ -2761,6 +2770,30 @@ mod tests {
         }
     }
 
+    struct FailingWatchDispatcher {
+        entered: mpsc::Sender<()>,
+        gate: Arc<Barrier>,
+        callback_entered: mpsc::Sender<()>,
+    }
+
+    impl IpcDispatcher<u64, u64> for FailingWatchDispatcher {
+        fn dispatch(
+            &self,
+            _context: &super::DispatchContextV1,
+            request: u64,
+            budget: &RequestBudgetV1,
+        ) -> u64 {
+            let callback_entered = self.callback_entered.clone();
+            let _failing_waiter = budget.cancel_waiter(Arc::new(move || {
+                let _reported = callback_entered.send(());
+                panic!("scripted watcher cancellation failure");
+            }));
+            self.entered.send(()).expect("dispatcher entry is observed");
+            let _wait = self.gate.wait();
+            request.saturating_add(1)
+        }
+    }
+
     /// Signals entry, waits at the gate, then answers; records whether the
     /// budget was cancelled by the time it was released.
     struct HalfCloseDispatcher {
@@ -3030,7 +3063,7 @@ mod tests {
             )
             .map_err(|err| err.to_string())?;
             expect_watch_event(&received, WatchEvent::Armed)?;
-            let outcome = watch.disarm();
+            let outcome = watch.disarm()?;
             if outcome != PeerWatchOutcome::Stopped {
                 return Err(format!("a live peer disarms Stopped, got {outcome:?}"));
             }
@@ -3070,9 +3103,44 @@ mod tests {
             if counters.snapshot().peer_hangup_detected != 1 {
                 return Err("a hang-up is detected exactly once".to_string());
             }
-            let outcome = watch.disarm();
+            let outcome = watch.disarm()?;
             if outcome != PeerWatchOutcome::HungUp {
                 return Err(format!("a closed peer disarms HungUp, got {outcome:?}"));
+            }
+            expect_watch_event(&received, WatchEvent::Joined)?;
+            Ok(())
+        })();
+        assert_test_ok(&result);
+    }
+
+    /// A watcher that panics after detecting a disconnect must not be
+    /// reported as a successful HungUp or Stopped observation. The
+    /// cancellation callback is the existing owner boundary that can
+    /// fail on the watcher thread; no production mutation hook is needed.
+    #[test]
+    fn peer_watch_thread_failure_is_not_a_successful_disarm() {
+        let result = (|| -> TestRes {
+            let (client, server) = UnixStream::pair().map_err(|err| err.to_string())?;
+            let budget = RequestBudgetV1::for_duration(Duration::from_secs(60));
+            let _failing_waiter = budget.cancel_waiter(Arc::new(|| {
+                panic!("scripted cancellation callback failure");
+            }));
+            let (observer, received) = WatchObserver::channel();
+            let watch = PeerWatch::arm_with_observer(
+                &server,
+                budget.cancel_handle(),
+                test_counters(),
+                observer,
+            )
+            .map_err(|err| err.to_string())?;
+            expect_watch_event(&received, WatchEvent::Armed)?;
+            drop(client);
+            expect_watch_event(&received, WatchEvent::PeerDisconnected)?;
+            let failure = watch
+                .disarm()
+                .expect_err("a panicking watcher cannot disarm successfully");
+            if !failure.contains("peer watch thread panicked") {
+                return Err(format!("watcher failure lost its cause: {failure}"));
             }
             expect_watch_event(&received, WatchEvent::Joined)?;
             Ok(())
@@ -3103,7 +3171,7 @@ mod tests {
                 // The half-close predates the arm: `Armed` proves the
                 // watch observed it and stayed watching.
                 expect_watch_event(&received, WatchEvent::Armed)?;
-                let outcome = watch.disarm();
+                let outcome = watch.disarm()?;
                 if outcome != PeerWatchOutcome::Stopped {
                     return Err(format!("a half-close disarms Stopped, got {outcome:?}"));
                 }
@@ -3158,7 +3226,7 @@ mod tests {
                 let budget = RequestBudgetV1::for_duration(Duration::from_secs(60));
                 let watch = PeerWatch::arm(&server, budget.cancel_handle(), Arc::clone(&counters))
                     .map_err(|err| err.to_string())?;
-                let outcome = watch.disarm();
+                let outcome = watch.disarm()?;
                 if outcome != PeerWatchOutcome::Stopped {
                     return Err(format!("a live peer disarms Stopped, got {outcome:?}"));
                 }
@@ -3309,6 +3377,67 @@ mod tests {
                 return Ok(());
             }
             Err(format!("unexpected close reason: {reason:?}"))
+        })();
+        assert_test_ok(&result);
+    }
+
+    #[test]
+    fn handle_connection_surfaces_a_failed_peer_watch() {
+        let result = (|| -> TestRes {
+            let (mut client, server) = UnixStream::pair().map_err(|err| err.to_string())?;
+            client
+                .write_all(&encode_test_frame(11, 1)?)
+                .map_err(|err| err.to_string())?;
+            let (entered_tx, entered_rx) = mpsc::channel();
+            let (callback_tx, callback_rx) = mpsc::channel();
+            let gate = Arc::new(Barrier::new(2));
+            let dispatcher = FailingWatchDispatcher {
+                entered: entered_tx,
+                gate: Arc::clone(&gate),
+                callback_entered: callback_tx,
+            };
+            let handle = thread::spawn(move || {
+                handle_connection::<
+                    TestRequestEnvelope,
+                    u64,
+                    TestResponseEnvelope,
+                    u64,
+                    FailingWatchDispatcher,
+                >(
+                    server,
+                    &dispatcher,
+                    &test_slots(),
+                    test_policy(),
+                    IpcPlane::Query,
+                    PeerCredentials {
+                        uid: 0,
+                        gid: 0,
+                        pid: None,
+                    },
+                    0,
+                    1,
+                    &AtomicBool::new(false),
+                    &test_counters(),
+                )
+            });
+            entered_rx
+                .recv_timeout(Duration::from_secs(10))
+                .map_err(|error| format!("dispatcher entry was not observed: {error}"))?;
+            drop(client);
+            callback_rx
+                .recv_timeout(Duration::from_secs(10))
+                .map_err(|error| format!("watcher failure was not observed: {error}"))?;
+            let _released = gate.wait();
+            let reason = handle
+                .join()
+                .map_err(|panic| format!("connection thread panicked: {panic:?}"))?;
+            if !matches!(&reason, ConnectionCloseReason::PeerWatchFailed(message) if message.contains("peer watch thread panicked"))
+            {
+                return Err(format!(
+                    "watcher failure must close the connection typed: {reason:?}"
+                ));
+            }
+            Ok(())
         })();
         assert_test_ok(&result);
     }

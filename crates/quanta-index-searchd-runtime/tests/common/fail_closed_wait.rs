@@ -150,6 +150,10 @@ where
     T: fmt::Debug,
     E: fmt::Debug,
 {
+    debug_assert!(
+        poll_interval > Duration::ZERO,
+        "a zero poll interval never advances a virtual clock"
+    );
     let start = ticker.now();
     let mut attempts = 0_u64;
     let mut last: Option<String>;

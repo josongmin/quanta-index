@@ -3355,6 +3355,38 @@ fn query_response_ready_allow_structural_not_ready(
     }
 }
 
+/// One-line payload identity for timeout evidence: the variant name,
+/// plus the typed code for refusals. Never the message body.
+fn describe_query_response_payload(payload: &SearchPlaneQueryIpcResponse) -> String {
+    match payload {
+        SearchPlaneQueryIpcResponse::Error(err) => format!("Error({:?})", err.code),
+        SearchPlaneQueryIpcResponse::Text(_) => "Text".to_string(),
+        SearchPlaneQueryIpcResponse::Symbol(_) => "Symbol".to_string(),
+        SearchPlaneQueryIpcResponse::Semantic(_) => "Semantic".to_string(),
+        SearchPlaneQueryIpcResponse::Hybrid(_) => "Hybrid".to_string(),
+        SearchPlaneQueryIpcResponse::HybridSeed(_) => "HybridSeed".to_string(),
+        SearchPlaneQueryIpcResponse::History(_) => "History".to_string(),
+        SearchPlaneQueryIpcResponse::Structural(_) => "Structural".to_string(),
+        SearchPlaneQueryIpcResponse::RepoMapQuery(_) => "RepoMapQuery".to_string(),
+        SearchPlaneQueryIpcResponse::Explain(_) => "Explain".to_string(),
+        SearchPlaneQueryIpcResponse::ClusterMembershipRead(_) => {
+            "ClusterMembershipRead".to_string()
+        }
+        SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => "RuntimeMetadata".to_string(),
+    }
+}
+
+/// Cap a last-observation string so timeout evidence stays one line,
+/// never a dumped response body.
+fn cap_observation(observed: String) -> String {
+    const CAP_CHARS: usize = 1000;
+    if observed.chars().count() <= CAP_CHARS {
+        return observed;
+    }
+    let prefix: String = observed.chars().take(CAP_CHARS).collect();
+    format!("{prefix}…[truncated]")
+}
+
 fn wait_for_query_response(
     socket: &Path,
     envelope: &SearchPlaneQueryIpcRequestEnvelope,
@@ -3362,11 +3394,14 @@ fn wait_for_query_response(
     ready: impl Fn(&SearchPlaneQueryIpcResponseEnvelope) -> bool,
 ) -> (bool, Result<SearchPlaneQueryIpcResponseEnvelope, IpcError>) {
     let mut cached_response: Option<SearchPlaneQueryIpcResponseEnvelope> = None;
-    let readiness_reached =
-        wait_until(
-            READINESS_TIMEOUT,
-            READINESS_POLL_INTERVAL,
-            || match send_request::<_, SearchPlaneQueryIpcResponseEnvelope>(
+    let mut attempts = 0_u64;
+    let mut last = String::from("no attempt completed");
+    let readiness_reached = wait_until(
+        READINESS_TIMEOUT,
+        READINESS_POLL_INTERVAL,
+        || {
+            attempts = attempts.saturating_add(1);
+            match send_request::<_, SearchPlaneQueryIpcResponseEnvelope>(
                 socket, envelope, client_io,
             ) {
                 Ok(response) => {
@@ -3374,15 +3409,45 @@ fn wait_for_query_response(
                         cached_response = Some(response);
                         return true;
                     }
+                    last = format!(
+                        "not-ready {}",
+                        describe_query_response_payload(&response.payload)
+                    );
                     false
                 }
-                Err(_transport_error) => false,
-            },
-        );
+                Err(transport_error) => {
+                    last = format!("transport error: {transport_error}");
+                    false
+                }
+            }
+        },
+    );
     if let Some(response) = cached_response {
         return (readiness_reached, Ok(response));
     }
-    (readiness_reached, send_request(socket, envelope, client_io))
+    // Timeout: one final attempt for the freshest evidence, but the
+    // verdict stays a typed timeout — a spent wait never returns a
+    // not-ready payload for callers to file as a remote refusal.
+    attempts = attempts.saturating_add(1);
+    match send_request::<_, SearchPlaneQueryIpcResponseEnvelope>(socket, envelope, client_io) {
+        Ok(response) => {
+            last = format!(
+                "not-ready {}",
+                describe_query_response_payload(&response.payload)
+            );
+        }
+        Err(transport_error) => {
+            last = format!("transport error: {transport_error}");
+        }
+    }
+    (
+        false,
+        Err(IpcError::ReadinessTimeout {
+            timeout: READINESS_TIMEOUT,
+            attempts,
+            last: cap_observation(last),
+        }),
+    )
 }
 
 fn explain_transport_error(
@@ -3418,15 +3483,24 @@ fn start_driver(spec: &DriverSpec<'_>) -> AnyResult<DriverHandles> {
     let join = thread::Builder::new()
         .name("e2e-harness-driver".into())
         .spawn(move || drive(runtime, &shutdown_for_drive))?;
+    let mut last_seen = (false, false, false);
     if !wait_until(SOCKET_APPEAR_TIMEOUT, SOCKET_APPEAR_POLL_INTERVAL, || {
-        query_socket.exists() && control_socket.exists() && ingest_socket.exists()
+        last_seen = (
+            query_socket.exists(),
+            control_socket.exists(),
+            ingest_socket.exists(),
+        );
+        last_seen.0 && last_seen.1 && last_seen.2
     }) {
         shutdown.store(true, Ordering::Release);
         let socket_failure = format!(
-            "e2e-harness: sockets never appeared query={} control={} ingest={}",
+            "e2e-harness: sockets never appeared query={} (present={}) control={} (present={}) ingest={} (present={})",
             query_socket.display(),
+            last_seen.0,
             control_socket.display(),
-            ingest_socket.display()
+            last_seen.1,
+            ingest_socket.display(),
+            last_seen.2
         );
         return match join.join() {
             Ok(Ok(())) => Err(anyhow::anyhow!("{socket_failure}")),
