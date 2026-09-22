@@ -9,6 +9,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use serde::Deserialize;
 
@@ -235,6 +236,78 @@ pub fn load_manifest(path: &Path) -> BenchResult<Manifest> {
     Ok(manifest)
 }
 
+fn git_output(repo_root: &Path, args: &[&str]) -> BenchResult<Vec<u8>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(args)
+        .output()
+        .map_err(|err| {
+            BenchError::Manifest(format!("cannot run git for repository proof: {err}"))
+        })?;
+    if !output.status.success() {
+        return Err(BenchError::Manifest(format!(
+            "git {} failed in {}: {}",
+            args.join(" "),
+            repo_root.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(output.stdout)
+}
+
+/// Prove the checkout names exactly the frozen commit, is clean, and every
+/// admitted path is tracked. A matching file hash alone cannot establish
+/// committed provenance for an ignored or untracked file.
+pub fn verify_checkout(repo_root: &Path, manifest: &Manifest) -> BenchResult<()> {
+    let root = std::fs::canonicalize(repo_root).map_err(|err| BenchError::Io {
+        path: repo_root.display().to_string(),
+        message: err.to_string(),
+    })?;
+    let reported = git_output(&root, &["rev-parse", "--show-toplevel"])?;
+    let reported = PathBuf::from(
+        String::from_utf8(reported)
+            .map_err(|err| BenchError::Manifest(format!("git root is not UTF-8: {err}")))?
+            .trim(),
+    );
+    if reported != root {
+        return Err(BenchError::Manifest(format!(
+            "--repo must name the checkout root: {}",
+            root.display()
+        )));
+    }
+    let head = git_output(&root, &["rev-parse", "HEAD"])?;
+    if head.as_slice() != format!("{}\n", manifest.repository_commit).as_bytes() {
+        return Err(BenchError::Manifest(
+            "checkout HEAD differs from frozen manifest commit".to_string(),
+        ));
+    }
+    if !git_output(
+        &root,
+        &["status", "--porcelain=v1", "--untracked-files=all"],
+    )?
+    .is_empty()
+    {
+        return Err(BenchError::Manifest(
+            "checkout has tracked or untracked changes".to_string(),
+        ));
+    }
+    let tracked = git_output(&root, &["ls-files", "-z"])?;
+    let tracked: std::collections::BTreeSet<&[u8]> = tracked
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .collect();
+    for entry in &manifest.files {
+        if !tracked.contains(entry.path.as_bytes()) {
+            return Err(BenchError::Manifest(format!(
+                "admitted file is not tracked at the frozen commit: {}",
+                entry.path
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Canonical digest of the admitted universe: SHA-256 over the sorted
 /// `path + NUL + file_sha256 + NUL` rows. Order-independent by construction.
 #[must_use]
@@ -408,5 +481,54 @@ mod tests {
             assert!(check_repo_path(bad).is_err(), "must reject {bad:?}");
         }
         assert!(check_repo_path("src/lib.rs").is_ok());
+    }
+
+    #[test]
+    fn checkout_proof_rejects_dirty_wrong_commit_and_untracked_admissions() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let root = directory.path();
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(args)
+                .output()
+                .expect("git");
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            output.stdout
+        };
+        let _init = git(&["init", "-q"]);
+        let _name = git(&["config", "user.name", "Benchmark Test"]);
+        let _email = git(&["config", "user.email", "benchmark@example.invalid"]);
+        std::fs::write(root.join("code.rs"), "fn original() {}\n").expect("source");
+        let _add = git(&["add", "code.rs"]);
+        let _commit = git(&["commit", "-qm", "fixture"]);
+        let head = String::from_utf8(git(&["rev-parse", "HEAD"]))
+            .expect("SHA")
+            .trim()
+            .to_string();
+        let mut manifest = Manifest {
+            repository_commit: head.clone(),
+            files: vec![ManifestFile {
+                path: "code.rs".to_string(),
+                file_sha256: sha256_hex(b"fn original() {}\n"),
+            }],
+        };
+        assert!(verify_checkout(root, &manifest).is_ok());
+        manifest.repository_commit = "0".repeat(40);
+        assert!(verify_checkout(root, &manifest).is_err());
+        manifest.repository_commit = head;
+        std::fs::write(root.join("code.rs"), "fn changed() {}\n").expect("change");
+        assert!(verify_checkout(root, &manifest).is_err());
+        std::fs::write(root.join("code.rs"), "fn original() {}\n").expect("restore fixture");
+        std::fs::write(root.join("other.rs"), "fn other() {}\n").expect("untracked");
+        assert!(verify_checkout(root, &manifest).is_err());
+        std::fs::remove_file(root.join("other.rs")).expect("remove fixture");
+        manifest.files[0].path = "not-tracked.rs".to_string();
+        assert!(verify_checkout(root, &manifest).is_err());
     }
 }

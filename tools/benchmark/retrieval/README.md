@@ -1,10 +1,12 @@
 # Real-repository retrieval and context-yield benchmark
 
-This evaluator scores an externally recorded runner output. It does not query
-the index, generate candidates, or infer missing evidence. Python 3.9 and the
-standard library are sufficient for the evaluator; the focused tests use
-pytest. The two versioned JSON schemas document the exact wire contracts.
-Runtime validation additionally checks Git, file contents, hashes, split
+The Python evaluator scores recorded runner output; it does not query an
+index, generate candidates, or infer missing evidence. The benchmark-only
+Rust CLI in `benchmarks/retrieval` loads a pinned repository, chunks it,
+publishes through the public SDK to a real daemon, and records route results.
+It is a Quanta runner, **not** a Semble adapter or paired comparison command.
+Python 3.9 and the standard library suffice for the evaluator; focused tests
+use pytest. Runtime validation checks Git, file contents, hashes, split
 isolation and complete route coverage.
 
 ## Run
@@ -20,8 +22,24 @@ python3 -m tools.benchmark.retrieval freeze \
 
 # freeze prints the canonical query_pack_sha256 for the runner record.
 
-# Supply query-pack.json to a separate retrieval runner. The runner must emit
-# a recorded JSON file conforming to runner.schema.json. No gold is in the pack.
+# Build searchd and the benchmark CLI through scripts/cargow, then run the
+# benchmark CLI against the blind pack. The manifest is JSON with exactly
+# repository_commit and files [{path, file_sha256}] for the admitted universe.
+# The state root and output must be outside the clean source checkout.
+./scripts/cargow --lane bench-lane build -p quanta-index-searchd \
+  --bin quanta-index-searchd --locked
+./scripts/cargow --lane bench-lane run -p quanta-index-retrieval-bench \
+  --bin quanta-index-retrieval-bench --locked -- run \
+  --repo /absolute/clean/repository --manifest /absolute/manifest.json \
+  --query-pack /absolute/query-pack.json --strategy syntax \
+  --routes lexical,semantic,hybrid --top-k 20 \
+  --repo-id benchmark-repo --revision-id pinned-revision --generation 1 \
+  --state-root /absolute/fresh-state-root \
+  --searchd-bin /absolute/quanta-index-searchd \
+  --runner-name quanta-sdk --runner-revision pinned-revision --run-id run-1 \
+  --blinding attested --isolation-method query-pack-only \
+  --access-block-log runner-was-not-given-gold \
+  --out /absolute/recorded-run.json
 
 python3 -m tools.benchmark.retrieval evaluate \
   --repo /absolute/clean/repository --suite /absolute/suite.json \
@@ -29,6 +47,18 @@ python3 -m tools.benchmark.retrieval evaluate \
   --baseline-route lexical --candidate-route hybrid \
   --output /absolute/report.json
 ```
+
+`run` defaults to the pinned `potion-code`/Model2Vec provider.
+`--embedder hash-dev` is an explicit development-only correctness control. The CLI derives
+model ID and revision from provider-owned constants; caller-supplied model
+labels are not accepted. Other provider profiles need a separately verified
+provenance path before they can emit benchmark records. The daemon verifies
+the local PotionCode model assets on boot; missing or changed assets fail the
+run. The CLI refuses dirty or wrong-HEAD repositories, untracked admitted
+files, empty query-pack universes, stale non-empty state roots and existing
+output files. This CLI only emits `attested` blinding: it cannot prove process
+isolation. A separate externally enforced runner/proof path is required before
+claiming an `isolated` blinded quality verdict.
 
 The runner computes `query_pack_sha256` as SHA-256 of UTF-8 JSON serialized
 with sorted keys, no whitespace, and `ensure_ascii=False`. A producer can use

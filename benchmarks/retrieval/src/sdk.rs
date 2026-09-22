@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
+use quanta_index_contract::ipc::GenerationStatusReport;
 use quanta_index_contract::{
     ExecutionOutcomeV2, GenerationPin, HybridCandidateV1, LexicalCandidate, ManifestGeneration,
     RepoId, RevisionId, SearchPlaneErrorCodeV2, SearchPlaneSearchCorpusActivationCasAck,
@@ -24,18 +25,18 @@ pub const DEFAULT_IO_TIMEOUT: Duration = Duration::from_secs(30);
 pub const SEARCHD_BIN_ENV: &str = "QUANTA_INDEX_SEARCHD_BIN";
 pub const EMBEDDER_ENV: &str = "QUANTA_INDEX_EMBEDDER";
 
-/// Resolve the daemon binary: explicit path, then `QUANTA_INDEX_SEARCHD_BIN`,
-/// then next to the current executable (both same-dir and `deps/` layouts).
-/// Every miss is reported; nothing is guessed.
+/// Resolve the daemon binary. An explicit path or environment override is
+/// authoritative: a bad pin must fail instead of silently selecting another
+/// binary. Only an unset pin permits next-to-runner discovery.
 pub fn resolve_searchd_binary(explicit: Option<&Path>) -> BenchResult<PathBuf> {
+    if let Some(path) = explicit {
+        return require_searchd_binary(path, "--searchd-bin");
+    }
+    if let Some(path) = std::env::var_os(SEARCHD_BIN_ENV) {
+        return require_searchd_binary(&PathBuf::from(path), SEARCHD_BIN_ENV);
+    }
     let mut tried: Vec<String> = Vec::new();
     let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Some(path) = explicit {
-        candidates.push(path.to_path_buf());
-    }
-    if let Some(env) = std::env::var_os(SEARCHD_BIN_ENV) {
-        candidates.push(PathBuf::from(env));
-    }
     // Compile-time workspace layout (this crate lives two levels below root).
     for profile in ["debug", "release"] {
         candidates.push(
@@ -72,6 +73,16 @@ pub fn resolve_searchd_binary(explicit: Option<&Path>) -> BenchResult<PathBuf> {
         "searchd binary not found; tried: {} (pass --searchd-bin or set {SEARCHD_BIN_ENV}, or build the searchd package first)",
         tried.join(", ")
     )))
+}
+
+fn require_searchd_binary(path: &Path, source: &str) -> BenchResult<PathBuf> {
+    if !path.is_absolute() || !path.is_file() {
+        return Err(BenchError::Daemon(format!(
+            "{source} must name an existing absolute searchd binary: {}",
+            path.display()
+        )));
+    }
+    Ok(path.to_path_buf())
 }
 
 fn daemon_socket_paths(state_root: &Path) -> [PathBuf; 3] {
@@ -295,28 +306,19 @@ impl DaemonSession {
         &self.embedder
     }
 
-    /// Prove the fresh daemon serves no readable generation: an active query
-    /// must fail. Success here means stale-index reuse and is refused.
+    /// Prove the fresh daemon has no active generation. Transport, protocol,
+    /// and readiness errors are not evidence of an empty index.
     pub fn assert_index_empty(
         &self,
         repo_id: &RepoId,
         revision_id: &RevisionId,
     ) -> BenchResult<()> {
-        match self
+        let report = self
             .client
-            .lexical()
-            .query()
-            .native("retrieval-bench-empty-probe")
-            .active(repo_id.clone(), revision_id.clone())
-            .top_k(1)
-            .execute()
-        {
-            Ok(_) => Err(BenchError::Protocol(
-                "fresh daemon unexpectedly serves an active generation; refusing stale-index reuse"
-                    .to_string(),
-            )),
-            Err(_) => Ok(()),
-        }
+            .generations()
+            .status(repo_id.clone(), revision_id.clone())
+            .map_err(|err| BenchError::Sdk(format!("fresh-index status probe failed: {err}")))?;
+        verify_empty_status(&report, repo_id, revision_id)
     }
 
     /// Bounded shutdown of the runner-owned daemon.
@@ -326,6 +328,65 @@ impl DaemonSession {
         }
         remove_socket_files(&self.state_root);
         Ok(())
+    }
+}
+
+fn verify_empty_status(
+    report: &GenerationStatusReport,
+    repo_id: &RepoId,
+    revision_id: &RevisionId,
+) -> BenchResult<()> {
+    if &report.repo_id != repo_id || &report.revision_id != revision_id {
+        return Err(BenchError::Protocol(
+            "fresh-index status response names another repository or revision".to_string(),
+        ));
+    }
+    if !report.tracks.is_empty() || report.semantic_content.is_some() {
+        return Err(BenchError::Protocol(
+            "fresh daemon unexpectedly has an active generation; refusing stale-index reuse"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod empty_status_tests {
+    use super::*;
+
+    #[test]
+    fn empty_status_requires_correct_identity_and_no_active_tracks() {
+        let repo = RepoId::new("bench-repo").expect("repo ID");
+        let revision = RevisionId::new("bench-revision").expect("revision ID");
+        let mut report = GenerationStatusReport {
+            repo_id: repo.clone(),
+            revision_id: revision.clone(),
+            tracks: Vec::new(),
+            semantic_content: None,
+        };
+        assert!(verify_empty_status(&report, &repo, &revision).is_ok());
+        assert!(
+            verify_empty_status(
+                &report,
+                &RepoId::new("other-repo").expect("repo ID"),
+                &revision
+            )
+            .is_err()
+        );
+        report
+            .tracks
+            .push(quanta_index_contract::ipc::TrackReadinessRecord {
+                track: quanta_index_contract::SearchPlaneTrackKind::Lexical,
+                manifest_generation: ManifestGeneration::new(1),
+                manifest_digest: "existing".to_string(),
+            });
+        assert!(verify_empty_status(&report, &repo, &revision).is_err());
+    }
+
+    #[test]
+    fn explicit_binary_pin_never_falls_back() {
+        assert!(resolve_searchd_binary(Some(Path::new("/does-not-exist/searchd"))).is_err());
+        assert!(require_searchd_binary(Path::new("relative/searchd"), "test").is_err());
     }
 }
 

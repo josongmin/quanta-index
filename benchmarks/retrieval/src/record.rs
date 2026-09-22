@@ -128,6 +128,19 @@ fn forbidden_pack_key(value: &Value) -> Option<String> {
     }
 }
 
+fn exact_keys(object: &Map<String, Value>, expected: &[&str], context: &str) -> BenchResult<()> {
+    let actual: BTreeSet<&str> = object.keys().map(String::as_str).collect();
+    let expected: BTreeSet<&str> = expected.iter().copied().collect();
+    if actual != expected {
+        return Err(BenchError::Protocol(format!(
+            "{context} fields differ from frozen query-pack contract: missing={:?}, unexpected={:?}",
+            expected.difference(&actual).collect::<Vec<_>>(),
+            actual.difference(&expected).collect::<Vec<_>>()
+        )));
+    }
+    Ok(())
+}
+
 /// Load a `freeze`-produced query pack, verifying blindness (no gold-bearing
 /// keys anywhere), query hashes and tokenizer binding.
 pub fn load_query_pack(path: &Path) -> BenchResult<QueryPack> {
@@ -147,6 +160,21 @@ pub fn load_query_pack(path: &Path) -> BenchResult<QueryPack> {
     let object = value.as_object().ok_or_else(|| {
         BenchError::Protocol(format!("query pack must be an object: {}", path.display()))
     })?;
+    exact_keys(
+        object,
+        &[
+            "schema_version",
+            "suite_id",
+            "suite_commitment_sha256",
+            "repository_commit",
+            "tokenizer",
+            "tokenizer_budget_version",
+            "routes",
+            "file_universe",
+            "tasks",
+        ],
+        "query pack",
+    )?;
     let get_str = |key: &str| -> BenchResult<String> {
         object
             .get(key)
@@ -167,16 +195,11 @@ pub fn load_query_pack(path: &Path) -> BenchResult<QueryPack> {
             "query pack tokenizer mismatch: {tokenizer}"
         )));
     }
-    let budget_version = object
-        .get("tokenizer_budget_version")
-        .and_then(Value::as_str)
-        .map(ToString::to_string);
-    if let Some(version) = &budget_version {
-        if version != TOKENIZER_BUDGET_VERSION {
-            return Err(BenchError::Protocol(format!(
-                "query pack tokenizer/budget version mismatch: {version}"
-            )));
-        }
+    let budget_version = get_str("tokenizer_budget_version")?;
+    if budget_version != TOKENIZER_BUDGET_VERSION {
+        return Err(BenchError::Protocol(format!(
+            "query pack tokenizer/budget version mismatch: {budget_version}"
+        )));
     }
     let routes = object
         .get("routes")
@@ -190,6 +213,13 @@ pub fn load_query_pack(path: &Path) -> BenchResult<QueryPack> {
             .ok_or_else(|| BenchError::Protocol("query pack has an empty route".to_string()))?;
         route_names.push(name.to_string());
     }
+    if route_names.is_empty()
+        || route_names.iter().collect::<BTreeSet<_>>().len() != route_names.len()
+    {
+        return Err(BenchError::Protocol(
+            "query pack routes must be nonempty and unique".to_string(),
+        ));
+    }
     let mut universe = Vec::new();
     if let Some(entries) = object.get("file_universe") {
         let list = entries
@@ -199,6 +229,7 @@ pub fn load_query_pack(path: &Path) -> BenchResult<QueryPack> {
             let item = entry.as_object().ok_or_else(|| {
                 BenchError::Protocol("file_universe entry must be an object".to_string())
             })?;
+            exact_keys(item, &["path", "file_sha256"], "file_universe entry")?;
             let path = item
                 .get("path")
                 .and_then(Value::as_str)
@@ -214,6 +245,17 @@ pub fn load_query_pack(path: &Path) -> BenchResult<QueryPack> {
                 })?;
             universe.push((path.to_string(), digest.to_string()));
         }
+    }
+    if universe
+        .iter()
+        .map(|(path, _)| path)
+        .collect::<BTreeSet<_>>()
+        .len()
+        != universe.len()
+    {
+        return Err(BenchError::Protocol(
+            "duplicate file_universe path".to_string(),
+        ));
     }
     let tasks = object
         .get("tasks")
@@ -231,6 +273,11 @@ pub fn load_query_pack(path: &Path) -> BenchResult<QueryPack> {
         let item = task
             .as_object()
             .ok_or_else(|| BenchError::Protocol("query pack task must be an object".to_string()))?;
+        exact_keys(
+            item,
+            &["task_id", "query", "query_sha256"],
+            "query pack task",
+        )?;
         let task_id = item
             .get("task_id")
             .and_then(Value::as_str)
@@ -272,7 +319,7 @@ pub fn load_query_pack(path: &Path) -> BenchResult<QueryPack> {
         suite_commitment_sha256: get_str("suite_commitment_sha256")?,
         repository_commit: get_str("repository_commit")?,
         tokenizer,
-        tokenizer_budget_version: budget_version,
+        tokenizer_budget_version: Some(budget_version),
         routes: route_names,
         file_universe: universe,
         tasks: parsed,
@@ -784,5 +831,35 @@ mod tests {
         let clean: Value = serde_json::from_str(r#"{"tasks":[{"task_id":"t","query":"q"}]}"#)
             .expect("fixture parses");
         assert!(forbidden_pack_key(&clean).is_none());
+    }
+
+    #[test]
+    fn pack_contract_rejects_unknown_fields_that_could_leak_labels() {
+        let mut object = Map::new();
+        assert!(
+            object
+                .insert("task_id".to_string(), Value::String("q1".to_string()))
+                .is_none()
+        );
+        assert!(
+            object
+                .insert("query".to_string(), Value::String("needle".to_string()))
+                .is_none()
+        );
+        assert!(
+            object
+                .insert(
+                    "query_sha256".to_string(),
+                    Value::String("digest".to_string())
+                )
+                .is_none()
+        );
+        assert!(exact_keys(&object, &["task_id", "query", "query_sha256"], "task").is_ok());
+        assert!(
+            object
+                .insert("relevant_spans".to_string(), Value::Array(Vec::new()))
+                .is_none()
+        );
+        assert!(exact_keys(&object, &["task_id", "query", "query_sha256"], "task").is_err());
     }
 }

@@ -4562,8 +4562,10 @@ name = "quanta-index-retrieval-bench"
 version = "0.1.0"
 dependencies = [
  "quanta-index-contract",
+ "quanta-index-embed",
  "quanta-index-ipc",
  "quanta-index-sdk",
+ "quanta-index-search-plane",
  "serde",
  "serde_json",
  "sha2",

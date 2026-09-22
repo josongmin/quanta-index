@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -17,7 +18,10 @@ use quanta_index_retrieval_bench::chunking::{
     chunk_corpus, fixed_window::FixedWindowChunker, syntax::SyntaxChunker,
     whole_file::WholeFileChunker,
 };
-use quanta_index_retrieval_bench::corpus::{CorpusLimits, SourceFile, load_corpus, load_manifest};
+use quanta_index_retrieval_bench::corpus::{
+    CorpusLimits, SourceFile, load_corpus, load_manifest, verify_checkout,
+};
+use quanta_index_retrieval_bench::profile::EmbedderProfile;
 use quanta_index_retrieval_bench::record::{
     QueryPack, RouteProvenance, RunnerIdentity, load_query_pack, runner_record,
 };
@@ -44,10 +48,11 @@ fn print_help() {
          fixed_window: --window-bytes N (default 4000) --overlap-bytes N (default 400)\n\
          syntax: --max-item-bytes N (default 32768)\n\
          run adds: --query-pack PATH --routes a,b --top-k N --state-root PATH\n\
-         --repo-id ID --revision-id ID --generation N --model NAME --model-revision REV\n\
+         --repo-id ID --revision-id ID --generation N\n\
          --runner-name NAME --runner-revision REV --run-id ID\n\
-         --blinding isolated|attested --isolation-method TEXT --access-block-log TEXT\n\
-         --out PATH [--searchd-bin PATH] [--embedder NAME] [--max-file-bytes N]\n\
+         --blinding attested --isolation-method TEXT --access-block-log TEXT\n\
+         --out PATH [--searchd-bin PATH] [--embedder potion-code|hash-dev]\n\
+         [--max-file-bytes N]\n\
          [--io-timeout-secs N] [--ready-timeout-secs N]"
     );
 }
@@ -199,10 +204,47 @@ fn write_json(path: &Path, value: &serde_json::Value) -> BenchResult<()> {
         path: path.display().to_string(),
         message: err.to_string(),
     })?;
-    std::fs::write(path, format!("{rendered}\n")).map_err(|err| BenchError::Io {
-        path: path.display().to_string(),
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|err| BenchError::Io {
+            path: path.display().to_string(),
+            message: format!("refusing to overwrite benchmark evidence: {err}"),
+        })?;
+    file.write_all(format!("{rendered}\n").as_bytes())
+        .map_err(|err| BenchError::Io {
+            path: path.display().to_string(),
+            message: err.to_string(),
+        })
+}
+
+fn require_external_path(repo: &Path, path: &Path, label: &str) -> BenchResult<()> {
+    if !path.is_absolute() {
+        return Err(BenchError::Config(format!(
+            "{label} must be an absolute path"
+        )));
+    }
+    if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Err(BenchError::Config(format!("{label} must not be a symlink")));
+    }
+    let root = std::fs::canonicalize(repo).map_err(|err| BenchError::Io {
+        path: repo.display().to_string(),
         message: err.to_string(),
-    })
+    })?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| BenchError::Config(format!("{label} has no parent")))?;
+    let canonical_parent = std::fs::canonicalize(parent).map_err(|err| BenchError::Io {
+        path: parent.display().to_string(),
+        message: err.to_string(),
+    })?;
+    if canonical_parent.starts_with(&root) {
+        return Err(BenchError::Config(format!(
+            "{label} must be outside the frozen repository"
+        )));
+    }
+    Ok(())
 }
 
 fn run_chunk(args: &Args) -> BenchResult<()> {
@@ -221,6 +263,7 @@ fn run_chunk(args: &Args) -> BenchResult<()> {
     )?;
     let repo = PathBuf::from(required(args, "repo")?);
     let manifest = load_manifest(&PathBuf::from(required(args, "manifest")?))?;
+    verify_checkout(&repo, &manifest)?;
     let limits = CorpusLimits {
         max_file_bytes: optional_u64(
             args,
@@ -231,6 +274,13 @@ fn run_chunk(args: &Args) -> BenchResult<()> {
     let files = load_corpus(&repo, &manifest, &limits)?;
     let selection = chunk_with_strategy(&required(args, "strategy")?, args, &files)?;
     let out = PathBuf::from(required(args, "out")?);
+    require_external_path(&repo, &out, "--out")?;
+    if out.exists() {
+        return Err(BenchError::Config(format!(
+            "--out already exists: {}",
+            out.display()
+        )));
+    }
     let mut file_entries = serde_json::Map::new();
     for (path, chunks) in &selection.chunks {
         let items: Vec<serde_json::Value> = chunks
@@ -267,6 +317,7 @@ fn run_chunk(args: &Args) -> BenchResult<()> {
         "fallback_chunks": coverage.fallback_chunks,
         "per_file": file_entries,
     });
+    verify_checkout(&repo, &manifest)?;
     write_json(&out, &value)?;
     println!(
         "chunked {} files into {} chunks ({} fallback, {} uncovered bytes) via {}",
@@ -300,8 +351,6 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             "repo-id",
             "revision-id",
             "generation",
-            "model",
-            "model-revision",
             "runner-name",
             "runner-revision",
             "run-id",
@@ -316,15 +365,16 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     let overall = Instant::now();
     let repo = PathBuf::from(required(args, "repo")?);
     let manifest = load_manifest(&PathBuf::from(required(args, "manifest")?))?;
+    verify_checkout(&repo, &manifest)?;
     let pack = load_query_pack(&PathBuf::from(required(args, "query-pack")?))?;
     cross_check_manifest_pack(&manifest, &pack)?;
     let routes = parse_routes(&required(args, "routes")?)?;
-    for route in &routes {
-        if !pack.routes.iter().any(|name| name == route) {
-            return Err(BenchError::Protocol(format!(
-                "route {route} is not registered in the query pack"
-            )));
-        }
+    let selected: BTreeSet<&str> = routes.iter().copied().collect();
+    let registered: BTreeSet<&str> = pack.routes.iter().map(String::as_str).collect();
+    if selected != registered {
+        return Err(BenchError::Protocol(format!(
+            "runner routes {selected:?} differ from query-pack routes {registered:?}"
+        )));
     }
     let top_k = u32::try_from(optional_u64(args, "top-k", 0)?)
         .map_err(|_| usage_error("flag --top-k exceeds u32 range".to_string()))?;
@@ -371,12 +421,32 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     let (batch, assembly) = assemble_batch(&identity, &selection.chunks)?;
 
     let state_root = PathBuf::from(required(args, "state-root")?);
+    require_external_path(&repo, &state_root, "--state-root")?;
+    let out = PathBuf::from(required(args, "out")?);
+    require_external_path(&repo, &out, "--out")?;
+    if out.exists() {
+        return Err(BenchError::Config(format!(
+            "--out already exists: {}",
+            out.display()
+        )));
+    }
     let searchd_bin = args.flags.get("searchd-bin").map(PathBuf::from);
-    let embedder = args
-        .flags
-        .get("embedder")
-        .cloned()
-        .unwrap_or_else(|| "hash-dev".to_string());
+    let profile = EmbedderProfile::resolve(args.flags.get("embedder").map(String::as_str))?;
+    let blinding = required(args, "blinding")?;
+    if blinding != "attested" {
+        return Err(BenchError::Config(
+            "this CLI cannot prove process isolation; only --blinding attested is allowed"
+                .to_string(),
+        ));
+    }
+    let identity_block = RunnerIdentity::new(
+        required(args, "runner-name")?,
+        required(args, "runner-revision")?,
+        required(args, "run-id")?,
+        blinding,
+        required(args, "isolation-method")?,
+        required(args, "access-block-log")?,
+    )?;
     let io_timeout = Duration::from_secs(optional_u64(
         args,
         "io-timeout-secs",
@@ -390,7 +460,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     let config = DaemonConfig {
         state_root: &state_root,
         searchd_binary: searchd_bin.as_deref(),
-        embedder: &embedder,
+        embedder: profile.selector,
         ready_timeout,
         io_timeout,
         history_max_generations: 8,
@@ -411,18 +481,21 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         )));
     }
 
-    let model = required(args, "model")?;
-    let model_revision = required(args, "model-revision")?;
     let mut provenance = BTreeMap::new();
     for route in routes.iter().copied() {
+        let (model, model_revision) = if route == "lexical" {
+            ("none:lexical", "not-applicable")
+        } else {
+            (profile.model_id, profile.model_revision)
+        };
         assert!(
             provenance
                 .insert(
                     route.to_string(),
                     RouteProvenance {
                         system: "quanta-index".to_string(),
-                        model: model.clone(),
-                        model_revision: model_revision.clone(),
+                        model: model.to_string(),
+                        model_revision: model_revision.to_string(),
                     },
                 )
                 .is_none()
@@ -450,14 +523,6 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     }
     let query_elapsed = query_start.elapsed();
 
-    let identity_block = RunnerIdentity::new(
-        required(args, "runner-name")?,
-        required(args, "runner-revision")?,
-        required(args, "run-id")?,
-        required(args, "blinding")?,
-        required(args, "isolation-method")?,
-        required(args, "access-block-log")?,
-    )?;
     let record = runner_record(
         &pack,
         &identity_block,
@@ -466,7 +531,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         top_k,
         &by_path,
     )?;
-    let out = PathBuf::from(required(args, "out")?);
+    verify_checkout(&repo, &manifest)?;
     write_json(&out, &record)?;
     let binary = session.searchd_binary().display().to_string();
     session.stop()?;
@@ -530,7 +595,9 @@ fn cross_check_manifest_pack(
         ));
     }
     if pack.file_universe.is_empty() {
-        return Ok(());
+        return Err(BenchError::Protocol(
+            "query pack lacks an admitted file universe; cannot prove paired coverage".to_string(),
+        ));
     }
     let manifest_rows: BTreeSet<(&str, &str)> = manifest
         .files
@@ -576,5 +643,26 @@ fn main() {
     if let Err(err) = outcome {
         eprintln!("ERROR: {err}");
         std::process::exit(2);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn evidence_output_is_external_and_never_overwritten() {
+        let parent = tempfile::tempdir().expect("tempdir");
+        let repo = parent.path().join("repo");
+        let external = parent.path().join("evidence");
+        std::fs::create_dir(&repo).expect("repo dir");
+        std::fs::create_dir(&external).expect("evidence dir");
+        assert!(require_external_path(&repo, &repo.join("run.json"), "--out").is_err());
+        let output = external.join("run.json");
+        assert!(require_external_path(&repo, &output, "--out").is_ok());
+        write_json(&output, &serde_json::json!({"run": 1})).expect("first write");
+        assert!(write_json(&output, &serde_json::json!({"run": 2})).is_err());
+        let saved = std::fs::read_to_string(&output).expect("saved output");
+        assert!(saved.contains("\"run\": 1"));
     }
 }

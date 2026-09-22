@@ -11,6 +11,7 @@
 pub mod batch;
 pub mod chunking;
 pub mod corpus;
+pub mod profile;
 pub mod record;
 pub mod sdk;
 
