@@ -1,9 +1,10 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Parse a search time reference against an explicit `now` (TOPT-01 /
-/// PO-1): the deterministic owner. Absolute shapes ignore `now_ms`;
-/// relative shapes subtract from it with checked arithmetic, so zero
-/// yields `now_ms` and underflow yields `None`.
+/// Parse a search time reference against an explicit `now`.
+///
+/// The deterministic owner (TOPT-01 / PO-1). Absolute shapes ignore
+/// `now_ms`; relative shapes subtract from it with checked arithmetic,
+/// so zero yields `now_ms` and underflow yields `None`.
 #[must_use]
 pub fn parse_search_timeref_ms_at(value: &str, now_ms: u64) -> Option<u64> {
     let trimmed = value.trim();

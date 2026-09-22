@@ -52,7 +52,7 @@ struct CancelSharedV1 {
 
 impl std::fmt::Debug for CancelSharedV1 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let live = self.waiters.lock().map(|set| set.wake.len()).unwrap_or(0);
+        let live = self.waiters.lock().map_or(0, |set| set.wake.len());
         f.debug_struct("CancelSharedV1")
             .field("cancelled", &self.cancelled.load(Ordering::Acquire))
             .field("live_waiters", &live)
@@ -78,16 +78,18 @@ impl CancelHandleV1 {
             return;
         }
         let wake = {
-            let waiters = self.shared.waiters.lock().map(|mut set| {
-                let wake: Vec<std::sync::Arc<dyn Fn() + Send + Sync>> = set
-                    .wake
-                    .iter()
-                    .map(|(_, woken)| Arc::clone(woken))
-                    .collect();
-                set.wake.clear();
-                wake
-            });
-            waiters.unwrap_or_default()
+            self.shared.waiters.lock().map_or_else(
+                |_| Vec::new(),
+                |mut set| {
+                    let wake: Vec<std::sync::Arc<dyn Fn() + Send + Sync>> = set
+                        .wake
+                        .iter()
+                        .map(|(_, woken)| Arc::clone(woken))
+                        .collect();
+                    set.wake.clear();
+                    wake
+                },
+            )
         };
         for woken in wake {
             woken();
@@ -172,11 +174,10 @@ impl RequestBudgetV1 {
     /// registration lives until the returned guard drops.
     pub fn cancel_waiter(&self, wake: Arc<dyn Fn() + Send + Sync>) -> CancelWaiterGuardV1 {
         let id = {
-            let mut set = self
-                .shared
-                .waiters
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut set = match self.shared.waiters.lock() {
+                Ok(set) => set,
+                Err(poisoned) => poisoned.into_inner(),
+            };
             let id = set.next_id;
             set.next_id = set.next_id.wrapping_add(1);
             set.wake.push((id, wake));
@@ -191,11 +192,7 @@ impl RequestBudgetV1 {
     /// Live waiter registrations. Test-only census for the RAII proof.
     #[cfg(test)]
     fn live_waiters(&self) -> usize {
-        self.shared
-            .waiters
-            .lock()
-            .map(|set| set.wake.len())
-            .unwrap_or(0)
+        self.shared.waiters.lock().map_or(0, |set| set.wake.len())
     }
 
     #[must_use]

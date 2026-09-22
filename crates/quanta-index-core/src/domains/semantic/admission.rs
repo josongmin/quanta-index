@@ -569,7 +569,8 @@ impl ProviderBudgetLedger {
     /// keeps the newest [`PROVIDER_AUDIT_RING_CAP`] events; older ones are
     /// evicted, never grown past the cap.
     pub fn record_audit(&self, event: ProviderAuditEventV1) -> Result<(), CoreError> {
-        let mut inner = self.inner.lock().map_err(|err| {
+        let guard = self.inner.lock();
+        let mut inner = guard.map_err(|err| {
             CoreError::Storage(format!(
                 "semantic admission: provider budget ledger lock poisoned: {err}"
             ))
@@ -578,6 +579,7 @@ impl ProviderBudgetLedger {
         while inner.audit.len() > PROVIDER_AUDIT_RING_CAP {
             drop(inner.audit.pop_front());
         }
+        drop(inner);
         Ok(())
     }
 
@@ -775,6 +777,10 @@ mod tests {
         }
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "each index follows an exact length assert on the same tail"
+    )]
     #[test]
     fn audit_ring_starts_empty_and_reads_back_in_order() {
         let ledger = ProviderBudgetLedger::new(test_budget()).expect("valid budget");
@@ -790,6 +796,10 @@ mod tests {
         assert_eq!(last_one[0].ticket_id, 2);
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "each index follows an exact length assert on the same tail"
+    )]
     #[test]
     fn audit_ring_evicts_oldest_past_the_cap() {
         let ledger = ProviderBudgetLedger::new(test_budget()).expect("valid budget");

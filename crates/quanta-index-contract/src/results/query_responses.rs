@@ -2683,6 +2683,10 @@ mod tests {
         assert!(validate_file_owner_projection_v1(&results, Some(&rows)).is_ok());
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "fixture vec literal has exactly two rows; indices 0 and 1 are total by construction"
+    )]
     #[test]
     fn file_owner_projection_count_mismatch_fails() {
         let results = vec![
@@ -2696,6 +2700,10 @@ mod tests {
         );
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "fixture vec literal has exactly two rows; indices 0 and 1 are total by construction"
+    )]
     #[test]
     fn file_owner_projection_swapped_rows_fail() {
         let results = vec![
@@ -2712,6 +2720,10 @@ mod tests {
         );
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "fixture vec literal has exactly two rows; indices 0 and 1 are total by construction"
+    )]
     #[test]
     fn text_response_with_swapped_projection_refuses_encode_and_decode() {
         let results = vec![

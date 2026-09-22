@@ -1008,7 +1008,7 @@ fn search_plane_ipc_response_v2_history_page_rejects_inconsistent_shapes() -> Te
                 window: QueryResultWindowV2::exact_probe(1),
                 read_epoch,
                 examined: 1,
-                next_cursor: Some(cursor.clone()),
+                next_cursor: Some(cursor),
             },
         ),
         (
@@ -1027,7 +1027,7 @@ fn search_plane_ipc_response_v2_history_page_rejects_inconsistent_shapes() -> Te
         (
             "a window that does not count the rows",
             quanta_index_contract::SearchPlaneHistoryQueryResponse {
-                generation: generation.clone(),
+                generation,
                 order: quanta_index_contract::HistoryOrderV1::Recency,
                 commits: vec![history_commit_candidate()],
                 diffs: Vec::new(),
@@ -1182,7 +1182,7 @@ fn search_plane_ipc_v2_history_refuses_order_and_score_disagreements() -> TestRe
     };
     let relevance_cursor = HistoryCursor {
         order: HistoryCursorOrderV1::Relevance { score },
-        ..recency_cursor.clone()
+        ..recency_cursor
     };
     let cases: Vec<(&str, SearchPlaneHistoryQueryResponse)> = vec![
         (
@@ -1191,7 +1191,7 @@ fn search_plane_ipc_v2_history_refuses_order_and_score_disagreements() -> TestRe
         ),
         (
             "a recency page with a scored row",
-            page(HistoryOrderV1::Recency, scored.clone(), None)?,
+            page(HistoryOrderV1::Recency, scored, None)?,
         ),
     ];
     for (label, page) in cases {
@@ -1942,7 +1942,10 @@ fn keyset_cursors_round_trip_and_decode_fail_closed() -> TestRes {
         *cursor = ciborium::Value::Text(String::new());
         Ok(())
     })?;
-    expect_decode_error_contains::<SearchPlaneQueryIpcRequest>(&bytes, "non-empty continuation token")
+    expect_decode_error_contains::<SearchPlaneQueryIpcRequest>(
+        &bytes,
+        "non-empty continuation token",
+    )
 }
 
 /// A page request carries its cursor only when it has one, and the two
@@ -2052,7 +2055,7 @@ fn keyset_pages_round_trip_with_and_without_a_continuation() -> TestRes {
 /// A page cannot claim a continuation it does not position, position one
 /// that is not its last row, count rows it does not hold, leave its
 /// order, or hand out a cursor for an epoch it did not read.
-
+///
 /// An inconsistent page must never cross the wire: the codec refuses it
 /// at encode, at decode, or at both, and the refusal must name the
 /// violated page invariant.
@@ -2067,10 +2070,9 @@ fn expect_page_refused(
             Err(err) => {
                 let message = err.to_string();
                 if !message.contains(fragment) {
-                    return Err(format!(
-                        "{label}: decode refusal missed `{fragment}`: {message}"
-                    )
-                    .into());
+                    return Err(
+                        format!("{label}: decode refusal missed `{fragment}`: {message}").into(),
+                    );
                 }
                 Ok(())
             }
@@ -2078,7 +2080,9 @@ fn expect_page_refused(
         Err(err) => {
             let message = err.to_string();
             if !message.contains(fragment) {
-                return Err(format!("{label}: encode refusal missed `{fragment}`: {message}").into());
+                return Err(
+                    format!("{label}: encode refusal missed `{fragment}`: {message}").into(),
+                );
             }
             Ok(())
         }
@@ -2135,7 +2139,7 @@ fn keyset_pages_reject_inconsistent_shapes() -> TestRes {
             "a duplicated row",
             quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
                 results: vec![lexical_candidate_named("b"), lexical_candidate_named("b")],
-                ..base.clone()
+                ..base
             },
             "strictly ascending",
         ),
@@ -2191,7 +2195,7 @@ fn keyset_pages_reject_inconsistent_shapes() -> TestRes {
                     structural_candidate_named("a"),
                 ],
                 next_cursor: Some(token("a")?),
-                ..base.clone()
+                ..base
             },
             "strictly ascending",
         ),
