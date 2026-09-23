@@ -2,7 +2,7 @@
 
 #[path = "e2e_process_readiness.rs"]
 mod e2e_process_readiness;
-#[allow(
+#[expect(
     dead_code,
     reason = "the shared bounded-wait helper also serves broader runtime suites"
 )]
