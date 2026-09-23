@@ -245,6 +245,61 @@ to validated lane handoffs and immutable proof manifests, not this document.
 
 ## Audit corrections
 
+- W10 R5 public-API RCA (inspection at `main@db46b12`, original Q1 source
+  `2e8dce9`): the earlier R5 `FAIL` compared the aggregate
+  `384cecb..2e8dce9` baseline diff with the correlation-only allowlist. That
+  range includes interleaved work from other owners, while the allowlist also
+  omitted R3's required typed corruption error. The four added lines in
+  `tools/ci/lint/baselines/public-api/quanta-index-contract.txt` represent two
+  symbols emitted through two export paths, with no removed lines:
+  - `FileOwnerProjectionErrorV1: Error` (two export paths) came from
+    `dae991e` and its baseline follow-up `e42cb82`. It is a test-optimization
+    rail change, not W10 R1–R4. Keep it in the aggregate baseline because the
+    production impl exists; exclude it from W10's change attribution.
+  - `LegacySemanticJournalCorrupt` (two export paths) came from W10 R3
+    `ea8feba` and its baseline follow-up `eb744e0`. The read-only legacy
+    journal decoder maps corrupt CBOR to this typed error, and
+    `state_migration_owner_v1` asserts it for corrupt/truncated input. R3's
+    P10 contract explicitly requires fail-closed corrupt input. This is an
+    intentional P10 error-surface addition omitted from the R5 prompt's
+    correlation-focused allowlist; removing it or mapping it to an unrelated
+    error to satisfy that list would weaken the owner contract.
+  - W10 R1 `e3167dc`, R2 `721a128`, and R4 `dc4206a` changed no public-API
+    baseline lines. The wire inventory is identical at `384cecb` and
+    `2e8dce9`. Later P06 active-resolution additions in
+    `2e8dce9..db46b12` belong to a separate source revision and are not R5
+    evidence.
+  The baseline was updated in `e42cb82` and `eb744e0`, before one serial R5
+  rebaseline. Shared-main interleaving broke the intended single-writer
+  chronology; Git commit provenance plus the producer source and owner oracle
+  are the recoverable attribution evidence. Do not rewrite those commits or
+  delete a real public API entry to manufacture a one-commit baseline history.
+  R5 baseline finding disposition: **mixed-owner attribution and incomplete
+  allowlist**, with the P10 typed-error addition explicitly documented as
+  the R3 exception in S21-11. At
+  `2e8dce9`, `just rust-public-api` passed against the source-bound baseline;
+  the R5 merge-tree and local Q1 owner rails passed in the isolated checkout.
+  Future shared-branch R5 reviews must pair each added baseline symbol with
+  its source-producing commit and owner ticket before applying a lane
+  allowlist. A baseline-only follow-up commit is not the origin of the API
+  change, and an aggregate range is not a lane-specific write set.
+  This correction does not issue a current-main owner manifest or qualify
+  P10's remaining RepoMap migration, P11, Linux release, deployment,
+  activation, rollback, or P12. Re-run those rails on one final clean source
+  before claiming their verdicts.
+- Current-main harness compile RCA at `db46b12`: P06 added
+  `ActiveGenerationSnapshot` and `ResolvedLexicalGeneration` query responses,
+  but the searchd harness and its open-loop binary retained exhaustive matches
+  for the old enum. Building the P10 owner target failed before running a test
+  with E0004 in `harness.rs`, `concurrency.rs`, and `open_loop.rs`. The harness
+  fixes landed independently on main as `9d37f6d` and `0e9cd17`; this RCA
+  branch retains only the missing concurrency negative oracle and does not
+  duplicate those implementation commits. The harness treats either
+  authority response to a normal search route as an
+  unexpected response, never as a served result or benchmark row. Readiness
+  waits terminate on such a response so the route can report the protocol
+  mismatch instead of retrying until timeout. This is a consumer exhaustiveness
+  correction for the current P06 contract, not a new W10 R5 public API delta.
 - W10 execution truth and request correlation are integrated on local main;
   they are no longer listed as unmerged work.
 - The production semantic adapter reruns a short approximate pass through an

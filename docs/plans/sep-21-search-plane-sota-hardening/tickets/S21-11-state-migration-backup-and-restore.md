@@ -18,6 +18,13 @@ Status: `planned`
   `tests/state_migration_owner_v1.rs` proves no destination publish and an
   unchanged source. Empty V1 layout markers and valid semantic journal may
   migrate. This does not close the full ticket.
+- W10-R3's read-only journal decoder returns the distinct public
+  `LegacySemanticJournalCorrupt` error for malformed CBOR. The owner fixture
+  checks corrupt and truncated journals against that exact code. Its two
+  public-API baseline rows are one symbol exposed through the `ipc` path and
+  the crate re-export. R5 must review this P10-owned delta explicitly;
+  collapsing it into an unrelated error solely to satisfy R5's
+  correlation-only allowlist would lose the typed corruption contract.
 - Remaining owner action: define a producer-replay input containing the
   original source bundle and checked identity for every legacy active key.
   Import through the current RepoMap publish/activate authority, then compare

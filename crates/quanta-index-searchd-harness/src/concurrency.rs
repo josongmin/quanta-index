@@ -714,6 +714,9 @@ mod tests {
     //! The pure parts: outcome classification, tallies, rows and the
     //! head-of-line ratio. The measured rail runs under the daemon lane.
     use super::*;
+    use quanta_index_contract::{
+        GenerationSnapshot, ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind,
+    };
 
     fn sample(route: Option<MixedRoute>, wall_ms: f64, outcome: RequestOutcome) -> RequestSample {
         RequestSample {
@@ -733,6 +736,31 @@ mod tests {
         assert_eq!(MixedRoute::Semantic.route_family(), RouteFamily::Semantic);
         assert_eq!(MixedRoute::Hybrid.route_family(), RouteFamily::Hybrid);
         assert_eq!(MixedRoute::Symbol.route_family(), RouteFamily::Symbol);
+    }
+
+    #[test]
+    fn authority_responses_are_not_counted_as_served_queries() {
+        let repo_id = RepoId::new("repo-concurrency").expect("canonical fixture repo");
+        let revision_id = RevisionId::new("rev-concurrency").expect("canonical fixture revision");
+        let generation = ManifestGeneration::new(1);
+        let pin = GenerationPin::new(repo_id.clone(), revision_id.clone(), generation);
+        let active = GenerationSnapshot {
+            repo_id,
+            revision_id,
+            track: SearchPlaneTrackKind::Lexical,
+            manifest_generation: generation,
+            manifest_digest: "fixture-digest".to_string(),
+        };
+        assert_eq!(
+            result_count_of(&SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(
+                active
+            )),
+            None
+        );
+        assert_eq!(
+            result_count_of(&SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(pin)),
+            None
+        );
     }
 
     #[test]
