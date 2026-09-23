@@ -83,8 +83,9 @@ const PRODUCED_ROOT_EXCLUSIONS: [&str; 2] = [
     STATE_BACKUP_MANIFEST_FILE_NAME,
 ];
 
-/// Manifest verification exclusions for a produced current root while its
-/// daemon lease is held. The lock is runtime custody, not manifest payload;
+/// Manifest verification exclusions for a leased produced root.
+///
+/// The lock is runtime custody, not manifest payload;
 /// unlike a live-source backup, the produced catalog remains covered by the
 /// manifest and therefore must not be excluded here.
 const LEASED_PRODUCED_ROOT_EXCLUSIONS: [&str; 3] = [
