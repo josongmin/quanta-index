@@ -6,8 +6,10 @@ to validated lane handoffs and immutable proof manifests, not this document.
 
 ## Current checkpoint (2026-09-24)
 
-- 2026-09-24 current-main P08/P09 follow-up is in progress on a shared dirty
-  checkout. `searchd` now composes a process-readiness port from supervisor
+- 2026-09-24 P08/P09 follow-up is committed at local `main` `3909b5ca`;
+  remote publication and post-commit clean-source proof are `NOT_RUN`.
+  The focused results below were collected on a shared dirty checkout.
+  `searchd` now composes a process-readiness port from supervisor
   phase, actual accept-loop/provider child liveness, maintenance heartbeat,
   activation-catalog identity, and a producer-owned physical active-pair
   proof. Boot's already-proven active pair identity seeds the cache, so the
