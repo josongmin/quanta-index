@@ -58,8 +58,12 @@ pub(super) fn exact_total_window_v1(
             "lexical adapter reported an exact total of {total} below the {returned} rows it returned"
         )));
     }
-    QueryResultWindowV1::new(returned, CandidateCountV1::Exact(total), total > u64::from(returned))
-        .map_err(|err| CoreError::InvalidContract(format!("lexical exact window: {err}")))
+    QueryResultWindowV1::new(
+        returned,
+        CandidateCountV1::Exact(total),
+        total > u64::from(returned),
+    )
+    .map_err(|err| CoreError::InvalidContract(format!("lexical exact window: {err}")))
 }
 
 /// Window for one lexical page: exact when the adapter proved the total,

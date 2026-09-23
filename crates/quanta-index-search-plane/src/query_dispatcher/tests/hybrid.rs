@@ -176,8 +176,16 @@ fn build_hybrid_response_explanation_reports_honest_lane_contribution_v1() {
     // zero-hit lanes the fanout metric must count — while the
     // `force_empty` case reports none.
     for (name, explanation, executed) in [
-        ("both", &both, vec![EngineTouched::Lexical, EngineTouched::Semantic]),
-        ("lex_only", &lex_only, vec![EngineTouched::Lexical, EngineTouched::Semantic]),
+        (
+            "both",
+            &both,
+            vec![EngineTouched::Lexical, EngineTouched::Semantic],
+        ),
+        (
+            "lex_only",
+            &lex_only,
+            vec![EngineTouched::Lexical, EngineTouched::Semantic],
+        ),
         ("empty", &empty, Vec::new()),
         (
             "semantic_only",
@@ -229,7 +237,10 @@ fn hybrid_builder_derives_engines_from_summary_not_hits() {
             semantic_contributed: false,
         },
     );
-    assert_eq!(zero_hit.engines_executed, vec![EngineTouched::Lexical, EngineTouched::Semantic]);
+    assert_eq!(
+        zero_hit.engines_executed,
+        vec![EngineTouched::Lexical, EngineTouched::Semantic]
+    );
     assert!(zero_hit.engines_touched.is_empty());
 }
 
@@ -310,8 +321,10 @@ fn hybrid_dispatch_embeds_semantic_query_text() -> TestResult {
             guard.search_constraints.clone(),
         )
     };
-    let expected = default_query_embedder()
-        .embed_query("scope alpha", &quanta_index_core::RequestBudgetV1::unbounded())?;
+    let expected = default_query_embedder().embed_query(
+        "scope alpha",
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     // QI-BB-018: the dense lane is independent of the lexical hits — one
     // unscoped search over the query vector, under the request's
     // constraints; never a search scoped to the lexical ids.

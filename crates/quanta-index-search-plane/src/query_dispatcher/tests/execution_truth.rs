@@ -162,7 +162,10 @@ fn emitted_fanout(lanes: &TruthLanes) -> Option<f64> {
 }
 
 fn engines_of(explanation: &SearchExplanation) -> (&[EngineTouched], &[EngineTouched]) {
-    (explanation.engines_executed.as_slice(), explanation.engines_touched.as_slice())
+    (
+        explanation.engines_executed.as_slice(),
+        explanation.engines_touched.as_slice(),
+    )
 }
 
 /// Assert the full truth chain for one response.
@@ -439,9 +442,10 @@ fn semantic_scoped_truth_chain() -> TestResult {
     // response reports the semantic engine alone.
     let lanes = truth_dispatcher(vec![candidate("lex-a", 1.0)], vec![candidate("sem-a", 1.0)])?;
     let scope = text_query("lang:python scope", rust_constraints());
-    let response = lanes
-        .dispatcher
-        .dispatch(semantic_request(Some(scope), rust_constraints()), &RequestBudgetV1::unbounded());
+    let response = lanes.dispatcher.dispatch(
+        semantic_request(Some(scope), rust_constraints()),
+        &RequestBudgetV1::unbounded(),
+    );
     let SearchPlaneQueryIpcResponse::Semantic(semantic) = &response else {
         return Err(format!("expected Semantic response, got {response:?}").into());
     };
@@ -553,10 +557,17 @@ fn hybrid_filtered_refill_counts_every_backend_call() -> TestResult {
     // fills completely while staying starved, so the lane must refill.
     let mut dense_rows = vec![candidate("alpha", 0.9)];
     for index in 0..99 {
-        dense_rows.push(candidate(Box::leak(format!("other-{index}").into_boxed_str()), 0.8));
+        dense_rows.push(candidate(
+            Box::leak(format!("other-{index}").into_boxed_str()),
+            0.8,
+        ));
     }
-    let lanes =
-        truth_dispatcher_full(vec![candidate("alpha", 1.0)], dense_rows, Some(&["alpha"]), None)?;
+    let lanes = truth_dispatcher_full(
+        vec![candidate("alpha", 1.0)],
+        dense_rows,
+        Some(&["alpha"]),
+        None,
+    )?;
     let response = lanes.dispatcher.dispatch(
         hybrid_request("type:file needle", QueryConstraintSetV1::unconstrained()),
         &RequestBudgetV1::unbounded(),
@@ -692,7 +703,11 @@ fn hybrid_candidate_for(id: &str) -> HybridCandidateV1 {
 fn explain_presence_truth_chain() -> TestResult {
     let lanes = truth_dispatcher(vec![candidate("alpha", 1.25)], Vec::new())?;
     let response = lanes.dispatcher.dispatch(
-        explain_request(ExplainCandidateV1::Lexical(candidate("alpha", 1.25)), None, None),
+        explain_request(
+            ExplainCandidateV1::Lexical(candidate("alpha", 1.25)),
+            None,
+            None,
+        ),
         &RequestBudgetV1::unbounded(),
     );
     let SearchPlaneQueryIpcResponse::Explain(explain) = &response else {
@@ -724,7 +739,11 @@ fn explain_presence_truth_chain() -> TestResult {
 fn explain_preflight_refusal_invokes_nothing() -> TestResult {
     let lanes = truth_dispatcher(vec![candidate("alpha", 1.25)], Vec::new())?;
     let response = lanes.dispatcher.dispatch(
-        explain_request(ExplainCandidateV1::Hybrid(hybrid_candidate_for("alpha")), None, None),
+        explain_request(
+            ExplainCandidateV1::Hybrid(hybrid_candidate_for("alpha")),
+            None,
+            None,
+        ),
         &RequestBudgetV1::unbounded(),
     );
     let SearchPlaneQueryIpcResponse::Error(error) = response else {

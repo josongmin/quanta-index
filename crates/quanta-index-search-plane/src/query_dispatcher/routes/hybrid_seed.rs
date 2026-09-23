@@ -247,13 +247,17 @@ impl SearchPlaneDispatcher {
                 summary.lexical_executed(),
                 summary.lexical_contributed,
             )
-            .with_candidates(CandidateCountV1::AtLeast(lane_count_u64(lexical_entity_count)?)),
+            .with_candidates(CandidateCountV1::AtLeast(lane_count_u64(
+                lexical_entity_count,
+            )?)),
             LaneTraceV1::new(
                 "hybrid_seed.dense",
                 summary.semantic_executed(),
                 summary.semantic_contributed,
             )
-            .with_candidates(CandidateCountV1::AtLeast(lane_count_u64(semantic_entity_count)?)),
+            .with_candidates(CandidateCountV1::AtLeast(lane_count_u64(
+                semantic_entity_count,
+            )?)),
         ];
         let window_v2 = fused_window_v2(
             request.top_k,
