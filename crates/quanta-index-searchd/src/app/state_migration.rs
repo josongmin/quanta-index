@@ -662,7 +662,7 @@ fn frozen_entry_v1(
             mtime_secs,
             mtime_nanos,
             content_digest_hex,
-        });
+        })
     }
     #[cfg(not(unix))]
     {
@@ -679,7 +679,7 @@ fn frozen_entry_v1(
             mtime_secs: 0,
             mtime_nanos: 0,
             content_digest_hex,
-        });
+        })
     }
 }
 
