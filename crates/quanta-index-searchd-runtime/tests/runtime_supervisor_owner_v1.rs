@@ -742,8 +742,13 @@ fn hold_the_lease(root: &std::path::Path, report: &std::path::Path) {
     };
     drop(stdin_lock);
     drop(lease);
-    std::fs::write(report, format!("held\nreleased-{release_reason}\n"))
-        .expect("the terminal report is written");
+    let mut terminal_report = std::fs::OpenOptions::new()
+        .append(true)
+        .open(report)
+        .expect("the held report remains openable for the terminal event");
+    terminal_report
+        .write_all(format!("released-{release_reason}\n").as_bytes())
+        .expect("the terminal report is appended");
 }
 
 /// Second-process side: the typed `STATE_ROOT_IN_USE` refusal is the
