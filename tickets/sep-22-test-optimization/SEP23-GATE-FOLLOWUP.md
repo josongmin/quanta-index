@@ -7,7 +7,11 @@ performance qualification. At initial capture, `main` was
 `384cecb5825d8ebf38ff6c07bc6bf64ffc43fbe0`, 16 commits ahead of
 `origin/main`. The repairs in this note were committed as
 `e42cb827b39197bae83752bec0cfb69aa572daae`; no clean checkout of that
-commit was qualified. Other writers had uncommitted changes in catalog, embed,
+commit was qualified. A clean checkout of its doc-only successor
+`d9b39c392d0e617ac0656a908bd0a85d755fc525` passed
+`just rust-public-api` but failed `just rust-clippy` at the first five
+uncommitted lint fixes in `lq-regex` and `lq-norm` tests; this is not a
+complete Clippy error inventory. Other writers had uncommitted changes in catalog, embed,
 repomap, SDK, search-plane, searchd, benchmark Python/schema, and the
 TOPT-08/RCA tickets. Do not stage those paths from this follow-up.
 
@@ -41,7 +45,7 @@ TOPT-08/RCA tickets. Do not stage those paths from this follow-up.
 | Rail | Result | Qualification limit |
 |---|---|---|
 | `just fmt-check` | pass | shared dirty tree |
-| `just rust-clippy` | pass, workspace/all targets/all features | depends on other writers' uncommitted Clippy repairs |
+| `just rust-clippy` | pass on shared dirty tree; fail on clean `d9b39c3` | clean checkout first reports 3 `lq-regex` and 2 `lq-norm` test lint errors; no clean-HEAD green |
 | `just rust-policy`; `just rust-machete` | pass; pass | policy sees zero current-HEAD benchmark artifacts |
 | `just rust-public-api` | pass | baseline update is in `e42cb82`, but no clean-commit rerun |
 | `just rust-doc` | pass after link repairs | shared dirty tree |
