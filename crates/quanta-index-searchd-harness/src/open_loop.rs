@@ -271,6 +271,7 @@ fn transport_kind(error: &IpcError) -> String {
         IpcError::EmptyFrame => "empty_frame".to_string(),
         IpcError::Encode(_) => "encode".to_string(),
         IpcError::Decode(_) => "decode".to_string(),
+        IpcError::ZeroRequestId => "zero_request_id".to_string(),
         IpcError::Timeout { .. }
         | IpcError::InvalidClientIoTimeout
         | IpcError::ClientIoDeadlineElapsed
@@ -732,6 +733,11 @@ pub(crate) fn artifact(
 )]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zero_request_id_keeps_its_protocol_failure_kind() {
+        assert_eq!(transport_kind(&IpcError::ZeroRequestId), "zero_request_id");
+    }
 
     #[test]
     fn schedule_has_fixed_arrivals_independent_of_completion() -> AnyResult<()> {
