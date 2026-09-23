@@ -352,9 +352,10 @@ fn restore_session_v1(
     Ok((session, destination))
 }
 
-/// Custody for `verify-state`: routed read-only by the advertised manifest,
-/// so a backup root never takes a lease and a missing or ambiguous root
-/// never creates anything. A current root's verification binds the daemon's
+/// Custody for `verify-state`, routed by the advertised manifest.
+///
+/// A backup root never takes a lease; a missing or ambiguous root never
+/// creates anything. A current root's verification binds the daemon's
 /// lease — a live owner fails that handover with the existing
 /// `STATE_ROOT_IN_USE`.
 fn verify_session_v1(command: &OfflineStateCommandV1) -> Result<OfflineSourceSessionV1, CoreError> {
