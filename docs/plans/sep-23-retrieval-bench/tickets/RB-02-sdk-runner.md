@@ -6,7 +6,7 @@ Depends on: RB-00 stage A
 
 Owner: benchmark-only Rust package; product SDK is a dependency, not a fork
 
-## Current code status (2026-09-23)
+## Current code status (2026-09-24)
 
 `benchmarks/retrieval` is a workspace member and the runner loads a clean pinned manifest, launches a separately pinned searchd, verifies fresh state, publishes lexical and semantic scopes through `SearchCorpusBatch`, verifies the sealed `BatchReceipt` and composite activation ACK, then reads lexical/semantic/hybrid routes through the SDK. The subprocess case executes `CARGO_BIN_EXE_quanta-index-retrieval-bench` itself and verifies that the v3 capture binds the exact runner/searchd SHA plus receipt and activation digests. The strict state-root regression found at `f2897a28` was repaired at `7d4994b9` by moving immutable daemon logs beside, never inside, the root. The earlier explicit-pinned package rail passed 62/62; that count is historical, not a receipt for the current source.
 
