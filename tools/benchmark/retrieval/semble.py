@@ -109,6 +109,7 @@ def main() -> int:
                 )
     payload = {
         "semble_index_ms": index_ms,
+        "configured_model_name": os.environ["SEMBLE_MODEL_NAME"],
         "observed_files": observed,
         "stats": stats,
         "native": native,
@@ -578,6 +579,7 @@ def run_adapter(args: argparse.Namespace) -> int:
     env["NATIVE_JSON"] = str(native_path)
     env["SEMBLE_CACHE_LOCATION"] = str(cache_root / "semble")
     env["HF_HOME"] = str(cache_root / "hf")
+    env["SEMBLE_MODEL_NAME"] = args.model_id
     env["SEMBLE_MAX_FILE_BYTES"] = str(max_file_bytes)
     try:
         completed = subprocess.run(
@@ -602,6 +604,8 @@ def run_adapter(args: argparse.Namespace) -> int:
     native_payload = read_json(native_path)
     if not isinstance(native_payload, dict):
         raise AdapterError("Semble native output must be an object")
+    if native_payload.get("configured_model_name") != args.model_id:
+        raise AdapterError("Semble worker model configuration differs from requested model")
     observed = native_payload.get("observed_files", [])
     proof, diff_digest = mapping_proof(admitted_rows, observed, corpus_dir)
     (out_root / "mapping-proof.json").write_text(

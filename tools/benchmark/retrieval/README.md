@@ -230,7 +230,9 @@ python3 -m tools.benchmark.retrieval.semble check \
 ```
 
 This pins the installed package inventory; it does not prove which model
-weights Semble loaded. The adapter also requires an observed Hugging Face
+weights Semble loaded. The adapter sets Semble's documented
+`SEMBLE_MODEL_NAME` to the requested model and verifies the worker-reported
+setting. It also requires an observed Hugging Face
 cache revision and rejects a supplied revision that disagrees with it.
 `same_model` remains an external claim needing its own evidence. The paired
 driver records `attested` blinding, so its output alone cannot qualify an
