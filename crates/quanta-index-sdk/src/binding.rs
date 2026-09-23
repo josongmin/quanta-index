@@ -152,8 +152,9 @@ impl ExpectedIngestResponseV1 {
 
 /// Whether a text query carries the `rev:at.time(...)` directive.
 ///
-/// Its timeref resolution the search plane owns: such a query may
-/// legally rebind the read to an ancestor revision of the pinned one.
+/// Only the lexical planner resolves this timeref and may legally rebind
+/// the read to an ancestor revision of the pinned one. Other routes must
+/// keep exact response-pin binding even if their text contains the token.
 /// This probes the request the SDK itself is sending, never a response.
 fn is_rev_at_time_query(query_text: &str) -> bool {
     query_text.contains("rev:at.time")
@@ -238,72 +239,64 @@ impl QueryCallBinding {
                 generation,
                 generation_selector,
                 top_k,
-                query_text,
                 ..
             }) => {
                 let (pin, active_domain) =
                     identity_from(generation.clone(), generation_selector.clone());
-                let rev_at_time = is_rev_at_time_query(query_text);
                 Self::ranked(
                     ExpectedQueryResponseV1::Symbol,
                     pin,
                     active_domain,
                     *top_k,
-                    rev_at_time,
+                    false,
                 )
             }
             SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
                 generation,
                 generation_selector,
                 top_k,
-                query_text,
                 ..
             }) => {
                 let (pin, active_domain) =
                     identity_from(generation.clone(), generation_selector.clone());
-                let rev_at_time = is_rev_at_time_query(query_text);
                 Self::ranked(
                     ExpectedQueryResponseV1::Semantic,
                     pin,
                     active_domain,
                     *top_k,
-                    rev_at_time,
+                    false,
                 )
             }
             SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
                 generation,
                 generation_selector,
                 top_k,
-                text_query,
                 ..
             }) => {
                 let (pin, active_domain) =
                     identity_from(generation.clone(), generation_selector.clone());
-                let rev_at_time = is_rev_at_time_query(&text_query.query_text);
                 Self::ranked(
                     ExpectedQueryResponseV1::Hybrid,
                     pin,
                     active_domain,
                     *top_k,
-                    rev_at_time,
+                    false,
                 )
             }
             SearchPlaneQueryIpcRequest::HybridSeed(HybridSeedQueryRequest {
                 generation,
                 generation_selector,
                 top_k,
-                text_query,
                 ..
             }) => {
                 let (pin, active_domain) =
                     identity_from(generation.clone(), generation_selector.clone());
-                let rev_at_time = is_rev_at_time_query(&text_query.query_text);
                 Self::ranked(
                     ExpectedQueryResponseV1::HybridSeed,
                     pin,
                     active_domain,
                     *top_k,
-                    rev_at_time,
+                    false,
                 )
             }
             SearchPlaneQueryIpcRequest::History(HistoryQueryRequest {
@@ -320,7 +313,7 @@ impl QueryCallBinding {
                     active_domain,
                     top_k: Some(text_query.top_k),
                     history_order: Some(*order),
-                    rev_at_time: is_rev_at_time_query(&text_query.query_text),
+                    rev_at_time: false,
                 }
             }
             SearchPlaneQueryIpcRequest::RuntimeMetadata(RuntimeMetadataQueryRequest {
@@ -331,13 +324,12 @@ impl QueryCallBinding {
                     text_query.generation.clone(),
                     text_query.generation_selector.clone(),
                 );
-                let rev_at_time = is_rev_at_time_query(&text_query.query_text);
                 Self::ranked(
                     ExpectedQueryResponseV1::RuntimeMetadata,
                     pin,
                     active_domain,
                     text_query.top_k,
-                    rev_at_time,
+                    false,
                 )
             }
             SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
@@ -347,13 +339,12 @@ impl QueryCallBinding {
                     text_query.generation.clone(),
                     text_query.generation_selector.clone(),
                 );
-                let rev_at_time = is_rev_at_time_query(&text_query.query_text);
                 Self::ranked(
                     ExpectedQueryResponseV1::Structural,
                     pin,
                     active_domain,
                     text_query.top_k,
-                    rev_at_time,
+                    false,
                 )
             }
             SearchPlaneQueryIpcRequest::RepoMapQuery(RepoMapQueryRequest {
@@ -435,7 +426,8 @@ fn binding_error(
 
 /// Check a resolved response pin against the request's identity.
 ///
-/// Exact for a named pin, domain-consistent for an active selector. An
+/// Exact for a named pin except the lexical planner's unresolved
+/// `rev:at.time` ancestor, domain-consistent for an active selector. An
 /// unresolved active selector is never equated with a resolved pin by
 /// simple equality; the domain check is what an active response must
 /// pass.

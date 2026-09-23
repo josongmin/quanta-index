@@ -100,7 +100,12 @@ to validated lane handoffs and immutable proof manifests, not this document.
   Structural active selection remains unsupported by
   `ActivationCatalog::resolve_record`; the SDK refuses it explicitly.
 - This does **not** close S21-07. `rev:at.time` still permits a same-repository
-  rebinding whose selected ancestor is not independently pinned by the SDK;
+  rebinding on the lexical route whose selected ancestor is not independently
+  pinned by the SDK. A follow-up restricts the exception to that route;
+  symbol, semantic, hybrid, history, runtime and structural responses must
+  retain exact request-pin binding even when their query text contains the
+  token. The focused symbol negative is separate evidence, not proof of the
+  lexical ancestor;
   activation epoch/content binding beyond the resolved generation pin is not
   yet a request-level contract. Do not promote the new negative oracle to
   coverage of those cases.

@@ -1709,6 +1709,38 @@ fn symbol_query_request_forwards_contract_dto_unchanged() {
 }
 
 #[test]
+fn symbol_rev_at_time_text_does_not_relax_response_pin() {
+    let wrong = quanta_index_contract::GenerationPin::new(
+        repo_id(),
+        revision_id(),
+        ManifestGeneration::new(8),
+    );
+    let query = Arc::new(StubQueryTransport::new(
+        SearchPlaneQueryIpcResponse::Symbol(quanta_index_contract::SymbolQueryResponse {
+            generation: wrong,
+            results: vec![],
+            window: QueryResultWindowV2::exact_probe(0),
+            next_cursor: None,
+        }),
+    ));
+    let client = QuantaIndex::from_transports(query, unused_control(), unused_ingest());
+    let request = quanta_index_contract::SymbolQueryRequest {
+        syntax: quanta_index_contract::TextQuerySyntax::Native,
+        query_text: "symbol:sample rev:at.time(2024-06-01T12:34:56Z)".to_string(),
+        constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+        generation: Some(sample_generation_pin()),
+        generation_selector: None,
+        top_k: 9,
+        cursor: None,
+    };
+    let error = client
+        .symbol()
+        .query_request(request)
+        .expect_err("symbol route cannot rebind the generation of a lexical plan");
+    assert!(matches!(error, crate::SdkError::Binding { .. }));
+}
+
+#[test]
 fn hybrid_seed_search_builder_dispatches_hybrid_seed_request_with_semantic_text() {
     let query = Arc::new(StubQueryTransport::new(
         SearchPlaneQueryIpcResponse::HybridSeed(HybridSeedQueryResponse {
