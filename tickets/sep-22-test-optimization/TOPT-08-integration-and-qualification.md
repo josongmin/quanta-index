@@ -128,6 +128,14 @@ for all targets, and the exact provider audit-correlation test passed 1/1.
 The full workspace rails and uncontended 10,001-row E2E/timing protocol are
 still outstanding.
 
+On later isolated source `2e8dce9`, the retrieval benchmark's four current
+lint errors and a `batch -> record -> sdk -> batch` module cycle were repaired
+at their owners. Benchmark all-target Clippy, library tests (28/28), real
+SDK roundtrip (8/8 with a pinned same-source daemon), `fmt-check`, policy,
+and dependency hygiene passed. This remains owner-local qualification; full
+workspace Clippy, daemon-all, and uncontended performance evidence have not
+yet passed on that source.
+
 The remaining runtime investigation is the 10,001-row top-k E2E: a shared,
 contended-tree execution timed out during fixture ingest at its existing
 600-second IPC read limit. This is a failed run, not proof of a producer

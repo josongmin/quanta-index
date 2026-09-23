@@ -139,3 +139,29 @@ source. This is owner-local proof, not a workspace Clippy or `verify-rust`
 pass. At this point, the shared `main` checkout also had unrelated active
 SDK, IPC, query-dispatcher, benchmark, and prompt-control edits; none of
 their dirty-tree results can be adopted as this ticket's qualification.
+
+## Retrieval benchmark gate repair — `2e8dce9`
+
+The first isolated full-workspace Clippy attempt exposed four new
+retrieval-benchmark lint errors in the committed Sep 23 runner. Commit
+`3efddfe` replaced linted string addition in fixture digests and made the
+stale-generation outcome match explicit; isolated benchmark all-target
+Clippy passed. The next policy run found a real module cycle:
+`batch -> record -> sdk -> batch`. `batch` needed canonical JSON for receipt
+digests, not the entire runner-record layer. Commit `2e8dce9` moved the
+canonical JSON authority and its two semantic tests to a lower `canonical`
+module; the module-cycle check then passed without a baseline exception.
+
+On clean `2e8dce9`, `just fmt-check`, `just rust-policy`, `just rust-machete`,
+isolated benchmark all-target Clippy, and benchmark library tests (28/28)
+passed. The exact `sdk_roundtrip` integration binary passed 8/8 with a
+same-checkout searchd executable explicitly pinned at SHA-256
+`150c2e6edc4d42a2a9131730fe7d61d9250ba2f606d291757749b598fdb0183f`.
+An earlier 6/8 run without `QUANTA_INDEX_SEARCHD_BIN` was a verification
+setup error, not a code failure; it is not a green receipt. These are
+source-bound owner and policy rails, not the full TOPT-08 verdict.
+
+Still required: isolated full-workspace Clippy and runtime-profile gates,
+an uncontended recheck of the 10,001-row ingest timeout, and TOPT-00's
+retrospective paired timing protocol. The historical missing
+pre-implementation admission record cannot be recreated.
