@@ -10,9 +10,11 @@ to validated lane handoffs and immutable proof manifests, not this document.
   corrections were cherry-picked as `ed954e0a` (cursor negative wire fixtures)
   and `16c979ba` (atomic lease-holder terminal report). W10 R5 RCA's unique
   benchmark refusal oracle and source-attribution record were cherry-picked
-  as `53a6e344`. The source branch tips remain in attached worktrees; no
-  worktree or branch was deleted. These are content integrations, not a claim
-  that the old branch tips became ancestors of `main`.
+  as `53a6e344`. The source tips `adea09bb`, `39011ab3`, and `47ec2b25`
+  were patch-equivalent to `main`, not ancestors of it. After the attached
+  worktrees became inactive and clean, the W10 R5 RCA and integrate worktrees
+  and branches were removed. Their source commit IDs remain the attribution
+  record.
 - Focused post-integration results on the shared dirty checkout:
   `./scripts/cargow test -p quanta-index-contract --test lexical_cursor_contract`
   (4/4), `./scripts/cargow test -p quanta-index-searchd-runtime --test
@@ -37,8 +39,8 @@ to validated lane handoffs and immutable proof manifests, not this document.
   `git cherry -v main` reports `-` for all three unique commits in the two
   SEP-21 W10 branches, confirming patch-equivalent content on `main`.
   Both attached worktrees were clean and had no matching live process at the
-  cleanup inspection, but their branch tips are not ancestors of `main`;
-  they remain available for source attribution rather than being deleted.
+  cleanup inspection. Their patch-equivalent branch tips were then deleted;
+  this does not turn the old branch tips into ancestors of `main`.
 
 - Local `main` was clean at this turn's initial inspection at `c93bf10`.
   W10-R3's clean `codex/sep21-w10-state-custody` branch was merged without
@@ -325,8 +327,9 @@ to validated lane handoffs and immutable proof manifests, not this document.
   R5 baseline finding disposition: **mixed-owner attribution and incomplete
   allowlist**, with the P10 typed-error addition explicitly documented as
   the R3 exception in S21-11. At
-  `2e8dce9`, `just rust-public-api` passed against the source-bound baseline;
-  the R5 merge-tree and local Q1 owner rails passed in the isolated checkout.
+  `2e8dce9`, the isolated checkout reported `just rust-public-api`, the R5
+  merge-tree, and local Q1 owner rails as passed. This ledger does not embed
+  their raw command results or establish current-source qualification.
   Future shared-branch R5 reviews must pair each added baseline symbol with
   its source-producing commit and owner ticket before applying a lane
   allowlist. A baseline-only follow-up commit is not the origin of the API
