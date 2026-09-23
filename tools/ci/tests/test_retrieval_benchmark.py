@@ -19,6 +19,36 @@ from tools.benchmark.retrieval import semble as semble_adapter
 from tools.ci import source_closure
 
 
+def _unbound_resource_payload(subject_sha256: str) -> dict:
+    return {
+        "schema_version": 1,
+        "sampler": "ps-process-tree-rss-cpu-v2",
+        "sample_interval_ms": 50,
+        "command_sha256": hashlib.sha256(b"test-command").hexdigest(),
+        "subject_sha256": subject_sha256,
+        "root_pid": 123,
+        "exit_code": 0,
+        "timed_out": False,
+        "elapsed_ms": 1.0,
+        "peak_rss_bytes": 4096,
+        "peak_cpu_percent": 1.0,
+        "processes": [{
+            "pid": 123,
+            "command": "test-runner",
+            "peak_rss_bytes": 4096,
+            "peak_cpu_percent": 1.0,
+            "samples": 1,
+        }],
+        "samples": 1,
+        "complete": True,
+        "error": None,
+        "cleanup_complete": True,
+        "cleanup_escalated": False,
+        "cleanup_error": None,
+        "isolation": None,
+    }
+
+
 def fixture(tmp_path: Path):
     repo = tmp_path / "source"
     repo.mkdir()
@@ -1669,6 +1699,8 @@ def test_run_semble_capture_forwards_lockfile(tmp_path, monkeypatch):
         seen["command"] = command
         output_root = Path(command[command.index("--output-root") + 1])
         output_root.mkdir(exist_ok=True)
+        record_path = output_root / "record.json"
+        record_path.write_text("{}", encoding="utf-8")
         (output_root / "phase-metrics.json").write_text("{}", encoding="utf-8")
         (output_root / "native.json").write_text(
             json.dumps(
@@ -1737,6 +1769,7 @@ def test_freeze_inputs_freezes_lockfile(tmp_path):
     frozen = pairrun.freeze_inputs(inputs, stage)
     assert frozen["suite"] == str(stage / "evaluator-only" / "suite.json")
     assert frozen["semble_lockfile"] == str(stage / "semble-lockfile.txt")
+    assert frozen["host_profile"] == str(stage / "host-profile.json")
     assert (stage / "semble-lockfile.txt").read_bytes() == b"semble==0.6.0\n"
     stage2 = tmp_path / "stage2"
     stage2.mkdir()
@@ -1750,9 +1783,12 @@ def test_quanta_driver_defaults_to_potion_and_binary_digest(tmp_path, monkeypatc
         assert command[command.index("--runner-revision") + 1] == "sha256:" + "a" * 64
         assert command[command.index("--searchd-bin") + 1] == "/unused/searchd"
         assert command[command.index("--searchd-expected-sha256") + 1] == "b" * 64
-        Path(command[command.index("--out") + 1]).write_text("{}", encoding="utf-8")
+        record_path = Path(command[command.index("--out") + 1])
+        record_path.write_text("{}", encoding="utf-8")
         Path(command[command.index("--metrics-out") + 1]).write_text("{}", encoding="utf-8")
-        kwargs["resource_path"].write_text("{}", encoding="utf-8")
+        kwargs["resource_path"].write_text(json.dumps(
+            _unbound_resource_payload(ev.digest(record_path.read_bytes()))
+        ), encoding="utf-8")
         return {"exit_code": 0, "timed_out": False, "elapsed_ms": 1.0}
 
     monkeypatch.setattr(pairrun, "run_monitored_process", fake_run)
@@ -2912,7 +2948,6 @@ def _pair_stage(
                 "suite_digest": ev.digest(suite_path.read_bytes()),
                 "query_pack_digest": ev.digest(pack_path.read_bytes()),
                 "corpus_manifest_digest": ev.digest(corpus_path.read_bytes()),
-                "spec_digest": ev.digest(ev.canonical(spec)),
                 "top_k": 10,
                 "strategies": ["whole_file"],
                 "searchd_expected_sha256": _fake_sha("searchd"),
@@ -3147,6 +3182,59 @@ def test_verdict_mapping_lies(tmp_path):
     assert verdict["failure_class"] == "corpus_mismatch"
 
 
+def test_verdict_rejects_host_profile_tamper(tmp_path):
+    st = _pair_stage(tmp_path)
+    profile_path = st["stage"] / "host-profile.json"
+    profile = json.loads(profile_path.read_text(encoding="utf-8"))
+    profile["profile_id"] = "tampered-host"
+    profile_path.write_text(json.dumps(profile), encoding="utf-8")
+    protocol_path = st["stage"] / "protocol-lock.json"
+    protocol = json.loads(protocol_path.read_text(encoding="utf-8"))
+    protocol["host_profile_digest"] = pairrun.sha_file(profile_path)
+    protocol_path.write_text(json.dumps(protocol), encoding="utf-8")
+    with pytest.raises(pairrun.RunError, match="host profile artifact digest mismatch"):
+        _stage_verdict(st)
+
+    st = _pair_stage(tmp_path / "invalid")
+    profile_path = st["stage"] / "host-profile.json"
+    profile_path.write_text("{}", encoding="utf-8")
+    profile_digest = pairrun.sha_file(profile_path)
+    protocol_path = st["stage"] / "protocol-lock.json"
+    protocol = json.loads(protocol_path.read_text(encoding="utf-8"))
+    protocol["host_profile_digest"] = profile_digest
+    protocol_path.write_text(json.dumps(protocol), encoding="utf-8")
+    _rewrite_manifest(
+        st,
+        lambda manifest: manifest["provenance"]["host"].update(
+            profile_digest=profile_digest
+        ),
+    )
+    with pytest.raises(pairrun.RunError, match="host profile must hold exactly"):
+        _stage_verdict(st)
+
+
+@pytest.mark.parametrize(
+    "field,value,reason",
+    [
+        ("top_k", 9, "protocol_lock_top_k_drift"),
+        ("repetitions", 2, "protocol_lock_repetitions_drift"),
+        ("strategies", ["brace_heuristic"], "protocol_lock_strategies_drift"),
+        ("searchd_expected_sha256", "0" * 64, "protocol_lock_searchd_pin_drift"),
+        ("semble_lockfile_sha256", "0" * 64, "protocol_lock_semble_pin_drift"),
+        ("strategies", 1, "protocol_lock_malformed"),
+    ],
+)
+def test_verdict_rejects_protocol_lock_pin_tamper(tmp_path, field, value, reason):
+    st = _pair_stage(tmp_path)
+    protocol_path = st["stage"] / "protocol-lock.json"
+    protocol = json.loads(protocol_path.read_text(encoding="utf-8"))
+    protocol[field] = value
+    protocol_path.write_text(json.dumps(protocol), encoding="utf-8")
+    verdict = _stage_verdict(st)
+    assert verdict["states"]["PAIR_VALID"] == "fail"
+    assert verdict["state_evidence"]["PAIR_VALID"]["reason"] == reason
+
+
 def test_verdict_report_tamper(tmp_path):
     st = _pair_stage(tmp_path)
     report_path = st["stage"] / "report-hybrid-vs-lexical-whole_file.json"
@@ -3281,6 +3369,10 @@ def test_verdict_host_profile_fingerprint_is_enforced(tmp_path, monkeypatch):
             profile_digest=pairrun.sha_file(profile_path)
         ),
     )
+    protocol_path = st["stage"] / "protocol-lock.json"
+    protocol = json.loads(protocol_path.read_text(encoding="utf-8"))
+    protocol["host_profile_digest"] = pairrun.sha_file(profile_path)
+    protocol_path.write_text(json.dumps(protocol), encoding="utf-8")
     verdict = _stage_verdict(st)
     assert verdict["states"]["PERF_QUALIFIED"] == "fail"
     assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"].startswith("admission_unverified:")

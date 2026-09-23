@@ -85,6 +85,7 @@ def test_auxiliary_cargo_tools_share_the_checkout_namespace(
     cache_root = tmp_path / "cache"
     monkeypatch.setenv("QUANTA_INDEX_CACHE_ROOT", str(cache_root))
     monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
+    monkeypatch.delenv("QUANTA_INDEX_BUILD_LANE", raising=False)
     cargo_env = runpy.run_path(str(REPO_ROOT / "tools" / "ci" / "lint" / script_name))[
         "cargo_env"
     ]

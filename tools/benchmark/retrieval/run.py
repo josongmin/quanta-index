@@ -2913,6 +2913,9 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     pack_digest = sha_note(resolved["query_pack"], "pack_bytes", ("T01",))
     corpus_digest = sha_note(resolved["corpus_manifest"], "corpus_bytes", ("T00",))
     mapping_digest = sha_note(resolved["mapping_proof"], "mapping_bytes", ("T00", "T11"))
+    host_profile_digest = sha_note(
+        resolved["host_profile"], "host_profile_bytes", ("T12",)
+    )
     if suite_digest != provenance_claims["suite"]["suite_digest"]:
         pair_note("suite_digest_mismatch", ("T01", "T12"))
     if pack_digest != provenance_claims["suite"]["query_pack_digest"]:
@@ -2922,7 +2925,49 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     if mapping_digest != evidence["pair"]["mapping_proof_digest"]:
         pair_note("mapping_proof_digest_mismatch", ("T00", "T11"))
     protocol_payload = read_note(resolved["protocol_lock"], "protocol_lock", ("T12",))
-    if isinstance(protocol_payload, dict):
+    protocol_keys = {
+        "suite_digest", "query_pack_digest", "corpus_manifest_digest", "top_k",
+        "strategies", "searchd_expected_sha256", "semble_lockfile_sha256",
+        "host_profile_digest", "admission_digest", "driver_source_closure_digest",
+        "repetitions",
+    }
+    protocol_shape_valid = isinstance(protocol_payload, dict) and set(
+        protocol_payload
+    ) == protocol_keys
+    if protocol_shape_valid:
+        protocol_shape_valid = all(
+            _is_hex(protocol_payload[key], 64)
+            for key in (
+                "suite_digest", "query_pack_digest", "corpus_manifest_digest",
+                "searchd_expected_sha256", "semble_lockfile_sha256",
+                "host_profile_digest",
+            )
+        )
+        strategies = protocol_payload["strategies"]
+        protocol_shape_valid = protocol_shape_valid and (
+            type(protocol_payload["top_k"]) is int
+            and protocol_payload["top_k"] > 0
+            and type(protocol_payload["repetitions"]) is int
+            and protocol_payload["repetitions"] > 0
+            and isinstance(strategies, list)
+            and bool(strategies)
+            and all(isinstance(strategy, str) and strategy for strategy in strategies)
+            and len(strategies) == len(set(strategies))
+        )
+        authority_digests = (
+            protocol_payload["admission_digest"],
+            protocol_payload["driver_source_closure_digest"],
+        )
+        if manifest["scope"] == "qualified":
+            protocol_shape_valid = protocol_shape_valid and all(
+                _is_hex(value, 64) for value in authority_digests
+            )
+        else:
+            protocol_shape_valid = protocol_shape_valid and authority_digests == (None, None)
+    if not protocol_shape_valid:
+        pair_note("protocol_lock_malformed", ("T12",))
+        protocol_payload = {}
+    else:
         if protocol_payload.get("suite_digest") != suite_digest:
             pair_note("protocol_lock_suite_drift", ("T12",))
         if protocol_payload.get("query_pack_digest") != pack_digest:
@@ -2944,6 +2989,12 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 pair_note("driver_source_closure_digest_drift", ("T12", "T17"))
             if protocol_payload.get("driver_source_closure_digest") != closure["digest"]:
                 pair_note("protocol_lock_source_closure_drift", ("T12", "T17"))
+        if protocol_payload.get("host_profile_digest") != host_profile_digest:
+            pair_note("protocol_lock_host_profile_drift", ("T12",))
+        if protocol_payload.get("top_k") != pack["comparison_contract"]["top_k"]:
+            pair_note("protocol_lock_top_k_drift", ("T12",))
+        if protocol_payload.get("repetitions") != manifest["repetitions"]:
+            pair_note("protocol_lock_repetitions_drift", ("T12",))
     if isinstance(corpus_payload, dict) and isinstance(mapping_payload, dict):
         if not mapping_matches_manifest(mapping_payload, corpus_payload):
             pair_note("mapping_proof_not_clean", ("T00", "T11", "T12"), "corpus_mismatch")
@@ -3253,6 +3304,8 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
 
     adapter = read_note(resolved["semble_adapter_manifest"], "adapter_manifest", ("T11",))
     lockfile_digest = sha_note(resolved["semble_lockfile"], "lockfile_bytes", ("T11",))
+    if protocol_payload.get("semble_lockfile_sha256") != lockfile_digest:
+        pair_note("protocol_lock_semble_pin_drift", ("T11", "T12"))
     if isinstance(adapter, dict):
         if adapter.get("semble_version") != SEMBLE_PINNED_VERSION:
             pair_note("semble_version_drift", ("T11",))
@@ -3283,15 +3336,29 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             pair_note("semble_receipt_anchor_drift", ("T11", "T12"))
 
     quanta_binaries = set()
+    quanta_searchd_binaries = set()
+    quanta_strategies = set()
     for _path, entry in validated.items():
         if entry["system"] == "quanta":
             _cid, capture = next(iter(entry["run"]["captures"].items()))
             quanta_binaries.add(capture.get("runner_binary", {}).get("digest"))
+            quanta_searchd_binaries.add(
+                capture.get("searchd_binary", {}).get("binary_digest")
+            )
+            quanta_strategies.add(entry["strategy"])
     binary_digest = sorted(quanta_binaries)[0] if quanta_binaries else "0" * 64
     if len(quanta_binaries) != 1:
         pair_note("runner_binary_divergence", ("T12",))
     elif binary_digest != provenance_claims["quanta"]["binary_digest"]:
         pair_note("binary_digest_mismatch", ("T12",))
+    if len(quanta_searchd_binaries) != 1:
+        pair_note("searchd_binary_divergence", ("T12",))
+    elif next(iter(quanta_searchd_binaries)) != protocol_payload.get(
+        "searchd_expected_sha256"
+    ):
+        pair_note("protocol_lock_searchd_pin_drift", ("T12",))
+    if sorted(quanta_strategies) != sorted(protocol_payload.get("strategies", [])):
+        pair_note("protocol_lock_strategies_drift", ("T12",))
 
     admission_evidence = None
     admission_error = None
@@ -4073,7 +4140,6 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
         "suite_digest": sha_file(Path(spec["suite"])),
         "query_pack_digest": sha_file(stage / "query-pack.json"),
         "corpus_manifest_digest": sha_file(stage / "corpus-manifest.json"),
-        "spec_digest": digest(canonical_bytes(spec)),
         "top_k": spec["top_k"],
         "strategies": [entry["name"] for entry in spec["strategies"]],
         "searchd_expected_sha256": spec["searchd_expected_sha256"],
