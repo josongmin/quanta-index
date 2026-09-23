@@ -13,8 +13,10 @@ PROOF_TEST = "actual_runner_binary_emits_receipt_bound_v3_record"
 
 
 def _hex64(value: object, label: str) -> str:
-    if not isinstance(value, str) or len(value) != 64 or any(
-        char not in "0123456789abcdef" for char in value
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(char not in "0123456789abcdef" for char in value)
     ):
         raise SystemExit(f"{label} must be a lowercase sha256")
     return value

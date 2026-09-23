@@ -190,7 +190,8 @@ def test_tools_owned_schema_version_is_checked(tmp_path: Path):
 def test_multiversion_receipt_schema_requires_both_inventory_rows():
     inventory = MODULE.load_inventory()
     inventory["tool_artifact"] = [
-        row for row in inventory["tool_artifact"]
+        row
+        for row in inventory["tool_artifact"]
         if row["id"] != "verification-receipt-v2-retrieval"
     ]
     findings = messages(MODULE.check_tool_artifacts(inventory, REPO_ROOT))
@@ -204,7 +205,8 @@ def test_multiversion_receipt_schema_requires_both_inventory_rows():
 def test_malformed_tool_version_is_a_finding_not_a_checker_crash():
     inventory = MODULE.load_inventory()
     row = next(
-        row for row in inventory["tool_artifact"]
+        row
+        for row in inventory["tool_artifact"]
         if row["id"] == "verification-receipt-v2-retrieval"
     )
     row["version"] = []
@@ -216,7 +218,8 @@ def test_malformed_tool_version_is_a_finding_not_a_checker_crash():
 def test_multiversion_receipt_rejects_duplicate_version_claim():
     inventory = MODULE.load_inventory()
     row = next(
-        row for row in inventory["tool_artifact"]
+        row
+        for row in inventory["tool_artifact"]
         if row["id"] == "verification-receipt-v2-retrieval"
     )
     inventory["tool_artifact"].append({**row, "id": "duplicate-v2"})

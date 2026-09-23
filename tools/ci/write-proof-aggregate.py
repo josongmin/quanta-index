@@ -261,9 +261,11 @@ def build_aggregate(
             ),
             "required_proofs": required_proofs,
         }
-    production_ready = release_ready_inputs and all(
-        verdict["status"] == "PASSED" for verdict in verdicts.values()
-    ) and handoffs_ready
+    production_ready = (
+        release_ready_inputs
+        and all(verdict["status"] == "PASSED" for verdict in verdicts.values())
+        and handoffs_ready
+    )
     return (
         {
             "schema_version": 1,

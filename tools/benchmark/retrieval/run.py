@@ -2913,9 +2913,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     pack_digest = sha_note(resolved["query_pack"], "pack_bytes", ("T01",))
     corpus_digest = sha_note(resolved["corpus_manifest"], "corpus_bytes", ("T00",))
     mapping_digest = sha_note(resolved["mapping_proof"], "mapping_bytes", ("T00", "T11"))
-    host_profile_digest = sha_note(
-        resolved["host_profile"], "host_profile_bytes", ("T12",)
-    )
+    host_profile_digest = sha_note(resolved["host_profile"], "host_profile_bytes", ("T12",))
     if suite_digest != provenance_claims["suite"]["suite_digest"]:
         pair_note("suite_digest_mismatch", ("T01", "T12"))
     if pack_digest != provenance_claims["suite"]["query_pack_digest"]:
@@ -2926,20 +2924,30 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         pair_note("mapping_proof_digest_mismatch", ("T00", "T11"))
     protocol_payload = read_note(resolved["protocol_lock"], "protocol_lock", ("T12",))
     protocol_keys = {
-        "suite_digest", "query_pack_digest", "corpus_manifest_digest", "top_k",
-        "strategies", "searchd_expected_sha256", "semble_lockfile_sha256",
-        "host_profile_digest", "admission_digest", "driver_source_closure_digest",
+        "suite_digest",
+        "query_pack_digest",
+        "corpus_manifest_digest",
+        "top_k",
+        "strategies",
+        "searchd_expected_sha256",
+        "semble_lockfile_sha256",
+        "host_profile_digest",
+        "admission_digest",
+        "driver_source_closure_digest",
         "repetitions",
     }
-    protocol_shape_valid = isinstance(protocol_payload, dict) and set(
-        protocol_payload
-    ) == protocol_keys
+    protocol_shape_valid = (
+        isinstance(protocol_payload, dict) and set(protocol_payload) == protocol_keys
+    )
     if protocol_shape_valid:
         protocol_shape_valid = all(
             _is_hex(protocol_payload[key], 64)
             for key in (
-                "suite_digest", "query_pack_digest", "corpus_manifest_digest",
-                "searchd_expected_sha256", "semble_lockfile_sha256",
+                "suite_digest",
+                "query_pack_digest",
+                "corpus_manifest_digest",
+                "searchd_expected_sha256",
+                "semble_lockfile_sha256",
                 "host_profile_digest",
             )
         )
@@ -3342,9 +3350,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         if entry["system"] == "quanta":
             _cid, capture = next(iter(entry["run"]["captures"].items()))
             quanta_binaries.add(capture.get("runner_binary", {}).get("digest"))
-            quanta_searchd_binaries.add(
-                capture.get("searchd_binary", {}).get("binary_digest")
-            )
+            quanta_searchd_binaries.add(capture.get("searchd_binary", {}).get("binary_digest"))
             quanta_strategies.add(entry["strategy"])
     binary_digest = sorted(quanta_binaries)[0] if quanta_binaries else "0" * 64
     if len(quanta_binaries) != 1:
@@ -3353,9 +3359,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         pair_note("binary_digest_mismatch", ("T12",))
     if len(quanta_searchd_binaries) != 1:
         pair_note("searchd_binary_divergence", ("T12",))
-    elif next(iter(quanta_searchd_binaries)) != protocol_payload.get(
-        "searchd_expected_sha256"
-    ):
+    elif next(iter(quanta_searchd_binaries)) != protocol_payload.get("searchd_expected_sha256"):
         pair_note("protocol_lock_searchd_pin_drift", ("T12",))
     if sorted(quanta_strategies) != sorted(protocol_payload.get("strategies", [])):
         pair_note("protocol_lock_strategies_drift", ("T12",))

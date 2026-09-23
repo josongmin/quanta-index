@@ -7,7 +7,6 @@ import re
 import sys
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[3]
 MANIFEST_PATH = REPO_ROOT / "tools" / "benchmark" / "manifest.py"
 JUSTFILE = REPO_ROOT / "Justfile"
@@ -68,7 +67,9 @@ def test_dsl_refresh_delegates_to_the_manifest_control_plane() -> None:
     )
     assert match is not None
     body = match.group("body")
-    assert "python3 tools/benchmark/benchctl.py run dsl-authority --cold-samples {{samples}}" in body
+    assert (
+        "python3 tools/benchmark/benchctl.py run dsl-authority --cold-samples {{samples}}" in body
+    )
     assert "@just rust-bench-dsl-" not in body
 
 

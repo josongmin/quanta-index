@@ -32,13 +32,15 @@ def _unbound_resource_payload(subject_sha256: str) -> dict:
         "elapsed_ms": 1.0,
         "peak_rss_bytes": 4096,
         "peak_cpu_percent": 1.0,
-        "processes": [{
-            "pid": 123,
-            "command": "test-runner",
-            "peak_rss_bytes": 4096,
-            "peak_cpu_percent": 1.0,
-            "samples": 1,
-        }],
+        "processes": [
+            {
+                "pid": 123,
+                "command": "test-runner",
+                "peak_rss_bytes": 4096,
+                "peak_cpu_percent": 1.0,
+                "samples": 1,
+            }
+        ],
         "samples": 1,
         "complete": True,
         "error": None,
@@ -1786,9 +1788,10 @@ def test_quanta_driver_defaults_to_potion_and_binary_digest(tmp_path, monkeypatc
         record_path = Path(command[command.index("--out") + 1])
         record_path.write_text("{}", encoding="utf-8")
         Path(command[command.index("--metrics-out") + 1]).write_text("{}", encoding="utf-8")
-        kwargs["resource_path"].write_text(json.dumps(
-            _unbound_resource_payload(ev.digest(record_path.read_bytes()))
-        ), encoding="utf-8")
+        kwargs["resource_path"].write_text(
+            json.dumps(_unbound_resource_payload(ev.digest(record_path.read_bytes()))),
+            encoding="utf-8",
+        )
         return {"exit_code": 0, "timed_out": False, "elapsed_ms": 1.0}
 
     monkeypatch.setattr(pairrun, "run_monitored_process", fake_run)
@@ -3205,9 +3208,7 @@ def test_verdict_rejects_host_profile_tamper(tmp_path):
     protocol_path.write_text(json.dumps(protocol), encoding="utf-8")
     _rewrite_manifest(
         st,
-        lambda manifest: manifest["provenance"]["host"].update(
-            profile_digest=profile_digest
-        ),
+        lambda manifest: manifest["provenance"]["host"].update(profile_digest=profile_digest),
     )
     with pytest.raises(pairrun.RunError, match="host profile must hold exactly"):
         _stage_verdict(st)

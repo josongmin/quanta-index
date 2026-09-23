@@ -30,7 +30,9 @@ def pytest_summary(path: Path) -> dict[str, object]:
     if root.get("tests") is not None:
         suites = [root]
     else:
-        suites = [suite for suite in root.iter("testsuite") if not list(suite.iter("testsuite"))[1:]]
+        suites = [
+            suite for suite in root.iter("testsuite") if not list(suite.iter("testsuite"))[1:]
+        ]
     if not suites:
         raise SystemExit("pytest JUnit evidence has no counted test suite")
     tests = sum(_count(suite.get("tests"), "tests") for suite in suites)
@@ -76,7 +78,12 @@ def nextest_summary(path: Path) -> dict[str, object]:
                     suites_finished += 1
                     passed = event.get("passed")
                     failed = event.get("failed")
-                    if type(passed) is not int or passed < 0 or type(failed) is not int or failed < 0:
+                    if (
+                        type(passed) is not int
+                        or passed < 0
+                        or type(failed) is not int
+                        or failed < 0
+                    ):
                         raise SystemExit("nextest suite has invalid counts")
                     suites_passed += passed
                 elif outcome == "failed":

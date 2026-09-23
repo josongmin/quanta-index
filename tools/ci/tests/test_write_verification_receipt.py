@@ -256,9 +256,7 @@ def test_receipt_rejects_dirty_source_before_emitting(tmp_path: Path) -> None:
     (source / "tracked.txt").write_text("changed\n", encoding="utf-8")
     evidence = tmp_path / "summary.json"
     evidence.write_text(
-        json.dumps(
-            {"command": "proof", "selected": 1, "executed": 1, "passed": 1, "failed": 0}
-        )
+        json.dumps({"command": "proof", "selected": 1, "executed": 1, "passed": 1, "failed": 0})
         + "\n",
         encoding="utf-8",
     )
@@ -337,9 +335,7 @@ def test_receipt_refuses_overwriting_existing_output(tmp_path: Path) -> None:
     source = _clean_repo(tmp_path)
     evidence = tmp_path / "summary.json"
     evidence.write_text(
-        json.dumps(
-            {"command": "proof", "selected": 1, "executed": 1, "passed": 1, "failed": 0}
-        )
+        json.dumps({"command": "proof", "selected": 1, "executed": 1, "passed": 1, "failed": 0})
         + "\n",
         encoding="utf-8",
     )

@@ -7,7 +7,6 @@ import importlib.util
 import sys
 from pathlib import Path
 
-
 PATH = Path(__file__).resolve().parents[1] / "lint/handoff_validation.py"
 spec = importlib.util.spec_from_file_location("quanta_handoff_validation_test", PATH)
 assert spec and spec.loader
@@ -18,11 +17,24 @@ spec.loader.exec_module(VALIDATOR)
 
 def test_product_lane_order_is_fixed_independent_of_fixture_builder() -> None:
     assert VALIDATOR.PRODUCT_LANES == (
-        "P00", "P01", "P02A", "P02B", "P02I", "P03", "P04", "P05",
-        "P06", "P07", "P08", "P09", "P10", "P11",
+        "P00",
+        "P01",
+        "P02A",
+        "P02B",
+        "P02I",
+        "P03",
+        "P04",
+        "P05",
+        "P06",
+        "P07",
+        "P08",
+        "P09",
+        "P10",
+        "P11",
     )
     assert VALIDATOR.HANDOFF_POLICIES["P02I"]["required"] == [
-        "p02a-repomap-compiler", "p02b-operation-journal"
+        "p02a-repomap-compiler",
+        "p02b-operation-journal",
     ]
 
 
@@ -41,8 +53,7 @@ def _chain() -> list[dict]:
     by_lane["P02B"]["base_sha"] = by_lane["P01"]["result_sha"]
     by_lane["P02I"]["base_sha"] = by_lane["P01"]["result_sha"]
     by_lane["P02I"]["integration_commits"] = [
-        {"lane": lane, "original_sha": by_lane[lane]["result_sha"]}
-        for lane in ("P02A", "P02B")
+        {"lane": lane, "original_sha": by_lane[lane]["result_sha"]} for lane in ("P02A", "P02B")
     ]
     for preceding, following in zip(lanes[5:-1], lanes[6:]):
         by_lane[following]["base_sha"] = by_lane[preceding]["result_sha"]

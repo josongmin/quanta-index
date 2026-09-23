@@ -35,9 +35,7 @@ def test_explicit_lane_overrides_inherited_target_dir(tmp_path: Path) -> None:
     env["CARGO_TARGET_DIR"] = str(tmp_path / "stale-target")
     payload = _run_metadata("--lane", "release-bin-lane", env=env)
     checkout_id = hashlib.sha256(str(REPO_ROOT.resolve()).encode()).hexdigest()[:16]
-    assert str(payload["target_directory"]).endswith(
-        f"/target/{checkout_id}/release-bin-lane"
-    )
+    assert str(payload["target_directory"]).endswith(f"/target/{checkout_id}/release-bin-lane")
 
 
 def test_distinct_checkouts_cannot_share_a_cargo_target_lane(tmp_path: Path) -> None:
@@ -86,14 +84,10 @@ def test_auxiliary_cargo_tools_share_the_checkout_namespace(
     monkeypatch.setenv("QUANTA_INDEX_CACHE_ROOT", str(cache_root))
     monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
     monkeypatch.delenv("QUANTA_INDEX_BUILD_LANE", raising=False)
-    cargo_env = runpy.run_path(str(REPO_ROOT / "tools" / "ci" / "lint" / script_name))[
-        "cargo_env"
-    ]
+    cargo_env = runpy.run_path(str(REPO_ROOT / "tools" / "ci" / "lint" / script_name))["cargo_env"]
     checkout_id = hashlib.sha256(str(REPO_ROOT.resolve()).encode()).hexdigest()[:16]
     lane = "auxiliary-lane"
-    assert cargo_env(lane)["CARGO_TARGET_DIR"] == str(
-        cache_root / "target" / checkout_id / lane
-    )
+    assert cargo_env(lane)["CARGO_TARGET_DIR"] == str(cache_root / "target" / checkout_id / lane)
 
 
 def test_preserve_opt_out_keeps_inherited_target_dir(tmp_path: Path) -> None:
@@ -147,11 +141,11 @@ def test_workspace_nextest_builds_and_exports_explicit_searchd_pin(tmp_path: Pat
     fake_cargo.write_text(
         "#!/bin/bash\n"
         "set -euo pipefail\n"
-        "printf '%s|%s\\n' \"${QUANTA_INDEX_SEARCHD_BIN:-}\" \"$*\" >> \"$CARGO_CALL_LOG\"\n"
-        "if [[ \"${1:-}\" == build ]]; then\n"
-        "  mkdir -p \"$CARGO_TARGET_DIR/debug\"\n"
+        'printf \'%s|%s\\n\' "${QUANTA_INDEX_SEARCHD_BIN:-}" "$*" >> "$CARGO_CALL_LOG"\n'
+        'if [[ "${1:-}" == build ]]; then\n'
+        '  mkdir -p "$CARGO_TARGET_DIR/debug"\n'
         "  printf '#!/bin/sh\\nexit 0\\n' > \"$CARGO_TARGET_DIR/debug/quanta-index-searchd\"\n"
-        "  chmod +x \"$CARGO_TARGET_DIR/debug/quanta-index-searchd\"\n"
+        '  chmod +x "$CARGO_TARGET_DIR/debug/quanta-index-searchd"\n'
         "fi\n",
         encoding="utf-8",
     )

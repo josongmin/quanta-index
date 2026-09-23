@@ -418,7 +418,9 @@ def test_the_cli_refuses_a_malformed_head(tmp_path: Path, capsys) -> None:
     assert "not 40 lowercase hex" in capsys.readouterr().err
 
 
-def test_clean_worktree_requirement_refuses_any_git_status_output(monkeypatch, tmp_path: Path) -> None:
+def test_clean_worktree_requirement_refuses_any_git_status_output(
+    monkeypatch, tmp_path: Path
+) -> None:
     class Completed:
         returncode = 0
         stdout = " M crates/owner.rs\n"

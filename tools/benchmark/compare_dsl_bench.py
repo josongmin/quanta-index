@@ -549,9 +549,7 @@ def main() -> int:
         else DEFAULT_P50_ABS_THRESHOLD_MS.get(mode, 1.0)
     )
     p95_rel_threshold = (
-        args.p95_rel_threshold
-        if args.p95_rel_threshold is not None
-        else DEFAULT_P95_REL_THRESHOLD
+        args.p95_rel_threshold if args.p95_rel_threshold is not None else DEFAULT_P95_REL_THRESHOLD
     )
     p95_abs_threshold_ms = (
         args.p95_abs_threshold_ms
@@ -737,9 +735,7 @@ def main() -> int:
             parts.append(f"{new_n} new without baseline")
         if unmeasured_n:
             parts.append(f"{unmeasured_n} unmeasured")
-        print(
-            f"FAIL: {', '.join(parts)} scenario(s) over p50/p95 thresholds."
-        )
+        print(f"FAIL: {', '.join(parts)} scenario(s) over p50/p95 thresholds.")
         print("To accept a deliberate change: re-run with --update-baseline.")
         return 1
 

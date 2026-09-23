@@ -12,8 +12,8 @@ import re
 import subprocess
 import sys
 import tempfile
-from datetime import datetime, timezone
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 RUST_PROCESS = re.compile(r"(?:^|/)(?:cargo|cargo-nextest|rustc)(?:\s|$)")
@@ -211,7 +211,9 @@ def main(argv: list[str] | None = None) -> int:
                 ),
             )
         except OSError as exc:
-            print(f"TIMING_PREFLIGHT_ERROR reason=receipt_write_failed detail={exc}", file=sys.stderr)
+            print(
+                f"TIMING_PREFLIGHT_ERROR reason=receipt_write_failed detail={exc}", file=sys.stderr
+            )
             return 2
     actual_os = platform.system().lower() or "unknown"
     if args.expected_os is not None and actual_os != args.expected_os:

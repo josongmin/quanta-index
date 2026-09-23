@@ -107,6 +107,8 @@ LATENCY_KEYS = ("p50_ms", "p95_ms", "p99_ms", "samples")
 MODES = ("warm", "cold")
 UNTIMED_DIMENSIONS = ("relevance", "relevance-openai-ab", "ambiguity", "snippet", "ops", "ui")
 CONCURRENCY_COUNTS = (1, 8, 32)
+
+
 @dataclass(frozen=True)
 class Refusal:
     path: Path
@@ -344,19 +346,25 @@ def check_envelope(
             ratio = amplification.get("ratio")
             if changed_bytes == 0:
                 if ratio is not None:
-                    reasons.append("disk_amplification.ratio must be null when changed_bytes is zero")
+                    reasons.append(
+                        "disk_amplification.ratio must be null when changed_bytes is zero"
+                    )
             elif isinstance(bytes_written, int) and isinstance(changed_bytes, int):
                 expected_ratio = bytes_written / changed_bytes
-                if not isinstance(ratio, (int, float)) or isinstance(ratio, bool) or ratio != expected_ratio:
-                    reasons.append("disk_amplification.ratio does not equal bytes_written / changed_bytes")
+                if (
+                    not isinstance(ratio, (int, float))
+                    or isinstance(ratio, bool)
+                    or ratio != expected_ratio
+                ):
+                    reasons.append(
+                        "disk_amplification.ratio does not equal bytes_written / changed_bytes"
+                    )
 
     if not isinstance(payload.get("detail"), dict):
         reasons.append("detail is not an object")
     elif dimension == "relevance":
         detail = payload["detail"]
-        model_revision = (
-            provenance.get("model_revision") if isinstance(provenance, dict) else None
-        )
+        model_revision = provenance.get("model_revision") if isinstance(provenance, dict) else None
         quality = detail.get("semantic_quality")
         if model_revision != POTION_CODE_MODEL_REVISION:
             reasons.append("relevance: canonical artifact requires potion-code model provenance")
@@ -481,8 +489,8 @@ def check_families(
                     ):
                         refusals.append(
                             Refusal(
-                            path,
-                            "open-loop: authority needs seeded_poisson, >=10 s and >=4 offered-load points",
+                                path,
+                                "open-loop: authority needs seeded_poisson, >=10 s and >=4 offered-load points",
                             )
                         )
                 if isinstance(rows, list) and any(
@@ -509,8 +517,13 @@ def select_families(
     return tuple((name, by_name[name]) for name in names)
 
 
-def control_plane(repo_root: Path) -> tuple[
-    dict[str, object], tuple[tuple[str, str], ...], tuple[tuple[str, str], ...], dict[str, tuple[str, ...]]
+def control_plane(
+    repo_root: Path,
+) -> tuple[
+    dict[str, object],
+    tuple[tuple[str, str], ...],
+    tuple[tuple[str, str], ...],
+    dict[str, tuple[str, ...]],
 ]:
     """Load the manifest belonging to the checkout being gated."""
     manifest = load_manifest(repo_root / "tools" / "benchmark" / "manifest.json")
