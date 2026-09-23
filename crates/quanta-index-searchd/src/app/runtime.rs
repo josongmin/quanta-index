@@ -1162,7 +1162,7 @@ pub struct SearchdRuntime {
     // so every adapter, server, and authority handle is gone before ownership
     // of the shared root is released. The serving path moves these three
     // into the supervisor's `RuntimeGuards` bundle, which drops only after
-    // every supervised child has joined or been explicitly escalated
+    // every supervised child has joined, including custody-reaped children
     // (S21-09); `SearchdRuntime::drop` alone is the non-serving fallback.
     _state_root_lease: StateRootLease,
 }
@@ -1191,8 +1191,8 @@ pub struct RuntimeServers {
 /// supervised child of its own. The supervisor owns this bundle for the
 /// whole serving interval; the guards drop only after every supervised
 /// child — accept loops, the connections they joined, the maintenance
-/// timer, provider tasks — has joined, or after an explicit hard-deadline
-/// escalation. In particular the state-root lease is held from
+/// timer, provider tasks — has joined, including those reaped after a
+/// hard-deadline escalation. In particular the state-root lease is held from
 /// construction until every child exits, so a second daemon cannot
 /// acquire the same state root while the first is still serving.
 pub struct RuntimeGuards {
@@ -1678,7 +1678,7 @@ impl SearchdRuntime {
     /// timer, and its lifetime guards (SEP-21 P08 / S21-09). The
     /// supervisor takes all of them: the servers and the timer are
     /// spawned as supervised children, the guards are held until every
-    /// child has joined or been explicitly escalated — never released
+    /// child has joined, including escalated children — never released
     /// before serving ends.
     #[must_use]
     pub fn into_servers_maintenance_guards_and_boot_notices(

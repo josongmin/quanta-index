@@ -136,4 +136,16 @@ where
             })?;
         Ok(handle)
     }
+
+    /// Run the bound accept loop in an already-supervised thread. This
+    /// avoids creating a second, unregistered thread after the supervisor
+    /// has committed to owning the server child.
+    pub(crate) fn run(self, accept_idle: Duration) -> Result<(), IpcError> {
+        self.server
+            .run::<RequestEnvelopeT, Request, ResponseEnvelopeT, Response, D>(
+                &self.dispatcher,
+                self.plane,
+                accept_idle,
+            )
+    }
 }

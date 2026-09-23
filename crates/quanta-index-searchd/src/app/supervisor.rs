@@ -6,8 +6,9 @@
 //! (maintenance, corpus lifecycle, state-root lease). No child holds a
 //! detached `JoinHandle`: every spawned child is registered with a stop
 //! closure and a join handle, reports its terminal result through one
-//! channel, and is joined (or explicitly escalated) before the guards
-//! drop.
+//! channel. An escalated child is transferred with the runtime guards to
+//! a custody reaper, so the state-root lease cannot be released while a
+//! child is still running.
 //!
 //! Lifecycle:
 //!
@@ -21,15 +22,14 @@
 //! well-behaved children get to observe cancellation and exit on their
 //! own; the hard deadline (`HARD_DRAIN_DEADLINE`, frozen) is the outer
 //! bound of the join itself. A child still alive at the hard deadline is
-//! escalated — its join is abandoned and named in the receipt, never
-//! marked graceful — so the supervisor join can never block unboundedly.
-//! The guards (and therefore the state-root lease) drop only after every
-//! child has joined, or after an explicit hard-deadline escalation or
-//! signal abort.
+//! escalated and named in the receipt, never marked graceful. The supervisor
+//! returns by the deadline; a separate custody reaper owns and joins the
+//! unfinished child before it drops the guards. A second-signal abort uses
+//! the same custody transfer without waiting in the supervisor.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -192,6 +192,7 @@ struct RegisteredChild {
     join: Option<JoinHandle<()>>,
     stop: Option<Box<dyn FnOnce() + Send>>,
     kind: Option<ChildExitKind>,
+    reports_exit: bool,
 }
 
 /// How a supervised runtime ended.
@@ -211,14 +212,15 @@ pub enum SupervisionOutcome {
         cooperative_overdue: Vec<&'static str>,
     },
     /// A child could not be spawned; everything already started was
-    /// stopped and joined in reverse order before the guards dropped.
+    /// stopped in reverse order. Unfinished children retain the guards
+    /// through the custody reaper.
     StartupRollback {
         /// The child whose spawn failed.
         failed: &'static str,
         /// Children torn down, in reverse start order.
         torn_down: Vec<&'static str>,
         /// Children still alive at the hard deadline of the rollback;
-        /// their joins were abandoned.
+        /// their joins and guards transfer to the custody reaper.
         escalated: Vec<&'static str>,
     },
     /// A required child exited while the runtime was serving; readiness
@@ -240,7 +242,7 @@ pub enum SupervisionOutcome {
         failed: Vec<(&'static str, ChildExitKind)>,
     },
     /// The hard drain deadline passed with children still alive; their
-    /// joins were abandoned and named. Never a graceful success.
+    /// joins transfer to the custody reaper and are named here.
     HardDeadlineEscalated {
         /// The children still alive at the hard deadline.
         unfinished: Vec<&'static str>,
@@ -317,10 +319,9 @@ struct DrainTally {
 /// threads and runtime guards.
 ///
 /// `G` is the guard payload (the daemon's `RuntimeGuards`; a drop-order
-/// recorder in tests). It is stored in the supervisor and dropped only
-/// after every child has joined, or after an explicit hard-deadline
-/// escalation or signal abort.
-pub struct SearchdSupervisor<G> {
+/// recorder in tests). It is stored in the supervisor until every child
+/// joins, or transferred with unfinished children to the custody reaper.
+pub struct SearchdSupervisor<G: Send + 'static> {
     phase: SupervisorPhase,
     cancel: CancelRoot,
     children: Vec<RegisteredChild>,
@@ -333,7 +334,16 @@ pub struct SearchdSupervisor<G> {
     guards: Option<G>,
 }
 
-impl<G> SearchdSupervisor<G> {
+impl<G: Send + 'static> Drop for SearchdSupervisor<G> {
+    fn drop(&mut self) {
+        if self.guards.is_some() {
+            self.cancel.request_shutdown();
+            self.release_guards_after_children();
+        }
+    }
+}
+
+impl<G: Send + 'static> SearchdSupervisor<G> {
     /// A supervisor with no children yet, holding `guards` until the
     /// end of its lifecycle. `cancel` is the one cancellation tree root
     /// the whole process shares: children poll its flag, `run` observes
@@ -402,6 +412,7 @@ impl<G> SearchdSupervisor<G> {
                     join: Some(join),
                     stop: Some(stop),
                     kind: None,
+                    reports_exit: true,
                 });
                 Ok(())
             }
@@ -409,8 +420,26 @@ impl<G> SearchdSupervisor<G> {
         }
     }
 
+    /// Register an already-running child whose join handle is transferred
+    /// directly to the supervisor. The maintenance timer uses this path:
+    /// no second adapter spawn may strand its original timer thread.
+    pub fn adopt_child(
+        &mut self,
+        name: &'static str,
+        stop: Box<dyn FnOnce() + Send>,
+        join: JoinHandle<()>,
+    ) {
+        self.children.push(RegisteredChild {
+            name,
+            join: Some(join),
+            stop: Some(stop),
+            kind: None,
+            reports_exit: false,
+        });
+    }
+
     /// Stop and join everything already started, in reverse start
-    /// order, bounded by the hard deadline; then drop the guards. The
+    /// order, bounded by the hard deadline; then release the guards. The
     /// answer to a spawn failure during startup; `failed` is the child
     /// that could not be spawned.
     pub fn rollback(mut self, failed: &'static str) -> SupervisionOutcome {
@@ -418,6 +447,7 @@ impl<G> SearchdSupervisor<G> {
         let mut escalated: Vec<&'static str> = Vec::new();
         // Global cancellation: what was started must now stop.
         self.cancel.request_shutdown();
+        let cancel = CancelRoot::clone(&self.cancel);
         let deadline = self.hard_deadline_at_now();
         let Self {
             children,
@@ -429,15 +459,17 @@ impl<G> SearchdSupervisor<G> {
             if let Some(stop) = child.stop.take() {
                 stop();
             }
-            if Self::await_child(child, pending, exits, deadline) {
+            if Self::await_child(child, pending, exits, deadline, &cancel) {
                 torn_down.push(child.name);
             } else {
                 escalated.push(child.name);
             }
         }
         self.phase = SupervisorPhase::Failed;
-        // The guards drop here, after every child joined or escalated.
-        drop(self.guards.take());
+        if let Some(signum) = self.latched_abort() {
+            return self.abort(signum);
+        }
+        self.release_guards_after_children();
         SupervisionOutcome::StartupRollback {
             failed,
             torn_down,
@@ -447,13 +479,16 @@ impl<G> SearchdSupervisor<G> {
 
     /// Serve until the cancellation root fires or a child exits, then
     /// drain under the two-deadline policy and derive the outcome.
-    /// Never joins unboundedly; never drops the guards before every
-    /// child joined or was explicitly escalated.
+    /// Never joins unboundedly; unfinished children retain the guards
+    /// through the custody reaper.
     pub fn run(mut self, external: &CancelRoot) -> SupervisionOutcome {
         // Startup: every registered child is spawned; the supervisor
         // becomes ready only with all of them running.
         if external.abort_signum() != 0 {
             return self.abort(external.abort_signum());
+        }
+        if let Some(lost) = self.observe_finished_direct_children() {
+            return self.required_child_lost(lost);
         }
         if let Some(lost) = self.take_pending_exits() {
             return self.required_child_lost(lost);
@@ -482,6 +517,12 @@ impl<G> SearchdSupervisor<G> {
             if let Some(lost) = observed {
                 return self.required_child_lost(lost);
             }
+            if let Some(lost) = self.observe_finished_direct_children() {
+                if external.shutdown_requested() || self.cancel.shutdown_requested() {
+                    break;
+                }
+                return self.required_child_lost(lost);
+            }
             if external.shutdown_requested() || self.cancel.shutdown_requested() {
                 break;
             }
@@ -492,9 +533,9 @@ impl<G> SearchdSupervisor<G> {
     /// Operator-requested drain: fire every stop, give children the
     /// cooperative deadline to exit on their own (recording the ones
     /// that miss it), then bound the whole join by the hard deadline.
-    /// Children whose terminal event arrived are joined (their event
-    /// precedes their return, so the join waits only for bounded thread
-    /// teardown); children without one are escalated, never joined.
+    /// Children whose terminal event arrived and whose thread actually
+    /// finished are joined. A reported child still in teardown at the
+    /// hard deadline is escalated with its join handle and guards.
     fn drain(mut self) -> SupervisionOutcome {
         self.phase = SupervisorPhase::Draining;
         self.stop_all();
@@ -513,7 +554,9 @@ impl<G> SearchdSupervisor<G> {
         self.cooperative_overdue = self
             .children
             .iter()
-            .filter(|child| child.kind.is_none())
+            .filter(|child| {
+                child.kind.is_none() || child.join.as_ref().is_some_and(|join| !join.is_finished())
+            })
             .map(|child| child.name)
             .collect();
         let deadline = self.hard_deadline_at_now();
@@ -538,6 +581,7 @@ impl<G> SearchdSupervisor<G> {
         self.phase = SupervisorPhase::Failed;
         // Global cancellation: every well-behaved peer stops now.
         self.cancel.request_shutdown();
+        let cancel = CancelRoot::clone(&self.cancel);
         self.stop_all();
         let deadline = self.hard_deadline_at_now();
         let Self {
@@ -548,11 +592,14 @@ impl<G> SearchdSupervisor<G> {
         } = &mut self;
         for child in children.iter_mut() {
             if child.kind.is_none() {
-                let _awaited = Self::await_child(child, pending, exits, deadline);
+                let _awaited = Self::await_child(child, pending, exits, deadline, &cancel);
             }
         }
+        if let Some(signum) = self.latched_abort() {
+            return self.abort(signum);
+        }
         let tally = self.join_children_with_known_exits();
-        drop(self.guards.take());
+        self.release_guards_after_children();
         if !tally.unfinished.is_empty() {
             return SupervisionOutcome::HardDeadlineEscalated {
                 unfinished: tally.unfinished,
@@ -576,7 +623,7 @@ impl<G> SearchdSupervisor<G> {
     /// The abort answer to a second signal: nothing is waited for.
     fn abort(mut self, signum: i32) -> SupervisionOutcome {
         self.phase = SupervisorPhase::Failed;
-        drop(self.guards.take());
+        self.release_guards_after_children();
         SupervisionOutcome::SignalAbort { signum }
     }
 
@@ -588,7 +635,7 @@ impl<G> SearchdSupervisor<G> {
         } else {
             SupervisorPhase::Failed
         };
-        drop(self.guards.take());
+        self.release_guards_after_children();
         if !tally.unfinished.is_empty() {
             return SupervisionOutcome::HardDeadlineEscalated {
                 unfinished: tally.unfinished,
@@ -612,7 +659,13 @@ impl<G> SearchdSupervisor<G> {
     /// never with a queued event unobserved.
     fn collect_exits_until(&mut self, deadline: Instant) {
         loop {
-            if self.children.iter().all(|child| child.kind.is_some()) {
+            if self.cancel.abort_signum() != 0 {
+                return;
+            }
+            let _finished = self.observe_finished_direct_children();
+            if self.children.iter().all(|child| {
+                child.kind.is_some() && child.join.as_ref().is_none_or(JoinHandle::is_finished)
+            }) {
                 return;
             }
             let now = Instant::now();
@@ -638,6 +691,33 @@ impl<G> SearchdSupervisor<G> {
         }
     }
 
+    /// A directly adopted child has no terminal-event adapter. Its actual
+    /// finished join handle is the authority for a serving-time loss and
+    /// for drain classification; never infer completion from a timer tick.
+    fn observe_finished_direct_children(&mut self) -> Option<ChildExit> {
+        let mut first = None;
+        for child in &mut self.children {
+            if child.reports_exit || child.kind.is_some() {
+                continue;
+            }
+            if !child.join.as_ref().is_some_and(JoinHandle::is_finished) {
+                continue;
+            }
+            let kind = match child.join.take().map(JoinHandle::join) {
+                Some(Err(_panic)) => ChildExitKind::Panicked,
+                Some(Ok(())) | None => ChildExitKind::Completed,
+            };
+            child.kind = Some(kind);
+            if first.is_none() {
+                first = Some(ChildExit {
+                    name: child.name,
+                    kind,
+                });
+            }
+        }
+        first
+    }
+
     fn stop_all(&mut self) {
         for child in &mut self.children {
             if let Some(stop) = child.stop.take() {
@@ -646,14 +726,68 @@ impl<G> SearchdSupervisor<G> {
         }
     }
 
-    /// Join every child whose terminal event is known; children without
-    /// one are escalated (their handles are dropped unjoined). A join
-    /// that itself caught a panic reclassifies the child as panicked.
+    /// Return without waiting beyond the hard deadline, but never release
+    /// the state-root lease while an escalated child may still use it.
+    /// The reaper owns each remaining stop closure and join handle as well
+    /// as the guards. If the OS refuses to spawn that reaper, deliberately
+    /// retain the payload until process exit: dropping the lease early is
+    /// less safe than retaining it after an already-failed shutdown.
+    fn release_guards_after_children(&mut self) {
+        let Some(guards) = self.guards.take() else {
+            return;
+        };
+        if self.children.iter().all(|child| child.join.is_none()) {
+            drop(guards);
+            return;
+        }
+        let payload = Arc::new(Mutex::new(Some((
+            std::mem::take(&mut self.children),
+            guards,
+        ))));
+        let worker = Arc::clone(&payload);
+        let spawned = std::thread::Builder::new()
+            .name("searchd-custody-reaper".to_string())
+            .spawn(move || {
+                let retained = match worker.lock() {
+                    Ok(mut slot) => slot.take(),
+                    Err(poisoned) => poisoned.into_inner().take(),
+                };
+                if let Some((mut children, guards)) = retained {
+                    for child in &mut children {
+                        if let Some(stop) = child.stop.take() {
+                            // A faulty stop callback must not unwind the
+                            // reaper and release the lease before joins.
+                            let _stopped =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(stop));
+                        }
+                    }
+                    for child in &mut children {
+                        if let Some(join) = child.join.take() {
+                            let _joined = join.join();
+                        }
+                    }
+                    drop(guards);
+                }
+            });
+        if spawned.is_err() {
+            // The failure outcome is already non-green. Preserve custody
+            // even under thread exhaustion; the process exit releases it.
+            std::mem::forget(payload);
+        }
+    }
+
+    /// Join only children that both reported and actually finished.
+    /// A child still running after its event is escalated to the custody
+    /// reaper, so a misleading event cannot bypass the hard deadline.
+    /// A join that caught a panic reclassifies the child as panicked.
     fn join_children_with_known_exits(&mut self) -> DrainTally {
         let mut tally = DrainTally::default();
         for child in &mut self.children {
-            match child.kind {
-                Some(kind) => {
+            match (
+                child.kind,
+                child.join.as_ref().is_none_or(JoinHandle::is_finished),
+            ) {
+                (Some(kind), true) => {
                     let joined = child.join.take().map_or(Ok(()), JoinHandle::join);
                     let kind = match (kind, joined) {
                         (_, Err(_panic_at_join)) => ChildExitKind::Panicked,
@@ -665,7 +799,7 @@ impl<G> SearchdSupervisor<G> {
                         tally.failed.push((child.name, kind));
                     }
                 }
-                None => tally.unfinished.push(child.name),
+                (None, _) | (Some(_), false) => tally.unfinished.push(child.name),
             }
         }
         tally
@@ -689,17 +823,29 @@ impl<G> SearchdSupervisor<G> {
         first
     }
 
-    /// Wait for one child's terminal event until `deadline`, buffering
-    /// other children's events for their own turn, then take and join
-    /// its handle. `false` means the deadline passed with the child
-    /// alive: its join is abandoned (escalated), never unbounded.
+    /// Wait for one child's terminal event and actual thread completion
+    /// until `deadline`, buffering other children's events for their own
+    /// turn, then take and join its finished handle. `false` means the
+    /// deadline passed with the child alive: its join transfers to the
+    /// custody reaper, never this bounded wait.
     fn await_child(
         child: &mut RegisteredChild,
         pending: &mut Vec<ChildExit>,
         exits: &Receiver<ChildExit>,
         deadline: Instant,
+        cancel: &CancelRoot,
     ) -> bool {
         loop {
+            if cancel.abort_signum() != 0 {
+                return false;
+            }
+            if !child.reports_exit && child.join.as_ref().is_some_and(JoinHandle::is_finished) {
+                child.kind = Some(match child.join.take().map(JoinHandle::join) {
+                    Some(Err(_panic)) => ChildExitKind::Panicked,
+                    Some(Ok(())) | None => ChildExitKind::Completed,
+                });
+                return true;
+            }
             if let Some(position) = pending.iter().position(|exit| exit.name == child.name) {
                 let exit = pending.remove(position);
                 child.kind = Some(exit.kind);
@@ -712,14 +858,22 @@ impl<G> SearchdSupervisor<G> {
             let remaining = deadline
                 .checked_duration_since(now)
                 .unwrap_or(Duration::ZERO);
-            match exits.recv_timeout(remaining) {
+            match exits.recv_timeout(remaining.min(SUPERVISOR_POLL)) {
                 Ok(exit) => {
                     pending.push(exit);
                 }
-                Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => {
-                    return false;
-                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return false,
             }
+        }
+        while child.join.as_ref().is_some_and(|join| !join.is_finished()) {
+            if cancel.abort_signum() != 0 {
+                return false;
+            }
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return false;
+            };
+            std::thread::sleep(remaining.min(SUPERVISOR_POLL));
         }
         if let Some(join) = child.join.take()
             && join.join().is_err()

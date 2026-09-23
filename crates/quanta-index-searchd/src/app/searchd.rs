@@ -7,7 +7,7 @@
 //! and state-root lease before serving began — is gone:
 //! `into_servers_maintenance_guards_and_boot_notices` hands the
 //! supervisor every piece, and the guards drop only after every child
-//! has joined or been explicitly escalated.
+//! has joined, including children escalated to the custody reaper.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -85,8 +85,7 @@ fn bridge_external_shutdown(
 /// under the two-deadline policy.
 ///
 /// The runtime guards (corpus lifecycle, state-root lease) are held by
-/// the supervisor until every child has joined or been explicitly
-/// escalated.
+/// the supervisor or custody reaper until every child has joined.
 #[must_use]
 pub fn supervise_runtime(
     runtime: SearchdRuntime,
@@ -112,36 +111,41 @@ pub fn supervise_runtime(
         CancelRoot::clone(root),
     );
 
-    // Startup is all-or-rollback: any spawn failure tears down exactly
-    // what was started, in reverse order, before the guards drop.
-    let mut startups = vec![
-        spawn_accept_child(
-            &mut supervisor,
-            "query-accept",
-            query_server,
-            QUERY_ACCEPT_IDLE,
-        ),
-        spawn_accept_child(
-            &mut supervisor,
-            "control-accept",
-            control_server,
-            CONTROL_ACCEPT_IDLE,
-        ),
-        spawn_accept_child(
-            &mut supervisor,
-            "ingest-accept",
-            ingest_server,
-            INGEST_ACCEPT_IDLE,
-        ),
-        spawn_maintenance_child(&mut supervisor, maintenance),
-    ];
-    if let Some(pool) = attempt_pool {
-        startups.push(spawn_provider_child(&mut supervisor, pool, hard_deadline));
+    // Adopt the already-running timer first. Enroll the provider drain
+    // before any accept loop can admit requests and start attempts. Every
+    // later spawn failure rolls back the enrolled children; no provider
+    // attempt can be stranded by a failed provider-child spawn.
+    if let Err(failure) = spawn_maintenance_child(&mut supervisor, maintenance) {
+        return supervisor.rollback(failure.name);
     }
-    for startup in startups {
-        if let Err(failure) = startup {
+    if let Some(pool) = attempt_pool {
+        if let Err(failure) = spawn_provider_child(&mut supervisor, pool, hard_deadline) {
             return supervisor.rollback(failure.name);
         }
+    }
+    if let Err(failure) = spawn_accept_child(
+        &mut supervisor,
+        "query-accept",
+        query_server,
+        QUERY_ACCEPT_IDLE,
+    ) {
+        return supervisor.rollback(failure.name);
+    }
+    if let Err(failure) = spawn_accept_child(
+        &mut supervisor,
+        "control-accept",
+        control_server,
+        CONTROL_ACCEPT_IDLE,
+    ) {
+        return supervisor.rollback(failure.name);
+    }
+    if let Err(failure) = spawn_accept_child(
+        &mut supervisor,
+        "ingest-accept",
+        ingest_server,
+        INGEST_ACCEPT_IDLE,
+    ) {
+        return supervisor.rollback(failure.name);
     }
     supervisor.run(root)
 }
@@ -149,7 +153,7 @@ pub fn supervise_runtime(
 /// Register one bound IPC server as a supervised child. The stop closure
 /// triggers the server's own shutdown handle; the adapted body joins the
 /// accept loop and reports its terminal kind.
-fn spawn_accept_child<RequestEnvelopeT, Request, ResponseEnvelopeT, Response, D>(
+fn spawn_accept_child<RequestEnvelopeT, Request: 'static, ResponseEnvelopeT, Response: 'static, D>(
     supervisor: &mut SearchdSupervisor<RuntimeGuards>,
     name: &'static str,
     server: QueryServer<RequestEnvelopeT, Request, ResponseEnvelopeT, Response, D>,
@@ -161,33 +165,23 @@ where
     D: IpcDispatcher<Request, Response> + ?Sized + 'static,
 {
     let stop_handle = server.shutdown_handle();
-    let stop_handle_for_error = stop_handle.clone();
     supervisor.spawn_child(
         name,
         Box::new(move || stop_handle.trigger()),
         move |context: ChildContext| {
-            let inner = server.spawn(accept_idle)?;
-            let adapter = std::thread::Builder::new()
+            std::thread::Builder::new()
                 .name(format!("supervised-{name}"))
                 .spawn(move || {
-                    let kind = match inner.join() {
+                    let kind = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        server.run(accept_idle)
+                    })) {
                         Ok(Ok(())) => ChildExitKind::Completed,
                         Ok(Err(_ipc)) => ChildExitKind::Failed,
                         Err(_panic) => ChildExitKind::Panicked,
                     };
                     context.report_exit(kind);
-                });
-            match adapter {
-                Ok(handle) => Ok(handle),
-                // The accept thread exists but the registry could not take
-                // it: trigger the server's shutdown so the acceptor
-                // self-terminates, and answer with the typed spawn failure
-                // so startup rolls the siblings back.
-                Err(error) => {
-                    stop_handle_for_error.trigger();
-                    Err(anyhow::Error::new(error))
-                }
-            }
+                })
+                .map_err(anyhow::Error::new)
         },
     )
 }
@@ -217,10 +211,18 @@ fn spawn_provider_child(
                         std::thread::sleep(SHUTDOWN_POLL_IDLE);
                     }
                     let report = pool.drain(hard_deadline);
-                    let kind = if report.unfinished.is_empty() {
-                        ChildExitKind::Completed
-                    } else {
+                    let overdue = !report.unfinished.is_empty();
+                    // A deadline miss is non-green, but this child must
+                    // keep custody of live attempts until they really
+                    // exit. The supervisor escalates this child and keeps
+                    // the state-root lease in its reaper meanwhile.
+                    if overdue {
+                        while !pool.drain(hard_deadline).unfinished.is_empty() {}
+                    }
+                    let kind = if overdue {
                         ChildExitKind::Failed
+                    } else {
+                        ChildExitKind::Completed
                     };
                     context.report_exit(kind);
                 });
@@ -241,21 +243,6 @@ fn spawn_maintenance_child(
         .map_err(|_handed_over_twice| ChildSpawnFailure {
             name: "maintenance-timer",
         })?;
-    supervisor.spawn_child(
-        "maintenance-timer",
-        Box::new(move || stop.stop()),
-        move |context: ChildContext| {
-            let adapter = std::thread::Builder::new()
-                .name("supervised-maintenance".to_string())
-                .spawn(move || {
-                    let kind = if join.join().is_ok() {
-                        ChildExitKind::Completed
-                    } else {
-                        ChildExitKind::Panicked
-                    };
-                    context.report_exit(kind);
-                });
-            adapter.map_err(anyhow::Error::new)
-        },
-    )
+    supervisor.adopt_child("maintenance-timer", Box::new(move || stop.stop()), join);
+    Ok(())
 }

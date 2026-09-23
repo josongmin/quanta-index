@@ -15,6 +15,7 @@
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 use std::sync::atomic::Ordering;
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -185,6 +186,51 @@ fn startup_spawn_failure_rolls_back_in_reverse_order() {
     );
 }
 
+/// A quiet 10 ms observation slice is not the rollback's hard deadline.
+/// The child reports after several slices and must still join normally.
+#[test]
+fn rollback_waits_across_poll_slices_until_hard_deadline() {
+    let log: DropLog = Arc::new(Mutex::new(Vec::new()));
+    let root = CancelRoot::new();
+    let mut supervisor = SearchdSupervisor::new(
+        Duration::from_millis(100),
+        Duration::from_secs(1),
+        RecordedGuards {
+            log: Arc::clone(&log),
+        },
+        CancelRoot::clone(&root),
+    );
+    let child_log = Arc::clone(&log);
+    let spawned = supervisor.spawn_child("delayed-child", no_stop(), move |context| {
+        Ok(std::thread::spawn(move || {
+            while !context.shutdown().load(Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+            std::thread::sleep(Duration::from_millis(50));
+            child_log
+                .lock()
+                .expect("drop log is not poisoned")
+                .push("delayed-child");
+            context.report_exit(ChildExitKind::Completed);
+        }))
+    });
+    assert!(spawned.is_ok());
+
+    let outcome = supervisor.rollback("refused-child");
+    assert!(matches!(
+        outcome,
+        SupervisionOutcome::StartupRollback {
+            torn_down,
+            escalated,
+            ..
+        } if torn_down == vec!["delayed-child"] && escalated.is_empty()
+    ));
+    assert_eq!(
+        log.lock().expect("drop log is not poisoned").clone(),
+        vec!["delayed-child", "guards-dropped"]
+    );
+}
+
 /// A required child that exits while serving takes readiness down,
 /// drains its peers, and exits non-zero — never a partial-ready
 /// process.
@@ -239,9 +285,45 @@ fn required_child_exit_propagates_and_drains_peers() {
     );
 }
 
+/// A directly adopted child, such as the already-running maintenance
+/// timer, is observed through its own join handle without a second
+/// adapter thread or a synthetic terminal event.
+#[test]
+fn adopted_child_exit_is_a_required_child_loss() {
+    let log: DropLog = Arc::new(Mutex::new(Vec::new()));
+    let (release_tx, release_rx) = mpsc::channel();
+    let root = CancelRoot::new();
+    let mut supervisor = SearchdSupervisor::new(
+        Duration::from_millis(100),
+        Duration::from_secs(1),
+        RecordedGuards {
+            log: Arc::clone(&log),
+        },
+        CancelRoot::clone(&root),
+    );
+    let join = std::thread::spawn(move || {
+        release_rx.recv().expect("test releases the adopted child");
+    });
+    supervisor.adopt_child("maintenance-timer", no_stop(), join);
+    release_tx.send(()).expect("adopted child is running");
+    let outcome = supervisor.run(&root);
+    assert!(matches!(
+        outcome,
+        SupervisionOutcome::RequiredChildLost {
+            name: "maintenance-timer",
+            kind: ChildExitKind::Completed,
+            ..
+        }
+    ));
+    assert_eq!(
+        log.lock().expect("drop log is not poisoned").as_slice(),
+        &["guards-dropped"]
+    );
+}
+
 /// A child that ignores cooperative cancellation is escalated at the
-/// hard deadline: the join is abandoned, the outcome is named, and the
-/// exit is 70 — the drain is not marked graceful.
+/// hard deadline: the custody reaper retains its join and the guards,
+/// the outcome is named, and the exit is 70.
 #[test]
 fn hard_deadline_escalation_is_not_graceful() {
     let log: DropLog = Arc::new(Mutex::new(Vec::new()));
@@ -287,10 +369,138 @@ fn hard_deadline_escalation_is_not_graceful() {
         panic!("expected a hard-deadline escalation: {outcome:?}");
     };
     assert_eq!(unfinished, vec!["child-ignoring"]);
-    assert_eq!(
-        log.lock().expect("drop log is not poisoned").clone(),
-        vec!["guards-dropped"]
+    assert!(
+        log.lock().expect("drop log is not poisoned").is_empty(),
+        "an unfinished child must retain the runtime guards"
     );
+}
+
+/// Escalation returns at the deadline, but custody follows the unfinished
+/// child rather than the supervisor's terminal receipt.
+#[test]
+fn escalated_child_retains_guards_until_it_actually_exits() {
+    let (release_tx, release_rx) = mpsc::channel();
+    let (drop_tx, drop_rx) = mpsc::channel();
+    struct NotifyingGuard(mpsc::Sender<()>);
+    impl Drop for NotifyingGuard {
+        fn drop(&mut self) {
+            self.0.send(()).expect("drop receiver is alive");
+        }
+    }
+
+    let root = CancelRoot::new();
+    let mut supervisor = SearchdSupervisor::new(
+        Duration::from_millis(10),
+        Duration::from_millis(30),
+        NotifyingGuard(drop_tx),
+        CancelRoot::clone(&root),
+    );
+    let spawned = supervisor.spawn_child("held-child", no_stop(), move |context| {
+        Ok(std::thread::spawn(move || {
+            release_rx.recv().expect("test releases the held child");
+            context.report_exit(ChildExitKind::Completed);
+        }))
+    });
+    assert!(spawned.is_ok());
+    root.request_shutdown();
+    let outcome = supervisor.run(&root);
+    assert!(matches!(
+        outcome,
+        SupervisionOutcome::HardDeadlineEscalated { .. }
+    ));
+    assert!(
+        drop_rx.try_recv().is_err(),
+        "the unfinished child must retain the guard after the deadline"
+    );
+    release_tx.send(()).expect("held child is still alive");
+    drop_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("guard drops after the child exits");
+}
+
+/// A terminal event is not proof that the OS thread has finished. A
+/// child stuck after reporting must not block the supervisor's join or
+/// release the lease before the custody reaper joins it.
+#[test]
+fn reported_but_unfinished_child_is_bounded_and_retains_guards() {
+    let (release_tx, release_rx) = mpsc::channel();
+    let (drop_tx, drop_rx) = mpsc::channel();
+    struct NotifyingGuard(mpsc::Sender<()>);
+    impl Drop for NotifyingGuard {
+        fn drop(&mut self) {
+            let _sent = self.0.send(());
+        }
+    }
+
+    let root = CancelRoot::new();
+    let mut supervisor = SearchdSupervisor::new(
+        Duration::from_millis(10),
+        Duration::from_millis(30),
+        NotifyingGuard(drop_tx),
+        CancelRoot::clone(&root),
+    );
+    let spawned = supervisor.spawn_child("reported-held", no_stop(), move |context| {
+        Ok(std::thread::spawn(move || {
+            context.report_exit(ChildExitKind::Completed);
+            let _released = release_rx.recv();
+        }))
+    });
+    assert!(spawned.is_ok());
+    root.request_shutdown();
+    let started = std::time::Instant::now();
+    let outcome = supervisor.run(&root);
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "a reported-but-live thread cannot bypass the hard deadline"
+    );
+    assert!(matches!(
+        outcome,
+        SupervisionOutcome::HardDeadlineEscalated { unfinished }
+            if unfinished == vec!["reported-held"]
+    ));
+    assert!(drop_rx.try_recv().is_err(), "guard is still held");
+    release_tx.send(()).expect("child remains in custody");
+    drop_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("guard drops after the child exits");
+}
+
+/// A caller that unwinds or drops the supervisor before `run` still
+/// transfers its registered child and guard to the custody reaper.
+#[test]
+fn early_supervisor_drop_retains_guard_until_child_exit() {
+    let (release_tx, release_rx) = mpsc::channel();
+    let (drop_tx, drop_rx) = mpsc::channel();
+    struct NotifyingGuard(mpsc::Sender<()>);
+    impl Drop for NotifyingGuard {
+        fn drop(&mut self) {
+            let _sent = self.0.send(());
+        }
+    }
+
+    let root = CancelRoot::new();
+    let mut supervisor = SearchdSupervisor::new(
+        Duration::from_millis(10),
+        Duration::from_millis(30),
+        NotifyingGuard(drop_tx),
+        CancelRoot::clone(&root),
+    );
+    let spawned = supervisor.spawn_child(
+        "early-drop",
+        Box::new(|| panic!("a faulty stop callback")),
+        move |_context| {
+            Ok(std::thread::spawn(move || {
+                let _released = release_rx.recv();
+            }))
+        },
+    );
+    assert!(spawned.is_ok());
+    drop(supervisor);
+    assert!(drop_rx.try_recv().is_err(), "live child retains its guard");
+    release_tx.send(()).expect("child is still in custody");
+    drop_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("guard drops after child exits");
 }
 
 /// A child that needs longer than the cooperative deadline but finishes
@@ -415,8 +625,14 @@ fn second_signal_latches_an_immediate_abort() {
             root.request_abort(15);
         })
     };
+    let started = std::time::Instant::now();
     let outcome = supervisor.run(&root);
     let _joined = trigger.join();
+
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "a second signal must interrupt drain rather than wait for the child"
+    );
 
     let SupervisionOutcome::SignalAbort { signum } = outcome else {
         panic!("expected a signal abort: {outcome:?}");
@@ -571,11 +787,14 @@ fn orphan_a_holder(
     let deadline = std::time::Instant::now()
         .checked_add(Duration::from_secs(10))
         .expect("the deadline is representable");
-    while !holder_report.exists() && std::time::Instant::now() < deadline {
+    while std::fs::read(&holder_report).ok().as_deref() != Some(b"held\n")
+        && std::time::Instant::now() < deadline
+    {
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert!(
-        holder_report.exists(),
+    assert_eq!(
+        std::fs::read(&holder_report).expect("holder report exists"),
+        b"held\n",
         "the holder reported holding before the abort"
     );
     std::fs::write(report, b"orphaned\n").expect("the report is written");

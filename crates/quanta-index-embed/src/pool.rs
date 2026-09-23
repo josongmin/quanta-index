@@ -137,11 +137,11 @@ impl ProviderAttemptPool {
         let start = Instant::now();
         let mut joined = 0usize;
         loop {
-            let Ok(mut live) = self.inner.lock() else {
-                return ProviderAttemptDrainReport {
-                    joined,
-                    unfinished: Vec::new(),
-                };
+            let mut live = match self.inner.lock() {
+                Ok(live) => live,
+                // Poison is not proof that attempts exited. Keep custody
+                // and reconcile the handles even after a panicking owner.
+                Err(poisoned) => poisoned.into_inner(),
             };
             joined = joined.saturating_add(Self::reap_finished(&mut live));
             if live.is_empty() {
@@ -244,5 +244,31 @@ mod tests {
         assert!(report.unfinished[0].starts_with("stuck-"));
         // The stuck thread is still owned, not leaked: it holds its slot.
         assert_eq!(pool.live_attempts(), 1);
+    }
+
+    #[test]
+    fn poisoned_registry_does_not_claim_a_live_attempt_is_drained() {
+        let pool = Arc::new(ProviderAttemptPool::new(1).expect("valid pool"));
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        pool.spawn_tracked("held", move || {
+            let _released = release_rx.recv();
+        })
+        .expect("attempt fits");
+        let poison_pool = Arc::clone(&pool);
+        let poison = std::thread::spawn(move || {
+            let _registry = poison_pool
+                .inner
+                .lock()
+                .expect("initial registry is healthy");
+            panic!("simulate a panicking registry owner");
+        });
+        assert!(poison.join().is_err());
+
+        let overdue = pool.drain(Duration::ZERO);
+        assert_eq!(overdue.unfinished.len(), 1);
+        release_tx.send(()).expect("attempt is still running");
+        let completed = pool.drain(Duration::from_secs(2));
+        assert_eq!(completed.joined, 1);
+        assert!(completed.unfinished.is_empty());
     }
 }

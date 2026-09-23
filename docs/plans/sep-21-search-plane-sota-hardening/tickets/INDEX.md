@@ -1,9 +1,10 @@
 # SEP-21 Search Plane SOTA Hardening — Ticket Index
 
-Status: current gate is `P00 OWNER_PROOF_GREEN`. The source-bound P00 handoff
-(`artifacts/sep-21/handoffs/P00.json`, pinned by its immutable archive receipt) is the current authority and
-permits P01R. S21-13 Phase B and every product/runtime proof remain open until their owning lanes produce
-same-source receipts. Tracked docs do not embed the result SHA; the handoff owns it.
+Status: implementation and qualification remain open. Historical owner proofs
+do not establish current-source or release closure. See the
+[execution progress ledger](EXECUTION-PROGRESS.md) for the inspected state and
+remaining owner work. Tracked docs do not embed a result SHA; validated
+handoffs own it.
 
 Authority inputs:
 
@@ -16,6 +17,7 @@ Authority inputs:
 - [final plan audit](FINAL-AUDIT.md)
 - [file-level execution action list](ACTION-LIST.md)
 - [copy/paste lane prompt runbook](prompts/README.md)
+- [execution progress ledger](EXECUTION-PROGRESS.md)
 
 이 packet은 2026-09-21 정적 감사에서 확인된 목적 적합성 결함을 구조적으로 제거하기 위한
 실행 계획이다. 구현 완료나 테스트 통과를 주장하지 않는다.
