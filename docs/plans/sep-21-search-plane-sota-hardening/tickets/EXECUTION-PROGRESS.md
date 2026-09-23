@@ -25,6 +25,13 @@ to validated lane handoffs and immutable proof manifests, not this document.
   The importer previously declared success after copying V1 RepoMap files
   into an inert `legacy-import/` tree. A current-main follow-up refuses that
   unsupported input typed; see the P10 implementation log below.
+- W10's competing wire-oracle commits were source-compared. R4 `550535e`
+  was cherry-picked alone as `dc4206a`; integrate `bd824ff` was not merged.
+  Its invalid-page decoder fixtures depended on first encoding an invalid
+  typed page, whereas R4 independently mutates valid CBOR bytes and pins the
+  pre-S21 reader shape. At `dc4206a`, the two contract integration tests
+  passed 50/50 and 17/17; `just fmt-check` exited 0. This is local contract
+  evidence, not a final-source release receipt.
 
 ## Structural work ledger
 
@@ -46,9 +53,14 @@ to validated lane handoffs and immutable proof manifests, not this document.
 - P11 needs separately confirmed Semantica read/edit/commit/push authority.
   Provider egress, deployment, activation, and rollback are separate
   approvals. Without them, record the specific node as `NOT_RUN` or `BLOCKED`.
-- Keep `/private/tmp/w10-r3` intact as historical owner provenance; its
-  commits are merged locally. Do not delete it while other work may refer to
-  its handoff.
+- The clean W10-R3 worktree and its ancestor branch were removed after the
+  merge; its commits remain reachable from `main`. The clean W10-R1 worktree
+  and its patch-equivalent branch were removed after preserving its original
+  commit at `archive/w10-r4-oracle-source`. The W10 integrate worktree
+  remains intact: its latest `8c30c9e` open-loop fix is patch-equivalent to
+  main `22f0f0a`, its `bd824ff` oracle commit is superseded by R4, and a
+  daemon test process plus ignored fuzz artifacts were present at cleanup
+  inspection. Do not remove that active worktree or its branch yet.
 - A focused code test is owner evidence only. Release, Linux process,
   external-provider, deployment, and activation proof are not inferred from it.
 - P06 cannot independently reject a wrong same-domain active generation
@@ -63,6 +75,22 @@ to validated lane handoffs and immutable proof manifests, not this document.
   observation model before `readiness: None` can be replaced.
 
 ## Current-main implementation log
+
+### W10 contract oracles and request-ID failure classification
+
+- R4 independently checks producer encode refusal and consumer decode
+  refusal on keyset-page invariants. The consumer fixtures start from valid
+  encoded pages and mutate raw CBOR; a producer-side refusal cannot make a
+  consumer negative test vacuous. The V0 `SearchExplanation` pin matches the
+  pre-S21 field set and verifies both old payload defaulting and old-reader
+  rejection of each new field.
+- `IpcError::ZeroRequestId` is a request-correlation protocol failure. The
+  open-loop harness previously had no match arm for it, so its binary could
+  not compile against the current IPC error enum. The harness now classifies
+  it as `zero_request_id` with an owner-local regression test. This harness
+  change was committed as `22f0f0a`; the full `open_loop_matrix` binary suite
+  passed 9/9 and `just fmt-check` exited 0. The equivalent peer commit
+  `8c30c9e` was not merged, nor was its duplicate oracle predecessor.
 
 ### P10 unsupported RepoMap cutover — in-progress follow-up to `22e9ba1`
 
