@@ -116,8 +116,17 @@ snapshot, not the current gate state. The benchmark/harness, rustdoc, and
 public-API repairs landed in `e42cb82`; the 33-file workspace Clippy owner
 sweep landed in `f478f69e5e0006afb7ea36360be9b4dd7558d252`. The latter
 commit excludes the concurrently edited Sep 23 retrieval benchmark lane.
-Qualification is being rerun from a clean checkout of `f478f69`. No earlier
-dirty-tree pass is promoted to a clean-source receipt.
+An attempted clean checkout of `f478f69` exposed a shared Cargo target-dir
+collision with newer worktrees. Its Cargo-dependent test and lint outputs
+are withdrawn as same-source qualification, even when the command exited 0.
+The target owner was repaired in `b7efbb3`; rerun the full gate with the
+checkout-scoped target directory. No earlier dirty-tree or shared-target
+pass is promoted to a clean-source receipt.
+
+Owner-local recheck on `820cf8e`: isolated-target search-plane Clippy passed
+for all targets, and the exact provider audit-correlation test passed 1/1.
+The full workspace rails and uncontended 10,001-row E2E/timing protocol are
+still outstanding.
 
 The remaining runtime investigation is the 10,001-row top-k E2E: a shared,
 contended-tree execution timed out during fixture ingest at its existing

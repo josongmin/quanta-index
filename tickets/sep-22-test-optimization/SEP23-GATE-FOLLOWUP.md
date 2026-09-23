@@ -1,6 +1,6 @@
 # Sep 23 gate follow-up — shared checkout
 
-Status: `BLOCKED — clean-source full rails, one runtime timeout investigation, and TOPT-00 timing evidence`
+Status: `BLOCKED — artifact isolation repaired; full exact-source rails, runtime timeout investigation, and TOPT-00 timing evidence remain`
 
 This is a current shared-worktree repair record, **not** a clean-HEAD or
 performance qualification. At initial capture, `main` was
@@ -83,7 +83,18 @@ quiet host, then investigate producer cost if it still fails.
 5. Do not emit `CODE_QUALIFIED`, `PERF_EVIDENCE_CLEAN`, or
    `PRODUCT_QUALIFIED` from these partial receipts.
 
-## Clean integrated-source gate — `f478f69`
+## Attempted integrated-source gate — `f478f69` (withdrawn)
+
+**Do not use the following Cargo-dependent passes as qualification.** The
+checkout itself was clean, but `scripts/quanta-index-env.sh` keyed its Cargo
+target directory only by lane, so concurrent `main`, linked-worktree, and
+temporary-worktree builds wrote the same target files. A repeat Clippy run in
+the `f478f69` checkout compiled its `search-plane` against a `core` source
+path in the shared `main` checkout and failed with mismatched `reserve` and
+`ProviderAuditEventV1` signatures. This proves that checkout cleanliness
+alone did not bind the compiler inputs to that source. The prior test-fast,
+integration, rustdoc, and public-API outputs are observations, not admitted
+same-source receipts. The daemon run cannot be promoted either.
 
 The existing isolated checkout was moved from `d9b39c3` to clean commit
 `f478f69e5e0006afb7ea36360be9b4dd7558d252`. On that source,
@@ -96,7 +107,8 @@ The existing isolated checkout was moved from `d9b39c3` to clean commit
 `c90dc8e5-85e1-4892-8aed-eb570f32f5cb`, and
 `76c805c5-8721-4944-911d-8fe813c5163e`). The
 policy gate found zero benchmark artifacts attributed to that HEAD. These
-static results are not a full `verify-rust` or runtime qualification receipt.
+results are not a full `verify-rust` or runtime qualification receipt and the
+Cargo-dependent subset is invalidated by the artifact collision above.
 
 At capture, another repository had active Cargo compilation and a generated
 mutation run on the same host. TOPT-00's quiet-host condition was not met.
@@ -104,3 +116,26 @@ The 10,001-row runtime failure therefore remains an investigation target,
 not an established load or producer-cost RCA. Keep the exact 10,001-row
 semantic oracle and its timeout unchanged until a source-bound, uncontended
 rerun distinguishes host contention from implementation cost.
+
+## Target-cache owner repair
+
+Commit `b7efbb3` scopes each Cargo lane under a SHA-256 identifier of the
+canonical checkout path. Direct public-API and cargo-modules scripts use the
+same namespace. The regression test proves two distinct checkout paths with
+the same cache root and lane receive different target directories; all 10
+`test_cargow_lane_env.py` cases and Ruff checks passed. Metadata from the
+real `main` and isolated qualification worktree showed distinct target paths.
+This prevents cross-worktree target-file races but intentionally causes a
+one-time cold rebuild per checkout. A fresh qualification must use this
+repair and a source-bound checkout; the previous shared-cache receipts are
+not reusable.
+
+On clean commit `820cf8e3c6c11a5943e36bf3705859d46f1fbc7c`, metadata
+resolved separate main and qualification target paths. With sccache disabled,
+the full `quanta-index-search-plane` Clippy target set passed in that isolated
+target after repairing a new W10 test's long first doc paragraph and panicable
+index assertions. Its exact audit-correlation test passed 1/1 from the same
+source. This is owner-local proof, not a workspace Clippy or `verify-rust`
+pass. At this point, the shared `main` checkout also had unrelated active
+SDK, IPC, query-dispatcher, benchmark, and prompt-control edits; none of
+their dirty-tree results can be adopted as this ticket's qualification.
