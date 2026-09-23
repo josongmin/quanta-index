@@ -179,12 +179,12 @@ fn joint_active_selection_uses_one_composite_head_and_checks_explicit_pin() -> T
         ),
         "lexical active-resolution drift must be a retryable refusal",
     )?;
-    let pinned_latest = GenerationSelector::Pinned(latest.pin.clone());
+    let pinned_latest = GenerationSelector::Pinned(latest.pin);
     require_joint_selection(
         matches!(
             resolve_optional_selection(
                 &catalog,
-                Some(pinned_first.clone()),
+                Some(pinned_first),
                 Some(&pinned_latest),
                 SearchPlaneTrackKind::Lexical,
                 "lexical",
