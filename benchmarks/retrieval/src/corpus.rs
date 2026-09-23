@@ -8,10 +8,11 @@
 //! block hashes can never silently diverge from the evaluator's.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use serde::Deserialize;
+use serde::de::{self, Deserialize, Deserializer, MapAccess, Visitor};
 
 use crate::{BenchError, BenchResult, sha256_hex};
 
@@ -27,18 +28,121 @@ const EXOTIC_SPLIT_CHARS: [char; 7] = [
 ];
 const EXOTIC_SPLIT_CHAR_EXTRA: char = '\u{2029}';
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug)]
 pub struct ManifestFile {
     pub path: String,
     pub file_sha256: String,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+impl<'de> Deserialize<'de> for ManifestFile {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct ManifestFileVisitor;
+
+        impl<'de> Visitor<'de> for ManifestFileVisitor {
+            type Value = ManifestFile;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a manifest file object")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut path = None;
+                let mut file_sha256 = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "path" => {
+                            if path.is_some() {
+                                return Err(de::Error::duplicate_field("path"));
+                            }
+                            path = Some(map.next_value()?);
+                        }
+                        "file_sha256" => {
+                            if file_sha256.is_some() {
+                                return Err(de::Error::duplicate_field("file_sha256"));
+                            }
+                            file_sha256 = Some(map.next_value()?);
+                        }
+                        _ => {
+                            return Err(de::Error::unknown_field(&key, &["path", "file_sha256"]));
+                        }
+                    }
+                }
+                Ok(ManifestFile {
+                    path: path.ok_or_else(|| de::Error::missing_field("path"))?,
+                    file_sha256: file_sha256
+                        .ok_or_else(|| de::Error::missing_field("file_sha256"))?,
+                })
+            }
+        }
+
+        deserializer.deserialize_map(ManifestFileVisitor)
+    }
+}
+
+#[derive(Debug)]
 pub struct Manifest {
     pub repository_commit: String,
     pub files: Vec<ManifestFile>,
+}
+
+impl<'de> Deserialize<'de> for Manifest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct ManifestVisitor;
+
+        impl<'de> Visitor<'de> for ManifestVisitor {
+            type Value = Manifest;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an admitted-corpus manifest object")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut repository_commit = None;
+                let mut files = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "repository_commit" => {
+                            if repository_commit.is_some() {
+                                return Err(de::Error::duplicate_field("repository_commit"));
+                            }
+                            repository_commit = Some(map.next_value()?);
+                        }
+                        "files" => {
+                            if files.is_some() {
+                                return Err(de::Error::duplicate_field("files"));
+                            }
+                            files = Some(map.next_value()?);
+                        }
+                        _ => {
+                            return Err(de::Error::unknown_field(
+                                &key,
+                                &["repository_commit", "files"],
+                            ));
+                        }
+                    }
+                }
+                Ok(Manifest {
+                    repository_commit: repository_commit
+                        .ok_or_else(|| de::Error::missing_field("repository_commit"))?,
+                    files: files.ok_or_else(|| de::Error::missing_field("files"))?,
+                })
+            }
+        }
+
+        deserializer.deserialize_map(ManifestVisitor)
+    }
 }
 
 #[derive(Debug, Clone)]

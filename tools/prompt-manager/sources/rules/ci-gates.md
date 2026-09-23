@@ -15,7 +15,7 @@
 - Semgrep: `just semgrep` (silent-fallback / serde-derive / unwrap / vendor-import rules)
 - Prompt drift: `python3 tools/prompt-manager/pm.py lint`
 - Tooling tests: `python3 -m pytest tools -q`
-- Agent output (PR-changed only): `python3 tools/ci/agent/validate_agent_output.py <file> --skip-rust-gates`
+- Agent output envelope and evidence binding (PR-changed only): `python3 tools/ci/agent/validate_agent_output.py <file>`
 
 ### Heavy rail (correctness.yml, nightly + workflow_dispatch)
 

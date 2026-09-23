@@ -1,10 +1,16 @@
 # RB-05 — Paired Quality, Speed and Resource Measurement
 
-Status: `planned`
+Status: `orchestration-landed / measurement-and-perf-blocked`
 
 Depends on: RB-01, RB-02, RB-03, RB-04; requires RB-00 stage B measurement-entry gate
 
 Owner: orchestration/reporting, not product ranking
+
+## Current code status (2026-09-23)
+
+`run.py` implements immutable input/receipt staging, sequential and alternating Quanta/Semble repetitions, record merge, manifest construction, latency-matrix re-derivation, deterministic report validation and the five-state verdict machine. Provenance and tamper mutants are covered by focused tests.
+
+No real pair has run. More importantly, speed qualification is deliberately unreachable in current code: the generated evidence sets `phase_boundaries=false`, no runner emits verified phase fragments or owned-process-tree peak RSS, and `build_verdict` terminally returns `phases_unimplemented` after all other speed checks. Quanta capture is also attested-only, so an isolated `QUALITY_DELTA` requires a new enforced runner boundary rather than a spec label.
 
 ## Goal
 
@@ -18,7 +24,7 @@ Produce an auditable comparison that separates retrieval quality, chunking effec
 4. Measure chunking ablations with the same Quanta model/query settings; distinguish producer effects from Quanta engine changes. An identical SDK transport alone is not proof of identical Semantica producer semantics.
 5. Write run manifest, raw records, path-mapping proof artifact (path map plus both-side path+SHA diff; any mismatch fails the common-universe pair), report, and the `verdict.json` artifact per [TEST-PLAN.md](TEST-PLAN.md) §8 (five states, `blinding`/`isolation_method`/`access_block_log`, missing T-IDs, failure class, provenance digests) under an explicit external output directory; bind exact HEAD, binary, corpus, suite, query-pack, model, Semble revision, config and host digests. Mandatory manifest fields include tokenizer/budget version, Semble dependency lockfile digest, and path+SHA diff digest. Do not commit mutable latest-result artifacts as baselines.
 
-## Planned files
+## Owner / expected files
 
 - `tools/benchmark/retrieval/run.py`
 - `tools/benchmark/retrieval/evaluator.py` (single scoring authority from RB-01; read-only consumer here)

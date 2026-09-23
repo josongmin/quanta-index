@@ -2717,7 +2717,7 @@ def test_retrieval_recipes_download_nothing():
             and not stripped.startswith(("#", "set ", "export ", "import "))
         )
         if is_header:
-            current = stripped[:-1]
+            current = stripped[:-1].split()[0]
             bodies[current] = []
         elif current is not None:
             bodies[current].append(line)

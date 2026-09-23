@@ -1,9 +1,10 @@
 # Agent Reference
 
-참조 인덱스 문서다.
+Reference index; load only the authority needed for the current task.
 
 ## Authority Map
 
+- repository role: external search plane in producer/search-plane splits
 - execution core: `AGENT_CORE.md`
 - command choice: `AGENT_PLAYBOOK.md`
 - full rule lookup: `AGENT_RULE_CATALOG.md`

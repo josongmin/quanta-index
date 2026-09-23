@@ -196,6 +196,41 @@ fi
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/quanta-index-env.sh"
 
+requires_searchd_pin() {
+  if [[ -n "${QUANTA_INDEX_SEARCHD_BIN:-}" ]] || ! has_arg "--workspace" "$@"; then
+    return 1
+  fi
+
+  case "${1:-}" in
+    test)
+      ! has_arg "--no-run" "$@"
+      ;;
+    nextest)
+      has_arg "run" "$@"
+      ;;
+    llvm-cov)
+      has_arg "nextest" "$@"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+prepare_searchd_pin() {
+  cargo build -p quanta-index-searchd-runtime --bin quanta-index-searchd --locked
+  local binary="${CARGO_TARGET_DIR}/debug/quanta-index-searchd"
+  if [[ ! -x "$binary" ]]; then
+    printf 'built searchd binary is missing or not executable: %s\n' "$binary" >&2
+    return 1
+  fi
+  export QUANTA_INDEX_SEARCHD_BIN="$binary"
+}
+
+if requires_searchd_pin "$@"; then
+  prepare_searchd_pin
+fi
+
 start_ms="$(python3 -c 'import time; print(int(time.time() * 1000))')"
 
 if cargo "$@"; then

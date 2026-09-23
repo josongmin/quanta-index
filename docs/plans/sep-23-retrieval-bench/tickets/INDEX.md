@@ -1,36 +1,72 @@
 # SEP-23 Retrieval Benchmark — Ticket Index
 
-Status: `planned`. This packet specifies implementation and qualification work; it is not benchmark evidence or a claim that Quanta beats Semble.
+Status: `implementation-landed / qualification-blocked`. The benchmark machinery is present, but no W0-B pilot freeze, paired pilot receipt, or qualified quality/performance verdict exists. This packet is not evidence that Quanta beats Semble.
 
 Required verification contract: [TEST-PLAN.md](TEST-PLAN.md). Its T00–T16 matrix and qualification ladder are part of every ticket's acceptance, not optional follow-up work.
+
+## Current code audit (2026-09-23)
+
+Latest implementation audit was run in the shared local `main` checkout while HEAD advanced through `a73341a67754dcb1e791852691e07be8f9ab59b7`. The checkout contains concurrent dirty work, so the results below are focused implementation evidence, not an exact-source qualification receipt. The canonical receipt writer and `retrieval-sdk-proof` now refuse dirty source; re-freeze HEAD and the full source tree before acceptance.
+
+| Ticket / wave | Current code state | Remaining terminal condition |
+| --- | --- | --- |
+| RB-00 / W0-A | v3 suite/runner comparison contract, blinding fields, common-universe/path+SHA rules and verdict schemas are implemented and mutant-tested. | W0-B is not frozen: no approved pilot repo/manifest, independently adjudicated gold, admitted model assets, Semble lockfile/license record, or quiet-host profile. |
+| RB-01 / W1A | Single evaluator supports exact v1/v2 migration reads and authoritative v3 validation/scoring; v3 pack, split-leakage, byte-span, capture and contract mutants are present. | No qualified external suite or real-pair scoring artifact has been issued. |
+| RB-02 / W1B | Benchmark-only Rust runner uses the public SDK and a separate pinned searchd. A subprocess integration test now executes the actual runner binary and binds its SHA, sealed receipt, activation ACK and v3 record. `retrieval-sdk-proof <fresh-out>` emits machine-counted `sdk_results.json` plus a digest-bound canonical receipt. Broad workspace Cargo rails now prebuild and explicitly export the daemon pin. | Model-unavailable/provider-failure process scenarios are not all exercised live. The broad workspace rail reached compilation after pin injection but was blocked by a concurrent unrelated non-exhaustive IPC test match; rerun on a frozen source. |
+| RB-03 / W1C | Whole-file, strict/line-aligned windows and Rust syntax chunking plus independent span/coverage validation are implemented. The manifest decoders are manual/duplicate-rejecting, Semgrep is green, and the derive allowlist covers `crates/` and `benchmarks/`. | No real ablation artifact exists. |
+| RB-04 / W1D | Semble 0.6.0 adapter, lockfile/interpreter/model-asset checks, mapping proof and v3 normalization are implemented and fixture-tested. | No admitted real Semble environment/pilot capture has been recorded. |
+| RB-05 / W2 | Pair orchestration, immutable staging, manifest/verdict validation, deterministic re-score and conditional T15/T16 evidence handling are implemented. | No paired pilot was run. `run.py` currently sets `phase_boundaries=false` and terminally refuses every speed claim as `phases_unimplemented`; process-tree peak RSS is not captured. |
+| RB-06 / W3 | `benchmark-prep-local`, receipt-producing `retrieval-contract-proof`/`retrieval-sdk-proof`, `retrieval-quanta`, `retrieval-pair`, `retrieval-verdict` and host-probe entry points exist; Rust integration targets are registered. Result summaries come from JUnit/nextest/runner-record machine evidence, and receipt production rejects dirty source. | No final clean-source contract/SDK receipt or verdict exists, and pilot/broader qualification remain unrun. |
+
+Latest focused execution on the dirty shared checkout:
+
+- `python3 -m pytest tools/ci/tests/test_retrieval_benchmark.py -q`: 132 passed, 0 failed in 82.22s.
+- Actual runner subprocess proof: 1 passed, 0 failed; the final runner binary emitted a v3 record whose capture SHA matched that executable.
+- Receipt-producing SDK recipe: 9 passed, 0 failed; emitted `sdk_results.json` with `selected=executed=passed=9`, `failed=0`, one runner SHA, sealed-receipt SHA and activation-ACK SHA. The run predated the dirty-source refusal and is diagnostic only.
+- Broad workspace nextest probe with no caller-supplied pin: the new `cargow` prerequisite built/exported searchd successfully, then workspace compilation stopped in the unrelated concurrent `repo_admission_and_slowloris.rs` non-exhaustive enum match. The old `searchd binary is not pinned` failure did not recur.
+- `python3 tools/ci/lint/check-test-authority.py`: pass at the earlier audited snapshot; rerun after the concurrent catalog changes settle.
+- `bash scripts/run-semgrep.sh benchmarks/retrieval/src`: pass, 0 findings.
+- `python3 tools/ci/lint/check-rust-derive-allowlist.py`: pass with owned roots `crates/` and `benchmarks/`.
+- Receipt/result producer regressions: 19 passed, 0 failed.
+
+Static policy contradiction is resolved: both Semgrep and the widened derive inventory inspect the benchmark source and pass. This does not qualify benchmark claims.
+
+### Required closeout order
+
+1. Re-run the registered workspace rail on a frozen source after the concurrent IPC test update is internally complete; require the live SDK test to pass with the `cargow`-injected explicit daemon pin.
+2. Run `retrieval-contract-proof` and `retrieval-sdk-proof` on one frozen clean source and freeze their emitted summaries/receipts into the W0-B stage. Keep `sdk_results.json` bound to the actual runner record/binary; never hand-author verdict inputs.
+3. Complete RB-02 live failure coverage for model/provider unavailability and verify bounded cleanup/no scored output. Keep unit classification tests, but do not substitute them for the process scenario.
+4. Freeze W0-B inputs outside the checkout: pilot commit and admitted manifest, reviewed license/attribution, two-person adjudicated gold, model assets/revision, Semble lockfile/interpreter, tokenizer/budget version and quiet-host/cache profile.
+5. Implement verified phase fragments and owned-process-tree peak RSS before enabling `claims.speed`; remove the `phases_unimplemented` frontier only with a negative oracle. Implement an enforced suite-denial/sandbox boundary before enabling isolated `QUALITY_DELTA`.
+6. Run the exploratory pair first, issue `run-manifest.json` and `verdict.json`, inspect every exclusion/failure, then run broader qualification. Re-freeze HEAD and source digests after every code or document change that affects the protocol.
 
 ## Objective and ownership
 
 Run reproducible real-repository search-quality and performance comparisons **entirely from quanta-index**. Vary chunking here, publish and query through `quanta-index-sdk`, and compare against Semble on the same pinned corpus and queries. Semantica is not a build, runtime, or test prerequisite. The benchmark matches Semantica's Quanta SDK integration boundary, not necessarily Semantica's producer-generated content.
 
-Existing authorities to reuse:
+Implemented authorities:
 
-- `tools/benchmark/retrieval/{evaluator.py,suite.schema.json,runner.schema.json}`: frozen-label validation, blind query pack, block/context-budget scoring. Today it records external results only; it does not run a search engine or time queries.
+- `tools/benchmark/retrieval/{evaluator.py,suite.schema.json,runner.schema.json}`: v3 frozen-label validation, blind query pack, byte-span/context-budget scoring and legacy v1/v2 migration reads. Candidate generation remains runner-owned.
 - `quanta-index-sdk::SearchCorpusBatch::{replace_generation,replace_scope,replace_semantic_scope}`, `SearchCorpusNamespace::publish_and_activate`, and SDK query namespaces: product ingest/read path. The benchmark must not use `E2eRuntime::ingest_text*` or dispatch IPC directly.
 - Existing search-quality/latency rails remain engine regression and operational evidence. They are not replaced or reclassified as real-repository retrieval quality.
 - Current checkout has unrelated in-flight changes, including a local `potion-code`/Model2Vec path. No clean-source, model-backed head-to-head qualification exists merely because that code is present. Freeze a clean implementation and model asset digest before quality capture.
 
-## Proposed repository layout
+## Repository layout
 
 ```text
-benchmarks/retrieval/                         # new, benchmark-only Cargo workspace member
+benchmarks/retrieval/                         # benchmark-only Cargo workspace member
   Cargo.toml
   src/{main,corpus,batch,sdk,record}.rs
   src/chunking/{mod,whole_file,fixed_window,syntax}.rs
   tests/{chunking_contract,sdk_roundtrip}.rs
-tools/benchmark/retrieval/                    # existing evaluator, extended in place
+tools/benchmark/retrieval/                    # evaluator, schemas and paired driver
   evaluator.py
   suite.schema.json
   runner.schema.json
   {run,semble}.py
   suites/                                     # reviewed suite metadata/labels, not cloned repos
   README.md
-tools/ci/tests/test_retrieval_benchmark.py    # existing; extend
+tools/ci/tests/test_retrieval_benchmark.py    # contract and mutation tests
 Justfile                                     # named prep/run entry points
 ```
 
@@ -63,7 +99,7 @@ W1A/B, W1C strategy code, and Semble environment/data auditing may proceed in pa
 - Retrieval configurations: identify Quanta lexical, semantic and hybrid profiles and model revision. The deterministic Hash embedder is a correctness control, never the quality opponent for Semble's Model2Vec-based profile. Each route's actual capabilities and unavailable/degraded status are recorded.
 - Authority: clean exact source SHA, built binary digest, corpus/labels/query pack digest, strategy and model configuration, Semble revision, host/resource profile and raw per-query results. Dirty or contended runs are diagnostic only. Mandatory manifest fields include tokenizer/budget version, the Semble dependency lockfile digest, and the both-side path+SHA diff digest; a manifest missing any of these cannot issue an authoritative verdict.
 - Blinding is recorded as `blinding: isolated | attested`, plus `isolation_method` and an `access_block_log` describing how runner access to gold was prevented (or why only attestation holds). `PAIR_VALID` (paired protocol/universe validity) and a blinded `QUALITY_DELTA` (quality claim under proven blinding) are separate verdicts; an attested-only run cannot silently upgrade to an isolated quality claim.
-- The current evaluator v1 requires both answerable and no-answer eval tasks and has no route-specific runner provenance/timing. RB-01 must version this contract before importing a Semble-only answerable set; fabricating no-answer tasks to satisfy v1 is forbidden.
+- The current authoritative contract is v3. Legacy v1 requires both answerable and no-answer eval tasks; v2/v3 permit an all-answerable external suite without inventing no-answer tasks. V1/v2 are migration inputs and cannot satisfy a v3 pair.
 - Every closeout emits the verdict artifact defined in [TEST-PLAN.md](TEST-PLAN.md) §8 (five states, missing T-IDs, failure class, provenance digests). T15 gates only the same-model claim; T16 is required only when an incremental-update claim is made.
 
 Semble's [published methodology](https://github.com/MinishLab/semble/blob/main/benchmarks/README.md) supplies candidate repos/queries and a reproducibility target, **not** a directly comparable baseline number. Its published labels are model-generated and model-checked; use a reviewed subset and an independently judged holdout. Do not vendor its annotations or source before checking license and attribution. Compare fresh local runs, not Quanta measurements against the upstream README table.

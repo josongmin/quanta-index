@@ -1,10 +1,14 @@
 # RB-01 — Frozen Suite and Single Scoring Authority
 
-Status: `planned`
+Status: `implementation-landed / real-pair-evidence-pending`
 
 Depends on: RB-00 stage A
 
 Owner: retrieval evaluator and suite schema
+
+## Current code status (2026-09-23)
+
+The single evaluator now reads legacy v1/v2 for migration and enforces v3 for pair capture. It implements blind v3 freeze, exact comparison-contract binding, file-universe/path+SHA checks, byte-span verification, graded and ungraded metrics, deterministic same-file collapse, split-leakage checks, capture provenance and deterministic re-score. Focused Python mutants exercise these paths. Remaining work is evidence, not another scorer: no admitted real suite or paired report exists.
 
 ## Goal
 
@@ -19,7 +23,7 @@ Extend the existing real-repo retrieval evaluator so one independent oracle scor
 5. Produce per-query rows and paired win/loss/tie plus confidence interval or bootstrap interval on sufficient sample sizes. Report sample count; do not hide small-sample uncertainty. Freeze the primary metric and treatment of unanswerable, capped and partial results before the eval split is revealed.
 6. Validate a canonical path+file SHA allowlist for both runners and reject results from an excluded file even when that file is tracked by Git. Exact checkout validity alone is insufficient for a same-universe comparison.
 
-## Planned files
+## Owner / expected files
 
 - `tools/benchmark/retrieval/evaluator.py`
 - `tools/benchmark/retrieval/{suite,runner}.schema.json` or explicit v2 siblings

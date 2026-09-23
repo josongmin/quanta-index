@@ -12,13 +12,25 @@ from pathlib import Path
 
 
 def _revision() -> str:
+    status = subprocess.check_output(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all"], text=True
+    )
+    dirty = []
+    for line in status.splitlines():
+        path = line[3:]
+        if line.startswith("?? ") and path.startswith("artifacts/"):
+            continue
+        dirty.append(line)
+    if dirty:
+        sample = ", ".join(dirty[:5])
+        raise SystemExit(f"refusing verification receipt from dirty source: {sample}")
     value = os.environ.get("GITHUB_SHA", "").strip()
     if value:
         return value
     return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
 
 
-def _evidence_summary(evidence: Path) -> tuple[str, int]:
+def _nextest_evidence_summary(evidence: Path) -> tuple[str, int]:
     digest = hashlib.sha256()
     counts = {"ok": 0, "failed": 0, "ignored": 0, "timeout": 0}
     suites_started = 0
@@ -87,6 +99,43 @@ def _evidence_summary(evidence: Path) -> tuple[str, int]:
     return digest.hexdigest(), sum(counts.values())
 
 
+def _summary_json_evidence_summary(evidence: Path) -> tuple[str, int]:
+    raw = evidence.read_bytes()
+    try:
+        payload = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise SystemExit(f"invalid summary JSON evidence {evidence}: {error}") from error
+    if not isinstance(payload, dict):
+        raise SystemExit(f"invalid summary JSON evidence {evidence}: expected an object")
+    required = {"command", "selected", "executed", "passed", "failed"}
+    missing = sorted(required - payload.keys())
+    if missing:
+        raise SystemExit(
+            f"summary JSON evidence is missing required fields in {evidence}: {', '.join(missing)}"
+        )
+    if not isinstance(payload["command"], str) or not payload["command"].strip():
+        raise SystemExit(f"summary JSON evidence has invalid command: {evidence}")
+    for key in ("selected", "executed", "passed", "failed"):
+        value = payload[key]
+        if type(value) is not int or value < 0:
+            raise SystemExit(
+                f"summary JSON evidence has invalid {key} count in {evidence}: {value!r}"
+            )
+    selected = payload["selected"]
+    executed = payload["executed"]
+    passed = payload["passed"]
+    failed = payload["failed"]
+    if failed:
+        raise SystemExit(f"summary JSON evidence reports failures: {evidence}")
+    if executed < 1 or passed < 1:
+        raise SystemExit(f"summary JSON evidence has no passing tests: {evidence}")
+    if passed + failed != executed:
+        raise SystemExit(f"summary JSON evidence has inconsistent execution counts: {evidence}")
+    if executed > selected:
+        raise SystemExit(f"summary JSON evidence executed more tests than selected: {evidence}")
+    return hashlib.sha256(raw).hexdigest(), executed
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rail", required=True)
@@ -94,16 +143,25 @@ def main() -> int:
         "--tier", required=True, choices=("pr", "merge", "correctness", "nightly", "weekly")
     )
     parser.add_argument("--command", required=True)
+    parser.add_argument(
+        "--evidence-format",
+        choices=("nextest-jsonl", "summary-json"),
+        default="nextest-jsonl",
+    )
     parser.add_argument("--evidence", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args()
     evidence = args.evidence.resolve()
     if not evidence.is_file():
         raise SystemExit(f"missing test evidence: {evidence}")
-    digest, test_event_count = _evidence_summary(evidence)
+    revision = _revision()
+    if args.evidence_format == "summary-json":
+        digest, test_event_count = _summary_json_evidence_summary(evidence)
+    else:
+        digest, test_event_count = _nextest_evidence_summary(evidence)
     receipt = {
         "schema_version": 1,
-        "revision": _revision(),
+        "revision": revision,
         "rail": args.rail,
         "tier": args.tier,
         "command": args.command,

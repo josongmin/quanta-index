@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use quanta_index_contract::{
     CurrentGenerationRequest, GenerationPin, GenerationSelector, ManifestGeneration, RepoId,
     RevisionId, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, SearchPlaneTrackKind,
-    SemanticQueryRequest,
+    SemanticQueryRequest, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_core::RequestBudgetV1;
 use tempfile::tempdir;
@@ -89,6 +89,39 @@ fn query_plane_resolves_only_catalog_active_generation() -> TestResult {
     )?;
     if selection.expected_manifest_digest.as_deref() != Some("activation-digest-9") {
         return Err("pin plus Active must preserve semantic manifest authority".into());
+    }
+    let next = corpus_generation(
+        repo_id.clone(),
+        revision_id.clone(),
+        ManifestGeneration::new(10),
+        "activation-digest-10",
+    )?;
+    let next_prepared =
+        PreparedSearchCorpusGenerationV1::new(next, Some(prepared.candidate().clone()))?;
+    let _next_activation =
+        activation_catalog.activate_prepared_search_corpus_generation_v1(&next_prepared)?;
+    let stale = dispatcher.dispatch(
+        SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+            syntax: TextQuerySyntax::Native,
+            query_text: "needle".to_string(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+            generation: Some(GenerationPin::new(
+                repo_id.clone(),
+                revision_id.clone(),
+                ManifestGeneration::new(9),
+            )),
+            generation_selector: Some(GenerationSelector::Active {
+                repo_id: repo_id.clone(),
+                revision_id: revision_id.clone(),
+            }),
+            top_k: 5,
+            cursor: None,
+        }),
+        &RequestBudgetV1::unbounded(),
+    );
+    let (code, _) = ipc_error_from(stale).map_err(Box::<dyn std::error::Error>::from)?;
+    if code != quanta_index_contract::SearchPlaneErrorCodeV2::InvalidRequest {
+        return Err(format!("stale Active+pin must be INVALID_REQUEST, got {code}").into());
     }
     let missing = dispatcher.dispatch(
         SearchPlaneQueryIpcRequest::ResolveActiveGeneration(CurrentGenerationRequest {

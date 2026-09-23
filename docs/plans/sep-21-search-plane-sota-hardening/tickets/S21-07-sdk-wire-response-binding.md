@@ -131,12 +131,13 @@ on latency versus independent validation is pending; do not add response-only
 The query-plane `ResolveActiveGeneration` → pinned-query path binds a returned
 generation number, but it is not yet the complete target contract:
 
-The semantic track must retain `GenerationSelector::Active` beside the
-pre-resolved explicit pin. `resolve_semantic_request_selection` then validates
-their equality and passes the catalog manifest digest to the read view;
-dropping `Active` would silently remove that existing content check. The SDK
-still exact-binds the response to the explicit pin. This does not substitute
-for the activation-epoch/commitment work below.
+Every active query retains `GenerationSelector::Active` beside the
+pre-resolved explicit pin, so the server rechecks current-active equality at
+dispatch while the SDK exact-binds the response. For semantic reads,
+`resolve_semantic_request_selection` also passes the catalog manifest digest
+to the read view; dropping `Active` would silently remove that existing
+content check. This does not substitute for the activation-epoch/commitment
+work below.
 
 1. `crates/quanta-index-search-plane/src/readiness/{activation_catalog,search_corpus_generation}.rs`
    must own a durable activation epoch/commitment, including rollback and

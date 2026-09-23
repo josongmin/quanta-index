@@ -1,10 +1,14 @@
 # RB-04 — Semble Same-Corpus Comparison Adapter
 
-Status: `planned`
+Status: `adapter-landed / real-pilot-blocked`
 
 Depends on: RB-00 stage B and RB-01 record contract (environment/data audit may start after stage A)
 
 Owner: Quanta repository's optional competitor adapter
+
+## Current code status (2026-09-23)
+
+`semble.py` pins Semble 0.6.0, checks the external interpreter/lockfile and observed model cache revision, consumes the admitted manifest and blind v3 pack, emits the path+SHA mapping proof, and normalizes native spans into the common v3 record. Contract tests cover missing or drifting inputs and partial/invalid rows. No real admitted Semble environment, license decision, W0-B corpus, or one-repo pilot artifact has been recorded, so T11/T12 are not closed by fixture tests.
 
 ## Goal
 
@@ -19,7 +23,7 @@ Run a pinned Semble release/commit locally against the exact same admitted repos
 5. Keep Semble optional for fast CI. A full head-to-head claim requires a real Semble result record on the same source/host, not its published README numbers.
 6. If reporting a model-matched control, compare fixed code/query embeddings, tokenizer behavior, dimensions and normalization against Quanta's clean-source `potion-code` profile with a frozen tolerance. Without [TEST-PLAN.md](TEST-PLAN.md) T15, report only an end-to-end system pair with disclosed models, not model parity. T15 gates only the same-model claim, never `PAIR_VALID`.
 
-## Planned files
+## Owner / expected files
 
 - `tools/benchmark/retrieval/semble.py`
 - `tools/benchmark/retrieval/run.py`

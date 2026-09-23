@@ -82,6 +82,21 @@ def test_clippy_attribute_is_not_a_derive(tmp_path: Path):
     assert MODULE.audit_file(f) == []
 
 
+def test_owned_source_inventory_includes_crates_and_benchmarks(tmp_path: Path):
+    crates = tmp_path / "crates"
+    benchmarks = tmp_path / "benchmarks"
+    crate_source = crates / "demo" / "src" / "lib.rs"
+    benchmark_source = benchmarks / "demo" / "src" / "main.rs"
+    for source in (crate_source, benchmark_source):
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text("#[derive(Debug)]\nstruct Demo;\n", encoding="utf-8")
+
+    assert MODULE.rust_source_files((crates, benchmarks)) == [
+        benchmark_source,
+        crate_source,
+    ]
+
+
 def test_main_returns_zero_on_clean_repo():
     """End-to-end smoke: running main() against the real tree returns 0."""
     rc = MODULE.main()

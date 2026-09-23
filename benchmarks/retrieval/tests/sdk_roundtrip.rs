@@ -13,6 +13,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Duration;
 
 use quanta_index_retrieval_bench::batch::{
@@ -537,6 +538,185 @@ fn real_daemon_roundtrip_publishes_and_queries() {
     // fails or the replay ack trips the fresh-daemon applied check.
     assert!(publish_and_activate(&session, &batch, &identity, None).is_err());
     session.stop().expect("bounded shutdown");
+}
+
+fn git(root: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .expect("git starts");
+    assert!(
+        output.status.success(),
+        "git {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout)
+        .expect("git stdout is utf8")
+        .trim()
+        .to_string()
+}
+
+#[test]
+fn actual_runner_binary_emits_receipt_bound_v3_record() {
+    let fixture = tempfile::tempdir().expect("fixture root");
+    let repo = fixture.path().join("repo");
+    let evidence = fixture.path().join("evidence");
+    std::fs::create_dir_all(&repo).expect("repo dir");
+    std::fs::create_dir_all(&evidence).expect("evidence dir");
+    write_tiny_repo(&repo);
+    std::fs::remove_file(repo.join("manifest.json")).expect("fixture manifest removed");
+    drop(git(&repo, &["init", "--quiet"]));
+    drop(git(
+        &repo,
+        &["config", "user.email", "retrieval-bench@example.invalid"],
+    ));
+    drop(git(&repo, &["config", "user.name", "Retrieval Bench"]));
+    drop(git(&repo, &["add", "src"]));
+    drop(git(&repo, &["commit", "--quiet", "-m", "fixture"]));
+    let commit = git(&repo, &["rev-parse", "HEAD"]);
+
+    let mut universe = Vec::new();
+    for path in ["src/alpha.rs", "src/beta.rs", "src/lib.rs"] {
+        universe.push((
+            path.to_string(),
+            sha256_hex(&std::fs::read(repo.join(path)).expect("source bytes")),
+        ));
+    }
+    let manifest_path = evidence.join("manifest.json");
+    let manifest_files: Vec<_> = universe
+        .iter()
+        .map(|(path, digest)| serde_json::json!({"path": path, "file_sha256": digest}))
+        .collect();
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "repository_commit": commit,
+            "files": manifest_files,
+        }))
+        .expect("manifest renders"),
+    )
+    .expect("manifest writes");
+
+    let query = "sphinx quartz vaults";
+    let pack_path = evidence.join("query-pack.json");
+    std::fs::write(
+        &pack_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 3,
+            "suite_id": "runner-binary-roundtrip",
+            "suite_commitment_sha256": "c".repeat(64),
+            "repository_commit": commit,
+            "tokenizer": "qi-regex-v1",
+            "tokenizer_budget_version": "qb-v1",
+            "routes": ["lexical", "semantic", "hybrid"],
+            "file_universe": universe.iter().map(|(path, digest)| {
+                serde_json::json!({"path": path, "file_sha256": digest})
+            }).collect::<Vec<_>>(),
+            "file_universe_digest": pack_universe_digest(&universe).expect("universe digest"),
+            "comparison_contract": {
+                "top_k": 10,
+                "tokenizer": "qi-regex-v1",
+                "tokenizer_budget_version": "qb-v1",
+                "output_unit_policy": "rank_prefix",
+                "span_unit": "byte_span_with_line_projection_v1"
+            },
+            "tasks": [{
+                "task_id": "T1",
+                "query": query,
+                "query_sha256": sha256_hex(query.as_bytes())
+            }]
+        }))
+        .expect("pack renders"),
+    )
+    .expect("pack writes");
+
+    let runner = PathBuf::from(env!("CARGO_BIN_EXE_quanta-index-retrieval-bench"));
+    let runner_digest = sha256_hex(&std::fs::read(&runner).expect("runner bytes"));
+    let searchd = resolve_searchd_binary(None).expect("explicit env pin resolves");
+    let searchd_digest = sha256_hex(&std::fs::read(&searchd).expect("searchd bytes"));
+    let out = evidence.join("record.json");
+    let state = evidence.join("state");
+    let output = Command::new(&runner)
+        .args([
+            "run",
+            "--repo",
+            repo.to_str().expect("repo path"),
+            "--manifest",
+            manifest_path.to_str().expect("manifest path"),
+            "--strategy",
+            "whole_file",
+            "--query-pack",
+            pack_path.to_str().expect("pack path"),
+            "--routes",
+            "lexical,semantic,hybrid",
+            "--top-k",
+            "10",
+            "--state-root",
+            state.to_str().expect("state path"),
+            "--searchd-bin",
+            searchd.to_str().expect("searchd path"),
+            "--searchd-expected-sha256",
+            &searchd_digest,
+            "--embedder",
+            EMBEDDER,
+            "--repo-id",
+            "runner-binary-repo",
+            "--revision-id",
+            &commit,
+            "--generation",
+            "1",
+            "--runner-name",
+            "quanta-sdk-runner",
+            "--runner-revision",
+            &format!("sha256:{runner_digest}"),
+            "--run-id",
+            "actual-runner-binary",
+            "--blinding",
+            "attested",
+            "--isolation-method",
+            "test-fixture-no-gold-mounted",
+            "--access-block-log",
+            "attested-fixture-pack-only",
+            "--out",
+            out.to_str().expect("output path"),
+        ])
+        .output()
+        .expect("runner starts");
+    assert!(
+        output.status.success(),
+        "runner failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let record: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&out).expect("record bytes")).expect("record JSON");
+    assert_eq!(record["schema_version"], 3);
+    assert_eq!(
+        record["runner"]["revision"],
+        format!("sha256:{runner_digest}")
+    );
+    let captures = record["captures"].as_object().expect("captures");
+    assert_eq!(captures.len(), 3);
+    for capture in captures.values() {
+        assert_eq!(capture["runner_binary"]["digest"], runner_digest);
+        assert_eq!(capture["searchd_binary"]["binary_digest"], searchd_digest);
+        for key in ["receipt_digest", "activation_digest"] {
+            let digest = capture[key].as_str().expect("capture digest");
+            assert_eq!(digest.len(), 64);
+            assert!(digest.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        }
+    }
+    assert_eq!(record["results"].as_array().expect("results").len(), 3);
+
+    if let Some(dir) = std::env::var_os("QUANTA_BENCH_SDK_EVIDENCE_DIR") {
+        let destination = PathBuf::from(dir).join("actual-runner-record.json");
+        std::fs::create_dir_all(destination.parent().expect("evidence parent"))
+            .expect("evidence output dir");
+        let _copied = std::fs::copy(&out, destination).expect("evidence record copies");
+    }
 }
 
 #[test]

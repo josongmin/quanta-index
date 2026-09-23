@@ -343,7 +343,7 @@ fn active_resolution_rejects_wrong_same_domain_query_generation() {
         requests.last().map(|request| &request.payload),
         Some(quanta_index_contract::SearchPlaneQueryIpcRequest::Text(request))
             if request.generation == Some(sample_generation_pin())
-                && request.generation_selector.is_none()
+                && matches!(request.generation_selector, Some(GenerationSelector::Active { .. }))
     ));
 }
 
@@ -1791,7 +1791,7 @@ fn lexical_query_request_resolves_active_before_forwarding() {
         panic!("expected pinned text query");
     };
     assert_eq!(pinned.generation, Some(sample_generation_pin()));
-    assert_eq!(pinned.generation_selector, None);
+    assert_eq!(pinned.generation_selector, request.generation_selector);
     assert_eq!(pinned.query_text, request.query_text);
 }
 
@@ -3725,7 +3725,10 @@ fn history_query_request_resolves_active_before_forwarding() {
         panic!("expected pinned history query");
     };
     assert_eq!(pinned.text_query.generation, Some(sample_generation_pin()));
-    assert_eq!(pinned.text_query.generation_selector, None);
+    assert!(matches!(
+        pinned.text_query.generation_selector,
+        Some(GenerationSelector::Active { .. })
+    ));
     assert_eq!(pinned.text_query.query_text, request.text_query.query_text);
 }
 

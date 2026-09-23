@@ -1,20 +1,25 @@
 # AGENTS.md
 
-quanta-index 공용 AI 에이전트 진입 문서.
+Shared AI-agent entrypoint for quanta-index.
 
-Read order:
-1. Always follow [AGENT_CORE.md](AGENT_CORE.md).
-2. For command selection and verification flow, use [AGENT_PLAYBOOK.md](AGENT_PLAYBOOK.md).
-3. For reference pointers, use [AGENT_REFERENCE.md](AGENT_REFERENCE.md).
-4. For full rule IDs and CI mapping, use [AGENT_RULE_CATALOG.md](AGENT_RULE_CATALOG.md).
+Load context on demand:
+
+- implementation or verification: relevant sections of [AGENT_CORE.md](AGENT_CORE.md)
+- command selection: relevant sections of [AGENT_PLAYBOOK.md](AGENT_PLAYBOOK.md)
+- rule IDs or CI mappings: relevant sections of [AGENT_RULE_CATALOG.md](AGENT_RULE_CATALOG.md)
+- authority pointers: [AGENT_REFERENCE.md](AGENT_REFERENCE.md)
+
+Do not preload the full playbook or catalog for routine work.
 
 Canonical tooling:
+
 - Rust build/verification: `Justfile` and `./scripts/cargow` (bare `cargo` only for env-sourced or tool-owned exception rails)
 - Prompt/doc control plane: `tools/prompt-manager/pm.py`
 
 Conflict rule:
-`AGENT_CORE.md` > `AGENT_PLAYBOOK.md` > `AGENT_RULE_CATALOG.md` > `AGENT_REFERENCE.md` > chat memory.
+`AGENTS.md` > `AGENT_CORE.md` > `AGENT_PLAYBOOK.md` > `AGENT_RULE_CATALOG.md` > `AGENT_REFERENCE.md` > chat memory.
 
 Language:
-- 응답은 한국어
-- 코드/주석/커밋 메시지 본문은 영어 우선
+
+- User-facing responses: Korean
+- Code, comments, and commit-message bodies: English preferred

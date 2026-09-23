@@ -500,6 +500,19 @@ fn manifest_rejects_unknown_fields_duplicates_and_bad_paths() {
             format!("{{\"repository_commit\": \"{commit}\", \"files\": [{good},{good}]}}"),
         ),
         (
+            "duplicate top-level JSON key",
+            format!(
+                "{{\"repository_commit\": \"{commit}\", \"repository_commit\": \"{commit}\", \"files\": [{good}]}}"
+            ),
+        ),
+        (
+            "duplicate nested JSON key",
+            format!(
+                "{{\"repository_commit\": \"{commit}\", \"files\": [{{\"path\": \"src/lib.rs\", \"path\": \"src/other.rs\", \"file_sha256\": \"{}\"}}]}}",
+                "b".repeat(64)
+            ),
+        ),
+        (
             "bad path",
             format!(
                 "{{\"repository_commit\": \"{commit}\", \"files\": [{{\"path\": \"../x.rs\", \"file_sha256\": \"{}\"}}]}}",

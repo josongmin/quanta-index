@@ -89,10 +89,14 @@ to validated lane handoffs and immutable proof manifests, not this document.
   backed by `ActivationCatalog::resolve_record`. SDK query dispatch centrally
   resolves active lexical/semantic selectors on that same query socket,
   binds the final response to the resolved pin, and keeps the query-only
-  client independent of the control socket. Lexical requests become pinned;
-  semantic requests carry both the pin and the original `Active` selector so
-  the server still checks current catalog equality and the semantic manifest
-  digest in its acquired read view.
+  client independent of the control socket. Final requests carry both the
+  resolved pin and original `Active` selector: the server rechecks that the
+  active head still equals the pin. Semantic reads also retain catalog
+  manifest-digest validation in the acquired read view.
+  A producer test advances the active head between resolution and a request
+  carrying the old pin plus `Active`; the latter fails before any lane opens
+  (focused test passed). It is a changed-generation race oracle, not an
+  activation-epoch proof.
   An independent scripted resolution followed by a wrong same-domain query
   generation is rejected by the SDK.
 - Local focused evidence so far: `./scripts/cargow check -p quanta-index-sdk

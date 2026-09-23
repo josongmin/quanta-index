@@ -5,7 +5,7 @@ Existing semgrep rule `rust-no-serde-derive` only blocks the two known-bad
 derive names (Serialize, Deserialize). This script flips that to an explicit
 allowlist of *cheap* derives. Any future proc-macro derive (`strum::EnumIter`,
 `clap::Parser`, `Deserialize_repr`, `tokio::main`, ...) silently slipping into
-a crate file is treated as build-cost regression and fails the gate.
+an owned Rust source file is treated as build-cost regression and fails the gate.
 
 The allowlist is intentionally small. Adding a new entry requires:
   1. measuring its cost via `cargo llvm-lines` / `cargo --timings`
@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
-CRATES_DIR = ROOT / "crates"
+RUST_SOURCE_ROOTS = (ROOT / "crates", ROOT / "benchmarks")
 
 ALLOWED_DERIVES: frozenset[str] = frozenset(
     {
@@ -93,16 +93,24 @@ def audit_file(path: Path) -> list[str]:
     return findings
 
 
+def rust_source_files(roots: tuple[Path, ...] = RUST_SOURCE_ROOTS) -> list[Path]:
+    """Return every owned Rust source under the guarded roots."""
+    return sorted(
+        path
+        for source_root in roots
+        for path in source_root.rglob("*.rs")
+        if "/target/" not in path.as_posix()
+    )
+
+
 def main() -> int:
-    if not CRATES_DIR.exists():
-        print(f"crates dir not found: {CRATES_DIR}", file=sys.stderr)
+    missing = [path for path in RUST_SOURCE_ROOTS if not path.is_dir()]
+    if missing:
+        print(f"Rust source root(s) not found: {missing}", file=sys.stderr)
         return 2
 
     findings: list[str] = []
-    for rs in sorted(CRATES_DIR.rglob("*.rs")):
-        # Skip vendored/generated artifacts (none today; defensive).
-        if "/target/" in str(rs):
-            continue
+    for rs in rust_source_files():
         findings.extend(audit_file(rs))
 
     if findings:

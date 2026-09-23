@@ -1,10 +1,14 @@
 # RB-03 — Benchmark-Owned Chunking Ablations
 
-Status: `planned`
+Status: `implementation-landed / measurement-pending`
 
 Depends on: RB-00 stage A; integration with RB-02 batch contract
 
 Owner: `benchmarks/retrieval/src/chunking/`
+
+## Current code status (2026-09-23)
+
+The benchmark package implements `whole_file`, `fixed_window_strict`, `fixed_window_line_aligned` and Rust `brace_heuristic` strategies with stable IDs, byte/line validation, explicit fallback accounting and coverage metrics. The 20-test `chunking_contract` rail passed on the audited retrieval source. `corpus.rs` now uses strict manual decoding with duplicate-key mutants; Semgrep reports zero findings, and the derive allowlist inventories both `crates/` and `benchmarks/`. No real strategy ablation has been captured.
 
 ## Goal
 
@@ -18,7 +22,7 @@ Measure how chunk boundaries affect actual Quanta retrieval without putting expe
 4. Hold Quanta query route, ranking, model and corpus constant while varying only chunking. Rebuild dependent semantic sources for each strategy. If a required semantic/structural projection cannot be regenerated, mark that route ineligible for the ablation rather than compare mismatched sources.
 5. Keep experiment code in the benchmark package. Promoting a winner into production is a separate later decision with product ownership and validation.
 
-## Planned files
+## Owner / expected files
 
 - `benchmarks/retrieval/src/chunking/{mod,whole_file,fixed_window,syntax}.rs`
 - `benchmarks/retrieval/tests/chunking_contract.rs`

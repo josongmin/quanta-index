@@ -16,7 +16,22 @@ WRITER = REPO_ROOT / "tools" / "ci" / "write-verification-receipt.py"
 SCHEMA = REPO_ROOT / "tools" / "ci" / "verification-receipt.schema.json"
 
 
+def _clean_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "source"
+    repo.mkdir()
+    (repo / "tracked.txt").write_text("source\n", encoding="utf-8")
+    subprocess.run(["git", "init", "--quiet"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "receipt-test@example.invalid"], cwd=repo, check=True
+    )
+    subprocess.run(["git", "config", "user.name", "Receipt Test"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "--quiet", "-m", "source"], cwd=repo, check=True)
+    return repo
+
+
 def test_receipt_binds_revision_evidence_digest_and_test_count(tmp_path: Path) -> None:
+    source = _clean_repo(tmp_path)
     evidence = tmp_path / "nextest.jsonl"
     evidence.write_text(
         '{"type":"suite","event":"started"}\n'
@@ -45,7 +60,7 @@ def test_receipt_binds_revision_evidence_digest_and_test_count(tmp_path: Path) -
             str(output),
         ],
         check=True,
-        cwd=REPO_ROOT,
+        cwd=source,
     )
     receipt = json.loads(output.read_text(encoding="utf-8"))
     schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
@@ -107,6 +122,7 @@ def test_receipt_binds_revision_evidence_digest_and_test_count(tmp_path: Path) -
     ],
 )
 def test_receipt_rejects_non_green_evidence(tmp_path: Path, events: str, error: str) -> None:
+    source = _clean_repo(tmp_path)
     evidence = tmp_path / "nextest.jsonl"
     evidence.write_text(events, encoding="utf-8")
     output = tmp_path / "receipt.json"
@@ -125,10 +141,147 @@ def test_receipt_rejects_non_green_evidence(tmp_path: Path, events: str, error: 
             "--out",
             str(output),
         ],
-        cwd=REPO_ROOT,
+        cwd=source,
         capture_output=True,
         text=True,
     )
     assert result.returncode != 0
     assert error in result.stderr
+    assert not output.exists()
+
+
+def test_receipt_binds_valid_summary_json(tmp_path: Path) -> None:
+    source = _clean_repo(tmp_path)
+    evidence = tmp_path / "summary.json"
+    evidence.write_text(
+        json.dumps(
+            {
+                "command": "just retrieval-sdk-proof",
+                "selected": 8,
+                "executed": 8,
+                "passed": 8,
+                "failed": 0,
+                "separate_process": True,
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "receipt.json"
+    subprocess.run(
+        [
+            sys.executable,
+            str(WRITER),
+            "--rail",
+            "retrieval-sdk-proof",
+            "--tier",
+            "correctness",
+            "--command",
+            "just retrieval-sdk-proof",
+            "--evidence-format",
+            "summary-json",
+            "--evidence",
+            str(evidence),
+            "--out",
+            str(output),
+        ],
+        check=True,
+        cwd=source,
+    )
+    receipt = json.loads(output.read_text(encoding="utf-8"))
+    assert receipt["test_event_count"] == 8
+    assert receipt["evidence_sha256"] == hashlib.sha256(evidence.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize(
+    ("payload", "error"),
+    [
+        ({"command": "proof", "selected": 1, "executed": 1, "passed": 1}, "missing required"),
+        (
+            {"command": "proof", "selected": 1, "executed": 1, "passed": 0, "failed": 1},
+            "reports failures",
+        ),
+        (
+            {"command": "proof", "selected": 2, "executed": 2, "passed": 1, "failed": 0},
+            "inconsistent execution counts",
+        ),
+        (
+            {"command": "proof", "selected": 1, "executed": 2, "passed": 2, "failed": 0},
+            "executed more tests than selected",
+        ),
+        (
+            {"command": "proof", "selected": True, "executed": 1, "passed": 1, "failed": 0},
+            "invalid selected count",
+        ),
+    ],
+)
+def test_receipt_rejects_invalid_summary_json(
+    tmp_path: Path, payload: dict[str, object], error: str
+) -> None:
+    source = _clean_repo(tmp_path)
+    evidence = tmp_path / "summary.json"
+    evidence.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    output = tmp_path / "receipt.json"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(WRITER),
+            "--rail",
+            "retrieval-sdk-proof",
+            "--tier",
+            "correctness",
+            "--command",
+            "just retrieval-sdk-proof",
+            "--evidence-format",
+            "summary-json",
+            "--evidence",
+            str(evidence),
+            "--out",
+            str(output),
+        ],
+        cwd=source,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert error in result.stderr
+    assert not output.exists()
+
+
+def test_receipt_rejects_dirty_source_before_emitting(tmp_path: Path) -> None:
+    source = _clean_repo(tmp_path)
+    (source / "tracked.txt").write_text("changed\n", encoding="utf-8")
+    evidence = tmp_path / "summary.json"
+    evidence.write_text(
+        json.dumps(
+            {"command": "proof", "selected": 1, "executed": 1, "passed": 1, "failed": 0}
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "receipt.json"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(WRITER),
+            "--rail",
+            "proof",
+            "--tier",
+            "correctness",
+            "--command",
+            "proof",
+            "--evidence-format",
+            "summary-json",
+            "--evidence",
+            str(evidence),
+            "--out",
+            str(output),
+        ],
+        cwd=source,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "dirty source" in result.stderr
     assert not output.exists()

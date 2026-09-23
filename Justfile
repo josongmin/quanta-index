@@ -369,8 +369,8 @@ rust-bench-build:
 # every producer binary warm in one target directory.
 benchmark-prep-local:
     find crates/quanta-index-searchd-harness/src -name '*.rs' -print0 | xargs -0 rustfmt --check --edition 2024
-    python3 -m pytest tools/ci/tests/test_benchmark_manifest.py tools/ci/tests/test_benchctl.py tools/ci/tests/test_check_bench_artifacts.py tools/ci/tests/test_check_host_contention.py tools/ci/tests/test_compare_dsl_bench.py tools/ci/tests/test_quality_integration_summary.py tools/ci/tests/test_retrieval_benchmark.py -q
-    python3 -m py_compile tools/benchmark/benchctl.py tools/benchmark/manifest.py tools/benchmark/compare_dsl_bench.py tools/benchmark/quality_integration_summary.py tools/ci/lint/check-bench-artifacts.py tools/ci/timing/check_host_contention.py tools/benchmark/retrieval/evaluator.py tools/benchmark/retrieval/semble.py tools/benchmark/retrieval/run.py
+    python3 -m pytest tools/ci/tests/test_benchmark_manifest.py tools/ci/tests/test_benchctl.py tools/ci/tests/test_check_bench_artifacts.py tools/ci/tests/test_check_host_contention.py tools/ci/tests/test_compare_dsl_bench.py tools/ci/tests/test_quality_integration_summary.py tools/ci/tests/test_retrieval_benchmark.py tools/ci/tests/test_retrieval_contract_proof.py tools/ci/tests/test_retrieval_sdk_proof.py tools/ci/tests/test_write_verification_receipt.py -q
+    python3 -m py_compile tools/benchmark/benchctl.py tools/benchmark/manifest.py tools/benchmark/compare_dsl_bench.py tools/benchmark/quality_integration_summary.py tools/ci/lint/check-bench-artifacts.py tools/ci/timing/check_host_contention.py tools/benchmark/retrieval/evaluator.py tools/benchmark/retrieval/semble.py tools/benchmark/retrieval/run.py tools/benchmark/retrieval/contract_proof.py tools/benchmark/retrieval/sdk_proof.py tools/ci/write-verification-receipt.py
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib --bins --all-features --locked --no-run
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib --all-features --locked
     {{cargo}} --lane test-daemon-lane test -p quanta-index-retrieval-bench --lib --all-features --locked
@@ -379,12 +379,32 @@ benchmark-prep-local:
     git diff --check
 
 # Retrieval benchmark: real-daemon SDK proof (T05-T07, T10). Builds the
-# pinned searchd + runner binaries first, then runs the live roundtrip.
+# pinned searchd + runner binaries first, then runs the live roundtrip and
+# emits machine-counted sdk_results.json plus a digest-bound receipt. The
+# caller supplies a fresh artifact root outside the checkout.
 # No model or Semble download happens on this path.
-retrieval-sdk-proof:
+retrieval-sdk-proof out:
+    source_status="$(git status --porcelain=v1 --untracked-files=all | grep -v '^?? artifacts/' || true)"; test -z "$source_status" || { echo "refusing SDK proof from dirty source" >&2; printf '%s\n' "$source_status" >&2; exit 2; }
+    test ! -e "{{out}}" || { echo "refusing non-fresh proof root: {{out}}" >&2; exit 2; }
+    mkdir -p "{{out}}"
     env CARGO_NET_OFFLINE=true {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-runtime --bin quanta-index-searchd --locked
     env CARGO_NET_OFFLINE=true {{cargo}} --lane test-daemon-lane build -p quanta-index-retrieval-bench --bin quanta-index-retrieval-bench --locked
-    QUANTA_INDEX_SEARCHD_BIN="$({{cargo}} --lane test-daemon-lane metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"] + "/debug/quanta-index-searchd")')" {{cargo}} --lane test-daemon-lane test -p quanta-index-retrieval-bench --test sdk_roundtrip --all-features --locked
+    set -o pipefail; NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1 QUANTA_BENCH_SDK_EVIDENCE_DIR="{{out}}" QUANTA_INDEX_SEARCHD_BIN="$({{cargo}} --lane test-daemon-lane metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"] + "/debug/quanta-index-searchd")')" {{cargo}} --lane test-daemon-lane nextest run -p quanta-index-retrieval-bench --test sdk_roundtrip --all-features --locked --message-format libtest-json-plus --message-format-version 0.1 | tee "{{out}}/nextest.jsonl"
+    python3 tools/benchmark/retrieval/sdk_proof.py --record "{{out}}/actual-runner-record.json" --nextest "{{out}}/nextest.jsonl" --runner-bin "$({{cargo}} --lane test-daemon-lane metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"] + "/debug/quanta-index-retrieval-bench")')" --out "{{out}}/sdk_results.json"
+    python3 tools/ci/write-verification-receipt.py --rail retrieval-sdk-proof --tier correctness --command "just retrieval-sdk-proof" --evidence-format summary-json --evidence "{{out}}/sdk_results.json" --out "{{out}}/sdk_receipt.json"
+
+# Retrieval benchmark contract proof. Both language summaries are derived from
+# machine evidence, then independently digest-bound by the canonical receipt
+# writer. The caller supplies a fresh external artifact root.
+retrieval-contract-proof out:
+    source_status="$(git status --porcelain=v1 --untracked-files=all | grep -v '^?? artifacts/' || true)"; test -z "$source_status" || { echo "refusing contract proof from dirty source" >&2; printf '%s\n' "$source_status" >&2; exit 2; }
+    test ! -e "{{out}}" || { echo "refusing non-fresh proof root: {{out}}" >&2; exit 2; }
+    mkdir -p "{{out}}"
+    python3 -m pytest tools/ci/tests/test_retrieval_benchmark.py -q --junitxml="{{out}}/python-junit.xml"
+    set -o pipefail; NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1 {{cargo}} --lane test-daemon-lane nextest run -p quanta-index-retrieval-bench --lib --test chunking_contract --all-features --locked --message-format libtest-json-plus --message-format-version 0.1 | tee "{{out}}/rust-nextest.jsonl"
+    python3 tools/benchmark/retrieval/contract_proof.py --pytest-junit "{{out}}/python-junit.xml" --nextest "{{out}}/rust-nextest.jsonl" --python-out "{{out}}/contract_python_results.json" --rust-out "{{out}}/contract_rust_results.json"
+    python3 tools/ci/write-verification-receipt.py --rail retrieval-contract-python --tier correctness --command "python3 -m pytest tools/ci/tests/test_retrieval_benchmark.py -q" --evidence-format summary-json --evidence "{{out}}/contract_python_results.json" --out "{{out}}/contract_python_receipt.json"
+    python3 tools/ci/write-verification-receipt.py --rail retrieval-contract-rust --tier correctness --command "./scripts/cargow nextest run -p quanta-index-retrieval-bench --lib --test chunking_contract --all-features --locked" --evidence-format summary-json --evidence "{{out}}/contract_rust_results.json" --out "{{out}}/contract_rust_receipt.json"
 
 # Retrieval benchmark: Quanta-only chunk A/B from a pinned spec file.
 # The spec names repo/manifest/suite/pack, strategies, binaries and output
@@ -718,7 +738,7 @@ rust-fuzz-smoke seconds="60":
 # source line added since `base` is absent or uncovered. cargo-llvm-cov is a
 # tool-owned wrapper, so it runs only after the repository environment is set.
 rust-coverage-changed base minimum_percent="90":
-    env QUANTA_INDEX_BUILD_LANE=coverage-lane bash -lc 'source scripts/quanta-index-env.sh && cargo llvm-cov nextest --workspace --all-features --locked --lcov --output-path /tmp/quanta-index-coverage.lcov'
+    {{cargo}} --lane coverage-lane llvm-cov nextest --workspace --all-features --locked --lcov --output-path /tmp/quanta-index-coverage.lcov
     python3 tools/ci/lint/check-changed-line-coverage.py --lcov /tmp/quanta-index-coverage.lcov --base {{base}} --minimum-percent {{minimum_percent}}
 
 rust-policy:

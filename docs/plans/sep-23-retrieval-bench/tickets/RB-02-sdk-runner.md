@@ -1,10 +1,16 @@
 # RB-02 — Independent Real-Repository SDK Runner
 
-Status: `planned`
+Status: `implementation-landed / live-failure-matrix-blocked`
 
 Depends on: RB-00 stage A
 
 Owner: benchmark-only Rust package; product SDK is a dependency, not a fork
+
+## Current code status (2026-09-23)
+
+`benchmarks/retrieval` is a workspace member and the runner loads a clean pinned manifest, launches a separately pinned searchd, verifies fresh state, publishes lexical and semantic scopes through `SearchCorpusBatch`, verifies the sealed `BatchReceipt` and composite activation ACK, then reads lexical/semantic/hybrid routes through the SDK. The new subprocess case executes `CARGO_BIN_EXE_quanta-index-retrieval-bench` itself and verifies that the v3 capture binds the exact runner/searchd SHA plus receipt and activation digests. `just retrieval-sdk-proof <fresh-out>` ran 9/9 tests and emitted machine-derived `sdk_results.json` and a canonical digest-bound receipt during implementation verification.
+
+Closeout remains blocked because the full process matrix in TEST-PLAN §4 is incomplete: missing-model/provider-unavailable behavior is classified in unit tests but not exercised as a live runner process scenario. Generic workspace Cargo test/nextest rails now prebuild searchd and export an exact explicit pin rather than weakening fail-closed binary resolution. The first broad rerun passed that prerequisite and then stopped on a concurrent unrelated IPC test compilation error, so a frozen-source broad-rail GREEN is still required. Receipt issuance now refuses dirty source; the dirty-checkout implementation artifact is diagnostic, not qualification evidence.
 
 ## Goal
 
@@ -18,7 +24,7 @@ Run `pinned repository → ChunkRecord → Quanta SDK publish/activate → Quant
 4. Query lexical, semantic and hybrid routes through SDK namespaces using the same query pack and declared `top_k`. Preserve typed errors, unavailable/degraded status, timeouts and actual result spans. No silent fallback to another route.
 5. Emit a deterministic, schema-validated runner record, raw per-query durations and phase timings. Keep gold inaccessible to this process; record the run's `blinding`, `isolation_method`, and `access_block_log`. Use an explicit admitted-file manifest; never process extra tracked files merely because they exist.
 
-## Planned files
+## Owner / expected files
 
 - `Cargo.toml` (workspace membership only)
 - `benchmarks/retrieval/Cargo.toml`

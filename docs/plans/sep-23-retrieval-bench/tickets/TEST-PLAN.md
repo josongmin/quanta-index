@@ -1,6 +1,25 @@
 # SEP-23 Retrieval Benchmark — Test and Qualification Plan
 
-Status: `planned`. This is the required proof map for RB-00 through RB-06, not a record of executed tests. Link each implemented test ID to `tools/ci/test-authority.toml` or the explicit benchmark command before claiming closure.
+Status: `implemented-proof-map / qualification-open`. T00–T14 have implementation or contract-test surfaces, but the real pilot, immutable receipts and terminal verdict remain absent. T15/T16 stay conditional. This document does not convert focused test output into benchmark evidence.
+
+## 0. Current execution boundary (2026-09-23)
+
+Latest implementation verification ran in a shared dirty checkout while HEAD advanced through `a73341a67754dcb1e791852691e07be8f9ab59b7`. The canonical writer now rejects dirty source, so the results below are scoped implementation evidence only. Re-freeze HEAD and source bytes before acceptance.
+
+| Surface | Current evidence | Authority limit |
+| --- | --- | --- |
+| Python/Rust contract | Python: 132 passed at the earlier snapshot. Current Rust: lib 28/28 and chunking 20/20. `retrieval-contract-proof <fresh-out>` derives both summaries from JUnit/nextest and digest-binds canonical receipts. | No clean frozen-source receipt set has been issued; fixture/mutant proof is not a real pair. |
+| Rust SDK path | `just retrieval-sdk-proof <fresh-out>`: 9 passed, 0 failed; actual final runner binary, separate daemon, real publish/activate/query, machine-derived `sdk_results.json` and digest-bound receipt. | The implementation run occurred on dirty source before the new refusal was added, so its receipt is diagnostic only. A clean-source issuance remains required. |
+| Test registration | Both Rust integration targets are catalogued under workspace nextest. `cargow` now prebuilds and explicitly exports searchd for broad Cargo test/nextest rails. | The first broad rerun passed pin setup but workspace compilation stopped in an unrelated concurrent IPC test. Frozen-source broad-rail GREEN is not yet recorded. |
+| Static policy | Semgrep: 0 findings. Derive allowlist: pass across `crates/` and `benchmarks/`; strict manual manifest decoders reject duplicate fields. | Policy GREEN is implementation evidence, not benchmark qualification. |
+
+Current hard frontiers in code:
+
+- `benchmarks/retrieval/src/main.rs` and `run.py` accept only Quanta `blinding=attested`; there is no enforced isolated runner. A quality claim therefore cannot reach isolated `QUALITY_DELTA`.
+- `run.py` writes `phase_boundaries=false` and, after every other speed precondition, returns `phases_unimplemented`. `PERF_QUALIFIED` cannot pass in the current implementation.
+- No committed/frozen W0-B pilot suite, real Semble pair, paired `run-manifest.json`, or terminal `verdict.json` was found.
+- T15 and T16 are correctly conditional, but no real model-parity or incremental evidence artifact has been issued.
+- The CI authority catalog assigns `sdk_roundtrip.rs` to generic workspace nextest. Its daemon prerequisite is now handled by `cargow`, but the full rail must be rerun on frozen source after the concurrent workspace compilation break is resolved.
 
 ## 1. Claims and evidence classes
 
@@ -87,8 +106,8 @@ Before a paired run, pin Semble commit/package, model weights/revision, Python/r
 ## 7. Execution ladder and command ownership
 
 1. **Static PREP (cheap):** `python3 -m pytest tools/ci/tests/test_retrieval_benchmark.py -q` covers the v3 evaluator/schemas, merge, matrix, frozen receipts and the verdict state machine. Run the registered Rust owner tests via `./scripts/cargow test -p quanta-index-retrieval-bench`. Update `just benchmark-prep-local` and `tools/ci/test-authority.toml` to include actual targets; verify selection counts. These are contract checks, not benchmark measurements. W0-A exit (protocol + schema freeze) is required before scaffolding/scorer finalization.
-2. **SDK process proof:** a future named `Justfile` recipe runs T05–T10 on a tiny repo with an actual daemon process. It emits a terminal receipt with binary hash, SDK route, selected/executed counts and failures. A unit test cannot substitute.
-3. **Pilot pair (exploratory-only):** a future explicit `Justfile` recipe freezes one repo/suite, runs Quanta and Semble sequentially, validates T00–T14 plus T15/T16 only as applicable (T15 only for a same-model control claim; T16 only for an incremental claim), then scores. If any shared-universe prerequisite fails, stop before expensive repetitions. W0-B exit (repo + gold + model + host freeze) is the measurement-entry gate. Pilot output is `PAIR_VALID` or a typed refusal; quality/speed claims require the additional qualification conditions.
+2. **SDK process proof:** `just retrieval-sdk-proof <fresh-output-root>` runs T05–T07 and relevant T10 binding/determinism checks on a tiny repo with the actual runner and daemon binaries. It emits machine-derived `sdk_results.json` and a canonical receipt only from clean source. Dirty-checkout console green remains implementation evidence, not `SDK_PATH_GREEN` authority.
+3. **Pilot pair (exploratory-only):** `just retrieval-pair <spec>` exists and freezes one repo/suite, runs Quanta and Semble sequentially, validates the pair and scores it. It has not been executed against an admitted W0-B pilot. If any shared-universe prerequisite fails, stop before expensive repetitions. W0-B exit (repo + gold + model + host freeze) remains the measurement-entry gate. Pilot output is `PAIR_VALID` or a typed refusal; quality/speed claims require the additional qualification conditions.
 4. **Qualified full run:** repeat the same immutable protocol on the reviewed broader suite and quiet canonical host profile. Preserve raw records, complete per-query report, failed/ineligible rows and provenance. No committed baseline or registered `benchctl` family until its artifact/host/source controls are actually wired and tested.
 
 Every closeout states the exact command, source SHA and dirty state, selected/executed/passed/failed counts, covered surface, excluded surface, artifact path, terminal verdict and failure class. `NOT_RUN` or missing evidence remains open. Product deployment/activation is not implied by benchmark qualification.

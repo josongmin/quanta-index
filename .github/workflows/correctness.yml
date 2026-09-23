@@ -440,8 +440,7 @@ jobs:
 
       - name: Produce workspace LCOV with nextest
         run: |
-          source scripts/quanta-index-env.sh
-          cargo llvm-cov nextest --workspace --all-features --locked --lcov --output-path /tmp/quanta-index-coverage.lcov
+          ./scripts/cargow --lane coverage-lane llvm-cov nextest --workspace --all-features --locked --lcov --output-path /tmp/quanta-index-coverage.lcov
 
       - name: Fail closed on uncovered changed production Rust lines
         run: |

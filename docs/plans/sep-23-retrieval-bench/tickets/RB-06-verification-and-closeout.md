@@ -1,10 +1,16 @@
 # RB-06 — Registered Entry Point and Source-Bound Closeout
 
-Status: `planned`
+Status: `entry-points-landed / closeout-blocked`
 
 Depends on: RB-05
 
 Owner: Just/CI/test authority and final evidence inventory
+
+## Current code status (2026-09-23)
+
+Named prep, SDK, Quanta-only, paired, verdict and host-probe commands exist. Both Rust integration targets are registered in `tools/ci/test-authority.toml`; focused Python and live SDK rails execute successfully on the audited retrieval source.
+
+This ticket is not closed. The repository has no W0-B pilot, real paired manifest/verdict, clean-source contract/SDK receipt set, qualified performance path, isolated quality path or broader-suite run. The prior serde/Semgrep contradiction is fixed. `retrieval-contract-proof <fresh-out>` derives Python/Rust summaries from JUnit and nextest JSONL; `retrieval-sdk-proof <fresh-out>` derives the SDK summary from nextest JSONL plus the actual-runner v3 record. Both issue canonical digest-bound receipts only from clean source. Generic workspace Cargo rails now prepare an explicit daemon pin; the first broad rerun reached compilation but was blocked by an unrelated concurrent IPC test match, so registered broad-rail GREEN still needs a frozen-source rerun.
 
 ## Goal
 
@@ -18,7 +24,7 @@ Make the benchmark easy to run without turning a short fixture test into a searc
 4. Validate final clean source, quiet-host profile with check-record entries, exact binary/model revisions, both raw records, path-mapping proof artifact, suite hashes, mandatory manifest fields (tokenizer/budget version, Semble lockfile digest, path+SHA diff digest), and report. Distinguish implementation/test pass from qualified quality/speed evidence and from production activation.
 5. Maintain [TEST-PLAN.md](TEST-PLAN.md) T00–T16 as the required coverage matrix. Map every blocking ID to a test target, command and artifact; stop expensive E2E work after a cheap blocking schema/source/model failure. Do not emit a success summary with `NOT_RUN` IDs. T15 is mapped only to the same-model control claim; T16 only to an incremental claim — otherwise record them as not-applicable in `verdict.json`, not as failures.
 
-## Planned files
+## Owner / expected files
 
 - `Justfile`
 - `tools/ci/test-authority.toml`

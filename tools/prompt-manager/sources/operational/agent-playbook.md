@@ -1,6 +1,6 @@
 # Agent Execution Playbook
 
-`AGENT_CORE.md`를 먼저 읽고, 여기서 실제 명령을 고른다.
+Read `AGENT_CORE.md` first, then select the narrowest command here.
 
 ## Quick Check
 
@@ -69,6 +69,12 @@ it is not clean performance evidence.
 
 - schema: `tools/ci/agent/agent_output.schema.json`
 - validator: `python3 tools/ci/agent/validate_agent_output.py <output.json>`
+- top-level `status` is the output envelope (`ok | blocked | error`); each
+  `claims[]` entry carries its own verification outcome
+- `verified` and `failed` claims require a command plus repository-relative,
+  digest-bound evidence; required `blocked`/`not_run` claims block an `ok` envelope
+- the output validator checks the envelope and bound evidence files; it does not
+  execute Rust or product verification on behalf of registered repository rails
 
 ## Prompt-Manager
 
@@ -79,18 +85,18 @@ it is not clean performance evidence.
 
 ## Retry Rule
 
-- 같은 명령을 맥락 변화 없이 반복 재실행하지 않는다
-- 실패하면 원인 분류 후 가장 좁은 surface부터 고친다
+- Do not rerun the same command without a relevant context change.
+- Classify the failure, then repair and rerun the narrowest affected surface.
 
 ## Cargo Wrapper Rule
 
-- bare `cargo`보다 `./scripts/cargow`를 우선한다
-- bare `cargo`가 필요하면 먼저 `scripts/quanta-index-env.sh`를 source하거나, 이미 그 작업을 캡슐화한 `just` target을 쓴다
+- Prefer `./scripts/cargow` over bare `cargo`.
+- If bare `cargo` is required, source `scripts/quanta-index-env.sh` first or use a `just` target that encapsulates it.
 
 ## Mandatory Escalation By Change Surface
 
-- `quanta-index-contract` / `quanta-index-sdk` public surface 변경: `just rust-public-api`
-- IPC decode, wire DTO, error envelope 변경: `just rust-fuzz-smoke`
-- crate/module boundary, facade/export surface 변경: `just rust-hexagonal` + `just rust-cargo-modules`
-- activation/generation resolution/query pin/state-root/shared-ingress 변경: `just rust-profile test-daemon` plus the owning `U/E/C/H-SP` scenario proof
-- prompt-manager source 변경: `python3 tools/prompt-manager/pm.py sync`, `python3 tools/prompt-manager/pm.py lint`, `python3 -m pytest tools/prompt-manager/tests/test_pm.py -q`
+- `quanta-index-contract` / `quanta-index-sdk` public surface: `just rust-public-api`
+- IPC decode, wire DTO, or error envelope: `just rust-fuzz-smoke`
+- crate/module boundary or facade/export surface: `just rust-hexagonal` + `just rust-cargo-modules`
+- activation, generation resolution, query pin, state root, or shared ingress: `just rust-profile test-daemon` plus the owning `U/E/C/H-SP` scenario proof
+- prompt-manager source: `python3 tools/prompt-manager/pm.py sync`, `python3 tools/prompt-manager/pm.py lint`, `python3 -m pytest tools/prompt-manager/tests/test_pm.py -q`

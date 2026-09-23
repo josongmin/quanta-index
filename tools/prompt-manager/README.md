@@ -9,6 +9,21 @@ Rules:
 - run `python3 tools/prompt-manager/pm.py sync` after source changes
 - run `python3 tools/prompt-manager/pm.py lint` before closeout
 - keep repo agent docs aligned through prompt-manager, not ad-hoc edits
+- keep the verification contract in `AGENTS.md`; do not copy it into tool-specific
+  bootstrap files
+- use `max_bytes` in `targets.yaml` to keep bootstrap context bounded
+- use `AGENTS.md` as the single native entrypoint for Codex, Cursor, and current
+  Claude Code; add a tool-specific surface only for a proven tool-specific need
+- keep every generated target allowlisted from `.gitignore` so sync and CI
+  validate the same committed prompt set
+- keep every source and template reachable from `targets.yaml`; orphan prompt
+  fragments are rejected by tests
+
+`sync` renders and stages every selected target before replacing generated
+outputs, so a broken source or template does not leave a partial render set.
+Rendering also fails before writes when a target exceeds its configured byte
+budget. Targets that require first-byte frontmatter can set
+`prepend_banner: false`; their template must carry its own generated notice.
 
 Layout:
 
@@ -20,7 +35,6 @@ tools/prompt-manager/
   sources/
     operational/
     rules/
-    agent-specific/
   tests/
 ```
 

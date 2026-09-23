@@ -72,14 +72,28 @@ answerability bit or train tasks. `freeze` is the only query-pack producer.
 
 ## Schema versions
 
-Current contract is v2 (`schema_version: 2`, see `suite.schema.json` and
-`runner.schema.json`). V1 suites and runner records remain readable by the
-same single evaluator for migration; v1 still requires at least two routes
-and both answerable and no-gold eval tasks. V2 permits an all-answerable
-external suite: no no-answer tasks are invented, and the absent stratum
-reports `not_applicable`. Suite and runner versions must match.
+Current authoritative contract is v3 (`schema_version: 3`, see
+`suite.schema.json` and `runner.schema.json`). V3 adds a byte-identical
+`comparison_contract`, byte-span coverage, per-capture binary/model/generation/
+receipt provenance, route-to-capture binding and nullable timing semantics.
+V1 and v2 remain readable by the single evaluator only for migration and are
+never accepted as v3 pair inputs. V1 still requires at least two routes and
+both answerable and no-gold eval tasks. V2/v3 permit an all-answerable external
+suite: no no-answer tasks are invented, and the absent stratum reports
+`not_applicable`. Suite and runner versions must match.
 
-## Frozen suite v2
+## Frozen suite and runner v3
+
+The v3 suite requires `comparison_contract` with `top_k`, `tokenizer`,
+`tokenizer_budget_version`, `output_unit_policy` and the byte-span unit. The
+blind pack echoes that contract and contains no train rows, labels, grades or
+answerability bits. The v3 runner record must echo the same contract exactly,
+bind each route to one capture, and bind every capture to runner/searchd binary
+digests, generation, receipt/activation digests, model identity and one frozen
+chunk strategy. Candidate credit is decided by proven byte spans; line spans
+are a checked projection.
+
+## Frozen suite v2 (legacy migration)
 
 V2 suite: `schema_version: 2`, `suite_id`, `repository_commit`, at least one
 route, `tasks`, and optional `file_universe` (canonical path+SHA allowlist).
@@ -88,7 +102,7 @@ a tracked-but-excluded file is rejected. Each task adds optional `category`;
 each gold block adds optional `grade` (0-3). Grades enable NDCG@10 only when
 every eval answerable gold label carries one. Eval needs at least one task.
 
-## Runner record v2
+## Runner record v2 (legacy migration)
 
 V2 record: `schema_version: 2`, `query_pack_sha256`, `runner`,
 `route_provenance`, `results`. `runner` adds `tokenizer_budget_version`
@@ -151,7 +165,7 @@ paired win/loss/tie counts (where success means BCY for answerable tasks and
 abstention for no-gold tasks). A candidate matching a gold file but missing
 its gold line span cannot earn block credit.
 
-V2 adds span-aware Recall@1/5/10/20, MRR@10, graded NDCG@10 (only when every
+V2 introduced, and v3 retains, span-aware Recall@1/5/10/20, MRR@10, graded NDCG@10 (only when every
 eval answerable gold label carries a reviewed grade, else `not_applicable`),
 file-only recall as a secondary view, and both chunk-level and deterministic
 same-file-collapsed rankings (best chunk per file). NDCG credits each gold span
@@ -201,7 +215,7 @@ keys: `repo`, `manifest`, `suite`, `query_pack`, `top_k`, `output_root`,
 | --- | --- | --- |
 | `routes` | `["lexical","semantic","hybrid"]` | Quanta routes (must be suite routes) |
 | `strategies` | required for `quanta`/`pair` | e.g. `[{"name":"whole_file"},{"name":"brace_heuristic"}]` |
-| `searchd_binary` | runtime resolution | explicit daemon pin (recommended) |
+| `searchd_binary` | required | explicit daemon pin; unpinned capture is refused |
 | `embedder` | `potion-code` | Rust runner embedder profile (`hash-dev` is an explicit diagnostic control) |
 | `repo_id`/`revision_id`/`generation` | `bench-repo`/`bench-rev`/`7` | batch identity |
 | `runner_name`/`run_id` | `quanta-sdk-runner`/`run` | runner identity; `runner_revision` is derived from the binary SHA-256 |
@@ -256,20 +270,28 @@ evidence exists yet; conditional IDs apply only when the claim is made.
 
 | ID | Target | Command / artifact |
 | --- | --- | --- |
-| T00 | `benchmarks/retrieval` corpus loader + `semble.py` mapping proof | `just retrieval-sdk-proof`; `mapping-proof.json` (path map + both-side path+SHA diff) |
-| T01 | `tools/ci/tests/test_retrieval_benchmark.py` (runner independence) | `just benchmark-prep-local`; tampered-record mutants must fail |
-| T02 | same (unsupported system/model mutants) | `just benchmark-prep-local` |
-| T03 | same (schema rejection: fields/routes/timings/status) | `just benchmark-prep-local` |
-| T04 | same (query uniformity; no rewrite) | `just benchmark-prep-local` |
-| T05 | `benchmarks/retrieval/tests/sdk_roundtrip.rs` (SDK frontdoor) | `just retrieval-sdk-proof`; sealed receipt + activation ACK asserted |
-| T06 | same (SDK-only growth rule) | static guard test in `sdk_roundtrip.rs` |
-| T07 | same (direct IPC refusal) | static guard test in `sdk_roundtrip.rs` |
+| T00 | `benchmarks/retrieval` corpus loader + `semble.py` mapping proof | `just retrieval-contract-proof <fresh-output-root>`; `mapping-proof.json` (path map + both-side path+SHA diff) |
+| T01 | `tools/ci/tests/test_retrieval_benchmark.py` (runner independence) | `just retrieval-contract-proof <fresh-output-root>`; tampered-record mutants must fail |
+| T02 | split-leakage custody: duplicate/near-duplicate queries, query families and answer-span overlap | `just retrieval-contract-proof <fresh-output-root>`; explicit both-sides allowlist mutants |
+| T03 | same (schema rejection: fields/routes/timings/status) | `just retrieval-contract-proof <fresh-output-root>` |
+| T04 | byte-span Recall/MRR/NDCG/BCY scoring and deterministic same-file collapse | `just retrieval-contract-proof <fresh-output-root>`; hand-calculated coverage/budget mutants |
+| T05 | `sdk_roundtrip.rs` process/frontdoor | `just retrieval-sdk-proof <fresh-output-root>`; pinned actual runner + separate daemon, readiness and empty-state checks |
+| T06 | same, SDK write authority | sealed receipt + exact composite activation ACK; direct IPC/fixture helpers refused by static guard |
+| T07 | same, SDK read authority | lexical/semantic/hybrid SDK reads, generation pin and typed failure behavior |
 | T08 | `benchmarks/retrieval/tests/chunking_contract.rs` | `just benchmark-prep-local` (chunking contract, no daemon) |
 | T09 | same (oracle cases + fallback accounting) | `just benchmark-prep-local` |
-| T10 | `sdk_roundtrip.rs` determinism probe + `run.py merge` order test | `just retrieval-sdk-proof`; `just benchmark-prep-local` |
+| T10 | per-strategy generation/capture/model binding plus deterministic replay | `just retrieval-sdk-proof <fresh-output-root>`; `just benchmark-prep-local`; real ablation evidence remains unrun |
 | T11 | `semble.py` mapping proof + adapter tests | `mapping-proof.json`; `just benchmark-prep-local` |
 | T12 | `run.py pair` (same universe/host) + `host.json` | `just retrieval-pair <spec>`; NOT_RUN until a frozen pilot |
-| T13 | `run.py verdict` (deterministic re-score) | `just retrieval-verdict …`; `verdict.json` |
-| T14 | CI rails | `just benchmark-prep-local` (no model/Semble download on this path) |
+| T13 | `run.py verdict` (deterministic re-score) | command implemented and fixture-tested; no real-pair `verdict.json` issued |
+| T14 | registered commands and external artifact root | `just benchmark-prep-local`, `just retrieval-contract-proof <fresh-output-root>` and `just retrieval-sdk-proof <fresh-output-root>`; none downloads Semble/model assets implicitly |
 | T15 | model parity (conditional on a same-model claim) | NOT_RUN (no same-model claim; `model_revision` recorded per run) |
 | T16 | incremental capture (conditional on an incremental claim) | NOT_RUN (no incremental claim) |
+
+Current closeout blockers are explicit: the contract/SDK receipt recipes must
+be run and frozen from one clean source; the generic workspace rail must record
+a frozen-source GREEN after its new explicit searchd-pin setup;
+Quanta capture is attested-only; and `run.py` hard-fails every speed claim as
+`phases_unimplemented` because phase fragments and process-tree peak RSS are
+not implemented. The commands above prove code paths, not W0-B, `PAIR_VALID`,
+`PERF_QUALIFIED` or `QUALITY_DELTA`.

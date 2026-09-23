@@ -29,6 +29,14 @@ def changed_step() -> dict:
     return next(step for step in steps if step.get("id") == "changed")
 
 
+def validation_step() -> dict:
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["agent-output"]["steps"]
+    return next(
+        step for step in steps if step.get("name") == "Validate agent outputs (semantic gate)"
+    )
+
+
 def run_changed_step(
     repo: Path, tmp_path: Path, event: str, base: str
 ) -> tuple[subprocess.CompletedProcess[str], str, list[str]]:
@@ -109,6 +117,7 @@ def test_agent_output_gate_uses_full_push_range_and_skips_idle_install(tmp_path:
         if step.get("name") == "Install agent-output dependencies"
     )
     assert install["if"] == "steps.changed.outputs.has_files == 'true'"
+    assert "--skip-rust-gates" not in validation_step()["run"]
 
 
 def test_agent_output_gate_handles_new_branch_and_fails_closed(tmp_path: Path) -> None:
