@@ -110,6 +110,16 @@ The correctness-first contract is a server-authoritative active-resolution
 operation returning an exact pin, activation epoch and candidate commitment,
 followed by a pinned query whose response is bound to that frozen resolution.
 This costs one additional IPC round trip for an uncached active read. An
+implementation must keep `QuantaIndex::connect_query_only` functional:
+`GenerationNamespace::current` uses the control plane and is unavailable to
+query-only clients. The resolution opcode therefore belongs on the query
+plane (or an explicitly revised query-only profile), not an SDK-only call to
+the existing control operation. Centralize request rewriting and response
+binding in `client.rs::dispatch_query` / `binding.rs`, covering every active
+query variant and the legal `rev:at.time` rebind; do not patch routes one by
+one. Freeze the resolution identity for the second request and reject a
+server response with a different pin/epoch/commitment. Add a query-only
+transport fixture and a wrong-same-domain-generation negative oracle. An
 alternative single-call contract must explicitly weaken the acceptance claim
 to request-ID/domain/self-consistency and must not claim detection of a
 producer that resolved the wrong same-domain generation. The user decision

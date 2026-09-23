@@ -90,20 +90,14 @@ impl LegacyStateImportPort for LegacyStateImporterV1 {
         let mut imported_records: u64 = 0;
         let mut consumed_markers: Vec<String> = Vec::new();
 
-        // The legacy `RepoMap` layout is migration input, never opened as a
-        // store: every current open path refuses it typed. Its bytes are
-        // carried verbatim into a namespace current adapters do not read, so
-        // the import neither loses them nor lets them become a serving
-        // authority again.
+        // A V1 RepoMap snapshot is a materialized view, not the source graph
+        // bundle required by the current generation store. Copying its bytes
+        // into an inert namespace would publish a root with no active RepoMap
+        // while claiming that migration succeeded. Refuse such a root until
+        // the producer can replay its source bundle into current authority.
         for name in quanta_index_searchd::app::state_format::LEGACY_REPOMAP_DIRECTORY_NAMES {
             let legacy = source_root.join("repo-map").join(name);
-            if !legacy.is_dir() {
-                continue;
-            }
-            let destination = staging_root.join("legacy-import").join(name);
-            imported_records =
-                imported_records.saturating_add(carry_legacy_tree_v1(&legacy, &destination)?);
-            consumed_markers.push(format!("repo-map/{name}"));
+            refuse_unconvertible_legacy_repomap_v1(&legacy)?;
         }
 
         if source_root.join(LEGACY_SEMANTIC_JOURNAL_RELATIVE).exists() {
@@ -142,69 +136,51 @@ impl LegacyStateImportPort for LegacyStateImporterV1 {
     }
 }
 
-/// Copy one legacy tree into a staging destination, refusing a symlink or a
-/// special file rather than guessing what it meant. Returns the file count.
-fn carry_legacy_tree_v1(source: &Path, destination: &Path) -> Result<u64, CoreError> {
-    std::fs::create_dir_all(destination).map_err(|error| {
+/// Empty legacy layout directories are markers, not authority. Any entry is
+/// unconvertible without the original graph producer and must not be silently
+/// dropped from the produced current root.
+fn refuse_unconvertible_legacy_repomap_v1(source: &Path) -> Result<(), CoreError> {
+    let metadata = match std::fs::symlink_metadata(source) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(CoreError::Storage(format!(
+                "state migration: inspect legacy RepoMap directory {}: {error}",
+                source.display()
+            )));
+        }
+    };
+    if !metadata.is_dir() {
+        return Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::StateRootInsecure,
+            message: format!(
+                "state migration: legacy RepoMap path {} is not a directory",
+                source.display()
+            ),
+        });
+    }
+    let mut entries = std::fs::read_dir(source).map_err(|error| {
         CoreError::Storage(format!(
-            "state migration: create legacy import directory {}: {error}",
-            destination.display()
-        ))
-    })?;
-    let mut carried: u64 = 0;
-    let entries = std::fs::read_dir(source).map_err(|error| {
-        CoreError::Storage(format!(
-            "state migration: read legacy directory {}: {error}",
+            "state migration: read legacy RepoMap directory {}: {error}",
             source.display()
         ))
     })?;
-    for entry in entries {
+    if let Some(entry) = entries.next() {
         let entry = entry.map_err(|error| {
             CoreError::Storage(format!(
-                "state migration: read legacy directory entry in {}: {error}",
+                "state migration: read legacy RepoMap entry in {}: {error}",
                 source.display()
             ))
         })?;
-        let path = entry.path();
-        let metadata = std::fs::symlink_metadata(&path).map_err(|error| {
-            CoreError::Storage(format!(
-                "state migration: inspect legacy entry {}: {error}",
-                path.display()
-            ))
-        })?;
-        let name = entry.file_name();
-        let target = destination.join(&name);
-        if metadata.file_type().is_symlink() {
-            return Err(CoreError::Typed {
-                code: quanta_index_contract::SearchPlaneErrorCodeV2::StateRootInsecure,
-                message: format!(
-                    "state migration: legacy root holds the symlink {}; the offline import refuses to follow it",
-                    path.display()
-                ),
-            });
-        }
-        if metadata.is_dir() {
-            carried = carried.saturating_add(carry_legacy_tree_v1(&path, &target)?);
-            continue;
-        }
-        if !metadata.is_file() {
-            return Err(CoreError::Typed {
-                code: quanta_index_contract::SearchPlaneErrorCodeV2::StateRootInsecure,
-                message: format!(
-                    "state migration: legacy root holds the non-regular entry {}",
-                    path.display()
-                ),
-            });
-        }
-        let _copied = std::fs::copy(&path, &target).map_err(|error| {
-            CoreError::Storage(format!(
-                "state migration: carry legacy object {}: {error}",
-                path.display()
-            ))
-        })?;
-        carried = carried.saturating_add(1);
+        return Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::StateRootFormatUnsupported,
+            message: format!(
+                "state migration: legacy RepoMap authority {} cannot be converted from materialized V1 snapshots; replay the producer source bundle into a current root",
+                entry.path().display()
+            ),
+        });
     }
-    Ok(carried)
+    Ok(())
 }
 
 /// The deep open a produced root must survive before it is published.

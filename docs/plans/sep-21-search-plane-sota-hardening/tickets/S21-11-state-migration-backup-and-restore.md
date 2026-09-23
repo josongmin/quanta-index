@@ -2,6 +2,39 @@
 
 Status: `planned`
 
+## 2026-09-23 source-bound RCA and execution boundary
+
+- W10-R3's read-only semantic importer and source-custody changes were merged
+  locally at `22e9ba1`. Its original V1 RepoMap importer only copied
+  `activations/` and `snapshots/` into non-serving `legacy-import/` while
+  returning success. The current-format store then opens with no equivalent
+  RepoMap candidate or active head. That is a false-success cutover.
+- Historical `RepoMapSnapshot` is a materialized entry view. The current
+  `RepoMapSourceBundle` requires graph nodes, edges, exactness and an authority
+  commitment that the snapshot cannot reconstruct. Do not synthesize a graph
+  from materialized rows or promote copied bytes to current authority.
+- Immediate safety correction: `crates/quanta-index-searchd-runtime/src/state_migration.rs`
+  refuses a nonempty V1 RepoMap layout typed with producer-replay guidance;
+  `tests/state_migration_owner_v1.rs` proves no destination publish and an
+  unchanged source. Empty V1 layout markers and valid semantic journal may
+  migrate. This does not close the full ticket.
+- Remaining owner action: define a producer-replay input containing the
+  original source bundle and checked identity for every legacy active key.
+  Import through the current RepoMap publish/activate authority, then compare
+  active pin, source commitment, terminal receipt, replay floor and sequence
+  high-water in the staged catalog before manifest publication. Missing
+  bundle or any ambiguity must remain a typed refusal.
+- `crates/quanta-index-searchd/src/app/runtime.rs` still calls
+  `migrate_legacy_auxiliary_snapshots` during boot on a current root. Move
+  that conversion to an offline, source-frozen operation only after defining
+  how pre-catalog current roots are detected and refused at boot. Removing
+  the call alone would silently drop history/runtime/structural authority.
+- DoD: no live legacy migration; materialized-only V1 RepoMap cannot produce
+  a green root; a complete replay fixture restores active identities and
+  high-water exactly; boot rejects a root requiring auxiliary conversion;
+  backup/restore and release-process proof run against the final same-source
+  binary. Until then P10 remains `OPEN`, not `QUALIFIED`.
+
 Depends on: S21-01, S21-02, S21-04, S21-09, S21-10
 
 ## Goal

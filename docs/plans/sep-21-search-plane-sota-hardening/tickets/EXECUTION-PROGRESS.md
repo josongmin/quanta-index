@@ -6,12 +6,10 @@ to validated lane handoffs and immutable proof manifests, not this document.
 
 ## Current checkpoint (2026-09-23)
 
-- Local `main` was clean at initial inspection at `1b0b827` and ahead of
-  `origin/main` by five commits. P08 candidate code `8b78f35` and its proof
-  note `fbe9c1e` were then committed directly on `main` (ahead by seven at
-  that checkpoint). W10 execution-truth and request-correlation changes are
-  integrated locally; remote publication and final-source qualification are
-  separate.
+- Local `main` was clean at this turn's initial inspection at `c93bf10`.
+  W10-R3's clean `codex/sep21-w10-state-custody` branch was merged without
+  conflicts at `22e9ba1`. The branch remains intact. This merge is local;
+  remote publication and final-source qualification are separate.
 - P03–P10 have historical owner-proof manifests and
   `RELEASE_PROOF_PENDING` handoffs. Every corresponding release proof is
   `NOT_RUN`. Those manifests name earlier source revisions and do not qualify
@@ -22,10 +20,11 @@ to validated lane handoffs and immutable proof manifests, not this document.
 - P11's four external proof nodes and P12 final qualification remain staged.
   P12A infrastructure is declared executable, but its required handoff-DAG
   aggregate producer is not implemented.
-- `/private/tmp/w10-r3` moved from six uncommitted P10 state-custody files
-  to a clean branch with at least three commits during this inspection.
-  The owner may continue committing; do not copy or overwrite that branch
-  while active. Reconcile its final diff into one P10 checkpoint.
+- The merged P10 work establishes read-only legacy semantic import and source
+  fingerprint custody, but not current-format RepoMap authority conversion.
+  The importer previously declared success after copying V1 RepoMap files
+  into an inert `legacy-import/` tree. A current-main follow-up refuses that
+  unsupported input typed; see the P10 implementation log below.
 
 ## Structural work ledger
 
@@ -34,21 +33,22 @@ to validated lane handoffs and immutable proof manifests, not this document.
 | 1 | P06 / S21-07 | SDK active-selector binding checks repo/revision but has no activation-resolution proof or epoch. | A response from the same repo/revision but wrong resolved generation/epoch is rejected by a consumer-visible negative oracle. |
 | 2 | P08 / S21-09 | Candidate `8b78f35` repairs guard custody and passes owner proof; release/process proof is still absent. | No live child can outlast state-root lease custody; required-child failure and hard drain have release process-boundary evidence. |
 | 3 | P09 / S21-10 | Production control dispatcher composes `readiness: None`. | Supervisor-owned process readiness is wired; component death or stale heartbeat makes readiness false without confusing it with repository generation status. |
-| 4 | P10 / S21-11 | Offline semantic importer writes lock/receipt/cleanup into the legacy source; RepoMap legacy activation is copied into an inert namespace; boot still migrates auxiliary snapshots. | Source inode/mtime/content remain unchanged, legacy authority is converted into current catalog/object authority, and boot contains no legacy importer. Restore/verify proves active identity, receipt, replay floor, and high-water equality. |
+| 4 | P10 / S21-11 | Read-only semantic import is merged. Current follow-up refuses nonempty V1 RepoMap instead of publishing a current root with missing active authority. Boot still migrates pre-catalog auxiliary snapshots. | Source remains byte-identical; nonconvertible RepoMap fails closed without destination; a producer replay path and offline auxiliary conversion are required before active identity/replay floor/high-water parity can close. |
 | 5 | P11 / S21-12 | V1 RepoMap mutation entrypoints remain reachable; no exact Quanta/Semantica commitment-chain or four P11 receipts. | One clean source pair and attested daemon binary pass publish, activate, replay, incompatibility, deployment, activation, and rollback proofs as separate nodes. |
 | 6 | P12A / S21-13B | Aggregate schema/writer/validator do not consume the product handoff DAG or separate P12A infrastructure handoff. | Exact P00–P11 fork/join and serial chain, historical and final receipt ledgers, paired source, binary, and negative tamper cases validate. |
 | 7 | P12Q / S21-13B | Final proof graph and P03–P10 release nodes have not run on one final source. | Same-source and same-binary final rerun yields distinct code/deploy/activate/rollback verdicts; no missing or stale mandatory receipt is promoted to green. |
 
 ## Execution constraints
 
-- Repair the earlier owner boundary before P11. The existing P10 handoff's
-  result revision is not current `main`; P11 must not consume it as an exact
-  predecessor. Reissue a clean P10 checkpoint and proof after integration.
+- Reissue P10 proof/handoff against the eventual final source. Its earlier
+  handoff revision is not the merged `main` and cannot serve as P11's exact
+  predecessor.
 - P11 needs separately confirmed Semantica read/edit/commit/push authority.
   Provider egress, deployment, activation, and rollback are separate
   approvals. Without them, record the specific node as `NOT_RUN` or `BLOCKED`.
-- Keep P10's in-flight worktree intact. Current-main edits must avoid its six
-  owner files until that work is reconciled.
+- Keep `/private/tmp/w10-r3` intact as historical owner provenance; its
+  commits are merged locally. Do not delete it while other work may refer to
+  its handoff.
 - A focused code test is owner evidence only. Release, Linux process,
   external-provider, deployment, and activation proof are not inferred from it.
 - P06 cannot independently reject a wrong same-domain active generation
@@ -63,6 +63,30 @@ to validated lane handoffs and immutable proof manifests, not this document.
   observation model before `readiness: None` can be replaced.
 
 ## Current-main implementation log
+
+### P10 unsupported RepoMap cutover — in-progress follow-up to `22e9ba1`
+
+- RCA: V1 `RepoMapSnapshot` contains materialized entries, not the graph
+  `nodes`/`edges` and source-bundle commitment required by current
+  `RepoMapSourceBundle`. Verbatim carry into `legacy-import/` kept bytes but
+  produced zero serving RepoMap candidates. This was a false-success cutover,
+  not authority migration.
+- `LegacyStateImporterV1` now refuses any nonempty V1 RepoMap activation or
+  snapshot directory with `StateRootFormatUnsupported` and an explicit
+  producer-replay instruction. Empty legacy layout markers may be consumed;
+  the source is not modified and no destination is published on refusal.
+  The owner suite replaces the prior inert-byte success oracle with a
+  negative materialized-RepoMap oracle and a convertible semantic-only path.
+- This is a safety correction, **not P10 completion**. A lossless producer
+  replay contract, offline pre-catalog auxiliary migration, active identity
+  equivalence, replay-floor/high-water equivalence, and exact-source owner /
+  release proof remain open. No legacy graph is fabricated from a materialized
+  view.
+- Focused local verification on this follow-up: `just fmt-check` exited 0;
+  `./scripts/cargow test -p quanta-index-searchd-runtime --test
+  state_migration_owner_v1` exited 0 with 41 passed, 0 failed, 0 ignored;
+  `git diff --check` exited 0. This is owner-fixture evidence, not a final
+  P10 proof manifest or release qualification.
 
 ### P08 custody correction — candidate checkpoint `8b78f35`
 
@@ -120,8 +144,7 @@ to validated lane handoffs and immutable proof manifests, not this document.
   exact lane when the scope has unseen rows. Therefore a short ANN result
   alone is not a proven `ExactExhausted` defect. Do not reopen that claim
   without a reachable counterexample.
-- The W10-R3 custody branch has at least three local commits and was clean at this
-  inspection. It adds source immutability proof, but its legacy migration
-  owner test still asserts that RepoMap activation bytes land only under
-  non-serving `legacy-import/`. This does not establish active-authority
-  conversion or replay floor/high-water parity; P10 remains open.
+- The W10-R3 custody branch was merged at `22e9ba1`; its inert RepoMap copy
+  success oracle was replaced on current main by a fail-closed oracle.
+  Neither approach alone proves active-authority conversion or replay-floor /
+  high-water parity; P10 remains open.

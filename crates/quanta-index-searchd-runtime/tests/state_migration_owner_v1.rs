@@ -193,6 +193,12 @@ fn build_legacy_root(root: &Path) -> TestResult {
     Ok(())
 }
 
+fn build_empty_legacy_repomap_root(root: &Path) -> TestResult {
+    fs::create_dir_all(root.join("repo-map/activations"))?;
+    fs::create_dir_all(root.join("repo-map/snapshots"))?;
+    Ok(())
+}
+
 fn backup_command(source: &Path, destination: &Path) -> OfflineStateCommandV1 {
     OfflineStateCommandV1 {
         operation: OfflineStateOperationV1::Backup,
@@ -1177,10 +1183,10 @@ fn the_backup_root_carries_the_backup_manifest_name_only() -> TestResult {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn migrate_state_carries_legacy_bytes_into_a_fresh_current_root() -> TestResult {
+fn migrate_state_imports_only_convertible_legacy_authority() -> TestResult {
     let legacy = private_root()?;
     let parent = private_root()?;
-    build_legacy_root(legacy.path())?;
+    build_empty_legacy_repomap_root(legacy.path())?;
     let migrated = parent.path().join("migrated");
 
     let migrate = OfflineStateCommandV1 {
@@ -1196,11 +1202,7 @@ fn migrate_state_carries_legacy_bytes_into_a_fresh_current_root() -> TestResult 
         detect_state_root_format_v1(&migrated)?,
         StateRootFormatV1::CurrentV1 { manifest: true }
     );
-    // The legacy bytes survived verbatim, in a namespace no adapter serves.
-    assert_eq!(
-        fs::read(migrated.join("legacy-import/activations/repo-a--rev-a.json"))?,
-        b"{\"legacy\":\"activation\"}"
-    );
+    assert!(!migrated.join("legacy-import").exists());
     // The receipt names source and target format, and the manifest covers it.
     let receipt = fs::read_to_string(migrated.join(STATE_MIGRATION_RECEIPT_FILE_NAME))?;
     assert!(receipt.contains("format-version 1"), "{receipt}");
@@ -1210,10 +1212,7 @@ fn migrate_state_carries_legacy_bytes_into_a_fresh_current_root() -> TestResult 
         receipt.contains("source-marker repo-map/activations"),
         "{receipt}"
     );
-    assert!(
-        receipt.contains("consumed-marker repo-map/snapshots"),
-        "{receipt}"
-    );
+    assert!(!receipt.contains("consumed-marker repo-map/"), "{receipt}");
     let manifest = read_root_manifest_v1(&migrated.join(STATE_ROOT_MANIFEST_FILE_NAME))?;
     assert!(manifest.objects.iter().any(|object| {
         object
@@ -1230,10 +1229,36 @@ fn migrate_state_carries_legacy_bytes_into_a_fresh_current_root() -> TestResult 
 }
 
 #[test]
-fn an_interrupted_migration_leaves_no_new_root_and_keeps_the_legacy_source() -> TestResult {
+fn migrate_refuses_materialized_legacy_repomap_without_publishing_an_empty_authority() -> TestResult
+{
     let legacy = private_root()?;
     let parent = private_root()?;
     build_legacy_root(legacy.path())?;
+    let before = freeze_legacy(legacy.path())?;
+    let migrated = parent.path().join("migrated");
+    let migrate = OfflineStateCommandV1 {
+        operation: OfflineStateOperationV1::Migrate,
+        source_root: legacy.path().to_path_buf(),
+        destination_root: Some(migrated.clone()),
+    };
+
+    let error = run_offline_state_command_with_v1(&migrate, &NoStateMigrationFaultsV1)
+        .expect_err("a materialized V1 RepoMap cannot become an empty current authority");
+    assert_eq!(
+        command_code(&error),
+        Some(SearchPlaneErrorCodeV2::StateRootFormatUnsupported)
+    );
+    assert!(!migrated.exists(), "failed conversion must publish no root");
+    assert_eq!(freeze_legacy(legacy.path())?, before);
+    assert_no_source_markers(legacy.path())?;
+    Ok(())
+}
+
+#[test]
+fn an_interrupted_migration_leaves_no_new_root_and_keeps_the_legacy_source() -> TestResult {
+    let legacy = private_root()?;
+    let parent = private_root()?;
+    build_empty_legacy_repomap_root(legacy.path())?;
     let migrated = parent.path().join("migrated");
     let migrate = OfflineStateCommandV1 {
         operation: OfflineStateOperationV1::Migrate,
@@ -1465,7 +1490,7 @@ fn backup_failure_and_interruption_keep_the_source_identical() -> TestResult {
 fn migrate_keeps_the_legacy_source_bit_identical() -> TestResult {
     let legacy = private_root()?;
     let parent = private_root()?;
-    build_legacy_root(legacy.path())?;
+    build_empty_legacy_repomap_root(legacy.path())?;
     let before = freeze_legacy(legacy.path())?;
     assert!(
         !before.entries.is_empty(),
@@ -1511,7 +1536,7 @@ fn migrate_keeps_the_legacy_source_bit_identical() -> TestResult {
 fn interrupted_migration_retry_cleans_staging_only() -> TestResult {
     let legacy = private_root()?;
     let parent = private_root()?;
-    build_legacy_root(legacy.path())?;
+    build_empty_legacy_repomap_root(legacy.path())?;
     let before = freeze_legacy(legacy.path())?;
     let migrated = parent.path().join("migrated");
     let staging = staging_directory_for_v1(&migrated);
@@ -1725,7 +1750,7 @@ fn corrupt_and_truncated_legacy_journal_fail_closed() -> TestResult {
     ] {
         let legacy = private_root()?;
         let parent = private_root()?;
-        build_legacy_root(legacy.path())?;
+        build_empty_legacy_repomap_root(legacy.path())?;
         fs::create_dir_all(legacy.path().join("semantic"))?;
         fs::write(legacy.path().join("semantic/journal.cbor"), &bytes)?;
         let before = freeze_legacy(legacy.path())?;
@@ -1765,7 +1790,7 @@ fn corrupt_and_truncated_legacy_journal_fail_closed() -> TestResult {
 fn new_binary_refuses_an_old_root_with_a_source_side_receipt() -> TestResult {
     let legacy = private_root()?;
     let parent = private_root()?;
-    build_legacy_root(legacy.path())?;
+    build_empty_legacy_repomap_root(legacy.path())?;
     fs::create_dir_all(legacy.path().join("semantic"))?;
     let journal = quanta_index_ipc::encode_cbor_payload(&(Vec::<
         quanta_index_contract::SemanticIngestBatch,
