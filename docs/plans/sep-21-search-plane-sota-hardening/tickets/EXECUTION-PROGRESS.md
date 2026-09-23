@@ -31,6 +31,14 @@ to validated lane handoffs and immutable proof manifests, not this document.
   to earlier HEAD/dirty/upstream states; P03–P10 release, P11 external,
   P12A and P12 final artifacts remain absent. The count is repeated binding
   findings plus missing nodes, not 75 independent product defects.
+- `just proof-p12a-proof-infrastructure` completed its infrastructure checks
+  with 11/11 Python tests passed. This checks the existing proof machinery,
+  not the missing P12A handoff-DAG implementation or final aggregate.
+  `git cherry -v main` reports `-` for all three unique commits in the two
+  SEP-21 W10 branches, confirming patch-equivalent content on `main`.
+  Both attached worktrees were clean and had no matching live process at the
+  cleanup inspection, but their branch tips are not ancestors of `main`;
+  they remain available for source attribution rather than being deleted.
 
 - Local `main` was clean at this turn's initial inspection at `c93bf10`.
   W10-R3's clean `codex/sep21-w10-state-custody` branch was merged without
