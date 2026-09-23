@@ -10,7 +10,7 @@ use crate::fail_closed_wait::{RealTicker, WaitError, wait_for};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-fn require_eq<T: std::fmt::Debug + PartialEq>(actual: T, expected: T, field: &str) -> TestResult {
+fn require_eq<T: std::fmt::Debug + PartialEq>(actual: &T, expected: &T, field: &str) -> TestResult {
     if actual == expected {
         Ok(())
     } else {
@@ -38,17 +38,21 @@ fn wait_until_ready(rt: &mut E2eRuntime) -> Result<ProcessReadinessV1, Box<dyn E
 fn zero_active_repositories_are_ready_only_with_all_supervised_children() -> TestResult {
     let mut rt = E2eRuntime::boot()?;
     let report = wait_until_ready(&mut rt)?;
-    require_eq(report.active_repositories, 0, "active repositories")?;
-    require_eq(report.active_candidate_integrity, None, "active integrity")?;
-    require_eq(report.components.query_plane, true, "query plane")?;
-    require_eq(report.components.control_plane, true, "control plane")?;
-    require_eq(report.components.ingest_plane, true, "ingest plane")?;
+    require_eq(&report.active_repositories, &0, "active repositories")?;
     require_eq(
-        report.components.maintenance_heartbeat,
-        true,
+        &report.active_candidate_integrity,
+        &None,
+        "active integrity",
+    )?;
+    require_eq(&report.components.query_plane, &true, "query plane")?;
+    require_eq(&report.components.control_plane, &true, "control plane")?;
+    require_eq(&report.components.ingest_plane, &true, "ingest plane")?;
+    require_eq(
+        &report.components.maintenance_heartbeat,
+        &true,
         "maintenance heartbeat",
     )?;
-    require_eq(report.not_ready_reasons, Vec::new(), "not-ready reasons")?;
+    require_eq(&report.not_ready_reasons, &Vec::new(), "not-ready reasons")?;
     Ok(())
 }
 
@@ -59,17 +63,17 @@ fn active_repository_requires_physical_candidate_proof() -> TestResult {
     let _sealed = rt.seal()?;
     rt.activate_last_sealed_generation()?;
     let report = wait_until_ready(&mut rt)?;
-    require_eq(report.active_repositories, 1, "active repositories")?;
+    require_eq(&report.active_repositories, &1, "active repositories")?;
     require_eq(
-        report.active_candidate_integrity,
-        Some(true),
+        &report.active_candidate_integrity,
+        &Some(true),
         "active integrity",
     )?;
     require_eq(
-        report
+        &report
             .not_ready_reasons
             .contains(&ProcessReadinessReasonV1::ActiveCandidateIntegrityFailed),
-        false,
+        &false,
         "active integrity failure reason",
     )?;
     Ok(())
