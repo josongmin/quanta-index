@@ -1359,7 +1359,7 @@ enum WatchEvent {
     /// `PeerDisconnected` instead, and a stop that wins before the first
     /// observation reports `Stopped`: `Armed` means the watch is live.
     Armed,
-    /// The watcher confirmed a hang-up and cancelled the budget.
+    /// The watcher confirmed a hang-up and completed budget cancellation.
     PeerDisconnected,
     /// The watcher stopped with the peer still present.
     Stopped,
@@ -1487,8 +1487,8 @@ impl PeerWatch {
                             }
                             hung_up.store(true, Ordering::Release);
                             counters.peer_hangup_detected();
-                            observer.fire(WatchEvent::PeerDisconnected);
                             cancel.cancel();
+                            observer.fire(WatchEvent::PeerDisconnected);
                             return;
                         }
                         match peer_state(&watched, &wake_read) {
@@ -1509,8 +1509,8 @@ impl PeerWatch {
                             PeerState::HungUp => {
                                 hung_up.store(true, Ordering::Release);
                                 counters.peer_hangup_detected();
-                                observer.fire(WatchEvent::PeerDisconnected);
                                 cancel.cancel();
+                                observer.fire(WatchEvent::PeerDisconnected);
                                 return;
                             }
                         }
@@ -3238,7 +3238,9 @@ mod tests {
         let result = (|| -> TestRes {
             let (client, server) = UnixStream::pair().map_err(|err| err.to_string())?;
             let budget = RequestBudgetV1::for_duration(Duration::from_secs(60));
-            let _failing_waiter = budget.cancel_waiter(Arc::new(|| {
+            let (callback_entered_tx, callback_entered_rx) = mpsc::channel();
+            let _failing_waiter = budget.cancel_waiter(Arc::new(move || {
+                let _reported = callback_entered_tx.send(());
                 panic!("scripted cancellation callback failure");
             }));
             let (observer, received) = WatchObserver::channel();
@@ -3251,7 +3253,9 @@ mod tests {
             .map_err(|err| err.to_string())?;
             expect_watch_event(&received, WatchEvent::Armed)?;
             drop(client);
-            expect_watch_event(&received, WatchEvent::PeerDisconnected)?;
+            callback_entered_rx
+                .recv_timeout(WATCH_EVENT_BOUND)
+                .map_err(|err| format!("cancellation callback must enter before disarm: {err}"))?;
             let failure = watch
                 .disarm()
                 .expect_err("a panicking watcher cannot disarm successfully");
