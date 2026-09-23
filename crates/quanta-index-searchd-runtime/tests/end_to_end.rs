@@ -58,6 +58,12 @@ type TestResult = Result<(), Box<dyn Error>>;
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 const READINESS_TIMEOUT: Duration = Duration::from_secs(15);
 
+fn next_request_id() -> u64 {
+    let id = NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+    assert_ne!(id, 0, "test request IDs must remain nonzero");
+    id
+}
+
 /// Harness-owned three-socket scenario fixture (TOPT-03: runtime fixture
 /// ownership).
 ///
@@ -389,7 +395,7 @@ fn dispatch_ingest(socket: &Path, payload: SearchPlaneIngestIpcRequest) -> TestR
     let response = send_ingest_request(
         socket,
         &SearchPlaneIngestIpcRequestEnvelope {
-            request_id: NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed),
+            request_id: next_request_id(),
             payload,
         },
     )?;
@@ -1280,7 +1286,7 @@ fn hybrid_query_succeeds_when_both_tracks_sealed() -> TestResult {
     // Wait for joint lexical/semantic materialization from search-corpus ingest.
     if !wait_until(READINESS_TIMEOUT, || {
         let req = SearchPlaneQueryIpcRequestEnvelope {
-            request_id: 0,
+            request_id: next_request_id(),
             payload: SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Sourcegraph,
@@ -1517,7 +1523,7 @@ fn repo_metadata_filters_share_one_indexed_fixture() -> TestResult {
 
 fn verify_semantic_requires_materialization(socket: &Path) -> TestResult {
     let req = SearchPlaneQueryIpcRequestEnvelope {
-        request_id: 0,
+        request_id: next_request_id(),
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
             query_text: "semantic".to_string(),
             constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
@@ -3154,7 +3160,7 @@ fn request_validation_refusals_share_one_runtime() -> TestResult {
 
 fn lex_query(needle: &str) -> SearchPlaneQueryIpcRequestEnvelope {
     SearchPlaneQueryIpcRequestEnvelope {
-        request_id: 0,
+        request_id: next_request_id(),
         payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
             syntax: TextQuerySyntax::Sourcegraph,
             query_text: needle.to_string(),
@@ -3176,7 +3182,7 @@ fn history_query_with_syntax(
     query_text: &str,
 ) -> SearchPlaneQueryIpcRequestEnvelope {
     SearchPlaneQueryIpcRequestEnvelope {
-        request_id: 0,
+        request_id: next_request_id(),
         payload: SearchPlaneQueryIpcRequest::History(HistoryQueryRequest {
             text_query: TextQueryRequest {
                 syntax,
@@ -3202,7 +3208,7 @@ fn runtime_metadata_query_with_syntax(
     query_text: &str,
 ) -> SearchPlaneQueryIpcRequestEnvelope {
     SearchPlaneQueryIpcRequestEnvelope {
-        request_id: 0,
+        request_id: next_request_id(),
         payload: SearchPlaneQueryIpcRequest::RuntimeMetadata(RuntimeMetadataQueryRequest {
             text_query: TextQueryRequest {
                 syntax,
