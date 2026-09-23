@@ -13,6 +13,7 @@ use quanta_index_core::{
 use crate::lower_lexical_text_query;
 use crate::query_dispatcher::continuation::{CursorRequestContextV2, require_token_pin};
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
+use crate::query_dispatcher::execution_trace::{LaneExecutionRecorderV1, LaneExecutionSummaryV1};
 use crate::query_dispatcher::planning::{
     prepare_language_query_v1, query_selects_file_owner_projection,
 };
@@ -34,6 +35,16 @@ impl SearchPlaneDispatcher {
         request: &TextQueryRequest,
         budget: &RequestBudgetV1,
     ) -> Result<TextQueryResponse, CoreError> {
+        self.lexical_with_execution(request, budget)
+            .map(|(response, _)| response)
+    }
+
+    pub(in crate::query_dispatcher) fn lexical_with_execution(
+        &self,
+        request: &TextQueryRequest,
+        budget: &RequestBudgetV1,
+    ) -> Result<(TextQueryResponse, LaneExecutionSummaryV1), CoreError> {
+        let execution = LaneExecutionRecorderV1::new();
         budget.checkpoint("lexical:entry")?;
         let _accepted_top_k = validate_query_top_k(request.top_k)?;
         let opened = request
@@ -75,13 +86,16 @@ impl SearchPlaneDispatcher {
         }
         let wants_file_owner_projection = query_selects_file_owner_projection(&planned.query);
         if planned.force_empty {
-            return Ok(TextQueryResponse {
-                generation: planned.pin.clone(),
-                results: Vec::new(),
-                window: pageable_window_v2(QueryResultWindowV1::exact(0), "lexical")?,
-                file_owner_rows: wants_file_owner_projection.then(Vec::new),
-                next_cursor: None,
-            });
+            return Ok((
+                TextQueryResponse {
+                    generation: planned.pin.clone(),
+                    results: Vec::new(),
+                    window: pageable_window_v2(QueryResultWindowV1::exact(0), "lexical")?,
+                    file_owner_rows: wants_file_owner_projection.then(Vec::new),
+                    next_cursor: None,
+                },
+                execution.summary(),
+            ));
         }
         let view = self.acquire_read_view(
             &ReadViewRequestV1::new("lexical", &planned.pin, planned.domains),
@@ -90,6 +104,7 @@ impl SearchPlaneDispatcher {
         let searcher = view.lexical()?;
         let fetch_top_k = lexical_fetch_limit_v1(&planned.query, request.top_k)?;
         budget.checkpoint("lexical:search")?;
+        execution.record_lexical_invocation();
         let mut page = searcher.search_constrained(
             &planned.query,
             &planned.constraints,
@@ -119,7 +134,7 @@ impl SearchPlaneDispatcher {
             .as_ref()
             .map(|boundary| self.cursors()?.mint(boundary, &cursor_context, Vec::new()))
             .transpose()?;
-        fit_ranked_page(
+        let response = fit_ranked_page(
             TextQueryResponse {
                 generation: planned.pin.clone(),
                 results,
@@ -129,14 +144,19 @@ impl SearchPlaneDispatcher {
             },
             self.response_budget,
             |boundary| self.cursors()?.mint(boundary, &cursor_context, Vec::new()),
-        )
+        )?;
+        if !response.results.is_empty() {
+            execution.record_lexical_contribution();
+        }
+        Ok((response, execution.summary()))
     }
 
-    pub(crate) fn symbol(
+    pub(in crate::query_dispatcher) fn symbol_with_execution(
         &self,
         request: SymbolQueryRequest,
         budget: &RequestBudgetV1,
-    ) -> Result<SymbolQueryResponse, CoreError> {
+    ) -> Result<(SymbolQueryResponse, LaneExecutionSummaryV1), CoreError> {
+        let execution = LaneExecutionRecorderV1::new();
         budget.checkpoint("symbol:entry")?;
         let _accepted_top_k = validate_query_top_k(request.top_k)?;
         let opened = request
@@ -189,12 +209,15 @@ impl SearchPlaneDispatcher {
                 .require_context(opened, &cursor_context, Vec::new())?;
         }
         if prepared_language.force_empty {
-            return Ok(SymbolQueryResponse {
-                generation: pin.clone(),
-                results: Vec::new(),
-                window: pageable_window_v2(QueryResultWindowV1::exact(0), "symbol")?,
-                next_cursor: None,
-            });
+            return Ok((
+                SymbolQueryResponse {
+                    generation: pin.clone(),
+                    results: Vec::new(),
+                    window: pageable_window_v2(QueryResultWindowV1::exact(0), "symbol")?,
+                    next_cursor: None,
+                },
+                execution.summary(),
+            ));
         }
         let view = self.acquire_read_view(
             &ReadViewRequestV1::declare(
@@ -209,6 +232,7 @@ impl SearchPlaneDispatcher {
         // The symbol port has no count collector yet, so a `count` option
         // still yields a probe-derived (at-least) window here.
         budget.checkpoint("symbol:search")?;
+        execution.record_lexical_invocation();
         let mut results = searcher.search_symbols_constrained(
             &prepared_language.query,
             &prepared_language.constraints,
@@ -231,7 +255,7 @@ impl SearchPlaneDispatcher {
             .as_ref()
             .map(|boundary| self.cursors()?.mint(boundary, &cursor_context, Vec::new()))
             .transpose()?;
-        fit_ranked_page(
+        let response = fit_ranked_page(
             SymbolQueryResponse {
                 generation: pin.clone(),
                 results,
@@ -240,7 +264,11 @@ impl SearchPlaneDispatcher {
             },
             self.response_budget,
             |boundary| self.cursors()?.mint(boundary, &cursor_context, Vec::new()),
-        )
+        )?;
+        if !response.results.is_empty() {
+            execution.record_lexical_contribution();
+        }
+        Ok((response, execution.summary()))
     }
 }
 

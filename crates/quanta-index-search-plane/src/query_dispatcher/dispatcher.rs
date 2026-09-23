@@ -14,9 +14,8 @@ use quanta_index_contract::{
 };
 use quanta_index_core::domains::structural::StructuralProducerPort;
 use quanta_index_core::{
-    CoreError, ExplainQueryPort, HybridQueryPort, LexicalIndexOpenPort, LexicalQueryPort,
-    QueryRouteV1, RepoMapSnapshotAcquirePort, RequestBudgetV1, SemanticIndexOpenPort,
-    SemanticQueryPort,
+    CoreError, ExplainQueryPort, HybridQueryPort, LexicalIndexOpenPort, QueryRouteV1,
+    RepoMapSnapshotAcquirePort, RequestBudgetV1, SemanticIndexOpenPort, SemanticQueryPort,
 };
 use quanta_index_lq_obs::{Dimensions, MetricKind, MetricSample};
 
@@ -186,7 +185,7 @@ impl SearchPlaneDispatcher {
             SearchPlaneQueryIpcRequest::ResolveLexicalGeneration(req) => {
                 self.dispatch_lexical_resolution(&req, budget)
             }
-            SearchPlaneQueryIpcRequest::Text(req) => self.dispatch_text(req, budget),
+            SearchPlaneQueryIpcRequest::Text(req) => self.dispatch_text(&req, budget),
             SearchPlaneQueryIpcRequest::Symbol(req) => self.dispatch_symbol(req, budget),
             SearchPlaneQueryIpcRequest::Semantic(req) => self.dispatch_semantic(req, budget),
             SearchPlaneQueryIpcRequest::Hybrid(req) => self.dispatch_hybrid(req, budget),
@@ -332,18 +331,18 @@ impl SearchPlaneDispatcher {
 
     fn dispatch_text(
         &self,
-        request: TextQueryRequest,
+        request: &TextQueryRequest,
         budget: &RequestBudgetV1,
     ) -> SearchPlaneQueryIpcResponse {
         let requested_pin = request.generation.clone();
         self.observed_route(QueryRoute::Lexical, requested_pin.as_ref(), || {
-            match self.lexical_query(request, budget) {
-                Ok(response) => {
+            match self.lexical_with_execution(request, budget) {
+                Ok((response, execution)) => {
                     self.emit_planner_metric(&response.generation);
                     self.emit_engine_activity_metrics(
                         &response.generation,
-                        1,
-                        usize::from(response.window.returned() > 0),
+                        execution.executed_engines().len(),
+                        execution.touched_engines().len(),
                     );
                     self.emit_examined_candidates_metric(
                         QueryRoute::Lexical,
@@ -367,13 +366,13 @@ impl SearchPlaneDispatcher {
     ) -> SearchPlaneQueryIpcResponse {
         let requested_pin = request.generation.clone();
         self.observed_route(QueryRoute::Symbol, requested_pin.as_ref(), || {
-            match self.symbol(request, budget) {
-                Ok(response) => {
+            match self.symbol_with_execution(request, budget) {
+                Ok((response, execution)) => {
                     self.emit_planner_metric(&response.generation);
                     self.emit_engine_activity_metrics(
                         &response.generation,
-                        1,
-                        usize::from(response.window.returned() > 0),
+                        execution.executed_engines().len(),
+                        execution.touched_engines().len(),
                     );
                     self.emit_examined_candidates_metric(
                         QueryRoute::Symbol,

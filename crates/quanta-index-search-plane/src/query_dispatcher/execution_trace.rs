@@ -1,4 +1,4 @@
-//! Backend-invocation truth for the semantic/hybrid/seed/explain routes.
+//! Backend-invocation truth for direct lexical/symbol and composite routes.
 //!
 //! Exactly one object observes whether a lane RAN: the route calls
 //! `record_*_invocation` immediately before each backend-adapter call and
@@ -7,9 +7,9 @@
 //! own — a skipped backend call records nothing, so `force_empty` lanes
 //! report zero invocations while executed zero-hit lanes still count.
 //!
-//! [`LaneExecutionSummaryV1`] is the snapshot every consumer reads: the
-//! explanation builders (`engines_executed`, `engines_touched`), the
-//! `LaneTraceV1` entries, and (through the explanation) the fanout metric.
+//! [`LaneExecutionSummaryV1`] is the snapshot every consumer reads: direct
+//! route metrics, explanation builders (`engines_executed`,
+//! `engines_touched`), `LaneTraceV1` entries, and composite-route metrics.
 //! Provider embedding is deliberately NOT a semantic invocation: embedding
 //! is provider work, tracked by provider diagnostics, not lane execution.
 

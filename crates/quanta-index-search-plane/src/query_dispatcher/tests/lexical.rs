@@ -219,7 +219,7 @@ fn symbol_dispatch_admits_only_typed_exact_path_as_constraint_only_authority_v1(
     let path = quanta_index_contract::ExactRepoRelativePathV1::new("src/a*)' \"literal file.rs")
         .map_err(str::to_string)?;
     let constraints = QueryConstraintSetV1::from_exact_repo_relative_path(path);
-    let response = dispatcher.symbol(
+    let (response, _) = dispatcher.symbol_with_execution(
         SymbolQueryRequest {
             syntax: TextQuerySyntax::Native,
             query_text: String::new(),
@@ -250,7 +250,7 @@ fn symbol_dispatch_admits_only_typed_exact_path_as_constraint_only_authority_v1(
     }
     drop(guard);
 
-    match dispatcher.symbol(
+    match dispatcher.symbol_with_execution(
         SymbolQueryRequest {
             syntax: TextQuerySyntax::Native,
             query_text: String::new(),

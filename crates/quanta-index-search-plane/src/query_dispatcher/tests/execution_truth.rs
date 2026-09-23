@@ -14,8 +14,8 @@ use quanta_index_contract::{
     EngineTouched, ExplainCandidateV1, HybridCandidateV1, HybridLaneContributionV1, HybridLaneV1,
     HybridQueryRequest, HybridSeedQueryRequest, QueryConstraintSetV1, SearchExplanation,
     SearchPlaneExplainQueryRequest, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
-    SemanticCorpusKindV1, SemanticQueryRequest, SemanticSeedCorpusBudgetV1, TextQueryRequest,
-    TextQuerySyntax,
+    SemanticCorpusKindV1, SemanticQueryRequest, SemanticSeedCorpusBudgetV1, SymbolQueryRequest,
+    TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_core::{RequestBudgetV1, RequestCorrelationV1};
 
@@ -306,6 +306,91 @@ fn text_query(query_text: &str, constraints: QueryConstraintSetV1) -> TextQueryR
         top_k: 10,
         cursor: None,
     }
+}
+
+// CASE-COVERS: direct lexical and symbol routes derive fanout from actual
+// backend calls, including a successful force_empty response with no call.
+#[test]
+fn direct_lexical_routes_report_actual_backend_activity() -> TestResult {
+    for (label, query, constraints, rows, expected_calls, expected_fanout) in [
+        (
+            "force_empty",
+            "lang:python needle",
+            rust_constraints(),
+            vec![candidate("lex-a", 1.0)],
+            0,
+            (Some(0.0), Some(0.0)),
+        ),
+        (
+            "zero_hit",
+            "needle",
+            QueryConstraintSetV1::unconstrained(),
+            Vec::new(),
+            1,
+            (Some(1.0), Some(0.0)),
+        ),
+        (
+            "hit",
+            "needle",
+            QueryConstraintSetV1::unconstrained(),
+            vec![candidate("lex-a", 1.0)],
+            1,
+            (Some(1.0), Some(1.0)),
+        ),
+    ] {
+        let lanes = truth_dispatcher(rows.clone(), Vec::new())?;
+        let response = lanes.dispatcher.dispatch(
+            SearchPlaneQueryIpcRequest::Text(text_query(query, constraints.clone())),
+            &RequestBudgetV1::unbounded(),
+        );
+        if !matches!(response, SearchPlaneQueryIpcResponse::Text(_)) {
+            return Err(format!("{label}: expected text response, got {response:?}").into());
+        }
+        let calls = lanes
+            .lexical
+            .lock()
+            .map_err(|err| format!("lexical state poisoned: {err}"))?
+            .search_top_ks
+            .len();
+        if calls != expected_calls || emitted_fanout(&lanes) != expected_fanout {
+            return Err(format!(
+                "{label}: text calls={calls}, fanout={:?}; expected calls={expected_calls}, fanout={expected_fanout:?}",
+                emitted_fanout(&lanes),
+            )
+            .into());
+        }
+
+        let lanes = truth_dispatcher(rows, Vec::new())?;
+        let response = lanes.dispatcher.dispatch(
+            SearchPlaneQueryIpcRequest::Symbol(SymbolQueryRequest {
+                syntax: TextQuerySyntax::Sourcegraph,
+                query_text: query.to_string(),
+                constraints,
+                generation: Some(ready_pin()),
+                generation_selector: None,
+                top_k: 10,
+                cursor: None,
+            }),
+            &RequestBudgetV1::unbounded(),
+        );
+        if !matches!(response, SearchPlaneQueryIpcResponse::Symbol(_)) {
+            return Err(format!("{label}: expected symbol response, got {response:?}").into());
+        }
+        let calls = lanes
+            .lexical
+            .lock()
+            .map_err(|err| format!("lexical state poisoned: {err}"))?
+            .symbol_top_ks
+            .len();
+        if calls != expected_calls || emitted_fanout(&lanes) != expected_fanout {
+            return Err(format!(
+                "{label}: symbol calls={calls}, fanout={:?}; expected calls={expected_calls}, fanout={expected_fanout:?}",
+                emitted_fanout(&lanes),
+            )
+            .into());
+        }
+    }
+    Ok(())
 }
 
 fn hybrid_request(
