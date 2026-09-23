@@ -1,6 +1,6 @@
 # Sep 23 gate follow-up — shared checkout
 
-Status: `BLOCKED — 1e9f9475 code rails passed; newer main source and TOPT-00 timing remain`
+Status: `BLOCKED — committed code rails passed through 474422f7; dirty overlay and TOPT-00 timing remain`
 
 This is a current shared-worktree repair record, **not** a clean-HEAD or
 performance qualification. At initial capture, `main` was
@@ -274,3 +274,25 @@ rail to a later HEAD or dirty overlay. Re-freeze and rerun the impacted rails
 after those owners finish. The passing contended 10,001-row runs retire the
 old *correctness* timeout concern on `1e9f9475`, not TOPT-00's quiet-host
 performance requirement or its irrecoverable pre-implementation admission gap.
+
+## Newer committed-source requalification — `474422f7`
+
+After the peer search-plane readiness, searchd state-migration, and retrieval
+SDK commits landed, the isolated checkout was moved to clean `474422f7`.
+`just fmt-check`, full-workspace strict `just rust-clippy`, `just rust-policy`,
+`just rust-public-api`, and `just rust-cargo-modules` passed. With
+`RUST_TEST_THREADS=1`, `just rust-profile verify-rust` exited 0, including the
+bench `--no-run`, all workspace tests, and strict rustdoc. Its runtime risk
+binary passed 137/137, including activation concurrency and the unchanged
+10,001-row top-k oracle. With `QUANTA_INDEX_TEST_THREADS=1`, the exact
+`just rust-profile test-daemon-all` selector exited 0: **327/327 passed**,
+one existing policy skip. The selector gained five cases relative to the
+earlier 322-test source; do not copy the old count forward.
+
+This refreshes `CODE_QUALIFIED` to the clean committed `474422f7` code tree.
+It does **not** qualify the concurrent dirty overlay: `Justfile`, retrieval
+runner/SDK, benchmark protocol, and receipt-generator files remain edited by
+other writers in shared `main`. Those changes require owner integration and
+their own source-bound gates. The host was contended during these passes;
+TOPT-00's quiet-host paired timing and the historical admission gap remain
+open. A passing correctness run is not `PERF_EVIDENCE_CLEAN`.

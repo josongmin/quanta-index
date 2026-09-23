@@ -1,6 +1,6 @@
 # TOPT-08 — Same-Source Integration and Qualification
 
-Status: `blocked — code-qualified at 1e9f9475 only; newer main and uncontended performance evidence remain`
+Status: `blocked — committed code-qualified through 474422f7; dirty overlay and uncontended performance evidence remain`
 
 Depends on: TOPT-01 through TOPT-07
 
@@ -189,3 +189,22 @@ Those later sources have no adopted full gate receipt from this run. TOPT-00's
 quiet-host retrospective paired measurements and the historical admission gap
 remain open, so neither `PERF_EVIDENCE_CLEAN` nor `PRODUCT_QUALIFIED` is
 emitted.
+
+## Newer committed-source verdict — `474422f7`
+
+The clean checkout passed `just rust-profile verify-rust` end to end with
+`RUST_TEST_THREADS=1` and the exact `test-daemon-all` selector with
+`QUANTA_INDEX_TEST_THREADS=1`: 327/327 executed tests passed, one existing
+policy skip. The 10,001-row oracle also passed inside the full workspace
+test run without changing its 600-second IPC limit. Full-workspace strict
+Clippy, format, policy, public API, and module snapshot checks passed. Emit
+`CODE_QUALIFIED` for committed `474422f7` only. The separately selected
+`test-fast`, `test-integration`, and `test-daemon` recipes were not rerun at
+this SHA; the full workspace test plus exhaustive daemon selector cover their
+tests, but this is not an exact-command receipt for those smaller selectors.
+
+The shared checkout still contains peer-owned uncommitted retrieval runner,
+SDK, `Justfile`, benchmark protocol, and receipt-generator changes. They are
+not qualified by the isolated `474422f7` result. The quiet-host TOPT-00
+retrospective paired protocol is also still absent; do not emit
+`PERF_EVIDENCE_CLEAN` or `PRODUCT_QUALIFIED`.
