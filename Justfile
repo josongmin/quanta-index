@@ -369,11 +369,43 @@ rust-bench-build:
 # every producer binary warm in one target directory.
 benchmark-prep-local:
     find crates/quanta-index-searchd-harness/src -name '*.rs' -print0 | xargs -0 rustfmt --check --edition 2024
-    python3 -m pytest tools/ci/tests/test_benchmark_manifest.py tools/ci/tests/test_benchctl.py tools/ci/tests/test_check_bench_artifacts.py tools/ci/tests/test_check_host_contention.py tools/ci/tests/test_compare_dsl_bench.py tools/ci/tests/test_quality_integration_summary.py -q
-    python3 -m py_compile tools/benchmark/benchctl.py tools/benchmark/manifest.py tools/benchmark/compare_dsl_bench.py tools/benchmark/quality_integration_summary.py tools/ci/lint/check-bench-artifacts.py tools/ci/timing/check_host_contention.py
+    python3 -m pytest tools/ci/tests/test_benchmark_manifest.py tools/ci/tests/test_benchctl.py tools/ci/tests/test_check_bench_artifacts.py tools/ci/tests/test_check_host_contention.py tools/ci/tests/test_compare_dsl_bench.py tools/ci/tests/test_quality_integration_summary.py tools/ci/tests/test_retrieval_benchmark.py -q
+    python3 -m py_compile tools/benchmark/benchctl.py tools/benchmark/manifest.py tools/benchmark/compare_dsl_bench.py tools/benchmark/quality_integration_summary.py tools/ci/lint/check-bench-artifacts.py tools/ci/timing/check_host_contention.py tools/benchmark/retrieval/evaluator.py tools/benchmark/retrieval/semble.py tools/benchmark/retrieval/run.py
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib --bins --all-features --locked --no-run
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib --all-features --locked
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-retrieval-bench --lib --all-features --locked
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-retrieval-bench --test chunking_contract --all-features --locked
+    python3 tools/ci/lint/check-test-authority.py
     git diff --check
+
+# Retrieval benchmark: real-daemon SDK proof (T05-T07, T10). Builds the
+# pinned searchd + runner binaries first, then runs the live roundtrip.
+# No model or Semble download happens on this path.
+retrieval-sdk-proof:
+    env CARGO_NET_OFFLINE=true {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-runtime --bin quanta-index-searchd --locked
+    env CARGO_NET_OFFLINE=true {{cargo}} --lane test-daemon-lane build -p quanta-index-retrieval-bench --bin quanta-index-retrieval-bench --locked
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-retrieval-bench --test sdk_roundtrip --all-features --locked
+
+# Retrieval benchmark: Quanta-only chunk A/B from a pinned spec file.
+# The spec names repo/manifest/suite/pack, strategies, binaries and output
+# root; captures stay outside the checkout. See RB-05 for the spec schema.
+retrieval-quanta spec:
+    python3 tools/benchmark/retrieval/run.py quanta --spec {{spec}}
+
+# Retrieval benchmark: sequential Quanta + Semble paired capture, merge and
+# scoring from a pinned spec. Fails closed when the pinned Semble python is
+# absent; installs and model caches stay outside the checkout.
+retrieval-pair spec:
+    python3 tools/benchmark/retrieval/run.py pair --spec {{spec}}
+
+# Retrieval benchmark: re-score immutable records into the TEST-PLAN §8
+# verdict artifact (deterministic re-score path, T13).
+retrieval-verdict repo suite records run_manifest baseline candidate out:
+    python3 tools/benchmark/retrieval/run.py verdict --repo {{repo}} --suite {{suite}} --records {{records}} --run-manifest {{run_manifest}} --baseline-route {{baseline}} --candidate-route {{candidate}} --out {{out}}
+
+# Retrieval benchmark: host check-record (identity, load, thermal/frequency).
+retrieval-host-probe out="":
+    python3 tools/benchmark/retrieval/run.py host-probe {{if out != "" { "--out " + out } else { "" } }}
 
 # Layer-3 DSL query-latency matrix (docs/plans/jun-2-dsl-hardening/RFC-DSL-Benchmarking.md).
 # Warm: in-process criterion + p50/p95/p99 artifact. Cold: fresh-process-per-sample runner.

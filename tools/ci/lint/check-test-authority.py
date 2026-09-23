@@ -7,6 +7,8 @@ targets are fully inventoried:
 
 * ``crates/*/tests/*.rs`` -- direct children are integration-test binaries;
   nested helpers such as ``tests/common/*.rs`` are modules, not targets.
+* ``benchmarks/*/tests/*.rs`` -- benchmark workspace members follow the same
+  rule as crates.
 * ``crates/*/fuzz/fuzz_targets/*.rs`` -- cargo-fuzz executables declared by
   the sibling fuzz manifest.
 
@@ -95,11 +97,13 @@ def _load_catalog(catalog: Path, violations: list[Violation]) -> dict[str, Any] 
 
 
 def _discover_integration_targets(root: Path) -> set[str]:
-    return {
-        path.relative_to(root).as_posix()
-        for path in root.glob("crates/*/tests/*.rs")
-        if path.is_file()
-    }
+    patterns = ("crates/*/tests/*.rs", "benchmarks/*/tests/*.rs")
+    found: set[str] = set()
+    for pattern in patterns:
+        for path in root.glob(pattern):
+            if path.is_file():
+                found.add(path.relative_to(root).as_posix())
+    return found
 
 
 def _discover_fuzz_targets(root: Path) -> set[str]:

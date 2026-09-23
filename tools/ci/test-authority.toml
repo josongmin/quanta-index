@@ -1255,6 +1255,18 @@ path = "crates/quanta-index-semantic/tests/semantic_generation_lifecycle_model.r
 owner = "quanta-index-semantic"
 rail = "pr-workspace-nextest"
 
+[[integration_targets]]
+id = "retrieval-bench-chunking-contract"
+path = "benchmarks/retrieval/tests/chunking_contract.rs"
+owner = "quanta-index-retrieval-bench"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "retrieval-bench-sdk-roundtrip"
+path = "benchmarks/retrieval/tests/sdk_roundtrip.rs"
+owner = "quanta-index-retrieval-bench"
+rail = "pr-workspace-nextest"
+
 [[fuzz_targets]]
 id = "contract-ipc-request-decode-fuzz"
 path = "crates/quanta-index-contract/fuzz/fuzz_targets/ipc_request_decode.rs"

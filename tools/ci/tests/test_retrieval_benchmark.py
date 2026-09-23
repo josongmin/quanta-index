@@ -10,6 +10,8 @@ from pathlib import Path
 import pytest
 
 from tools.benchmark.retrieval import evaluator as ev
+from tools.benchmark.retrieval import run as pairrun
+from tools.benchmark.retrieval import semble as semble_adapter
 
 
 def fixture(tmp_path: Path):
@@ -898,3 +900,404 @@ def test_v2_cli_freeze_evaluate_roundtrip(tmp_path, capsys):
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["schema_version"] == 2
     assert report["rank_metrics"]["comparison"]["sample_count"] == 1
+
+
+# --- RB-04/RB-05 adapter and merge contracts (T11–T13) ---
+
+def _admitted_rows(files: dict[str, bytes]) -> list[tuple[str, str]]:
+    return [(name, ev.digest(data)) for name, data in sorted(files.items())]
+
+
+def test_mapping_proof_clean_and_mismatch_detected(tmp_path):
+    _repo, _suite, _run, _sp, _rp, files = fixture_v2(tmp_path)
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    for name, data in files.items():
+        if name != "excluded.txt":
+            (corpus / name).write_bytes(data)
+    admitted = _admitted_rows({k: v for k, v in files.items() if k != "excluded.txt"})
+    proof, diff = semble_adapter.mapping_proof(admitted, ["a.txt", "b.txt"], corpus)
+    assert proof["skipped"] == [] and proof["extra"] == []
+    assert proof["mismatched"] == []
+    assert len(diff) == 64
+    assert all(row["status"] == "indexed" for row in proof["per_file"])
+
+    skipped, _ = semble_adapter.mapping_proof(admitted, ["a.txt"], corpus)
+    assert skipped["skipped"] == ["b.txt"]
+    extra, _ = semble_adapter.mapping_proof(admitted, ["a.txt", "b.txt", "zzz.txt"], corpus)
+    assert extra["extra"] == ["zzz.txt"]
+    assert extra["semble_side"][-1]["readable"] is False
+
+    (corpus / "a.txt").write_bytes(b"different bytes")
+    changed, _ = semble_adapter.mapping_proof(admitted, ["a.txt", "b.txt"], corpus)
+    assert changed["skipped"] == changed["extra"] == []
+    assert changed["mismatched"] == ["a.txt"]
+    assert changed["per_file"][0]["status"] == "hash_mismatch"
+    manifest = {"files": [{"path": name, "file_sha256": sha} for name, sha in admitted]}
+    assert pairrun.mapping_matches_manifest(proof, manifest)
+    assert not pairrun.mapping_matches_manifest(changed, manifest)
+    tampered = dict(proof, semble_side=[dict(proof["semble_side"][0], file_sha256="0" * 64), proof["semble_side"][1]])
+    assert not pairrun.mapping_matches_manifest(tampered, manifest)
+
+
+def test_semble_inputs_refuse_duplicate_keys_and_unsafe_paths(tmp_path):
+    path = tmp_path / "manifest.json"
+    path.write_text('{"tasks":[{"gold":[]}],"tasks":[]}', encoding="utf-8")
+    with pytest.raises(semble_adapter.AdapterError, match="duplicate JSON key: tasks"):
+        semble_adapter.read_json(path)
+    path.write_text(json.dumps({
+        "repository_commit": "a" * 40,
+        "files": [{"path": "../outside.rs", "file_sha256": "b" * 64}],
+    }), encoding="utf-8")
+    with pytest.raises(semble_adapter.AdapterError, match="unsafe manifest path"):
+        semble_adapter.load_manifest(path)
+
+
+def test_pair_driver_refuses_ambiguous_json(tmp_path):
+    path = tmp_path / "run-manifest.json"
+    path.write_text('{"evidence":{"pair":{"same_files":false}},"evidence":{"pair":{"same_files":true}}}', encoding="utf-8")
+    with pytest.raises(pairrun.RunError, match="duplicate JSON key: evidence"):
+        pairrun.read_json(path)
+    path.write_text('{"query_latency_ms":NaN}', encoding="utf-8")
+    with pytest.raises(pairrun.RunError, match="non-finite JSON number: NaN"):
+        pairrun.read_json(path)
+
+
+def test_pair_capture_preflight_requires_external_root_and_clean_pin(tmp_path):
+    repo, suite, _run, _suite_path, _run_path = fixture(tmp_path)
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"repository_commit": suite["repository_commit"]}), encoding="utf-8")
+    spec = {"repo": str(repo), "manifest": str(manifest),
+            "output_root": str(repo / "capture")}
+    with pytest.raises(pairrun.RunError, match="outside the frozen repository"):
+        pairrun.preflight_capture(spec)
+    spec["output_root"] = str(tmp_path / "capture")
+    assert pairrun.preflight_capture(spec) == tmp_path / "capture"
+    (repo / "untracked.txt").write_text("dirty", encoding="utf-8")
+    with pytest.raises(pairrun.RunError, match="checkout has tracked or untracked changes"):
+        pairrun.preflight_capture(spec)
+
+
+def test_semble_model_revision_requires_observed_pinned_cache(tmp_path):
+    model = "minishlab/potion-code-16M-v2"
+    with pytest.raises(semble_adapter.AdapterError, match="revision unavailable"):
+        semble_adapter.resolve_model_revision(tmp_path, model, None)
+    ref = tmp_path / "hub/models--minishlab--potion-code-16M-v2/refs/main"
+    ref.parent.mkdir(parents=True)
+    ref.write_text("a" * 40, encoding="utf-8")
+    assert semble_adapter.resolve_model_revision(tmp_path, model, "a" * 40) == "a" * 40
+    with pytest.raises(semble_adapter.AdapterError, match="revision drift"):
+        semble_adapter.resolve_model_revision(tmp_path, model, "b" * 40)
+
+
+def test_semble_env_refuses_missing_lockfile(tmp_path, monkeypatch):
+    interpreter = tmp_path / "python"
+    interpreter.write_text("", encoding="utf-8")
+
+    def fake_run(command, **_kwargs):
+        if "-c" in command:
+            return subprocess.CompletedProcess(
+                command, 0,
+                '{"semble_version":"1","has_from_path":true,"has_search":true}', "",
+            )
+        return subprocess.CompletedProcess(command, 1, "", "pip failed")
+
+    monkeypatch.setattr(semble_adapter.subprocess, "run", fake_run)
+    with pytest.raises(semble_adapter.AdapterError, match="pip freeze failed"):
+        semble_adapter.check_semble_env(interpreter)
+
+
+def test_semble_env_reports_lockfile_digest_and_pair_requires_pin(tmp_path, monkeypatch):
+    interpreter = tmp_path / "python"
+    interpreter.write_text("", encoding="utf-8")
+
+    def fake_run(command, **_kwargs):
+        if "-c" in command:
+            return subprocess.CompletedProcess(
+                command, 0,
+                '{"semble_version":"1","has_from_path":true,"has_search":true}', "",
+            )
+        return subprocess.CompletedProcess(command, 0, "semble==1\n", "")
+
+    monkeypatch.setattr(semble_adapter.subprocess, "run", fake_run)
+    report = semble_adapter.check_semble_env(interpreter)
+    assert report["lockfile_sha256"] == ev.digest(b"semble==1\n")
+    with pytest.raises(pairrun.RunError, match="requires a pinned semble_lockfile_sha256"):
+        pairrun.run_pair({"output_root": str(tmp_path / "out")})
+    assert not (tmp_path / "out").exists()
+
+
+def test_quanta_driver_defaults_to_potion_and_binary_digest(tmp_path, monkeypatch):
+    def fake_run(command, **_kwargs):
+        assert command[command.index("--embedder") + 1] == "potion-code"
+        assert command[command.index("--runner-revision") + 1] == "sha256:" + "a" * 64
+        Path(command[command.index("--out") + 1]).write_text("{}", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(pairrun.subprocess, "run", fake_run)
+    spec = {
+        "runner_binary": "/unused/runner",
+        "repo": "/unused/repo",
+        "manifest": "/unused/manifest.json",
+        "top_k": 10,
+    }
+    result = pairrun.run_quanta_strategy(
+        spec, {"name": "syntax"}, 0, tmp_path, ["lexical"], tmp_path / "pack.json", "a" * 64
+    )
+    assert result["runner_binary_sha256"] == "a" * 64
+
+
+def test_driver_observed_pair_and_perf_cannot_be_overridden(tmp_path):
+    semble_dir = tmp_path / "semble"
+    semble_dir.mkdir()
+    (semble_dir / "mapping-proof.json").write_text(
+        '{"skipped":[],"extra":[]}', encoding="utf-8"
+    )
+    (semble_dir / "adapter-manifest.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "latency-matrix.json").write_text("{}", encoding="utf-8")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text('{"repository_commit":"' + "a" * 40 + '"}', encoding="utf-8")
+    pack = tmp_path / "pack.json"
+    pack.write_text('{"repository_commit":"' + "a" * 40 + '"}', encoding="utf-8")
+    spec = {"manifest": str(manifest), "query_pack": str(pack),
+            "evidence": {"pair": {"same_files": True}, "perf": {"phase_boundaries": True}}}
+    with pytest.raises(pairrun.RunError, match="cannot override driver-observed"):
+        pairrun.build_run_manifest(
+            spec, tmp_path, [{"semble": str(semble_dir / "record.json")}], {}, {}, []
+        )
+
+
+def test_normalize_record_proves_spans_and_order(tmp_path):
+    repo, suite, _run, suite_path, _rp, files = fixture_v2(tmp_path, answerable_only=True)
+    _, pack, _ = ev.validate_suite(repo, suite)
+    pack_sha = ev.digest(ev.canonical(pack))
+    file_shas = {name: ev.digest(data) for name, data in files.items()}
+    file_lines = {name: data.splitlines(keepends=True) for name, data in files.items()}
+    native = [
+        {"task_id": "T1", "results": [
+            {"file_path": "a.txt", "start_line": 2, "end_line": 2, "score": 0.9},
+            {"file_path": "b.txt", "start_line": 1, "end_line": 1, "score": 0.1},
+        ]},
+        {"task_id": "T2", "results": []},
+    ]
+    record = semble_adapter.normalize_record(
+        pack, pack_sha, native, {"T1": [3.0], "T2": [1.0]}, repo, file_shas,
+        file_lines, 5, "run-1", "attested", "method", "log",
+        "minishlab/potion-code-16M-v2", "rev", "semble-hybrid",
+    )
+    assert [row["status"] for row in record["results"]] == ["success", "abstained"]
+    assert [c["rank"] for c in record["results"][0]["candidates"]] == [1, 2]
+    assert record["results"][0]["candidates"][0]["path"] == "a.txt"
+
+    drifted = [{"task_id": "T1", "results": [
+        {"file_path": "elsewhere/a.txt", "start_line": 1, "end_line": 1, "score": 1.0}]}]
+    with pytest.raises(semble_adapter.AdapterError, match="outside admitted universe"):
+        semble_adapter.normalize_record(
+            pack, pack_sha, drifted, {"T1": [1.0]}, repo, file_shas,
+            file_lines, 5, "run-1", "attested", "method", "log", "m", "r", "semble-hybrid")
+
+    truncated = [{"task_id": "T1", "results": [
+        {"file_path": "a.txt", "start_line": 1, "end_line": 99, "score": 1.0}]}]
+    with pytest.raises(semble_adapter.AdapterError, match="beyond EOF"):
+        semble_adapter.normalize_record(
+            pack, pack_sha, truncated, {"T1": [1.0]}, repo, file_shas,
+            file_lines, 5, "run-1", "attested", "method", "log", "m", "r", "semble-hybrid")
+
+    over = [{"task_id": "T1", "results": [
+        {"file_path": "a.txt", "start_line": 1, "end_line": 1, "score": 1.0},
+        {"file_path": "a.txt", "start_line": 2, "end_line": 2, "score": 0.5}]}]
+    with pytest.raises(semble_adapter.AdapterError, match="exceeded top_k"):
+        semble_adapter.normalize_record(
+            pack, pack_sha, over, {"T1": [1.0]}, repo, file_shas,
+            file_lines, 1, "run-1", "attested", "method", "log", "m", "r", "semble-hybrid")
+
+    missing = semble_adapter.normalize_record(
+        {"tasks": [{"task_id": "T9", "query": "q", "query_sha256": "s"}]},
+        pack_sha, [], {}, repo, file_shas, file_lines, 5, "run-1",
+        "attested", "method", "log", "m", "r", "semble-hybrid")
+    assert missing["results"][0]["status"] == "error"
+    assert missing["results"][0]["error"]["code"] == "semble_missing_query"
+
+
+def _single_route_record(pack_sha: str, route: str, system: str, rows: list[dict]) -> dict:
+    return {
+        "schema_version": 2,
+        "query_pack_sha256": pack_sha,
+        "runner": {
+            "name": f"{system}-runner", "revision": "r", "run_id": "run",
+            "tokenizer": ev.TOKENIZER,
+            "tokenizer_budget_version": ev.TOKENIZER_BUDGET_VERSION,
+            "gold_access": False, "blinding": "attested",
+            "isolation_method": "m", "access_block_log": "l",
+        },
+        "route_provenance": {route: {"system": system, "model": "m", "model_revision": "r"}},
+        "results": rows,
+    }
+
+
+def test_merge_combines_disjoint_records_and_scores(tmp_path):
+    repo, suite, _run, suite_path, _rp, files = fixture_v2(tmp_path, answerable_only=True)
+    suite["routes"] = ["lexical", "semble-hybrid"]
+    suite_path.write_text(json.dumps(suite), encoding="utf-8")
+    _, pack, _ = ev.validate_suite(repo, suite)
+
+    def cand(path, start, end, rank):
+        file_sha, block_sha, tokens = _span_meta(files[path], start, end)
+        return {"path": path, "start_line": start, "end_line": end,
+                "file_sha256": file_sha, "block_sha256": block_sha,
+                "tokens": tokens, "rank": rank}
+
+    def row(task_id, route, spans):
+        return {"task_id": task_id, "route": route, "status": "success",
+                "candidates": [cand(*span, rank=i + 1) for i, span in enumerate(spans)],
+                "timings": {"query_latency_ms": 2.0}, "error": None}
+
+    lex_pack, _ = pairrun.project_pack_and_suite(pack, suite, ["lexical"])
+    sem_pack, _ = pairrun.project_pack_and_suite(pack, suite, ["semble-hybrid"])
+    lex = _single_route_record(
+        ev.digest(ev.canonical(lex_pack)), "lexical", "quanta",
+        [row("T1", "lexical", [("a.txt", 2, 2)]), row("T2", "lexical", [("a.txt", 3, 3)])])
+    sem = _single_route_record(
+        ev.digest(ev.canonical(sem_pack)), "semble-hybrid", "semble",
+        [row("T1", "semble-hybrid", [("b.txt", 1, 1)]), row("T2", "semble-hybrid", [("a.txt", 4, 4)])])
+    lex_path = tmp_path / "lex.json"
+    sem_path = tmp_path / "sem.json"
+    lex_path.write_text(json.dumps(lex), encoding="utf-8")
+    sem_path.write_text(json.dumps(sem), encoding="utf-8")
+
+    merged_suite, merged_pack, combined = pairrun.merge_records(repo, suite_path, [lex_path, sem_path])
+    assert sorted(combined["route_provenance"]) == ["lexical", "semble-hybrid"]
+    assert len(combined["results"]) == 4
+    report = ev.evaluate(merged_suite, merged_pack, combined, "semble-hybrid", "lexical")
+    assert report["rank_metrics"]["comparison"]["sample_count"] == 2
+
+    # Deterministic under input order.
+    _, _, swapped = pairrun.merge_records(repo, suite_path, [sem_path, lex_path])
+    assert ev.digest(ev.canonical(swapped)) == ev.digest(ev.canonical(combined))
+
+    # Duplicate route refused.
+    with pytest.raises(pairrun.RunError, match="recorded twice"):
+        pairrun.merge_records(repo, suite_path, [lex_path, lex_path])
+    # Union must cover the suite.
+    with pytest.raises(pairrun.RunError, match="!= suite routes"):
+        pairrun.merge_records(repo, suite_path, [lex_path])
+
+    # Tampered pack binding refused: routes doctored after signing.
+    tampered = json.loads(lex_path.read_text(encoding="utf-8"))
+    tampered["route_provenance"]["semble-hybrid"] = {
+        "system": "semble", "model": "m", "model_revision": "r"}
+    tampered_path = tmp_path / "tampered.json"
+    tampered_path.write_text(json.dumps(tampered), encoding="utf-8")
+    with pytest.raises(pairrun.RunError, match="projected pack"):
+        pairrun.merge_records(repo, suite_path, [tampered_path, sem_path])
+
+
+def test_verdict_states_and_conditional_ids(tmp_path):
+    repo, suite, _run, suite_path, _rp, files = fixture_v2(tmp_path, answerable_only=True)
+    suite["routes"] = ["lexical", "semble-hybrid"]
+    suite_path.write_text(json.dumps(suite), encoding="utf-8")
+    _, pack, _ = ev.validate_suite(repo, suite)
+
+    def cand(path, start, end, rank):
+        file_sha, block_sha, tokens = _span_meta(files[path], start, end)
+        return {"path": path, "start_line": start, "end_line": end,
+                "file_sha256": file_sha, "block_sha256": block_sha,
+                "tokens": tokens, "rank": rank}
+
+    def row(task_id, route, spans):
+        return {"task_id": task_id, "route": route, "status": "success",
+                "candidates": [cand(*span, rank=i + 1) for i, span in enumerate(spans)],
+                "timings": {"query_latency_ms": 2.0}, "error": None}
+
+    lex_pack, _ = pairrun.project_pack_and_suite(pack, suite, ["lexical"])
+    sem_pack, _ = pairrun.project_pack_and_suite(pack, suite, ["semble-hybrid"])
+    lex = _single_route_record(
+        ev.digest(ev.canonical(lex_pack)), "lexical", "quanta",
+        [row("T1", "lexical", [("a.txt", 2, 2)]), row("T2", "lexical", [("a.txt", 3, 3)])])
+    sem = _single_route_record(
+        ev.digest(ev.canonical(sem_pack)), "semble-hybrid", "semble",
+        [row("T1", "semble-hybrid", [("b.txt", 1, 1)]), row("T2", "semble-hybrid", [("a.txt", 4, 4)])])
+    lex_path = tmp_path / "lex.json"
+    sem_path = tmp_path / "sem.json"
+    lex_path.write_text(json.dumps(lex), encoding="utf-8")
+    sem_path.write_text(json.dumps(sem), encoding="utf-8")
+
+    manifest = {
+        "blinding": "attested",
+        "scope": "exploratory",
+        "claims": {"quality": True, "speed": False},
+        "evidence": {
+            "contract_suites": {"python": {"passed": 65, "failed": 0}, "rust": {"passed": 30, "failed": 0}},
+            "sdk_path": {"separate_process": True, "sealed_receipt": True,
+                         "activation_ack": True, "empty_check": True},
+            "pair": {"mapping_proof_clean": True, "same_commit": True,
+                     "same_files": True, "same_host": True},
+        },
+        "provenance": {"quanta_source_sha": "abc", "host_profile": "test"},
+    }
+    verdict = pairrun.build_verdict(
+        repo, suite_path, [lex_path, sem_path], manifest, "semble-hybrid", "lexical")
+    assert verdict["verdict_version"] == 1
+    assert verdict["states"]["CONTRACT_GREEN"] == "pass"
+    assert verdict["states"]["SDK_PATH_GREEN"] == "pass"
+    assert verdict["states"]["PAIR_VALID"] == "pass"
+    assert verdict["states"]["PERF_QUALIFIED"] == "not_applicable"
+    assert verdict["states"]["QUALITY_DELTA"] == "not_applicable"
+    assert "T15" in verdict["not_applicable_t_ids"]
+    assert "T16" in verdict["not_applicable_t_ids"]
+    assert verdict["failure_class"] == "none"
+
+    empty = pairrun.build_verdict(
+        repo, suite_path, [lex_path, sem_path],
+        {"blinding": "attested", "scope": "exploratory", "claims": {}, "provenance": {}},
+        "semble-hybrid", "lexical")
+    assert empty["states"]["PAIR_VALID"] == "not_run"
+    assert "T00" in empty["missing_t_ids"]
+    assert "T05" in empty["missing_t_ids"]
+    # A manifest cannot upgrade attested runner records to isolated quality proof.
+    qualified = pairrun.build_verdict(
+        repo, suite_path, [lex_path, sem_path],
+        {"blinding": "isolated", "isolation_method": "m", "access_block_log": "l",
+         "scope": "qualified", "claims": {"quality": True},
+         "evidence": manifest["evidence"], "provenance": {"s": "x"}},
+        "semble-hybrid", "lexical")
+    assert qualified["states"]["QUALITY_DELTA"] == "not_applicable"
+    assert qualified["blinding"] == "attested"
+    assert qualified["states"]["PAIR_VALID"] == "pass"
+
+    # Perf: floors + clean host + phases pass; contention fails host;
+    # thin evidence without contention fails provenance.
+    clean_host = {"start": {"concurrent_processes": {"none": []}},
+                  "end": {"concurrent_processes": {}}}
+    perf_pass = {"observations_per_route": 1000, "phase_boundaries": True,
+                 "resource_accounting": True}
+    good = pairrun.build_verdict(
+        repo, suite_path, [lex_path, sem_path],
+        {"blinding": "attested", "scope": "exploratory", "claims": {"speed": True},
+         "evidence": {"perf": perf_pass}, "host": clean_host, "provenance": {}},
+        "semble-hybrid", "lexical")
+    assert good["states"]["PERF_QUALIFIED"] == "pass"
+    busy_host = {"start": {"concurrent_processes": {"cargo": [123]}},
+                 "end": {"concurrent_processes": {}}}
+    busy = pairrun.build_verdict(
+        repo, suite_path, [lex_path, sem_path],
+        {"blinding": "attested", "scope": "exploratory", "claims": {"speed": True},
+         "evidence": {"perf": perf_pass}, "host": busy_host, "provenance": {}},
+        "semble-hybrid", "lexical")
+    assert busy["states"]["PERF_QUALIFIED"] == "fail"
+    assert busy["failure_class"] == "host"
+    thin = pairrun.build_verdict(
+        repo, suite_path, [lex_path, sem_path],
+        {"blinding": "attested", "scope": "exploratory", "claims": {"speed": True},
+         "evidence": {"perf": {"observations_per_route": 4}}, "host": clean_host,
+         "provenance": {}},
+        "semble-hybrid", "lexical")
+    assert thin["states"]["PERF_QUALIFIED"] == "fail"
+    assert thin["failure_class"] == "provenance"
+
+
+def test_host_probe_records_without_fabrication():
+    probe = pairrun.host_probe()
+    for key in ("system", "machine", "cpu_count", "python", "concurrent_processes",
+                "thermal", "frequency"):
+        assert key in probe, f"host probe lacks {key}"
