@@ -94,10 +94,24 @@ def main() -> int:
     seed = int(spec.get("seed", 0))
     warmup = int(spec.get("warmup_passes", 1))
     repetitions = int(spec.get("repetitions", 1))
-    order = list(range(len(queries)))
-    for _ in range(warmup):
-        for task_id, query in queries:
-            index.search(query, top_k=top_k)
+    protocol = spec.get("query_protocol")
+    query_by_id = dict(queries)
+    cold_latency_ms = None
+    cold_query_start_ns = index_end_ns
+    cold_query_end_ns = index_end_ns
+    if protocol is not None:
+        cold_query_start_ns = time.monotonic_ns()
+        index.search(query_by_id[protocol["cold_probe_task_id"]], top_k=top_k)
+        cold_query_end_ns = time.monotonic_ns()
+        cold_latency_ms = (cold_query_end_ns - cold_query_start_ns) / 1_000_000.0
+        warmup_schedules = protocol["warmup_schedules"]
+        measurement_schedules = protocol["measurement_schedules"]
+    else:
+        warmup_schedules = [[task_id for task_id, _ in queries] for _ in range(warmup)]
+        measurement_schedules = [[task_id for task_id, _ in queries] for _ in range(repetitions)]
+    for schedule in warmup_schedules:
+        for task_id in schedule:
+            index.search(query_by_id[task_id], top_k=top_k)
     warmup_end_ns = time.monotonic_ns()
     native = []
     latencies = {}
@@ -105,9 +119,9 @@ def main() -> int:
     first_query_ms = None
     first_query_start_ns = None
     first_query_end_ns = None
-    for rep in range(repetitions):
-        for position in order:
-            task_id, query = queries[position]
+    for rep, schedule in enumerate(measurement_schedules):
+        for task_id in schedule:
+            query = query_by_id[task_id]
             t0 = time.monotonic_ns()
             results = index.search(query, top_k=top_k)
             ended_ns = time.monotonic_ns()
@@ -151,6 +165,8 @@ def main() -> int:
         "query_start": query_started_ns,
         "first_query_start": first_query_start_ns,
         "first_query_end": first_query_end_ns,
+        "cold_query_start": cold_query_start_ns,
+        "cold_query_end": cold_query_end_ns,
         "query_end": query_end_ns,
         "worker_end": worker_end_ns,
     }
@@ -160,15 +176,21 @@ def main() -> int:
         "model_provider_prepare_ms": (
             model_prepare_end_ns - discovery_end_ns
         ) / 1_000_000.0,
-        "warmup_ms": (warmup_end_ns - index_end_ns) / 1_000_000.0,
+        "warmup_ms": (
+            warmup_end_ns - (cold_query_end_ns if protocol is not None else index_end_ns)
+        ) / 1_000_000.0,
         "first_query_ms": first_query_ms,
         "warm_query_ms": max(query_ms - first_query_ms, 0.0),
+        "cold_query_ms": cold_latency_ms,
+        "protocol_warm_query_ms": query_ms if protocol is not None else None,
         "worker_total_ms": (worker_end_ns - worker_started_ns) / 1_000_000.0,
         "phase_boundaries_ns": phase_boundaries_ns,
         "configured_model_name": os.environ["SEMBLE_MODEL_NAME"],
         "observed_files": observed,
         "stats": stats,
         "query_schedule": [task_id for task_id, _ in queries],
+        "query_protocol": protocol,
+        "cold_latency_ms": cold_latency_ms,
         "native": native,
         "latencies_ms": latencies,
         "timing_layer": "worker_wall_per_query_ms",
@@ -227,6 +249,46 @@ def sha_file(path: Path) -> str:
         for block in iter(lambda: handle.read(65536), b""):
             digestor.update(block)
     return digestor.hexdigest()
+
+
+def validate_query_protocol(payload: object, task_ids: list[str]) -> dict:
+    if not isinstance(payload, dict):
+        raise AdapterError("query protocol must be an object")
+    expected_keys = {
+        "schema_version",
+        "seed",
+        "task_ids",
+        "cold_probe_task_id",
+        "warmup_schedules",
+        "measurement_schedules",
+        "sha256",
+    }
+    if set(payload) != expected_keys:
+        raise AdapterError("query protocol keys differ from the closed schema")
+    if payload["schema_version"] != 1 or type(payload["seed"]) is not int:
+        raise AdapterError("query protocol version or seed is invalid")
+    if payload["task_ids"] != task_ids or payload["cold_probe_task_id"] not in task_ids:
+        raise AdapterError("query protocol task ids differ from the query pack")
+    expected = set(task_ids)
+    for key in ("warmup_schedules", "measurement_schedules"):
+        schedules = payload[key]
+        if not isinstance(schedules, list) or (key == "measurement_schedules" and not schedules):
+            raise AdapterError(f"query protocol {key} has an invalid schedule list")
+        if any(
+            not isinstance(schedule, list)
+            or len(schedule) != len(task_ids)
+            or any(not isinstance(task_id, str) for task_id in schedule)
+            or set(schedule) != expected
+            for schedule in schedules
+        ):
+            raise AdapterError(f"query protocol {key} must contain exact task permutations")
+    core = {key: value for key, value in payload.items() if key != "sha256"}
+    observed = hashlib.sha256(
+        json.dumps(core, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+    if payload["sha256"] != observed:
+        raise AdapterError("query protocol digest mismatch")
+    return payload
 
 
 def load_manifest(path: Path) -> tuple[str, list[tuple[str, str]]]:
@@ -841,6 +903,16 @@ def run_adapter(args: argparse.Namespace) -> int:
     seed = _int(args.seed, "seed")
     if repetitions <= 0 or warmup_passes < 0:
         raise AdapterError("repetitions must be positive and warmup_passes non-negative")
+    task_ids = [task["task_id"] for task in pack["tasks"]]
+    query_protocol = None
+    if args.query_protocol is not None:
+        query_protocol = validate_query_protocol(read_json(Path(args.query_protocol)), task_ids)
+        if len(query_protocol["warmup_schedules"]) != warmup_passes:
+            raise AdapterError("query protocol warmup count differs from CLI")
+        if len(query_protocol["measurement_schedules"]) != repetitions:
+            raise AdapterError("query protocol repetition count differs from CLI")
+        if query_protocol["seed"] != seed:
+            raise AdapterError("query protocol seed differs from CLI")
     spec = {
         "corpus_dir": str(corpus_dir),
         "tasks": [{"task_id": task["task_id"], "query": task["query"]} for task in pack["tasks"]],
@@ -848,6 +920,7 @@ def run_adapter(args: argparse.Namespace) -> int:
         "seed": seed,
         "warmup_passes": warmup_passes,
         "repetitions": repetitions,
+        "query_protocol": query_protocol,
     }
     spec_path = out_root / "spec.json"
     spec_path.write_text(json.dumps(spec, indent=2, sort_keys=True), encoding="utf-8")
@@ -946,9 +1019,13 @@ def run_adapter(args: argparse.Namespace) -> int:
         "model_provider_prepare": native_payload.get("model_provider_prepare_ms"),
         "index": native_payload.get("semble_index_ms"),
         "warmup": native_payload.get("warmup_ms"),
-        "first_query": native_payload.get("first_query_ms"),
-        "warm_query": native_payload.get("warm_query_ms"),
     }
+    if query_protocol is None:
+        phase_values["first_query"] = native_payload.get("first_query_ms")
+        phase_values["warm_query"] = native_payload.get("warm_query_ms")
+    else:
+        phase_values["cold_query"] = native_payload.get("cold_query_ms")
+        phase_values["warm_query"] = native_payload.get("protocol_warm_query_ms")
     if any(type(value) not in (int, float) or value < 0 for value in phase_values.values()):
         raise AdapterError("Semble worker omitted nonnegative phase timings")
     worker_total_ms = native_payload.get("worker_total_ms")
@@ -976,6 +1053,10 @@ def run_adapter(args: argparse.Namespace) -> int:
         "phase_boundaries_ns": phase_boundaries_ns,
         "total_ms": worker_total_ms,
     }
+    if query_protocol is not None:
+        phase_metrics["query_protocol"] = query_protocol
+        phase_metrics["warm_latencies_ms"] = {args.route: native_payload.get("latencies_ms")}
+        phase_metrics["cold_latencies_ms"] = {args.route: native_payload.get("cold_latency_ms")}
     (out_root / "phase-metrics.json").write_text(
         json.dumps(phase_metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
@@ -997,6 +1078,7 @@ def run_adapter(args: argparse.Namespace) -> int:
         "repetitions": repetitions,
         "warmup_passes": warmup_passes,
         "seed": seed,
+        "query_protocol_sha256": (query_protocol["sha256"] if query_protocol is not None else None),
         "semble_max_file_bytes": max_file_bytes,
         "path_sha_diff_digest": diff_digest,
         "top_k": top_k,
@@ -1075,6 +1157,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--seed", default="0")
     run.add_argument("--warmup-passes", default="1")
     run.add_argument("--repetitions", default="1")
+    run.add_argument("--query-protocol", default=None)
     run.add_argument("--timeout-secs", default="1800")
     run.add_argument("--materialized-corpus", action="store_true")
     return parser

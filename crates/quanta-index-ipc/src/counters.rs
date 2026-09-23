@@ -5,10 +5,58 @@
 //! server at bind so the composition root can register them with the
 //! metrics scrape before any connection exists.
 
-use std::sync::Arc;
+use std::collections::VecDeque;
+use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, TryLockError};
 
+use quanta_index_contract::SearchPlaneErrorCodeV2;
 use quanta_index_core::{CoreError, MetricPointV1, MetricSourcePort};
+
+const REQUEST_EVENT_CAPACITY_V1: usize = 1024;
+
+/// Fixed, payload-free stages of one admitted envelope. The caller's ID is
+/// never synthesized by diagnostics; it is the validated wire envelope ID.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RequestEventStageV1 {
+    Validated,
+    ShuttingDown,
+    QueueAdmitted,
+    QueueRefusedGlobal,
+    QueueRefusedRepository,
+    DispatchStarted,
+    BackendStarted,
+    BackendReturned,
+    /// Closed route projection and typed error code from the backend answer.
+    /// `None` means the response was a success variant, not that work was
+    /// billed or that the transport wrote the answer to the peer.
+    BackendOutcome {
+        route: &'static str,
+        error: Option<SearchPlaneErrorCodeV2>,
+    },
+    DispatchReturned,
+    PeerWatchFailed,
+    PeerCancelled,
+    ResponseEncodeFailed,
+    ResponseWriteFailed,
+    ResponseWritten,
+    Aborted,
+    Panicked,
+}
+
+/// A bounded diagnostic event, not a usage/audit settlement or a metric label.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RequestEventV1 {
+    pub request_id: NonZeroU64,
+    pub connection_id: u64,
+    pub stage: RequestEventStageV1,
+    pub elapsed_micros: u64,
+}
+
+/// The transport-owned diagnostic sink passed to admitted backend contexts.
+pub trait RequestEventSinkV1: std::fmt::Debug + Send + Sync {
+    fn record_request_event_v1(&self, event: RequestEventV1);
+}
 
 /// The counts one server keeps, all monotonic but `connections_live` and
 /// `dispatch_in_flight`.
@@ -55,6 +103,10 @@ pub struct IpcServerCounters {
     /// dispatch returns — this is the event-driven signal tests wait for
     /// instead of sleeping out the watch's poll interval.
     peer_hangup_detected: AtomicU64,
+    /// A fixed-capacity diagnostic tail. Counter totals above remain the
+    /// accounting authority and are never reconstructed from this ring.
+    request_events: Mutex<VecDeque<RequestEventV1>>,
+    request_events_dropped: AtomicU64,
 }
 
 /// One consistent-enough read of [`IpcServerCounters`]: each field is
@@ -76,6 +128,7 @@ pub struct IpcServerCountersSnapshot {
     pub requests_dispatched: u64,
     pub peer_hangups: u64,
     pub peer_hangup_detected: u64,
+    pub request_events_dropped: u64,
 }
 
 impl IpcServerCounters {
@@ -103,6 +156,8 @@ impl IpcServerCounters {
             requests_dispatched: AtomicU64::new(0),
             peer_hangups: AtomicU64::new(0),
             peer_hangup_detected: AtomicU64::new(0),
+            request_events: Mutex::new(VecDeque::new()),
+            request_events_dropped: AtomicU64::new(0),
         }
     }
 
@@ -131,6 +186,7 @@ impl IpcServerCounters {
             requests_dispatched: self.requests_dispatched.load(Ordering::Acquire),
             peer_hangups: self.peer_hangups.load(Ordering::Acquire),
             peer_hangup_detected: self.peer_hangup_detected.load(Ordering::Acquire),
+            request_events_dropped: self.request_events_dropped.load(Ordering::Acquire),
         }
     }
 
@@ -212,6 +268,15 @@ impl IpcServerCounters {
         let _prior = self.peer_hangup_detected.fetch_add(1, Ordering::AcqRel);
     }
 
+    /// Read the current bounded tail in insertion order. A poisoned lock is
+    /// an explicit diagnostic failure, not an empty successful tail.
+    pub fn recent_request_events_v1(&self) -> Result<Vec<RequestEventV1>, CoreError> {
+        let events = self.request_events.lock().map_err(|error| {
+            CoreError::Storage(format!("IPC request event ring poisoned: {error}"))
+        })?;
+        Ok(events.iter().copied().collect())
+    }
+
     fn metric_name(&self, suffix: &str) -> String {
         format!("ipc_{}_{suffix}", self.plane)
     }
@@ -281,7 +346,28 @@ impl MetricSourcePort for IpcServerCounters {
                 self.metric_name("peer_hangup_detected_total"),
                 snapshot.peer_hangup_detected,
             ),
+            MetricPointV1::counter(
+                self.metric_name("request_events_dropped_total"),
+                snapshot.request_events_dropped,
+            ),
         ])
+    }
+}
+
+impl RequestEventSinkV1 for IpcServerCounters {
+    fn record_request_event_v1(&self, event: RequestEventV1) {
+        let mut events = match self.request_events.try_lock() {
+            Ok(events) => events,
+            Err(TryLockError::WouldBlock | TryLockError::Poisoned(_)) => {
+                let _prior = self.request_events_dropped.fetch_add(1, Ordering::AcqRel);
+                return;
+            }
+        };
+        if events.len() == REQUEST_EVENT_CAPACITY_V1 {
+            let _oldest = events.pop_front();
+            let _prior = self.request_events_dropped.fetch_add(1, Ordering::AcqRel);
+        }
+        events.push_back(event);
     }
 }
 
@@ -338,9 +424,55 @@ impl Drop for InFlightDispatchGuard {
 
 #[cfg(test)]
 mod tests {
-    use super::{InFlightDispatchGuard, IpcServerCounters, LiveConnectionGuard};
+    use super::{
+        InFlightDispatchGuard, IpcServerCounters, LiveConnectionGuard, REQUEST_EVENT_CAPACITY_V1,
+        RequestEventSinkV1, RequestEventStageV1, RequestEventV1,
+    };
+    use quanta_index_core::{MetricPointV1, MetricSourcePort};
+    use std::num::NonZeroU64;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[test]
+    fn request_event_tail_is_bounded_and_reports_loss_without_changing_totals() {
+        let counters = IpcServerCounters::for_plane("test");
+        for id in 1..=(REQUEST_EVENT_CAPACITY_V1 + 2) {
+            counters.record_request_event_v1(RequestEventV1 {
+                request_id: NonZeroU64::new(id as u64).expect("nonzero fixture ID"),
+                connection_id: 7,
+                stage: RequestEventStageV1::Validated,
+                elapsed_micros: 0,
+            });
+        }
+        let events = counters.recent_request_events_v1().expect("tail");
+        assert_eq!(events.len(), REQUEST_EVENT_CAPACITY_V1);
+        assert_eq!(events[0].request_id.get(), 3);
+        assert_eq!(events.last().expect("last event").request_id.get(), 1026);
+        assert_eq!(counters.snapshot().request_events_dropped, 2);
+        assert_eq!(counters.snapshot().requests_dispatched, 0);
+
+        let _held = counters.request_events.lock().expect("ring lock");
+        counters.record_request_event_v1(RequestEventV1 {
+            request_id: NonZeroU64::new(1027).expect("nonzero fixture ID"),
+            connection_id: 7,
+            stage: RequestEventStageV1::ResponseWritten,
+            elapsed_micros: 1,
+        });
+        assert_eq!(counters.snapshot().request_events_dropped, 3);
+        drop(_held);
+        let dropped_point = counters
+            .scrape()
+            .expect("scrape")
+            .into_iter()
+            .find(|point| point.name == "ipc_test_request_events_dropped_total");
+        assert_eq!(
+            dropped_point,
+            Some(MetricPointV1::counter(
+                "ipc_test_request_events_dropped_total",
+                3,
+            ))
+        );
+    }
 
     /// The RAII permits reconcile on a panic unwind: both gauges return
     /// to their baseline (S21-09), so a panicking connection or dispatch

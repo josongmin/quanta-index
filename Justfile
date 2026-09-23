@@ -362,31 +362,36 @@ rust-bench:
 rust-bench-build:
     {{cargo}} --lane bench-lane bench --workspace --all-features --locked --no-run
 
-# Fast local PREP contract check.  It deliberately does not produce a benchmark
-# artifact, enter the timing preflight, or run an end-to-end quality recipe:
+# Fast local PREP check for the shared benchmark control plane. Retrieval
+# contracts have their own local/proof rails and are not run here a second time.
+# This does not produce a benchmark artifact, enter the timing preflight, or
+# run an end-to-end quality recipe:
 # those require a clean source and (for timing authority) a quiet canonical
-# Linux host.  The shared test-daemon lane keeps all harness library tests and
-# every producer binary warm in one target directory.
+# Linux host. The shared test-daemon lane compiles harness binaries without
+# running their tests, then runs the harness library tests.
 benchmark-prep-local:
     find crates/quanta-index-searchd-harness/src -name '*.rs' -print0 | xargs -0 rustfmt --check --edition 2024
-    python3 -m pytest tools/ci/tests/test_benchmark_manifest.py tools/ci/tests/test_benchctl.py tools/ci/tests/test_check_bench_artifacts.py tools/ci/tests/test_check_host_contention.py tools/ci/tests/test_compare_dsl_bench.py tools/ci/tests/test_quality_integration_summary.py tools/ci/tests/test_retrieval_benchmark.py tools/ci/tests/test_retrieval_contract_proof.py tools/ci/tests/test_retrieval_sdk_proof.py tools/ci/tests/test_write_verification_receipt.py -q
+    python3 -m pytest tools/ci/tests/test_benchmark_manifest.py tools/ci/tests/test_benchctl.py tools/ci/tests/test_check_bench_artifacts.py tools/ci/tests/test_check_host_contention.py tools/ci/tests/test_compare_dsl_bench.py tools/ci/tests/test_quality_integration_summary.py tools/ci/tests/test_retrieval_contract_proof.py tools/ci/tests/test_retrieval_sdk_proof.py tools/ci/tests/test_write_verification_receipt.py -q
     python3 -m py_compile tools/benchmark/benchctl.py tools/benchmark/manifest.py tools/benchmark/compare_dsl_bench.py tools/benchmark/quality_integration_summary.py tools/ci/lint/check-bench-artifacts.py tools/ci/timing/check_host_contention.py tools/benchmark/retrieval/evaluator.py tools/benchmark/retrieval/semble.py tools/benchmark/retrieval/run.py tools/benchmark/retrieval/contract_proof.py tools/benchmark/retrieval/sdk_proof.py tools/ci/source_closure.py tools/ci/write-verification-receipt.py
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib --bins --all-features --locked --no-run
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib --all-features --locked
-    {{cargo}} --lane test-daemon-lane test -p quanta-index-retrieval-bench --lib --all-features --locked
-    {{cargo}} --lane test-daemon-lane test -p quanta-index-retrieval-bench --test chunking_contract --all-features --locked
     python3 tools/ci/lint/check-test-authority.py
     git diff --check
+
+# Dirty-checkout retrieval edit loop. This is diagnostic only: use the proof
+# rail on a clean source to produce source-bound JUnit/nextest receipts.
+retrieval-contract-local:
+    python3 -m pytest tools/ci/tests/test_retrieval_benchmark.py -q
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-retrieval-bench --lib --test chunking_contract --all-features --locked
 
 # Retrieval benchmark: real-daemon SDK proof (T05-T07, T10). Builds the
 # pinned searchd + runner binaries first, then runs the live roundtrip and
 # emits machine-counted sdk_results.json plus a digest-bound receipt. The
 # caller supplies a fresh artifact root outside the checkout.
+# Capture checks clean source before it creates the output root.
 # No model or Semble download happens on this path.
 retrieval-sdk-proof out:
-    python3 tools/ci/source_closure.py check --profile retrieval
     test ! -e "{{out}}" || { echo "refusing non-fresh proof root: {{out}}" >&2; exit 2; }
-    mkdir -p "{{out}}"
     python3 tools/ci/source_closure.py capture --profile retrieval --out "{{out}}/source-closure.json"
     env CARGO_NET_OFFLINE=true {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-runtime --bin quanta-index-searchd --locked
     env CARGO_NET_OFFLINE=true {{cargo}} --lane test-daemon-lane build -p quanta-index-retrieval-bench --bin quanta-index-retrieval-bench --locked
@@ -398,9 +403,7 @@ retrieval-sdk-proof out:
 # machine evidence, then independently digest-bound by the canonical receipt
 # writer. The caller supplies a fresh external artifact root.
 retrieval-contract-proof out:
-    python3 tools/ci/source_closure.py check --profile retrieval
     test ! -e "{{out}}" || { echo "refusing non-fresh proof root: {{out}}" >&2; exit 2; }
-    mkdir -p "{{out}}"
     python3 tools/ci/source_closure.py capture --profile retrieval --out "{{out}}/source-closure.json"
     python3 -m pytest tools/ci/tests/test_retrieval_benchmark.py -q --junitxml="{{out}}/python-junit.xml"
     set -o pipefail; NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1 {{cargo}} --lane test-daemon-lane nextest run -p quanta-index-retrieval-bench --lib --test chunking_contract --all-features --locked --message-format libtest-json-plus --message-format-version 0.1 | tee "{{out}}/rust-nextest.jsonl"

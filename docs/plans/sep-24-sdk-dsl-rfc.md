@@ -1,0 +1,120 @@
+# RFC: Quanta Index Rust SDK interface, scoped to current contracts
+
+- Status: **proposed; adversarial revision**. This document implements no SDK, wire, daemon, or producer change.
+- Source audited: Quanta HEAD `1a1458f00652ab53d2bcc170304b4d26ba2556cb` on 2026-09-24, with unrelated concurrent dirty files. During review HEAD advanced to `f154f2f25cac107765f6625aa354156f3e0e38c6`; the intervening commit changed only two searchd-runtime readiness test files, not the SDK/contract/lifecycle paths cited here. Semantica `index_sdk_ingress` was read as a consumer, but its revision and dirty-state identity were not frozen. Re-freeze both before implementation or qualification.
+- Scope: Rust SDK over local query, ingest, and control UDS planes; not an in-process Tantivy/LanceDB handle.
+- Related: [search configuration RFC](sep-23-search-config-profiles/rfc.md), [earlier SDK target](sep-23-search-config-profiles/sdk-interface.md). This RFC supersedes the earlier target where its public-shape proposals conflict. Server profile/config policy stays with the configuration RFC.
+
+## 1. Purpose and supported functions
+
+The SDK turns caller intent into typed IPC requests, sends each request to its plane, and checks that the response belongs to that request and its selected generation. The daemon owns indexing, semantic derivation, ranking, admission, and durable activation. The SDK covers lexical, semantic, hybrid, and hybrid-seed search; symbol/history/runtime/structural/repo-map reads; typed corpus publishing; generation control; and diagnostics. Search consumers need only the query socket. Producer/control use separate sockets and OS permissions.
+
+Do not model this as an arbitrary query language, a client-side ranker, a server-config editor, or a per-request embedding-model selector. New search behavior needs a server contract and evidence, not a fluent setter alone.
+
+## 2. Adversarial audit of the previous proposal
+
+| Previous proposal | Current-source evidence | Decision |
+|---|---|---|
+| Mandatory owned `ReaderClient`/`OperatorClient`; remove `QuantaIndex`/`ClientProfile` | `client.rs` already has `connect_query_only`, borrowed `reader`/`producer`/`control` views, and typed `PlaneUnavailable`; `config.rs` constructs no dummy control/ingest transport in query-only mode. No observed misuse establishes a need for owned role types. | **Drop.** Keep existing client and views. OS permissions remain authoritative. |
+| Replace all const-generic builders | `lexical.rs` and `semantic.rs` use typestate to prevent `execute` before required text, selection, and limit. Replacing history/runtime/structural builders would remove compile-time checks and cause broad migration without measured benefit. | **Drop wholesale rewrite.** Keep typestate for required inputs. Narrow only the semantic lexical-scope pair if implemented. |
+| New `SearchScope`, `Filter`, `CandidateLimit`, `CorpusScope`, `ExpectedActive`, `PreparedRequest`, page wrappers | Existing `GenerationSelector`, `QueryConstraintSetV1`, route DTOs, and canonical IPC requests cover current semantics. Proposed filter merge rules differ from current setter replacement behavior. | **Drop.** Reuse existing types/results; no SDK AST or implicit filter algebra. |
+| Internal sealed operation-descriptor framework | `binding.rs` already publishes `SDK_WIRE_ROUTES_V1`; `client.rs` has explicit plane dispatch/exhaustive response matches; `tests/sdk_binding_owner_v1.rs` covers adversarial binding. A descriptor risks a second route inventory. | **Drop.** Extend existing inventory/binder for a new route; factor only a concrete duplicated invariant. |
+| Explicit seal type hierarchy and `PublishedCorpus` hierarchy | `SearchCorpusBatch<true>` plus `.without_seal()` encodes seal choice; `publish` validates the receipt. No production misuse of the default was established. | **Defer.** Document default; keep unsealed explicit. |
+| One-call `publish_and_activate` as primary workflow | `lexical.rs` publishes and obtains a validated receipt, then uses `?` on candidate/CAS paths. A later error returns `SdkError` alone, losing receipt in the return value. Semantica calls this in two `index_sdk_ingress/publish.rs` paths. | **Fix this boundary.** Provide a safe two-stage path; migrate producer before removing/changing the helper. |
+| Semantic scoped-rerank syntax | `semantic.rs` requires `scope_native`/`scope_sourcegraph` **and** `scope_top_k`; `text_query_builder.rs` rejects a half-configured pair. Hybrid is a distinct independent-recall route. | **Simplify narrowly.** One lexical-scope setter carries syntax, text, and candidate cap; same wire route. |
+
+This source audit identifies one **partial-success contract gap** and one **ergonomic complexity**. It does not prove a throughput issue, route correctness failure, or need for a new transport layer. Source inspection cannot prove those negative claims under load.
+
+## 3. Target SDK DSL
+
+Keep `QuantaIndex::connect` and `QuantaIndex::connect_query_only`, existing route namespaces, `GenerationSelector`/`.active`/`.pinned`, `QueryConstraintSetV1`, route-specific responses, and SDK error variants. `ClientProfile` remains transport selection, distinct from server build/query profiles. Existing borrowed `reader`/`producer`/`control` views aid discoverability; they are not a security claim.
+
+Current lexical and independent hybrid calls remain valid. The *only proposed query DSL change* is a composite semantic scope setter. Illustrative code; `within_native` is **not implemented today**:
+
+```rust
+let client = QuantaIndex::connect_query_only(options)?;
+
+let lexical = client.lexical().query()
+    .native("symbol:Parser")
+    .active(repo_id.clone(), revision_id.clone())
+    .top_k(20)
+    .execute()?;
+
+let reranked = client.semantic().query()
+    .text("how is parsing recovered?")
+    .within_native("parser", 100) // lexical candidate cap
+    .active(repo_id.clone(), revision_id.clone())
+    .top_k(20)                      // final semantic result cap
+    .execute()?;
+
+let hybrid = client.search().hybrid()
+    .native("parser")
+    .semantic_text("error recovery")
+    .active(repo_id, revision_id)
+    .top_k(20)
+    .execute()?;
+```
+
+`within_native(text, candidate_cap)` and `within_sourcegraph(text, candidate_cap)` would be SDK-only setters for the existing semantic request's lexical scope. Set both scope fields in one transition; preserve syntax, constraints, selector, route, and cap validation before I/O. No new `SearchScope` or query-text parser. Keep distinct names for scoped semantic rerank and independent hybrid fusion. Native/Sourcegraph text is **query syntax**, not escaped literal-safe text. Unscoped semantic retains `.text(...).active/pinned(...).top_k(...).execute()`.
+
+The old `scope_native`/`scope_sourcegraph` plus `scope_top_k` sequence can remain temporarily for source compatibility. If removed in a permitted breaking window, delete both in one coordinated cutover and update all call sites; no permanent dual DSL. Keep required-input typestate. A composite setter may reduce the two scope flags to one; this does not justify rewriting unrelated builders.
+
+## 4. Publish and activation: visible two-stage result
+
+Add a narrow `SearchCorpusNamespace::activate_published(&SearchCorpusBatch<true>, &BatchReceipt, expected_active)` method. It must revalidate the receipt against the exact batch/digest/seal before deriving the composite candidate from batch identity and receipt semantic content roots. Prevalidate the CAS request, dispatch on control, and exact-bind the acknowledgement. Local receipt comparison is **not authentication** of a caller-supplied receipt: the daemon must still prove the candidate matches the physically sealed generation before promotion. Batch/receipt references stay with the caller if activation refuses or transport result is unknown. Proposed flow:
+
+```rust
+let batch = SearchCorpusBatch::replace_generation(repo, revision, generation, manifest_digest)
+    .replace_scope(scope, scope_digest, chunks, symbols);
+let receipt = client.search_corpus().publish(&batch)?;
+// Keep receipt and batch in producer recovery context before CAS.
+let activation = client.search_corpus()
+    .activate_published(&batch, &receipt, expected_active);
+```
+
+This is two calls and **not atomic**. CAS refusal means sealed/published but not promoted; CAS transport error means unknown until status/reconciliation. Publish transport error is likewise unknown until deterministic replay/receipt reconciliation. Do not infer failure from absent acknowledgement. The SDK cannot guarantee crash-safe receipt retention: the producer must persist or reconstruct the same canonical batch and reconcile after restart. Local pre-publish validation failure differs from every post-publish error.
+
+`publish_and_activate` hides the receipt on a post-publish `Err`. Migrate its two Semantica callers to two-stage flow and preserve receipt/recovery metadata in their error/result contract. Then remove the helper in the intentional breaking cutover, or retain it only with a typed staged outcome that preserves all partial states. Avoid a generic workflow/result framework solely for this case. Do not expose raw activation that can pair a candidate with an unrelated receipt.
+
+## 5. Stable extension rules
+
+| Change | Owner and admission rule |
+|---|---|
+| Convenience method or optional bound expressible in current contract | SDK builder lowers to one existing typed request; preserve route, canonical body, binding, and request count. |
+| New server-backed filter, budget, or pagination option | Typed contract field/route plus validation, continuation compatibility, daemon support, negative binding tests, and effective-policy visibility where relevant. No generic `extras` bag. |
+| New model/ranking/corpus semantics | Explicit server recipe/profile/generation compatibility decision with quality/cost evidence; never a silent SDK default. |
+| New route | Exhaustive IPC variant/codec, daemon dispatcher, `SDK_WIRE_ROUTES_V1`, exact binder, SDK entrypoint, and real-daemon scenario. |
+
+All-public wire DTOs constrain source evolution, but hiding every DTO behind new private result types creates immediate cross-repository churn. Keep the typed contract crate and SDK re-exports for this cutover. Use private fields on **new SDK-only** types when needed; revisit raw DTO exposure when a specific extension is blocked. Preserve `SdkError` variants and remote metadata; Semantica matches variants exhaustively. No automatic retry of CAS or paid semantic calls.
+
+Keep one canonical IPC request per operation. Builder state is temporary construction state, not a second semantic IR. `execute`/`publish` is the I/O boundary. Existing active-generation resolution can add a documented query-plane RPC; new setters add none. No async twin, streaming layer, macro DSL, or code generation here. Performance objective: no extra RPC or large-batch clone from ergonomics; measure against the same daemon before claiming speedup.
+
+## 6. Implementation boundaries and integration
+
+| Owner | Required work |
+|---|---|
+| `crates/quanta-index-sdk/src/semantic.rs`, `src/text_query_builder.rs`, `src/tests.rs` | Add composite scope setter(s); preserve typestate/exact lowering. Remove old setters only if source break selected. Test lexical cap versus final cap and route identity. |
+| `crates/quanta-index-sdk/src/lexical.rs`, `src/client.rs`, `src/tests.rs` | Extract existing validated candidate/CAS path into `activate_published`; revalidate supplied receipt; retain caller batch/receipt on failure. Remove/redesign one-call helper after migration. `client.rs` changes only if producer view forwards new method. |
+| `crates/quanta-index-sdk/src/binding.rs`, `tests/sdk_binding_owner_v1.rs` | No new descriptor. Extend tests only for new path and uncovered wrong receipt/CAS acknowledgement; retain exact binding. |
+| Semantica `packages/analysis/quanta-v2/crates/quanta-runtime-retrieval-kernel/src/index_sdk_ingress/{publish.rs,facade.rs}` and related result/error consumers | Re-freeze Semantica; migrate two one-call paths; carry validated receipt and unknown/refused activation state through recovery. Inspect all SDK usages/exhaustive error matches before source break. |
+| Contract/daemon/config | **No change expected** for these SDK-only operations. Reopen if canonical equivalence or safe recovery cannot be met with current contract. |
+
+Sequence:
+
+1. Freeze both revisions, dirty-path ownership, SDK dependency path/version, and producer binary/config. Inventory call sites and produce a minimal old→new map. Do not stage concurrent work.
+2. Add composite semantic setter against current IPC. Compare independently built canonical fixtures for unscoped semantic, scoped semantic, and hybrid; prove cap, constraints, and selector preservation. Keep binding negative matrix.
+3. Add `activate_published` by extracting current receipt/candidate/CAS validation. Exercise mismatched batch/receipt, missing or forged semantic roots, CAS refusal, wrong acknowledgement, and control transport uncertainty. A forged but locally well-formed receipt must still be refused by the daemon's sealed-root proof. Keep receipt in caller state on every post-publish path.
+4. Migrate Semantica's two production paths and recovery/result contract. Run publish → sealed receipt → CAS conflict → reconcile/retry; publish → CAS transport loss → status/reconciliation; and restart after publish before CAS. In-memory receipt alone is not restart recovery.
+5. In one coordinated source break, remove unsafe one-call helper and optionally old half-scope setters. Run `just rust-public-api`; focused SDK tests; `tests/sdk_binding_owner_v1.rs`; real-daemon SDK frontdoor/lifecycle; source-bound Semantica build/integration. Use `Justfile` and `./scripts/cargow`. Broad qualification, Linux/production activation, and benchmark validity are separate receipts.
+
+Stop/reopen if supplied receipt cannot be validated against its batch, Semantica cannot carry a partial publish outcome, active-selection semantics change, an SDK setter adds a hidden RPC, or a wire/profile change becomes necessary. Write the changed contract first; do not stack compatibility shims or claim DSL-only equivalence.
+
+## 7. External API precedents, with limits
+
+| Reference | Useful precedent | Boundary here |
+|---|---|---|
+| [Elasticsearch Rust client](https://www.elastic.co/guide/en/elasticsearch/client/rust-api/current/overview.html) | Endpoint-specific fluent builders. | Existing Quanta namespaces already provide this; no new root DSL required. |
+| [Qdrant `QueryPointsBuilder`](https://docs.rs/qdrant-client/latest/qdrant_client/qdrant/struct.QueryPointsBuilder.html) | Typed limits/options around one operation. | Quanta scoped rerank and hybrid remain distinct. |
+| [Cargo SemVer guide](https://doc.rust-lang.org/cargo/reference/semver.html) | Public shapes have source-compatibility cost. | A permitted break still has migration cost; change only demonstrated pain points. |
+
+These references are design examples, not proof of Quanta correctness/performance. This RFC is a static source audit. Implementation, execution, integration, and production behavior are **NOT_RUN** here.

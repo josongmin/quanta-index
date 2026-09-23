@@ -851,6 +851,8 @@ mod tests {
             connection_id: 1,
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(1),
             cancellation: RequestBudgetV1::unbounded().cancel_handle(),
+            events: Arc::new(quanta_index_ipc::IpcServerCounters::for_plane("control")),
+            request_started: std::time::Instant::now(),
         };
         let response = dispatcher.dispatch_authorized(
             &context,
@@ -882,6 +884,8 @@ mod tests {
             connection_id: 1,
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(1),
             cancellation: RequestBudgetV1::unbounded().cancel_handle(),
+            events: Arc::new(quanta_index_ipc::IpcServerCounters::for_plane("control")),
+            request_started: std::time::Instant::now(),
         };
         // The operator reaches the domain layer: the activation is attempted
         // and answered by the domain, not by the authorization gate.

@@ -14,6 +14,7 @@ pub mod chunking;
 pub mod corpus;
 pub mod profile;
 pub mod record;
+pub mod schedule;
 pub mod sdk;
 
 use thiserror::Error;

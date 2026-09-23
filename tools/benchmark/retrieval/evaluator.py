@@ -324,9 +324,11 @@ def git(repo: Path, *args: str) -> str:
 
 def verify_repo(repo: Path, commit: str) -> Path:
     require(repo.is_dir(), f"repository checkout missing: {repo}")
-    root = Path(git(repo, "rev-parse", "--show-toplevel")).resolve()
+    root_text, separator, head = git(repo, "rev-parse", "--show-toplevel", "HEAD").rpartition("\n")
+    require(separator and root_text and head, "repository Git evidence unavailable")
+    root = Path(root_text).resolve()
     require(root == repo.resolve(), "--repo must name the checkout root")
-    require(git(root, "rev-parse", "HEAD") == commit, "checkout HEAD differs from frozen commit")
+    require(head == commit, "checkout HEAD differs from frozen commit")
     require(
         not git(root, "status", "--porcelain", "--untracked-files=all"),
         "checkout has tracked or untracked changes",

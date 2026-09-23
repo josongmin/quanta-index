@@ -21,10 +21,15 @@ requires a clean host preflight receipt; contention overrides are diagnostic.
 The integration summary independently validates its required artifacts before
 writing a green aggregate.
 For local PREP after benchmark-control-plane changes, run
-`just benchmark-prep-local`. It validates benchmark-harness Rust formatting,
-benchmark Python contracts, all harness library tests, and producer-binary
-compilation in the warm `test-daemon-lane`. It intentionally does not create
-an artifact, invoke a timing preflight, or claim current-source qualification.
+`just benchmark-prep-local`. It validates shared benchmark-control-plane Python
+contracts, benchmark-harness Rust formatting and library tests, and
+producer-binary compilation in the warm `test-daemon-lane`. Retrieval evaluator
+and chunking contracts are intentionally separate: run
+`just retrieval-contract-local` for a dirty-checkout edit loop, or
+`just retrieval-contract-proof <fresh-output-root>` once on a clean source to
+run them and emit source-bound receipts. Running prep followed by proof does not
+repeat retrieval contract tests. PREP does not create a benchmark artifact,
+invoke a timing preflight, or claim current-source qualification.
 Run a real profile only after the checkout is clean; DSL authority additionally
 requires the quiet canonical Linux host.
 The `dsl-authority` profile is canonical-Linux-only: it writes an

@@ -63,7 +63,7 @@ use crate::codec::{
     IpcError, IpcIoOperation, MAX_FRAME_BODY_BYTES, decode_request, decode_response,
     encode_request, encode_response,
 };
-use crate::counters::IpcServerCounters;
+use crate::counters::{IpcServerCounters, RequestEventSinkV1, RequestEventStageV1, RequestEventV1};
 use crate::socket_access::PeerCredentials;
 
 /// Which daemon plane one server serves (S21-10). The transport names it
@@ -102,6 +102,77 @@ pub struct DispatchContextV1 {
     pub deadline: std::time::Instant,
     /// The cancellation handle that fires if the peer hangs up mid-flight.
     pub cancellation: quanta_index_core::CancelHandleV1,
+    /// The one transport-owned, bounded diagnostic sink. It is not the
+    /// provider usage ledger or a replacement for monotonic IPC counters.
+    pub events: Arc<dyn RequestEventSinkV1>,
+    /// Admission's monotonic start, shared with backend stage timings.
+    pub request_started: Instant,
+}
+
+impl DispatchContextV1 {
+    /// Emit a payload-free backend stage under the transport's validated ID.
+    pub fn record_event_v1(&self, stage: RequestEventStageV1) {
+        self.events.record_request_event_v1(RequestEventV1 {
+            request_id: self.request_id,
+            connection_id: self.connection_id,
+            stage,
+            elapsed_micros: elapsed_micros_v1(self.request_started),
+        });
+    }
+}
+
+fn elapsed_micros_v1(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX)
+}
+
+/// Emits one terminal event even when a dispatcher unwinds or a transport
+/// branch returns early. Diagnostic loss is counted by the sink, never hidden.
+struct RequestEventScope<'a> {
+    sink: &'a IpcServerCounters,
+    request_id: NonZeroU64,
+    connection_id: u64,
+    started: Instant,
+    finished: bool,
+}
+
+impl<'a> RequestEventScope<'a> {
+    fn new(sink: &'a IpcServerCounters, request_id: NonZeroU64, connection_id: u64) -> Self {
+        let scope = Self {
+            sink,
+            request_id,
+            connection_id,
+            started: Instant::now(),
+            finished: false,
+        };
+        scope.emit(RequestEventStageV1::Validated);
+        scope
+    }
+
+    fn emit(&self, stage: RequestEventStageV1) {
+        self.sink.record_request_event_v1(RequestEventV1 {
+            request_id: self.request_id,
+            connection_id: self.connection_id,
+            stage,
+            elapsed_micros: elapsed_micros_v1(self.started),
+        });
+    }
+
+    fn finish(&mut self, stage: RequestEventStageV1) {
+        self.emit(stage);
+        self.finished = true;
+    }
+}
+
+impl Drop for RequestEventScope<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.emit(if std::thread::panicking() {
+                RequestEventStageV1::Panicked
+            } else {
+                RequestEventStageV1::Aborted
+            });
+        }
+    }
 }
 
 /// Dispatch hook supplied by the composition root.
@@ -1214,10 +1285,12 @@ where
                 return ConnectionCloseReason::RequestDecodeFailed(err);
             }
         };
+        let mut event_scope = RequestEventScope::new(counters, request_id, connection_id);
         // A request that arrives during shutdown is not dispatched; the
         // connection closes so the peer retries against the next process.
         if shutdown.load(Ordering::Acquire) {
             counters.request_refused_shutting_down();
+            event_scope.finish(RequestEventStageV1::ShuttingDown);
             return ConnectionCloseReason::ShuttingDown;
         }
         // Admission: ingress happened above, now the dispatch slot, global
@@ -1228,18 +1301,39 @@ where
             Ok(permit) => permit,
             Err(refusal) => {
                 counters.request_overloaded(refusal.is_repo_scoped());
+                event_scope.emit(if refusal.is_repo_scoped() {
+                    RequestEventStageV1::QueueRefusedRepository
+                } else {
+                    RequestEventStageV1::QueueRefusedGlobal
+                });
                 let Some(response) = ResponseEnvelopeT::overloaded(request_id.get(), &refusal)
                 else {
+                    event_scope.finish(RequestEventStageV1::Aborted);
                     return ConnectionCloseReason::Overloaded {
                         waited: refusal.waited(),
                     };
                 };
                 match write_response(&mut stream, &response, counters) {
-                    Ok(()) => continue,
-                    Err(reason) => return reason,
+                    Ok(()) => {
+                        event_scope.finish(RequestEventStageV1::ResponseWritten);
+                        continue;
+                    }
+                    Err(reason) => {
+                        event_scope.finish(match reason {
+                            ConnectionCloseReason::ResponseEncodeFailed(_) => {
+                                RequestEventStageV1::ResponseEncodeFailed
+                            }
+                            ConnectionCloseReason::ResponseWriteFailed(_) => {
+                                RequestEventStageV1::ResponseWriteFailed
+                            }
+                            _ => RequestEventStageV1::Aborted,
+                        });
+                        return reason;
+                    }
                 }
             }
         };
+        event_scope.emit(RequestEventStageV1::QueueAdmitted);
         // W10-R2: the admitted id rides the budget so routes, typed
         // responses and provider audit correlate without an envelope.
         let budget = RequestBudgetV1::for_duration(policy.dispatch_budget())
@@ -1257,6 +1351,8 @@ where
                 .checked_add(policy.dispatch_budget())
                 .unwrap_or_else(std::time::Instant::now),
             cancellation: budget.cancel_handle(),
+            events: Arc::clone(counters) as Arc<dyn RequestEventSinkV1>,
+            request_started: event_scope.started,
         };
         // The dispatch slot and the in-flight count are one RAII pair
         // (S21-09): a panicking dispatcher unwinds through both drops,
@@ -1271,14 +1367,20 @@ where
             {
                 Ok(watch) => watch,
                 Err(err) => {
+                    event_scope.finish(RequestEventStageV1::PeerWatchFailed);
                     return ConnectionCloseReason::PeerWatchFailed(err.to_string());
                 }
             };
+            event_scope.emit(RequestEventStageV1::DispatchStarted);
             let response_payload = dispatcher.dispatch(&context, request_payload, &budget);
+            event_scope.emit(RequestEventStageV1::DispatchReturned);
             let peer_hung_up = match watch.disarm() {
                 Ok(PeerWatchOutcome::HungUp) => true,
                 Ok(PeerWatchOutcome::Stopped) => false,
-                Err(error) => return ConnectionCloseReason::PeerWatchFailed(error),
+                Err(error) => {
+                    event_scope.finish(RequestEventStageV1::PeerWatchFailed);
+                    return ConnectionCloseReason::PeerWatchFailed(error);
+                }
             };
             (response_payload, peer_hung_up)
         };
@@ -1287,6 +1389,7 @@ where
         if peer_hung_up {
             // Nothing to write to; the dispatcher already saw the
             // cancellation at its next checkpoint (or ran to completion).
+            event_scope.finish(RequestEventStageV1::PeerCancelled);
             return ConnectionCloseReason::PeerClosed;
         }
         let response = ResponseEnvelopeT::from_parts(request_id.get(), response_payload);
@@ -1303,21 +1406,30 @@ where
                     encoded_bytes,
                     limit_bytes,
                 ) else {
+                    event_scope.finish(RequestEventStageV1::ResponseEncodeFailed);
                     return ConnectionCloseReason::ResponseEncodeFailed(IpcError::Oversized(
                         encoded_bytes,
                     ));
                 };
                 match encode_response(&refusal) {
                     Ok(frame) => frame,
-                    Err(err) => return ConnectionCloseReason::ResponseEncodeFailed(err),
+                    Err(err) => {
+                        event_scope.finish(RequestEventStageV1::ResponseEncodeFailed);
+                        return ConnectionCloseReason::ResponseEncodeFailed(err);
+                    }
                 }
             }
-            Err(err) => return ConnectionCloseReason::ResponseEncodeFailed(err),
+            Err(err) => {
+                event_scope.finish(RequestEventStageV1::ResponseEncodeFailed);
+                return ConnectionCloseReason::ResponseEncodeFailed(err);
+            }
         };
         if let Err(err) = stream.write_all(&frame) {
+            event_scope.finish(RequestEventStageV1::ResponseWriteFailed);
             return ConnectionCloseReason::ResponseWriteFailed(err.to_string());
         }
         counters.response_written(frame_bytes(&frame));
+        event_scope.finish(RequestEventStageV1::ResponseWritten);
         // continue: next request on same conn
     }
 }
@@ -1898,9 +2010,10 @@ mod tests {
     use super::{
         ClientIoPolicy, ConnectionCloseReason, IpcDispatcher, IpcError, IpcPlane,
         IpcServerCounters, PeerCredentials, PeerWatch, PeerWatchOutcome, RequestEnvelope,
-        ResponseEnvelope, SocketPathIdentity, UdsServer, WatchEvent, WatchObserver,
-        connect_before_deadline, connect_requires_completion_wait, create_connect_socket,
-        decode_response, encode_request, handle_connection, send_request, wait_for_connect,
+        RequestEventStageV1, ResponseEnvelope, SocketPathIdentity, UdsServer, WatchEvent,
+        WatchObserver, connect_before_deadline, connect_requires_completion_wait,
+        create_connect_socket, decode_response, encode_request, handle_connection, send_request,
+        wait_for_connect,
     };
     use crate::socket_access::{PRIVATE_DIRECTORY_MODE, PRIVATE_SOCKET_MODE};
     use rustix::fs::{OFlags, fcntl_getfl};
@@ -2699,7 +2812,7 @@ mod tests {
         }
 
         fn overloaded(_request_id: u64, _refusal: &SlotRefusal) -> Option<Self> {
-            None
+            Some(Self)
         }
     }
 
@@ -2941,6 +3054,13 @@ mod tests {
                     counters.snapshot()
                 ));
             }
+            if !counters
+                .recent_request_events_v1()
+                .map_err(|error| error.to_string())?
+                .is_empty()
+            {
+                return Err("zero ID must not enter the request event ring".to_string());
+            }
             let mut probe = [0u8; 1];
             match client.read(&mut probe) {
                 Ok(0) => Ok(()),
@@ -2962,6 +3082,8 @@ mod tests {
                 .shutdown(Shutdown::Write)
                 .map_err(|err| err.to_string())?;
 
+            let counters = test_counters();
+            let worker_counters = Arc::clone(&counters);
             let handle = thread::spawn(move || {
                 handle_connection::<
                     TestRequestEnvelope,
@@ -2983,7 +3105,7 @@ mod tests {
                     0,
                     1,
                     &AtomicBool::new(false),
-                    &test_counters(),
+                    &worker_counters,
                 )
             });
 
@@ -3001,6 +3123,27 @@ mod tests {
                 .map_err(|join_err| format!("server thread panicked: {join_err:?}"))?;
             if !matches!(reason, ConnectionCloseReason::PeerClosed) {
                 return Err(format!("unexpected close reason: {reason:?}"));
+            }
+            let events = counters
+                .recent_request_events_v1()
+                .map_err(|error| error.to_string())?;
+            let stages = events.iter().map(|event| event.stage).collect::<Vec<_>>();
+            if stages
+                != [
+                    RequestEventStageV1::Validated,
+                    RequestEventStageV1::QueueAdmitted,
+                    RequestEventStageV1::DispatchStarted,
+                    RequestEventStageV1::DispatchReturned,
+                    RequestEventStageV1::ResponseWritten,
+                ]
+            {
+                return Err(format!("round-trip event stages differ: {stages:?}"));
+            }
+            if events
+                .iter()
+                .any(|event| event.request_id.get() != 41 || event.connection_id != 1)
+            {
+                return Err(format!("round-trip event identity drift: {events:?}"));
             }
             Ok(())
         })();
@@ -3129,6 +3272,7 @@ mod tests {
                 .shutdown(Shutdown::Write)
                 .map_err(|err| err.to_string())?;
 
+            let counters = test_counters();
             let reason = handle_connection::<
                 TestRequestEnvelope,
                 u64,
@@ -3149,14 +3293,79 @@ mod tests {
                 1000,
                 1,
                 &AtomicBool::new(false),
-                &test_counters(),
+                &counters,
             );
+            let events = counters
+                .recent_request_events_v1()
+                .map_err(|error| error.to_string())?;
+            if !matches!(events.last(), Some(event) if event.stage == RequestEventStageV1::ResponseEncodeFailed && event.request_id.get() == 7)
+            {
+                return Err(format!("encode failure event missing: {events:?}"));
+            }
             if let ConnectionCloseReason::ResponseEncodeFailed(IpcError::Encode(message)) = &reason
                 && message.contains("simulated response encode failure")
             {
                 return Ok(());
             }
             Err(format!("unexpected close reason: {reason:?}"))
+        })();
+        assert_test_ok(&result);
+    }
+
+    #[test]
+    fn overload_response_encode_failure_has_encode_terminal_event() {
+        let result = (|| -> TestRes {
+            let (mut client, server) = UnixStream::pair().map_err(|err| err.to_string())?;
+            client
+                .write_all(&encode_test_frame(18, 4)?)
+                .map_err(|err| err.to_string())?;
+            let policy = ServerAdmissionPolicy::new(
+                1,
+                1,
+                1,
+                Duration::ZERO,
+                Duration::from_secs(1),
+                Duration::from_secs(1),
+            )
+            .map_err(|err| err.to_string())?;
+            let slots = DispatchSlots::for_policy(policy);
+            let _held = slots
+                .acquire(Duration::ZERO, None)
+                .map_err(|err| format!("first slot must admit: {err:?}"))?;
+            let counters = test_counters();
+            let reason = handle_connection::<
+                TestRequestEnvelope,
+                u64,
+                FailingResponseEnvelope,
+                u64,
+                TestDispatcher,
+            >(
+                server,
+                &TestDispatcher,
+                &slots,
+                policy,
+                IpcPlane::Query,
+                PeerCredentials {
+                    uid: 1000,
+                    gid: 1000,
+                    pid: None,
+                },
+                1000,
+                2,
+                &AtomicBool::new(false),
+                &counters,
+            );
+            let events = counters
+                .recent_request_events_v1()
+                .map_err(|err| err.to_string())?;
+            if !matches!(reason, ConnectionCloseReason::ResponseEncodeFailed(_)) {
+                return Err(format!("wrong overload close reason: {reason:?}"));
+            }
+            if !matches!(events.last(), Some(event) if event.stage == RequestEventStageV1::ResponseEncodeFailed && event.request_id.get() == 18 && event.connection_id == 2)
+            {
+                return Err(format!("wrong overload terminal event: {events:?}"));
+            }
+            Ok(())
         })();
         assert_test_ok(&result);
     }
@@ -3456,6 +3665,8 @@ mod tests {
                 gate: Arc::clone(&gate),
                 observed_cancel: Arc::clone(&observed_cancel),
             };
+            let counters = test_counters();
+            let worker_counters = Arc::clone(&counters);
             let handle = thread::spawn(move || {
                 handle_connection::<
                     TestRequestEnvelope,
@@ -3477,7 +3688,7 @@ mod tests {
                     0,
                     1,
                     &AtomicBool::new(false),
-                    &test_counters(),
+                    &worker_counters,
                 )
             });
 
@@ -3492,6 +3703,13 @@ mod tests {
                 .map_err(|join_err| format!("server thread panicked: {join_err:?}"))?;
             if !observed_cancel.load(Ordering::Acquire) {
                 return Err("dispatcher never saw the peer's hang-up on its budget".to_string());
+            }
+            let events = counters
+                .recent_request_events_v1()
+                .map_err(|error| error.to_string())?;
+            if !matches!(events.last(), Some(event) if event.stage == RequestEventStageV1::PeerCancelled && event.request_id.get() == 9)
+            {
+                return Err(format!("peer cancellation event missing: {events:?}"));
             }
             if matches!(reason, ConnectionCloseReason::PeerClosed) {
                 return Ok(());

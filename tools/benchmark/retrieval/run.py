@@ -21,6 +21,7 @@ import json
 import math
 import os
 import platform
+import random
 import re
 import shutil
 import signal
@@ -79,9 +80,108 @@ class RunError(ValueError):
     """Paired-run evidence is absent, inconsistent or ineligible."""
 
 
-def _qualified_speed_protocol_available() -> bool:
-    """Qualified speed stays closed until both runners share the warm-query protocol."""
-    return False
+QUERY_PROTOCOL_VERSION = 1
+
+
+def _protocol_digest(payload: dict) -> str:
+    return hashlib.sha256(canonical_bytes(payload)).hexdigest()
+
+
+def build_query_protocol(
+    task_ids: list[str], seed: int, warmup_passes: int, repetitions: int
+) -> dict:
+    """Build one deterministic schedule consumed byte-for-byte by both runners."""
+    if (
+        not task_ids
+        or len(set(task_ids)) != len(task_ids)
+        or any(not isinstance(task_id, str) or not task_id for task_id in task_ids)
+    ):
+        raise RunError("query protocol requires nonempty unique task ids")
+    if type(seed) is not int or seed < 0:
+        raise RunError("query protocol seed must be a nonnegative integer")
+    if type(warmup_passes) is not int or warmup_passes < 0:
+        raise RunError("query protocol warmup passes must be nonnegative")
+    if type(repetitions) is not int or repetitions < 1:
+        raise RunError("query protocol requires at least one measurement repetition")
+    rng = random.Random(seed)
+
+    def shuffled() -> list[str]:
+        schedule = list(task_ids)
+        rng.shuffle(schedule)
+        return schedule
+
+    core = {
+        "schema_version": QUERY_PROTOCOL_VERSION,
+        "seed": seed,
+        "task_ids": list(task_ids),
+        "cold_probe_task_id": task_ids[seed % len(task_ids)],
+        "warmup_schedules": [shuffled() for _ in range(warmup_passes)],
+        "measurement_schedules": [shuffled() for _ in range(repetitions)],
+    }
+    return {**core, "sha256": _protocol_digest(core)}
+
+
+def validate_query_protocol(payload: object, task_ids: list[str], where: str) -> dict:
+    protocol = _exact_keys(
+        payload,
+        {
+            "schema_version",
+            "seed",
+            "task_ids",
+            "cold_probe_task_id",
+            "warmup_schedules",
+            "measurement_schedules",
+            "sha256",
+        },
+        where,
+    )
+    if protocol["schema_version"] != QUERY_PROTOCOL_VERSION:
+        raise RunError(f"{where} schema version mismatch")
+    if type(protocol["seed"]) is not int or protocol["seed"] < 0:
+        raise RunError(f"{where}.seed must be a nonnegative integer")
+    if protocol["task_ids"] != task_ids or len(set(task_ids)) != len(task_ids):
+        raise RunError(f"{where}.task_ids differ from the frozen pack order")
+    if protocol["cold_probe_task_id"] not in task_ids:
+        raise RunError(f"{where}.cold_probe_task_id is not a frozen task")
+
+    expected = set(task_ids)
+    for key in ("warmup_schedules", "measurement_schedules"):
+        schedules = protocol[key]
+        if not isinstance(schedules, list) or (key == "measurement_schedules" and not schedules):
+            raise RunError(f"{where}.{key} has an invalid schedule list")
+        for index, schedule in enumerate(schedules):
+            if (
+                not isinstance(schedule, list)
+                or len(schedule) != len(task_ids)
+                or any(not isinstance(task_id, str) for task_id in schedule)
+                or set(schedule) != expected
+            ):
+                raise RunError(f"{where}.{key}[{index}] must be an exact task permutation")
+    core = {key: value for key, value in protocol.items() if key != "sha256"}
+    if not _is_hex(protocol["sha256"], 64) or protocol["sha256"] != _protocol_digest(core):
+        raise RunError(f"{where}.sha256 mismatch")
+    return protocol
+
+
+def validate_qualified_speed_spec(spec: dict, task_count: int) -> None:
+    roots = _int(spec.get("repetitions", 1), "spec.repetitions")
+    warmups = _int(spec.get("query_warmup_passes", 0), "spec.query_warmup_passes")
+    measurements = _int(
+        spec.get("query_repetitions_per_root", 0), "spec.query_repetitions_per_root"
+    )
+    routes = spec.get("routes", ["lexical", "semantic", "hybrid"])
+    if roots < FRESH_ROOTS_FLOOR:
+        raise RunError(f"qualified speed requires at least {FRESH_ROOTS_FLOOR} fresh roots")
+    if task_count < 20:
+        raise RunError("qualified speed requires at least 20 frozen tasks")
+    if warmups < 1:
+        raise RunError("qualified speed requires at least one shared warmup pass")
+    if task_count * measurements * roots < PILOT_OBSERVATIONS_FLOOR:
+        raise RunError(
+            f"qualified speed requires at least {PILOT_OBSERVATIONS_FLOOR} warm observations per route"
+        )
+    if not isinstance(routes, list) or len(routes) != 1:
+        raise RunError("qualified speed requires exactly one Quanta route")
 
 
 def _process_tree_sample(root_pid: int) -> list[dict]:
@@ -1248,6 +1348,8 @@ SPEC_OPTIONAL = (
     "quanta_model_dir",
     "semble_repetitions",
     "semble_warmup_passes",
+    "query_repetitions_per_root",
+    "query_warmup_passes",
     "baseline_route",
     "candidate_route",
     "host_profile",
@@ -1577,6 +1679,8 @@ def load_spec(path: Path) -> dict:
         ("repetitions", 1),
         ("semble_repetitions", 1),
         ("semble_warmup_passes", 0),
+        ("query_repetitions_per_root", 1),
+        ("query_warmup_passes", 1),
     ):
         if key in spec:
             _spec_int(spec, key, minimum)
@@ -1821,6 +1925,8 @@ def run_quanta_strategy(
         "--out",
         str(record_path),
     ]
+    if "_query_protocol" in spec:
+        command += ["--query-protocol", spec["_query_protocol"]]
     command += ["--searchd-bin", spec["searchd_binary"]]
     command += ["--searchd-expected-sha256", spec["searchd_expected_sha256"]]
     materialized = spec.get("_materialized_corpus")
@@ -2376,28 +2482,30 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
     if not isinstance(payload, dict):
         raise RunError(f"{where} must be an object")
     system = payload.get("system")
+    protocol_mode = "query_protocol" in payload
     system_key = "runner_binary_sha256" if system == "quanta" else "worker_sha256"
-    expected_phases = (
-        {
+    if system == "quanta":
+        expected_phases = {
             "discovery",
             "chunk",
             "model_provider_prepare",
             "embed_publish_seal_activate",
-            "first_query",
+            "cold_query" if protocol_mode else "first_query",
             "warm_query",
             "unattributed",
         }
-        if system == "quanta"
-        else {
+        if protocol_mode:
+            expected_phases.add("warmup")
+    else:
+        expected_phases = {
             "discovery",
             "model_provider_prepare",
             "index",
             "warmup",
-            "first_query",
+            "cold_query" if protocol_mode else "first_query",
             "warm_query",
             "unattributed",
         }
-    )
     metric_keys = {
         "schema_version",
         "system",
@@ -2417,6 +2525,8 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
     }
     if system == "semble":
         metric_keys.add("phase_boundaries_ns")
+    if protocol_mode:
+        metric_keys.update({"query_protocol", "warm_latencies_ms", "cold_latencies_ms"})
     metrics = _exact_keys(
         payload,
         metric_keys,
@@ -2452,6 +2562,44 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
         or metrics["measurement_repetitions"] < 1
     ):
         raise RunError(f"{where}.measurement_repetitions must be positive")
+    if protocol_mode:
+        protocol = validate_query_protocol(
+            metrics["query_protocol"], schedule, f"{where}.query_protocol"
+        )
+        if len(protocol["warmup_schedules"]) != metrics["warmup_passes"]:
+            raise RunError(f"{where} warmup count differs from query protocol")
+        if len(protocol["measurement_schedules"]) != metrics["measurement_repetitions"]:
+            raise RunError(f"{where} repetition count differs from query protocol")
+        warm = metrics["warm_latencies_ms"]
+        cold = metrics["cold_latencies_ms"]
+        if (
+            not isinstance(warm, dict)
+            or set(warm) != set(cold)
+            or len(warm) != metrics["route_count"]
+        ):
+            raise RunError(f"{where} warm/cold route maps differ")
+        for route, by_task in warm.items():
+            if (
+                not isinstance(route, str)
+                or not isinstance(by_task, dict)
+                or set(by_task) != set(schedule)
+            ):
+                raise RunError(f"{where} warm latency task map differs from the protocol")
+            if (
+                type(cold[route]) not in (int, float)
+                or not math.isfinite(cold[route])
+                or cold[route] < 0
+            ):
+                raise RunError(f"{where} cold latency is invalid")
+            for task_id, values in by_task.items():
+                if (
+                    not isinstance(values, list)
+                    or len(values) != metrics["measurement_repetitions"]
+                ):
+                    raise RunError(f"{where} warm latency count differs for {route}/{task_id}")
+                for value in values:
+                    if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+                        raise RunError(f"{where} warm latency is invalid for {route}/{task_id}")
     phases = _exact_keys(metrics["phases_ms"], expected_phases, f"{where}.phases_ms")
     for key, value in phases.items():
         if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
@@ -2462,25 +2610,42 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
     if not math.isclose(sum(phases.values()), total, rel_tol=1e-9, abs_tol=0.01):
         raise RunError(f"{where} phase sum differs from total")
     if system == "semble":
+        boundary_keys = {
+            "worker_start",
+            "discovery_end",
+            "model_provider_prepare_end",
+            "index_end",
+            "warmup_end",
+            "query_start",
+            "first_query_start",
+            "first_query_end",
+            "query_end",
+            "worker_end",
+        }
+        if protocol_mode:
+            boundary_keys.update({"cold_query_start", "cold_query_end"})
         boundaries = _exact_keys(
             metrics["phase_boundaries_ns"],
-            {
+            boundary_keys,
+            f"{where}.phase_boundaries_ns",
+        )
+        boundary_order = (
+            (
                 "worker_start",
                 "discovery_end",
                 "model_provider_prepare_end",
                 "index_end",
+                "cold_query_start",
+                "cold_query_end",
                 "warmup_end",
                 "query_start",
                 "first_query_start",
                 "first_query_end",
                 "query_end",
                 "worker_end",
-            },
-            f"{where}.phase_boundaries_ns",
-        )
-        ordered = [
-            boundaries[key]
-            for key in (
+            )
+            if protocol_mode
+            else (
                 "worker_start",
                 "discovery_end",
                 "model_provider_prepare_end",
@@ -2492,7 +2657,8 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
                 "query_end",
                 "worker_end",
             )
-        ]
+        )
+        ordered = [boundaries[key] for key in boundary_order]
         if any(type(value) is not int or value < 0 for value in ordered):
             raise RunError(f"{where} phase boundaries must be nonnegative integers")
         if ordered != sorted(ordered):
@@ -2504,16 +2670,24 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
             )
             / 1e6,
             "index": (boundaries["index_end"] - boundaries["model_provider_prepare_end"]) / 1e6,
-            "warmup": (boundaries["warmup_end"] - boundaries["index_end"]) / 1e6,
-            "first_query": (boundaries["first_query_end"] - boundaries["first_query_start"]) / 1e6,
-            "warm_query": (
+        }
+        if protocol_mode:
+            derived["cold_query"] = (
+                boundaries["cold_query_end"] - boundaries["cold_query_start"]
+            ) / 1e6
+            derived["warmup"] = (boundaries["warmup_end"] - boundaries["cold_query_end"]) / 1e6
+            derived["warm_query"] = (boundaries["query_end"] - boundaries["query_start"]) / 1e6
+        else:
+            derived["warmup"] = (boundaries["warmup_end"] - boundaries["index_end"]) / 1e6
+            derived["first_query"] = (
+                boundaries["first_query_end"] - boundaries["first_query_start"]
+            ) / 1e6
+            derived["warm_query"] = (
                 boundaries["query_end"]
                 - boundaries["query_start"]
                 - boundaries["first_query_end"]
                 + boundaries["first_query_start"]
-            )
-            / 1e6,
-        }
+            ) / 1e6
         derived["unattributed"] = (
             boundaries["worker_end"] - boundaries["worker_start"]
         ) / 1e6 - sum(derived.values())
@@ -3115,18 +3289,23 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     bound_records: set[str] = set()
     record_digests = {sha_file(Path(path)) for path in resolved["records"]}
     phase_record_digests: list[str] = []
+    phase_by_record: dict[str, dict] = {}
     phase_ok = len(resolved["phase_metrics"]) == len(resolved["records"])
     expected_query_schedule = [task["task_id"] for task in pack["tasks"]]
     for path in resolved["phase_metrics"]:
         try:
             metrics = _validate_phase_metrics(read_json(Path(path)), f"phase metrics {path}")
             phase_record_digests.append(metrics["record_sha256"])
+            if metrics["record_sha256"] in phase_by_record:
+                phase_ok = False
+            phase_by_record[metrics["record_sha256"]] = metrics
             if metrics["query_schedule"] != expected_query_schedule:
                 phase_ok = False
             if (
                 manifest["scope"] == "qualified"
                 and claims["speed"]
-                and (metrics["warmup_passes"] != 0 or metrics["measurement_repetitions"] != 1)
+                and "query_protocol" in metrics
+                and metrics["warmup_passes"] < 1
             ):
                 phase_ok = False
         except (RunError, ValueError, OSError):
@@ -3572,39 +3751,61 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         missing.append("T17")
         classes.append("admission")
     else:
-        perf_fail: tuple[str, str] | None = (
-            None
-            if manifest.get("host", {}).get("cache_regime") == "true_process_cold"
-            else ("unsupported_cache_protocol", "host")
-        )
+        if evidence["perf"]["phase_boundaries"] is not True or not phase_ok:
+            perf_fail: tuple[str, str] | None = (
+                "phase_boundaries_incomplete",
+                "provenance",
+            )
+        elif manifest.get("host", {}).get("cache_regime") != "true_process_cold":
+            perf_fail = ("unsupported_cache_protocol", "host")
+        else:
+            perf_fail = None
         try:
             cells = []
+            shared_protocol_ok = True
             for rep in sorted(rep_records, key=_rep_sort_key):
+                rep_protocols = []
                 quanta_paths = sorted(
                     (p for p in rep_records[rep] if validated[p]["system"] == "quanta"),
                     key=lambda p: (validated[p]["strategy"], p),
                 )
                 for path in quanta_paths:
                     entry = validated[path]
-                    cells.append(_cell_from_record("quanta", entry["strategy"], entry["run"]))
+                    cell = _cell_from_record("quanta", entry["strategy"], entry["run"])
+                    phase = phase_by_record.get(sha_file(Path(path)))
+                    rep_protocols.append(
+                        phase.get("query_protocol") if isinstance(phase, dict) else None
+                    )
+                    if isinstance(phase, dict) and "warm_latencies_ms" in phase:
+                        cell["warm_latencies"] = phase["warm_latencies_ms"]
+                    cells.append(cell)
                 semble_paths = [p for p in rep_records[rep] if validated[p]["system"] == "semble"]
                 if len(semble_paths) != 1:
                     raise RunError(f"rep {rep} lacks exactly one semble record")
-                native_paths = native_reps.get(rep, [])
-                if len(native_paths) != 1:
-                    raise RunError(f"rep {rep} lacks exactly one native file")
-                native_content = read_json(Path(native_paths[0]))
-                if not isinstance(native_content, dict):
-                    raise RunError(f"rep {rep} native output is not an object")
                 scell = _cell_from_record("semble", "native", validated[semble_paths[0]]["run"])
-                routes = {
-                    row["route"] for row in validated[semble_paths[0]]["run"].get("results", [])
-                }
-                if len(routes) != 1:
-                    raise RunError("semble record must carry exactly one route")
-                scell["native_latencies"] = native_content.get("latencies_ms", {})
-                scell["native_route"] = next(iter(routes))
+                phase = phase_by_record.get(sha_file(Path(semble_paths[0])))
+                rep_protocols.append(
+                    phase.get("query_protocol") if isinstance(phase, dict) else None
+                )
+                if isinstance(phase, dict) and "warm_latencies_ms" in phase:
+                    scell["warm_latencies"] = phase["warm_latencies_ms"]
+                else:
+                    native_paths = native_reps.get(rep, [])
+                    if len(native_paths) != 1:
+                        raise RunError(f"rep {rep} lacks exactly one native file")
+                    native_content = read_json(Path(native_paths[0]))
+                    routes = {
+                        row["route"] for row in validated[semble_paths[0]]["run"].get("results", [])
+                    }
+                    if not isinstance(native_content, dict) or len(routes) != 1:
+                        raise RunError(f"rep {rep} native latency evidence is malformed")
+                    scell["native_latencies"] = native_content.get("latencies_ms", {})
+                    scell["native_route"] = next(iter(routes))
                 cells.append(scell)
+                if any(protocol is None for protocol in rep_protocols) or any(
+                    protocol != rep_protocols[0] for protocol in rep_protocols[1:]
+                ):
+                    shared_protocol_ok = False
             rebuilt = aggregate_matrix(cells, len(rep_records))
             matrix_content = read_json(resolved["latency_matrix"])
         except (RunError, ValueError, OSError) as exc:
@@ -3626,8 +3827,6 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 perf_fail = ("null_timings_on_speed_claim", "provenance")
             elif evidence["perf"]["resource_accounting"] is not True or not resource_ok:
                 perf_fail = ("resource_accounting_incomplete", "provenance")
-            elif evidence["perf"]["phase_boundaries"] is not True or not phase_ok:
-                perf_fail = ("phase_boundaries_incomplete", "provenance")
             elif not (
                 isinstance(host_start_payload, dict)
                 and isinstance(host_end_payload, dict)
@@ -3635,9 +3834,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 and _probe_clean(host_end_payload, host_profile)
             ):
                 perf_fail = ("host_contended", "host")
-            elif manifest.get("host", {}).get("cache_regime") != "true_process_cold":
-                perf_fail = ("unsupported_cache_protocol", "host")
-            elif not _qualified_speed_protocol_available():
+            elif not shared_protocol_ok:
                 perf_fail = ("shared_warm_query_protocol_unimplemented", "provenance")
         if perf_fail is None:
             set_state(
@@ -3908,7 +4105,11 @@ def run_pair(spec: dict) -> int:
     if scope != "qualified" and "admission" in spec:
         raise RunError("spec.admission is valid only for a qualified capture")
     if scope == "qualified" and spec.get("claims", {}).get("speed") is True:
-        raise RunError("qualified speed is blocked: shared warm-query protocol is not implemented")
+        pack_payload = read_json(Path(spec["query_pack"]))
+        tasks = pack_payload.get("tasks") if isinstance(pack_payload, dict) else None
+        if not isinstance(tasks, list):
+            raise RunError("qualified speed query pack lacks tasks")
+        validate_qualified_speed_spec(spec, len(tasks))
     lockfile_sha = spec.get("semble_lockfile_sha256")
     if not _is_hex(lockfile_sha, 64):
         raise RunError("pair requires a pinned semble_lockfile_sha256")
@@ -3990,13 +4191,44 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
         rep_order = order if (rep % 2 == 0 or not alternate) else list(reversed(order))
         rep_dir = stage / f"rep-{rep:02d}"
         rep_dir.mkdir(parents=True)
-        layout: dict = {"rep": rep, "order": rep_order, "quanta": {}, "semble": ""}
+        pack_payload = read_json(Path(spec["query_pack"]))
+        tasks = pack_payload.get("tasks") if isinstance(pack_payload, dict) else None
+        if not isinstance(tasks, list):
+            raise RunError("frozen query pack lacks tasks")
+        task_ids = [task.get("task_id") for task in tasks if isinstance(task, dict)]
+        if len(task_ids) != len(tasks):
+            raise RunError("frozen query pack has malformed tasks")
+        protocol = build_query_protocol(
+            task_ids,
+            _int(spec.get("seed", 0), "spec.seed") + rep,
+            _int(
+                spec.get("query_warmup_passes", spec.get("semble_warmup_passes", 1)),
+                "spec.query_warmup_passes",
+            ),
+            _int(
+                spec.get("query_repetitions_per_root", spec.get("semble_repetitions", 1)),
+                "spec.query_repetitions_per_root",
+            ),
+        )
+        protocol_path = rep_dir / "query-protocol.json"
+        protocol_path.write_text(
+            json.dumps(protocol, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        layout: dict = {
+            "rep": rep,
+            "order": rep_order,
+            "query_protocol": str(protocol_path),
+            "quanta": {},
+            "quanta_phase_metrics": {},
+            "semble": "",
+        }
         for system in rep_order:
             if system == "quanta":
                 quanta_out = rep_dir / "quanta"
                 quanta_spec = dict(spec)
                 quanta_spec["output_root"] = str(quanta_out)
                 quanta_spec["run_id"] = f"{spec.get('run_id', 'run')}-r{rep}"
+                quanta_spec["_query_protocol"] = str(protocol_path)
                 if run_quanta(quanta_spec, Path(".")) != 0:
                     raise RunError(f"quanta capture failed at rep {rep}")
                 quanta_manifest_path = quanta_out / "quanta-manifest.json"
@@ -4005,11 +4237,15 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
                     raise RunError("quanta manifest is not an object")
                 for run in quanta_manifest["runs"]:
                     layout["quanta"][run["strategy"]] = str(quanta_out / run["record"])
+                    layout["quanta_phase_metrics"][run["strategy"]] = str(
+                        quanta_out / run["phase_metrics"]
+                    )
                 layout["quanta_manifest"] = str(quanta_manifest_path)
             else:
                 semble_out = rep_dir / "semble"
+                rep_semble_spec = dict(semble_spec, _query_protocol=str(protocol_path))
                 semble_metrics = run_semble_capture(
-                    semble_spec, semble_out, semble_pack, semble_routes[0], rep=rep
+                    rep_semble_spec, semble_out, semble_pack, semble_routes[0], rep=rep
                 )
                 layout["semble"] = str(semble_out / "record.json")
                 layout["semble_phase_metrics"] = semble_metrics["phase_metrics"]
@@ -4172,38 +4408,43 @@ def aggregate_matrix(cells: list[dict], fresh_roots: int) -> dict:
                 continue
             samples.setdefault(sample_key, []).append(value)
             sample_owner[sample_key] = sys_key
-        native = cell.get("native_latencies")
-        if native is not None:
-            if not isinstance(native, dict):
-                raise RunError("native latencies must be an object")
+        warm_by_route = cell.get("warm_latencies")
+        if warm_by_route is None and cell.get("native_latencies") is not None:
             route = cell.get("native_route")
             if not isinstance(route, str) or not route:
                 raise RunError("native latencies need their record route")
-            for task_id, values in native.items():
-                if not isinstance(values, list):
-                    raise RunError(f"native latencies for {task_id} are not a list")
-                sample_key = f"{system}:{cell['strategy']}:{route}:{task_id}"
-                sys_key = f"{system}:{cell['strategy']}:{route}"
-                if (route, task_id) not in timings_by_task:
-                    raise RunError(f"native task without a record row: {task_id}")
-                if not values:
-                    continue
-                recorded = timings_by_task[(route, task_id)]
-                extras: list[object] = list(values)
-                if recorded is not None:
-                    first = _sample_value(values[0], f"{sample_key}[native]")
-                    if first != recorded:
-                        raise RunError(
-                            f"native timing and normalized timing disagree for {task_id}"
-                        )
-                    extras = values[1:]
-                for value in extras:
-                    parsed = _sample_value(value, f"{sample_key}[native]")
-                    if parsed is None:
-                        bump(nulls, sys_key)
-                    else:
-                        samples.setdefault(sample_key, []).append(parsed)
-                        sample_owner[sample_key] = sys_key
+            warm_by_route = {route: cell["native_latencies"]}
+        if warm_by_route is not None:
+            if not isinstance(warm_by_route, dict):
+                raise RunError("warm latencies must be an object")
+            for route, by_task in warm_by_route.items():
+                if not isinstance(route, str) or not isinstance(by_task, dict):
+                    raise RunError("warm latency route entries must be objects")
+                for task_id, values in by_task.items():
+                    if not isinstance(values, list):
+                        raise RunError(f"warm latencies for {route}/{task_id} are not a list")
+                    sample_key = f"{system}:{cell['strategy']}:{route}:{task_id}"
+                    sys_key = f"{system}:{cell['strategy']}:{route}"
+                    if (route, task_id) not in timings_by_task:
+                        raise RunError(f"warm task without a record row: {route}/{task_id}")
+                    if not values:
+                        continue
+                    recorded = timings_by_task[(route, task_id)]
+                    extras: list[object] = list(values)
+                    if recorded is not None:
+                        first = _sample_value(values[0], f"{sample_key}[warm]")
+                        if first != recorded:
+                            raise RunError(
+                                f"warm timing and normalized timing disagree for {route}/{task_id}"
+                            )
+                        extras = values[1:]
+                    for value in extras:
+                        parsed = _sample_value(value, f"{sample_key}[warm]")
+                        if parsed is None:
+                            bump(nulls, sys_key)
+                        else:
+                            samples.setdefault(sample_key, []).append(parsed)
+                            sample_owner[sample_key] = sys_key
     for key in attempts:
         floors[key] = 0
     for key, values in samples.items():
@@ -4241,6 +4482,7 @@ def _cell_from_record(system: str, strategy: str, payload: dict) -> dict:
         "rows": rows,
         "native_latencies": None,
         "native_route": None,
+        "warm_latencies": None,
     }
 
 
@@ -4250,23 +4492,50 @@ def build_latency_matrix(rep_layouts: list[dict]) -> dict:
         raise RunError("latency matrix needs at least one rep")
     cells = []
     for layout in rep_layouts:
+        protocol = None
+        if "query_protocol" in layout:
+            raw_protocol = read_json(Path(layout["query_protocol"]))
+            task_ids = raw_protocol.get("task_ids") if isinstance(raw_protocol, dict) else None
+            if not isinstance(task_ids, list):
+                raise RunError(f"rep {layout['rep']} query protocol lacks task ids")
+            protocol = validate_query_protocol(
+                raw_protocol, task_ids, f"rep {layout['rep']} query protocol"
+            )
         for strategy, record in sorted(layout["quanta"].items()):
             payload = read_json(Path(record))
             if not isinstance(payload, dict):
                 raise RunError(f"record is not an object: {record}")
-            cells.append(_cell_from_record("quanta", strategy, payload))
+            cell = _cell_from_record("quanta", strategy, payload)
+            if protocol is not None:
+                phase = _validate_phase_metrics(
+                    read_json(Path(layout["quanta_phase_metrics"][strategy])),
+                    f"rep {layout['rep']} quanta {strategy} phase metrics",
+                )
+                if phase.get("query_protocol") != protocol:
+                    raise RunError("Quanta phase metrics do not echo the shared query protocol")
+                cell["warm_latencies"] = phase["warm_latencies_ms"]
+            cells.append(cell)
         semble_record = read_json(Path(layout["semble"]))
         if not isinstance(semble_record, dict):
             raise RunError(f"semble record is not an object: {layout['semble']}")
         cell = _cell_from_record("semble", "native", semble_record)
-        native = read_json(Path(layout["semble"]).parent / "native.json")
-        if not isinstance(native, dict):
-            raise RunError(f"semble native output is not an object: {layout['semble']}")
-        routes = {row["route"] for row in semble_record.get("results", [])}
-        if len(routes) != 1:
-            raise RunError("semble record must carry exactly one route")
-        cell["native_latencies"] = native.get("latencies_ms", {})
-        cell["native_route"] = next(iter(routes))
+        if protocol is not None:
+            phase = _validate_phase_metrics(
+                read_json(Path(layout["semble_phase_metrics"])),
+                f"rep {layout['rep']} semble phase metrics",
+            )
+            if phase.get("query_protocol") != protocol:
+                raise RunError("Semble phase metrics do not echo the shared query protocol")
+            cell["warm_latencies"] = phase["warm_latencies_ms"]
+        else:
+            native = read_json(Path(layout["semble"]).parent / "native.json")
+            if not isinstance(native, dict):
+                raise RunError(f"semble native output is not an object: {layout['semble']}")
+            routes = {row["route"] for row in semble_record.get("results", [])}
+            if len(routes) != 1:
+                raise RunError("semble record must carry exactly one route")
+            cell["native_latencies"] = native.get("latencies_ms", {})
+            cell["native_route"] = next(iter(routes))
         cells.append(cell)
     return aggregate_matrix(cells, len(rep_layouts))
 
@@ -5039,10 +5308,12 @@ def run_semble_capture(
         "--access-block-log",
         spec.get("access_block_log", "attested-only: no suite path is passed to the worker"),
         "--repetitions",
-        str(spec.get("semble_repetitions", 1)),
+        str(spec.get("query_repetitions_per_root", spec.get("semble_repetitions", 1))),
         "--warmup-passes",
-        str(spec.get("semble_warmup_passes", 0)),
+        str(spec.get("query_warmup_passes", spec.get("semble_warmup_passes", 0))),
     ]
+    if "_query_protocol" in spec:
+        command += ["--query-protocol", spec["_query_protocol"]]
     if "_materialized_corpus" in spec:
         command += ["--materialized-corpus"]
     if "semble_model_revision" in spec:

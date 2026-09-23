@@ -35,8 +35,8 @@ use quanta_index_contract::ipc::{
 use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId, SearchPlaneIpcError};
 use quanta_index_core::{CoreError, REQUEST_DEADLINE_EXCEEDED_CODE};
 use quanta_index_ipc::{
-    ClientIoPolicy, IpcDispatcher, IpcError, RequestBudgetV1, ServerAdmissionPolicy, UdsServer,
-    send_request,
+    ClientIoPolicy, IpcDispatcher, IpcError, RequestBudgetV1, RequestEventStageV1,
+    ServerAdmissionPolicy, UdsServer, send_request,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -357,6 +357,36 @@ fn a_full_dispatch_queue_is_refused_with_a_typed_overload_then_serves_again() ->
     ensure(
         counters.connections_accepted == 3 && counters.connections_refused == 0,
         format!("every connection was admitted under the cap of 8: {counters:?}"),
+    )?;
+    let events = server.uds.counters().recent_request_events_v1()?;
+    let refused = events
+        .iter()
+        .find(|event| event.stage == RequestEventStageV1::QueueRefusedGlobal)
+        .ok_or("missing request-correlated queue refusal event")?;
+    ensure(
+        refused.request_id.get() == 7,
+        "queue refusal lost envelope ID",
+    )?;
+    let refusal_stages = events
+        .iter()
+        .filter(|event| event.connection_id == refused.connection_id)
+        .map(|event| event.stage)
+        .collect::<Vec<_>>();
+    ensure(
+        refusal_stages
+            == [
+                RequestEventStageV1::Validated,
+                RequestEventStageV1::QueueRefusedGlobal,
+                RequestEventStageV1::ResponseWritten,
+            ],
+        format!("queue refusal must terminate on its own connection: {refusal_stages:?}"),
+    )?;
+    ensure(
+        !events.iter().any(|event| {
+            event.connection_id == refused.connection_id
+                && event.stage == RequestEventStageV1::DispatchStarted
+        }),
+        "queue refusal cannot report backend dispatch",
     )?;
     server.stop()?;
     ensure(

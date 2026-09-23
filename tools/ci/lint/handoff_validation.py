@@ -1,8 +1,7 @@
-"""Pure SEP-21 handoff-chain checks; proof and Git validation stay with their owners.
+"""SEP-21 handoff Git/archive validation and fixed product-chain policy.
 
-The caller must validate each handoff's schema, commit ancestry, exact write set,
-and immutable proof archives before accepting this chain result. This leaf does
-not import the proof checker, so both the CLI and aggregate checker can use it.
+The leaf owns one handoff interpretation for the CLI and aggregate. It takes
+the proof checker as an injected dependency and never imports it back.
 """
 
 from __future__ import annotations
@@ -584,7 +583,9 @@ def inspect_handoff_ledger(
         except (
             OSError,
             ValueError,
-            json.JSONDecodeError,
+            KeyError,
+            TypeError,
+            AttributeError,
             tomllib.TOMLDecodeError,
             subprocess.CalledProcessError,
         ) as error:

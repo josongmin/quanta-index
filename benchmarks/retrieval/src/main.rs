@@ -30,6 +30,7 @@ use quanta_index_retrieval_bench::record::{
     CaptureProvenance, QueryPack, RouteProvenance, RunnerIdentity, RunnerRecordInput,
     load_query_pack, runner_record,
 };
+use quanta_index_retrieval_bench::schedule::QueryProtocol;
 use quanta_index_retrieval_bench::sdk::{
     DEFAULT_IO_TIMEOUT, DEFAULT_READY_TIMEOUT, DaemonConfig, DaemonSession, QueryOutcome,
     RouteQuery, publish_and_activate, query_route, resolve_searchd_binary, verify_searchd_digest,
@@ -55,6 +56,7 @@ fn print_help() -> BenchResult<()> {
          fixed_window_*: --window-bytes N (default 4000) --overlap-bytes N (default 400)\n\
          brace_heuristic: --max-item-bytes N (default 32768)\n\
          run adds: --query-pack PATH --routes a,b --top-k N --state-root PATH\n\
+         [--query-protocol PATH]\n\
          --repo-id ID --revision-id ID --generation N\n\
          --runner-name NAME --runner-revision REV --run-id ID\n\
          --blinding attested|isolated --isolation-method TEXT --access-block-log TEXT\n\
@@ -434,6 +436,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             "max-item-bytes",
             "max-file-bytes",
             "query-pack",
+            "query-protocol",
             "routes",
             "top-k",
             "state-root",
@@ -463,6 +466,13 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     verify_capture_corpus(args, &repo, &manifest)?;
     let pack = load_query_pack(&PathBuf::from(required(args, "query-pack")?))?;
     cross_check_manifest_pack(&manifest, &pack)?;
+    let expected_task_ids: Vec<String> =
+        pack.tasks.iter().map(|task| task.task_id.clone()).collect();
+    let query_protocol = args
+        .flags
+        .get("query-protocol")
+        .map(|path| QueryProtocol::load(Path::new(path), &expected_task_ids))
+        .transpose()?;
     let routes = parse_routes(&required(args, "routes")?)?;
     let selected: BTreeSet<&str> = routes.iter().copied().collect();
     let registered: BTreeSet<&str> = pack.routes.iter().map(String::as_str).collect();
@@ -671,37 +681,150 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             )));
         }
     }
-    let query_start = Instant::now();
-    let mut first_query_elapsed = Duration::ZERO;
+    let task_queries: BTreeMap<&str, &str> = pack
+        .tasks
+        .iter()
+        .map(|task| (task.task_id.as_str(), task.query.as_str()))
+        .collect();
     let mut outcomes: BTreeMap<(String, String), QueryOutcome> = BTreeMap::new();
-    for task in &pack.tasks {
+    let mut warm_latencies_ms: BTreeMap<String, BTreeMap<String, Vec<f64>>> = BTreeMap::new();
+    let mut cold_latencies_ms: BTreeMap<String, f64> = BTreeMap::new();
+    let mut warmup_elapsed = Duration::ZERO;
+    let first_query_elapsed;
+    let warm_query_elapsed;
+    if let Some(protocol) = &query_protocol {
+        let cold_start = Instant::now();
+        let cold_query = task_queries
+            .get(protocol.cold_probe_task_id.as_str())
+            .ok_or_else(|| BenchError::Protocol("cold probe task disappeared".to_string()))?;
         for route in routes.iter().copied() {
-            let single_query_start = Instant::now();
             let outcome = query_route(&RouteQuery {
                 client: session.client(),
                 route,
-                query_text: &task.query,
+                query_text: cold_query,
                 repo_id: &identity.repo_id,
                 revision_id: &identity.revision_id,
                 generation: identity.generation,
                 top_k,
             });
-            if first_query_elapsed.is_zero() {
-                first_query_elapsed = single_query_start.elapsed();
-            }
-            if outcomes
-                .insert((task.task_id.clone(), route.to_string()), outcome)
-                .is_some()
-            {
+            let latency = match &outcome {
+                QueryOutcome::Hits { latency, .. } => *latency,
+                QueryOutcome::Failed { status, code, .. } => {
+                    return Err(BenchError::Protocol(format!(
+                        "cold probe failed for route {route}: {status}/{code}"
+                    )));
+                }
+            };
+            let previous =
+                cold_latencies_ms.insert(route.to_string(), latency.as_secs_f64() * 1000.0);
+            if previous.is_some() {
                 return Err(BenchError::Protocol(format!(
-                    "duplicate outcome for task {} route {route}",
-                    task.task_id
+                    "duplicate cold latency for route {route}"
                 )));
             }
         }
+        first_query_elapsed = cold_start.elapsed();
+
+        let warmup_start = Instant::now();
+        for schedule in &protocol.warmup_schedules {
+            for task_id in schedule {
+                let query = task_queries
+                    .get(task_id.as_str())
+                    .ok_or_else(|| BenchError::Protocol("warmup task disappeared".to_string()))?;
+                for route in routes.iter().copied() {
+                    if let QueryOutcome::Failed { status, code, .. } = query_route(&RouteQuery {
+                        client: session.client(),
+                        route,
+                        query_text: query,
+                        repo_id: &identity.repo_id,
+                        revision_id: &identity.revision_id,
+                        generation: identity.generation,
+                        top_k,
+                    }) {
+                        return Err(BenchError::Protocol(format!(
+                            "warmup query failed for {task_id}/{route}: {status}/{code}"
+                        )));
+                    }
+                }
+            }
+        }
+        warmup_elapsed = warmup_start.elapsed();
+
+        let measurement_start = Instant::now();
+        for (repetition, schedule) in protocol.measurement_schedules.iter().enumerate() {
+            for task_id in schedule {
+                let query = task_queries.get(task_id.as_str()).ok_or_else(|| {
+                    BenchError::Protocol("measurement task disappeared".to_string())
+                })?;
+                for route in routes.iter().copied() {
+                    let outcome = query_route(&RouteQuery {
+                        client: session.client(),
+                        route,
+                        query_text: query,
+                        repo_id: &identity.repo_id,
+                        revision_id: &identity.revision_id,
+                        generation: identity.generation,
+                        top_k,
+                    });
+                    let latency = match &outcome {
+                        QueryOutcome::Hits { latency, .. } => *latency,
+                        QueryOutcome::Failed { status, code, .. } => {
+                            return Err(BenchError::Protocol(format!(
+                                "measurement query failed for {task_id}/{route}: {status}/{code}"
+                            )));
+                        }
+                    };
+                    warm_latencies_ms
+                        .entry(route.to_string())
+                        .or_default()
+                        .entry(task_id.clone())
+                        .or_default()
+                        .push(latency.as_secs_f64() * 1000.0);
+                    if repetition == 0
+                        && outcomes
+                            .insert((task_id.clone(), route.to_string()), outcome)
+                            .is_some()
+                    {
+                        return Err(BenchError::Protocol(format!(
+                            "duplicate outcome for task {task_id} route {route}"
+                        )));
+                    }
+                }
+            }
+        }
+        warm_query_elapsed = measurement_start.elapsed();
+    } else {
+        let query_start = Instant::now();
+        let mut first = Duration::ZERO;
+        for task in &pack.tasks {
+            for route in routes.iter().copied() {
+                let single_query_start = Instant::now();
+                let outcome = query_route(&RouteQuery {
+                    client: session.client(),
+                    route,
+                    query_text: &task.query,
+                    repo_id: &identity.repo_id,
+                    revision_id: &identity.revision_id,
+                    generation: identity.generation,
+                    top_k,
+                });
+                if first.is_zero() {
+                    first = single_query_start.elapsed();
+                }
+                if outcomes
+                    .insert((task.task_id.clone(), route.to_string()), outcome)
+                    .is_some()
+                {
+                    return Err(BenchError::Protocol(format!(
+                        "duplicate outcome for task {} route {route}",
+                        task.task_id
+                    )));
+                }
+            }
+        }
+        first_query_elapsed = first;
+        warm_query_elapsed = query_start.elapsed().saturating_sub(first);
     }
-    let query_elapsed = query_start.elapsed();
-    let warm_query_elapsed = query_elapsed.saturating_sub(first_query_elapsed);
 
     let record = runner_record(&RunnerRecordInput {
         pack: &pack,
@@ -722,6 +845,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         .and_then(|value| value.checked_add(boot_elapsed))
         .and_then(|value| value.checked_add(publish_elapsed))
         .and_then(|value| value.checked_add(first_query_elapsed))
+        .and_then(|value| value.checked_add(warmup_elapsed))
         .and_then(|value| value.checked_add(warm_query_elapsed))
         .ok_or_else(|| BenchError::Protocol("runner phase duration overflow".to_string()))?;
     let phase_sum_ms = phase_sum.as_secs_f64() * 1000.0;
@@ -732,7 +856,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             message: err.to_string(),
         })?;
     let record_digest = sha256_hex(format!("{rendered_record}\n").as_bytes());
-    let phase_metrics = serde_json::json!({
+    let mut phase_metrics = serde_json::json!({
         "schema_version": 1,
         "system": "quanta",
         "timing_layer": "runner_monotonic_wall_v1",
@@ -744,19 +868,82 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         "file_count": selection.coverage.files,
         "chunk_count": selection.coverage.chunks,
         "query_schedule": pack.tasks.iter().map(|task| task.task_id.as_str()).collect::<Vec<_>>(),
-        "warmup_passes": 0,
-        "measurement_repetitions": 1,
+        "warmup_passes": query_protocol.as_ref().map_or(0, |value| value.warmup_schedules.len()),
+        "measurement_repetitions": query_protocol.as_ref().map_or(1, |value| value.measurement_schedules.len()),
         "phases_ms": {
             "discovery": discovery_elapsed.as_secs_f64() * 1000.0,
             "chunk": chunk_elapsed.as_secs_f64() * 1000.0,
             "model_provider_prepare": boot_elapsed.as_secs_f64() * 1000.0,
             "embed_publish_seal_activate": publish_elapsed.as_secs_f64() * 1000.0,
             "first_query": first_query_elapsed.as_secs_f64() * 1000.0,
+            "warmup": warmup_elapsed.as_secs_f64() * 1000.0,
             "warm_query": warm_query_elapsed.as_secs_f64() * 1000.0,
             "unattributed": (total_ms - phase_sum_ms).max(0.0),
         },
         "total_ms": total_ms,
     });
+    if let Some(protocol) = &query_protocol {
+        let object = phase_metrics.as_object_mut().ok_or_else(|| {
+            BenchError::Protocol("phase metrics must serialize as an object".to_string())
+        })?;
+        let phases = object
+            .get_mut("phases_ms")
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or_else(|| BenchError::Protocol("phase map disappeared".to_string()))?;
+        let cold = phases
+            .remove("first_query")
+            .ok_or_else(|| BenchError::Protocol("cold query phase disappeared".to_string()))?;
+        if phases.insert("cold_query".to_string(), cold).is_some() {
+            return Err(BenchError::Protocol(
+                "duplicate cold query phase".to_string(),
+            ));
+        }
+        if object
+            .insert(
+                "query_protocol".to_string(),
+                serde_json::to_value(protocol)
+                    .map_err(|err| BenchError::Protocol(err.to_string()))?,
+            )
+            .is_some()
+        {
+            return Err(BenchError::Protocol(
+                "duplicate query protocol evidence".to_string(),
+            ));
+        }
+        if object
+            .insert(
+                "warm_latencies_ms".to_string(),
+                serde_json::to_value(&warm_latencies_ms)
+                    .map_err(|err| BenchError::Protocol(err.to_string()))?,
+            )
+            .is_some()
+        {
+            return Err(BenchError::Protocol(
+                "duplicate warm latency evidence".to_string(),
+            ));
+        }
+        if object
+            .insert(
+                "cold_latencies_ms".to_string(),
+                serde_json::to_value(&cold_latencies_ms)
+                    .map_err(|err| BenchError::Protocol(err.to_string()))?,
+            )
+            .is_some()
+        {
+            return Err(BenchError::Protocol(
+                "duplicate cold latency evidence".to_string(),
+            ));
+        }
+    } else {
+        let phases = phase_metrics
+            .as_object_mut()
+            .and_then(|object| object.get_mut("phases_ms"))
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or_else(|| BenchError::Protocol("phase map disappeared".to_string()))?;
+        if phases.remove("warmup").is_none() {
+            return Err(BenchError::Protocol("warmup phase disappeared".to_string()));
+        }
+    }
     if let Some(path) = &metrics_out {
         write_json(path, &phase_metrics)?;
     }
@@ -785,7 +972,10 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         chunk_elapsed.as_millis(),
         boot_elapsed.as_millis(),
         publish_elapsed.as_millis(),
-        query_elapsed.as_millis(),
+        first_query_elapsed
+            .saturating_add(warmup_elapsed)
+            .saturating_add(warm_query_elapsed)
+            .as_millis(),
         overall_elapsed.as_millis(),
     ))?;
     Ok(())

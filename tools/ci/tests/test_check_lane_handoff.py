@@ -365,3 +365,24 @@ def test_ledger_refuses_blocked_infrastructure_even_after_single_validation(
 
     assert ledger["infrastructure_handoff"]["status"] == "FAILED"
     assert any("P12A.json: no recorded owner-proof handoff" in item for item in findings)
+
+
+def test_ledger_classifies_malformed_proof_archive_as_failed(tmp_path: Path) -> None:
+    root, handoff, manifest_path = _fixture(tmp_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["source"] = "forged source"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    handoff["proofs"][0]["manifest_sha256"] = hashlib.sha256(
+        manifest_path.read_bytes()
+    ).hexdigest()
+    directory = root / "artifacts/sep-21/handoffs"
+    directory.mkdir(parents=True)
+    (directory / "P00.json").write_text(json.dumps(handoff), encoding="utf-8")
+
+    ledger, findings = HANDOFF.CHAIN_VALIDATOR.inspect_handoff_ledger(
+        root=root, proof_checker=PROOF
+    )
+
+    assert ledger["product_handoffs"][0]["status"] == "FAILED"
+    assert ledger["product_chain_status"] == "FAILED"
+    assert any("P00.json: unreadable or invalid handoff" in item for item in findings)

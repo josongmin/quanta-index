@@ -1616,6 +1616,7 @@ def test_worker_template_runs_against_stub_semble(tmp_path, monkeypatch):
         "seed": 0,
         "warmup_passes": 1,
         "repetitions": 2,
+        "query_protocol": pairrun.build_query_protocol(["T1"], 0, 1, 2),
     }
     spec_path = tmp_path / "spec.json"
     native_path = tmp_path / "native.json"
@@ -1640,6 +1641,8 @@ def test_worker_template_runs_against_stub_semble(tmp_path, monkeypatch):
     assert payload["worker_pid"] > 0
     assert [row["task_id"] for row in payload["native"]] == ["T1"]
     assert len(payload["latencies_ms"]["T1"]) == 2
+    assert payload["query_protocol"] == spec["query_protocol"]
+    assert payload["cold_latency_ms"] >= 0
     assert payload["native"][0]["results"][0]["file_path"] == "a.txt"
     assert payload["observed_files"] == ["a.txt"]
 
@@ -2535,6 +2538,20 @@ def _pair_stage(
         spath = sdir / "record.json"
         qpath.write_text(json.dumps(qrec), encoding="utf-8")
         spath.write_text(json.dumps(srec), encoding="utf-8")
+        task_ids = [task["task_id"] for task in pack["tasks"]]
+        protocol = pairrun.build_query_protocol(task_ids, rep, 1, 1)
+        protocol_path = rep_dir / "query-protocol.json"
+        protocol_path.write_text(json.dumps(protocol), encoding="utf-8")
+        q_warm = {
+            "lexical": {
+                row["task_id"]: [row["timings"]["query_latency_ms"]] for row in qrec["results"]
+            }
+        }
+        s_warm = {
+            "hybrid": {
+                row["task_id"]: [row["timings"]["query_latency_ms"]] for row in srec["results"]
+            }
+        }
         qphase = qdir / "phase-metrics.json"
         qphase.write_text(
             json.dumps(
@@ -2550,18 +2567,22 @@ def _pair_stage(
                     "file_count": 2,
                     "chunk_count": 2,
                     "query_schedule": [task["task_id"] for task in pack["tasks"]],
-                    "warmup_passes": 0,
+                    "warmup_passes": 1,
                     "measurement_repetitions": 1,
+                    "query_protocol": protocol,
+                    "warm_latencies_ms": q_warm,
+                    "cold_latencies_ms": {"lexical": 9.0},
                     "phases_ms": {
                         "discovery": 1.0,
                         "chunk": 1.0,
                         "model_provider_prepare": 1.0,
                         "embed_publish_seal_activate": 1.0,
-                        "first_query": 1.0,
+                        "cold_query": 1.0,
+                        "warmup": 1.0,
                         "warm_query": 1.0,
                         "unattributed": 1.0,
                     },
-                    "total_ms": 7.0,
+                    "total_ms": 8.0,
                 }
             ),
             encoding="utf-8",
@@ -2581,15 +2602,18 @@ def _pair_stage(
                     "file_count": 2,
                     "chunk_count": 2,
                     "query_schedule": [task["task_id"] for task in pack["tasks"]],
-                    "warmup_passes": 0,
+                    "warmup_passes": 1,
                     "measurement_repetitions": 1,
+                    "query_protocol": protocol,
+                    "warm_latencies_ms": s_warm,
+                    "cold_latencies_ms": {"hybrid": 9.0},
                     "phases_ms": {
                         "discovery": 1.0,
                         "model_provider_prepare": 1.0,
                         "index": 1.0,
                         "warmup": 1.0,
-                        "first_query": 1.0,
-                        "warm_query": 1.0,
+                        "cold_query": 1.0,
+                        "warm_query": 2.0,
                         "unattributed": 1.0,
                     },
                     "phase_boundaries_ns": {
@@ -2597,14 +2621,16 @@ def _pair_stage(
                         "discovery_end": 1_000_000,
                         "model_provider_prepare_end": 2_000_000,
                         "index_end": 3_000_000,
-                        "warmup_end": 4_000_000,
-                        "query_start": 4_000_000,
-                        "first_query_start": 4_000_000,
-                        "first_query_end": 5_000_000,
-                        "query_end": 6_000_000,
-                        "worker_end": 7_000_000,
+                        "cold_query_start": 3_000_000,
+                        "cold_query_end": 4_000_000,
+                        "warmup_end": 5_000_000,
+                        "query_start": 5_000_000,
+                        "first_query_start": 5_000_000,
+                        "first_query_end": 6_000_000,
+                        "query_end": 7_000_000,
+                        "worker_end": 8_000_000,
                     },
-                    "total_ms": 7.0,
+                    "total_ms": 8.0,
                 }
             ),
             encoding="utf-8",
@@ -2743,7 +2769,9 @@ def _pair_stage(
             {
                 "rep": rep,
                 "order": ["quanta", "semble"],
+                "query_protocol": str(protocol_path),
                 "quanta": {"whole_file": str(qpath)},
+                "quanta_phase_metrics": {"whole_file": str(qphase)},
                 "semble": str(spath),
                 "quanta_manifest": str(rep_dir / "quanta" / "quanta-manifest.json"),
                 "semble_phase_metrics": str(sphase),
@@ -3177,12 +3205,12 @@ def test_verdict_matrix_tamper_and_native_disagreement(tmp_path):
     verdict = _stage_verdict(st)
     assert verdict["states"]["PERF_QUALIFIED"] == "fail"
     assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == "matrix_not_reproducible"
-    st = _pair_stage(tmp_path / "native", scope="qualified", claims={"speed": True})
-    native_path = st["stage"] / "rep-00" / "semble" / "native.json"
-    native = json.loads(native_path.read_text(encoding="utf-8"))
-    first_task = next(iter(native["latencies_ms"]))
-    native["latencies_ms"][first_task][0] = 9.9
-    native_path.write_text(json.dumps(native), encoding="utf-8")
+    st = _pair_stage(tmp_path / "warm", scope="qualified", claims={"speed": True})
+    phase_path = st["stage"] / "rep-00" / "semble" / "phase-metrics.json"
+    phase = json.loads(phase_path.read_text(encoding="utf-8"))
+    first_task = next(iter(phase["warm_latencies_ms"]["hybrid"]))
+    phase["warm_latencies_ms"]["hybrid"][first_task][0] = 9.9
+    phase_path.write_text(json.dumps(phase), encoding="utf-8")
     verdict = _stage_verdict(st)
     assert verdict["states"]["PERF_QUALIFIED"] == "fail"
     assert "matrix_rebuild_failed" in verdict["state_evidence"]["PERF_QUALIFIED"]["reason"]
@@ -3199,7 +3227,6 @@ def test_verdict_perf_frontier_and_gates(tmp_path, monkeypatch):
     assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == "observations_floor_unmet"
     monkeypatch.setattr(pairrun, "PILOT_OBSERVATIONS_FLOOR", 2)
     monkeypatch.setattr(pairrun, "FRESH_ROOTS_FLOOR", 1)
-    monkeypatch.setattr(pairrun, "_qualified_speed_protocol_available", lambda: True)
     verdict = _stage_verdict(st)
     assert verdict["states"]["PERF_QUALIFIED"] == "pass"
     assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == (
@@ -3211,23 +3238,25 @@ def test_verdict_perf_frontier_and_gates(tmp_path, monkeypatch):
     record = json.loads(record_path.read_text(encoding="utf-8"))
     record["results"][0]["timings"] = {"query_latency_ms": None}
     record_path.write_text(json.dumps(record), encoding="utf-8")
+    record_digest = ev.digest(record_path.read_bytes())
+    phase_path = record_path.parent / "phase-metrics.json"
+    phase = json.loads(phase_path.read_text(encoding="utf-8"))
+    phase["record_sha256"] = record_digest
+    phase_path.write_text(json.dumps(phase), encoding="utf-8")
+    resource_path = record_path.parent / "resource-metrics.json"
+    resource = json.loads(resource_path.read_text(encoding="utf-8"))
+    resource["subject_sha256"] = record_digest
+    resource_path.write_text(json.dumps(resource), encoding="utf-8")
     matrix = pairrun.build_latency_matrix(st["rep_layouts"])
     (st["stage"] / "latency-matrix.json").write_text(json.dumps(matrix), encoding="utf-8")
-    (st["stage"] / "rep-00" / "quanta" / "quanta-manifest.json").write_text(
-        json.dumps(
-            {
-                "runs": [
-                    {
-                        "strategy": "whole_file",
-                        "record": "strategy-00-whole_file/record.json",
-                        "record_digest": ev.digest(record_path.read_bytes()),
-                        "index_bytes": 4096,
-                    }
-                ]
-            }
-        ),
-        encoding="utf-8",
+    quanta_manifest_path = st["stage"] / "rep-00" / "quanta" / "quanta-manifest.json"
+    quanta_manifest = json.loads(quanta_manifest_path.read_text(encoding="utf-8"))
+    quanta_manifest["runs"][0].update(
+        record_digest=record_digest,
+        phase_metrics_digest=ev.digest(phase_path.read_bytes()),
+        resource_metrics_digest=ev.digest(resource_path.read_bytes()),
     )
+    quanta_manifest_path.write_text(json.dumps(quanta_manifest), encoding="utf-8")
     _rewrite_manifest(
         st,
         lambda m: m["evidence"]["perf"].update(
@@ -3419,23 +3448,187 @@ def test_qualified_admission_is_reverified_after_capture(tmp_path):
     assert verdict["failure_class"] == "admission"
 
 
-@pytest.mark.parametrize("cache_regime", ["true_process_cold", "warm_cache"])
-def test_qualified_speed_refuses_until_shared_warm_query_protocol(cache_regime):
-    with pytest.raises(pairrun.RunError, match="shared warm-query protocol is not implemented"):
-        pairrun.run_pair(
+def test_shared_query_protocol_is_deterministic_digest_bound_and_permuted():
+    task_ids = [f"T{index:02d}" for index in range(20)]
+    first = pairrun.build_query_protocol(task_ids, 17, 1, 10)
+    second = pairrun.build_query_protocol(task_ids, 17, 1, 10)
+    assert first == second
+    assert pairrun.validate_query_protocol(first, task_ids, "protocol") == first
+    assert all(sorted(schedule) == task_ids for schedule in first["measurement_schedules"])
+
+    mutated = json.loads(json.dumps(first))
+    mutated["measurement_schedules"][0].reverse()
+    with pytest.raises(pairrun.RunError, match="sha256 mismatch"):
+        pairrun.validate_query_protocol(mutated, task_ids, "protocol")
+
+    malformed = json.loads(json.dumps(first))
+    malformed["measurement_schedules"][0][0] = 7
+    with pytest.raises(pairrun.RunError, match="exact task permutation"):
+        pairrun.validate_query_protocol(malformed, task_ids, "protocol")
+
+
+@pytest.mark.parametrize(
+    ("spec", "task_count", "message"),
+    [
+        (
             {
-                "scope": "qualified",
-                "admission": {},
-                "claims": {"speed": True},
-                "cache_regime": cache_regime,
-            }
-        )
+                "repetitions": 4,
+                "query_warmup_passes": 1,
+                "query_repetitions_per_root": 13,
+                "routes": ["hybrid"],
+            },
+            20,
+            "fresh roots",
+        ),
+        (
+            {
+                "repetitions": 5,
+                "query_warmup_passes": 1,
+                "query_repetitions_per_root": 10,
+                "routes": ["hybrid"],
+            },
+            19,
+            "20 frozen tasks",
+        ),
+        (
+            {
+                "repetitions": 5,
+                "query_warmup_passes": 0,
+                "query_repetitions_per_root": 10,
+                "routes": ["hybrid"],
+            },
+            20,
+            "warmup pass",
+        ),
+        (
+            {
+                "repetitions": 5,
+                "query_warmup_passes": 1,
+                "query_repetitions_per_root": 9,
+                "routes": ["hybrid"],
+            },
+            20,
+            "warm observations",
+        ),
+        (
+            {
+                "repetitions": 5,
+                "query_warmup_passes": 1,
+                "query_repetitions_per_root": 10,
+                "routes": ["lexical", "hybrid"],
+            },
+            20,
+            "exactly one Quanta route",
+        ),
+    ],
+)
+def test_qualified_speed_spec_rejects_underpowered_or_biased_protocol(spec, task_count, message):
+    with pytest.raises(pairrun.RunError, match=message):
+        pairrun.validate_qualified_speed_spec(spec, task_count)
+
+
+def test_qualified_speed_spec_accepts_1000_warm_observations_per_route():
+    pairrun.validate_qualified_speed_spec(
+        {
+            "repetitions": 5,
+            "query_warmup_passes": 1,
+            "query_repetitions_per_root": 10,
+            "routes": ["hybrid"],
+        },
+        20,
+    )
+
+
+def test_protocol_phase_metrics_bind_raw_warm_counts_and_cold_separately():
+    task_ids = ["T1", "T2"]
+    protocol = pairrun.build_query_protocol(task_ids, 3, 1, 2)
+    phase = {
+        "schema_version": 1,
+        "system": "quanta",
+        "timing_layer": "runner_monotonic_wall_v1",
+        "strategy": "whole_file",
+        "record_sha256": "a" * 64,
+        "runner_binary_sha256": "b" * 64,
+        "task_count": 2,
+        "route_count": 1,
+        "file_count": 1,
+        "chunk_count": 1,
+        "query_schedule": task_ids,
+        "warmup_passes": 1,
+        "measurement_repetitions": 2,
+        "query_protocol": protocol,
+        "warm_latencies_ms": {"hybrid": {"T1": [1.0, 1.1], "T2": [2.0, 2.1]}},
+        "cold_latencies_ms": {"hybrid": 9.0},
+        "phases_ms": {
+            "discovery": 1.0,
+            "chunk": 1.0,
+            "model_provider_prepare": 1.0,
+            "embed_publish_seal_activate": 1.0,
+            "cold_query": 1.0,
+            "warmup": 1.0,
+            "warm_query": 1.0,
+            "unattributed": 1.0,
+        },
+        "total_ms": 8.0,
+    }
+    assert pairrun._validate_phase_metrics(phase, "phase") == phase
+    phase["warm_latencies_ms"]["hybrid"]["T1"].pop()
+    with pytest.raises(pairrun.RunError, match="count differs"):
+        pairrun._validate_phase_metrics(phase, "phase")
 
 
 def test_verdict_cannot_qualify_cold_only_latency_as_warm_performance(tmp_path, monkeypatch):
     monkeypatch.setattr(pairrun, "PILOT_OBSERVATIONS_FLOOR", 2)
     monkeypatch.setattr(pairrun, "FRESH_ROOTS_FLOOR", 1)
     st = _pair_stage(tmp_path, scope="qualified", claims={"speed": True})
+    layout = st["rep_layouts"][0]
+    qphase_path = Path(layout["quanta_phase_metrics"]["whole_file"])
+    qphase = json.loads(qphase_path.read_text(encoding="utf-8"))
+    for key in ("query_protocol", "warm_latencies_ms", "cold_latencies_ms"):
+        qphase.pop(key)
+    qphase["phases_ms"]["first_query"] = qphase["phases_ms"].pop("cold_query")
+    qphase["phases_ms"].pop("warmup")
+    qphase["warmup_passes"] = 0
+    qphase["total_ms"] = 7.0
+    qphase_path.write_text(json.dumps(qphase), encoding="utf-8")
+    quanta_manifest_path = st["stage"] / "rep-00" / "quanta" / "quanta-manifest.json"
+    quanta_manifest = json.loads(quanta_manifest_path.read_text(encoding="utf-8"))
+    quanta_manifest["runs"][0]["phase_metrics_digest"] = ev.digest(qphase_path.read_bytes())
+    quanta_manifest_path.write_text(json.dumps(quanta_manifest), encoding="utf-8")
+
+    sphase_path = Path(layout["semble_phase_metrics"])
+    sphase = json.loads(sphase_path.read_text(encoding="utf-8"))
+    for key in ("query_protocol", "warm_latencies_ms", "cold_latencies_ms"):
+        sphase.pop(key)
+    sphase["phases_ms"]["first_query"] = sphase["phases_ms"].pop("cold_query")
+    sphase["phases_ms"]["warm_query"] = 1.0
+    sphase["phase_boundaries_ns"] = {
+        "worker_start": 0,
+        "discovery_end": 1_000_000,
+        "model_provider_prepare_end": 2_000_000,
+        "index_end": 3_000_000,
+        "warmup_end": 4_000_000,
+        "query_start": 4_000_000,
+        "first_query_start": 4_000_000,
+        "first_query_end": 5_000_000,
+        "query_end": 6_000_000,
+        "worker_end": 7_000_000,
+    }
+    sphase["total_ms"] = 7.0
+    sphase_path.write_text(json.dumps(sphase), encoding="utf-8")
+
+    legacy_layout = dict(layout)
+    legacy_layout.pop("query_protocol")
+    legacy_layout.pop("quanta_phase_metrics")
+    matrix = pairrun.build_latency_matrix([legacy_layout])
+    (st["stage"] / "latency-matrix.json").write_text(json.dumps(matrix), encoding="utf-8")
+    _rewrite_manifest(
+        st,
+        lambda manifest: manifest["evidence"]["perf"].update(
+            observations_floor=matrix["observations_floor"],
+            fresh_roots=matrix["fresh_roots"],
+        ),
+    )
     verdict = _stage_verdict(st)
     assert verdict["states"]["PERF_QUALIFIED"] == "fail"
     assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == (
@@ -3746,6 +3939,26 @@ def test_matrix_floor_no_cross_strategy_inflation():
     bad[0]["native_latencies"]["T1"] = [9.9, 2.5]
     with pytest.raises(pairrun.RunError, match="disagree"):
         pairrun.aggregate_matrix(bad, 1)
+
+
+def test_matrix_uses_only_shared_warm_samples_and_rejects_first_sample_drift():
+    cell = {
+        "system": "quanta",
+        "strategy": "whole_file",
+        "rows": [("hybrid", "T1", "success", 2.0)],
+        "warm_latencies": {"hybrid": {"T1": [2.0, 2.5, 3.0]}},
+        "cold_latencies": {"hybrid": 99.0},
+        "native_latencies": None,
+        "native_route": None,
+    }
+    matrix = pairrun.aggregate_matrix([cell], 1)
+    assert matrix["samples"]["quanta:whole_file:hybrid:T1"] == [2.0, 2.5, 3.0]
+    assert matrix["observations_floor"] == 3
+    assert 99.0 not in matrix["samples"]["quanta:whole_file:hybrid:T1"]
+
+    cell["warm_latencies"]["hybrid"]["T1"][0] = 2.1
+    with pytest.raises(pairrun.RunError, match="disagree"):
+        pairrun.aggregate_matrix([cell], 1)
 
 
 def test_receipt_shape_mirrors_canonical_schema():
@@ -4478,6 +4691,30 @@ def test_retrieval_recipes_download_nothing():
         text = "\n".join(bodies[name]).lower()
         for verb in verbs:
             assert verb not in text, f"{name} downloads via {verb}"
+
+
+def test_benchmark_prep_does_not_repeat_retrieval_contracts():
+    root = Path(pairrun.__file__).resolve().parents[3]
+
+    def recipe(*args: str) -> str:
+        completed = subprocess.run(
+            ["just", "--dry-run", *args],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return completed.stdout + completed.stderr
+
+    prep = recipe("benchmark-prep-local")
+    proof = recipe("retrieval-contract-proof", "/tmp/retrieval-proof")
+    local = recipe("retrieval-contract-local")
+    assert "test_retrieval_benchmark.py -q" not in prep
+    assert "test -p quanta-index-retrieval-bench" not in prep
+    assert "test_retrieval_benchmark.py -q" in proof
+    assert "--test chunking_contract" in proof
+    assert "test_retrieval_benchmark.py -q" in local
+    assert "--test chunking_contract" in local
 
 
 def test_retrieval_verdict_recipe_matches_cli_parser():

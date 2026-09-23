@@ -42,6 +42,14 @@
     "seed": {"type": "integer", "minimum": 0},
     "timeout_secs": {"type": "integer", "minimum": 1},
     "repetitions": {"type": "integer", "minimum": 1},
+    "query_repetitions_per_root": {
+      "type": "integer", "minimum": 1,
+      "description": "Shared warm-query measurement repetitions per fresh root. Required by qualified speed; task_count * this value * repetitions must be at least 1000."
+    },
+    "query_warmup_passes": {
+      "type": "integer", "minimum": 1,
+      "description": "Shared warmup passes consumed from the same digest-bound schedule by both runners. Required by qualified speed."
+    },
     "alternate_order": {"type": "boolean"},
     "order": {
       "type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true,
@@ -104,6 +112,26 @@
     {
       "if": {"properties": {"scope": {"const": "qualified"}}, "required": ["scope"]},
       "then": {"required": ["admission"]}
+    },
+    {
+      "if": {
+        "properties": {
+          "scope": {"const": "qualified"},
+          "claims": {
+            "properties": {"speed": {"const": true}},
+            "required": ["speed"]
+          }
+        },
+        "required": ["scope", "claims"]
+      },
+      "then": {
+        "required": ["repetitions", "query_repetitions_per_root", "query_warmup_passes", "routes"],
+        "properties": {
+          "repetitions": {"minimum": 5},
+          "query_warmup_passes": {"minimum": 1},
+          "routes": {"maxItems": 1}
+        }
+      }
     }
   ],
   "$defs": {

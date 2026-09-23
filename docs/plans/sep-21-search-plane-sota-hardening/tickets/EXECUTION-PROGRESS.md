@@ -6,6 +6,39 @@ to validated lane handoffs and immutable proof manifests, not this document.
 
 ## Current checkpoint (2026-09-24)
 
+- P09 request-event follow-up on moving shared `main` (latest observed
+  `f154f2f25cac107765f6625aa354156f3e0e38c6`; source dirty, not an
+  exact-source receipt): IPC now owns one bounded 1024-entry, nonblocking
+  request-event tail keyed by validated envelope ID and connection ID, with
+  visible dropped-event counter. The generic searchd adapter adds a closed
+  route projection and top-level typed error code without new request IDs or
+  provider usage settlement. An overload refusal encode failure previously
+  emitted `ResponseWriteFailed`; a real `handle_connection` RED failed 1/1,
+  then the classification patch made the same test pass 1/1. `./scripts/cargow
+  test -p quanta-index-ipc --lib --locked` passed 49/49; `./scripts/cargow
+  --lane fast-lane check -p quanta-index-searchd --lib --tests --locked`
+  passed compilation only. A filtered searchd test attempt was interrupted
+  during DataFusion/Lance compilation (exit 130), before test execution.
+  `just rust-hexagonal`, `just rust-wire-inventory` and `just
+  rust-public-api` passed; `just rust-cargo-modules` was interrupted after
+  90 seconds waiting on its tool subprocess (exit 130), with no verdict.
+  Query/ingest still discard `DispatchContextV1`; provider-stage linkage,
+  an operator-readable bounded event path, observed backend liveness and an
+  explicit readiness proof-age horizon remain open. The P09 owner/release
+  proof and clean-source qualification remain `NOT_RUN`.
+
+- R0 read-only inventory on the current host: neither
+  `QUANTA_INDEX_STATE_ROOT` nor `QUANTA_INDEX_CACHE_ROOT` was set in this
+  shell. The macOS default `/Users/songmin/Library/Caches/quanta-index/state`
+  exists but its only observed file was `build-profile/history.jsonl`; no
+  `repo-map/` exists there. This limits the default local root only, not an
+  external deployment or custom root. Semantica's current checkout was
+  `ab1bb476306b02ae81979d359f5ae22c712358ad`, 31 commits ahead and 28
+  behind its upstream with two dirty ticket files. Exact-pair proof remains
+  `BLOCKED` on that shared checkout. Preserve actual V1 roots and original
+  source bundles until the operator identifies them; absence at the default
+  path is not a global `NOT_APPLICABLE` waiver.
+
 - P12A aggregate follow-up is now present on shared local `main`
   `fa17e0f14672548bf7116074b7064c7c5e455d03`: the single-handoff
   Git/archive/proof semantics moved into the acyclic
@@ -30,9 +63,13 @@ to validated lane handoffs and immutable proof manifests, not this document.
   JSON parsing consumes. The product-chain and infrastructure-ledger failure
   axes are separately covered. `just proof-p12a-proof-infrastructure` then
   exited 0 with 32/32 Python tests; `git diff --check` exited 0. Shared
-  `main` advanced again during this session (last observed `449197fe`), and
+  `main` advanced again during this session (last observed `1306325e`), and
   unrelated benchmark work plus these P12A edits remained dirty, so this is
   local behavior/governance evidence, not exact-source qualification.
+  A later same-scope rerun exited 0 with 33/33 tests after malformed archived
+  manifest input was made a `FAILED` ledger entry rather than an unhandled
+  aggregate exception; the source remained dirty and this still did not issue
+  a P12A proof manifest.
 
 - P12A partial implementation on Quanta `main` base `565be6ac` adds one
   fixed handoff lane policy in `tools/ci/lint/handoff_validation.py`, a pure

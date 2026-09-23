@@ -15,6 +15,8 @@ Read this file for implementation or verification work.
 ## Design Defaults
 
 - Breaking-first: prefer one canonical contract over open-ended compatibility shims.
+- Keep one current internal IR per semantic boundary. Change its producers and consumers together; do not add versioned IR twins, upcasters, or legacy readers for this undeployed service.
+- Distinguish internal IR from persisted/wire artifacts: retain exact identity and rejection checks where needed, but never use an artifact version stamp to justify parallel IRs.
 - Authority must be typed or explicit; heuristics cannot decide correctness.
 - Keep core/port types independent from vendor and adapter types.
 - Fix the producing authority instead of adding consumer-side repair layers.

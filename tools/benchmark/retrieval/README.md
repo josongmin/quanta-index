@@ -235,10 +235,11 @@ keys: `repo`, `manifest`, `suite`, `query_pack`, `top_k`, `output_root`,
 | `semble_lockfile_sha256` | required for `pair` | SHA-256 of the external lockfile; env must carry every locked line plus `semble==0.6.0` |
 | `semble_route` | `semble-hybrid` | Semble record route name |
 | `semble_cache_root` | `<out>/semble-cache` | Semble + HF caches (outside checkout) |
-| `semble_repetitions`/`semble_warmup_passes` | `1`/`0` | internal Semble schedule; qualified cold speed fixes these at 1/0 and uses query-pack order, matching Quanta |
+| `semble_repetitions`/`semble_warmup_passes` | `1`/`0` | exploratory Semble-only compatibility knobs; never qualify speed |
+| `query_repetitions_per_root`/`query_warmup_passes` | `1`/`1` | one driver-generated, digest-bound randomized schedule consumed by both runners; qualified speed requires warmup >= 1 and at least 1,000 warm observations per route across roots |
 | `semble_model_revision` | observed | pinned HF revision (drift fails) |
 | `quanta_model_dir` | none | explicit local model directory; required for a `potion-code` speed claim and counted separately from index storage |
-| `repetitions` | `1` | external reps on fresh state |
+| `repetitions` | `1` | external reps on fresh state; qualified speed requires at least 5 |
 | `alternate_order` | `true` | alternate system order per rep |
 | `order` | `["quanta","semble"]` | base system order |
 | `baseline_route` | Semble route | report baseline |
@@ -294,13 +295,17 @@ Resource evidence is schema-closed: aggregate and per-process peak RSS/CPU,
 index/model/parser/embedding-cache bytes, discovered file count, indexed chunk
 count, disk-vs-memory ownership, and the measurement method are mandatory.
 Semble in-memory index bytes are a worker-observed peak-RSS delta and must be
-positive and byte-equal in native/resource evidence. Phase evidence carries the
-exact query-pack schedule, warmup/repetition counts, and monotonic boundaries;
-the verdict re-derives every Semble phase. Process-cold timings are diagnostic
-only. Qualified speed capture and verdict both refuse until the two runners
-implement one shared warmup, randomized/interleaved 50-repetition schedule, raw
-per-query warm samples, and like-for-like timing layer. A cold-only manifest
-cannot be upgraded by editing its claim fields.
+positive and byte-equal in native/resource evidence. For each fresh root the
+driver emits one SHA-256-bound query protocol containing a cold probe, randomized
+warmup permutation(s), and randomized measurement permutations. Quanta and
+Semble must echo that exact protocol and raw per-route/per-task warm latency
+arrays in phase evidence. The verdict rejects protocol drift, incomplete
+permutations, count mismatches, first-sample/record disagreement, or cold samples
+entering the warm matrix. Qualified speed additionally requires exactly one
+Quanta route, at least 20 tasks, at least 5 fresh roots, and at least 1,000 warm
+observations per route. Cold-query latency remains separate and never contributes
+to the qualified matrix. A legacy cold-only manifest cannot be upgraded by
+editing its claim fields.
 
 Notes: the first Semble index includes the model download (later runs reuse
 the cache; `index_stats` and `semble_index_ms` always record what ran).
@@ -324,13 +329,13 @@ evidence exists yet; conditional IDs apply only when the claim is made.
 | T05 | `sdk_roundtrip.rs` process/frontdoor | `just retrieval-sdk-proof <fresh-output-root>`; pinned actual runner + separate daemon, readiness and empty-state checks |
 | T06 | same, SDK write authority | sealed receipt + exact composite activation ACK; direct IPC/fixture helpers refused by static guard |
 | T07 | same, SDK read authority | lexical/semantic/hybrid SDK reads, generation pin and typed failure behavior |
-| T08 | `benchmarks/retrieval/tests/chunking_contract.rs` | `just benchmark-prep-local` (chunking contract, no daemon) |
-| T09 | same (oracle cases + fallback accounting) | `just benchmark-prep-local` |
-| T10 | per-strategy generation/capture/model binding plus deterministic replay | `just retrieval-sdk-proof <fresh-output-root>`; `just benchmark-prep-local`; real ablation evidence remains unrun |
-| T11 | `semble.py` mapping proof + adapter tests | `mapping-proof.json`; `just benchmark-prep-local` |
+| T08 | `benchmarks/retrieval/tests/chunking_contract.rs` | `just retrieval-contract-proof <fresh-output-root>` (chunking contract, no daemon); `just retrieval-contract-local` for diagnostic edits |
+| T09 | same (oracle cases + fallback accounting) | `just retrieval-contract-proof <fresh-output-root>` |
+| T10 | per-strategy generation/capture/model binding plus deterministic replay | `just retrieval-sdk-proof <fresh-output-root>`; `just retrieval-contract-proof <fresh-output-root>`; real ablation evidence remains unrun |
+| T11 | `semble.py` mapping proof + adapter tests | `mapping-proof.json`; `just retrieval-contract-proof <fresh-output-root>` |
 | T12 | `run.py pair` (same universe/host) + `host.json` | `just retrieval-pair <spec>`; NOT_RUN until a frozen pilot |
 | T13 | `run.py verdict` (deterministic re-score) | command implemented and fixture-tested; no real-pair `verdict.json` issued |
-| T14 | registered commands and external artifact root | `just benchmark-prep-local`, `just retrieval-contract-proof <fresh-output-root>` and `just retrieval-sdk-proof <fresh-output-root>`; none downloads Semble/model assets implicitly |
+| T14 | registered commands and external artifact root | `just benchmark-prep-local`, `just retrieval-contract-local`, `just retrieval-contract-proof <fresh-output-root>` and `just retrieval-sdk-proof <fresh-output-root>`; none downloads Semble/model assets implicitly |
 | T15 | model parity (conditional on a same-model claim) | NOT_RUN (no same-model claim; `model_revision` recorded per run) |
 | T16 | incremental capture (conditional on an incremental claim) | NOT_RUN (no incremental claim) |
 | T17 | W0-B qualification admission | `admission.schema.json` plus license, two annotation, adjudication, model, host, lockfile and exact contract/SDK receipt digests; exploratory runs are never promoted |
