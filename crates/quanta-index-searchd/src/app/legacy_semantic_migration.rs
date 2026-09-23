@@ -235,10 +235,12 @@ impl LegacySemanticJournalReaderV1 {
     /// Nothing is created and nothing is written: no directory, no lock
     /// file, no receipt, no cleanup of the source. A missing directory (or a
     /// directory without `journal.cbor`) simply means there is no legacy
-    /// journal. A source-side `MIGRATED` receipt is old-binary authority
-    /// this binary cannot verify against a fresh staging root, so the
-    /// journal is refused immutable rather than re-migrated or ignored.
-    /// A stale `MIGRATED.lock` beside it is inert residue and is ignored.
+    /// journal, and so does a journal that decodes to zero batches: there is
+    /// nothing to migrate, revalidate, or receipt. A source-side `MIGRATED`
+    /// receipt is old-binary authority this binary cannot verify against a
+    /// fresh staging root, so the journal is refused immutable rather than
+    /// re-migrated or ignored. A stale `MIGRATED.lock` beside it is inert
+    /// residue and is ignored.
     pub fn open(journal_dir: impl AsRef<Path>) -> Result<Self, CoreError> {
         let requested_root = journal_dir.as_ref();
         match fs::symlink_metadata(requested_root) {
@@ -268,6 +270,9 @@ impl LegacySemanticJournalReaderV1 {
             return Ok(Self::empty());
         };
         let journal = decode_journal(&bytes)?;
+        if journal.batches.is_empty() {
+            return Ok(Self::empty());
+        }
         if journal.batches.len() > MAX_JOURNAL_BATCHES {
             return Err(CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticMigrationInputTooLarge,
