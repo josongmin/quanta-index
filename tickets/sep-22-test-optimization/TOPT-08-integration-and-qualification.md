@@ -153,3 +153,23 @@ not passed on `5b24c34`; prior attempts found and repaired owner errors,
 then stopped or became source-stale. Daemon-profile rails, the 10,001-row
 quiet-host recheck, and retrospective paired performance evidence remain
 open. No `CODE_QUALIFIED` or `PERF_EVIDENCE_CLEAN` verdict is emitted.
+
+## Current code receipt and remaining qualification — `87f4e797`
+
+Clean checkout-scoped, sccache-disabled `test-fast` and `test-integration`
+passed on `87f4e797` (search-plane library 402/402; integration 210 + 6 +
+58). Strict rustdoc passed. The full-workspace static gates passed on
+`a6ec03fe`, one test-oracle edit earlier. Focused active-generation drift
+unit/E2E tests passed after the server began returning typed `NOT_READY` for
+stale `Active` pins while retaining `INVALID_REQUEST` for fixed-pin mismatch.
+The activation E2E still requires an observed complete generation two within
+its original five-second bound.
+
+This does **not** emit `CODE_QUALIFIED`: final-source `test-daemon-all`,
+`verify-rust`, and any surface-triggered fuzz rail are not complete. Earlier
+daemon-all runs failed before all cases executed: four contended 30-second
+IPC read timeouts at four threads; then the now-fixed activation drift at one
+thread. The 10,001-row ingest timeout must be retried on a quiet host without
+changing its limit. `PERF_EVIDENCE_CLEAN` is blocked independently on TOPT-00's
+retrospective paired protocol. The missing historical admission record cannot
+be retroactively manufactured.

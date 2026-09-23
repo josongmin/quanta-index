@@ -191,3 +191,57 @@ TOPT-08 remains open: complete the exact-source full Rust and daemon rails,
 rerun the 10,001-row ingest case without competing host load, and collect
 TOPT-00's retrospective paired timing. A contended timeout is not yet a
 producer-cost RCA; do not increase its deadline or weaken the oracle.
+
+## Sep 23 source-bound remediation — `87f4e797`
+
+The current code source was exercised in the clean, checkout-scoped detached
+worktree `sep23-gate-qualification/quanta-index` with sccache disabled. The
+shared `main` checkout still contains another writer's prompt-manager changes;
+they were excluded from every commit and source-bound Cargo receipt below.
+
+- Removed redundant crate-local `multiple_crate_versions` expectations. The
+  workspace already allows this Clippy lint and cargo-deny owns dependency
+  duplication. The explicit expectations forced Clippy's recursive dependency
+  graph traversal and caused an 18-minute-plus lint run. A workspace-lint
+  guard now prevents reintroducing the redundant expectations.
+- Repaired exhaustive IPC response matching in the harness and runtime tests.
+  The new active-generation response variants are rejected in routes that do
+  not consume them, rather than swallowed by a wildcard.
+- The peer-watch test exposed a real ordering race: a disconnect event could
+  be observed before cancellation. The owner now cancels first and publishes
+  the event second; the callback test synchronizes on callback entry.
+- Five daemon E2E queries and the SDK frontdoor ingest fixture issued request
+  ID zero, which the current IPC contract rejects. They now allocate nonzero
+  IDs at the request producer. The SDK regression helper asserts that invariant.
+- A concurrent activation test originally hid query errors behind a polling
+  atomic. An event channel surfaced the actual `INVALID_REQUEST`: the SDK
+  resolved an `Active` generation before activation, then sent its stale
+  explicit pin after activation. The server still refuses the inconsistent
+  query, but now classifies this *retryable active-selector drift* as typed
+  `NOT_READY`. A mismatched fixed `Pinned` selector remains `INVALID_REQUEST`.
+  Unit tests cover active lexical, semantic, and hybrid drift and pinned
+  mismatch. The E2E keeps its original five-second deadline, requires a
+  complete generation-two result, and tolerates only typed `NOT_READY` while
+  activation is in flight.
+
+On clean `87f4e797`, `just rust-profile test-fast` passed; the search-plane
+library passed 402/402. `just rust-profile test-integration` passed with
+210/210 fast, 6/6 storage, and 58/58 semantic cases. Strict-warnings
+`just rust-doc` passed. Full-workspace `just rust-clippy`,
+`just fmt-check`, `just rust-policy`, `just rust-machete`, and
+`just rust-public-api` passed on its predecessor `a6ec03fe`;
+the sole subsequent code edit changed a search-plane test assertion from an
+obsolete `INVALID_REQUEST` expectation to the exact `NOT_READY` drift code
+and message. Do not call those static receipts exact-HEAD results until rerun.
+
+`test-daemon-all` is not green on this source. The default four-thread run on
+`a1d6c0fb` failed four 30-second IPC reads while other Rust workloads were
+active; each failed case passed independently with one test thread. A
+one-thread full run then exposed the activation drift above and failed at
+170/322; that root cause was fixed and its focused owner/E2E cases passed,
+but the complete selector has not been rerun after the fix. Neither earlier
+fail-fast run is a full-suite receipt. A prior 10,001-row fixture ingest
+timeout under host contention likewise remains unresolved; do not call it a
+producer regression or delete/relax the oracle. TOPT-00 quiet-host paired
+performance evidence and the irrecoverable historical pre-implementation
+admission record remain separate open items.
