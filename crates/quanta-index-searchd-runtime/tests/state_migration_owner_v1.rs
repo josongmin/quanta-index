@@ -260,9 +260,10 @@ fn verify_backup(root: &Path) -> Result<OfflineStateVerificationV1, Box<dyn std:
     Ok(run_offline_verify_v1(&session, &CatalogVerifierV1)?)
 }
 
-/// Every file and directory name under `root`, sorted. The catalog subtree
-/// is excluded: the engine's backup API necessarily opens the live catalog,
-/// and directory mtimes there are vendor bookkeeping, not source state.
+/// Return sorted names beneath `root`, excluding the catalog subtree.
+///
+/// The engine's backup API opens the live catalog, whose directory mtimes
+/// are vendor bookkeeping rather than source state.
 ///
 /// Everywhere else the name set must be exactly stable across an operation.
 fn tree_names_outside_catalog(root: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
@@ -290,10 +291,12 @@ fn tree_names_outside_catalog(root: &Path) -> Result<Vec<String>, Box<dyn std::e
     Ok(names)
 }
 
-/// No migration marker, migration receipt or produced-current manifest may
-/// appear inside a source root: those authorities live in staging/destination
-/// only. Track-local files such as `indexes/.../manifest.cbor` are ordinary
-/// source payload and must not be rejected by a substring match.
+/// Assert migration control files never appear beneath a source root.
+///
+/// Migration markers, receipts, and produced-current manifests belong in
+/// staging or destination only. Track-local files such as
+/// `indexes/.../manifest.cbor` are ordinary source payload and must not be
+/// rejected by a substring match.
 ///
 /// Lock files are covered separately: the daemon's own pre-existing lock may stand, but
 /// the name set ([`tree_names_outside_catalog`]) must prove no lock was
