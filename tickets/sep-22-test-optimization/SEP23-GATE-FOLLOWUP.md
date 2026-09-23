@@ -3,9 +3,11 @@
 Status: `BLOCKED — dirty-source ownership, one runtime timeout, and TOPT-00 timing evidence`
 
 This is a current shared-worktree repair record, **not** a clean-HEAD or
-performance qualification. At capture, `main` was
+performance qualification. At initial capture, `main` was
 `384cecb5825d8ebf38ff6c07bc6bf64ffc43fbe0`, 16 commits ahead of
-`origin/main`. Other writers had uncommitted changes in catalog, embed,
+`origin/main`. The repairs in this note were committed as
+`e42cb827b39197bae83752bec0cfb69aa572daae`; no clean checkout of that
+commit was qualified. Other writers had uncommitted changes in catalog, embed,
 repomap, SDK, search-plane, searchd, benchmark Python/schema, and the
 TOPT-08/RCA tickets. Do not stage those paths from this follow-up.
 
@@ -41,7 +43,7 @@ TOPT-08/RCA tickets. Do not stage those paths from this follow-up.
 | `just fmt-check` | pass | shared dirty tree |
 | `just rust-clippy` | pass, workspace/all targets/all features | depends on other writers' uncommitted Clippy repairs |
 | `just rust-policy`; `just rust-machete` | pass; pass | policy sees zero current-HEAD benchmark artifacts |
-| `just rust-public-api` | pass | baseline update is uncommitted |
+| `just rust-public-api` | pass | baseline update is in `e42cb82`, but no clean-commit rerun |
 | `just rust-doc` | pass after link repairs | shared dirty tree |
 | `just rust-bench-build` | pass; optimized workspace benches compiled, not executed | shared dirty tree; no timing evidence |
 | `test-fast` selector via `./scripts/cargow --lane test-fast-lane test --workspace --lib --bins --all-features --locked --exclude quanta-index-searchd-runtime --quiet` | pass, exit 0 | exact recipe first ended with SIGTERM/143 mid-run; same selector's quiet-output rerun passed; runtime crate excluded by profile |
