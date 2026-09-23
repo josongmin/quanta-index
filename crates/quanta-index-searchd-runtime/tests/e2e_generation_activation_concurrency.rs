@@ -16,13 +16,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use quanta_index_contract::{
     ChunkId, ChunkRecord, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
-    SearchCorpusGenerationIdentityV1, SearchScopeKey, SearchScopeSurface, lex::LanguageCode,
+    SearchCorpusGenerationIdentityV1, SearchPlaneErrorCodeV2, SearchScopeKey, SearchScopeSurface,
+    lex::LanguageCode,
 };
-use quanta_index_sdk::{ConnectOptions, QuantaIndex, RepoMetaBatch, SearchCorpusBatch};
+use quanta_index_sdk::{ConnectOptions, QuantaIndex, RepoMetaBatch, SdkError, SearchCorpusBatch};
 use quanta_index_searchd_harness::E2eRuntime;
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -101,18 +102,32 @@ fn generation(raw: u64) -> ManifestGeneration {
 #[derive(Debug, Eq, PartialEq)]
 enum QueryEvent {
     Generation(u64),
+    NotReady,
     TransitionQueryCompleted,
     Failed(String),
 }
 
 fn expect_query_event(events: &mpsc::Receiver<QueryEvent>, expected: QueryEvent) -> TestResult {
-    match events.recv_timeout(SOCKET_TIMEOUT) {
-        Ok(QueryEvent::Failed(error)) => {
-            Err(format!("query loop failed before {expected:?}: {error}").into())
+    let deadline = Instant::now() + SOCKET_TIMEOUT;
+    let mut saw_not_ready = false;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match events.recv_timeout(remaining) {
+            Ok(QueryEvent::NotReady) => saw_not_ready = true,
+            Ok(QueryEvent::Failed(error)) => {
+                return Err(format!("query loop failed before {expected:?}: {error}").into());
+            }
+            Ok(observed) if observed == expected => return Ok(()),
+            Ok(observed) => {
+                return Err(format!("expected {expected:?}, observed {observed:?}").into());
+            }
+            Err(error) => {
+                return Err(format!(
+                    "waiting for {expected:?}: {error}; saw_not_ready={saw_not_ready}"
+                )
+                .into());
+            }
         }
-        Ok(observed) if observed == expected => Ok(()),
-        Ok(observed) => Err(format!("expected {expected:?}, observed {observed:?}").into()),
-        Err(error) => Err(format!("waiting for {expected:?}: {error}").into()),
     }
 }
 
@@ -238,8 +253,8 @@ fn assert_complete_generation(response: &quanta_index_contract::TextQueryRespons
     Ok(())
 }
 
-fn query_active_generation(client: &QuantaIndex) -> Result<u64, Box<dyn Error>> {
-    let response = client
+fn query_active_generation(client: &QuantaIndex) -> Result<Option<u64>, Box<dyn Error>> {
+    let response = match client
         .lexical()
         .query()
         .sourcegraph(format!(
@@ -247,9 +262,17 @@ fn query_active_generation(client: &QuantaIndex) -> Result<u64, Box<dyn Error>> 
         ))
         .active(repo(), revision())
         .top_k(u32::try_from(RESULT_COUNT)?)
-        .execute()?;
+        .execute()
+    {
+        Ok(response) => response,
+        Err(SdkError::Remote {
+            code: SearchPlaneErrorCodeV2::NotReady,
+            ..
+        }) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
     assert_complete_generation(&response)?;
-    Ok(response.generation.manifest_generation.get())
+    Ok(Some(response.generation.manifest_generation.get()))
 }
 
 #[test]
@@ -270,9 +293,20 @@ fn concurrent_queries_observe_only_complete_predicate_authority_generations() ->
         .name("generation-activation-concurrency-query".to_string())
         .spawn(move || -> Result<(), String> {
             let mut last_generation = None;
+            let mut not_ready_reported = false;
             while !query_stop.load(Ordering::Acquire) {
                 let observed = match query_active_generation(&query_client) {
-                    Ok(observed) => observed,
+                    Ok(Some(observed)) => {
+                        not_ready_reported = false;
+                        observed
+                    }
+                    Ok(None) => {
+                        if !not_ready_reported {
+                            let _reported = events_tx.send(QueryEvent::NotReady);
+                            not_ready_reported = true;
+                        }
+                        continue;
+                    }
                     Err(error) => {
                         let message = error.to_string();
                         let _reported = events_tx.send(QueryEvent::Failed(message.clone()));

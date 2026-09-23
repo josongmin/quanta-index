@@ -23,7 +23,7 @@ use crate::ActivationCatalog;
 use crate::query_dispatcher::execution_trace::LaneExecutionSummaryV1;
 use crate::query_dispatcher::selection::{
     SemanticSelection, resolve_joint_active_selection, resolve_lexical_request_pin,
-    resolve_semantic_selector_selection,
+    resolve_semantic_selector_selection, selection_mismatch_error,
 };
 
 /// The plan-stage trace entry naming the dense lane every semantic route
@@ -113,12 +113,20 @@ pub(super) fn resolve_semantic_request_selection(
         (Some(pin), Some(selection), Some(scope_pin))
             if pin != selection.pin || pin != scope_pin =>
         {
-            Err(CoreError::InvalidContract(
+            Err(selection_mismatch_error(
+                &[
+                    request.generation_selector.as_ref(),
+                    request
+                        .lexical_scope
+                        .as_ref()
+                        .and_then(|scope| scope.generation_selector.as_ref()),
+                ],
                 "semantic: scope generation does not match semantic request generation".to_string(),
             ))
         }
         (Some(pin), Some(selection), None) if pin != selection.pin => {
-            Err(CoreError::InvalidContract(
+            Err(selection_mismatch_error(
+                &[request.generation_selector.as_ref()],
                 "semantic: explicit generation pin does not match generation selector resolution"
                     .to_string(),
             ))
@@ -179,14 +187,23 @@ pub(super) fn resolve_hybrid_request_selection(
     };
     match (request.generation.clone(), semantic_selection) {
         (Some(pin), Some(selection)) if pin != selection.pin || pin != lexical_pin => {
-            Err(CoreError::InvalidContract(
+            Err(selection_mismatch_error(
+                &[
+                    request.generation_selector.as_ref(),
+                    request.text_query.generation_selector.as_ref(),
+                ],
                 "hybrid: lexical generation does not match semantic generation".to_string(),
             ))
         }
-        (Some(pin), None) if pin != lexical_pin => Err(CoreError::InvalidContract(
+        (Some(pin), None) if pin != lexical_pin => Err(selection_mismatch_error(
+            &[request.text_query.generation_selector.as_ref()],
             "hybrid: lexical generation does not match semantic generation".to_string(),
         )),
-        (None, Some(selection)) if selection.pin != lexical_pin => Err(CoreError::InvalidContract(
+        (None, Some(selection)) if selection.pin != lexical_pin => Err(selection_mismatch_error(
+            &[
+                request.generation_selector.as_ref(),
+                request.text_query.generation_selector.as_ref(),
+            ],
             "hybrid: lexical generation does not match semantic generation".to_string(),
         )),
         (Some(pin), Some(selection)) => Ok(SemanticSelection {

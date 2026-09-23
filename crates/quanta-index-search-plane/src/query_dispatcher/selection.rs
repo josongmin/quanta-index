@@ -15,6 +15,20 @@ pub(super) struct SemanticSelection {
     pub(super) expected_manifest_digest: Option<String>,
 }
 
+pub(super) fn selection_mismatch_error(
+    selectors: &[Option<&GenerationSelector>],
+    message: String,
+) -> CoreError {
+    if selectors
+        .iter()
+        .any(|selector| matches!(selector, Some(GenerationSelector::Active { .. })))
+    {
+        CoreError::NotReady(message)
+    } else {
+        CoreError::InvalidContract(message)
+    }
+}
+
 fn resolve_generation_selector_pin(
     activation_catalog: &ActivationCatalog,
     selector: &GenerationSelector,
@@ -58,9 +72,12 @@ pub(super) fn resolve_optional_selection(
         None => None,
     };
     match (generation, selector_pin) {
-        (Some(pin), Some(selected)) if pin != selected => Err(CoreError::InvalidContract(format!(
-            "{plane}: explicit generation pin does not match generation selector resolution"
-        ))),
+        (Some(pin), Some(selected)) if pin != selected => Err(selection_mismatch_error(
+            &[generation_selector],
+            format!(
+                "{plane}: explicit generation pin does not match generation selector resolution"
+            ),
+        )),
         (Some(pin), _) | (None, Some(pin)) => Ok(Some(pin)),
         (None, None) => Ok(None),
     }
@@ -126,7 +143,7 @@ pub(super) fn resolve_joint_active_selection(
         generation.manifest_generation(),
     );
     if lexical_generation.is_some_and(|explicit| explicit != &pin) {
-        return Err(CoreError::InvalidContract(format!(
+        return Err(CoreError::NotReady(format!(
             "{plane}: explicit lexical generation pin does not match active composite resolution"
         )));
     }

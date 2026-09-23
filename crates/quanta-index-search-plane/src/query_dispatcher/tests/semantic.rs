@@ -6,12 +6,14 @@ use quanta_index_contract::{
     SearchPlaneQueryIpcResponse, SearchPlaneTrackKind, SemanticQueryRequest, TextQueryRequest,
     TextQuerySyntax,
 };
-use quanta_index_core::RequestBudgetV1;
+use quanta_index_core::{CoreError, RequestBudgetV1};
 use tempfile::tempdir;
 
 use crate::observability::NoopQueryObsSink;
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
-use crate::query_dispatcher::selection::resolve_joint_active_selection;
+use crate::query_dispatcher::selection::{
+    resolve_joint_active_selection, resolve_optional_selection,
+};
 use crate::query_dispatcher::semantic_query::{
     resolve_hybrid_request_selection, resolve_semantic_request_selection,
 };
@@ -133,22 +135,63 @@ fn joint_active_selection_uses_one_composite_head_and_checks_explicit_pin() -> T
             && hybrid_selection.expected_manifest_digest == latest.expected_manifest_digest,
         "hybrid did not select the composite active head",
     )?;
+    let mut stale_semantic = semantic_request;
+    stale_semantic.generation = Some(pinned_first.clone());
+    require_joint_selection(
+        matches!(
+            resolve_semantic_request_selection(&catalog, &stale_semantic),
+            Err(CoreError::NotReady(_))
+        ),
+        "semantic active-resolution drift must be a retryable refusal",
+    )?;
     let mut stale_hybrid = hybrid_request;
     stale_hybrid.text_query.generation = Some(pinned_first.clone());
     require_joint_selection(
-        resolve_hybrid_request_selection(&catalog, &stale_hybrid).is_err(),
-        "hybrid accepted stale lexical pin",
+        matches!(
+            resolve_hybrid_request_selection(&catalog, &stale_hybrid),
+            Err(CoreError::NotReady(_))
+        ),
+        "hybrid active-resolution drift must be a retryable refusal",
     )?;
     require_joint_selection(
-        resolve_joint_active_selection(
-            &catalog,
-            Some(&selector),
-            Some(&selector),
-            Some(&pinned_first),
-            "hybrid",
-        )
-        .is_err(),
-        "joint selection accepted stale lexical pin",
+        matches!(
+            resolve_joint_active_selection(
+                &catalog,
+                Some(&selector),
+                Some(&selector),
+                Some(&pinned_first),
+                "hybrid",
+            ),
+            Err(CoreError::NotReady(_))
+        ),
+        "joint active-resolution drift must be a retryable refusal",
+    )?;
+    require_joint_selection(
+        matches!(
+            resolve_optional_selection(
+                &catalog,
+                Some(pinned_first.clone()),
+                Some(&selector),
+                SearchPlaneTrackKind::Lexical,
+                "lexical",
+            ),
+            Err(CoreError::NotReady(_))
+        ),
+        "lexical active-resolution drift must be a retryable refusal",
+    )?;
+    let pinned_latest = GenerationSelector::Pinned(latest.pin.clone());
+    require_joint_selection(
+        matches!(
+            resolve_optional_selection(
+                &catalog,
+                Some(pinned_first.clone()),
+                Some(&pinned_latest),
+                SearchPlaneTrackKind::Lexical,
+                "lexical",
+            ),
+            Err(CoreError::InvalidContract(_))
+        ),
+        "a mismatched fixed pin must remain an invalid request",
     )?;
     let foreign = GenerationSelector::Active {
         repo_id: RepoId::new("foreign-repo")?,
