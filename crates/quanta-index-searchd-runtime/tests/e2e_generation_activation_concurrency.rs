@@ -107,8 +107,10 @@ enum QueryEvent {
     Failed(String),
 }
 
-fn expect_query_event(events: &mpsc::Receiver<QueryEvent>, expected: QueryEvent) -> TestResult {
-    let deadline = Instant::now() + SOCKET_TIMEOUT;
+fn expect_query_event(events: &mpsc::Receiver<QueryEvent>, expected: &QueryEvent) -> TestResult {
+    let deadline = Instant::now()
+        .checked_add(SOCKET_TIMEOUT)
+        .ok_or_else(|| "query event deadline overflow".to_string())?;
     let mut saw_not_ready = false;
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -117,7 +119,7 @@ fn expect_query_event(events: &mpsc::Receiver<QueryEvent>, expected: QueryEvent)
             Ok(QueryEvent::Failed(error)) => {
                 return Err(format!("query loop failed before {expected:?}: {error}").into());
             }
-            Ok(observed) if observed == expected => return Ok(()),
+            Ok(observed) if &observed == expected => return Ok(()),
             Ok(observed) => {
                 return Err(format!("expected {expected:?}, observed {observed:?}").into());
             }
@@ -328,15 +330,15 @@ fn concurrent_queries_observe_only_complete_predicate_authority_generations() ->
         })?;
 
     let test_result = (|| -> TestResult {
-        expect_query_event(&events_rx, QueryEvent::Generation(G1))?;
+        expect_query_event(&events_rx, &QueryEvent::Generation(G1))?;
 
         transition_open.store(true, Ordering::Release);
-        expect_query_event(&events_rx, QueryEvent::TransitionQueryCompleted)?;
+        expect_query_event(&events_rx, &QueryEvent::TransitionQueryCompleted)?;
         let active_g2 = publish_and_activate(&publisher, G2, Some(active_g1.clone()))?;
         if active_g2.lexical.manifest_generation != generation(G2) {
             return Err("generation two activation acknowledgement did not select G2".into());
         }
-        expect_query_event(&events_rx, QueryEvent::Generation(G2))?;
+        expect_query_event(&events_rx, &QueryEvent::Generation(G2))?;
         Ok(())
     })();
 
