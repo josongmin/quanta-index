@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -31,6 +32,22 @@ except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
 ROOT = Path(__file__).resolve().parents[3]
 REGISTRY_PATH = ROOT / "tools/ci/proof-authority.toml"
 SCHEMA_PATH = ROOT / "tools/ci/proof-manifest.schema.json"
+HANDOFF_VALIDATION_PATH = ROOT / "tools/ci/lint/handoff_validation.py"
+
+
+def _load_handoff_validation():
+    spec = importlib.util.spec_from_file_location(
+        "quanta_handoff_validation_for_proof", HANDOFF_VALIDATION_PATH
+    )
+    if spec is None or spec.loader is None:
+        raise ValueError(f"cannot load handoff validator: {HANDOFF_VALIDATION_PATH}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+HANDOFF_VALIDATION = _load_handoff_validation()
 FAMILIES = frozenset("SUADPFQX")
 CHECKPOINTS = ("M0", "M1", "M2", "M3", "M4", "M5")
 GATES = frozenset(("pr", "merge", "correctness", "release"))
@@ -1779,6 +1796,19 @@ def check_aggregate_receipt(
     if payload.get("registry_sha256") != _sha256(registry_path):
         findings.append(Finding(receipt_path, "registry_sha256 is not the current registry"))
 
+    handoff_ledger, handoff_findings = HANDOFF_VALIDATION.inspect_handoff_ledger(
+        root=root, proof_checker=sys.modules[__name__]
+    )
+    for field in ("product_handoffs", "product_chain_status", "infrastructure_handoff"):
+        if payload.get(field) != handoff_ledger[field]:
+            findings.append(Finding(receipt_path, f"aggregate {field} is not derived authority"))
+    if require_ready:
+        findings.extend(Finding(receipt_path, message) for message in handoff_findings)
+    handoffs_ready = (
+        handoff_ledger["product_chain_status"] == "VERIFIED"
+        and handoff_ledger["infrastructure_handoff"]["status"] == "VERIFIED"
+    )
+
     receipts = payload.get("dependency_receipts")
     if not isinstance(receipts, list):
         return findings
@@ -2043,6 +2073,7 @@ def check_aggregate_receipt(
         set(expected_verdict_statuses) == VERDICTS
         and all(status == "PASSED" for status in expected_verdict_statuses.values())
         and release_ready_inputs
+        and handoffs_ready
     )
     if payload.get("production_ready") is not expected_ready:
         findings.append(Finding(receipt_path, "aggregate production_ready is not derived verdict"))

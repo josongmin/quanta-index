@@ -35,3 +35,8 @@ just lane-handoff-check artifacts/sep-21/handoffs/<LANE>.json
 위 `just` command는 checkpoint closeout용 strict current-source gate다. 과거 ledger를 현재 checkout과 재결속하지 않고
 archive/ancestry만 검사할 때만 `just lane-handoff-check-historical <path>`를 사용한다. JSON Schema 단독 성공은 handoff
 GREEN이 아니다.
+
+전체 제품 이력의 누락·중복·순서·P02 fork/join·P03→P11 인접 SHA 결속은
+`just lane-handoff-chain-check`로 검사한다. 이 명령은 각 handoff의 historical Git/archive 검증을 먼저 실행하며,
+과거 result를 현재 HEAD라고 주장하지 않는다. P12 aggregate가 이 체인을 직접 소비하기 전에는 이 명령의 성공만으로
+P12A/P12 완료를 선언하지 않는다.

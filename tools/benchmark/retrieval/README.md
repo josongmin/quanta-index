@@ -293,10 +293,11 @@ count, disk-vs-memory ownership, and the measurement method are mandatory.
 Semble in-memory index bytes are a worker-observed peak-RSS delta and must be
 positive and byte-equal in native/resource evidence. Phase evidence carries the
 exact query-pack schedule, warmup/repetition counts, and monotonic boundaries;
-the verdict re-derives every Semble phase. Qualified speed currently supports
-only symmetric `true_process_cold` captures (one measurement, zero one-sided
-warmups). `warm_cache` is diagnostic until both runners implement one shared
-within-process schedule.
+the verdict re-derives every Semble phase. Process-cold timings are diagnostic
+only. Qualified speed capture and verdict both refuse until the two runners
+implement one shared warmup, randomized/interleaved 50-repetition schedule, raw
+per-query warm samples, and like-for-like timing layer. A cold-only manifest
+cannot be upgraded by editing its claim fields.
 
 Notes: the first Semble index includes the model download (later runs reuse
 the cache; `index_stats` and `semble_index_ms` always record what ran).

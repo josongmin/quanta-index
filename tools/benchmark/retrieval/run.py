@@ -79,6 +79,11 @@ class RunError(ValueError):
     """Paired-run evidence is absent, inconsistent or ineligible."""
 
 
+def _qualified_speed_protocol_available() -> bool:
+    """Qualified speed stays closed until both runners share the warm-query protocol."""
+    return False
+
+
 def _process_tree_sample(root_pid: int) -> list[dict]:
     """Return one owned-process-tree RSS/CPU sample."""
     output = subprocess.check_output(
@@ -2231,46 +2236,101 @@ def _probe_clean(probe: object, profile: dict) -> bool:
     )
 
 
-def _qualified_uncertainty(comparison: object) -> bool:
-    if not isinstance(comparison, dict):
+def _valid_bootstrap_ci(ci: object, sample_count: int, *, estimable: bool) -> bool:
+    if not isinstance(ci, dict) or ci.get("sample_count") != sample_count:
         return False
-    ci = comparison.get("primary_delta_ci_95")
-    strata = comparison.get("stratified_primary_delta")
-    no_answer = comparison.get("no_answer_abstention_delta")
-    if not isinstance(ci, dict) or ci.get("status") == "not_applicable":
-        return False
-    if (
-        ci.get("method") != "paired_stratified_bootstrap_percentile_v1"
-        or ci.get("resamples") != 10_000
-        or type(ci.get("sample_count")) is not int
-        or ci["sample_count"] < 1
-        or not _is_hex(ci.get("seed_sha256"), 64)
-    ):
+    if ci.get("method") != "paired_stratified_bootstrap_percentile_v1":
         return False
     counts = ci.get("strata")
     if (
         not isinstance(counts, dict)
-        or not counts
         or any(type(value) is not int or value < 1 for value in counts.values())
-        or sum(counts.values()) != ci["sample_count"]
+        or sum(counts.values()) != sample_count
     ):
         return False
+    if ci.get("status") == "not_applicable":
+        return not estimable and ci.get("reason") == "insufficient_sample"
+    return (
+        ci.get("resamples") == 10_000
+        and _is_hex(ci.get("seed_sha256"), 64)
+        and all(
+            isinstance(ci.get(key), (int, float)) and math.isfinite(ci[key])
+            for key in ("mean", "lower_95", "upper_95")
+        )
+        and ci["lower_95"] <= ci["mean"] <= ci["upper_95"]
+    )
+
+
+def _valid_stratified_delta(strata: object, sample_count: int, expected_mean: float | None) -> bool:
     if not isinstance(strata, dict) or set(strata) != {"category", "language", "repository"}:
         return False
     for dimension in strata.values():
-        if not isinstance(dimension, dict) or not dimension:
+        if not isinstance(dimension, dict) or (sample_count > 0 and not dimension):
             return False
+        observed = 0
+        weighted_sum = 0.0
         for entry in dimension.values():
             if not isinstance(entry, dict) or set(entry) != {"sample_count", "mean_delta", "ci_95"}:
                 return False
             if type(entry["sample_count"]) is not int or entry["sample_count"] < 1:
                 return False
+            observed += entry["sample_count"]
             if not isinstance(entry["mean_delta"], (int, float)) or not math.isfinite(
                 entry["mean_delta"]
             ):
                 return False
-            if not isinstance(entry["ci_95"], dict):
+            weighted_sum += float(entry["mean_delta"]) * entry["sample_count"]
+            ci = entry["ci_95"]
+            if not _valid_bootstrap_ci(ci, entry["sample_count"], estimable=False):
                 return False
+            if ci.get("status") != "not_applicable" and not math.isclose(
+                float(ci["mean"]), float(entry["mean_delta"]), rel_tol=1e-12, abs_tol=1e-12
+            ):
+                return False
+        if observed != sample_count:
+            return False
+        if sample_count > 0 and (
+            expected_mean is None
+            or not math.isclose(
+                weighted_sum / sample_count, expected_mean, rel_tol=1e-12, abs_tol=1e-12
+            )
+        ):
+            return False
+    return True
+
+
+def _qualified_uncertainty(comparison: object) -> bool:
+    if not isinstance(comparison, dict):
+        return False
+    ci = comparison.get("primary_delta_ci_95")
+    if not isinstance(ci, dict) or type(ci.get("sample_count")) is not int:
+        return False
+    primary_count = ci["sample_count"]
+    if primary_count < 1 or not _valid_bootstrap_ci(ci, primary_count, estimable=True):
+        return False
+    primary_mean = comparison.get("primary_delta")
+    if (
+        comparison.get("sample_count") != primary_count
+        or not isinstance(primary_mean, (int, float))
+        or not math.isfinite(primary_mean)
+        or not math.isclose(float(ci["mean"]), float(primary_mean), rel_tol=1e-12, abs_tol=1e-12)
+    ):
+        return False
+    outcome_counts = [
+        comparison.get("paired_wins"),
+        comparison.get("paired_losses"),
+        comparison.get("paired_ties"),
+    ]
+    if (
+        any(type(value) is not int or value < 0 for value in outcome_counts)
+        or sum(outcome_counts) != primary_count
+    ):
+        return False
+    if not _valid_stratified_delta(
+        comparison.get("stratified_primary_delta"), primary_count, float(primary_mean)
+    ):
+        return False
+    no_answer = comparison.get("no_answer_abstention_delta")
     if not isinstance(no_answer, dict) or set(no_answer) != {
         "metric",
         "sample_count",
@@ -2283,16 +2343,30 @@ def _qualified_uncertainty(comparison: object) -> bool:
         no_answer["metric"] != "no_answer_abstention"
         or type(no_answer["sample_count"]) is not int
         or no_answer["sample_count"] < 0
-        or not isinstance(no_answer["ci_95"], dict)
-        or not isinstance(no_answer["strata"], dict)
-        or set(no_answer["strata"]) != {"category", "language", "repository"}
+        or not _valid_bootstrap_ci(no_answer["ci_95"], no_answer["sample_count"], estimable=False)
     ):
         return False
     if no_answer["sample_count"] == 0:
-        if no_answer["mean_delta"] != "not_applicable" or any(no_answer["strata"].values()):
+        if (
+            no_answer["mean_delta"] != "not_applicable"
+            or any(no_answer["strata"].values())
+            or not _valid_stratified_delta(no_answer["strata"], 0, None)
+        ):
             return False
     elif not isinstance(no_answer["mean_delta"], (int, float)) or not math.isfinite(
         no_answer["mean_delta"]
+    ):
+        return False
+    elif (
+        no_answer["ci_95"].get("status") != "not_applicable"
+        and not math.isclose(
+            float(no_answer["ci_95"]["mean"]),
+            float(no_answer["mean_delta"]),
+            rel_tol=1e-12,
+            abs_tol=1e-12,
+        )
+    ) or not _valid_stratified_delta(
+        no_answer["strata"], no_answer["sample_count"], float(no_answer["mean_delta"])
     ):
         return False
     return True
@@ -3005,6 +3079,10 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 "candidate_route": rank_comparison["candidate"],
                 "primary_metric": rank_comparison["primary_metric"],
                 "primary_delta": primary_delta,
+                "sample_count": rank_comparison["sample_count"],
+                "paired_wins": rank_comparison["paired_wins"],
+                "paired_losses": rank_comparison["paired_losses"],
+                "paired_ties": rank_comparison["paired_ties"],
                 "record_digest": merged_digest,
                 "report_digest": report_digest,
                 "graded": bool(rescored.get("graded")),
@@ -3559,6 +3637,8 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 perf_fail = ("host_contended", "host")
             elif manifest.get("host", {}).get("cache_regime") != "true_process_cold":
                 perf_fail = ("unsupported_cache_protocol", "host")
+            elif not _qualified_speed_protocol_available():
+                perf_fail = ("shared_warm_query_protocol_unimplemented", "provenance")
         if perf_fail is None:
             set_state(
                 "PERF_QUALIFIED",
@@ -3828,14 +3908,7 @@ def run_pair(spec: dict) -> int:
     if scope != "qualified" and "admission" in spec:
         raise RunError("spec.admission is valid only for a qualified capture")
     if scope == "qualified" and spec.get("claims", {}).get("speed") is True:
-        if spec.get("cache_regime") != "true_process_cold":
-            raise RunError(
-                "qualified speed currently requires the symmetric true_process_cold protocol"
-            )
-        if _int(spec.get("semble_repetitions", 1), "spec.semble_repetitions") != 1:
-            raise RunError("qualified cold speed requires one Semble measurement repetition")
-        if _int(spec.get("semble_warmup_passes", 0), "spec.semble_warmup_passes") != 0:
-            raise RunError("qualified cold speed forbids Semble-only warmup passes")
+        raise RunError("qualified speed is blocked: shared warm-query protocol is not implemented")
     lockfile_sha = spec.get("semble_lockfile_sha256")
     if not _is_hex(lockfile_sha, 64):
         raise RunError("pair requires a pinned semble_lockfile_sha256")

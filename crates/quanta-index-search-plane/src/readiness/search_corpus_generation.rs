@@ -4,7 +4,7 @@
 use std::fmt;
 
 use quanta_index_contract::{
-    GenerationSnapshot, ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind,
+    GenerationSnapshot, ManifestGeneration, RepoId, RevisionId, SearchCorpusGenerationIdentityV1,
     SemanticContentRootsV1,
 };
 use quanta_index_core::CoreError;
@@ -32,39 +32,18 @@ impl SearchCorpusGenerationV1 {
         semantic: GenerationSnapshot,
         semantic_content: SemanticContentRootsV1,
     ) -> Result<Self, CoreError> {
-        if !semantic_content.is_canonical_v1() {
-            return Err(CoreError::InvalidContract(
-                "search-corpus generation: semantic content roots must be canonical sha256 digests"
-                    .to_string(),
-            ));
-        }
-        if lexical.track != SearchPlaneTrackKind::Lexical
-            || semantic.track != SearchPlaneTrackKind::Semantic
-        {
-            return Err(CoreError::InvalidContract(
-                "search-corpus generation: expected exactly lexical and semantic tracks"
-                    .to_string(),
-            ));
-        }
-        if lexical.repo_id != semantic.repo_id
-            || lexical.revision_id != semantic.revision_id
-            || lexical.manifest_generation != semantic.manifest_generation
-            || lexical.manifest_digest != semantic.manifest_digest
-        {
-            return Err(CoreError::InvalidContract(
-                "search-corpus generation: lexical and semantic identities must match exactly"
-                    .to_string(),
-            ));
-        }
-        if lexical.manifest_digest.trim().is_empty() {
-            return Err(CoreError::InvalidContract(
-                "search-corpus generation: manifest_digest must not be empty".to_string(),
-            ));
-        }
-        Ok(Self {
+        let identity = SearchCorpusGenerationIdentityV1 {
             lexical,
             semantic,
             semantic_content,
+        };
+        identity.validate_v1().map_err(|error| {
+            CoreError::InvalidContract(format!("search-corpus generation: {error}"))
+        })?;
+        Ok(Self {
+            lexical: identity.lexical,
+            semantic: identity.semantic,
+            semantic_content: identity.semantic_content,
         })
     }
 

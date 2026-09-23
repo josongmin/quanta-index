@@ -28,11 +28,11 @@ use quanta_index_contract::{
     RepoMapActivateGenerationRequestV2, RepoMapMutationAck, RepoMapMutationPhaseV2,
     RepoMapPublishBundleRequestV2, RepoMapQueryRequest, RepoMapQueryResponse,
     RepoMapTerminalReceiptV2, RevisionId, RuntimeMetadataQueryRequest,
-    SearchCorpusGenerationIdentityV1, SearchPlaneActivateSearchCorpusGenerationCasRequest,
-    SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse, SearchPlaneExplainQueryRequest,
-    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse, SearchPlaneQueryIpcRequest,
-    SearchPlaneQueryIpcResponse, SearchPlaneRollbackSearchCorpusGenerationCasRequest,
-    SemanticQueryRequest, StructuralQueryRequest, SymbolQueryRequest, TextQueryRequest,
+    SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
+    SearchPlaneControlIpcResponse, SearchPlaneExplainQueryRequest, SearchPlaneIngestIpcRequest,
+    SearchPlaneIngestIpcResponse, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
+    SearchPlaneRollbackSearchCorpusGenerationCasRequest, SemanticQueryRequest,
+    StructuralQueryRequest, SymbolQueryRequest, TextQueryRequest,
     validate_file_owner_projection_v1, validate_hybrid_results_v1,
 };
 
@@ -909,25 +909,6 @@ impl ControlCallBinding {
     }
 }
 
-/// Composite corpus identity compared field-wise over its snapshots:
-/// repo, revision, manifest generation and manifest digest per track.
-fn same_identity(
-    left: &SearchCorpusGenerationIdentityV1,
-    right: &SearchCorpusGenerationIdentityV1,
-) -> bool {
-    fn snap_eq(
-        left: &quanta_index_contract::GenerationSnapshot,
-        right: &quanta_index_contract::GenerationSnapshot,
-    ) -> bool {
-        left.repo_id == right.repo_id
-            && left.revision_id == right.revision_id
-            && left.track == right.track
-            && left.manifest_generation == right.manifest_generation
-            && left.manifest_digest == right.manifest_digest
-    }
-    snap_eq(&left.lexical, &right.lexical) && snap_eq(&left.semantic, &right.semantic)
-}
-
 fn check_repomap_ack(
     ack: &RepoMapMutationAck,
     request: &RepoMapActivateGenerationRequest,
@@ -1040,7 +1021,7 @@ pub(crate) fn bind_control_response(
                 return Err(variant("search_corpus_activation_cas_ack"));
             }
             if let ControlCall::Activate(request) = &binding.inner {
-                if !same_identity(&ack.active, &request.candidate) {
+                if ack.active != request.candidate {
                     return Err(binding_error(
                         route,
                         ResponseBindingAxis::TargetIdentity,
@@ -1048,9 +1029,7 @@ pub(crate) fn bind_control_response(
                         "a different active identity",
                     ));
                 }
-                if let Some(expected_prior) = &request.expected_active
-                    && ack.previous_sealed_active.as_ref() != Some(expected_prior)
-                {
+                if ack.previous_sealed_active != request.expected_active {
                     return Err(binding_error(
                         route,
                         ResponseBindingAxis::CasExpectation,
@@ -1066,7 +1045,7 @@ pub(crate) fn bind_control_response(
                 return Err(variant("search_corpus_rollback_cas_ack"));
             }
             if let ControlCall::Rollback(request) = &binding.inner {
-                if !same_identity(&ack.active, &request.target) {
+                if ack.active != request.target {
                     return Err(binding_error(
                         route,
                         ResponseBindingAxis::TargetIdentity,
@@ -1074,7 +1053,7 @@ pub(crate) fn bind_control_response(
                         "a different active identity",
                     ));
                 }
-                if !same_identity(&ack.previous_sealed_active, &request.expected_active) {
+                if ack.previous_sealed_active != request.expected_active {
                     return Err(binding_error(
                         route,
                         ResponseBindingAxis::CasExpectation,
@@ -1637,6 +1616,131 @@ pub const SDK_WIRE_ROUTE_EXCLUSIONS_V1: &[(&str, &str)] = &[
         "return wrappers, no wire round trip",
     ),
 ];
+
+#[cfg(test)]
+mod search_corpus_binding_tests {
+    use super::{ControlCallBinding, bind_control_response};
+    use crate::{ResponseBindingAxis, SdkError};
+    use quanta_index_contract::{
+        GenerationSnapshot, ManifestGeneration, RepoId, RevisionId,
+        SearchCorpusGenerationIdentityV1, SearchPlaneActivateSearchCorpusGenerationCasRequest,
+        SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse,
+        SearchPlaneRollbackSearchCorpusGenerationCasRequest,
+        SearchPlaneSearchCorpusActivationCasAck, SearchPlaneSearchCorpusRollbackCasAck,
+        SearchPlaneTrackKind, SemanticContentRootsV1,
+    };
+
+    fn identity(generation: u64) -> SearchCorpusGenerationIdentityV1 {
+        let repo_id = RepoId::new("sdk-binding-roots").expect("valid repo");
+        let revision_id = RevisionId::new("rev-1").expect("valid revision");
+        let snapshot = |track| GenerationSnapshot {
+            repo_id: repo_id.clone(),
+            revision_id: revision_id.clone(),
+            track,
+            manifest_generation: ManifestGeneration::new(generation),
+            manifest_digest: "manifest-digest".to_string(),
+        };
+        SearchCorpusGenerationIdentityV1 {
+            lexical: snapshot(SearchPlaneTrackKind::Lexical),
+            semantic: snapshot(SearchPlaneTrackKind::Semantic),
+            semantic_content: SemanticContentRootsV1 {
+                row_root_digest: format!("sha256:{}", "a".repeat(64)),
+                membership_root_digest: format!("sha256:{}", "b".repeat(64)),
+            },
+        }
+    }
+
+    #[test]
+    fn activation_and_rollback_binding_reject_swapped_semantic_roots() {
+        let candidate = identity(7);
+        let previous = identity(6);
+        let mut swapped = candidate.clone();
+        swapped.semantic_content.row_root_digest = format!("sha256:{}", "c".repeat(64));
+
+        let activation = ControlCallBinding::from_request(
+            &SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(
+                SearchPlaneActivateSearchCorpusGenerationCasRequest {
+                    candidate: candidate.clone(),
+                    expected_active: Some(previous.clone()),
+                },
+            ),
+        );
+        let activation_ack = SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(
+            SearchPlaneSearchCorpusActivationCasAck {
+                active: swapped.clone(),
+                previous_sealed_active: Some(previous.clone()),
+            },
+        );
+        assert!(matches!(
+            bind_control_response(&activation, &activation_ack),
+            Err(SdkError::Binding {
+                axis: ResponseBindingAxis::TargetIdentity,
+                ..
+            })
+        ));
+
+        let rollback = ControlCallBinding::from_request(
+            &SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(
+                SearchPlaneRollbackSearchCorpusGenerationCasRequest {
+                    expected_active: previous.clone(),
+                    target: candidate.clone(),
+                },
+            ),
+        );
+        let rollback_ack = SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(
+            SearchPlaneSearchCorpusRollbackCasAck {
+                active: swapped,
+                previous_sealed_active: previous.clone(),
+            },
+        );
+        assert!(matches!(
+            bind_control_response(&rollback, &rollback_ack),
+            Err(SdkError::Binding {
+                axis: ResponseBindingAxis::TargetIdentity,
+                ..
+            })
+        ));
+
+        let mut wrong_previous = previous.clone();
+        wrong_previous.semantic_content.membership_root_digest =
+            format!("sha256:{}", "d".repeat(64));
+        let rollback_ack = SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(
+            SearchPlaneSearchCorpusRollbackCasAck {
+                active: candidate.clone(),
+                previous_sealed_active: wrong_previous,
+            },
+        );
+        assert!(matches!(
+            bind_control_response(&rollback, &rollback_ack),
+            Err(SdkError::Binding {
+                axis: ResponseBindingAxis::CasExpectation,
+                ..
+            })
+        ));
+
+        let first_activation = ControlCallBinding::from_request(
+            &SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(
+                SearchPlaneActivateSearchCorpusGenerationCasRequest {
+                    candidate: candidate.clone(),
+                    expected_active: None,
+                },
+            ),
+        );
+        let spurious_previous = SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(
+            SearchPlaneSearchCorpusActivationCasAck {
+                active: candidate,
+                previous_sealed_active: Some(previous),
+            },
+        );
+        assert!(matches!(
+            bind_control_response(&first_activation, &spurious_previous),
+            Err(SdkError::Binding {
+                axis: ResponseBindingAxis::CasExpectation,
+                ..
+            })
+        ));
+    }
+}
 
 #[cfg(test)]
 mod repo_map_v2_binding_tests {

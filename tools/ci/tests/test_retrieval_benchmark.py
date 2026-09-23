@@ -15,6 +15,7 @@ import pytest
 from tools.benchmark.retrieval import evaluator as ev
 from tools.benchmark.retrieval import run as pairrun
 from tools.benchmark.retrieval import semble as semble_adapter
+from tools.ci import source_closure
 
 
 def fixture(tmp_path: Path):
@@ -1081,6 +1082,11 @@ def test_qualified_uncertainty_contract_rejects_incomplete_or_forged_strata(monk
         ("T2", {"category": "symbol", "gold": [{"path": "b.rs"}]}, -0.25),
     ]
     comparison = {
+        "primary_delta": 0.0,
+        "sample_count": 2,
+        "paired_wins": 1,
+        "paired_losses": 1,
+        "paired_ties": 0,
         "primary_delta_ci_95": ev.mean_ci([0.25, -0.25], [("T1", "symbol"), ("T2", "symbol")]),
         "stratified_primary_delta": ev.stratified_delta_summary(rows, "a" * 40),
         "no_answer_abstention_delta": ev.no_answer_delta_summary([], "a" * 40),
@@ -1089,20 +1095,56 @@ def test_qualified_uncertainty_contract_rejects_incomplete_or_forged_strata(monk
 
     mutants = []
     for mutate in (
+        lambda value: value.update(sample_count=1),
+        lambda value: value.update(primary_delta=0.5),
+        lambda value: value.update(paired_ties=1),
         lambda value: value["primary_delta_ci_95"].update(method="normal_approximation"),
         lambda value: value["primary_delta_ci_95"].update(resamples=100),
         lambda value: value["primary_delta_ci_95"].update(seed_sha256="bad"),
         lambda value: value["primary_delta_ci_95"].update(strata={"symbol": 1}),
+        lambda value: value["primary_delta_ci_95"].update(lower_95=2.0),
+        lambda value: value["primary_delta_ci_95"].update(mean=0.5),
         lambda value: value["stratified_primary_delta"].pop("language"),
         lambda value: value["stratified_primary_delta"]["category"].clear(),
         lambda value: value["stratified_primary_delta"]["category"]["symbol"].pop("mean_delta"),
+        lambda value: value["stratified_primary_delta"]["category"]["symbol"].update(
+            mean_delta=0.5
+        ),
+        lambda value: value["stratified_primary_delta"]["category"]["symbol"]["ci_95"].update(
+            mean=0.5
+        ),
+        lambda value: value["stratified_primary_delta"]["category"]["symbol"].update(
+            sample_count=1
+        ),
         lambda value: value.pop("no_answer_abstention_delta"),
         lambda value: value["no_answer_abstention_delta"].update(sample_count=1),
+        lambda value: value["no_answer_abstention_delta"]["ci_95"].update(method="normal"),
+        lambda value: value["no_answer_abstention_delta"]["strata"]["category"].update(
+            forged={"sample_count": 1, "mean_delta": 0.0, "ci_95": {}}
+        ),
     ):
         mutant = json.loads(json.dumps(comparison))
         mutate(mutant)
         mutants.append(mutant)
     assert all(not pairrun._qualified_uncertainty(mutant) for mutant in mutants)
+
+    no_answer_comparison = json.loads(json.dumps(comparison))
+    no_answer_comparison["no_answer_abstention_delta"] = ev.no_answer_delta_summary(
+        [
+            ("N1", {"category": "negative", "gold": []}, 1.0),
+            ("N2", {"category": "negative", "gold": []}, 0.0),
+        ],
+        "a" * 40,
+    )
+    assert pairrun._qualified_uncertainty(no_answer_comparison)
+    for mutate in (
+        lambda value: value.update(mean_delta=0.75),
+        lambda value: value["strata"]["category"]["negative"].update(mean_delta=0.75),
+        lambda value: value["strata"]["repository"]["a" * 40].update(sample_count=1),
+    ):
+        mutant = json.loads(json.dumps(no_answer_comparison))
+        mutate(mutant["no_answer_abstention_delta"])
+        assert not pairrun._qualified_uncertainty(mutant)
 
 
 @pytest.mark.parametrize(
@@ -3156,6 +3198,7 @@ def test_verdict_perf_frontier_and_gates(tmp_path, monkeypatch):
     assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == "observations_floor_unmet"
     monkeypatch.setattr(pairrun, "PILOT_OBSERVATIONS_FLOOR", 2)
     monkeypatch.setattr(pairrun, "FRESH_ROOTS_FLOOR", 1)
+    monkeypatch.setattr(pairrun, "_qualified_speed_protocol_available", lambda: True)
     verdict = _stage_verdict(st)
     assert verdict["states"]["PERF_QUALIFIED"] == "pass"
     assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == (
@@ -3375,16 +3418,28 @@ def test_qualified_admission_is_reverified_after_capture(tmp_path):
     assert verdict["failure_class"] == "admission"
 
 
-def test_qualified_speed_refuses_asymmetric_warm_protocol():
-    with pytest.raises(pairrun.RunError, match="symmetric true_process_cold"):
+@pytest.mark.parametrize("cache_regime", ["true_process_cold", "warm_cache"])
+def test_qualified_speed_refuses_until_shared_warm_query_protocol(cache_regime):
+    with pytest.raises(pairrun.RunError, match="shared warm-query protocol is not implemented"):
         pairrun.run_pair(
             {
                 "scope": "qualified",
                 "admission": {},
                 "claims": {"speed": True},
-                "cache_regime": "warm_cache",
+                "cache_regime": cache_regime,
             }
         )
+
+
+def test_verdict_cannot_qualify_cold_only_latency_as_warm_performance(tmp_path, monkeypatch):
+    monkeypatch.setattr(pairrun, "PILOT_OBSERVATIONS_FLOOR", 2)
+    monkeypatch.setattr(pairrun, "FRESH_ROOTS_FLOOR", 1)
+    st = _pair_stage(tmp_path, scope="qualified", claims={"speed": True})
+    verdict = _stage_verdict(st)
+    assert verdict["states"]["PERF_QUALIFIED"] == "fail"
+    assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == (
+        "shared_warm_query_protocol_unimplemented"
+    )
 
 
 def test_source_closure_driver_uses_canonical_capture_and_verify_commands(tmp_path, monkeypatch):
@@ -3407,6 +3462,27 @@ def test_source_closure_driver_uses_canonical_capture_and_verify_commands(tmp_pa
     ]
     assert observed[1][0][-3:] == ["verify", "--manifest", str(closure)]
     assert all(call[1]["cwd"] == tmp_path and call[1]["timeout"] == 300 for call in observed)
+
+
+def test_retrieval_source_closure_profile_covers_authority_surfaces():
+    profile = source_closure.PROFILES["retrieval"]
+    paths = set(profile["paths"])
+    assert {
+        "Cargo.lock",
+        "Cargo.toml",
+        "Justfile",
+        "docs/plans/sep-23-retrieval-bench",
+        "tools/benchmark/retrieval",
+        "tools/ci/source_closure.py",
+        "tools/ci/tests/test_retrieval_benchmark.py",
+        "tools/ci/tests/test_retrieval_contract_proof.py",
+        "tools/ci/tests/test_retrieval_sdk_proof.py",
+        "tools/ci/write-verification-receipt.py",
+    } <= paths
+    assert set(profile["cargo_packages"]) == {
+        "quanta-index-retrieval-bench",
+        "quanta-index-searchd-runtime",
+    }
 
 
 def test_source_closure_driver_fails_closed_on_tool_refusal(tmp_path, monkeypatch):

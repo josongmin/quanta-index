@@ -41,6 +41,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, dict, Path]:
     for relative in (
         "Justfile",
         "tools/ci/lint/check-proof-authority.py",
+        "tools/ci/lint/handoff_validation.py",
         "tools/ci/proof-authority.toml",
         "tools/ci/proof-manifest.schema.json",
         "tools/ci/proof-aggregate.schema.json",
@@ -180,6 +181,17 @@ def test_valid_handoff_binds_git_result_and_immutable_manifest(tmp_path: Path) -
     )
 
 
+def test_leaf_handoff_validator_accepts_injected_proof_checker(tmp_path: Path) -> None:
+    root, handoff, _ = _fixture(tmp_path)
+    assert HANDOFF.CHAIN_VALIDATOR.validate_handoff(
+        handoff,
+        handoff_path=root / "P00.json",
+        root=root,
+        proof_checker=PROOF,
+        require_result_head=True,
+    ) == []
+
+
 def test_handoff_refuses_count_and_not_run_drift(tmp_path: Path) -> None:
     root, handoff, _ = _fixture(tmp_path)
     broken = copy.deepcopy(handoff)
@@ -285,3 +297,44 @@ def test_handoff_refuses_noncanonical_registry(tmp_path: Path) -> None:
     )
 
     assert any("proof registry is invalid" in error for error in errors)
+
+
+def test_product_chain_refuses_missing_historical_handoff(tmp_path: Path) -> None:
+    root, handoff, _ = _fixture(tmp_path)
+    directory = root / "handoffs"
+    directory.mkdir()
+    (directory / "P00.json").write_text(json.dumps(handoff), encoding="utf-8")
+
+    errors = HANDOFF.validate_product_handoff_directory(directory=directory, root=root)
+
+    assert any("P01.json: unreadable handoff" in error for error in errors)
+    assert any("P11.json: unreadable handoff" in error for error in errors)
+    assert not any("P00.json:" in error for error in errors)
+
+
+def test_ledger_keeps_historical_product_and_infrastructure_separate(tmp_path: Path) -> None:
+    root, handoff, _ = _fixture(tmp_path)
+    directory = root / "artifacts/sep-21/handoffs"
+    directory.mkdir(parents=True)
+    (directory / "P00.json").write_text(json.dumps(handoff), encoding="utf-8")
+
+    ledger, findings = HANDOFF.CHAIN_VALIDATOR.inspect_handoff_ledger(
+        root=root, proof_checker=PROOF
+    )
+
+    assert ledger["product_handoffs"][0]["status"] == "VERIFIED"
+    assert ledger["product_handoffs"][0]["sha256"] == hashlib.sha256(
+        (directory / "P00.json").read_bytes()
+    ).hexdigest()
+    assert ledger["product_chain_status"] == "NOT_RUN"
+    assert ledger["infrastructure_handoff"]["lane"] == "P12A"
+    assert ledger["infrastructure_handoff"]["status"] == "NOT_RUN"
+    assert any("P12A.json: handoff is missing" in finding for finding in findings)
+
+    (directory / "P01.json").symlink_to(directory / "P00.json")
+    ledger, findings = HANDOFF.CHAIN_VALIDATOR.inspect_handoff_ledger(
+        root=root, proof_checker=PROOF
+    )
+    assert ledger["product_handoffs"][1]["status"] == "FAILED"
+    assert ledger["product_chain_status"] == "FAILED"
+    assert any("P01.json: handoff is not a regular non-symlink file" in item for item in findings)

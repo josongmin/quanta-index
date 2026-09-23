@@ -210,6 +210,13 @@ def build_aggregate(
         proof_by_id=proof_by_id,
         path=registry_path,
     )
+    handoff_ledger, _handoff_findings = checker.HANDOFF_VALIDATION.inspect_handoff_ledger(
+        root=root, proof_checker=checker
+    )
+    handoffs_ready = (
+        handoff_ledger["product_chain_status"] == "VERIFIED"
+        and handoff_ledger["infrastructure_handoff"]["status"] == "VERIFIED"
+    )
     all_dependencies_passed = all(
         dependency_statuses.get(proof_id) == "PASSED" for proof_id in dependency_ids
     )
@@ -256,7 +263,7 @@ def build_aggregate(
         }
     production_ready = release_ready_inputs and all(
         verdict["status"] == "PASSED" for verdict in verdicts.values()
-    )
+    ) and handoffs_ready
     return (
         {
             "schema_version": 1,
@@ -270,6 +277,7 @@ def build_aggregate(
             "state_root_format": state_root_format,
             "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "dependency_receipts": dependency_receipts,
+            **handoff_ledger,
             "verdicts": verdicts,
             "production_ready": production_ready,
         },

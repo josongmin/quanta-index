@@ -6,6 +6,50 @@ to validated lane handoffs and immutable proof manifests, not this document.
 
 ## Current checkpoint (2026-09-24)
 
+- P12A partial implementation on Quanta `main` base `565be6ac` adds one
+  fixed handoff lane policy in `tools/ci/lint/handoff_validation.py`, a pure
+  product fork/join/serial-chain check, and a historical directory CLI rail.
+  The existing single-handoff Git delta, immutable archive and proof-manifest
+  checks run before chain acceptance; current-source HEAD rebinding is not
+  imposed on historical handoffs. `python3 -m pytest
+  tools/ci/tests/test_check_lane_handoff.py
+  tools/ci/tests/test_handoff_validation.py -q` passed 13/13 on a dirty
+  working tree. The updated `just proof-p12a-proof-infrastructure` rail passed
+  test-authority lint, proof-authority lint (26 registered proofs, zero
+  manifests validated), and 25/25 Python tests on the same dirty source.
+  The real chain command failed as expected because P00, P01,
+  P02A, P02B, P02I and P11 handoffs are absent. Aggregate schema/writer/final
+  checker integration and P12A/P12 proof issuance are still `NOT_RUN`; this
+  local test result is not P12A closure.
+
+- P06 source follow-up on the same Quanta base `565be6ac` found that
+  `quanta-index-searchd-runtime::build_runtime_with_memory_probe` opens the
+  lexical and semantic adapters before `SearchCorpusLifecycleOwner::open`.
+  Therefore an empty `activations/` directory is not proof of a fresh state
+  root: adapter construction may already have created current-format files.
+  The final plan now requires fresh-vs-existing root admission immediately
+  after lease acquisition, before those constructors. The root-incarnation
+  format and lifecycle wiring are still `NOT_RUN`. The supported restore
+  boundary (managed restore only vs external clone fencing) was requested
+  from the operator; no answer is recorded in this checkpoint.
+
+- Current `$ss` implementation checkpoint on Quanta `main` base
+  `565be6ac5934ac13b548fc926e581e5094629ec5` (dirty working-tree
+  changes, not a clean-source receipt): P06 SDK control binding now compares
+  complete typed search-corpus identities, including semantic content roots
+  and an absent first-activation predecessor. The common binding-path
+  swapped-root test failed before the fix (1 executed/1 failed), then passed
+  after it (1/1). `just rust-profile test-sdk-binding-owner-lib` passed
+  637/637 again after both code edits, before this ledger update; it is
+  local behavioral evidence, not an exact clean-source receipt.
+  `SearchCorpusGenerationV1::new` now delegates
+  its shared shape rules to the contract's `validate_v1` instead of keeping
+  a parallel validator; the focused owner negative passed 1/1 after its
+  expectation moved to the contract error code. The activation owner-local
+  slice then passed 13/13. ActiveHead event identity,
+  root incarnation, P09/P10/P11/P12 implementation and final-source proof
+  remain open. `just fmt-check` passed after formatting this checkpoint.
+
 - A subsequent P09 metric follow-up derives both executed-engine fanout and
   post-filter contributing-lane count at the same successful dispatcher
   boundary. Lexical/single-lane routes derive contribution from returned

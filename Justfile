@@ -778,6 +778,9 @@ lane-handoff-check handoff:
 lane-handoff-check-historical handoff:
     python3 tools/ci/lint/check-lane-handoff.py "{{handoff}}"
 
+lane-handoff-chain-check:
+    python3 tools/ci/lint/check-lane-handoff.py --product-chain artifacts/sep-21/handoffs
+
 proof-error-authority-inventory:
     python3 tools/ci/write-error-authority-inventory.py
 
@@ -821,7 +824,10 @@ proof-p00-authority-freeze:
 proof-p12a-proof-infrastructure:
     python3 tools/ci/lint/check-test-authority.py
     python3 tools/ci/lint/check-proof-authority.py
-    python3 -m pytest tools/ci/tests/test_write_proof_aggregate.py -q
+    python3 -m pytest \
+        tools/ci/tests/test_write_proof_aggregate.py \
+        tools/ci/tests/test_check_lane_handoff.py \
+        tools/ci/tests/test_handoff_validation.py -q
 
 # P12 records this dependency aggregate as its own terminal evidence. It must
 # exclude p12-final-qualification itself; the release gate below validates the
