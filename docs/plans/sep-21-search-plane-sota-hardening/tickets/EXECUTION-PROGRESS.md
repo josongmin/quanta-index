@@ -6,6 +6,32 @@ to validated lane handoffs and immutable proof manifests, not this document.
 
 ## Current checkpoint (2026-09-23)
 
+- Integration follow-up on local `main`: W10 integrate's two unique test
+  corrections were cherry-picked as `ed954e0a` (cursor negative wire fixtures)
+  and `16c979ba` (atomic lease-holder terminal report). W10 R5 RCA's unique
+  benchmark refusal oracle and source-attribution record were cherry-picked
+  as `53a6e344`. The source branch tips remain in attached worktrees; no
+  worktree or branch was deleted. These are content integrations, not a claim
+  that the old branch tips became ancestors of `main`.
+- Focused post-integration results on the shared dirty checkout:
+  `./scripts/cargow test -p quanta-index-contract --test lexical_cursor_contract`
+  (4/4), `./scripts/cargow test -p quanta-index-searchd-runtime --test
+  runtime_supervisor_owner_v1` (15/15), `python3 tools/prompt-manager/pm.py
+  lint` (4 generated targets in sync), and `python3 -m pytest
+  tools/prompt-manager/tests/test_pm.py -q` (15/15). The harness's
+  `authority_responses_are_not_counted_as_served_queries` unit test passed
+  (1/1). The prompt-manager and
+  Sep-23 test-optimization files were already dirty under another writer and
+  were not staged, committed, or overwritten here. These commands are not
+  exact-clean-source owner/release receipts.
+- `python3 tools/ci/lint/check-proof-authority.py --require-all
+  --bind-source --paired-checkout
+  github:josongmin/semantica-codegraph-v2=<local checkout>` refused the
+  shared dirty source with 75 findings. Historical owner manifests are bound
+  to earlier HEAD/dirty/upstream states; P03–P10 release, P11 external,
+  P12A and P12 final artifacts remain absent. The count is repeated binding
+  findings plus missing nodes, not 75 independent product defects.
+
 - Local `main` was clean at this turn's initial inspection at `c93bf10`.
   W10-R3's clean `codex/sep21-w10-state-custody` branch was merged without
   conflicts at `22e9ba1`. The branch remains intact. This merge is local;
