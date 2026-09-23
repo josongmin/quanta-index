@@ -4,9 +4,8 @@
 //! exist, and then its cursor names its last row in its own generation;
 //! its rows are in strict page order. The decoder holds every page to that
 //! fail-closed, because a page that breaks it would make a client skip or
-//! repeat rows. The oracle for every refusal is a page the encoder writes
-//! as given (encoding checks nothing but the cursor's score) and the
-//! decoder must refuse.
+//! repeat rows. Malformed wire pages must fail decode, while invariants
+//! enforced at both boundaries must fail before encode as well.
 
 #![forbid(unsafe_code)]
 
@@ -149,7 +148,11 @@ fn the_decoder_refuses_every_page_that_would_skip_or_repeat() -> TestResult {
         repo_relative_path: RepoRelativePath::new("src/a.rs"),
         owners: Vec::new(),
     }]);
-    refused_text(&owners, "owner rows that do not pair with the results")
+    let mut bytes = Vec::new();
+    if ciborium::into_writer(&owners, &mut bytes).is_ok() {
+        return Err("owner rows that do not pair with the results must not encode".into());
+    }
+    Ok(())
 }
 
 #[test]
@@ -228,10 +231,20 @@ fn symbol_requests_and_pages_share_the_text_rules() -> TestResult {
     if decoded != page {
         return Err("a continued symbol page must round-trip".into());
     }
-    let mut stray = page;
+    let mut stray = page.clone();
     stray.next_cursor = None;
     let mut bytes = Vec::new();
-    ciborium::into_writer(&stray, &mut bytes)?;
+    if ciborium::into_writer(&stray, &mut bytes).is_ok() {
+        return Err("a symbol page with more rows and no cursor must not encode".into());
+    }
+
+    let mut malformed_wire = ciborium::Value::serialized(&page)?;
+    let ciborium::Value::Map(entries) = &mut malformed_wire else {
+        return Err("a symbol page must serialize as a map".into());
+    };
+    entries.retain(|(key, _value)| key.as_text() != Some("next_cursor"));
+    let mut bytes = Vec::new();
+    ciborium::into_writer(&malformed_wire, &mut bytes)?;
     ciborium::from_reader::<SymbolQueryResponse, _>(bytes.as_slice()).map_or_else(
         |_refused| Ok(()),
         |decoded| {
