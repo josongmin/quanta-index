@@ -80,7 +80,7 @@ fn query_plane_resolves_only_catalog_active_generation() -> TestResult {
                 ManifestGeneration::new(9),
             )),
             generation_selector: Some(GenerationSelector::Active {
-                repo_id,
+                repo_id: repo_id.clone(),
                 revision_id: revision_id.clone(),
             }),
             lexical_scope: None,
@@ -111,7 +111,7 @@ fn query_plane_resolves_only_catalog_active_generation() -> TestResult {
                 ManifestGeneration::new(9),
             )),
             generation_selector: Some(GenerationSelector::Active {
-                repo_id: repo_id.clone(),
+                repo_id,
                 revision_id: revision_id.clone(),
             }),
             top_k: 5,
