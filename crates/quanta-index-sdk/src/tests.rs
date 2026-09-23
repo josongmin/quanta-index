@@ -91,16 +91,15 @@ impl QueryTransport for StubQueryTransport {
             .push(request.clone());
         if let quanta_index_contract::SearchPlaneQueryIpcRequest::ResolveActiveGeneration(resolve) =
             &request.payload
+            && let Some(mut snapshot) = self.active_resolution.clone()
         {
-            if let Some(mut snapshot) = self.active_resolution.clone() {
-                snapshot.repo_id = resolve.repo_id.clone();
-                snapshot.revision_id = resolve.revision_id.clone();
-                snapshot.track = resolve.track;
-                return Ok(SearchPlaneQueryIpcResponseEnvelope {
-                    request_id: request.request_id,
-                    payload: SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(snapshot),
-                });
-            }
+            snapshot.repo_id = resolve.repo_id.clone();
+            snapshot.revision_id = resolve.revision_id.clone();
+            snapshot.track = resolve.track;
+            return Ok(SearchPlaneQueryIpcResponseEnvelope {
+                request_id: request.request_id,
+                payload: SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(snapshot),
+            });
         }
         let payload = self
             .responses
@@ -345,6 +344,7 @@ fn active_resolution_rejects_wrong_same_domain_query_generation() {
             if request.generation == Some(sample_generation_pin())
                 && request.generation_selector.is_none()
     ));
+    drop(requests);
 }
 
 #[test]
@@ -392,6 +392,7 @@ fn lexical_time_resolution_binds_the_final_ancestor_pin() {
             Some(quanta_index_contract::SearchPlaneQueryIpcRequest::Text(sent))
                 if sent == &request
         ));
+        drop(requests);
     }
 }
 
@@ -422,6 +423,7 @@ fn lexical_time_resolution_rejects_foreign_repo_before_query() {
     assert!(matches!(error, crate::SdkError::Binding { .. }));
     let requests = ok_or_fail!(query.requests.lock());
     assert_eq!(requests.len(), 1, "final query must not be dispatched");
+    drop(requests);
 }
 
 fn repo_id() -> RepoId {
@@ -868,22 +870,24 @@ fn only_query_request(
         .lock()
         .map_err(|err| crate::SdkError::Protocol(format!("query request list poisoned: {err}")))?;
     let len = requests.len();
-    if len == 0
-        || !requests[..len - 1].iter().all(|request| {
-            matches!(
-                &request.payload,
-                quanta_index_contract::SearchPlaneQueryIpcRequest::ResolveActiveGeneration(_)
-            )
-        })
-    {
+    let Some((last, preceding)) = requests.split_last() else {
+        return Err(crate::SdkError::Protocol(format!(
+            "expected one query preceded only by active resolutions, got {len} requests"
+        )));
+    };
+    if !preceding.iter().all(|request| {
+        matches!(
+            &request.payload,
+            quanta_index_contract::SearchPlaneQueryIpcRequest::ResolveActiveGeneration(_)
+        )
+    }) {
         return Err(crate::SdkError::Protocol(format!(
             "expected one query preceded only by active resolutions, got {len} requests"
         )));
     }
-    requests
-        .last()
-        .cloned()
-        .ok_or_else(|| crate::SdkError::Protocol("missing captured query request".to_string()))
+    let result = last.clone();
+    drop(requests);
+    Ok(result)
 }
 
 fn query_after_resolution(
@@ -893,8 +897,13 @@ fn query_after_resolution(
         .requests
         .lock()
         .map_err(|err| crate::SdkError::Protocol(format!("query request list poisoned: {err}")))?;
-    if requests.len() < 2
-        || !requests[..requests.len() - 1].iter().all(|request| {
+    let Some((last, preceding)) = requests.split_last() else {
+        return Err(crate::SdkError::Protocol(
+            "expected active resolution before the pinned query".to_string(),
+        ));
+    };
+    if preceding.is_empty()
+        || !preceding.iter().all(|request| {
             matches!(
                 &request.payload,
                 quanta_index_contract::SearchPlaneQueryIpcRequest::ResolveActiveGeneration(_)
@@ -905,10 +914,9 @@ fn query_after_resolution(
             "expected active resolution before the pinned query".to_string(),
         ));
     }
-    requests
-        .last()
-        .cloned()
-        .ok_or_else(|| crate::SdkError::Protocol("missing pinned query".to_string()))
+    let result = last.clone();
+    drop(requests);
+    Ok(result)
 }
 
 fn only_control_request(
