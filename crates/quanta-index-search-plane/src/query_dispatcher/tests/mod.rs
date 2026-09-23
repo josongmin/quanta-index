@@ -2,6 +2,7 @@ pub(crate) mod support;
 
 mod budget;
 mod cluster_membership;
+mod execution_truth;
 mod explain;
 mod history;
 mod history_relevance;

@@ -45,11 +45,7 @@ impl LexicalIndexOpenPort for RejectLexicalOpener {
         &self,
         candidate: &GenerationSnapshot,
     ) -> Result<Box<dyn LexicalSearcher>, CoreError> {
-        self.open(
-            &candidate.repo_id,
-            &candidate.revision_id,
-            candidate.manifest_generation,
-        )
+        self.open(&candidate.repo_id, &candidate.revision_id, candidate.manifest_generation)
     }
 }
 
@@ -200,11 +196,7 @@ impl LexicalIndexOpenPort for StubLexicalOpener {
         &self,
         candidate: &GenerationSnapshot,
     ) -> Result<Box<dyn LexicalSearcher>, CoreError> {
-        self.open(
-            &candidate.repo_id,
-            &candidate.revision_id,
-            candidate.manifest_generation,
-        )
+        self.open(&candidate.repo_id, &candidate.revision_id, candidate.manifest_generation)
     }
 }
 
@@ -233,6 +225,12 @@ pub(crate) struct RecordingLexicalState {
     /// Every admission evaluation asked of the handle: the filter-only
     /// plan and the candidate ids it was asked about, in call order.
     pub(crate) admission_calls: Vec<(LqQuery, BTreeSet<String>)>,
+    /// Every presence lookup asked of the handle, in call order (W10-R1
+    /// execution truth).
+    pub(crate) presence_checks: Vec<String>,
+    /// Every candidate-trace asked of the handle, in call order (W10-R1
+    /// execution truth).
+    pub(crate) explained_candidates: Vec<String>,
 }
 
 pub(crate) struct RecordingLexicalSearcher {
@@ -360,6 +358,11 @@ impl LexicalSearcher for RecordingLexicalSearcher {
     }
 
     fn candidate_presence(&self, candidate_id: &str) -> Result<CandidatePresenceV1, CoreError> {
+        self.state
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("lexical state poisoned: {err}")))?
+            .presence_checks
+            .push(candidate_id.to_string());
         Ok(
             if self
                 .results
@@ -380,6 +383,11 @@ impl LexicalSearcher for RecordingLexicalSearcher {
         candidate_id: &str,
         _budget: &RequestBudgetV1,
     ) -> Result<LexicalCandidateExplanationV1, CoreError> {
+        self.state
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("lexical state poisoned: {err}")))?
+            .explained_candidates
+            .push(candidate_id.to_string());
         // The double scores every stub result at its carried score under
         // a unit boost; the boost arithmetic is the real adapter's to
         // prove.
@@ -447,11 +455,7 @@ impl LexicalIndexOpenPort for RecordingLexicalOpener {
         &self,
         candidate: &GenerationSnapshot,
     ) -> Result<Box<dyn LexicalSearcher>, CoreError> {
-        self.open(
-            &candidate.repo_id,
-            &candidate.revision_id,
-            candidate.manifest_generation,
-        )
+        self.open(&candidate.repo_id, &candidate.revision_id, candidate.manifest_generation)
     }
 }
 

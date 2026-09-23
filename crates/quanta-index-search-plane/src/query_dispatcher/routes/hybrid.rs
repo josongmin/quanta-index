@@ -13,6 +13,7 @@ use quanta_index_core::{
 use crate::lower_lexical_text_query;
 use crate::query_dispatcher::dense_admission::admit_dense_lane_v1;
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
+use crate::query_dispatcher::execution_trace::{LaneExecutionRecorderV1, LaneExecutionSummaryV1};
 use crate::query_dispatcher::planning::prepare_language_query_v1;
 use crate::query_dispatcher::ranking::stabilize_ranked_candidates;
 use crate::query_dispatcher::read_view::{ReadViewRequestV1, attach_read_view_trace};
@@ -23,10 +24,13 @@ use crate::query_dispatcher::semantic_query::{
 };
 use crate::query_dispatcher::window::{fused_window_v2, hybrid_probe_top_k_v1, lane_count_u64};
 
-/// Lane traces for the fused window: lexical and dense lanes carry their
-/// executed/contributed split, candidate counts, and the dense admission
+/// Lane traces for the fused window.
+///
+/// Lexical and dense lanes carry their executed/contributed split from the
+/// observed invocation truth, candidate counts, and the dense admission
 /// examination count as the dense lane's cost observation.
 fn hybrid_lane_traces(
+    execution: &LaneExecutionSummaryV1,
     lexical_hits: usize,
     dense_hits: usize,
     dense_examined: usize,
@@ -35,12 +39,20 @@ fn hybrid_lane_traces(
     use quanta_index_contract::{CandidateCountV1, LaneTraceV1};
     let excluded = dense_examined.saturating_sub(dense_admitted);
     Ok(vec![
-        LaneTraceV1::new("hybrid.lexical", true, lexical_hits > 0)
-            .with_candidates(CandidateCountV1::AtLeast(lane_count_u64(lexical_hits)?)),
-        LaneTraceV1::new("hybrid.dense", true, dense_hits > 0)
-            .with_candidates(CandidateCountV1::AtLeast(lane_count_u64(dense_hits)?))
-            .with_filtered_out(lane_count_u64(excluded)?)
-            .with_cost(lane_count_u64(dense_examined)?),
+        LaneTraceV1::new(
+            "hybrid.lexical",
+            execution.lexical_executed(),
+            execution.lexical_contributed,
+        )
+        .with_candidates(CandidateCountV1::AtLeast(lane_count_u64(lexical_hits)?)),
+        LaneTraceV1::new(
+            "hybrid.dense",
+            execution.semantic_executed(),
+            execution.semantic_contributed,
+        )
+        .with_candidates(CandidateCountV1::AtLeast(lane_count_u64(dense_hits)?))
+        .with_filtered_out(lane_count_u64(excluded)?)
+        .with_cost(lane_count_u64(dense_examined)?),
     ])
 }
 
@@ -90,10 +102,14 @@ impl SearchPlaneDispatcher {
         let lex_searcher = view.lexical()?;
         let sem_searcher = view.semantic()?;
         let internal_top_k = hybrid_probe_top_k_v1(top_k)?;
+        // Invocation truth (W10-R1): only backend calls record. A
+        // `force_empty` plan invokes nothing and records nothing.
+        let execution = LaneExecutionRecorderV1::new();
         budget.checkpoint("hybrid:lexical")?;
         let mut lex_results = if prepared_language.force_empty {
             Vec::new()
         } else {
+            execution.record_lexical_invocation();
             lex_searcher
                 .search_constrained(
                     &prepared_language.query,
@@ -116,12 +132,14 @@ impl SearchPlaneDispatcher {
             &prepared_language.constraints,
             internal_top_k,
             budget,
+            &execution,
             |candidate: &LexicalCandidate| candidate.candidate_id.as_str(),
             |fetch_size| {
                 if prepared_language.force_empty {
                     return Ok(Vec::new());
                 }
                 budget.checkpoint("hybrid:semantic")?;
+                execution.record_semantic_invocation();
                 sem_searcher.search_constrained(
                     &query_vector,
                     &prepared_language.constraints,
@@ -165,12 +183,22 @@ impl SearchPlaneDispatcher {
         } else {
             None
         };
+        // Contribution, same rule the builder used to apply inline: a lane
+        // contributed iff it returned rows.
+        if !lex_results.is_empty() {
+            execution.record_lexical_contribution();
+        }
+        if !sem_results.is_empty() {
+            execution.record_semantic_contribution();
+        }
+        let summary = execution.summary();
         let mut explanation = build_hybrid_response_explanation(
             &HybridLaneTallyV1 {
                 lexical_hits: lex_results.len(),
                 semantic_hits: sem_results.len(),
                 fused_universe: fused_universe_size,
                 fused_hits: fused.len(),
+                execution: summary,
             },
             internal_top_k,
             early_stop_reason,
@@ -186,6 +214,7 @@ impl SearchPlaneDispatcher {
             Some(dense_outcome),
             internal_top_k,
             hybrid_lane_traces(
+                &summary,
                 lex_results.len(),
                 sem_results.len(),
                 dense_examined,

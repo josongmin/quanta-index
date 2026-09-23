@@ -12,6 +12,7 @@ use quanta_index_core::{
 
 use crate::lower_lexical_text_query;
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
+use crate::query_dispatcher::execution_trace::LaneExecutionRecorderV1;
 use crate::query_dispatcher::planning::{PreparedLanguageQueryV1, prepare_language_query_v1};
 use crate::query_dispatcher::ranking::stabilize_ranked_candidates;
 use crate::query_dispatcher::read_view::{ReadViewRequestV1, attach_read_view_trace};
@@ -69,10 +70,9 @@ impl SearchPlaneDispatcher {
             Some(scope) => Some(plan_semantic_scope(request, scope)?),
             None => None,
         };
-        let effective_constraints: QueryConstraintSetV1 = scope_plan.as_ref().map_or_else(
-            || request.constraints.clone(),
-            |plan| plan.prepared.constraints.clone(),
-        );
+        let effective_constraints: QueryConstraintSetV1 = scope_plan
+            .as_ref()
+            .map_or_else(|| request.constraints.clone(), |plan| plan.prepared.constraints.clone());
         let view = self.acquire_read_view(
             &ReadViewRequestV1::declare(
                 "semantic",
@@ -83,6 +83,9 @@ impl SearchPlaneDispatcher {
             .with_semantic_manifest_digest(selection.expected_manifest_digest.as_deref()),
             budget,
         )?;
+        // Invocation truth (W10-R1): only backend calls record. A
+        // `force_empty` scope invokes nothing and records nothing.
+        let execution = LaneExecutionRecorderV1::new();
         let scope = match scope_plan.as_ref() {
             Some(plan) => {
                 // QI-BB-004: the scope's `top_k` is the lexical candidate cap
@@ -95,6 +98,7 @@ impl SearchPlaneDispatcher {
                 let mut scoped = if plan.prepared.force_empty {
                     Vec::new()
                 } else {
+                    execution.record_lexical_invocation();
                     searcher
                         .search_constrained(
                             &plan.prepared.query,
@@ -133,6 +137,7 @@ impl SearchPlaneDispatcher {
         )?;
         let probe_top_k = probe_top_k_v1(request.top_k)?;
         budget.checkpoint("semantic:search")?;
+        execution.record_semantic_invocation();
         let mut results = if let Some(scope_ids) = scope_candidate_ids {
             searcher.search_scoped_constrained(
                 &query_vector,
@@ -152,7 +157,21 @@ impl SearchPlaneDispatcher {
         budget.checkpoint("semantic:project")?;
         let observed = results.len();
         results.truncate(top_k_limit(request.top_k));
-        let window_v2 = semantic_window_v2(request.top_k, observed, &searcher.dense_lane())?;
+        // Contribution, same rule the builder used to apply inline: the
+        // lexical scope contributed iff it narrowed to candidates; the
+        // semantic lane iff it returned rows.
+        if scope
+            .as_ref()
+            .is_some_and(|scope| !scope.candidate_ids.is_empty())
+        {
+            execution.record_lexical_contribution();
+        }
+        if !results.is_empty() {
+            execution.record_semantic_contribution();
+        }
+        let summary = execution.summary();
+        let window_v2 =
+            semantic_window_v2(request.top_k, observed, &searcher.dense_lane(), &summary)?;
         let early_stop_reason = scope_candidate_ids.and_then(|scope_ids| {
             let limit = top_k_limit(request.top_k);
             if scope_ids.len() > results.len() && results.len() == limit {
@@ -166,6 +185,7 @@ impl SearchPlaneDispatcher {
             results.len(),
             early_stop_reason,
             &searcher.dense_lane(),
+            &summary,
         );
         attach_read_view_trace(&mut explanation, view.identity());
         Ok(SemanticQueryResponse {

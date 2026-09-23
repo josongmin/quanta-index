@@ -24,13 +24,14 @@ use crate::query_dispatcher::tests::support::semantic::{
 };
 use crate::query_dispatcher::tests::support::structural::FailClosedStructuralProducer;
 
-/// The explanation of one hybrid execution with the given lane tally and
-/// no DSL filter.
+/// The explanation of one hybrid execution with the given lane tally, the
+/// given observed invocation truth, and no DSL filter.
 fn hybrid_explanation(
     lexical_hits: usize,
     semantic_hits: usize,
     fused_universe: usize,
     fused_hits: usize,
+    execution: crate::query_dispatcher::execution_trace::LaneExecutionSummaryV1,
 ) -> quanta_index_contract::SearchExplanation {
     use crate::query_dispatcher::semantic_query::{
         HybridFilterTraceV1, HybridLaneTallyV1, build_hybrid_response_explanation,
@@ -41,6 +42,7 @@ fn hybrid_explanation(
             semantic_hits,
             fused_universe,
             fused_hits,
+            execution,
         },
         100,
         None,
@@ -55,11 +57,23 @@ fn hybrid_explanation(
 // CASE-COVERS: hybrid explanation honesty over two independent lanes.
 #[test]
 fn build_hybrid_response_explanation_reports_honest_lane_contribution_v1() {
+    use crate::query_dispatcher::execution_trace::LaneExecutionSummaryV1;
     use quanta_index_contract::EngineTouched;
-    // args: (lexical_hits, semantic_hits, fused_universe, fused)
+    // args: (lexical_hits, semantic_hits, fused_universe, fused, execution)
     // Both lanes contributed -> genuine RRF over both engines, and the
     // trace says the lanes are independent (QI-BB-018).
-    let both = hybrid_explanation(2, 2, 3, 2);
+    let both = hybrid_explanation(
+        2,
+        2,
+        3,
+        2,
+        LaneExecutionSummaryV1 {
+            lexical_invocations: 1,
+            semantic_invocations: 1,
+            lexical_contributed: true,
+            semantic_contributed: true,
+        },
+    );
     assert_eq!(both.strategy, "rrf", "both-lane hybrid must stay rrf");
     assert_eq!(
         both.engines_touched,
@@ -85,7 +99,18 @@ fn build_hybrid_response_explanation_reports_honest_lane_contribution_v1() {
     // Lexical found candidates but the dense lane matched none -> must
     // NOT claim a symmetric rrf fusion; it is lexical-only and the
     // Semantic engine is not touched.
-    let lex_only = hybrid_explanation(3, 0, 3, 3);
+    let lex_only = hybrid_explanation(
+        3,
+        0,
+        3,
+        3,
+        LaneExecutionSummaryV1 {
+            lexical_invocations: 1,
+            semantic_invocations: 1,
+            lexical_contributed: true,
+            semantic_contributed: false,
+        },
+    );
     assert_eq!(
         lex_only.strategy, "lexical_only",
         "semantic-empty hybrid must report lexical_only, not rrf"
@@ -96,8 +121,10 @@ fn build_hybrid_response_explanation_reports_honest_lane_contribution_v1() {
         "semantic-empty hybrid must not over-claim the Semantic engine"
     );
 
-    // No lane found anything: honest "empty", no engines claimed.
-    let empty = hybrid_explanation(0, 0, 0, 0);
+    // No lane found anything: honest "empty", no engines claimed. The
+    // summary is a `force_empty` execution: nothing invoked, nothing
+    // contributed.
+    let empty = hybrid_explanation(0, 0, 0, 0, LaneExecutionSummaryV1::default());
     assert_eq!(empty.strategy, "empty", "no-hit hybrid must report empty");
     assert!(
         empty.engines_touched.is_empty(),
@@ -107,24 +134,38 @@ fn build_hybrid_response_explanation_reports_honest_lane_contribution_v1() {
 
     // Dense-only recall is a real outcome now: the lexical lane found
     // nothing but the dense lane did.
-    let semantic_only = hybrid_explanation(0, 1, 1, 1);
+    let semantic_only = hybrid_explanation(
+        0,
+        1,
+        1,
+        1,
+        LaneExecutionSummaryV1 {
+            lexical_invocations: 1,
+            semantic_invocations: 1,
+            lexical_contributed: false,
+            semantic_contributed: true,
+        },
+    );
     assert_eq!(semantic_only.strategy, "semantic_only");
     assert_eq!(semantic_only.engines_touched, vec![EngineTouched::Semantic]);
 
-    // S21-10: executed is plan-level, not contribution-level. All four
-    // outcomes above planned both independent lanes, so every one of them
-    // reports both engines executed — including the zero-hit cases the
-    // fanout metric must count.
-    for (name, explanation) in [
-        ("both", &both),
-        ("lex_only", &lex_only),
-        ("empty", &empty),
-        ("semantic_only", &semantic_only),
+    // W10-R1: executed is invocation truth, not plan shape. The three
+    // ran-lanes cases report both engines executed — including the
+    // zero-hit lanes the fanout metric must count — while the
+    // `force_empty` case reports none.
+    for (name, explanation, executed) in [
+        ("both", &both, vec![EngineTouched::Lexical, EngineTouched::Semantic]),
+        ("lex_only", &lex_only, vec![EngineTouched::Lexical, EngineTouched::Semantic]),
+        ("empty", &empty, Vec::new()),
+        (
+            "semantic_only",
+            &semantic_only,
+            vec![EngineTouched::Lexical, EngineTouched::Semantic],
+        ),
     ] {
         assert_eq!(
-            explanation.engines_executed,
-            vec![EngineTouched::Lexical, EngineTouched::Semantic],
-            "{name} hybrid must report both lanes executed"
+            explanation.engines_executed, executed,
+            "{name} hybrid must report exactly its invoked engines"
         );
         // Builders emit 0; only the transport adapter stamps a real id.
         assert_eq!(
@@ -132,6 +173,42 @@ fn build_hybrid_response_explanation_reports_honest_lane_contribution_v1() {
             "{name} hybrid built off-transport must carry request_id 0"
         );
     }
+}
+
+// CASE-COVERS: W10-R1 builder purity — engine lists follow the summary,
+// never the hit counts.
+#[test]
+fn hybrid_builder_derives_engines_from_summary_not_hits() {
+    use crate::query_dispatcher::execution_trace::LaneExecutionSummaryV1;
+    use quanta_index_contract::EngineTouched;
+    // Hits without invocations (impossible through a route, possible as a
+    // builder input): no engine may be reported executed.
+    let phantom = hybrid_explanation(5, 5, 9, 4, LaneExecutionSummaryV1::default());
+    assert!(
+        phantom.engines_executed.is_empty(),
+        "hits must never imply execution: {:?}",
+        phantom.engines_executed
+    );
+    assert!(
+        phantom.engines_touched.is_empty(),
+        "hits must never imply contribution: {:?}",
+        phantom.engines_touched
+    );
+    // Invocations without contribution: executed but not touched.
+    let zero_hit = hybrid_explanation(
+        0,
+        0,
+        0,
+        0,
+        LaneExecutionSummaryV1 {
+            lexical_invocations: 3,
+            semantic_invocations: 2,
+            lexical_contributed: false,
+            semantic_contributed: false,
+        },
+    );
+    assert_eq!(zero_hit.engines_executed, vec![EngineTouched::Lexical, EngineTouched::Semantic]);
+    assert!(zero_hit.engines_touched.is_empty());
 }
 
 #[test]
@@ -211,10 +288,8 @@ fn hybrid_dispatch_embeds_semantic_query_text() -> TestResult {
             guard.search_constraints.clone(),
         )
     };
-    let expected = default_query_embedder().embed_query(
-        "scope alpha",
-        &quanta_index_core::RequestBudgetV1::unbounded(),
-    )?;
+    let expected = default_query_embedder()
+        .embed_query("scope alpha", &quanta_index_core::RequestBudgetV1::unbounded())?;
     // QI-BB-018: the dense lane is independent of the lexical hits — one
     // unscoped search over the query vector, under the request's
     // constraints; never a search scoped to the lexical ids.

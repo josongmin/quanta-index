@@ -11,6 +11,8 @@ use quanta_index_core::{
     LexicalSearchPageV1, validate_query_top_k,
 };
 
+use super::execution_trace::LaneExecutionSummaryV1;
+
 /// Rows to fetch for one query so the window can observe a continuation row.
 ///
 /// The public cap and the internal fetch ceiling are different numbers owned
@@ -56,12 +58,8 @@ pub(super) fn exact_total_window_v1(
             "lexical adapter reported an exact total of {total} below the {returned} rows it returned"
         )));
     }
-    QueryResultWindowV1::new(
-        returned,
-        CandidateCountV1::Exact(total),
-        total > u64::from(returned),
-    )
-    .map_err(|err| CoreError::InvalidContract(format!("lexical exact window: {err}")))
+    QueryResultWindowV1::new(returned, CandidateCountV1::Exact(total), total > u64::from(returned))
+        .map_err(|err| CoreError::InvalidContract(format!("lexical exact window: {err}")))
 }
 
 /// Window for one lexical page: exact when the adapter proved the total,
@@ -292,12 +290,16 @@ pub(super) fn fused_window_v2(
 /// probe observed the universe end (`observed <= requested`), a lower
 /// bound when the probe saw a continuation row, and `CappedUnknown` under
 /// the internal fetch ceiling when the page filled without either proof.
+///
 /// The lane trace records the model profile so a zero-hit page still
-/// carries its executed backend and cost class.
+/// carries its executed backend and cost class. The trace's
+/// executed/contributed split comes from the observed invocation truth
+/// (W10-R1), never a hardcoded `true`.
 pub(super) fn semantic_window_v2(
     top_k: u32,
     observed: usize,
     dense_lane: &DenseLaneContractV1,
+    execution: &LaneExecutionSummaryV1,
 ) -> Result<QueryResultWindowV2, CoreError> {
     let requested = usize::try_from(top_k)
         .map_err(|err| CoreError::InvalidContract(format!("query top_k overflow: {err}")))?;
@@ -307,9 +309,13 @@ pub(super) fn semantic_window_v2(
         .map_err(|err| CoreError::InvalidContract(format!("page rows exceed u32: {err}")))?;
     let observed_u64 = u64::try_from(observed)
         .map_err(|err| CoreError::InvalidContract(format!("page rows exceed u64: {err}")))?;
-    let lane = LaneTraceV1::new("semantic.dense", true, returned > 0)
-        .with_candidates(CandidateCountV1::AtLeast(observed_u64))
-        .with_profile(dense_lane.trace_detail());
+    let lane = LaneTraceV1::new(
+        "semantic.dense",
+        execution.semantic_executed(),
+        execution.semantic_contributed,
+    )
+    .with_candidates(CandidateCountV1::AtLeast(observed_u64))
+    .with_profile(dense_lane.trace_detail());
     let (outcome, proof) = if continuation {
         (ExecutionOutcomeV2::LowerBound { continuation: true }, None)
     } else {
