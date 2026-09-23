@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Shared local cache layout for quanta-index build and runtime artifacts.
+# Local cache layout for quanta-index build and runtime artifacts.
 #
 # macOS:  ~/Library/Caches/quanta-index/
 # Linux:  ${XDG_CACHE_HOME:-~/.cache}/quanta-index/
@@ -7,6 +7,8 @@
 # Override the root with QUANTA_INDEX_CACHE_ROOT when needed.
 # Override the compile lane with QUANTA_INDEX_BUILD_LANE when a command should
 # use an isolated incremental/cache root.
+# Cargo targets are additionally scoped to the canonical checkout path: two
+# worktrees must never write the same package/version artifact concurrently.
 
 if [[ -n "${ZSH_VERSION:-}" ]]; then
   _QUANTA_INDEX_ENV_SOURCE="${0}"
@@ -39,7 +41,8 @@ _QUANTA_INDEX_REPO_ROOT="$(cd -- "$(dirname -- "$_QUANTA_INDEX_ENV_SOURCE")/.." 
 export QUANTA_INDEX_REPO_ROOT="$_QUANTA_INDEX_REPO_ROOT"
 export QUANTA_INDEX_BUILD_LANE="${QUANTA_INDEX_BUILD_LANE:-shared}"
 export QUANTA_INDEX_BUILD_LOGGING="${QUANTA_INDEX_BUILD_LOGGING:-1}"
-export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$_QUANTA_INDEX_CACHE_ROOT/target/${QUANTA_INDEX_BUILD_LANE}}"
+_QUANTA_INDEX_CHECKOUT_ID="$(python3 -c 'import hashlib, sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest()[:16])' "$_QUANTA_INDEX_REPO_ROOT")"
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$_QUANTA_INDEX_CACHE_ROOT/target/${_QUANTA_INDEX_CHECKOUT_ID}/${QUANTA_INDEX_BUILD_LANE}}"
 export QUANTA_INDEX_STATE_ROOT="${QUANTA_INDEX_STATE_ROOT:-$_QUANTA_INDEX_CACHE_ROOT/state}"
 export PYTEST_CACHE_DIR="${PYTEST_CACHE_DIR:-$_QUANTA_INDEX_CACHE_ROOT/pytest}"
 export RUFF_CACHE_DIR="${RUFF_CACHE_DIR:-$_QUANTA_INDEX_CACHE_ROOT/ruff}"
@@ -70,6 +73,6 @@ elif [[ "$_QUANTA_INDEX_SCCACHE_MODE" != "0" && "${CI:-}" != "true" ]]; then
   fi
 fi
 
-unset _QUANTA_INDEX_CACHE_ROOT _QUANTA_INDEX_REPO_ROOT _QUANTA_INDEX_SCCACHE_MODE
+unset _QUANTA_INDEX_CACHE_ROOT _QUANTA_INDEX_REPO_ROOT _QUANTA_INDEX_CHECKOUT_ID _QUANTA_INDEX_SCCACHE_MODE
 unset _QUANTA_INDEX_SCCACHE_BIN _QUANTA_INDEX_REPO_HASH
 unset _QUANTA_INDEX_ENV_SOURCE _QUANTA_INDEX_INHERITED_WRAPPER _QUANTA_INDEX_WRAPPER_NAME

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -31,7 +33,45 @@ def test_explicit_lane_overrides_inherited_target_dir(tmp_path: Path) -> None:
     env["QUANTA_INDEX_BUILD_LOGGING"] = "0"
     env["CARGO_TARGET_DIR"] = str(tmp_path / "stale-target")
     payload = _run_metadata("--lane", "release-bin-lane", env=env)
-    assert str(payload["target_directory"]).endswith("/target/release-bin-lane")
+    checkout_id = hashlib.sha256(str(REPO_ROOT.resolve()).encode()).hexdigest()[:16]
+    assert str(payload["target_directory"]).endswith(
+        f"/target/{checkout_id}/release-bin-lane"
+    )
+
+
+def test_distinct_checkouts_cannot_share_a_cargo_target_lane(tmp_path: Path) -> None:
+    cache_root = tmp_path / "cache"
+    env = os.environ.copy()
+    env["QUANTA_INDEX_CACHE_ROOT"] = str(cache_root)
+    env["QUANTA_INDEX_BUILD_LANE"] = "clippy-lane"
+    env["QUANTA_INDEX_SCCACHE"] = "0"
+    env.pop("CARGO_TARGET_DIR", None)
+    targets: list[str] = []
+
+    for name in ("checkout-a", "checkout-b"):
+        scripts = tmp_path / name / "scripts"
+        scripts.mkdir(parents=True)
+        copied_env = scripts / "quanta-index-env.sh"
+        shutil.copyfile(ENV_SCRIPT, copied_env)
+        result = subprocess.run(
+            [
+                "/bin/bash",
+                "-c",
+                'source "$1"; printf "%s" "$CARGO_TARGET_DIR"',
+                "bash",
+                str(copied_env),
+            ],
+            cwd=tmp_path,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        targets.append(result.stdout)
+
+    assert targets[0] != targets[1]
+    assert all(target.startswith(str(cache_root / "target")) for target in targets)
+    assert all(target.endswith("/clippy-lane") for target in targets)
 
 
 def test_preserve_opt_out_keeps_inherited_target_dir(tmp_path: Path) -> None:

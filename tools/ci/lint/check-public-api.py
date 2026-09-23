@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import hashlib
 import os
 import platform
 import subprocess
@@ -55,7 +56,12 @@ def cargo_env(default_lane: str) -> dict[str, str]:
     env.setdefault("QUANTA_INDEX_BUILD_LANE", default_lane)
     env.setdefault(
         "CARGO_TARGET_DIR",
-        str(cache_root / "target" / env["QUANTA_INDEX_BUILD_LANE"]),
+        str(
+            cache_root
+            / "target"
+            / hashlib.sha256(str(ROOT.resolve()).encode()).hexdigest()[:16]
+            / env["QUANTA_INDEX_BUILD_LANE"]
+        ),
     )
     return env
 
