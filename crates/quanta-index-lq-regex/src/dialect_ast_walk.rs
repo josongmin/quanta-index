@@ -402,7 +402,7 @@ mod tests {
                 assert!(
                     false,
                     "expected Ok(()) (downstream parse_hir surfaces ParseFail), got {e}"
-                )
+                );
             }
         }
     }
@@ -417,7 +417,7 @@ mod tests {
                 assert!(
                     false,
                     "AST walk should not classify lookaround; expected Ok(()), got {e}"
-                )
+                );
             }
         }
     }
@@ -430,7 +430,7 @@ mod tests {
                 assert!(
                     false,
                     "AST walk should not classify backref; expected Ok(()), got {e}"
-                )
+                );
             }
         }
     }

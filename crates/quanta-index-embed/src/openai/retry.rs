@@ -27,7 +27,8 @@ pub(super) fn classify_status(status: u16) -> StatusClass {
     }
 }
 
-/// Exclusive upper bound of the full-jitter backoff for `attempt`:
+/// Exclusive upper bound of the full-jitter backoff for `attempt`.
+///
 /// `RETRY_BASE_DELAY * 2^attempt`, saturating. Pure: the same input always
 /// yields the same bound, so tests pin the production schedule exactly.
 pub(super) fn backoff_bound(attempt: u32) -> Duration {

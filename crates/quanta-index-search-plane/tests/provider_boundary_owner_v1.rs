@@ -385,6 +385,10 @@ fn cancelled_call_settles_and_leaves_no_detached_work() {
 
 /// Native inference cannot always stop mid-call. A vector returned after the
 /// peer cancelled must never become a success receipt or a served result.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "index follows an exact length assert on the same audit tail"
+)]
 #[test]
 fn completed_vector_after_peer_cancellation_is_not_a_success() {
     let spy = Arc::new(SpyEmbedder::returns_after_cancellation());

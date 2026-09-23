@@ -53,6 +53,12 @@ pub(super) type MemoryRecord = (
     Option<(BatchPublishReceipt, u64)>,
 );
 
+/// A frozen terminal refusal: code, message, terminal sequence, body hash.
+type RefusalRow = (SearchPlaneErrorCodeV2, String, u64, [u8; 32]);
+
+/// A committed repo-map terminal receipt: receipt, terminal sequence, body hash.
+type RepomapRow = (RepoMapTerminalReceiptV2, u64, [u8; 32]);
+
 /// An in-memory idempotency catalog with the port's exact semantics, for
 /// tests that need the protocol without the storage engine.
 ///
@@ -63,8 +69,8 @@ pub(super) type MemoryRecord = (
 #[derive(Default)]
 pub(crate) struct MemoryIdempotencyCatalog {
     records: Mutex<BTreeMap<IdempotencyKeyV1, MemoryRecord>>,
-    refusals: Mutex<BTreeMap<IdempotencyKeyV1, (SearchPlaneErrorCodeV2, String, u64, [u8; 32])>>,
-    repomap: Mutex<BTreeMap<IdempotencyKeyV1, (RepoMapTerminalReceiptV2, u64, [u8; 32])>>,
+    refusals: Mutex<BTreeMap<IdempotencyKeyV1, RefusalRow>>,
+    repomap: Mutex<BTreeMap<IdempotencyKeyV1, RepomapRow>>,
     next_sequence: AtomicUsize,
     /// Every `forget_generation` call, in order, with how many records it
     /// dropped: the oracle for "forgotten once, idempotently".
@@ -283,19 +289,21 @@ impl IdempotencyCatalogPort for MemoryIdempotencyCatalog {
                     key.kind, key.batch_digest
                 ),
             }),
-            Some((_, _, Some(_)))
-            | Some((
-                _,
-                Some((
+            Some(
+                (_, _, Some(_))
+                | (
                     _,
+                    Some((
+                        _,
+                        _,
+                        _,
+                        OperationJournalStateV1::Committed
+                        | OperationJournalStateV1::Refused
+                        | OperationJournalStateV1::Aborted,
+                    )),
                     _,
-                    _,
-                    OperationJournalStateV1::Committed
-                    | OperationJournalStateV1::Refused
-                    | OperationJournalStateV1::Aborted,
-                )),
-                _,
-            )) => Err(CoreError::Typed {
+                ),
+            ) => Err(CoreError::Typed {
                 code: quanta_index_core::OPERATION_FENCE_LOST_CODE,
                 message: format!(
                     "journal: {} batch_digest={} prepare met a terminal record",
@@ -360,8 +368,7 @@ impl IdempotencyCatalogPort for MemoryIdempotencyCatalog {
             .lock()
             .map_err(|err| CoreError::Storage(format!("memory catalog poisoned: {err}")))?
             .get(key)
-            .map(|(stored, _, _)| *stored != *body_sha256)
-            .unwrap_or(false);
+            .is_some_and(|(stored, _, _)| *stored != *body_sha256);
         if conflict {
             return Err(CoreError::Typed {
                 code: quanta_index_core::BATCH_DIGEST_CONFLICT_CODE,
@@ -454,10 +461,10 @@ impl IdempotencyCatalogPort for MemoryIdempotencyCatalog {
             Some((_, Some((row_owner, _, _, OperationJournalStateV1::Prepared)), None))
                 if *row_owner != owner =>
             {
-                return Err(CoreError::Typed {
+                Err(CoreError::Typed {
                     code: quanta_index_core::CATALOG_BUSY_CODE,
                     message: "memory catalog: claim met a live foreign prepare".to_string(),
-                });
+                })
             }
             Some((_, claim, None)) => {
                 *claim = Some((
@@ -501,10 +508,6 @@ impl IdempotencyCatalogPort for MemoryIdempotencyCatalog {
         Ok(())
     }
 
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "test fake: the mutex guard must span the whole fenced mutation"
-    )]
     fn record_refused(
         &self,
         claim: &PreparedMutationV1,
@@ -514,7 +517,11 @@ impl IdempotencyCatalogPort for MemoryIdempotencyCatalog {
         // freezes; anything else is a caller-side rejection.
         let (code, message) = match refusal {
             CoreError::Typed { code, message } => (*code, message.clone()),
-            _ => {
+            CoreError::InvalidContract(_)
+            | CoreError::NotReady(_)
+            | CoreError::NotImplemented(_)
+            | CoreError::NotFound(_)
+            | CoreError::Storage(_) => {
                 return Err(CoreError::InvalidContract(
                     "record_refused takes a frozen-policy typed refusal".into(),
                 ));
@@ -594,10 +601,6 @@ impl IdempotencyCatalogPort for MemoryIdempotencyCatalog {
         Ok(sequence)
     }
 
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "test fake: the mutex guard must span the whole fenced mutation"
-    )]
     fn commit_repomap(
         &self,
         claim: &PreparedMutationV1,

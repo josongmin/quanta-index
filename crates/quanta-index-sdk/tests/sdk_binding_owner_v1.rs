@@ -154,11 +154,12 @@ fn serve_one(
     Ok(())
 }
 
-/// A uniquely-named binding directory under RAII custody (TOPT-06/TH-3):
-/// the guard lives across the server and client lifetimes, and dropping
-/// it removes the directory with every socket in it — on success, on
-/// assertion failure, and on server-thread error alike. Random names
-/// make a stale path unable to collide with a rerun.
+/// A uniquely-named binding directory under RAII custody.
+///
+/// TOPT-06/TH-3: the guard lives across the server and client lifetimes,
+/// and dropping it removes the directory with every socket in it — on
+/// success, on assertion failure, and on server-thread error alike.
+/// Random names make a stale path unable to collide with a rerun.
 fn temp_dir(tag: &str) -> tempfile::TempDir {
     tempfile::Builder::new()
         .prefix(&format!("sdk-binding-owner-{tag}-"))

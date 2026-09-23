@@ -530,10 +530,11 @@ impl QueryTextEmbedderPort for QueryEmbedderAdapter {
     }
 }
 
-/// The supervisor id provider reservations enroll to (S21-08). The name
-/// is fixed at composition so reserved work always has an owner; the
-/// supervisor that actually spawns/registers/cancels/joins it is P08
-/// (S21-09).
+/// The supervisor id provider reservations enroll to (S21-08).
+///
+/// The name is fixed at composition so reserved work always has an
+/// owner; the supervisor that actually spawns/registers/cancels/joins
+/// it is P08 (S21-09).
 const PROVIDER_SUPERVISOR_ID: &str = "searchd-provider-supervisor";
 
 /// The query-side and corpus-side embedders resolved for one profile.
@@ -1911,6 +1912,10 @@ mod tests {
         Ok(())
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "index follows an exact length assert on the same corpus vector"
+    )]
     #[test]
     #[ignore = "requires the pinned 33 MB upstream model assets"]
     fn potion_code_profile_uses_one_model_for_query_and_corpus() -> TestRes {
@@ -2009,6 +2014,10 @@ mod tests {
     // provider boundary — a tokenless query is refused before any
     // provider I/O (and before any reservation, so the audit ring stays
     // empty), while a valid query settles and records its audit identity.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "index follows an exact length assert on the same audit tail"
+    )]
     #[test]
     fn hash_profile_query_sits_behind_the_provider_boundary() -> TestRes {
         use quanta_index_search_plane::SEARCH_OWNED_SEMANTIC_DIMENSION;

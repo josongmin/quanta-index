@@ -714,7 +714,7 @@ mod tests {
                     e.code,
                     crate::errors::LqParseErrorCode::UnsupportedCombo,
                     "got {e}"
-                )
+                );
             }
         }
     }
@@ -853,7 +853,7 @@ mod tests {
                     e.code,
                     crate::errors::LqParseErrorCode::ForbiddenSyntax,
                     "got {e}"
-                )
+                );
             }
         }
     }

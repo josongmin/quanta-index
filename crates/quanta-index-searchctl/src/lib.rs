@@ -4619,19 +4619,18 @@ mod tests {
         assert!(with_cursor("structural", &runtime_path).is_ok());
         assert!(with_cursor("runtime-metadata", &structural_path).is_ok());
         // A malformed JSON document is still a local usage error.
-        for (command, path) in [("history", malformed_path.as_str())] {
-            let parsed = with_cursor(command, path);
-            assert!(parsed.is_err(), "{command}: {parsed:?}");
-            if let Err(error) = parsed {
-                assert_eq!(error.exit_code, EXIT_USAGE, "{command}: {error:?}");
-                assert!(
-                    error
-                        .message
-                        .contains(&format!("failed to decode {command} cursor json")),
-                    "{command}: {}",
-                    error.message
-                );
-            }
+        let (command, path) = ("history", malformed_path.as_str());
+        let parsed = with_cursor(command, path);
+        assert!(parsed.is_err(), "{command}: {parsed:?}");
+        if let Err(error) = parsed {
+            assert_eq!(error.exit_code, EXIT_USAGE, "{command}: {error:?}");
+            assert!(
+                error
+                    .message
+                    .contains(&format!("failed to decode {command} cursor json")),
+                "{command}: {}",
+                error.message
+            );
         }
     }
 }

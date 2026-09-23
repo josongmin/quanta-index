@@ -91,10 +91,11 @@ impl OpenAiEmbedderTuning {
     }
 }
 
-/// Process-global provider work caps (S21-08 step 4), surfaced as daemon
-/// env so the release authority — not the code — bounds external
-/// egress, work and cost. Every cap must be non-zero; the ledger holds
-/// the composition to that at boot.
+/// Process-global provider work caps (S21-08 step 4).
+///
+/// Surfaced as daemon env so the release authority — not the code —
+/// bounds external egress, work and cost. Every cap must be non-zero;
+/// the ledger holds the composition to that at boot.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProviderWorkBudgetConfig {
     /// Concurrent provider requests (`QUANTA_INDEX_PROVIDER_MAX_INFLIGHT_REQUESTS`).
@@ -207,7 +208,7 @@ pub enum SemanticEmbedderProfile {
     /// selected only by name (`hash-dev`); the daemon logs a boot warning and reports
     /// `boot_semantic_profile_is_dev` whenever it serves under it.
     Hash { dimension: usize },
-    /// Pinned local Model2Vec code model used by Semble.
+    /// Pinned local `Model2Vec` code model used by Semble.
     PotionCode { model_dir: PathBuf },
     /// Network-backed `OpenAI` embeddings. `api_key` is held here but redacted in
     /// `Debug` (R-SEC-01) and never logged. `tuning` carries the env-resolved
@@ -1436,7 +1437,7 @@ fn required_positive_raw_u64(name: &str, raw: Option<String>) -> Result<u64> {
 /// (QI-BB-007).
 ///
 /// `QUANTA_INDEX_EMBEDDER` names the profile: `potion-code` (pinned local
-/// Model2Vec), `openai` (a learned network provider), `unavailable` (queries
+/// `Model2Vec`), `openai` (a learned network provider), `unavailable` (queries
 /// fail closed), or `hash-dev` (the
 /// development hash embedder, by name). Unset selects `potion-code`;
 /// a deployment that names no embedder never serves token overlap as
@@ -1448,7 +1449,7 @@ fn semantic_embedder_profile_from_lookup(
     lookup: &EnvLookup<'_>,
 ) -> Result<SemanticEmbedderProfile> {
     match lookup("QUANTA_INDEX_EMBEDDER")?.as_deref() {
-        None | Some("") | Some("potion-code") => {
+        None | Some("" | "potion-code") => {
             let model_dir = match lookup("QUANTA_INDEX_EMBED_MODEL_DIR")?
                 .filter(|value| !value.trim().is_empty())
             {
@@ -1503,9 +1504,9 @@ fn default_potion_code_model_dir(lookup: &EnvLookup<'_>) -> Result<PathBuf> {
     } else {
         #[cfg(target_os = "macos")]
         {
-            PathBuf::from(std::env::var("HOME").map_err(|_| {
+            PathBuf::from(std::env::var("HOME").map_err(|err| {
                 anyhow::anyhow!(
-                    "HOME unset: set QUANTA_INDEX_CACHE_ROOT or QUANTA_INDEX_EMBED_MODEL_DIR"
+                    "HOME unset ({err}): set QUANTA_INDEX_CACHE_ROOT or QUANTA_INDEX_EMBED_MODEL_DIR"
                 )
             })?)
             .join("Library/Caches/quanta-index")

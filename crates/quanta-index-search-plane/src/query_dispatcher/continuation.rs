@@ -200,7 +200,9 @@ fn plan_digest(
 }
 
 fn push_str(hasher: &mut Sha256, value: &str) {
-    hasher.update(u64::try_from(value.len()).unwrap_or(u64::MAX).to_be_bytes());
+    let len_bytes =
+        u64::try_from(value.len()).map_or_else(|_| u64::MAX.to_be_bytes(), u64::to_be_bytes);
+    hasher.update(len_bytes);
     hasher.update(value.as_bytes());
 }
 

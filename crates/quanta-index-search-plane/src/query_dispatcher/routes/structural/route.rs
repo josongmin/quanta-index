@@ -76,8 +76,7 @@ impl SearchPlaneDispatcher {
                     .or_else(|| request.text_query.generation.clone()),
                 generation_selector: opened
                     .as_ref()
-                    .map(|_| None)
-                    .unwrap_or_else(|| request.text_query.generation_selector.clone()),
+                    .map_or_else(|| request.text_query.generation_selector.clone(), |_| None),
                 cursor: None,
                 ..request.text_query.clone()
             },

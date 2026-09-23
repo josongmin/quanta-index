@@ -220,8 +220,8 @@ impl SearchPlaneIngestDispatcher {
         }
     }
 
-    /// Run one RepoMap V2 bundle publish under the operation journal
-    /// (SEP-21 P02B). The only journal-bearing RepoMap path: the V1
+    /// Run one `RepoMap` V2 bundle publish under the operation journal
+    /// (SEP-21 P02B). The only journal-bearing `RepoMap` path: the V1
     /// bundle arm below stays journal-free as the W7 removal target.
     ///
     /// Same seven stages as [`Self::publish_idempotent`], keyed by
@@ -471,11 +471,12 @@ fn no_storage_free_preflight<B: IngestBatchBodyV1>(_body: &B) -> Result<(), Core
     Ok(())
 }
 
-/// A typed refusal is frozen policy: recording it lets a retry replay
-/// the refusal exactly with no in-progress residue. Anything else
-/// (storage, ambiguity — including future [`CoreError`] shapes, which
-/// fail to compile here until they are classified) marks the record
-/// uncertain for recovery.
+/// A typed refusal is frozen policy.
+///
+/// Recording it lets a retry replay the refusal exactly with no
+/// in-progress residue. Anything else (storage, ambiguity — including
+/// future [`CoreError`] shapes, which fail to compile here until they
+/// are classified) marks the record uncertain for recovery.
 fn is_frozen_policy_refusal(error: &CoreError) -> bool {
     matches!(
         error,
@@ -483,10 +484,11 @@ fn is_frozen_policy_refusal(error: &CoreError) -> bool {
     )
 }
 
-/// A batch key holding a repo-map terminal payload (or the reverse) is
-/// journal corruption: kinds and payload decoders are bound together,
-/// so this arm is unreachable unless the row was written around the
-/// journal.
+/// A batch key holding a repo-map terminal payload (or the reverse).
+///
+/// That is journal corruption: kinds and payload decoders are bound
+/// together, so this arm is unreachable unless the row was written
+/// around the journal.
 fn journal_payload_mismatch(key: &IdempotencyKeyV1) -> CoreError {
     CoreError::Typed {
         code: CATALOG_ROW_CORRUPT_CODE,
@@ -497,10 +499,11 @@ fn journal_payload_mismatch(key: &IdempotencyKeyV1) -> CoreError {
     }
 }
 
-/// Decode the `sha256:<hex>` source-bundle digest wire token to the
-/// journal's 32-byte body identity. The dispatcher already proved the
-/// token is the bundle's own digest, so a malformed token here is a
-/// contract defect, not a producer retry.
+/// Decode the `sha256:<hex>` source-bundle digest wire token.
+///
+/// The target is the journal's 32-byte body identity. The dispatcher
+/// already proved the token is the bundle's own digest, so a malformed
+/// token here is a contract defect, not a producer retry.
 fn parse_source_bundle_digest_v2(token: &str) -> Result<[u8; 32], CoreError> {
     let hex = token.strip_prefix("sha256:").ok_or_else(|| {
         CoreError::InvalidContract(format!(
@@ -513,15 +516,18 @@ fn parse_source_bundle_digest_v2(token: &str) -> Result<[u8; 32], CoreError> {
         )));
     }
     let mut body = [0_u8; 32];
-    for (index, chunk) in hex.as_bytes().chunks_exact(2).enumerate() {
+    // `hex` is exactly 64 bytes, so there are exactly 32 pairs for the
+    // 32 slots; `zip` ends the loop with the shorter side, which cannot
+    // happen here.
+    for (slot, chunk) in body.iter_mut().zip(hex.as_bytes().chunks_exact(2)) {
         let &[high, low] = chunk else {
             return Err(CoreError::InvalidContract(format!(
                 "repomap V2 publish: source bundle digest {token:?} is not hex pairs"
             )));
         };
         let nibble = |byte: u8| match byte {
-            b'0'..=b'9' => Some(byte - b'0'),
-            b'a'..=b'f' => Some(byte - b'a' + 10),
+            b'0'..=b'9' => Some(byte.wrapping_sub(b'0')),
+            b'a'..=b'f' => Some(byte.wrapping_sub(b'a').wrapping_add(10)),
             _ => None,
         };
         let (Some(high), Some(low)) = (nibble(high), nibble(low)) else {
@@ -529,7 +535,7 @@ fn parse_source_bundle_digest_v2(token: &str) -> Result<[u8; 32], CoreError> {
                 "repomap V2 publish: source bundle digest {token:?} is not lowercase hex"
             )));
         };
-        body[index] = (high << 4) | low;
+        *slot = (high << 4) | low;
     }
     Ok(body)
 }

@@ -1,4 +1,4 @@
-//! Pinned, local-only Model2Vec provider for Semble's potion-code-16M-v2 model.
+//! Pinned, local-only `Model2Vec` provider for Semble's potion-code-16M-v2 model.
 
 use std::{fs, path::Path};
 
@@ -145,6 +145,10 @@ mod tests {
         );
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "ignored fixture test; indices follow a length assert or a bounded zip"
+    )]
     #[test]
     #[ignore = "requires the pinned 33 MB upstream model assets"]
     fn pinned_model_embeds_identically_for_repeated_inputs() {
@@ -168,14 +172,14 @@ mod tests {
         // The upstream Python implementation returns float16, while the Rust
         // decoder pools/normalizes in float32, so compare within quantization.
         let reference = [
-            -0.22583008,
-            0.03062439,
-            -0.05465698,
-            -0.04708862,
-            0.03433228,
-            0.05368042,
-            0.06616211,
-            -0.03701782,
+            -0.225_830_08,
+            0.030_624_39,
+            -0.054_656_98,
+            -0.047_088_62,
+            0.034_332_28,
+            0.053_680_42,
+            0.066_162_11,
+            -0.037_017_82,
         ];
         for (actual, expected) in output[0].iter().zip(reference).take(reference.len()) {
             assert!((actual - expected).abs() < 0.005, "{actual} != {expected}");

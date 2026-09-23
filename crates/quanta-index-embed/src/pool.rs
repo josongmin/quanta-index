@@ -106,6 +106,7 @@ impl ProviderAttemptPool {
             name,
             handle: Some(handle),
         });
+        drop(live);
         Ok(())
     }
 
@@ -142,7 +143,7 @@ impl ProviderAttemptPool {
                     unfinished: Vec::new(),
                 };
             };
-            joined += Self::reap_finished(&mut live);
+            joined = joined.saturating_add(Self::reap_finished(&mut live));
             if live.is_empty() {
                 return ProviderAttemptDrainReport {
                     joined,
@@ -164,15 +165,12 @@ impl ProviderAttemptPool {
     fn reap_finished(live: &mut Vec<TrackedAttempt>) -> usize {
         let mut reaped = 0usize;
         live.retain_mut(|attempt| {
-            let finished = attempt
-                .handle
-                .as_ref()
-                .is_some_and(|handle| handle.is_finished());
+            let finished = attempt.handle.as_ref().is_some_and(JoinHandle::is_finished);
             if finished {
                 if let Some(handle) = attempt.handle.take() {
                     let _completed_or_panicked = handle.join();
                 }
-                reaped += 1;
+                reaped = reaped.saturating_add(1);
                 return false;
             }
             true
@@ -228,6 +226,10 @@ mod tests {
         assert_eq!(code, SearchPlaneErrorCodeV2::RequestCancelled);
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "index follows an exact length assert on the same unfinished vector"
+    )]
     #[test]
     fn drain_names_unfinished_attempts_past_the_deadline() {
         let pool = Arc::new(ProviderAttemptPool::new(4).expect("valid pool"));

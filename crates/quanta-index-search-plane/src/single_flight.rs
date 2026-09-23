@@ -107,10 +107,8 @@ impl<H: ?Sized> Flight<H> {
     where
         H: Send + Sync + 'static,
     {
-        let wake = {
-            let flight = Arc::clone(flight);
-            Arc::new(move || Self::wake_waiter(&flight)) as Arc<dyn Fn() + Send + Sync>
-        };
+        let woken = Arc::clone(flight);
+        let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || Self::wake_waiter(&woken));
         let _registered = budget.cancel_waiter(wake);
         let mut outcome = flight.lock_outcome().map_err(AwaitFlightFailure::Flight)?;
         loop {
@@ -168,7 +166,10 @@ mod tests {
         for waiter in waiters {
             match waiter.join().expect("waiter thread") {
                 Ok(handle) => assert_eq!(handle.0, 7),
-                Err(_) => panic!("every waiter shares the settled handle"),
+                other => panic!(
+                    "every waiter shares the settled handle, got {}",
+                    describe(&other)
+                ),
             }
         }
     }
@@ -209,7 +210,10 @@ mod tests {
         let late = RequestBudgetV1::for_duration(Duration::from_secs(60));
         match Flight::await_outcome(&flight, &late, "late-waiter") {
             Ok(handle) => assert_eq!(handle.0, 9),
-            Err(_) => panic!("a late waiter shares the landed outcome"),
+            other => panic!(
+                "a late waiter shares the landed outcome, got {}",
+                describe(&other)
+            ),
         }
     }
 
@@ -283,8 +287,7 @@ mod tests {
             // The match is exhaustive, so a fourth outcome fails to compile.
             match waiter.join().expect("waiter thread") {
                 Ok(handle) => assert_eq!(handle.0, 1),
-                Err(AwaitFlightFailure::Flight(_)) => {}
-                Err(AwaitFlightFailure::Interrupted(_)) => {}
+                Err(AwaitFlightFailure::Flight(_) | AwaitFlightFailure::Interrupted(_)) => {}
             }
             settler.join().expect("settler thread").expect("settle ok");
             canceller.join().expect("canceller thread");

@@ -208,9 +208,9 @@ impl SearchPlaneControlDispatcher {
 
     fn repo_map_activate_v2(
         &self,
-        request: RepoMapActivateGenerationRequestV2,
+        request: &RepoMapActivateGenerationRequestV2,
     ) -> Result<RepoMapTerminalReceiptV2, CoreError> {
-        self.repo_map_activate.activate_generation_v2(&request)
+        self.repo_map_activate.activate_generation_v2(request)
     }
 
     /// Promote a prepared lexical plus semantic corpus after proving both
@@ -403,7 +403,7 @@ impl SearchPlaneControlDispatcher {
                 }
             }
             SearchPlaneControlIpcRequest::RepoMapActivateV2(request) => {
-                match self.repo_map_activate_v2(request) {
+                match self.repo_map_activate_v2(&request) {
                     Ok(resp) => SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(resp),
                     Err(err) => SearchPlaneControlIpcResponse::Error(core_error_to_ipc(err)),
                 }

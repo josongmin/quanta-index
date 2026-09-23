@@ -249,6 +249,10 @@ fn a_page_past_the_byte_budget_is_cut_and_continued() -> TestResult {
     Ok(())
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "rows(3, 8) builds exactly three rows; indices 0..3 and prefix ..2 are in range"
+)]
 #[test]
 fn a_large_later_row_cannot_refuse_a_fitting_prefix() -> TestResult {
     let mut all = rows(3, 8);
@@ -368,6 +372,10 @@ fn a_shorter_prefix_can_exceed_the_budget_when_its_cursor_is_larger() -> TestRes
     Ok(())
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the len check short-circuits the same condition before either index runs"
+)]
 #[test]
 fn symbol_page_budget_cut_keeps_ranked_prefix_window_and_cursor() -> TestResult {
     let results = (0..4)

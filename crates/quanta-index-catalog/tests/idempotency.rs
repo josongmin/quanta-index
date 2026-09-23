@@ -21,6 +21,10 @@
 //!    (TOPT-01 / PO-3).
 
 #![forbid(unsafe_code)]
+#![expect(
+    clippy::expect_used,
+    reason = "integration-test helpers outside `#[test]` fns assert fixture setup with `expect`; the workspace already permits this inside test fns and a helper that cannot set up its fixture has no caller to propagate to"
+)]
 
 use std::collections::VecDeque;
 use std::error::Error;
@@ -484,7 +488,13 @@ fn prepare_conflicts_before_any_mutation() -> TestResult {
     let _prepared = catalog.prepare(&key, &body, "test", LONG_LEASE_MS, &body)?;
     match catalog.inspect(&key)? {
         OperationInspectV1::InFlight { .. } => {}
-        other => return Err(format!("a prepare must read back in-flight, got {other:?}").into()),
+        other @ (OperationInspectV1::Absent
+        | OperationInspectV1::Committed { .. }
+        | OperationInspectV1::CommittedRepoMap { .. }
+        | OperationInspectV1::Refused { .. }
+        | OperationInspectV1::Uncertain { .. }) => {
+            return Err(format!("a prepare must read back in-flight, got {other:?}").into());
+        }
     }
     let events_before = event_count(&temp)?;
     let next_before = allocator_next(&temp)?;
@@ -500,7 +510,7 @@ fn prepare_conflicts_before_any_mutation() -> TestResult {
     // The original prepare is untouched: the same owner still claims.
     match catalog.claim_prepared(&key, &body, "test", LONG_LEASE_MS, &body)? {
         ClaimOutcomeV1::Claimed(_) => {}
-        other => {
+        other @ (ClaimOutcomeV1::Replay { .. } | ClaimOutcomeV1::ReplayRepoMap { .. }) => {
             return Err(format!("the original prepare must still claim, got {other:?}").into());
         }
     }
@@ -538,7 +548,13 @@ fn a_prepared_mutation_records_a_frozen_refusal_without_a_claim() -> TestResult 
                 return Err("the inspect must replay the frozen refusal and its sequence".into());
             }
         }
-        other => return Err(format!("expected a refused inspect, got {other:?}").into()),
+        other @ (OperationInspectV1::Absent
+        | OperationInspectV1::Committed { .. }
+        | OperationInspectV1::CommittedRepoMap { .. }
+        | OperationInspectV1::InFlight { .. }
+        | OperationInspectV1::Uncertain { .. }) => {
+            return Err(format!("expected a refused inspect, got {other:?}").into());
+        }
     }
     // The prepared mutation is spent: refusing twice loses the fence.
     let again = catalog
@@ -565,14 +581,15 @@ fn a_bare_claim_cannot_refuse_or_go_uncertain() -> TestResult {
     let catalog = SqliteCatalog::open(temp.path(), Duration::from_millis(100))?;
     let key = key(IngestOperationKindV1::Structural, 23, "bare-claim");
     let body = [14_u8; 32];
-    let prepared = catalog.prepare(&key, &body, "test", LONG_LEASE_MS, &body)?;
+    let _prepared = catalog.prepare(&key, &body, "test", LONG_LEASE_MS, &body)?;
     let claim = match catalog.claim_prepared(&key, &body, "test", LONG_LEASE_MS, &body)? {
         ClaimOutcomeV1::Claimed(claim) => claim,
-        other => return Err(format!("expected a fresh claim, got {other:?}").into()),
+        other @ (ClaimOutcomeV1::Replay { .. } | ClaimOutcomeV1::ReplayRepoMap { .. }) => {
+            return Err(format!("expected a fresh claim, got {other:?}").into());
+        }
     };
     // The prepared mutation and the claim differ by fence rotation, but
     // neither may refuse from `Claimed`.
-    let _prepared = prepared;
     let refusal = CoreError::Typed {
         code: SearchPlaneErrorCodeV2::RequestCancelled,
         message: "cancelled".to_string(),
@@ -640,7 +657,9 @@ fn a_repomap_bundle_key_travels_the_same_journal() -> TestResult {
     }
     let claim = match catalog.claim_prepared(&rm_key, &body, "test", LONG_LEASE_MS, &body)? {
         ClaimOutcomeV1::Claimed(claim) => claim,
-        other => return Err(format!("expected a fresh claim, got {other:?}").into()),
+        other @ (ClaimOutcomeV1::Replay { .. } | ClaimOutcomeV1::ReplayRepoMap { .. }) => {
+            return Err(format!("expected a fresh claim, got {other:?}").into());
+        }
     };
     catalog.mark_applying(&claim)?;
     // A batch commit on a repo-map key is a caller defect.
@@ -667,7 +686,11 @@ fn a_repomap_bundle_key_travels_the_same_journal() -> TestResult {
                 return Err("the replay must carry the recorded terminal receipt".into());
             }
         }
-        other => {
+        other @ (OperationInspectV1::Absent
+        | OperationInspectV1::Committed { .. }
+        | OperationInspectV1::InFlight { .. }
+        | OperationInspectV1::Refused { .. }
+        | OperationInspectV1::Uncertain { .. }) => {
             return Err(format!("expected a repo-map committed inspect, got {other:?}").into());
         }
     }
@@ -680,7 +703,9 @@ fn a_repomap_bundle_key_travels_the_same_journal() -> TestResult {
                 return Err("the claim replay must carry the recorded terminal receipt".into());
             }
         }
-        other => return Err(format!("expected a repo-map replay, got {other:?}").into()),
+        other @ (ClaimOutcomeV1::Claimed(_) | ClaimOutcomeV1::Replay { .. }) => {
+            return Err(format!("expected a repo-map replay, got {other:?}").into());
+        }
     }
     if event_count(&temp)? != events_before {
         return Err("a repo-map replay must append no journal event".into());
@@ -698,7 +723,9 @@ fn a_repomap_bundle_key_travels_the_same_journal() -> TestResult {
         &batch_body,
     )? {
         ClaimOutcomeV1::Claimed(claim) => claim,
-        other => return Err(format!("expected a fresh claim, got {other:?}").into()),
+        other @ (ClaimOutcomeV1::Replay { .. } | ClaimOutcomeV1::ReplayRepoMap { .. }) => {
+            return Err(format!("expected a fresh claim, got {other:?}").into());
+        }
     };
     catalog.mark_applying(&batch_claim)?;
     if catalog.commit_repomap(&batch_claim, &rm_receipt).is_ok() {
@@ -883,7 +910,12 @@ fn recover_boundary_follows_the_scripted_now() -> TestResult {
                 }
             }
             OperationInspectV1::Absent if index > 0 => {}
-            other => {
+            other @ (OperationInspectV1::Absent
+            | OperationInspectV1::Committed { .. }
+            | OperationInspectV1::CommittedRepoMap { .. }
+            | OperationInspectV1::InFlight { .. }
+            | OperationInspectV1::Refused { .. }
+            | OperationInspectV1::Uncertain { .. }) => {
                 return Err(format!("probe {index} recovered wrong: {other:?}").into());
             }
         }

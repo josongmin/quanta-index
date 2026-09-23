@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -199,8 +199,8 @@ fn verified_request_digest(
         SearchPlaneIngestIpcRequest::PublishDirtyBatch(batch) => verify(batch),
         SearchPlaneIngestIpcRequest::PublishRuntimeCatalogBatch(batch) => verify(batch),
         SearchPlaneIngestIpcRequest::PublishStructuralBatch(batch) => verify(batch),
-        SearchPlaneIngestIpcRequest::PublishRepoMapBundle(_) => Ok(None),
-        SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(_) => Ok(None),
+        SearchPlaneIngestIpcRequest::PublishRepoMapBundle(_)
+        | SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(_) => Ok(None),
     }
 }
 
@@ -820,7 +820,7 @@ fn connect_options_reject_zero_request_io_timeout() {
 /// PO-2): no process environment is read or mutated, so these tests run
 /// safely in parallel with no global env mutex.
 struct MapEnv {
-    vars: HashMap<&'static str, Result<String, EnvLookupError>>,
+    vars: BTreeMap<&'static str, Result<String, EnvLookupError>>,
 }
 
 impl MapEnv {
@@ -832,7 +832,7 @@ impl MapEnv {
 
     fn missing() -> Self {
         Self {
-            vars: HashMap::new(),
+            vars: BTreeMap::new(),
         }
     }
 }
@@ -852,20 +852,22 @@ struct ForbiddenEnv;
 
 impl EnvLookup for ForbiddenEnv {
     fn get(&self, name: &str) -> Result<String, EnvLookupError> {
-        panic!("environment must not be consulted, got lookup for {name}");
+        forbidden_env_lookup(name)
     }
 }
 
-fn present(value: &str) -> Result<String, EnvLookupError> {
-    Ok(value.to_string())
+/// Any lookup is itself the test failure: returning `Err` would let
+/// tolerant paths pass silently, so this diverges instead of answering.
+fn forbidden_env_lookup(name: &str) -> ! {
+    panic!("environment must not be consulted, got lookup for {name}");
 }
 
 #[test]
 fn state_root_explicit_option_beats_every_environment_source() {
     let env = MapEnv::new(&[
-        ("QUANTA_INDEX_STATE_ROOT", present("/env/state")),
-        ("QUANTA_INDEX_CACHE_ROOT", present("/env/cache")),
-        ("HOME", present("/env/home")),
+        ("QUANTA_INDEX_STATE_ROOT", Ok("/env/state".to_string())),
+        ("QUANTA_INDEX_CACHE_ROOT", Ok("/env/cache".to_string())),
+        ("HOME", Ok("/env/home".to_string())),
     ]);
     let resolved = ok_or_fail!(
         ConnectOptions::from_state_root("/explicit/state").resolve_state_root_with(&env)
@@ -891,9 +893,9 @@ fn state_root_short_circuits_skip_the_environment_entirely() {
 fn state_root_environment_precedence_matrix() {
     // State-root variable wins over everything below it.
     let env = MapEnv::new(&[
-        ("QUANTA_INDEX_STATE_ROOT", present("/env/state")),
-        ("QUANTA_INDEX_CACHE_ROOT", present("/env/cache")),
-        ("HOME", present("/env/home")),
+        ("QUANTA_INDEX_STATE_ROOT", Ok("/env/state".to_string())),
+        ("QUANTA_INDEX_CACHE_ROOT", Ok("/env/cache".to_string())),
+        ("HOME", Ok("/env/home".to_string())),
     ]);
     let resolved = ok_or_fail!(ConnectOptions::default().resolve_state_root_with(&env));
     assert_eq!(resolved, Some(PathBuf::from("/env/state")));
@@ -901,14 +903,14 @@ fn state_root_environment_precedence_matrix() {
     // Cache-root variable appends `state` when the state-root variable
     // is missing.
     let env = MapEnv::new(&[
-        ("QUANTA_INDEX_CACHE_ROOT", present("/env/cache")),
-        ("HOME", present("/env/home")),
+        ("QUANTA_INDEX_CACHE_ROOT", Ok("/env/cache".to_string())),
+        ("HOME", Ok("/env/home".to_string())),
     ]);
     let resolved = ok_or_fail!(ConnectOptions::default().resolve_state_root_with(&env));
     assert_eq!(resolved, Some(PathBuf::from("/env/cache/state")));
 
     // HOME fallback when both QUANTA_INDEX_* variables are missing.
-    let env = MapEnv::new(&[("HOME", present("/env/home"))]);
+    let env = MapEnv::new(&[("HOME", Ok("/env/home".to_string()))]);
     let resolved = ok_or_fail!(ConnectOptions::default().resolve_state_root_with(&env));
     #[cfg(target_os = "macos")]
     let expected = PathBuf::from("/env/home/Library/Caches/quanta-index/state");
@@ -933,8 +935,8 @@ fn state_root_missing_and_non_unicode_inputs() {
     // A non-Unicode state-root variable falls through to the cache root.
     let env = MapEnv::new(&[
         ("QUANTA_INDEX_STATE_ROOT", Err(EnvLookupError::NotUnicode)),
-        ("QUANTA_INDEX_CACHE_ROOT", present("/env/cache")),
-        ("HOME", present("/env/home")),
+        ("QUANTA_INDEX_CACHE_ROOT", Ok("/env/cache".to_string())),
+        ("HOME", Ok("/env/home".to_string())),
     ]);
     let resolved = ok_or_fail!(ConnectOptions::default().resolve_state_root_with(&env));
     assert_eq!(resolved, Some(PathBuf::from("/env/cache/state")));
@@ -942,7 +944,7 @@ fn state_root_missing_and_non_unicode_inputs() {
     // A non-Unicode cache-root variable falls through to HOME.
     let env = MapEnv::new(&[
         ("QUANTA_INDEX_CACHE_ROOT", Err(EnvLookupError::NotUnicode)),
-        ("HOME", present("/env/home")),
+        ("HOME", Ok("/env/home".to_string())),
     ]);
     let resolved = ok_or_fail!(ConnectOptions::default().resolve_state_root_with(&env));
     assert!(

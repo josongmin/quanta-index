@@ -110,10 +110,6 @@ impl ExpectedControlResponseV1 {
 }
 
 /// The one response variant an ingest-plane call accepts.
-#[expect(
-    clippy::enum_variant_names,
-    reason = "mirrors the closed wire response variant names one-to-one; renaming here would desync the SDK table from the contract"
-)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ExpectedIngestResponseV1 {
     SearchCorpusReceipt,
@@ -533,10 +529,11 @@ fn check_cap(route: &'static str, top_k: u32, rows: usize) -> Result<(), SdkErro
     }
 }
 
-/// Re-check the contract ranking policy on a typed response. The wire
-/// decoder enforces it for bytes on the socket; typed transports (stubs,
-/// in-process peers) skip the decoder, so binding holds the same line.
-/// Labels name the failure kind only, never a payload field.
+/// Re-check the contract ranking policy on a typed response.
+///
+/// The wire decoder enforces it for bytes on the socket; typed transports
+/// (stubs, in-process peers) skip the decoder, so binding holds the same
+/// line. Labels name the failure kind only, never a payload field.
 fn check_ranking_order(
     results: &[quanta_index_contract::HybridCandidateV1],
 ) -> Result<(), SdkError> {
@@ -909,7 +906,7 @@ enum RepoMapV2RequestRef<'a> {
 
 fn check_repo_map_v2_receipt(
     receipt: &RepoMapTerminalReceiptV2,
-    request: RepoMapV2RequestRef<'_>,
+    request: &RepoMapV2RequestRef<'_>,
 ) -> Result<(), SdkError> {
     let (phase, identity, snapshot_id, projection_version, authority_digest, source_digest) =
         match request {
@@ -1043,7 +1040,7 @@ pub(crate) fn bind_control_response(
                 return Err(variant("repomap_terminal_receipt_v2"));
             }
             if let ControlCall::ActivateRepoMapV2(request) = &binding.inner {
-                check_repo_map_v2_receipt(receipt, RepoMapV2RequestRef::Activate(request))?;
+                check_repo_map_v2_receipt(receipt, &RepoMapV2RequestRef::Activate(request))?;
             }
             Ok(())
         }
@@ -1181,7 +1178,18 @@ impl IngestCallBinding {
         };
         let repo_map_v2 = match request {
             SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(request) => Some(request.clone()),
-            _ => None,
+            SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(_)
+            | SearchPlaneIngestIpcRequest::PublishHistoryBatch(_)
+            | SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(_)
+            | SearchPlaneIngestIpcRequest::PublishRepoTopicBatch(_)
+            | SearchPlaneIngestIpcRequest::PublishFileOwnershipBatch(_)
+            | SearchPlaneIngestIpcRequest::PublishFileContributorBatch(_)
+            | SearchPlaneIngestIpcRequest::PublishDirtyBatch(_)
+            | SearchPlaneIngestIpcRequest::PublishRuntimeCatalogBatch(_)
+            | SearchPlaneIngestIpcRequest::PublishStructuralBatch(_)
+            | SearchPlaneIngestIpcRequest::PublishRepoMapBundle(_)
+            | SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(_)
+            | SearchPlaneIngestIpcRequest::PublishRepoDescriptionBatch(_) => None,
         };
         Self {
             expected,
@@ -1207,7 +1215,7 @@ pub(crate) fn bind_ingest_response(
         SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(receipt) => {
             ("repomap_terminal_receipt_v2", {
                 if let Some(request) = &binding.repo_map_v2 {
-                    check_repo_map_v2_receipt(receipt, RepoMapV2RequestRef::Publish(request))?;
+                    check_repo_map_v2_receipt(receipt, &RepoMapV2RequestRef::Publish(request))?;
                 }
                 None
             })
@@ -1560,10 +1568,6 @@ pub const SDK_WIRE_ROUTE_EXCLUSIONS_V1: &[(&str, &str)] = &[
 ];
 
 #[cfg(test)]
-#[expect(
-    clippy::expect_used,
-    reason = "the fixture IDs and canonical source digest are fixed test inputs"
-)]
 mod repo_map_v2_binding_tests {
     use super::{
         ControlCallBinding, IngestCallBinding, bind_control_response, bind_ingest_response,

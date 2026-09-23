@@ -45,11 +45,11 @@ impl CursorKeyStore {
         let id = u64::from_be_bytes(
             id_bytes
                 .try_into()
-                .map_err(|_| invalid("cursor key id has the wrong length"))?,
+                .map_err(|err| invalid(&format!("cursor key id has the wrong length: {err}")))?,
         );
         let key = key_bytes
             .try_into()
-            .map_err(|_| invalid("cursor key material has the wrong length"))?;
+            .map_err(|err| invalid(&format!("cursor key material has the wrong length: {err}")))?;
         Ok(Self {
             key: CursorKeyV2::new(id, key),
             ttl: CursorTtlPolicyV2::standard(),

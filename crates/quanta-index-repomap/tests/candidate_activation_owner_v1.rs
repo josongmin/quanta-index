@@ -126,7 +126,7 @@ fn activate_request(generation: u64) -> RepoMapActivateGenerationRequest {
 }
 
 struct Fixture {
-    _dir: TempDir,
+    dir: TempDir,
     catalog: Arc<SqliteCatalog>,
     store: Arc<RepoMapGenerationStore>,
 }
@@ -144,7 +144,7 @@ fn fixture() -> Result<Fixture, Box<dyn Error>> {
     let root = dir.path().to_path_buf();
     let (catalog, store) = open_fixture(&root)?;
     Ok(Fixture {
-        _dir: dir,
+        dir,
         catalog,
         store,
     })
@@ -417,13 +417,13 @@ fn v2_replay_refuses_corrupt_sealed_object() -> TestResult {
         .expect("published candidate is durable");
     let object_path = find_single_object(
         &fixture
-            ._dir
+            .dir
             .path()
             .join("repo-map")
             .join("objects")
             .join("sha256"),
     )?;
-    let _written = std::fs::write(&object_path, b"corrupt candidate")?;
+    std::fs::write(&object_path, b"corrupt candidate")?;
 
     let error = fixture
         .store
@@ -489,12 +489,16 @@ fn v1_replay_remains_compatible_and_cannot_upgrade_legacy_custody_to_v2() -> Tes
     Ok(())
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "each key is written into the parsed object right after parsing it"
+)]
 #[test]
 fn projection_meta_rejects_partial_or_malformed_v2_strong_custody() -> TestResult {
     let source = bundle(1, "g1");
     let legacy_meta = CandidateProjectionMetaV1::from_bundle(&source);
     let mut partial: serde_json::Value = serde_json::from_str(&legacy_meta.to_json()?)?;
-    partial["manifest_digest"] = serde_json::Value::String(source.manifest_digest.clone());
+    partial["manifest_digest"] = serde_json::Value::String(source.manifest_digest);
     let error = CandidateProjectionMetaV1::from_json(&serde_json::to_string(&partial)?)
         .expect_err("one strong-custody field without its pair is corrupt");
     assert_typed(

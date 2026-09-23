@@ -128,9 +128,11 @@ pub(super) fn pageable_window_v2(
     .map_err(|error| CoreError::InvalidContract(format!("pageable result window v2: {error}")))
 }
 
-/// Reframe an already valid pageable window after the response byte budget
-/// cuts it to a strict prefix. The cut proves a continuation regardless of
-/// whether the pre-cut page had exhausted its backend universe.
+/// Reframe an already valid pageable window after the cut.
+///
+/// The response byte budget cuts it to a strict prefix. The cut proves a
+/// continuation regardless of whether the pre-cut page had exhausted its
+/// backend universe.
 pub(super) fn cut_pageable_window_v2(
     window: &QueryResultWindowV2,
     returned: usize,

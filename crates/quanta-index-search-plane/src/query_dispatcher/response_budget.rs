@@ -87,10 +87,11 @@ fn encoded_len<T: Serialize>(value: &T, what: &str) -> Result<u64, CoreError> {
         .map_err(|err| CoreError::InvalidContract(format!("measure {what}: {err}")))
 }
 
-/// The window of a page cut to `returned` rows because the bytes ran out:
-/// more rows exist, and at least one more than were returned.
-/// `page` as it fits `budget`: whole when it fits, else its longest
-/// prefix that does, continued by a cursor at the prefix's last row.
+/// The window of a page cut to `returned` rows.
+///
+/// The bytes ran out: more rows exist, and at least one more than were
+/// returned. `page` as it fits `budget`: whole when it fits, else its
+/// longest prefix that does, continued by a cursor at the prefix's last row.
 ///
 /// The row bytes bound which prefixes could possibly fit. Check those
 /// prefixes from longest to shortest with their actual cursor and window:

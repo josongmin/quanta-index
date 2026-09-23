@@ -61,7 +61,19 @@ impl<'a> RepoMapNamespace<'a> {
             .dispatch_ingest(SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(request))?;
         match response {
             SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(receipt) => Ok(receipt),
-            other => Err(SdkError::unexpected_response(
+            other @ (SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
+            | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
+            | SearchPlaneIngestIpcResponse::FileOwnershipReceipt(_)
+            | SearchPlaneIngestIpcResponse::FileContributorReceipt(_)
+            | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
+            | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
+            | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
+            | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "repomap V2 publish receipt",
                 QuantaIndex::ingest_response_kind(&other),
             )),
@@ -104,10 +116,21 @@ impl<'a> RepoMapNamespace<'a> {
             .dispatch_control(SearchPlaneControlIpcRequest::RepoMapActivateV2(request))?;
         match response {
             SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(receipt) => Ok(receipt),
-            other => Err(SdkError::unexpected_response(
-                "repomap V2 activate receipt",
-                QuantaIndex::control_response_kind(&other),
-            )),
+            other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
+            | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
+            | SearchPlaneControlIpcResponse::Error(_)
+            | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
+            | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
+            | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
+            | SearchPlaneControlIpcResponse::QuarantineInventory(_)
+            | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
+            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)) => {
+                Err(SdkError::unexpected_response(
+                    "repomap V2 activate receipt",
+                    QuantaIndex::control_response_kind(&other),
+                ))
+            }
         }
     }
 }

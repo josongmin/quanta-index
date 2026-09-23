@@ -176,8 +176,9 @@ fn receipt_version_mismatch(stored: Option<u32>) -> CoreError {
     }
 }
 
-/// The versioned persisted form of a repo-map terminal receipt: the
-/// format tag followed by the receipt's canonical CBOR. Same
+/// The versioned persisted form of a repo-map terminal receipt.
+///
+/// The format tag followed by the receipt's canonical CBOR. Same
 /// incompatibility rule as [`encode_versioned_receipt`]: any other
 /// version is a typed refusal before any mutation.
 fn encode_versioned_repomap_receipt(

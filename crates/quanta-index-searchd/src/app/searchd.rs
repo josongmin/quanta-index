@@ -192,8 +192,9 @@ where
     )
 }
 
-/// Register the provider attempt drain as a supervised child (S21-09):
-/// the stop closure shuts the pool down, the adapted body drains it
+/// Register the provider attempt drain as a supervised child (S21-09).
+///
+/// The stop closure shuts the pool down, the adapted body drains it
 /// under the hard deadline and reports `Failed` when attempts are still
 /// running — the receipt then names `provider-attempts` instead of
 /// claiming a graceful shutdown it did not perform.

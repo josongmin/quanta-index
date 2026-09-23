@@ -1,7 +1,7 @@
 //! Text embedding providers for the semantic search plane.
 //!
 //! The query/corpus embedder seam is [`quanta_index_core::TextEmbeddingProvider`].
-//! This crate supplies a pinned local Model2Vec provider and an OpenAI-backed
+//! This crate supplies a pinned local `Model2Vec` provider and an OpenAI-backed
 //! implementation behind a **blocking** transport. The latter reuses the
 //! in-tree `reqwest` + `rustls` stack (no new TLS dependency).
 

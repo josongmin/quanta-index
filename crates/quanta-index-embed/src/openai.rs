@@ -915,9 +915,10 @@ mod tests {
         }
     }
 
-    /// A [`RetrySleeper`] that records every proposed backoff and never
-    /// sleeps: retry tests prove the schedule with zero wall-clock wait.
-    /// The budget is still checkpointed so cancellation semantics stay honest.
+    /// A [`RetrySleeper`] that records every proposed backoff.
+    ///
+    /// It never sleeps: retry tests prove the schedule with zero wall-clock
+    /// wait. The budget is still checkpointed so cancellation semantics stay honest.
     struct RecordingSleeper {
         delays: Mutex<Vec<Duration>>,
     }
@@ -1174,6 +1175,7 @@ mod tests {
             if *released {
                 return Ok(());
             }
+            drop(released);
             debug_assert!(waited.timed_out());
             Err(typed(
                 LexicalErrorCode::SemProviderTransport,
@@ -1560,6 +1562,10 @@ mod tests {
         );
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "each index follows an exact length assert on the same delays vector"
+    )]
     #[test]
     fn retryable_status_invokes_sleeper_once_per_retry_inside_attempt_bounds() {
         // Two 503s then success with max_retries=2: the sleeper sees exactly

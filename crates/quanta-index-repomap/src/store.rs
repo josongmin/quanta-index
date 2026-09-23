@@ -15,6 +15,7 @@
 
 use std::{
     collections::BTreeMap,
+    fmt::Write as _,
     path::{Path, PathBuf},
     sync::{Arc, RwLock},
 };
@@ -413,13 +414,13 @@ impl RepoMapGenerationStore {
         &self,
         bundle: &RepoMapSourceBundle,
     ) -> Result<RepoMapMutationReceiptV1, CoreError> {
-        self.ingest_bundle_with_meta_v2(bundle, CandidateProjectionMetaV1::from_bundle(bundle))
+        self.ingest_bundle_with_meta_v2(bundle, &CandidateProjectionMetaV1::from_bundle(bundle))
     }
 
     fn ingest_bundle_with_meta_v2(
         &self,
         bundle: &RepoMapSourceBundle,
-        meta: CandidateProjectionMetaV1,
+        meta: &CandidateProjectionMetaV1,
     ) -> Result<RepoMapMutationReceiptV1, CoreError> {
         if bundle.manifest_digest.trim().is_empty() {
             return Err(CoreError::InvalidContract(
@@ -505,7 +506,7 @@ impl RepoMapGenerationStore {
                 &bundle.repo_id,
                 &bundle.revision_id,
                 bundle.manifest_generation,
-                &meta,
+                meta,
                 candidate.projection(),
             );
             let key = RepoMapStoreKeyV1::new(
@@ -615,7 +616,7 @@ impl RepoMapGenerationStore {
                 replay,
             ));
         }
-        let receipt = self.ingest_bundle_with_meta_v2(&request.bundle, meta)?;
+        let receipt = self.ingest_bundle_with_meta_v2(&request.bundle, &meta)?;
         self.validate_published_candidate_custody_v2(
             &request.bundle,
             request.source_bundle_digest.as_str(),
@@ -1157,7 +1158,10 @@ impl RepoMapBundleIngestPort for RepoMapGenerationStore {
 // occupy a nested content-addressed layout. Name the durable incident,
 // not an adapter-local path, so list/discard remain exact and unambiguous.
 fn quarantine_entry_name(digest: &[u8; 32]) -> String {
-    let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    let mut hex = String::with_capacity(digest.len().saturating_mul(2));
+    for byte in digest {
+        let _written: Result<(), std::fmt::Error> = write!(hex, "{byte:02x}");
+    }
     format!("incident-{hex}.cbor")
 }
 

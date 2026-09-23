@@ -505,10 +505,7 @@ fn a_refused_search_corpus_batch_freezes_its_refusal() -> TestRes {
     let catalog = memory_catalog();
     let (materializer, fakes) = search_corpus_materializer(Arc::clone(&catalog), false);
     let counting = Arc::new(CountingSearchCorpus::new(materializer));
-    let dispatcher = search_corpus_dispatcher_with_port(
-        counting.clone() as Arc<dyn SearchCorpusIngestPort + Send + Sync>,
-        Arc::clone(&catalog),
-    );
+    let dispatcher = search_corpus_dispatcher_with_port(counting.clone(), Arc::clone(&catalog));
     let budget = RequestBudgetV1::unbounded();
 
     // Mode/base mismatch, re-stamped so the digest is the body's and the
@@ -678,10 +675,7 @@ fn a_committed_replay_runs_no_preflight_apply_or_storage() -> TestRes {
     let catalog = memory_catalog();
     let (materializer, fakes) = search_corpus_materializer(Arc::clone(&catalog), true);
     let counting = Arc::new(CountingSearchCorpus::new(materializer));
-    let dispatcher = search_corpus_dispatcher_with_port(
-        counting.clone() as Arc<dyn SearchCorpusIngestPort + Send + Sync>,
-        Arc::clone(&catalog),
-    );
+    let dispatcher = search_corpus_dispatcher_with_port(counting.clone(), Arc::clone(&catalog));
     let budget = RequestBudgetV1::unbounded();
 
     let batch = fixture_search_corpus_batch()?;
@@ -807,14 +801,14 @@ fn repomap_dispatcher(
         unreachable.clone(),
         unreachable.clone(),
         unreachable.clone(),
-        unreachable.clone(),
+        unreachable,
         repomap,
         catalog,
     )
 }
 
-fn repomap_bundle_fixture() -> Result<RepoMapSourceBundle, Box<dyn std::error::Error>> {
-    Ok(RepoMapSourceBundle::new(
+fn repomap_bundle_fixture() -> RepoMapSourceBundle {
+    RepoMapSourceBundle::new(
         RepoId::new("repo-rm2").expect("static fixture ID satisfies canonical policy"),
         RevisionId::new("rev-rm2").expect("static fixture ID satisfies canonical policy"),
         ManifestGeneration::new(9),
@@ -828,7 +822,7 @@ fn repomap_bundle_fixture() -> Result<RepoMapSourceBundle, Box<dyn std::error::E
         },
         RepoMapExactnessSummary::Exact,
         RepoMapRedactionState::Unredacted,
-    ))
+    )
 }
 
 fn repomap_receipt_of(
@@ -839,11 +833,24 @@ fn repomap_receipt_of(
         SearchPlaneIngestIpcResponse::Error(error) => {
             Err(format!("{}: {}", error.code, error.message))
         }
-        other => Err(format!("unexpected response {other:?}")),
+        other @ (SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
+        | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
+        | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
+        | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
+        | SearchPlaneIngestIpcResponse::FileOwnershipReceipt(_)
+        | SearchPlaneIngestIpcResponse::FileContributorReceipt(_)
+        | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
+        | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
+        | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
+        | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+        | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
+        | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)) => {
+            Err(format!("unexpected response {other:?}"))
+        }
     }
 }
 
-/// SEP-21 P02B: a RepoMap V2 publish travels the operation journal —
+/// SEP-21 P02B: a `RepoMap` V2 publish travels the operation journal —
 /// exactly one store apply, then replays carry the stored terminal
 /// receipt with zero store contact.
 ///
@@ -859,7 +866,7 @@ fn a_repomap_v2_publish_journals_once_and_replays_without_the_store() -> TestRes
     let dispatcher = repomap_dispatcher(Arc::clone(&repomap), Arc::clone(&catalog));
     let budget = RequestBudgetV1::unbounded();
 
-    let request = RepoMapPublishBundleRequestV2::new(repomap_bundle_fixture()?)?;
+    let request = RepoMapPublishBundleRequestV2::new(repomap_bundle_fixture())?;
     let records_before = catalog.records();
     let first = repomap_receipt_of(dispatcher.dispatch(
         SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(request.clone()),
@@ -905,7 +912,19 @@ fn a_repomap_v2_publish_journals_once_and_replays_without_the_store() -> TestRes
         &budget,
     ) {
         SearchPlaneIngestIpcResponse::Error(_) => {}
-        other => {
+        other @ (SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
+        | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
+        | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
+        | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
+        | SearchPlaneIngestIpcResponse::FileOwnershipReceipt(_)
+        | SearchPlaneIngestIpcResponse::FileContributorReceipt(_)
+        | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
+        | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
+        | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
+        | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+        | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
+        | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
+        | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)) => {
             return Err(format!("a forged bundle digest must be refused, got {other:?}").into());
         }
     }
@@ -916,11 +935,23 @@ fn a_repomap_v2_publish_journals_once_and_replays_without_the_store() -> TestRes
     // The V1 bundle arm stays journal-free: its store error records
     // nothing.
     match dispatcher.dispatch(
-        SearchPlaneIngestIpcRequest::PublishRepoMapBundle(repomap_bundle_fixture()?),
+        SearchPlaneIngestIpcRequest::PublishRepoMapBundle(repomap_bundle_fixture()),
         &budget,
     ) {
         SearchPlaneIngestIpcResponse::Error(_) => {}
-        other => {
+        other @ (SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
+        | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
+        | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
+        | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
+        | SearchPlaneIngestIpcResponse::FileOwnershipReceipt(_)
+        | SearchPlaneIngestIpcResponse::FileContributorReceipt(_)
+        | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
+        | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
+        | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
+        | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+        | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
+        | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
+        | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)) => {
             return Err(format!("the V1 arm must error on the fake store, got {other:?}").into());
         }
     }
