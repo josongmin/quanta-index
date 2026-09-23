@@ -120,6 +120,13 @@ EXPECTED_VERDICT_PROOFS: dict[str, list[str]] = {
     "ACTIVATED": ["p11-activation"],
     "ROLLBACK_PROVEN": ["p10-state-migration", "p11-rollback"],
 }
+EXPECTED_P12A_TEST_TARGETS = [
+    "proof-aggregate-python-owner",
+    "proof-handoff-cli-python-owner",
+    "proof-handoff-chain-python-owner",
+    "proof-authority-python-owner",
+    "proof-manifest-python-owner",
+]
 STREAM_CHUNK_SIZE = 1024 * 1024
 
 
@@ -384,6 +391,8 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
                 findings.append(Finding(path, f"duplicate artifact path {artifact!r}"))
             seen_artifacts.add(artifact)
         test_targets = proof.get("test_authority_targets")
+        if proof_id == "p12a-proof-infrastructure" and test_targets != EXPECTED_P12A_TEST_TARGETS:
+            findings.append(Finding(path, "P12A test authority targets differ from the fixed infrastructure set"))
         if not isinstance(test_targets, list) or any(
             not isinstance(item, str) for item in test_targets
         ):
@@ -2294,7 +2303,13 @@ def _main_locked(argv: list[str] | None = None) -> int:
             print(f"REFUSED {finding.render()}", file=sys.stderr)
         print(f"FAIL: {len(findings)} proof-authority finding(s)", file=sys.stderr)
         return 1
-    print(f"OK: {len(proof_by_id)} registered proof(s); {len(seen_proofs)} manifest(s) validated")
+    if not manifest_paths:
+        print(
+            f"REGISTRY_ONLY: {len(proof_by_id)} registered proof(s); "
+            "0 manifest(s) validated; execution proof not checked"
+        )
+    else:
+        print(f"OK: {len(proof_by_id)} registered proof(s); {len(seen_proofs)} manifest(s) validated")
     return 0
 
 

@@ -314,12 +314,42 @@ owners = [
 ]
 
 [python_scopes.p12a-proof-infrastructure]
-targets = ["proof-aggregate-python-owner"]
+targets = [
+  "proof-aggregate-python-owner",
+  "proof-handoff-cli-python-owner",
+  "proof-handoff-chain-python-owner",
+  "proof-authority-python-owner",
+  "proof-manifest-python-owner",
+]
 
 [[python_targets]]
 id = "proof-aggregate-python-owner"
 path = "tools/ci/tests/test_write_proof_aggregate.py"
 owner = "tools/ci/write-proof-aggregate.py"
+rail = "pr-proof-authority-python"
+
+[[python_targets]]
+id = "proof-handoff-cli-python-owner"
+path = "tools/ci/tests/test_check_lane_handoff.py"
+owner = "tools/ci/lint/check-lane-handoff.py"
+rail = "pr-proof-authority-python"
+
+[[python_targets]]
+id = "proof-handoff-chain-python-owner"
+path = "tools/ci/tests/test_handoff_validation.py"
+owner = "tools/ci/lint/handoff_validation.py"
+rail = "pr-proof-authority-python"
+
+[[python_targets]]
+id = "proof-authority-python-owner"
+path = "tools/ci/tests/test_check_proof_authority.py"
+owner = "tools/ci/lint/check-proof-authority.py"
+rail = "pr-proof-authority-python"
+
+[[python_targets]]
+id = "proof-manifest-python-owner"
+path = "tools/ci/tests/test_write_proof_manifest.py"
+owner = "tools/ci/write-proof-manifest.py"
 rail = "pr-proof-authority-python"
 
 [[integration_targets]]

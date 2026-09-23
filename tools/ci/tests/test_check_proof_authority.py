@@ -1019,8 +1019,21 @@ def test_p12a_python_owner_is_registered_and_source_bound() -> None:
     assert proof["authority_state"] == "executable"
     assert proof["source_binding"] == "exact-pair"
     assert proof["dependencies"] == ["p11-cross-repo-cutover"]
-    assert proof["test_authority_targets"] == ["proof-aggregate-python-owner"]
+    assert proof["test_authority_targets"] == MODULE.EXPECTED_P12A_TEST_TARGETS
     assert not MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH)
+
+
+def test_static_registry_lint_does_not_claim_execution_proof(capsys) -> None:
+    assert MODULE._main_locked([]) == 0
+    assert "REGISTRY_ONLY:" in capsys.readouterr().out
+
+
+def test_p12a_refuses_a_shrunk_infrastructure_test_set() -> None:
+    registry = MODULE._read_toml(REGISTRY_PATH)
+    proof = next(proof for proof in registry["proofs"] if proof["id"] == "p12a-proof-infrastructure")
+    proof["test_authority_targets"] = ["proof-aggregate-python-owner"]
+    messages = _messages(MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH))
+    assert any("P12A test authority targets differ" in message for message in messages)
 
 
 def test_p12a_python_owner_refuses_missing_scope_target_and_recipe(monkeypatch) -> None:
