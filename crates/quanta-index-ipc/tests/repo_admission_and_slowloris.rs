@@ -227,7 +227,9 @@ fn send(
     >(socket, &text_query(1, repo), policy)?;
     match envelope.payload {
         SearchPlaneQueryIpcResponse::Error(error) => Ok(error),
-        other @ (SearchPlaneQueryIpcResponse::Text(_)
+        other @ (SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+        | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
+        | SearchPlaneQueryIpcResponse::Text(_)
         | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::Semantic(_)
         | SearchPlaneQueryIpcResponse::Hybrid(_)

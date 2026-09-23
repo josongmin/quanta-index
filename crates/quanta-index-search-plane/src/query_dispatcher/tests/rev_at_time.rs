@@ -75,10 +75,12 @@ fn lexical_dispatch_rebinds_rev_at_time_to_reachable_ancestor() -> TestResult {
         SearchPlaneQueryIpcRequest::ResolveLexicalGeneration(request.clone()),
         &RequestBudgetV1::unbounded(),
     );
-    assert!(matches!(
-        resolved,
-        SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(pin) if pin == expected_ancestor
-    ));
+    if !matches!(
+        &resolved,
+        SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(pin) if pin == &expected_ancestor
+    ) {
+        return Err(format!("expected ancestor resolution, got {resolved:?}").into());
+    }
     let mut before_history = request.clone();
     before_history.query_text = "rev:at.time(1970-01-01T00:00:00.050Z) foo".to_string();
     let response = dispatcher.dispatch(
@@ -113,22 +115,26 @@ fn lexical_dispatch_rebinds_rev_at_time_to_reachable_ancestor() -> TestResult {
         SearchPlaneQueryIpcRequest::ResolveLexicalGeneration(before_history.clone()),
         &RequestBudgetV1::unbounded(),
     );
-    assert!(matches!(
-        empty_resolution,
+    if !matches!(
+        &empty_resolution,
         SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(pin)
             if pin.manifest_generation == ManifestGeneration::new(9)
                 && pin.revision_id.as_str() == "2222222222222222222222222222222222222222"
-    ));
+    ) {
+        return Err(format!("expected head resolution, got {empty_resolution:?}").into());
+    }
     let empty_response = dispatcher.dispatch(
         SearchPlaneQueryIpcRequest::Text(before_history),
         &RequestBudgetV1::unbounded(),
     );
-    assert!(matches!(
-        empty_response,
+    if !matches!(
+        &empty_response,
         SearchPlaneQueryIpcResponse::Text(text)
             if text.results.is_empty()
                 && text.generation.manifest_generation == ManifestGeneration::new(9)
-    ));
+    ) {
+        return Err(format!("expected empty head response, got {empty_response:?}").into());
+    }
 
     let guard = state
         .lock()
