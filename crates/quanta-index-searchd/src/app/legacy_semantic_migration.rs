@@ -1,4 +1,11 @@
 //! Private legacy journal migration authority.
+//!
+//! The source side is read-only: [`LegacySemanticJournalReaderV1`] opens the
+//! legacy journal directory without creating it, without taking a lock file,
+//! and without writing anything into it — a source-side `MIGRATED` receipt
+//! is old-binary authority this binary cannot verify, so the journal is
+//! refused immutable instead. The migration receipt and every durable
+//! generation are written by the staging writer into the new root only.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
@@ -6,7 +13,6 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use fs2::FileExt as _;
 use quanta_index_contract::{
     ManifestGeneration, OwnerDocKind, RepoId, RevisionId, SemanticCorpusKindV1, SemanticIngestBatch,
 };
@@ -120,10 +126,9 @@ struct Receipt {
 type ReceiptWire = (u32, String, u64, Vec<SourceRowWire>, Vec<DurableRowWire>);
 
 fn decode_journal(bytes: &[u8]) -> Result<Journal, CoreError> {
-    let (batches,): JournalWire = decode_cbor_payload(bytes).map_err(|error| {
-        CoreError::Storage(format!(
-            "legacy semantic migration: decode journal: {error}"
-        ))
+    let (batches,): JournalWire = decode_cbor_payload(bytes).map_err(|error| CoreError::Typed {
+        code: quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticJournalCorrupt,
+        message: format!("legacy semantic migration: decode journal: {error}"),
     })?;
     Ok(Journal { batches })
 }
@@ -214,43 +219,60 @@ fn encode_receipt(receipt: &Receipt) -> Result<Vec<u8>, CoreError> {
 
 struct ValidatedMigrationV2(Receipt);
 
-/// Opaque journal snapshot. Receipt construction and persistence are private.
+/// Opaque read-only journal snapshot. The source directory is only ever
+/// read: receipt construction and persistence happen in the staging root.
 #[derive(Debug)]
-pub struct LegacySemanticJournalStore {
-    _lock: File,
-    root: PathBuf,
+pub struct LegacySemanticJournalReaderV1 {
+    journal_dir: PathBuf,
     journal_path: PathBuf,
-    receipt_path: PathBuf,
     journal_digest: Option<String>,
     batches: Vec<SemanticIngestBatch>,
 }
 
-impl LegacySemanticJournalStore {
-    pub fn open(root: impl AsRef<Path>) -> Result<Self, CoreError> {
-        let requested_root = root.as_ref();
-        fs::create_dir_all(requested_root)
-            .map_err(storage("create migration root", requested_root))?;
+impl LegacySemanticJournalReaderV1 {
+    /// Open the legacy journal directory read-only.
+    ///
+    /// Nothing is created and nothing is written: no directory, no lock
+    /// file, no receipt, no cleanup of the source. A missing directory (or a
+    /// directory without `journal.cbor`) simply means there is no legacy
+    /// journal, and so does a journal that decodes to zero batches: there is
+    /// nothing to migrate, revalidate, or receipt. A source-side `MIGRATED`
+    /// receipt is old-binary authority this binary cannot verify against a
+    /// fresh staging root, so the journal is refused immutable rather than
+    /// re-migrated or ignored. A stale `MIGRATED.lock` beside it is inert
+    /// residue and is ignored.
+    pub fn open(journal_dir: impl AsRef<Path>) -> Result<Self, CoreError> {
+        let requested_root = journal_dir.as_ref();
+        match fs::symlink_metadata(requested_root) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Self::empty());
+            }
+            Err(error) => {
+                return Err(storage("inspect journal root", requested_root)(error));
+            }
+        }
         validate_root_custody(requested_root)?;
-        // The daemon supplies this root from its state-root composition. Pin the
-        // resolved directory for the entire locked session so ancestor aliases
-        // cannot redirect later child operations to a different custody tree.
-        let root = fs::canonicalize(requested_root)
-            .map_err(storage("canonicalize migration root", requested_root))?;
-        validate_root_custody(&root)?;
-        let lock_path = root.join("MIGRATED.lock");
-        let lock =
-            open_lock_nofollow(&lock_path).map_err(storage("open migration lock", &lock_path))?;
-        validate_opened_file_custody(&root, &lock, &lock_path, false)?;
-        lock.lock_exclusive()
-            .map_err(storage("lock migration root", &root))?;
-        cleanup_stale_temporaries(&root)?;
-        let journal_path = root.join("journal.cbor");
-        let bytes = read_bounded(&root, &journal_path, MAX_JOURNAL_BYTES, "journal")?;
-        let journal = bytes
-            .as_deref()
-            .map(decode_journal)
-            .transpose()?
-            .unwrap_or_default();
+        // Pin the resolved directory so ancestor aliases cannot redirect
+        // later reads to a different custody tree.
+        let journal_dir = fs::canonicalize(requested_root)
+            .map_err(storage("canonicalize journal root", requested_root))?;
+        validate_root_custody(&journal_dir)?;
+        if journal_dir.join("MIGRATED").exists() {
+            return Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticJournalImmutableAfterMigration,
+                message: "legacy journal already has a migration receipt; a source-side receipt is old-binary authority this binary does not verify".to_string(),
+            });
+        }
+        let journal_path = journal_dir.join("journal.cbor");
+        let bytes = read_bounded(&journal_dir, &journal_path, MAX_JOURNAL_BYTES, "journal")?;
+        let Some(bytes) = bytes else {
+            return Ok(Self::empty());
+        };
+        let journal = decode_journal(&bytes)?;
+        if journal.batches.is_empty() {
+            return Ok(Self::empty());
+        }
         if journal.batches.len() > MAX_JOURNAL_BATCHES {
             return Err(CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticMigrationInputTooLarge,
@@ -260,15 +282,21 @@ impl LegacySemanticJournalStore {
                 ),
             });
         }
-        let receipt_path = root.join("MIGRATED");
         Ok(Self {
-            _lock: lock,
-            root,
+            journal_dir,
             journal_path,
-            receipt_path,
-            journal_digest: bytes.as_deref().map(digest),
+            journal_digest: Some(digest(&bytes)),
             batches: journal.batches,
         })
+    }
+
+    fn empty() -> Self {
+        Self {
+            journal_dir: PathBuf::new(),
+            journal_path: PathBuf::new(),
+            journal_digest: None,
+            batches: Vec::new(),
+        }
     }
 
     #[cfg(test)]
@@ -293,14 +321,22 @@ impl LegacySemanticJournalStore {
 
 type Key = (RepoId, RevisionId, ManifestGeneration);
 
+/// Migrate the decoded journal into the staging semantic root.
+///
+/// `reader` is a read-only snapshot of the source journal; every durable
+/// write — the generations, the temporary receipt files, and the published
+/// `MIGRATED` receipt — lands under `staging_semantic_root`, which the
+/// offline operation owns. The source journal is re-validated before and
+/// after the import so a mid-migration source change fails closed.
 pub(super) fn migrate(
-    store: &LegacySemanticJournalStore,
+    reader: &LegacySemanticJournalReaderV1,
     builder: &(dyn SemanticScopeStreamBuildPort + Send + Sync),
-    semantic_root: &Path,
+    staging_semantic_root: &Path,
     window_policy: SemanticStreamWindowPolicy,
 ) -> Result<SemanticMigrationOutcome, CoreError> {
-    let Some(journal_digest) = store.journal_digest.as_deref() else {
-        if store.receipt_path.exists() {
+    let receipt_path = staging_semantic_root.join("MIGRATED");
+    let Some(journal_digest) = reader.journal_digest.as_deref() else {
+        if receipt_path.exists() {
             return Err(CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticJournalMissing,
                 message: "migration receipt exists without retained journal".to_string(),
@@ -308,18 +344,19 @@ pub(super) fn migrate(
         }
         return Ok(SemanticMigrationOutcome::NoLegacyJournal);
     };
-    revalidate_journal(store, journal_digest)?;
-    let batches: Vec<_> = store
+    revalidate_journal(reader, journal_digest)?;
+    let batches: Vec<_> = reader
         .batches
         .iter()
         .map(normalize_legacy_semantic_batch_v1)
         .collect();
     let sources = source_rows(&batches)?;
-    let existing = read_receipt(store)?;
-    let persisted = inventory_persisted_generations(semantic_root)?.sealed;
+    let existing = read_receipt(staging_semantic_root, &receipt_path)?;
+    let persisted = inventory_persisted_generations(staging_semantic_root)?.sealed;
     if let Some(receipt) = existing {
-        let durable = durable_rows(semantic_root, &sources, &persisted)?;
-        let expected = validated_migration(store, journal_digest, sources, durable)?.0;
+        let durable = durable_rows(staging_semantic_root, &sources, &persisted)?;
+        let expected =
+            validated_migration(reader.batches.len(), journal_digest, sources, durable)?.0;
         if receipt != expected {
             return Err(CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticMigrationReceiptConflict,
@@ -329,7 +366,7 @@ pub(super) fn migrate(
         }
         return Ok(SemanticMigrationOutcome::AlreadyMigrated);
     }
-    let before = witness_map_for_sources(semantic_root, &persisted, &sources)?;
+    let before = witness_map_for_sources(staging_semantic_root, &persisted, &sources)?;
     let preexisting: BTreeSet<Key> = sources
         .iter()
         .filter_map(|source| {
@@ -377,11 +414,18 @@ pub(super) fn migrate(
                 .ok_or_else(|| CoreError::Storage("migration count overflow".to_string()))?;
         }
     }
-    let persisted = inventory_persisted_generations(semantic_root)?.sealed;
-    let durable = durable_rows(semantic_root, &sources, &persisted)?;
-    let receipt = validated_migration(store, journal_digest, sources, durable)?;
-    revalidate_journal(store, journal_digest)?;
-    write_receipt(store, &receipt)?;
+    let persisted = inventory_persisted_generations(staging_semantic_root)?.sealed;
+    let durable = durable_rows(staging_semantic_root, &sources, &persisted)?;
+    let receipt = validated_migration(reader.batches.len(), journal_digest, sources, durable)?;
+    revalidate_journal(reader, journal_digest)?;
+    // The receipt directory is staging-owned: create it only on the publish
+    // path, converge its temporaries, then publish the receipt noreplace.
+    fs::create_dir_all(staging_semantic_root).map_err(storage(
+        "create staging semantic root",
+        staging_semantic_root,
+    ))?;
+    cleanup_stale_temporaries(staging_semantic_root)?;
+    write_receipt(staging_semantic_root, &receipt_path, &receipt)?;
     Ok(SemanticMigrationOutcome::Migrated { imported })
 }
 
@@ -496,7 +540,7 @@ fn durable_rows(
 }
 
 fn validated_migration(
-    store: &LegacySemanticJournalStore,
+    batch_count: usize,
     journal_digest: &str,
     sources: Vec<SourceRow>,
     durable: Vec<DurableRow>,
@@ -517,20 +561,15 @@ fn validated_migration(
     Ok(ValidatedMigrationV2(Receipt {
         format_version: RECEIPT_FORMAT,
         journal_digest: journal_digest.to_string(),
-        batch_count: u64::try_from(store.batches.len())
+        batch_count: u64::try_from(batch_count)
             .map_err(|err| CoreError::Storage(format!("batch count overflow: {err}")))?,
         sources,
         durable,
     }))
 }
 
-fn read_receipt(store: &LegacySemanticJournalStore) -> Result<Option<Receipt>, CoreError> {
-    let Some(bytes) = read_bounded(
-        &store.root,
-        &store.receipt_path,
-        MAX_RECEIPT_BYTES,
-        "receipt",
-    )?
+fn read_receipt(staging_root: &Path, receipt_path: &Path) -> Result<Option<Receipt>, CoreError> {
+    let Some(bytes) = read_bounded(staging_root, receipt_path, MAX_RECEIPT_BYTES, "receipt")?
     else {
         return Ok(None);
     };
@@ -593,11 +632,12 @@ fn is_canonical_sha256(value: &str) -> bool {
 }
 
 fn write_receipt(
-    store: &LegacySemanticJournalStore,
+    staging_root: &Path,
+    receipt_path: &Path,
     witness: &ValidatedMigrationV2,
 ) -> Result<(), CoreError> {
     let receipt = &witness.0;
-    if let Some(existing) = read_receipt(store)? {
+    if let Some(existing) = read_receipt(staging_root, receipt_path)? {
         if existing == *receipt {
             return Ok(());
         }
@@ -607,13 +647,16 @@ fn write_receipt(
         });
     }
     let bytes = encode_receipt(receipt)?;
-    atomic_publish_noreplace(&store.root, &store.receipt_path, &bytes)
+    atomic_publish_noreplace(staging_root, receipt_path, &bytes)
 }
 
-fn revalidate_journal(store: &LegacySemanticJournalStore, expected: &str) -> Result<(), CoreError> {
+fn revalidate_journal(
+    reader: &LegacySemanticJournalReaderV1,
+    expected: &str,
+) -> Result<(), CoreError> {
     let bytes = read_bounded(
-        &store.root,
-        &store.journal_path,
+        &reader.journal_dir,
+        &reader.journal_path,
         MAX_JOURNAL_BYTES,
         "journal",
     )?
@@ -796,35 +839,8 @@ fn open_read_nofollow(path: &Path) -> std::io::Result<File> {
     File::open(path)
 }
 
-#[cfg(unix)]
-fn open_lock_nofollow(path: &Path) -> std::io::Result<File> {
-    use rustix::fs::{Mode, OFlags, open};
-
-    open(
-        path,
-        OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::CREATE,
-        Mode::from_raw_mode(0o600),
-    )
-    .map(File::from)
-    .map_err(|error| std::io::Error::from_raw_os_error(error.raw_os_error()))
-}
-
-#[cfg(not(unix))]
-fn open_lock_nofollow(path: &Path) -> std::io::Result<File> {
-    if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
-        return Err(std::io::Error::other(format!(
-            "migration lock is a symlink: {}",
-            path.display()
-        )));
-    }
-    OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(path)
-}
-
+/// Remove interrupted receipt temporaries under a staging-owned directory.
+/// Never called on a source root: the source side is read-only.
 fn cleanup_stale_temporaries(root: &Path) -> Result<(), CoreError> {
     for entry in fs::read_dir(root).map_err(storage("list migration root", root))? {
         let entry = entry.map_err(storage("read migration entry", root))?;
@@ -967,8 +983,8 @@ mod tests {
 
     #[test]
     fn receipt_crash_boundaries_cleanup_or_recover_idempotently() -> TestResult {
-        let root = tempfile::tempdir()?;
-        let store = LegacySemanticJournalStore::open(root.path())?;
+        let staging = tempfile::tempdir()?;
+        let receipt_path = staging.path().join("MIGRATED");
         let witness = ValidatedMigrationV2(Receipt {
             format_version: RECEIPT_FORMAT,
             journal_digest: format!("sha256:{}", "1".repeat(64)),
@@ -978,30 +994,34 @@ mod tests {
         });
 
         failpoint::set(Some(FAIL_AFTER_TEMP_SYNC));
-        let before_publish = write_receipt(&store, &witness)
+        let before_publish = write_receipt(staging.path(), &receipt_path, &witness)
             .expect_err("temp-sync failure must surface before publication");
         failpoint::set(None);
         assert!(matches!(before_publish, CoreError::Storage(_)));
-        assert!(!store.receipt_path.exists());
-        assert!(!leaked_migration_temp(&store.root)?);
+        assert!(!receipt_path.exists());
+        assert!(!leaked_migration_temp(staging.path())?);
 
         failpoint::set(Some(FAIL_AFTER_RECEIPT_PUBLISH));
-        let after_publish = write_receipt(&store, &witness)
+        let after_publish = write_receipt(staging.path(), &receipt_path, &witness)
             .expect_err("post-publication sync failure must surface");
         failpoint::set(None);
         assert!(matches!(after_publish, CoreError::Storage(_)));
-        assert!(store.receipt_path.exists());
-        write_receipt(&store, &witness)?;
-        assert_eq!(read_receipt(&store)?, Some(witness.0));
+        assert!(receipt_path.exists());
+        write_receipt(staging.path(), &receipt_path, &witness)?;
+        assert_eq!(
+            read_receipt(staging.path(), &receipt_path)?,
+            Some(witness.0)
+        );
         Ok(())
     }
 
     #[test]
     fn receipt_shape_rejects_fabricated_legacy_or_invalid_root() -> TestResult {
-        let root = tempfile::tempdir()?;
-        let store = LegacySemanticJournalStore::open(root.path())?;
-        fs::write(root.path().join("MIGRATED"), b"migrated")?;
-        let legacy = read_receipt(&store).expect_err("v1 marker must not authorize migration");
+        let staging = tempfile::tempdir()?;
+        let receipt_path = staging.path().join("MIGRATED");
+        fs::write(&receipt_path, b"migrated")?;
+        let legacy = read_receipt(staging.path(), &receipt_path)
+            .expect_err("v1 marker must not authorize migration");
         assert!(matches!(
             legacy,
             CoreError::Typed { ref code, .. }
@@ -1009,7 +1029,7 @@ mod tests {
         ));
 
         fs::write(
-            root.path().join("MIGRATED"),
+            &receipt_path,
             encode_receipt(&Receipt {
                 format_version: RECEIPT_FORMAT,
                 journal_digest: format!("sha256:{}", "1".repeat(64)),
@@ -1034,7 +1054,8 @@ mod tests {
                 }],
             })?,
         )?;
-        let invalid = read_receipt(&store).expect_err("invalid durable root must fail closed");
+        let invalid = read_receipt(staging.path(), &receipt_path)
+            .expect_err("invalid durable root must fail closed");
         assert!(matches!(
             invalid,
             CoreError::Typed { ref code, .. }
@@ -1043,31 +1064,87 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(unix)]
+    /// The read-only open creates nothing beside the journal it reads: no
+    /// lock file, no receipt, no temporary, and the journal bytes are
+    /// identical before and after.
     #[test]
-    fn store_rejects_symlinked_journal_and_lock() -> TestResult {
-        use std::os::unix::fs::symlink;
-
+    fn reader_open_creates_nothing_in_the_source() -> TestResult {
         let root = tempfile::tempdir()?;
-        let outside = tempfile::NamedTempFile::new()?;
-        symlink(outside.path(), root.path().join("journal.cbor"))?;
-        assert!(LegacySemanticJournalStore::open(root.path()).is_err());
+        let journal_dir = root.path().join("semantic");
+        LegacySemanticJournalReaderV1::stage_for_test(&journal_dir, &[])?;
+        let before: Vec<(PathBuf, Vec<u8>)> = vec![(
+            journal_dir.join("journal.cbor"),
+            fs::read(journal_dir.join("journal.cbor"))?,
+        )];
 
-        fs::remove_file(root.path().join("journal.cbor"))?;
-        fs::remove_file(root.path().join("MIGRATED.lock"))?;
-        symlink(outside.path(), root.path().join("MIGRATED.lock"))?;
-        assert!(LegacySemanticJournalStore::open(root.path()).is_err());
+        let _reader = LegacySemanticJournalReaderV1::open(&journal_dir)?;
+        assert!(
+            !journal_dir.join("MIGRATED").exists(),
+            "the reader must not write a receipt into the source"
+        );
+        assert!(
+            !journal_dir.join("MIGRATED.lock").exists(),
+            "the reader must not take a lock file in the source"
+        );
+        assert!(!leaked_migration_temp(&journal_dir)?);
+        for (path, bytes) in &before {
+            assert_eq!(
+                &fs::read(path)?,
+                bytes,
+                "the source journal must read back byte-identical"
+            );
+        }
+        Ok(())
+    }
+
+    /// New binary, old root: a source-side `MIGRATED` receipt is old-binary
+    /// authority this binary does not verify, so the journal is refused
+    /// immutable. A stale `MIGRATED.lock` beside it is inert residue and is
+    /// ignored.
+    #[test]
+    fn reader_refuses_a_source_side_receipt_as_old_binary_authority() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let journal_dir = root.path().join("semantic");
+        LegacySemanticJournalReaderV1::stage_for_test(&journal_dir, &[])?;
+        fs::write(journal_dir.join("MIGRATED.lock"), b"stale lock residue")?;
+
+        let reader = LegacySemanticJournalReaderV1::open(&journal_dir)?;
+        assert!(
+            reader.journal_digest.is_none(),
+            "an empty staged journal carries no digest"
+        );
+
+        fs::write(journal_dir.join("MIGRATED"), b"migrated")?;
+        let error = LegacySemanticJournalReaderV1::open(&journal_dir)
+            .expect_err("a source-side receipt must refuse the journal immutable");
+        assert!(matches!(
+            error,
+            CoreError::Typed { ref code, .. }
+                if *code == quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticJournalImmutableAfterMigration
+        ));
         Ok(())
     }
 
     #[cfg(unix)]
     #[test]
-    fn store_rejects_hard_linked_journal() -> TestResult {
+    fn reader_rejects_symlinked_journal() -> TestResult {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir()?;
+        let outside = tempfile::NamedTempFile::new()?;
+        symlink(outside.path(), root.path().join("journal.cbor"))?;
+        assert!(LegacySemanticJournalReaderV1::open(root.path()).is_err());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reader_rejects_hard_linked_journal() -> TestResult {
         let root = tempfile::tempdir()?;
         let outside = tempfile::NamedTempFile::new()?;
         fs::hard_link(outside.path(), root.path().join("journal.cbor"))?;
 
-        let error = LegacySemanticJournalStore::open(root.path())
+        let error = LegacySemanticJournalReaderV1::open(root.path())
             .expect_err("multi-link journal must not cross the custody boundary");
         assert!(matches!(
             error,

@@ -147,6 +147,7 @@ define_search_plane_error_codes! {
         Internal => "INTERNAL",
         InvalidRequest => "INVALID_REQUEST",
         LegacySemanticJournalChangedDuringMigration => "LEGACY_SEMANTIC_JOURNAL_CHANGED_DURING_MIGRATION",
+        LegacySemanticJournalCorrupt => "LEGACY_SEMANTIC_JOURNAL_CORRUPT",
         LegacySemanticJournalGenerationConflict => "LEGACY_SEMANTIC_JOURNAL_GENERATION_CONFLICT",
         LegacySemanticJournalImmutableAfterMigration => "LEGACY_SEMANTIC_JOURNAL_IMMUTABLE_AFTER_MIGRATION",
         LegacySemanticJournalManifestDigestMissing => "LEGACY_SEMANTIC_JOURNAL_MANIFEST_DIGEST_MISSING",

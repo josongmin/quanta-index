@@ -1297,6 +1297,7 @@ pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::IngestResourceBudgetExce
 pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::Internal
 pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::InvalidRequest
 pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LegacySemanticJournalChangedDuringMigration
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LegacySemanticJournalCorrupt
 pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LegacySemanticJournalGenerationConflict
 pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LegacySemanticJournalImmutableAfterMigration
 pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::LegacySemanticJournalManifestDigestMissing
@@ -9694,6 +9695,7 @@ pub quanta_index_contract::SearchPlaneErrorCodeV2::IngestResourceBudgetExceeded
 pub quanta_index_contract::SearchPlaneErrorCodeV2::Internal
 pub quanta_index_contract::SearchPlaneErrorCodeV2::InvalidRequest
 pub quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticJournalChangedDuringMigration
+pub quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticJournalCorrupt
 pub quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticJournalGenerationConflict
 pub quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticJournalImmutableAfterMigration
 pub quanta_index_contract::SearchPlaneErrorCodeV2::LegacySemanticJournalManifestDigestMissing

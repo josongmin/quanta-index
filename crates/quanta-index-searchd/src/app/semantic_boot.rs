@@ -23,7 +23,7 @@ use quanta_index_search_plane::Ledger;
 
 use super::boot_inventory::{TrackInventoryReportV1, seed_track_readiness};
 
-use super::LegacySemanticJournalStore;
+use super::LegacySemanticJournalReaderV1;
 
 pub use super::legacy_semantic_migration::SemanticMigrationOutcome;
 
@@ -74,21 +74,25 @@ pub struct SemanticBootReport {
 /// Offline-only (S21-11): called solely by the `migrate-state` importer with
 /// the daemon fully stopped, never from the boot path.
 ///
+/// `reader` is a read-only snapshot of the source journal; `staging_root`
+/// is the staging-owned semantic root that receives the generations and the
+/// `MIGRATED` receipt. The source journal is never written: it is retained
+/// as-is after success.
+///
 /// Idempotent and resumable: generations already sealed on disk (from a prior
 /// run or a partial crash) are skipped, so a re-run never tries to mutate a
-/// sealed generation. The legacy journal is retained after success; only a
-/// completion marker is written.
+/// sealed generation.
 ///
 /// `window_policy` is the window the builder admits streamed batches
 /// against; the journal's decoded batches are windowed by it before they
 /// enter the same build entry a live batch takes.
 pub fn migrate_legacy_semantic_journal(
-    store: &LegacySemanticJournalStore,
+    reader: &LegacySemanticJournalReaderV1,
     builder: &(dyn SemanticScopeStreamBuildPort + Send + Sync),
-    semantic_root: &Path,
+    staging_root: &Path,
     window_policy: SemanticStreamWindowPolicy,
 ) -> Result<SemanticMigrationOutcome, CoreError> {
-    super::legacy_semantic_migration::migrate(store, builder, semantic_root, window_policy)
+    super::legacy_semantic_migration::migrate(reader, builder, staging_root, window_policy)
 }
 
 /// Seed semantic readiness directly from the sealed-generation inventory.
@@ -132,7 +136,7 @@ mod tests {
     };
 
     use super::{
-        Arc, Ledger, LegacySemanticJournalStore, RwLock, SearchPlaneTrackKind,
+        Arc, Ledger, LegacySemanticJournalReaderV1, RwLock, SearchPlaneTrackKind,
         SemanticMigrationOutcome, migrate_legacy_semantic_journal,
         seed_persisted_semantic_readiness,
     };
@@ -422,9 +426,9 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let semantic_root: PathBuf = temp.path().join("indexes").join("semantic");
         let adapter = SemanticAdapter::with_state_root(semantic_root.clone())?;
-        let store = LegacySemanticJournalStore::open(temp.path().join("semantic"))?;
+        let reader = LegacySemanticJournalReaderV1::open(temp.path().join("semantic"))?;
         let outcome = migrate_legacy_semantic_journal(
-            &store,
+            &reader,
             &adapter,
             &semantic_root,
             adapter.window_policy(),
@@ -463,7 +467,7 @@ mod tests {
             embeddings: vec![embedding("emb-2", "y.rs", vec![0.0, 1.0, 0.0])?],
             cluster_memberships: Vec::new(),
         });
-        LegacySemanticJournalStore::stage_for_test(&legacy_root, &[sealing])?;
+        LegacySemanticJournalReaderV1::stage_for_test(&legacy_root, &[sealing])?;
 
         let one_owner = quanta_index_core::SemanticStreamWindowPolicy::new(
             1,
@@ -471,9 +475,9 @@ mod tests {
         )?;
         let adapter =
             SemanticAdapter::with_state_root_and_window_policy(semantic_root.clone(), one_owner)?;
-        let store = LegacySemanticJournalStore::open(&legacy_root)?;
+        let reader = LegacySemanticJournalReaderV1::open(&legacy_root)?;
         let outcome = migrate_legacy_semantic_journal(
-            &store,
+            &reader,
             &adapter,
             &semantic_root,
             adapter.window_policy(),
@@ -520,12 +524,12 @@ mod tests {
             vec![0.0, 1.0, 0.0],
             true,
         )?;
-        LegacySemanticJournalStore::stage_for_test(&legacy_root, &[first, second])?;
+        LegacySemanticJournalReaderV1::stage_for_test(&legacy_root, &[first, second])?;
 
         let adapter = SemanticAdapter::with_state_root(semantic_root.clone())?;
-        let store = LegacySemanticJournalStore::open(&legacy_root)?;
+        let reader = LegacySemanticJournalReaderV1::open(&legacy_root)?;
         let outcome = migrate_legacy_semantic_journal(
-            &store,
+            &reader,
             &adapter,
             &semantic_root,
             adapter.window_policy(),
@@ -549,11 +553,12 @@ mod tests {
             .map(|c| c.candidate_id.clone())
             .collect();
 
-        // Re-running migration is idempotent (marker present -> AlreadyMigrated).
-        drop(store);
-        let store_again = LegacySemanticJournalStore::open(&legacy_root)?;
+        // Re-running migration is idempotent (the staging receipt matches ->
+        // AlreadyMigrated); the source journal carries no marker either way.
+        drop(reader);
+        let reader_again = LegacySemanticJournalReaderV1::open(&legacy_root)?;
         let outcome_again = migrate_legacy_semantic_journal(
-            &store_again,
+            &reader_again,
             &adapter,
             &semantic_root,
             adapter.window_policy(),
@@ -634,11 +639,11 @@ mod tests {
             vec![0.0, 1.0, 0.0],
             true,
         )?;
-        LegacySemanticJournalStore::stage_for_test(&legacy_root, &[g1, g2])?;
+        LegacySemanticJournalReaderV1::stage_for_test(&legacy_root, &[g1, g2])?;
 
-        let store = LegacySemanticJournalStore::open(&legacy_root)?;
+        let reader = LegacySemanticJournalReaderV1::open(&legacy_root)?;
         let outcome = migrate_legacy_semantic_journal(
-            &store,
+            &reader,
             &adapter,
             &semantic_root,
             adapter.window_policy(),
@@ -684,13 +689,13 @@ mod tests {
         let resumed_adapter = SemanticAdapter::with_state_root(resumed_semantic.clone())?;
         build_legacy_durable(&resumed_adapter, &a)?;
         build_legacy_durable(&resumed_adapter, &b)?;
-        let store = LegacySemanticJournalStore::stage_for_test(
+        let reader = LegacySemanticJournalReaderV1::stage_for_test(
             resumed.path().join("semantic"),
             &[a.clone(), b.clone(), c.clone()],
         )
-        .and_then(|()| LegacySemanticJournalStore::open(resumed.path().join("semantic")))?;
+        .and_then(|()| LegacySemanticJournalReaderV1::open(resumed.path().join("semantic")))?;
         let _outcome = migrate_legacy_semantic_journal(
-            &store,
+            &reader,
             &resumed_adapter,
             &resumed_semantic,
             resumed_adapter.window_policy(),
