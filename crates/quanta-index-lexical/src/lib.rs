@@ -47,10 +47,6 @@
 #![deny(unused_must_use)]
 #![deny(clippy::let_underscore_must_use)]
 #![deny(clippy::map_err_ignore)]
-#![expect(
-    clippy::multiple_crate_versions,
-    reason = "tantivy 0.22 pulls multiple transitive versions (rustix, linux-raw-sys, windows-sys) we cannot collapse; scoped allowance in deny.toml [bans] skip-tree."
-)]
 
 mod analyzer;
 

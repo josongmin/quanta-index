@@ -2,10 +2,6 @@
 #![deny(unused_must_use)]
 #![deny(clippy::let_underscore_must_use)]
 #![deny(clippy::map_err_ignore)]
-#![expect(
-    clippy::multiple_crate_versions,
-    reason = "transitive duplicates from tantivy + tokio + lancedb (arrow/datafusion subtree); each is named-scoped in deny.toml via skip-tree"
-)]
 
 //! Concrete runtime wiring for the search-plane daemon.
 

@@ -82,6 +82,9 @@ match_wild_err_arm = "deny"
 # syn / thiserror etc.; supply-chain policy is enforced in deny.toml via the
 # `lancedb@0.30` skip-tree (LDB-00 §3.2). `clippy::multiple_crate_versions` reads
 # Cargo.lock directly and would otherwise re-flag the same allowlisted state.
+# Do not add a crate-local `expect` for this lint: it overrides this allowance
+# and triggers repeated full dependency-graph traversals even when the
+# duplicates are permitted. `cargo-deny` remains the dependency-policy gate.
 multiple_crate_versions = "allow"
 missing_const_for_fn = "allow"
 missing_errors_doc = "allow"
