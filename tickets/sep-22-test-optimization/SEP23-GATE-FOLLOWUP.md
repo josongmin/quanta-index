@@ -325,8 +325,10 @@ strict full-workspace Clippy, policy (all 26 workspace members), dependency
 hygiene, bench `--no-run`, workspace tests, and strict rustdoc. The runtime
 risk binary passed 137/137, including unchanged 10,001-row top-k and
 activation-concurrency oracles. The independent exact-source
-`QUANTA_INDEX_TEST_THREADS=1 just rust-profile test-daemon-all` remains in
-progress; do not count it as passed until its process exits 0.
+`QUANTA_INDEX_TEST_THREADS=1 just rust-profile test-daemon-all` also exited 0:
+327/327 passed, nine marked slow, one existing policy skip. The unchanged
+10,001-row top-k real-daemon oracle completed in both rails. This establishes
+`CODE_QUALIFIED` for the clean `b0e147a4` tree, not for any later tree.
 
 This source-bound `verify-rust` result does not qualify later shared-main
 commits or its peer-owned dirty benchmark overlay. TOPT-00 quiet-host paired
