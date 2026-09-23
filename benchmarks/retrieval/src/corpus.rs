@@ -28,12 +28,14 @@ const EXOTIC_SPLIT_CHARS: [char; 7] = [
 const EXOTIC_SPLIT_CHAR_EXTRA: char = '\u{2029}';
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ManifestFile {
     pub path: String,
     pub file_sha256: String,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Manifest {
     pub repository_commit: String,
     pub files: Vec<ManifestFile>,
@@ -205,7 +207,7 @@ pub fn load_manifest(path: &Path) -> BenchResult<Manifest> {
             "manifest has unknown fields: {unknown:?}"
         )));
     }
-    let manifest: Manifest = serde_json::from_value(value).map_err(|err| BenchError::Json {
+    let manifest: Manifest = serde_json::from_str(&raw).map_err(|err| BenchError::Json {
         path: path.display().to_string(),
         message: err.to_string(),
     })?;
@@ -429,6 +431,25 @@ pub fn file_inventory(files: &[SourceFile]) -> BTreeMap<&str, (usize, &str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manifest_rejects_repeated_keys_and_unknown_file_fields() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("manifest.json");
+        let commit = "c".repeat(40);
+        let sha = "a".repeat(64);
+        for raw in [
+            format!(
+                r#"{{"repository_commit":"{commit}","repository_commit":"{commit}","files":[{{"path":"src/lib.rs","file_sha256":"{sha}"}}]}}"#
+            ),
+            format!(
+                r#"{{"repository_commit":"{commit}","files":[{{"path":"src/lib.rs","file_sha256":"{sha}","gold":[]}}]}}"#
+            ),
+        ] {
+            std::fs::write(&path, raw).expect("write fixture");
+            assert!(load_manifest(&path).is_err());
+        }
+    }
 
     #[test]
     fn line_split_matches_python_model_for_lf_crlf_and_cr() {

@@ -26,26 +26,26 @@ import argparse
 import hashlib
 import json
 import os
-import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 try:
     from tools.benchmark.retrieval.evaluator import (
+        TOKEN_RE,
         TOKENIZER,
         TOKENIZER_BUDGET_VERSION,
-        TOKEN_RE,
         digest,
+        verify_repo,
     )
 except ImportError:  # direct script invocation: import the sibling module
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from evaluator import (  # noqa: E402
+        TOKEN_RE,
         TOKENIZER,
         TOKENIZER_BUDGET_VERSION,
-        TOKEN_RE,
         digest,
+        verify_repo,
     )
 
 WORKER_TEMPLATE = '''"""Spawned Semble worker (pinned env only). Reads SPEC_JSON, writes NATIVE_JSON."""
@@ -109,6 +109,7 @@ def main() -> int:
                 )
     payload = {
         "semble_index_ms": index_ms,
+        "configured_model_name": os.environ["SEMBLE_MODEL_NAME"],
         "observed_files": observed,
         "stats": stats,
         "native": native,
@@ -140,8 +141,23 @@ def _int(value: object, label: str) -> int:
 
 
 def read_json(path: Path) -> object:
+    def unique_object(pairs: list[tuple[str, object]]) -> dict:
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise AdapterError(f"duplicate JSON key: {key}")
+            value[key] = item
+        return value
+
+    def reject_constant(value: str) -> object:
+        raise AdapterError(f"non-finite JSON number: {value}")
+
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=unique_object,
+            parse_constant=reject_constant,
+        )
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise AdapterError(f"cannot read JSON {path}: {exc}") from exc
 
@@ -160,7 +176,7 @@ def load_manifest(path: Path) -> tuple[str, list[tuple[str, str]]]:
         raise AdapterError("manifest must be an object")
     commit = payload.get("repository_commit")
     files = payload.get("files")
-    if not isinstance(commit, str) or not commit:
+    if not isinstance(commit, str) or len(commit) != 40 or any(c not in "0123456789abcdef" for c in commit):
         raise AdapterError("manifest lacks repository_commit")
     if not isinstance(files, list) or not files:
         raise AdapterError("manifest admits no files")
@@ -171,6 +187,10 @@ def load_manifest(path: Path) -> tuple[str, list[tuple[str, str]]]:
         name, sha = entry.get("path"), entry.get("file_sha256")
         if not isinstance(name, str) or not name or not isinstance(sha, str):
             raise AdapterError("manifest entry lacks path/file_sha256")
+        if name.startswith("/") or "\\" in name or any(part in ("", ".", "..") for part in name.split("/")):
+            raise AdapterError(f"unsafe manifest path: {name}")
+        if len(sha) != 64 or any(c not in "0123456789abcdef" for c in sha):
+            raise AdapterError(f"manifest entry has invalid file_sha256: {name}")
         rows.append((name, sha))
     if len({name for name, _ in rows}) != len(rows):
         raise AdapterError("manifest holds duplicate paths")
@@ -230,7 +250,10 @@ def check_semble_env(python: Path) -> dict:
         text=True,
         timeout=120,
     )
-    report["lockfile"] = freeze.stdout if freeze.returncode == 0 else ""
+    if freeze.returncode != 0 or not freeze.stdout.strip():
+        raise AdapterError("Semble environment pip freeze failed or produced an empty lockfile")
+    report["lockfile"] = freeze.stdout
+    report["lockfile_sha256"] = hashlib.sha256(freeze.stdout.encode("utf-8")).hexdigest()
     return report
 
 
@@ -245,7 +268,7 @@ def build_isolated_corpus(
     max_bytes = 0
     for name, expected in manifest_rows:
         source = repo / name
-        if source.is_symlink() or not source.is_file():
+        if source.is_symlink() or not source.is_file() or repo not in source.resolve().parents:
             raise AdapterError(f"admitted file is not a regular file: {name}")
         data = source.read_bytes()
         observed = hashlib.sha256(data).hexdigest()
@@ -297,12 +320,22 @@ def mapping_proof(
                 "readable": data is not None,
             }
         )
+    observed_by_path = {row["path"]: row for row in semble_side}
     per_file = []
+    mismatched = []
     for name, sha in sorted(admitted):
         if name not in observed_set:
             status = "skipped"
         else:
-            status = "indexed" if (corpus_dir / name).is_file() else "unreadable"
+            side = observed_by_path[name]
+            if not side["readable"]:
+                status = "unreadable"
+            elif side["file_sha256"] != sha:
+                status = "hash_mismatch"
+            else:
+                status = "indexed"
+            if status in ("unreadable", "hash_mismatch"):
+                mismatched.append(name)
         per_file.append({"path": name, "file_sha256": sha, "status": status})
     for name in sorted(observed_set - admitted_set):
         per_file.append({"path": name, "file_sha256": None, "status": "extra"})
@@ -317,6 +350,7 @@ def mapping_proof(
         "observed_count": len(observed_set),
         "skipped": sorted(admitted_set - observed_set),
         "extra": sorted(observed_set - admitted_set),
+        "mismatched": mismatched,
     }
     diff_digest = digest(
         json.dumps(
@@ -482,10 +516,19 @@ def cmd_run(args: argparse.Namespace) -> int:
 def run_adapter(args: argparse.Namespace) -> int:
     repo = Path(args.repo)
     out_root = Path(args.output_root)
+    commit, manifest_rows = load_manifest(Path(args.manifest))
+    try:
+        repo = verify_repo(repo, commit)
+    except ValueError as exc:
+        raise AdapterError(f"pinned repository proof failed: {exc}") from exc
+    if repo in out_root.resolve().parents or out_root.resolve() == repo:
+        raise AdapterError("output root must be outside the frozen repository")
+    cache_root = Path(args.cache_root)
+    if repo in cache_root.resolve().parents or cache_root.resolve() == repo:
+        raise AdapterError("cache root must be outside the frozen repository")
     if out_root.exists():
         raise AdapterError(f"output root already exists (refusing reuse): {out_root}")
     out_root.mkdir(parents=True)
-    commit, manifest_rows = load_manifest(Path(args.manifest))
     pack = load_query_pack(Path(args.query_pack))
     if pack.get("repository_commit") != commit:
         raise AdapterError("manifest commit differs from query-pack commit")
@@ -496,6 +539,8 @@ def run_adapter(args: argparse.Namespace) -> int:
         raise AdapterError("blinding must be isolated or attested")
 
     env_report = check_semble_env(Path(args.python))
+    if env_report["lockfile_sha256"] != args.lockfile_sha256:
+        raise AdapterError("Semble lockfile SHA-256 differs from the pinned preflight digest")
     semble_version = env_report["semble_version"]
     lockfile = out_root / "lockfile.txt"
     lockfile.write_text(env_report.get("lockfile", ""), encoding="utf-8")
@@ -528,13 +573,13 @@ def run_adapter(args: argparse.Namespace) -> int:
     spec_path = out_root / "spec.json"
     spec_path.write_text(json.dumps(spec, indent=2, sort_keys=True), encoding="utf-8")
     native_path = out_root / "native.json"
-    cache_root = Path(args.cache_root)
     cache_root.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ)
     env["SPEC_JSON"] = str(spec_path)
     env["NATIVE_JSON"] = str(native_path)
     env["SEMBLE_CACHE_LOCATION"] = str(cache_root / "semble")
     env["HF_HOME"] = str(cache_root / "hf")
+    env["SEMBLE_MODEL_NAME"] = args.model_id
     env["SEMBLE_MAX_FILE_BYTES"] = str(max_file_bytes)
     try:
         completed = subprocess.run(
@@ -559,15 +604,18 @@ def run_adapter(args: argparse.Namespace) -> int:
     native_payload = read_json(native_path)
     if not isinstance(native_payload, dict):
         raise AdapterError("Semble native output must be an object")
+    if native_payload.get("configured_model_name") != args.model_id:
+        raise AdapterError("Semble worker model configuration differs from requested model")
     observed = native_payload.get("observed_files", [])
     proof, diff_digest = mapping_proof(admitted_rows, observed, corpus_dir)
     (out_root / "mapping-proof.json").write_text(
         json.dumps(proof, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    if proof["skipped"] or proof["extra"]:
+    if proof["skipped"] or proof["extra"] or proof["mismatched"]:
         raise AdapterError(
             "common-universe pair ineligible: "
             f"skipped={proof['skipped']} extra={proof['extra']} "
+            f"mismatched={proof['mismatched']} "
             f"(see {out_root / 'mapping-proof.json'})"
         )
 
@@ -636,14 +684,14 @@ def run_adapter(args: argparse.Namespace) -> int:
 
 def resolve_model_revision(hf_home: Path, model_id: str, pinned: str | None) -> str:
     observed = read_hf_revision(hf_home, model_id)
+    if observed is None or len(observed) != 40 or any(c not in "0123456789abcdef" for c in observed):
+        raise AdapterError(f"model revision unavailable or invalid in HF cache: {model_id}")
     if pinned:
-        if observed is not None and observed != pinned:
+        if observed != pinned:
             raise AdapterError(
                 f"model revision drift: pinned {pinned} but cache holds {observed}"
             )
         return pinned
-    if observed is None:
-        return "unresolved"
     return observed
 
 
@@ -658,6 +706,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--query-pack", required=True)
     run.add_argument("--top-k", required=True)
     run.add_argument("--python", required=True)
+    run.add_argument("--lockfile-sha256", required=True)
     run.add_argument("--cache-root", required=True)
     run.add_argument("--output-root", required=True)
     run.add_argument("--model-id", default="minishlab/potion-code-16M-v2")

@@ -35,6 +35,10 @@ try:
         evaluate,
         load_evidence,
         validate_suite,
+        verify_repo,
+    )
+    from tools.benchmark.retrieval.evaluator import (
+        read_json as read_evidence_json,
     )
 except ImportError:  # direct script invocation: import the sibling module
     sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -45,6 +49,10 @@ except ImportError:  # direct script invocation: import the sibling module
         evaluate,
         load_evidence,
         validate_suite,
+        verify_repo,
+    )
+    from evaluator import (
+        read_json as read_evidence_json,
     )
 
 VERDICT_VERSION = 1
@@ -64,8 +72,8 @@ def _int(value: object, label: str) -> int:
 
 def read_json(path: Path) -> object:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        return read_evidence_json(path)
+    except ValueError as exc:
         raise RunError(f"cannot read JSON {path}: {exc}") from exc
 
 
@@ -390,6 +398,21 @@ def load_spec(path: Path) -> dict:
     return spec
 
 
+def preflight_capture(spec: dict) -> Path:
+    """Refuse dirty/wrong-HEAD inputs and output inside the frozen checkout."""
+    manifest = read_json(Path(spec["manifest"]))
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("repository_commit"), str):
+        raise RunError("manifest must pin repository_commit")
+    try:
+        repo = verify_repo(Path(spec["repo"]), manifest["repository_commit"])
+    except ValueError as exc:
+        raise RunError(f"pinned repository proof failed: {exc}") from exc
+    out_root = Path(spec["output_root"]).resolve()
+    if out_root == repo or repo in out_root.parents:
+        raise RunError("output root must be outside the frozen repository")
+    return out_root
+
+
 def cmd_quanta(args: argparse.Namespace) -> int:
     try:
         return run_quanta(load_spec(Path(args.spec)), Path(args.spec).parent)
@@ -418,13 +441,19 @@ def write_projected_pack(
 
 def run_quanta(spec: dict, _spec_dir: Path) -> int:
     """Run the Rust SDK runner once per strategy. Returns process exit code."""
-    out_root = Path(spec["output_root"])
+    out_root = preflight_capture(spec)
     if out_root.exists():
         raise RunError(f"output root already exists (refusing reuse): {out_root}")
     out_root.mkdir(parents=True)
     runner_bin = spec.get("runner_binary")
     if not runner_bin or not Path(runner_bin).is_file():
         raise RunError("spec.runner_binary must name a built Rust runner binary")
+    if "runner_revision" in spec:
+        raise RunError("runner_revision is derived from the Rust runner binary; do not supply it")
+    try:
+        runner_binary_sha256 = sha_file(Path(runner_bin))
+    except OSError as exc:
+        raise RunError(f"cannot hash Rust runner binary: {exc}") from exc
     strategies = spec.get("strategies")
     if not isinstance(strategies, list) or not strategies:
         raise RunError("spec.strategies must be a nonempty list")
@@ -442,7 +471,13 @@ def run_quanta(spec: dict, _spec_dir: Path) -> int:
     )
     runs = []
     for index, strategy in enumerate(strategies):
-        runs.append(run_quanta_strategy(spec, strategy, index, out_root, routes, pack_path))
+        runs.append(
+            run_quanta_strategy(
+                spec, strategy, index, out_root, routes, pack_path, runner_binary_sha256
+            )
+        )
+        if sha_file(Path(runner_bin)) != runner_binary_sha256:
+            raise RunError("Rust runner binary changed during capture")
     (out_root / "quanta-manifest.json").write_text(
         json.dumps({"runs": runs}, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
@@ -457,6 +492,7 @@ def run_quanta_strategy(
     out_root: Path,
     routes: list[str],
     pack_path: Path,
+    runner_binary_sha256: str,
 ) -> dict:
     name = strategy.get("name")
     if name not in ("whole_file", "fixed_window", "syntax"):
@@ -478,9 +514,9 @@ def run_quanta_strategy(
         "--repo-id", spec.get("repo_id", "bench-repo"),
         "--revision-id", spec.get("revision_id", "bench-rev"),
         "--generation", str(spec.get("generation", 7)),
-        "--embedder", spec.get("embedder", "hash-dev"),
+        "--embedder", spec.get("embedder", "potion-code"),
         "--runner-name", spec.get("runner_name", "quanta-sdk-runner"),
-        "--runner-revision", spec.get("runner_revision", "unpinned"),
+        "--runner-revision", f"sha256:{runner_binary_sha256}",
         "--run-id", f"{spec.get('run_id', 'run')}-{name}",
         "--blinding", "attested",
         "--isolation-method", spec.get("isolation_method", "attested-only: same-checkout pack consumer"),
@@ -519,6 +555,7 @@ def run_quanta_strategy(
         "strategy_config": strategy,
         "record": str(record_path),
         "record_digest": sha_file(record_path),
+        "runner_binary_sha256": runner_binary_sha256,
         "driver_ms": elapsed_ms,
         "index_bytes": tree_size(state_root),
         "state_root": str(state_root),
@@ -663,7 +700,13 @@ def build_verdict(
         state("PERF_QUALIFIED", "not_run", [])
 
     # QUALITY_DELTA: blinded, graded, in-scope quality only.
-    blinding = run_manifest.get("blinding", "attested")
+    declared_blinding = run_manifest.get("blinding", "attested")
+    recorded_blinding = combined["runner"]["blinding"]
+    blinding = (
+        "isolated"
+        if declared_blinding == "isolated" and recorded_blinding == "isolated"
+        else "attested"
+    )
     scope = run_manifest.get("scope", "exploratory")
     if not claims.get("quality"):
         state("QUALITY_DELTA", "not_applicable", [])
@@ -741,7 +784,12 @@ def run_pair(spec: dict) -> int:
     Quality merges rep-0 records; every rep feeds the latency matrix.
     Partial output is never resumed: rerun from a fresh output root.
     """
-    out_root = Path(spec["output_root"])
+    lockfile_sha = spec.get("semble_lockfile_sha256")
+    if not isinstance(lockfile_sha, str) or len(lockfile_sha) != 64 or any(
+        c not in "0123456789abcdef" for c in lockfile_sha
+    ):
+        raise RunError("pair requires a pinned semble_lockfile_sha256")
+    out_root = preflight_capture(spec)
     if out_root.exists():
         raise RunError(f"output root already exists (refusing reuse): {out_root}")
     out_root.mkdir(parents=True)
@@ -905,6 +953,35 @@ def git_head_sha(path: Path) -> str:
     return sha if len(sha) == 40 else "unresolved"
 
 
+def mapping_matches_manifest(mapping: object, manifest: object) -> bool:
+    """Require exact admitted path+bytes on both sides, not just no skipped names."""
+    if not isinstance(mapping, dict) or not isinstance(manifest, dict):
+        return False
+    files = manifest.get("files")
+    quanta = mapping.get("quanta_side")
+    semble = mapping.get("semble_side")
+    per_file = mapping.get("per_file")
+    if not all(isinstance(rows, list) for rows in (files, quanta, semble, per_file)):
+        return False
+    if not all(isinstance(row, dict) for rows in (files, quanta, semble, per_file) for row in rows):
+        return False
+    if mapping.get("skipped") != [] or mapping.get("extra") != [] or mapping.get("mismatched") != []:
+        return False
+    if any(row.get("status") != "indexed" for row in per_file):
+        return False
+    if any(row.get("readable") is not True for row in semble):
+        return False
+    try:
+        expected = sorted(files, key=lambda row: row["path"])
+    except (KeyError, TypeError):
+        return False
+    observed = [
+        {"path": row.get("path"), "file_sha256": row.get("file_sha256")}
+        for row in semble
+    ]
+    return bool(expected) and quanta == expected == observed and len(per_file) == len(expected)
+
+
 def build_run_manifest(
     spec: dict,
     out_root: Path,
@@ -930,11 +1007,7 @@ def build_run_manifest(
         and manifest_payload.get("repository_commit") == pack_payload.get("repository_commit")
     )
     mapping = read_json(Path(rep0["semble"]).parent / "mapping-proof.json")
-    mapping_clean = (
-        isinstance(mapping, dict)
-        and mapping.get("skipped") == []
-        and mapping.get("extra") == []
-    )
+    mapping_clean = mapping_matches_manifest(mapping, manifest_payload)
     latency = read_json(out_root / "latency-matrix.json")
     observations = latency.get("observations_floor", 0) if isinstance(latency, dict) else 0
     adapter_manifest = read_json(Path(rep0["semble"]).parent / "adapter-manifest.json")
@@ -960,9 +1033,15 @@ def build_run_manifest(
         },
     }
     passthrough = spec.get("evidence", {})
-    if isinstance(passthrough, dict):
-        for key, value in passthrough.items():
-            evidence[key] = value
+    if not isinstance(passthrough, dict):
+        raise RunError("spec.evidence must be an object")
+    reserved = set(passthrough) & {"pair", "perf"}
+    if reserved:
+        raise RunError(
+            f"spec.evidence cannot override driver-observed evidence: {sorted(reserved)}"
+        )
+    for key, value in passthrough.items():
+        evidence[key] = value
     claims = spec.get("claims", {})
     if not isinstance(claims, dict):
         claims = {}
@@ -1008,6 +1087,7 @@ def run_semble_capture(
         "--query-pack", str(pack_path),
         "--top-k", str(spec["top_k"]),
         "--python", spec["semble_python"],
+        "--lockfile-sha256", spec["semble_lockfile_sha256"],
         "--cache-root", spec.get("semble_cache_root", str(out_dir.parent / "semble-cache")),
         "--output-root", str(out_dir),
         "--route", route,

@@ -641,7 +641,6 @@ def _load_run_v2(
                 item = object_keys(error, ["code", "message"], f"error for {key}")
                 string(item["code"], f"error.code for {key}")
                 string(item["message"], f"error.message for {key}")
-        seen_blocks = set()
         for index, candidate in enumerate(candidates, start=1):
             block(
                 source,
@@ -655,9 +654,6 @@ def _load_run_v2(
                 candidate["rank"] == index,
                 f"duplicate/non-sequential candidate rank for {key}: expected {index}",
             )
-            span = (candidate["path"], candidate["start_line"], candidate["end_line"])
-            require(span not in seen_blocks, f"duplicate candidate block: {key}")
-            seen_blocks.add(span)
     require(found == expected, f"missing task route evidence: {sorted(expected - found)}")
     return run
 
@@ -734,16 +730,16 @@ def mrr_at_k(candidates: list[dict[str, Any]], labels: list[dict[str, Any]], k: 
     return 0.0
 
 
-def ndcg_at_k(
-    candidates: list[dict[str, Any]], labels: list[dict[str, Any]], k: int
-) -> float:
+def ndcg_at_k(candidates: list[dict[str, Any]], labels: list[dict[str, Any]], k: int) -> float:
     gains = []
+    credited_labels: set[int] = set()
     for item in candidates[:k]:
         rel = 0
-        for label in labels:
-            if covers(item, label):
+        for index, label in enumerate(labels):
+            if index not in credited_labels and covers(item, label):
                 rel = max(rel, int(label.get("grade", 1)))
-        gains.append((2**rel - 1))
+                credited_labels.add(index)
+        gains.append(2**rel - 1)
     dcg = sum(g / math.log2(i + 2) for i, g in enumerate(gains))
     ideal = sorted((int(label.get("grade", 1)) for label in labels), reverse=True)[:k]
     idcg = sum((2**g - 1) / math.log2(i + 2) for i, g in enumerate(ideal))
@@ -857,6 +853,7 @@ def evaluate(
         "budgets": {},
     }
     if version == 2:
+        output["rank_metric_version"] = "rb-rank-v2-first-coverage"
         output["route_provenance"] = run["route_provenance"]
         output["blinding"] = run["runner"]["blinding"]
     # Budgeted BCY view (v1-compatible numbers, NA-aware for v2 strata).
@@ -1002,13 +999,15 @@ def evaluate(
                 collapsed_sums[key] += value
             per_task_primary[task_id][route] = chunk_vals[primary_metric]
         n = len(answerable_ids)
-        def _avg(sums: dict[str, float]) -> dict[str, Any]:
-            if not n:
+
+        def _avg(sums: dict[str, float], sample_count: int = n) -> dict[str, Any]:
+            if not sample_count:
                 return {k: NOT_APPLICABLE for k in sums}
-            averaged: dict[str, Any] = {k: v / n for k, v in sums.items()}
+            averaged: dict[str, Any] = {k: v / sample_count for k, v in sums.items()}
             if not graded:
                 averaged["ndcg_at_10"] = NOT_APPLICABLE
             return averaged
+
         rank_routes[route] = {
             "answerable_tasks": len(answerable_ids),
             "no_gold_tasks": len(no_gold_ids),

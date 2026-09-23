@@ -4,7 +4,8 @@ The Python evaluator scores recorded runner output; it does not query an
 index, generate candidates, or infer missing evidence. The benchmark-only
 Rust CLI in `benchmarks/retrieval` loads a pinned repository, chunks it,
 publishes through the public SDK to a real daemon, and records route results.
-It is a Quanta runner, **not** a Semble adapter or paired comparison command.
+The Rust CLI is the Quanta runner; the separate Python `semble.py` adapter
+and `run.py` driver implement paired capture and comparison.
 Python 3.9 and the standard library suffice for the evaluator; focused tests
 use pytest. Runtime validation checks Git, file contents, hashes, split
 isolation and complete route coverage.
@@ -152,7 +153,13 @@ its gold line span cannot earn block credit.
 V2 adds span-aware Recall@1/5/10/20, MRR@10, graded NDCG@10 (only when every
 eval answerable gold label carries a reviewed grade, else `not_applicable`),
 file-only recall as a secondary view, and both chunk-level and deterministic
-same-file-collapsed rankings (best chunk per file). Primary metric is
+same-file-collapsed rankings (best chunk per file). NDCG credits each gold span
+only on its first covering candidate: overlapping chunks cannot earn the same
+gain twice or inflate NDCG above 1. The report labels this scoring contract
+`rb-rank-v2-first-coverage`; older reports without that marker are not
+comparable on overlapping-chunk suites. V2 retains repeated line spans from
+distinct chunks in their original ranks; they consume rank and context budget
+but earn no second relevance gain. Primary metric is
 `ndcg_at_10` when graded, else `recall_at_10`. Reports include per-query rows,
 per-route status counts and mean latency, sample counts, and a 95% normal
 confidence interval on paired deltas when the sample reaches 20, else an
@@ -194,12 +201,13 @@ keys: `repo`, `manifest`, `suite`, `query_pack`, `top_k`, `output_root`,
 | `routes` | `["lexical","semantic","hybrid"]` | Quanta routes (must be suite routes) |
 | `strategies` | required for `quanta`/`pair` | e.g. `[{"name":"whole_file"},{"name":"syntax"}]` |
 | `searchd_binary` | runtime resolution | explicit daemon pin (recommended) |
-| `embedder` | `hash-dev` | Rust runner embedder profile |
+| `embedder` | `potion-code` | Rust runner embedder profile (`hash-dev` is an explicit diagnostic control) |
 | `repo_id`/`revision_id`/`generation` | `bench-repo`/`bench-rev`/`7` | batch identity |
-| `runner_name`/`runner_revision`/`run_id` | `quanta-sdk-runner`/`unpinned`/`run` | runner identity |
+| `runner_name`/`run_id` | `quanta-sdk-runner`/`run` | runner identity; `runner_revision` is derived from the binary SHA-256 |
 | `blinding` | `attested` | only `attested` is supported today |
 | `isolation_method`/`access_block_log` | `attested-only…` | blinding evidence text |
 | `semble_python` | required for `pair` | pinned Semble venv interpreter |
+| `semble_lockfile_sha256` | required for `pair` | SHA-256 of successful Semble `pip freeze` preflight; drift fails |
 | `semble_route` | `semble-hybrid` | Semble record route name |
 | `semble_cache_root` | `<out>/semble-cache` | Semble + HF caches (outside checkout) |
 | `semble_repetitions`/`seed` | `1`/`0` | worker query sampling (1 untimed warmup pass) |
@@ -210,8 +218,25 @@ keys: `repo`, `manifest`, `suite`, `query_pack`, `top_k`, `output_root`,
 | `baseline_route` | Semble route | report baseline |
 | `scope` | `exploratory` | `exploratory` or `qualified` |
 | `claims` | all `false` | `{quality,speed,same_model,incremental}` |
-| `evidence` | `{}` | passthrough from actual CI/test runs |
+| `evidence` | `{}` | external contract/SDK receipts; cannot override driver-observed `pair` or `perf` |
 | `timeout_secs` | `1800` | per-capture timeout |
+
+Before a paired run, preflight the exact external Semble virtualenv and copy
+the reported `lockfile_sha256` into `semble_lockfile_sha256` in the spec:
+
+```sh
+python3 -m tools.benchmark.retrieval.semble check \
+  --python /absolute/semble-venv/bin/python
+```
+
+This pins the installed package inventory; it does not prove which model
+weights Semble loaded. The adapter sets Semble's documented
+`SEMBLE_MODEL_NAME` to the requested model and verifies the worker-reported
+setting. It also requires an observed Hugging Face
+cache revision and rejects a supplied revision that disagrees with it.
+`same_model` remains an external claim needing its own evidence. The paired
+driver records `attested` blinding, so its output alone cannot qualify an
+isolated-blind quality or phase-qualified speed verdict.
 
 Notes: the first Semble index includes the model download (later runs reuse
 the cache; `index_stats` and `semble_index_ms` always record what ran).

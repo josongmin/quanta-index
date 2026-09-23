@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 from pathlib import Path
 
@@ -470,6 +471,7 @@ def test_v2_hand_calculated_rank_metrics(tmp_path):
     loaded = record_v2(repo, suite, run, suite_path, runner_path)
     report = ev.evaluate(*loaded, "lexical", "hybrid")
     assert report["schema_version"] == 2
+    assert report["rank_metric_version"] == "rb-rank-v2-first-coverage"
     assert report["graded"] is True
     assert report["primary_metric"] == "ndcg_at_10"
     routes = report["rank_metrics"]["routes"]
@@ -504,6 +506,16 @@ def test_v2_hand_calculated_rank_metrics(tmp_path):
     assert len(report["per_query"]) == 4
     assert report["rank_metrics"]["comparison"]["sample_count"] == 1
     assert report["rank_metrics"]["comparison"]["primary_delta_ci_95"]["status"] == ev.NOT_APPLICABLE
+
+
+def test_ndcg_credits_each_gold_span_once_even_when_chunks_overlap():
+    label = {"path": "src/lib.rs", "start_line": 3, "end_line": 3, "grade": 3}
+    candidates = [
+        {"path": "src/lib.rs", "start_line": 1, "end_line": 3},
+        {"path": "src/lib.rs", "start_line": 2, "end_line": 4},
+    ]
+    assert ev.ndcg_at_k(candidates, [label], 10) == pytest.approx(1.0)
+    assert ev.ndcg_at_k(list(reversed(candidates)), [label], 10) == pytest.approx(1.0)
 
 
 def test_v2_bcy_budget_prefix_and_out_of_budget_not_credited(tmp_path):
@@ -844,14 +856,23 @@ def test_v2_unsafe_candidate_path_rejected(tmp_path):
         record_v2(repo, suite, run, suite_path, runner_path)
 
 
-def test_v2_duplicate_candidate_block_rejected(tmp_path):
+def test_v2_duplicate_line_spans_are_retained_and_credited_once(tmp_path):
     repo, suite, run, suite_path, runner_path, files = fixture_v2(tmp_path)
     dup = dict(run["results"][1]["candidates"][0])
     dup["rank"] = 2
     run["results"][1]["candidates"][1] = dup
     run["results"][1]["candidates"][2]["rank"] = 3
-    with pytest.raises(ev.EvidenceError, match="duplicate candidate block"):
-        record_v2(repo, suite, run, suite_path, runner_path)
+    loaded = record_v2(repo, suite, run, suite_path, runner_path)
+    report = ev.evaluate(*loaded, "lexical", "hybrid")
+    row = next(
+        row
+        for row in report["per_query"]
+        if row["task_id"] == "T1" and row["route"] == "hybrid"
+    )
+    assert row["candidates"] == 3
+    assert row["ndcg_at_10"] == pytest.approx(
+        (7.0 + 1.0 / math.log2(4)) / (7.0 + 1.0 / math.log2(3))
+    )
 
 
 def test_v2_error_result_with_candidates_rejected(tmp_path):
@@ -897,6 +918,7 @@ def test_mapping_proof_clean_and_mismatch_detected(tmp_path):
     admitted = _admitted_rows({k: v for k, v in files.items() if k != "excluded.txt"})
     proof, diff = semble_adapter.mapping_proof(admitted, ["a.txt", "b.txt"], corpus)
     assert proof["skipped"] == [] and proof["extra"] == []
+    assert proof["mismatched"] == []
     assert len(diff) == 64
     assert all(row["status"] == "indexed" for row in proof["per_file"])
 
@@ -905,6 +927,144 @@ def test_mapping_proof_clean_and_mismatch_detected(tmp_path):
     extra, _ = semble_adapter.mapping_proof(admitted, ["a.txt", "b.txt", "zzz.txt"], corpus)
     assert extra["extra"] == ["zzz.txt"]
     assert extra["semble_side"][-1]["readable"] is False
+
+    (corpus / "a.txt").write_bytes(b"different bytes")
+    changed, _ = semble_adapter.mapping_proof(admitted, ["a.txt", "b.txt"], corpus)
+    assert changed["skipped"] == changed["extra"] == []
+    assert changed["mismatched"] == ["a.txt"]
+    assert changed["per_file"][0]["status"] == "hash_mismatch"
+    manifest = {"files": [{"path": name, "file_sha256": sha} for name, sha in admitted]}
+    assert pairrun.mapping_matches_manifest(proof, manifest)
+    assert not pairrun.mapping_matches_manifest(changed, manifest)
+    tampered = dict(proof, semble_side=[dict(proof["semble_side"][0], file_sha256="0" * 64), proof["semble_side"][1]])
+    assert not pairrun.mapping_matches_manifest(tampered, manifest)
+
+
+def test_semble_inputs_refuse_duplicate_keys_and_unsafe_paths(tmp_path):
+    path = tmp_path / "manifest.json"
+    path.write_text('{"tasks":[{"gold":[]}],"tasks":[]}', encoding="utf-8")
+    with pytest.raises(semble_adapter.AdapterError, match="duplicate JSON key: tasks"):
+        semble_adapter.read_json(path)
+    path.write_text(json.dumps({
+        "repository_commit": "a" * 40,
+        "files": [{"path": "../outside.rs", "file_sha256": "b" * 64}],
+    }), encoding="utf-8")
+    with pytest.raises(semble_adapter.AdapterError, match="unsafe manifest path"):
+        semble_adapter.load_manifest(path)
+
+
+def test_pair_driver_refuses_ambiguous_json(tmp_path):
+    path = tmp_path / "run-manifest.json"
+    path.write_text('{"evidence":{"pair":{"same_files":false}},"evidence":{"pair":{"same_files":true}}}', encoding="utf-8")
+    with pytest.raises(pairrun.RunError, match="duplicate JSON key: evidence"):
+        pairrun.read_json(path)
+    path.write_text('{"query_latency_ms":NaN}', encoding="utf-8")
+    with pytest.raises(pairrun.RunError, match="non-finite JSON number: NaN"):
+        pairrun.read_json(path)
+
+
+def test_pair_capture_preflight_requires_external_root_and_clean_pin(tmp_path):
+    repo, suite, _run, _suite_path, _run_path = fixture(tmp_path)
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"repository_commit": suite["repository_commit"]}), encoding="utf-8")
+    spec = {"repo": str(repo), "manifest": str(manifest),
+            "output_root": str(repo / "capture")}
+    with pytest.raises(pairrun.RunError, match="outside the frozen repository"):
+        pairrun.preflight_capture(spec)
+    spec["output_root"] = str(tmp_path / "capture")
+    assert pairrun.preflight_capture(spec) == tmp_path / "capture"
+    (repo / "untracked.txt").write_text("dirty", encoding="utf-8")
+    with pytest.raises(pairrun.RunError, match="checkout has tracked or untracked changes"):
+        pairrun.preflight_capture(spec)
+
+
+def test_semble_model_revision_requires_observed_pinned_cache(tmp_path):
+    model = "minishlab/potion-code-16M-v2"
+    with pytest.raises(semble_adapter.AdapterError, match="revision unavailable"):
+        semble_adapter.resolve_model_revision(tmp_path, model, None)
+    ref = tmp_path / "hub/models--minishlab--potion-code-16M-v2/refs/main"
+    ref.parent.mkdir(parents=True)
+    ref.write_text("a" * 40, encoding="utf-8")
+    assert semble_adapter.resolve_model_revision(tmp_path, model, "a" * 40) == "a" * 40
+    with pytest.raises(semble_adapter.AdapterError, match="revision drift"):
+        semble_adapter.resolve_model_revision(tmp_path, model, "b" * 40)
+
+
+def test_semble_env_refuses_missing_lockfile(tmp_path, monkeypatch):
+    interpreter = tmp_path / "python"
+    interpreter.write_text("", encoding="utf-8")
+
+    def fake_run(command, **_kwargs):
+        if "-c" in command:
+            return subprocess.CompletedProcess(
+                command, 0,
+                '{"semble_version":"1","has_from_path":true,"has_search":true}', "",
+            )
+        return subprocess.CompletedProcess(command, 1, "", "pip failed")
+
+    monkeypatch.setattr(semble_adapter.subprocess, "run", fake_run)
+    with pytest.raises(semble_adapter.AdapterError, match="pip freeze failed"):
+        semble_adapter.check_semble_env(interpreter)
+
+
+def test_semble_env_reports_lockfile_digest_and_pair_requires_pin(tmp_path, monkeypatch):
+    interpreter = tmp_path / "python"
+    interpreter.write_text("", encoding="utf-8")
+
+    def fake_run(command, **_kwargs):
+        if "-c" in command:
+            return subprocess.CompletedProcess(
+                command, 0,
+                '{"semble_version":"1","has_from_path":true,"has_search":true}', "",
+            )
+        return subprocess.CompletedProcess(command, 0, "semble==1\n", "")
+
+    monkeypatch.setattr(semble_adapter.subprocess, "run", fake_run)
+    report = semble_adapter.check_semble_env(interpreter)
+    assert report["lockfile_sha256"] == ev.digest(b"semble==1\n")
+    with pytest.raises(pairrun.RunError, match="requires a pinned semble_lockfile_sha256"):
+        pairrun.run_pair({"output_root": str(tmp_path / "out")})
+    assert not (tmp_path / "out").exists()
+
+
+def test_quanta_driver_defaults_to_potion_and_binary_digest(tmp_path, monkeypatch):
+    def fake_run(command, **_kwargs):
+        assert command[command.index("--embedder") + 1] == "potion-code"
+        assert command[command.index("--runner-revision") + 1] == "sha256:" + "a" * 64
+        Path(command[command.index("--out") + 1]).write_text("{}", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(pairrun.subprocess, "run", fake_run)
+    spec = {
+        "runner_binary": "/unused/runner",
+        "repo": "/unused/repo",
+        "manifest": "/unused/manifest.json",
+        "top_k": 10,
+    }
+    result = pairrun.run_quanta_strategy(
+        spec, {"name": "syntax"}, 0, tmp_path, ["lexical"], tmp_path / "pack.json", "a" * 64
+    )
+    assert result["runner_binary_sha256"] == "a" * 64
+
+
+def test_driver_observed_pair_and_perf_cannot_be_overridden(tmp_path):
+    semble_dir = tmp_path / "semble"
+    semble_dir.mkdir()
+    (semble_dir / "mapping-proof.json").write_text(
+        '{"skipped":[],"extra":[]}', encoding="utf-8"
+    )
+    (semble_dir / "adapter-manifest.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "latency-matrix.json").write_text("{}", encoding="utf-8")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text('{"repository_commit":"' + "a" * 40 + '"}', encoding="utf-8")
+    pack = tmp_path / "pack.json"
+    pack.write_text('{"repository_commit":"' + "a" * 40 + '"}', encoding="utf-8")
+    spec = {"manifest": str(manifest), "query_pack": str(pack),
+            "evidence": {"pair": {"same_files": True}, "perf": {"phase_boundaries": True}}}
+    with pytest.raises(pairrun.RunError, match="cannot override driver-observed"):
+        pairrun.build_run_manifest(
+            spec, tmp_path, [{"semble": str(semble_dir / "record.json")}], {}, {}, []
+        )
 
 
 def test_normalize_record_proves_spans_and_order(tmp_path):
@@ -1094,14 +1254,15 @@ def test_verdict_states_and_conditional_ids(tmp_path):
     assert empty["states"]["PAIR_VALID"] == "not_run"
     assert "T00" in empty["missing_t_ids"]
     assert "T05" in empty["missing_t_ids"]
-    # Isolated + qualified + graded quality claim passes QUALITY_DELTA.
+    # A manifest cannot upgrade attested runner records to isolated quality proof.
     qualified = pairrun.build_verdict(
         repo, suite_path, [lex_path, sem_path],
         {"blinding": "isolated", "isolation_method": "m", "access_block_log": "l",
          "scope": "qualified", "claims": {"quality": True},
          "evidence": manifest["evidence"], "provenance": {"s": "x"}},
         "semble-hybrid", "lexical")
-    assert qualified["states"]["QUALITY_DELTA"] == "pass"
+    assert qualified["states"]["QUALITY_DELTA"] == "not_applicable"
+    assert qualified["blinding"] == "attested"
     assert qualified["states"]["PAIR_VALID"] == "pass"
 
     # Perf: floors + clean host + phases pass; contention fails host;

@@ -5,6 +5,7 @@
 //! (`QUANTA_INDEX_SEARCHD_BIN`) or the workspace target layout; a missing
 //! binary fails with an explicit build-first message, never a skip.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -12,6 +13,7 @@ use quanta_index_retrieval_bench::batch::{BatchIdentity, assemble_batch};
 use quanta_index_retrieval_bench::chunking::chunk_corpus;
 use quanta_index_retrieval_bench::chunking::whole_file::WholeFileChunker;
 use quanta_index_retrieval_bench::corpus::{CorpusLimits, load_corpus, load_manifest};
+use quanta_index_retrieval_bench::record::result_value;
 use quanta_index_retrieval_bench::sdk::{
     DaemonConfig, DaemonSession, QueryOutcome, RouteQuery, publish_and_activate, query_route,
     resolve_searchd_binary,
@@ -166,6 +168,15 @@ fn real_daemon_roundtrip_publishes_and_queries() {
     let chunker = WholeFileChunker;
     let (chunks, coverage) = chunk_corpus(&chunker, &files).expect("chunk");
     assert_eq!(coverage.chunks, 3);
+    let files_by_path: BTreeMap<_, _> = files
+        .iter()
+        .map(|file| (file.path.clone(), file.clone()))
+        .collect();
+    let chunks_by_id: BTreeMap<_, _> = chunks
+        .values()
+        .flatten()
+        .map(|chunk| (chunk.chunk_id.clone(), chunk.clone()))
+        .collect();
 
     let identity = BatchIdentity::new(
         "bench-repo",
@@ -212,6 +223,9 @@ fn real_daemon_roundtrip_publishes_and_queries() {
             panic!("lexical query failed: {code}: {message}");
         }
     }
+    let lexical_record = result_value("T1", "lexical", &lexical, 10, &files_by_path, &chunks_by_id)
+        .expect("lexical SDK hits refer to published chunks");
+    assert_eq!(lexical_record["route"], "lexical");
 
     // Semantic and hybrid routes answer under the same generation; their
     // rank content under hash-dev is plumbing, not quality evidence.
@@ -225,7 +239,7 @@ fn real_daemon_roundtrip_publishes_and_queries() {
             generation: identity.generation,
             top_k: 10,
         });
-        match outcome {
+        match &outcome {
             QueryOutcome::Hits { .. } => {}
             QueryOutcome::Failed {
                 status,
@@ -236,6 +250,9 @@ fn real_daemon_roundtrip_publishes_and_queries() {
                 panic!("{route} query failed: {status} {code}: {message}");
             }
         }
+        let route_record = result_value("T1", route, &outcome, 10, &files_by_path, &chunks_by_id)
+            .expect("SDK hits refer to published chunks");
+        assert_eq!(route_record["route"], route);
     }
 
     // A nonsense term abstains or errors typed; never fake success.
