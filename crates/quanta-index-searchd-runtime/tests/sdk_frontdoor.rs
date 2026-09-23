@@ -52,8 +52,14 @@ use crate::searchd_binary_process::SearchdBinaryProcess;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(0);
+static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 const SOCKET_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn next_request_id() -> u64 {
+    let id = NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+    assert_ne!(id, 0, "test request IDs must remain nonzero");
+    id
+}
 
 /// Harness-owned SDK frontdoor fixture (TOPT-06: the last direct-runtime
 ///
@@ -153,7 +159,7 @@ fn dispatch_ingest(socket: &Path, payload: SearchPlaneIngestIpcRequest) -> TestR
     let response: SearchPlaneIngestIpcResponseEnvelope = send_request(
         socket,
         &SearchPlaneIngestIpcRequestEnvelope {
-            request_id: NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed),
+            request_id: next_request_id(),
             payload,
         },
         quanta_index_ipc::ClientIoPolicy::default(),
