@@ -61,6 +61,11 @@ files, empty query-pack universes, stale non-empty state roots and existing
 output files. A direct CLI invocation is normally `attested`. The paired
 driver can invoke the CLI as `isolated` only inside its verified macOS
 Seatbelt boundary; the record then carries the driver-generated proof digest.
+For that path, the driver first materializes a Git-free directory containing
+exactly the manifest-admitted files, denies the entire original checkout and
+both suite roots, and passes only the materialized corpus to both runners.
+The verdict re-enumerates every materialized path/SHA and refuses extra files,
+symlinks, Git metadata, or a corpus-proof mismatch.
 The record label alone is never authority: `verdict` requires the frozen
 policy/probe artifact and matching process-resource bindings.
 
@@ -198,7 +203,8 @@ extra file fails the common-universe pair with a typed reason. `run.py`
 drives the Rust SDK runner per chunking strategy (`quanta`), runs both
 systems sequentially from a pinned spec (`pair`), deterministically merges
 per-system records (`merge`), re-scores immutable records into the TEST-PLAN
-§8 verdict artifact (`verdict`), and records the host check (`host-probe`).
+§8 verdict artifact (`verdict`), records the host check (`host-probe`), and
+freezes a canonical machine/power fingerprint (`host-profile`).
 
 Each system consumes a projected pack (same tasks/universe/commit, narrowed
 routes, rebound suite commitment); the merge re-derives and re-validates
@@ -231,13 +237,15 @@ keys: `repo`, `manifest`, `suite`, `query_pack`, `top_k`, `output_root`,
 | `semble_cache_root` | `<out>/semble-cache` | Semble + HF caches (outside checkout) |
 | `semble_repetitions`/`seed` | `1`/`0` | worker query sampling (1 untimed warmup pass) |
 | `semble_model_revision` | observed | pinned HF revision (drift fails) |
+| `quanta_model_dir` | none | explicit local model directory; required for a `potion-code` speed claim and counted separately from index storage |
 | `repetitions` | `1` | external reps on fresh state |
 | `alternate_order` | `true` | alternate system order per rep |
 | `order` | `["quanta","semble"]` | base system order |
 | `baseline_route` | Semble route | report baseline |
 | `scope` | `exploratory` | `exploratory` or `qualified` |
+| `host_profile` | required for `pair` | path to a generated host-profile JSON; the file is frozen, digest-bound, and matched against both host probes |
 | `claims` | all `false` | `{quality,speed,same_model,incremental}` |
-| `receipts` | omitted | paths to external contract/SDK result+receipt artifacts; bytes are frozen into the stage and re-verified |
+| `receipts` | omitted | paths to contract/SDK summaries, receipts, raw JUnit/nextest JSONL and actual-runner record; all bytes are frozen and raw evidence is reparsed by the verdict |
 | `timeout_secs` | `1800` | per-capture timeout |
 
 Before a paired run, author a hash-pinned external lockfile for the exact
@@ -259,6 +267,23 @@ cache revision and rejects a supplied revision that disagrees with it.
 `same_model` remains an external claim needing its own evidence. The paired
 driver records `attested` blinding, so its output alone cannot qualify an
 isolated-blind quality or phase-qualified speed verdict.
+
+Generate the host profile on the measurement host before authoring the pair
+spec. `PERF_QUALIFIED` requires the frozen fingerprint, power digest, clean
+thermal/frequency states, and no competing benchmark/build process at both
+start and end:
+
+```sh
+python3 tools/benchmark/retrieval/run.py host-profile \
+  --profile-id macbook-m4-ac-power --out /absolute/host-profile.json
+```
+
+Resource evidence is schema-closed: aggregate and per-process peak RSS/CPU,
+index/model/parser/embedding-cache bytes, discovered file count, indexed chunk
+count and disk-vs-memory index ownership are mandatory. Phase evidence splits
+discovery, model/provider preparation, indexing/chunking, publish/activation,
+first query and remaining warm queries; missing or coarsened evidence cannot
+pass `PERF_QUALIFIED`.
 
 Notes: the first Semble index includes the model download (later runs reuse
 the cache; `index_stats` and `semble_index_ms` always record what ran).

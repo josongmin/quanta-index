@@ -35,11 +35,23 @@
     "access_block_log": {"type": "string", "minLength": 1},
     "missing_t_ids": {"type": "array", "items": {"type": "string", "minLength": 1}},
     "not_applicable_t_ids": {"type": "array", "items": {"type": "string", "minLength": 1}},
-    "failure_class": {"enum": ["none", "corpus_mismatch", "blinding", "provenance", "model", "host", "scoring", "infra"]},
+    "failure_class": {"enum": ["none", "admission", "corpus_mismatch", "blinding", "provenance", "model", "host", "scoring", "infra"]},
     "provenance": {
       "type": "object", "additionalProperties": false,
-      "required": ["quanta", "semble", "corpus", "suite", "host"],
+      "required": ["admission", "quanta", "semble", "corpus", "suite", "host"],
       "properties": {
+        "admission": {
+          "type": "object", "additionalProperties": false,
+          "required": ["manifest_digest"],
+          "properties": {
+            "manifest_digest": {
+              "anyOf": [
+                {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                {"type": "null"}
+              ]
+            }
+          }
+        },
         "quanta": {
           "type": "object", "additionalProperties": false,
           "required": ["source_sha", "binary_digest", "embedder"],
@@ -76,9 +88,9 @@
         },
         "host": {
           "type": "object", "additionalProperties": false,
-          "required": ["profile", "check_record_digest"],
+          "required": ["profile_digest", "check_record_digest"],
           "properties": {
-            "profile": {"type": "string", "minLength": 1},
+            "profile_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
             "check_record_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
           }
         }

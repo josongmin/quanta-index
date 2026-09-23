@@ -78,7 +78,7 @@
     },
     "artifacts": {
       "type": "object", "additionalProperties": false,
-      "required": ["suite", "query_pack", "corpus_manifest", "mapping_proof", "latency_matrix", "host_start", "host_end", "records", "reports", "quanta_manifests", "semble_adapter_manifest", "semble_lockfile", "semble_native", "phase_metrics", "resource_metrics", "protocol_lock"],
+      "required": ["suite", "query_pack", "corpus_manifest", "mapping_proof", "latency_matrix", "host_start", "host_end", "host_profile", "records", "reports", "quanta_manifests", "semble_adapter_manifest", "semble_lockfile", "semble_native", "phase_metrics", "resource_metrics", "protocol_lock"],
       "properties": {
         "suite": {"type": "string", "minLength": 1},
         "query_pack": {"type": "string", "minLength": 1},
@@ -87,6 +87,14 @@
         "latency_matrix": {"type": "string", "minLength": 1},
         "host_start": {"type": "string", "minLength": 1},
         "host_end": {"type": "string", "minLength": 1},
+        "host_profile": {"type": "string", "minLength": 1},
+        "admission_manifest": {"type": "string", "minLength": 1},
+        "license_receipt": {"type": "string", "minLength": 1},
+        "annotation_receipts": {
+          "type": "array", "minItems": 2, "maxItems": 2,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "adjudication_receipt": {"type": "string", "minLength": 1},
         "records": {
           "type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1},
           "description": "Every rep's per-system records (rep-0 for scoring, all reps for the latency matrix)."
@@ -137,8 +145,20 @@
     },
     "provenance": {
       "type": "object", "additionalProperties": false,
-      "required": ["quanta", "semble", "corpus", "suite", "host"],
+      "required": ["admission", "quanta", "semble", "corpus", "suite", "host"],
       "properties": {
+        "admission": {
+          "type": "object", "additionalProperties": false,
+          "required": ["manifest_digest"],
+          "properties": {
+            "manifest_digest": {
+              "anyOf": [
+                {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                {"type": "null"}
+              ]
+            }
+          }
+        },
         "quanta": {
           "type": "object", "additionalProperties": false,
           "required": ["source_sha", "binary_digest", "embedder"],
@@ -177,9 +197,9 @@
         },
         "host": {
           "type": "object", "additionalProperties": false,
-          "required": ["profile", "check_record_digest"],
+          "required": ["profile_digest", "check_record_digest"],
           "properties": {
-            "profile": {"type": "string", "minLength": 1},
+            "profile_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
             "check_record_digest": {
               "type": "string", "pattern": "^[0-9a-f]{64}$",
               "description": "sha256 of canonical({\"start\": host_start_bytes, \"end\": host_end_bytes}) re-derived from the host artifacts."
@@ -189,6 +209,38 @@
       }
     }
   },
+  "allOf": [
+    {
+      "if": {"properties": {"scope": {"const": "qualified"}}},
+      "then": {
+        "properties": {
+          "artifacts": {
+            "required": ["admission_manifest", "license_receipt", "annotation_receipts", "adjudication_receipt"]
+          },
+          "provenance": {
+            "properties": {
+              "admission": {
+                "properties": {
+                  "manifest_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+                }
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "provenance": {
+            "properties": {
+              "admission": {
+                "properties": {"manifest_digest": {"type": "null"}}
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
     "digest_claim": {
       "type": "object", "additionalProperties": false,

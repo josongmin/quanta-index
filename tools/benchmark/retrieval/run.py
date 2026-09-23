@@ -21,14 +21,16 @@ import json
 import math
 import os
 import platform
-import signal
+import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
 
 try:
+    from tools.benchmark.retrieval.contract_proof import nextest_summary, pytest_summary
     from tools.benchmark.retrieval.evaluator import (
         CHUNK_STRATEGIES,
         TOKENIZER_BUDGET_VERSION,
@@ -43,10 +45,10 @@ try:
     from tools.benchmark.retrieval.evaluator import (
         read_json as read_evidence_json,
     )
-    from tools.benchmark.retrieval.contract_proof import nextest_summary, pytest_summary
     from tools.benchmark.retrieval.sdk_proof import build_summary_from_evidence
 except ImportError:  # direct script invocation: import the sibling module
     sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from contract_proof import nextest_summary, pytest_summary  # noqa: E402
     from evaluator import (  # noqa: E402
         CHUNK_STRATEGIES,
         TOKENIZER_BUDGET_VERSION,
@@ -61,7 +63,6 @@ except ImportError:  # direct script invocation: import the sibling module
     from evaluator import (
         read_json as read_evidence_json,
     )
-    from contract_proof import nextest_summary, pytest_summary  # noqa: E402
     from sdk_proof import build_summary_from_evidence  # noqa: E402
 
 VERDICT_VERSION = 2
@@ -331,15 +332,52 @@ def _path_within(path: Path, root: Path) -> bool:
     return resolved == boundary or boundary in resolved.parents
 
 
-def _seatbelt_profile(denied_roots: list[str]) -> str:
-    """Build a deterministic default-allow profile with explicit read denials."""
-    rules = ["(version 1)", "(allow default)"]
-    for root in sorted(set(denied_roots)):
-        if not Path(root).is_absolute() or "\n" in root or "\x00" in root:
-            raise RunError(f"invalid Seatbelt denial root: {root!r}")
+def _seatbelt_profile(
+    denied_roots: list[str],
+    allowed_read_roots: list[str],
+    allowed_write_roots: list[str],
+) -> str:
+    """Build a deterministic default-deny profile with explicit file authority."""
+    system_read_roots = [
+        "/System", "/usr", "/bin", "/sbin", "/Library/Apple",
+        "/private/var/db/dyld", "/private/var/db/timezone", "/dev",
+    ]
+
+    def validated(values: list[str], label: str) -> list[str]:
+        roots = sorted(set(values))
+        for root in roots:
+            if not isinstance(root, str) or not Path(root).is_absolute() or "\n" in root or "\x00" in root:
+                raise RunError(f"invalid Seatbelt {label} root: {root!r}")
+        return roots
+
+    denied = validated(denied_roots, "denial")
+    allowed_read = validated([*system_read_roots, *allowed_read_roots], "read allow")
+    allowed_write = validated(allowed_write_roots, "write allow")
+    rules = [
+        "(version 1)",
+        "(deny default)",
+        '(import "system.sb")',
+        "(allow process*)",
+        "(allow signal (target self))",
+        "(allow sysctl-read)",
+        "(allow mach-lookup)",
+        "(allow ipc-posix-shm)",
+        "(allow file-read-metadata)",
+    ]
+    for root in allowed_read:
+        quoted = json.dumps(root)
+        rules.append(f"(allow file-read* (literal {quoted}))")
+        rules.append(f"(allow file-read* (subpath {quoted}))")
+    for root in allowed_write:
+        quoted = json.dumps(root)
+        rules.append(f"(allow file-write* (literal {quoted}))")
+        rules.append(f"(allow file-write* (subpath {quoted}))")
+    for root in denied:
         quoted = json.dumps(root)
         rules.append(f"(deny file-read* (literal {quoted}))")
         rules.append(f"(deny file-read* (subpath {quoted}))")
+        rules.append(f"(deny file-write* (literal {quoted}))")
+        rules.append(f"(deny file-write* (subpath {quoted}))")
     return "\n".join(rules) + "\n"
 
 
@@ -522,7 +560,20 @@ def prepare_isolation(spec: dict, stage: Path, original_suite: Path) -> dict:
     if not _path_within(suite_path, evaluator_root):
         raise RunError("frozen suite must be under the evaluator-only stage root")
     denied_roots = sorted({str(secret_root), str(evaluator_root), str(source_repo)})
-    profile = _seatbelt_profile(denied_roots)
+    semble_env_root = Path(spec["semble_python"]).resolve().parent.parent
+    extra_read_roots = [
+        str(repo), str(Path(spec["manifest"]).resolve()), str(pack_path),
+        str(Path(spec["runner_binary"]).resolve()), str(Path(spec["searchd_binary"]).resolve()),
+        str(Path(spec["semble_lockfile"]).resolve()), str(semble_env_root),
+        str(Path(spec.get("semble_cache_root", stage / "semble-cache")).resolve()),
+        str(stage.resolve()), str(Path(spec["output_root"]).resolve()),
+    ]
+    for optional in ("quanta_model_dir",):
+        if optional in spec:
+            extra_read_roots.append(str(Path(spec[optional]).resolve()))
+    allowed_read_roots = sorted(set(extra_read_roots))
+    allowed_write_roots = sorted({str(stage.resolve()), str(Path(spec["output_root"]).resolve())})
+    profile = _seatbelt_profile(denied_roots, allowed_read_roots, allowed_write_roots)
     probes = _probe_seatbelt(profile, suite_path, pack_path)
     proof = {
         "schema_version": 1,
@@ -533,6 +584,8 @@ def prepare_isolation(spec: dict, stage: Path, original_suite: Path) -> dict:
         },
         "profile_sha256": hashlib.sha256(profile.encode("utf-8")).hexdigest(),
         "denied_roots": denied_roots,
+        "allowed_read_roots": allowed_read_roots,
+        "allowed_write_roots": allowed_write_roots,
         "suite": {
             "path": suite_path.relative_to(stage.resolve()).as_posix(),
             "capture_path": str(suite_path),
@@ -605,7 +658,7 @@ def bind_storage_metrics(resource_path: Path, storage: dict) -> dict:
     expected = {
         "index_bytes", "model_cache_bytes", "parser_cache_bytes",
         "embedding_cache_bytes", "discovered_files", "indexed_chunks",
-        "index_storage",
+        "index_storage", "index_measurement",
     }
     if set(storage) != expected:
         raise RunError("storage metrics hold missing or unknown keys")
@@ -646,23 +699,78 @@ def host_probe() -> dict:
         record["rustc"] = "unavailable"
     record["concurrent_processes"] = find_competing_processes()
     record["thermal"] = read_thermal()
-    record["frequency"] = read_frequency()
-    record["power"] = read_power()
+    power = read_power()
+    record["power"] = power
+    record["frequency"] = read_frequency(power)
     return record
+
+
+def _darwin_power_source(text: str) -> str | None:
+    match = re.search(r"^Now drawing from '([^']+)'\s*$", text, re.MULTILINE)
+    if match is None:
+        return None
+    source = match.group(1)
+    return source if source in {"AC Power", "Battery Power", "UPS Power"} else None
+
+
+def _darwin_power_settings(text: str, active_source: str) -> dict[str, str] | None:
+    sections: dict[str, dict[str, str]] = {}
+    current: str | None = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.endswith(":") and line[:-1] in {"AC Power", "Battery Power", "UPS Power"}:
+            current = line[:-1]
+            sections[current] = {}
+            continue
+        if current is None or not line:
+            continue
+        parts = line.split(maxsplit=1)
+        if len(parts) != 2:
+            return None
+        key, value = parts
+        if key in sections[current]:
+            return None
+        sections[current][key] = value.strip()
+    selected = sections.get(active_source)
+    return selected if selected else None
 
 
 def read_power() -> dict:
     if sys.platform == "darwin":
         try:
-            completed = subprocess.run(
+            settings = subprocess.run(
                 ["pmset", "-g", "custom"], capture_output=True, text=True, timeout=15
+            )
+            source = subprocess.run(
+                ["pmset", "-g", "ps"], capture_output=True, text=True, timeout=15
             )
         except (OSError, subprocess.SubprocessError):
             return {"status": "unavailable", "digest": None}
-        text = completed.stdout.strip()
-        if completed.returncode != 0 or not text:
+        settings_text = settings.stdout.strip()
+        source_text = source.stdout.strip()
+        if (
+            settings.returncode != 0
+            or source.returncode != 0
+            or not settings_text
+            or not source_text
+        ):
             return {"status": "unavailable", "digest": None}
-        return {"status": "bounded", "digest": digest(text.encode("utf-8"))}
+        active_source = _darwin_power_source(source_text)
+        active_settings = (
+            _darwin_power_settings(settings_text, active_source)
+            if active_source is not None else None
+        )
+        if active_source is None or active_settings is None:
+            return {"status": "unavailable", "digest": None}
+        return {
+            "status": "bounded",
+            "digest": digest(canonical({
+                "active_source": active_source,
+                "settings": active_settings,
+            })),
+            "active_source": active_source,
+            "observation_digest": digest(source_text.encode("utf-8")),
+        }
     if sys.platform.startswith("linux"):
         governors = {}
         for node in sorted(
@@ -717,11 +825,35 @@ def read_thermal() -> dict:
         except (OSError, subprocess.SubprocessError):
             return {"status": "unavailable", "evidence": {}}
         text = completed.stdout.strip()
+        if completed.returncode != 0 or not text:
+            return {"status": "unavailable", "evidence": text}
         lowered = text.lower()
-        clean = completed.returncode == 0 and (
-            "no thermal warning" in lowered or "cpu_power_speed" in lowered
+        no_pressure = all(phrase in lowered for phrase in (
+            "no thermal warning", "no performance warning", "no cpu power status",
+        ))
+        limits = {
+            key: int(value)
+            for key, value in re.findall(
+                r"^(CPU_Scheduler_Limit|CPU_Available_CPUs|CPU_Speed_Limit)\s*=\s*(\d+)\s*$",
+                text,
+                re.MULTILINE,
+            )
+        }
+        expected_cpus = os.cpu_count()
+        full_limits = set(limits) == {
+            "CPU_Scheduler_Limit", "CPU_Available_CPUs", "CPU_Speed_Limit"
+        }
+        limits_clean = (
+            full_limits
+            and limits["CPU_Scheduler_Limit"] == 100
+            and limits["CPU_Speed_Limit"] == 100
+            and expected_cpus is not None
+            and limits["CPU_Available_CPUs"] == expected_cpus
         )
-        return {"status": "clean" if clean else "warning", "evidence": text}
+        return {
+            "status": "clean" if no_pressure or limits_clean else "warning",
+            "evidence": text,
+        }
     if sys.platform.startswith("linux"):
         out: dict = {}
         for zone in sorted(Path("/sys/class/thermal").glob("thermal_zone*/temp")):
@@ -733,13 +865,16 @@ def read_thermal() -> dict:
     return {"status": "unavailable", "evidence": {}}
 
 
-def read_frequency() -> dict:
+def read_frequency(power: dict | None = None) -> dict:
     if sys.platform == "darwin":
         evidence = read_sysctl(["hw.cpufrequency", "hw.cpufrequency_max"])
-        available = any(value != "unavailable" for value in evidence.values())
-        power = read_power()
+        try:
+            current = int(evidence["hw.cpufrequency"])
+            maximum = int(evidence["hw.cpufrequency_max"])
+        except (KeyError, TypeError, ValueError):
+            return {"status": "unavailable", "evidence": evidence}
         return {
-            "status": "stable" if available else power["status"],
+            "status": "bounded" if 0 < current <= maximum else "warning",
             "evidence": evidence,
         }
     if sys.platform.startswith("linux"):
@@ -1066,6 +1201,7 @@ SPEC_OPTIONAL = (
     "baseline_route",
     "candidate_route",
     "host_profile",
+    "admission",
     "claims",
     "receipts",
     "contention_override",
@@ -1083,6 +1219,12 @@ RECEIPT_KEYS = (
     "sdk_record_raw",
     "model_parity_results",
     "incremental_results",
+)
+ADMISSION_KEYS = (
+    "manifest",
+    "license_receipt",
+    "annotation_receipts",
+    "adjudication_receipt",
 )
 CONTRACT_EVIDENCE_KEYS = (
     "contract_python_receipt",
@@ -1106,6 +1248,171 @@ def _is_hex(value: object, length: int) -> bool:
         and len(value) == length
         and all(c in "0123456789abcdef" for c in value)
     )
+
+
+def validate_admission_manifest(payload: object) -> dict:
+    """Validate the closed W0-B qualification authority packet."""
+    admission = _exact_keys(
+        payload,
+        {
+            "schema_version", "admission_id", "issued_at", "source_revision",
+            "repository_commit", "corpus_manifest_sha256", "suite_sha256",
+            "query_pack_sha256", "license", "gold", "models",
+            "semble_lockfile_sha256", "host_profile_sha256", "cache_regime",
+            "verification",
+        },
+        "qualification admission",
+    )
+    if admission["schema_version"] != 1:
+        raise RunError("qualification admission schema version mismatch")
+    for key in ("admission_id", "issued_at"):
+        if not isinstance(admission[key], str) or not admission[key]:
+            raise RunError(f"qualification admission {key} must be nonempty")
+    for key in ("source_revision", "repository_commit"):
+        if not _is_hex(admission[key], 40):
+            raise RunError(f"qualification admission {key} must be a full Git SHA")
+    for key in (
+        "corpus_manifest_sha256", "suite_sha256", "query_pack_sha256",
+        "semble_lockfile_sha256", "host_profile_sha256",
+    ):
+        if not _is_hex(admission[key], 64):
+            raise RunError(f"qualification admission {key} must be a sha256")
+    if admission["cache_regime"] not in ("true_process_cold", "warm_cache"):
+        raise RunError("qualified admission cannot use an undeclared cache regime")
+
+    license_claim = _exact_keys(
+        admission["license"], {"reviewer_id", "decision", "receipt_sha256"},
+        "qualification admission license",
+    )
+    if not isinstance(license_claim["reviewer_id"], str) or not license_claim["reviewer_id"]:
+        raise RunError("qualification admission license reviewer must be nonempty")
+    if license_claim["decision"] != "approved":
+        raise RunError("qualification admission license must be approved")
+    if not _is_hex(license_claim["receipt_sha256"], 64):
+        raise RunError("qualification admission license receipt digest is malformed")
+
+    gold = _exact_keys(
+        admission["gold"],
+        {"frozen_before_results", "annotators", "adjudicator_id",
+         "adjudication_receipt_sha256"},
+        "qualification admission gold",
+    )
+    if gold["frozen_before_results"] is not True:
+        raise RunError("qualification gold must be frozen before runner results")
+    annotators = gold["annotators"]
+    if not isinstance(annotators, list) or len(annotators) != 2:
+        raise RunError("qualification admission requires exactly two annotators")
+    identities = []
+    receipt_digests = []
+    for index, raw in enumerate(annotators):
+        annotator = _exact_keys(
+            raw, {"annotator_id", "receipt_sha256"},
+            f"qualification admission annotators[{index}]",
+        )
+        if not isinstance(annotator["annotator_id"], str) or not annotator["annotator_id"]:
+            raise RunError("qualification annotator id must be nonempty")
+        if not _is_hex(annotator["receipt_sha256"], 64):
+            raise RunError("qualification annotation receipt digest is malformed")
+        identities.append(annotator["annotator_id"])
+        receipt_digests.append(annotator["receipt_sha256"])
+    if len(set(identities)) != 2 or len(set(receipt_digests)) != 2:
+        raise RunError("qualification annotation authorities and receipts must be distinct")
+    if not isinstance(gold["adjudicator_id"], str) or not gold["adjudicator_id"]:
+        raise RunError("qualification adjudicator id must be nonempty")
+    if not _is_hex(gold["adjudication_receipt_sha256"], 64):
+        raise RunError("qualification adjudication receipt digest is malformed")
+
+    models = _exact_keys(
+        admission["models"],
+        {"quanta_model_revision", "semble_model_revision", "semble_model_asset_sha256"},
+        "qualification admission models",
+    )
+    for key in ("quanta_model_revision", "semble_model_revision"):
+        if not isinstance(models[key], str) or not models[key]:
+            raise RunError(f"qualification admission models.{key} must be nonempty")
+    if not _is_hex(models["semble_model_asset_sha256"], 64):
+        raise RunError("qualification Semble model asset digest is malformed")
+
+    verification = _exact_keys(
+        admission["verification"],
+        {"contract_python_receipt_sha256", "contract_rust_receipt_sha256",
+         "sdk_receipt_sha256"},
+        "qualification admission verification",
+    )
+    for key, value in verification.items():
+        if not _is_hex(value, 64):
+            raise RunError(f"qualification admission verification.{key} is malformed")
+    return admission
+
+
+def verify_admission_bundle(
+    manifest_path: Path,
+    license_path: Path,
+    annotation_paths: list[Path],
+    adjudication_path: Path,
+    *,
+    source_revision: str,
+    corpus_manifest_path: Path,
+    suite_path: Path,
+    query_pack_path: Path,
+    lockfile_path: Path,
+    host_profile_path: Path,
+    cache_regime: str,
+    receipt_paths: dict[str, Path],
+    quanta_model_revision: str | None = None,
+    semble_model_revision: str | None = None,
+    semble_model_asset_sha256: str | None = None,
+) -> dict:
+    """Re-derive every authority digest in a qualified admission bundle."""
+    admission = validate_admission_manifest(read_json(manifest_path))
+    if admission["source_revision"] != source_revision:
+        raise RunError("qualification admission source revision mismatch")
+    corpus = read_json(corpus_manifest_path)
+    if not isinstance(corpus, dict) or admission["repository_commit"] != corpus.get(
+        "repository_commit"
+    ):
+        raise RunError("qualification admission repository commit mismatch")
+    for key, path in (
+        ("corpus_manifest_sha256", corpus_manifest_path),
+        ("suite_sha256", suite_path),
+        ("query_pack_sha256", query_pack_path),
+        ("semble_lockfile_sha256", lockfile_path),
+        ("host_profile_sha256", host_profile_path),
+    ):
+        if admission[key] != sha_file(path):
+            raise RunError(f"qualification admission {key} mismatch")
+    if admission["cache_regime"] != cache_regime:
+        raise RunError("qualification admission cache regime mismatch")
+    if admission["license"]["receipt_sha256"] != sha_file(license_path):
+        raise RunError("qualification admission license receipt mismatch")
+    if len(annotation_paths) != 2:
+        raise RunError("qualification admission requires two frozen annotation receipts")
+    expected_annotations = [row["receipt_sha256"] for row in admission["gold"]["annotators"]]
+    observed_annotations = [sha_file(path) for path in annotation_paths]
+    if expected_annotations != observed_annotations:
+        raise RunError("qualification admission annotation receipt mismatch")
+    if admission["gold"]["adjudication_receipt_sha256"] != sha_file(adjudication_path):
+        raise RunError("qualification admission adjudication receipt mismatch")
+    required_receipts = {
+        "contract_python_receipt": "contract_python_receipt_sha256",
+        "contract_rust_receipt": "contract_rust_receipt_sha256",
+        "sdk_receipt": "sdk_receipt_sha256",
+    }
+    if set(receipt_paths) != set(required_receipts):
+        raise RunError("qualification admission lacks the complete receipt authority set")
+    for role, claim in required_receipts.items():
+        if admission["verification"][claim] != sha_file(receipt_paths[role]):
+            raise RunError(f"qualification admission {role} mismatch")
+    models = admission["models"]
+    for expected, observed, label in (
+        (models["quanta_model_revision"], quanta_model_revision, "Quanta model revision"),
+        (models["semble_model_revision"], semble_model_revision, "Semble model revision"),
+        (models["semble_model_asset_sha256"], semble_model_asset_sha256,
+         "Semble model asset digest"),
+    ):
+        if observed is not None and expected != observed:
+            raise RunError(f"qualification admission {label} mismatch")
+    return admission
 
 
 def _spec_int(spec: dict, key: str, minimum: int) -> int:
@@ -1211,6 +1518,26 @@ def load_spec(path: Path) -> dict:
         for key, value in receipts.items():
             if not isinstance(value, str) or not value:
                 raise RunError(f"spec.receipts.{key} must be a nonempty path")
+    if "admission" in spec:
+        admission = _exact_keys(
+            spec["admission"], set(ADMISSION_KEYS), "spec.admission"
+        )
+        for key in ("manifest", "license_receipt", "adjudication_receipt"):
+            if not isinstance(admission[key], str) or not admission[key]:
+                raise RunError(f"spec.admission.{key} must be a nonempty path")
+        annotation_receipts = admission["annotation_receipts"]
+        if (
+            not isinstance(annotation_receipts, list)
+            or len(annotation_receipts) != 2
+            or any(not isinstance(path, str) or not path for path in annotation_receipts)
+            or len(set(annotation_receipts)) != 2
+        ):
+            raise RunError("spec.admission.annotation_receipts must hold two distinct paths")
+    scope = spec.get("scope", "exploratory")
+    if scope == "qualified" and "admission" not in spec:
+        raise RunError("qualified capture requires spec.admission")
+    if scope != "qualified" and "admission" in spec:
+        raise RunError("spec.admission is valid only for a qualified capture")
     if "contention_override" in spec and type(spec["contention_override"]) is not bool:
         raise RunError("spec.contention_override must be a boolean")
     return spec
@@ -1426,7 +1753,7 @@ def run_quanta_strategy(
     if not isinstance(phase, dict):
         raise RunError(f"Rust runner phase metrics are not an object for {name}")
     model_dir = Path(spec["quanta_model_dir"]) if "quanta_model_dir" in spec else None
-    resource = bind_storage_metrics(resource_path, {
+    bind_storage_metrics(resource_path, {
         "index_bytes": index_bytes,
         "model_cache_bytes": tree_size(model_dir) if model_dir is not None else 0,
         "parser_cache_bytes": 0,
@@ -1434,6 +1761,7 @@ def run_quanta_strategy(
         "discovered_files": phase.get("file_count"),
         "indexed_chunks": phase.get("chunk_count"),
         "index_storage": "disk",
+        "index_measurement": "filesystem_tree_v1",
     })
     return {
         "strategy": name,
@@ -1574,15 +1902,24 @@ def _validate_manifest_shape(payload: object) -> dict:
                           "reports", "quanta_manifests", "semble_adapter_manifest",
                           "semble_lockfile", "semble_native", "phase_metrics",
                           "resource_metrics", "protocol_lock"}
-    optional_artifacts = set(RECEIPT_KEYS) | {"isolation_proof"}
+    admission_artifacts = {
+        "admission_manifest", "license_receipt", "annotation_receipts",
+        "adjudication_receipt",
+    }
+    optional_artifacts = set(RECEIPT_KEYS) | {"isolation_proof"} | admission_artifacts
     if not required_artifacts <= set(artifacts) <= required_artifacts | optional_artifacts:
         raise RunError("run manifest artifacts hold missing/unknown keys")
+    present_admission = set(artifacts).intersection(admission_artifacts)
+    if manifest["scope"] == "qualified" and present_admission != admission_artifacts:
+        raise RunError("qualified run manifest lacks the complete admission bundle")
+    if manifest["scope"] != "qualified" and present_admission:
+        raise RunError("exploratory run manifest carries qualification admission artifacts")
     for key in required_artifacts | optional_artifacts:
         if key not in artifacts:
             continue
         value = artifacts[key]
         if key in ("records", "reports", "quanta_manifests", "semble_native",
-                   "phase_metrics", "resource_metrics"):
+                   "phase_metrics", "resource_metrics", "annotation_receipts"):
             if not isinstance(value, list) or not all(
                 isinstance(ref, str) and ref for ref in value
             ):
@@ -1592,9 +1929,19 @@ def _validate_manifest_shape(payload: object) -> dict:
     if not artifacts["records"]:
         raise RunError("run manifest artifacts.records must be nonempty")
     provenance = _exact_keys(
-        manifest["provenance"], {"quanta", "semble", "corpus", "suite", "host"},
+        manifest["provenance"],
+        {"admission", "quanta", "semble", "corpus", "suite", "host"},
         "run manifest provenance",
     )
+    admission_prov = _exact_keys(
+        provenance["admission"], {"manifest_digest"}, "manifest admission provenance"
+    )
+    admission_digest = admission_prov["manifest_digest"]
+    if manifest["scope"] == "qualified":
+        if not _is_hex(admission_digest, 64):
+            raise RunError("qualified manifest admission digest must be a sha256")
+    elif admission_digest is not None:
+        raise RunError("exploratory manifest admission digest must be null")
     quanta = _exact_keys(
         provenance["quanta"], {"source_sha", "binary_digest", "embedder"}, "manifest quanta")
     if not _is_hex(quanta["source_sha"], 40) or not _is_hex(quanta["binary_digest"], 64):
@@ -1682,11 +2029,18 @@ def _record_identity(payload: dict, where: str) -> tuple[str, str]:
     return capture.get("system"), capture.get("chunk_strategy")
 
 
-def _probe_clean(probe: object) -> bool:
+def _probe_clean(probe: object, profile: dict) -> bool:
     return (
         isinstance(probe, dict)
+        and _host_fingerprint(probe) == profile["fingerprint"]
         and probe.get("concurrent_processes", {}) in ({}, {"none": []})
         and probe.get("contention_override") is not True
+        and isinstance(probe.get("thermal"), dict)
+        and probe["thermal"].get("status") == "clean"
+        and isinstance(probe.get("frequency"), dict)
+        and probe["frequency"].get("status") in ("stable", "bounded")
+        and isinstance(probe.get("power"), dict)
+        and probe["power"].get("status") == "bounded"
     )
 
 
@@ -1702,11 +2056,16 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
         else {"discovery", "model_provider_prepare", "index", "warmup",
               "first_query", "warm_query", "unattributed"}
     )
+    metric_keys = {
+        "schema_version", "system", "timing_layer", "strategy", "record_sha256",
+        system_key, "task_count", "route_count", "file_count", "chunk_count",
+        "phases_ms", "total_ms",
+    }
+    if system == "semble":
+        metric_keys.add("phase_boundaries_ns")
     metrics = _exact_keys(
         payload,
-        {"schema_version", "system", "timing_layer", "strategy", "record_sha256",
-         system_key, "task_count", "route_count", "file_count", "chunk_count",
-         "phases_ms", "total_ms"},
+        metric_keys,
         where,
     )
     if metrics["schema_version"] != 1 or system not in ("quanta", "semble"):
@@ -1733,6 +2092,49 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
         raise RunError(f"{where}.total_ms must be finite and positive")
     if not math.isclose(sum(phases.values()), total, rel_tol=1e-9, abs_tol=0.01):
         raise RunError(f"{where} phase sum differs from total")
+    if system == "semble":
+        boundaries = _exact_keys(
+            metrics["phase_boundaries_ns"],
+            {"worker_start", "discovery_end", "model_provider_prepare_end", "index_end",
+             "warmup_end", "query_start", "first_query_start", "first_query_end",
+             "query_end", "worker_end"},
+            f"{where}.phase_boundaries_ns",
+        )
+        ordered = [
+            boundaries[key]
+            for key in (
+                "worker_start", "discovery_end", "model_provider_prepare_end", "index_end",
+                "warmup_end", "query_start", "first_query_start", "first_query_end",
+                "query_end", "worker_end",
+            )
+        ]
+        if any(type(value) is not int or value < 0 for value in ordered):
+            raise RunError(f"{where} phase boundaries must be nonnegative integers")
+        if ordered != sorted(ordered):
+            raise RunError(f"{where} phase boundaries are not monotonic")
+        derived = {
+            "discovery": (boundaries["discovery_end"] - boundaries["worker_start"]) / 1e6,
+            "model_provider_prepare": (
+                boundaries["model_provider_prepare_end"] - boundaries["discovery_end"]
+            ) / 1e6,
+            "index": (
+                boundaries["index_end"] - boundaries["model_provider_prepare_end"]
+            ) / 1e6,
+            "warmup": (boundaries["warmup_end"] - boundaries["index_end"]) / 1e6,
+            "first_query": (
+                boundaries["first_query_end"] - boundaries["first_query_start"]
+            ) / 1e6,
+            "warm_query": (
+                boundaries["query_end"] - boundaries["query_start"]
+                - boundaries["first_query_end"] + boundaries["first_query_start"]
+            ) / 1e6,
+        }
+        derived["unattributed"] = (
+            boundaries["worker_end"] - boundaries["worker_start"]
+        ) / 1e6 - sum(derived.values())
+        for key, value in derived.items():
+            if value < 0 or not math.isclose(value, phases[key], rel_tol=1e-9, abs_tol=0.01):
+                raise RunError(f"{where} phase {key} is not derived from boundaries")
     return metrics
 
 
@@ -1797,7 +2199,7 @@ def _validate_resource_metrics(payload: object, where: str) -> dict:
         metrics["storage"],
         {"index_bytes", "model_cache_bytes", "parser_cache_bytes",
          "embedding_cache_bytes", "discovered_files", "indexed_chunks",
-         "index_storage"},
+         "index_storage", "index_measurement"},
         f"{where}.storage",
     )
     for key in ("index_bytes", "model_cache_bytes", "parser_cache_bytes",
@@ -1809,6 +2211,14 @@ def _validate_resource_metrics(payload: object, where: str) -> dict:
             raise RunError(f"{where}.storage.{key} must be positive")
     if storage["index_storage"] not in ("disk", "memory"):
         raise RunError(f"{where}.storage.index_storage is invalid")
+    expected_measurement = (
+        "filesystem_tree_v1" if storage["index_storage"] == "disk"
+        else "process_peak_rss_delta_v1"
+    )
+    if storage["index_measurement"] != expected_measurement:
+        raise RunError(f"{where}.storage.index_measurement is invalid")
+    if storage["index_bytes"] <= 0:
+        raise RunError(f"{where}.storage.index_bytes must be positive")
     if type(metrics["samples"]) is not int or metrics["samples"] < 1:
         raise RunError(f"{where}.samples must be positive")
     if metrics["complete"] is not True or metrics["error"] is not None:
@@ -1846,7 +2256,8 @@ def _validate_isolation_proof(
     proof = _exact_keys(
         payload,
         {"schema_version", "backend", "sandbox_exec", "profile_sha256",
-         "denied_roots", "suite", "query_pack", "corpus_view", "probes"},
+         "denied_roots", "allowed_read_roots", "allowed_write_roots",
+         "suite", "query_pack", "corpus_view", "probes"},
         "isolation proof",
     )
     if proof["schema_version"] != 1 or proof["backend"] != ISOLATION_BACKEND:
@@ -1866,7 +2277,19 @@ def _validate_isolation_proof(
         or any(not isinstance(path, str) or not Path(path).is_absolute() for path in roots)
     ):
         raise RunError("isolation proof denied_roots must be sorted unique absolute paths")
-    profile = _seatbelt_profile(roots)
+    def absolute_roots(key: str) -> list[str]:
+        values = proof[key]
+        if (
+            not isinstance(values, list)
+            or values != sorted(set(values))
+            or any(not isinstance(path, str) or not Path(path).is_absolute() for path in values)
+        ):
+            raise RunError(f"isolation proof {key} must be sorted unique absolute paths")
+        return values
+
+    allowed_read_roots = absolute_roots("allowed_read_roots")
+    allowed_write_roots = absolute_roots("allowed_write_roots")
+    profile = _seatbelt_profile(roots, allowed_read_roots, allowed_write_roots)
     profile_sha = hashlib.sha256(profile.encode("utf-8")).hexdigest()
     if proof["profile_sha256"] != profile_sha:
         raise RunError("isolation proof profile digest mismatch")
@@ -1918,9 +2341,7 @@ def _validate_isolation_proof(
     if probes != {"suite_read_denied": True, "query_pack_read_allowed": True}:
         raise RunError("isolation proof probes did not pass")
     if capture_paths["suite"].is_file() and capture_paths["query_pack"].is_file():
-        observed = _probe_seatbelt(
-            profile, capture_paths["suite"], capture_paths["query_pack"]
-        )
+        observed = _probe_seatbelt(profile, capture_paths["suite"], capture_paths["query_pack"])
     else:
         # Atomic promotion renames the staging tree. Re-probe the frozen final
         # bytes under an equivalent denial root while retaining external secret
@@ -1931,8 +2352,25 @@ def _validate_isolation_proof(
             else boundary
             for boundary in roots
         ]
+        captured_stage = capture_paths["suite"].parent.parent
+
+        def relocate(values: list[str]) -> list[str]:
+            relocated = []
+            for value in values:
+                path = Path(value)
+                if path == captured_stage or captured_stage in path.parents:
+                    path = root.resolve() / path.relative_to(captured_stage)
+                relocated.append(str(path))
+            return sorted(set(relocated))
+
         observed = _probe_seatbelt(
-            _seatbelt_profile(sorted(set(relocated_roots))), suite_path, pack_path
+            _seatbelt_profile(
+                sorted(set(relocated_roots)),
+                relocate(allowed_read_roots),
+                relocate(allowed_write_roots),
+            ),
+            suite_path,
+            pack_path,
         )
     if observed != probes:
         raise RunError("isolation proof could not be independently reproduced")
@@ -1957,7 +2395,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     artifacts = manifest["artifacts"]
     resolved: dict[str, object] = {}
     for key in ("suite", "query_pack", "corpus_manifest", "mapping_proof",
-                "latency_matrix", "host_start", "host_end",
+                "latency_matrix", "host_start", "host_end", "host_profile",
                 "semble_adapter_manifest", "semble_lockfile", "protocol_lock"):
         resolved[key] = _resolve_artifact(root, artifacts[key], f"artifacts.{key}")
     for key in ("records", "reports", "quanta_manifests", "semble_native",
@@ -1968,6 +2406,13 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     for key in RECEIPT_KEYS:
         if key in artifacts:
             resolved[key] = _resolve_artifact(root, artifacts[key], f"artifacts.{key}")
+    if manifest["scope"] == "qualified":
+        for key in ("admission_manifest", "license_receipt", "adjudication_receipt"):
+            resolved[key] = _resolve_artifact(root, artifacts[key], f"artifacts.{key}")
+        resolved["annotation_receipts"] = [
+            _resolve_artifact(root, ref, "artifacts.annotation_receipts")
+            for ref in artifacts["annotation_receipts"]
+        ]
     if "isolation_proof" in artifacts:
         resolved["isolation_proof"] = _resolve_artifact(
             root, artifacts["isolation_proof"], "artifacts.isolation_proof"
@@ -1982,6 +2427,9 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     evidence = manifest["evidence"]
     claims = manifest["claims"]
     provenance_claims = manifest["provenance"]
+    host_profile = validate_host_profile(read_json(resolved["host_profile"]))
+    if sha_file(resolved["host_profile"]) != provenance_claims["host"]["profile_digest"]:
+        raise RunError("host profile artifact digest mismatch")
     pair_notes: list[tuple[str, list[str], str]] = []
 
     def pair_note(reason: str, t_ids: tuple[str, ...] = (), fail_class: str = "provenance") -> None:
@@ -1990,7 +2438,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     def read_note(path: Path, where: str, t_ids: tuple[str, ...]) -> object:
         try:
             return read_json(path)
-        except ValueError as exc:
+        except ValueError:
             pair_note(f"{where}_unreadable", t_ids)
             return None
 
@@ -2037,6 +2485,10 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             pair_note("protocol_lock_pack_drift", ("T12",))
         if protocol_payload.get("corpus_manifest_digest") != corpus_digest:
             pair_note("protocol_lock_corpus_drift", ("T12",))
+        if protocol_payload.get("admission_digest") != provenance_claims["admission"][
+            "manifest_digest"
+        ]:
+            pair_note("protocol_lock_admission_drift", ("T17",))
     if isinstance(corpus_payload, dict) and isinstance(mapping_payload, dict):
         if not mapping_matches_manifest(mapping_payload, corpus_payload):
             pair_note("mapping_proof_not_clean", ("T00", "T11", "T12"), "corpus_mismatch")
@@ -2122,7 +2574,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                     repo, resolved["suite"],
                     [Path(quanta_by_strategy[strategy]), Path(semble_rep0)],
                 )
-            except (RunError, ValueError) as exc:
+            except (RunError, ValueError):
                 pair_note(f"combo_merge_failed:{strategy}", ("T03", "T12", "T13"))
                 continue
             combos[strategy] = (merged, digest(canonical(merged)))
@@ -2145,7 +2597,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             rescored = evaluate(
                 suite, pack, merged, comparison.get("baseline"), comparison.get("candidate")
             )
-        except (RunError, ValueError, TypeError) as exc:
+        except (RunError, ValueError, TypeError):
             pair_note("report_rescore_failed", ("T04", "T13"))
             continue
         if digest(canonical(rescored)) != digest(canonical(content)):
@@ -2204,6 +2656,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
 
     resource_ok = len(resolved["resource_metrics"]) == len(resolved["records"])
     resource_subject_digests: list[str] = []
+    resource_by_subject: dict[str, dict] = {}
     resource_isolation: list[dict | None] = []
     for path in resolved["resource_metrics"]:
         try:
@@ -2211,6 +2664,9 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 read_json(Path(path)), f"resource metrics {path}"
             )
             resource_subject_digests.append(metrics["subject_sha256"])
+            if metrics["subject_sha256"] in resource_by_subject:
+                resource_ok = False
+            resource_by_subject[metrics["subject_sha256"]] = metrics
             resource_isolation.append(metrics.get("isolation"))
         except (RunError, ValueError, OSError):
             resource_ok = False
@@ -2218,6 +2674,38 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         record_digests
     ):
         resource_ok = False
+    for path, entry in validated.items():
+        subject_digest = sha_file(Path(path))
+        metrics = resource_by_subject.get(subject_digest)
+        if metrics is None:
+            resource_ok = False
+            continue
+        expected_storage = "memory" if entry["system"] == "semble" else "disk"
+        if metrics["storage"]["index_storage"] != expected_storage:
+            resource_ok = False
+    for path in resolved["semble_native"]:
+        try:
+            rep = _rep_segment(Path(path), root)
+            semble_records = [
+                record_path
+                for record_path in rep_records.get(rep, [])
+                if validated[record_path]["system"] == "semble"
+            ]
+            if len(semble_records) != 1:
+                raise RunError("Semble native artifact lacks one record owner")
+            metrics = resource_by_subject[sha_file(Path(semble_records[0]))]
+            native = read_json(Path(path))
+            stats = native.get("stats") if isinstance(native, dict) else None
+            if not isinstance(stats, dict):
+                raise RunError("Semble native artifact lacks index statistics")
+            if (
+                stats.get("index_resident_bytes") != metrics["storage"]["index_bytes"]
+                or stats.get("index_measurement")
+                != metrics["storage"]["index_measurement"]
+            ):
+                raise RunError("Semble index memory attribution differs from native evidence")
+        except (KeyError, RunError, ValueError, OSError):
+            resource_ok = False
     for path in resolved["quanta_manifests"]:
         content = read_note(path, "quanta_manifest", ("T12",))
         if not isinstance(content, dict) or not isinstance(content.get("runs"), list):
@@ -2305,7 +2793,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         if adapter.get("model_asset_digest") != provenance_claims["semble"]["model_asset_digest"]:
             pair_note("model_asset_digest_mismatch", ("T11",))
     mapping_diff = mapping_payload.get("diff_digest") if isinstance(mapping_payload, dict) else None
-    for path, entry in validated.items():
+    for _path, entry in validated.items():
         if entry["system"] != "semble":
             continue
         _cid, capture = next(iter(entry["run"]["captures"].items()))
@@ -2313,7 +2801,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             pair_note("semble_receipt_anchor_drift", ("T11", "T12"))
 
     quanta_binaries = set()
-    for path, entry in validated.items():
+    for _path, entry in validated.items():
         if entry["system"] == "quanta":
             _cid, capture = next(iter(entry["run"]["captures"].items()))
             quanta_binaries.add(capture.get("runner_binary", {}).get("digest"))
@@ -2323,9 +2811,57 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     elif binary_digest != provenance_claims["quanta"]["binary_digest"]:
         pair_note("binary_digest_mismatch", ("T12",))
 
+    admission_evidence = None
+    admission_error = None
+    if manifest["scope"] == "qualified":
+        try:
+            annotation_paths = resolved.get("annotation_receipts")
+            if not isinstance(annotation_paths, list):
+                raise RunError("qualified verdict lacks annotation receipts")
+            quanta_model_revisions = {
+                capture.get("model_revision")
+                for entry in validated.values()
+                if entry["rep"] == "rep-00" and entry["system"] == "quanta"
+                for capture in entry["run"]["captures"].values()
+                if capture.get("model_revision") != "not-applicable"
+            }
+            if len(quanta_model_revisions) != 1:
+                raise RunError("qualified verdict requires one Quanta model revision")
+            if not isinstance(adapter, dict):
+                raise RunError("qualified verdict lacks the Semble adapter manifest")
+            receipt_paths = {
+                key: resolved[key]
+                for key in (
+                    "contract_python_receipt", "contract_rust_receipt", "sdk_receipt"
+                )
+                if key in resolved
+            }
+            admission_evidence = verify_admission_bundle(
+                resolved["admission_manifest"],
+                resolved["license_receipt"],
+                annotation_paths,
+                resolved["adjudication_receipt"],
+                source_revision=provenance_claims["quanta"]["source_sha"],
+                corpus_manifest_path=resolved["corpus_manifest"],
+                suite_path=resolved["suite"],
+                query_pack_path=resolved["query_pack"],
+                lockfile_path=resolved["semble_lockfile"],
+                host_profile_path=resolved["host_profile"],
+                cache_regime=manifest["host"]["cache_regime"],
+                receipt_paths=receipt_paths,
+                quanta_model_revision=next(iter(quanta_model_revisions)),
+                semble_model_revision=adapter.get("model_revision"),
+                semble_model_asset_sha256=adapter.get("model_asset_digest"),
+            )
+            observed_admission_digest = sha_file(resolved["admission_manifest"])
+            if observed_admission_digest != provenance_claims["admission"]["manifest_digest"]:
+                raise RunError("qualification admission manifest digest mismatch")
+        except (RunError, ValueError, OSError) as exc:
+            admission_error = str(exc)
+
     # T12: error/timeout/unavailable rows are incomplete observations — the
     # pair never silently compares a system that failed to observe a query.
-    for path, entry in validated.items():
+    for _path, entry in validated.items():
         rows = entry["run"].get("results", [])
         bad = sorted({row["task_id"] for row in rows
                       if row.get("status") in ("error", "timeout", "unavailable")})
@@ -2506,6 +3042,16 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     # PERF_QUALIFIED: matrix re-derivation + floors + host, only on speed claims.
     if not claims["speed"]:
         set_state("PERF_QUALIFIED", "not_applicable", "no_speed_claim", None)
+    elif manifest["scope"] != "qualified":
+        set_state("PERF_QUALIFIED", "not_applicable", "exploratory_only", None)
+        not_applicable.append("scope:exploratory_only")
+    elif admission_error is not None or admission_evidence is None:
+        set_state(
+            "PERF_QUALIFIED", "fail",
+            f"admission_unverified: {admission_error or 'missing admission'}", None,
+        )
+        missing.append("T17")
+        classes.append("admission")
     else:
         perf_fail: tuple[str, str] | None = None
         try:
@@ -2560,8 +3106,8 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             elif not (
                 isinstance(host_start_payload, dict)
                 and isinstance(host_end_payload, dict)
-                and _probe_clean(host_start_payload)
-                and _probe_clean(host_end_payload)
+                and _probe_clean(host_start_payload, host_profile)
+                and _probe_clean(host_end_payload, host_profile)
             ):
                 perf_fail = ("host_contended", "host")
             elif manifest.get("host", {}).get("cache_regime", "undeclared") == "undeclared":
@@ -2574,6 +3120,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 "pass",
                 "phase_and_process_tree_resources_verified",
                 digest(canonical({
+                    "admission": admission_evidence,
                     "latency_matrix": rebuilt,
                     "phase_metrics": [sha_file(Path(path)) for path in resolved["phase_metrics"]],
                     "resource_metrics": [
@@ -2635,6 +3182,16 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         set_state("QUALITY_DELTA", "not_applicable", "no_quality_claim", None)
     elif not matched:
         set_state("QUALITY_DELTA", "not_run", "reports_unmatched", None)
+    elif manifest["scope"] != "qualified":
+        set_state("QUALITY_DELTA", "not_applicable", "exploratory_only", None)
+        not_applicable.append("scope:exploratory_only")
+    elif admission_error is not None or admission_evidence is None:
+        set_state(
+            "QUALITY_DELTA", "fail",
+            f"admission_unverified: {admission_error or 'missing admission'}", None,
+        )
+        missing.append("T17")
+        classes.append("admission")
     elif provenance_claims["quanta"].get("embedder") != "potion-code":
         # T10: a quality claim over the hash-dev diagnostic control (or an
         # undeclared embedder) is not model-quality evidence.
@@ -2652,9 +3209,6 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             f"isolation_proof_unverified: {isolation_error or 'missing proof'}", None,
         )
         classes.append("blinding")
-    elif manifest["scope"] != "qualified":
-        set_state("QUALITY_DELTA", "not_applicable", "exploratory_only", None)
-        not_applicable.append("scope:exploratory_only")
     elif not all(entry["graded"] for entry in matched):
         set_state("QUALITY_DELTA", "fail", "reports_ungraded", None)
         classes.append("scoring")
@@ -2662,6 +3216,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         set_state(
             "QUALITY_DELTA", "pass", "blinded_graded_delta",
             digest(canonical({
+                "admission": admission_evidence,
                 "reports": sorted(entry["report_sha"] for entry in matched),
                 "isolation": isolation_evidence,
             })),
@@ -2724,6 +3279,9 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     ]
     diff_digest = mapping_diff if _is_hex(mapping_diff, 64) else "0" * 64
     provenance = {
+        "admission": {
+            "manifest_digest": provenance_claims["admission"]["manifest_digest"]
+        },
         "quanta": {"source_sha": provenance_claims["quanta"]["source_sha"],
                    "binary_digest": binary_digest,
                    "embedder": provenance_claims["quanta"].get("embedder", "undeclared")},
@@ -2735,7 +3293,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             "tokenizer_budget_version": TOKENIZER_BUDGET_VERSION,
         },
         "host": {
-            "profile": provenance_claims["host"]["profile"],
+            "profile_digest": provenance_claims["host"]["profile_digest"],
             "check_record_digest": check_record_digest or "0" * 64,
         },
     }
@@ -2773,6 +3331,11 @@ def run_pair(spec: dict) -> int:
     tree (manifest + verdict) is atomically renamed onto the output
     root. Partial output is never resumed: rerun from a fresh root.
     """
+    scope = spec.get("scope", "exploratory")
+    if scope == "qualified" and not isinstance(spec.get("admission"), dict):
+        raise RunError("qualified pair capture requires spec.admission")
+    if scope != "qualified" and "admission" in spec:
+        raise RunError("spec.admission is valid only for a qualified capture")
     lockfile_sha = spec.get("semble_lockfile_sha256")
     if not _is_hex(lockfile_sha, 64):
         raise RunError("pair requires a pinned semble_lockfile_sha256")
@@ -2824,6 +3387,7 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
     frozen_inputs = freeze_inputs(spec, stage)
     frozen_receipts = freeze_receipts(spec, stage)
     spec = dict(spec, **frozen_inputs)
+    frozen_admission = freeze_admission(spec, stage, frozen_receipts)
     if spec.get("blinding", "attested") == "isolated":
         spec = materialize_corpus_view(spec, stage, source_repo)
     spec = prepare_isolation(spec, stage, original_suite)
@@ -2930,13 +3494,18 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
         "searchd_expected_sha256": spec["searchd_expected_sha256"],
         "semble_lockfile_sha256": spec["semble_lockfile_sha256"],
         "host_profile_digest": sha_file(Path(spec["host_profile"])),
+        "admission_digest": (
+            sha_file(Path(str(frozen_admission["manifest"])))
+            if frozen_admission else None
+        ),
         "repetitions": repetitions,
     }
     (stage / "protocol-lock.json").write_text(
         json.dumps(protocol_lock, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     manifest = build_run_manifest(
-        spec, stage, rep_layouts, host_start, host_end, reports, frozen_receipts
+        spec, stage, rep_layouts, host_start, host_end, reports, frozen_receipts,
+        frozen_admission,
     )
     manifest_path = stage / "run-manifest.json"
     manifest_path.write_text(
@@ -3326,6 +3895,83 @@ def freeze_receipts(spec: dict, stage: Path) -> dict[str, str]:
     return frozen
 
 
+def freeze_admission(
+    spec: dict, stage: Path, frozen_receipts: dict[str, str]
+) -> dict[str, object]:
+    """Freeze and preflight the W0-B authority packet for a qualified run."""
+    scope = spec.get("scope", "exploratory")
+    raw = spec.get("admission")
+    if scope != "qualified":
+        if raw is not None:
+            raise RunError("admission authority is valid only for qualified capture")
+        return {}
+    if not isinstance(raw, dict):
+        raise RunError("qualified capture requires the W0-B admission bundle")
+    admission = _exact_keys(raw, set(ADMISSION_KEYS), "spec.admission")
+    target_dir = stage / "admission"
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    frozen: dict[str, object] = {}
+    scalar_names = {
+        "manifest": "admission.json",
+        "license_receipt": "license-receipt.json",
+        "adjudication_receipt": "adjudication-receipt.json",
+    }
+    for key, name in scalar_names.items():
+        source = Path(admission[key])
+        target = target_dir / name
+        try:
+            before = sha_file(source)
+            shutil.copyfile(source, target)
+            after = sha_file(target)
+        except OSError as exc:
+            raise RunError(f"cannot freeze qualification admission {key}: {exc}") from exc
+        if before != after:
+            raise RunError(f"qualification admission changed during freeze: {key}")
+        frozen[key] = str(target)
+
+    annotation_paths: list[str] = []
+    annotation_sources = admission["annotation_receipts"]
+    if not isinstance(annotation_sources, list) or len(annotation_sources) != 2:
+        raise RunError("qualification admission requires two annotation receipt paths")
+    for index, source_name in enumerate(annotation_sources):
+        source = Path(source_name)
+        target = target_dir / f"annotation-{index + 1}-receipt.json"
+        try:
+            before = sha_file(source)
+            shutil.copyfile(source, target)
+            after = sha_file(target)
+        except OSError as exc:
+            raise RunError(
+                f"cannot freeze qualification annotation receipt {index}: {exc}"
+            ) from exc
+        if before != after:
+            raise RunError("qualification annotation receipt changed during freeze")
+        annotation_paths.append(str(target))
+    frozen["annotation_receipts"] = annotation_paths
+
+    required_receipts = {
+        key: Path(frozen_receipts[key])
+        for key in ("contract_python_receipt", "contract_rust_receipt", "sdk_receipt")
+        if key in frozen_receipts
+    }
+    verify_admission_bundle(
+        Path(str(frozen["manifest"])),
+        Path(str(frozen["license_receipt"])),
+        [Path(path) for path in annotation_paths],
+        Path(str(frozen["adjudication_receipt"])),
+        source_revision=git_head_sha(Path(__file__).resolve().parents[3]),
+        corpus_manifest_path=Path(spec["manifest"]),
+        suite_path=Path(spec["suite"]),
+        query_pack_path=Path(spec["query_pack"]),
+        lockfile_path=Path(spec["semble_lockfile"]),
+        host_profile_path=Path(spec["host_profile"]),
+        cache_regime=spec.get("cache_regime", "undeclared"),
+        receipt_paths=required_receipts,
+    )
+    return frozen
+
+
 def freeze_inputs(spec: dict, stage: Path) -> dict:
     """Copy capture inputs into the stage root and return byte-verified paths.
 
@@ -3363,6 +4009,7 @@ def build_run_manifest(
     host_end: dict,
     reports: list[str],
     frozen_receipts: dict[str, str] | None = None,
+    frozen_admission: dict[str, object] | None = None,
 ) -> dict:
     """Emit the driver-observed run manifest consumed by `verdict`.
 
@@ -3489,7 +4136,7 @@ def build_run_manifest(
         if not all(key in frozen for key in CONTRACT_EVIDENCE_KEYS):
             raise RunError("incomplete frozen contract receipt set")
         for side in ("python", "rust"):
-            results = _validate_counts_shape(
+            _validate_counts_shape(
                 read_json(Path(frozen[f"contract_{side}_results"])),
                 f"contract {side} results",
             )
@@ -3559,8 +4206,57 @@ def build_run_manifest(
     scope = spec.get("scope", "exploratory")
     if scope not in ("exploratory", "qualified"):
         raise RunError("spec.scope must be exploratory or qualified")
+    admission_files = frozen_admission or {}
+    if scope == "qualified" and set(admission_files) != set(ADMISSION_KEYS):
+        raise RunError("qualified run lacks the complete frozen admission bundle")
+    if scope != "qualified" and admission_files:
+        raise RunError("exploratory run cannot carry qualification admission authority")
     profile_path = Path(spec.get("host_profile", ""))
-    profile = validate_host_profile(read_json(profile_path))
+    validate_host_profile(read_json(profile_path))
+    admission_digest = None
+    if admission_files:
+        annotation_refs = admission_files["annotation_receipts"]
+        if not isinstance(annotation_refs, list):
+            raise RunError("frozen admission annotation receipts are malformed")
+        quanta_model_revisions = set()
+        for record_path in rep0["quanta"].values():
+            record = read_json(Path(record_path))
+            if not isinstance(record, dict) or not isinstance(record.get("captures"), dict):
+                raise RunError("qualified admission cannot inspect Quanta capture models")
+            for capture in record["captures"].values():
+                if not isinstance(capture, dict):
+                    raise RunError("qualified admission found a malformed Quanta capture")
+                revision = capture.get("model_revision")
+                if isinstance(revision, str) and revision != "not-applicable":
+                    quanta_model_revisions.add(revision)
+        if len(quanta_model_revisions) != 1:
+            raise RunError("qualified admission requires one Quanta model revision")
+        admission = verify_admission_bundle(
+            Path(str(admission_files["manifest"])),
+            Path(str(admission_files["license_receipt"])),
+            [Path(str(path)) for path in annotation_refs],
+            Path(str(admission_files["adjudication_receipt"])),
+            source_revision=source_sha,
+            corpus_manifest_path=Path(spec["manifest"]),
+            suite_path=Path(spec["suite"]),
+            query_pack_path=Path(spec["query_pack"]),
+            lockfile_path=Path(spec["semble_lockfile"]),
+            host_profile_path=profile_path,
+            cache_regime=spec.get("cache_regime", "undeclared"),
+            receipt_paths={
+                key: Path(frozen[key])
+                for key in (
+                    "contract_python_receipt", "contract_rust_receipt", "sdk_receipt"
+                )
+                if key in frozen
+            },
+            quanta_model_revision=next(iter(quanta_model_revisions)),
+            semble_model_revision=adapter_manifest.get("model_revision"),
+            semble_model_asset_sha256=adapter_manifest.get("model_asset_digest"),
+        )
+        admission_digest = sha_file(Path(str(admission_files["manifest"])))
+        if admission["source_revision"] != source_sha:
+            raise RunError("qualified admission is not bound to the driver source")
     artifacts = {
         "suite": relative(Path(spec["suite"])),
         "query_pack": relative(Path(spec["query_pack"])),
@@ -3586,6 +4282,18 @@ def build_run_manifest(
             raise RunError("isolated run lacks isolation-proof.json")
         artifacts["isolation_proof"] = relative(proof_path)
     artifacts.update(receipt_artifacts)
+    if admission_files:
+        artifacts.update({
+            "admission_manifest": relative(Path(str(admission_files["manifest"]))),
+            "license_receipt": relative(Path(str(admission_files["license_receipt"]))),
+            "annotation_receipts": [
+                relative(Path(str(path)))
+                for path in admission_files["annotation_receipts"]
+            ],
+            "adjudication_receipt": relative(
+                Path(str(admission_files["adjudication_receipt"]))
+            ),
+        })
     if not (out_root / "protocol-lock.json").is_file():
         raise RunError("protocol-lock.json must exist before the run manifest")
     return {
@@ -3604,6 +4312,7 @@ def build_run_manifest(
         },
         "artifacts": artifacts,
         "provenance": {
+            "admission": {"manifest_digest": admission_digest},
             "quanta": {"source_sha": source_sha, "binary_digest": runner_binary_digest,
                        "embedder": spec.get("embedder", "potion-code")},
             "semble": {
@@ -3705,13 +4414,14 @@ def run_semble_capture(
         spec.get("semble_cache_root", str(out_dir.parent / "semble-cache"))
     )
     bind_storage_metrics(resource_path, {
-        "index_bytes": 0,
+        "index_bytes": stats.get("index_resident_bytes"),
         "model_cache_bytes": tree_size(cache_root),
         "parser_cache_bytes": 0,
         "embedding_cache_bytes": 0,
         "discovered_files": stats.get("indexed_files"),
         "indexed_chunks": stats.get("total_chunks"),
         "index_storage": "memory",
+        "index_measurement": stats.get("index_measurement"),
     })
     return {"phase_metrics": str(phase_path), "resource_metrics": str(resource_path)}
 
@@ -3735,6 +4445,9 @@ def build_parser() -> argparse.ArgumentParser:
     verdict.add_argument("--out", required=True)
     probe = sub.add_parser("host-probe", help="emit host check-record")
     probe.add_argument("--out", default=None)
+    profile = sub.add_parser("host-profile", help="freeze a canonical host profile")
+    profile.add_argument("--profile-id", required=True)
+    profile.add_argument("--out", required=True)
     return parser
 
 
@@ -3745,6 +4458,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_merge(args)
     if args.command == "host-probe":
         return cmd_host_probe(args)
+    if args.command == "host-profile":
+        return cmd_host_profile(args)
     if args.command == "quanta":
         return cmd_quanta(args)
     if args.command == "verdict":

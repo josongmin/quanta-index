@@ -9,9 +9,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 import jsonschema
+import pytest
 
 from tools.benchmark.retrieval import evaluator as ev
 from tools.benchmark.retrieval import run as pairrun
@@ -1111,10 +1110,14 @@ def test_check_semble_env_refuses_missing_installed_proof(tmp_path, monkeypatch)
     with pytest.raises(semble_adapter.AdapterError, match="RECORD digest proof"):
         run_with(base + ',"dist_info":"semble-0.6.0.dist-info","record_sha256":null}')
     with pytest.raises(semble_adapter.AdapterError, match="malformed direct_url digest"):
-        run_with(base + ',"dist_info":"semble-0.6.0.dist-info",'
-                 '"record_sha256":"%s","direct_url_sha256":"zz"}' % ("c" * 64))
-    report = run_with(base + ',"dist_info":"semble-0.6.0.dist-info",'
-                             '"record_sha256":"%s","direct_url_sha256":"%s"}' % ("d" * 64, "e" * 64))
+        run_with(
+            base + ',"dist_info":"semble-0.6.0.dist-info",'
+            f'"record_sha256":"{"c" * 64}","direct_url_sha256":"zz"}}'
+        )
+    report = run_with(
+        base + ',"dist_info":"semble-0.6.0.dist-info",'
+        f'"record_sha256":"{"d" * 64}","direct_url_sha256":"{"e" * 64}"}}'
+    )
     assert report["installed_distribution"]["direct_url_sha256"] == "e" * 64
 
 
@@ -1230,6 +1233,14 @@ def test_run_semble_capture_forwards_lockfile(tmp_path, monkeypatch):
         output_root = Path(command[command.index("--output-root") + 1])
         output_root.mkdir(exist_ok=True)
         (output_root / "phase-metrics.json").write_text("{}", encoding="utf-8")
+        (output_root / "native.json").write_text(json.dumps({
+            "stats": {
+                "indexed_files": 1,
+                "total_chunks": 1,
+                "index_resident_bytes": 4096,
+                "index_measurement": "process_peak_rss_delta_v1",
+            }
+        }), encoding="utf-8")
         kwargs["resource_path"].write_text("{}", encoding="utf-8")
         return {"exit_code": 0, "timed_out": False}
 
@@ -1250,9 +1261,17 @@ def test_freeze_inputs_freezes_lockfile(tmp_path):
     (src / "lock.txt").write_bytes(b"semble==0.6.0\n")
     for name in ("suite.json", "pack.json", "manifest.json"):
         (src / name).write_text("{}", encoding="utf-8")
+    (src / "host-profile.json").write_text(json.dumps({
+        "schema_version": 1, "profile_id": "test",
+        "fingerprint": {"system": "Darwin", "release": "test",
+                        "machine": "arm64", "processor": "test",
+                        "cpu_count": 8, "rustc": "rustc test",
+                        "power_digest": _fake_sha("power")},
+    }), encoding="utf-8")
     inputs = {"suite": str(src / "suite.json"), "query_pack": str(src / "pack.json"),
-              "manifest": str(src / "manifest.json"),
-              "semble_lockfile": str(src / "lock.txt")}
+                  "manifest": str(src / "manifest.json"),
+                  "semble_lockfile": str(src / "lock.txt"),
+                  "host_profile": str(src / "host-profile.json")}
     stage = tmp_path / "stage"
     stage.mkdir()
     frozen = pairrun.freeze_inputs(inputs, stage)
@@ -1791,7 +1810,13 @@ def _pair_stage(tmp_path, *, repetitions=1, blinding="attested", scope="explorat
         denied_roots = sorted(
             {str(secret_root.resolve()), str(suite_path.parent.resolve()), str(repo.resolve())}
         )
-        profile = pairrun._seatbelt_profile(denied_roots)
+        allowed_read_roots = sorted({
+            str(pack_path.resolve()), str(runner_corpus.resolve()), str(stage.resolve())
+        })
+        allowed_write_roots = [str(stage.resolve())]
+        profile = pairrun._seatbelt_profile(
+            denied_roots, allowed_read_roots, allowed_write_roots
+        )
         proof = {
             "schema_version": 1,
             "backend": pairrun.ISOLATION_BACKEND,
@@ -1801,6 +1826,8 @@ def _pair_stage(tmp_path, *, repetitions=1, blinding="attested", scope="explorat
             },
             "profile_sha256": hashlib.sha256(profile.encode()).hexdigest(),
             "denied_roots": denied_roots,
+            "allowed_read_roots": allowed_read_roots,
+            "allowed_write_roots": allowed_write_roots,
             "suite": {
                 "path": "evaluator-only/suite.json",
                 "capture_path": str(suite_path.resolve()),
@@ -1908,6 +1935,18 @@ def _pair_stage(tmp_path, *, repetitions=1, blinding="attested", scope="explorat
             "phases_ms": {"discovery": 1.0, "model_provider_prepare": 1.0,
                           "index": 1.0, "warmup": 1.0, "first_query": 1.0,
                           "warm_query": 1.0, "unattributed": 1.0},
+            "phase_boundaries_ns": {
+                "worker_start": 0,
+                "discovery_end": 1_000_000,
+                "model_provider_prepare_end": 2_000_000,
+                "index_end": 3_000_000,
+                "warmup_end": 4_000_000,
+                "query_start": 4_000_000,
+                "first_query_start": 4_000_000,
+                "first_query_end": 5_000_000,
+                "query_end": 6_000_000,
+                "worker_end": 7_000_000,
+            },
             "total_ms": 7.0}), encoding="utf-8")
         resource_payload = {
             "schema_version": 1, "sampler": "ps-process-tree-rss-cpu-v2",
@@ -1921,7 +1960,8 @@ def _pair_stage(tmp_path, *, repetitions=1, blinding="attested", scope="explorat
             "storage": {"index_bytes": 4096, "model_cache_bytes": 1024,
                         "parser_cache_bytes": 0, "embedding_cache_bytes": 0,
                         "discovered_files": 2, "indexed_chunks": 2,
-                        "index_storage": "disk"},
+                        "index_storage": "disk",
+                        "index_measurement": "filesystem_tree_v1"},
             "samples": 2,
             "complete": True, "error": None, "cleanup_complete": True,
             "cleanup_escalated": False, "cleanup_error": None,
@@ -1935,15 +1975,23 @@ def _pair_stage(tmp_path, *, repetitions=1, blinding="attested", scope="explorat
         sresource = rep_dir / "semble-resource-metrics.json"
         sresource.write_text(json.dumps({
             **resource_payload, "subject_sha256": ev.digest(spath.read_bytes()),
-            "storage": {**resource_payload["storage"], "index_bytes": 0,
-                        "index_storage": "memory"},
+            "storage": {**resource_payload["storage"], "index_bytes": 4096,
+                        "index_storage": "memory",
+                        "index_measurement": "process_peak_rss_delta_v1"},
         }), encoding="utf-8")
         latencies = {row["task_id"]: [row["timings"]["query_latency_ms"],
                                       row["timings"]["query_latency_ms"] + 0.1]
                      for row in srec["results"]}
         (sdir / "native.json").write_text(json.dumps({
             "native": [{"task_id": row["task_id"], "results": []} for row in srec["results"]],
-            "latencies_ms": latencies}), encoding="utf-8")
+            "latencies_ms": latencies,
+            "stats": {
+                "indexed_files": 2,
+                "total_chunks": 2,
+                "index_resident_bytes": 4096,
+                "index_measurement": "process_peak_rss_delta_v1",
+            },
+        }), encoding="utf-8")
         (sdir / "mapping-proof.json").write_text(json.dumps(mapping), encoding="utf-8")
         lockfile = sdir / "lockfile.txt"
         lockfile.write_bytes(b"semble==0.6.0\n")
@@ -1985,29 +2033,36 @@ def _pair_stage(tmp_path, *, repetitions=1, blinding="attested", scope="explorat
     report = ev.evaluate(_s, _p, combined, "hybrid", "lexical")
     report_name = "report-hybrid-vs-lexical-whole_file.json"
     (stage / report_name).write_text(json.dumps(report), encoding="utf-8")
-    host = {"concurrent_processes": {}, "contention_override": False}
+    host = {
+        "system": "Darwin", "release": "test", "machine": "arm64",
+        "processor": "test-cpu", "cpu_count": 8, "python": "3.11",
+        "rustc": "rustc test", "concurrent_processes": {"none": []},
+        "contention_override": False,
+        "thermal": {"status": "clean", "evidence": "test"},
+        "frequency": {"status": "bounded", "evidence": {}},
+        "power": {"status": "bounded", "digest": _fake_sha("power")},
+    }
     if not host_clean:
-        host = {"concurrent_processes": {"cargo": [123]}, "contention_override": False}
+        host = {**host, "concurrent_processes": {"cargo": [123]}}
     host_start = dict(host)
     host_end = dict(host)
     (stage / "host-start.json").write_text(json.dumps(host_start), encoding="utf-8")
     (stage / "host-end.json").write_text(json.dumps(host_end), encoding="utf-8")
+    host_profile = stage / "host-profile.json"
+    host_profile.write_text(json.dumps({
+        "schema_version": 1,
+        "profile_id": "test-host",
+        "fingerprint": pairrun._host_fingerprint(host),
+    }), encoding="utf-8")
+    semble_lockfile = stage / "rep-00" / "semble" / "lockfile.txt"
     spec = {"manifest": str(corpus_path), "suite": str(suite_path),
             "query_pack": str(pack_path), "runner_binary": str(runner_binary),
-            "host_profile": "test-host", "blinding": blinding,
+            "semble_lockfile": str(semble_lockfile),
+            "host_profile": str(host_profile), "blinding": blinding,
             "isolation_method": isolation_method,
             "access_block_log": access_block_log, "scope": scope,
             "claims": claims or {}, "embedder": embedder, "cache_regime": cache_regime}
-    (stage / "protocol-lock.json").write_text(json.dumps({
-        "suite_digest": ev.digest(suite_path.read_bytes()),
-        "query_pack_digest": ev.digest(pack_path.read_bytes()),
-        "corpus_manifest_digest": ev.digest(corpus_path.read_bytes()),
-        "spec_digest": ev.digest(ev.canonical(spec)),
-        "top_k": 10, "strategies": ["whole_file"],
-        "searchd_expected_sha256": _fake_sha("searchd"),
-        "semble_lockfile_sha256": ev.digest(b"semble==0.6.0\n"),
-        "host_profile": "test-host", "repetitions": repetitions}), encoding="utf-8")
-    if receipts == "full":
+    if receipts == "full" or (scope == "qualified" and receipts is None):
         source_sha = pairrun.git_head_sha(Path(__file__).resolve().parents[3])
         contents = _full_receipts(source_sha, binary_digest)
     else:
@@ -2021,8 +2076,90 @@ def _pair_stage(tmp_path, *, repetitions=1, blinding="attested", scope="explorat
             target = rdir / f"{key}.json"
             target.write_bytes(data)
             frozen[key] = str(target)
+
+    frozen_admission = {}
+    if scope == "qualified":
+        evidence_dir = stage / "admission"
+        evidence_dir.mkdir(exist_ok=True)
+        license_path = evidence_dir / "license-receipt.json"
+        annotation_paths = [
+            evidence_dir / "annotation-1-receipt.json",
+            evidence_dir / "annotation-2-receipt.json",
+        ]
+        adjudication_path = evidence_dir / "adjudication-receipt.json"
+        license_path.write_text('{"decision":"approved","reviewer":"license-owner"}',
+                                encoding="utf-8")
+        annotation_paths[0].write_text('{"annotator":"gold-owner-a"}', encoding="utf-8")
+        annotation_paths[1].write_text('{"annotator":"gold-owner-b"}', encoding="utf-8")
+        adjudication_path.write_text('{"adjudicator":"gold-adjudicator"}', encoding="utf-8")
+        admission_path = evidence_dir / "admission.json"
+        admission = {
+            "schema_version": 1,
+            "admission_id": "test-qualified-admission",
+            "issued_at": "2026-09-24T00:00:00Z",
+            "source_revision": pairrun.git_head_sha(Path(__file__).resolve().parents[3]),
+            "repository_commit": suite["repository_commit"],
+            "corpus_manifest_sha256": pairrun.sha_file(corpus_path),
+            "suite_sha256": pairrun.sha_file(suite_path),
+            "query_pack_sha256": pairrun.sha_file(pack_path),
+            "license": {
+                "reviewer_id": "license-owner",
+                "decision": "approved",
+                "receipt_sha256": pairrun.sha_file(license_path),
+            },
+            "gold": {
+                "frozen_before_results": True,
+                "annotators": [
+                    {"annotator_id": "gold-owner-a",
+                     "receipt_sha256": pairrun.sha_file(annotation_paths[0])},
+                    {"annotator_id": "gold-owner-b",
+                     "receipt_sha256": pairrun.sha_file(annotation_paths[1])},
+                ],
+                "adjudicator_id": "gold-adjudicator",
+                "adjudication_receipt_sha256": pairrun.sha_file(adjudication_path),
+            },
+            "models": {
+                "quanta_model_revision": "r1",
+                "semble_model_revision": "r",
+                "semble_model_asset_sha256": _fake_sha("model"),
+            },
+            "semble_lockfile_sha256": pairrun.sha_file(semble_lockfile),
+            "host_profile_sha256": pairrun.sha_file(host_profile),
+            "cache_regime": cache_regime,
+            "verification": {
+                "contract_python_receipt_sha256": pairrun.sha_file(
+                    Path(frozen["contract_python_receipt"])),
+                "contract_rust_receipt_sha256": pairrun.sha_file(
+                    Path(frozen["contract_rust_receipt"])),
+                "sdk_receipt_sha256": pairrun.sha_file(Path(frozen["sdk_receipt"])),
+            },
+        }
+        admission_path.write_text(json.dumps(admission), encoding="utf-8")
+        frozen_admission = {
+            "manifest": str(admission_path),
+            "license_receipt": str(license_path),
+            "annotation_receipts": [str(path) for path in annotation_paths],
+            "adjudication_receipt": str(adjudication_path),
+        }
+        spec["admission"] = dict(frozen_admission)
+
+    (stage / "protocol-lock.json").write_text(json.dumps({
+        "suite_digest": ev.digest(suite_path.read_bytes()),
+        "query_pack_digest": ev.digest(pack_path.read_bytes()),
+        "corpus_manifest_digest": ev.digest(corpus_path.read_bytes()),
+        "spec_digest": ev.digest(ev.canonical(spec)),
+        "top_k": 10, "strategies": ["whole_file"],
+        "searchd_expected_sha256": _fake_sha("searchd"),
+        "semble_lockfile_sha256": ev.digest(b"semble==0.6.0\n"),
+        "host_profile_digest": pairrun.sha_file(host_profile),
+        "admission_digest": (
+            pairrun.sha_file(Path(frozen_admission["manifest"]))
+            if frozen_admission else None
+        ),
+        "repetitions": repetitions}), encoding="utf-8")
     manifest = pairrun.build_run_manifest(
-        spec, stage, rep_layouts, host_start, host_end, [report_name], frozen)
+        spec, stage, rep_layouts, host_start, host_end, [report_name], frozen,
+        frozen_admission)
     manifest_path = stage / "run-manifest.json"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     return {"repo": repo, "suite": suite, "stage": stage, "spec": spec,
@@ -2128,7 +2265,7 @@ def test_verdict_lying_manifest_refused(tmp_path):
     assert verdict["states"]["CONTRACT_GREEN"] == "fail"
     assert verdict["failure_class"] == "scoring"
     # Inflated perf numbers are re-derived, never trusted.
-    st = _pair_stage(tmp_path / "perf", claims={"speed": True})
+    st = _pair_stage(tmp_path / "perf", scope="qualified", claims={"speed": True})
     _rewrite_manifest(st, lambda m: m["evidence"]["perf"].update({"observations_floor": 9999}))
     verdict = _stage_verdict(st)
     assert verdict["states"]["PERF_QUALIFIED"] == "fail"
@@ -2239,7 +2376,7 @@ def test_verdict_matrix_tamper_and_native_disagreement(tmp_path):
     # Without a speed claim the matrix is not pair evidence.
     assert verdict["states"]["PAIR_VALID"] == "pass"
     assert verdict["states"]["PERF_QUALIFIED"] == "not_applicable"
-    st = _pair_stage(tmp_path / "speed", claims={"speed": True})
+    st = _pair_stage(tmp_path / "speed", scope="qualified", claims={"speed": True})
     matrix_path = st["stage"] / "latency-matrix.json"
     matrix = json.loads(matrix_path.read_text(encoding="utf-8"))
     matrix["observations_floor"] = 9999
@@ -2247,7 +2384,7 @@ def test_verdict_matrix_tamper_and_native_disagreement(tmp_path):
     verdict = _stage_verdict(st)
     assert verdict["states"]["PERF_QUALIFIED"] == "fail"
     assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == "matrix_not_reproducible"
-    st = _pair_stage(tmp_path / "native", claims={"speed": True})
+    st = _pair_stage(tmp_path / "native", scope="qualified", claims={"speed": True})
     native_path = st["stage"] / "rep-00" / "semble" / "native.json"
     native = json.loads(native_path.read_text(encoding="utf-8"))
     first_task = next(iter(native["latencies_ms"]))
@@ -2261,6 +2398,10 @@ def test_verdict_matrix_tamper_and_native_disagreement(tmp_path):
 def test_verdict_perf_frontier_and_gates(tmp_path, monkeypatch):
     st = _pair_stage(tmp_path, claims={"speed": True})
     verdict = _stage_verdict(st)
+    assert verdict["states"]["PERF_QUALIFIED"] == "not_applicable"
+    assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == "exploratory_only"
+    st = _pair_stage(tmp_path / "qualified", scope="qualified", claims={"speed": True})
+    verdict = _stage_verdict(st)
     assert verdict["states"]["PERF_QUALIFIED"] == "fail"
     assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == "observations_floor_unmet"
     monkeypatch.setattr(pairrun, "PILOT_OBSERVATIONS_FLOOR", 2)
@@ -2271,7 +2412,7 @@ def test_verdict_perf_frontier_and_gates(tmp_path, monkeypatch):
         "phase_and_process_tree_resources_verified"
     )
     # Null timings fail a speed claim once floors hold.
-    st = _pair_stage(tmp_path / "nulls", claims={"speed": True})
+    st = _pair_stage(tmp_path / "nulls", scope="qualified", claims={"speed": True})
     record_path = st["stage"] / "rep-00" / "quanta" / "strategy-00-whole_file" / "record.json"
     record = json.loads(record_path.read_text(encoding="utf-8"))
     record["results"][0]["timings"] = {"query_latency_ms": None}
@@ -2293,7 +2434,7 @@ def test_verdict_perf_frontier_and_gates(tmp_path, monkeypatch):
     assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == "null_timings_on_speed_claim"
     monkeypatch.setattr(pairrun, "PILOT_OBSERVATIONS_FLOOR", 2)
     # Contended hosts fail with host class; the digests stay consistent.
-    st = _pair_stage(tmp_path / "host", claims={"speed": True})
+    st = _pair_stage(tmp_path / "host", scope="qualified", claims={"speed": True})
     busy = {"concurrent_processes": {"cargo": [123]}, "contention_override": False}
     (st["stage"] / "host-start.json").write_text(json.dumps(busy), encoding="utf-8")
 
@@ -2314,11 +2455,34 @@ def test_verdict_perf_frontier_and_gates(tmp_path, monkeypatch):
     assert verdict["failure_class"] == "host"
 
 
+def test_verdict_host_profile_fingerprint_is_enforced(tmp_path, monkeypatch):
+    monkeypatch.setattr(pairrun, "PILOT_OBSERVATIONS_FLOOR", 2)
+    monkeypatch.setattr(pairrun, "FRESH_ROOTS_FLOOR", 1)
+    st = _pair_stage(tmp_path, scope="qualified", claims={"speed": True})
+    profile_path = st["stage"] / "host-profile.json"
+    profile = json.loads(profile_path.read_text(encoding="utf-8"))
+    profile["fingerprint"]["cpu_count"] += 1
+    profile_path.write_text(json.dumps(profile), encoding="utf-8")
+    _rewrite_manifest(
+        st,
+        lambda manifest: manifest["provenance"]["host"].update(
+            profile_digest=pairrun.sha_file(profile_path)
+        ),
+    )
+    verdict = _stage_verdict(st)
+    assert verdict["states"]["PERF_QUALIFIED"] == "fail"
+    assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"].startswith(
+        "admission_unverified:"
+    )
+    assert verdict["failure_class"] == "admission"
+
+
 def test_verdict_rejects_forged_phase_and_process_tree_resources(tmp_path, monkeypatch):
     monkeypatch.setattr(pairrun, "PILOT_OBSERVATIONS_FLOOR", 2)
     monkeypatch.setattr(pairrun, "FRESH_ROOTS_FLOOR", 1)
 
-    resource_stage = _pair_stage(tmp_path / "resource", claims={"speed": True})
+    resource_stage = _pair_stage(
+        tmp_path / "resource", scope="qualified", claims={"speed": True})
     resource_path = resource_stage["stage"] / "rep-00" / "semble-resource-metrics.json"
     resource = json.loads(resource_path.read_text(encoding="utf-8"))
     resource.update(complete=False, error="sampler lost process tree")
@@ -2328,7 +2492,7 @@ def test_verdict_rejects_forged_phase_and_process_tree_resources(tmp_path, monke
         "resource_accounting_incomplete"
     )
 
-    phase_stage = _pair_stage(tmp_path / "phase", claims={"speed": True})
+    phase_stage = _pair_stage(tmp_path / "phase", scope="qualified", claims={"speed": True})
     phase_path = (
         phase_stage["stage"]
         / "rep-00"
@@ -2345,12 +2509,9 @@ def test_verdict_rejects_forged_phase_and_process_tree_resources(tmp_path, monke
     )
     # T12: a speed claim without a declared cache regime fails once every
     # earlier gate holds; the declared stage reaches the phase frontier.
-    st = _pair_stage(tmp_path / "cache", claims={"speed": True},
-                      cache_regime="undeclared")
-    assert st["manifest"]["host"]["cache_regime"] == "undeclared"
-    verdict = _stage_verdict(st)
-    assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == "cache_regime_undeclared"
-    assert verdict["failure_class"] == "host"
+    with pytest.raises(pairrun.RunError, match="qualified admission cannot use"):
+        _pair_stage(tmp_path / "cache", scope="qualified", claims={"speed": True},
+                    cache_regime="undeclared")
 
 
 def test_verdict_t15_t16_conditionals(tmp_path):
@@ -2374,7 +2535,7 @@ def test_verdict_quality_gates(tmp_path):
     st = _pair_stage(tmp_path, claims={"quality": True})
     verdict = _stage_verdict(st)
     assert verdict["states"]["QUALITY_DELTA"] == "not_applicable"
-    assert "blinding:attested_only" in verdict["not_applicable_t_ids"]
+    assert "scope:exploratory_only" in verdict["not_applicable_t_ids"]
     st = _pair_stage(tmp_path / "iso", blinding="isolated", scope="qualified",
                       claims={"quality": True})
     verdict = _stage_verdict(st)
@@ -2464,6 +2625,14 @@ def test_pair_staging_atomicity(tmp_path, monkeypatch):
     searchd.write_bytes(b"searchd")
     lockfile = tmp_path / "semble-lock.txt"
     lockfile.write_bytes(b"semble==0.6.0\n")
+    host_profile = tmp_path / "host-profile.json"
+    host_profile.write_text(json.dumps({
+        "schema_version": 1, "profile_id": "test-host",
+        "fingerprint": {"system": "Darwin", "release": "test",
+                        "machine": "arm64", "processor": "test",
+                        "cpu_count": 8, "rustc": "rustc test",
+                        "power_digest": _fake_sha("power")},
+    }), encoding="utf-8")
     spec = {"repo": str(repo), "manifest": str(manifest), "suite": str(suite_file),
             "query_pack": str(pack_file), "top_k": 10,
             "output_root": str(tmp_path / "out"), "runner_binary": "/unused/runner",
@@ -2471,7 +2640,8 @@ def test_pair_staging_atomicity(tmp_path, monkeypatch):
             "searchd_expected_sha256": ev.digest(b"searchd"),
             "semble_python": "/unused/python",
             "semble_lockfile": str(lockfile),
-            "semble_lockfile_sha256": _fake_sha("lock"), "host_profile": "test-host"}
+            "semble_lockfile_sha256": _fake_sha("lock"),
+            "host_profile": str(host_profile)}
 
     def explode(_spec, _spec_dir):
         raise pairrun.RunError("boom")
@@ -2539,8 +2709,68 @@ def test_receipt_shape_mirrors_canonical_schema():
 def test_host_probe_records_without_fabrication():
     probe = pairrun.host_probe()
     for key in ("system", "machine", "cpu_count", "python", "concurrent_processes",
-                "thermal", "frequency"):
+                "thermal", "frequency", "power"):
         assert key in probe, f"host probe lacks {key}"
+
+
+def test_darwin_power_fingerprint_excludes_battery_observation(monkeypatch):
+    monkeypatch.setattr(pairrun.sys, "platform", "darwin")
+    settings = """Battery Power:
+ lidwake              1
+ lowpowermode         1
+AC Power:
+ lidwake              1
+ lowpowermode         0
+"""
+    source = [
+        "Now drawing from 'AC Power'\n -InternalBattery-0 80%; charging; 1:00 remaining",
+        "Now drawing from 'AC Power'\n -InternalBattery-0 81%; charging; 0:55 remaining",
+    ]
+
+    def fake_run(command, **_kwargs):
+        if command[-1] == "custom":
+            return subprocess.CompletedProcess(command, 0, settings, "")
+        return subprocess.CompletedProcess(command, 0, source.pop(0), "")
+
+    monkeypatch.setattr(pairrun.subprocess, "run", fake_run)
+    first = pairrun.read_power()
+    second = pairrun.read_power()
+    assert first["status"] == second["status"] == "bounded"
+    assert first["digest"] == second["digest"]
+    assert first["observation_digest"] != second["observation_digest"]
+    assert first["active_source"] == "AC Power"
+
+
+def test_darwin_thermal_limits_and_frequency_fail_closed(monkeypatch):
+    monkeypatch.setattr(pairrun.sys, "platform", "darwin")
+    monkeypatch.setattr(pairrun.os, "cpu_count", lambda: 8)
+
+    def throttled(command, **_kwargs):
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            "CPU_Scheduler_Limit = 100\nCPU_Available_CPUs = 8\nCPU_Speed_Limit = 50\n",
+            "",
+        )
+
+    monkeypatch.setattr(pairrun.subprocess, "run", throttled)
+    assert pairrun.read_thermal()["status"] == "warning"
+    monkeypatch.setattr(
+        pairrun,
+        "read_sysctl",
+        lambda _keys: {
+            "hw.cpufrequency": "unavailable",
+            "hw.cpufrequency_max": "unavailable",
+        },
+    )
+    assert pairrun.read_frequency({"status": "bounded"})["status"] == "unavailable"
+
+    monkeypatch.setattr(
+        pairrun,
+        "read_sysctl",
+        lambda _keys: {"hw.cpufrequency": "2400000000", "hw.cpufrequency_max": "3200000000"},
+    )
+    assert pairrun.read_frequency()["status"] == "bounded"
 
 
 # --- G0: W0-A comparison-contract cutover (schema v3) ---
@@ -2550,6 +2780,7 @@ G0_SCHEMAS = (
     "runner.schema.json",
     "suite.schema.json",
     "pair-spec.schema.json",
+    "admission.schema.json",
     "run-manifest.schema.json",
     "verdict.schema.json",
 )
@@ -2560,7 +2791,7 @@ def _load_schema(name: str) -> dict:
 
 
 def _fake_sha(seed: str) -> str:
-    return ev.digest(f"g0-seed-{seed}".encode("utf-8"))
+    return ev.digest(f"g0-seed-{seed}".encode())
 
 
 def test_g0_schema_files_are_closed():
@@ -2569,7 +2800,7 @@ def test_g0_schema_files_are_closed():
         schema = _load_schema(name)
         open_nodes = []
 
-        def walk(node, path="$"):
+        def walk(node, path="$", open_nodes=open_nodes):
             if isinstance(node, dict):
                 if node.get("type") == "object":
                     guard = node.get("additionalProperties")
@@ -3063,6 +3294,18 @@ def test_v3_pair_spec_schema():
     invalid(lambda s: s.update(semble_lockfile=""))
     invalid(lambda s: s.update(cache_regime="lukewarm"))
 
+    qualified = _g0_spec()
+    qualified["scope"] = "qualified"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(qualified, schema)
+    qualified["admission"] = {
+        "manifest": "/tmp/admission.json",
+        "license_receipt": "/tmp/license.json",
+        "annotation_receipts": ["/tmp/a.json", "/tmp/b.json"],
+        "adjudication_receipt": "/tmp/adjudication.json",
+    }
+    jsonschema.validate(qualified, schema)
+
 
 def test_v3_spec_accepts_lockfile_path(tmp_path):
     spec_path = tmp_path / "spec.json"
@@ -3139,6 +3382,7 @@ def _g0_manifest() -> dict:
             "latency_matrix": "latency-matrix.json",
             "host_start": "host-start.json",
             "host_end": "host-end.json",
+            "host_profile": "host-profile.json",
             "records": ["lex.json", "sem.json"],
             "reports": [],
             "quanta_manifests": [],
@@ -3157,7 +3401,9 @@ def _g0_manifest() -> dict:
             "corpus": {"digest": _fake_sha("c"), "path_sha_diff_digest": _fake_sha("d")},
             "suite": {"suite_digest": _fake_sha("s"), "query_pack_digest": _fake_sha("p"),
                       "tokenizer_budget_version": "qb-v1"},
-            "host": {"profile": "test-host", "check_record_digest": _fake_sha("h")},
+            "host": {"profile_digest": _fake_sha("hp"),
+                     "check_record_digest": _fake_sha("h")},
+            "admission": {"manifest_digest": None},
         },
     }
 
@@ -3204,7 +3450,9 @@ def _g0_verdict() -> dict:
             "corpus": {"digest": _fake_sha("c"), "path_sha_diff_digest": _fake_sha("d")},
             "suite": {"suite_digest": _fake_sha("s"), "query_pack_digest": _fake_sha("p"),
                       "tokenizer_budget_version": "qb-v1"},
-            "host": {"profile": "test-host", "check_record_digest": _fake_sha("h")},
+            "host": {"profile_digest": _fake_sha("hp"),
+                     "check_record_digest": _fake_sha("h")},
+            "admission": {"manifest_digest": None},
         },
         "counts": {"selected": 0, "executed": 0, "passed": 0, "failed": 0},
         "comparisons": [
@@ -3289,17 +3537,17 @@ def test_v3_byte_span_verification(tmp_path):
         ev.validate_suite(repo, mutated_suite)
 
     # A byte span cutting a UTF-8 boundary is refused, not decoded lossily.
-    repo2, commit2 = _write_repo(tmp_path / "uni", {"u.txt": "aé\nb\n".encode("utf-8")})
+    repo2, commit2 = _write_repo(tmp_path / "uni", {"u.txt": "aé\nb\n".encode()})
     source = ev.SourceSnapshot(repo2, commit2)
     bad = {
         "path": "u.txt", "start_byte": 0, "end_byte": 2, "start_line": 1,
-        "end_line": 1, "file_sha256": ev.digest("aé\nb\n".encode("utf-8")),
+        "end_line": 1, "file_sha256": ev.digest("aé\nb\n".encode()),
         "block_sha256": "0" * 64, "tokens": 1,
     }
     with pytest.raises(ev.EvidenceError, match="cuts a UTF-8 boundary"):
         ev.block(source, bad, "probe", candidate=True, byte_spans=True)
     good = dict(bad, end_byte=4,
-                block_sha256=ev.digest("aé\n".encode("utf-8")), tokens=2)
+                block_sha256=ev.digest("aé\n".encode()), tokens=2)
     assert ev.block(source, good, "probe", candidate=True, byte_spans=True)["tokens"] == 2
 
 

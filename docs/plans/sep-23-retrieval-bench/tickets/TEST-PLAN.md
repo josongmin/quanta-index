@@ -8,15 +8,16 @@ Latest implementation verification re-froze shared `main` at `474422f71d9f1dde9b
 
 | Surface | Current evidence | Authority limit |
 | --- | --- | --- |
-| Python/Rust contract | Python receipt/verdict/source-closure/isolation/failure-artifact contracts: 155/155 passed. `retrieval-contract-proof <fresh-out>` captures the source closure before execution, derives summaries from JUnit/nextest, and re-verifies the closure before immutable v2 receipt emission. | No receipt was issued from the dirty working tree; fixtures are not a real pair. |
-| Rust SDK path | Explicit-pinned retrieval package nextest: 62/62 passed, including actual runner binary, separate daemon, live publish/activate/query, missing model, provider unavailable, stale CAS, timeout, terminated-daemon paths and isolated-record proof-shape refusal. | No final source-closure receipt exists for this working tree. |
+| Python/Rust contract | Python receipt/verdict/source-closure/isolation/failure-artifact contracts: 157/157 passed on the current dirty implementation tree. `retrieval-contract-proof <fresh-out>` captures the source closure before execution, derives summaries from raw JUnit/nextest, and re-verifies the closure before immutable v2 receipt emission. | No receipt was issued from the dirty working tree; fixtures are not a real pair. |
+| Rust SDK path | Current retrieval inventory: 63/63 passed in split execution (49 lib/chunking, 12 explicit-searchd-pinned SDK, 2 binary contracts), including actual runner binary, separate daemon, live publish/activate/query, missing model, provider unavailable, stale CAS, timeout, terminated-daemon paths and isolated-record proof-shape refusal. | No final source-closure receipt exists for this working tree. |
 | Test registration | Both Rust integration targets are catalogued. The registered SDK proof builds and exports an exact searchd pin. | Full post-change workspace nextest is not yet recorded. A package-only invocation without the recipe pin correctly fails closed. |
 | Static policy | Semgrep: 0 findings. Derive allowlist: pass across `crates/` and `benchmarks/`; strict manual manifest decoders reject duplicate fields. | Policy GREEN is implementation evidence, not benchmark qualification. |
 
 Current hard frontiers in code:
 
-- The macOS pair driver now supports enforced `blinding=isolated`: the suite must live outside the readable repository under `suite_secret_root`; Seatbelt denies that root and the frozen evaluator-only copy while permitting the blind pack; the proof, profile, records and process-resource artifacts are digest-bound and independently rechecked by the verdict. No non-macOS backend or real isolated pair receipt exists.
-- The previous performance frontier is implemented: Quanta and Semble emit digest-bound monotonic phase fragments; the driver records owned process-tree peak RSS and timeout/exit/sample completeness; the verdict rebinds phase records and refuses forged/partial resource evidence. Qualification still requires a real quiet-host pair meeting observation/root floors.
+- The macOS pair driver now supports enforced `blinding=isolated`: the suite roots and the entire original checkout are denied, while both runners receive only a Git-free exact materialization of the admitted path/SHA universe. The proof, materialized corpus, records and process-resource artifacts are digest-bound and independently rechecked by the verdict. No non-macOS backend or real isolated pair receipt exists.
+- The performance frontier is schema-closed: Quanta and Semble emit discovery/model/index-or-chunk/publish/first-query/warm-query phase fragments; the driver records aggregate and per-process RSS/CPU plus owned index/model/parser/embedding-cache bytes and file/chunk counts. A frozen host-profile artifact must match both probes. Qualification still requires a real quiet-host pair meeting observation/root floors.
+- Contract/SDK receipt summaries are not standalone evidence. Receipt v2 binds role-tagged raw JUnit/nextest/runner artifacts and the verdict reparses those frozen inputs under the canonical producer before accepting `CONTRACT_GREEN` or `SDK_PATH_GREEN`.
 - No committed/frozen W0-B pilot suite, real Semble pair, paired `run-manifest.json`, or terminal `verdict.json` was found.
 - T15 and T16 are correctly conditional, but no real model-parity or incremental evidence artifact has been issued.
 - The CI authority catalog assigns `sdk_roundtrip.rs` to generic workspace nextest. Its daemon prerequisite is handled by `cargow`; the full rail must be rerun after this working tree is committed and frozen.
@@ -144,7 +145,7 @@ Every paired run emits exactly one `verdict.json` under the external output root
     "semble": {"revision": "0.6.0", "lockfile_digest": "hex"},
     "corpus": {"digest": "hex", "path_sha_diff_digest": "hex"},
     "suite": {"suite_digest": "hex", "query_pack_digest": "hex", "tokenizer_budget_version": "qb-v1"},
-    "host": {"profile": "string", "check_record_digest": "hex"}
+    "host": {"profile_digest": "hex", "check_record_digest": "hex"}
   },
   "counts": {"selected": 0, "executed": 0, "passed": 0, "failed": 0},
   "comparisons": [

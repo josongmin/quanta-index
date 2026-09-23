@@ -719,7 +719,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     let overall_elapsed = overall.elapsed();
     let phase_sum = discovery_elapsed
         .checked_add(chunk_elapsed)
-        .checked_add(boot_elapsed)
+        .and_then(|value| value.checked_add(boot_elapsed))
         .and_then(|value| value.checked_add(publish_elapsed))
         .and_then(|value| value.checked_add(first_query_elapsed))
         .and_then(|value| value.checked_add(warm_query_elapsed))

@@ -270,7 +270,7 @@ fn missing_pinned_model_fails_boot_without_a_scored_record() {
         .expect("missing pinned model must fail before capture");
     assert!(matches!(err, BenchError::Daemon(_)), "{err}");
     assert!(
-        err.to_string().contains("exited before opening sockets"),
+        err.to_string().contains("model directory does not exist"),
         "{err}"
     );
     assert!(started.elapsed() < Duration::from_secs(20));

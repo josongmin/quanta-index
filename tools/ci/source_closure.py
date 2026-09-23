@@ -10,7 +10,6 @@ import os
 import subprocess
 from pathlib import Path
 
-
 SCHEMA_VERSION = 1
 PROFILES = {
     "retrieval": {

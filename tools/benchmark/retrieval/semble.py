@@ -57,29 +57,35 @@ SEMBLE_PINNED_VERSION = "0.6.0"
 WORKER_TEMPLATE = '''"""Spawned Semble worker (pinned env only). Reads SPEC_JSON, writes NATIVE_JSON."""
 import json
 import os
+import resource
 import sys
 import time
 
 def main() -> int:
-    worker_started = time.monotonic()
-    discovery_started = time.monotonic()
+    worker_started_ns = time.monotonic_ns()
     spec_path = os.environ["SPEC_JSON"]
     out_path = os.environ["NATIVE_JSON"]
     with open(spec_path, encoding="utf-8") as handle:
         spec = json.load(handle)
-    discovery_ms = (time.monotonic() - discovery_started) * 1000.0
-    model_prepare_started = time.monotonic()
+    discovery_end_ns = time.monotonic_ns()
     from semble import SembleIndex
-    model_provider_prepare_ms = (time.monotonic() - model_prepare_started) * 1000.0
+    model_prepare_end_ns = time.monotonic_ns()
 
-    t0 = time.monotonic()
+    rss_unit = 1 if sys.platform == "darwin" else 1024
+    rss_before_index = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) * rss_unit
     index = SembleIndex.from_path(spec["corpus_dir"], show_progress_bar=False)
-    index_ms = (time.monotonic() - t0) * 1000.0
+    index_end_ns = time.monotonic_ns()
+    rss_after_index = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) * rss_unit
+    index_resident_bytes = max(rss_after_index - rss_before_index, 0)
+    if index_resident_bytes == 0:
+        raise SystemExit("worker could not attribute positive resident bytes to the index")
     observed = sorted({chunk.file_path for chunk in index.chunks})
     stats = {
         "indexed_files": int(index.stats.indexed_files),
         "total_chunks": int(index.stats.total_chunks),
         "languages": {str(k): int(v) for k, v in dict(index.stats.languages).items()},
+        "index_resident_bytes": index_resident_bytes,
+        "index_measurement": "process_peak_rss_delta_v1",
     }
     queries = [(task["task_id"], task["query"]) for task in spec["tasks"]]
     if len({task_id for task_id, _ in queries}) != len(queries):
@@ -91,25 +97,29 @@ def main() -> int:
     import random
 
     order = list(range(len(queries)))
-    warmup_started = time.monotonic()
     for _ in range(warmup):
         for task_id, query in queries:
             index.search(query, top_k=top_k)
-    warmup_ms = (time.monotonic() - warmup_started) * 1000.0
+    warmup_end_ns = time.monotonic_ns()
     native = []
     latencies = {}
-    query_started = time.monotonic()
+    query_started_ns = time.monotonic_ns()
     first_query_ms = None
+    first_query_start_ns = None
+    first_query_end_ns = None
     for rep in range(repetitions):
         rng = random.Random(seed + rep)
         rng.shuffle(order)
         for position in order:
             task_id, query = queries[position]
-            t0 = time.monotonic()
+            t0 = time.monotonic_ns()
             results = index.search(query, top_k=top_k)
-            elapsed_ms = (time.monotonic() - t0) * 1000.0
+            ended_ns = time.monotonic_ns()
+            elapsed_ms = (ended_ns - t0) / 1_000_000.0
             if first_query_ms is None:
                 first_query_ms = elapsed_ms
+                first_query_start_ns = t0
+                first_query_end_ns = ended_ns
             latencies.setdefault(task_id, []).append(elapsed_ms)
             if rep == 0:
                 native.append(
@@ -126,20 +136,39 @@ def main() -> int:
                         ],
                     }
                 )
-    query_ms = (time.monotonic() - query_started) * 1000.0
+    query_end_ns = time.monotonic_ns()
     first_query_ms = first_query_ms or 0.0
+    if first_query_start_ns is None or first_query_end_ns is None:
+        raise SystemExit("worker did not execute a first measured query")
     emitted = sorted(row["task_id"] for row in native)
     expected = sorted(task_id for task_id, _ in queries)
     if emitted != expected:
         raise SystemExit("worker output task set differs from the spec task set")
+    worker_end_ns = time.monotonic_ns()
+    query_ms = (query_end_ns - query_started_ns) / 1_000_000.0
+    phase_boundaries_ns = {
+        "worker_start": worker_started_ns,
+        "discovery_end": discovery_end_ns,
+        "model_provider_prepare_end": model_prepare_end_ns,
+        "index_end": index_end_ns,
+        "warmup_end": warmup_end_ns,
+        "query_start": query_started_ns,
+        "first_query_start": first_query_start_ns,
+        "first_query_end": first_query_end_ns,
+        "query_end": query_end_ns,
+        "worker_end": worker_end_ns,
+    }
     payload = {
-        "semble_index_ms": index_ms,
-        "discovery_ms": discovery_ms,
-        "model_provider_prepare_ms": model_provider_prepare_ms,
-        "warmup_ms": warmup_ms,
+        "semble_index_ms": (index_end_ns - model_prepare_end_ns) / 1_000_000.0,
+        "discovery_ms": (discovery_end_ns - worker_started_ns) / 1_000_000.0,
+        "model_provider_prepare_ms": (
+            model_prepare_end_ns - discovery_end_ns
+        ) / 1_000_000.0,
+        "warmup_ms": (warmup_end_ns - index_end_ns) / 1_000_000.0,
         "first_query_ms": first_query_ms,
         "warm_query_ms": max(query_ms - first_query_ms, 0.0),
-        "worker_total_ms": (time.monotonic() - worker_started) * 1000.0,
+        "worker_total_ms": (worker_end_ns - worker_started_ns) / 1_000_000.0,
+        "phase_boundaries_ns": phase_boundaries_ns,
         "configured_model_name": os.environ["SEMBLE_MODEL_NAME"],
         "observed_files": observed,
         "stats": stats,
@@ -917,6 +946,9 @@ def run_adapter(args: argparse.Namespace) -> int:
     if type(worker_total_ms) not in (int, float) or worker_total_ms < sum(phase_values.values()):
         raise AdapterError("Semble worker total timing is inconsistent with phases")
     phase_values["unattributed"] = worker_total_ms - sum(phase_values.values())
+    phase_boundaries_ns = native_payload.get("phase_boundaries_ns")
+    if not isinstance(phase_boundaries_ns, dict):
+        raise AdapterError("Semble worker omitted monotonic phase boundaries")
     phase_metrics = {
         "schema_version": 1,
         "system": "semble",
@@ -929,6 +961,7 @@ def run_adapter(args: argparse.Namespace) -> int:
         "file_count": native_payload.get("stats", {}).get("indexed_files"),
         "chunk_count": native_payload.get("stats", {}).get("total_chunks"),
         "phases_ms": phase_values,
+        "phase_boundaries_ns": phase_boundaries_ns,
         "total_ms": worker_total_ms,
     }
     (out_root / "phase-metrics.json").write_text(

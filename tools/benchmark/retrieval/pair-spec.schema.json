@@ -53,12 +53,27 @@
     "semble_lockfile_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "semble_cache_root": {"type": "string", "minLength": 1},
     "semble_model_revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "quanta_model_dir": {"type": "string", "minLength": 1},
     "semble_repetitions": {"type": "integer", "minimum": 1},
     "baseline_route": {"type": "string", "minLength": 1},
     "candidate_route": {"type": "string", "minLength": 1},
     "host_profile": {
       "type": "string", "minLength": 1,
-      "description": "Canonical quiet-host profile name. Optional in the schema; run_pair refuses a pair spec without it."
+      "description": "Path to a canonical host-profile JSON artifact. Optional in the schema; run_pair refuses a pair spec without it."
+    },
+    "admission": {
+      "type": "object", "additionalProperties": false,
+      "description": "Required when scope=qualified. Paths to the W0-B authority manifest and the independently produced evidence bytes it binds.",
+      "required": ["manifest", "license_receipt", "annotation_receipts", "adjudication_receipt"],
+      "properties": {
+        "manifest": {"type": "string", "minLength": 1},
+        "license_receipt": {"type": "string", "minLength": 1},
+        "annotation_receipts": {
+          "type": "array", "minItems": 2, "maxItems": 2,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "adjudication_receipt": {"type": "string", "minLength": 1}
+      }
     },
     "claims": {"$ref": "#/$defs/claims"},
     "receipts": {
@@ -84,6 +99,12 @@
       "description": "Operator-declared contention acknowledgement. Recorded in the host artifacts; any speed claim with contention or override is diagnostic-only."
     }
   },
+  "allOf": [
+    {
+      "if": {"properties": {"scope": {"const": "qualified"}}, "required": ["scope"]},
+      "then": {"required": ["admission"]}
+    }
+  ],
   "$defs": {
     "strategy": {
       "type": "object", "additionalProperties": false,

@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://quanta-index.invalid/benchmark/retrieval/admission-v1",
+  "title": "Retrieval qualification admission v1",
+  "description": "W0-B authority packet. This manifest binds independently reviewed license and gold receipts to the exact corpus, suite, models, verification receipts, host profile, cache regime, and source revision admitted before a qualified capture.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "admission_id",
+    "issued_at",
+    "source_revision",
+    "repository_commit",
+    "corpus_manifest_sha256",
+    "suite_sha256",
+    "query_pack_sha256",
+    "license",
+    "gold",
+    "models",
+    "semble_lockfile_sha256",
+    "host_profile_sha256",
+    "cache_regime",
+    "verification"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "admission_id": {"type": "string", "minLength": 1},
+    "issued_at": {"type": "string", "minLength": 1},
+    "source_revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "repository_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "corpus_manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "suite_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "query_pack_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "license": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reviewer_id", "decision", "receipt_sha256"],
+      "properties": {
+        "reviewer_id": {"type": "string", "minLength": 1},
+        "decision": {"const": "approved"},
+        "receipt_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "gold": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["frozen_before_results", "annotators", "adjudicator_id", "adjudication_receipt_sha256"],
+      "properties": {
+        "frozen_before_results": {"const": true},
+        "annotators": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["annotator_id", "receipt_sha256"],
+            "properties": {
+              "annotator_id": {"type": "string", "minLength": 1},
+              "receipt_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+            }
+          }
+        },
+        "adjudicator_id": {"type": "string", "minLength": 1},
+        "adjudication_receipt_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "models": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["quanta_model_revision", "semble_model_revision", "semble_model_asset_sha256"],
+      "properties": {
+        "quanta_model_revision": {"type": "string", "minLength": 1},
+        "semble_model_revision": {"type": "string", "minLength": 1},
+        "semble_model_asset_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "semble_lockfile_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "host_profile_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "cache_regime": {"enum": ["true_process_cold", "warm_cache"]},
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_python_receipt_sha256", "contract_rust_receipt_sha256", "sdk_receipt_sha256"],
+      "properties": {
+        "contract_python_receipt_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "contract_rust_receipt_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "sdk_receipt_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  }
+}

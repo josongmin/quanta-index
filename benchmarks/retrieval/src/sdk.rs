@@ -242,6 +242,14 @@ impl DaemonSession {
                 "embedder profile must not be empty".to_string(),
             ));
         }
+        if let Some(model_dir) = config.model_dir {
+            if !model_dir.is_dir() {
+                return Err(BenchError::Daemon(format!(
+                    "explicit model directory does not exist or is not a directory: {}",
+                    model_dir.display()
+                )));
+            }
+        }
         if std::fs::symlink_metadata(config.state_root)
             .is_ok_and(|metadata| metadata.file_type().is_symlink())
         {

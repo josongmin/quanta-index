@@ -420,7 +420,64 @@ pub fn verify_checkout(repo_root: &Path, manifest: &Manifest) -> BenchResult<()>
     Ok(())
 }
 
+fn collect_materialized_files(
+    root: &Path,
+    current: &Path,
+    files: &mut BTreeMap<String, String>,
+) -> BenchResult<()> {
+    let entries = std::fs::read_dir(current).map_err(|err| BenchError::Io {
+        path: current.display().to_string(),
+        message: err.to_string(),
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|err| BenchError::Io {
+            path: current.display().to_string(),
+            message: err.to_string(),
+        })?;
+        let path = entry.path();
+        let metadata = std::fs::symlink_metadata(&path).map_err(|err| BenchError::Io {
+            path: path.display().to_string(),
+            message: err.to_string(),
+        })?;
+        if metadata.file_type().is_symlink() {
+            return Err(BenchError::Manifest(format!(
+                "materialized corpus contains a symlink: {}",
+                path.display()
+            )));
+        }
+        if metadata.is_dir() {
+            collect_materialized_files(root, &path, files)?;
+        } else if metadata.is_file() {
+            let relative = path.strip_prefix(root).map_err(|err| {
+                BenchError::Manifest(format!("materialized path escapes root: {err}"))
+            })?;
+            let name = relative.to_str().ok_or_else(|| {
+                BenchError::Manifest("materialized corpus path is not UTF-8".to_string())
+            })?;
+            let bytes = std::fs::read(&path).map_err(|err| BenchError::Io {
+                path: path.display().to_string(),
+                message: err.to_string(),
+            })?;
+            if files
+                .insert(name.replace('\\', "/"), sha256_hex(&bytes))
+                .is_some()
+            {
+                return Err(BenchError::Manifest(
+                    "materialized corpus contains a duplicate path".to_string(),
+                ));
+            }
+        } else {
+            return Err(BenchError::Manifest(format!(
+                "materialized corpus contains a non-regular entry: {}",
+                path.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Prove a Git-free runner view contains exactly the manifest-admitted files.
+///
 /// This is the isolated-capture counterpart to [`verify_checkout`]: the
 /// original checkout is denied by the OS sandbox, so no Git metadata is made
 /// visible to the benchmark process.
@@ -435,57 +492,8 @@ pub fn verify_materialized_corpus(repo_root: &Path, manifest: &Manifest) -> Benc
         ));
     }
 
-    fn collect(
-        root: &Path,
-        current: &Path,
-        files: &mut BTreeMap<String, String>,
-    ) -> BenchResult<()> {
-        let entries = std::fs::read_dir(current).map_err(|err| BenchError::Io {
-            path: current.display().to_string(),
-            message: err.to_string(),
-        })?;
-        for entry in entries {
-            let entry = entry.map_err(|err| BenchError::Io {
-                path: current.display().to_string(),
-                message: err.to_string(),
-            })?;
-            let path = entry.path();
-            let metadata = std::fs::symlink_metadata(&path).map_err(|err| BenchError::Io {
-                path: path.display().to_string(),
-                message: err.to_string(),
-            })?;
-            if metadata.file_type().is_symlink() {
-                return Err(BenchError::Manifest(format!(
-                    "materialized corpus contains a symlink: {}",
-                    path.display()
-                )));
-            }
-            if metadata.is_dir() {
-                collect(root, &path, files)?;
-            } else if metadata.is_file() {
-                let relative = path.strip_prefix(root).map_err(|err| {
-                    BenchError::Manifest(format!("materialized path escapes root: {err}"))
-                })?;
-                let name = relative.to_str().ok_or_else(|| {
-                    BenchError::Manifest("materialized corpus path is not UTF-8".to_string())
-                })?;
-                let bytes = std::fs::read(&path).map_err(|err| BenchError::Io {
-                    path: path.display().to_string(),
-                    message: err.to_string(),
-                })?;
-                files.insert(name.replace('\\', "/"), sha256_hex(&bytes));
-            } else {
-                return Err(BenchError::Manifest(format!(
-                    "materialized corpus contains a non-regular entry: {}",
-                    path.display()
-                )));
-            }
-        }
-        Ok(())
-    }
-
     let mut observed = BTreeMap::new();
-    collect(&root, &root, &mut observed)?;
+    collect_materialized_files(&root, &root, &mut observed)?;
     let expected: BTreeMap<String, String> = manifest
         .files
         .iter()
@@ -683,6 +691,26 @@ mod tests {
             },
         ];
         assert_eq!(universe_digest(&left), universe_digest(&right));
+    }
+
+    #[test]
+    fn materialized_corpus_requires_exact_files_and_no_git_metadata() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let data = b"fn admitted() {}\n";
+        std::fs::write(dir.path().join("a.rs"), data).expect("write admitted file");
+        let manifest = Manifest {
+            repository_commit: "a".repeat(40),
+            files: vec![ManifestFile {
+                path: "a.rs".to_string(),
+                file_sha256: sha256_hex(data),
+            }],
+        };
+        assert!(verify_materialized_corpus(dir.path(), &manifest).is_ok());
+        std::fs::write(dir.path().join("gold.json"), b"secret").expect("write extra file");
+        assert!(verify_materialized_corpus(dir.path(), &manifest).is_err());
+        std::fs::remove_file(dir.path().join("gold.json")).expect("remove extra file");
+        std::fs::create_dir(dir.path().join(".git")).expect("create git marker");
+        assert!(verify_materialized_corpus(dir.path(), &manifest).is_err());
     }
 
     #[test]
