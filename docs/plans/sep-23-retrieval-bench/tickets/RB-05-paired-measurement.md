@@ -1,6 +1,6 @@
 # RB-05 — Paired Quality, Speed and Resource Measurement
 
-Status: `orchestration-landed / measurement-and-perf-blocked`
+Status: `orchestration-and-perf-authority-landed / measurement-blocked`
 
 Depends on: RB-01, RB-02, RB-03, RB-04; requires RB-00 stage B measurement-entry gate
 
@@ -8,9 +8,9 @@ Owner: orchestration/reporting, not product ranking
 
 ## Current code status (2026-09-23)
 
-`run.py` implements immutable input/receipt staging, sequential and alternating Quanta/Semble repetitions, record merge, manifest construction, latency-matrix re-derivation, deterministic report validation and the five-state verdict machine. Provenance and tamper mutants are covered by focused tests.
+`run.py` implements immutable input/receipt staging, sequential and alternating Quanta/Semble repetitions, record merge, manifest construction, latency-matrix re-derivation, deterministic report validation and the five-state verdict machine. Provenance and tamper mutants are covered by focused tests. Quanta now emits chunk/boot/publish/query/unattributed phase artifacts; Semble emits index/warmup/query/unattributed worker artifacts. The driver samples the owned process tree, including daemon/worker descendants, records peak RSS/exit/timeout/sample completeness, and binds every metrics artifact by SHA to its raw capture. The verdict independently validates phase sums, record bindings, metric counts and resource completeness before `PERF_QUALIFIED` can pass. For isolated quality on macOS, the suite must be outside the readable repository under `suite_secret_root`; Seatbelt denies that root and the frozen evaluator-only suite to both process trees. The driver freezes an allow/deny probe and the verdict rebinds the policy, proof, resources and runner records before `QUALITY_DELTA` can pass.
 
-No real pair has run. More importantly, speed qualification is deliberately unreachable in current code: the generated evidence sets `phase_boundaries=false`, no runner emits verified phase fragments or owned-process-tree peak RSS, and `build_verdict` terminally returns `phases_unimplemented` after all other speed checks. Quanta capture is also attested-only, so an isolated `QUALITY_DELTA` requires a new enforced runner boundary rather than a spec label.
+No real pair has run, so neither the performance authority nor the isolation authority has issued a qualified receipt. Attested capture remains available for diagnostics; an isolated claim fails closed without the versioned Seatbelt proof. A non-macOS isolation backend is not implemented.
 
 ## Goal
 

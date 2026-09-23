@@ -10,6 +10,8 @@ import os
 import subprocess
 from pathlib import Path
 
+from source_closure import ClosureError, load_and_verify
+
 
 def _revision() -> str:
     status = subprocess.check_output(
@@ -136,6 +138,28 @@ def _summary_json_evidence_summary(evidence: Path) -> tuple[str, int]:
     return hashlib.sha256(raw).hexdigest(), executed
 
 
+def _input_evidence(values: list[str]) -> list[dict[str, str]]:
+    inputs: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for value in values:
+        role, separator, raw_path = value.partition("=")
+        if not separator or not role or not raw_path:
+            raise SystemExit("--input-evidence must use ROLE=PATH")
+        if role in seen:
+            raise SystemExit(f"duplicate input evidence role: {role}")
+        if any(character not in "abcdefghijklmnopqrstuvwxyz0123456789-_" for character in role):
+            raise SystemExit(f"invalid input evidence role: {role}")
+        path = Path(raw_path).resolve()
+        if not path.is_file():
+            raise SystemExit(f"missing input evidence: {path}")
+        inputs.append({
+            "role": role,
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        })
+        seen.add(role)
+    return sorted(inputs, key=lambda entry: entry["role"])
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rail", required=True)
@@ -150,17 +174,42 @@ def main() -> int:
     )
     parser.add_argument("--evidence", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
+    parser.add_argument(
+        "--source-closure",
+        type=Path,
+        help="verified source_closure.py manifest; emits a retrieval-authoritative v2 receipt",
+    )
+    parser.add_argument(
+        "--input-evidence",
+        action="append",
+        default=[],
+        metavar="ROLE=PATH",
+        help="raw machine evidence consumed by the summary producer; repeat per input",
+    )
     args = parser.parse_args()
     evidence = args.evidence.resolve()
     if not evidence.is_file():
         raise SystemExit(f"missing test evidence: {evidence}")
-    revision = _revision()
+    source_closure = None
+    if args.source_closure is None:
+        if args.input_evidence:
+            raise SystemExit("--input-evidence requires --source-closure and receipt schema v2")
+        revision = _revision()
+    else:
+        try:
+            source_closure = load_and_verify(args.source_closure.resolve())
+        except ClosureError as error:
+            raise SystemExit(f"invalid source closure: {error}") from error
+        revision = source_closure["revision"]
+    input_evidence = _input_evidence(args.input_evidence)
+    if source_closure is not None and not input_evidence:
+        raise SystemExit("retrieval-authoritative receipt v2 requires raw --input-evidence")
     if args.evidence_format == "summary-json":
         digest, test_event_count = _summary_json_evidence_summary(evidence)
     else:
         digest, test_event_count = _nextest_evidence_summary(evidence)
     receipt = {
-        "schema_version": 1,
+        "schema_version": 2 if source_closure is not None else 1,
         "revision": revision,
         "rail": args.rail,
         "tier": args.tier,
@@ -169,8 +218,17 @@ def main() -> int:
         "evidence_sha256": digest,
         "test_event_count": test_event_count,
     }
+    if source_closure is not None:
+        receipt["source_closure"] = source_closure
+        receipt["input_evidence"] = input_evidence
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps(receipt, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    try:
+        with args.out.open("x", encoding="utf-8") as stream:
+            stream.write(json.dumps(receipt, sort_keys=True, indent=2) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+    except FileExistsError as error:
+        raise SystemExit(f"refusing existing verification receipt: {args.out}") from error
     return 0
 
 

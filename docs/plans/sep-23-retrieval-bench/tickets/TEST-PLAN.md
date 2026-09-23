@@ -4,22 +4,22 @@ Status: `implemented-proof-map / qualification-open`. T00–T14 have implementat
 
 ## 0. Current execution boundary (2026-09-23)
 
-Latest implementation verification ran in a shared dirty checkout while HEAD advanced through `a73341a67754dcb1e791852691e07be8f9ab59b7`. The canonical writer now rejects dirty source, so the results below are scoped implementation evidence only. Re-freeze HEAD and source bytes before acceptance.
+Latest implementation verification re-froze shared `main` at `474422f71d9f1dde9b13e56af5995d73c7298ffb` after the daemon-log producer fix landed at `7d4994b9`. The working tree contains this retrieval patch set, so the results below are implementation evidence only. Retrieval receipts now use schema v2 and embed an exact transitive source closure; relevant dirty/add/remove/HEAD drift fails closed, while unrelated shared-checkout dirt does not invalidate an otherwise exact closure.
 
 | Surface | Current evidence | Authority limit |
 | --- | --- | --- |
-| Python/Rust contract | Current machine evidence: Python 132/132 and Rust 48/48; derived summaries have zero failures. `retrieval-contract-proof <fresh-out>` derives both summaries from JUnit/nextest and digest-binds canonical receipts. | The run was on dirty source, so no receipt was issued; fixture/mutant proof is not a real pair. |
-| Rust SDK path | `just retrieval-sdk-proof <fresh-out>`: 9 passed, 0 failed; actual final runner binary, separate daemon, real publish/activate/query, machine-derived `sdk_results.json` and digest-bound receipt. | The implementation run occurred on dirty source before the new refusal was added, so its receipt is diagnostic only. A clean-source issuance remains required. |
-| Test registration | Both Rust integration targets are catalogued under workspace nextest. `cargow` now prebuilds and explicitly exports searchd for broad Cargo test/nextest rails. | Broad reruns passed pin setup but workspace compilation currently stops in two concurrent `quanta-index-searchctl` non-exhaustive IPC matches. Frozen-source broad-rail GREEN is not yet recorded. |
+| Python/Rust contract | Python receipt/verdict/source-closure/isolation/failure-artifact contracts: 155/155 passed. `retrieval-contract-proof <fresh-out>` captures the source closure before execution, derives summaries from JUnit/nextest, and re-verifies the closure before immutable v2 receipt emission. | No receipt was issued from the dirty working tree; fixtures are not a real pair. |
+| Rust SDK path | Explicit-pinned retrieval package nextest: 62/62 passed, including actual runner binary, separate daemon, live publish/activate/query, missing model, provider unavailable, stale CAS, timeout, terminated-daemon paths and isolated-record proof-shape refusal. | No final source-closure receipt exists for this working tree. |
+| Test registration | Both Rust integration targets are catalogued. The registered SDK proof builds and exports an exact searchd pin. | Full post-change workspace nextest is not yet recorded. A package-only invocation without the recipe pin correctly fails closed. |
 | Static policy | Semgrep: 0 findings. Derive allowlist: pass across `crates/` and `benchmarks/`; strict manual manifest decoders reject duplicate fields. | Policy GREEN is implementation evidence, not benchmark qualification. |
 
 Current hard frontiers in code:
 
-- `benchmarks/retrieval/src/main.rs` and `run.py` accept only Quanta `blinding=attested`; there is no enforced isolated runner. A quality claim therefore cannot reach isolated `QUALITY_DELTA`.
-- `run.py` writes `phase_boundaries=false` and, after every other speed precondition, returns `phases_unimplemented`. `PERF_QUALIFIED` cannot pass in the current implementation.
+- The macOS pair driver now supports enforced `blinding=isolated`: the suite must live outside the readable repository under `suite_secret_root`; Seatbelt denies that root and the frozen evaluator-only copy while permitting the blind pack; the proof, profile, records and process-resource artifacts are digest-bound and independently rechecked by the verdict. No non-macOS backend or real isolated pair receipt exists.
+- The previous performance frontier is implemented: Quanta and Semble emit digest-bound monotonic phase fragments; the driver records owned process-tree peak RSS and timeout/exit/sample completeness; the verdict rebinds phase records and refuses forged/partial resource evidence. Qualification still requires a real quiet-host pair meeting observation/root floors.
 - No committed/frozen W0-B pilot suite, real Semble pair, paired `run-manifest.json`, or terminal `verdict.json` was found.
 - T15 and T16 are correctly conditional, but no real model-parity or incremental evidence artifact has been issued.
-- The CI authority catalog assigns `sdk_roundtrip.rs` to generic workspace nextest. Its daemon prerequisite is now handled by `cargow`, but the full rail must be rerun on frozen source after the concurrent workspace compilation break is resolved.
+- The CI authority catalog assigns `sdk_roundtrip.rs` to generic workspace nextest. Its daemon prerequisite is handled by `cargow`; the full rail must be rerun after this working tree is committed and frozen.
 
 ## 1. Claims and evidence classes
 

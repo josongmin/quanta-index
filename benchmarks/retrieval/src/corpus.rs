@@ -420,6 +420,85 @@ pub fn verify_checkout(repo_root: &Path, manifest: &Manifest) -> BenchResult<()>
     Ok(())
 }
 
+/// Prove a Git-free runner view contains exactly the manifest-admitted files.
+/// This is the isolated-capture counterpart to [`verify_checkout`]: the
+/// original checkout is denied by the OS sandbox, so no Git metadata is made
+/// visible to the benchmark process.
+pub fn verify_materialized_corpus(repo_root: &Path, manifest: &Manifest) -> BenchResult<()> {
+    let root = std::fs::canonicalize(repo_root).map_err(|err| BenchError::Io {
+        path: repo_root.display().to_string(),
+        message: err.to_string(),
+    })?;
+    if root.join(".git").exists() {
+        return Err(BenchError::Manifest(
+            "materialized corpus must not expose Git metadata".to_string(),
+        ));
+    }
+
+    fn collect(
+        root: &Path,
+        current: &Path,
+        files: &mut BTreeMap<String, String>,
+    ) -> BenchResult<()> {
+        let entries = std::fs::read_dir(current).map_err(|err| BenchError::Io {
+            path: current.display().to_string(),
+            message: err.to_string(),
+        })?;
+        for entry in entries {
+            let entry = entry.map_err(|err| BenchError::Io {
+                path: current.display().to_string(),
+                message: err.to_string(),
+            })?;
+            let path = entry.path();
+            let metadata = std::fs::symlink_metadata(&path).map_err(|err| BenchError::Io {
+                path: path.display().to_string(),
+                message: err.to_string(),
+            })?;
+            if metadata.file_type().is_symlink() {
+                return Err(BenchError::Manifest(format!(
+                    "materialized corpus contains a symlink: {}",
+                    path.display()
+                )));
+            }
+            if metadata.is_dir() {
+                collect(root, &path, files)?;
+            } else if metadata.is_file() {
+                let relative = path.strip_prefix(root).map_err(|err| {
+                    BenchError::Manifest(format!("materialized path escapes root: {err}"))
+                })?;
+                let name = relative.to_str().ok_or_else(|| {
+                    BenchError::Manifest("materialized corpus path is not UTF-8".to_string())
+                })?;
+                let bytes = std::fs::read(&path).map_err(|err| BenchError::Io {
+                    path: path.display().to_string(),
+                    message: err.to_string(),
+                })?;
+                files.insert(name.replace('\\', "/"), sha256_hex(&bytes));
+            } else {
+                return Err(BenchError::Manifest(format!(
+                    "materialized corpus contains a non-regular entry: {}",
+                    path.display()
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    let mut observed = BTreeMap::new();
+    collect(&root, &root, &mut observed)?;
+    let expected: BTreeMap<String, String> = manifest
+        .files
+        .iter()
+        .map(|entry| (entry.path.clone(), entry.file_sha256.clone()))
+        .collect();
+    if observed != expected {
+        return Err(BenchError::Manifest(
+            "materialized corpus differs from the exact admitted universe".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Canonical digest of the admitted universe: SHA-256 over the sorted
 /// `path + NUL + file_sha256 + NUL` rows. Order-independent by construction.
 #[must_use]

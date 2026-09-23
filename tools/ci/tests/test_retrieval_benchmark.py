@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import subprocess
@@ -1024,7 +1025,7 @@ def test_semble_env_refuses_missing_lockfile(tmp_path, monkeypatch):
     interpreter = tmp_path / "python"
     interpreter.write_text("", encoding="utf-8")
 
-    def fake_run(command, **_kwargs):
+    def fake_run(command, **kwargs):
         if "-c" in command:
             return subprocess.CompletedProcess(
                 command, 0,
@@ -1045,7 +1046,7 @@ def test_semble_env_reports_lockfile_digest_and_pair_requires_pin(tmp_path, monk
     installed = ('"dist_info":"semble-0.6.0.dist-info","record_sha256":"%s",'
                  '"direct_url_sha256":null') % ("b" * 64)
 
-    def fake_run(command, **_kwargs):
+    def fake_run(command, **kwargs):
         if "-c" in command:
             return subprocess.CompletedProcess(
                 command, 0,
@@ -1224,11 +1225,15 @@ def test_run_pair_requires_lockfile_path(tmp_path):
 def test_run_semble_capture_forwards_lockfile(tmp_path, monkeypatch):
     seen = {}
 
-    def fake_run(command, **_kwargs):
+    def fake_run(command, **kwargs):
         seen["command"] = command
-        return subprocess.CompletedProcess(command, 0, "", "")
+        output_root = Path(command[command.index("--output-root") + 1])
+        output_root.mkdir(exist_ok=True)
+        (output_root / "phase-metrics.json").write_text("{}", encoding="utf-8")
+        kwargs["resource_path"].write_text("{}", encoding="utf-8")
+        return {"exit_code": 0, "timed_out": False}
 
-    monkeypatch.setattr(pairrun.subprocess, "run", fake_run)
+    monkeypatch.setattr(pairrun, "run_monitored_process", fake_run)
     spec = {"repo": "r", "manifest": "m", "top_k": 10,
             "semble_python": "/venv/bin/python",
             "semble_lockfile": "/frozen/semble-lockfile.txt",
@@ -1251,6 +1256,7 @@ def test_freeze_inputs_freezes_lockfile(tmp_path):
     stage = tmp_path / "stage"
     stage.mkdir()
     frozen = pairrun.freeze_inputs(inputs, stage)
+    assert frozen["suite"] == str(stage / "evaluator-only" / "suite.json")
     assert frozen["semble_lockfile"] == str(stage / "semble-lockfile.txt")
     assert (stage / "semble-lockfile.txt").read_bytes() == b"semble==0.6.0\n"
     stage2 = tmp_path / "stage2"
@@ -1261,15 +1267,17 @@ def test_freeze_inputs_freezes_lockfile(tmp_path):
 
 
 def test_quanta_driver_defaults_to_potion_and_binary_digest(tmp_path, monkeypatch):
-    def fake_run(command, **_kwargs):
+    def fake_run(command, **kwargs):
         assert command[command.index("--embedder") + 1] == "potion-code"
         assert command[command.index("--runner-revision") + 1] == "sha256:" + "a" * 64
         assert command[command.index("--searchd-bin") + 1] == "/unused/searchd"
         assert command[command.index("--searchd-expected-sha256") + 1] == "b" * 64
         Path(command[command.index("--out") + 1]).write_text("{}", encoding="utf-8")
-        return subprocess.CompletedProcess(command, 0, "", "")
+        Path(command[command.index("--metrics-out") + 1]).write_text("{}", encoding="utf-8")
+        kwargs["resource_path"].write_text("{}", encoding="utf-8")
+        return {"exit_code": 0, "timed_out": False, "elapsed_ms": 1.0}
 
-    monkeypatch.setattr(pairrun.subprocess, "run", fake_run)
+    monkeypatch.setattr(pairrun, "run_monitored_process", fake_run)
     spec = {
         "runner_binary": "/unused/runner",
         "repo": "/unused/repo",
@@ -1287,6 +1295,137 @@ def test_quanta_driver_defaults_to_potion_and_binary_digest(tmp_path, monkeypatc
             pairrun.run_quanta_strategy(
                 spec, {"name": legacy}, 0, tmp_path, ["lexical"],
                 tmp_path / "pack.json", "a" * 64)
+
+
+def test_quanta_driver_freezes_typed_failure_without_record(tmp_path, monkeypatch):
+    def fake_run(_command, **kwargs):
+        kwargs["stdout_path"].write_text("", encoding="utf-8")
+        kwargs["stderr_path"].write_text("provider unavailable", encoding="utf-8")
+        kwargs["resource_path"].write_text('{"exit_code":2}', encoding="utf-8")
+        return {"exit_code": 2, "timed_out": False, "elapsed_ms": 1.0}
+
+    monkeypatch.setattr(pairrun, "run_monitored_process", fake_run)
+    spec = {
+        "runner_binary": "/unused/runner",
+        "repo": "/unused/repo",
+        "manifest": "/unused/manifest.json",
+        "top_k": 10,
+        "searchd_binary": "/unused/searchd",
+        "searchd_expected_sha256": "b" * 64,
+    }
+    with pytest.raises(pairrun.RunError, match="Rust runner failed"):
+        pairrun.run_quanta_strategy(
+            spec, {"name": "whole_file"}, 0, tmp_path, ["lexical"],
+            tmp_path / "pack.json", "a" * 64,
+        )
+    failure = json.loads(
+        (tmp_path / "strategy-00-whole_file" / "failure.json").read_text(encoding="utf-8")
+    )
+    assert failure["failure_type"] == "nonzero_exit"
+    assert failure["record_emitted"] is False
+
+
+def test_process_tree_resource_sampler_counts_children_and_kills_timeout(tmp_path):
+    child_code = (
+        "import subprocess,sys,time; "
+        "subprocess.Popen([sys.executable,'-c','x=bytearray(8_000_000); time.sleep(5)']); "
+        "time.sleep(5)"
+    )
+    metrics = pairrun.run_monitored_process(
+        [sys.executable, "-c", child_code],
+        stdout_path=tmp_path / "stdout.log",
+        stderr_path=tmp_path / "stderr.log",
+        resource_path=tmp_path / "resource.json",
+        timeout_secs=1,
+        sample_interval_ms=20,
+    )
+    assert metrics["timed_out"] is True
+    assert metrics["exit_code"] != 0
+    assert metrics["complete"] is True
+    assert metrics["samples"] > 0
+    assert metrics["peak_rss_bytes"] > 8_000_000
+    assert metrics["cleanup_complete"] is True
+    assert metrics["cleanup_error"] is None
+    assert subprocess.run(
+        ["ps", "-p", str(metrics["root_pid"])], capture_output=True
+    ).returncode != 0
+
+
+@pytest.mark.skipif(
+    pairrun.platform.system() != "Darwin" or not pairrun.SANDBOX_EXEC.is_file(),
+    reason="macOS Seatbelt backend is unavailable",
+)
+def test_isolation_boundary_denies_suite_and_allows_blind_pack(tmp_path):
+    stage = tmp_path / "capture.staging"
+    evaluator = stage / "evaluator-only"
+    evaluator.mkdir(parents=True)
+    frozen_suite = evaluator / "suite.json"
+    frozen_suite.write_text('{"gold":"secret"}', encoding="utf-8")
+    pack = stage / "query-pack.json"
+    pack.write_text('{"query":"blind"}', encoding="utf-8")
+    secret_root = tmp_path / "secret"
+    secret_root.mkdir()
+    original_suite = secret_root / "suite.json"
+    original_suite.write_bytes(frozen_suite.read_bytes())
+    source_repo = tmp_path / "repo"
+    source_repo.mkdir()
+    duplicate_gold = source_repo / "duplicate-gold.json"
+    duplicate_gold.write_text('{"gold":"secret"}', encoding="utf-8")
+    repo = stage / "runner-corpus"
+    repo.mkdir()
+    admitted = repo / "a.txt"
+    admitted.write_text("admitted", encoding="utf-8")
+    manifest = stage / "corpus-manifest.json"
+    manifest.write_text(json.dumps({
+        "repository_commit": "a" * 40,
+        "files": [{"path": "a.txt", "file_sha256": pairrun.sha_file(admitted)}],
+    }), encoding="utf-8")
+    materialized = pairrun._verify_materialized_corpus(repo, manifest)
+    inputs = {}
+    for name in ("runner_binary", "searchd_binary", "semble_python",
+                 "semble_lockfile"):
+        path = tmp_path / name
+        path.write_text(name, encoding="utf-8")
+        inputs[name] = str(path)
+    spec = {
+        **inputs,
+        "repo": str(repo),
+        "manifest": str(manifest),
+        "_source_repo": str(source_repo),
+        "_materialized_corpus": materialized,
+        "suite": str(frozen_suite),
+        "query_pack": str(pack),
+        "output_root": str(tmp_path / "final"),
+        "blinding": "isolated",
+        "suite_secret_root": str(secret_root),
+    }
+    prepared = pairrun.prepare_isolation(spec, stage, original_suite)
+    assert prepared["isolation_method"] == pairrun.ISOLATION_BACKEND
+    proof_path = stage / "isolation-proof.json"
+    assert prepared["access_block_log"] == f"sha256:{pairrun.sha_file(proof_path)}"
+    denied_command, evidence = pairrun.sandbox_command(
+        prepared, ["/bin/cat", str(original_suite)]
+    )
+    denied = subprocess.run(denied_command, capture_output=True, text=True, timeout=15)
+    assert denied.returncode != 0
+    assert denied.stdout == ""
+    denied_source, _ = pairrun.sandbox_command(
+        prepared, ["/bin/cat", str(duplicate_gold)]
+    )
+    source_attempt = subprocess.run(
+        denied_source, capture_output=True, text=True, timeout=15
+    )
+    assert source_attempt.returncode != 0
+    assert source_attempt.stdout == ""
+    allowed_corpus, _ = pairrun.sandbox_command(
+        prepared, ["/bin/cat", str(admitted)]
+    )
+    admitted_attempt = subprocess.run(
+        allowed_corpus, capture_output=True, text=True, timeout=15
+    )
+    assert admitted_attempt.returncode == 0
+    assert admitted_attempt.stdout == "admitted"
+    assert evidence["proof_sha256"] == pairrun.sha_file(proof_path)
 
 
 def test_spec_evidence_content_is_removed_receipts_are_frozen(tmp_path):
@@ -1517,12 +1656,25 @@ def _counts_results(command, selected=10, executed=10, passed=10, failed=0):
             "passed": passed, "failed": failed}
 
 
-def _receipt(command, results_bytes, revision):
-    return {"schema_version": 1, "revision": revision, "rail": "retrieval-bench",
+def _receipt(command, results_bytes, revision, rail, raw_inputs):
+    closure_core = {
+        "schema_version": 1,
+        "profile": "retrieval",
+        "revision": revision,
+        "roots": ["Cargo.toml"],
+        "files": [{"path": "Cargo.toml", "sha256": _fake_sha("source")}],
+    }
+    closure = {**closure_core, "digest": ev.digest(ev.canonical(closure_core))}
+    return {"schema_version": 2, "revision": revision, "rail": rail,
             "tier": "correctness", "command": command,
             "evidence_path": "results.json",
             "evidence_sha256": ev.digest(results_bytes),
-            "test_event_count": 10}
+            "test_event_count": 10, "source_closure": closure,
+            "input_evidence": sorted(
+                ({"role": role, "sha256": ev.digest(content)}
+                 for role, content in raw_inputs.items()),
+                key=lambda entry: entry["role"],
+            )}
 
 
 def _sdk_results(command, binary_digest):
@@ -1534,6 +1686,32 @@ def _sdk_results(command, binary_digest):
             "passed": 6, "failed": 0}
 
 
+def _nextest_raw(count, *, proof=False):
+    rows = [{"type": "suite", "event": "started"}]
+    for index in range(count):
+        name = (
+            "actual_runner_binary_emits_receipt_bound_v3_record"
+            if proof and index == 0
+            else f"test-{index}"
+        )
+        rows.append({"type": "test", "event": "ok", "name": name})
+    rows.append({"type": "suite", "event": "ok", "passed": count,
+                 "failed": 0, "ignored": 0})
+    return b"".join(json.dumps(row).encode() + b"\n" for row in rows)
+
+
+def _sdk_raw_record(binary_digest):
+    return json.dumps({
+        "schema_version": 3,
+        "captures": {"capture": {
+            "runner_binary": {"digest": binary_digest},
+            "receipt_digest": _fake_sha("sealed"),
+            "activation_digest": _fake_sha("ack"),
+        }},
+        "route_provenance": {"lexical": {"capture_id": "capture"}},
+    }).encode()
+
+
 def _parity_results(command, status="pass", failed=0):
     passed = 4 - failed
     return {"command": command, "status": status, "selected": 4,
@@ -1542,7 +1720,8 @@ def _parity_results(command, status="pass", failed=0):
 
 def _full_receipts(commit, binary_digest):
     py_cmd = "python3 -m pytest tools/ci/tests/test_retrieval_benchmark.py -q"
-    rs_cmd = "./scripts/cargow test -p quanta-index-retrieval-bench --lib"
+    rs_cmd = ("./scripts/cargow nextest run -p quanta-index-retrieval-bench "
+              "--lib --test chunking_contract --all-features --locked")
     sdk_cmd = "just retrieval-sdk-proof"
     py_results = _counts_results(py_cmd, 105, 105, 105, 0)
     rs_results = _counts_results(rs_cmd, 40, 40, 40, 0)
@@ -1550,13 +1729,25 @@ def _full_receipts(commit, binary_digest):
     py_bytes = json.dumps(py_results).encode()
     rs_bytes = json.dumps(rs_results).encode()
     sdk_bytes = json.dumps(sdk_results).encode()
+    py_raw = b'<testsuite tests="105" failures="0" errors="0" skipped="0" />\n'
+    rust_raw = _nextest_raw(40)
+    sdk_nextest = _nextest_raw(6, proof=True)
+    sdk_record = _sdk_raw_record(binary_digest)
     return {
         "contract_python_results": py_bytes,
-        "contract_python_receipt": _receipt(py_cmd, py_bytes, commit[:12]),
+        "contract_python_raw": py_raw,
+        "contract_python_receipt": _receipt(
+            py_cmd, py_bytes, commit, "retrieval-contract-python", {"pytest-junit": py_raw}),
         "contract_rust_results": rs_bytes,
-        "contract_rust_receipt": _receipt(rs_cmd, rs_bytes, commit[:12]),
+        "contract_rust_raw": rust_raw,
+        "contract_rust_receipt": _receipt(
+            rs_cmd, rs_bytes, commit, "retrieval-contract-rust", {"nextest-jsonl": rust_raw}),
         "sdk_results": sdk_bytes,
-        "sdk_receipt": _receipt(sdk_cmd, sdk_bytes, commit[:12]),
+        "sdk_nextest_raw": sdk_nextest,
+        "sdk_record_raw": sdk_record,
+        "sdk_receipt": _receipt(
+            sdk_cmd, sdk_bytes, commit, "retrieval-sdk-proof",
+            {"nextest-jsonl": sdk_nextest, "runner-record": sdk_record}),
     }
 
 
@@ -1572,7 +1763,8 @@ def _pair_stage(tmp_path, *, repetitions=1, blinding="attested", scope="explorat
                 label.pop("grade", None)
     stage = work / "stage"
     stage.mkdir(parents=True)
-    suite_path = stage / "suite.json"
+    suite_path = stage / "evaluator-only" / "suite.json"
+    suite_path.parent.mkdir()
     suite_path.write_text(json.dumps(suite), encoding="utf-8")
     _suite, pack, _source = ev.validate_suite(repo, suite)
     pack_path = stage / "query-pack.json"
@@ -1583,6 +1775,63 @@ def _pair_stage(tmp_path, *, repetitions=1, blinding="attested", scope="explorat
     ]}
     corpus_path = stage / "corpus-manifest.json"
     corpus_path.write_text(json.dumps(corpus), encoding="utf-8")
+    runner_corpus = stage / "runner-corpus"
+    runner_corpus.mkdir()
+    for name in ("a.txt", "b.txt"):
+        (runner_corpus / name).write_bytes(files[name])
+    corpus_view = pairrun._verify_materialized_corpus(runner_corpus, corpus_path)
+    isolation_method = "m"
+    access_block_log = "l"
+    resource_isolation = None
+    if blinding == "isolated":
+        if not pairrun.SANDBOX_EXEC.is_file():
+            pytest.skip("macOS Seatbelt backend is unavailable")
+        secret_root = work / "evaluator-secret"
+        secret_root.mkdir()
+        denied_roots = sorted(
+            {str(secret_root.resolve()), str(suite_path.parent.resolve()), str(repo.resolve())}
+        )
+        profile = pairrun._seatbelt_profile(denied_roots)
+        proof = {
+            "schema_version": 1,
+            "backend": pairrun.ISOLATION_BACKEND,
+            "sandbox_exec": {
+                "path": str(pairrun.SANDBOX_EXEC),
+                "sha256": pairrun.sha_file(pairrun.SANDBOX_EXEC),
+            },
+            "profile_sha256": hashlib.sha256(profile.encode()).hexdigest(),
+            "denied_roots": denied_roots,
+            "suite": {
+                "path": "evaluator-only/suite.json",
+                "capture_path": str(suite_path.resolve()),
+                "sha256": pairrun.sha_file(suite_path),
+            },
+            "query_pack": {
+                "path": "query-pack.json",
+                "capture_path": str(pack_path.resolve()),
+                "sha256": pairrun.sha_file(pack_path),
+            },
+            "corpus_view": {
+                "path": "runner-corpus",
+                "manifest_sha256": corpus_view["manifest_sha256"],
+                "proof_sha256": corpus_view["proof_sha256"],
+                "file_count": len(corpus_view["files"]),
+            },
+            "probes": {
+                "suite_read_denied": True,
+                "query_pack_read_allowed": True,
+            },
+        }
+        proof_path = stage / "isolation-proof.json"
+        proof_path.write_text(json.dumps(proof), encoding="utf-8")
+        proof_sha = pairrun.sha_file(proof_path)
+        isolation_method = pairrun.ISOLATION_BACKEND
+        access_block_log = f"sha256:{proof_sha}"
+        resource_isolation = {
+            "backend": pairrun.ISOLATION_BACKEND,
+            "profile_sha256": proof["profile_sha256"],
+            "proof_sha256": proof_sha,
+        }
     corpus_dir = work / "corpus"
     corpus_dir.mkdir(parents=True)
     for name in ("a.txt", "b.txt"):
@@ -1615,7 +1864,8 @@ def _pair_stage(tmp_path, *, repetitions=1, blinding="attested", scope="explorat
                 "tokenizer": ev.TOKENIZER,
                 "tokenizer_budget_version": ev.TOKENIZER_BUDGET_VERSION,
                 "gold_access": False, "blinding": blinding,
-                "isolation_method": "m", "access_block_log": "l",
+                "isolation_method": isolation_method,
+                "access_block_log": access_block_log,
             },
             "captures": {capture_id: capture},
             "route_provenance": {route_rows[0]["route"]: {"capture_id": capture_id}},
@@ -1635,6 +1885,59 @@ def _pair_stage(tmp_path, *, repetitions=1, blinding="attested", scope="explorat
         spath = sdir / "record.json"
         qpath.write_text(json.dumps(qrec), encoding="utf-8")
         spath.write_text(json.dumps(srec), encoding="utf-8")
+        qphase = qdir / "phase-metrics.json"
+        qphase.write_text(json.dumps({
+            "schema_version": 1, "system": "quanta",
+            "timing_layer": "runner_monotonic_wall_v1", "strategy": "whole_file",
+            "record_sha256": ev.digest(qpath.read_bytes()),
+            "runner_binary_sha256": binary_digest, "task_count": 2, "route_count": 1,
+            "file_count": 2, "chunk_count": 2,
+            "phases_ms": {"discovery": 1.0, "chunk": 1.0,
+                          "model_provider_prepare": 1.0,
+                          "embed_publish_seal_activate": 1.0,
+                          "first_query": 1.0, "warm_query": 1.0,
+                          "unattributed": 1.0},
+            "total_ms": 7.0}), encoding="utf-8")
+        sphase = sdir / "phase-metrics.json"
+        sphase.write_text(json.dumps({
+            "schema_version": 1, "system": "semble",
+            "timing_layer": "worker_monotonic_wall_v1", "strategy": "native",
+            "record_sha256": ev.digest(spath.read_bytes()),
+            "worker_sha256": _fake_sha("worker"), "task_count": 2, "route_count": 1,
+            "file_count": 2, "chunk_count": 2,
+            "phases_ms": {"discovery": 1.0, "model_provider_prepare": 1.0,
+                          "index": 1.0, "warmup": 1.0, "first_query": 1.0,
+                          "warm_query": 1.0, "unattributed": 1.0},
+            "total_ms": 7.0}), encoding="utf-8")
+        resource_payload = {
+            "schema_version": 1, "sampler": "ps-process-tree-rss-cpu-v2",
+            "sample_interval_ms": 50, "command_sha256": _fake_sha("command"),
+            "root_pid": 100 + rep, "exit_code": 0, "timed_out": False,
+            "elapsed_ms": 5.0, "peak_rss_bytes": 4096,
+            "peak_cpu_percent": 10.0,
+            "processes": [{"pid": 100 + rep, "command": "runner",
+                           "peak_rss_bytes": 4096, "peak_cpu_percent": 10.0,
+                           "samples": 2}],
+            "storage": {"index_bytes": 4096, "model_cache_bytes": 1024,
+                        "parser_cache_bytes": 0, "embedding_cache_bytes": 0,
+                        "discovered_files": 2, "indexed_chunks": 2,
+                        "index_storage": "disk"},
+            "samples": 2,
+            "complete": True, "error": None, "cleanup_complete": True,
+            "cleanup_escalated": False, "cleanup_error": None,
+        }
+        if resource_isolation is not None:
+            resource_payload["isolation"] = resource_isolation
+        qresource = qdir / "resource-metrics.json"
+        qresource.write_text(json.dumps({
+            **resource_payload, "subject_sha256": ev.digest(qpath.read_bytes())
+        }), encoding="utf-8")
+        sresource = rep_dir / "semble-resource-metrics.json"
+        sresource.write_text(json.dumps({
+            **resource_payload, "subject_sha256": ev.digest(spath.read_bytes()),
+            "storage": {**resource_payload["storage"], "index_bytes": 0,
+                        "index_storage": "memory"},
+        }), encoding="utf-8")
         latencies = {row["task_id"]: [row["timings"]["query_latency_ms"],
                                       row["timings"]["query_latency_ms"] + 0.1]
                      for row in srec["results"]}
@@ -1662,11 +1965,17 @@ def _pair_stage(tmp_path, *, repetitions=1, blinding="attested", scope="explorat
                 "index_bytes": 4096,
                 "runner_binary_sha256": binary_digest,
                 "driver_ms": 1.0,
+                "phase_metrics": "strategy-00-whole_file/phase-metrics.json",
+                "phase_metrics_digest": ev.digest(qphase.read_bytes()),
+                "resource_metrics": "strategy-00-whole_file/resource-metrics.json",
+                "resource_metrics_digest": ev.digest(qresource.read_bytes()),
                 "state_root": "strategy-00-whole_file/state"}]}), encoding="utf-8")
         rep_layouts.append({
             "rep": rep, "order": ["quanta", "semble"],
             "quanta": {"whole_file": str(qpath)}, "semble": str(spath),
-            "quanta_manifest": str(rep_dir / "quanta" / "quanta-manifest.json")})
+            "quanta_manifest": str(rep_dir / "quanta" / "quanta-manifest.json"),
+            "semble_phase_metrics": str(sphase),
+            "semble_resource_metrics": str(sresource)})
 
     matrix = pairrun.build_latency_matrix(rep_layouts)
     (stage / "latency-matrix.json").write_text(json.dumps(matrix), encoding="utf-8")
@@ -1686,7 +1995,8 @@ def _pair_stage(tmp_path, *, repetitions=1, blinding="attested", scope="explorat
     spec = {"manifest": str(corpus_path), "suite": str(suite_path),
             "query_pack": str(pack_path), "runner_binary": str(runner_binary),
             "host_profile": "test-host", "blinding": blinding,
-            "isolation_method": "m", "access_block_log": "l", "scope": scope,
+            "isolation_method": isolation_method,
+            "access_block_log": access_block_log, "scope": scope,
             "claims": claims or {}, "embedder": embedder, "cache_regime": cache_regime}
     (stage / "protocol-lock.json").write_text(json.dumps({
         "suite_digest": ev.digest(suite_path.read_bytes()),
@@ -1698,7 +2008,8 @@ def _pair_stage(tmp_path, *, repetitions=1, blinding="attested", scope="explorat
         "semble_lockfile_sha256": ev.digest(b"semble==0.6.0\n"),
         "host_profile": "test-host", "repetitions": repetitions}), encoding="utf-8")
     if receipts == "full":
-        contents = _full_receipts(suite["repository_commit"], binary_digest)
+        source_sha = pairrun.git_head_sha(Path(__file__).resolve().parents[3])
+        contents = _full_receipts(source_sha, binary_digest)
     else:
         contents = receipts or {}
     frozen = {}
@@ -1754,7 +2065,10 @@ def test_verdict_pair_only_green(tmp_path):
     for name, proof in verdict["state_evidence"].items():
         assert proof["reason"], name
     assert verdict["state_evidence"]["PAIR_VALID"]["proof_digest"] is not None
-    assert verdict["provenance"]["quanta"]["source_sha"] == st["commit"]
+    assert st["commit"] != st["manifest"]["provenance"]["quanta"]["source_sha"]
+    assert verdict["provenance"]["quanta"]["source_sha"] == (
+        st["manifest"]["provenance"]["quanta"]["source_sha"]
+    )
 
 
 def test_verdict_incomplete_observation_fails_pair(tmp_path):
@@ -1800,8 +2114,16 @@ def test_verdict_lying_manifest_refused(tmp_path):
     st = _pair_stage(tmp_path, claims={"speed": True})
     # Fake contract evidence without artifacts fails instead of passing.
     _rewrite_manifest(st, lambda m: m["evidence"].update({
-        "contract_suites": {"python": {"test_result_digest": "a" * 64},
-                            "rust": {"test_result_digest": "b" * 64}}}))
+        "contract_suites": {
+            "python": {
+                "test_result_digest": "a" * 64,
+                "raw_evidence_digest": "c" * 64,
+            },
+            "rust": {
+                "test_result_digest": "b" * 64,
+                "raw_evidence_digest": "d" * 64,
+            },
+        }}))
     verdict = _stage_verdict(st)
     assert verdict["states"]["CONTRACT_GREEN"] == "fail"
     assert verdict["failure_class"] == "scoring"
@@ -1829,6 +2151,21 @@ def test_verdict_stale_and_swapped_receipts(tmp_path):
     verdict = _stage_verdict(st)
     assert verdict["states"]["CONTRACT_GREEN"] == "fail"
     assert "receipt digest mismatch" in verdict["state_evidence"]["CONTRACT_GREEN"]["reason"]
+
+    st = _pair_stage(tmp_path / "closure", receipts="full")
+    rust_receipt_path = st["stage"] / "receipts" / "contract_rust_receipt.json"
+    rust_receipt = json.loads(rust_receipt_path.read_text(encoding="utf-8"))
+    closure = rust_receipt["source_closure"]
+    closure["files"][0]["sha256"] = _fake_sha("different-source")
+    closure_core = {
+        key: closure[key]
+        for key in ("schema_version", "profile", "revision", "roots", "files")
+    }
+    closure["digest"] = ev.digest(ev.canonical(closure_core))
+    rust_receipt_path.write_text(json.dumps(rust_receipt), encoding="utf-8")
+    verdict = _stage_verdict(st)
+    assert verdict["states"]["CONTRACT_GREEN"] == "fail"
+    assert "different source closures" in verdict["state_evidence"]["CONTRACT_GREEN"]["reason"]
     st = _pair_stage(tmp_path / "swap", receipts="full")
     rust_bytes = (st["stage"] / "receipts" / "contract_rust_results.json").read_bytes()
     (st["stage"] / "receipts" / "contract_python_results.json").write_bytes(rust_bytes)
@@ -1837,39 +2174,28 @@ def test_verdict_stale_and_swapped_receipts(tmp_path):
 
 
 def test_verdict_garbage_test_artifact(tmp_path):
-    st = _pair_stage(tmp_path)
-    garbage = st["stage"] / "receipts-garbage.json"
-    garbage.write_text(
-        '{"command": "python3 -m pytest tools/ci/tests/test_retrieval_benchmark.py -q", '
-        '"selected": 4, "executed": 4, "passed": 3, "failed": 1}',
-        encoding="utf-8")
-    receipt = _receipt("python3 -m pytest tools/ci/tests/test_retrieval_benchmark.py -q",
-                       garbage.read_bytes(), st["commit"][:12])
-    receipt_path = st["stage"] / "receipt.json"
+    st = _pair_stage(tmp_path, receipts="full")
+    raw_path = st["stage"] / "receipts" / "contract_python_raw.json"
+    raw_path.write_text(
+        '<testsuite tests="105" failures="1" errors="0" skipped="0" />\n',
+        encoding="utf-8",
+    )
+    raw_digest = ev.digest(raw_path.read_bytes())
+    receipt_path = st["stage"] / "receipts" / "contract_python_receipt.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["input_evidence"] = [{"role": "pytest-junit", "sha256": raw_digest}]
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
-    rs_results = _counts_results("./scripts/cargow test -p quanta-index-retrieval-bench --lib",
-                                 40, 40, 40, 0)
-    rs_bytes = json.dumps(rs_results).encode()
-    rs_path = st["stage"] / "rs-results.json"
-    rs_path.write_bytes(rs_bytes)
-    rs_receipt = _receipt("./scripts/cargow test -p quanta-index-retrieval-bench --lib",
-                          rs_bytes, st["commit"][:12])
-    rs_receipt_path = st["stage"] / "rs-receipt.json"
-    rs_receipt_path.write_text(json.dumps(rs_receipt), encoding="utf-8")
-
-    def lie(manifest):
-        manifest["evidence"]["contract_suites"] = {
-            "python": {"test_result_digest": ev.digest(garbage.read_bytes())},
-            "rust": {"test_result_digest": ev.digest(rs_bytes)}}
-        manifest["artifacts"]["contract_python_results"] = "receipts-garbage.json"
-        manifest["artifacts"]["contract_python_receipt"] = "receipt.json"
-        manifest["artifacts"]["contract_rust_results"] = "rs-results.json"
-        manifest["artifacts"]["contract_rust_receipt"] = "rs-receipt.json"
-
-    _rewrite_manifest(st, lie)
+    _rewrite_manifest(
+        st,
+        lambda manifest: (
+            manifest["evidence"]["contract_suites"]["python"].update(
+                raw_evidence_digest=raw_digest
+            ),
+        ),
+    )
     verdict = _stage_verdict(st)
     assert verdict["states"]["CONTRACT_GREEN"] == "fail"
-    assert "counts inconsistent" in verdict["state_evidence"]["CONTRACT_GREEN"]["reason"]
+    assert "raw evidence refused" in verdict["state_evidence"]["CONTRACT_GREEN"]["reason"]
 
 
 def test_verdict_mapping_lies(tmp_path):
@@ -1940,7 +2266,10 @@ def test_verdict_perf_frontier_and_gates(tmp_path, monkeypatch):
     monkeypatch.setattr(pairrun, "PILOT_OBSERVATIONS_FLOOR", 2)
     monkeypatch.setattr(pairrun, "FRESH_ROOTS_FLOOR", 1)
     verdict = _stage_verdict(st)
-    assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == "phases_unimplemented"
+    assert verdict["states"]["PERF_QUALIFIED"] == "pass"
+    assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == (
+        "phase_and_process_tree_resources_verified"
+    )
     # Null timings fail a speed claim once floors hold.
     st = _pair_stage(tmp_path / "nulls", claims={"speed": True})
     record_path = st["stage"] / "rep-00" / "quanta" / "strategy-00-whole_file" / "record.json"
@@ -1983,6 +2312,37 @@ def test_verdict_perf_frontier_and_gates(tmp_path, monkeypatch):
     assert verdict["states"]["PERF_QUALIFIED"] == "fail"
     assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == "host_contended"
     assert verdict["failure_class"] == "host"
+
+
+def test_verdict_rejects_forged_phase_and_process_tree_resources(tmp_path, monkeypatch):
+    monkeypatch.setattr(pairrun, "PILOT_OBSERVATIONS_FLOOR", 2)
+    monkeypatch.setattr(pairrun, "FRESH_ROOTS_FLOOR", 1)
+
+    resource_stage = _pair_stage(tmp_path / "resource", claims={"speed": True})
+    resource_path = resource_stage["stage"] / "rep-00" / "semble-resource-metrics.json"
+    resource = json.loads(resource_path.read_text(encoding="utf-8"))
+    resource.update(complete=False, error="sampler lost process tree")
+    resource_path.write_text(json.dumps(resource), encoding="utf-8")
+    verdict = _stage_verdict(resource_stage)
+    assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == (
+        "resource_accounting_incomplete"
+    )
+
+    phase_stage = _pair_stage(tmp_path / "phase", claims={"speed": True})
+    phase_path = (
+        phase_stage["stage"]
+        / "rep-00"
+        / "quanta"
+        / "strategy-00-whole_file"
+        / "phase-metrics.json"
+    )
+    phase = json.loads(phase_path.read_text(encoding="utf-8"))
+    phase["total_ms"] += 1.0
+    phase_path.write_text(json.dumps(phase), encoding="utf-8")
+    verdict = _stage_verdict(phase_stage)
+    assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == (
+        "phase_boundaries_incomplete"
+    )
     # T12: a speed claim without a declared cache regime fails once every
     # earlier gate holds; the declared stage reaches the phase frontier.
     st = _pair_stage(tmp_path / "cache", claims={"speed": True},
@@ -2019,16 +2379,34 @@ def test_verdict_quality_gates(tmp_path):
                       claims={"quality": True})
     verdict = _stage_verdict(st)
     assert verdict["states"]["QUALITY_DELTA"] == "pass"
+    assert verdict["state_evidence"]["QUALITY_DELTA"]["reason"] == (
+        "blinded_graded_delta"
+    )
+    assert verdict["failure_class"] == "none"
+    proof_path = st["stage"] / "isolation-proof.json"
+    proof = json.loads(proof_path.read_text(encoding="utf-8"))
+    proof["profile_sha256"] = _fake_sha("forged-profile")
+    proof_path.write_text(json.dumps(proof), encoding="utf-8")
+    verdict = _stage_verdict(st)
+    assert verdict["states"]["QUALITY_DELTA"] == "fail"
+    assert verdict["state_evidence"]["QUALITY_DELTA"]["reason"].startswith(
+        "isolation_proof_unverified:"
+    )
+    assert verdict["failure_class"] == "blinding"
     st = _pair_stage(tmp_path / "ungraded", blinding="isolated", scope="qualified",
                       claims={"quality": True}, graded=False)
     verdict = _stage_verdict(st)
     assert verdict["states"]["QUALITY_DELTA"] == "fail"
+    assert verdict["state_evidence"]["QUALITY_DELTA"]["reason"] == "reports_ungraded"
     assert verdict["failure_class"] == "scoring"
     # A manifest cannot upgrade attested records to isolated quality proof.
     st = _pair_stage(tmp_path / "spoof", scope="qualified", claims={"quality": True})
     _rewrite_manifest(st, lambda m: m.update(blinding="isolated"))
     verdict = _stage_verdict(st)
-    assert verdict["states"]["QUALITY_DELTA"] == "not_applicable"
+    assert verdict["states"]["QUALITY_DELTA"] == "fail"
+    assert verdict["state_evidence"]["QUALITY_DELTA"]["reason"] == (
+        "isolation_record_mismatch"
+    )
     assert verdict["blinding"] == "attested"
     # T10: a quality claim over the hash-dev diagnostic control fails even
     # when every other quality gate would pass.
@@ -2143,7 +2521,10 @@ def test_receipt_shape_mirrors_canonical_schema():
     canonical = json.loads(
         Path("tools/ci/verification-receipt.schema.json").read_text(encoding="utf-8"))
     results = _counts_results("cmd", 2, 2, 2, 0)
-    receipt = _receipt("cmd", json.dumps(results).encode(), "abcdef123456")
+    receipt = _receipt(
+        "cmd", json.dumps(results).encode(), "abcdef123456" + "0" * 28,
+        "probe", {"raw": b"raw evidence"},
+    )
     jsonschema.validate(receipt, canonical)
     assert pairrun._validate_receipt_shape(receipt, "probe") == receipt
     for key in ("tier", "test_event_count", "revision"):
@@ -2209,7 +2590,7 @@ def test_g0_receipt_shape_matches_canonical_receipt_schema():
         Path("tools/ci/verification-receipt.schema.json").read_text(encoding="utf-8")
     )
     embedded = _load_schema("run-manifest.schema.json")["$defs"]["verification_receipt"]
-    for key in ("type", "additionalProperties", "required", "properties"):
+    for key in ("type", "additionalProperties", "required", "properties", "oneOf"):
         assert embedded[key] == canonical[key], f"receipt $def drifted on {key}"
 
 
@@ -2764,6 +3145,8 @@ def _g0_manifest() -> dict:
             "semble_adapter_manifest": "adapter-manifest.json",
             "semble_lockfile": "lockfile.txt",
             "semble_native": ["native.json"],
+            "phase_metrics": ["phase.json"],
+            "resource_metrics": ["resource.json"],
             "protocol_lock": "protocol-lock.json",
         },
         "provenance": {

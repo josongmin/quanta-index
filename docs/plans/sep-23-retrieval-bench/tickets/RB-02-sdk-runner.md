@@ -1,6 +1,6 @@
 # RB-02 — Independent Real-Repository SDK Runner
 
-Status: `implementation-landed / live-failure-matrix-blocked`
+Status: `implementation-and-live-failure-matrix-landed / receipt-blocked`
 
 Depends on: RB-00 stage A
 
@@ -8,9 +8,9 @@ Owner: benchmark-only Rust package; product SDK is a dependency, not a fork
 
 ## Current code status (2026-09-23)
 
-`benchmarks/retrieval` is a workspace member and the runner loads a clean pinned manifest, launches a separately pinned searchd, verifies fresh state, publishes lexical and semantic scopes through `SearchCorpusBatch`, verifies the sealed `BatchReceipt` and composite activation ACK, then reads lexical/semantic/hybrid routes through the SDK. The new subprocess case executes `CARGO_BIN_EXE_quanta-index-retrieval-bench` itself and verifies that the v3 capture binds the exact runner/searchd SHA plus receipt and activation digests. `just retrieval-sdk-proof <fresh-out>` ran 9/9 tests and emitted machine-derived `sdk_results.json` and a canonical digest-bound receipt during implementation verification.
+`benchmarks/retrieval` is a workspace member and the runner loads a clean pinned manifest, launches a separately pinned searchd, verifies fresh state, publishes lexical and semantic scopes through `SearchCorpusBatch`, verifies the sealed `BatchReceipt` and composite activation ACK, then reads lexical/semantic/hybrid routes through the SDK. The subprocess case executes `CARGO_BIN_EXE_quanta-index-retrieval-bench` itself and verifies that the v3 capture binds the exact runner/searchd SHA plus receipt and activation digests. The strict state-root regression found at `f2897a28` was repaired at `7d4994b9` by moving immutable daemon logs beside, never inside, the root. The explicit-pinned package rail passes 62/62.
 
-Closeout remains blocked because the full process matrix in TEST-PLAN §4 is incomplete: missing-model/provider-unavailable behavior is classified in unit tests but not exercised as a live runner process scenario. Generic workspace Cargo test/nextest rails now prebuild searchd and export an exact explicit pin rather than weakening fail-closed binary resolution. Broad reruns passed that prerequisite and then stopped on concurrent non-exhaustive IPC response matches, currently two sites in `quanta-index-searchctl`; a frozen-source broad-rail GREEN is still required. Receipt issuance now refuses dirty source; the dirty-checkout implementation artifact is diagnostic, not qualification evidence.
+The live real-daemon matrix now covers a missing pinned model (boot refuses before capture), provider unavailable (typed `SEM_PROVIDER_UNAVAILABLE`, no hits), stale expected-active CAS, readiness timeout and post-spawn daemon termination (typed failure, no hits). Owned children are killed/reaped and sockets are removed through bounded harness paths. The expanded package rail passes 62/62. Generic workspace Cargo test/nextest rails prebuild searchd and export an exact explicit pin rather than weakening fail-closed binary resolution. Closeout remains blocked on a clean source-closure-bound SDK receipt and the admitted pilot, not on this implementation matrix.
 
 ## Goal
 

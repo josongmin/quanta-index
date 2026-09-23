@@ -22,7 +22,8 @@ use quanta_index_retrieval_bench::chunking::{
     syntax::SyntaxChunker, whole_file::WholeFileChunker,
 };
 use quanta_index_retrieval_bench::corpus::{
-    CorpusLimits, SourceFile, load_corpus, load_manifest, verify_checkout,
+    CorpusLimits, Manifest, SourceFile, load_corpus, load_manifest, verify_checkout,
+    verify_materialized_corpus,
 };
 use quanta_index_retrieval_bench::profile::EmbedderProfile;
 use quanta_index_retrieval_bench::record::{
@@ -56,9 +57,10 @@ fn print_help() -> BenchResult<()> {
          run adds: --query-pack PATH --routes a,b --top-k N --state-root PATH\n\
          --repo-id ID --revision-id ID --generation N\n\
          --runner-name NAME --runner-revision REV --run-id ID\n\
-         --blinding attested --isolation-method TEXT --access-block-log TEXT\n\
+         --blinding attested|isolated --isolation-method TEXT --access-block-log TEXT\n\
+         [--materialized-corpus-sha256 HEX]\n\
          --searchd-bin PATH --searchd-expected-sha256 HEX\n\
-         --out PATH [--embedder potion-code|hash-dev]\n\
+         --out PATH [--metrics-out PATH] [--embedder potion-code|hash-dev]\n\
          [--max-file-bytes N]\n\
          [--io-timeout-secs N] [--ready-timeout-secs N]\n",
         )
@@ -148,6 +150,24 @@ fn reject_unknown(args: &Args, allowed: &[&str]) -> BenchResult<()> {
         }
     }
     Ok(())
+}
+
+fn verify_capture_corpus(args: &Args, repo: &Path, manifest: &Manifest) -> BenchResult<()> {
+    if let Some(proof) = args.flags.get("materialized-corpus-sha256") {
+        let valid = proof.len() == 64
+            && proof
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+        if !valid || required(args, "blinding")? != "isolated" {
+            return Err(BenchError::Config(
+                "materialized corpus requires isolated blinding and a lowercase sha256 proof"
+                    .to_string(),
+            ));
+        }
+        verify_materialized_corpus(repo, manifest)
+    } else {
+        verify_checkout(repo, manifest)
+    }
 }
 
 fn parse_routes(raw: &str) -> BenchResult<Vec<&'static str>> {
@@ -289,6 +309,33 @@ fn require_external_path(repo: &Path, path: &Path, label: &str) -> BenchResult<(
     Ok(())
 }
 
+fn validate_blinding_claim(
+    blinding: &str,
+    isolation_method: &str,
+    access_block_log: &str,
+) -> BenchResult<()> {
+    match blinding {
+        "attested" => Ok(()),
+        "isolated"
+            if isolation_method == "macos-seatbelt-v1"
+                && access_block_log
+                    .strip_prefix("sha256:")
+                    .is_some_and(|value| {
+                        value.len() == 64
+                            && value
+                                .bytes()
+                                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                    }) => Ok(()),
+        "isolated" => Err(BenchError::Config(
+            "isolated records require the macos-seatbelt-v1 backend and a sha256-bound access proof; the external verdict remains the isolation authority"
+                .to_string(),
+        )),
+        _ => Err(BenchError::Config(
+            "--blinding must be attested or isolated".to_string(),
+        )),
+    }
+}
+
 fn run_chunk(args: &Args) -> BenchResult<()> {
     reject_unknown(
         args,
@@ -402,15 +449,18 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             "blinding",
             "isolation-method",
             "access-block-log",
+            "metrics-out",
             "out",
             "io-timeout-secs",
             "ready-timeout-secs",
+            "materialized-corpus-sha256",
+            "model-dir",
         ],
     )?;
     let overall = Instant::now();
     let repo = PathBuf::from(required(args, "repo")?);
     let manifest = load_manifest(&PathBuf::from(required(args, "manifest")?))?;
-    verify_checkout(&repo, &manifest)?;
+    verify_capture_corpus(args, &repo, &manifest)?;
     let pack = load_query_pack(&PathBuf::from(required(args, "query-pack")?))?;
     cross_check_manifest_pack(&manifest, &pack)?;
     let routes = parse_routes(&required(args, "routes")?)?;
@@ -444,6 +494,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         .iter()
         .map(|file| (file.path.clone(), file.clone()))
         .collect();
+    let discovery_elapsed = overall.elapsed();
 
     let chunk_start = Instant::now();
     let selection = chunk_with_strategy(&required(args, "strategy")?, args, &files)?;
@@ -493,25 +544,38 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             out.display()
         )));
     }
+    let metrics_out = args.flags.get("metrics-out").map(PathBuf::from);
+    if let Some(path) = &metrics_out {
+        require_external_path(&repo, path, "--metrics-out")?;
+        if path.exists() {
+            return Err(BenchError::Config(format!(
+                "--metrics-out already exists: {}",
+                path.display()
+            )));
+        }
+    }
     let searchd_bin =
         resolve_searchd_binary(args.flags.get("searchd-bin").map(PathBuf::from).as_deref())?;
     let searchd_digest =
         verify_searchd_digest(&searchd_bin, &required(args, "searchd-expected-sha256")?)?;
     let profile = EmbedderProfile::resolve(args.flags.get("embedder").map(String::as_str))?;
-    let blinding = required(args, "blinding")?;
-    if blinding != "attested" {
+    let model_dir = args.flags.get("model-dir").map(PathBuf::from);
+    if model_dir.as_ref().is_some_and(|path| !path.is_dir()) {
         return Err(BenchError::Config(
-            "this CLI cannot prove process isolation; only --blinding attested is allowed"
-                .to_string(),
+            "--model-dir must name an existing directory".to_string(),
         ));
     }
+    let blinding = required(args, "blinding")?;
+    let isolation_method = required(args, "isolation-method")?;
+    let access_block_log = required(args, "access-block-log")?;
+    validate_blinding_claim(&blinding, &isolation_method, &access_block_log)?;
     let identity_block = RunnerIdentity::new(
         required(args, "runner-name")?,
         required(args, "runner-revision")?,
         required(args, "run-id")?,
         blinding,
-        required(args, "isolation-method")?,
-        required(args, "access-block-log")?,
+        isolation_method,
+        access_block_log,
     )?;
     let io_timeout = Duration::from_secs(optional_u64(
         args,
@@ -527,6 +591,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         state_root: &state_root,
         searchd_binary: Some(searchd_bin.as_path()),
         embedder: profile.selector,
+        model_dir: model_dir.as_deref(),
         repo_id: &identity.repo_id,
         revision_id: &identity.revision_id,
         ready_timeout,
@@ -607,9 +672,11 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         }
     }
     let query_start = Instant::now();
+    let mut first_query_elapsed = Duration::ZERO;
     let mut outcomes: BTreeMap<(String, String), QueryOutcome> = BTreeMap::new();
     for task in &pack.tasks {
         for route in routes.iter().copied() {
+            let single_query_start = Instant::now();
             let outcome = query_route(&RouteQuery {
                 client: session.client(),
                 route,
@@ -619,6 +686,9 @@ fn run_capture(args: &Args) -> BenchResult<()> {
                 generation: identity.generation,
                 top_k,
             });
+            if first_query_elapsed.is_zero() {
+                first_query_elapsed = single_query_start.elapsed();
+            }
             if outcomes
                 .insert((task.task_id.clone(), route.to_string()), outcome)
                 .is_some()
@@ -631,6 +701,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         }
     }
     let query_elapsed = query_start.elapsed();
+    let warm_query_elapsed = query_elapsed.saturating_sub(first_query_elapsed);
 
     let record = runner_record(&RunnerRecordInput {
         pack: &pack,
@@ -642,10 +713,53 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         files: &by_path,
         chunks_by_id: &chunks_by_id,
     })?;
-    verify_checkout(&repo, &manifest)?;
-    write_json(&out, &record)?;
+    verify_capture_corpus(args, &repo, &manifest)?;
     let binary = session.searchd_binary().display().to_string();
     session.stop()?;
+    let overall_elapsed = overall.elapsed();
+    let phase_sum = discovery_elapsed
+        .checked_add(chunk_elapsed)
+        .checked_add(boot_elapsed)
+        .and_then(|value| value.checked_add(publish_elapsed))
+        .and_then(|value| value.checked_add(first_query_elapsed))
+        .and_then(|value| value.checked_add(warm_query_elapsed))
+        .ok_or_else(|| BenchError::Protocol("runner phase duration overflow".to_string()))?;
+    let phase_sum_ms = phase_sum.as_secs_f64() * 1000.0;
+    let total_ms = overall_elapsed.as_secs_f64() * 1000.0;
+    let rendered_record =
+        serde_json::to_string_pretty(&record).map_err(|err| BenchError::Json {
+            path: out.display().to_string(),
+            message: err.to_string(),
+        })?;
+    let record_digest = sha256_hex(format!("{rendered_record}\n").as_bytes());
+    let phase_metrics = serde_json::json!({
+        "schema_version": 1,
+        "system": "quanta",
+        "timing_layer": "runner_monotonic_wall_v1",
+        "strategy": selection.name,
+        "record_sha256": record_digest,
+        "runner_binary_sha256": runner_digest,
+        "task_count": pack.tasks.len(),
+        "route_count": routes.len(),
+        "file_count": selection.coverage.files,
+        "chunk_count": selection.coverage.chunks,
+        "phases_ms": {
+            "discovery": discovery_elapsed.as_secs_f64() * 1000.0,
+            "chunk": chunk_elapsed.as_secs_f64() * 1000.0,
+            "model_provider_prepare": boot_elapsed.as_secs_f64() * 1000.0,
+            "embed_publish_seal_activate": publish_elapsed.as_secs_f64() * 1000.0,
+            "first_query": first_query_elapsed.as_secs_f64() * 1000.0,
+            "warm_query": warm_query_elapsed.as_secs_f64() * 1000.0,
+            "unattributed": (total_ms - phase_sum_ms).max(0.0),
+        },
+        "total_ms": total_ms,
+    });
+    if let Some(path) = &metrics_out {
+        write_json(path, &phase_metrics)?;
+    }
+    // A failed owned-daemon shutdown or phase-artifact write must not leave a
+    // scoreable success record. The record is the final create-new artifact.
+    write_json(&out, &record)?;
 
     let mut status_counts: BTreeMap<&str, usize> = BTreeMap::new();
     for outcome in outcomes.values() {
@@ -669,7 +783,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         boot_elapsed.as_millis(),
         publish_elapsed.as_millis(),
         query_elapsed.as_millis(),
-        overall.elapsed().as_millis(),
+        overall_elapsed.as_millis(),
     ))?;
     Ok(())
 }
@@ -801,5 +915,22 @@ mod tests {
         assert!(write_json(&output, &serde_json::json!({"run": 2})).is_err());
         let saved = std::fs::read_to_string(&output).expect("saved output");
         assert!(saved.contains("\"run\": 1"));
+    }
+
+    #[test]
+    fn isolated_record_requires_external_proof_binding() {
+        assert!(validate_blinding_claim("attested", "attested-only", "none").is_ok());
+        assert!(
+            validate_blinding_claim(
+                "isolated",
+                "macos-seatbelt-v1",
+                &format!("sha256:{}", "a".repeat(64)),
+            )
+            .is_ok()
+        );
+        assert!(validate_blinding_claim("isolated", "label-only", &"a".repeat(64)).is_err());
+        assert!(
+            validate_blinding_claim("isolated", "macos-seatbelt-v1", "sha256:not-hex").is_err()
+        );
     }
 }

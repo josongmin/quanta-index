@@ -63,7 +63,9 @@ def _nextest_counts(path: Path) -> tuple[int, int, int, int]:
     return selected, executed, counts["ok"], counts["failed"] + counts["timeout"]
 
 
-def build_summary(record_path: Path, nextest_path: Path, runner_path: Path) -> dict[str, object]:
+def build_summary_from_evidence(
+    record_path: Path, nextest_path: Path, runner_digest: str
+) -> dict[str, object]:
     try:
         record = json.loads(record_path.read_bytes())
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -77,7 +79,7 @@ def build_summary(record_path: Path, nextest_path: Path, runner_path: Path) -> d
     if not isinstance(routes, dict) or not routes:
         raise SystemExit("runner record has no route provenance")
 
-    binary_digest = hashlib.sha256(runner_path.read_bytes()).hexdigest()
+    binary_digest = _hex64(runner_digest, "runner binary digest")
     receipt_digests: set[str] = set()
     activation_digests: set[str] = set()
     capture_binary_digests: set[str] = set()
@@ -112,6 +114,11 @@ def build_summary(record_path: Path, nextest_path: Path, runner_path: Path) -> d
         "passed": passed,
         "failed": failed,
     }
+
+
+def build_summary(record_path: Path, nextest_path: Path, runner_path: Path) -> dict[str, object]:
+    binary_digest = hashlib.sha256(runner_path.read_bytes()).hexdigest()
+    return build_summary_from_evidence(record_path, nextest_path, binary_digest)
 
 
 def main() -> int:

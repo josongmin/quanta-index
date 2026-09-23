@@ -80,6 +80,7 @@ fn boot_session(state_root: &Path, identity: &BatchIdentity) -> DaemonSession {
         state_root,
         searchd_binary: None,
         embedder: EMBEDDER,
+        model_dir: None,
         repo_id: &identity.repo_id,
         revision_id: &identity.revision_id,
         ready_timeout: Duration::from_secs(60),
@@ -165,6 +166,7 @@ fn stale_state_root_is_refused() {
         state_root: &state_root,
         searchd_binary: None,
         embedder: EMBEDDER,
+        model_dir: None,
         repo_id: &identity.repo_id,
         revision_id: &identity.revision_id,
         ready_timeout: Duration::from_secs(5),
@@ -191,6 +193,7 @@ fn symlink_state_root_is_refused() {
         state_root: &link,
         searchd_binary: None,
         embedder: EMBEDDER,
+        model_dir: None,
         repo_id: &identity.repo_id,
         revision_id: &identity.revision_id,
         ready_timeout: Duration::from_secs(5),
@@ -220,6 +223,7 @@ fn boot_times_out_when_daemon_never_opens_sockets() {
         state_root: &state_root,
         searchd_binary: Some(&script),
         embedder: EMBEDDER,
+        model_dir: None,
         repo_id: &identity.repo_id,
         revision_id: &identity.revision_id,
         ready_timeout: Duration::from_secs(2),
@@ -235,6 +239,123 @@ fn boot_times_out_when_daemon_never_opens_sockets() {
         started.elapsed() < Duration::from_secs(20),
         "readiness must time out promptly"
     );
+}
+
+#[test]
+fn missing_pinned_model_fails_boot_without_a_scored_record() {
+    let root = tempfile::tempdir().expect("temp root");
+    let state_root = root.path().join("state");
+    let missing_model = root.path().join("missing-potion-code-model");
+    let identity = BatchIdentity::new(
+        "bench-repo",
+        "bench-rev",
+        7,
+        "manifest:missing-model".to_string(),
+    )
+    .expect("identity");
+    let config = DaemonConfig {
+        state_root: &state_root,
+        searchd_binary: None,
+        embedder: "potion-code",
+        model_dir: Some(&missing_model),
+        repo_id: &identity.repo_id,
+        revision_id: &identity.revision_id,
+        ready_timeout: Duration::from_secs(10),
+        io_timeout: Duration::from_secs(5),
+        history_max_generations: 8,
+    };
+    let started = std::time::Instant::now();
+    let err = DaemonSession::boot(&config)
+        .err()
+        .expect("missing pinned model must fail before capture");
+    assert!(matches!(err, BenchError::Daemon(_)), "{err}");
+    assert!(
+        err.to_string().contains("exited before opening sockets"),
+        "{err}"
+    );
+    assert!(started.elapsed() < Duration::from_secs(20));
+    assert!(!root.path().join("record.json").exists());
+}
+
+#[test]
+fn unavailable_provider_is_typed_and_never_returns_hits() {
+    let repo = tempfile::tempdir().expect("repo root");
+    write_tiny_repo(repo.path());
+    let manifest = load_manifest(&repo.path().join("manifest.json")).expect("manifest");
+    let files = load_corpus(repo.path(), &manifest, &CorpusLimits::default()).expect("corpus");
+    let (chunks, _) = chunk_corpus(&WholeFileChunker, &files).expect("chunk");
+    let identity = BatchIdentity::new(
+        "bench-repo",
+        "bench-rev",
+        7,
+        "manifest:provider-unavailable".to_string(),
+    )
+    .expect("identity");
+    let (batch, _) = assemble_batch(&identity, &chunks).expect("batch");
+    let state = tempfile::tempdir().expect("state root");
+    let state_root = state.path().join("daemon");
+    let config = DaemonConfig {
+        state_root: &state_root,
+        searchd_binary: None,
+        embedder: "unavailable",
+        model_dir: None,
+        repo_id: &identity.repo_id,
+        revision_id: &identity.revision_id,
+        ready_timeout: Duration::from_secs(60),
+        io_timeout: Duration::from_secs(30),
+        history_max_generations: 8,
+    };
+    let session = DaemonSession::boot(&config).expect("daemon boots");
+    let (_receipt, _ack) =
+        publish_and_activate(&session, &batch, &identity, None).expect("publish+activate");
+    match query_route(&RouteQuery {
+        client: session.client(),
+        route: "semantic",
+        query_text: "sphinx quartz vaults",
+        repo_id: &identity.repo_id,
+        revision_id: &identity.revision_id,
+        generation: identity.generation,
+        top_k: 10,
+    }) {
+        QueryOutcome::Failed { status, code, .. } => {
+            assert_eq!(status, "unavailable");
+            assert_eq!(code, "SEM_PROVIDER_UNAVAILABLE");
+        }
+        QueryOutcome::Hits { .. } => panic!("unavailable provider must never return hits"),
+    }
+    session.stop().expect("bounded shutdown");
+}
+
+#[test]
+fn terminated_daemon_is_typed_and_never_returns_hits() {
+    let identity = BatchIdentity::new(
+        "bench-repo",
+        "bench-rev",
+        7,
+        "manifest:terminated".to_string(),
+    )
+    .expect("identity");
+    let state = tempfile::tempdir().expect("state root");
+    let state_root = state.path().join("daemon");
+    let mut session = boot_session(&state_root, &identity);
+    session
+        .terminate_for_failure_probe()
+        .expect("owned daemon terminates and reaps");
+    match query_route(&RouteQuery {
+        client: session.client(),
+        route: "lexical",
+        query_text: "sphinx",
+        repo_id: &identity.repo_id,
+        revision_id: &identity.revision_id,
+        generation: identity.generation,
+        top_k: 10,
+    }) {
+        QueryOutcome::Failed { status, .. } => {
+            assert!(matches!(status, "error" | "timeout" | "unavailable"));
+        }
+        QueryOutcome::Hits { .. } => panic!("terminated daemon must never return hits"),
+    }
+    session.stop().expect("idempotent bounded shutdown");
 }
 
 #[test]
@@ -536,7 +657,12 @@ fn real_daemon_roundtrip_publishes_and_queries() {
 
     // A replayed publish on the live daemon refuses: either the CAS
     // fails or the replay ack trips the fresh-daemon applied check.
-    assert!(publish_and_activate(&session, &batch, &identity, None).is_err());
+    let conflict = publish_and_activate(&session, &batch, &identity, None)
+        .expect_err("stale expected-active CAS must refuse replay");
+    assert!(
+        matches!(conflict, BenchError::Sdk(_) | BenchError::Protocol(_)),
+        "{conflict}"
+    );
     session.stop().expect("bounded shutdown");
 }
 
@@ -741,6 +867,7 @@ fn second_boot_over_used_root_is_refused_without_cleanup() {
         state_root: &state_root,
         searchd_binary: None,
         embedder: EMBEDDER,
+        model_dir: None,
         repo_id: &identity.repo_id,
         revision_id: &identity.revision_id,
         ready_timeout: Duration::from_secs(5),

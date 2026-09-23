@@ -78,7 +78,7 @@
     },
     "artifacts": {
       "type": "object", "additionalProperties": false,
-      "required": ["suite", "query_pack", "corpus_manifest", "mapping_proof", "latency_matrix", "host_start", "host_end", "records", "reports", "quanta_manifests", "semble_adapter_manifest", "semble_lockfile", "semble_native", "protocol_lock"],
+      "required": ["suite", "query_pack", "corpus_manifest", "mapping_proof", "latency_matrix", "host_start", "host_end", "records", "reports", "quanta_manifests", "semble_adapter_manifest", "semble_lockfile", "semble_native", "phase_metrics", "resource_metrics", "protocol_lock"],
       "properties": {
         "suite": {"type": "string", "minLength": 1},
         "query_pack": {"type": "string", "minLength": 1},
@@ -105,16 +105,32 @@
           "type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1},
           "description": "Every rep's native.json: the verdict re-derives the full latency matrix from records + natives."
         },
+        "phase_metrics": {
+          "type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1},
+          "description": "One monotonic phase-boundary artifact per raw capture."
+        },
+        "resource_metrics": {
+          "type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1},
+          "description": "One owned process-tree peak-RSS artifact per raw capture."
+        },
         "protocol_lock": {
           "type": "string", "minLength": 1,
           "description": "Frozen input digests + pins. The verdict re-verifies its digests against the frozen bytes."
         },
+        "isolation_proof": {
+          "type": "string", "minLength": 1,
+          "description": "Required by the verdict for isolated QUALITY_DELTA: versioned Seatbelt policy identity, denied roots, file bindings and deny/allow probes."
+        },
         "contract_python_receipt": {"type": "string", "minLength": 1},
         "contract_python_results": {"type": "string", "minLength": 1},
+        "contract_python_raw": {"type": "string", "minLength": 1},
         "contract_rust_receipt": {"type": "string", "minLength": 1},
         "contract_rust_results": {"type": "string", "minLength": 1},
+        "contract_rust_raw": {"type": "string", "minLength": 1},
         "sdk_receipt": {"type": "string", "minLength": 1},
         "sdk_results": {"type": "string", "minLength": 1},
+        "sdk_nextest_raw": {"type": "string", "minLength": 1},
+        "sdk_record_raw": {"type": "string", "minLength": 1},
         "model_parity_results": {"type": "string", "minLength": 1},
         "incremental_results": {"type": "string", "minLength": 1}
       }
@@ -186,15 +202,70 @@
       "type": "object", "additionalProperties": false,
       "required": ["schema_version", "revision", "rail", "tier", "command", "evidence_path", "evidence_sha256", "test_event_count"],
       "properties": {
-        "schema_version": {"const": 1},
+        "schema_version": {"enum": [1, 2]},
         "revision": {"type": "string", "minLength": 7},
         "rail": {"type": "string", "minLength": 1},
         "tier": {"enum": ["pr", "merge", "correctness", "nightly", "weekly"]},
         "command": {"type": "string", "minLength": 1},
         "evidence_path": {"type": "string", "minLength": 1},
         "evidence_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
-        "test_event_count": {"type": "integer", "minimum": 1}
-      }
+        "test_event_count": {"type": "integer", "minimum": 1},
+        "source_closure": {
+          "type": "object", "additionalProperties": false,
+          "required": ["schema_version", "profile", "revision", "roots", "files", "digest"],
+          "properties": {
+            "schema_version": {"const": 1},
+            "profile": {"const": "retrieval"},
+            "revision": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+            "roots": {
+              "type": "array", "minItems": 1, "uniqueItems": true,
+              "items": {"type": "string", "minLength": 1}
+            },
+            "files": {
+              "type": "array", "minItems": 1,
+              "items": {
+                "type": "object", "additionalProperties": false,
+                "required": ["path", "sha256"],
+                "properties": {
+                  "path": {"type": "string", "minLength": 1},
+                  "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+                }
+              }
+            },
+            "digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+          }
+        },
+        "input_evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["role", "sha256"],
+            "properties": {
+              "role": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$"},
+              "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+            }
+          }
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {"schema_version": {"const": 1}},
+          "not": {
+            "anyOf": [
+              {"required": ["source_closure"]},
+              {"required": ["input_evidence"]}
+            ]
+          }
+        },
+        {
+          "required": ["source_closure", "input_evidence"],
+          "properties": {
+            "schema_version": {"const": 2},
+            "revision": {"type": "string", "pattern": "^[a-f0-9]{40}$"}
+          }
+        }
+      ]
     }
   }
 }

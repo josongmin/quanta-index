@@ -219,6 +219,9 @@ pub struct DaemonConfig<'a> {
     pub state_root: &'a Path,
     pub searchd_binary: Option<&'a Path>,
     pub embedder: &'a str,
+    /// Optional explicit local-model directory. Used by failure probes and
+    /// qualified captures that must not inherit a workstation cache path.
+    pub model_dir: Option<&'a Path>,
     pub repo_id: &'a RepoId,
     pub revision_id: &'a RevisionId,
     pub ready_timeout: Duration,
@@ -318,6 +321,9 @@ impl DaemonSession {
                 "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_TOTAL_BYTES",
                 (256 * 1024 * 1024).to_string(),
             );
+        if let Some(model_dir) = config.model_dir {
+            let _configured = command.env("QUANTA_INDEX_EMBED_MODEL_DIR", model_dir);
+        }
         let mut child = command.spawn().map_err(|err| {
             BenchError::Daemon(format!("failed to spawn {}: {err}", binary.display()))
         })?;
@@ -411,6 +417,16 @@ impl DaemonSession {
     #[must_use]
     pub fn embedder(&self) -> &str {
         &self.embedder
+    }
+
+    /// Stop and reap the owned daemon while retaining the connected client.
+    /// This is a benchmark failure probe: subsequent SDK calls must return a
+    /// typed transport failure and can never be scored as empty success.
+    pub fn terminate_for_failure_probe(&mut self) -> BenchResult<()> {
+        if let Some(mut child) = self.child.take() {
+            terminate_child(&mut child)?;
+        }
+        remove_socket_files(&self.state_root)
     }
 
     /// Bounded shutdown of the runner-owned daemon.

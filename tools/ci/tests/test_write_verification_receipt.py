@@ -11,6 +11,8 @@ from pathlib import Path
 import jsonschema
 import pytest
 
+from tools.ci import source_closure
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 WRITER = REPO_ROOT / "tools" / "ci" / "write-verification-receipt.py"
 SCHEMA = REPO_ROOT / "tools" / "ci" / "verification-receipt.schema.json"
@@ -285,3 +287,85 @@ def test_receipt_rejects_dirty_source_before_emitting(tmp_path: Path) -> None:
     assert result.returncode != 0
     assert "dirty source" in result.stderr
     assert not output.exists()
+
+
+def test_source_closure_allows_unrelated_dirty_but_rejects_relevant_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _clean_repo(tmp_path)
+    monkeypatch.setitem(
+        source_closure.PROFILES,
+        "fixture",
+        {"cargo_packages": (), "paths": ("tracked.txt",)},
+    )
+    manifest = source_closure.build_manifest(source, "fixture")
+
+    (source / "unrelated.txt").write_text("dirty but out of closure\n", encoding="utf-8")
+    assert source_closure.verify_manifest(source, manifest) == manifest
+
+    (source / "tracked.txt").write_text("changed\n", encoding="utf-8")
+    with pytest.raises(source_closure.ClosureError, match="dirty relevant source"):
+        source_closure.verify_manifest(source, manifest)
+
+
+def test_source_closure_rejects_manifest_tampering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _clean_repo(tmp_path)
+    monkeypatch.setitem(
+        source_closure.PROFILES,
+        "fixture",
+        {"cargo_packages": (), "paths": ("tracked.txt",)},
+    )
+    manifest = source_closure.build_manifest(source, "fixture")
+    manifest["files"][0]["sha256"] = "0" * 64
+    with pytest.raises(source_closure.ClosureError, match="digest mismatch"):
+        source_closure.verify_manifest(source, manifest)
+
+
+def test_retrieval_source_closure_includes_transitive_execution_owners() -> None:
+    paths = set(source_closure.PROFILES["retrieval"]["paths"])
+    assert {
+        "scripts/cargow",
+        "scripts/quanta-index-env.sh",
+        "rust-toolchain.toml",
+        "tools/ci/timing/rust_profile_history.py",
+    } <= paths
+
+
+def test_receipt_refuses_overwriting_existing_output(tmp_path: Path) -> None:
+    source = _clean_repo(tmp_path)
+    evidence = tmp_path / "summary.json"
+    evidence.write_text(
+        json.dumps(
+            {"command": "proof", "selected": 1, "executed": 1, "passed": 1, "failed": 0}
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "receipt.json"
+    output.write_text("keep\n", encoding="utf-8")
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(WRITER),
+            "--rail",
+            "proof",
+            "--tier",
+            "correctness",
+            "--command",
+            "proof",
+            "--evidence-format",
+            "summary-json",
+            "--evidence",
+            str(evidence),
+            "--out",
+            str(output),
+        ],
+        cwd=source,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "refusing existing verification receipt" in result.stderr
+    assert output.read_text(encoding="utf-8") == "keep\n"

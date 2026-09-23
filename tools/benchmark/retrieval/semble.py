@@ -61,11 +61,16 @@ import sys
 import time
 
 def main() -> int:
+    worker_started = time.monotonic()
+    discovery_started = time.monotonic()
     spec_path = os.environ["SPEC_JSON"]
     out_path = os.environ["NATIVE_JSON"]
     with open(spec_path, encoding="utf-8") as handle:
         spec = json.load(handle)
+    discovery_ms = (time.monotonic() - discovery_started) * 1000.0
+    model_prepare_started = time.monotonic()
     from semble import SembleIndex
+    model_provider_prepare_ms = (time.monotonic() - model_prepare_started) * 1000.0
 
     t0 = time.monotonic()
     index = SembleIndex.from_path(spec["corpus_dir"], show_progress_bar=False)
@@ -86,11 +91,15 @@ def main() -> int:
     import random
 
     order = list(range(len(queries)))
+    warmup_started = time.monotonic()
     for _ in range(warmup):
         for task_id, query in queries:
             index.search(query, top_k=top_k)
+    warmup_ms = (time.monotonic() - warmup_started) * 1000.0
     native = []
     latencies = {}
+    query_started = time.monotonic()
+    first_query_ms = None
     for rep in range(repetitions):
         rng = random.Random(seed + rep)
         rng.shuffle(order)
@@ -99,6 +108,8 @@ def main() -> int:
             t0 = time.monotonic()
             results = index.search(query, top_k=top_k)
             elapsed_ms = (time.monotonic() - t0) * 1000.0
+            if first_query_ms is None:
+                first_query_ms = elapsed_ms
             latencies.setdefault(task_id, []).append(elapsed_ms)
             if rep == 0:
                 native.append(
@@ -115,12 +126,20 @@ def main() -> int:
                         ],
                     }
                 )
+    query_ms = (time.monotonic() - query_started) * 1000.0
+    first_query_ms = first_query_ms or 0.0
     emitted = sorted(row["task_id"] for row in native)
     expected = sorted(task_id for task_id, _ in queries)
     if emitted != expected:
         raise SystemExit("worker output task set differs from the spec task set")
     payload = {
         "semble_index_ms": index_ms,
+        "discovery_ms": discovery_ms,
+        "model_provider_prepare_ms": model_provider_prepare_ms,
+        "warmup_ms": warmup_ms,
+        "first_query_ms": first_query_ms,
+        "warm_query_ms": max(query_ms - first_query_ms, 0.0),
+        "worker_total_ms": (time.monotonic() - worker_started) * 1000.0,
         "configured_model_name": os.environ["SEMBLE_MODEL_NAME"],
         "observed_files": observed,
         "stats": stats,
@@ -390,6 +409,28 @@ def build_isolated_corpus(
         rows.append((name, observed))
         max_bytes = max(max_bytes, len(data))
     return rows, max_bytes
+
+
+def verify_materialized_corpus(
+    repo: Path, manifest_rows: list[tuple[str, str]]
+) -> Path:
+    """Prove a Git-free directory contains exactly the admitted file universe."""
+    repo = repo.resolve()
+    if not repo.is_dir() or (repo / ".git").exists():
+        raise AdapterError("materialized corpus must be a Git-free directory")
+    observed: list[tuple[str, str]] = []
+    for dirpath, dirnames, filenames in os.walk(repo, followlinks=False):
+        base = Path(dirpath)
+        if any((base / name).is_symlink() for name in dirnames):
+            raise AdapterError("materialized corpus contains a symlinked directory")
+        for name in filenames:
+            path = base / name
+            if path.is_symlink() or not path.is_file():
+                raise AdapterError("materialized corpus contains a non-regular file")
+            observed.append((path.relative_to(repo).as_posix(), sha_file(path)))
+    if sorted(observed) != sorted(manifest_rows):
+        raise AdapterError("materialized corpus differs from the admitted universe")
+    return repo
 
 
 def read_hf_revision(hf_home: Path, model_id: str) -> str | None:
@@ -705,10 +746,13 @@ def run_adapter(args: argparse.Namespace) -> int:
     repo = Path(args.repo)
     out_root = Path(args.output_root)
     commit, manifest_rows = load_manifest(Path(args.manifest))
-    try:
-        repo = verify_repo(repo, commit)
-    except ValueError as exc:
-        raise AdapterError(f"pinned repository proof failed: {exc}") from exc
+    if args.materialized_corpus:
+        repo = verify_materialized_corpus(repo, manifest_rows)
+    else:
+        try:
+            repo = verify_repo(repo, commit)
+        except ValueError as exc:
+            raise AdapterError(f"pinned repository proof failed: {exc}") from exc
     if repo in out_root.resolve().parents or out_root.resolve() == repo:
         raise AdapterError("output root must be outside the frozen repository")
     cache_root = Path(args.cache_root)
@@ -859,6 +903,37 @@ def run_adapter(args: argparse.Namespace) -> int:
     record_path.write_text(
         json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
+    phase_values = {
+        "discovery": native_payload.get("discovery_ms"),
+        "model_provider_prepare": native_payload.get("model_provider_prepare_ms"),
+        "index": native_payload.get("semble_index_ms"),
+        "warmup": native_payload.get("warmup_ms"),
+        "first_query": native_payload.get("first_query_ms"),
+        "warm_query": native_payload.get("warm_query_ms"),
+    }
+    if any(type(value) not in (int, float) or value < 0 for value in phase_values.values()):
+        raise AdapterError("Semble worker omitted nonnegative phase timings")
+    worker_total_ms = native_payload.get("worker_total_ms")
+    if type(worker_total_ms) not in (int, float) or worker_total_ms < sum(phase_values.values()):
+        raise AdapterError("Semble worker total timing is inconsistent with phases")
+    phase_values["unattributed"] = worker_total_ms - sum(phase_values.values())
+    phase_metrics = {
+        "schema_version": 1,
+        "system": "semble",
+        "timing_layer": "worker_monotonic_wall_v1",
+        "strategy": "native",
+        "record_sha256": sha_file(record_path),
+        "worker_sha256": worker_digest,
+        "task_count": len(pack["tasks"]),
+        "route_count": 1,
+        "file_count": native_payload.get("stats", {}).get("indexed_files"),
+        "chunk_count": native_payload.get("stats", {}).get("total_chunks"),
+        "phases_ms": phase_values,
+        "total_ms": worker_total_ms,
+    }
+    (out_root / "phase-metrics.json").write_text(
+        json.dumps(phase_metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     manifest_out = {
         "semble_version": semble_version,
         "semble_python": str(Path(args.python)),
@@ -956,6 +1031,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--warmup-passes", default="1")
     run.add_argument("--repetitions", default="1")
     run.add_argument("--timeout-secs", default="1800")
+    run.add_argument("--materialized-corpus", action="store_true")
     return parser
 
 

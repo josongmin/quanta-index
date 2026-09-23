@@ -58,9 +58,11 @@ provenance path before they can emit benchmark records. The daemon verifies
 the local PotionCode model assets on boot; missing or changed assets fail the
 run. The CLI refuses dirty or wrong-HEAD repositories, untracked admitted
 files, empty query-pack universes, stale non-empty state roots and existing
-output files. This CLI only emits `attested` blinding: it cannot prove process
-isolation. A separate externally enforced runner/proof path is required before
-claiming an `isolated` blinded quality verdict.
+output files. A direct CLI invocation is normally `attested`. The paired
+driver can invoke the CLI as `isolated` only inside its verified macOS
+Seatbelt boundary; the record then carries the driver-generated proof digest.
+The record label alone is never authority: `verdict` requires the frozen
+policy/probe artifact and matching process-resource bindings.
 
 The runner computes `query_pack_sha256` as SHA-256 of UTF-8 JSON serialized
 with sorted keys, no whitespace, and `ensure_ascii=False`. A producer can use
@@ -190,7 +192,7 @@ quality is inferred.
 
 `semble.py` runs a pinned Semble install (an outside-the-checkout virtualenv)
 against the admitted manifest and a projected query pack, then normalizes
-native hits into a v2 record with proven spans. It always emits the
+native hits into a v3 record with proven spans. It always emits the
 path-mapping proof (path map plus both-side path+SHA diff); any skipped or
 extra file fails the common-universe pair with a typed reason. `run.py`
 drives the Rust SDK runner per chunking strategy (`quanta`), runs both
@@ -219,8 +221,9 @@ keys: `repo`, `manifest`, `suite`, `query_pack`, `top_k`, `output_root`,
 | `embedder` | `potion-code` | Rust runner embedder profile (`hash-dev` is an explicit diagnostic control) |
 | `repo_id`/`revision_id`/`generation` | `bench-repo`/`bench-rev`/`7` | batch identity |
 | `runner_name`/`run_id` | `quanta-sdk-runner`/`run` | runner identity; `runner_revision` is derived from the binary SHA-256 |
-| `blinding` | `attested` | only `attested` is supported today |
-| `isolation_method`/`access_block_log` | `attested-only…` | blinding evidence text |
+| `blinding` | `attested` | `isolated` is supported by `pair` on macOS only, through the enforced Seatbelt path |
+| `suite_secret_root` | none | required for `isolated`; external evaluator-only root containing the suite and no runner-readable input |
+| `isolation_method`/`access_block_log` | `attested-only…` | supplied for attested runs; driver-generated and proof-bound for isolated runs |
 | `semble_python` | required for `pair` | pinned Semble venv interpreter |
 | `semble_lockfile` | required for `pair` | external hash-pinned lockfile path (frozen into the stage) |
 | `semble_lockfile_sha256` | required for `pair` | SHA-256 of the external lockfile; env must carry every locked line plus `semble==0.6.0` |
@@ -234,7 +237,7 @@ keys: `repo`, `manifest`, `suite`, `query_pack`, `top_k`, `output_root`,
 | `baseline_route` | Semble route | report baseline |
 | `scope` | `exploratory` | `exploratory` or `qualified` |
 | `claims` | all `false` | `{quality,speed,same_model,incremental}` |
-| `evidence` | `{}` | external contract/SDK receipts; cannot override driver-observed `pair` or `perf` |
+| `receipts` | omitted | paths to external contract/SDK result+receipt artifacts; bytes are frozen into the stage and re-verified |
 | `timeout_secs` | `1800` | per-capture timeout |
 
 Before a paired run, author a hash-pinned external lockfile for the exact
@@ -289,9 +292,8 @@ evidence exists yet; conditional IDs apply only when the claim is made.
 | T16 | incremental capture (conditional on an incremental claim) | NOT_RUN (no incremental claim) |
 
 Current closeout blockers are explicit: the contract/SDK receipt recipes must
-be run and frozen from one clean source; the generic workspace rail must record
-a frozen-source GREEN after its new explicit searchd-pin setup;
-Quanta capture is attested-only; and `run.py` hard-fails every speed claim as
-`phases_unimplemented` because phase fragments and process-tree peak RSS are
-not implemented. The commands above prove code paths, not W0-B, `PAIR_VALID`,
-`PERF_QUALIFIED` or `QUALITY_DELTA`.
+be run and frozen from one v2 source closure; the generic workspace rail must
+record a post-change frozen-source GREEN; the Seatbelt isolation authority and
+phase/process-tree RSS authority still need a real admitted quiet-host pair
+meeting their proof and sample floors. The commands above prove code paths, not W0-B,
+`PAIR_VALID`, `PERF_QUALIFIED` or `QUALITY_DELTA`.
