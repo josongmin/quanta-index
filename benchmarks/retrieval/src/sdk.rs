@@ -162,8 +162,28 @@ fn secure_state_root(_state_root: &Path) -> BenchResult<()> {
     Ok(())
 }
 
-fn daemon_stderr_tail(state_root: &Path) -> String {
-    let text = match std::fs::read_to_string(state_root.join("searchd.stderr.log")) {
+fn daemon_log_paths(state_root: &Path) -> BenchResult<(PathBuf, PathBuf)> {
+    let parent = state_root.parent().ok_or_else(|| {
+        BenchError::Config(format!(
+            "state root has no parent for external daemon logs: {}",
+            state_root.display()
+        ))
+    })?;
+    let name = state_root.file_name().ok_or_else(|| {
+        BenchError::Config(format!(
+            "state root has no file name for external daemon logs: {}",
+            state_root.display()
+        ))
+    })?;
+    let prefix = name.to_string_lossy();
+    Ok((
+        parent.join(format!("{prefix}.searchd.stdout.log")),
+        parent.join(format!("{prefix}.searchd.stderr.log")),
+    ))
+}
+
+fn daemon_stderr_tail(stderr_log: &Path) -> String {
+    let text = match std::fs::read_to_string(stderr_log) {
         Ok(text) => text,
         Err(err) => format!("<stderr log unreadable: {err}>"),
     };
@@ -254,18 +274,25 @@ impl DaemonSession {
         }
         secure_state_root(config.state_root)?;
         let binary = resolve_searchd_binary(config.searchd_binary)?;
-        // Daemon output lands in runner-owned log files inside the fresh
-        // state root: no pipe deadlock on long runs, and failures carry
-        // the daemon's own tail.
-        let stdout_log = std::fs::File::create(config.state_root.join("searchd.stdout.log"))
+        // Daemon logs are sibling evidence, never state-root data. Writing
+        // them inside the root would contaminate format detection before the
+        // daemon can establish the current layout.
+        let (stdout_log_path, stderr_log_path) = daemon_log_paths(config.state_root)?;
+        let stdout_log = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&stdout_log_path)
             .map_err(|err| BenchError::Io {
-                path: config.state_root.display().to_string(),
-                message: format!("failed to create daemon stdout log: {err}"),
+                path: stdout_log_path.display().to_string(),
+                message: format!("refusing to overwrite daemon stdout evidence: {err}"),
             })?;
-        let stderr_log = std::fs::File::create(config.state_root.join("searchd.stderr.log"))
+        let stderr_log = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&stderr_log_path)
             .map_err(|err| BenchError::Io {
-                path: config.state_root.display().to_string(),
-                message: format!("failed to create daemon stderr log: {err}"),
+                path: stderr_log_path.display().to_string(),
+                message: format!("refusing to overwrite daemon stderr evidence: {err}"),
             })?;
         let mut command = Command::new(&binary);
         let _configured = command
@@ -305,7 +332,7 @@ impl DaemonSession {
             }
             match child.try_wait() {
                 Ok(Some(status)) => {
-                    let tail = daemon_stderr_tail(config.state_root);
+                    let tail = daemon_stderr_tail(&stderr_log_path);
                     let _cleanup = remove_socket_files(config.state_root);
                     return Err(BenchError::Daemon(format!(
                         "searchd exited before opening sockets: {status}; stderr tail: {tail}"
