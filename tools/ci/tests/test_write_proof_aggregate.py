@@ -388,15 +388,30 @@ def _write_dependency_manifests(
 def _inject_verified_handoff_ledger(monkeypatch: pytest.MonkeyPatch) -> None:
     """Isolate aggregate composition from the separately tested handoff validator."""
     lanes = (
-        "P00", "P01", "P02A", "P02B", "P02I", "P03", "P04", "P05",
-        "P06", "P07", "P08", "P09", "P10", "P11",
+        "P00",
+        "P01",
+        "P02A",
+        "P02B",
+        "P02I",
+        "P03",
+        "P04",
+        "P05",
+        "P06",
+        "P07",
+        "P08",
+        "P09",
+        "P10",
+        "P11",
     )
-    reference = lambda lane: {
-        "lane": lane,
-        "path": f"artifacts/sep-21/handoffs/{lane}.json",
-        "sha256": hashlib.sha256(f"fixture-{lane}".encode()).hexdigest(),
-        "status": "VERIFIED",
-    }
+
+    def reference(lane: str) -> dict[str, str]:
+        return {
+            "lane": lane,
+            "path": f"artifacts/sep-21/handoffs/{lane}.json",
+            "sha256": hashlib.sha256(f"fixture-{lane}".encode()).hexdigest(),
+            "status": "VERIFIED",
+        }
+
     ledger = {
         "product_handoffs": [reference(lane) for lane in lanes],
         "product_chain_status": "VERIFIED",

@@ -392,7 +392,11 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
             seen_artifacts.add(artifact)
         test_targets = proof.get("test_authority_targets")
         if proof_id == "p12a-proof-infrastructure" and test_targets != EXPECTED_P12A_TEST_TARGETS:
-            findings.append(Finding(path, "P12A test authority targets differ from the fixed infrastructure set"))
+            findings.append(
+                Finding(
+                    path, "P12A test authority targets differ from the fixed infrastructure set"
+                )
+            )
         if not isinstance(test_targets, list) or any(
             not isinstance(item, str) for item in test_targets
         ):
@@ -2309,7 +2313,9 @@ def _main_locked(argv: list[str] | None = None) -> int:
             "0 manifest(s) validated; execution proof not checked"
         )
     else:
-        print(f"OK: {len(proof_by_id)} registered proof(s); {len(seen_proofs)} manifest(s) validated")
+        print(
+            f"OK: {len(proof_by_id)} registered proof(s); {len(seen_proofs)} manifest(s) validated"
+        )
     return 0
 
 

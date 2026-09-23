@@ -1030,7 +1030,9 @@ def test_static_registry_lint_does_not_claim_execution_proof(capsys) -> None:
 
 def test_p12a_refuses_a_shrunk_infrastructure_test_set() -> None:
     registry = MODULE._read_toml(REGISTRY_PATH)
-    proof = next(proof for proof in registry["proofs"] if proof["id"] == "p12a-proof-infrastructure")
+    proof = next(
+        proof for proof in registry["proofs"] if proof["id"] == "p12a-proof-infrastructure"
+    )
     proof["test_authority_targets"] = ["proof-aggregate-python-owner"]
     messages = _messages(MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH))
     assert any("P12A test authority targets differ" in message for message in messages)
