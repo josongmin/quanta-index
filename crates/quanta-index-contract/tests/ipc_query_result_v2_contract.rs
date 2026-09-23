@@ -92,15 +92,15 @@ fn duplicate_text_field(
     Ok(())
 }
 
-fn first_candidate_fields_mut(
+fn results_array_mut(
     results: &mut ciborium::Value,
-) -> Result<&mut Vec<(ciborium::Value, ciborium::Value)>, Box<dyn std::error::Error>> {
+) -> Result<&mut Vec<ciborium::Value>, Box<dyn std::error::Error>> {
     #[expect(
         clippy::wildcard_enum_match_arm,
         reason = "ciborium::Value is non_exhaustive; keep a future-variant rejection arm"
     )]
-    let array = match results {
-        ciborium::Value::Array(values) => values,
+    match results {
+        ciborium::Value::Array(values) => Ok(values),
         other @ (ciborium::Value::Integer(_)
         | ciborium::Value::Bytes(_)
         | ciborium::Value::Float(_)
@@ -108,16 +108,17 @@ fn first_candidate_fields_mut(
         | ciborium::Value::Bool(_)
         | ciborium::Value::Null
         | ciborium::Value::Tag(_, _)
-        | ciborium::Value::Map(_)) => {
-            return Err(format!("expected results array, got {other:?}").into());
-        }
+        | ciborium::Value::Map(_)) => Err(format!("expected results array, got {other:?}").into()),
         other => {
-            return Err(format!(
-                "expected results array, got future/non-exhaustive value {other:?}"
-            )
-            .into());
+            Err(format!("expected results array, got future/non-exhaustive value {other:?}").into())
         }
-    };
+    }
+}
+
+fn first_candidate_fields_mut(
+    results: &mut ciborium::Value,
+) -> Result<&mut Vec<(ciborium::Value, ciborium::Value)>, Box<dyn std::error::Error>> {
+    let array = results_array_mut(results)?;
     let first = array
         .first_mut()
         .ok_or_else(|| "expected first lexical result".to_string())?;
@@ -1270,7 +1271,10 @@ fn text_response_rejects_missing_or_contradictory_window() -> TestRes {
         ));
         Ok(())
     })?;
-    expect_decode_error_contains::<SearchPlaneQueryIpcResponse>(&contradictory, "disagree")
+    expect_decode_error_contains::<SearchPlaneQueryIpcResponse>(
+        &contradictory,
+        CONTINUATION_AUTHORIZATION_FRAGMENT,
+    )
 }
 
 #[test]
@@ -2049,39 +2053,60 @@ fn keyset_pages_round_trip_with_and_without_a_continuation() -> TestRes {
     roundtrip_eq(&SearchPlaneQueryIpcResponse::Structural(final_page))
 }
 
-/// A page whose window, rows, order, cursor and epochs disagree fails to
-/// decode.
+/// Concrete refusal fragments for the keyset-page invariants.
 ///
-/// A page cannot claim a continuation it does not position, position one
-/// that is not its last row, count rows it does not hold, leave its
-/// order, or hand out a cursor for an epoch it did not read.
+/// Each names the violated rule — continuation authorization, the
+/// returned-vs-results count, the candidate-id order — never the weak
+/// shared `disagree` the old oracle accepted. The duplicate-identity
+/// case shares the order fragment deliberately: duplicate ids violate
+/// strict ascent, and the production message says exactly that.
+const CONTINUATION_AUTHORIZATION_FRAGMENT: &str =
+    "the token is present exactly when the outcome authorizes a continuation";
+const RETURNED_LENGTH_FRAGMENT: &str = "returned count does not match results length";
+const KEYSET_ORDER_FRAGMENT: &str = "strictly ascending by candidate id";
+
+/// Require the producer to refuse: encoding `response` must fail naming `fragment`.
 ///
-/// An inconsistent page must never cross the wire: the codec refuses it
-/// at encode, at decode, or at both, and the refusal must name the
-/// violated page invariant.
-fn expect_page_refused(
+/// An inconsistent page must never become bytes — even where the decoder
+/// would also refuse them, a successful encode means the producer let
+/// the page cross the wire.
+fn expect_encode_refused(
     label: &str,
     response: &SearchPlaneQueryIpcResponse,
     fragment: &str,
 ) -> TestRes {
     match encode(response) {
-        Ok(bytes) => match decode::<SearchPlaneQueryIpcResponse>(&bytes) {
-            Ok(decoded) => Err(format!("{label}: inconsistent page accepted: {decoded:?}").into()),
-            Err(err) => {
-                let message = err.to_string();
-                if !message.contains(fragment) {
-                    return Err(
-                        format!("{label}: decode refusal missed `{fragment}`: {message}").into(),
-                    );
-                }
-                Ok(())
+        Ok(bytes) => Err(format!(
+            "{label}: inconsistent page encoded into {} bytes; producer must refuse with `{fragment}`",
+            bytes.len()
+        )
+        .into()),
+        Err(err) => {
+            let message = err.to_string();
+            if !message.contains(fragment) {
+                return Err(format!(
+                    "{label}: encode refusal missed `{fragment}`: {message}"
+                )
+                .into());
             }
-        },
+            Ok(())
+        }
+    }
+}
+
+/// Require the consumer to refuse: decoding `bytes` must fail naming `fragment`.
+///
+/// Callers build `bytes` by encoding a valid page and mutating the raw
+/// CBOR map, so the refusal proves the decoder holds the invariant
+/// against bytes no valid producer emits.
+fn expect_decode_refused(label: &str, bytes: &[u8], fragment: &str) -> TestRes {
+    match decode::<SearchPlaneQueryIpcResponse>(bytes) {
+        Ok(decoded) => Err(format!("{label}: inconsistent page decoded: {decoded:?}").into()),
         Err(err) => {
             let message = err.to_string();
             if !message.contains(fragment) {
                 return Err(
-                    format!("{label}: encode refusal missed `{fragment}`: {message}").into(),
+                    format!("{label}: decode refusal missed `{fragment}`: {message}").into(),
                 );
             }
             Ok(())
@@ -2089,13 +2114,156 @@ fn expect_page_refused(
     }
 }
 
+/// A well-formed exact runtime-metadata page: two ascending rows, an
+/// exact window counting them, no continuation.
+fn runtime_final_page() -> quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
+    quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
+        generation: generation_pin(),
+        results: vec![lexical_candidate_named("a"), lexical_candidate_named("b")],
+        window: QueryResultWindowV2::exact_probe(2),
+        read_epoch: AuxEpochV1::new(4),
+        universe_epoch: AuxEpochV1::new(11),
+        examined: 2,
+        next_cursor: None,
+    }
+}
+
+/// A well-formed exact structural page: two ascending rows, an exact
+/// window counting them, no continuation.
+fn structural_final_page() -> quanta_index_contract::SearchPlaneStructuralQueryResponse {
+    quanta_index_contract::SearchPlaneStructuralQueryResponse {
+        generation: generation_pin(),
+        results: vec![
+            structural_candidate_named("a"),
+            structural_candidate_named("b"),
+        ],
+        window: QueryResultWindowV2::exact_probe(2),
+        read_epoch: AuxEpochV1::new(6),
+        examined: 2,
+        next_cursor: None,
+    }
+}
+
+/// Remove the page's `next_cursor` from the raw CBOR map. The valid base
+/// carries exactly one; anything else is fixture drift, not a refusal.
+fn strip_next_cursor(wire: &mut ciborium::Value) -> Result<(), Box<dyn std::error::Error>> {
+    let response_fields = map_fields_mut(wire)?;
+    let payload = field_value_mut(response_fields, "payload")?;
+    let payload_fields = map_fields_mut(payload)?;
+    let before = payload_fields.len();
+    payload_fields
+        .retain(|(key, _)| !matches!(key, ciborium::Value::Text(name) if name == "next_cursor"));
+    if payload_fields.len() != before.saturating_sub(1) {
+        return Err("valid continuation page carries exactly one next_cursor".into());
+    }
+    Ok(())
+}
+
+/// Plant a continuation token on the raw CBOR map of an exact page. The
+/// valid base carries none; anything else is fixture drift, not a refusal.
+fn plant_next_cursor(wire: &mut ciborium::Value) -> Result<(), Box<dyn std::error::Error>> {
+    let response_fields = map_fields_mut(wire)?;
+    let payload = field_value_mut(response_fields, "payload")?;
+    let payload_fields = map_fields_mut(payload)?;
+    if payload_fields
+        .iter()
+        .any(|(key, _)| matches!(key, ciborium::Value::Text(name) if name == "next_cursor"))
+    {
+        return Err("exact page must carry no next_cursor before planting".into());
+    }
+    payload_fields.push((
+        ciborium::Value::Text("next_cursor".to_owned()),
+        ciborium::Value::Text("signed-x".to_owned()),
+    ));
+    Ok(())
+}
+
+/// Rewrite the page window's `returned` count on the raw CBOR map. The
+/// valid base counts `expected` rows; anything else is fixture drift.
+fn rewrite_window_returned(
+    wire: &mut ciborium::Value,
+    expected: u32,
+    rewritten: u32,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let response_fields = map_fields_mut(wire)?;
+    let payload = field_value_mut(response_fields, "payload")?;
+    let payload_fields = map_fields_mut(payload)?;
+    let window = field_value_mut(payload_fields, "window")?;
+    let window_fields = map_fields_mut(window)?;
+    let returned = field_value_mut(window_fields, "returned")?;
+    if *returned != ciborium::Value::Integer(expected.into()) {
+        return Err(format!("valid page window counts {expected} rows").into());
+    }
+    *returned = ciborium::Value::Integer(rewritten.into());
+    Ok(())
+}
+
+/// Read a keyset row's `candidate_id` off the raw CBOR map.
+fn candidate_id_of(row: &ciborium::Value) -> Result<&str, Box<dyn std::error::Error>> {
+    let ciborium::Value::Map(fields) = row else {
+        return Err(format!("expected candidate map, got {row:?}").into());
+    };
+    for (key, value) in fields {
+        if matches!(key, ciborium::Value::Text(name) if name == "candidate_id") {
+            if let ciborium::Value::Text(id) = value {
+                return Ok(id);
+            }
+            return Err(format!("candidate_id is not text: {value:?}").into());
+        }
+    }
+    Err("candidate_id not found".into())
+}
+
+/// Swap the first two rows on the raw CBOR map. The valid base ascends,
+/// so the swap breaks the candidate-id order; anything else is drift.
+fn swap_first_two_rows(wire: &mut ciborium::Value) -> Result<(), Box<dyn std::error::Error>> {
+    let response_fields = map_fields_mut(wire)?;
+    let payload = field_value_mut(response_fields, "payload")?;
+    let payload_fields = map_fields_mut(payload)?;
+    let results = results_array_mut(field_value_mut(payload_fields, "results")?)?;
+    let [first, second, ..] = results.as_slice() else {
+        return Err("valid page carries at least two rows".into());
+    };
+    if candidate_id_of(first)? >= candidate_id_of(second)? {
+        return Err("valid page rows ascend by candidate id".into());
+    }
+    results.swap(0, 1);
+    Ok(())
+}
+
+/// Copy the first row over the second on the raw CBOR map. The valid
+/// base holds distinct ids, so the copy forges a duplicate identity.
+fn duplicate_first_row(wire: &mut ciborium::Value) -> Result<(), Box<dyn std::error::Error>> {
+    let response_fields = map_fields_mut(wire)?;
+    let payload = field_value_mut(response_fields, "payload")?;
+    let payload_fields = map_fields_mut(payload)?;
+    let results = results_array_mut(field_value_mut(payload_fields, "results")?)?;
+    let [first, second, ..] = results.as_slice() else {
+        return Err("valid page carries at least two rows".into());
+    };
+    if candidate_id_of(first)? == candidate_id_of(second)? {
+        return Err("valid page rows carry distinct candidate ids".into());
+    }
+    let forged = first.clone();
+    let target = results
+        .get_mut(1)
+        .ok_or("valid page carries at least two rows")?;
+    *target = forged;
+    Ok(())
+}
+
+/// Producer proof: a page whose continuation token and window outcome
+/// disagree never encodes — on either keyset route, in either direction.
+///
+/// Each case violates exactly one invariant (the window still counts
+/// the rows, which still ascend), so the refusal must name the
+/// continuation rule.
 #[test]
-fn keyset_pages_reject_inconsistent_shapes() -> TestRes {
+fn keyset_pages_refuse_continuation_mismatch_on_encode() -> TestRes {
     let base = runtime_page_with_continuation()?;
     let runtime_cases: Vec<(
         &str,
         quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse,
-        &str,
     )> = vec![
         (
             "an authorizing outcome without a token",
@@ -2103,52 +2271,20 @@ fn keyset_pages_reject_inconsistent_shapes() -> TestRes {
                 next_cursor: None,
                 ..base.clone()
             },
-            "disagree",
         ),
         (
             "a token without an authorizing outcome",
             quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
                 window: QueryResultWindowV2::exact_probe(2),
-                ..base.clone()
-            },
-            "disagree",
-        ),
-        (
-            "a window that does not count the rows",
-            quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
-                window: QueryResultWindowV2::pageable(
-                    1,
-                    quanta_index_contract::CandidateCountV1::AtLeast(3),
-                    true,
-                    Vec::new(),
-                )?,
-                ..base.clone()
-            },
-            "does not match results length",
-        ),
-        (
-            "rows out of candidate-id order",
-            quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
-                results: vec![lexical_candidate_named("b"), lexical_candidate_named("a")],
-                next_cursor: Some(token("a")?),
-                ..base.clone()
-            },
-            "strictly ascending",
-        ),
-        (
-            "a duplicated row",
-            quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
-                results: vec![lexical_candidate_named("b"), lexical_candidate_named("b")],
                 ..base
             },
-            "strictly ascending",
         ),
     ];
-    for (label, page, fragment) in runtime_cases {
-        expect_page_refused(
+    for (label, page) in runtime_cases {
+        expect_encode_refused(
             &format!("runtime-metadata: {label}"),
             &SearchPlaneQueryIpcResponse::RuntimeMetadata(page),
-            fragment,
+            CONTINUATION_AUTHORIZATION_FRAGMENT,
         )?;
     }
 
@@ -2156,7 +2292,6 @@ fn keyset_pages_reject_inconsistent_shapes() -> TestRes {
     let structural_cases: Vec<(
         &str,
         quanta_index_contract::SearchPlaneStructuralQueryResponse,
-        &str,
     )> = vec![
         (
             "an authorizing outcome without a token",
@@ -2164,52 +2299,189 @@ fn keyset_pages_reject_inconsistent_shapes() -> TestRes {
                 next_cursor: None,
                 ..base.clone()
             },
-            "disagree",
         ),
         (
             "a token without an authorizing outcome",
             quanta_index_contract::SearchPlaneStructuralQueryResponse {
                 window: QueryResultWindowV2::exact_probe(2),
-                ..base.clone()
-            },
-            "disagree",
-        ),
-        (
-            "a window that does not count the rows",
-            quanta_index_contract::SearchPlaneStructuralQueryResponse {
-                window: QueryResultWindowV2::pageable(
-                    3,
-                    quanta_index_contract::CandidateCountV1::Exact(5),
-                    true,
-                    Vec::new(),
-                )?,
-                ..base.clone()
-            },
-            "does not match results length",
-        ),
-        (
-            "rows out of candidate-id order",
-            quanta_index_contract::SearchPlaneStructuralQueryResponse {
-                results: vec![
-                    structural_candidate_named("b"),
-                    structural_candidate_named("a"),
-                ],
-                next_cursor: Some(token("a")?),
                 ..base
             },
-            "strictly ascending",
         ),
     ];
-    for (label, page, fragment) in structural_cases {
-        expect_page_refused(
+    for (label, page) in structural_cases {
+        expect_encode_refused(
             &format!("structural: {label}"),
             &SearchPlaneQueryIpcResponse::Structural(page),
-            fragment,
+            CONTINUATION_AUTHORIZATION_FRAGMENT,
         )?;
     }
+    Ok(())
+}
 
-    // Every required field is required: dropping `examined` or an epoch
-    // from the wire refuses the page.
+/// Producer proof: a page whose window does not count its rows never
+/// encodes, on either keyset route.
+#[test]
+fn keyset_pages_refuse_returned_length_mismatch_on_encode() -> TestRes {
+    let base = runtime_page_with_continuation()?;
+    let short = quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
+        window: QueryResultWindowV2::pageable(
+            1,
+            quanta_index_contract::CandidateCountV1::AtLeast(3),
+            true,
+            Vec::new(),
+        )?,
+        ..base
+    };
+    expect_encode_refused(
+        "runtime-metadata: a window that does not count the rows",
+        &SearchPlaneQueryIpcResponse::RuntimeMetadata(short),
+        RETURNED_LENGTH_FRAGMENT,
+    )?;
+
+    let base = structural_page_with_continuation()?;
+    let long = quanta_index_contract::SearchPlaneStructuralQueryResponse {
+        window: QueryResultWindowV2::pageable(
+            3,
+            quanta_index_contract::CandidateCountV1::Exact(5),
+            true,
+            Vec::new(),
+        )?,
+        ..base
+    };
+    expect_encode_refused(
+        "structural: a window that does not count the rows",
+        &SearchPlaneQueryIpcResponse::Structural(long),
+        RETURNED_LENGTH_FRAGMENT,
+    )
+}
+
+/// Consumer proof: bytes carrying a continuation the outcome does not
+/// authorize — or withholding one it does — are refused at decode.
+///
+/// Each payload starts as a valid page that round-trips, then the raw
+/// CBOR map is mutated, so the refusal proves the decoder holds the
+/// invariant against bytes no valid producer emits.
+#[test]
+fn keyset_pages_refuse_continuation_mismatch_on_decode() -> TestRes {
+    let valid = SearchPlaneQueryIpcResponse::RuntimeMetadata(runtime_page_with_continuation()?);
+    roundtrip_eq(&valid)?;
+    let stripped = mutate_ipc_response_wire(&valid, strip_next_cursor)?;
+    expect_decode_refused(
+        "runtime-metadata: an authorizing outcome without a token",
+        &stripped,
+        CONTINUATION_AUTHORIZATION_FRAGMENT,
+    )?;
+
+    let exact = SearchPlaneQueryIpcResponse::RuntimeMetadata(runtime_final_page());
+    roundtrip_eq(&exact)?;
+    let planted = mutate_ipc_response_wire(&exact, plant_next_cursor)?;
+    expect_decode_refused(
+        "runtime-metadata: a token without an authorizing outcome",
+        &planted,
+        CONTINUATION_AUTHORIZATION_FRAGMENT,
+    )?;
+
+    let valid = SearchPlaneQueryIpcResponse::Structural(structural_page_with_continuation()?);
+    roundtrip_eq(&valid)?;
+    let stripped = mutate_ipc_response_wire(&valid, strip_next_cursor)?;
+    expect_decode_refused(
+        "structural: an authorizing outcome without a token",
+        &stripped,
+        CONTINUATION_AUTHORIZATION_FRAGMENT,
+    )?;
+
+    let exact = SearchPlaneQueryIpcResponse::Structural(structural_final_page());
+    roundtrip_eq(&exact)?;
+    let planted = mutate_ipc_response_wire(&exact, plant_next_cursor)?;
+    expect_decode_refused(
+        "structural: a token without an authorizing outcome",
+        &planted,
+        CONTINUATION_AUTHORIZATION_FRAGMENT,
+    )
+}
+
+/// Consumer proof: bytes whose window does not count the rows are
+/// refused at decode, on either keyset route.
+#[test]
+fn keyset_pages_refuse_returned_length_mismatch_on_decode() -> TestRes {
+    let valid = SearchPlaneQueryIpcResponse::RuntimeMetadata(runtime_page_with_continuation()?);
+    roundtrip_eq(&valid)?;
+    let bytes = mutate_ipc_response_wire(&valid, |wire| rewrite_window_returned(wire, 2, 1))?;
+    expect_decode_refused(
+        "runtime-metadata: a window that does not count the rows",
+        &bytes,
+        RETURNED_LENGTH_FRAGMENT,
+    )?;
+
+    let valid = SearchPlaneQueryIpcResponse::Structural(structural_page_with_continuation()?);
+    roundtrip_eq(&valid)?;
+    let bytes = mutate_ipc_response_wire(&valid, |wire| rewrite_window_returned(wire, 2, 3))?;
+    expect_decode_refused(
+        "structural: a window that does not count the rows",
+        &bytes,
+        RETURNED_LENGTH_FRAGMENT,
+    )
+}
+
+/// Consumer proof: bytes whose rows leave the candidate-id order are
+/// refused at decode, on either keyset route.
+///
+/// Row order is consumer-enforced by codec design — the producer is
+/// trusted for its own sort and the visitor holds every page to strict
+/// ascent — so the swapped pair is proven here, against mutated bytes.
+#[test]
+fn keyset_pages_refuse_candidate_ordering_violation_on_decode() -> TestRes {
+    let valid = SearchPlaneQueryIpcResponse::RuntimeMetadata(runtime_page_with_continuation()?);
+    roundtrip_eq(&valid)?;
+    let bytes = mutate_ipc_response_wire(&valid, swap_first_two_rows)?;
+    expect_decode_refused(
+        "runtime-metadata: rows out of candidate-id order",
+        &bytes,
+        KEYSET_ORDER_FRAGMENT,
+    )?;
+
+    let valid = SearchPlaneQueryIpcResponse::Structural(structural_page_with_continuation()?);
+    roundtrip_eq(&valid)?;
+    let bytes = mutate_ipc_response_wire(&valid, swap_first_two_rows)?;
+    expect_decode_refused(
+        "structural: rows out of candidate-id order",
+        &bytes,
+        KEYSET_ORDER_FRAGMENT,
+    )
+}
+
+/// Consumer proof: bytes carrying two rows under one candidate identity
+/// are refused at decode, on either keyset route.
+///
+/// A duplicated id is not strictly ascending, so the same order rule
+/// names the violation; the construction (a forged copy, not a swapped
+/// pair) is what distinguishes this invariant from the ordering one.
+#[test]
+fn keyset_pages_refuse_duplicate_candidate_identity_on_decode() -> TestRes {
+    let valid = SearchPlaneQueryIpcResponse::RuntimeMetadata(runtime_page_with_continuation()?);
+    roundtrip_eq(&valid)?;
+    let bytes = mutate_ipc_response_wire(&valid, duplicate_first_row)?;
+    expect_decode_refused(
+        "runtime-metadata: a duplicated row",
+        &bytes,
+        KEYSET_ORDER_FRAGMENT,
+    )?;
+
+    let valid = SearchPlaneQueryIpcResponse::Structural(structural_page_with_continuation()?);
+    roundtrip_eq(&valid)?;
+    let bytes = mutate_ipc_response_wire(&valid, duplicate_first_row)?;
+    expect_decode_refused(
+        "structural: a duplicated row",
+        &bytes,
+        KEYSET_ORDER_FRAGMENT,
+    )
+}
+
+/// Consumer proof: every required field is required — dropping
+/// `examined`, an epoch, or the window from the wire refuses the page,
+/// and the refusal names the missing field.
+#[test]
+fn keyset_pages_refuse_missing_required_fields_on_decode() -> TestRes {
     for name in ["examined", "universe_epoch", "read_epoch", "window"] {
         let mut value = serde_json::to_value(SearchPlaneQueryIpcResponse::RuntimeMetadata(
             runtime_page_with_continuation()?,
@@ -2221,9 +2493,7 @@ fn keyset_pages_reject_inconsistent_shapes() -> TestRes {
         if payload.remove(name).is_none() {
             return Err(format!("the runtime page serializes `{name}`").into());
         }
-        if serde_json::from_value::<SearchPlaneQueryIpcResponse>(value).is_ok() {
-            return Err(format!("a runtime page without `{name}` must not decode").into());
-        }
+        expect_json_refusal::<SearchPlaneQueryIpcResponse>(&value.to_string(), name)?;
     }
     for name in ["examined", "read_epoch", "window"] {
         let mut value = serde_json::to_value(SearchPlaneQueryIpcResponse::Structural(
@@ -2236,9 +2506,7 @@ fn keyset_pages_reject_inconsistent_shapes() -> TestRes {
         if payload.remove(name).is_none() {
             return Err(format!("the structural page serializes `{name}`").into());
         }
-        if serde_json::from_value::<SearchPlaneQueryIpcResponse>(value).is_ok() {
-            return Err(format!("a structural page without `{name}` must not decode").into());
-        }
+        expect_json_refusal::<SearchPlaneQueryIpcResponse>(&value.to_string(), name)?;
     }
     Ok(())
 }

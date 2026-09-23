@@ -28,6 +28,11 @@ use quanta_index_contract::{
     GenerationPin, HybridQueryRequest, ManifestGeneration, RepoId, RevisionId,
     SemanticQueryRequest, TextQueryRequest, TextQuerySyntax,
 };
+use serde::{
+    Deserialize, Deserializer,
+    de::{self, MapAccess, Visitor},
+};
+use std::fmt;
 
 type TestRes = Result<(), Box<dyn std::error::Error>>;
 
@@ -451,6 +456,378 @@ fn search_explanation_rejects_unknown_field() -> TestRes {
         ciborium::de::from_reader::<SearchExplanation, _>(mutated.as_slice());
     if result.is_ok() {
         return Err("decoder must reject unknown SearchExplanation fields".into());
+    }
+    Ok(())
+}
+
+// --- S21-10 compat: V0 payloads (pre-`engines_executed`/`request_id`) ------
+//
+// The current reader defaults the two S21-10 fields (`[]`, `0`) so
+// pre-change payloads stay readable; a pinned V0 decoder — the exact
+// pre-change field set with unknown fields denied — rejects every new
+// field instead of misreading. No binary fixtures: the V0 bytes below
+// are a freshly encoded current payload with the two fields stripped,
+// and the stripped key set is asserted exactly, so test-construction
+// drift fails the test rather than weakening the oracle.
+
+/// Pinned pre-S21-10 `SearchExplanation` reader: the exact V0 field set.
+///
+/// This mirrors the decoder every pre-change consumer ran. The
+/// component types are unchanged since V0; only `engines_executed` and
+/// `request_id` are absent, and any other field is an unknown-field
+/// refusal. Manual `Deserialize` per CLAUDE.md D18 — no derives.
+#[derive(Debug)]
+struct SearchExplanationV0Pin {
+    planner_trace: Vec<PlannerTraceEntry>,
+    engines_touched: Vec<EngineTouched>,
+    early_stop_reason: Option<EarlyStopReason>,
+    contributions: Vec<ExplanationRow>,
+    ranker_weights_hash: [u8; 32],
+    strategy: String,
+    summary: String,
+}
+
+const SEARCH_EXPLANATION_V0_FIELDS: &[&str] = &[
+    "planner_trace",
+    "engines_touched",
+    "early_stop_reason",
+    "contributions",
+    "ranker_weights_hash",
+    "strategy",
+    "summary",
+];
+
+struct SearchExplanationV0Visitor;
+
+impl<'de> Visitor<'de> for SearchExplanationV0Visitor {
+    type Value = SearchExplanationV0Pin;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a V0 SearchExplanation map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut planner_trace: Option<Vec<PlannerTraceEntry>> = None;
+        let mut engines_touched: Option<Vec<EngineTouched>> = None;
+        let mut early_stop_reason: Option<Option<EarlyStopReason>> = None;
+        let mut contributions: Option<Vec<ExplanationRow>> = None;
+        let mut ranker_weights_hash: Option<[u8; 32]> = None;
+        let mut strategy: Option<String> = None;
+        let mut summary: Option<String> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "planner_trace" => {
+                    if planner_trace.is_some() {
+                        return Err(de::Error::duplicate_field("planner_trace"));
+                    }
+                    planner_trace = Some(map.next_value()?);
+                }
+                "engines_touched" => {
+                    if engines_touched.is_some() {
+                        return Err(de::Error::duplicate_field("engines_touched"));
+                    }
+                    engines_touched = Some(map.next_value()?);
+                }
+                "early_stop_reason" => {
+                    if early_stop_reason.is_some() {
+                        return Err(de::Error::duplicate_field("early_stop_reason"));
+                    }
+                    early_stop_reason = Some(Some(map.next_value()?));
+                }
+                "contributions" => {
+                    if contributions.is_some() {
+                        return Err(de::Error::duplicate_field("contributions"));
+                    }
+                    contributions = Some(map.next_value()?);
+                }
+                "ranker_weights_hash" => {
+                    if ranker_weights_hash.is_some() {
+                        return Err(de::Error::duplicate_field("ranker_weights_hash"));
+                    }
+                    ranker_weights_hash = Some(map.next_value()?);
+                }
+                "strategy" => {
+                    if strategy.is_some() {
+                        return Err(de::Error::duplicate_field("strategy"));
+                    }
+                    strategy = Some(map.next_value()?);
+                }
+                "summary" => {
+                    if summary.is_some() {
+                        return Err(de::Error::duplicate_field("summary"));
+                    }
+                    summary = Some(map.next_value()?);
+                }
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        SEARCH_EXPLANATION_V0_FIELDS,
+                    ));
+                }
+            }
+        }
+        Ok(SearchExplanationV0Pin {
+            planner_trace: planner_trace
+                .ok_or_else(|| de::Error::missing_field("planner_trace"))?,
+            engines_touched: engines_touched
+                .ok_or_else(|| de::Error::missing_field("engines_touched"))?,
+            early_stop_reason: early_stop_reason.unwrap_or(None),
+            contributions: contributions
+                .ok_or_else(|| de::Error::missing_field("contributions"))?,
+            ranker_weights_hash: ranker_weights_hash
+                .ok_or_else(|| de::Error::missing_field("ranker_weights_hash"))?,
+            strategy: strategy.ok_or_else(|| de::Error::missing_field("strategy"))?,
+            summary: summary.ok_or_else(|| de::Error::missing_field("summary"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for SearchExplanationV0Pin {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "SearchExplanationV0Pin",
+            SEARCH_EXPLANATION_V0_FIELDS,
+            SearchExplanationV0Visitor,
+        )
+    }
+}
+
+/// Strip `fields` from a freshly encoded explanation's CBOR map. Every
+/// named field must be present exactly once; anything else is fixture
+/// drift, not a V0 payload.
+fn strip_explanation_fields(
+    value: &SearchExplanation,
+    fields: &[&str],
+) -> Result<ciborium::Value, Box<dyn std::error::Error>> {
+    let wire: ciborium::Value = decode(&encode(value)?)?;
+    let ciborium::Value::Map(mut entries) = wire else {
+        return Err("expected SearchExplanation to encode as a map".into());
+    };
+    for field in fields {
+        let before = entries.len();
+        entries.retain(|(key, _)| !matches!(key, ciborium::Value::Text(name) if name == field));
+        if entries.len() != before.saturating_sub(1) {
+            return Err(format!("wire map carries `{field}` exactly once").into());
+        }
+    }
+    Ok(ciborium::Value::Map(entries))
+}
+
+/// Sorted text keys of a CBOR map.
+fn wire_map_keys(wire: &ciborium::Value) -> Result<Vec<&str>, Box<dyn std::error::Error>> {
+    let ciborium::Value::Map(entries) = wire else {
+        return Err("expected a CBOR map".into());
+    };
+    let mut keys = Vec::new();
+    for (key, _) in entries {
+        let ciborium::Value::Text(name) = key else {
+            return Err(format!("expected text map keys, got {key:?}").into());
+        };
+        keys.push(name.as_str());
+    }
+    keys.sort_unstable();
+    Ok(keys)
+}
+
+#[test]
+fn search_explanation_current_reader_defaults_v0_payload() -> TestRes {
+    // V0 with `early_stop_reason`: exactly the 7 V0 keys, and the
+    // current reader yields `[]` / `0` for the two absent S21-10 fields
+    // while every carried field survives verbatim.
+    let full = sample_explanation_full();
+    let v0 = strip_explanation_fields(&full, &["engines_executed", "request_id"])?;
+    let keys = wire_map_keys(&v0)?;
+    let expected = [
+        "contributions",
+        "early_stop_reason",
+        "engines_touched",
+        "planner_trace",
+        "ranker_weights_hash",
+        "strategy",
+        "summary",
+    ];
+    if keys.as_slice() != expected {
+        return Err(format!("V0 key set drifted: {keys:?}").into());
+    }
+    let decoded: SearchExplanation = decode(&encode(&v0)?)?;
+    if !decoded.engines_executed.is_empty() {
+        return Err(format!(
+            "V0 engines_executed must default to [], got {:?}",
+            decoded.engines_executed
+        )
+        .into());
+    }
+    if decoded.request_id != 0 {
+        return Err(format!(
+            "V0 request_id must default to 0, got {}",
+            decoded.request_id
+        )
+        .into());
+    }
+    if decoded.engines_touched != vec![EngineTouched::Lexical, EngineTouched::Semantic]
+        || decoded.early_stop_reason != Some(EarlyStopReason::CountReached)
+        || decoded.strategy != "hybrid-v1"
+        || decoded.summary != "regex narrowed by repo filter"
+    {
+        return Err(format!("V0 carried fields must survive verbatim: {decoded:?}").into());
+    }
+
+    // V0 without `early_stop_reason`: 6 keys, `None` stays `None`.
+    let bare = SearchExplanation {
+        early_stop_reason: None,
+        ..full
+    };
+    let v0 = strip_explanation_fields(&bare, &["engines_executed", "request_id"])?;
+    let keys = wire_map_keys(&v0)?;
+    let expected = [
+        "contributions",
+        "engines_touched",
+        "planner_trace",
+        "ranker_weights_hash",
+        "strategy",
+        "summary",
+    ];
+    if keys.as_slice() != expected {
+        return Err(format!("V0 key set drifted: {keys:?}").into());
+    }
+    let decoded: SearchExplanation = decode(&encode(&v0)?)?;
+    if !decoded.engines_executed.is_empty() || decoded.request_id != 0 {
+        return Err(format!("V0 new fields must default to [] / 0: {decoded:?}").into());
+    }
+    if decoded.early_stop_reason.is_some() {
+        return Err("V0 without early_stop_reason must stay None".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn search_explanation_pinned_v0_decoder_rejects_each_new_field() -> TestRes {
+    // The full current payload trips on the first new field in wire
+    // order; each single-field payload trips on exactly its new field.
+    // Every refusal must be an unknown-field refusal naming the field.
+    let full = sample_explanation_full();
+    // Positive control: a true V0 payload reads cleanly, so the
+    // rejections below prove the pin trips on the new fields — not that
+    // the pin rejects everything.
+    let v0 = strip_explanation_fields(&full, &["engines_executed", "request_id"])?;
+    let pinned: SearchExplanationV0Pin = decode(&encode(&v0)?)?;
+    if pinned.strategy != "hybrid-v1"
+        || pinned.summary != "regex narrowed by repo filter"
+        || pinned.engines_touched != vec![EngineTouched::Lexical, EngineTouched::Semantic]
+        || pinned.early_stop_reason != Some(EarlyStopReason::CountReached)
+        || pinned.planner_trace.len() != 2
+        || pinned.contributions.len() != 1
+        || pinned.ranker_weights_hash != [0xab; 32]
+    {
+        return Err(format!("pinned V0 decoder misread a V0 payload: {pinned:?}").into());
+    }
+    let cases: Vec<(&str, Vec<&str>, &str)> = vec![
+        ("full current payload", vec![], "engines_executed"),
+        (
+            "current payload without engines_executed",
+            vec!["engines_executed"],
+            "request_id",
+        ),
+        (
+            "current payload without request_id",
+            vec!["request_id"],
+            "engines_executed",
+        ),
+    ];
+    for (label, strip, expected) in cases {
+        let wire = strip_explanation_fields(&full, &strip)?;
+        let bytes = encode(&wire)?;
+        let result: Result<SearchExplanationV0Pin, _> = ciborium::de::from_reader(bytes.as_slice());
+        match result {
+            Ok(pinned) => {
+                return Err(format!(
+                    "{label}: pinned V0 decoder accepted new field `{expected}`: {pinned:?}"
+                )
+                .into());
+            }
+            Err(err) => {
+                let message = err.to_string();
+                if !message.contains("unknown field") || !message.contains(expected) {
+                    return Err(format!(
+                        "{label}: V0 refusal missed unknown-field `{expected}`: {message}"
+                    )
+                    .into());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A payload duplicating `field` must be refused as a duplicate field,
+/// naming it.
+fn duplicate_explanation_field_is_refused(field: &str) -> TestRes {
+    let bytes = encode(&sample_explanation_full())?;
+    let mut wire: ciborium::Value = decode(&bytes)?;
+    let ciborium::Value::Map(entries) = &mut wire else {
+        return Err("expected SearchExplanation to encode as a map".into());
+    };
+    let duplicate = entries
+        .iter()
+        .find(|(key, _)| matches!(key, ciborium::Value::Text(name) if name == field))
+        .cloned()
+        .ok_or_else(|| format!("wire map carries `{field}`"))?;
+    entries.push(duplicate);
+    let bytes = encode(&wire)?;
+    let result: Result<SearchExplanation, _> = ciborium::de::from_reader(bytes.as_slice());
+    match result {
+        Ok(decoded) => Err(format!("duplicated `{field}` decoded: {decoded:?}").into()),
+        Err(err) => {
+            let expected = format!("duplicate field `{field}`");
+            let message = err.to_string();
+            if !message.contains(&expected) {
+                return Err(format!("refusal missed `{expected}`: {message}").into());
+            }
+            Ok(())
+        }
+    }
+}
+
+#[test]
+fn search_explanation_rejects_duplicate_engines_executed() -> TestRes {
+    duplicate_explanation_field_is_refused("engines_executed")
+}
+
+#[test]
+fn search_explanation_rejects_duplicate_request_id() -> TestRes {
+    duplicate_explanation_field_is_refused("request_id")
+}
+
+#[test]
+fn search_explanation_early_stop_reason_presence_controls_field_count() -> TestRes {
+    // The optional field is the only structural difference: 9 entries
+    // with it, 8 without, every other key identical.
+    let present = sample_explanation_full();
+    let absent = SearchExplanation {
+        early_stop_reason: None,
+        ..present.clone()
+    };
+    let present_wire: ciborium::Value = decode(&encode(&present)?)?;
+    let absent_wire: ciborium::Value = decode(&encode(&absent)?)?;
+    let present_keys = wire_map_keys(&present_wire)?;
+    let absent_keys = wire_map_keys(&absent_wire)?;
+    if present_keys.len() != 9 {
+        return Err(format!("present map must hold 9 fields: {present_keys:?}").into());
+    }
+    if absent_keys.len() != 8 {
+        return Err(format!("absent map must hold 8 fields: {absent_keys:?}").into());
+    }
+    if !present_keys.contains(&"early_stop_reason") {
+        return Err(format!("present map must carry early_stop_reason: {present_keys:?}").into());
+    }
+    if absent_keys.contains(&"early_stop_reason") {
+        return Err(format!("absent map must omit early_stop_reason: {absent_keys:?}").into());
     }
     Ok(())
 }
