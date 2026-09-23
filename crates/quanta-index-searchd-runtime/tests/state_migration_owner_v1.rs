@@ -24,11 +24,11 @@ use quanta_index_contract::SearchPlaneErrorCodeV2;
 use quanta_index_core::CoreError;
 use quanta_index_searchd::app::runtime::StateRootLease;
 use quanta_index_searchd::app::state_format::{
-    NoStateMigrationFaultsV1, OfflineRootRoleV1, STATE_MIGRATION_RECEIPT_FILE_NAME,
-    STATE_ROOT_MANIFEST_FILE_NAME, StateMigrationFaultPointV1, StateMigrationFaultPort,
-    StateRootFormatV1, atomic_cutover_v1, detect_state_root_format_v1, read_root_manifest_v1,
-    refuse_broad_offline_target_v1, refuse_legacy_state_root_v1, refuse_non_empty_destination_v1,
-    staging_directory_for_v1,
+    LEGACY_AUXILIARY_SNAPSHOT_RELATIVES, NoStateMigrationFaultsV1, OfflineRootRoleV1,
+    STATE_MIGRATION_RECEIPT_FILE_NAME, STATE_ROOT_MANIFEST_FILE_NAME, StateMigrationFaultPointV1,
+    StateMigrationFaultPort, StateRootFormatV1, atomic_cutover_v1, detect_state_root_format_v1,
+    read_root_manifest_v1, refuse_broad_offline_target_v1, refuse_legacy_state_root_v1,
+    refuse_non_empty_destination_v1, staging_directory_for_v1,
 };
 use quanta_index_searchd::app::state_migration::{
     CatalogFreezeV1, CatalogSnapshotPort, CatalogSnapshotV1, LegacyImportOutcomeV1,
@@ -390,6 +390,7 @@ fn production_boot_refuses_a_legacy_root_instead_of_migrating() -> TestResult {
     // migrate; it must now be a typed refusal before any adapter opens.
     fs::create_dir_all(root.path().join("semantic"))?;
     fs::write(root.path().join("semantic/journal.cbor"), b"legacy-journal")?;
+    let before = freeze_legacy(root.path())?;
 
     // The boot refusal runs through the harness-owned runtime (TOPT-03):
     // sockets and retention come from the harness builder, and `start`
@@ -406,6 +407,31 @@ fn production_boot_refuses_a_legacy_root_instead_of_migrating() -> TestResult {
         Some(SearchPlaneErrorCodeV2::StateRootFormatUnsupported),
         "boot must refuse typed: {error}"
     );
+    assert_eq!(freeze_legacy(root.path())?, before);
+    Ok(())
+}
+
+#[test]
+fn production_boot_refuses_auxiliary_snapshot_before_creating_catalog_or_lease() -> TestResult {
+    let root = private_root()?;
+    let snapshot = root.path().join(LEGACY_AUXILIARY_SNAPSHOT_RELATIVES[0]);
+    fs::create_dir_all(snapshot.parent().ok_or("snapshot has no parent")?)?;
+    fs::write(
+        &snapshot,
+        quanta_index_ipc::encode_cbor_payload(&serde_json::json!({"entries": {}}))?,
+    )?;
+    let before = freeze_legacy(root.path())?;
+    let mut runtime = E2eRuntime::boot_in(root.path())?;
+    let error = runtime
+        .start()
+        .expect_err("boot must leave pre-catalog snapshots to offline migration");
+    assert_eq!(
+        command_code(&error),
+        Some(SearchPlaneErrorCodeV2::StateRootFormatUnsupported)
+    );
+    assert_eq!(freeze_legacy(root.path())?, before);
+    assert!(!root.path().join("catalog").exists());
+    assert!(!root.path().join(".searchd-state-root.lock").exists());
     Ok(())
 }
 
@@ -1256,6 +1282,125 @@ fn migrate_refuses_materialized_legacy_repomap_without_publishing_an_empty_autho
     assert!(!migrated.exists(), "failed conversion must publish no root");
     assert_eq!(freeze_legacy(legacy.path())?, before);
     assert_no_source_markers(legacy.path())?;
+    Ok(())
+}
+
+#[test]
+fn pre_catalog_auxiliary_snapshots_import_offline_without_touching_source() -> TestResult {
+    for relative in LEGACY_AUXILIARY_SNAPSHOT_RELATIVES {
+        let legacy = private_root()?;
+        let parent = private_root()?;
+        let snapshot = legacy.path().join(relative);
+        fs::create_dir_all(snapshot.parent().ok_or("snapshot has no parent")?)?;
+        let empty_snapshot = if relative.contains("structural/") {
+            serde_json::json!({"entries": {}, "tracks": {}})
+        } else {
+            serde_json::json!({"entries": {}})
+        };
+        fs::write(
+            &snapshot,
+            quanta_index_ipc::encode_cbor_payload(&empty_snapshot)?,
+        )?;
+        let before = freeze_legacy(legacy.path())?;
+        assert_eq!(
+            detect_state_root_format_v1(legacy.path())?,
+            StateRootFormatV1::LegacyV1,
+            "{relative} must be classified as legacy"
+        );
+        assert_eq!(
+            typed_code(&refuse_legacy_state_root_v1(legacy.path()).expect_err("boot must refuse")),
+            Some(SearchPlaneErrorCodeV2::StateRootFormatUnsupported)
+        );
+
+        let destination = parent.path().join("migrated");
+        let command = OfflineStateCommandV1 {
+            operation: OfflineStateOperationV1::Migrate,
+            source_root: legacy.path().to_path_buf(),
+            destination_root: Some(destination.clone()),
+        };
+        let _outcome = run_offline_state_command_with_v1(&command, &NoStateMigrationFaultsV1)?;
+        let receipt = fs::read_to_string(destination.join(STATE_MIGRATION_RECEIPT_FILE_NAME))?;
+        assert!(
+            receipt.contains(&format!("consumed-marker {relative}")),
+            "{relative} must be accounted for in the migration receipt"
+        );
+        let _verified = verify_current(&destination)?;
+        assert_eq!(
+            freeze_legacy(legacy.path())?,
+            before,
+            "{relative} source changed"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn corrupt_pre_catalog_auxiliary_snapshot_publishes_no_destination() -> TestResult {
+    let legacy = private_root()?;
+    let parent = private_root()?;
+    let snapshot = legacy.path().join(LEGACY_AUXILIARY_SNAPSHOT_RELATIVES[0]);
+    fs::create_dir_all(snapshot.parent().ok_or("snapshot has no parent")?)?;
+    fs::write(&snapshot, b"not CBOR")?;
+    let before = freeze_legacy(legacy.path())?;
+    let destination = parent.path().join("migrated");
+    let command = OfflineStateCommandV1 {
+        operation: OfflineStateOperationV1::Migrate,
+        source_root: legacy.path().to_path_buf(),
+        destination_root: Some(destination.clone()),
+    };
+    let _error = run_offline_state_command_with_v1(&command, &NoStateMigrationFaultsV1)
+        .expect_err("corrupt legacy authority must be refused");
+    assert!(!destination.exists());
+    assert_eq!(freeze_legacy(legacy.path())?, before);
+    Ok(())
+}
+
+#[test]
+fn mixed_legacy_marker_and_unconverted_authority_publishes_no_destination() -> TestResult {
+    let legacy = private_root()?;
+    let parent = private_root()?;
+    let snapshot = legacy.path().join(LEGACY_AUXILIARY_SNAPSHOT_RELATIVES[0]);
+    fs::create_dir_all(snapshot.parent().ok_or("snapshot has no parent")?)?;
+    fs::write(
+        &snapshot,
+        quanta_index_ipc::encode_cbor_payload(&serde_json::json!({"entries": {}}))?,
+    )?;
+    let unconverted = legacy.path().join("indexes/lexical/manifest.cbor");
+    fs::create_dir_all(unconverted.parent().ok_or("index has no parent")?)?;
+    fs::write(&unconverted, b"sealed lexical authority")?;
+    let before = freeze_legacy(legacy.path())?;
+    let destination = parent.path().join("migrated");
+    let command = OfflineStateCommandV1 {
+        operation: OfflineStateOperationV1::Migrate,
+        source_root: legacy.path().to_path_buf(),
+        destination_root: Some(destination.clone()),
+    };
+    let error = run_offline_state_command_with_v1(&command, &NoStateMigrationFaultsV1)
+        .expect_err("mixed authority cannot be omitted from the produced root");
+    assert_eq!(
+        command_code(&error),
+        Some(SearchPlaneErrorCodeV2::StateRootFormatUnsupported)
+    );
+    assert!(!destination.exists());
+    assert_eq!(freeze_legacy(legacy.path())?, before);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn dangling_legacy_auxiliary_snapshot_is_not_classified_as_current() -> TestResult {
+    let root = private_root()?;
+    let snapshot = root.path().join(LEGACY_AUXILIARY_SNAPSHOT_RELATIVES[0]);
+    fs::create_dir_all(snapshot.parent().ok_or("snapshot has no parent")?)?;
+    std::os::unix::fs::symlink("missing-snapshot", &snapshot)?;
+    assert_eq!(
+        detect_state_root_format_v1(root.path())?,
+        StateRootFormatV1::LegacyV1
+    );
+    assert_eq!(
+        typed_code(&refuse_legacy_state_root_v1(root.path()).expect_err("boot must refuse")),
+        Some(SearchPlaneErrorCodeV2::StateRootFormatUnsupported)
+    );
     Ok(())
 }
 

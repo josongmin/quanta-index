@@ -74,7 +74,7 @@ to validated lane handoffs and immutable proof manifests, not this document.
 | 1 | P06 / S21-07 | Query-plane active resolution and exact SDK pin binding are implemented. Hybrid/semantic-scope server selection now reads one composite active head. Durable activation epoch, request/read-view commitment binding, final-source owner/release proof remain open. | A response from the same repo/revision but wrong resolved generation/epoch/commitment is rejected by a consumer-visible negative oracle. |
 | 2 | P08 / S21-09 | Candidate `8b78f35` repairs guard custody and passes owner proof; release/process proof is still absent. | No live child can outlast state-root lease custody; required-child failure and hard drain have release process-boundary evidence. |
 | 3 | P09 / S21-10 | Production control dispatcher composes `readiness: None`. | Supervisor-owned process readiness is wired; component death or stale heartbeat makes readiness false without confusing it with repository generation status. |
-| 4 | P10 / S21-11 | Read-only semantic import is merged. Current follow-up refuses nonempty V1 RepoMap instead of publishing a current root with missing active authority. Boot still migrates pre-catalog auxiliary snapshots. | Source remains byte-identical; nonconvertible RepoMap fails closed without destination; a producer replay path and offline auxiliary conversion are required before active identity/replay floor/high-water parity can close. |
+| 4 | P10 / S21-11 | Read-only semantic and pre-catalog auxiliary import are wired offline. Boot refuses legacy snapshots before adapter/catalog open; mixed roots with unconverted data and nonempty V1 RepoMap fail closed. | Producer replay for materialized V1 RepoMap, source-to-destination active identity/replay floor/high-water equivalence, and final-source owner/release proof remain required. |
 | 5 | P11 / S21-12 | V1 RepoMap mutation entrypoints remain reachable; no exact Quanta/Semantica commitment-chain or four P11 receipts. | One clean source pair and attested daemon binary pass publish, activate, replay, incompatibility, deployment, activation, and rollback proofs as separate nodes. |
 | 6 | P12A / S21-13B | Aggregate schema/writer/validator do not consume the product handoff DAG or separate P12A infrastructure handoff. | Exact P00–P11 fork/join and serial chain, historical and final receipt ledgers, paired source, binary, and negative tamper cases validate. |
 | 7 | P12Q / S21-13B | Final proof graph and P03–P10 release nodes have not run on one final source. | Same-source and same-binary final rerun yields distinct code/deploy/activate/rollback verdicts; no missing or stale mandatory receipt is promoted to green. |
@@ -202,6 +202,21 @@ to validated lane handoffs and immutable proof manifests, not this document.
 
 ### P10 unsupported RepoMap cutover — in-progress follow-up to `22e9ba1`
 
+- Current-main follow-up: pre-catalog history/runtime/structural snapshots are
+  classified as legacy before any boot adapter or catalog opens. The offline
+  importer decodes them read-only and applies all derived rows to the staged
+  catalog in one transaction. The old boot-time migrate-and-delete entrypoint
+  is removed. An inventory gate rejects any source data file without a
+  converter, including a mixed legacy marker plus lexical/catalog authority;
+  corrupt snapshots and symlinks publish no destination. The source-side
+  semantic `MIGRATED` refusal remains typed and its inert lock residue remains
+  accepted. No producer graph is fabricated from V1 RepoMap snapshots.
+- Focused dirty-source results after this follow-up: the search-plane
+  nonempty auxiliary import oracle passed (1/1); the state migration owner
+  suite passed 46/46, including source-byte equality and no-destination
+  negatives; `just rust-public-api` reported contract and SDK APIs unchanged.
+  These results do not issue a P10 proof manifest or Linux release proof.
+
 - RCA: V1 `RepoMapSnapshot` contains materialized entries, not the graph
   `nodes`/`edges` and source-bundle commitment required by current
   `RepoMapSourceBundle`. Verbatim carry into `legacy-import/` kept bytes but
@@ -214,10 +229,9 @@ to validated lane handoffs and immutable proof manifests, not this document.
   The owner suite replaces the prior inert-byte success oracle with a
   negative materialized-RepoMap oracle and a convertible semantic-only path.
 - This is a safety correction, **not P10 completion**. A lossless producer
-  replay contract, offline pre-catalog auxiliary migration, active identity
-  equivalence, replay-floor/high-water equivalence, and exact-source owner /
-  release proof remain open. No legacy graph is fabricated from a materialized
-  view.
+  replay contract, active identity equivalence, replay-floor/high-water
+  equivalence, and exact-source owner/release proof remain open. No legacy
+  graph is fabricated from a materialized view.
 - Focused local verification on this follow-up: `just fmt-check` exited 0;
   `./scripts/cargow test -p quanta-index-searchd-runtime --test
   state_migration_owner_v1` exited 0 with 41 passed, 0 failed, 0 ignored;

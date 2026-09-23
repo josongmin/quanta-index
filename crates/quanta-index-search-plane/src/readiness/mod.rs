@@ -53,7 +53,8 @@ pub use crate::search_corpus_retention::{
 pub use activation_catalog::{ActivationCatalog, ActiveGenerationRecord};
 pub use aux_epoch::{AuxEpochRefusedError, AuxRead};
 pub use auxiliary_store::{
-    AuxiliaryAuthorityStore, LegacyAuxiliaryMigrationReceipt, restore_auxiliary_rows_into,
+    AuxiliaryAuthorityStore, LegacyAuxiliaryMigrationReceipt,
+    import_legacy_auxiliary_snapshots_readonly, restore_auxiliary_rows_into,
 };
 #[cfg(test)]
 pub(crate) use auxiliary_store::{ScriptedIndexBytesV1, TEST_INDEX_BYTES_PER_GENERATION};

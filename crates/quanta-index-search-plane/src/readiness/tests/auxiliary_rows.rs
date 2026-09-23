@@ -9,7 +9,9 @@ use quanta_index_ipc::encode_cbor_payload;
 use tempfile::tempdir;
 
 use crate::auxiliary_authority;
-use crate::readiness::auxiliary_store::{AuxiliaryAuthorityStore, restore_auxiliary_rows_into};
+use crate::readiness::auxiliary_store::{
+    import_legacy_auxiliary_snapshots_readonly, restore_auxiliary_rows_into,
+};
 use crate::readiness::history_state::{
     HistoryAuthoritySnapshot, HistoryAuthorityState, HistoryStateMeta,
 };
@@ -18,7 +20,7 @@ use crate::readiness::runtime_state::{RuntimeAuthoritySnapshot, RuntimeMetadataS
 use crate::readiness::structural_state::StructuralAuthoritySnapshot;
 use crate::readiness::tests::support::{
     TestResult, generation, install_chunk, install_chunk_with_id, persist_whole_ledger, repo_id,
-    revision_id, search_corpus_retention,
+    revision_id,
 };
 
 /// Every auxiliary family and the structural track round-trip through
@@ -234,13 +236,17 @@ fn auxiliary_authorities_roundtrip_through_catalog_rows() -> TestResult {
     Ok(())
 }
 
-/// The pre-catalog snapshot files move into the catalog once: every
-/// record is restored from rows afterwards, the files are gone, and a
-/// second open finds nothing to migrate.
+/// Offline import converts every pre-catalog family into rows without
+/// mutating its source. A retry upserts identical rows into staging.
 #[test]
-fn legacy_auxiliary_snapshots_migrate_into_the_catalog_once() -> TestResult {
+fn legacy_auxiliary_snapshots_import_readonly_into_staging_catalog() -> TestResult {
     let dir = tempdir()?;
-    let store = AuxiliaryAuthorityStore::open(dir.path(), search_corpus_retention(2)?)?;
+    let history_path = dir.path().join("history/state.cbor");
+    let runtime_path = dir.path().join("runtime/state.cbor");
+    let structural_path = dir.path().join("structural/state.cbor");
+    for path in [&history_path, &runtime_path, &structural_path] {
+        fs::create_dir_all(path.parent().ok_or("snapshot has no parent")?)?;
+    }
     let mut ledger = Ledger::default();
     ledger
         .aux_restore_mut::<HistoryAuthorityState>(&repo_id(), &revision_id(), generation())
@@ -277,7 +283,7 @@ fn legacy_auxiliary_snapshots_migrate_into_the_catalog_once() -> TestResult {
         Ok(())
     };
     legacy(
-        &store.history,
+        &history_path,
         encode_cbor_payload(&HistoryAuthoritySnapshot {
             entries: ledger
                 .history
@@ -287,7 +293,7 @@ fn legacy_auxiliary_snapshots_migrate_into_the_catalog_once() -> TestResult {
         })?,
     )?;
     legacy(
-        &store.runtime,
+        &runtime_path,
         encode_cbor_payload(&RuntimeAuthoritySnapshot {
             entries: ledger
                 .runtime_metadata
@@ -297,7 +303,7 @@ fn legacy_auxiliary_snapshots_migrate_into_the_catalog_once() -> TestResult {
         })?,
     )?;
     legacy(
-        &store.structural,
+        &structural_path,
         encode_cbor_payload(&StructuralAuthoritySnapshot {
             entries: ledger
                 .structural
@@ -309,22 +315,18 @@ fn legacy_auxiliary_snapshots_migrate_into_the_catalog_once() -> TestResult {
     )?;
 
     let catalog = auxiliary_authority::testing::MemoryAuxiliaryCatalog::default();
-    let receipt = store
-        .migrate_legacy_auxiliary_snapshots(&catalog)?
+    let receipt = import_legacy_auxiliary_snapshots_readonly(dir.path(), &catalog)?
         .ok_or("legacy files present, migration must run")?;
     if receipt.generations != 1 || receipt.rows_written == 0 {
         return Err(format!("migration receipt drifted: {receipt:?}").into());
     }
-    for path in [&store.history, &store.runtime, &store.structural] {
-        if path.exists() {
-            return Err(format!("migrated snapshot {} must be removed", path.display()).into());
+    for path in [&history_path, &runtime_path, &structural_path] {
+        if !path.exists() {
+            return Err(format!("legacy source {} must remain", path.display()).into());
         }
     }
-    if store
-        .migrate_legacy_auxiliary_snapshots(&catalog)?
-        .is_some()
-    {
-        return Err("a second open must find nothing to migrate".into());
+    if import_legacy_auxiliary_snapshots_readonly(dir.path(), &catalog)? != Some(receipt) {
+        return Err("a retry must converge on the same catalog rows".into());
     }
     let mut restored = Ledger::default();
     let _rows = restore_auxiliary_rows_into(&mut restored, &catalog)?;

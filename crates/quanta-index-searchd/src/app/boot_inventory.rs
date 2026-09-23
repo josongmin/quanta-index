@@ -30,8 +30,7 @@ use quanta_index_core::{
 };
 use quanta_index_ipc::SocketAccessPolicy;
 use quanta_index_search_plane::{
-    Ledger, LegacyAuxiliaryMigrationReceipt, OrphanedSealedGenerationV1,
-    partition_sealed_inventory_v1,
+    Ledger, OrphanedSealedGenerationV1, partition_sealed_inventory_v1,
 };
 
 use crate::app::socket_access::{SocketAccessPolicies, SocketRole};
@@ -264,9 +263,6 @@ pub struct BootInventoryReportV1 {
     /// Active `(lexical, semantic)` pairs the lifecycle proved physically at
     /// boot; each was proven exactly once.
     pub active_pairs_validated: usize,
-    /// The one-shot move of pre-catalog auxiliary snapshot files into the
-    /// catalog, if this boot performed it (QI-BB-020).
-    pub auxiliary_migration: Option<LegacyAuxiliaryMigrationReceipt>,
     /// Auxiliary authority rows restored from the catalog at boot.
     pub auxiliary_rows_restored: u64,
     /// What the `RepoMap` store found on disk: loaded, migrated, swept and

@@ -53,12 +53,24 @@ pub const STATE_CATALOG_DIRECTORY: &str = "catalog";
 /// directory.
 pub const STATE_BACKUP_CATALOG_FILE_NAME: &str = "catalog-v1.sqlite";
 
+/// Persistent lease file; the OS lock, not its presence, owns liveness.
+pub const STATE_ROOT_LEASE_FILE_NAME: &str = ".searchd-state-root.lock";
+
 /// The only directory an offline operation is allowed to create beside a
 /// destination root while it prepares the switch.
 pub const STAGING_DIRECTORY_SUFFIX: &str = ".p10-staging";
 
 /// Legacy semantic journal, relative to a state root: migration input only.
 pub const LEGACY_SEMANTIC_JOURNAL_RELATIVE: &str = "semantic/journal.cbor";
+
+/// Pre-catalog auxiliary snapshots are legacy input, never a boot-time
+/// migration source. The offline importer must account for each one before
+/// publishing a current root.
+pub const LEGACY_AUXILIARY_SNAPSHOT_RELATIVES: [&str; 3] = [
+    "authorities/history/state.cbor",
+    "authorities/runtime/state.cbor",
+    "authorities/structural/state.cbor",
+];
 
 /// Legacy `RepoMap` layout directories, relative to `state_root/repo-map`.
 pub const LEGACY_REPOMAP_DIRECTORY_NAMES: [&str; 2] = ["activations", "snapshots"];
@@ -106,6 +118,17 @@ pub fn legacy_state_root_markers_v1(root: &Path) -> Vec<String> {
     if journal.exists() {
         markers.push(LEGACY_SEMANTIC_JOURNAL_RELATIVE.to_string());
     }
+    for relative in LEGACY_AUXILIARY_SNAPSHOT_RELATIVES {
+        // Include dangling symlinks: they are not an absent snapshot and
+        // must not let a mixed-format root be classified as current. An
+        // unreadable path is also not evidence that the snapshot is absent.
+        if !matches!(
+            fs::symlink_metadata(root.join(relative)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound
+        ) {
+            markers.push(relative.to_string());
+        }
+    }
     let repomap_root = root.join(REPOMAP_DIRECTORY);
     for name in LEGACY_REPOMAP_DIRECTORY_NAMES {
         if repomap_root.join(name).is_dir() {
@@ -141,8 +164,9 @@ pub fn detect_state_root_format_v1(root: &Path) -> Result<StateRootFormatV1, Cor
     let mut any = false;
     for entry in entries {
         let entry = entry.map_err(|error| storage("read root entry", root, &error))?;
-        any = true;
-        let _name = entry.file_name();
+        if entry.file_name() != STATE_ROOT_LEASE_FILE_NAME {
+            any = true;
+        }
     }
     if !any {
         return Ok(StateRootFormatV1::Absent);

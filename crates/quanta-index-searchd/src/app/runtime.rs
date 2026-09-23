@@ -180,7 +180,8 @@ impl StateRootLease {
         ensure_durable_state_root_v1(state_root)?;
         let state_root_identity_v1 = canonical_state_root_identity_v1(state_root)?;
         ensure_private_state_root_v1(&state_root_identity_v1, access)?;
-        let path = state_root_identity_v1.join(".searchd-state-root.lock");
+        let path =
+            state_root_identity_v1.join(crate::app::state_format::STATE_ROOT_LEASE_FILE_NAME);
         let file = open_state_root_lock_nofollow_v1(&path).map_err(|error| {
             CoreError::Storage(format!(
                 "searchd state-root lease: open {}: {error}",
@@ -1354,12 +1355,8 @@ impl SearchdRuntime {
         let active_pairs_validated = search_corpus_lifecycle
             .validate_rehydrated_active_generations_v1(&promotion)
             .map_err(anyhow::Error::from)?;
-        // The pre-catalog snapshot files, if this state root still has
-        // them, move into the catalog once; then the auxiliary authorities
-        // are rebuilt from the catalog's rows (QI-BB-020).
-        let auxiliary_migration = aux_authority_store
-            .migrate_legacy_auxiliary_snapshots(auxiliary_catalog.as_ref())
-            .map_err(anyhow::Error::from)?;
+        // Legacy auxiliary snapshots are refused by the format gate above.
+        // Boot only restores rows already present in the current catalog.
         let auxiliary_rows_restored = {
             let mut guard = ledger.write().map_err(|err| {
                 anyhow::anyhow!("ledger poisoned during auxiliary authority bootstrap: {err}")
@@ -1392,7 +1389,6 @@ impl SearchdRuntime {
                 .with_interrupted_reclaims(semantic_interrupted),
             active_pairs_validated,
             half_sealed_pairs,
-            auxiliary_migration,
             auxiliary_rows_restored,
             repo_map: repo_map_open_report,
             socket_access: config.socket_access_policies().clone(),

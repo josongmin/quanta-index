@@ -11,11 +11,14 @@ use quanta_index_contract::{AuxEpochV1, SearchPlaneTrackKind};
 use quanta_index_core::{
     AuxiliaryAuthorityCatalogPort, AuxiliaryGenerationKeyV1, AuxiliaryMutationBatchV1, CoreError,
 };
+use quanta_index_ipc::decode_cbor_payload;
+use serde::Deserialize;
 
 use crate::auxiliary_authority;
 use crate::readiness::durable_fs::{
     FsParentDirectorySyncPort, ParentDirectorySyncPort, ensure_durable_directory_v1,
-    is_owned_search_corpus_staging_name_v1, reconcile_legacy_atomic_temporaries_v1,
+    is_owned_search_corpus_staging_name_v1, read_regular_file_nofollow_v1,
+    reconcile_legacy_atomic_temporaries_v1,
 };
 use crate::readiness::history_state::HistoryAuthoritySnapshot;
 use crate::readiness::keys::AuthorityKey;
@@ -38,7 +41,7 @@ use quanta_index_contract::RepoId;
 #[cfg(test)]
 use quanta_index_contract::RevisionId;
 
-/// What the one-shot migration of the pre-catalog snapshot files moved.
+/// What the offline import of pre-catalog snapshot files wrote to staging.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LegacyAuxiliaryMigrationReceipt {
     /// Distinct `(repo, revision, generation)` keys the snapshots held.
@@ -51,17 +54,14 @@ pub struct LegacyAuxiliaryMigrationReceipt {
 ///
 /// It holds the durable search-corpus rollback history under
 /// `authorities/search-corpus/` (one record per sealed generation,
-/// retention-bounded) and performs the one-shot migration of the
-/// pre-catalog auxiliary snapshot files.
+/// retention-bounded). Legacy snapshots are imported only by the offline
+/// state-migration composition root.
 ///
 /// The auxiliary authorities themselves — history, runtime metadata,
 /// structural — live in the catalog as rows since QI-BB-020; the three
 /// paths kept here name only where their legacy snapshots were.
 #[derive(Debug)]
 pub struct AuxiliaryAuthorityStore {
-    pub(super) history: PathBuf,
-    pub(super) runtime: PathBuf,
-    pub(super) structural: PathBuf,
     pub(super) search_corpus_dir: PathBuf,
     pub(super) search_corpus_staging_dir: PathBuf,
     // State-root count/byte admission must be atomic across pair stripes.
@@ -163,9 +163,6 @@ impl AuxiliaryAuthorityStore {
             ensure_durable_directory_v1(dir, "search-plane authority store", parent_sync.as_ref())?;
         }
         let store = Self {
-            history: history_dir.join("state.cbor"),
-            runtime: runtime_dir.join("state.cbor"),
-            structural: structural_dir.join("state.cbor"),
             search_corpus_dir,
             search_corpus_staging_dir,
             search_corpus_root_lock: Mutex::new(()),
@@ -350,98 +347,107 @@ impl AuxiliaryAuthorityStore {
         }
         Ok(())
     }
+}
 
-    /// Move the pre-catalog whole-map snapshot files, if any exist, into
-    /// the auxiliary row catalog as one transaction, then remove them
-    /// (QI-BB-020, one-shot).
-    ///
-    /// The migrated generations are stamped [`AuxEpochV1::GENESIS`]: they
-    /// predate epoch stamping, and their first stamped mutation starts the
-    /// sequence.
-    ///
-    /// A crash after the transaction and before the removal re-runs the
-    /// migration on the next open; every row is an upsert of the same
-    /// content, so the second run converges on the same catalog.
-    pub fn migrate_legacy_auxiliary_snapshots(
-        &self,
-        catalog: &dyn AuxiliaryAuthorityCatalogPort,
-    ) -> Result<Option<LegacyAuxiliaryMigrationReceipt>, CoreError> {
-        let history = self.read_cbor::<HistoryAuthoritySnapshot>(&self.history, "history")?;
-        let runtime =
-            self.read_cbor::<RuntimeAuthoritySnapshot>(&self.runtime, "runtime metadata")?;
-        let structural =
-            self.read_cbor::<StructuralAuthoritySnapshot>(&self.structural, "structural")?;
-        if history.is_none() && runtime.is_none() && structural.is_none() {
-            return Ok(None);
-        }
-        let mut batch = AuxiliaryMutationBatchV1::default();
-        let mut generations: BTreeSet<AuthorityKey> = BTreeSet::new();
-        let generation_key = |key: &AuthorityKey| AuxiliaryGenerationKeyV1 {
-            repo_id: key.repo_id.clone(),
-            revision_id: key.revision_id.clone(),
-            generation: key.generation,
-        };
-        if let Some(history) = history {
-            for (key, state) in &history.entries {
-                let _new = generations.insert(key.clone());
-                batch.rows.extend(auxiliary_authority::history_state_rows(
-                    &generation_key(key),
-                    AuxEpochV1::GENESIS,
-                    state,
-                )?);
-            }
-        }
-        if let Some(runtime) = runtime {
-            for (key, state) in &runtime.entries {
-                let _new = generations.insert(key.clone());
-                batch.rows.extend(auxiliary_authority::runtime_state_rows(
-                    &generation_key(key),
-                    AuxEpochV1::GENESIS,
-                    state,
-                )?);
-            }
-        }
-        if let Some(structural) = structural {
-            for (key, state) in &structural.entries {
-                let _new = generations.insert(key.clone());
-                batch
-                    .rows
-                    .extend(auxiliary_authority::structural_state_rows(
-                        &generation_key(key),
-                        AuxEpochV1::GENESIS,
-                        state,
-                    )?);
-            }
-            for (key, state) in &structural.tracks {
-                if key.track != SearchPlaneTrackKind::Structural {
-                    continue;
-                }
-                batch.tracks.push(auxiliary_authority::structural_track_row(
-                    &key.repo_id,
-                    &key.revision_id,
-                    state,
-                )?);
-            }
-        }
-        let receipt = catalog.apply(&batch)?;
-        for path in [&self.history, &self.runtime, &self.structural] {
-            match fs::remove_file(path) {
-                Ok(()) => {}
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                Err(err) => {
-                    return Err(CoreError::Storage(format!(
-                        "search-plane authority store: remove migrated snapshot {}: {err}",
-                        path.display()
-                    )));
-                }
-            }
-        }
-        Ok(Some(LegacyAuxiliaryMigrationReceipt {
-            generations: generations.len(),
-            rows_written: receipt.rows_written,
-        }))
+/// Import pre-catalog snapshots from a read-only legacy source.
+///
+/// All three families enter the *staging* catalog in one transaction. Source
+/// files are never removed or rewritten. A failed import leaves the staging
+/// root unpublished; the offline engine owns that cutover boundary.
+pub fn import_legacy_auxiliary_snapshots_readonly(
+    source_authorities_root: &Path,
+    catalog: &dyn AuxiliaryAuthorityCatalogPort,
+) -> Result<Option<LegacyAuxiliaryMigrationReceipt>, CoreError> {
+    let history_path = source_authorities_root.join("history/state.cbor");
+    let runtime_path = source_authorities_root.join("runtime/state.cbor");
+    let structural_path = source_authorities_root.join("structural/state.cbor");
+    let history = read_legacy_snapshot::<HistoryAuthoritySnapshot>(&history_path, "history")?;
+    let runtime =
+        read_legacy_snapshot::<RuntimeAuthoritySnapshot>(&runtime_path, "runtime metadata")?;
+    let structural =
+        read_legacy_snapshot::<StructuralAuthoritySnapshot>(&structural_path, "structural")?;
+    if history.is_none() && runtime.is_none() && structural.is_none() {
+        return Ok(None);
     }
+    let mut batch = AuxiliaryMutationBatchV1::default();
+    let mut generations: BTreeSet<AuthorityKey> = BTreeSet::new();
+    let generation_key = |key: &AuthorityKey| AuxiliaryGenerationKeyV1 {
+        repo_id: key.repo_id.clone(),
+        revision_id: key.revision_id.clone(),
+        generation: key.generation,
+    };
+    if let Some(history) = history {
+        for (key, state) in &history.entries {
+            let _new = generations.insert(key.clone());
+            batch.rows.extend(auxiliary_authority::history_state_rows(
+                &generation_key(key),
+                AuxEpochV1::GENESIS,
+                state,
+            )?);
+        }
+    }
+    if let Some(runtime) = runtime {
+        for (key, state) in &runtime.entries {
+            let _new = generations.insert(key.clone());
+            batch.rows.extend(auxiliary_authority::runtime_state_rows(
+                &generation_key(key),
+                AuxEpochV1::GENESIS,
+                state,
+            )?);
+        }
+    }
+    if let Some(structural) = structural {
+        for (key, state) in &structural.entries {
+            let _new = generations.insert(key.clone());
+            batch
+                .rows
+                .extend(auxiliary_authority::structural_state_rows(
+                    &generation_key(key),
+                    AuxEpochV1::GENESIS,
+                    state,
+                )?);
+        }
+        for (key, state) in &structural.tracks {
+            if key.track != SearchPlaneTrackKind::Structural {
+                continue;
+            }
+            batch.tracks.push(auxiliary_authority::structural_track_row(
+                &key.repo_id,
+                &key.revision_id,
+                state,
+            )?);
+        }
+    }
+    let receipt = catalog.apply(&batch)?;
+    Ok(Some(LegacyAuxiliaryMigrationReceipt {
+        generations: generations.len(),
+        rows_written: receipt.rows_written,
+    }))
+}
 
+fn read_legacy_snapshot<T: for<'de> Deserialize<'de>>(
+    path: &Path,
+    label: &str,
+) -> Result<Option<T>, CoreError> {
+    let bytes = match read_regular_file_nofollow_v1(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(CoreError::Storage(format!(
+                "offline auxiliary import: read {label} {}: {error}",
+                path.display()
+            )));
+        }
+    };
+    decode_cbor_payload(&bytes).map(Some).map_err(|error| {
+        CoreError::Storage(format!(
+            "offline auxiliary import: decode {label} {}: {error}",
+            path.display()
+        ))
+    })
+}
+
+impl AuxiliaryAuthorityStore {
     /// Restore the search-corpus rollback history into the ledger; the
     /// auxiliary authorities are restored from the catalog by
     /// [`restore_auxiliary_rows_into`].

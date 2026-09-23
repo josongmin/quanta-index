@@ -22,11 +22,13 @@ use quanta_index_catalog::{
 };
 use quanta_index_core::CoreError;
 use quanta_index_repomap::RepoMapGenerationStore;
+use quanta_index_search_plane::readiness::import_legacy_auxiliary_snapshots_readonly;
 use quanta_index_searchd::app::LegacySemanticJournalReaderV1;
 use quanta_index_searchd::app::runtime::StateRootLease;
 use quanta_index_searchd::app::semantic_boot;
 use quanta_index_searchd::app::state_format::{
-    EnvironmentStateMigrationFaultV1, LEGACY_SEMANTIC_JOURNAL_RELATIVE, StateMigrationFaultPort,
+    EnvironmentStateMigrationFaultV1, LEGACY_SEMANTIC_JOURNAL_RELATIVE, STATE_ROOT_LEASE_FILE_NAME,
+    StateMigrationFaultPort,
 };
 use quanta_index_searchd::app::state_migration::{
     CatalogFreezeV1, CatalogSnapshotPort, CatalogSnapshotV1, LegacyImportOutcomeV1,
@@ -99,6 +101,7 @@ impl LegacyStateImportPort for LegacyStateImporterV1 {
             let legacy = source_root.join("repo-map").join(name);
             refuse_unconvertible_legacy_repomap_v1(&legacy)?;
         }
+        refuse_unconsumed_legacy_objects_v1(source_root)?;
 
         if source_root.join(LEGACY_SEMANTIC_JOURNAL_RELATIVE).exists() {
             let semantic_root = quanta_index_semantic::semantic_state_root(staging_root);
@@ -125,6 +128,18 @@ impl LegacyStateImportPort for LegacyStateImporterV1 {
         // normalized to the offline snapshot form so `verify-state` can read
         // it without a shared-memory file.
         let catalog = SqliteCatalog::open(staging_root, OFFLINE_CATALOG_BUSY_BUDGET)?;
+        let auxiliary =
+            import_legacy_auxiliary_snapshots_readonly(&source_root.join("authorities"), &catalog)?;
+        if let Some(receipt) = auxiliary {
+            imported_records = imported_records.saturating_add(receipt.rows_written);
+            for relative in
+                quanta_index_searchd::app::state_format::LEGACY_AUXILIARY_SNAPSHOT_RELATIVES
+            {
+                if std::fs::symlink_metadata(source_root.join(relative)).is_ok() {
+                    consumed_markers.push(relative.to_string());
+                }
+            }
+        }
         let catalog_path = catalog.path().to_path_buf();
         drop(catalog);
         let _receipt = normalize_catalog_journal_mode(&catalog_path)?;
@@ -134,6 +149,78 @@ impl LegacyStateImportPort for LegacyStateImporterV1 {
             consumed_markers,
         })
     }
+}
+
+/// Refuse source data files this importer cannot convert.
+///
+/// A mixed root can carry a legacy marker alongside catalog/index authority.
+/// Seeing that marker must not permit publication of a smaller current root.
+fn refuse_unconsumed_legacy_objects_v1(source_root: &Path) -> Result<(), CoreError> {
+    fn visit(source_root: &Path, directory: &Path) -> Result<(), CoreError> {
+        let mut entries = std::fs::read_dir(directory)
+            .map_err(|error| {
+                CoreError::Storage(format!(
+                    "state migration: list legacy source {}: {error}",
+                    directory.display()
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| {
+                CoreError::Storage(format!(
+                    "state migration: read legacy source {}: {error}",
+                    directory.display()
+                ))
+            })?;
+        entries.sort_by_key(std::fs::DirEntry::path);
+        for entry in entries {
+            let path = entry.path();
+            let relative = path.strip_prefix(source_root).map_err(|error| {
+                CoreError::Storage(format!(
+                    "state migration: relativize legacy object {}: {error}",
+                    path.display()
+                ))
+            })?;
+            let kind = entry.file_type().map_err(|error| {
+                CoreError::Storage(format!(
+                    "state migration: inspect legacy object {}: {error}",
+                    path.display()
+                ))
+            })?;
+            if kind.is_dir() {
+                visit(source_root, &path)?;
+                continue;
+            }
+            if !kind.is_file() {
+                return Err(CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::StateRootInsecure,
+                    message: format!(
+                        "state migration: legacy source object {} is not a regular file",
+                        path.display()
+                    ),
+                });
+            }
+            let semantic_residue = source_root.join(LEGACY_SEMANTIC_JOURNAL_RELATIVE).is_file()
+                && (relative == Path::new("semantic/MIGRATED")
+                    || relative == Path::new("semantic/MIGRATED.lock"));
+            let convertible = relative == Path::new(STATE_ROOT_LEASE_FILE_NAME)
+                || semantic_residue
+                || relative == Path::new(LEGACY_SEMANTIC_JOURNAL_RELATIVE)
+                || quanta_index_searchd::app::state_format::LEGACY_AUXILIARY_SNAPSHOT_RELATIVES
+                    .iter()
+                    .any(|allowed| relative == Path::new(allowed));
+            if !convertible {
+                return Err(CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::StateRootFormatUnsupported,
+                    message: format!(
+                        "state migration: legacy source object {} has no lossless converter",
+                        path.display()
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
+    visit(source_root, source_root)
 }
 
 /// Empty legacy layout directories are markers, not authority. Any entry is

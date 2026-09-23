@@ -32,6 +32,7 @@ use quanta_index_search_plane::{
 };
 use quanta_index_searchd::app::KernelResidentMemoryProbe;
 use quanta_index_searchd::app::runtime::{SearchdRuntimeParts, StateRootAccessV1, StateRootLease};
+use quanta_index_searchd::app::state_format::refuse_legacy_state_root_v1;
 use quanta_index_searchd::{
     DEFAULT_COOPERATIVE_DRAIN_DEADLINE, HARD_DRAIN_DEADLINE, SearchdCommand, SearchdConfig,
     SearchdRuntime, supervise_runtime,
@@ -69,6 +70,10 @@ pub fn build_runtime_with_memory_probe(
     // and its resident-memory ceiling becomes the lexical writer gate.
     let process_memory_envelope = config.process_memory_envelope()?;
     let configured_state_root = config.state_root().to_path_buf();
+    // A known legacy source is refused before even the persistent lease
+    // file is created. The second check below closes path changes before
+    // adapters or catalog schema can write to the leased identity.
+    refuse_legacy_state_root_v1(&configured_state_root)?;
     // Acquire process ownership before any adapter or authority store opens the
     // shared root. No loser may observe or mutate partially initialized state.
     // The root must be exactly private unless a socket is shared, in which
@@ -80,6 +85,7 @@ pub fn build_runtime_with_memory_probe(
     // Every mutable adapter derives from the identity protected by the held
     // lease, not from a path alias that can be retargeted during composition.
     let state_root = state_root_lease.state_root_identity_v1().to_path_buf();
+    refuse_legacy_state_root_v1(&state_root)?;
     let (writer_admission, gate_metric_source) =
         writer_gate_for(process_memory_envelope.rss_ceiling, &memory_probe);
     let lex_adapter: Arc<LexicalAdapter> = Arc::new(
