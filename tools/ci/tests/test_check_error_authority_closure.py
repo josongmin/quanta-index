@@ -23,7 +23,7 @@ def test_free_form_producer_and_control_flow_tripwires() -> None:
         'code: format!("LEX_REGEX_{}", kind),',
         'if code == "NOT_READY" {',
         'if error_code.as_wire_str().contains("PARSE") {',
-        'fn typed(code: &str) -> CoreError {',
+        "fn typed(code: &str) -> CoreError {",
     ]:
         assert module.scan_line(path, 7, line), line
 

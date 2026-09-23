@@ -183,13 +183,16 @@ def test_valid_handoff_binds_git_result_and_immutable_manifest(tmp_path: Path) -
 
 def test_leaf_handoff_validator_accepts_injected_proof_checker(tmp_path: Path) -> None:
     root, handoff, _ = _fixture(tmp_path)
-    assert HANDOFF.CHAIN_VALIDATOR.validate_handoff(
-        handoff,
-        handoff_path=root / "P00.json",
-        root=root,
-        proof_checker=PROOF,
-        require_result_head=True,
-    ) == []
+    assert (
+        HANDOFF.CHAIN_VALIDATOR.validate_handoff(
+            handoff,
+            handoff_path=root / "P00.json",
+            root=root,
+            proof_checker=PROOF,
+            require_result_head=True,
+        )
+        == []
+    )
 
 
 def test_handoff_refuses_count_and_not_run_drift(tmp_path: Path) -> None:
@@ -331,9 +334,10 @@ def test_ledger_keeps_historical_product_and_infrastructure_separate(tmp_path: P
     )
 
     assert ledger["product_handoffs"][0]["status"] == "VERIFIED"
-    assert ledger["product_handoffs"][0]["sha256"] == hashlib.sha256(
-        (directory / "P00.json").read_bytes()
-    ).hexdigest()
+    assert (
+        ledger["product_handoffs"][0]["sha256"]
+        == hashlib.sha256((directory / "P00.json").read_bytes()).hexdigest()
+    )
     assert ledger["product_chain_status"] == "NOT_RUN"
     assert ledger["infrastructure_handoff"]["lane"] == "P12A"
     assert ledger["infrastructure_handoff"]["status"] == "NOT_RUN"
@@ -372,9 +376,7 @@ def test_ledger_classifies_malformed_proof_archive_as_failed(tmp_path: Path) -> 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["source"] = "forged source"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    handoff["proofs"][0]["manifest_sha256"] = hashlib.sha256(
-        manifest_path.read_bytes()
-    ).hexdigest()
+    handoff["proofs"][0]["manifest_sha256"] = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
     directory = root / "artifacts/sep-21/handoffs"
     directory.mkdir(parents=True)
     (directory / "P00.json").write_text(json.dumps(handoff), encoding="utf-8")

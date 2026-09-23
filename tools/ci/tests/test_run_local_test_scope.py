@@ -166,6 +166,30 @@ def test_library_only_scope_builds_one_nextest_command(tmp_path: Path, monkeypat
     assert command.count("nextest") == 1
 
 
+def test_owner_library_scope_runs_ignored_tests_only_when_requested(
+    tmp_path: Path, monkeypatch
+) -> None:
+    data = _catalog(tmp_path)
+    library = tmp_path / "crates" / "library"
+    library.mkdir(parents=True)
+    (library / "Cargo.toml").write_text('[package]\nname = "library"\nversion = "0.1.0"\n')
+    data["local_scopes"]["library"] = {
+        "lane": "library-lane",
+        "test_threads": 3,
+        "packages": ["library"],
+        "lib": True,
+    }
+    monkeypatch.setattr(MODULE, "ROOT", tmp_path)
+    lane, threads, include_lib, packages, targets = MODULE.resolve_targets(data, ["library"])
+
+    default = MODULE.build_command(lane, threads, include_lib, packages, targets)
+    all_tests = MODULE.build_command(lane, threads, include_lib, packages, targets, "all")
+    assert "--run-ignored" not in default
+    assert all_tests[all_tests.index("--run-ignored") + 1] == "all"
+    with pytest.raises(ValueError, match="run_ignored"):
+        MODULE.build_command(lane, threads, include_lib, packages, targets, "only")
+
+
 def test_include_cycle_is_rejected(tmp_path: Path, monkeypatch) -> None:
     data = _catalog(tmp_path)
     data["local_scopes"]["one"]["includes"] = ["all-second"]

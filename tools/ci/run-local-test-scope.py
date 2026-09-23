@@ -165,7 +165,10 @@ def build_command(
     include_lib: bool,
     extra_packages: list[str],
     targets: list[dict[str, str]],
+    run_ignored: str = "default",
 ) -> list[str]:
+    if run_ignored not in {"default", "all"}:
+        raise ValueError("run_ignored must be default or all")
     packages = list(dict.fromkeys([*(target["owner"] for target in targets), *extra_packages]))
     test_names = list(dict.fromkeys(target["target"] for target in targets))
     command = [
@@ -179,6 +182,8 @@ def build_command(
         command.extend(["-p", package])
     if include_lib:
         command.append("--lib")
+    if run_ignored == "all":
+        command.extend(["--run-ignored", "all"])
     for test_name in test_names:
         command.extend(["--test", test_name])
     command.extend(
@@ -218,6 +223,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("scopes", nargs="+", help="local scope names from test-authority.toml")
     parser.add_argument("--lane", help="override the declared lane (for composite validation)")
+    parser.add_argument(
+        "--run-ignored",
+        choices=("default", "all"),
+        default="default",
+        help="include ignored tests when the owner proof supplies their required inputs",
+    )
     parser.add_argument("--dry-run", action="store_true", help="print the exact command only")
     args = parser.parse_args(argv)
     try:
@@ -231,6 +242,7 @@ def main(argv: list[str] | None = None) -> int:
             include_lib,
             extra_packages,
             targets,
+            args.run_ignored,
         )
     except (OSError, tomllib.TOMLDecodeError, ValueError) as error:
         print(f"local test scope error: {error}", file=sys.stderr)

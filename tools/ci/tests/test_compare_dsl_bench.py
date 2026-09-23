@@ -459,11 +459,15 @@ def test_update_baseline_requires_clean_matching_preflight(tmp_path: Path) -> No
     assert "requires --preflight-receipt" in missing.stderr
     receipt = tmp_path / "preflight.json"
     _write_clean_preflight(receipt, status="blocked")
-    blocked = _run(str(baseline), str(current), "--update-baseline", "--preflight-receipt", str(receipt))
+    blocked = _run(
+        str(baseline), str(current), "--update-baseline", "--preflight-receipt", str(receipt)
+    )
     assert blocked.returncode == 2
     assert "is not clean" in blocked.stderr
     _write_clean_preflight(receipt, host={"os": "linux", "arch": "x86_64", "cpu_count": 4})
-    mismatch = _run(str(baseline), str(current), "--update-baseline", "--preflight-receipt", str(receipt))
+    mismatch = _run(
+        str(baseline), str(current), "--update-baseline", "--preflight-receipt", str(receipt)
+    )
     assert mismatch.returncode == 2
     assert "does not match candidate host class" in mismatch.stderr
 

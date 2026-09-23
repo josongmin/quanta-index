@@ -20,8 +20,12 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from manifest import DEFAULT_MANIFEST_PATH, ManifestError, load_manifest
-from compare_dsl_bench import ArtifactRefused, MIN_SAMPLES_FOR_AUTHORITY, load_artifact
+from compare_dsl_bench import (  # noqa: E402
+    MIN_SAMPLES_FOR_AUTHORITY,
+    ArtifactRefused,
+    load_artifact,
+)
+from manifest import DEFAULT_MANIFEST_PATH, ManifestError, load_manifest  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -79,7 +83,10 @@ def parse_args(
     )
     preflight.add_argument("profile", choices=sorted(profiles))
     preflight.add_argument(
-        "--receipt", type=Path, required=True, help="where to atomically write the preflight receipt"
+        "--receipt",
+        type=Path,
+        required=True,
+        help="where to atomically write the preflight receipt",
     )
     return parser.parse_args(argv)
 
@@ -103,7 +110,9 @@ def validate(repo_root: Path, artifact_profile: str) -> int:
     ).returncode
 
 
-def require_declared_baselines(repo_root: Path, profile: dict[str, object], manifest: dict[str, object]) -> None:
+def require_declared_baselines(
+    repo_root: Path, profile: dict[str, object], manifest: dict[str, object]
+) -> None:
     """Refuse an expensive comparison run that cannot finish without its baselines."""
     families = manifest["families"]
     names = profile["families"]
@@ -130,7 +139,10 @@ def require_declared_baselines(repo_root: Path, profile: dict[str, object], mani
                 f"declared baseline for {name} has mode {artifact.mode!r}, expected {expected_mode!r}"
             )
         floor = MIN_SAMPLES_FOR_AUTHORITY[artifact.mode]
-        if any(row.early_stop_reason is not None or row.samples < floor for row in artifact.rows.values()):
+        if any(
+            row.early_stop_reason is not None or row.samples < floor
+            for row in artifact.rows.values()
+        ):
             raise RuntimeError(
                 f"declared baseline for {name} has unmeasured rows or fewer than {floor} samples"
             )
@@ -243,7 +255,9 @@ def summarize(repo_root: Path, profile: dict[str, object], manifest: dict[str, o
                 artifacts.append({"path": str(path.relative_to(repo_root)), "error": str(exc)})
                 continue
             if not isinstance(payload, dict):
-                artifacts.append({"path": str(path.relative_to(repo_root)), "error": "not an object"})
+                artifacts.append(
+                    {"path": str(path.relative_to(repo_root)), "error": "not an object"}
+                )
                 continue
             provenance = payload.get("provenance")
             detail = payload.get("detail")
@@ -251,7 +265,9 @@ def summarize(repo_root: Path, profile: dict[str, object], manifest: dict[str, o
                 {
                     "path": str(path.relative_to(repo_root)),
                     "schema_version": payload.get("schema_version"),
-                    "git_head": provenance.get("git_head") if isinstance(provenance, dict) else None,
+                    "git_head": provenance.get("git_head")
+                    if isinstance(provenance, dict)
+                    else None,
                     "host_os": payload.get("host", {}).get("os")
                     if isinstance(payload.get("host"), dict)
                     else None,
@@ -302,7 +318,10 @@ def main(argv: list[str] | None = None) -> int:
                 print("ERROR: --cold-samples is only valid for dsl-authority", file=sys.stderr)
                 return 2
             if cold_samples < 20:
-                print("ERROR: --cold-samples must be at least 20 for authority comparison", file=sys.stderr)
+                print(
+                    "ERROR: --cold-samples must be at least 20 for authority comparison",
+                    file=sys.stderr,
+                )
                 return 2
         try:
             require_declared_baselines(repo_root, profile, manifest)

@@ -215,15 +215,16 @@ def check_tool_artifacts(inventory: dict, root: Path = ROOT) -> list[Finding]:
                         ):
                             raise ValueError("invalid schema_version enum or oneOf")
                         branch_versions = [
-                            branch["properties"]["schema_version"]["const"]
-                            for branch in branches
+                            branch["properties"]["schema_version"]["const"] for branch in branches
                         ]
                         if (
                             len(branch_versions) != len(values)
                             or any(type(value) is not int for value in branch_versions)
                             or set(branch_versions) != set(values)
                         ):
-                            raise ValueError("oneOf version branches must match schema_version enum")
+                            raise ValueError(
+                                "oneOf version branches must match schema_version enum"
+                            )
                         supported = set(values)
                 except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
                     findings.append(
@@ -238,8 +239,8 @@ def check_tool_artifacts(inventory: dict, root: Path = ROOT) -> list[Finding]:
                             Finding(
                                 where,
                                 f"inventory version {version!r} differs from schema const {declared!r}"
-                                if declared is not None else
-                                f"inventory version {version!r} is not supported by schema {sorted(supported)!r}",
+                                if declared is not None
+                                else f"inventory version {version!r} is not supported by schema {sorted(supported)!r}",
                             )
                         )
                     elif version in claimed_versions.setdefault(schema_file, set()):

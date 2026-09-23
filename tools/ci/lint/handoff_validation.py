@@ -11,9 +11,10 @@ import json
 import os
 import stat
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Sequence
+from typing import Any
 
 import jsonschema
 
@@ -125,9 +126,7 @@ def validate_product_handoff_chain(handoffs: Sequence[dict[str, Any]]) -> list[s
     edge("P01", "P02B")
 
     join = by_lane["P02I"]
-    accepted_bases = {
-        by_lane[lane].get("result_sha") for lane in ("P01", "P02A", "P02B")
-    }
+    accepted_bases = {by_lane[lane].get("result_sha") for lane in ("P01", "P02A", "P02B")}
     if join.get("base_sha") not in accepted_bases:
         errors.append("P02I base_sha is not the common base or either branch tip")
     integration = join.get("integration_commits")

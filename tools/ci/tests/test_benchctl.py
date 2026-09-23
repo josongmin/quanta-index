@@ -6,8 +6,8 @@ import importlib.util
 import json
 import subprocess
 import sys
-from types import SimpleNamespace
 from pathlib import Path
+from types import SimpleNamespace
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT_PATH = REPO_ROOT / "tools" / "benchmark" / "benchctl.py"
@@ -96,7 +96,9 @@ def test_compare_runs_only_declared_dsl_baseline_pairs(monkeypatch) -> None:
     assert calls == []
 
 
-def test_preflight_requires_linux_before_a_canonical_profile_runs(monkeypatch, tmp_path: Path) -> None:
+def test_preflight_requires_linux_before_a_canonical_profile_runs(
+    monkeypatch, tmp_path: Path
+) -> None:
     calls: list[list[str]] = []
 
     def fake_run(command, **_kwargs):
@@ -115,7 +117,9 @@ def test_preflight_requires_linux_before_a_canonical_profile_runs(monkeypatch, t
 
 def test_run_refuses_a_dirty_worktree_before_any_producer(monkeypatch, capsys) -> None:
     def dirty(_repo_root: Path) -> None:
-        raise RuntimeError("worktree is dirty: benchmark producers require a clean checkout before capture")
+        raise RuntimeError(
+            "worktree is dirty: benchmark producers require a clean checkout before capture"
+        )
 
     monkeypatch.setattr(MODULE, "require_clean_worktree", dirty)
     monkeypatch.setattr(
@@ -149,7 +153,9 @@ def test_run_rejects_invalid_dsl_cold_sample_override_before_producers(monkeypat
     assert "at least 20" in capsys.readouterr().err
 
 
-def test_run_refuses_contended_override_before_producers(monkeypatch, tmp_path: Path, capsys) -> None:
+def test_run_refuses_contended_override_before_producers(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
     manifest_path = tmp_path / "tools" / "benchmark" / "manifest.json"
     manifest_path.parent.mkdir(parents=True)
     manifest_path.write_text(

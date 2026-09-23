@@ -71,7 +71,15 @@ def _metadata(repo: Path) -> dict:
     wrapper = repo / "scripts" / "cargow"
     try:
         raw = subprocess.check_output(
-            [str(wrapper), "--lane", "metadata-lane", "metadata", "--format-version", "1", "--locked"],
+            [
+                str(wrapper),
+                "--lane",
+                "metadata-lane",
+                "metadata",
+                "--format-version",
+                "1",
+                "--locked",
+            ],
             cwd=repo,
         )
     except subprocess.CalledProcessError as error:
@@ -226,7 +234,9 @@ def validate_manifest_shape(payload: object) -> dict:
         paths.append(entry["path"])
     if paths != sorted(set(paths)):
         raise ClosureError("source closure files must be sorted and unique")
-    core = {key: payload[key] for key in ("schema_version", "profile", "revision", "roots", "files")}
+    core = {
+        key: payload[key] for key in ("schema_version", "profile", "revision", "roots", "files")
+    }
     if payload["digest"] != _digest(core):
         raise ClosureError("source closure digest mismatch")
     return payload

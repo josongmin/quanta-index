@@ -12,7 +12,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MANIFEST_PATH = ROOT / "tools" / "benchmark" / "manifest.json"
 SCHEMA_VERSION = 2
@@ -113,7 +112,9 @@ def load_manifest(path: Path = DEFAULT_MANIFEST_PATH) -> dict[str, Any]:
         _string(name, "manifest profile name")
         profile = _object(raw, f"profile {name!r}")
         if set(profile) != {"families", "recipes", "description"}:
-            raise ManifestError(f"profile {name!r} must contain exactly families, recipes and description")
+            raise ManifestError(
+                f"profile {name!r} must contain exactly families, recipes and description"
+            )
         family_names = _string_list(profile["families"], f"profile {name!r}.families")
         unknown = sorted(set(family_names) - set(families))
         if unknown:

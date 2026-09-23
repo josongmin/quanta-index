@@ -71,10 +71,15 @@ def main() -> int:
         source = path.read_text(encoding="utf-8")
         for line_number, line in enumerate(source.splitlines(), start=1):
             findings.extend(scan_line(relative, line_number, line))
-        if relative == "crates/quanta-index-contract/src/ipc/error.rs" and '"BAD_REQUEST"' in source:
+        if (
+            relative == "crates/quanta-index-contract/src/ipc/error.rs"
+            and '"BAD_REQUEST"' in source
+        ):
             findings.append(f"{relative}: BAD_REQUEST is not an accepted V2 code")
     if findings:
-        print("REFUSED: free-form error authority remains:\n" + "\n".join(findings), file=sys.stderr)
+        print(
+            "REFUSED: free-form error authority remains:\n" + "\n".join(findings), file=sys.stderr
+        )
         return 1
 
     required_fragments = {
@@ -88,15 +93,15 @@ def main() -> int:
             "code: SearchPlaneErrorCodeV2",
             "pub fn into_search_plane_wire(self)",
         ),
-        "crates/quanta-index-sdk/src/error.rs": (
-            "code: SearchPlaneErrorCodeV2",
-        ),
+        "crates/quanta-index-sdk/src/error.rs": ("code: SearchPlaneErrorCodeV2",),
     }
     for relative, fragments in required_fragments.items():
         text = (ROOT / relative).read_text(encoding="utf-8")
         missing = [fragment for fragment in fragments if fragment not in text]
         if missing:
-            print(f"REFUSED: {relative} misses typed authority fragments {missing}", file=sys.stderr)
+            print(
+                f"REFUSED: {relative} misses typed authority fragments {missing}", file=sys.stderr
+            )
             return 1
 
     print(

@@ -56,9 +56,7 @@ def main() -> int:
             print(f" - {path}")
         return 1
 
-    print(
-        f"All {len(manifests)} workspace crates inherit workspace lints."
-    )
+    print(f"All {len(manifests)} workspace crates inherit workspace lints.")
     print("No crate-local multiple_crate_versions overrides.")
     return 0
 

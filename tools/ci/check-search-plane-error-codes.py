@@ -65,9 +65,7 @@ def source_codes(root: Path) -> list[str]:
         label="native variant list",
     )
     lexical_variants = re.findall(r"\b([A-Z][A-Za-z0-9]*)\b", lexical_body)
-    native_entries = re.findall(
-        r'\b([A-Z][A-Za-z0-9]*)\s*=>\s*"([A-Z][A-Z0-9_]*)"', native_body
-    )
+    native_entries = re.findall(r'\b([A-Z][A-Za-z0-9]*)\s*=>\s*"([A-Z][A-Z0-9_]*)"', native_body)
     if not lexical_variants or not native_entries:
         raise TableError("closed enum invocation has an empty lexical or native set")
 

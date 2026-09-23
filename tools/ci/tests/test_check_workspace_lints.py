@@ -6,7 +6,6 @@ import importlib.util
 import sys
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "check_workspace_lints.py"
 
@@ -28,9 +27,7 @@ def test_guard_covers_non_crates_workspace_member(tmp_path: Path, monkeypatch, c
     for member in ("crates/core", "benchmarks/retrieval"):
         member_dir = tmp_path / member
         (member_dir / "src").mkdir(parents=True)
-        (member_dir / "Cargo.toml").write_text(
-            "[lints]\nworkspace = true\n", encoding="utf-8"
-        )
+        (member_dir / "Cargo.toml").write_text("[lints]\nworkspace = true\n", encoding="utf-8")
     (tmp_path / "benchmarks/retrieval/src/lib.rs").write_text(
         "#![expect(clippy::multiple_crate_versions)]\n", encoding="utf-8"
     )

@@ -152,10 +152,12 @@ def _input_evidence(values: list[str]) -> list[dict[str, str]]:
         path = Path(raw_path).resolve()
         if not path.is_file():
             raise SystemExit(f"missing input evidence: {path}")
-        inputs.append({
-            "role": role,
-            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-        })
+        inputs.append(
+            {
+                "role": role,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+        )
         seen.add(role)
     return sorted(inputs, key=lambda entry: entry["role"])
 

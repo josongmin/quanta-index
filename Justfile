@@ -267,7 +267,7 @@ rust-test-state-migration-owner lane="test-state-migration-owner-lane":
     python3 tools/ci/run-local-test-scope.py state-migration-owner --lane {{lane}}
 
 rust-test-state-migration-owner-lib lane="test-state-migration-owner-lane":
-    python3 tools/ci/run-local-test-scope.py state-migration-owner-lib --lane {{lane}}
+    QUANTA_INDEX_TEST_POTION_CODE_MODEL_DIR="${QUANTA_INDEX_TEST_POTION_CODE_MODEL_DIR:-$(./scripts/quanta-index-env.sh)/models/potion-code-16M-v2-e9d2a44}" python3 tools/ci/run-local-test-scope.py state-migration-owner-lib --lane {{lane}} --run-ignored all
 
 rust-test-sdk-binding-owner lane="test-sdk-binding-owner-lane":
     python3 tools/ci/run-local-test-scope.py sdk-binding-owner --lane {{lane}}
@@ -1062,7 +1062,9 @@ proof-p09-control-readiness-owner:
 # backup-API catalog freeze, manifest-last crash convergence, atomic cutover,
 # refusal matrix) and the lib scope carries the engine's unit suites. The
 # structural rails guard the surface the offline CLI and the new persisted
-# formats touched. The Linux production-like release subrail
+# formats touched. The lib scope includes its pinned-model test rather than
+# issuing a passed owner receipt with an ignored selection. The model assets
+# must match the hashes enforced by quanta-index-embed. The Linux production-like release subrail
 # (p10-state-migration, release-daemon binding) stays NOT_RUN on this host.
 proof-p10-state-migration-owner:
     @just rust-profile test-state-migration-owner
