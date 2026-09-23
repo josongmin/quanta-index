@@ -13,7 +13,9 @@ correctness and performance evidence from one final source.
 
 ## Integration audit
 
-1. Freeze final `HEAD`, dirty digest, toolchain, and target inventory.
+1. Freeze final `HEAD`, dirty digest, toolchain, and target inventory. Verify
+   the target root is checkout-scoped and no explicit preservation override
+   reconnects it to another worktree's Cargo artifacts.
 2. Re-run the 18-row crosswalk against current source; no `OPEN`, stale path,
    duplicate owner, or compatibility shadow path may remain.
 3. Confirm production behavior did not change unintentionally:

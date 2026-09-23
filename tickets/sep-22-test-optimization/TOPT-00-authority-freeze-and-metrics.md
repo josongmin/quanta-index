@@ -13,7 +13,9 @@ an optimization claim into unverifiable prose.
 ## Work
 
 1. Record exact `HEAD`, `origin/main`, branch, dirty paths, and a digest of the
-   six audit documents and this packet.
+   six audit documents and this packet. Record the resolved `CARGO_TARGET_DIR`
+   for every lane; it must include the canonical checkout identifier, with
+   `QUANTA_INDEX_PRESERVE_CARGO_TARGET_DIR` unset.
 2. Re-open every cited owner path and mark each finding `OPEN`, `STALE`, or
    `ALREADY_FIXED`. `STALE` stops its dependent ticket until re-audited.
 3. Resolve every focused selector through `tools/ci/test-authority.toml` and the
@@ -44,6 +46,8 @@ an optimization claim into unverifiable prose.
 - no implementation lane starts from a different source digest;
 - foreign dirty paths, including concurrent proof-registry work, are named and
   excluded from lane ownership.
+- two checkouts using the same lane resolve to distinct Cargo target roots;
+  no shared-target output is admitted as exact-source proof.
 
 ## Verification
 
