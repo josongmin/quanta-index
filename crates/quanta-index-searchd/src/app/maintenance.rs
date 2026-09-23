@@ -48,7 +48,6 @@ pub struct MaintenanceTallies {
 
 impl MaintenanceTallies {
     /// A stalled or dead timer is unhealthy even when earlier ticks succeeded.
-    #[must_use]
     pub fn heartbeat_fresh(&self, cadence: Duration) -> Result<bool, CoreError> {
         let Some(limit) = cadence.checked_mul(3) else {
             return Ok(false);
