@@ -165,3 +165,29 @@ Still required: isolated full-workspace Clippy and runtime-profile gates,
 an uncontended recheck of the 10,001-row ingest timeout, and TOPT-00's
 retrospective paired timing protocol. The historical missing
 pre-implementation admission record cannot be recreated.
+
+## Sep 23 integrated-source recheck — `5b24c34`
+
+The isolated checkout at `2e8dce9` also completed
+`just rust-profile test-fast` with exit 0 using the checkout-scoped target;
+this is not a result for later commits. Subsequent clean-source workspace
+Clippy attempts exposed newly committed searchd, IPC, SDK, search-plane,
+searchctl, and retrieval-benchmark compile/lint failures. The owner repairs
+landed through `5b24c348be4ca2f4ac156c0fca4e751dfeabf6d5`. In particular,
+the new query response variants are matched explicitly, and the SDK test
+request helpers use checked `split_last` custody rather than panicable
+slicing. No other writer's dirty files were included in these commits.
+
+On clean isolated `5b24c34`, `just fmt-check` and `just rust-policy` passed;
+the policy rail found **zero** benchmark artifacts attributed to this HEAD.
+SDK and search-plane all-target, all-feature strict Clippy passed together;
+their library tests passed 102/102 and 401/401. Earlier full-workspace
+Clippy runs were stopped only after decisive errors or source drift, and
+none is a full-workspace green receipt for `5b24c34`. The shared `main`
+checkout still has another writer's prompt-manager dirty paths, excluded
+from these isolated-source results.
+
+TOPT-08 remains open: complete the exact-source full Rust and daemon rails,
+rerun the 10,001-row ingest case without competing host load, and collect
+TOPT-00's retrospective paired timing. A contended timeout is not yet a
+producer-cost RCA; do not increase its deadline or weaken the oracle.

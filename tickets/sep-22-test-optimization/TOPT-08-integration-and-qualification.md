@@ -144,3 +144,12 @@ contended-tree execution timed out during fixture ingest at its existing
 defect or a reason to increase the deadline or remove the oracle. TOPT-00
 still lacks the retrospective quiet-host paired timing comparison and its
 pre-implementation admission gap remains recorded.
+
+On clean isolated `5b24c34`, `fmt-check`, policy, SDK/search-plane strict
+all-target Clippy, and their library tests (102/102, 401/401) passed.
+The earlier clean `2e8dce9` also passed `test-fast` with exit 0, but later
+code changes require a fresh final-source run. Full-workspace Clippy has
+not passed on `5b24c34`; prior attempts found and repaired owner errors,
+then stopped or became source-stale. Daemon-profile rails, the 10,001-row
+quiet-host recheck, and retrospective paired performance evidence remain
+open. No `CODE_QUALIFIED` or `PERF_EVIDENCE_CLEAN` verdict is emitted.
