@@ -8,9 +8,9 @@ Latest implementation verification ran in a shared dirty checkout while HEAD adv
 
 | Surface | Current evidence | Authority limit |
 | --- | --- | --- |
-| Python/Rust contract | Python: 132 passed at the earlier snapshot. Current Rust: lib 28/28 and chunking 20/20. `retrieval-contract-proof <fresh-out>` derives both summaries from JUnit/nextest and digest-binds canonical receipts. | No clean frozen-source receipt set has been issued; fixture/mutant proof is not a real pair. |
+| Python/Rust contract | Current machine evidence: Python 132/132 and Rust 48/48; derived summaries have zero failures. `retrieval-contract-proof <fresh-out>` derives both summaries from JUnit/nextest and digest-binds canonical receipts. | The run was on dirty source, so no receipt was issued; fixture/mutant proof is not a real pair. |
 | Rust SDK path | `just retrieval-sdk-proof <fresh-out>`: 9 passed, 0 failed; actual final runner binary, separate daemon, real publish/activate/query, machine-derived `sdk_results.json` and digest-bound receipt. | The implementation run occurred on dirty source before the new refusal was added, so its receipt is diagnostic only. A clean-source issuance remains required. |
-| Test registration | Both Rust integration targets are catalogued under workspace nextest. `cargow` now prebuilds and explicitly exports searchd for broad Cargo test/nextest rails. | The first broad rerun passed pin setup but workspace compilation stopped in an unrelated concurrent IPC test. Frozen-source broad-rail GREEN is not yet recorded. |
+| Test registration | Both Rust integration targets are catalogued under workspace nextest. `cargow` now prebuilds and explicitly exports searchd for broad Cargo test/nextest rails. | Broad reruns passed pin setup but workspace compilation currently stops in two concurrent `quanta-index-searchctl` non-exhaustive IPC matches. Frozen-source broad-rail GREEN is not yet recorded. |
 | Static policy | Semgrep: 0 findings. Derive allowlist: pass across `crates/` and `benchmarks/`; strict manual manifest decoders reject duplicate fields. | Policy GREEN is implementation evidence, not benchmark qualification. |
 
 Current hard frontiers in code:

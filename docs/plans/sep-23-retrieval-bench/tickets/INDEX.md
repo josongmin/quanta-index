@@ -6,13 +6,13 @@ Required verification contract: [TEST-PLAN.md](TEST-PLAN.md). Its T00–T16 matr
 
 ## Current code audit (2026-09-23)
 
-Latest implementation audit was run in the shared local `main` checkout while HEAD advanced through `a73341a67754dcb1e791852691e07be8f9ab59b7`. The checkout contains concurrent dirty work, so the results below are focused implementation evidence, not an exact-source qualification receipt. The canonical receipt writer and `retrieval-sdk-proof` now refuse dirty source; re-freeze HEAD and the full source tree before acceptance.
+Latest implementation audit was run in the shared local `main` checkout while implementation HEAD advanced through `269029e8f8412a07331d4ae65d6b89508e5c06e1`. The checkout contains concurrent dirty work, so the results below are focused implementation evidence, not an exact-source qualification receipt. The canonical receipt writer and proof recipes now refuse dirty source; re-freeze HEAD and the full source tree before acceptance.
 
 | Ticket / wave | Current code state | Remaining terminal condition |
 | --- | --- | --- |
 | RB-00 / W0-A | v3 suite/runner comparison contract, blinding fields, common-universe/path+SHA rules and verdict schemas are implemented and mutant-tested. | W0-B is not frozen: no approved pilot repo/manifest, independently adjudicated gold, admitted model assets, Semble lockfile/license record, or quiet-host profile. |
 | RB-01 / W1A | Single evaluator supports exact v1/v2 migration reads and authoritative v3 validation/scoring; v3 pack, split-leakage, byte-span, capture and contract mutants are present. | No qualified external suite or real-pair scoring artifact has been issued. |
-| RB-02 / W1B | Benchmark-only Rust runner uses the public SDK and a separate pinned searchd. A subprocess integration test now executes the actual runner binary and binds its SHA, sealed receipt, activation ACK and v3 record. `retrieval-sdk-proof <fresh-out>` emits machine-counted `sdk_results.json` plus a digest-bound canonical receipt. Broad workspace Cargo rails now prebuild and explicitly export the daemon pin. | Model-unavailable/provider-failure process scenarios are not all exercised live. The broad workspace rail reached compilation after pin injection but was blocked by a concurrent unrelated non-exhaustive IPC test match; rerun on a frozen source. |
+| RB-02 / W1B | Benchmark-only Rust runner uses the public SDK and a separate pinned searchd. A subprocess integration test now executes the actual runner binary and binds its SHA, sealed receipt, activation ACK and v3 record. `retrieval-sdk-proof <fresh-out>` emits machine-counted `sdk_results.json` plus a digest-bound canonical receipt. Broad workspace Cargo rails now prebuild and explicitly export the daemon pin. | Model-unavailable/provider-failure process scenarios are not all exercised live. The broad workspace rail reached compilation after pin injection but is currently blocked by concurrent `quanta-index-searchctl` matches missing two new IPC response variants; rerun on a frozen source. |
 | RB-03 / W1C | Whole-file, strict/line-aligned windows and Rust syntax chunking plus independent span/coverage validation are implemented. The manifest decoders are manual/duplicate-rejecting, Semgrep is green, and the derive allowlist covers `crates/` and `benchmarks/`. | No real ablation artifact exists. |
 | RB-04 / W1D | Semble 0.6.0 adapter, lockfile/interpreter/model-asset checks, mapping proof and v3 normalization are implemented and fixture-tested. | No admitted real Semble environment/pilot capture has been recorded. |
 | RB-05 / W2 | Pair orchestration, immutable staging, manifest/verdict validation, deterministic re-score and conditional T15/T16 evidence handling are implemented. | No paired pilot was run. `run.py` currently sets `phase_boundaries=false` and terminally refuses every speed claim as `phases_unimplemented`; process-tree peak RSS is not captured. |
@@ -20,20 +20,21 @@ Latest implementation audit was run in the shared local `main` checkout while HE
 
 Latest focused execution on the dirty shared checkout:
 
-- `python3 -m pytest tools/ci/tests/test_retrieval_benchmark.py -q`: 132 passed, 0 failed in 82.22s.
+- `python3 -m pytest tools/ci/tests/test_retrieval_benchmark.py -q`: 132 passed, 0 failed in 86.29s; JUnit-derived summary reports `selected=executed=passed=132`, `failed=0`.
+- Rust contract nextest machine evidence: 48 passed, 0 failed; derived summary reports `selected=executed=passed=48`, `failed=0`.
 - Actual runner subprocess proof: 1 passed, 0 failed; the final runner binary emitted a v3 record whose capture SHA matched that executable.
 - Receipt-producing SDK recipe: 9 passed, 0 failed; emitted `sdk_results.json` with `selected=executed=passed=9`, `failed=0`, one runner SHA, sealed-receipt SHA and activation-ACK SHA. The run predated the dirty-source refusal and is diagnostic only.
-- Broad workspace nextest probe with no caller-supplied pin: the new `cargow` prerequisite built/exported searchd successfully, then workspace compilation stopped in the unrelated concurrent `repo_admission_and_slowloris.rs` non-exhaustive enum match. The old `searchd binary is not pinned` failure did not recur.
-- `python3 tools/ci/lint/check-test-authority.py`: pass at the earlier audited snapshot; rerun after the concurrent catalog changes settle.
+- Broad workspace nextest probe with no caller-supplied pin: the new `cargow` prerequisite built/exported searchd successfully. After one concurrent IPC test match was repaired, the rerun stopped in `crates/quanta-index-searchctl/src/lib.rs` at two non-exhaustive matches for `ActiveGenerationSnapshot`/`ResolvedLexicalGeneration`. The old `searchd binary is not pinned` failure did not recur.
+- `python3 tools/ci/lint/check-test-authority.py`: pass on implementation HEAD `269029e8`.
 - `bash scripts/run-semgrep.sh benchmarks/retrieval/src`: pass, 0 findings.
 - `python3 tools/ci/lint/check-rust-derive-allowlist.py`: pass with owned roots `crates/` and `benchmarks/`.
-- Receipt/result producer regressions: 19 passed, 0 failed.
+- Receipt/result producer plus Cargo-lane regressions: 38 passed, 0 failed.
 
 Static policy contradiction is resolved: both Semgrep and the widened derive inventory inspect the benchmark source and pass. This does not qualify benchmark claims.
 
 ### Required closeout order
 
-1. Re-run the registered workspace rail on a frozen source after the concurrent IPC test update is internally complete; require the live SDK test to pass with the `cargow`-injected explicit daemon pin.
+1. Re-run the registered workspace rail on a frozen source after the concurrent IPC/searchctl update is internally complete; require the live SDK test to pass with the `cargow`-injected explicit daemon pin.
 2. Run `retrieval-contract-proof` and `retrieval-sdk-proof` on one frozen clean source and freeze their emitted summaries/receipts into the W0-B stage. Keep `sdk_results.json` bound to the actual runner record/binary; never hand-author verdict inputs.
 3. Complete RB-02 live failure coverage for model/provider unavailability and verify bounded cleanup/no scored output. Keep unit classification tests, but do not substitute them for the process scenario.
 4. Freeze W0-B inputs outside the checkout: pilot commit and admitted manifest, reviewed license/attribution, two-person adjudicated gold, model assets/revision, Semble lockfile/interpreter, tokenizer/budget version and quiet-host/cache profile.
