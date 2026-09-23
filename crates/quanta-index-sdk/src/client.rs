@@ -214,13 +214,13 @@ impl QuantaIndex {
     fn pin_active_selector(
         &self,
         generation: &mut Option<GenerationPin>,
-        selector: &Option<GenerationSelector>,
+        selector: Option<&GenerationSelector>,
         track: SearchPlaneTrackKind,
     ) -> Result<(), SdkError> {
         let Some(GenerationSelector::Active {
             repo_id,
             revision_id,
-        }) = selector.as_ref()
+        }) = selector
         else {
             return Ok(());
         };
@@ -254,24 +254,24 @@ impl QuantaIndex {
         match request {
             SearchPlaneQueryIpcRequest::Text(query) => self.pin_active_selector(
                 &mut query.generation,
-                &query.generation_selector,
+                query.generation_selector.as_ref(),
                 SearchPlaneTrackKind::Lexical,
             ),
             SearchPlaneQueryIpcRequest::Symbol(query) => self.pin_active_selector(
                 &mut query.generation,
-                &query.generation_selector,
+                query.generation_selector.as_ref(),
                 SearchPlaneTrackKind::Lexical,
             ),
             SearchPlaneQueryIpcRequest::Semantic(query) => {
                 self.pin_active_selector(
                     &mut query.generation,
-                    &query.generation_selector,
+                    query.generation_selector.as_ref(),
                     SearchPlaneTrackKind::Semantic,
                 )?;
                 if let Some(scope) = &mut query.lexical_scope {
                     self.pin_active_selector(
                         &mut scope.generation,
-                        &scope.generation_selector,
+                        scope.generation_selector.as_ref(),
                         SearchPlaneTrackKind::Lexical,
                     )?;
                 }
@@ -280,35 +280,35 @@ impl QuantaIndex {
             SearchPlaneQueryIpcRequest::Hybrid(query) => {
                 self.pin_active_selector(
                     &mut query.text_query.generation,
-                    &query.text_query.generation_selector,
+                    query.text_query.generation_selector.as_ref(),
                     SearchPlaneTrackKind::Lexical,
                 )?;
                 self.pin_active_selector(
                     &mut query.generation,
-                    &query.generation_selector,
+                    query.generation_selector.as_ref(),
                     SearchPlaneTrackKind::Semantic,
                 )
             }
             SearchPlaneQueryIpcRequest::HybridSeed(query) => {
                 self.pin_active_selector(
                     &mut query.text_query.generation,
-                    &query.text_query.generation_selector,
+                    query.text_query.generation_selector.as_ref(),
                     SearchPlaneTrackKind::Lexical,
                 )?;
                 self.pin_active_selector(
                     &mut query.generation,
-                    &query.generation_selector,
+                    query.generation_selector.as_ref(),
                     SearchPlaneTrackKind::Semantic,
                 )
             }
             SearchPlaneQueryIpcRequest::History(query) => self.pin_active_selector(
                 &mut query.text_query.generation,
-                &query.text_query.generation_selector,
+                query.text_query.generation_selector.as_ref(),
                 SearchPlaneTrackKind::Lexical,
             ),
             SearchPlaneQueryIpcRequest::RuntimeMetadata(query) => self.pin_active_selector(
                 &mut query.text_query.generation,
-                &query.text_query.generation_selector,
+                query.text_query.generation_selector.as_ref(),
                 SearchPlaneTrackKind::Lexical,
             ),
             SearchPlaneQueryIpcRequest::Structural(query) => {

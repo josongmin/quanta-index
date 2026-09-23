@@ -1493,6 +1493,7 @@ fn semantic_active_keeps_catalog_selector_and_rejects_wrong_generation() {
             if request.generation == Some(sample_generation_pin())
                 && matches!(request.generation_selector, Some(GenerationSelector::Active { .. }))
     ));
+    drop(requests);
 }
 
 #[test]
