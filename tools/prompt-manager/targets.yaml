@@ -3,7 +3,7 @@ targets:
     output: AGENTS.md
     template: templates/agents.md.j2
     description: "Shared AGENTS router"
-    max_bytes: 4000
+    max_bytes: 3200
     sections:
       - sources/operational/agent-router.md
       - sources/rules/verification-contract.md
@@ -12,7 +12,7 @@ targets:
     output: AGENT_CORE.md
     template: templates/agent-core.md.j2
     description: "Core execution rules"
-    max_bytes: 5000
+    max_bytes: 2600
     sections:
       - sources/operational/agent-core.md
 
@@ -20,32 +20,21 @@ targets:
     output: AGENT_PLAYBOOK.md
     template: templates/agent-playbook.md.j2
     description: "Command selection and verification playbook"
-    max_bytes: 16000
+    max_bytes: 6500
     sections:
       - sources/operational/agent-playbook.md
       - sources/operational/compile-boundary-guard.md
       - sources/operational/test-fast-path.md
-      - sources/operational/taint.md
       - sources/operational/artifacts.md
-
-  agent-reference:
-    output: AGENT_REFERENCE.md
-    template: templates/agent-reference.md.j2
-    description: "Authority map and reference entrypoint"
-    max_bytes: 4000
-    sections:
-      - sources/operational/agent-reference.md
-      - sources/rules/agent-change-posture.md
 
   agent-rule-catalog:
     output: AGENT_RULE_CATALOG.md
     template: templates/agent-rule-catalog.md.j2
     description: "Full rule catalog and CI mapping"
-    max_bytes: 30000
+    max_bytes: 24000
     sections:
       - sources/operational/agent-rule-catalog.md
       - sources/rules/agent-change-posture.md
       - sources/rules/golden-rules.md
-      - sources/rules/verification-contract.md
       - sources/rules/catalog.md
       - sources/rules/ci-gates.md

@@ -38,27 +38,14 @@ Read `AGENT_CORE.md` first, then select the narrowest command here.
 - one crate probe when the profile catalog is insufficient: `./scripts/cargow test -p <crate>`
 
 Local integration/CLI/daemon profiles resolve target IDs from
-`tools/ci/test-authority.toml` and launch one `cargo nextest` process per scope.
-Do not restore one-Cargo-process-per-test recipes. `validate-shared-surface`
-uses one shared lane, compiles the selected all-target graph once in the test
-profile with nextest `--no-run`, then executes three bounded selections: shared
-libraries, bounded integration, and CLI smoke. The selections stay separate
-because Cargo's global `--lib` selector would otherwise pull unrelated package
-libraries into the integration command. CI keeps its independent workspace-wide
-authority rail. Scope-specific `test_threads` caps prevent a scheduler from
-oversubscribing daemon and storage tests; composed scopes use the smallest
-declared cap.
-The 49 searchd-runtime scenario source files are modules of three explicit Cargo
-test suites (fast, risk, extended), not 49 separately linked binaries. The test
-authority guard verifies every source-to-suite binding. `test-daemon-fast`
-executes only the fast runtime suite; the expensive DSL golden-truth matrix
-remains in `test-daemon`, `test-daemon-all`, and `rust-bench-dsl-truth`.
-The complete integration profile runs fast, lexical-storage, and semantic
-slices sequentially in one build lane, retaining their 8/2/4 thread caps. The
-edit loop can skip text-authority persistence and Lance/DataFusion when those
-storage surfaces did not change. Local `sccache`, when installed, reuses
-cacheable clean-rebuild work on a repository-isolated server;
-`QUANTA_INDEX_SCCACHE=0` disables it.
+`tools/ci/test-authority.toml`. Preserve these execution invariants:
+
+- one `cargo nextest` process per selected scope, not one Cargo process per test
+- separate shared-library, integration, and CLI selectors in the shared lane
+- declared `test_threads` caps; composed scopes use the smallest cap
+- fast/risk/extended runtime suites and their source-to-suite authority guard
+- the DSL cold matrix starts at `test-daemon` or `rust-bench-dsl-truth`
+- `QUANTA_INDEX_SCCACHE=0` disables repository-isolated local `sccache`
 
 Timing and timing-bearing quality rails fail before build/cache mutation when
 foreign Cargo or rustc processes are active. Wait for a quiet host. The
@@ -82,16 +69,6 @@ it is not clean performance evidence.
 - lint: `python3 tools/prompt-manager/pm.py lint`
 - preview: `python3 tools/prompt-manager/pm.py preview --target agents`
 - tests: `python3 -m pytest tools/prompt-manager/tests/test_pm.py -q`
-
-## Retry Rule
-
-- Do not rerun the same command without a relevant context change.
-- Classify the failure, then repair and rerun the narrowest affected surface.
-
-## Cargo Wrapper Rule
-
-- Prefer `./scripts/cargow` over bare `cargo`.
-- If bare `cargo` is required, source `scripts/quanta-index-env.sh` first or use a `just` target that encapsulates it.
 
 ## Mandatory Escalation By Change Surface
 

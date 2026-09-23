@@ -3,12 +3,13 @@
 
 Shared AI-agent entrypoint for quanta-index.
 
+Repository role: external search plane in producer/search-plane splits.
+
 Load context on demand:
 
 - implementation or verification: relevant sections of [AGENT_CORE.md](AGENT_CORE.md)
 - command selection: relevant sections of [AGENT_PLAYBOOK.md](AGENT_PLAYBOOK.md)
 - rule IDs or CI mappings: relevant sections of [AGENT_RULE_CATALOG.md](AGENT_RULE_CATALOG.md)
-- authority pointers: [AGENT_REFERENCE.md](AGENT_REFERENCE.md)
 
 Do not preload the full playbook or catalog for routine work.
 
@@ -18,7 +19,7 @@ Canonical tooling:
 - Prompt/doc control plane: `tools/prompt-manager/pm.py`
 
 Conflict rule:
-`AGENTS.md` > `AGENT_CORE.md` > `AGENT_PLAYBOOK.md` > `AGENT_RULE_CATALOG.md` > `AGENT_REFERENCE.md` > chat memory.
+`AGENTS.md` > `AGENT_CORE.md` > `AGENT_PLAYBOOK.md` > `AGENT_RULE_CATALOG.md` > chat memory.
 
 Language:
 

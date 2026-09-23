@@ -1,14 +1,23 @@
 from __future__ import annotations
 
+import argparse
+import importlib.util
 import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 PM = Path(__file__).parent.parent / "pm.py"
 REPO_ROOT = Path(__file__).parent.parent.parent.parent
 TARGETS = Path(__file__).parent.parent / "targets.yaml"
+
+SPEC = importlib.util.spec_from_file_location("prompt_manager_under_test", PM)
+assert SPEC and SPEC.loader
+PROMPT_MANAGER = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = PROMPT_MANAGER
+SPEC.loader.exec_module(PROMPT_MANAGER)
 
 
 def run(*args: str) -> subprocess.CompletedProcess:
@@ -27,7 +36,6 @@ def test_list_returns_expected_targets():
         "agents",
         "agent-core",
         "agent-playbook",
-        "agent-reference",
         "agent-rule-catalog",
     ]:
         assert name in result.stdout
@@ -53,7 +61,6 @@ def test_preview_agents_mentions_core_docs():
     assert result.returncode == 0
     assert "AGENT_CORE.md" in result.stdout
     assert "AGENT_PLAYBOOK.md" in result.stdout
-    assert "AGENT_REFERENCE.md" in result.stdout
     assert "AGENT_RULE_CATALOG.md" in result.stdout
     assert result.stdout.endswith("\n") and not result.stdout.endswith("\n\n")
 
@@ -67,10 +74,13 @@ def test_preview_agent_core_mentions_prompt_manager():
 
 
 def test_primary_rule_targets_include_verification_contract():
-    for target in ["agents", "agent-rule-catalog"]:
-        result = run("preview", "--target", target)
-        assert result.returncode == 0, result.stderr
-        assert "## Verification Contract" in result.stdout
+    agents = run("preview", "--target", "agents")
+    assert agents.returncode == 0, agents.stderr
+    assert "## Verification Contract" in agents.stdout
+
+    catalog = run("preview", "--target", "agent-rule-catalog")
+    assert catalog.returncode == 0, catalog.stderr
+    assert "## Verification Contract" not in catalog.stdout
 
 
 def test_deprecated_and_inert_prompt_surfaces_are_absent():
@@ -83,6 +93,7 @@ def test_deprecated_and_inert_prompt_surfaces_are_absent():
         ".cursor/rules/FAIL-CLOSED-POLICY.md",
         ".cursor/rules/cursor-supplements.mdc",
         "CLAUDE.md",
+        "AGENT_REFERENCE.md",
     ]:
         assert not (REPO_ROOT / relative).exists(), relative
 
@@ -105,6 +116,12 @@ def test_generated_outputs_are_not_gitignored():
             cwd=str(REPO_ROOT),
         )
         assert result.returncode == 1, f"generated target is gitignored: {name}"
+        tracked = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", config["output"]],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+        )
+        assert tracked.returncode == 0, f"generated target is not tracked: {name}"
 
 
 def test_all_sources_and_templates_are_reachable_from_targets():
@@ -128,6 +145,50 @@ def test_full_rule_catalog_includes_golden_rules():
     result = run("preview", "--target", "agent-rule-catalog")
     assert result.returncode == 0, result.stderr
     assert "## Golden Rules" in result.stdout
+
+
+def test_render_budget_failure_does_not_partially_sync(tmp_path, monkeypatch):
+    template = tmp_path / "template.j2"
+    template.write_text("{{ target.name }}\n", encoding="utf-8")
+    first_output = tmp_path / "first.md"
+    second_output = tmp_path / "second.md"
+    first_output.write_text("old first\n", encoding="utf-8")
+    second_output.write_text("old second\n", encoding="utf-8")
+
+    first = PROMPT_MANAGER.Target(
+        name="first",
+        output=first_output,
+        template=template,
+        description="",
+        max_bytes=1024,
+    )
+    second = PROMPT_MANAGER.Target(
+        name="second",
+        output=second_output,
+        template=template,
+        description="",
+        max_bytes=1,
+    )
+    monkeypatch.setattr(PROMPT_MANAGER, "load_targets", lambda _names=None: [first, second])
+
+    result = PROMPT_MANAGER.cmd_sync(argparse.Namespace(target=None, dry_run=False))
+
+    assert result == 1
+    assert first_output.read_text(encoding="utf-8") == "old first\n"
+    assert second_output.read_text(encoding="utf-8") == "old second\n"
+
+
+def test_render_reports_missing_template_as_regular_error(tmp_path):
+    target = PROMPT_MANAGER.Target(
+        name="missing",
+        output=tmp_path / "output.md",
+        template=tmp_path / "missing.j2",
+        description="",
+        max_bytes=1024,
+    )
+
+    with pytest.raises(PROMPT_MANAGER.PromptManagerError, match="Template not found"):
+        PROMPT_MANAGER.render(target)
 
 
 def test_preview_agent_playbook_mentions_verify_commands():
