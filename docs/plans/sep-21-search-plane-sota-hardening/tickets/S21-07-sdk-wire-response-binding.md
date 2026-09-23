@@ -143,13 +143,17 @@ generation number, but it is not yet the complete target contract:
    satisfy an older resolution merely by repeating its generation number.
    Add producer/consumer negatives for same generation but wrong epoch and
    wrong content commitment.
-3. `crates/quanta-index-search-plane/src/query_dispatcher/rev_at_time.rs` and
-   `crates/quanta-index-sdk/src/{client,binding}.rs` need an explicit
-   history-authoritative resolved-ancestor identity (or equivalent
-   independently checkable proof). The current `check_pin` same-repository
-   exception accepts any ancestor-looking revision; prove a wrong reachable
-   same-repository pin is rejected while the legitimate ancestor and
-   before-history empty case still work.
+3. `crates/quanta-index-search-plane/src/query_dispatcher/{planning,rev_at_time,dispatcher}.rs`
+   and `crates/quanta-index-sdk/src/{client,binding}.rs` now use a lexical
+   planner preflight that selects the ancestor before the actual query; the
+   SDK binds the final response to that result. Focused production-planner
+   tests cover the legal ancestor, invalid timeref and before-history empty
+   case; SDK mock negatives reject a wrong same-repository final pin and a
+   foreign-repository preflight result. Re-run these at the frozen final
+   source as part of P06 owner/release proof.
+   Explain has its own server-side candidate-pin equality guard and must
+   keep exact SDK response binding. Non-lexical routes cannot rebind and
+   retain exact pin matching even if their text contains the token.
 4. Hybrid/semantic-with-lexical-scope requests should resolve the composite
    lexical+semantic active root atomically from one catalog read rather than
    two independently timed lookups. A concurrent activation/rollback test

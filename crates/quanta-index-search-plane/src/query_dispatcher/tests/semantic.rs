@@ -187,6 +187,7 @@ fn semantic_dispatch_embeds_query_text() -> TestResult {
             }
         }
         other @ (SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+        | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
         | SearchPlaneQueryIpcResponse::Text(_)
         | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::Hybrid(_)

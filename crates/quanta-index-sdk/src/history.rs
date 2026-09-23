@@ -981,6 +981,7 @@ fn dispatch_history_query_request_v1(
     match response {
         SearchPlaneQueryIpcResponse::History(results) => Ok(results),
         other @ (SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+        | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
         | SearchPlaneQueryIpcResponse::Text(_)
         | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::Semantic(_)

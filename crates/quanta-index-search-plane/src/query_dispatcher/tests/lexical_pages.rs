@@ -67,6 +67,7 @@ fn text(response: SearchPlaneQueryIpcResponse) -> Result<TextQueryResponse, Stri
     match response {
         SearchPlaneQueryIpcResponse::Text(page) => Ok(page),
         other @ (SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+        | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
         | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::Semantic(_)
         | SearchPlaneQueryIpcResponse::Hybrid(_)

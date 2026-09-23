@@ -79,8 +79,11 @@ to validated lane handoffs and immutable proof manifests, not this document.
 ### P06 active-selector binding — main-checkout work in progress
 
 - Work is being performed directly on local `main`, with the unrelated
-  Sep-23 retrieval-benchmark and agent-rule edits preserved. The P06 diff is
-  not an immutable checkpoint or release proof while this checkout is dirty.
+  Sep-23 retrieval-benchmark and agent-rule edits preserved. The active-pin
+  checkpoint is committed at `599ad8b`; the non-lexical time-rebind
+  restriction is committed at `98153c1`. Neither is final-source release
+  proof. The lexical planner preflight is a further local checkpoint, not
+  final-source release proof.
 - The query IPC now exposes a read-only active-generation resolution opcode
   backed by `ActivationCatalog::resolve_record`. SDK query dispatch centrally
   resolves active lexical/semantic selectors on that same query socket,
@@ -89,8 +92,8 @@ to validated lane handoffs and immutable proof manifests, not this document.
   An independent scripted resolution followed by a wrong same-domain query
   generation is rejected by the SDK.
 - Local focused evidence so far: `./scripts/cargow check -p quanta-index-sdk
-  -p quanta-index-search-plane -p quanta-index-contract`, SDK lib (98/98 before
-  the subsequent structural-active test), contract active-resolution CBOR/JSON
+  -p quanta-index-search-plane -p quanta-index-contract`, SDK lib (101/101
+  after the lexical-preflight SDK tests), contract active-resolution CBOR/JSON
   test, search-plane catalog-resolution test, real UDS SDK binding owner target
   (13/13), `just rust-wire-inventory`, and `just rust-public-api` after the
   intentional contract/SDK baseline update passed. `just rust-fuzz-smoke 5`
@@ -99,16 +102,21 @@ to validated lane handoffs and immutable proof manifests, not this document.
   pass result. Final-source P06 owner/release manifests remain pending.
   Structural active selection remains unsupported by
   `ActivationCatalog::resolve_record`; the SDK refuses it explicitly.
-- This does **not** close S21-07. `rev:at.time` still permits a same-repository
-  rebinding on the lexical route whose selected ancestor is not independently
-  pinned by the SDK. A follow-up restricts the exception to that route;
-  symbol, semantic, hybrid, history, runtime and structural responses must
-  retain exact request-pin binding even when their query text contains the
-  token. The focused symbol negative is separate evidence, not proof of the
-  lexical ancestor;
-  activation epoch/content binding beyond the resolved generation pin is not
-  yet a request-level contract. Do not promote the new negative oracle to
-  coverage of those cases.
+- The follow-up restricts time-rebind tolerance to lexical queries: symbol,
+  semantic, hybrid, history, runtime and structural responses retain exact
+  request-pin binding even when their query text contains the token. A new
+  `ResolveLexicalGeneration` opcode reuses the production lexical planner to
+  select the ancestor before execution; SDK binds the final response to that
+  result. Contract round-trip and SDK positive/wrong-same-repo/foreign-repo
+  negatives passed. The search-plane real planner test (ancestor and
+  before-history empty) and invalid-timeref test passed. The real UDS owner
+  target passed 13/13, `just rust-wire-inventory` passed, and
+  `just rust-public-api` passed against the intentional baseline update.
+- This does **not** close S21-07. Activation epoch/content binding beyond the
+  resolved generation pin is not yet a request-level contract. The two-step
+  planner resolution trusts the server's first result and does not prove
+  catalog epoch or immutable content in the final read view. Do not promote
+  the focused oracle to those acceptance claims.
 
 ### W10 contract oracles and request-ID failure classification
 

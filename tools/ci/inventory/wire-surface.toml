@@ -113,6 +113,7 @@ plane = "query"
 direction = "request"
 variants = [
   "ResolveActiveGeneration",
+  "ResolveLexicalGeneration",
   "Text",
   "Symbol",
   "Semantic",
@@ -133,6 +134,7 @@ plane = "query"
 direction = "response"
 variants = [
   "ActiveGenerationSnapshot",
+  "ResolvedLexicalGeneration",
   "Text",
   "Symbol",
   "Semantic",

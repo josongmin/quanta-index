@@ -118,6 +118,7 @@ pub quanta_index_sdk::binding::ExpectedQueryResponseV1::History
 pub quanta_index_sdk::binding::ExpectedQueryResponseV1::Hybrid
 pub quanta_index_sdk::binding::ExpectedQueryResponseV1::HybridSeed
 pub quanta_index_sdk::binding::ExpectedQueryResponseV1::RepoMapQuery
+pub quanta_index_sdk::binding::ExpectedQueryResponseV1::ResolvedLexicalGeneration
 pub quanta_index_sdk::binding::ExpectedQueryResponseV1::RuntimeMetadata
 pub quanta_index_sdk::binding::ExpectedQueryResponseV1::Semantic
 pub quanta_index_sdk::binding::ExpectedQueryResponseV1::Structural
@@ -227,6 +228,7 @@ pub quanta_index_sdk::ExpectedQueryResponseV1::History
 pub quanta_index_sdk::ExpectedQueryResponseV1::Hybrid
 pub quanta_index_sdk::ExpectedQueryResponseV1::HybridSeed
 pub quanta_index_sdk::ExpectedQueryResponseV1::RepoMapQuery
+pub quanta_index_sdk::ExpectedQueryResponseV1::ResolvedLexicalGeneration
 pub quanta_index_sdk::ExpectedQueryResponseV1::RuntimeMetadata
 pub quanta_index_sdk::ExpectedQueryResponseV1::Semantic
 pub quanta_index_sdk::ExpectedQueryResponseV1::Structural

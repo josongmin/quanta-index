@@ -87,6 +87,7 @@ fn repo_map_dispatch_emits_closed_obs_metrics() -> TestResult {
     match response {
         SearchPlaneQueryIpcResponse::RepoMapQuery(_) => {}
         other @ (SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+        | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
         | SearchPlaneQueryIpcResponse::Text(_)
         | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::Semantic(_)

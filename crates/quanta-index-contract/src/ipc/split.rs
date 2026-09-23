@@ -8,15 +8,15 @@ use serde::{
 
 use crate::{
     ClusterMembershipBatchReadRequestV1, ClusterMembershipBatchReadResponseV1,
-    CurrentGenerationRequest, GenerationSnapshot, GenerationStatusReport, GenerationStatusRequest,
-    HistoryQueryRequest, HybridQueryRequest, HybridQueryResponse, HybridSeedQueryRequest,
-    HybridSeedQueryResponse, MetricsSnapshotRequest, MetricsSnapshotV1, ProcessReadinessRequest,
-    ProcessReadinessV1, QuarantineDiscardAck, QuarantineDiscardRequest, QuarantineInventoryRequest,
-    QuarantineInventoryV1, RepoMapActivateGenerationRequest, RepoMapActivateGenerationRequestV2,
-    RepoMapMutationAck, RepoMapQueryRequest, RepoMapQueryResponse, RepoMapTerminalReceiptV2,
-    RuntimeMetadataQueryRequest, SearchPlaneActivateSearchCorpusGenerationCasRequest,
-    SearchPlaneExplainQueryRequest, SearchPlaneExplainQueryResponse,
-    SearchPlaneHistoryQueryResponse, SearchPlaneIpcError,
+    CurrentGenerationRequest, GenerationPin, GenerationSnapshot, GenerationStatusReport,
+    GenerationStatusRequest, HistoryQueryRequest, HybridQueryRequest, HybridQueryResponse,
+    HybridSeedQueryRequest, HybridSeedQueryResponse, MetricsSnapshotRequest, MetricsSnapshotV1,
+    ProcessReadinessRequest, ProcessReadinessV1, QuarantineDiscardAck, QuarantineDiscardRequest,
+    QuarantineInventoryRequest, QuarantineInventoryV1, RepoMapActivateGenerationRequest,
+    RepoMapActivateGenerationRequestV2, RepoMapMutationAck, RepoMapQueryRequest,
+    RepoMapQueryResponse, RepoMapTerminalReceiptV2, RuntimeMetadataQueryRequest,
+    SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneExplainQueryRequest,
+    SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse, SearchPlaneIpcError,
     SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneRuntimeMetadataQueryResponse,
     SearchPlaneSearchCorpusActivationCasAck, SearchPlaneSearchCorpusRollbackCasAck,
     SearchPlaneStructuralQueryResponse, SemanticQueryRequest, SemanticQueryResponse,
@@ -28,6 +28,7 @@ const SEARCH_PLANE_ENVELOPE_FIELDS: &[&str] = &["request_id", "payload"];
 const SEARCH_PLANE_ADJACENT_TAG_FIELDS: &[&str] = &["kind", "payload"];
 const SEARCH_PLANE_QUERY_IPC_REQUEST_VARIANTS: &[&str] = &[
     "ResolveActiveGeneration",
+    "ResolveLexicalGeneration",
     "Text",
     "Symbol",
     "Semantic",
@@ -42,6 +43,7 @@ const SEARCH_PLANE_QUERY_IPC_REQUEST_VARIANTS: &[&str] = &[
 ];
 const SEARCH_PLANE_QUERY_IPC_RESPONSE_VARIANTS: &[&str] = &[
     "ActiveGenerationSnapshot",
+    "ResolvedLexicalGeneration",
     "Text",
     "Symbol",
     "Semantic",
@@ -90,6 +92,7 @@ pub struct SearchPlaneQueryIpcRequestEnvelope {
 #[derive(Clone, Debug, PartialEq)]
 pub enum SearchPlaneQueryIpcRequest {
     ResolveActiveGeneration(CurrentGenerationRequest),
+    ResolveLexicalGeneration(TextQueryRequest),
     Text(TextQueryRequest),
     Symbol(SymbolQueryRequest),
     Semantic(SemanticQueryRequest),
@@ -112,6 +115,7 @@ pub struct SearchPlaneQueryIpcResponseEnvelope {
 #[derive(Clone, Debug, PartialEq)]
 pub enum SearchPlaneQueryIpcResponse {
     ActiveGenerationSnapshot(GenerationSnapshot),
+    ResolvedLexicalGeneration(GenerationPin),
     Text(TextQueryResponse),
     Symbol(SymbolQueryResponse),
     Semantic(SemanticQueryResponse),
@@ -146,6 +150,7 @@ impl SearchPlaneQueryIpcResponse {
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+            | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
             | SearchPlaneQueryIpcResponse::Error(_) => None,
         };
         if let Some(explanation) = explanation {
@@ -352,6 +357,12 @@ impl Serialize for SearchPlaneQueryIpcRequest {
                 payload,
                 serializer,
             ),
+            Self::ResolveLexicalGeneration(payload) => serialize_adjacent_tagged(
+                "SearchPlaneQueryIpcRequest",
+                "ResolveLexicalGeneration",
+                payload,
+                serializer,
+            ),
             Self::Text(payload) => {
                 serialize_adjacent_tagged("SearchPlaneQueryIpcRequest", "Text", payload, serializer)
             }
@@ -452,6 +463,9 @@ impl<'de> Visitor<'de> for SearchPlaneQueryIpcRequestVisitor {
                     let decoded = match kind_value {
                         "ResolveActiveGeneration" => {
                             SearchPlaneQueryIpcRequest::ResolveActiveGeneration(map.next_value()?)
+                        }
+                        "ResolveLexicalGeneration" => {
+                            SearchPlaneQueryIpcRequest::ResolveLexicalGeneration(map.next_value()?)
                         }
                         "Text" => SearchPlaneQueryIpcRequest::Text(map.next_value()?),
                         "Symbol" => SearchPlaneQueryIpcRequest::Symbol(map.next_value()?),
@@ -571,6 +585,12 @@ impl Serialize for SearchPlaneQueryIpcResponse {
                 payload,
                 serializer,
             ),
+            Self::ResolvedLexicalGeneration(payload) => serialize_adjacent_tagged(
+                "SearchPlaneQueryIpcResponse",
+                "ResolvedLexicalGeneration",
+                payload,
+                serializer,
+            ),
             Self::Text(payload) => serialize_adjacent_tagged(
                 "SearchPlaneQueryIpcResponse",
                 "Text",
@@ -680,6 +700,11 @@ impl<'de> Visitor<'de> for SearchPlaneQueryIpcResponseVisitor {
                     let decoded = match kind_value {
                         "ActiveGenerationSnapshot" => {
                             SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(map.next_value()?)
+                        }
+                        "ResolvedLexicalGeneration" => {
+                            SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(
+                                map.next_value()?,
+                            )
                         }
                         "Text" => SearchPlaneQueryIpcResponse::Text(map.next_value()?),
                         "Symbol" => SearchPlaneQueryIpcResponse::Symbol(map.next_value()?),
@@ -1286,6 +1311,69 @@ mod tests {
                 &encode(&response).expect("resolution response CBOR")
             )
             .expect("resolution response CBOR decode"),
+            response
+        );
+    }
+
+    #[test]
+    fn lexical_plan_resolution_variants_round_trip_over_json_and_cbor() {
+        let request = SearchPlaneQueryIpcRequestEnvelope {
+            request_id: 31,
+            payload: SearchPlaneQueryIpcRequest::ResolveLexicalGeneration(TextQueryRequest {
+                syntax: TextQuerySyntax::Native,
+                query_text: "needle rev:at.time(2024-06-01T12:34:56Z)".to_string(),
+                constraints: crate::QueryConstraintSetV1::unconstrained(),
+                generation: Some(GenerationPin::new(
+                    fixture_repo(),
+                    fixture_revision(),
+                    ManifestGeneration::new(7),
+                )),
+                generation_selector: None,
+                top_k: 5,
+                cursor: None,
+            }),
+        };
+        let request_json = serde_json::to_value(&request).expect("lexical resolution JSON");
+        assert_eq!(
+            request_json.pointer("/payload/kind"),
+            Some(&json!("ResolveLexicalGeneration"))
+        );
+        assert_eq!(
+            serde_json::from_value::<SearchPlaneQueryIpcRequestEnvelope>(request_json)
+                .expect("lexical resolution JSON decode"),
+            request
+        );
+        assert_eq!(
+            decode::<SearchPlaneQueryIpcRequestEnvelope>(
+                &encode(&request).expect("lexical resolution CBOR")
+            )
+            .expect("lexical resolution CBOR decode"),
+            request
+        );
+
+        let response = SearchPlaneQueryIpcResponseEnvelope {
+            request_id: 31,
+            payload: SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(GenerationPin::new(
+                fixture_repo(),
+                RevisionId::new("ancestor").expect("fixture revision"),
+                ManifestGeneration::new(3),
+            )),
+        };
+        let response_json = serde_json::to_value(&response).expect("lexical resolution JSON");
+        assert_eq!(
+            response_json.pointer("/payload/kind"),
+            Some(&json!("ResolvedLexicalGeneration"))
+        );
+        assert_eq!(
+            serde_json::from_value::<SearchPlaneQueryIpcResponseEnvelope>(response_json)
+                .expect("lexical resolution JSON decode"),
+            response
+        );
+        assert_eq!(
+            decode::<SearchPlaneQueryIpcResponseEnvelope>(
+                &encode(&response).expect("lexical resolution CBOR")
+            )
+            .expect("lexical resolution CBOR decode"),
             response
         );
     }
@@ -1913,6 +2001,7 @@ mod tests {
                 SearchPlaneQueryIpcResponse::HybridSeed(r) => Some(r.explanation.request_id),
                 SearchPlaneQueryIpcResponse::Explain(r) => Some(r.explanation.request_id),
                 SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+                | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
                 | SearchPlaneQueryIpcResponse::Text(_)
                 | SearchPlaneQueryIpcResponse::Symbol(_)
                 | SearchPlaneQueryIpcResponse::History(_)

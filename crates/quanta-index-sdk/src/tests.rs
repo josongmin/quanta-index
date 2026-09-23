@@ -347,6 +347,83 @@ fn active_resolution_rejects_wrong_same_domain_query_generation() {
     ));
 }
 
+#[test]
+fn lexical_time_resolution_binds_the_final_ancestor_pin() {
+    let ancestor = quanta_index_contract::GenerationPin::new(
+        repo_id(),
+        RevisionId::new("ancestor").expect("fixture revision"),
+        ManifestGeneration::new(3),
+    );
+    let request = quanta_index_contract::TextQueryRequest {
+        syntax: quanta_index_contract::TextQuerySyntax::Native,
+        query_text: "needle rev:at.time(2024-06-01T12:34:56Z)".to_string(),
+        constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+        generation: Some(sample_generation_pin()),
+        generation_selector: None,
+        top_k: 5,
+        cursor: None,
+    };
+    for final_pin in [ancestor.clone(), sample_generation_pin()] {
+        let query = Arc::new(StubQueryTransport::sequence([
+            SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(ancestor.clone()),
+            SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
+                generation: final_pin.clone(),
+                results: vec![],
+                window: QueryResultWindowV2::exact_probe(0),
+                file_owner_rows: None,
+                next_cursor: None,
+            }),
+        ]));
+        let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+        let result = client.lexical().query_request(request.clone());
+        if final_pin == ancestor {
+            assert_eq!(ok_or_fail!(result).generation, ancestor);
+        } else {
+            assert!(matches!(result, Err(crate::SdkError::Binding { .. })));
+        }
+        let requests = ok_or_fail!(query.requests.lock());
+        assert!(matches!(
+            requests.first().map(|request| &request.payload),
+            Some(quanta_index_contract::SearchPlaneQueryIpcRequest::ResolveLexicalGeneration(resolved))
+                if resolved == &request
+        ));
+        assert!(matches!(
+            requests.last().map(|request| &request.payload),
+            Some(quanta_index_contract::SearchPlaneQueryIpcRequest::Text(sent))
+                if sent == &request
+        ));
+    }
+}
+
+#[test]
+fn lexical_time_resolution_rejects_foreign_repo_before_query() {
+    let foreign = quanta_index_contract::GenerationPin::new(
+        RepoId::new("foreign").expect("fixture repo"),
+        RevisionId::new("ancestor").expect("fixture revision"),
+        ManifestGeneration::new(3),
+    );
+    let query = Arc::new(StubQueryTransport::sequence([
+        SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(foreign),
+    ]));
+    let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+    let request = quanta_index_contract::TextQueryRequest {
+        syntax: quanta_index_contract::TextQuerySyntax::Native,
+        query_text: "needle rev:at.time(2024-06-01T12:34:56Z)".to_string(),
+        constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+        generation: Some(sample_generation_pin()),
+        generation_selector: None,
+        top_k: 5,
+        cursor: None,
+    };
+    let error = client
+        .lexical()
+        .query_request(request)
+        .expect_err("foreign lexical resolution must be refused");
+    assert!(matches!(error, crate::SdkError::Binding { .. }));
+    let requests = ok_or_fail!(query.requests.lock());
+    assert_eq!(requests.len(), 1, "final query must not be dispatched");
+}
+
 fn repo_id() -> RepoId {
     RepoId::new("repo-1").expect("static fixture ID satisfies canonical policy")
 }

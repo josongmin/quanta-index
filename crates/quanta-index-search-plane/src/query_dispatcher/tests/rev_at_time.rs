@@ -51,39 +51,49 @@ fn lexical_dispatch_rebinds_rev_at_time_to_reachable_ancestor() -> TestResult {
         activation_catalog,
     );
 
+    let request = TextQueryRequest {
+        syntax: TextQuerySyntax::Sourcegraph,
+        query_text: "rev:at.time(1970-01-01T00:00:00.150Z) foo".to_string(),
+        constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+        generation: Some(GenerationPin::new(
+            RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
+            RevisionId::new("2222222222222222222222222222222222222222")
+                .expect("static fixture ID satisfies canonical policy"),
+            ManifestGeneration::new(9),
+        )),
+        generation_selector: None,
+        top_k: 5,
+        cursor: None,
+    };
+    let expected_ancestor = GenerationPin::new(
+        RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
+        RevisionId::new("1111111111111111111111111111111111111111")
+            .expect("static fixture ID satisfies canonical policy"),
+        ManifestGeneration::new(7),
+    );
+    let resolved = dispatcher.dispatch(
+        SearchPlaneQueryIpcRequest::ResolveLexicalGeneration(request.clone()),
+        &RequestBudgetV1::unbounded(),
+    );
+    assert!(matches!(
+        resolved,
+        SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(pin) if pin == expected_ancestor
+    ));
+    let mut before_history = request.clone();
+    before_history.query_text = "rev:at.time(1970-01-01T00:00:00.050Z) foo".to_string();
     let response = dispatcher.dispatch(
-        SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
-            syntax: TextQuerySyntax::Sourcegraph,
-            query_text: "rev:at.time(1970-01-01T00:00:00.150Z) foo".to_string(),
-            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
-            generation: Some(GenerationPin::new(
-                RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
-                RevisionId::new("2222222222222222222222222222222222222222")
-                    .expect("static fixture ID satisfies canonical policy"),
-                ManifestGeneration::new(9),
-            )),
-            generation_selector: None,
-            top_k: 5,
-            cursor: None,
-        }),
+        SearchPlaneQueryIpcRequest::Text(request),
         &RequestBudgetV1::unbounded(),
     );
 
     match response {
         SearchPlaneQueryIpcResponse::Text(text) => {
-            if text.generation
-                != GenerationPin::new(
-                    RepoId::new("repo-map-ipc")
-                        .expect("static fixture ID satisfies canonical policy"),
-                    RevisionId::new("1111111111111111111111111111111111111111")
-                        .expect("static fixture ID satisfies canonical policy"),
-                    ManifestGeneration::new(7),
-                )
-            {
+            if text.generation != expected_ancestor {
                 return Err(format!("unexpected rebound generation: {:?}", text.generation).into());
             }
         }
         other @ (SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+        | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
         | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::Semantic(_)
         | SearchPlaneQueryIpcResponse::Hybrid(_)
@@ -98,6 +108,27 @@ fn lexical_dispatch_rebinds_rev_at_time_to_reachable_ancestor() -> TestResult {
             return Err(format!("expected Text response, got {other:?}").into());
         }
     }
+
+    let empty_resolution = dispatcher.dispatch(
+        SearchPlaneQueryIpcRequest::ResolveLexicalGeneration(before_history.clone()),
+        &RequestBudgetV1::unbounded(),
+    );
+    assert!(matches!(
+        empty_resolution,
+        SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(pin)
+            if pin.manifest_generation == ManifestGeneration::new(9)
+                && pin.revision_id.as_str() == "2222222222222222222222222222222222222222"
+    ));
+    let empty_response = dispatcher.dispatch(
+        SearchPlaneQueryIpcRequest::Text(before_history),
+        &RequestBudgetV1::unbounded(),
+    );
+    assert!(matches!(
+        empty_response,
+        SearchPlaneQueryIpcResponse::Text(text)
+            if text.results.is_empty()
+                && text.generation.manifest_generation == ManifestGeneration::new(9)
+    ));
 
     let guard = state
         .lock()
@@ -142,27 +173,30 @@ fn lexical_dispatch_rejects_rev_at_time_invalid_timeref() -> TestResult {
         test_activation_catalog()?,
     );
 
-    let response = dispatcher.dispatch(
-        SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
-            syntax: TextQuerySyntax::Sourcegraph,
-            query_text: "rev:at.time(definitely-not-a-timeref) foo".to_string(),
-            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
-            generation: Some(GenerationPin::new(
-                RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
-                RevisionId::new("2222222222222222222222222222222222222222")
-                    .expect("static fixture ID satisfies canonical policy"),
-                ManifestGeneration::new(9),
-            )),
-            generation_selector: None,
-            top_k: 5,
-            cursor: None,
-        }),
-        &RequestBudgetV1::unbounded(),
-    );
-
-    let (code, _message) = ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
-    if code != ERR_HISTORY_INVALID_TIMEREF {
-        return Err(format!("expected {ERR_HISTORY_INVALID_TIMEREF}, got {code}").into());
+    let request = TextQueryRequest {
+        syntax: TextQuerySyntax::Sourcegraph,
+        query_text: "rev:at.time(definitely-not-a-timeref) foo".to_string(),
+        constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+        generation: Some(GenerationPin::new(
+            RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
+            RevisionId::new("2222222222222222222222222222222222222222")
+                .expect("static fixture ID satisfies canonical policy"),
+            ManifestGeneration::new(9),
+        )),
+        generation_selector: None,
+        top_k: 5,
+        cursor: None,
+    };
+    for payload in [
+        SearchPlaneQueryIpcRequest::ResolveLexicalGeneration(request.clone()),
+        SearchPlaneQueryIpcRequest::Text(request),
+    ] {
+        let response = dispatcher.dispatch(payload, &RequestBudgetV1::unbounded());
+        let (code, _message) =
+            ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
+        if code != ERR_HISTORY_INVALID_TIMEREF {
+            return Err(format!("expected {ERR_HISTORY_INVALID_TIMEREF}, got {code}").into());
+        }
     }
     Ok(())
 }

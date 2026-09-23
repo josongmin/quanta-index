@@ -592,6 +592,7 @@ fn coverage_table_exact_matches_sdk_surface() {
         .collect();
     let expected_query = [
         "active_generation_snapshot",
+        "resolved_lexical_generation",
         "text",
         "symbol",
         "semantic",

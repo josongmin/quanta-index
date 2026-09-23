@@ -297,6 +297,7 @@ fn hybrid_dispatch_embeds_semantic_query_text() -> TestResult {
             }
         }
         other @ (SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+        | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
         | SearchPlaneQueryIpcResponse::HybridSeed(_)
         | SearchPlaneQueryIpcResponse::Text(_)
         | SearchPlaneQueryIpcResponse::Symbol(_)
@@ -462,6 +463,7 @@ fn hybrid_dispatch_emits_closed_obs_metrics() -> TestResult {
     match response {
         SearchPlaneQueryIpcResponse::Hybrid(_) | SearchPlaneQueryIpcResponse::HybridSeed(_) => {}
         other @ (SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+        | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
         | SearchPlaneQueryIpcResponse::Text(_)
         | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::Semantic(_)

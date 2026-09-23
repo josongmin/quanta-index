@@ -845,6 +845,9 @@ fn dispatch_text_query_request_v1(
         other @ (quanta_index_contract::SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(
             _,
         )
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(
+            _,
+        )
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Symbol(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Semantic(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Hybrid(_)

@@ -43,6 +43,7 @@ use crate::SdkError;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExpectedQueryResponseV1 {
     ActiveGenerationSnapshot,
+    ResolvedLexicalGeneration,
     Text,
     Symbol,
     Semantic,
@@ -63,6 +64,7 @@ impl ExpectedQueryResponseV1 {
     pub const fn kind(self) -> &'static str {
         match self {
             Self::ActiveGenerationSnapshot => "active_generation_snapshot",
+            Self::ResolvedLexicalGeneration => "resolved_lexical_generation",
             Self::Text => "text",
             Self::Symbol => "symbol",
             Self::Semantic => "semantic",
@@ -217,6 +219,19 @@ impl QueryCallBinding {
                 history_order: None,
                 rev_at_time: false,
             },
+            SearchPlaneQueryIpcRequest::ResolveLexicalGeneration(request) => {
+                let (pin, active_domain) = identity_from(
+                    request.generation.clone(),
+                    request.generation_selector.clone(),
+                );
+                Self::ranked(
+                    ExpectedQueryResponseV1::ResolvedLexicalGeneration,
+                    pin,
+                    active_domain,
+                    request.top_k,
+                    true,
+                )
+            }
             SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
                 generation,
                 generation_selector,
@@ -389,6 +404,13 @@ impl QueryCallBinding {
                 rev_at_time: false,
             },
         }
+    }
+
+    pub(crate) fn with_resolved_lexical_generation(mut self, pin: GenerationPin) -> Self {
+        self.pin = Some(pin);
+        self.active_domain = None;
+        self.rev_at_time = false;
+        self
     }
 
     const fn ranked(
@@ -651,6 +673,10 @@ pub(crate) fn bind_query_response(
                 ));
             }
             Ok(())
+        }
+        SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(pin) => {
+            check_variant(binding, ExpectedQueryResponseV1::ResolvedLexicalGeneration)?;
+            check_pin(binding, pin)
         }
         SearchPlaneQueryIpcResponse::Text(payload) => {
             check_variant(binding, ExpectedQueryResponseV1::Text)?;
@@ -1331,6 +1357,12 @@ pub const SDK_WIRE_ROUTES_V1: &[SdkWireRouteV1] = &[
         route: "active_generation_snapshot",
         plane: "query",
         expected_kind: "active_generation_snapshot",
+        bound_axes: &["variant", "read_identity"],
+    },
+    SdkWireRouteV1 {
+        route: "resolved_lexical_generation",
+        plane: "query",
+        expected_kind: "resolved_lexical_generation",
         bound_axes: &["variant", "read_identity"],
     },
     SdkWireRouteV1 {

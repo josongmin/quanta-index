@@ -217,6 +217,7 @@ pub(crate) fn ipc_error_from(
     match response {
         SearchPlaneQueryIpcResponse::Error(err) => Ok((err.code, err.message)),
         other @ (SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+        | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
         | SearchPlaneQueryIpcResponse::Text(_)
         | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::Semantic(_)

@@ -144,7 +144,11 @@ impl QuantaIndex {
         mut payload: SearchPlaneQueryIpcRequest,
     ) -> Result<SearchPlaneQueryIpcResponse, SdkError> {
         self.pin_active_query(&mut payload)?;
-        let binding = QueryCallBinding::from_request(&payload);
+        let selected_lexical_pin = self.resolve_lexical_query_generation(&payload)?;
+        let mut binding = QueryCallBinding::from_request(&payload);
+        if let Some(pin) = selected_lexical_pin {
+            binding = binding.with_resolved_lexical_generation(pin);
+        }
         let request_id = self.next_request_id();
         let envelope = SearchPlaneQueryIpcRequestEnvelope {
             request_id,
@@ -165,6 +169,7 @@ impl QuantaIndex {
                 repair: error.repair,
             }),
             payload @ (SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+            | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
             | SearchPlaneQueryIpcResponse::Text(_)
             | SearchPlaneQueryIpcResponse::Symbol(_)
             | SearchPlaneQueryIpcResponse::Semantic(_)
@@ -177,6 +182,27 @@ impl QuantaIndex {
             | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => Ok(payload),
         }
+    }
+
+    fn resolve_lexical_query_generation(
+        &self,
+        request: &SearchPlaneQueryIpcRequest,
+    ) -> Result<Option<GenerationPin>, SdkError> {
+        let SearchPlaneQueryIpcRequest::Text(query) = request else {
+            return Ok(None);
+        };
+        if !query.query_text.contains("rev:at.time") {
+            return Ok(None);
+        }
+        let response = self.dispatch_query(
+            SearchPlaneQueryIpcRequest::ResolveLexicalGeneration(query.clone()),
+        )?;
+        let SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(pin) = response else {
+            return Err(SdkError::Protocol(
+                "lexical plan resolution did not return a generation pin".to_string(),
+            ));
+        };
+        Ok(Some(pin))
     }
 
     /// Resolve an active selector on the query plane before submitting a
@@ -294,6 +320,7 @@ impl QuantaIndex {
                 Ok(())
             }
             SearchPlaneQueryIpcRequest::ResolveActiveGeneration(_)
+            | SearchPlaneQueryIpcRequest::ResolveLexicalGeneration(_)
             | SearchPlaneQueryIpcRequest::RepoMapQuery(_)
             | SearchPlaneQueryIpcRequest::Explain(_)
             | SearchPlaneQueryIpcRequest::ClusterMembershipRead(_) => Ok(()),
@@ -411,6 +438,9 @@ impl QuantaIndex {
         match response {
             SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_) => {
                 "active_generation_snapshot"
+            }
+            SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_) => {
+                "resolved_lexical_generation"
             }
             SearchPlaneQueryIpcResponse::Text(_) => "text",
             SearchPlaneQueryIpcResponse::Symbol(_) => "symbol",

@@ -100,7 +100,7 @@ impl<'a> SearchNamespace<'a> {
                 })?;
                 Ok(batch)
             }
-            other @ (quanta_index_contract::SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+            other @ (quanta_index_contract::SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_) | quanta_index_contract::SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Text(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::Symbol(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::Semantic(_)
@@ -185,7 +185,7 @@ impl<'a> SearchNamespace<'a> {
         )?;
         match response {
             quanta_index_contract::SearchPlaneQueryIpcResponse::Explain(results) => Ok(results),
-            other @ (quanta_index_contract::SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+            other @ (quanta_index_contract::SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_) | quanta_index_contract::SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Text(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::Symbol(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::Semantic(_)
@@ -367,6 +367,9 @@ fn dispatch_hybrid_seed_query_request_v1(
         other @ (quanta_index_contract::SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(
             _,
         )
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(
+            _,
+        )
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Text(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Symbol(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Semantic(_)
@@ -543,6 +546,9 @@ fn dispatch_hybrid_query_request_v1(
     match response {
         quanta_index_contract::SearchPlaneQueryIpcResponse::Hybrid(results) => Ok(results),
         other @ (quanta_index_contract::SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(
+            _,
+        )
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(
             _,
         )
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Text(_)

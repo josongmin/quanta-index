@@ -9,6 +9,7 @@ use quanta_index_core::CoreError;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum QueryRoute {
     ActiveResolution,
+    LexicalResolution,
     Lexical,
     Symbol,
     Semantic,
@@ -26,6 +27,7 @@ impl QueryRoute {
     const fn name(self) -> &'static str {
         match self {
             Self::ActiveResolution => "active_resolution",
+            Self::LexicalResolution => "lexical_resolution",
             Self::Lexical => "lexical",
             Self::Symbol => "symbol",
             Self::Semantic => "semantic",

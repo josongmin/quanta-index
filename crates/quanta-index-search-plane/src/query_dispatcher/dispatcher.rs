@@ -15,7 +15,8 @@ use quanta_index_contract::{
 use quanta_index_core::domains::structural::StructuralProducerPort;
 use quanta_index_core::{
     CoreError, ExplainQueryPort, HybridQueryPort, LexicalIndexOpenPort, LexicalQueryPort,
-    RepoMapSnapshotAcquirePort, RequestBudgetV1, SemanticIndexOpenPort, SemanticQueryPort,
+    QueryRouteV1, RepoMapSnapshotAcquirePort, RequestBudgetV1, SemanticIndexOpenPort,
+    SemanticQueryPort,
 };
 use quanta_index_lq_obs::{Dimensions, MetricKind, MetricSample};
 
@@ -182,6 +183,9 @@ impl SearchPlaneDispatcher {
             SearchPlaneQueryIpcRequest::ResolveActiveGeneration(req) => {
                 self.dispatch_active_resolution(&req, budget)
             }
+            SearchPlaneQueryIpcRequest::ResolveLexicalGeneration(req) => {
+                self.dispatch_lexical_resolution(&req, budget)
+            }
             SearchPlaneQueryIpcRequest::Text(req) => self.dispatch_text(req, budget),
             SearchPlaneQueryIpcRequest::Symbol(req) => self.dispatch_symbol(req, budget),
             SearchPlaneQueryIpcRequest::Semantic(req) => self.dispatch_semantic(req, budget),
@@ -226,6 +230,21 @@ impl SearchPlaneDispatcher {
                 Err(error) => SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(error)),
             }
         })
+    }
+
+    fn dispatch_lexical_resolution(
+        &self,
+        request: &TextQueryRequest,
+        budget: &RequestBudgetV1,
+    ) -> SearchPlaneQueryIpcResponse {
+        self.observed_route(
+            QueryRoute::LexicalResolution,
+            request.generation.as_ref(),
+            || match self.plan_lexical_text_query(request, QueryRouteV1::Lexical, budget) {
+                Ok(plan) => SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(plan.pin),
+                Err(error) => SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(error)),
+            },
+        )
     }
 
     fn dispatch_cluster_membership_batch_read(

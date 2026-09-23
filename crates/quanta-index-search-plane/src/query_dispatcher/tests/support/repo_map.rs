@@ -115,6 +115,7 @@ pub(crate) fn into_repo_map_query_response(
     match response {
         SearchPlaneQueryIpcResponse::RepoMapQuery(response) => Ok(response),
         other @ (SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+        | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
         | SearchPlaneQueryIpcResponse::Text(_)
         | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::Semantic(_)

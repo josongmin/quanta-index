@@ -260,6 +260,7 @@ fn lane_flags(
         // explanation plus the adapter counts, asserted by the caller.
         SearchPlaneQueryIpcResponse::Explain(_) => Ok(Vec::new()),
         SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+        | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
         | SearchPlaneQueryIpcResponse::Text(_)
         | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::History(_)
@@ -829,6 +830,7 @@ fn one_correlation_reaches_every_route_explanation() -> TestResult {
             SearchPlaneQueryIpcResponse::HybridSeed(r) => Ok(r.explanation.request_id),
             SearchPlaneQueryIpcResponse::Explain(r) => Ok(r.explanation.request_id),
             SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+            | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
             | SearchPlaneQueryIpcResponse::Text(_)
             | SearchPlaneQueryIpcResponse::Symbol(_)
             | SearchPlaneQueryIpcResponse::History(_)
