@@ -1,6 +1,6 @@
 # TOPT-03 — Runtime Fixture and Process Lifecycle Ownership
 
-Status: `planned`
+Status: `code-landed; qualification pending`
 
 Depends on: TOPT-00
 

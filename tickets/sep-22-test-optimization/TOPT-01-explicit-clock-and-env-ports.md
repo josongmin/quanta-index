@@ -1,6 +1,6 @@
 # TOPT-01 — Explicit Clock and Environment Ports
 
-Status: `planned`
+Status: `code-landed; qualification pending`
 
 Depends on: TOPT-00
 

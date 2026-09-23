@@ -1,6 +1,6 @@
 # TOPT-02 — Event-Driven Cancellation and Wakeup Ownership
 
-Status: `planned`
+Status: `code-landed; qualification pending`
 
 Depends on: TOPT-00
 

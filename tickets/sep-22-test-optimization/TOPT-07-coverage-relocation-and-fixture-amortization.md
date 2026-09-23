@@ -1,6 +1,6 @@
 # TOPT-07 — Coverage Relocation and Immutable Fixture Amortization
 
-Status: `planned`
+Status: `code-landed; qualification pending`
 
 Depends on: TOPT-05, TOPT-06
 

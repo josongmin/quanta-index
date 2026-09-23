@@ -1,6 +1,8 @@
 # TOPT — SEP-22 Test Optimization Structural Remediation
 
-Status: `planned`
+Status: `implementation integrated; qualification blocked`
+
+Current-source integration receipt: [RCA-2026-09-23-current-source.md](RCA-2026-09-23-current-source.md#committed-tree-integration-receipt). The 18 finding owners have code changes; this is not a performance or full-workspace-green claim. TOPT-00 and TOPT-08 remain open on the exact gates recorded there.
 
 Source base: `23bd3d7fa7af1122f904e59f1f514935bd5ffe7e`
 

@@ -1,6 +1,6 @@
 # TOPT-08 — Same-Source Integration and Qualification
 
-Status: `planned`
+Status: `blocked — workspace Clippy and uncontended performance evidence`
 
 Depends on: TOPT-01 through TOPT-07
 

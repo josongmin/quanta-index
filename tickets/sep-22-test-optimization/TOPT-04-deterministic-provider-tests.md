@@ -1,6 +1,6 @@
 # TOPT-04 — Deterministic Provider Retry and Concurrency Tests
 
-Status: `planned`
+Status: `code-landed; qualification pending`
 
 Depends on: TOPT-00
 

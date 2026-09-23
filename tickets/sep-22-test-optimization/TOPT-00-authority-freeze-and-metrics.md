@@ -1,6 +1,6 @@
 # TOPT-00 — Authority Freeze and Measurement Contract
 
-Status: `planned`
+Status: `blocked — uncontended baseline and retrospective admission missing`
 
 Depends on: none
 

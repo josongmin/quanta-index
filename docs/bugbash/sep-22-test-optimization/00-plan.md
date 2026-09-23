@@ -8,6 +8,10 @@ current source path, reachable failure or cost, an owning component, a minimum
 fix, and a verification rail. The audit changed documentation only; none of the
 actions below is implemented or runtime-qualified yet.
 
+The status above describes the frozen Sep 22 audit, not the current checkout.
+For the Sep 23 code integration and remaining qualification gates, see the
+[current-source receipt](../../../tickets/sep-22-test-optimization/RCA-2026-09-23-current-source.md#committed-tree-integration-receipt).
+
 Structural execution packet:
 [`tickets/sep-22-test-optimization`](../../../tickets/sep-22-test-optimization/INDEX.md).
 

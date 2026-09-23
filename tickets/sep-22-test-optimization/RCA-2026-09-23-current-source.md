@@ -81,3 +81,71 @@ quanta-index-searchd-harness -p quanta-index-searchd-runtime` passed.
 The prior 203-case `test-daemon` run failed on the structural classification
 and stopped with 48 cases not run. It is not a full green receipt. Re-run the
 broader rail only after writer reconciliation on a stable source.
+
+## Committed-tree integration receipt
+
+This section supersedes the earlier dirty-tree verification status, not its
+failure history. The test-optimization changes and the provider-grant repair
+are integrated in `main` at `81fcec7ffd6baf9690e60528f80048cea7cc34f3`.
+The clean isolated test checkout used commit `90f646053d058ceab7b56abfe9843bcde01a8e1a`;
+both commits have the identical tracked tree
+`997803009e906f7c06f6284a656f4fa1481e5a6b`. The shared `main` checkout
+has concurrent uncommitted Rust/benchmark/CI files outside this repair and is
+not the source of these receipts. `origin/main` was still `97f7c9a` (local
+`main` ahead 10); no remote push is claimed.
+
+The first exhaustive daemon run on `c0baa5d` found a real fixture contract
+failure: its OpenAI metrics case selected an external profile but the harness
+could only pass the default incomplete egress grant. The daemon correctly
+refused boot with `PROVIDER_EGRESS_DENIED` (`tenant_id` required). Commit
+`81fcec7` gives the harness an explicit grant input without changing the
+fail-closed default; the metrics fixture supplies test authorization, while
+the manual OpenAI E2E and relevance A/B read the operator's grant at their
+entry points. No grant or source-content consent is synthesized by the
+harness.
+
+| Rail on the identical tracked tree | Result |
+|---|---|
+| `just fmt-check`; test-authority lint | pass; pass |
+| `just rust-profile test-fast` | exit 0 |
+| `just rust-profile test-integration` | 204 + 6 + 58 = 268 passed, 0 skipped |
+| `just rust-profile test-daemon-fast` | 61 passed; 1 intentionally ignored external-API test |
+| `runtime_extended_suite` (no fail-fast) | 60 passed; 0 skipped; one non-failing nextest leak warning |
+| Complete `daemon-all` selector with `--no-fail-fast` | 304 passed, 0 failed; 1 intentionally ignored external-API test; nextest run `bbb8bb49-be12-4878-b1d4-4d800630e400` |
+| `quanta-index-searchd` and harness library units | 84 passed + 93 passed |
+
+The complete selector uses the same seven binaries, features, and four test
+threads as `just rust-profile test-daemon-all`; `--no-fail-fast` only prevents
+an early failure from hiding later cases. The registered `daemon` selector's
+three binaries are a subset of those seven. The earlier exact `1bf5f0a`
+`test-daemon` run passed 203/203, but is not promoted to a final-tree receipt.
+All 18 retained finding rows have owner-side code on this tracked tree; this
+crosswalk/source check does not replace each ticket's mutation or timing
+acceptance criterion.
+
+Qualification is still **blocked**, for distinct reasons:
+
+1. `just rust-clippy` exited 101 on this tracked tree. A keep-going diagnostic
+   exposed lint failures in `lq-regex`, `lq-norm`, `embed`, `catalog`, `SDK`,
+   and `search-plane`; it was stopped after the workspace failure was
+   decisive, so its output is not a complete error inventory. Concurrent
+   uncommitted edits in the shared checkout overlap many of those owners.
+   They must be reconciled by their writer before a new HEAD is qualified.
+2. `just rust-public-api` exited 1 because the contract baseline lacks the
+   already-present `FileOwnerProjectionErrorV1: Error` implementation. This
+   is outside the provider-grant repair; do not update the baseline without
+   confirming the contract owner's intended public surface.
+3. `just rust-profile verify-rust` was not run: its required Clippy step is
+   already red. No `CODE_QUALIFIED` or product-qualified verdict is issued.
+4. TOPT-00 has no uncontended pre/post baseline or historical admission
+   record. Other Cargo/rustc/mutation work was active throughout the run;
+   the 714-second daemon duration is correctness evidence only, not a speed
+   result. R1-R4 and TH-4 still need the specified quiet-host repeated
+   measurements, and R5 needs the conserved-case-count comparison.
+
+Next gate: reconcile the concurrent writers, fix the Clippy and public-API
+failures at one new clean HEAD, rerun source-bound required rails if Rust source
+changes, then collect the TOPT-00 performance protocol on a quiet host. Until
+then, TOPT-01..07 are code-landed, while TOPT-00/08 and overall closure remain
+open. Do not interpret the historical Sep 22 audit's “18 open actions” as 18
+remaining implementation defects.

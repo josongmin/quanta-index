@@ -1,6 +1,6 @@
 # TOPT-05 — Independent Fail-Closed Oracles
 
-Status: `planned`
+Status: `code-landed; qualification pending`
 
 Depends on: TOPT-00
 

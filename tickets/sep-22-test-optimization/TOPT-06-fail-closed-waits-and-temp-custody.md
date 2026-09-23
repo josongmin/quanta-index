@@ -1,6 +1,6 @@
 # TOPT-06 — Fail-Closed Wait Helpers and Temporary Resource Custody
 
-Status: `planned`
+Status: `code-landed; qualification pending`
 
 Depends on: TOPT-01, TOPT-03
 
