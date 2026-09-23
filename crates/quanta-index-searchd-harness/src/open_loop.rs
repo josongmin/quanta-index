@@ -1,4 +1,6 @@
-//! Scheduled arrivals over the real query IPC socket. Arrival timestamps are
+//! Scheduled arrivals over the real query IPC socket.
+//!
+//! Arrival timestamps are
 //! fixed before dispatch; queueing and scheduler lag remain in end-to-end
 //! latency, so a slow daemon cannot silently reduce the offered load.
 
@@ -110,10 +112,12 @@ fn scheduled_count(duration: Duration, rate: u32) -> AnyResult<u128> {
 }
 
 fn scheduled_offset(index: u128, rate: u32) -> AnyResult<Duration> {
-    let nanos = index
+    let scaled = index
         .checked_mul(1_000_000_000)
-        .context("scheduled offset overflow")?
-        / u128::from(rate);
+        .context("scheduled offset overflow")?;
+    let nanos = scaled
+        .checked_div(u128::from(rate))
+        .context("offered QPS must be positive")?;
     Ok(Duration::from_nanos(u64::try_from(nanos)?))
 }
 
@@ -137,7 +141,10 @@ fn poisson_offsets(duration: Duration, rate: u32, seed: u64) -> AnyResult<Vec<Du
     let mut elapsed_secs = 0.0_f64;
     let duration_secs = duration.as_secs_f64();
     let mut offsets = Vec::new();
-    while elapsed_secs < duration_secs {
+    loop {
+        if elapsed_secs >= duration_secs {
+            break;
+        }
         // Map 53 random bits into (0, 1] so ln is finite and zero intervals
         // cannot create duplicate scheduled arrivals.
         let random = next_random(&mut state) >> 11;
@@ -187,7 +194,7 @@ struct Completion {
     dispatch_lag_ms: f64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 struct OfferedRequest {
     id: u64,
     scheduled: Instant,
@@ -264,7 +271,14 @@ fn transport_kind(error: &IpcError) -> String {
         IpcError::EmptyFrame => "empty_frame".to_string(),
         IpcError::Encode(_) => "encode".to_string(),
         IpcError::Decode(_) => "decode".to_string(),
-        _ => "policy_or_socket".to_string(),
+        IpcError::Timeout { .. }
+        | IpcError::InvalidClientIoTimeout
+        | IpcError::ClientIoDeadlineElapsed
+        | IpcError::ReadinessTimeout { .. }
+        | IpcError::InvalidAdmissionPolicy
+        | IpcError::SocketInUse(_)
+        | IpcError::SocketPathInsecure { .. }
+        | IpcError::SocketAccessUnsatisfiable { .. } => "policy_or_socket".to_string(),
     }
 }
 
@@ -309,12 +323,22 @@ fn dispatch(
                         .map(|row| &row.candidate_id)
                         .eq(expected_ids.iter()) =>
             {
-                Outcome::Served {
-                    result_count: u64::try_from(page.results.len()).unwrap_or(u64::MAX),
-                }
+                u64::try_from(page.results.len()).map_or(Outcome::InvalidResult, |result_count| {
+                    Outcome::Served { result_count }
+                })
             }
             SearchPlaneQueryIpcResponse::Error(error) => Outcome::TypedError { code: error.code },
-            _ => Outcome::InvalidResult,
+            SearchPlaneQueryIpcResponse::Text(_)
+            | SearchPlaneQueryIpcResponse::Symbol(_)
+            | SearchPlaneQueryIpcResponse::Semantic(_)
+            | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::HybridSeed(_)
+            | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+            | SearchPlaneQueryIpcResponse::Structural(_)
+            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_) => Outcome::InvalidResult,
         },
         Err(IpcError::Timeout { .. } | IpcError::ClientIoDeadlineElapsed) => Outcome::Timeout,
         Err(error) => Outcome::TransportError {
@@ -328,18 +352,29 @@ fn dispatch(
     }
 }
 
+fn increment_count(counter: &mut u64, label: &str) -> AnyResult<()> {
+    *counter = counter
+        .checked_add(1)
+        .with_context(|| format!("{label} overflow"))?;
+    Ok(())
+}
+
 fn summarize(
     rate: u32,
     duration: Duration,
     offered: u64,
     dropped_queue_full: u64,
     dropped_scheduler_late: u64,
-    mut completions: Vec<Completion>,
+    completions: Vec<Completion>,
     drain_secs: f64,
 ) -> AnyResult<LoadPoint> {
     ensure!(drain_secs > 0.0, "measurement window must be positive");
+    let accounted = u64::try_from(completions.len())?
+        .checked_add(dropped_queue_full)
+        .and_then(|count| count.checked_add(dropped_scheduler_late))
+        .context("offered request accounting overflow")?;
     ensure!(
-        u64::try_from(completions.len())? + dropped_queue_full + dropped_scheduler_late == offered,
+        accounted == offered,
         "offered requests were lost before accounting"
     );
     let mut served = 0_u64;
@@ -354,30 +389,37 @@ fn summarize(
     let mut codes = Vec::new();
     let mut elapsed = Vec::new();
     let mut max_dispatch_lag_ms = 0.0_f64;
-    for completion in completions.drain(..) {
+    for completion in completions {
         max_dispatch_lag_ms = max_dispatch_lag_ms.max(completion.dispatch_lag_ms);
         if let Some(ms) = completion.elapsed_ms {
             elapsed.push(ms);
         }
         match completion.outcome {
             Outcome::Served { result_count } => {
-                served += 1;
+                increment_count(&mut served, "served count")?;
                 last_result_count = Some(result_count);
             }
             Outcome::TypedError { code } => {
-                typed_errors += 1;
+                increment_count(&mut typed_errors, "typed error count")?;
                 if code != SearchPlaneErrorCodeV2::ServerOverloaded {
-                    unexpected_typed_errors += 1;
+                    increment_count(&mut unexpected_typed_errors, "unexpected typed error count")?;
                 }
                 codes.push(code.as_wire_str().to_string());
             }
-            Outcome::Timeout => timeouts += 1,
+            Outcome::Timeout => increment_count(&mut timeouts, "timeout count")?,
             Outcome::TransportError { kind } => {
-                transport_errors += 1;
-                *transport_error_kinds.entry(kind).or_default() += 1;
+                increment_count(&mut transport_errors, "transport error count")?;
+                increment_count(
+                    transport_error_kinds.entry(kind).or_default(),
+                    "transport error kind count",
+                )?;
             }
-            Outcome::InvalidResult => invalid_results += 1,
-            Outcome::QueueDeadline => dropped_deadline += 1,
+            Outcome::InvalidResult => {
+                increment_count(&mut invalid_results, "invalid result count")?;
+            }
+            Outcome::QueueDeadline => {
+                increment_count(&mut dropped_deadline, "queue deadline count")?;
+            }
         }
     }
     codes.sort();
@@ -461,21 +503,27 @@ fn measure_point(
     let mut dropped_queue_full = 0_u64;
     let mut dropped_scheduler_late = 0_u64;
     for (index, offset) in offsets.into_iter().enumerate() {
-        let scheduled = started + offset;
+        let scheduled = started
+            .checked_add(offset)
+            .context("scheduled arrival instant overflow")?;
         if let Some(wait) = scheduled.checked_duration_since(Instant::now()) {
             thread::sleep(wait);
         }
         if Instant::now().saturating_duration_since(scheduled) >= config.request_timeout {
             // The scheduler itself missed this deadline. No request was sent.
-            dropped_scheduler_late += 1;
+            increment_count(&mut dropped_scheduler_late, "scheduler-late drop count")?;
             continue;
         }
         match sender.try_send(OfferedRequest {
-            id: u64::try_from(index)? + 1,
+            id: u64::try_from(index)?
+                .checked_add(1)
+                .context("request id overflow")?,
             scheduled,
         }) {
             Ok(()) => {}
-            Err(mpsc::TrySendError::Full(_)) => dropped_queue_full += 1,
+            Err(mpsc::TrySendError::Full(_)) => {
+                increment_count(&mut dropped_queue_full, "full-queue drop count")?;
+            }
             Err(mpsc::TrySendError::Disconnected(_)) => {
                 anyhow::bail!("all load workers disconnected during scheduling");
             }
@@ -556,7 +604,20 @@ pub(crate) fn run(config: Config) -> AnyResult<Report> {
                 .map(|row| row.candidate_id)
                 .collect::<Vec<_>>()
         }
-        _ => anyhow::bail!("pinned IPC query failed correctness preflight"),
+        SearchPlaneQueryIpcResponse::Text(_)
+        | SearchPlaneQueryIpcResponse::Symbol(_)
+        | SearchPlaneQueryIpcResponse::Semantic(_)
+        | SearchPlaneQueryIpcResponse::Hybrid(_)
+        | SearchPlaneQueryIpcResponse::HybridSeed(_)
+        | SearchPlaneQueryIpcResponse::History(_)
+        | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+        | SearchPlaneQueryIpcResponse::Structural(_)
+        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+        | SearchPlaneQueryIpcResponse::Explain(_)
+        | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
+        | SearchPlaneQueryIpcResponse::Error(_) => {
+            anyhow::bail!("pinned IPC query failed correctness preflight")
+        }
     };
     let (socket, _, _) = runtime
         .socket_paths()
@@ -584,24 +645,31 @@ pub(crate) fn artifact(
     let rows = report
         .points
         .iter()
-        .map(|point| BenchRowV1 {
-            scenario_id: format!("open_loop.lexical.qps{}", point.target_qps),
-            route_family: RouteFamily::Lexical,
-            syntax: BenchSyntax::Native,
-            result_shape: ResultShape::Candidates,
-            latency: point.latency,
-            qps: Some(point.achieved_qps),
-            error_count: point.typed_errors + point.transport_errors + point.invalid_results,
-            timeout_count: point.timeouts,
-            result_count: point.last_result_count,
-            typed_error_code: point.error_codes.first().cloned(),
-            engine_touched: vec!["lexical".to_string()],
-            early_stop_reason: point
-                .latency
-                .is_none()
-                .then(|| "all_offered_requests_dropped".to_string()),
+        .map(|point| -> AnyResult<BenchRowV1> {
+            let error_count = point
+                .typed_errors
+                .checked_add(point.transport_errors)
+                .and_then(|count| count.checked_add(point.invalid_results))
+                .context("open-loop artifact error count overflow")?;
+            Ok(BenchRowV1 {
+                scenario_id: format!("open_loop.lexical.qps{}", point.target_qps),
+                route_family: RouteFamily::Lexical,
+                syntax: BenchSyntax::Native,
+                result_shape: ResultShape::Candidates,
+                latency: point.latency,
+                qps: Some(point.achieved_qps),
+                error_count,
+                timeout_count: point.timeouts,
+                result_count: point.last_result_count,
+                typed_error_code: point.error_codes.first().cloned(),
+                engine_touched: vec!["lexical".to_string()],
+                early_stop_reason: point
+                    .latency
+                    .is_none()
+                    .then(|| "all_offered_requests_dropped".to_string()),
+            })
         })
-        .collect();
+        .collect::<AnyResult<Vec<_>>>()?;
     Ok(BenchArtifactV1 {
         dimension: DIMENSION.to_string(),
         mode: BenchMode::Warm,
@@ -658,6 +726,10 @@ pub(crate) fn artifact(
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "test assertions intentionally fail while fixture setup uses the Result operator"
+)]
 mod tests {
     use super::*;
 
@@ -686,7 +758,12 @@ mod tests {
         assert!(
             first
                 .windows(2)
-                .any(|pair| pair[1] - pair[0] != Duration::from_millis(100))
+                .any(|pair| pair
+                    .first()
+                    .zip(pair.get(1))
+                    .is_some_and(|(earlier, later)| {
+                        later.checked_sub(*earlier) != Some(Duration::from_millis(100))
+                    }))
         );
         Ok(())
     }
@@ -713,8 +790,11 @@ mod tests {
             ],
             1.0,
         )?;
-        assert_eq!(point.latency.context("latency missing")?.p99_ms, 700.0);
-        assert_eq!(point.max_dispatch_lag_ms, 600.0);
+        assert_eq!(
+            point.latency.context("latency missing")?.p99_ms.to_bits(),
+            700.0_f64.to_bits()
+        );
+        assert_eq!(point.max_dispatch_lag_ms.to_bits(), 600.0_f64.to_bits());
         assert!(!point.saturated);
         Ok(())
     }

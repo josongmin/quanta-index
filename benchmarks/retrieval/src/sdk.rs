@@ -6,7 +6,8 @@
 //! `SearchCorpusNamespace::publish_and_activate`, and queries the lexical,
 //! semantic and hybrid SDK routes. No direct IPC, no fixture harness.
 
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
@@ -25,8 +26,10 @@ pub const DEFAULT_IO_TIMEOUT: Duration = Duration::from_secs(30);
 pub const SEARCHD_BIN_ENV: &str = "QUANTA_INDEX_SEARCHD_BIN";
 pub const EMBEDDER_ENV: &str = "QUANTA_INDEX_EMBEDDER";
 
-/// Resolve the daemon binary. An explicit path or environment override is
-/// authoritative: a bad pin must fail instead of silently selecting another
+/// Resolve the daemon binary.
+///
+/// An explicit path or environment override is authoritative: a bad pin
+/// must fail instead of silently selecting another
 /// binary. Only an unset pin permits next-to-runner discovery.
 pub fn resolve_searchd_binary(explicit: Option<&Path>) -> BenchResult<PathBuf> {
     if let Some(path) = explicit {
@@ -53,14 +56,14 @@ pub fn resolve_searchd_binary(explicit: Option<&Path>) -> BenchResult<PathBuf> {
             candidates.push(target.join(profile).join("quanta-index-searchd"));
         }
     }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            candidates.push(dir.join("quanta-index-searchd"));
-            if dir.ends_with("deps") {
-                if let Some(parent) = dir.parent() {
-                    candidates.push(parent.join("quanta-index-searchd"));
-                }
-            }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        candidates.push(dir.join("quanta-index-searchd"));
+        if dir.ends_with("deps")
+            && let Some(parent) = dir.parent()
+        {
+            candidates.push(parent.join("quanta-index-searchd"));
         }
     }
     for candidate in candidates {
@@ -106,12 +109,20 @@ fn socket_accepts_connection(_path: &Path) -> bool {
     false
 }
 
-fn remove_socket_files(state_root: &Path) {
+fn remove_socket_files(state_root: &Path) -> BenchResult<()> {
     for socket in daemon_socket_paths(state_root) {
         match std::fs::remove_file(&socket) {
-            Ok(()) | Err(_) => {}
+            Ok(()) => {}
+            Err(err) if err.kind() == ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(BenchError::Io {
+                    path: socket.display().to_string(),
+                    message: format!("failed to remove daemon socket: {err}"),
+                });
+            }
         }
     }
+    Ok(())
 }
 
 /// The daemon requires a 0700 state root; enforce it on roots the runner
@@ -133,17 +144,27 @@ fn secure_state_root(_state_root: &Path) -> BenchResult<()> {
 }
 
 fn daemon_stderr_tail(state_root: &Path) -> String {
-    let text = std::fs::read_to_string(state_root.join("searchd.stderr.log"))
-        .unwrap_or_else(|_| "<stderr log unreadable>".to_string());
+    let text = match std::fs::read_to_string(state_root.join("searchd.stderr.log")) {
+        Ok(text) => text,
+        Err(err) => format!("<stderr log unreadable: {err}>"),
+    };
     let tail: String = text.chars().rev().take(600).collect();
     tail.chars().rev().collect()
 }
 
-fn terminate_child(child: &mut Child) {
-    if child.try_wait().unwrap_or(None).is_none() {
-        let _ignored = child.kill();
+fn terminate_child(child: &mut Child) -> BenchResult<()> {
+    let status = child.try_wait().map_err(|err| {
+        BenchError::Daemon(format!("failed to poll searchd during shutdown: {err}"))
+    })?;
+    if status.is_none() {
+        child
+            .kill()
+            .map_err(|err| BenchError::Daemon(format!("failed to stop searchd: {err}")))?;
     }
-    let _status = child.wait();
+    let _status = child
+        .wait()
+        .map_err(|err| BenchError::Daemon(format!("failed to reap searchd: {err}")))?;
+    Ok(())
 }
 
 /// A booted real daemon plus its connected full SDK client.
@@ -175,8 +196,17 @@ impl DaemonSession {
         }
         if config.state_root.exists() {
             let non_empty = std::fs::read_dir(config.state_root)
-                .map(|mut entries| entries.next().is_some())
-                .unwrap_or(true);
+                .map_err(|err| BenchError::Io {
+                    path: config.state_root.display().to_string(),
+                    message: format!("cannot inspect state root: {err}"),
+                })?
+                .next()
+                .transpose()
+                .map_err(|err| BenchError::Io {
+                    path: config.state_root.display().to_string(),
+                    message: format!("cannot enumerate state root: {err}"),
+                })?
+                .is_some();
             if non_empty {
                 return Err(BenchError::Daemon(format!(
                     "state root is not fresh (refusing stale-index reuse): {}",
@@ -243,15 +273,15 @@ impl DaemonSession {
             match child.try_wait() {
                 Ok(Some(status)) => {
                     let tail = daemon_stderr_tail(config.state_root);
-                    remove_socket_files(config.state_root);
+                    let _cleanup = remove_socket_files(config.state_root);
                     return Err(BenchError::Daemon(format!(
                         "searchd exited before opening sockets: {status}; stderr tail: {tail}"
                     )));
                 }
                 Ok(None) => {}
                 Err(err) => {
-                    terminate_child(&mut child);
-                    remove_socket_files(config.state_root);
+                    let _termination = terminate_child(&mut child);
+                    let _cleanup = remove_socket_files(config.state_root);
                     return Err(BenchError::Daemon(format!("failed to poll searchd: {err}")));
                 }
             }
@@ -261,8 +291,8 @@ impl DaemonSession {
             std::thread::sleep(Duration::from_millis(10));
         };
         if !ready {
-            terminate_child(&mut child);
-            remove_socket_files(config.state_root);
+            let _termination = terminate_child(&mut child);
+            let _cleanup = remove_socket_files(config.state_root);
             return Err(BenchError::Timeout(
                 config.ready_timeout,
                 "searchd did not open query/control/ingest sockets".to_string(),
@@ -273,8 +303,8 @@ impl DaemonSession {
                 .with_request_io_timeout(config.io_timeout),
         )
         .map_err(|err| {
-            terminate_child(&mut child);
-            remove_socket_files(config.state_root);
+            let _termination = terminate_child(&mut child);
+            let _cleanup = remove_socket_files(config.state_root);
             BenchError::Sdk(format!("SDK connect failed: {err}"))
         })?;
         Ok(Self {
@@ -324,10 +354,9 @@ impl DaemonSession {
     /// Bounded shutdown of the runner-owned daemon.
     pub fn stop(mut self) -> BenchResult<()> {
         if let Some(mut child) = self.child.take() {
-            terminate_child(&mut child);
+            terminate_child(&mut child)?;
         }
-        remove_socket_files(&self.state_root);
-        Ok(())
+        remove_socket_files(&self.state_root)
     }
 }
 
@@ -393,14 +422,15 @@ mod empty_status_tests {
 impl Drop for DaemonSession {
     fn drop(&mut self) {
         if let Some(mut child) = self.child.take() {
-            terminate_child(&mut child);
+            let _termination = terminate_child(&mut child);
         }
-        remove_socket_files(&self.state_root);
+        let _cleanup = remove_socket_files(&self.state_root);
     }
 }
 
-/// Publish + activate, asserting the receipt names this exact batch and the
-/// ACK promotes this exact candidate. `expected_active` is `None` on a fresh
+/// Publish + activate, asserting the receipt names this exact batch.
+///
+/// The ACK must promote this exact candidate. `expected_active` is `None` on a fresh
 /// daemon; callers testing conflicts pass an explicit expectation.
 pub fn publish_and_activate(
     session: &DaemonSession,
@@ -686,9 +716,9 @@ fn failed_outcome(err: &SdkError, start: Instant) -> QueryOutcome {
 /// Route-name inventory for record provenance, in canonical order.
 #[must_use]
 pub fn canonical_routes(routes: &[&str]) -> Vec<String> {
-    let mut ordered: BTreeMap<&str, ()> = BTreeMap::new();
+    let mut ordered: BTreeSet<&str> = BTreeSet::new();
     for route in routes {
-        let _previous = ordered.insert(*route, ());
+        let _inserted = ordered.insert(*route);
     }
-    ordered.keys().map(ToString::to_string).collect()
+    ordered.into_iter().map(ToString::to_string).collect()
 }

@@ -23,7 +23,7 @@ use quanta_index_retrieval_bench::corpus::{
 };
 use quanta_index_retrieval_bench::profile::EmbedderProfile;
 use quanta_index_retrieval_bench::record::{
-    QueryPack, RouteProvenance, RunnerIdentity, load_query_pack, runner_record,
+    QueryPack, RouteProvenance, RunnerIdentity, RunnerRecordInput, load_query_pack, runner_record,
 };
 use quanta_index_retrieval_bench::sdk::{
     DEFAULT_IO_TIMEOUT, DEFAULT_READY_TIMEOUT, DaemonConfig, DaemonSession, QueryOutcome,
@@ -33,13 +33,15 @@ use quanta_index_retrieval_bench::{BenchError, BenchResult, sha256_hex};
 
 const KNOWN_ROUTES: [&str; 3] = ["lexical", "semantic", "hybrid"];
 
-fn usage_error(message: String) -> BenchError {
-    BenchError::Config(format!("{message} (see --help)"))
+fn usage_error(mut message: String) -> BenchError {
+    message.push_str(" (see --help)");
+    BenchError::Config(message)
 }
 
-fn print_help() {
-    println!(
-        "quanta-index-retrieval-bench run|chunk [flags]\n\
+fn print_help() -> BenchResult<()> {
+    std::io::stdout()
+        .write_all(
+            b"quanta-index-retrieval-bench run|chunk [flags]\n\
          \n\
          run: manifest -> chunks -> real searchd publish/activate -> SDK queries -> v2 record\n\
          chunk: manifest -> chunks + coverage JSON (no daemon)\n\
@@ -53,27 +55,44 @@ fn print_help() {
          --blinding attested --isolation-method TEXT --access-block-log TEXT\n\
          --out PATH [--searchd-bin PATH] [--embedder potion-code|hash-dev]\n\
          [--max-file-bytes N]\n\
-         [--io-timeout-secs N] [--ready-timeout-secs N]"
-    );
+         [--io-timeout-secs N] [--ready-timeout-secs N]\n",
+        )
+        .map_err(|err| BenchError::Io {
+            path: "stdout".to_string(),
+            message: err.to_string(),
+        })
+}
+
+fn stdout_line(message: &str) -> BenchResult<()> {
+    writeln!(std::io::stdout().lock(), "{message}").map_err(|err| BenchError::Io {
+        path: "stdout".to_string(),
+        message: err.to_string(),
+    })
 }
 
 struct Args {
     positional: Vec<String>,
     flags: BTreeMap<String, String>,
+    help: bool,
 }
 
 fn parse_args(argv: &[String]) -> BenchResult<Args> {
     let mut positional = Vec::new();
     let mut flags: BTreeMap<String, String> = BTreeMap::new();
-    let mut index = 1;
+    let mut index = 1_usize;
     while index < argv.len() {
-        let arg = &argv[index];
+        let arg = argv
+            .get(index)
+            .ok_or_else(|| usage_error("argument index is absent".to_string()))?;
         if arg == "--help" || arg == "-h" {
-            print_help();
-            std::process::exit(0);
+            return Ok(Args {
+                positional,
+                flags,
+                help: true,
+            });
         }
         if let Some(name) = arg.strip_prefix("--") {
-            let Some(value) = argv.get(index + 1) else {
+            let Some(value) = argv.get(index.saturating_add(1)) else {
                 return Err(usage_error(format!("flag --{name} lacks a value")));
             };
             if value.starts_with("--") {
@@ -82,13 +101,17 @@ fn parse_args(argv: &[String]) -> BenchResult<Args> {
             if flags.insert(name.to_string(), value.clone()).is_some() {
                 return Err(usage_error(format!("duplicate flag --{name}")));
             }
-            index += 2;
+            index = index.saturating_add(2);
         } else {
             positional.push(arg.clone());
-            index += 1;
+            index = index.saturating_add(1);
         }
     }
-    Ok(Args { positional, flags })
+    Ok(Args {
+        positional,
+        flags,
+        help: false,
+    })
 }
 
 fn required(args: &Args, name: &str) -> BenchResult<String> {
@@ -99,21 +122,17 @@ fn required(args: &Args, name: &str) -> BenchResult<String> {
 }
 
 fn optional_u64(args: &Args, name: &str, default: u64) -> BenchResult<u64> {
-    match args.flags.get(name) {
-        None => Ok(default),
-        Some(raw) => raw
-            .parse::<u64>()
-            .map_err(|_| usage_error(format!("flag --{name} must be an unsigned integer"))),
-    }
+    args.flags.get(name).map_or(Ok(default), |raw| {
+        raw.parse::<u64>()
+            .map_err(|err| usage_error(format!("flag --{name} must be an unsigned integer: {err}")))
+    })
 }
 
 fn optional_usize(args: &Args, name: &str, default: usize) -> BenchResult<usize> {
-    match args.flags.get(name) {
-        None => Ok(default),
-        Some(raw) => raw
-            .parse::<usize>()
-            .map_err(|_| usage_error(format!("flag --{name} must be an unsigned integer"))),
-    }
+    args.flags.get(name).map_or(Ok(default), |raw| {
+        raw.parse::<usize>()
+            .map_err(|err| usage_error(format!("flag --{name} must be an unsigned integer: {err}")))
+    })
 }
 
 fn reject_unknown(args: &Args, allowed: &[&str]) -> BenchResult<()> {
@@ -297,11 +316,14 @@ fn run_chunk(args: &Args) -> BenchResult<()> {
                 })
             })
             .collect();
-        assert!(
-            file_entries
-                .insert(path.clone(), serde_json::Value::Array(items))
-                .is_none()
-        );
+        if file_entries
+            .insert(path.clone(), serde_json::Value::Array(items))
+            .is_some()
+        {
+            return Err(BenchError::Protocol(format!(
+                "duplicate chunk path: {path}"
+            )));
+        }
     }
     let coverage = &selection.coverage;
     let value = serde_json::json!({
@@ -319,18 +341,17 @@ fn run_chunk(args: &Args) -> BenchResult<()> {
     });
     verify_checkout(&repo, &manifest)?;
     write_json(&out, &value)?;
-    println!(
+    stdout_line(&format!(
         "chunked {} files into {} chunks ({} fallback, {} uncovered bytes) via {}",
         coverage.files,
         coverage.chunks,
         coverage.fallback_chunks,
         coverage.uncovered_bytes,
         selection.name
-    );
+    ))?;
     Ok(())
 }
 
-#[allow(clippy::too_many_lines)]
 fn run_capture(args: &Args) -> BenchResult<()> {
     reject_unknown(
         args,
@@ -377,7 +398,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         )));
     }
     let top_k = u32::try_from(optional_u64(args, "top-k", 0)?)
-        .map_err(|_| usage_error("flag --top-k exceeds u32 range".to_string()))?;
+        .map_err(|err| usage_error(format!("flag --top-k exceeds u32 range: {err}")))?;
     if top_k == 0 {
         return Err(usage_error("flag --top-k must be positive".to_string()));
     }
@@ -485,7 +506,10 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     let publish_start = Instant::now();
     let (receipt, ack) = publish_and_activate(&session, &batch, None)?;
     let publish_elapsed = publish_start.elapsed();
-    if receipt.accepted_replace_scopes as usize != assembly.scopes {
+    let accepted_scopes = usize::try_from(receipt.accepted_replace_scopes).map_err(|err| {
+        BenchError::Protocol(format!("receipt scope count cannot fit usize: {err}"))
+    })?;
+    if accepted_scopes != assembly.scopes {
         session.stop()?;
         return Err(BenchError::Protocol(format!(
             "sealed receipt accepted {} scopes but the runner published {}",
@@ -500,18 +524,19 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         } else {
             (profile.model_id, profile.model_revision)
         };
-        assert!(
-            provenance
-                .insert(
-                    route.to_string(),
-                    RouteProvenance {
-                        system: "quanta-index".to_string(),
-                        model: model.to_string(),
-                        model_revision: model_revision.to_string(),
-                    },
-                )
-                .is_none()
-        );
+        if provenance
+            .insert(
+                route.to_string(),
+                RouteProvenance {
+                    system: "quanta-index".to_string(),
+                    model: model.to_string(),
+                    model_revision: model_revision.to_string(),
+                },
+            )
+            .is_some()
+        {
+            return Err(BenchError::Protocol(format!("duplicate route: {route}")));
+        }
     }
     let query_start = Instant::now();
     let mut outcomes: BTreeMap<(String, String), QueryOutcome> = BTreeMap::new();
@@ -526,24 +551,28 @@ fn run_capture(args: &Args) -> BenchResult<()> {
                 generation: identity.generation,
                 top_k,
             });
-            assert!(
-                outcomes
-                    .insert((task.task_id.clone(), route.to_string()), outcome)
-                    .is_none()
-            );
+            if outcomes
+                .insert((task.task_id.clone(), route.to_string()), outcome)
+                .is_some()
+            {
+                return Err(BenchError::Protocol(format!(
+                    "duplicate outcome for task {} route {route}",
+                    task.task_id
+                )));
+            }
         }
     }
     let query_elapsed = query_start.elapsed();
 
-    let record = runner_record(
-        &pack,
-        &identity_block,
-        &provenance,
-        &outcomes,
+    let record = runner_record(&RunnerRecordInput {
+        pack: &pack,
+        identity: &identity_block,
+        provenance: &provenance,
+        outcomes: &outcomes,
         top_k,
-        &by_path,
-        &chunks_by_id,
-    )?;
+        files: &by_path,
+        chunks_by_id: &chunks_by_id,
+    })?;
     verify_checkout(&repo, &manifest)?;
     write_json(&out, &record)?;
     let binary = session.searchd_binary().display().to_string();
@@ -555,9 +584,12 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             QueryOutcome::Hits { .. } => "hits",
             QueryOutcome::Failed { status, .. } => status,
         };
-        *status_counts.entry(status).or_insert(0) += 1;
+        let count = status_counts.entry(status).or_insert(0);
+        *count = count
+            .checked_add(1)
+            .ok_or_else(|| BenchError::Protocol("outcome status count overflow".to_string()))?;
     }
-    println!(
+    stdout_line(&format!(
         "captured {} tasks x {} routes via {} (receipt gen {}, ack active {:?}); chunk={}ms boot={}ms publish={}ms query={}ms total={}ms; outcomes={status_counts:?}; binary={binary}",
         pack.tasks.len(),
         routes.len(),
@@ -569,7 +601,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         publish_elapsed.as_millis(),
         query_elapsed.as_millis(),
         overall.elapsed().as_millis(),
-    );
+    ))?;
     Ok(())
 }
 
@@ -634,28 +666,36 @@ fn cross_check_manifest_pack(
     Ok(())
 }
 
-fn main() {
+fn run_cli(argv: &[String]) -> BenchResult<()> {
+    let parsed = parse_args(argv)?;
+    if parsed.help {
+        return print_help();
+    }
+    if parsed.positional.len() != 1 {
+        print_help()?;
+        return Err(usage_error(
+            "expected exactly one subcommand: run|chunk".to_string(),
+        ));
+    }
+    match parsed.positional.first().map(String::as_str) {
+        Some("run") => run_capture(&parsed),
+        Some("chunk") => run_chunk(&parsed),
+        Some(other) => {
+            print_help()?;
+            Err(usage_error(format!("unknown subcommand: {other}")))
+        }
+        None => Err(usage_error("missing subcommand".to_string())),
+    }
+}
+
+fn main() -> std::process::ExitCode {
     let argv: Vec<String> = std::env::args().collect();
-    let outcome = (|| -> BenchResult<()> {
-        let args = parse_args(&argv)?;
-        if args.positional.len() != 1 {
-            print_help();
-            return Err(usage_error(
-                "expected exactly one subcommand: run|chunk".to_string(),
-            ));
+    match run_cli(&argv) {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(err) => {
+            let _diagnostic = writeln!(std::io::stderr().lock(), "ERROR: {err}");
+            std::process::ExitCode::from(2)
         }
-        match args.positional[0].as_str() {
-            "run" => run_capture(&args),
-            "chunk" => run_chunk(&args),
-            other => {
-                print_help();
-                Err(usage_error(format!("unknown subcommand: {other}")))
-            }
-        }
-    })();
-    if let Err(err) = outcome {
-        eprintln!("ERROR: {err}");
-        std::process::exit(2);
     }
 }
 

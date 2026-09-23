@@ -57,10 +57,8 @@ fn language_for(path: &str) -> BenchResult<LanguageCode> {
     let code = match path.rsplit('.').next().unwrap_or("") {
         "rs" => "rust",
         "py" => "python",
-        "js" | "mjs" | "cjs" => "javascript",
-        "jsx" => "javascript",
-        "ts" | "mts" | "cts" => "typescript",
-        "tsx" => "typescript",
+        "js" | "mjs" | "cjs" | "jsx" => "javascript",
+        "ts" | "mts" | "cts" | "tsx" => "typescript",
         "go" => "go",
         "java" => "java",
         "c" | "h" => "c",
@@ -187,13 +185,22 @@ pub fn assemble_batch(
             records,
             Vec::new(),
         );
-        report.scopes += 1;
-        report.chunks += file_chunks.len();
+        report.scopes = report
+            .scopes
+            .checked_add(1)
+            .ok_or_else(|| BenchError::Protocol("lexical scope count overflow".to_string()))?;
+        report.chunks = report
+            .chunks
+            .checked_add(file_chunks.len())
+            .ok_or_else(|| BenchError::Protocol("chunk count overflow".to_string()))?;
         for chunk in file_chunks {
             let scope = semantic_scope(chunk)?;
             let scope_digest = scope.scope_digest.clone();
             batch = batch.replace_semantic_scope(scope.scope, scope_digest, scope.sources);
-            report.semantic_scopes += 1;
+            report.semantic_scopes = report
+                .semantic_scopes
+                .checked_add(1)
+                .ok_or_else(|| BenchError::Protocol("semantic scope count overflow".to_string()))?;
         }
     }
     if report.scopes == 0 {

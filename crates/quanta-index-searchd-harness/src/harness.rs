@@ -198,7 +198,7 @@ pub struct E2eRuntime {
     /// harness instances in one process can disagree on embedder.
     embedder_profile: SemanticEmbedderProfile,
     /// Explicit authorization for external provider profiles. The default
-    /// remains incomplete, so selecting OpenAI alone never grants egress.
+    /// remains incomplete, so selecting `OpenAI` alone never grants egress.
     provider_egress_grant: ProviderEgressGrantConfig,
     /// Sealed generations the daemon keeps per repo/revision pair. The
     /// harness default (8) is wide enough that ordinary tests never reap;
@@ -2206,7 +2206,7 @@ impl E2eRuntime {
         let response: SearchPlaneQueryIpcResponseEnvelope = match response {
             Ok(r) => r,
             Err(err) => {
-                let query_result = self.semantic_transport_error(err);
+                let query_result = self.semantic_transport_error(&err);
                 return E2eHistoryResult {
                     commit_ids: Vec::new(),
                     diff_paths: Vec::new(),
@@ -2458,7 +2458,7 @@ impl E2eRuntime {
         let response = match response {
             Ok(response) => response,
             Err(err) => {
-                let failure = self.semantic_transport_error(err);
+                let failure = self.semantic_transport_error(&err);
                 return Err(anyhow::anyhow!(
                     "e2e-harness: keyset page transport failure: {}",
                     failure
@@ -2543,7 +2543,7 @@ impl E2eRuntime {
         );
         let response: SearchPlaneQueryIpcResponseEnvelope = match response {
             Ok(r) => r,
-            Err(err) => return self.semantic_transport_error(err),
+            Err(err) => return self.semantic_transport_error(&err),
         };
         match response.payload {
             SearchPlaneQueryIpcResponse::Text(text) => E2eQueryResult {
@@ -2694,7 +2694,7 @@ impl E2eRuntime {
             wait_for_query_response(&socket, &envelope, self.client_io, query_response_ready);
         let response: SearchPlaneQueryIpcResponseEnvelope = match response {
             Ok(r) => r,
-            Err(err) => return self.semantic_transport_error(err),
+            Err(err) => return self.semantic_transport_error(&err),
         };
         match response.payload {
             SearchPlaneQueryIpcResponse::Semantic(semantic) => E2eQueryResult {
@@ -2790,7 +2790,7 @@ impl E2eRuntime {
             wait_for_query_response(&socket, &envelope, self.client_io, query_response_ready);
         let response: SearchPlaneQueryIpcResponseEnvelope = match response {
             Ok(r) => r,
-            Err(err) => return self.semantic_transport_error(err),
+            Err(err) => return self.semantic_transport_error(&err),
         };
         match response.payload {
             SearchPlaneQueryIpcResponse::Hybrid(hybrid) => E2eQueryResult {
@@ -2865,7 +2865,7 @@ impl E2eRuntime {
         let response = match response {
             Ok(response) => response,
             Err(err) => {
-                let failure = self.semantic_transport_error(err);
+                let failure = self.semantic_transport_error(&err);
                 return Err(anyhow::anyhow!(
                     "e2e-harness: route probe transport failure: {}",
                     failure
@@ -2907,7 +2907,7 @@ impl E2eRuntime {
             .ok_or_else(|| anyhow::anyhow!("e2e-harness: no chunk id recorded for path `{path}`"))
     }
 
-    fn semantic_transport_error(&mut self, err: IpcError) -> E2eQueryResult {
+    fn semantic_transport_error(&mut self, err: &IpcError) -> E2eQueryResult {
         let mut message = err.to_string();
         if let Some(mut driver) = self.driver.take() {
             driver.shutdown.store(true, Ordering::Release);
@@ -3037,7 +3037,7 @@ impl E2eRuntime {
             wait_for_query_response(&socket, &envelope, self.client_io, query_response_ready);
         let response: SearchPlaneQueryIpcResponseEnvelope = match response {
             Ok(r) => r,
-            Err(err) => return explain_transport_error(err),
+            Err(err) => return explain_transport_error(&err),
         };
         match response.payload {
             SearchPlaneQueryIpcResponse::Explain(explain) => E2eExplainResult {
@@ -3397,6 +3397,7 @@ fn cap_observation(observed: String) -> String {
 }
 
 /// Preserve both the caller's per-request limit and the readiness window.
+///
 /// Every IPC attempt receives the earliest deadline, never a fresh full
 /// request timeout after the readiness window has already been spent.
 fn readiness_attempt_deadline(
@@ -3420,7 +3421,11 @@ fn wait_for_query_response(
 ) -> Result<SearchPlaneQueryIpcResponseEnvelope, IpcError> {
     let readiness_deadline = Instant::now()
         .checked_add(READINESS_TIMEOUT)
-        .expect("the bounded readiness deadline is representable");
+        .ok_or_else(|| IpcError::ReadinessTimeout {
+            timeout: READINESS_TIMEOUT,
+            attempts: 0,
+            last: "readiness deadline is not representable".to_string(),
+        })?;
     let mut attempts = 0_u64;
     let mut last = String::from("no attempt completed");
     loop {
@@ -3471,50 +3476,7 @@ fn wait_for_query_response(
     })
 }
 
-#[cfg(test)]
-mod readiness_deadline_tests {
-    use std::time::{Duration, Instant};
-
-    use quanta_index_ipc::ClientIoPolicy;
-
-    use super::readiness_attempt_deadline;
-
-    #[test]
-    fn every_attempt_uses_the_earliest_owner_deadline() {
-        let now = Instant::now();
-        let readiness_deadline = now + Duration::from_secs(15);
-        let long_io = ClientIoPolicy::try_new(Duration::from_secs(30))
-            .expect("a positive request timeout is valid");
-        assert_eq!(
-            readiness_attempt_deadline(long_io, now, readiness_deadline),
-            readiness_deadline,
-            "a 30-second IPC limit cannot extend a 15-second readiness window"
-        );
-
-        let short_io = ClientIoPolicy::try_new(Duration::from_secs(2))
-            .expect("a positive request timeout is valid");
-        assert_eq!(
-            readiness_attempt_deadline(short_io, now, readiness_deadline),
-            now + Duration::from_secs(2),
-            "a stricter per-request limit remains effective"
-        );
-
-        let caller_deadline = now + Duration::from_secs(3_600);
-        let absolute_io = ClientIoPolicy::try_with_deadline(caller_deadline)
-            .expect("a future absolute deadline is valid");
-        assert_eq!(
-            readiness_attempt_deadline(
-                absolute_io,
-                Instant::now(),
-                now + Duration::from_secs(7_200)
-            ),
-            caller_deadline,
-            "a caller's absolute deadline remains effective"
-        );
-    }
-}
-
-fn explain_transport_error(err: IpcError) -> E2eExplainResult {
+fn explain_transport_error(err: &IpcError) -> E2eExplainResult {
     let message = err.to_string();
     E2eExplainResult {
         presence: None,
@@ -3887,4 +3849,47 @@ pub fn stamped_ingest_request(
         bundle @ SearchPlaneIngestIpcRequest::PublishRepoMapBundle(_) => bundle,
         request @ SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(_) => request,
     })
+}
+
+#[cfg(test)]
+mod readiness_deadline_tests {
+    use std::time::{Duration, Instant};
+
+    use quanta_index_ipc::ClientIoPolicy;
+
+    use super::readiness_attempt_deadline;
+
+    #[test]
+    fn every_attempt_uses_the_earliest_owner_deadline() {
+        let now = Instant::now();
+        let readiness_deadline = now + Duration::from_secs(15);
+        let long_io = ClientIoPolicy::try_new(Duration::from_secs(30))
+            .expect("a positive request timeout is valid");
+        assert_eq!(
+            readiness_attempt_deadline(long_io, now, readiness_deadline),
+            readiness_deadline,
+            "a 30-second IPC limit cannot extend a 15-second readiness window"
+        );
+
+        let short_io = ClientIoPolicy::try_new(Duration::from_secs(2))
+            .expect("a positive request timeout is valid");
+        assert_eq!(
+            readiness_attempt_deadline(short_io, now, readiness_deadline),
+            now + Duration::from_secs(2),
+            "a stricter per-request limit remains effective"
+        );
+
+        let caller_deadline = now + Duration::from_secs(3_600);
+        let absolute_io = ClientIoPolicy::try_with_deadline(caller_deadline)
+            .expect("a future absolute deadline is valid");
+        assert_eq!(
+            readiness_attempt_deadline(
+                absolute_io,
+                Instant::now(),
+                now + Duration::from_secs(7_200)
+            ),
+            caller_deadline,
+            "a caller's absolute deadline remains effective"
+        );
+    }
 }

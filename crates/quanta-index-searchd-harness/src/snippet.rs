@@ -645,7 +645,7 @@ pub fn artifact(
                 qps: None,
                 error_count: saturating_u64(score.failures.len()),
                 timeout_count: 0,
-                result_count: Some(if score.matched_path.is_some() { 1 } else { 0 }),
+                result_count: Some(u64::from(score.matched_path.is_some())),
                 typed_error_code: None,
                 engine_touched: vec!["lexical".to_string()],
                 early_stop_reason: None,
@@ -663,13 +663,14 @@ pub fn write_artifacts(
     host: HostV1,
 ) -> AnyResult<()> {
     let golden: Vec<Value> = report.scores.iter().map(golden_window_json).collect();
-    artifact(report, git_head.clone(), host)?.write_to(&dir.join("summary.json"))?;
+    let git_head_text = git_head.as_str().to_string();
+    artifact(report, git_head, host)?.write_to(&dir.join("summary.json"))?;
     crate::artifact::write_json_pretty(
         &dir.join("golden_windows.json"),
         &json!({
             "schema_version": 2,
             "dimension": "snippet",
-            "git_head": git_head.as_str(),
+            "git_head": git_head_text,
             "windows": golden,
             "oracle_note": "oracle_window is the ideal hit-centered, bounded window compute_snippet_window would emit for (observed_snippet, needle); with the engine truncating, observed_snippet and oracle_window converge on the long_line intent, and any divergence marks an unwindowed-snippet regression",
         }),

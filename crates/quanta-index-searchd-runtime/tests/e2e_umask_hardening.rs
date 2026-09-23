@@ -28,6 +28,7 @@ type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 const EXIT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The daemon binary, run under a shell-set umask (TOPT-03): only the
+///
 /// argv wrapper lives here — the binary path, the boot env, the socket
 /// layout, the readiness wait, and the race-tolerant termination are
 /// the shared binary-process owner's.

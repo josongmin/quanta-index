@@ -78,17 +78,17 @@ fn identity_oracle_rejects_missing_wrong_extra_duplicate_and_empty_rows() {
         ("missing needle row", [].as_slice()),
         (
             "wrong in-corpus row",
-            &[("repo-e2e", "src/util.py")].as_slice(),
+            [("repo-e2e", "src/util.py")].as_slice(),
         ),
         (
             "needle plus extra row",
-            &[("repo-e2e", "src/lib.rs"), ("repo-e2e", "src/util.py")].as_slice(),
+            [("repo-e2e", "src/lib.rs"), ("repo-e2e", "src/util.py")].as_slice(),
         ),
         (
             "duplicate needle row",
-            &[("repo-e2e", "src/lib.rs"), ("repo-e2e", "src/lib.rs")].as_slice(),
+            [("repo-e2e", "src/lib.rs"), ("repo-e2e", "src/lib.rs")].as_slice(),
         ),
-        ("wrong repo", &[("repo-other", "src/lib.rs")].as_slice()),
+        ("wrong repo", [("repo-other", "src/lib.rs")].as_slice()),
     ] {
         assert!(
             verify_identity_set(actual, expected).is_err(),

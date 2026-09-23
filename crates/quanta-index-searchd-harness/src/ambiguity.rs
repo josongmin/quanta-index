@@ -253,13 +253,14 @@ pub fn write_artifacts(
     host: HostV1,
 ) -> AnyResult<()> {
     let payloads: Vec<Value> = report.audits.iter().map(audit_json).collect();
-    artifact(report, git_head.clone(), host)?.write_to(&dir.join("summary.json"))?;
+    let git_head_text = git_head.as_str().to_string();
+    artifact(report, git_head, host)?.write_to(&dir.join("summary.json"))?;
     crate::artifact::write_json_pretty(
         &dir.join("error_payloads.json"),
         &json!({
             "schema_version": 2,
             "dimension": "ambiguity",
-            "git_head": git_head.as_str(),
+            "git_head": git_head_text,
             "payloads": payloads,
         }),
     )?;
@@ -290,10 +291,15 @@ mod tests {
         .expect("authority artifact")
         .to_json()
         .expect("json");
-        assert_eq!(artifact["schema_version"], 2);
-        assert_eq!(artifact["detail"]["passed"], true);
+        assert_eq!(artifact.get("schema_version"), Some(&json!(2)));
         assert_eq!(
-            artifact["rows"].as_array().map(Vec::len),
+            artifact
+                .get("detail")
+                .and_then(|detail| detail.get("passed")),
+            Some(&json!(true))
+        );
+        assert_eq!(
+            artifact.get("rows").and_then(Value::as_array).map(Vec::len),
             Some(report.audits.len())
         );
     }

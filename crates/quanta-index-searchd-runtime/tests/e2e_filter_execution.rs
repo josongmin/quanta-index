@@ -32,6 +32,8 @@ use crate::e2e_harness::{E2eHistoryFixtureSpec, E2eRuntime, E2eTextChunkSpec};
 
 const REPO: &str = "repo-filter-exec";
 
+type FilterCase = (&'static str, fn(&mut E2eRuntime) -> AnyResult<()>);
+
 /// Boot a runtime with one deterministic commit + a text chunk, sealed + active.
 ///
 /// The commit carries distinct `author` / `committer` / `message` / `ref_name`
@@ -71,13 +73,13 @@ fn history_commit_count(rt: &mut E2eRuntime, query: &str) -> AnyResult<usize> {
     Ok(result.commit_ids.len())
 }
 
-fn rev_filter_admits_matching_ref_and_excludes_others(mut rt: &mut E2eRuntime) -> AnyResult<()> {
-    let admitted = history_commit_count(&mut rt, "type:commit rev:refs/heads/main needle_token")?;
+fn rev_filter_admits_matching_ref_and_excludes_others(rt: &mut E2eRuntime) -> AnyResult<()> {
+    let admitted = history_commit_count(rt, "type:commit rev:refs/heads/main needle_token")?;
     ensure!(
         admitted == 1,
         "rev: on the seeded ref must admit the commit, got {admitted}"
     );
-    let excluded = history_commit_count(&mut rt, "type:commit rev:refs/heads/absent needle_token")?;
+    let excluded = history_commit_count(rt, "type:commit rev:refs/heads/absent needle_token")?;
     ensure!(
         excluded == 0,
         "rev: on an unknown ref must exclude the commit, got {excluded}"
@@ -85,15 +87,13 @@ fn rev_filter_admits_matching_ref_and_excludes_others(mut rt: &mut E2eRuntime) -
     Ok(())
 }
 
-fn author_filter_admits_matching_author_and_excludes_others(
-    mut rt: &mut E2eRuntime,
-) -> AnyResult<()> {
-    let admitted = history_commit_count(&mut rt, "type:commit author:alice needle_token")?;
+fn author_filter_admits_matching_author_and_excludes_others(rt: &mut E2eRuntime) -> AnyResult<()> {
+    let admitted = history_commit_count(rt, "type:commit author:alice needle_token")?;
     ensure!(
         admitted == 1,
         "author: matching the commit author must admit it, got {admitted}"
     );
-    let excluded = history_commit_count(&mut rt, "type:commit author:nobodyxyz needle_token")?;
+    let excluded = history_commit_count(rt, "type:commit author:nobodyxyz needle_token")?;
     ensure!(
         excluded == 0,
         "author: not matching must exclude the commit, got {excluded}"
@@ -102,14 +102,14 @@ fn author_filter_admits_matching_author_and_excludes_others(
 }
 
 fn committer_filter_admits_matching_committer_and_excludes_others(
-    mut rt: &mut E2eRuntime,
+    rt: &mut E2eRuntime,
 ) -> AnyResult<()> {
-    let admitted = history_commit_count(&mut rt, "type:commit committer:bob needle_token")?;
+    let admitted = history_commit_count(rt, "type:commit committer:bob needle_token")?;
     ensure!(
         admitted == 1,
         "committer: matching must admit the commit, got {admitted}"
     );
-    let excluded = history_commit_count(&mut rt, "type:commit committer:nobodyxyz needle_token")?;
+    let excluded = history_commit_count(rt, "type:commit committer:nobodyxyz needle_token")?;
     ensure!(
         excluded == 0,
         "committer: not matching must exclude the commit, got {excluded}"
@@ -118,14 +118,14 @@ fn committer_filter_admits_matching_committer_and_excludes_others(
 }
 
 fn message_filter_admits_matching_message_and_excludes_others(
-    mut rt: &mut E2eRuntime,
+    rt: &mut E2eRuntime,
 ) -> AnyResult<()> {
-    let admitted = history_commit_count(&mut rt, "type:commit message:needle_token needle_token")?;
+    let admitted = history_commit_count(rt, "type:commit message:needle_token needle_token")?;
     ensure!(
         admitted == 1,
         "message: matching the commit message must admit it, got {admitted}"
     );
-    let excluded = history_commit_count(&mut rt, "type:commit message:absentword needle_token")?;
+    let excluded = history_commit_count(rt, "type:commit message:absentword needle_token")?;
     ensure!(
         excluded == 0,
         "message: not matching must exclude the commit, got {excluded}"
@@ -2547,7 +2547,7 @@ fn sourcegraph_legacy_index_and_boost_execute_on_active_stack(
 #[test]
 fn history_filter_cases_share_one_boot() -> AnyResult<()> {
     let mut rt = boot_with_history()?;
-    let cases: [(&str, fn(&mut E2eRuntime) -> AnyResult<()>); 4] = [
+    let cases: [FilterCase; 4] = [
         (
             "rev_filter_admits_matching_ref_and_excludes_others",
             rev_filter_admits_matching_ref_and_excludes_others,
@@ -2584,7 +2584,7 @@ fn history_filter_cases_share_one_boot() -> AnyResult<()> {
 #[test]
 fn lexical_filter_cases_share_one_boot() -> AnyResult<()> {
     let mut rt = boot_with_lexical()?;
-    let cases: [(&str, fn(&mut E2eRuntime) -> AnyResult<()>); 6] = [
+    let cases: [FilterCase; 6] = [
         (
             "content_filter_executes_as_a_text_pattern",
             content_filter_executes_as_a_text_pattern,
@@ -2629,7 +2629,7 @@ fn lexical_filter_cases_share_one_boot() -> AnyResult<()> {
 #[test]
 fn multi_repo_filter_cases_share_one_boot() -> AnyResult<()> {
     let mut rt = boot_with_multi_repo()?;
-    let cases: [(&str, fn(&mut E2eRuntime) -> AnyResult<()>); 11] = [
+    let cases: [FilterCase; 11] = [
         (
             "repo_has_content_predicate_executes_on_sourcegraph_surface",
             repo_has_content_predicate_executes_on_sourcegraph_surface,
@@ -2694,7 +2694,7 @@ fn multi_repo_filter_cases_share_one_boot() -> AnyResult<()> {
 #[test]
 fn commit_recency_filter_cases_share_one_boot() -> AnyResult<()> {
     let mut rt = boot_with_multi_repo_and_commit_recency()?;
-    let cases: [(&str, fn(&mut E2eRuntime) -> AnyResult<()>); 3] = [
+    let cases: [FilterCase; 3] = [
         (
             "repo_has_commit_after_predicate_executes_on_sourcegraph_surface",
             repo_has_commit_after_predicate_executes_on_sourcegraph_surface,
@@ -2727,7 +2727,7 @@ fn commit_recency_filter_cases_share_one_boot() -> AnyResult<()> {
 #[test]
 fn repo_meta_filter_cases_share_one_boot() -> AnyResult<()> {
     let mut rt = boot_with_multi_repo_and_repo_meta()?;
-    let cases: [(&str, fn(&mut E2eRuntime) -> AnyResult<()>); 6] = [
+    let cases: [FilterCase; 6] = [
         (
             "repo_has_meta_predicate_executes_on_sourcegraph_surface",
             repo_has_meta_predicate_executes_on_sourcegraph_surface,
@@ -2772,7 +2772,7 @@ fn repo_meta_filter_cases_share_one_boot() -> AnyResult<()> {
 #[test]
 fn repo_description_filter_cases_share_one_boot() -> AnyResult<()> {
     let mut rt = boot_with_multi_repo_and_repo_description()?;
-    let cases: [(&str, fn(&mut E2eRuntime) -> AnyResult<()>); 3] = [
+    let cases: [FilterCase; 3] = [
         (
             "repo_has_description_predicate_executes_on_sourcegraph_surface",
             repo_has_description_predicate_executes_on_sourcegraph_surface,
@@ -2805,7 +2805,7 @@ fn repo_description_filter_cases_share_one_boot() -> AnyResult<()> {
 #[test]
 fn file_ownership_filter_cases_share_one_boot() -> AnyResult<()> {
     let mut rt = boot_with_multi_repo_and_file_ownership()?;
-    let cases: [(&str, fn(&mut E2eRuntime) -> AnyResult<()>); 3] = [
+    let cases: [FilterCase; 3] = [
         (
             "select_file_owners_projects_owner_rows_on_sourcegraph_surface",
             select_file_owners_projects_owner_rows_on_sourcegraph_surface,
@@ -2838,7 +2838,7 @@ fn file_ownership_filter_cases_share_one_boot() -> AnyResult<()> {
 #[test]
 fn file_contributor_filter_cases_share_one_boot() -> AnyResult<()> {
     let mut rt = boot_with_multi_repo_and_file_contributor()?;
-    let cases: [(&str, fn(&mut E2eRuntime) -> AnyResult<()>); 2] = [
+    let cases: [FilterCase; 2] = [
         (
             "file_has_contributor_executes_on_sourcegraph_surface",
             file_has_contributor_executes_on_sourcegraph_surface,
@@ -2867,7 +2867,7 @@ fn file_contributor_filter_cases_share_one_boot() -> AnyResult<()> {
 #[test]
 fn repo_metadata_filter_cases_share_one_boot() -> AnyResult<()> {
     let mut rt = boot_with_metadata()?;
-    let cases: [(&str, fn(&mut E2eRuntime) -> AnyResult<()>); 2] = [
+    let cases: [FilterCase; 2] = [
         (
             "archived_filter_admits_non_archived_and_excludes_only",
             archived_filter_admits_non_archived_and_excludes_only,

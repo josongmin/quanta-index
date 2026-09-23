@@ -83,6 +83,7 @@ pub(super) fn ingest_all(rt: &mut E2eRuntime, rows: &[CorpusRow]) -> AnyResult<(
 pub(super) const SMOKE_NEEDLE_RUST: &str = "smoke_needle_rust";
 
 /// Fixture contract: the exact `(repo, path)` identity set a
+///
 /// [`SMOKE_NEEDLE_RUST`] query must return. `alpha` carries the rust
 /// needle; `beta` carries the python needle; `gamma` carries no needle.
 /// The smoke oracle asserts this set exactly — missing rows and extras

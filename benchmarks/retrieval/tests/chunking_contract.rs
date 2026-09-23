@@ -1,6 +1,12 @@
 //! Chunking contract tests (RB-03, T08–T09): boundary correctness,
 //! determinism, fallback accounting and corpus-loader rejection rules.
 
+#![expect(
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    reason = "integration-test fixture setup and direct oracle assertions intentionally fail on absence"
+)]
+
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -25,7 +31,8 @@ fn write_oracle(root: &Path) {
         ("notes/long.rs", &{
             let mut text = String::from("pub fn huge() -> u64 {\n");
             for index in 0..400 {
-                text.push_str(&format!("    let _v{index} = {index}_u64;\n"));
+                use std::fmt::Write as _;
+                writeln!(text, "    let _v{index} = {index}_u64;").expect("fixture formatting");
             }
             text.push_str("    0\n}\n");
             text.into_bytes()
@@ -278,32 +285,32 @@ fn validator_rejects_mutated_spans_ids_and_order() {
     assert!(valid.len() >= 2);
     validate_chunks(valid, file).expect("oracle validates");
 
-    let mut wrong_text = valid.to_vec();
+    let mut wrong_text = valid.clone();
     wrong_text[0].text = "tampered".to_string();
     assert!(validate_chunks(&wrong_text, file).is_err());
 
-    let mut wrong_lines = valid.to_vec();
+    let mut wrong_lines = valid.clone();
     wrong_lines[0].end_line += 100;
     assert!(validate_chunks(&wrong_lines, file).is_err());
 
-    let mut wrong_id = valid.to_vec();
+    let mut wrong_id = valid.clone();
     wrong_id[0].chunk_id = "0".repeat(64);
     assert!(validate_chunks(&wrong_id, file).is_err());
 
-    let mut dup_id = valid.to_vec();
+    let mut dup_id = valid.clone();
     let first_id = dup_id[0].chunk_id.clone();
     dup_id[1].chunk_id = first_id;
     assert!(validate_chunks(&dup_id, file).is_err());
 
-    let mut reordered = valid.to_vec();
+    let mut reordered = valid.clone();
     reordered.swap(0, 1);
     assert!(validate_chunks(&reordered, file).is_err());
 
-    let mut overflow = valid.to_vec();
+    let mut overflow = valid.clone();
     overflow[0].end_byte = u32::MAX;
     assert!(validate_chunks(&overflow, file).is_err());
 
-    let mut zero_length = valid.to_vec();
+    let mut zero_length = valid.clone();
     zero_length[0].end_byte = zero_length[0].start_byte;
     assert!(validate_chunks(&zero_length, file).is_err());
 }
@@ -337,7 +344,7 @@ fn corpus_loader_rejects_binary_symlink_oversize_and_mismatch() {
 
     let commit = "a".repeat(40);
     let entry = |path: &str| {
-        let bytes = std::fs::read(root.path().join(path)).unwrap_or_default();
+        let bytes = std::fs::read(root.path().join(path)).expect("oracle file is readable");
         format!(
             "{{\"path\": \"{path}\", \"file_sha256\": \"{}\"}}",
             sha256_hex(&bytes)
@@ -448,7 +455,6 @@ fn coverage_accounts_overlap_and_fallbacks() {
     for file in &files {
         let mut covered = vec![false; file.bytes.len()];
         for chunk in &chunks[&file.path] {
-            #[allow(clippy::needless_range_loop)]
             for index in chunk.start_byte..chunk.end_byte {
                 let slot = usize::try_from(index).unwrap();
                 if covered[slot] {

@@ -24,8 +24,9 @@ pub const RUNNER_SCHEMA_VERSION: u64 = 2;
 pub const TOKENIZER: &str = "qi-regex-v1";
 pub const TOKENIZER_BUDGET_VERSION: &str = "qb-v1";
 
-/// Parse the raw pack without discarding repeated JSON keys. A repeated
-/// `tasks` key could otherwise hide an earlier gold-bearing value from the
+/// Parse the raw pack without discarding repeated JSON keys.
+///
+/// A repeated `tasks` key could otherwise hide an earlier gold-bearing value from the
 /// post-parse blindness check while leaving those bytes visible to the runner.
 struct UniqueJson(Value);
 
@@ -201,7 +202,7 @@ fn forbidden_pack_key(value: &Value) -> Option<String> {
             None
         }
         Value::Array(items) => items.iter().find_map(forbidden_pack_key),
-        _ => None,
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => None,
     }
 }
 
@@ -517,13 +518,21 @@ fn prove_hit(
             hit.path, start_line, end_line
         )));
     }
-    let (start, end) = file.line_span_bytes(
-        usize::try_from(start_line).unwrap_or(usize::MAX),
-        usize::try_from(end_line).unwrap_or(0),
-    )?;
-    let block = &file.bytes[start..end];
-    let text = std::str::from_utf8(block)
-        .map_err(|_| BenchError::Protocol(format!("SDK hit block is not UTF-8: {}", hit.path)))?;
+    let start_line_index = usize::try_from(start_line).map_err(|err| {
+        BenchError::Protocol(format!("SDK hit start line cannot fit usize: {err}"))
+    })?;
+    let end_line_index = usize::try_from(end_line)
+        .map_err(|err| BenchError::Protocol(format!("SDK hit end line cannot fit usize: {err}")))?;
+    let (start, end) = file.line_span_bytes(start_line_index, end_line_index)?;
+    let block = file.bytes.get(start..end).ok_or_else(|| {
+        BenchError::Protocol(format!(
+            "SDK hit block is outside source bytes: {}",
+            hit.path
+        ))
+    })?;
+    let text = std::str::from_utf8(block).map_err(|err| {
+        BenchError::Protocol(format!("SDK hit block is not UTF-8: {}: {err}", hit.path))
+    })?;
     let tokens = count_tokens(text);
     if tokens == 0 {
         return Err(BenchError::Protocol(format!(
@@ -531,75 +540,32 @@ fn prove_hit(
             hit.path
         )));
     }
-    let mut candidate = Map::new();
-    assert!(
-        candidate
-            .insert("path".to_string(), Value::String(hit.path.clone()))
-            .is_none()
-    );
-    assert!(
-        candidate
-            .insert("start_line".to_string(), Value::Number(start_line.into()),)
-            .is_none()
-    );
-    assert!(
-        candidate
-            .insert("end_line".to_string(), Value::Number(end_line.into()))
-            .is_none()
-    );
-    assert!(
-        candidate
-            .insert(
-                "file_sha256".to_string(),
-                Value::String(file.sha256.clone()),
-            )
-            .is_none()
-    );
-    assert!(
-        candidate
-            .insert("block_sha256".to_string(), Value::String(sha256_hex(block)),)
-            .is_none()
-    );
-    assert!(
-        candidate
-            .insert("tokens".to_string(), Value::Number((tokens as u64).into()),)
-            .is_none()
-    );
-    assert!(
-        candidate
-            .insert("rank".to_string(), Value::Number((rank as u64).into()),)
-            .is_none()
-    );
-    Ok(Value::Object(candidate))
+    let tokens = u64::try_from(tokens).map_err(|err| {
+        BenchError::Protocol(format!("SDK hit token count cannot fit u64: {err}"))
+    })?;
+    let rank = u64::try_from(rank)
+        .map_err(|err| BenchError::Protocol(format!("SDK hit rank cannot fit u64: {err}")))?;
+    Ok(serde_json::json!({
+        "path": hit.path,
+        "start_line": start_line,
+        "end_line": end_line,
+        "file_sha256": file.sha256,
+        "block_sha256": sha256_hex(block),
+        "tokens": tokens,
+        "rank": rank,
+    }))
 }
 
 fn error_value(code: &str, message: &str) -> Value {
-    let mut error = Map::new();
-    assert!(
-        error
-            .insert("code".to_string(), Value::String(code.to_string()))
-            .is_none()
-    );
-    assert!(
-        error
-            .insert("message".to_string(), Value::String(message.to_string()))
-            .is_none()
-    );
-    Value::Object(error)
+    serde_json::json!({"code": code, "message": message})
 }
 
 fn timings_value(latency: Duration) -> BenchResult<Value> {
-    let mut timings = Map::new();
     let ms = duration_ms(latency)?;
     let number = serde_json::Number::from_f64(ms).ok_or_else(|| {
         BenchError::Protocol("non-finite query latency cannot be recorded".to_string())
     })?;
-    assert!(
-        timings
-            .insert("query_latency_ms".to_string(), Value::Number(number))
-            .is_none()
-    );
-    Ok(Value::Object(timings))
+    Ok(serde_json::json!({"query_latency_ms": number}))
 }
 
 /// Map one query outcome to a v2 result object. `top_k` is the declared cap;
@@ -612,76 +578,41 @@ pub fn result_value(
     files: &BTreeMap<String, SourceFile>,
     chunks_by_id: &BTreeMap<String, Chunk>,
 ) -> BenchResult<Value> {
-    let mut result = Map::new();
-    assert!(
-        result
-            .insert("task_id".to_string(), Value::String(task_id.to_string()))
-            .is_none()
-    );
-    assert!(
-        result
-            .insert("route".to_string(), Value::String(route.to_string()))
-            .is_none()
-    );
     match outcome {
         QueryOutcome::Hits {
             hits,
             outcome,
             latency,
         } => {
-            if hits.len() as u64 > u64::from(top_k) {
+            let hit_count = u64::try_from(hits.len()).map_err(|err| {
+                BenchError::Protocol(format!("SDK hit count cannot fit u64: {err}"))
+            })?;
+            if hit_count > u64::from(top_k) {
                 return Err(BenchError::Protocol(format!(
                     "{route} returned {} hits above top_k={top_k} for {task_id}",
                     hits.len()
                 )));
             }
             if hits.is_empty() {
-                if outcome.is_exhausted() {
-                    assert!(
-                        result
-                            .insert("status".to_string(), Value::String("abstained".to_string()))
-                            .is_none()
-                    );
-                    assert!(
-                        result
-                            .insert("candidates".to_string(), Value::Array(Vec::new()))
-                            .is_none()
-                    );
-                    assert!(
-                        result
-                            .insert("timings".to_string(), timings_value(*latency)?)
-                            .is_none()
-                    );
-                    assert!(result.insert("error".to_string(), Value::Null).is_none());
+                let (status, error) = if outcome.is_exhausted() {
+                    ("abstained", Value::Null)
                 } else {
-                    assert!(
-                        result
-                            .insert("status".to_string(), Value::String("error".to_string()))
-                            .is_none()
-                    );
-                    assert!(
-                        result
-                            .insert("candidates".to_string(), Value::Array(Vec::new()))
-                            .is_none()
-                    );
-                    assert!(
-                        result
-                            .insert("timings".to_string(), timings_value(*latency)?)
-                            .is_none()
-                    );
-                    assert!(
-                        result
-                            .insert(
-                                "error".to_string(),
-                                error_value(
-                                    "empty_non_exhausted_window",
-                                    "zero hits under a non-exhausted window cannot score",
-                                ),
-                            )
-                            .is_none()
-                    );
-                }
-                return Ok(Value::Object(result));
+                    (
+                        "error",
+                        error_value(
+                            "empty_non_exhausted_window",
+                            "zero hits under a non-exhausted window cannot score",
+                        ),
+                    )
+                };
+                return Ok(serde_json::json!({
+                    "task_id": task_id,
+                    "route": route,
+                    "status": status,
+                    "candidates": [],
+                    "timings": timings_value(*latency)?,
+                    "error": error,
+                }));
             }
             let status = if outcome.is_exhausted() {
                 "success"
@@ -690,68 +621,61 @@ pub fn result_value(
             };
             let mut candidates = Vec::with_capacity(hits.len());
             for (index, hit) in hits.iter().enumerate() {
-                candidates.push(prove_hit(hit, index + 1, files, chunks_by_id)?);
+                candidates.push(prove_hit(
+                    hit,
+                    index.saturating_add(1),
+                    files,
+                    chunks_by_id,
+                )?);
             }
-            assert!(
-                result
-                    .insert("status".to_string(), Value::String(status.to_string()))
-                    .is_none()
-            );
-            assert!(
-                result
-                    .insert("candidates".to_string(), Value::Array(candidates))
-                    .is_none()
-            );
-            assert!(
-                result
-                    .insert("timings".to_string(), timings_value(*latency)?)
-                    .is_none()
-            );
-            assert!(result.insert("error".to_string(), Value::Null).is_none());
+            Ok(serde_json::json!({
+                "task_id": task_id,
+                "route": route,
+                "status": status,
+                "candidates": candidates,
+                "timings": timings_value(*latency)?,
+                "error": null,
+            }))
         }
         QueryOutcome::Failed {
             status,
             code,
             message,
             latency,
-        } => {
-            assert!(
-                result
-                    .insert("status".to_string(), Value::String(status.to_string()),)
-                    .is_none()
-            );
-            assert!(
-                result
-                    .insert("candidates".to_string(), Value::Array(Vec::new()))
-                    .is_none()
-            );
-            assert!(
-                result
-                    .insert("timings".to_string(), timings_value(*latency)?)
-                    .is_none()
-            );
-            assert!(
-                result
-                    .insert("error".to_string(), error_value(code, message))
-                    .is_none()
-            );
-        }
+        } => Ok(serde_json::json!({
+            "task_id": task_id,
+            "route": route,
+            "status": status,
+            "candidates": [],
+            "timings": timings_value(*latency)?,
+            "error": error_value(code, message),
+        })),
     }
-    Ok(Value::Object(result))
 }
 
 /// Assemble the complete v2 runner record. Results emit in deterministic
 /// `(task_id, route)` order from the pack's task order and sorted routes.
-#[allow(clippy::too_many_arguments)]
-pub fn runner_record(
-    pack: &QueryPack,
-    identity: &RunnerIdentity,
-    provenance: &BTreeMap<String, RouteProvenance>,
-    outcomes: &BTreeMap<(String, String), QueryOutcome>,
-    top_k: u32,
-    files: &BTreeMap<String, SourceFile>,
-    chunks_by_id: &BTreeMap<String, Chunk>,
-) -> BenchResult<Value> {
+#[derive(Clone, Copy)]
+pub struct RunnerRecordInput<'a> {
+    pub pack: &'a QueryPack,
+    pub identity: &'a RunnerIdentity,
+    pub provenance: &'a BTreeMap<String, RouteProvenance>,
+    pub outcomes: &'a BTreeMap<(String, String), QueryOutcome>,
+    pub top_k: u32,
+    pub files: &'a BTreeMap<String, SourceFile>,
+    pub chunks_by_id: &'a BTreeMap<String, Chunk>,
+}
+
+pub fn runner_record(input: &RunnerRecordInput<'_>) -> BenchResult<Value> {
+    let RunnerRecordInput {
+        pack,
+        identity,
+        provenance,
+        outcomes,
+        top_k,
+        files,
+        chunks_by_id,
+    } = *input;
     let mut routes: Vec<&String> = provenance.keys().collect();
     routes.sort();
     if routes.is_empty() {
@@ -766,127 +690,20 @@ pub fn runner_record(
             )));
         }
     }
-    let mut record = Map::new();
-    assert!(
-        record
-            .insert(
-                "schema_version".to_string(),
-                Value::Number(RUNNER_SCHEMA_VERSION.into()),
-            )
-            .is_none()
-    );
-    assert!(
-        record
-            .insert(
-                "query_pack_sha256".to_string(),
-                Value::String(pack.pack_sha256.clone()),
-            )
-            .is_none()
-    );
-    let mut runner = Map::new();
-    assert!(
-        runner
-            .insert("name".to_string(), Value::String(identity.name.clone()))
-            .is_none()
-    );
-    assert!(
-        runner
-            .insert(
-                "revision".to_string(),
-                Value::String(identity.revision.clone()),
-            )
-            .is_none()
-    );
-    assert!(
-        runner
-            .insert("run_id".to_string(), Value::String(identity.run_id.clone()),)
-            .is_none()
-    );
-    assert!(
-        runner
-            .insert(
-                "tokenizer".to_string(),
-                Value::String(TOKENIZER.to_string()),
-            )
-            .is_none()
-    );
-    assert!(
-        runner
-            .insert(
-                "tokenizer_budget_version".to_string(),
-                Value::String(TOKENIZER_BUDGET_VERSION.to_string()),
-            )
-            .is_none()
-    );
-    assert!(
-        runner
-            .insert("gold_access".to_string(), Value::Bool(false))
-            .is_none()
-    );
-    assert!(
-        runner
-            .insert(
-                "blinding".to_string(),
-                Value::String(identity.blinding.clone()),
-            )
-            .is_none()
-    );
-    assert!(
-        runner
-            .insert(
-                "isolation_method".to_string(),
-                Value::String(identity.isolation_method.clone()),
-            )
-            .is_none()
-    );
-    assert!(
-        runner
-            .insert(
-                "access_block_log".to_string(),
-                Value::String(identity.access_block_log.clone()),
-            )
-            .is_none()
-    );
-    assert!(
-        record
-            .insert("runner".to_string(), Value::Object(runner))
-            .is_none()
-    );
     let mut provenance_value = Map::new();
     for route in &routes {
         let entry = provenance
             .get(*route)
             .ok_or_else(|| BenchError::Protocol(format!("missing provenance for route {route}")))?;
-        let mut item = Map::new();
-        assert!(
-            item.insert("system".to_string(), Value::String(entry.system.clone()))
-                .is_none()
-        );
-        assert!(
-            item.insert("model".to_string(), Value::String(entry.model.clone()))
-                .is_none()
-        );
-        assert!(
-            item.insert(
-                "model_revision".to_string(),
-                Value::String(entry.model_revision.clone()),
-            )
-            .is_none()
-        );
-        assert!(
-            provenance_value
-                .insert((*route).clone(), Value::Object(item))
-                .is_none()
+        let _previous = provenance_value.insert(
+            (*route).clone(),
+            serde_json::json!({
+                "system": entry.system,
+                "model": entry.model,
+                "model_revision": entry.model_revision,
+            }),
         );
     }
-    assert!(
-        record
-            .insert(
-                "route_provenance".to_string(),
-                Value::Object(provenance_value),
-            )
-            .is_none()
-    );
     let mut results = Vec::new();
     for task in &pack.tasks {
         for route in &routes {
@@ -905,12 +722,23 @@ pub fn runner_record(
             )?);
         }
     }
-    assert!(
-        record
-            .insert("results".to_string(), Value::Array(results))
-            .is_none()
-    );
-    Ok(Value::Object(record))
+    Ok(serde_json::json!({
+        "schema_version": RUNNER_SCHEMA_VERSION,
+        "query_pack_sha256": pack.pack_sha256,
+        "runner": {
+            "name": identity.name,
+            "revision": identity.revision,
+            "run_id": identity.run_id,
+            "tokenizer": TOKENIZER,
+            "tokenizer_budget_version": TOKENIZER_BUDGET_VERSION,
+            "gold_access": false,
+            "blinding": identity.blinding,
+            "isolation_method": identity.isolation_method,
+            "access_block_log": identity.access_block_log,
+        },
+        "route_provenance": provenance_value,
+        "results": results,
+    }))
 }
 
 #[cfg(test)]
@@ -1024,9 +852,18 @@ mod tests {
             score: 1.0,
         };
         let candidate = prove_hit(&hit, 1, &files, &chunks).expect("anchored by published ID");
-        assert_eq!(candidate["start_line"], 1);
-        assert_eq!(candidate["end_line"], 1);
-        assert_eq!(candidate["block_sha256"], sha256_hex(chunk_text.as_bytes()));
+        assert_eq!(
+            candidate.get("start_line"),
+            Some(&Value::Number(1_u64.into()))
+        );
+        assert_eq!(
+            candidate.get("end_line"),
+            Some(&Value::Number(1_u64.into()))
+        );
+        assert_eq!(
+            candidate.get("block_sha256").and_then(Value::as_str),
+            Some(sha256_hex(chunk_text.as_bytes()).as_str())
+        );
 
         let mut changed = hit.clone();
         changed.snippet = "not the published chunk".to_string();
@@ -1038,7 +875,7 @@ mod tests {
         changed.end_line = 1;
         assert!(prove_hit(&changed, 1, &files, &chunks).is_err());
 
-        let mut anchored = changed.clone();
+        let mut anchored = changed;
         anchored.start_line = 1;
         assert!(prove_hit(&anchored, 1, &files, &chunks).is_ok());
         anchored.candidate_id = "unknown".to_string();

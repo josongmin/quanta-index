@@ -24,6 +24,10 @@ fn is_bound_socket(path: &std::path::Path) -> Result<bool, Box<dyn Error>> {
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "socket-layout integration assertions intentionally fail the test while setup uses Result"
+)]
 fn deliberately_long_state_root_binds_all_three_sockets() -> Result<(), Box<dyn Error>> {
     let parent = quanta_index_searchd_harness::private_tempdir()?;
     // Ten levels of 23 characters push the root past the socket path
@@ -47,7 +51,7 @@ fn deliberately_long_state_root_binds_all_three_sockets() -> Result<(), Box<dyn 
     let (query, control, ingest) = runtime
         .socket_paths()
         .ok_or("a started daemon binds all three sockets")?;
-    for socket in [query, control, ingest] {
+    for socket in <[_; 3]>::from((query, control, ingest)) {
         assert!(
             socket.as_os_str().len() < MACOS_SUN_PATH_LEN,
             "harness sockets stay bindable while the root is not: {}",

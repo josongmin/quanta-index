@@ -128,6 +128,7 @@ fn refused_with_nothing_changed(
 }
 
 /// Publish one batch the mutable preflight refuses and require the
+///
 /// typed refusal `expected` with exactly one new journal row and zero
 /// changed bytes (SEP-21 P02B: a frozen-policy refusal is itself the
 /// terminal record the retry replays).
@@ -148,7 +149,10 @@ fn refused_with_one_frozen_row(
     if typed_code(&response) != Some(expected.as_wire_str()) {
         return Err(format!("{label}: expected {expected}, got {response:?}").into());
     }
-    if idempotency_rows(rt)? != rows_before + 1 {
+    let expected_rows = rows_before
+        .checked_add(1)
+        .ok_or("idempotency row count overflow")?;
+    if idempotency_rows(rt)? != expected_rows {
         return Err(format!("{label}: a preflight refusal must freeze exactly one row").into());
     }
     if durable_tree(rt)? != tree_before {
@@ -158,7 +162,7 @@ fn refused_with_one_frozen_row(
     if typed_code(&replayed) != Some(expected.as_wire_str()) {
         return Err(format!("{label}: the retry must replay the refusal, got {replayed:?}").into());
     }
-    if idempotency_rows(rt)? != rows_before + 1 {
+    if idempotency_rows(rt)? != expected_rows {
         return Err(format!("{label}: a refused replay must add no row").into());
     }
     if durable_tree(rt)? != tree_before {
@@ -168,6 +172,7 @@ fn refused_with_one_frozen_row(
 }
 
 /// Every refusal the raw socket can provoke: intrinsic (digest)
+///
 /// refusals record nothing, mutable-preflight refusals freeze exactly
 /// one terminal row each, and no refusal changes a byte under the
 /// state root; then a well-formed batch applies on the same daemon.
@@ -340,6 +345,7 @@ fn remote_code(error: &SdkError) -> Option<&str> {
 }
 
 /// Through the SDK: a delta on an unsealed base and a batch past the
+///
 /// resource envelope are typed refusals that each freeze exactly one
 /// terminal journal row (SEP-21 P02B); the batch that applies carries
 /// the canonical digest the receipt names.

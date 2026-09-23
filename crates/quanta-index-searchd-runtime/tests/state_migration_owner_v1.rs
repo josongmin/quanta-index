@@ -575,6 +575,7 @@ fn a_crash_after_the_cutover_rename_leaves_the_complete_new_root() -> TestResult
 }
 
 /// Entries the backup's deep open rewrites per run: the reconciled
+///
 /// catalog snapshot bytes, the fresh root uuid, and quarantine
 /// incidents. Exempt from cross-run digest equality; still covered by
 /// the verifier's internal consistency proof.
@@ -592,6 +593,7 @@ fn is_incident_dir(dir: &str) -> bool {
 }
 
 /// Mutation control for the completeness oracle: deleting or corrupting a
+///
 /// single published object must fail production verification, and
 /// restoring it must pass again — proving the failure names the mutation,
 /// not the fixture.

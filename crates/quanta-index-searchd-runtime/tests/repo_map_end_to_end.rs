@@ -366,7 +366,7 @@ fn repo_map_query_roundtrip_through_searchd_socket() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let query_socket = fixture.query_socket.clone();
     let control_socket = fixture.control_socket.clone();
-    let ingest_socket = fixture.ingest_socket.clone();
+    let ingest_socket = fixture.ingest_socket;
     let source = repo_map_bundle()?;
     let publish_request = RepoMapPublishBundleRequestV2::new(source.clone())?;
     let publish_envelope = SearchPlaneIngestIpcRequestEnvelope {
@@ -502,9 +502,9 @@ fn repo_map_query_survives_runtime_restart_from_persisted_state() -> TestResult 
     };
 
     let fixture = fixture.restart()?;
-    let query_socket = fixture.query_socket.clone();
-    let control_socket = fixture.control_socket.clone();
-    let ingest_socket = fixture.ingest_socket.clone();
+    let query_socket = fixture.query_socket;
+    let control_socket = fixture.control_socket;
+    let ingest_socket = fixture.ingest_socket;
     let replay = send_ingest_request(&ingest_socket, &publish_envelope)?;
     let mut expected_publish_replay = publish;
     expected_publish_replay.mutation.replayed = true;
@@ -554,7 +554,7 @@ fn repo_map_query_survives_runtime_restart_from_persisted_state() -> TestResult 
 #[test]
 fn repo_map_query_without_materialized_snapshot_fails_closed() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
-    let query_socket = fixture.query_socket.clone();
+    let query_socket = fixture.query_socket;
 
     let response = send_query_request(&query_socket, &repo_map_request())
         .map_err(|err| format!("repo-map missing-snapshot query failed: {err}"))?;
@@ -573,8 +573,8 @@ fn repo_map_query_without_materialized_snapshot_fails_closed() -> TestResult {
 #[test]
 fn cross_socket_requests_fail_closed() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
-    let query_socket = fixture.query_socket.clone();
-    let control_socket = fixture.control_socket.clone();
+    let query_socket = fixture.query_socket;
+    let control_socket = fixture.control_socket;
 
     match send_ingest_request(&query_socket, &repo_map_ingest_envelope()?) {
         Ok(unexpected) => {

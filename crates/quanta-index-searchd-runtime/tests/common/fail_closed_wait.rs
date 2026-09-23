@@ -134,6 +134,7 @@ fn render_capped(value: &dyn fmt::Debug) -> String {
 }
 
 /// Poll `run` until `ready` holds: the first attempt runs immediately,
+///
 /// a non-ready value or a retryable error sleeps `poll_interval` and
 /// retries, a terminal error returns at once, and a spent deadline
 /// returns typed timeout evidence. Attempts count every `run` call.
@@ -158,7 +159,7 @@ where
     let mut attempts = 0_u64;
     let mut last: Option<String>;
     loop {
-        attempts += 1;
+        attempts = attempts.saturating_add(1);
         match run() {
             Ok(value) if ready(&value) => return Ok(value),
             Ok(value) => {
@@ -183,6 +184,7 @@ where
 }
 
 /// Poll `run` until it refuses terminally: a retryable error sleeps and
+///
 /// retries, a success fails at once with the unexpected value, and a
 /// spent deadline returns typed timeout evidence — never the retryable
 /// error relabeled as the terminal one.
@@ -202,7 +204,7 @@ where
     let mut attempts = 0_u64;
     let mut last: Option<String>;
     loop {
-        attempts += 1;
+        attempts = attempts.saturating_add(1);
         match run() {
             Ok(value) => return Err(WaitError::Terminal(UnexpectedSuccess(value))),
             Err(error) if retryable(&error) => {

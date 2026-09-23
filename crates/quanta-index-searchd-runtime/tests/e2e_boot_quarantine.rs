@@ -445,8 +445,12 @@ fn quarantine_is_listed_discarded_as_named_and_gone_after_a_reboot() -> TestResu
         .map(|entry| entry.file_name.as_str())
         .collect();
     if repo_map.len() != 1
-        || !repo_map[0].starts_with("incident-")
-        || !repo_map[0].ends_with(".cbor")
+        || repo_map
+            .first()
+            .is_none_or(|name| !name.starts_with("incident-"))
+        || repo_map.first().is_none_or(|name| {
+            std::path::Path::new(name).extension() != Some(std::ffi::OsStr::new("cbor"))
+        })
         || object_path.exists()
     {
         return Err(format!("repo-map quarantine listing drifted: {repo_map:?}").into());

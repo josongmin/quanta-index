@@ -809,7 +809,7 @@ fn verify_publish_dispatch_sourcegraph_roundtrip(socket: &Path) -> TestResult {
 fn publish_dispatch_queries_share_one_indexed_fixture() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket.clone();
+    let ingest_socket = fixture.ingest_socket;
     publish_search_corpus_chunks(
         &ingest_socket,
         vec![
@@ -835,7 +835,7 @@ fn publish_dispatch_queries_share_one_indexed_fixture() -> TestResult {
 fn sourcegraph_path_and_lang_filters_execute_against_indexed_metadata() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket.clone();
+    let ingest_socket = fixture.ingest_socket;
     publish_search_corpus_chunks(
         &ingest_socket,
         vec![
@@ -936,7 +936,7 @@ fn verify_history_producer_unavailable_without_lexical_fallback(socket: &Path) -
 fn history_query_returns_typed_shard_unavailable_when_diff_shard_missing() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket.clone();
+    let ingest_socket = fixture.ingest_socket;
     publish_search_corpus_chunks(
         &ingest_socket,
         vec![chunk_record("history-lex", "history shard lexical proof")?],
@@ -971,7 +971,7 @@ fn history_query_returns_typed_shard_unavailable_when_diff_shard_missing() -> Te
 fn end_to_end_widened_history_and_runtime_queries_roundtrip_exact_truth() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket.clone();
+    let ingest_socket = fixture.ingest_socket;
     publish_search_corpus_chunks(
         &ingest_socket,
         vec![
@@ -1269,7 +1269,7 @@ fn verify_hybrid_requires_joint_materialization(socket: &Path) -> TestResult {
 fn hybrid_query_succeeds_when_both_tracks_sealed() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket.clone();
+    let ingest_socket = fixture.ingest_socket;
     let alpha = chunk_record("alpha", "sphinx quartz")?;
     let beta = chunk_record("beta", "sphinx riddles")?;
     publish_search_corpus_chunks(&ingest_socket, vec![alpha, beta], None)?;
@@ -1482,7 +1482,7 @@ fn verify_hybrid_visibility_filter(socket: &Path) -> TestResult {
 fn repo_metadata_filters_share_one_indexed_fixture() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket.clone();
+    let ingest_socket = fixture.ingest_socket;
     publish_search_corpus_chunks(
         &ingest_socket,
         vec![chunk_record("alpha", "needle")?],
@@ -1618,7 +1618,7 @@ fn openai_semantic_paraphrase_outranks_unrelated_v1() -> TestResult {
         quanta_index_searchd::app::config::ProviderEgressGrantConfig::from_env()?,
     )?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket.clone();
+    let ingest_socket = fixture.ingest_socket;
 
     // Zero meaningful lexical overlap with the query "the cat is sleeping":
     // cat-doc uses kitten/dozed/windowsill; finance-doc uses revenue/dividends.
@@ -1741,7 +1741,7 @@ fn semantic_query_uses_search_owned_text_derivation_with_explicit_hash_profile()
     // search-owned dimension, so plain boot is this test's fixture.
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket.clone();
+    let ingest_socket = fixture.ingest_socket;
 
     publish_search_corpus_chunks(
         &ingest_socket,
@@ -1890,7 +1890,7 @@ fn verify_semantic_scoped_unindexed_lexical_scope(socket: &Path) -> TestResult {
 fn semantic_query_with_lexical_scope_returns_intersection_only() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket.clone();
+    let ingest_socket = fixture.ingest_socket;
     let pin = GenerationPin::new(repo(), revision(), generation());
     let alpha = chunk_record("alpha", "scope needle")?;
     let beta = chunk_record("beta", "scope miss")?;
@@ -1948,7 +1948,7 @@ fn semantic_query_with_lexical_scope_returns_intersection_only() -> TestResult {
 fn semantic_scoped_query_ignores_out_of_scope_global_nearest_hit() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket.clone();
+    let ingest_socket = fixture.ingest_socket;
     let pin = GenerationPin::new(repo(), revision(), generation());
     let alpha = chunk_record("alpha", "focus alpha")?;
     let beta = chunk_record("beta", "scope focus")?;
@@ -2042,7 +2042,7 @@ fn verify_semantic_empty_text_refusal(socket: &Path) -> TestResult {
 fn default_indexed_queries_share_one_fixture() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket.clone();
+    let ingest_socket = fixture.ingest_socket;
     publish_search_corpus_chunks(
         &ingest_socket,
         vec![
@@ -2093,7 +2093,7 @@ fn semantic_query_fails_closed_when_runtime_has_no_query_embedder() -> TestResul
     // still hash-derives and the generation materializes.
     let fixture = ScenarioFixture::boot_with_profile(SemanticEmbedderProfile::Unavailable)?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket.clone();
+    let ingest_socket = fixture.ingest_socket;
 
     let alpha = chunk_record("alpha", "semantic alpha")?;
     publish_search_corpus_chunks(&ingest_socket, vec![alpha], None)?;
@@ -2252,7 +2252,7 @@ fn patch_every_top_k(value: &mut ciborium::Value, top_k: u32) -> usize {
 fn hybrid_query_admits_a_semantic_only_relevant_hit_beside_the_lexical_hits() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket.clone();
+    let ingest_socket = fixture.ingest_socket;
     // Lexical lane (`riddle`): beta only. Dense lane (`focus alpha`): alpha
     // first, beta second, gamma last. Fused at top_k=2: beta (both lanes),
     // then alpha on dense relevance alone; gamma, ranked last by the one
@@ -2321,9 +2321,7 @@ fn hybrid_query_admits_a_semantic_only_relevant_hit_beside_the_lexical_hits() ->
     // both lanes (lexical rank 1, dense rank 2); alpha only by the dense
     // lane, at its rank 1. The fused score is the RRF of exactly those
     // ranks, recomputed here under the plane's k = 60.
-    if let Err(err) = check_hybrid_lane_provenance(&results) {
-        return Err(err);
-    }
+    check_hybrid_lane_provenance(&results)?;
 
     Ok(())
 }
@@ -2388,7 +2386,7 @@ fn check_hybrid_lane_provenance(results: &[HybridCandidateV1]) -> Result<(), Box
 fn hybrid_query_repeated_tied_scope_query_keeps_stable_order() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket.clone();
+    let ingest_socket = fixture.ingest_socket;
     let alpha = chunk_record("alpha", "scope tie")?;
     let beta = chunk_record("beta", "scope tie")?;
     publish_search_corpus_chunks(&ingest_socket, vec![alpha, beta], None)?;
@@ -2489,7 +2487,7 @@ fn verify_structural_generation_not_ready(socket: &Path) -> TestResult {
 fn structural_query_returns_typed_shard_unavailable_error() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket.clone();
+    let ingest_socket = fixture.ingest_socket;
     publish_search_corpus_chunks(
         &ingest_socket,
         vec![
@@ -3035,7 +3033,7 @@ fn verify_structural_typed_holes(socket: &Path) -> TestResult {
 fn structural_ready_queries_share_one_indexed_fixture() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket.clone();
+    let ingest_socket = fixture.ingest_socket;
     publish_structural_ready_fixture(&ingest_socket)?;
     seal_lexical(&ingest_socket)?;
     seal_structural(&ingest_socket)?;
@@ -3099,7 +3097,7 @@ fn verify_structural_typed_hole_kind_refusal(socket: &Path) -> TestResult {
 #[test]
 fn request_validation_refusals_share_one_runtime() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
-    let socket = fixture.query_socket.clone();
+    let socket = fixture.query_socket;
 
     let verification: TestResult = (|| {
         let verify_history_generation_not_ready_fn: fn(&Path) -> TestResult =

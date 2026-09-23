@@ -287,9 +287,14 @@ pub fn route_budgets_json() -> Value {
     })
 }
 
-fn measurement_json(measurement: &RouteTailMeasurement) -> Value {
-    let budget = budget_for(measurement.route).expect("tail measurement has a DSL route budget");
-    json!({
+fn measurement_json(measurement: &RouteTailMeasurement) -> AnyResult<Value> {
+    let budget = budget_for(measurement.route).ok_or_else(|| {
+        anyhow::anyhow!(
+            "tail measurement has no DSL route budget: {:?}",
+            measurement.route
+        )
+    })?;
+    Ok(json!({
         "route": measurement.route.as_str(),
         "scenario_id": measurement.scenario_id,
         "sample_count": measurement.sample_count,
@@ -308,18 +313,22 @@ fn measurement_json(measurement: &RouteTailMeasurement) -> Value {
             "p95": within(measurement.p95_ms, budget.p95_ms),
             "p99": within(measurement.p99_ms, budget.p99_ms),
         },
-    })
+    }))
 }
 
 /// The dimension-specific detail of the tail artifact: every measured
 /// route against its budget, and the rail's blocking signal.
-#[must_use]
-pub fn detail_json(report: &TailReport) -> Value {
-    json!({
+pub fn detail_json(report: &TailReport) -> AnyResult<Value> {
+    let routes = report
+        .measurements
+        .iter()
+        .map(measurement_json)
+        .collect::<AnyResult<Vec<_>>>()?;
+    Ok(json!({
         "passed": report.passed,
         "blocking_signal": "route correctness (golden-validated before timing); latency budgets are advisory on this host this increment",
-        "routes": report.measurements.iter().map(measurement_json).collect::<Vec<_>>(),
-    })
+        "routes": routes,
+    }))
 }
 
 /// The tail artifact: one `BenchArtifactV1` whose rows are the measured
@@ -355,7 +364,7 @@ pub fn artifact(
             .iter()
             .map(|measurement| measurement.row.clone())
             .collect(),
-        detail: detail_json(report),
+        detail: detail_json(report)?,
     })
 }
 
@@ -413,7 +422,8 @@ mod tests {
 
     #[test]
     fn tail_detail_reuses_artifact_nearest_rank_percentiles() {
-        let samples: Vec<f64> = (1..=TAIL_SAMPLES).map(|value| value as f64).collect();
+        let sample_count = u32::try_from(TAIL_SAMPLES).expect("bounded fixture sample count");
+        let samples: Vec<f64> = (1..=sample_count).map(f64::from).collect();
         let summary =
             LatencySummary::from_samples_ms(&samples).expect("tail samples are non-empty");
         assert_eq!(summary.p50_ms, 32.0);
@@ -469,7 +479,7 @@ mod tests {
 
     #[test]
     fn detail_json_records_passed_and_per_route_advisory() {
-        let value = detail_json(&sample_report());
+        let value = detail_json(&sample_report()).expect("valid route budget");
         assert_eq!(value["passed"], true);
         let routes = value["routes"].as_array().expect("routes array");
         assert_eq!(routes.len(), 1);

@@ -45,6 +45,7 @@ const ERR_ROLLBACK_CAS_CONFLICT: SearchPlaneErrorCodeV2 =
 const ERR_STATE_ROOT_IN_USE: SearchPlaneErrorCodeV2 = SearchPlaneErrorCodeV2::StateRootInUse;
 
 /// Boot a daemon over a caller-owned `state_root` and start its driver,
+///
 /// returning the running harness: the lease is held from `start` until
 /// the runtime stops or drops (TOPT-03: runtime fixture ownership).
 fn boot_started(state_root: &Path) -> anyhow::Result<E2eRuntime> {

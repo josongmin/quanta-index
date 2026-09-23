@@ -55,6 +55,7 @@ impl Default for CorpusLimits {
 }
 
 /// One admitted source file with its verified bytes and line-start index.
+///
 /// `line_starts[i]` is the byte offset where 1-based line `i + 1` starts;
 /// the line's bytes (terminator included) run to the next start or EOF.
 #[derive(Debug, Clone)]
@@ -93,12 +94,24 @@ impl SourceFile {
                 ),
             });
         }
-        let start = self.line_starts[start_line - 1];
-        let end = if end_line < self.line_starts.len() {
-            self.line_starts[end_line]
-        } else {
-            self.bytes.len()
-        };
+        let start_index = start_line
+            .checked_sub(1)
+            .ok_or_else(|| BenchError::Corpus {
+                path: self.path.clone(),
+                message: "line span starts below line 1".to_string(),
+            })?;
+        let start = *self
+            .line_starts
+            .get(start_index)
+            .ok_or_else(|| BenchError::Corpus {
+                path: self.path.clone(),
+                message: format!("line {start_line} is absent from line index"),
+            })?;
+        let end = self
+            .line_starts
+            .get(end_line)
+            .copied()
+            .unwrap_or(self.bytes.len());
         Ok((start, end))
     }
 
@@ -111,14 +124,7 @@ impl SourceFile {
                 message: format!("offset {offset} out of bounds"),
             });
         }
-        let mut line = 1;
-        for (index, start) in self.line_starts.iter().enumerate() {
-            if *start > offset {
-                break;
-            }
-            line = index + 1;
-        }
-        Ok(line)
+        Ok(self.line_starts.partition_point(|start| *start <= offset))
     }
 }
 
@@ -133,25 +139,25 @@ fn split_line_starts(text: &str) -> (Vec<usize>, bool) {
     let bytes = text.as_bytes();
     let mut index = 0;
     while index < bytes.len() {
-        match bytes[index] {
-            b'\r' => {
-                if bytes.get(index + 1) == Some(&b'\n') {
-                    index += 2;
+        match bytes.get(index).copied() {
+            Some(b'\r') => {
+                if bytes.get(index.saturating_add(1)) == Some(&b'\n') {
+                    index = index.saturating_add(2);
                 } else {
-                    index += 1;
+                    index = index.saturating_add(1);
                 }
                 if index < bytes.len() {
                     starts.push(index);
                 }
             }
-            b'\n' => {
-                index += 1;
+            Some(b'\n') => {
+                index = index.saturating_add(1);
                 if index < bytes.len() {
                     starts.push(index);
                 }
             }
             _ => {
-                index += 1;
+                index = index.saturating_add(1);
             }
         }
     }
@@ -318,7 +324,7 @@ pub fn universe_digest(files: &[ManifestFile]) -> String {
         .iter()
         .map(|file| (file.path.as_str(), file.file_sha256.as_str()))
         .collect();
-    rows.sort();
+    rows.sort_unstable();
     let mut raw = Vec::new();
     for (path, digest) in rows {
         raw.extend_from_slice(path.as_bytes());
@@ -392,9 +398,9 @@ fn load_source_file(
             message: "file hash mismatch against admitted manifest".to_string(),
         });
     }
-    let text = String::from_utf8(bytes.clone()).map_err(|_| BenchError::Corpus {
+    let text = String::from_utf8(bytes.clone()).map_err(|err| BenchError::Corpus {
         path: entry.path.clone(),
-        message: "file is not UTF-8 source text".to_string(),
+        message: format!("file is not UTF-8 source text: {err}"),
     })?;
     let (line_starts, exotic) = split_line_starts(&text);
     if exotic {
@@ -549,7 +555,7 @@ mod tests {
         std::fs::write(root.join("other.rs"), "fn other() {}\n").expect("untracked");
         assert!(verify_checkout(root, &manifest).is_err());
         std::fs::remove_file(root.join("other.rs")).expect("remove fixture");
-        manifest.files[0].path = "not-tracked.rs".to_string();
+        manifest.files.get_mut(0).expect("fixture file").path = "not-tracked.rs".to_string();
         assert!(verify_checkout(root, &manifest).is_err());
     }
 }

@@ -41,7 +41,7 @@ fn parse_args() -> AnyResult<(open_loop::Config, PathBuf)> {
                 config.rates_qps = raw
                     .split(',')
                     .map(str::parse)
-                    .collect::<Result<Vec<u32>, _>>()?
+                    .collect::<Result<Vec<u32>, _>>()?;
             }
             "--duration-ms" => config.duration = Duration::from_millis(raw.parse()?),
             "--workers" => config.workers = raw.parse()?,
@@ -99,7 +99,10 @@ fn main() -> ExitCode {
             point.timeouts,
             point.transport_errors,
             point.invalid_results,
-            point.dropped_queue_full + point.dropped_scheduler_late + point.dropped_deadline,
+            point
+                .dropped_queue_full
+                .saturating_add(point.dropped_scheduler_late)
+                .saturating_add(point.dropped_deadline),
             point.saturated
         );
     }
@@ -107,12 +110,12 @@ fn main() -> ExitCode {
         "open_loop: saturation_onset_qps={:?}",
         report.saturation_onset_qps()
     );
-    if !report.passed() {
+    if report.passed() {
+        ExitCode::SUCCESS
+    } else {
         eprintln!(
             "open_loop_matrix: correctness failure: no healthy first load point, invalid result, or unexpected typed error"
         );
         ExitCode::FAILURE
-    } else {
-        ExitCode::SUCCESS
     }
 }

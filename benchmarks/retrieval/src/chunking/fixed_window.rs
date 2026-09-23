@@ -38,13 +38,18 @@ impl FixedWindowChunker {
                 message: "overlap_bytes must be below window_bytes".to_string(),
             });
         }
-        Ok(self.window_bytes - self.overlap_bytes)
+        self.window_bytes
+            .checked_sub(self.overlap_bytes)
+            .ok_or_else(|| BenchError::Chunk {
+                path: path.to_string(),
+                message: "window step underflow".to_string(),
+            })
     }
 }
 
 fn snap_forward(text: &str, mut offset: usize) -> usize {
     while offset < text.len() && !text.is_char_boundary(offset) {
-        offset += 1;
+        offset = offset.saturating_add(1);
     }
     offset.min(text.len())
 }
@@ -53,7 +58,7 @@ fn snap_backward(text: &str, mut offset: usize) -> usize {
     let capped = offset.min(text.len());
     offset = capped;
     while offset > 0 && !text.is_char_boundary(offset) {
-        offset -= 1;
+        offset = offset.saturating_sub(1);
     }
     offset
 }
@@ -77,8 +82,8 @@ impl Chunker for FixedWindowChunker {
         let mut start = 0_usize;
         let mut guard = 0_usize;
         while start < file.text.len() {
-            guard += 1;
-            if guard > file.text.len() + 2 {
+            guard = guard.saturating_add(1);
+            if guard > file.text.len().saturating_add(2) {
                 return Err(BenchError::Chunk {
                     path: file.path.clone(),
                     message: "window advance failed to terminate".to_string(),
@@ -88,7 +93,7 @@ impl Chunker for FixedWindowChunker {
             // Extend to the enclosing line end so spans stay line-anchored.
             let line = file.line_of_offset(window_end.min(file.text.len().saturating_sub(1)))?;
             let (_, line_end) = file.line_span_bytes(line, line)?;
-            let mut end = line_end.max(start + 1);
+            let mut end = line_end.max(start.saturating_add(1));
             end = end.min(file.text.len());
             if end <= start {
                 return Err(BenchError::Chunk {
@@ -97,23 +102,30 @@ impl Chunker for FixedWindowChunker {
                 });
             }
             let start_line = file.line_of_offset(start)?;
-            let end_line = file.line_of_offset(end - 1)?;
-            let text = file.text[start..end].to_string();
-            let start_u32 = u32::try_from(start).map_err(|_| BenchError::Chunk {
+            let end_line = file.line_of_offset(end.saturating_sub(1))?;
+            let text = file
+                .text
+                .get(start..end)
+                .ok_or_else(|| BenchError::Chunk {
+                    path: file.path.clone(),
+                    message: "window span is not a UTF-8 boundary".to_string(),
+                })?
+                .to_string();
+            let start_u32 = u32::try_from(start).map_err(|err| BenchError::Chunk {
                 path: file.path.clone(),
-                message: "file exceeds u32 byte range".to_string(),
+                message: format!("file exceeds u32 byte range: {err}"),
             })?;
-            let end_u32 = u32::try_from(end).map_err(|_| BenchError::Chunk {
+            let end_u32 = u32::try_from(end).map_err(|err| BenchError::Chunk {
                 path: file.path.clone(),
-                message: "file exceeds u32 byte range".to_string(),
+                message: format!("file exceeds u32 byte range: {err}"),
             })?;
-            let start_line_u32 = u32::try_from(start_line).map_err(|_| BenchError::Chunk {
+            let start_line_u32 = u32::try_from(start_line).map_err(|err| BenchError::Chunk {
                 path: file.path.clone(),
-                message: "file exceeds u32 line range".to_string(),
+                message: format!("file exceeds u32 line range: {err}"),
             })?;
-            let end_line_u32 = u32::try_from(end_line).map_err(|_| BenchError::Chunk {
+            let end_line_u32 = u32::try_from(end_line).map_err(|err| BenchError::Chunk {
                 path: file.path.clone(),
-                message: "file exceeds u32 line range".to_string(),
+                message: format!("file exceeds u32 line range: {err}"),
             })?;
             chunks.push(Chunk {
                 path: file.path.clone(),

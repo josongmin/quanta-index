@@ -24,7 +24,7 @@ fn parse_args() -> AnyResult<Cli> {
                 out_dir = PathBuf::from(
                     args.next()
                         .ok_or_else(|| anyhow!("--out-dir needs a path"))?,
-                )
+                );
             }
             "--samples" => {
                 let raw = args

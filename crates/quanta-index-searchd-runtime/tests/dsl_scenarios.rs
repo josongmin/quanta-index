@@ -325,7 +325,7 @@ fn wait_for_non_error(socket: &Path, request: &SearchPlaneQueryIpcRequestEnvelop
 fn sourcegraph_repo_path_lang_filters_are_deterministic_across_repeated_runs() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket.clone();
+    let ingest_socket = fixture.ingest_socket;
     publish_search_corpus_chunks(
         &ingest_socket,
         vec![
@@ -423,7 +423,7 @@ fn sourcegraph_repo_path_lang_filters_are_deterministic_across_repeated_runs() -
 fn sourcegraph_boolean_text_query_is_deterministic_across_repeated_runs() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket.clone();
+    let ingest_socket = fixture.ingest_socket;
     publish_search_corpus_chunks(
         &ingest_socket,
         vec![
@@ -487,7 +487,7 @@ fn sourcegraph_boolean_text_query_is_deterministic_across_repeated_runs() -> Tes
 fn sourcegraph_repo_has_file_predicate_executes_live() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket.clone();
+    let ingest_socket = fixture.ingest_socket;
     publish_search_corpus_chunks(
         &ingest_socket,
         vec![
@@ -549,7 +549,7 @@ fn sourcegraph_repo_has_file_predicate_executes_live() -> TestResult {
 fn sourcegraph_phrase_and_regex_patterns_execute_live() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket.clone();
+    let ingest_socket = fixture.ingest_socket;
     publish_search_corpus_chunks(
         &ingest_socket,
         vec![
@@ -647,7 +647,7 @@ fn sourcegraph_phrase_and_regex_patterns_execute_live() -> TestResult {
 fn lq_phrase_and_regex_patterns_execute_live() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket.clone();
+    let ingest_socket = fixture.ingest_socket;
     publish_search_corpus_chunks(
         &ingest_socket,
         vec![
@@ -720,7 +720,7 @@ fn lq_phrase_and_regex_patterns_execute_live() -> TestResult {
 fn semantic_scoped_query_with_complex_scope_excludes_outsiders_and_explains_scope() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket.clone();
+    let ingest_socket = fixture.ingest_socket;
     publish_search_corpus_chunks(
         &ingest_socket,
         vec![
@@ -828,7 +828,7 @@ fn semantic_scoped_query_with_complex_scope_excludes_outsiders_and_explains_scop
 fn hybrid_query_reports_complex_scope_explanation_accounting() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket.clone();
+    let ingest_socket = fixture.ingest_socket;
     publish_search_corpus_chunks(
         &ingest_socket,
         vec![
@@ -941,7 +941,7 @@ fn hybrid_query_reports_complex_scope_explanation_accounting() -> TestResult {
 fn hybrid_query_surfaces_truthful_count_reached_early_stop() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket.clone();
+    let ingest_socket = fixture.ingest_socket;
     publish_search_corpus_chunks(
         &ingest_socket,
         vec![

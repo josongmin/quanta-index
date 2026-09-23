@@ -920,7 +920,7 @@ pub enum StateMigrationFaultPointV1 {
 /// exact boundary the ordering rules are about.
 ///
 /// The production implementation is [`NoStateMigrationFaultsV1`]; the
-/// environment-driven subprocess hook lives in [`environment_fault_v1`].
+/// environment-driven subprocess hook lives in [`EnvironmentStateMigrationFaultV1`].
 pub trait StateMigrationFaultPort: Send + Sync {
     fn reach(&self, point: StateMigrationFaultPointV1) -> Result<(), CoreError>;
 }

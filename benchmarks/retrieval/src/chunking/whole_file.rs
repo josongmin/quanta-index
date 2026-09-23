@@ -20,14 +20,15 @@ impl Chunker for WholeFileChunker {
         if file.bytes.is_empty() {
             return Ok(Vec::new());
         }
-        let end_byte = u32::try_from(file.bytes.len()).map_err(|_| crate::BenchError::Chunk {
+        let end_byte = u32::try_from(file.bytes.len()).map_err(|err| crate::BenchError::Chunk {
             path: file.path.clone(),
-            message: "file exceeds u32 byte range".to_string(),
+            message: format!("file exceeds u32 byte range: {err}"),
         })?;
-        let end_line = u32::try_from(file.line_count()).map_err(|_| crate::BenchError::Chunk {
-            path: file.path.clone(),
-            message: "file exceeds u32 line range".to_string(),
-        })?;
+        let end_line =
+            u32::try_from(file.line_count()).map_err(|err| crate::BenchError::Chunk {
+                path: file.path.clone(),
+                message: format!("file exceeds u32 line range: {err}"),
+            })?;
         let config = self.config();
         Ok(vec![Chunk {
             path: file.path.clone(),

@@ -281,7 +281,7 @@ pub fn artifact(
                 result_shape: ResultShape::Candidates,
                 latency: None,
                 qps: None,
-                error_count: if snapshot.provenance_ok { 0 } else { 1 },
+                error_count: u64::from(!snapshot.provenance_ok),
                 timeout_count: 0,
                 result_count: Some(1),
                 typed_error_code: None,
@@ -305,11 +305,9 @@ pub fn write_artifacts(
     git_head: GitHeadV1,
     host: HostV1,
 ) -> AnyResult<()> {
-    artifact(report, git_head.clone(), host)?.write_to(&dir.join("summary.json"))?;
-    crate::artifact::write_json_pretty(
-        &dir.join("cli_snapshots.json"),
-        &cli_snapshots_supplement_json(report, &git_head),
-    )?;
+    let snapshots = cli_snapshots_supplement_json(report, &git_head);
+    artifact(report, git_head, host)?.write_to(&dir.join("summary.json"))?;
+    crate::artifact::write_json_pretty(&dir.join("cli_snapshots.json"), &snapshots)?;
     Ok(())
 }
 

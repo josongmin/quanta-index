@@ -7,7 +7,7 @@
 
 #![forbid(unsafe_code)]
 
-use anyhow::Result as AnyResult;
+use anyhow::{Result as AnyResult, ensure};
 use quanta_index_searchd_harness::E2eRuntime;
 
 #[test]
@@ -15,9 +15,9 @@ fn stop_releases_the_daemon_and_removes_the_owned_tempdir() -> AnyResult<()> {
     let mut runtime = E2eRuntime::boot()?;
     runtime.start()?;
     let root = runtime.state_root().to_path_buf();
-    assert!(root.is_dir(), "boot serves its owned tempdir");
+    ensure!(root.is_dir(), "boot serves its owned tempdir");
     runtime.stop()?;
-    assert!(!root.exists(), "stop removes the owned tempdir");
+    ensure!(!root.exists(), "stop removes the owned tempdir");
     Ok(())
 }
 
@@ -27,7 +27,7 @@ fn drop_without_stop_still_removes_the_owned_tempdir() -> AnyResult<()> {
     runtime.start()?;
     let root = runtime.state_root().to_path_buf();
     drop(runtime);
-    assert!(!root.exists(), "drop removes the owned tempdir");
+    ensure!(!root.exists(), "drop removes the owned tempdir");
     Ok(())
 }
 
@@ -37,7 +37,7 @@ fn stop_never_removes_a_caller_owned_root() -> AnyResult<()> {
     let mut runtime = E2eRuntime::boot_in(dir.path())?;
     runtime.start()?;
     runtime.stop()?;
-    assert!(
+    ensure!(
         dir.path().is_dir(),
         "a caller-owned root survives stop; the daemon deletes only what it created"
     );

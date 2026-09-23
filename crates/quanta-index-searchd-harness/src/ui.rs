@@ -522,7 +522,7 @@ pub fn artifact(
             qps: None,
             error_count: saturating_u64(score.failures.len()),
             timeout_count: 0,
-            result_count: Some(if score.snippet.is_some() { 1 } else { 0 }),
+            result_count: Some(u64::from(score.snippet.is_some())),
             typed_error_code: None,
             engine_touched: vec!["lexical".to_string()],
             early_stop_reason: None,
@@ -541,7 +541,7 @@ pub fn artifact(
         qps: None,
         error_count: saturating_u64(report.explanation.failures.len()),
         timeout_count: 0,
-        result_count: Some(if report.explanation.passed() { 1 } else { 0 }),
+        result_count: Some(u64::from(report.explanation.passed())),
         typed_error_code: None,
         engine_touched: vec!["lexical".to_string()],
         early_stop_reason: None,
@@ -584,11 +584,9 @@ pub fn write_artifacts(
     git_head: GitHeadV1,
     host: HostV1,
 ) -> AnyResult<()> {
-    artifact(report, git_head.clone(), host)?.write_to(&dir.join("summary.json"))?;
-    crate::artifact::write_json_pretty(
-        &dir.join("contract_snapshots.json"),
-        &contract_snapshots_supplement_json(report, &git_head),
-    )?;
+    let snapshots = contract_snapshots_supplement_json(report, &git_head);
+    artifact(report, git_head, host)?.write_to(&dir.join("summary.json"))?;
+    crate::artifact::write_json_pretty(&dir.join("contract_snapshots.json"), &snapshots)?;
     Ok(())
 }
 

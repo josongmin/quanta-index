@@ -61,6 +61,7 @@ fn require_stamped(explanation: &SearchExplanation, context: &str) -> AnyResult<
 }
 
 /// Strip transport correlation before comparing query determinism across
+///
 /// requests (S21-10): `request_id` identifies the transport request, so
 /// two identical queries issued as distinct requests legitimately carry
 /// distinct ids.

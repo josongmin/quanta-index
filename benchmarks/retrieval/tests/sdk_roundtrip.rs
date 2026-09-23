@@ -5,6 +5,12 @@
 //! (`QUANTA_INDEX_SEARCHD_BIN`) or the workspace target layout; a missing
 //! binary fails with an explicit build-first message, never a skip.
 
+#![expect(
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    reason = "integration-test fixture setup and direct oracle assertions intentionally fail on absence"
+)]
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -128,9 +134,7 @@ fn collect_sources(dir: &Path, out: &mut Vec<PathBuf>) {
 fn explicit_missing_searchd_binary_never_falls_back() {
     // An explicit binary pin is authoritative even when another build exists.
     let bogus = PathBuf::from("/nonexistent-dir-xyz/quanta-index-searchd");
-    let err = resolve_searchd_binary(Some(&bogus))
-        .err()
-        .expect("bad explicit path must fail");
+    let err = resolve_searchd_binary(Some(&bogus)).expect_err("bad explicit path must fail");
     let text = err.to_string();
     assert!(text.contains("--searchd-bin"), "{text}");
     assert!(
@@ -198,7 +202,10 @@ fn real_daemon_roundtrip_publishes_and_queries() {
 
     let (receipt, ack) = publish_and_activate(&session, &batch, None).expect("publish+activate");
     assert_eq!(receipt.batch_digest, batch.batch_digest().expect("digest"));
-    assert_eq!(receipt.accepted_replace_scopes as usize, assembly.scopes);
+    assert_eq!(
+        usize::try_from(receipt.accepted_replace_scopes).expect("scope count fits usize"),
+        assembly.scopes
+    );
     assert!(receipt.semantic_content.is_some());
 
     // Lexical route finds the distinctive term in its source span.
@@ -290,7 +297,8 @@ fn real_daemon_roundtrip_publishes_and_queries() {
     }
 
     assert!(receipt.semantic_content.is_some());
-    let _ack = ack;
+    assert_eq!(ack.active.lexical.manifest_generation, identity.generation);
+    assert_eq!(ack.active.semantic.manifest_generation, identity.generation);
     session.stop().expect("bounded shutdown");
 }
 

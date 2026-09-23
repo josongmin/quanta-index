@@ -1,5 +1,5 @@
 //! The process cancellation root (SEP-21 P08 / S21-09): SIGINT and
-//! SIGTERM latched into the supervisor's [`CancelRoot`].
+//! SIGTERM latched into the supervisor's [`quanta_index_searchd::CancelRoot`].
 //!
 //! The first delivered signal requests cooperative shutdown (the
 //! supervisor drains under its two-deadline policy); a second signal

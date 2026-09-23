@@ -7312,6 +7312,7 @@ impl core::clone::Clone for quanta_index_contract::FileOwnerProjectionErrorV1
 pub fn quanta_index_contract::FileOwnerProjectionErrorV1::clone(&self) -> quanta_index_contract::FileOwnerProjectionErrorV1
 impl core::cmp::PartialEq for quanta_index_contract::FileOwnerProjectionErrorV1
 pub fn quanta_index_contract::FileOwnerProjectionErrorV1::eq(&self, other: &quanta_index_contract::FileOwnerProjectionErrorV1) -> bool
+impl core::error::Error for quanta_index_contract::FileOwnerProjectionErrorV1
 impl core::fmt::Debug for quanta_index_contract::FileOwnerProjectionErrorV1
 pub fn quanta_index_contract::FileOwnerProjectionErrorV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for quanta_index_contract::FileOwnerProjectionErrorV1
@@ -8522,6 +8523,7 @@ impl core::clone::Clone for quanta_index_contract::FileOwnerProjectionErrorV1
 pub fn quanta_index_contract::FileOwnerProjectionErrorV1::clone(&self) -> quanta_index_contract::FileOwnerProjectionErrorV1
 impl core::cmp::PartialEq for quanta_index_contract::FileOwnerProjectionErrorV1
 pub fn quanta_index_contract::FileOwnerProjectionErrorV1::eq(&self, other: &quanta_index_contract::FileOwnerProjectionErrorV1) -> bool
+impl core::error::Error for quanta_index_contract::FileOwnerProjectionErrorV1
 impl core::fmt::Debug for quanta_index_contract::FileOwnerProjectionErrorV1
 pub fn quanta_index_contract::FileOwnerProjectionErrorV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for quanta_index_contract::FileOwnerProjectionErrorV1

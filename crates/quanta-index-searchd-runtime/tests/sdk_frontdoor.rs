@@ -5,10 +5,6 @@
     clippy::expect_used,
     reason = "integration-test helpers outside `#[test]` fns assert fixture setup with `expect`; the workspace already permits this inside test fns and a helper that cannot set up its fixture has no caller to propagate to"
 )]
-#![expect(
-    clippy::disallowed_methods,
-    reason = "integration polling uses explicit Result fallback checks"
-)]
 
 use std::cell::Cell;
 use std::collections::BTreeSet;
@@ -60,6 +56,7 @@ static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(0);
 const SOCKET_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Harness-owned SDK frontdoor fixture (TOPT-06: the last direct-runtime
+///
 /// builder joins the TOPT-03 owner; waits over it are fail-closed per
 /// TH-1). Boot binds query/control/ingest under the same retention
 /// policy the old `build_config` spelled out; explicit `stop` surfaces
@@ -1500,7 +1497,7 @@ fn sdk_search_frontdoor_routes_lexical_semantic_hybrid_explain_and_repomap_truth
     let client = &fixture.client;
 
     let corpus_batch = lexical_batch()?;
-    let _corpus_active = publish_and_activate_sdk_search_corpus(&client, &corpus_batch)?;
+    let _corpus_active = publish_and_activate_sdk_search_corpus(client, &corpus_batch)?;
     let repo_map_receipt = client.repomap().publish(&repo_map_bundle()?)?;
     if repo_map_receipt.manifest_generation != generation() {
         return Err(format!("unexpected repo-map publish ack: {repo_map_receipt:?}").into());
@@ -1798,7 +1795,7 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
     let client = &fixture.client;
 
     let corpus_batch = lexical_batch()?;
-    let _corpus_active = publish_and_activate_sdk_search_corpus(&client, &corpus_batch)?;
+    let _corpus_active = publish_and_activate_sdk_search_corpus(client, &corpus_batch)?;
     let _history_receipt = client.history().publish(&history_batch())?;
     let _dirty_receipt = client.runtime().publish_dirty(&dirty_batch())?;
     let _structural_receipt = client.structural().publish(&structural_batch()?)?;
@@ -2623,11 +2620,11 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
         .history()
         .publish_file_contributor(&file_contributor_batch())?;
     let corpus_batch = lexical_frontdoor_matrix_batch()?;
-    let _corpus_active = publish_and_activate_sdk_search_corpus(&client, &corpus_batch)?;
+    let _corpus_active = publish_and_activate_sdk_search_corpus(client, &corpus_batch)?;
     let _history_receipt = client.history().publish(&history_batch())?;
     let _structural_receipt = client.structural().publish(&structural_batch()?)?;
     let _dirty_receipt = client.runtime().publish_dirty(&dirty_batch())?;
-    publish_runtime_catalog_batch(&ingest_socket)?;
+    publish_runtime_catalog_batch(ingest_socket)?;
 
     for &scenario in SDK_FRONTDOOR_SCENARIOS {
         match scenario.expected {
@@ -2944,7 +2941,7 @@ fn sdk_text_frontdoor_rebinds_rev_at_time_generation_truth() -> TestResult {
         "chunk-rev-at-time-ancestor",
         "needle_token legacy_choice",
     )?;
-    let _ancestor_active = publish_and_activate_sdk_search_corpus(&client, &ancestor_batch)?;
+    let _ancestor_active = publish_and_activate_sdk_search_corpus(client, &ancestor_batch)?;
     let head_batch = rev_at_time_lexical_batch(
         rev_at_time_head_revision(),
         rev_at_time_head_generation(),
@@ -2952,7 +2949,7 @@ fn sdk_text_frontdoor_rebinds_rev_at_time_generation_truth() -> TestResult {
         "chunk-rev-at-time-head",
         "needle_token head_choice",
     )?;
-    let _head_active = publish_and_activate_sdk_search_corpus(&client, &head_batch)?;
+    let _head_active = publish_and_activate_sdk_search_corpus(client, &head_batch)?;
     let _history_receipt = client.history().publish(&rev_at_time_history_batch()?)?;
 
     let head = wait_for_sdk_observation(
@@ -3101,7 +3098,7 @@ fn sdk_structural_sourcegraph_frontdoor_supports_boolean_and_typed_hole_truth() 
     let fixture = SdkFrontdoorRuntime::start()?;
     let client = &fixture.client;
 
-    publish_sdk_search_corpus_ready(&client)?;
+    publish_sdk_search_corpus_ready(client)?;
     let _structural_receipt = client.structural().publish(&structural_batch()?)?;
 
     let typed_expr = wait_for_sdk_observation(
@@ -3185,7 +3182,7 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
     let fixture = SdkFrontdoorRuntime::start()?;
     let client = &fixture.client;
 
-    publish_sdk_search_corpus_ready(&client)?;
+    publish_sdk_search_corpus_ready(client)?;
     let _structural_receipt = client.structural().publish(&structural_batch()?)?;
 
     let lexical_timeout = expect_sdk_error(
@@ -3462,7 +3459,7 @@ fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
     let client = &fixture.client;
 
     let corpus_batch = lexical_batch()?;
-    let _corpus_active = publish_and_activate_sdk_search_corpus(&client, &corpus_batch)?;
+    let _corpus_active = publish_and_activate_sdk_search_corpus(client, &corpus_batch)?;
     let _history_receipt = client.history().publish(&history_batch())?;
     let _dirty_receipt = client.runtime().publish_dirty(&dirty_batch())?;
     let _structural_receipt = client.structural().publish(&structural_batch()?)?;
@@ -3691,7 +3688,7 @@ fn sdk_search_corpus_frontdoor_promotes_composite_generation_identity() -> TestR
     expect_remote_code(not_ready, "NOT_READY")?;
 
     let corpus_batch = lexical_batch()?;
-    let composite_active = publish_and_activate_sdk_search_corpus(&client, &corpus_batch)?;
+    let composite_active = publish_and_activate_sdk_search_corpus(client, &corpus_batch)?;
     if composite_active.lexical.repo_id != repo()
         || composite_active.lexical.revision_id != revision()
         || composite_active.lexical.track != SearchPlaneTrackKind::Lexical
@@ -3747,7 +3744,7 @@ fn sdk_tombstone_only_generation_replaces_active_composite_and_removes_both_quer
     let client = &fixture.client;
 
     let first_generation = lexical_batch()?;
-    let _first_active = publish_and_activate_sdk_search_corpus(&client, &first_generation)?;
+    let _first_active = publish_and_activate_sdk_search_corpus(client, &first_generation)?;
 
     let removed_scope = SearchScopeKey {
         doc_surface: SearchScopeSurface::File,
@@ -3762,7 +3759,7 @@ fn sdk_tombstone_only_generation_replaces_active_composite_and_removes_both_quer
     )
     .tombstone_scope(removed_scope);
 
-    let expected_active = current_sdk_search_corpus_or_none(&client, repo(), revision())?
+    let expected_active = current_sdk_search_corpus_or_none(client, repo(), revision())?
         .ok_or_else(|| "first composite generation did not become active".to_string())?;
     let (receipt, activation) = client
         .search_corpus()
@@ -3842,7 +3839,7 @@ fn sdk_builder_variant_frontdoors_route_native_inline_vector_and_pinned_truth() 
     let client = &fixture.client;
 
     let corpus_batch = lexical_batch()?;
-    let _corpus_active = publish_and_activate_sdk_search_corpus(&client, &corpus_batch)?;
+    let _corpus_active = publish_and_activate_sdk_search_corpus(client, &corpus_batch)?;
     let _dirty_receipt = client.runtime().publish_dirty(&dirty_batch())?;
 
     let lexical_native = wait_for_sdk_observation(
@@ -3961,7 +3958,7 @@ fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_comp
     let client = &fixture.client;
 
     let corpus_batch_v1 = lexical_batch()?;
-    let _corpus_active_v1 = publish_and_activate_sdk_search_corpus(&client, &corpus_batch_v1)?;
+    let _corpus_active_v1 = publish_and_activate_sdk_search_corpus(client, &corpus_batch_v1)?;
     let _structural_receipt_v1 = client.structural().publish(&structural_batch()?)?;
 
     let lexical_active_v1 = wait_for_sdk_observation(
@@ -3988,7 +3985,7 @@ fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_comp
     }
 
     let corpus_batch_v2 = lexical_batch_two()?;
-    let _corpus_active_v2 = publish_and_activate_sdk_search_corpus(&client, &corpus_batch_v2)?;
+    let _corpus_active_v2 = publish_and_activate_sdk_search_corpus(client, &corpus_batch_v2)?;
     let _structural_receipt_v2 = client.structural().publish(&structural_batch_two()?)?;
 
     let lexical_pinned_v2 = wait_for_sdk_observation(

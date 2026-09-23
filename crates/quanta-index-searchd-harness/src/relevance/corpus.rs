@@ -597,7 +597,9 @@ pub const SEMANTIC_GATED_QUERIES: &[JudgedQuery] = &[JudgedQuery {
     },
 }];
 
-/// The judged semantic query set. The default model-backed relevance rail gates
+/// The judged semantic query set.
+///
+/// The default model-backed relevance rail gates
 /// paraphrase aggregates; hash-dev only exercises determinism/mechanics and the
 /// `ExactToken` subset via [`SEMANTIC_GATED_QUERIES`].
 pub const SEMANTIC_JUDGED_QUERIES: &[SemanticJudgedQuery] = &[

@@ -178,7 +178,7 @@ fn summarize_semantic_quality(cases: &[SemanticCaseMetrics]) -> SemanticQualityS
         if cases.is_empty() {
             0.0
         } else {
-            cases.iter().map(|case| metric(case)).sum::<f64>() / count
+            cases.iter().map(metric).sum::<f64>() / count
         }
     };
     let top1_count = cases.iter().filter(|case| case.top1_is_on_topic).count();
@@ -604,13 +604,12 @@ pub fn run_relevance_report_with_profile(
         None
     };
     let mut routes = aggregate_routes(&queries);
-    if let Some(quality) = &semantic_quality {
-        if let Some(semantic_route) = routes
+    if let Some(quality) = &semantic_quality
+        && let Some(semantic_route) = routes
             .iter_mut()
             .find(|route| route.route == RelevanceRoute::Semantic)
-        {
-            semantic_route.passed &= quality.passed;
-        }
+    {
+        semantic_route.passed &= quality.passed;
     }
     // J7Q-01B: capture the quanta-index half of every overlap bucket live. The
     // Sourcegraph half stays unprovisioned, so this never gates `passed`.
@@ -1360,7 +1359,7 @@ mod tests {
 
     #[test]
     fn lexical_symbol_tokens_accept_definition_or_call_first_but_not_a_negative() {
-        let query = &JUDGED_QUERIES[0];
+        let query = JUDGED_QUERIES.first().expect("judged query fixture exists");
         for ranking in [
             [
                 "src/config/parser.rs",

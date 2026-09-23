@@ -42,7 +42,9 @@ use quanta_index_searchd::{
 };
 use quanta_index_semantic::SemanticAdapter;
 
-/// The process signal root (SIGINT/SIGTERM -> `CancelRoot`).
+/// The process signal root.
+///
+/// SIGINT/SIGTERM are latched into [`quanta_index_searchd::CancelRoot`].
 pub mod signal;
 
 /// Offline `migrate-state` / `backup-state` / `restore-state` /

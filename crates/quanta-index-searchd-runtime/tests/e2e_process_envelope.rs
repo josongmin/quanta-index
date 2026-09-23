@@ -107,6 +107,7 @@ fn typed_code(response: &SearchPlaneIngestIpcResponse) -> Option<&str> {
 }
 
 /// Wait, bounded, until `condition` holds against fresh scrapes
+///
 /// (TOPT-06/TH-2): a spent wait is a typed timeout naming `what` and
 /// carrying the last scrape — never the stale scrape as success. A
 /// scrape failure itself is terminal and returns at once.
@@ -129,7 +130,7 @@ fn wait_for_scrape(
         // A boxed scrape failure is already the terminal error: return
         // it unwrapped, never rendered-and-reboxed.
         Err(WaitError::Terminal(boxed)) => Err(boxed),
-        Err(WaitError::Timeout(timeout)) => Err(Box::new(timeout) as Box<dyn Error>),
+        Err(WaitError::Timeout(timeout)) => Err(Box::new(timeout)),
     }
 }
 
@@ -396,10 +397,15 @@ fn an_envelope_over_its_ceiling_refuses_boot_typed_before_any_socket() -> TestRe
 }
 
 /// TH-2 adapter proof (TOPT-06): a scrape predicate that never holds
+///
 /// returns a typed timeout carrying the last scrape — never the stale
 /// scrape as success. The bound is short but the verdict cannot flake:
 /// a never-true predicate times out however the bound elapses.
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "typed-timeout integration assertions intentionally fail the test while setup uses Result"
+)]
 fn scrape_wait_never_true_predicate_returns_typed_timeout() -> TestResult {
     let mut rt = E2eRuntime::boot()?;
     // Boot the daemon outside the bound: the first scrape lazy-starts

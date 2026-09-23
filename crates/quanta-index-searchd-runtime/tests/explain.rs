@@ -250,7 +250,7 @@ fn seal_lexical(socket: &Path) -> TestResult {
 fn explain_reports_present_candidate() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket.clone();
+    let ingest_socket = fixture.ingest_socket;
     publish_chunk(
         &ingest_socket,
         chunk_record("explain-c1", "quick brown fox jumps")?,
@@ -319,7 +319,7 @@ fn explain_reports_present_candidate() -> TestResult {
 fn explain_rejects_generation_mismatch() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
-    let ingest_socket = fixture.ingest_socket.clone();
+    let ingest_socket = fixture.ingest_socket;
     publish_chunk(
         &ingest_socket,
         chunk_record("c-mismatch", "alpha bravo charlie")?,

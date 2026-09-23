@@ -472,6 +472,7 @@ fn p08_lease_child_entry() {
 }
 
 /// Parent death must release the holder (TOPT-03 proof): an
+///
 /// intermediate parent exits without sending the release byte. Closing
 /// its pipe makes the holder observe EOF and release the lease, with no
 /// child-side timer or polling loop.
@@ -481,12 +482,17 @@ fn lease_holder_exits_when_parent_dies_without_release() {
 }
 
 /// Holder side: acquire, prove the lock file's fstat invariants
+///
 /// (expected owner, exact mode, regular, one link), report, then hold
 /// until the parent's acknowledged release — no fixed hold duration.
 ///
 /// The parent owns the pipe writer. It sends `R` only after the second
 /// process is refused; if the parent exits instead, EOF releases the
 /// holder without waiting for a deadline.
+#[expect(
+    clippy::panic,
+    reason = "child-process fixture must fail on an invalid release byte"
+)]
 fn hold_the_lease(root: &std::path::Path, report: &std::path::Path) {
     use std::os::unix::fs::MetadataExt;
     let lease = quanta_index_searchd::app::runtime::StateRootLease::acquire(root)
@@ -507,12 +513,15 @@ fn hold_the_lease(root: &std::path::Path, report: &std::path::Path) {
     );
     std::fs::write(report, b"held\n").expect("the report is written");
     let mut signal = [0_u8; 1];
-    let release_reason = match std::io::stdin().lock().read(&mut signal) {
+    let stdin = std::io::stdin();
+    let mut stdin_lock = stdin.lock();
+    let release_reason = match stdin_lock.read(&mut signal) {
         Ok(0) => "parent-eof",
         Ok(1) if signal[0] == b'R' => "explicit",
         Ok(_) => panic!("the parent sent an invalid lease-release byte"),
         Err(error) => panic!("reading the lease-release pipe failed: {error}"),
     };
+    drop(stdin_lock);
     drop(lease);
     std::fs::write(report, format!("held\nreleased-{release_reason}\n"))
         .expect("the terminal report is written");
@@ -534,9 +543,14 @@ fn attempt_the_lease(root: &std::path::Path, report: &std::path::Path) {
 }
 
 /// Intermediate-parent side of the abort proof: spawn a holder, wait
+///
 /// until it reports holding, then exit without sending a release byte.
 /// The OS closes the pipe writer on process exit, which is the holder's
 /// release event. Reports `orphaned` to prove the abort happened while held.
+#[expect(
+    clippy::exit,
+    reason = "the abort fixture must exit without running destructors so the holder observes pipe EOF"
+)]
 fn orphan_a_holder(
     root: &std::path::Path,
     report: &std::path::Path,
@@ -572,6 +586,10 @@ fn orphan_a_holder(
 
 /// Parent side of the two-process exclusion proof: disposable temp
 /// root, two child processes of this binary, exact file evidence.
+#[expect(
+    clippy::panic,
+    reason = "the helper-process timeout is a terminal test failure"
+)]
 fn run_two_process_lease_parent() {
     let temp = tempfile::tempdir().expect("a disposable temp root");
     let root = temp.path().join("state");
