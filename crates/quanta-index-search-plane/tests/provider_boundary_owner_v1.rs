@@ -468,8 +468,9 @@ fn admitted_call_settles_success_with_outcome() {
     assert_eq!(ledger.snapshot().expect("snapshot").live_tickets, 0);
 }
 
-/// W10-R2: the audit event carries the settling budget's correlation —
-/// reserve stamps it pre-call, settle copies it through the receipt, and
+/// W10-R2: the audit event carries the settling budget's correlation.
+///
+/// Reserve stamps it pre-call, settle copies it through the receipt, and
 /// the ring event reads it from the receipt, never from ambient state.
 ///
 /// The off-transport twin on the same ledger stays `None`, proving the
