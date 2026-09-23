@@ -151,14 +151,19 @@ fn total_semantic(lanes: &TruthLanes) -> Result<usize, BoxError> {
         .saturating_add(corpora.saturating_sub(hits.min(corpora))))
 }
 
-/// The emitted fanout value, or `None` when the dispatch emitted none.
-fn emitted_fanout(lanes: &TruthLanes) -> Option<f64> {
-    lanes
-        .obs
-        .snapshot()
-        .into_iter()
-        .find(|sample| &*sample.name == "lq_engine_fanout_count")
-        .map(|sample| sample.value)
+/// Executed and post-filter contribution fanouts, independently observed.
+fn emitted_fanout(lanes: &TruthLanes) -> (Option<f64>, Option<f64>) {
+    let samples = lanes.obs.snapshot();
+    let value = |name: &str| {
+        samples
+            .iter()
+            .find(|sample| &*sample.name == name)
+            .map(|sample| sample.value)
+    };
+    (
+        value("lq_engine_fanout_count"),
+        value("lq_lane_contribution_count"),
+    )
 }
 
 fn engines_of(explanation: &SearchExplanation) -> (&[EngineTouched], &[EngineTouched]) {
@@ -177,7 +182,7 @@ fn assert_truth_chain(
     what: &str,
     explanation: &SearchExplanation,
     lanes: &[(String, bool, bool)],
-    fanout: Option<f64>,
+    fanout: (Option<f64>, Option<f64>),
     lexical_invocations: usize,
     semantic_invocations: usize,
     expect_lexical_contributed: bool,
@@ -230,8 +235,19 @@ fn assert_truth_chain(
         u32::try_from(expect_executed.len())
             .map_err(|err| format!("executed engine count overflow: {err}"))?,
     );
-    if fanout != Some(expect_fanout) {
-        return Err(format!("{what}: emitted fanout {fanout:?} != {expect_fanout}").into());
+    if fanout.0 != Some(expect_fanout) {
+        return Err(format!("{what}: executed fanout {:?} != {expect_fanout}", fanout.0).into());
+    }
+    let expect_contributed = f64::from(
+        u32::try_from(expect_touched.len())
+            .map_err(|err| format!("contributed lane count overflow: {err}"))?,
+    );
+    if fanout.1 != Some(expect_contributed) {
+        return Err(format!(
+            "{what}: contribution fanout {:?} != {expect_contributed}",
+            fanout.1
+        )
+        .into());
     }
     Ok(())
 }

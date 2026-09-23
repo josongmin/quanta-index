@@ -112,6 +112,7 @@ fn repo_map_dispatch_emits_closed_obs_metrics() -> TestResult {
         "lq_query_intake_total".to_string(),
         "lq_planner_total".to_string(),
         "lq_engine_fanout_count".to_string(),
+        "lq_lane_contribution_count".to_string(),
         "lq_merge_result_count".to_string(),
         "lq_route_repo_map_latency_ms".to_string(),
         "lq_route_repo_map_served_total".to_string(),

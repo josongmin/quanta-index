@@ -340,7 +340,11 @@ impl SearchPlaneDispatcher {
             match self.lexical_query(request, budget) {
                 Ok(response) => {
                     self.emit_planner_metric(&response.generation);
-                    self.emit_engine_fanout_metric(&response.generation, 1);
+                    self.emit_engine_activity_metrics(
+                        &response.generation,
+                        1,
+                        usize::from(response.window.returned() > 0),
+                    );
                     self.emit_examined_candidates_metric(
                         QueryRoute::Lexical,
                         &response.generation,
@@ -366,7 +370,11 @@ impl SearchPlaneDispatcher {
             match self.symbol(request, budget) {
                 Ok(response) => {
                     self.emit_planner_metric(&response.generation);
-                    self.emit_engine_fanout_metric(&response.generation, 1);
+                    self.emit_engine_activity_metrics(
+                        &response.generation,
+                        1,
+                        usize::from(response.window.returned() > 0),
+                    );
                     self.emit_examined_candidates_metric(
                         QueryRoute::Symbol,
                         &response.generation,
@@ -393,9 +401,10 @@ impl SearchPlaneDispatcher {
         {
             Ok(response) => {
                 self.emit_planner_metric(&response.generation);
-                self.emit_engine_fanout_metric(
+                self.emit_engine_activity_metrics(
                     &response.generation,
                     response.explanation.engines_executed.len(),
+                    response.explanation.engines_touched.len(),
                 );
                 self.emit_early_stop_metric(
                     &response.generation,
@@ -425,9 +434,10 @@ impl SearchPlaneDispatcher {
             match self.hybrid_query(request, budget) {
                 Ok(response) => {
                     self.emit_planner_metric(&response.generation);
-                    self.emit_engine_fanout_metric(
+                    self.emit_engine_activity_metrics(
                         &response.generation,
                         response.explanation.engines_executed.len(),
+                        response.explanation.engines_touched.len(),
                     );
                     self.emit_merge_count_metric(&response.generation, response.results.len());
                     self.emit_early_stop_metric(
@@ -459,9 +469,10 @@ impl SearchPlaneDispatcher {
             match self.hybrid_seed(request, budget) {
                 Ok(response) => {
                     self.emit_planner_metric(&response.generation);
-                    self.emit_engine_fanout_metric(
+                    self.emit_engine_activity_metrics(
                         &response.generation,
                         response.explanation.engines_executed.len(),
+                        response.explanation.engines_touched.len(),
                     );
                     // The merge count is what the window says the page holds
                     // (QI-BB-019): the one canonical seed list.
@@ -498,7 +509,11 @@ impl SearchPlaneDispatcher {
             match self.history(request, budget) {
                 Ok(response) => {
                     self.emit_planner_metric(&response.generation);
-                    self.emit_engine_fanout_metric(&response.generation, 1);
+                    self.emit_engine_activity_metrics(
+                        &response.generation,
+                        1,
+                        usize::from(!response.commits.is_empty() || !response.diffs.is_empty()),
+                    );
                     self.emit_merge_count_metric(
                         &response.generation,
                         response.commits.len().saturating_add(response.diffs.len()),
@@ -531,7 +546,11 @@ impl SearchPlaneDispatcher {
             match self.structural(request, budget) {
                 Ok(response) => {
                     self.emit_planner_metric(&response.generation);
-                    self.emit_engine_fanout_metric(&response.generation, 1);
+                    self.emit_engine_activity_metrics(
+                        &response.generation,
+                        1,
+                        usize::from(!response.results.is_empty()),
+                    );
                     self.emit_merge_count_metric(&response.generation, response.results.len());
                     self.emit_metric(
                         Some(&response.generation),
@@ -568,7 +587,11 @@ impl SearchPlaneDispatcher {
                         response.manifest_generation,
                     );
                     self.emit_planner_metric(&response_pin);
-                    self.emit_engine_fanout_metric(&response_pin, 1);
+                    self.emit_engine_activity_metrics(
+                        &response_pin,
+                        1,
+                        usize::from(!response.entries.is_empty()),
+                    );
                     self.emit_merge_count_metric(&response_pin, response.entries.len());
                     SearchPlaneQueryIpcResponse::RepoMapQuery(response)
                 }
@@ -590,9 +613,10 @@ impl SearchPlaneDispatcher {
             match self.explain_query(request, budget) {
                 Ok(response) => {
                     self.emit_planner_metric(&response.generation);
-                    self.emit_engine_fanout_metric(
+                    self.emit_engine_activity_metrics(
                         &response.generation,
                         response.explanation.engines_executed.len(),
+                        response.explanation.engines_touched.len(),
                     );
                     self.emit_early_stop_metric(
                         &response.generation,
@@ -622,7 +646,11 @@ impl SearchPlaneDispatcher {
             match self.runtime_metadata(request, budget) {
                 Ok(response) => {
                     self.emit_planner_metric(&response.generation);
-                    self.emit_engine_fanout_metric(&response.generation, 1);
+                    self.emit_engine_activity_metrics(
+                        &response.generation,
+                        1,
+                        usize::from(!response.results.is_empty()),
+                    );
                     self.emit_merge_count_metric(&response.generation, response.results.len());
                     self.emit_metric(
                         Some(&response.generation),
@@ -666,15 +694,25 @@ impl SearchPlaneDispatcher {
         self.emit_metric(Some(pin), "lq_planner_total", MetricKind::Counter, 1.0);
     }
 
-    /// Executed-engine fanout (S21-10): `count` must be
-    /// `explanation.engines_executed.len()` — lanes the route ran — never
-    /// `engines_touched.len()`, so an executed zero-hit lane still counts.
-    fn emit_engine_fanout_metric(&self, pin: &GenerationPin, count: usize) {
+    /// Count invoked and post-filter contributing lanes separately. A
+    /// zero-hit backend increments executed fanout but not contribution.
+    fn emit_engine_activity_metrics(
+        &self,
+        pin: &GenerationPin,
+        executed: usize,
+        contributed: usize,
+    ) {
         self.emit_metric(
             Some(pin),
             "lq_engine_fanout_count",
             MetricKind::Histogram,
-            metric_count_value(count),
+            metric_count_value(executed),
+        );
+        self.emit_metric(
+            Some(pin),
+            "lq_lane_contribution_count",
+            MetricKind::Histogram,
+            metric_count_value(contributed),
         );
     }
 

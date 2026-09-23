@@ -6,6 +6,17 @@ to validated lane handoffs and immutable proof manifests, not this document.
 
 ## Current checkpoint (2026-09-24)
 
+- A subsequent P09 metric follow-up derives both executed-engine fanout and
+  post-filter contributing-lane count at the same successful dispatcher
+  boundary. Lexical/single-lane routes derive contribution from returned
+  results; semantic/hybrid/explain consume their producer-owned execution
+  summary. The independent execution-truth suite passed 10/10, including
+  zero-hit `executed=2, contributed=0`; four closed metric-set tests passed
+  4/4. `./scripts/cargow --lane fast-lane check -p
+  quanta-index-searchd-runtime --test runtime_extended_suite --test
+  runtime_risk_suite --locked` passed. Their test bodies and the P09 release
+  process target remain `NOT_RUN`.
+
 - 2026-09-24 P08/P09 follow-up is committed at local `main` `3909b5ca`;
   remote publication and post-commit clean-source proof are `NOT_RUN`.
   The focused results below were collected on a shared dirty checkout.
@@ -117,7 +128,7 @@ to validated lane handoffs and immutable proof manifests, not this document.
 | --- | --- | --- | --- |
 | 1 | P06 / S21-07 | Query-plane active resolution and exact SDK pin binding are implemented. Hybrid/semantic-scope server selection now reads one composite active head. Durable activation epoch, request/read-view commitment binding, final-source owner/release proof remain open. | A response from the same repo/revision but wrong resolved generation/epoch/commitment is rejected by a consumer-visible negative oracle. |
 | 2 | P08 / S21-09 | Candidate `8b78f35` repairs guard custody and passes owner proof. A current-main follow-up fixes the shutdown bridge join after supervisor-initiated failure; release/process proof is still absent. | No live child can outlast state-root lease custody; required-child failure and hard drain have release process-boundary evidence. |
-| 3 | P09 / S21-10 | Current-main patch wires supervisor-owned process readiness and active-pair proof. Focused contract/SDK/CLI/searchd tests and owner-target compilation passed on dirty source; real-UDS execution, clean-source process/release receipts, bounded request-stage diagnostics and zero-hit/contribution metric proof remain open. | Supervisor-owned process readiness is wired; component death or stale heartbeat makes readiness false without confusing it with repository generation status. |
+| 3 | P09 / S21-10 | Current-main patch wires supervisor-owned process readiness and active-pair proof. Focused contract/SDK/CLI/searchd and zero-hit execution/contribution tests passed on dirty source; owner-target compilation passed. Real-UDS execution, clean-source process/release receipts, bounded request-stage diagnostics and release metric proof remain open. | Supervisor-owned process readiness is wired; component death or stale heartbeat makes readiness false without confusing it with repository generation status. |
 | 4 | P10 / S21-11 | Read-only semantic and pre-catalog auxiliary import are wired offline. Boot refuses legacy snapshots before adapter/catalog open; mixed roots with unconverted data and nonempty V1 RepoMap fail closed. | Producer replay for materialized V1 RepoMap, source-to-destination active identity/replay floor/high-water equivalence, and final-source owner/release proof remain required. |
 | 5 | P11 / S21-12 | V1 RepoMap mutation entrypoints remain reachable; no exact Quanta/Semantica commitment-chain or four P11 receipts. | One clean source pair and attested daemon binary pass publish, activate, replay, incompatibility, deployment, activation, and rollback proofs as separate nodes. |
 | 6 | P12A / S21-13B | Aggregate schema/writer/validator do not consume the product handoff DAG or separate P12A infrastructure handoff. | Exact P00–P11 fork/join and serial chain, historical and final receipt ledgers, paired source, binary, and negative tamper cases validate. |

@@ -155,6 +155,7 @@ fn structural_dispatch_success_emits_closed_obs_metrics() -> TestResult {
             "lq_query_intake_total",
             "lq_planner_total",
             "lq_engine_fanout_count",
+            "lq_lane_contribution_count",
             "lq_merge_result_count",
             "lq_route_structural_examined_candidates_total",
             "lq_route_structural_latency_ms",

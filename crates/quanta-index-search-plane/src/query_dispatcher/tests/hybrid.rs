@@ -492,6 +492,7 @@ fn hybrid_dispatch_emits_closed_obs_metrics() -> TestResult {
         "lq_snapshot_semantic_cold_open_ms".to_string(),
         "lq_planner_total".to_string(),
         "lq_engine_fanout_count".to_string(),
+        "lq_lane_contribution_count".to_string(),
         "lq_merge_result_count".to_string(),
         "lq_early_stop_total".to_string(),
         "lq_route_hybrid_examined_candidates_total".to_string(),

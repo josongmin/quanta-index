@@ -25,8 +25,9 @@ type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 const SERVED_QUERIES: u64 = 5;
 
 /// Samples one served lexical query emits: intake, snapshot hit, planner,
-/// engine fan-out, examined candidates, route latency, route outcome.
-const SAMPLES_PER_SERVED_LEXICAL_QUERY: u64 = 7;
+/// executed fan-out, contributing lanes, examined candidates, route latency,
+/// route outcome.
+const SAMPLES_PER_SERVED_LEXICAL_QUERY: u64 = 8;
 
 /// Samples one lexical query that times out in execution emits: intake,
 /// snapshot hit (the handle is acquired before execution), the typed-error
