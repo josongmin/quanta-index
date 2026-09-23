@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import importlib.util
 import json
@@ -384,6 +385,54 @@ def _write_dependency_manifests(
         archive_path.write_bytes(manifest_bytes)
 
 
+def _inject_verified_handoff_ledger(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Isolate aggregate composition from the separately tested handoff validator."""
+    lanes = (
+        "P00", "P01", "P02A", "P02B", "P02I", "P03", "P04", "P05",
+        "P06", "P07", "P08", "P09", "P10", "P11",
+    )
+    reference = lambda lane: {
+        "lane": lane,
+        "path": f"artifacts/sep-21/handoffs/{lane}.json",
+        "sha256": hashlib.sha256(f"fixture-{lane}".encode()).hexdigest(),
+        "status": "VERIFIED",
+    }
+    ledger = {
+        "product_handoffs": [reference(lane) for lane in lanes],
+        "product_chain_status": "VERIFIED",
+        "infrastructure_handoff": reference("P12A"),
+    }
+    monkeypatch.setattr(WRITER, "_load_checker", lambda: CHECKER)
+    monkeypatch.setattr(MANIFEST_WRITER, "_load_checker", lambda: CHECKER)
+    monkeypatch.setattr(
+        CHECKER.HANDOFF_VALIDATION,
+        "inspect_handoff_ledger",
+        lambda **_kwargs: (copy.deepcopy(ledger), []),
+    )
+
+
+def test_full_dependency_graph_without_handoffs_is_not_ready(
+    tmp_path: Path,
+    aggregate_templates: AggregateTemplates,
+) -> None:
+    root, registry = _fixture_root(tmp_path, executable=True, templates=aggregate_templates)
+    paired = _paired_checkout(tmp_path, aggregate_templates)
+    _write_dependency_manifests(root, registry, paired)
+
+    output, _, ready = WRITER.publish_aggregate(
+        root=root,
+        registry_path=root / "tools/ci/proof-authority.toml",
+        paired_checkout=paired,
+    )
+
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert not ready
+    assert all(item["status"] == "PASSED" for item in payload["dependency_receipts"])
+    assert payload["product_chain_status"] == "NOT_RUN"
+    assert payload["infrastructure_handoff"]["status"] == "NOT_RUN"
+    assert payload["production_ready"] is False
+
+
 def test_writer_publishes_truthful_not_ready_diagnostic_for_staged_graph(
     tmp_path: Path,
     aggregate_templates: AggregateTemplates,
@@ -455,11 +504,12 @@ def test_writer_rebinds_source_after_publication(
         assert output.read_bytes() == prior_bytes
 
 
-def test_writer_derives_ready_receipt_from_full_valid_closure(
+def test_writer_derives_ready_receipt_from_verified_handoff_input(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     aggregate_templates: AggregateTemplates,
 ) -> None:
+    _inject_verified_handoff_ledger(monkeypatch)
     root, registry = _fixture_root(tmp_path, executable=True, templates=aggregate_templates)
     paired = _paired_checkout(tmp_path, aggregate_templates)
     _write_dependency_manifests(root, registry, paired)
@@ -579,6 +629,7 @@ def test_aggregate_validation_refuses_source_change_during_cached_pass(
     monkeypatch: pytest.MonkeyPatch,
     aggregate_templates: AggregateTemplates,
 ) -> None:
+    _inject_verified_handoff_ledger(monkeypatch)
     root, registry = _fixture_root(tmp_path, executable=True, templates=aggregate_templates)
     paired = _paired_checkout(tmp_path, aggregate_templates)
     _write_dependency_manifests(root, registry, paired)
@@ -652,6 +703,7 @@ def test_ready_aggregate_is_mandatory_and_sufficient_for_p12_issuance(
     monkeypatch: pytest.MonkeyPatch,
     aggregate_templates: AggregateTemplates,
 ) -> None:
+    _inject_verified_handoff_ledger(monkeypatch)
     root, registry = _fixture_root(tmp_path, executable=True, templates=aggregate_templates)
     paired = _paired_checkout(tmp_path, aggregate_templates)
     _write_dependency_manifests(root, registry, paired)
