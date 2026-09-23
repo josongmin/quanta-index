@@ -2047,10 +2047,14 @@ fn render_pretty(
         SearchPlaneQueryIpcResponse::Structural(payload) => {
             render_structural_payload(payload, rendered)
         }
-        SearchPlaneQueryIpcResponse::ClusterMembershipRead(_) => Err(CliError::protocol(
-            "ClusterMembershipRead is an SDK authority response and has no searchctl command"
-                .to_string(),
-        )),
+        SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+        | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
+        | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_) => {
+            Err(CliError::protocol(format!(
+                "{} is an SDK authority response and has no searchctl command",
+                response_kind_name(&response.payload)
+            )))
+        }
     }
 }
 
@@ -2518,6 +2522,8 @@ fn render_explanation(explanation: &SearchExplanation, rendered: &mut String) ->
 
 fn response_kind_name(response: &SearchPlaneQueryIpcResponse) -> &'static str {
     match response {
+        SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_) => "ActiveGenerationSnapshot",
+        SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_) => "ResolvedLexicalGeneration",
         SearchPlaneQueryIpcResponse::Text(_) => "Text",
         SearchPlaneQueryIpcResponse::Symbol(_) => "Symbol",
         SearchPlaneQueryIpcResponse::Semantic(_) => "Semantic",
