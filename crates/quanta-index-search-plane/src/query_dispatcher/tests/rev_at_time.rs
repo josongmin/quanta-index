@@ -83,7 +83,8 @@ fn lexical_dispatch_rebinds_rev_at_time_to_reachable_ancestor() -> TestResult {
                 return Err(format!("unexpected rebound generation: {:?}", text.generation).into());
             }
         }
-        other @ (SearchPlaneQueryIpcResponse::Symbol(_)
+        other @ (SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+        | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::Semantic(_)
         | SearchPlaneQueryIpcResponse::Hybrid(_)
         | SearchPlaneQueryIpcResponse::HybridSeed(_)

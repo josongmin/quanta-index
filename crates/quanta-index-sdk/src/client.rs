@@ -4,10 +4,11 @@ use std::sync::{
 };
 
 use quanta_index_contract::{
-    GenerationPin, GenerationSelector, SearchPlaneControlIpcRequest,
+    CurrentGenerationRequest, GenerationPin, GenerationSelector, SearchPlaneControlIpcRequest,
     SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponse,
     SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
+    SearchPlaneTrackKind,
 };
 
 use crate::binding::{
@@ -140,8 +141,9 @@ impl QuantaIndex {
 
     pub(super) fn dispatch_query(
         &self,
-        payload: SearchPlaneQueryIpcRequest,
+        mut payload: SearchPlaneQueryIpcRequest,
     ) -> Result<SearchPlaneQueryIpcResponse, SdkError> {
+        self.pin_active_query(&mut payload)?;
         let binding = QueryCallBinding::from_request(&payload);
         let request_id = self.next_request_id();
         let envelope = SearchPlaneQueryIpcRequestEnvelope {
@@ -162,7 +164,8 @@ impl QuantaIndex {
                 message: error.message,
                 repair: error.repair,
             }),
-            payload @ (SearchPlaneQueryIpcResponse::Text(_)
+            payload @ (SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+            | SearchPlaneQueryIpcResponse::Text(_)
             | SearchPlaneQueryIpcResponse::Symbol(_)
             | SearchPlaneQueryIpcResponse::Semantic(_)
             | SearchPlaneQueryIpcResponse::Hybrid(_)
@@ -173,6 +176,127 @@ impl QuantaIndex {
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => Ok(payload),
+        }
+    }
+
+    /// Resolve an active selector on the query plane before submitting a
+    /// pinned request. The query-only profile has no control transport.
+    fn pin_active_selector(
+        &self,
+        generation: &mut Option<GenerationPin>,
+        selector: &mut Option<GenerationSelector>,
+        track: SearchPlaneTrackKind,
+    ) -> Result<(), SdkError> {
+        let Some(GenerationSelector::Active {
+            repo_id,
+            revision_id,
+        }) = selector.as_ref()
+        else {
+            return Ok(());
+        };
+        let request = CurrentGenerationRequest {
+            repo_id: repo_id.clone(),
+            revision_id: revision_id.clone(),
+            track,
+        };
+        let response =
+            self.dispatch_query(SearchPlaneQueryIpcRequest::ResolveActiveGeneration(request))?;
+        let SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(snapshot) = response else {
+            return Err(SdkError::Protocol(
+                "active resolution did not return a generation snapshot".to_string(),
+            ));
+        };
+        let resolved = GenerationPin::new(
+            snapshot.repo_id,
+            snapshot.revision_id,
+            snapshot.manifest_generation,
+        );
+        if generation.as_ref().is_some_and(|pin| pin != &resolved) {
+            return Err(SdkError::Protocol(
+                "explicit generation pin conflicts with active resolution".to_string(),
+            ));
+        }
+        *generation = Some(resolved);
+        *selector = None;
+        Ok(())
+    }
+
+    fn pin_active_query(&self, request: &mut SearchPlaneQueryIpcRequest) -> Result<(), SdkError> {
+        match request {
+            SearchPlaneQueryIpcRequest::Text(query) => self.pin_active_selector(
+                &mut query.generation,
+                &mut query.generation_selector,
+                SearchPlaneTrackKind::Lexical,
+            ),
+            SearchPlaneQueryIpcRequest::Symbol(query) => self.pin_active_selector(
+                &mut query.generation,
+                &mut query.generation_selector,
+                SearchPlaneTrackKind::Lexical,
+            ),
+            SearchPlaneQueryIpcRequest::Semantic(query) => {
+                self.pin_active_selector(
+                    &mut query.generation,
+                    &mut query.generation_selector,
+                    SearchPlaneTrackKind::Semantic,
+                )?;
+                if let Some(scope) = &mut query.lexical_scope {
+                    self.pin_active_selector(
+                        &mut scope.generation,
+                        &mut scope.generation_selector,
+                        SearchPlaneTrackKind::Lexical,
+                    )?;
+                }
+                Ok(())
+            }
+            SearchPlaneQueryIpcRequest::Hybrid(query) => {
+                self.pin_active_selector(
+                    &mut query.text_query.generation,
+                    &mut query.text_query.generation_selector,
+                    SearchPlaneTrackKind::Lexical,
+                )?;
+                self.pin_active_selector(
+                    &mut query.generation,
+                    &mut query.generation_selector,
+                    SearchPlaneTrackKind::Semantic,
+                )
+            }
+            SearchPlaneQueryIpcRequest::HybridSeed(query) => {
+                self.pin_active_selector(
+                    &mut query.text_query.generation,
+                    &mut query.text_query.generation_selector,
+                    SearchPlaneTrackKind::Lexical,
+                )?;
+                self.pin_active_selector(
+                    &mut query.generation,
+                    &mut query.generation_selector,
+                    SearchPlaneTrackKind::Semantic,
+                )
+            }
+            SearchPlaneQueryIpcRequest::History(query) => self.pin_active_selector(
+                &mut query.text_query.generation,
+                &mut query.text_query.generation_selector,
+                SearchPlaneTrackKind::Lexical,
+            ),
+            SearchPlaneQueryIpcRequest::RuntimeMetadata(query) => self.pin_active_selector(
+                &mut query.text_query.generation,
+                &mut query.text_query.generation_selector,
+                SearchPlaneTrackKind::Lexical,
+            ),
+            SearchPlaneQueryIpcRequest::Structural(query) => {
+                if matches!(
+                    query.text_query.generation_selector,
+                    Some(GenerationSelector::Active { .. })
+                ) {
+                    return Err(SdkError::Protocol(
+                        "structural active generation is unsupported".to_string(),
+                    ));
+                }
+                Ok(())
+            }
+            SearchPlaneQueryIpcRequest::ResolveActiveGeneration(_)
+            | SearchPlaneQueryIpcRequest::RepoMapQuery(_)
+            | SearchPlaneQueryIpcRequest::Explain(_)
+            | SearchPlaneQueryIpcRequest::ClusterMembershipRead(_) => Ok(()),
         }
     }
 
@@ -285,6 +409,9 @@ impl QuantaIndex {
         response: &SearchPlaneQueryIpcResponse,
     ) -> &'static str {
         match response {
+            SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_) => {
+                "active_generation_snapshot"
+            }
             SearchPlaneQueryIpcResponse::Text(_) => "text",
             SearchPlaneQueryIpcResponse::Symbol(_) => "symbol",
             SearchPlaneQueryIpcResponse::Semantic(_) => "semantic",

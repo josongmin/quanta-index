@@ -192,6 +192,7 @@ impl RequestEnvelope<quanta_index_contract::SearchPlaneQueryIpcRequest>
     fn repo_scope(request: &quanta_index_contract::SearchPlaneQueryIpcRequest) -> Option<String> {
         use quanta_index_contract::SearchPlaneQueryIpcRequest as Request;
         match request {
+            Request::ResolveActiveGeneration(resolve) => Some(resolve.repo_id.as_str().to_string()),
             Request::Text(text) => {
                 pinned_repo_scope(text.generation.as_ref(), text.generation_selector.as_ref())
             }

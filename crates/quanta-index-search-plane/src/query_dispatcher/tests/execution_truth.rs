@@ -259,7 +259,8 @@ fn lane_flags(
         // The explain response carries no window: its truth chain is the
         // explanation plus the adapter counts, asserted by the caller.
         SearchPlaneQueryIpcResponse::Explain(_) => Ok(Vec::new()),
-        SearchPlaneQueryIpcResponse::Text(_)
+        SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+        | SearchPlaneQueryIpcResponse::Text(_)
         | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
@@ -827,7 +828,8 @@ fn one_correlation_reaches_every_route_explanation() -> TestResult {
             SearchPlaneQueryIpcResponse::Hybrid(r) => Ok(r.explanation.request_id),
             SearchPlaneQueryIpcResponse::HybridSeed(r) => Ok(r.explanation.request_id),
             SearchPlaneQueryIpcResponse::Explain(r) => Ok(r.explanation.request_id),
-            SearchPlaneQueryIpcResponse::Text(_)
+            SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+            | SearchPlaneQueryIpcResponse::Text(_)
             | SearchPlaneQueryIpcResponse::Symbol(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)

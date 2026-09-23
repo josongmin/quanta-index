@@ -125,3 +125,37 @@ to request-ID/domain/self-consistency and must not claim detection of a
 producer that resolved the wrong same-domain generation. The user decision
 on latency versus independent validation is pending; do not add response-only
 `resolution_proof` fields as a cosmetic substitute.
+
+### Remaining structural closeout after query-plane resolution checkpoint
+
+The query-plane `ResolveActiveGeneration` → pinned-query path binds a returned
+generation number, but it is not yet the complete target contract:
+
+1. `crates/quanta-index-search-plane/src/readiness/{activation_catalog,search_corpus_generation}.rs`
+   must own a durable activation epoch/commitment, including rollback and
+   reopen semantics. A manifest generation is not an activation epoch: the
+   same generation may be reactivated. The query resolution response must
+   derive this identity from the catalog, not from the query response itself.
+2. `crates/quanta-index-contract/src/ipc/{split,control}.rs` and the query
+   request DTOs must carry the resolved authority identity into the pinned
+   request. `query_dispatcher/{dispatcher,selection,read_view}*` must check
+   it against the acquired view, so a newer/different activation cannot
+   satisfy an older resolution merely by repeating its generation number.
+   Add producer/consumer negatives for same generation but wrong epoch and
+   wrong content commitment.
+3. `crates/quanta-index-search-plane/src/query_dispatcher/rev_at_time.rs` and
+   `crates/quanta-index-sdk/src/{client,binding}.rs` need an explicit
+   history-authoritative resolved-ancestor identity (or equivalent
+   independently checkable proof). The current `check_pin` same-repository
+   exception accepts any ancestor-looking revision; prove a wrong reachable
+   same-repository pin is rejected while the legitimate ancestor and
+   before-history empty case still work.
+4. Hybrid/semantic-with-lexical-scope requests should resolve the composite
+   lexical+semantic active root atomically from one catalog read rather than
+   two independently timed lookups. A concurrent activation/rollback test
+   must show either one coherent pair or a typed retry/failure, never a
+   mixed successful response.
+5. Re-run the closed SDK route inventory, real UDS query-only positive and
+   same-variant negative matrix, public API/wire/fuzz rails, P06 owner proof,
+   then Linux release proof at one frozen source. Until then the P06 status is
+   open even if focused query tests pass.

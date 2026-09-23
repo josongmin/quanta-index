@@ -1,8 +1,8 @@
 use std::sync::{Arc, Mutex, RwLock};
 
 use quanta_index_contract::{
-    GenerationPin, GenerationSelector, ManifestGeneration, RepoId, RevisionId,
-    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, SearchPlaneTrackKind,
+    CurrentGenerationRequest, GenerationPin, GenerationSelector, ManifestGeneration, RepoId,
+    RevisionId, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, SearchPlaneTrackKind,
     SemanticQueryRequest,
 };
 use quanta_index_core::RequestBudgetV1;
@@ -25,6 +25,63 @@ use crate::{
     ActivationCatalog, Ledger, PreparedSearchCorpusGenerationV1, SEARCH_OWNED_SEMANTIC_DIMENSION,
     SnapshotRegistries, SnapshotRegistryPolicy,
 };
+
+#[test]
+fn query_plane_resolves_only_catalog_active_generation() -> TestResult {
+    let dir = tempdir()?;
+    let activation_catalog = Arc::new(ActivationCatalog::open(dir.keep())?);
+    let repo_id = RepoId::new("repo-map-ipc")?;
+    let revision_id = RevisionId::new("rev-map-ipc")?;
+    let active = corpus_generation(
+        repo_id.clone(),
+        revision_id.clone(),
+        ManifestGeneration::new(9),
+        "activation-digest-9",
+    )?;
+    let prepared = PreparedSearchCorpusGenerationV1::new(active, None)?;
+    let _activation =
+        activation_catalog.activate_prepared_search_corpus_generation_v1(&prepared)?;
+    let dispatcher = SearchPlaneDispatcher::new(
+        Arc::new(RejectLexicalOpener),
+        Arc::new(RejectSemanticOpener),
+        Arc::new(StubRepoMapSnapshotPort::default()),
+        Arc::new(FailClosedStructuralProducer),
+        ready_ledger(),
+        activation_catalog,
+    );
+    let response = dispatcher.dispatch(
+        SearchPlaneQueryIpcRequest::ResolveActiveGeneration(CurrentGenerationRequest {
+            repo_id: repo_id.clone(),
+            revision_id: revision_id.clone(),
+            track: SearchPlaneTrackKind::Lexical,
+        }),
+        &RequestBudgetV1::unbounded(),
+    );
+    let SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(snapshot) = response else {
+        return Err(format!("expected catalog snapshot, got {response:?}").into());
+    };
+    if snapshot.repo_id != repo_id
+        || snapshot.revision_id != revision_id
+        || snapshot.track != SearchPlaneTrackKind::Lexical
+        || snapshot.manifest_generation != ManifestGeneration::new(9)
+        || snapshot.manifest_digest != "activation-digest-9"
+    {
+        return Err(format!("wrong catalog snapshot: {snapshot:?}").into());
+    }
+    let missing = dispatcher.dispatch(
+        SearchPlaneQueryIpcRequest::ResolveActiveGeneration(CurrentGenerationRequest {
+            repo_id: RepoId::new("missing")?,
+            revision_id,
+            track: SearchPlaneTrackKind::Lexical,
+        }),
+        &RequestBudgetV1::unbounded(),
+    );
+    let (code, _) = ipc_error_from(missing).map_err(Box::<dyn std::error::Error>::from)?;
+    if code != quanta_index_contract::SearchPlaneErrorCodeV2::NotReady {
+        return Err(format!("missing active entry must be NOT_READY, got {code}").into());
+    }
+    Ok(())
+}
 
 // CASE-COVERS: query-time semantic model-identity enforcement (SEM_MODEL_MISMATCH).
 #[test]
@@ -129,7 +186,8 @@ fn semantic_dispatch_embeds_query_text() -> TestResult {
                 .into());
             }
         }
-        other @ (SearchPlaneQueryIpcResponse::Text(_)
+        other @ (SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+        | SearchPlaneQueryIpcResponse::Text(_)
         | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::Hybrid(_)
         | SearchPlaneQueryIpcResponse::HybridSeed(_)

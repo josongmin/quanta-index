@@ -56,7 +56,8 @@ fn lexical_dispatch_fail_closed_when_generation_is_not_ready() -> TestResult {
                 return Err(format!("unexpected error code: {}", err.code).into());
             }
         }
-        other @ (SearchPlaneQueryIpcResponse::Text(_)
+        other @ (SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+        | SearchPlaneQueryIpcResponse::Text(_)
         | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::Semantic(_)
         | SearchPlaneQueryIpcResponse::Hybrid(_)
@@ -170,7 +171,8 @@ fn sourcegraph_text_syntax_dispatch_returns_text_payload() -> TestResult {
                 );
             }
         }
-        other @ (SearchPlaneQueryIpcResponse::Symbol(_)
+        other @ (SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+        | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::Semantic(_)
         | SearchPlaneQueryIpcResponse::Hybrid(_)
         | SearchPlaneQueryIpcResponse::HybridSeed(_)
@@ -330,7 +332,8 @@ fn lexical_dispatch_stabilizes_tied_text_results() -> TestResult {
                 .into());
             }
         }
-        other @ (SearchPlaneQueryIpcResponse::Symbol(_)
+        other @ (SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+        | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::Semantic(_)
         | SearchPlaneQueryIpcResponse::Hybrid(_)
         | SearchPlaneQueryIpcResponse::HybridSeed(_)
@@ -492,7 +495,8 @@ fn lexical_dispatch_returns_typed_when_filter_is_fork_only() -> TestResult {
                 .into());
             }
         }
-        other @ (SearchPlaneQueryIpcResponse::Symbol(_)
+        other @ (SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+        | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::Semantic(_)
         | SearchPlaneQueryIpcResponse::Hybrid(_)
         | SearchPlaneQueryIpcResponse::HybridSeed(_)
@@ -607,7 +611,8 @@ fn lexical_dispatch_passes_through_when_no_unavailable_filters() -> TestResult {
             )
             .into());
         }
-        other @ (SearchPlaneQueryIpcResponse::Symbol(_)
+        other @ (SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+        | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::Semantic(_)
         | SearchPlaneQueryIpcResponse::Hybrid(_)
         | SearchPlaneQueryIpcResponse::HybridSeed(_)
@@ -680,7 +685,8 @@ fn symbol_dispatch_returns_symbol_candidates_with_kind_truth() -> TestResult {
                 return Err(format!("unexpected symbol candidate: {first:?}").into());
             }
         }
-        other @ (SearchPlaneQueryIpcResponse::Text(_)
+        other @ (SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+        | SearchPlaneQueryIpcResponse::Text(_)
         | SearchPlaneQueryIpcResponse::Semantic(_)
         | SearchPlaneQueryIpcResponse::Hybrid(_)
         | SearchPlaneQueryIpcResponse::HybridSeed(_)

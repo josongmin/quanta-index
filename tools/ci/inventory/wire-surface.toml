@@ -112,6 +112,7 @@ file = "crates/quanta-index-contract/src/ipc/split.rs"
 plane = "query"
 direction = "request"
 variants = [
+  "ResolveActiveGeneration",
   "Text",
   "Symbol",
   "Semantic",
@@ -131,6 +132,7 @@ file = "crates/quanta-index-contract/src/ipc/split.rs"
 plane = "query"
 direction = "response"
 variants = [
+  "ActiveGenerationSnapshot",
   "Text",
   "Symbol",
   "Semantic",

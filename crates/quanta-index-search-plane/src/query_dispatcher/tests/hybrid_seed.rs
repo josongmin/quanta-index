@@ -132,7 +132,8 @@ fn hybrid_seed_dispatch_includes_dense_only_entity_in_the_seed_set() -> TestResu
                 .into());
             }
         }
-        other @ (SearchPlaneQueryIpcResponse::Hybrid(_)
+        other @ (SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+        | SearchPlaneQueryIpcResponse::Hybrid(_)
         | SearchPlaneQueryIpcResponse::Text(_)
         | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::Semantic(_)

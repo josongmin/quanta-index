@@ -169,7 +169,10 @@ fn dispatch_symbol_query_request_v1(
     )?;
     match response {
         quanta_index_contract::SearchPlaneQueryIpcResponse::Symbol(results) => Ok(results),
-        other @ (quanta_index_contract::SearchPlaneQueryIpcResponse::Text(_)
+        other @ (quanta_index_contract::SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(
+            _,
+        )
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::Text(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Semantic(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Hybrid(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::HybridSeed(_)

@@ -218,7 +218,10 @@ fn dispatch_semantic_query_request_v1(
     )?;
     match response {
         quanta_index_contract::SearchPlaneQueryIpcResponse::Semantic(results) => Ok(results),
-        other @ (quanta_index_contract::SearchPlaneQueryIpcResponse::Text(_)
+        other @ (quanta_index_contract::SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(
+            _,
+        )
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::Text(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Symbol(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Hybrid(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::HybridSeed(_)

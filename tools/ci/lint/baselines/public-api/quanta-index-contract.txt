@@ -1517,6 +1517,7 @@ pub quanta_index_contract::ipc::SearchPlaneQueryIpcRequest::History(quanta_index
 pub quanta_index_contract::ipc::SearchPlaneQueryIpcRequest::Hybrid(quanta_index_contract::HybridQueryRequest)
 pub quanta_index_contract::ipc::SearchPlaneQueryIpcRequest::HybridSeed(quanta_index_contract::HybridSeedQueryRequest)
 pub quanta_index_contract::ipc::SearchPlaneQueryIpcRequest::RepoMapQuery(quanta_index_contract::RepoMapQueryRequest)
+pub quanta_index_contract::ipc::SearchPlaneQueryIpcRequest::ResolveActiveGeneration(quanta_index_contract::CurrentGenerationRequest)
 pub quanta_index_contract::ipc::SearchPlaneQueryIpcRequest::RuntimeMetadata(quanta_index_contract::RuntimeMetadataQueryRequest)
 pub quanta_index_contract::ipc::SearchPlaneQueryIpcRequest::Semantic(quanta_index_contract::SemanticQueryRequest)
 pub quanta_index_contract::ipc::SearchPlaneQueryIpcRequest::Structural(quanta_index_contract::StructuralQueryRequest)
@@ -1541,6 +1542,7 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneQueryIpcReq
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneQueryIpcRequest
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneQueryIpcRequest
 pub enum quanta_index_contract::ipc::SearchPlaneQueryIpcResponse
+pub quanta_index_contract::ipc::SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(quanta_index_contract::GenerationSnapshot)
 pub quanta_index_contract::ipc::SearchPlaneQueryIpcResponse::ClusterMembershipRead(quanta_index_contract::ClusterMembershipBatchReadResponseV1)
 pub quanta_index_contract::ipc::SearchPlaneQueryIpcResponse::Error(quanta_index_contract::SearchPlaneIpcError)
 pub quanta_index_contract::ipc::SearchPlaneQueryIpcResponse::Explain(quanta_index_contract::SearchPlaneExplainQueryResponse)
@@ -9915,6 +9917,7 @@ pub quanta_index_contract::SearchPlaneQueryIpcRequest::History(quanta_index_cont
 pub quanta_index_contract::SearchPlaneQueryIpcRequest::Hybrid(quanta_index_contract::HybridQueryRequest)
 pub quanta_index_contract::SearchPlaneQueryIpcRequest::HybridSeed(quanta_index_contract::HybridSeedQueryRequest)
 pub quanta_index_contract::SearchPlaneQueryIpcRequest::RepoMapQuery(quanta_index_contract::RepoMapQueryRequest)
+pub quanta_index_contract::SearchPlaneQueryIpcRequest::ResolveActiveGeneration(quanta_index_contract::CurrentGenerationRequest)
 pub quanta_index_contract::SearchPlaneQueryIpcRequest::RuntimeMetadata(quanta_index_contract::RuntimeMetadataQueryRequest)
 pub quanta_index_contract::SearchPlaneQueryIpcRequest::Semantic(quanta_index_contract::SemanticQueryRequest)
 pub quanta_index_contract::SearchPlaneQueryIpcRequest::Structural(quanta_index_contract::StructuralQueryRequest)
@@ -9939,6 +9942,7 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneQueryIpcReq
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneQueryIpcRequest
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneQueryIpcRequest
 pub enum quanta_index_contract::SearchPlaneQueryIpcResponse
+pub quanta_index_contract::SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(quanta_index_contract::GenerationSnapshot)
 pub quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(quanta_index_contract::ClusterMembershipBatchReadResponseV1)
 pub quanta_index_contract::SearchPlaneQueryIpcResponse::Error(quanta_index_contract::SearchPlaneIpcError)
 pub quanta_index_contract::SearchPlaneQueryIpcResponse::Explain(quanta_index_contract::SearchPlaneExplainQueryResponse)

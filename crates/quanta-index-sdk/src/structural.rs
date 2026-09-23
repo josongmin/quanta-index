@@ -380,7 +380,8 @@ fn dispatch_structural_query_request_v1(
     let response = client.dispatch_query(SearchPlaneQueryIpcRequest::Structural(request))?;
     match response {
         SearchPlaneQueryIpcResponse::Structural(results) => Ok(results),
-        other @ (SearchPlaneQueryIpcResponse::Text(_)
+        other @ (SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+        | SearchPlaneQueryIpcResponse::Text(_)
         | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::Semantic(_)
         | SearchPlaneQueryIpcResponse::Hybrid(_)

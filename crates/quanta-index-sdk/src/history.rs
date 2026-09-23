@@ -980,7 +980,8 @@ fn dispatch_history_query_request_v1(
     let response = client.dispatch_query(SearchPlaneQueryIpcRequest::History(request))?;
     match response {
         SearchPlaneQueryIpcResponse::History(results) => Ok(results),
-        other @ (SearchPlaneQueryIpcResponse::Text(_)
+        other @ (SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+        | SearchPlaneQueryIpcResponse::Text(_)
         | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::Semantic(_)
         | SearchPlaneQueryIpcResponse::Hybrid(_)

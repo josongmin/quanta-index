@@ -114,7 +114,8 @@ pub(crate) fn into_repo_map_query_response(
 ) -> Result<RepoMapQueryResponse, Box<dyn std::error::Error>> {
     match response {
         SearchPlaneQueryIpcResponse::RepoMapQuery(response) => Ok(response),
-        other @ (SearchPlaneQueryIpcResponse::Text(_)
+        other @ (SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+        | SearchPlaneQueryIpcResponse::Text(_)
         | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::Semantic(_)
         | SearchPlaneQueryIpcResponse::Hybrid(_)

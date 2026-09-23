@@ -66,7 +66,8 @@ fn stub_dispatcher(
 fn text(response: SearchPlaneQueryIpcResponse) -> Result<TextQueryResponse, String> {
     match response {
         SearchPlaneQueryIpcResponse::Text(page) => Ok(page),
-        other @ (SearchPlaneQueryIpcResponse::Symbol(_)
+        other @ (SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+        | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::Semantic(_)
         | SearchPlaneQueryIpcResponse::Hybrid(_)
         | SearchPlaneQueryIpcResponse::HybridSeed(_)

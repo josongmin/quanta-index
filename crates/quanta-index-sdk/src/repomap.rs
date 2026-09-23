@@ -23,7 +23,8 @@ impl<'a> RepoMapNamespace<'a> {
             .dispatch_query(SearchPlaneQueryIpcRequest::RepoMapQuery(request))?;
         match response {
             SearchPlaneQueryIpcResponse::RepoMapQuery(result) => Ok(result),
-            other @ (SearchPlaneQueryIpcResponse::Text(_)
+            other @ (SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+            | SearchPlaneQueryIpcResponse::Text(_)
             | SearchPlaneQueryIpcResponse::Symbol(_)
             | SearchPlaneQueryIpcResponse::Semantic(_)
             | SearchPlaneQueryIpcResponse::Hybrid(_)

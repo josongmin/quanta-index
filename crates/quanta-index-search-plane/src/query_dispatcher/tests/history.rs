@@ -64,7 +64,8 @@ fn history_dispatch_success_emits_closed_obs_metrics() -> TestResult {
                 return Err(format!("unexpected history response: {history:?}").into());
             }
         }
-        other @ (SearchPlaneQueryIpcResponse::Text(_)
+        other @ (SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+        | SearchPlaneQueryIpcResponse::Text(_)
         | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::Semantic(_)
         | SearchPlaneQueryIpcResponse::Hybrid(_)

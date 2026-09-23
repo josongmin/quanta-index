@@ -27,6 +27,7 @@ use crate::{
 const SEARCH_PLANE_ENVELOPE_FIELDS: &[&str] = &["request_id", "payload"];
 const SEARCH_PLANE_ADJACENT_TAG_FIELDS: &[&str] = &["kind", "payload"];
 const SEARCH_PLANE_QUERY_IPC_REQUEST_VARIANTS: &[&str] = &[
+    "ResolveActiveGeneration",
     "Text",
     "Symbol",
     "Semantic",
@@ -40,6 +41,7 @@ const SEARCH_PLANE_QUERY_IPC_REQUEST_VARIANTS: &[&str] = &[
     "ClusterMembershipRead",
 ];
 const SEARCH_PLANE_QUERY_IPC_RESPONSE_VARIANTS: &[&str] = &[
+    "ActiveGenerationSnapshot",
     "Text",
     "Symbol",
     "Semantic",
@@ -87,6 +89,7 @@ pub struct SearchPlaneQueryIpcRequestEnvelope {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum SearchPlaneQueryIpcRequest {
+    ResolveActiveGeneration(CurrentGenerationRequest),
     Text(TextQueryRequest),
     Symbol(SymbolQueryRequest),
     Semantic(SemanticQueryRequest),
@@ -108,6 +111,7 @@ pub struct SearchPlaneQueryIpcResponseEnvelope {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum SearchPlaneQueryIpcResponse {
+    ActiveGenerationSnapshot(GenerationSnapshot),
     Text(TextQueryResponse),
     Symbol(SymbolQueryResponse),
     Semantic(SemanticQueryResponse),
@@ -141,6 +145,7 @@ impl SearchPlaneQueryIpcResponse {
             | SearchPlaneQueryIpcResponse::Structural(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
+            | SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
             | SearchPlaneQueryIpcResponse::Error(_) => None,
         };
         if let Some(explanation) = explanation {
@@ -341,6 +346,12 @@ impl Serialize for SearchPlaneQueryIpcRequest {
         S: Serializer,
     {
         match self {
+            Self::ResolveActiveGeneration(payload) => serialize_adjacent_tagged(
+                "SearchPlaneQueryIpcRequest",
+                "ResolveActiveGeneration",
+                payload,
+                serializer,
+            ),
             Self::Text(payload) => {
                 serialize_adjacent_tagged("SearchPlaneQueryIpcRequest", "Text", payload, serializer)
             }
@@ -439,6 +450,9 @@ impl<'de> Visitor<'de> for SearchPlaneQueryIpcRequestVisitor {
                         .as_deref()
                         .ok_or_else(|| payload_before_kind_error("SearchPlaneQueryIpcRequest"))?;
                     let decoded = match kind_value {
+                        "ResolveActiveGeneration" => {
+                            SearchPlaneQueryIpcRequest::ResolveActiveGeneration(map.next_value()?)
+                        }
                         "Text" => SearchPlaneQueryIpcRequest::Text(map.next_value()?),
                         "Symbol" => SearchPlaneQueryIpcRequest::Symbol(map.next_value()?),
                         "Semantic" => SearchPlaneQueryIpcRequest::Semantic(map.next_value()?),
@@ -551,6 +565,12 @@ impl Serialize for SearchPlaneQueryIpcResponse {
         S: Serializer,
     {
         match self {
+            Self::ActiveGenerationSnapshot(payload) => serialize_adjacent_tagged(
+                "SearchPlaneQueryIpcResponse",
+                "ActiveGenerationSnapshot",
+                payload,
+                serializer,
+            ),
             Self::Text(payload) => serialize_adjacent_tagged(
                 "SearchPlaneQueryIpcResponse",
                 "Text",
@@ -658,6 +678,9 @@ impl<'de> Visitor<'de> for SearchPlaneQueryIpcResponseVisitor {
                         .as_deref()
                         .ok_or_else(|| payload_before_kind_error("SearchPlaneQueryIpcResponse"))?;
                     let decoded = match kind_value {
+                        "ActiveGenerationSnapshot" => {
+                            SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(map.next_value()?)
+                        }
                         "Text" => SearchPlaneQueryIpcResponse::Text(map.next_value()?),
                         "Symbol" => SearchPlaneQueryIpcResponse::Symbol(map.next_value()?),
                         "Semantic" => SearchPlaneQueryIpcResponse::Semantic(map.next_value()?),
@@ -1204,6 +1227,67 @@ mod tests {
 
     fn fixture_revision() -> RevisionId {
         RevisionId::new("rev").expect("static fixture ID satisfies canonical policy")
+    }
+
+    #[test]
+    fn active_resolution_query_variants_round_trip_over_json_and_cbor() {
+        let request = SearchPlaneQueryIpcRequestEnvelope {
+            request_id: 29,
+            payload: SearchPlaneQueryIpcRequest::ResolveActiveGeneration(
+                CurrentGenerationRequest {
+                    repo_id: fixture_repo(),
+                    revision_id: fixture_revision(),
+                    track: SearchPlaneTrackKind::Lexical,
+                },
+            ),
+        };
+        let request_json = serde_json::to_value(&request).expect("resolution request JSON");
+        assert_eq!(
+            request_json.pointer("/payload/kind"),
+            Some(&json!("ResolveActiveGeneration"))
+        );
+        assert_eq!(
+            serde_json::from_value::<SearchPlaneQueryIpcRequestEnvelope>(request_json)
+                .expect("resolution request JSON decode"),
+            request
+        );
+        assert_eq!(
+            decode::<SearchPlaneQueryIpcRequestEnvelope>(
+                &encode(&request).expect("resolution request CBOR")
+            )
+            .expect("resolution request CBOR decode"),
+            request
+        );
+
+        let response = SearchPlaneQueryIpcResponseEnvelope {
+            request_id: 29,
+            payload: SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(GenerationSnapshot {
+                repo_id: fixture_repo(),
+                revision_id: fixture_revision(),
+                track: SearchPlaneTrackKind::Lexical,
+                manifest_generation: ManifestGeneration::new(7),
+                manifest_digest:
+                    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        .to_string(),
+            }),
+        };
+        let response_json = serde_json::to_value(&response).expect("resolution response JSON");
+        assert_eq!(
+            response_json.pointer("/payload/kind"),
+            Some(&json!("ActiveGenerationSnapshot"))
+        );
+        assert_eq!(
+            serde_json::from_value::<SearchPlaneQueryIpcResponseEnvelope>(response_json)
+                .expect("resolution response JSON decode"),
+            response
+        );
+        assert_eq!(
+            decode::<SearchPlaneQueryIpcResponseEnvelope>(
+                &encode(&response).expect("resolution response CBOR")
+            )
+            .expect("resolution response CBOR decode"),
+            response
+        );
     }
 
     #[test]
@@ -1828,7 +1912,8 @@ mod tests {
                 SearchPlaneQueryIpcResponse::Hybrid(r) => Some(r.explanation.request_id),
                 SearchPlaneQueryIpcResponse::HybridSeed(r) => Some(r.explanation.request_id),
                 SearchPlaneQueryIpcResponse::Explain(r) => Some(r.explanation.request_id),
-                SearchPlaneQueryIpcResponse::Text(_)
+                SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+                | SearchPlaneQueryIpcResponse::Text(_)
                 | SearchPlaneQueryIpcResponse::Symbol(_)
                 | SearchPlaneQueryIpcResponse::History(_)
                 | SearchPlaneQueryIpcResponse::Structural(_)

@@ -22,9 +22,10 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
 use quanta_index_contract::{
-    GenerationPin, GenerationSelector, ManifestGeneration, QueryConstraintSetV1, RepoId,
-    RepoRelativePath, RevisionId, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope,
-    SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope, SymbolQueryRequest,
+    GenerationPin, GenerationSelector, GenerationSnapshot, ManifestGeneration,
+    QueryConstraintSetV1, RepoId, RepoRelativePath, RevisionId, SearchPlaneQueryIpcRequest,
+    SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
+    SearchPlaneQueryIpcResponseEnvelope, SearchPlaneTrackKind, SymbolQueryRequest,
     TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_ipc::{decode_request, encode_response};
@@ -85,6 +86,17 @@ fn text_response(generation: GenerationPin) -> SearchPlaneQueryIpcResponse {
         window: quanta_index_contract::QueryResultWindowV2::exact_probe(0),
         file_owner_rows: None,
         next_cursor: None,
+    })
+}
+
+fn active_snapshot(repo_id: RepoId) -> SearchPlaneQueryIpcResponse {
+    SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(GenerationSnapshot {
+        repo_id,
+        revision_id: revision_id(),
+        track: SearchPlaneTrackKind::Lexical,
+        manifest_generation: ManifestGeneration::new(7),
+        manifest_digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            .to_string(),
     })
 }
 
@@ -231,24 +243,67 @@ fn wrong_repo_pin_fails_closed() {
 #[test]
 fn active_selector_out_of_domain_fails_closed() {
     let dir = temp_dir("active");
-    let error = run_scripted(
-        dir.path(),
-        text_request(
+    let (socket, rx) = scripted_query_server(dir.path(), vec![active_snapshot(other_repo_id())]);
+    let client = client_on(dir.path(), socket);
+    let error = client
+        .reader()
+        .lexical_request(text_request(
             None,
             Some(GenerationSelector::Active {
                 repo_id: repo_id(),
                 revision_id: revision_id(),
             }),
-        ),
-        text_response(pin(other_repo_id())),
-    )
-    .expect_err("out-of-domain active resolution must be refused");
+        ))
+        .expect_err("out-of-domain active resolution must be refused");
     assert!(matches!(
         error,
         Binding {
-            axis: ResponseBindingAxis::SelectorDomain,
+            axis: ResponseBindingAxis::ReadIdentity,
             ..
         }
+    ));
+    assert!(matches!(
+        rx.recv()
+            .expect("active resolution reached the query socket"),
+        SearchPlaneQueryIpcRequest::ResolveActiveGeneration(_)
+    ));
+}
+
+#[test]
+fn active_selector_rejects_wrong_same_domain_generation_over_uds() {
+    let dir = temp_dir("active-wrong-generation");
+    let wrong = GenerationPin::new(repo_id(), revision_id(), ManifestGeneration::new(8));
+    let (socket, rx) = scripted_query_server(
+        dir.path(),
+        vec![active_snapshot(repo_id()), text_response(wrong)],
+    );
+    let client = client_on(dir.path(), socket);
+    let error = client
+        .reader()
+        .lexical_request(text_request(
+            None,
+            Some(GenerationSelector::Active {
+                repo_id: repo_id(),
+                revision_id: revision_id(),
+            }),
+        ))
+        .expect_err("same-domain response from another generation must be refused");
+    assert!(matches!(
+        error,
+        Binding {
+            axis: ResponseBindingAxis::ReadIdentity,
+            ..
+        }
+    ));
+    assert!(matches!(
+        rx.recv().expect("resolution request"),
+        SearchPlaneQueryIpcRequest::ResolveActiveGeneration(_)
+    ));
+    assert!(matches!(
+        rx.recv().expect("pinned query request"),
+        SearchPlaneQueryIpcRequest::Text(request)
+            if request.generation == Some(pin(repo_id()))
+                && request.generation_selector.is_none()
     ));
 }
 
@@ -455,7 +510,10 @@ fn matching_positive_response_passes_binding() {
 #[test]
 fn query_only_profile_needs_no_control_or_ingest_sockets() {
     let dir = temp_dir("query-only");
-    let (socket, _rx) = scripted_query_server(dir.path(), vec![text_response(pin(repo_id()))]);
+    let (socket, rx) = scripted_query_server(
+        dir.path(),
+        vec![active_snapshot(repo_id()), text_response(pin(repo_id()))],
+    );
     // Only the query socket is named; the query-only profile must not
     // require, resolve or fabricate the other two.
     let options = ConnectOptions::default().with_query_socket(socket);
@@ -463,9 +521,25 @@ fn query_only_profile_needs_no_control_or_ingest_sockets() {
         .expect("query-only profile connects without control/ingest endpoints");
     let response = client
         .reader()
-        .lexical_request(text_request(Some(pin(repo_id())), None))
-        .expect("query dispatch works in the query-only profile");
+        .lexical_request(text_request(
+            None,
+            Some(GenerationSelector::Active {
+                repo_id: repo_id(),
+                revision_id: revision_id(),
+            }),
+        ))
+        .expect("active query dispatch works in the query-only profile");
     drop(response);
+    assert!(matches!(
+        rx.recv().expect("resolution request"),
+        SearchPlaneQueryIpcRequest::ResolveActiveGeneration(_)
+    ));
+    assert!(matches!(
+        rx.recv().expect("pinned query request"),
+        SearchPlaneQueryIpcRequest::Text(request)
+            if request.generation == Some(pin(repo_id()))
+                && request.generation_selector.is_none()
+    ));
 
     // The full profile with the same options still refuses: least
     // privilege is opt-in, not a silent downgrade.
@@ -517,6 +591,7 @@ fn coverage_table_exact_matches_sdk_surface() {
         .map(|row| row.route)
         .collect();
     let expected_query = [
+        "active_generation_snapshot",
         "text",
         "symbol",
         "semantic",

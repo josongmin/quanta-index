@@ -216,7 +216,8 @@ pub(crate) fn ipc_error_from(
 ) -> Result<(quanta_index_contract::SearchPlaneErrorCodeV2, String), String> {
     match response {
         SearchPlaneQueryIpcResponse::Error(err) => Ok((err.code, err.message)),
-        other @ (SearchPlaneQueryIpcResponse::Text(_)
+        other @ (SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+        | SearchPlaneQueryIpcResponse::Text(_)
         | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::Semantic(_)
         | SearchPlaneQueryIpcResponse::Hybrid(_)

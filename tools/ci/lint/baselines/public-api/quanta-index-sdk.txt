@@ -111,6 +111,7 @@ pub use quanta_index_sdk::canonical_batch_digest_v1
 pub use quanta_index_sdk::stamp_batch_digest_v1
 pub mod quanta_index_sdk::binding
 pub enum quanta_index_sdk::binding::ExpectedQueryResponseV1
+pub quanta_index_sdk::binding::ExpectedQueryResponseV1::ActiveGenerationSnapshot
 pub quanta_index_sdk::binding::ExpectedQueryResponseV1::ClusterMembershipRead
 pub quanta_index_sdk::binding::ExpectedQueryResponseV1::Explain
 pub quanta_index_sdk::binding::ExpectedQueryResponseV1::History
@@ -219,6 +220,7 @@ impl core::marker::UnsafeUnpin for quanta_index_sdk::DirtyBatchMutation
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::DirtyBatchMutation
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::DirtyBatchMutation
 pub enum quanta_index_sdk::ExpectedQueryResponseV1
+pub quanta_index_sdk::ExpectedQueryResponseV1::ActiveGenerationSnapshot
 pub quanta_index_sdk::ExpectedQueryResponseV1::ClusterMembershipRead
 pub quanta_index_sdk::ExpectedQueryResponseV1::Explain
 pub quanta_index_sdk::ExpectedQueryResponseV1::History

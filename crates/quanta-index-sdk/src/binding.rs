@@ -21,10 +21,10 @@
 
 use crate::error::ResponseBindingAxis;
 use quanta_index_contract::{
-    BatchPublishReceipt, ClusterMembershipBatchReadRequestV1, FileOwnerProjectionErrorV1,
-    FileOwnerProjectionRow, GenerationPin, GenerationSelector, HistoryQueryRequest,
-    HybridCandidatePolicyErrorV1, HybridQueryRequest, HybridSeedQueryRequest, LexicalCandidate,
-    ManifestGeneration, RepoId, RepoMapActivateGenerationRequest,
+    BatchPublishReceipt, ClusterMembershipBatchReadRequestV1, CurrentGenerationRequest,
+    FileOwnerProjectionErrorV1, FileOwnerProjectionRow, GenerationPin, GenerationSelector,
+    HistoryQueryRequest, HybridCandidatePolicyErrorV1, HybridQueryRequest, HybridSeedQueryRequest,
+    LexicalCandidate, ManifestGeneration, RepoId, RepoMapActivateGenerationRequest,
     RepoMapActivateGenerationRequestV2, RepoMapMutationAck, RepoMapMutationPhaseV2,
     RepoMapPublishBundleRequestV2, RepoMapQueryRequest, RepoMapQueryResponse,
     RepoMapTerminalReceiptV2, RevisionId, RuntimeMetadataQueryRequest,
@@ -42,6 +42,7 @@ use crate::SdkError;
 /// from the request before the payload moves into the envelope.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExpectedQueryResponseV1 {
+    ActiveGenerationSnapshot,
     Text,
     Symbol,
     Semantic,
@@ -61,6 +62,7 @@ impl ExpectedQueryResponseV1 {
     #[must_use]
     pub const fn kind(self) -> &'static str {
         match self {
+            Self::ActiveGenerationSnapshot => "active_generation_snapshot",
             Self::Text => "text",
             Self::Symbol => "symbol",
             Self::Semantic => "semantic",
@@ -189,6 +191,7 @@ fn identity_from(
 #[derive(Clone, Debug)]
 pub(crate) struct QueryCallBinding {
     expected: ExpectedQueryResponseV1,
+    resolution_request: Option<CurrentGenerationRequest>,
     pin: Option<GenerationPin>,
     active_domain: Option<ActiveDomain>,
     top_k: Option<u32>,
@@ -204,6 +207,15 @@ impl QueryCallBinding {
     /// it declares its expected response here.
     pub(crate) fn from_request(request: &SearchPlaneQueryIpcRequest) -> Self {
         match request {
+            SearchPlaneQueryIpcRequest::ResolveActiveGeneration(request) => Self {
+                expected: ExpectedQueryResponseV1::ActiveGenerationSnapshot,
+                resolution_request: Some(request.clone()),
+                pin: None,
+                active_domain: None,
+                top_k: None,
+                history_order: None,
+                rev_at_time: false,
+            },
             SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
                 generation,
                 generation_selector,
@@ -303,6 +315,7 @@ impl QueryCallBinding {
                 );
                 Self {
                     expected: ExpectedQueryResponseV1::History,
+                    resolution_request: None,
                     pin,
                     active_domain,
                     top_k: Some(text_query.top_k),
@@ -350,6 +363,7 @@ impl QueryCallBinding {
                 ..
             }) => Self {
                 expected: ExpectedQueryResponseV1::RepoMapQuery,
+                resolution_request: None,
                 pin: Some(GenerationPin::new(
                     repo_id.clone(),
                     revision_id.clone(),
@@ -365,6 +379,7 @@ impl QueryCallBinding {
                 ..
             }) => Self {
                 expected: ExpectedQueryResponseV1::Explain,
+                resolution_request: None,
                 pin: Some(generation.clone()),
                 active_domain: None,
                 top_k: None,
@@ -375,6 +390,7 @@ impl QueryCallBinding {
                 ClusterMembershipBatchReadRequestV1 { generation, .. },
             ) => Self {
                 expected: ExpectedQueryResponseV1::ClusterMembershipRead,
+                resolution_request: None,
                 pin: Some(generation.clone()),
                 active_domain: None,
                 top_k: None,
@@ -393,6 +409,7 @@ impl QueryCallBinding {
     ) -> Self {
         Self {
             expected,
+            resolution_request: None,
             pin,
             active_domain,
             top_k: Some(top_k),
@@ -619,6 +636,30 @@ pub(crate) fn bind_query_response(
     response: &SearchPlaneQueryIpcResponse,
 ) -> Result<(), SdkError> {
     match response {
+        SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(snapshot) => {
+            check_variant(binding, ExpectedQueryResponseV1::ActiveGenerationSnapshot)?;
+            let request = binding.resolution_request.as_ref().ok_or_else(|| {
+                binding_error(
+                    "active_generation_snapshot",
+                    ResponseBindingAxis::Variant,
+                    "an active-resolution request",
+                    "a different request",
+                )
+            })?;
+            if snapshot.repo_id != request.repo_id
+                || snapshot.revision_id != request.revision_id
+                || snapshot.track != request.track
+                || snapshot.manifest_digest.trim().is_empty()
+            {
+                return Err(binding_error(
+                    "active_generation_snapshot",
+                    ResponseBindingAxis::ReadIdentity,
+                    "the requested domain and track with a sealed manifest",
+                    "a different or unsealed active generation",
+                ));
+            }
+            Ok(())
+        }
         SearchPlaneQueryIpcResponse::Text(payload) => {
             check_variant(binding, ExpectedQueryResponseV1::Text)?;
             check_pin(binding, &payload.generation)?;
@@ -1294,6 +1335,12 @@ pub struct SdkWireRouteV1 {
 /// coverage test asserts this table exact-matches the closed expected
 /// enums and the SDK dispatch surface.
 pub const SDK_WIRE_ROUTES_V1: &[SdkWireRouteV1] = &[
+    SdkWireRouteV1 {
+        route: "active_generation_snapshot",
+        plane: "query",
+        expected_kind: "active_generation_snapshot",
+        bound_axes: &["variant", "read_identity"],
+    },
     SdkWireRouteV1 {
         route: "text",
         plane: "query",

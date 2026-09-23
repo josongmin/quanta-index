@@ -236,6 +236,8 @@ lane = "test-sdk-binding-owner-lane"
 test_threads = 4
 lib = true
 packages = [
+  "quanta-index-contract",
+  "quanta-index-search-plane",
   "quanta-index-sdk",
 ]
 

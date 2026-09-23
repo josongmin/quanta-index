@@ -6,10 +6,11 @@ use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Instant;
 
 use quanta_index_contract::{
-    ClusterMembershipBatchReadRequestV1, EarlyStopReason, GenerationPin, HistoryQueryRequest,
-    HybridQueryRequest, HybridSeedQueryRequest, RepoMapQueryRequest, RuntimeMetadataQueryRequest,
-    SearchPlaneExplainQueryRequest, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
-    SemanticQueryRequest, StructuralQueryRequest, SymbolQueryRequest, TextQueryRequest,
+    ClusterMembershipBatchReadRequestV1, CurrentGenerationRequest, EarlyStopReason, GenerationPin,
+    GenerationSnapshot, HistoryQueryRequest, HybridQueryRequest, HybridSeedQueryRequest,
+    RepoMapQueryRequest, RuntimeMetadataQueryRequest, SearchPlaneExplainQueryRequest,
+    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, SemanticQueryRequest,
+    StructuralQueryRequest, SymbolQueryRequest, TextQueryRequest,
 };
 use quanta_index_core::domains::structural::StructuralProducerPort;
 use quanta_index_core::{
@@ -178,6 +179,9 @@ impl SearchPlaneDispatcher {
         // new variant means: add one handler fn + add one match arm — no
         // edits to encode/decode/match/factory all at once.
         match request {
+            SearchPlaneQueryIpcRequest::ResolveActiveGeneration(req) => {
+                self.dispatch_active_resolution(&req, budget)
+            }
             SearchPlaneQueryIpcRequest::Text(req) => self.dispatch_text(req, budget),
             SearchPlaneQueryIpcRequest::Symbol(req) => self.dispatch_symbol(req, budget),
             SearchPlaneQueryIpcRequest::Semantic(req) => self.dispatch_semantic(req, budget),
@@ -194,6 +198,34 @@ impl SearchPlaneDispatcher {
                 self.dispatch_cluster_membership_batch_read(&req, budget)
             }
         }
+    }
+
+    fn dispatch_active_resolution(
+        &self,
+        request: &CurrentGenerationRequest,
+        budget: &RequestBudgetV1,
+    ) -> SearchPlaneQueryIpcResponse {
+        self.observed_route(QueryRoute::ActiveResolution, None, || {
+            let resolved = budget.checkpoint("active-resolution:entry").and_then(|()| {
+                self.activation_catalog.resolve_record(
+                    &request.repo_id,
+                    &request.revision_id,
+                    request.track,
+                )
+            });
+            match resolved {
+                Ok(record) => {
+                    SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(GenerationSnapshot {
+                        repo_id: record.repo_id,
+                        revision_id: record.revision_id,
+                        track: record.track,
+                        manifest_generation: record.manifest_generation,
+                        manifest_digest: record.manifest_digest,
+                    })
+                }
+                Err(error) => SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(error)),
+            }
+        })
     }
 
     fn dispatch_cluster_membership_batch_read(
