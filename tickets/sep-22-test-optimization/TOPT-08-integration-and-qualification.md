@@ -1,6 +1,6 @@
 # TOPT-08 — Same-Source Integration and Qualification
 
-Status: `blocked — workspace Clippy and uncontended performance evidence`
+Status: `blocked — exact-source full Rust rails, 10,001-row timeout investigation, uncontended performance evidence`
 
 Depends on: TOPT-01 through TOPT-07
 
@@ -65,3 +65,63 @@ proof registry to manufacture closure.
 All 18 rows are implemented and evidenced, no required rail is failed/skipped,
 timing evidence is source-bound and uncontended, and remaining S21 product
 qualification gaps are reported separately.
+
+## Evidence — Sep 23 Clippy sweep and broader rails (dirty tree)
+
+`HEAD` at capture: `81fcec7`. Dirty-tree receipts, not frozen-source
+qualification: peer lanes were editing `searchd-runtime`, `searchd-harness`,
+`benchmarks/retrieval`, and `tools/benchmark` while these rails ran (89 dirty
+paths at closeout). Re-freeze and re-run before promoting any verdict.
+
+Clippy sweep (this lane, behavior-preserving lint hygiene, 33 `.rs` files):
+`catalog` src + tests, `embed` lib/model2vec/openai/retry/pool, `lq-norm`,
+`lq-regex`, `repomap` materializer/store/candidate-activation-test, `sdk`
+binding/repomap/tests/sdk-binding-test, `search-plane` single-flight,
+control/ingest/query dispatchers + tests, `searchctl`, `searchd`
+config/runtime/searchd. Production semantics unchanged; three fail-closed
+error messages gained a cause suffix (`cursor_key` id/material length,
+`materializer` manifest custody digest, `config` HOME lookup) with no
+dependents on the old text.
+
+- `just fmt-check`: exit 0, full workspace.
+- `just rust-clippy` (CI recipe, `--workspace --all-targets --all-features
+  --locked -- -D warnings`): exit 101 with errors ONLY in
+  `benchmarks/retrieval` (152 across 8 files: batch, chunking
+  fixed-window/mod/syntax/whole-file, corpus, record, sdk). Every other
+  workspace target is clean. `benchmarks/retrieval` is the retrieval
+  benchmark lane's active work area (commits `1955700`, `de78a31`,
+  `ad35484`, … plus uncommitted `tools/benchmark/retrieval/*`); left to
+  its owner per shared-tree discipline, mostly arithmetic/indexing/doc
+  debt in chunking math where saturating-vs-wrapping is evidence-critical.
+- `just rust-profile test-fast`: exit 0, 44 suites, 1859 passed / 0 failed.
+- `just rust-profile test-integration`: exit 0, 204 + 6 + 58 passed /
+  0 failed across fast/storage/semantic slices.
+- `just rust-profile test-daemon`: exit 0, 203 passed / 1 skipped.
+- `just rust-profile test-daemon-all`: exit 0, 304 passed / 1 skipped.
+- `just rust-policy`, `just rust-machete`: exit 0.
+- `just rust-doc`: exit 101 on peer-active files only
+  (`searchd-runtime` signal `CancelRoot` link, `searchd`
+  `state_format` fault-port link); the owning lane is fixing these in-tree
+  (uncommitted fixes observed); untouched here.
+- `just verify-rust`: not green — blocked on the two foreign items above.
+- Timing evidence: still blocked on a quiet host (pre-existing TOPT-00).
+
+No `CODE_QUALIFIED`: the workspace gate is red on foreign-owned debt and no
+frozen-source re-run exists yet.
+
+## Sep 23 integrated-source update
+
+The preceding Clippy and rustdoc failures describe the historical `81fcec7`
+snapshot, not the current gate state. The benchmark/harness, rustdoc, and
+public-API repairs landed in `e42cb82`; the 33-file workspace Clippy owner
+sweep landed in `f478f69e5e0006afb7ea36360be9b4dd7558d252`. The latter
+commit excludes the concurrently edited Sep 23 retrieval benchmark lane.
+Qualification is being rerun from a clean checkout of `f478f69`. No earlier
+dirty-tree pass is promoted to a clean-source receipt.
+
+The remaining runtime investigation is the 10,001-row top-k E2E: a shared,
+contended-tree execution timed out during fixture ingest at its existing
+600-second IPC read limit. This is a failed run, not proof of a producer
+defect or a reason to increase the deadline or remove the oracle. TOPT-00
+still lacks the retrospective quiet-host paired timing comparison and its
+pre-implementation admission gap remains recorded.

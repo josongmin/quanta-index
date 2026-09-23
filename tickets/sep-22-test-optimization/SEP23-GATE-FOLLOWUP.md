@@ -1,6 +1,6 @@
 # Sep 23 gate follow-up — shared checkout
 
-Status: `BLOCKED — dirty-source ownership, one runtime timeout, and TOPT-00 timing evidence`
+Status: `BLOCKED — clean-source full rails, one runtime timeout investigation, and TOPT-00 timing evidence`
 
 This is a current shared-worktree repair record, **not** a clean-HEAD or
 performance qualification. At initial capture, `main` was
@@ -13,7 +13,9 @@ commit was qualified. A clean checkout of its doc-only successor
 uncommitted lint fixes in `lq-regex` and `lq-norm` tests; this is not a
 complete Clippy error inventory. Other writers had uncommitted changes in catalog, embed,
 repomap, SDK, search-plane, searchd, benchmark Python/schema, and the
-TOPT-08/RCA tickets. Do not stage those paths from this follow-up.
+TOPT-08/RCA tickets. The 33 Rust owner changes were later reviewed and
+integrated in `f478f69e5e0006afb7ea36360be9b4dd7558d252`. The separate
+Sep 23 retrieval benchmark edits remain excluded.
 
 ## Gate root causes repaired locally
 
@@ -80,3 +82,19 @@ quiet host, then investigate producer cost if it still fails.
    admission gap rather than silently waiving it.
 5. Do not emit `CODE_QUALIFIED`, `PERF_EVIDENCE_CLEAN`, or
    `PRODUCT_QUALIFIED` from these partial receipts.
+
+## Clean integrated-source gate — `f478f69`
+
+The existing isolated checkout was moved from `d9b39c3` to clean commit
+`f478f69e5e0006afb7ea36360be9b4dd7558d252`. On that source,
+`just fmt-check`, `just rust-policy`, `just rust-machete`, and
+`just rust-public-api` passed. The
+policy gate found zero benchmark artifacts attributed to that HEAD. These
+static results are not a full `verify-rust` or runtime qualification receipt.
+
+At capture, another repository had active Cargo compilation and a generated
+mutation run on the same host. TOPT-00's quiet-host condition was not met.
+The 10,001-row runtime failure therefore remains an investigation target,
+not an established load or producer-cost RCA. Keep the exact 10,001-row
+semantic oracle and its timeout unchanged until a source-bound, uncontended
+rerun distinguishes host contention from implementation cost.

@@ -149,3 +149,30 @@ changes, then collect the TOPT-00 performance protocol on a quiet host. Until
 then, TOPT-01..07 are code-landed, while TOPT-00/08 and overall closure remain
 open. Do not interpret the historical Sep 22 audit's “18 open actions” as 18
 remaining implementation defects.
+
+## Clippy sweep and broader rails (later on Sep 23)
+
+Dirty-tree receipts at `HEAD 81fcec7` with concurrent peer edits present
+(`searchd-runtime`, `searchd-harness`, `benchmarks/retrieval`,
+`tools/benchmark`; 89 dirty paths at closeout). Supersedes the receipt
+above on `lq-regex`, `lq-norm`, `embed`, `catalog`, `sdk`, and
+`search-plane`: all are Clippy-clean now, plus `repomap`, `searchctl`, and
+`searchd` app owners (33 `.rs` files, behavior-preserving; see TOPT-08
+evidence). `just fmt-check` exit 0. `just rust-clippy` (CI recipe) exit 101
+with errors ONLY in `benchmarks/retrieval` (152, retrieval-lane owned,
+untouched). Broader rails: test-fast 1859/0, test-integration 268/0,
+test-daemon 203 passed / 1 skipped, test-daemon-all 304 passed / 1 skipped;
+`rust-policy` and `rust-machete` exit 0. `just rust-doc` exit 101 on
+peer-active files only (owning lane fixing in-tree). `verify-rust` not
+green; no frozen-source re-run; timing still needs a quiet host. TOPT-08
+stays blocked; no verdict promoted.
+
+## Integrated-source supersession
+
+The Clippy/rustdoc/public-API blocker list above is historical to the named
+snapshots. Benchmark/harness, documentation-link, and public-API baseline
+repairs were committed in `e42cb82`; the 33-file Rust Clippy owner sweep was
+integrated at `f478f69e5e0006afb7ea36360be9b4dd7558d252`. The shared
+checkout still contains unrelated Sep 23 retrieval benchmark work, which was
+not staged with the TOPT changes. Clean-source gate results and remaining
+qualification gaps are tracked in `SEP23-GATE-FOLLOWUP.md`.
