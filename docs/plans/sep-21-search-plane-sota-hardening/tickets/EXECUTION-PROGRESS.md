@@ -87,6 +87,11 @@ to validated lane handoffs and immutable proof manifests, not this document.
   state_migration_owner_v1` exited 0 with 41 passed, 0 failed, 0 ignored;
   `git diff --check` exited 0. This is owner-fixture evidence, not a final
   P10 proof manifest or release qualification.
+- Exact code/doc checkpoint `03aabbf`: `just
+  proof-p10-state-migration-owner` exited 0. Registered integration scope ran
+  40/40 passed, lib scope 86/86 passed with one separately reported skipped
+  test; hexagonal, wire inventory and public API checks passed. The command
+  does not issue the missing final-source P10 release proof or P11 handoff.
 
 ### P08 custody correction — candidate checkpoint `8b78f35`
 
