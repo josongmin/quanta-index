@@ -6,9 +6,12 @@ to validated lane handoffs and immutable proof manifests, not this document.
 
 ## Current checkpoint (2026-09-23)
 
-- Local `main` was clean at inspection and ahead of `origin/main` by five
-  commits. W10 execution-truth and request-correlation changes are integrated
-  locally; remote publication and final-source qualification are separate.
+- Local `main` was clean at initial inspection at `1b0b827` and ahead of
+  `origin/main` by five commits. P08 candidate code `8b78f35` and its proof
+  note `fbe9c1e` were then committed directly on `main` (ahead by seven at
+  that checkpoint). W10 execution-truth and request-correlation changes are
+  integrated locally; remote publication and final-source qualification are
+  separate.
 - P03–P10 have historical owner-proof manifests and
   `RELEASE_PROOF_PENDING` handoffs. Every corresponding release proof is
   `NOT_RUN`. Those manifests name earlier source revisions and do not qualify
@@ -19,16 +22,17 @@ to validated lane handoffs and immutable proof manifests, not this document.
 - P11's four external proof nodes and P12 final qualification remain staged.
   P12A infrastructure is declared executable, but its required handoff-DAG
   aggregate producer is not implemented.
-- `/private/tmp/w10-r3` has six uncommitted P10 state-custody files. Treat
-  those edits as concurrent owner work. Do not copy or overwrite them while
-  the owner is active; reconcile their final diff into one P10 checkpoint.
+- `/private/tmp/w10-r3` moved from six uncommitted P10 state-custody files
+  to a clean branch with at least three commits during this inspection.
+  The owner may continue committing; do not copy or overwrite that branch
+  while active. Reconcile its final diff into one P10 checkpoint.
 
 ## Structural work ledger
 
 | Order | Owner | Current finding | Required closeout |
 | --- | --- | --- | --- |
 | 1 | P06 / S21-07 | SDK active-selector binding checks repo/revision but has no activation-resolution proof or epoch. | A response from the same repo/revision but wrong resolved generation/epoch is rejected by a consumer-visible negative oracle. |
-| 2 | P08 / S21-09 | Hard escalation can release runtime guards while a child is unfinished. | No live child can outlast state-root lease custody; required-child failure and hard drain have process-boundary evidence. |
+| 2 | P08 / S21-09 | Candidate `8b78f35` repairs guard custody and passes owner proof; release/process proof is still absent. | No live child can outlast state-root lease custody; required-child failure and hard drain have release process-boundary evidence. |
 | 3 | P09 / S21-10 | Production control dispatcher composes `readiness: None`. | Supervisor-owned process readiness is wired; component death or stale heartbeat makes readiness false without confusing it with repository generation status. |
 | 4 | P10 / S21-11 | Offline semantic importer writes lock/receipt/cleanup into the legacy source; RepoMap legacy activation is copied into an inert namespace; boot still migrates auxiliary snapshots. | Source inode/mtime/content remain unchanged, legacy authority is converted into current catalog/object authority, and boot contains no legacy importer. Restore/verify proves active identity, receipt, replay floor, and high-water equality. |
 | 5 | P11 / S21-12 | V1 RepoMap mutation entrypoints remain reachable; no exact Quanta/Semantica commitment-chain or four P11 receipts. | One clean source pair and attested daemon binary pass publish, activate, replay, incompatibility, deployment, activation, and rollback proofs as separate nodes. |
@@ -47,6 +51,16 @@ to validated lane handoffs and immutable proof manifests, not this document.
   owner files until that work is reconciled.
 - A focused code test is owner evidence only. Release, Linux process,
   external-provider, deployment, and activation proof are not inferred from it.
+- P06 cannot independently reject a wrong same-domain active generation
+  with the present request contract: `Active` carries repo/revision, not an
+  expected pin/epoch/commitment. A response-only proof is self-attestation.
+  The correctness-first path is active resolve then exact pinned query; the
+  additional IPC round trip is an explicit product decision.
+- P09 must not wire a synthetic `ready=true`: boot's active-pair proof is not
+  automatically a fresh integrity proof after mutation or disk damage.
+  Supervisor child liveness, maintenance heartbeat freshness, backend open,
+  active-head integrity, and provider claim need one owned, fail-closed
+  observation model before `readiness: None` can be replaced.
 
 ## Current-main implementation log
 

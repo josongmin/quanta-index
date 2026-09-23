@@ -95,3 +95,23 @@ validator registry를 공통 client architecture로 만든다.
 - same response variant지만 repo/revision/generation/commitment/order가 다른 mock wire fixture를 모두 거부한다.
 - active selector는 resolution proof 누락·stale epoch·다른 activation identity를 거부한다.
 - query-only SDK 구성은 control/ingest socket 부재에서도 query contract만으로 동작한다.
+
+## 2026-09-23 active-selector RCA and decision gate
+
+`crates/quanta-index-sdk/src/binding.rs::check_pin` currently knows only the
+repo/revision from an `Active` request and accepts any response generation in
+that domain. The request contains no expected activation epoch or candidate
+commitment. Therefore adding an epoch to the response and checking its shape
+cannot let the SDK independently reject a wrong but same-domain generation:
+the response would be its own only authority. Do not call such a self-check
+the negative oracle above.
+
+The correctness-first contract is a server-authoritative active-resolution
+operation returning an exact pin, activation epoch and candidate commitment,
+followed by a pinned query whose response is bound to that frozen resolution.
+This costs one additional IPC round trip for an uncached active read. An
+alternative single-call contract must explicitly weaken the acceptance claim
+to request-ID/domain/self-consistency and must not claim detection of a
+producer that resolved the wrong same-domain generation. The user decision
+on latency versus independent validation is pending; do not add response-only
+`resolution_proof` fields as a cosmetic substitute.
