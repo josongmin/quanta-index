@@ -1,16 +1,20 @@
 use std::sync::{Arc, Mutex, RwLock};
 
 use quanta_index_contract::{
-    CurrentGenerationRequest, GenerationPin, GenerationSelector, ManifestGeneration, RepoId,
-    RevisionId, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, SearchPlaneTrackKind,
-    SemanticQueryRequest, TextQueryRequest, TextQuerySyntax,
+    CurrentGenerationRequest, GenerationPin, GenerationSelector, HybridQueryRequest,
+    ManifestGeneration, RepoId, RevisionId, SearchPlaneQueryIpcRequest,
+    SearchPlaneQueryIpcResponse, SearchPlaneTrackKind, SemanticQueryRequest, TextQueryRequest,
+    TextQuerySyntax,
 };
 use quanta_index_core::RequestBudgetV1;
 use tempfile::tempdir;
 
 use crate::observability::NoopQueryObsSink;
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
-use crate::query_dispatcher::semantic_query::resolve_semantic_request_selection;
+use crate::query_dispatcher::selection::resolve_joint_active_selection;
+use crate::query_dispatcher::semantic_query::{
+    resolve_hybrid_request_selection, resolve_semantic_request_selection,
+};
 use crate::query_dispatcher::tests::support::common::{
     TestResult, corpus_generation, default_query_embedder, ipc_error_from, ready_ledger,
     test_activation_catalog,
@@ -26,6 +30,118 @@ use crate::{
     ActivationCatalog, Ledger, PreparedSearchCorpusGenerationV1, SEARCH_OWNED_SEMANTIC_DIMENSION,
     SnapshotRegistries, SnapshotRegistryPolicy,
 };
+
+#[test]
+fn joint_active_selection_uses_one_composite_head_and_checks_explicit_pin() -> TestResult {
+    let dir = tempdir()?;
+    let catalog = ActivationCatalog::open(dir.keep())?;
+    let repo = RepoId::new("joint-active-repo")?;
+    let revision = RevisionId::new("joint-active-revision")?;
+    let first = corpus_generation(
+        repo.clone(),
+        revision.clone(),
+        ManifestGeneration::new(9),
+        "joint-digest-9",
+    )?;
+    let first_prepared = PreparedSearchCorpusGenerationV1::new(first.clone(), None)?;
+    let _first_activation =
+        catalog.activate_prepared_search_corpus_generation_v1(&first_prepared)?;
+    let selector = GenerationSelector::Active {
+        repo_id: repo.clone(),
+        revision_id: revision.clone(),
+    };
+    let pinned_first =
+        GenerationPin::new(repo.clone(), revision.clone(), ManifestGeneration::new(9));
+    let first_selection = resolve_joint_active_selection(
+        &catalog,
+        Some(&selector),
+        Some(&selector),
+        Some(&pinned_first),
+        "hybrid",
+    )?
+    .ok_or("matching active selectors must resolve together")?;
+    assert_eq!(first_selection.pin, pinned_first);
+    assert_eq!(
+        first_selection.expected_manifest_digest.as_deref(),
+        Some("joint-digest-9")
+    );
+
+    let second = corpus_generation(
+        repo.clone(),
+        revision.clone(),
+        ManifestGeneration::new(10),
+        "joint-digest-10",
+    )?;
+    let _second_activation = catalog.activate_prepared_search_corpus_generation_v1(
+        &PreparedSearchCorpusGenerationV1::new(second, Some(first))?,
+    )?;
+    let latest =
+        resolve_joint_active_selection(&catalog, Some(&selector), Some(&selector), None, "hybrid")?
+            .ok_or("active selectors must resolve after activation")?;
+    assert_eq!(latest.pin.manifest_generation, ManifestGeneration::new(10));
+    assert_eq!(
+        latest.expected_manifest_digest.as_deref(),
+        Some("joint-digest-10")
+    );
+    let text_scope = TextQueryRequest {
+        syntax: TextQuerySyntax::Native,
+        query_text: "needle".to_string(),
+        constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+        generation: Some(latest.pin.clone()),
+        generation_selector: Some(selector.clone()),
+        top_k: 5,
+        cursor: None,
+    };
+    let semantic_request = SemanticQueryRequest {
+        query_text: "semantic".to_string(),
+        constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+        generation: Some(latest.pin.clone()),
+        generation_selector: Some(selector.clone()),
+        lexical_scope: Some(text_scope.clone()),
+        top_k: 5,
+    };
+    let semantic_selection = resolve_semantic_request_selection(&catalog, &semantic_request)?;
+    assert_eq!(semantic_selection.pin, latest.pin);
+    assert_eq!(
+        semantic_selection.expected_manifest_digest,
+        latest.expected_manifest_digest
+    );
+    let hybrid_request = HybridQueryRequest {
+        text_query: text_scope.clone(),
+        semantic_query_text: "semantic".to_string(),
+        generation: Some(latest.pin.clone()),
+        generation_selector: Some(selector.clone()),
+        top_k: 5,
+    };
+    let hybrid_selection = resolve_hybrid_request_selection(&catalog, &hybrid_request)?;
+    assert_eq!(hybrid_selection.pin, latest.pin);
+    assert_eq!(
+        hybrid_selection.expected_manifest_digest,
+        latest.expected_manifest_digest
+    );
+    let mut stale_hybrid = hybrid_request;
+    stale_hybrid.text_query.generation = Some(pinned_first.clone());
+    assert!(resolve_hybrid_request_selection(&catalog, &stale_hybrid).is_err());
+    assert!(
+        resolve_joint_active_selection(
+            &catalog,
+            Some(&selector),
+            Some(&selector),
+            Some(&pinned_first),
+            "hybrid",
+        )
+        .is_err()
+    );
+    let foreign = GenerationSelector::Active {
+        repo_id: RepoId::new("foreign-repo")?,
+        revision_id: revision,
+    };
+    assert!(
+        resolve_joint_active_selection(&catalog, Some(&selector), Some(&foreign), None, "hybrid",)
+            .is_err()
+    );
+    Ok(())
+}
 
 #[test]
 fn query_plane_resolves_only_catalog_active_generation() -> TestResult {

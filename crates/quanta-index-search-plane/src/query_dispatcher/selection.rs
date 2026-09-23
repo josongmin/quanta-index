@@ -83,6 +83,59 @@ pub(super) fn resolve_semantic_selector_selection(
     }
 }
 
+/// Resolve two active selectors from one composite catalog snapshot. A pair
+/// activated between independent lexical and semantic lookups must not be
+/// observable as one successful mixed selection.
+pub(super) fn resolve_joint_active_selection(
+    activation_catalog: &ActivationCatalog,
+    lexical_selector: Option<&GenerationSelector>,
+    semantic_selector: Option<&GenerationSelector>,
+    lexical_generation: Option<&GenerationPin>,
+    plane: &str,
+) -> Result<Option<SemanticSelection>, CoreError> {
+    let (
+        Some(GenerationSelector::Active {
+            repo_id: lexical_repo,
+            revision_id: lexical_revision,
+        }),
+        Some(GenerationSelector::Active {
+            repo_id: semantic_repo,
+            revision_id: semantic_revision,
+        }),
+    ) = (lexical_selector, semantic_selector)
+    else {
+        return Ok(None);
+    };
+    if lexical_repo != semantic_repo || lexical_revision != semantic_revision {
+        return Err(CoreError::InvalidContract(format!(
+            "{plane}: lexical and semantic active selectors name different repositories or revisions"
+        )));
+    }
+    let generation = activation_catalog
+        .active_search_corpus_v1(lexical_repo, lexical_revision)?
+        .ok_or_else(|| {
+            CoreError::NotReady(format!(
+                "{plane}: active composite generation unresolved for repo={} revision={}",
+                lexical_repo.as_str(),
+                lexical_revision.as_str()
+            ))
+        })?;
+    let pin = GenerationPin::new(
+        lexical_repo.clone(),
+        lexical_revision.clone(),
+        generation.manifest_generation(),
+    );
+    if lexical_generation.is_some_and(|explicit| explicit != &pin) {
+        return Err(CoreError::InvalidContract(format!(
+            "{plane}: explicit lexical generation pin does not match active composite resolution"
+        )));
+    }
+    Ok(Some(SemanticSelection {
+        pin,
+        expected_manifest_digest: Some(generation.manifest_digest().to_string()),
+    }))
+}
+
 fn resolve_active_semantic_selection(
     activation_catalog: &ActivationCatalog,
     repo_id: &RepoId,

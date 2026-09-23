@@ -22,7 +22,8 @@ use quanta_index_core::{
 use crate::ActivationCatalog;
 use crate::query_dispatcher::execution_trace::LaneExecutionSummaryV1;
 use crate::query_dispatcher::selection::{
-    SemanticSelection, resolve_lexical_request_pin, resolve_semantic_selector_selection,
+    SemanticSelection, resolve_joint_active_selection, resolve_lexical_request_pin,
+    resolve_semantic_selector_selection,
 };
 
 /// The plan-stage trace entry naming the dense lane every semantic route
@@ -74,22 +75,39 @@ pub(super) fn resolve_semantic_request_selection(
     activation_catalog: &ActivationCatalog,
     request: &SemanticQueryRequest,
 ) -> Result<SemanticSelection, CoreError> {
-    let outer_selection = match request.generation_selector.as_ref() {
-        Some(selector) => Some(resolve_semantic_selector_selection(
-            activation_catalog,
-            selector,
-            "semantic",
-        )?),
-        None => None,
+    let joint = resolve_joint_active_selection(
+        activation_catalog,
+        request
+            .lexical_scope
+            .as_ref()
+            .and_then(|scope| scope.generation_selector.as_ref()),
+        request.generation_selector.as_ref(),
+        request
+            .lexical_scope
+            .as_ref()
+            .and_then(|scope| scope.generation.as_ref()),
+        "semantic",
+    )?;
+    let outer_selection = match &joint {
+        Some(selection) => Some(selection.clone()),
+        None => match request.generation_selector.as_ref() {
+            Some(selector) => Some(resolve_semantic_selector_selection(
+                activation_catalog,
+                selector,
+                "semantic",
+            )?),
+            None => None,
+        },
     };
-    let scope_pin = match request.lexical_scope.as_ref() {
-        Some(scope) => Some(resolve_lexical_request_pin(
+    let scope_pin = match (&joint, request.lexical_scope.as_ref()) {
+        (Some(selection), Some(_)) => Some(selection.pin.clone()),
+        (None, Some(scope)) => Some(resolve_lexical_request_pin(
             activation_catalog,
             scope,
             SearchPlaneTrackKind::Lexical,
             "semantic scope",
         )?),
-        None => None,
+        (_, None) => None,
     };
     match (request.generation.clone(), outer_selection, scope_pin) {
         (Some(pin), Some(selection), Some(scope_pin))
@@ -132,19 +150,32 @@ pub(super) fn resolve_hybrid_request_selection(
     activation_catalog: &ActivationCatalog,
     request: &HybridQueryRequest,
 ) -> Result<SemanticSelection, CoreError> {
-    let lexical_pin = resolve_lexical_request_pin(
+    let joint = resolve_joint_active_selection(
         activation_catalog,
-        &request.text_query,
-        SearchPlaneTrackKind::Lexical,
-        "hybrid text_query",
+        request.text_query.generation_selector.as_ref(),
+        request.generation_selector.as_ref(),
+        request.text_query.generation.as_ref(),
+        "hybrid",
     )?;
-    let semantic_selection = match request.generation_selector.as_ref() {
-        Some(selector) => Some(resolve_semantic_selector_selection(
+    let lexical_pin = match &joint {
+        Some(selection) => selection.pin.clone(),
+        None => resolve_lexical_request_pin(
             activation_catalog,
-            selector,
-            "hybrid",
-        )?),
-        None => None,
+            &request.text_query,
+            SearchPlaneTrackKind::Lexical,
+            "hybrid text_query",
+        )?,
+    };
+    let semantic_selection = match joint {
+        Some(selection) => Some(selection),
+        None => match request.generation_selector.as_ref() {
+            Some(selector) => Some(resolve_semantic_selector_selection(
+                activation_catalog,
+                selector,
+                "hybrid",
+            )?),
+            None => None,
+        },
     };
     match (request.generation.clone(), semantic_selection) {
         (Some(pin), Some(selection)) if pin != selection.pin || pin != lexical_pin => {

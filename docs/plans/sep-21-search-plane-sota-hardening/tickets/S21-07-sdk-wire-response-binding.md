@@ -171,3 +171,16 @@ work below.
    same-variant negative matrix, public API/wire/fuzz rails, P06 owner proof,
    then Linux release proof at one frozen source. Until then the P06 status is
    open even if focused query tests pass.
+
+### Composite active selection checkpoint (2026-09-23)
+
+The server-side hybrid, hybrid-seed and semantic-with-lexical-scope paths now
+share one `ActivationCatalog::active_search_corpus_v1` read when both selectors
+are `Active`. They reject a stale explicit lexical pin or divergent active
+repo/revision before opening a lane. The owner test checks the selected pin
+and manifest digest across activation advancement and exercises both route
+selection functions. This narrows item 4 but does not close its concurrent
+activation/rollback oracle or the request-level epoch/commitment design in
+items 1–2. The SDK still performs independent lexical and semantic preflight
+resolution calls, so the full end-to-end composite-resolution contract remains
+open.

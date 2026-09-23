@@ -37,7 +37,7 @@ to validated lane handoffs and immutable proof manifests, not this document.
 
 | Order | Owner | Current finding | Required closeout |
 | --- | --- | --- | --- |
-| 1 | P06 / S21-07 | SDK active-selector binding checks repo/revision but has no activation-resolution proof or epoch. | A response from the same repo/revision but wrong resolved generation/epoch is rejected by a consumer-visible negative oracle. |
+| 1 | P06 / S21-07 | Query-plane active resolution and exact SDK pin binding are implemented. Hybrid/semantic-scope server selection now reads one composite active head. Durable activation epoch, request/read-view commitment binding, final-source owner/release proof remain open. | A response from the same repo/revision but wrong resolved generation/epoch/commitment is rejected by a consumer-visible negative oracle. |
 | 2 | P08 / S21-09 | Candidate `8b78f35` repairs guard custody and passes owner proof; release/process proof is still absent. | No live child can outlast state-root lease custody; required-child failure and hard drain have release process-boundary evidence. |
 | 3 | P09 / S21-10 | Production control dispatcher composes `readiness: None`. | Supervisor-owned process readiness is wired; component death or stale heartbeat makes readiness false without confusing it with repository generation status. |
 | 4 | P10 / S21-11 | Read-only semantic import is merged. Current follow-up refuses nonempty V1 RepoMap instead of publishing a current root with missing active authority. Boot still migrates pre-catalog auxiliary snapshots. | Source remains byte-identical; nonconvertible RepoMap fails closed without destination; a producer replay path and offline auxiliary conversion are required before active identity/replay floor/high-water parity can close. |
@@ -77,6 +77,18 @@ to validated lane handoffs and immutable proof manifests, not this document.
 ## Current-main implementation log
 
 ### P06 active-selector binding — main-checkout work in progress
+
+- Current main follow-up: `query_dispatcher::selection::resolve_joint_active_selection`
+  obtains one lexical+semantic composite head when both selectors are
+  `Active`. Hybrid, hybrid-seed and semantic-with-lexical-scope share that
+  authority instead of independently reading lexical and semantic heads.
+  The explicit lexical pin must match the composite head; differing active
+  repo/revision pairs fail before opening a lane. Focused dirty-source tests:
+  `./scripts/cargow test -p quanta-index-search-plane
+  joint_active_selection_uses_one_composite_head_and_checks_explicit_pin
+  --lib` (1/1), `query_dispatcher::tests::semantic` (8/8), and
+  `query_dispatcher::tests::hybrid` (18/18). This is a server-side
+  same-snapshot correction, not durable epoch/commitment or a release proof.
 
 - Work is being performed directly on local `main`, with the unrelated
   Sep-23 retrieval-benchmark and agent-rule edits preserved. The active-pin
