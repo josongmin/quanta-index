@@ -14,8 +14,9 @@
 use std::error::Error;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use quanta_index_contract::{
     ChunkId, ChunkRecord, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
@@ -97,18 +98,22 @@ fn generation(raw: u64) -> ManifestGeneration {
     ManifestGeneration::new(raw)
 }
 
-fn wait_until<F>(timeout: Duration, mut predicate: F) -> bool
-where
-    F: FnMut() -> bool,
-{
-    let start = Instant::now();
-    while start.elapsed() < timeout {
-        if predicate() {
-            return true;
+#[derive(Debug, Eq, PartialEq)]
+enum QueryEvent {
+    Generation(u64),
+    TransitionQueryCompleted,
+    Failed(String),
+}
+
+fn expect_query_event(events: &mpsc::Receiver<QueryEvent>, expected: QueryEvent) -> TestResult {
+    match events.recv_timeout(SOCKET_TIMEOUT) {
+        Ok(QueryEvent::Failed(error)) => {
+            Err(format!("query loop failed before {expected:?}: {error}").into())
         }
-        thread::sleep(Duration::from_millis(5));
+        Ok(observed) if observed == expected => Ok(()),
+        Ok(observed) => Err(format!("expected {expected:?}, observed {observed:?}").into()),
+        Err(error) => Err(format!("waiting for {expected:?}: {error}").into()),
     }
-    false
 }
 
 fn label(raw_generation: u64) -> String {
@@ -255,55 +260,49 @@ fn concurrent_queries_observe_only_complete_predicate_authority_generations() ->
     let active_g1 = publish_and_activate(&publisher, G1, None)?;
 
     let stop = Arc::new(AtomicBool::new(false));
-    let g1_seen = Arc::new(AtomicBool::new(false));
-    let g2_seen = Arc::new(AtomicBool::new(false));
     let transition_open = Arc::new(AtomicBool::new(false));
     let transition_queries = Arc::new(AtomicU64::new(0));
+    let (events_tx, events_rx) = mpsc::channel();
     let query_stop = Arc::clone(&stop);
-    let query_g1_seen = Arc::clone(&g1_seen);
-    let query_g2_seen = Arc::clone(&g2_seen);
     let query_transition_open = Arc::clone(&transition_open);
     let query_transition_queries = Arc::clone(&transition_queries);
     let query_loop = thread::Builder::new()
         .name("generation-activation-concurrency-query".to_string())
         .spawn(move || -> Result<(), String> {
+            let mut last_generation = None;
             while !query_stop.load(Ordering::Acquire) {
-                let observed =
-                    query_active_generation(&query_client).map_err(|error| error.to_string())?;
+                let observed = match query_active_generation(&query_client) {
+                    Ok(observed) => observed,
+                    Err(error) => {
+                        let message = error.to_string();
+                        let _reported = events_tx.send(QueryEvent::Failed(message.clone()));
+                        return Err(message);
+                    }
+                };
                 if query_transition_open.load(Ordering::Acquire) {
-                    let _previous = query_transition_queries.fetch_add(1, Ordering::AcqRel);
+                    let previous = query_transition_queries.fetch_add(1, Ordering::AcqRel);
+                    if previous == 0 {
+                        let _reported = events_tx.send(QueryEvent::TransitionQueryCompleted);
+                    }
                 }
-                match observed {
-                    G1 => query_g1_seen.store(true, Ordering::Release),
-                    G2 => query_g2_seen.store(true, Ordering::Release),
-                    other => return Err(format!("unexpected observed generation {other}")),
+                if last_generation != Some(observed) {
+                    let _reported = events_tx.send(QueryEvent::Generation(observed));
+                    last_generation = Some(observed);
                 }
             }
             Ok(())
         })?;
 
     let test_result = (|| -> TestResult {
-        if !wait_until(SOCKET_TIMEOUT, || g1_seen.load(Ordering::Acquire)) {
-            return Err("query client never observed the active generation one baseline".into());
-        }
+        expect_query_event(&events_rx, QueryEvent::Generation(G1))?;
 
         transition_open.store(true, Ordering::Release);
-        if !wait_until(SOCKET_TIMEOUT, || {
-            transition_queries.load(Ordering::Acquire) > 0
-        }) {
-            return Err(
-                "query loop did not enter the publish/seal/activate transition window".into(),
-            );
-        }
+        expect_query_event(&events_rx, QueryEvent::TransitionQueryCompleted)?;
         let active_g2 = publish_and_activate(&publisher, G2, Some(active_g1.clone()))?;
         if active_g2.lexical.manifest_generation != generation(G2) {
             return Err("generation two activation acknowledgement did not select G2".into());
         }
-        if !wait_until(SOCKET_TIMEOUT, || g2_seen.load(Ordering::Acquire)) {
-            return Err(
-                "query client never observed the activated generation two result set".into(),
-            );
-        }
+        expect_query_event(&events_rx, QueryEvent::Generation(G2))?;
         Ok(())
     })();
 
@@ -315,8 +314,8 @@ fn concurrent_queries_observe_only_complete_predicate_authority_generations() ->
         Err(panic) => Err(format!("query loop panicked: {panic:?}").into()),
     };
     let stop_result = runtime.stop();
-    test_result?;
     query_result?;
+    test_result?;
     stop_result?;
     if transition_queries.load(Ordering::Acquire) == 0 {
         return Err("no query completed during the generation-two transition window".into());
