@@ -1,10 +1,14 @@
 # RB-00 — Scope Freeze and Benchmark Protocol
 
-Status: `planned`
+Status: `stage-a-implemented / stage-b-blocked`
 
 Depends on: none
 
 Owner: benchmark plan/protocol; no product runtime edits
+
+## Current code status (2026-09-23)
+
+Stage A is implemented in the v3 suite/runner schemas, pair/run-manifest/verdict schemas, evaluator, mapping-proof contract and negative tests. Stage B has not exited: this repository contains no approved pilot repo manifest, two-person adjudicated gold set, accepted data-license record, pinned real Semble environment/lockfile, admitted model-asset receipt, or quiet-host profile. No quality or speed claim is authorized.
 
 ## Goal
 
@@ -14,7 +18,7 @@ Freeze the benchmark's comparison unit and data custody before runner work. Prev
 
 ### Stage A — protocol + schema freeze (unblocks W1 scaffolding/scorer)
 
-A1. Inventory current evaluator v1, SDK publish/query APIs, searchd lifecycle, supported languages/file filters, semantic model profiles and existing benchmark artifact/manifest rules. Record what can be reused and what is absent.
+A1. Inventory the original evaluator-v1 baseline, SDK publish/query APIs, searchd lifecycle, supported languages/file filters, semantic model profiles and existing benchmark artifact/manifest rules. Record what can be reused and what is absent. This inventory produced the current v3 authority; v1 is migration-only.
 A2. Define one versioned run protocol: pinned repo commit, exact tracked-file manifest and exclusions, query-pack digest, per-system version/build/model/chunker configuration, result spans, timings, receipts, errors and host. Use the existing evaluator's blind query-pack and file-hash rules; extend rather than fork it.
 A3. Specify corpus policy: same source bytes and admitted file universe for both systems; distinguish common-coverage scoring from native-coverage reporting. Explicitly handle large files, generated files, binary files, unsupported languages and ignore rules. No silent subset reduction.
 A4. Decide the v1-to-v2 suite/runner migration, common-file-universe construction and label isolation mechanism. Every run records `blinding: isolated | attested` plus `isolation_method` and an `access_block_log`; `gold_access: false` without process isolation remains an attestation, not proven blinding.
@@ -28,7 +32,7 @@ B3. Prove the Semble path-mapping on the frozen manifest (path map plus both-sid
 B4. Audit the in-flight `potion-code` profile on a clean source revision and pin the exact local model files, revision, and Semble dependency lockfile before designating it as the model-matched Semble control. A compiled but unqualified embedder is not an admitted benchmark route. Independently verify whether identical Model2Vec model files, tokenization and normalization produce equivalent vectors; a shared model name alone does not establish model parity. T15 gates only the same-model claim.
 B5. Freeze correctness and speed measurement definitions, including the quiet host fixed as a host profile (pinned CPU/power plan, no concurrent builds/benchmarks, thermal/frequency sanity under the check-record rule — no single load-average gate) and cache regime, before running opponents. Record non-comparable configurations as `ineligible`, not PASS or a zero score.
 
-## Planned files
+## Owner / expected files
 
 - `tools/benchmark/retrieval/README.md`
 - `tools/benchmark/retrieval/suites/` manifest and provenance documents

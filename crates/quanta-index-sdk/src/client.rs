@@ -205,12 +205,16 @@ impl QuantaIndex {
         Ok(Some(pin))
     }
 
-    /// Resolve an active selector on the query plane before submitting a
-    /// pinned request. The query-only profile has no control transport.
+    /// Resolve an active selector on the query plane before submission.
+    /// Keep `Active` alongside the explicit resolved pin: the server checks
+    /// that the catalog still selects the same generation at dispatch time,
+    /// while the SDK exact-binds the final response. Semantic reads also
+    /// retain the catalog manifest-digest check in the acquired view.
+    /// The query-only profile has no control transport.
     fn pin_active_selector(
         &self,
         generation: &mut Option<GenerationPin>,
-        selector: &mut Option<GenerationSelector>,
+        selector: &Option<GenerationSelector>,
         track: SearchPlaneTrackKind,
     ) -> Result<(), SdkError> {
         let Some(GenerationSelector::Active {
@@ -243,7 +247,6 @@ impl QuantaIndex {
             ));
         }
         *generation = Some(resolved);
-        *selector = None;
         Ok(())
     }
 
@@ -251,24 +254,24 @@ impl QuantaIndex {
         match request {
             SearchPlaneQueryIpcRequest::Text(query) => self.pin_active_selector(
                 &mut query.generation,
-                &mut query.generation_selector,
+                &query.generation_selector,
                 SearchPlaneTrackKind::Lexical,
             ),
             SearchPlaneQueryIpcRequest::Symbol(query) => self.pin_active_selector(
                 &mut query.generation,
-                &mut query.generation_selector,
+                &query.generation_selector,
                 SearchPlaneTrackKind::Lexical,
             ),
             SearchPlaneQueryIpcRequest::Semantic(query) => {
                 self.pin_active_selector(
                     &mut query.generation,
-                    &mut query.generation_selector,
+                    &query.generation_selector,
                     SearchPlaneTrackKind::Semantic,
                 )?;
                 if let Some(scope) = &mut query.lexical_scope {
                     self.pin_active_selector(
                         &mut scope.generation,
-                        &mut scope.generation_selector,
+                        &scope.generation_selector,
                         SearchPlaneTrackKind::Lexical,
                     )?;
                 }
@@ -277,35 +280,35 @@ impl QuantaIndex {
             SearchPlaneQueryIpcRequest::Hybrid(query) => {
                 self.pin_active_selector(
                     &mut query.text_query.generation,
-                    &mut query.text_query.generation_selector,
+                    &query.text_query.generation_selector,
                     SearchPlaneTrackKind::Lexical,
                 )?;
                 self.pin_active_selector(
                     &mut query.generation,
-                    &mut query.generation_selector,
+                    &query.generation_selector,
                     SearchPlaneTrackKind::Semantic,
                 )
             }
             SearchPlaneQueryIpcRequest::HybridSeed(query) => {
                 self.pin_active_selector(
                     &mut query.text_query.generation,
-                    &mut query.text_query.generation_selector,
+                    &query.text_query.generation_selector,
                     SearchPlaneTrackKind::Lexical,
                 )?;
                 self.pin_active_selector(
                     &mut query.generation,
-                    &mut query.generation_selector,
+                    &query.generation_selector,
                     SearchPlaneTrackKind::Semantic,
                 )
             }
             SearchPlaneQueryIpcRequest::History(query) => self.pin_active_selector(
                 &mut query.text_query.generation,
-                &mut query.text_query.generation_selector,
+                &query.text_query.generation_selector,
                 SearchPlaneTrackKind::Lexical,
             ),
             SearchPlaneQueryIpcRequest::RuntimeMetadata(query) => self.pin_active_selector(
                 &mut query.text_query.generation,
-                &mut query.text_query.generation_selector,
+                &query.text_query.generation_selector,
                 SearchPlaneTrackKind::Lexical,
             ),
             SearchPlaneQueryIpcRequest::Structural(query) => {

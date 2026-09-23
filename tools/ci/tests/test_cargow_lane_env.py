@@ -138,6 +138,52 @@ def test_invalid_lane_is_rejected_before_cargo(
     assert not (tmp_path / "cache" / "escaped").exists()
 
 
+def test_workspace_nextest_builds_and_exports_explicit_searchd_pin(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    log = tmp_path / "cargo.log"
+    fake_cargo = fake_bin / "cargo"
+    fake_cargo.write_text(
+        "#!/bin/bash\n"
+        "set -euo pipefail\n"
+        "printf '%s|%s\\n' \"${QUANTA_INDEX_SEARCHD_BIN:-}\" \"$*\" >> \"$CARGO_CALL_LOG\"\n"
+        "if [[ \"${1:-}\" == build ]]; then\n"
+        "  mkdir -p \"$CARGO_TARGET_DIR/debug\"\n"
+        "  printf '#!/bin/sh\\nexit 0\\n' > \"$CARGO_TARGET_DIR/debug/quanta-index-searchd\"\n"
+        "  chmod +x \"$CARGO_TARGET_DIR/debug/quanta-index-searchd\"\n"
+        "fi\n",
+        encoding="utf-8",
+    )
+    fake_cargo.chmod(0o755)
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["CARGO_CALL_LOG"] = str(log)
+    env["QUANTA_INDEX_BUILD_LOGGING"] = "0"
+    env["QUANTA_INDEX_CACHE_ROOT"] = str(tmp_path / "cache")
+    env["QUANTA_INDEX_SCCACHE"] = "0"
+    env.pop("QUANTA_INDEX_SEARCHD_BIN", None)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--lane", "test-workspace-lane", "nextest", "run", "--workspace"],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert calls[0].endswith(
+        "|build -p quanta-index-searchd-runtime --bin quanta-index-searchd --locked"
+    )
+    pin, command = calls[1].split("|", 1)
+    pin_path = Path(pin)
+    assert pin_path.name == "quanta-index-searchd"
+    assert pin_path.parent.name == "debug"
+    assert pin_path.parent.parent.name == "test-workspace-lane"
+    assert command == "nextest run --workspace"
+
+
 def _source_env(env: dict[str, str], shell: str = "/bin/bash") -> list[str]:
     result = subprocess.run(
         [

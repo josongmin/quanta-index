@@ -3,13 +3,16 @@ targets:
     output: AGENTS.md
     template: templates/agents.md.j2
     description: "Shared AGENTS router"
+    max_bytes: 4000
     sections:
       - sources/operational/agent-router.md
+      - sources/rules/verification-contract.md
 
   agent-core:
     output: AGENT_CORE.md
     template: templates/agent-core.md.j2
     description: "Core execution rules"
+    max_bytes: 5000
     sections:
       - sources/operational/agent-core.md
 
@@ -17,10 +20,9 @@ targets:
     output: AGENT_PLAYBOOK.md
     template: templates/agent-playbook.md.j2
     description: "Command selection and verification playbook"
+    max_bytes: 16000
     sections:
       - sources/operational/agent-playbook.md
-      - sources/operational/quick-reference-compact.md
-      - sources/operational/front-door-fast-path.md
       - sources/operational/compile-boundary-guard.md
       - sources/operational/test-fast-path.md
       - sources/operational/taint.md
@@ -30,6 +32,7 @@ targets:
     output: AGENT_REFERENCE.md
     template: templates/agent-reference.md.j2
     description: "Authority map and reference entrypoint"
+    max_bytes: 4000
     sections:
       - sources/operational/agent-reference.md
       - sources/rules/agent-change-posture.md
@@ -38,77 +41,11 @@ targets:
     output: AGENT_RULE_CATALOG.md
     template: templates/agent-rule-catalog.md.j2
     description: "Full rule catalog and CI mapping"
+    max_bytes: 30000
     sections:
       - sources/operational/agent-rule-catalog.md
       - sources/rules/agent-change-posture.md
+      - sources/rules/golden-rules.md
+      - sources/rules/verification-contract.md
       - sources/rules/catalog.md
       - sources/rules/ci-gates.md
-
-  codex-rules:
-    output: .codex/CODEX-RULES.md
-    template: templates/codex-rules.md.j2
-    description: "Codex bootstrap rules"
-    sections:
-      - sources/rules/agent-change-posture.md
-      - sources/rules/golden-rules.md
-      - sources/rules/catalog-fast-path.md
-      - sources/agent-specific/codex-supplements.md
-      - sources/operational/front-door-fast-path.md
-      - sources/operational/compile-boundary-guard.md
-
-  codex-start:
-    output: .codex/CODEX-START-PROMPT.md
-    template: templates/codex-start.md.j2
-    description: "Codex start prompt"
-    sections:
-      - sources/rules/agent-change-posture.md
-      - sources/rules/golden-rules.md
-      - sources/rules/catalog-fast-path.md
-      - sources/agent-specific/codex-supplements.md
-      - sources/operational/front-door-fast-path.md
-      - sources/operational/compile-boundary-guard.md
-
-  cursorrules:
-    output: .cursorrules
-    template: templates/cursorrules.md.j2
-    description: "Cursor bootstrap rules"
-    sections:
-      - sources/rules/agent-change-posture.md
-      - sources/rules/golden-rules.md
-      - sources/rules/catalog-fast-path.md
-      - sources/agent-specific/cursor-supplements.md
-      - sources/operational/front-door-fast-path.md
-      - sources/operational/compile-boundary-guard.md
-      - sources/operational/taint.md
-
-  cursor-start:
-    output: .cursor/rules/AI-START-PROMPT.md
-    template: templates/cursor-start.md.j2
-    description: "Cursor start prompt"
-    sections:
-      - sources/rules/agent-change-posture.md
-      - sources/rules/golden-rules.md
-      - sources/agent-specific/cursor-supplements.md
-      - sources/operational/front-door-fast-path.md
-      - sources/operational/compile-boundary-guard.md
-
-  cursor-fail-closed:
-    output: .cursor/rules/FAIL-CLOSED-POLICY.md
-    template: templates/cursor-fail-closed.md.j2
-    description: "Cursor fail-closed reference"
-    sections:
-      - sources/rules/catalog.md
-
-  claude:
-    output: CLAUDE.md
-    template: templates/claude.md.j2
-    description: "Claude inline handbook"
-    sections:
-      - sources/rules/agent-change-posture.md
-      - sources/agent-specific/claude-supplements.md
-      - sources/rules/catalog.md
-      - sources/operational/test.md
-      - sources/operational/build.md
-      - sources/operational/compile-boundary-guard.md
-      - sources/operational/buildctl.md
-      - sources/operational/taint.md

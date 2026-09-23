@@ -82,13 +82,21 @@ to validated lane handoffs and immutable proof manifests, not this document.
   Sep-23 retrieval-benchmark and agent-rule edits preserved. The active-pin
   checkpoint is committed at `599ad8b`; the non-lexical time-rebind
   restriction is committed at `98153c1`. Neither is final-source release
-  proof. The lexical planner preflight is a further local checkpoint, not
-  final-source release proof.
+  proof. The lexical planner preflight is committed at `ee6d1b4` and the
+  semantic active-authority correction at `f10a6c4`; neither is final-source
+  release proof.
 - The query IPC now exposes a read-only active-generation resolution opcode
   backed by `ActivationCatalog::resolve_record`. SDK query dispatch centrally
   resolves active lexical/semantic selectors on that same query socket,
-  rewrites the actual request to a pin, and binds the final response to that
-  pin. This keeps the query-only client independent of the control socket.
+  binds the final response to the resolved pin, and keeps the query-only
+  client independent of the control socket. Final requests carry both the
+  resolved pin and original `Active` selector: the server rechecks that the
+  active head still equals the pin. Semantic reads also retain catalog
+  manifest-digest validation in the acquired read view.
+  A producer test advances the active head between resolution and a request
+  carrying the old pin plus `Active`; the latter fails before any lane opens
+  (focused test passed). It is a changed-generation race oracle, not an
+  activation-epoch proof.
   An independent scripted resolution followed by a wrong same-domain query
   generation is rejected by the SDK.
 - Local focused evidence so far: `./scripts/cargow check -p quanta-index-sdk
@@ -112,6 +120,14 @@ to validated lane handoffs and immutable proof manifests, not this document.
   before-history empty) and invalid-timeref test passed. The real UDS owner
   target passed 13/13, `just rust-wire-inventory` passed, and
   `just rust-public-api` passed against the intentional baseline update.
+- A post-checkpoint read-view audit found that rewriting a Semantic `Active`
+  selector to `Pinned` suppressed the server's
+  `expected_manifest_digest` check. The main-checkout follow-up keeps the
+  Semantic `Active` selector alongside the resolved explicit pin. The
+  server's semantic selection validates equality and carries the catalog
+  digest into read-view validation; SDK still exact-binds the response pin.
+  The focused SDK wrong-generation negative, producer selection oracle and
+  SDK lib 102/102 passed after this correction.
 - This does **not** close S21-07. Activation epoch/content binding beyond the
   resolved generation pin is not yet a request-level contract. The two-step
   planner resolution trusts the server's first result and does not prove

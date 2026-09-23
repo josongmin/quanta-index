@@ -141,7 +141,7 @@ repos:
         entry: python3 tools/ci/lint/check-rust-derive-allowlist.py
         language: system
         pass_filenames: false
-        files: ^(crates/.*\.rs|tools/ci/lint/check-rust-derive-allowlist\.py|tools/ci/tests/test_lint_derive_allowlist\.py)$
+        files: ^((crates|benchmarks)/.*\.rs|tools/ci/lint/check-rust-derive-allowlist\.py|tools/ci/tests/test_lint_derive_allowlist\.py)$
         stages: [pre-commit, pre-push]
 
       - id: rust-cargo-toml-hygiene

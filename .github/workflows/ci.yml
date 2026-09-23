@@ -408,7 +408,7 @@ jobs:
           set -euo pipefail
           while IFS= read -r -d '' f; do
             echo "::group::$f"
-            python3 tools/ci/agent/validate_agent_output.py "$f" --skip-rust-gates
+            python3 tools/ci/agent/validate_agent_output.py "$f"
             echo "::endgroup::"
           done < "$RUNNER_TEMP/agent-output-changed-files"
 

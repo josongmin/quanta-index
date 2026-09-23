@@ -303,7 +303,7 @@ fn active_selector_rejects_wrong_same_domain_generation_over_uds() {
         rx.recv().expect("pinned query request"),
         SearchPlaneQueryIpcRequest::Text(request)
             if request.generation == Some(pin(repo_id()))
-                && request.generation_selector.is_none()
+                && matches!(request.generation_selector, Some(GenerationSelector::Active { .. }))
     ));
 }
 
@@ -538,7 +538,7 @@ fn query_only_profile_needs_no_control_or_ingest_sockets() {
         rx.recv().expect("pinned query request"),
         SearchPlaneQueryIpcRequest::Text(request)
             if request.generation == Some(pin(repo_id()))
-                && request.generation_selector.is_none()
+                && matches!(request.generation_selector, Some(GenerationSelector::Active { .. }))
     ));
 
     // The full profile with the same options still refuses: least
