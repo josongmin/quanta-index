@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 pub mod batch;
+pub mod canonical;
 pub mod chunking;
 pub mod corpus;
 pub mod profile;

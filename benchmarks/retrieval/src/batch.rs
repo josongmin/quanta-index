@@ -228,7 +228,7 @@ pub fn receipt_digest(receipt: &BatchReceipt) -> BenchResult<String> {
         message: err.to_string(),
     })?;
     Ok(sha256_hex(
-        crate::record::canonical_json(&value)?.as_bytes(),
+        crate::canonical::canonical_json(&value)?.as_bytes(),
     ))
 }
 
@@ -240,6 +240,6 @@ pub fn activation_digest(ack: &SearchPlaneSearchCorpusActivationCasAck) -> Bench
         message: err.to_string(),
     })?;
     Ok(sha256_hex(
-        crate::record::canonical_json(&value)?.as_bytes(),
+        crate::canonical::canonical_json(&value)?.as_bytes(),
     ))
 }
