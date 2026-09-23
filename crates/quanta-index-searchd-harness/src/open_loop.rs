@@ -329,7 +329,9 @@ fn dispatch(
                 })
             }
             SearchPlaneQueryIpcResponse::Error(error) => Outcome::TypedError { code: error.code },
-            SearchPlaneQueryIpcResponse::Text(_)
+            SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+            | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
+            | SearchPlaneQueryIpcResponse::Text(_)
             | SearchPlaneQueryIpcResponse::Symbol(_)
             | SearchPlaneQueryIpcResponse::Semantic(_)
             | SearchPlaneQueryIpcResponse::Hybrid(_)
@@ -605,7 +607,9 @@ pub(crate) fn run(config: Config) -> AnyResult<Report> {
                 .map(|row| row.candidate_id)
                 .collect::<Vec<_>>()
         }
-        SearchPlaneQueryIpcResponse::Text(_)
+        SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+        | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
+        | SearchPlaneQueryIpcResponse::Text(_)
         | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::Semantic(_)
         | SearchPlaneQueryIpcResponse::Hybrid(_)
