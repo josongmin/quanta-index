@@ -82,8 +82,12 @@ impl SearchPlaneDispatcher {
             execution.record_lexical_invocation();
             let presence = view.lexical()?.candidate_presence(candidate_id)?;
             execution.record_lexical_contribution();
-            let mut explanation =
-                build_presence_explanation(candidate_id, presence, &execution.summary());
+            let mut explanation = build_presence_explanation(
+                candidate_id,
+                presence,
+                &execution.summary(),
+                budget.response_request_id(),
+            );
             attach_read_view_trace(&mut explanation, view.identity());
             return Ok(SearchPlaneExplainQueryResponse {
                 generation: pin,
@@ -150,6 +154,7 @@ impl SearchPlaneDispatcher {
                     &planned.query,
                     &explained,
                     &execution.summary(),
+                    budget.response_request_id(),
                 )?;
                 attach_read_view_trace(&mut explanation, view.identity());
                 (explanation, presence_of(&explained))
@@ -219,6 +224,7 @@ impl SearchPlaneDispatcher {
                         ranks: rederived,
                     },
                     &execution.summary(),
+                    budget.response_request_id(),
                 )?;
                 explanation.planner_trace.push(PlannerTraceEntry {
                     stage: PlannerStage::Plan,
@@ -456,6 +462,7 @@ fn build_presence_explanation(
     candidate_id: &str,
     presence: CandidatePresenceV1,
     execution: &LaneExecutionSummaryV1,
+    request_id: u64,
 ) -> SearchExplanation {
     let indexed = presence == CandidatePresenceV1::Indexed;
     SearchExplanation {
@@ -473,8 +480,8 @@ fn build_presence_explanation(
         // observed invocation truth.
         engines_touched: execution.touched_engines(),
         engines_executed: execution.executed_engines(),
-        // Stamped by the transport adapter; 0 off-transport.
-        request_id: 0,
+        // W10-R2: the route's budget correlation; 0 only off-transport.
+        request_id,
         early_stop_reason: None,
         contributions: Vec::new(),
         ranker_weights_hash: [0u8; 32],
@@ -615,6 +622,7 @@ fn build_lexical_score_explanation(
     query: &quanta_index_contract::LqQuery,
     explained: &LexicalCandidateExplanationV1,
     execution: &LaneExecutionSummaryV1,
+    request_id: u64,
 ) -> Result<SearchExplanation, CoreError> {
     let candidate_id = candidate.candidate_id.as_str();
     let carried_score = candidate.score;
@@ -660,8 +668,8 @@ fn build_lexical_score_explanation(
         // observed invocation truth.
         engines_touched: execution.touched_engines(),
         engines_executed: execution.executed_engines(),
-        // Stamped by the transport adapter; 0 off-transport.
-        request_id: 0,
+        // W10-R2: the route's budget correlation; 0 only off-transport.
+        request_id,
         early_stop_reason: None,
         contributions,
         ranker_weights_hash: ranker_weights_hash_v1(&query.options, RankerFusionV1::None),
@@ -788,12 +796,13 @@ fn build_hybrid_score_explanation(
     explained: &LexicalCandidateExplanationV1,
     derived: &HybridDenseDerivationV1,
     execution: &LaneExecutionSummaryV1,
+    request_id: u64,
 ) -> Result<SearchExplanation, CoreError> {
     let mut report = HybridTraceReportV1::open(hybrid, explained);
     report.lexical_lane(hybrid, query, explained)?;
     report.dense_lane(hybrid, derived);
     report.fusion(hybrid, derived.ranks);
-    Ok(report.close(&query.options, execution))
+    Ok(report.close(&query.options, execution, request_id))
 }
 
 /// The hybrid explanation under assembly: one method per lane, then the
@@ -948,15 +957,20 @@ impl HybridTraceReportV1 {
         });
     }
 
-    fn close(self, options: &LqOptions, execution: &LaneExecutionSummaryV1) -> SearchExplanation {
+    fn close(
+        self,
+        options: &LqOptions,
+        execution: &LaneExecutionSummaryV1,
+        request_id: u64,
+    ) -> SearchExplanation {
         SearchExplanation {
             planner_trace: self.planner_trace,
             // Single-sourced (W10-R1): both engine lists derive from the
             // observed invocation truth.
             engines_touched: execution.touched_engines(),
             engines_executed: execution.executed_engines(),
-            // Stamped by the transport adapter; 0 off-transport.
-            request_id: 0,
+            // W10-R2: the route's budget correlation; 0 only off-transport.
+            request_id,
             early_stop_reason: None,
             contributions: self.contributions,
             ranker_weights_hash: ranker_weights_hash_v1(options, RankerFusionV1::Rrf),

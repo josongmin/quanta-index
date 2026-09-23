@@ -33,6 +33,27 @@ fn hybrid_explanation(
     fused_hits: usize,
     execution: crate::query_dispatcher::execution_trace::LaneExecutionSummaryV1,
 ) -> quanta_index_contract::SearchExplanation {
+    hybrid_explanation_with_id(
+        lexical_hits,
+        semantic_hits,
+        fused_universe,
+        fused_hits,
+        execution,
+        // Off-transport honesty fixture: no budget, no correlation.
+        0,
+    )
+}
+
+/// [`hybrid_explanation`] with an explicit request id, for the W10-R2
+/// correlation tests: the builder echoes whatever the route resolved.
+fn hybrid_explanation_with_id(
+    lexical_hits: usize,
+    semantic_hits: usize,
+    fused_universe: usize,
+    fused_hits: usize,
+    execution: crate::query_dispatcher::execution_trace::LaneExecutionSummaryV1,
+    request_id: u64,
+) -> quanta_index_contract::SearchExplanation {
     use crate::query_dispatcher::semantic_query::{
         HybridFilterTraceV1, HybridLaneTallyV1, build_hybrid_response_explanation,
     };
@@ -51,6 +72,7 @@ fn hybrid_explanation(
             filters: "hybrid.filters=none".to_string(),
             admission: vec!["hybrid.dense_admission=not_needed".to_string()],
         },
+        request_id,
     )
 }
 
@@ -630,4 +652,23 @@ fn hybrid_rows_carry_per_lane_provenance_and_the_fused_score() -> TestResult {
         return Err("the hybrid response must round-trip through the wire".into());
     }
     Ok(())
+}
+
+// CASE-COVERS: W10-R2 — the builder echoes the route-resolved request id
+// verbatim and keeps 0 for the off-transport fixture.
+#[test]
+fn build_hybrid_response_explanation_echoes_the_routed_request_id() {
+    use crate::query_dispatcher::execution_trace::LaneExecutionSummaryV1;
+    let carried = hybrid_explanation_with_id(2, 2, 3, 2, LaneExecutionSummaryV1::default(), 42);
+    assert_eq!(
+        carried.request_id, 42,
+        "the builder must echo the routed id, got {}",
+        carried.request_id
+    );
+    let off_transport = hybrid_explanation(2, 2, 3, 2, LaneExecutionSummaryV1::default());
+    assert_eq!(
+        off_transport.request_id, 0,
+        "the off-transport fixture must stay 0, got {}",
+        off_transport.request_id
+    );
 }

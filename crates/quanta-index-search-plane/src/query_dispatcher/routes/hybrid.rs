@@ -204,6 +204,7 @@ impl SearchPlaneDispatcher {
             early_stop_reason,
             &sem_searcher.dense_lane(),
             &filter_trace,
+            budget.response_request_id(),
         );
         attach_read_view_trace(&mut explanation, view.identity());
         let window_v2 = fused_window_v2(

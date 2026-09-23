@@ -17,7 +17,7 @@ use quanta_index_contract::{
     SemanticCorpusKindV1, SemanticQueryRequest, SemanticSeedCorpusBudgetV1, TextQueryRequest,
     TextQuerySyntax,
 };
-use quanta_index_core::RequestBudgetV1;
+use quanta_index_core::{RequestBudgetV1, RequestCorrelationV1};
 
 use crate::observability::BoundedQueryObsStore;
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
@@ -794,5 +794,87 @@ fn explain_hybrid_truth_chain() -> TestResult {
         true,
         true,
     )?;
+    Ok(())
+}
+
+// CASE-COVERS: W10-R2 — one budget correlation reaches every route's
+// explanation unchanged, and an uncorrelated budget stays 0 everywhere.
+// The adapter no longer stamps: what the builders resolve IS the id.
+#[test]
+fn one_correlation_reaches_every_route_explanation() -> TestResult {
+    fn explanation_id(response: &SearchPlaneQueryIpcResponse) -> Result<u64, BoxError> {
+        match response {
+            SearchPlaneQueryIpcResponse::Semantic(r) => Ok(r.explanation.request_id),
+            SearchPlaneQueryIpcResponse::Hybrid(r) => Ok(r.explanation.request_id),
+            SearchPlaneQueryIpcResponse::HybridSeed(r) => Ok(r.explanation.request_id),
+            SearchPlaneQueryIpcResponse::Explain(r) => Ok(r.explanation.request_id),
+            SearchPlaneQueryIpcResponse::Text(_)
+            | SearchPlaneQueryIpcResponse::Symbol(_)
+            | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+            | SearchPlaneQueryIpcResponse::Structural(_)
+            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
+            | SearchPlaneQueryIpcResponse::Error(_) => {
+                Err(format!("expected an explanation-carrying response, got {response:?}").into())
+            }
+        }
+    }
+    let corpora = vec![SemanticSeedCorpusBudgetV1 {
+        corpus_kind: SemanticCorpusKindV1::SymbolCard,
+        top_k: 7,
+    }];
+    let requests = |corpora: Vec<SemanticSeedCorpusBudgetV1>| {
+        vec![
+            (
+                "semantic",
+                semantic_request(None, QueryConstraintSetV1::unconstrained()),
+            ),
+            (
+                "hybrid",
+                hybrid_request("needle", QueryConstraintSetV1::unconstrained()),
+            ),
+            (
+                "seed",
+                seed_request("needle", QueryConstraintSetV1::unconstrained(), corpora),
+            ),
+            (
+                "explain",
+                explain_request(
+                    ExplainCandidateV1::Lexical(candidate("alpha", 1.25)),
+                    None,
+                    None,
+                ),
+            ),
+        ]
+    };
+    let Some(correlation) = RequestCorrelationV1::from_raw(77) else {
+        return Err("77 is a nonzero test id".to_string().into());
+    };
+    for (name, request) in requests(corpora.clone()) {
+        let lanes = truth_dispatcher(
+            vec![candidate("alpha", 1.25)],
+            vec![candidate("sem-a", 1.0)],
+        )?;
+        let budget = RequestBudgetV1::unbounded().with_correlation(correlation);
+        let response = lanes.dispatcher.dispatch(request, &budget);
+        let id = explanation_id(&response)?;
+        if id != 77 {
+            return Err(format!("{name}: correlated dispatch must carry 77, got {id}").into());
+        }
+    }
+    for (name, request) in requests(corpora) {
+        let lanes = truth_dispatcher(
+            vec![candidate("alpha", 1.25)],
+            vec![candidate("sem-a", 1.0)],
+        )?;
+        let response = lanes
+            .dispatcher
+            .dispatch(request, &RequestBudgetV1::unbounded());
+        let id = explanation_id(&response)?;
+        if id != 0 {
+            return Err(format!("{name}: uncorrelated dispatch must stay 0, got {id}").into());
+        }
+    }
     Ok(())
 }

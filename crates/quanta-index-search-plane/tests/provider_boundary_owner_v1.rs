@@ -27,8 +27,8 @@ use std::sync::{Arc, Mutex};
 
 use quanta_index_core::{
     CoreError, ProviderBudgetLedger, ProviderSettlementKindV1, ProviderSettlementUsageV1,
-    ProviderWorkBudgetV1, ProviderWorkEstimateV1, RequestBudgetV1, SemanticAdmissionEngine,
-    SemanticEgressGrantV1, SemanticEgressPolicyV1, SemanticInputClass,
+    ProviderWorkBudgetV1, ProviderWorkEstimateV1, RequestBudgetV1, RequestCorrelationV1,
+    SemanticAdmissionEngine, SemanticEgressGrantV1, SemanticEgressPolicyV1, SemanticInputClass,
 };
 use quanta_index_search_plane::{
     ProviderBoundaryQueryEmbedder, QueryTextEmbedderPort, SEARCH_OWNED_SEMANTIC_DIMENSION,
@@ -256,6 +256,7 @@ fn reservation_settlement_bounds() {
             SemanticInputClass::QueryText,
             &ProviderWorkEstimateV1::loopback(10),
             "supervisor-a",
+            None,
         )
         .expect("first reservation fits");
     let second = ledger
@@ -263,6 +264,7 @@ fn reservation_settlement_bounds() {
             SemanticInputClass::QueryText,
             &ProviderWorkEstimateV1::loopback(10),
             "supervisor-a",
+            None,
         )
         .expect("second reservation fits the cap of two");
     let err = ledger
@@ -270,6 +272,7 @@ fn reservation_settlement_bounds() {
             SemanticInputClass::QueryText,
             &ProviderWorkEstimateV1::loopback(10),
             "supervisor-a",
+            None,
         )
         .expect_err("third reservation must exceed the cap");
     assert_eq!(refused_code(&err), "SERVER_OVERLOADED");
@@ -294,6 +297,7 @@ fn reservation_settlement_bounds() {
             SemanticInputClass::QueryText,
             &ProviderWorkEstimateV1::loopback(10),
             "supervisor-a",
+            None,
         )
         .expect("cap recovered after settlement");
     assert_eq!(again.ticket_id, 3);
@@ -309,6 +313,7 @@ fn double_settlement_fails_typed() {
             SemanticInputClass::QueryText,
             &ProviderWorkEstimateV1::loopback(10),
             "supervisor-a",
+            None,
         )
         .expect("reservation");
     let _ = ledger
@@ -334,6 +339,7 @@ fn observed_cost_beyond_reservation_fails_closed() {
                 retry_attempts: 0,
             },
             "supervisor-a",
+            None,
         )
         .expect("reservation");
     let err = ledger
@@ -458,6 +464,38 @@ fn admitted_call_settles_success_with_outcome() {
     assert_eq!(ledger.snapshot().expect("snapshot").live_tickets, 0);
 }
 
+/// W10-R2: the audit event carries the settling budget's correlation —
+/// reserve stamps it pre-call, settle copies it through the receipt, and
+/// the ring event reads it from the receipt, never from ambient state.
+/// The off-transport twin on the same ledger stays `None`, proving the
+/// ring mixes correlated and uncorrelated events without confusion.
+#[test]
+fn audit_event_carries_the_settling_budgets_correlation() {
+    let spy = Arc::new(SpyEmbedder::unit());
+    let ledger = open_ledger();
+    let boundary = loopback_boundary(Arc::clone(&spy), Arc::clone(&ledger));
+    let correlation = RequestCorrelationV1::from_raw(77).expect("77 is nonzero");
+    let correlated = RequestBudgetV1::unbounded().with_correlation(correlation);
+    let (correlated_vector, _) = boundary
+        .embed_query_admitted("valid query text", &correlated)
+        .expect("correlated call settles");
+    let (plain_vector, _) = boundary
+        .embed_query_admitted("valid query text", &request_budget())
+        .expect("uncorrelated call settles");
+    assert!(!correlated_vector.is_empty() && !plain_vector.is_empty());
+    assert_eq!(spy.calls(), 2);
+    let audit = ledger.audit_tail(2).expect("audit tail");
+    assert_eq!(audit.len(), 2);
+    assert_eq!(audit[0].kind, ProviderSettlementKindV1::Success);
+    assert_eq!(audit[1].kind, ProviderSettlementKindV1::Success);
+    assert_eq!(audit[0].correlation, Some(correlation));
+    assert_eq!(
+        audit[0].correlation.map(RequestCorrelationV1::get),
+        Some(77)
+    );
+    assert_eq!(audit[1].correlation, None);
+}
+
 /// Declared vs observed: a provider answering with an unexpected model,
 /// dimension or non-finite vector produces a typed failure and no success.
 #[test]
@@ -539,6 +577,7 @@ fn retry_cap_reservation_refused() {
                 retry_attempts: 2,
             },
             "supervisor-a",
+            None,
         )
         .expect_err("retry overrun must refuse");
     assert_eq!(refused_code(&err), "SERVER_OVERLOADED");
@@ -554,6 +593,7 @@ fn anonymous_reservation_refused() {
             SemanticInputClass::QueryText,
             &ProviderWorkEstimateV1::loopback(10),
             "",
+            None,
         )
         .expect_err("anonymous reservation must refuse");
     assert!(matches!(err, CoreError::InvalidContract(_)));

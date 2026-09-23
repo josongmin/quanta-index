@@ -17,6 +17,7 @@ mod query_truth_owner;
 mod read_view;
 mod read_view_lifetime;
 mod repo_map;
+mod request_correlation;
 mod rev_at_time;
 mod runtime_metadata;
 mod semantic;

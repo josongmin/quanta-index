@@ -1789,9 +1789,40 @@ mod tests {
                 }),
                 false,
             ),
+            // W10-R2: the stamp is a no-op on explanation-less variants —
+            // byte-identical before and after, not merely "no explanation
+            // read back".
+            (
+                "Text",
+                SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
+                    generation: pin(),
+                    results: Vec::new(),
+                    window: window(),
+                    file_owner_rows: None,
+                    next_cursor: None,
+                }),
+                false,
+            ),
+            (
+                "Symbol",
+                SearchPlaneQueryIpcResponse::Symbol(SymbolQueryResponse {
+                    generation: pin(),
+                    results: Vec::new(),
+                    window: window(),
+                    next_cursor: None,
+                }),
+                false,
+            ),
         ];
         for (name, response, carries) in &mut cases {
+            let before = response.clone();
             response.stamp_request_id(99);
+            if !*carries {
+                assert_eq!(
+                    *response, before,
+                    "{name}: stamping an explanation-less variant must change nothing"
+                );
+            }
             let stamped = match response {
                 SearchPlaneQueryIpcResponse::Semantic(r) => Some(r.explanation.request_id),
                 SearchPlaneQueryIpcResponse::Hybrid(r) => Some(r.explanation.request_id),
@@ -1811,6 +1842,47 @@ mod tests {
                 (*carries).then_some(99),
                 "{name}: stamp must reach exactly the explanation-carrying variants"
             );
+        }
+    }
+
+    // W10-R2: the wire shape is frozen `u64` — serde still round-trips 0
+    // in both formats. The nonzero rule is enforced above serde, by the
+    // transport's `validated` gate, never by narrowing the shape.
+    #[test]
+    fn zero_request_id_survives_serde_shape_frozen() {
+        let result = (|| -> Result<(), String> {
+            let envelope = SearchPlaneQueryIpcRequestEnvelope {
+                request_id: 0,
+                payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+                    syntax: TextQuerySyntax::Native,
+                    query_text: "needle".to_string(),
+                    constraints: crate::QueryConstraintSetV1::unconstrained(),
+                    generation: None,
+                    generation_selector: None,
+                    top_k: 5,
+                    cursor: None,
+                }),
+            };
+            let json =
+                serde_json::to_value(&envelope).map_err(|err| format!("json encode: {err}"))?;
+            if json.get("request_id") != Some(&serde_json::json!(0)) {
+                return Err(format!("json must carry request_id 0, got {json}"));
+            }
+            let decoded_json: SearchPlaneQueryIpcRequestEnvelope =
+                serde_json::from_value(json).map_err(|err| format!("json decode: {err}"))?;
+            if decoded_json != envelope {
+                return Err("json round-trip must preserve the zero id".to_string());
+            }
+            let cbor = encode(&envelope).map_err(|err| format!("cbor encode: {err}"))?;
+            let decoded_cbor: SearchPlaneQueryIpcRequestEnvelope =
+                decode(&cbor).map_err(|err| format!("cbor decode: {err}"))?;
+            if decoded_cbor != envelope {
+                return Err("cbor round-trip must preserve the zero id".to_string());
+            }
+            Ok(())
+        })();
+        if let Err(err) = result {
+            assert!(false, "{err}");
         }
     }
 }

@@ -21,7 +21,7 @@ pub use ingest_resource::{
 };
 pub use request_budget::{
     BudgetInterruptionV1, CancelHandleV1, REQUEST_CANCELLED_CODE, REQUEST_DEADLINE_EXCEEDED_CODE,
-    RequestBudgetV1,
+    RequestBudgetV1, RequestCorrelationV1,
 };
 
 pub use domains::auxiliary::{

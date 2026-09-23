@@ -409,6 +409,7 @@ pub(super) fn build_hybrid_seed_response_explanation(
     early_stop_reason: Option<EarlyStopReason>,
     dense_lane: &DenseLaneContractV1,
     filters: &HybridFilterTraceV1,
+    request_id: u64,
 ) -> SearchExplanation {
     let SeedLaneTallyV1 {
         lexical_hits,
@@ -460,8 +461,8 @@ pub(super) fn build_hybrid_seed_response_explanation(
         planner_trace,
         engines_touched,
         engines_executed,
-        // Stamped by the transport adapter; 0 off-transport.
-        request_id: 0,
+        // W10-R2: the route's budget correlation; 0 only off-transport.
+        request_id,
         early_stop_reason,
         contributions: Vec::new(),
         ranker_weights_hash: [0u8; 32],
@@ -818,6 +819,7 @@ pub(super) fn build_semantic_response_explanation(
     early_stop_reason: Option<EarlyStopReason>,
     dense_lane: &DenseLaneContractV1,
     execution: &LaneExecutionSummaryV1,
+    request_id: u64,
 ) -> SearchExplanation {
     let scoped = scope.is_some();
     let scope_candidate_count = scope.map_or(0, |scope| scope.candidate_ids.len());
@@ -857,8 +859,8 @@ pub(super) fn build_semantic_response_explanation(
         planner_trace,
         engines_touched,
         engines_executed,
-        // Stamped by the transport adapter; 0 off-transport.
-        request_id: 0,
+        // W10-R2: the route's budget correlation; 0 only off-transport.
+        request_id,
         early_stop_reason,
         contributions: Vec::new(),
         ranker_weights_hash: [0u8; 32],
@@ -889,6 +891,7 @@ pub(super) fn build_hybrid_response_explanation(
     early_stop_reason: Option<EarlyStopReason>,
     dense_lane: &DenseLaneContractV1,
     filters: &HybridFilterTraceV1,
+    request_id: u64,
 ) -> SearchExplanation {
     let HybridLaneTallyV1 {
         lexical_hits,
@@ -932,8 +935,8 @@ pub(super) fn build_hybrid_response_explanation(
         planner_trace,
         engines_touched,
         engines_executed: execution.executed_engines(),
-        // Stamped by the transport adapter; 0 off-transport.
-        request_id: 0,
+        // W10-R2: the route's budget correlation; 0 only off-transport.
+        request_id,
         early_stop_reason,
         contributions: Vec::new(),
         ranker_weights_hash: [0u8; 32],

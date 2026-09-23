@@ -226,6 +226,7 @@ impl SearchPlaneDispatcher {
                 filters: format!("hybrid_seed.filters={filter_plan}"),
                 admission: admission_traces,
             },
+            budget.response_request_id(),
         );
         attach_read_view_trace(&mut explanation, view.identity());
         // Aggregate dense admission: one capped lane caps the whole

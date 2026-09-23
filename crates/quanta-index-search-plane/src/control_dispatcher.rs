@@ -844,7 +844,7 @@ mod tests {
             Arc::new(RwLock::new(Ledger::new())),
         );
         let context = quanta_index_ipc::DispatchContextV1 {
-            request_id: 1,
+            request_id: std::num::NonZeroU64::MIN,
             plane: quanta_index_ipc::IpcPlane::Control,
             principal: None,
             owner_uid: 1000,
@@ -871,7 +871,7 @@ mod tests {
             Arc::new(RwLock::new(Ledger::new())),
         );
         let context = quanta_index_ipc::DispatchContextV1 {
-            request_id: 1,
+            request_id: std::num::NonZeroU64::MIN,
             plane: quanta_index_ipc::IpcPlane::Control,
             principal: Some(quanta_index_ipc::PeerCredentials {
                 uid: 1000,

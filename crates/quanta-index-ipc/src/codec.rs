@@ -74,6 +74,11 @@ pub enum IpcError {
         path: std::path::PathBuf,
         reason: String,
     },
+    /// An envelope carried request id 0 (W10-R2). Transport request ids
+    /// are nonzero by construction — the SDK allocator never emits 0 and
+    /// the server never admits it — so 0 is a malformed envelope, refused
+    /// before admission, typed, with no dispatch and no response.
+    ZeroRequestId,
 }
 
 impl core::fmt::Display for IpcError {
@@ -132,6 +137,9 @@ impl core::fmt::Display for IpcError {
                 "SOCKET_ACCESS_UNSATISFIABLE: {} cannot be shared as configured: {reason}",
                 path.display()
             ),
+            Self::ZeroRequestId => f.write_str(
+                "request envelope carries request id 0: transport request ids are nonzero",
+            ),
         }
     }
 }
@@ -152,7 +160,8 @@ impl std::error::Error for IpcError {
             | Self::InvalidAdmissionPolicy
             | Self::SocketInUse(_)
             | Self::SocketPathInsecure { .. }
-            | Self::SocketAccessUnsatisfiable { .. } => None,
+            | Self::SocketAccessUnsatisfiable { .. }
+            | Self::ZeroRequestId => None,
         }
     }
 }

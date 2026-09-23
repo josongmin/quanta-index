@@ -18,6 +18,7 @@
 //! response flow through as an `Error` variant in the response envelope.
 
 use std::io::{ErrorKind, Read, Write};
+use std::num::NonZeroU64;
 use std::os::fd::OwnedFd;
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -27,7 +28,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use quanta_index_core::RequestBudgetV1;
+use quanta_index_core::{RequestBudgetV1, RequestCorrelationV1};
 
 use crate::admission::{DispatchSlots, ServerAdmissionPolicy, SlotRefusal};
 use crate::peer_credentials::{KernelPeerCredentials, PeerCredentialsSource};
@@ -83,8 +84,10 @@ pub enum IpcPlane {
 /// as a missing credential context and refuses (default deny).
 #[derive(Clone, Debug)]
 pub struct DispatchContextV1 {
-    /// The envelope's request id, correlated through diagnostics.
-    pub request_id: u64,
+    /// The envelope's admitted request id (W10-R2): nonzero by
+    /// construction — the connection loop refuses 0 before this context
+    /// exists — correlated through diagnostics and typed responses.
+    pub request_id: NonZeroU64,
     /// The plane whose socket carried the request.
     pub plane: IpcPlane,
     /// The peer's kernel-reported credentials, or `None` off-socket.
@@ -122,6 +125,16 @@ pub trait IpcDispatcher<Request, Response>: Send + Sync {
 
 pub trait RequestEnvelope<Request>: serde::de::DeserializeOwned + Send + Sync + 'static {
     fn into_parts(self) -> (u64, Request);
+
+    /// Split the envelope and prove its request id is admissible
+    /// (W10-R2): 0 is a malformed envelope refused with a typed error
+    /// before admission, dispatch and any response. The single gate every
+    /// plane's connection loop calls; the wire shape stays `u64`.
+    fn validated(self) -> Result<(NonZeroU64, Request), IpcError> {
+        let (request_id, payload) = self.into_parts();
+        let admitted = NonZeroU64::new(request_id).ok_or(IpcError::ZeroRequestId)?;
+        Ok((admitted, payload))
+    }
 
     /// The repository this request is scoped to, for the per-repository
     /// in-flight cap (QI-BB-002); `None` for a request that names no
@@ -1186,7 +1199,16 @@ where
                 return ConnectionCloseReason::RequestDecodeFailed(err);
             }
         };
-        let (request_id, request_payload) = request.into_parts();
+        // W10-R2: the id gate runs before shutdown, admission and
+        // dispatch alike — a 0 envelope is malformed, refused typed, and
+        // answered with nothing, exactly like a corrupt frame.
+        let (request_id, request_payload) = match request.validated() {
+            Ok(parts) => parts,
+            Err(err) => {
+                counters.request_decode_failed();
+                return ConnectionCloseReason::RequestDecodeFailed(err);
+            }
+        };
         // A request that arrives during shutdown is not dispatched; the
         // connection closes so the peer retries against the next process.
         if shutdown.load(Ordering::Acquire) {
@@ -1201,7 +1223,8 @@ where
             Ok(permit) => permit,
             Err(refusal) => {
                 counters.request_overloaded(refusal.is_repo_scoped());
-                let Some(response) = ResponseEnvelopeT::overloaded(request_id, &refusal) else {
+                let Some(response) = ResponseEnvelopeT::overloaded(request_id.get(), &refusal)
+                else {
                     return ConnectionCloseReason::Overloaded {
                         waited: refusal.waited(),
                     };
@@ -1212,7 +1235,10 @@ where
                 }
             }
         };
-        let budget = RequestBudgetV1::for_duration(policy.dispatch_budget());
+        // W10-R2: the admitted id rides the budget so routes, typed
+        // responses and provider audit correlate without an envelope.
+        let budget = RequestBudgetV1::for_duration(policy.dispatch_budget())
+            .with_correlation(RequestCorrelationV1::from_admitted(request_id));
         // S21-10: the transport builds the kernel-derived dispatch
         // context every dispatcher authorizes against. The principal is
         // the accept-time kernel report; the payload never asserts one.
@@ -1258,7 +1284,7 @@ where
             // cancellation at its next checkpoint (or ran to completion).
             return ConnectionCloseReason::PeerClosed;
         }
-        let response = ResponseEnvelopeT::from_parts(request_id, response_payload);
+        let response = ResponseEnvelopeT::from_parts(request_id.get(), response_payload);
         let frame = match encode_response(&response) {
             Ok(frame) => frame,
             // The answer was computed but cannot cross the wire. Tell the
@@ -1267,9 +1293,11 @@ where
             Err(IpcError::Oversized(encoded_bytes)) => {
                 let limit_bytes =
                     u64::try_from(MAX_FRAME_BODY_BYTES).map_or(u64::MAX, |limit| limit);
-                let Some(refusal) =
-                    ResponseEnvelopeT::result_too_large(request_id, encoded_bytes, limit_bytes)
-                else {
+                let Some(refusal) = ResponseEnvelopeT::result_too_large(
+                    request_id.get(),
+                    encoded_bytes,
+                    limit_bytes,
+                ) else {
                     return ConnectionCloseReason::ResponseEncodeFailed(IpcError::Oversized(
                         encoded_bytes,
                     ));
@@ -1840,7 +1868,8 @@ fn classify_client_decode_error(
         | IpcError::InvalidAdmissionPolicy
         | IpcError::SocketInUse(_)
         | IpcError::SocketPathInsecure { .. }
-        | IpcError::SocketAccessUnsatisfiable { .. }) => other,
+        | IpcError::SocketAccessUnsatisfiable { .. }
+        | IpcError::ZeroRequestId) => other,
     }
 }
 
@@ -1871,7 +1900,7 @@ mod tests {
     use crate::socket_access::{PRIVATE_DIRECTORY_MODE, PRIVATE_SOCKET_MODE};
     use rustix::fs::{OFlags, fcntl_getfl};
     use rustix::io::{Errno, FdFlags, fcntl_getfd};
-    use std::io::Write;
+    use std::io::{Read, Write};
     use std::net::Shutdown;
     use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _};
     use std::os::unix::net::{UnixListener, UnixStream};
@@ -2836,6 +2865,86 @@ mod tests {
     fn encode_test_frame(request_id: u64, payload: u64) -> Result<Vec<u8>, String> {
         encode_request(&test_request(request_id, payload))
             .map_err(|err| format!("test request must encode: {err}"))
+    }
+
+    // W10-R2: the id gate admits nonzero and refuses 0 typed, before
+    // admission, dispatch and any response exist.
+    #[test]
+    fn envelope_validation_admits_nonzero_and_refuses_zero() {
+        let result = (|| -> TestRes {
+            let (admitted, payload) = test_request(41, 8)
+                .validated()
+                .map_err(|err| format!("nonzero id must validate: {err}"))?;
+            if admitted.get() != 41 || payload != 8 {
+                return Err(format!(
+                    "validated parts must echo the envelope, got {admitted:?}/{payload}"
+                ));
+            }
+            match test_request(0, 8).validated() {
+                Err(IpcError::ZeroRequestId) => Ok(()),
+                other => Err(format!("zero id must refuse typed, got {other:?}")),
+            }
+        })();
+        assert_test_ok(&result);
+    }
+
+    // W10-R2: a zero id over the wire closes the connection typed, with
+    // no dispatch, no response bytes and a decode-failure count — the
+    // same refusal a corrupt frame gets.
+    #[test]
+    fn handle_connection_refuses_zero_request_id_without_dispatch_or_response() {
+        let result = (|| -> TestRes {
+            let (mut client, server) = UnixStream::pair().map_err(|err| err.to_string())?;
+            let frame = encode_test_frame(0, 8)?;
+            client.write_all(&frame).map_err(|err| err.to_string())?;
+            client
+                .shutdown(Shutdown::Write)
+                .map_err(|err| err.to_string())?;
+
+            let counters = test_counters();
+            let reason = handle_connection::<
+                TestRequestEnvelope,
+                u64,
+                TestResponseEnvelope,
+                u64,
+                TestDispatcher,
+            >(
+                server,
+                &TestDispatcher,
+                &test_slots(),
+                test_policy(),
+                IpcPlane::Query,
+                PeerCredentials {
+                    uid: 0,
+                    gid: 0,
+                    pid: None,
+                },
+                0,
+                1,
+                &AtomicBool::new(false),
+                &counters,
+            );
+            if !matches!(
+                reason,
+                ConnectionCloseReason::RequestDecodeFailed(IpcError::ZeroRequestId)
+            ) {
+                return Err(format!("unexpected close reason: {reason:?}"));
+            }
+            if counters.snapshot().request_decode_failures != 1 {
+                return Err(format!(
+                    "zero-id refusal must count one decode failure, got {:?}",
+                    counters.snapshot()
+                ));
+            }
+            let mut probe = [0u8; 1];
+            match client.read(&mut probe) {
+                Ok(0) => Ok(()),
+                other => Err(format!(
+                    "refused request must get no response bytes (EOF), got {other:?}"
+                )),
+            }
+        })();
+        assert_test_ok(&result);
     }
 
     #[test]

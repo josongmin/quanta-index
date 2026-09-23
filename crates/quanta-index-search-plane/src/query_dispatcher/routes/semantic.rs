@@ -186,6 +186,7 @@ impl SearchPlaneDispatcher {
             early_stop_reason,
             &searcher.dense_lane(),
             &summary,
+            budget.response_request_id(),
         );
         attach_read_view_trace(&mut explanation, view.identity());
         Ok(SemanticQueryResponse {
