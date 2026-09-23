@@ -205,8 +205,10 @@ impl QuantaIndex {
         Ok(Some(pin))
     }
 
-    /// Resolve an active selector on the query plane before submitting a
-    /// pinned request. The query-only profile has no control transport.
+    /// Resolve an active selector on the query plane before submission.
+    /// Lexical requests become pinned; semantic requests retain `Active`
+    /// alongside the resolved pin so the server rechecks catalog content.
+    /// The query-only profile has no control transport.
     fn pin_active_selector(
         &self,
         generation: &mut Option<GenerationPin>,
@@ -243,7 +245,12 @@ impl QuantaIndex {
             ));
         }
         *generation = Some(resolved);
-        *selector = None;
+        // Semantic Active carries the catalog's manifest digest into the
+        // acquired read view. Keep the selector so the server verifies both
+        // current-active equality and content authority against this pin.
+        if track != SearchPlaneTrackKind::Semantic {
+            *selector = None;
+        }
         Ok(())
     }
 

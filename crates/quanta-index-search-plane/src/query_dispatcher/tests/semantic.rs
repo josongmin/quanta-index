@@ -10,6 +10,7 @@ use tempfile::tempdir;
 
 use crate::observability::NoopQueryObsSink;
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
+use crate::query_dispatcher::semantic_query::resolve_semantic_request_selection;
 use crate::query_dispatcher::tests::support::common::{
     TestResult, corpus_generation, default_query_embedder, ipc_error_from, ready_ledger,
     test_activation_catalog,
@@ -47,7 +48,7 @@ fn query_plane_resolves_only_catalog_active_generation() -> TestResult {
         Arc::new(StubRepoMapSnapshotPort::default()),
         Arc::new(FailClosedStructuralProducer),
         ready_ledger(),
-        activation_catalog,
+        Arc::clone(&activation_catalog),
     );
     let response = dispatcher.dispatch(
         SearchPlaneQueryIpcRequest::ResolveActiveGeneration(CurrentGenerationRequest {
@@ -67,6 +68,27 @@ fn query_plane_resolves_only_catalog_active_generation() -> TestResult {
         || snapshot.manifest_digest != "activation-digest-9"
     {
         return Err(format!("wrong catalog snapshot: {snapshot:?}").into());
+    }
+    let selection = resolve_semantic_request_selection(
+        activation_catalog.as_ref(),
+        &SemanticQueryRequest {
+            query_text: "semantic text".to_string(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+            generation: Some(GenerationPin::new(
+                repo_id.clone(),
+                revision_id.clone(),
+                ManifestGeneration::new(9),
+            )),
+            generation_selector: Some(GenerationSelector::Active {
+                repo_id: repo_id.clone(),
+                revision_id: revision_id.clone(),
+            }),
+            lexical_scope: None,
+            top_k: 5,
+        },
+    )?;
+    if selection.expected_manifest_digest.as_deref() != Some("activation-digest-9") {
+        return Err("pin plus Active must preserve semantic manifest authority".into());
     }
     let missing = dispatcher.dispatch(
         SearchPlaneQueryIpcRequest::ResolveActiveGeneration(CurrentGenerationRequest {

@@ -1438,7 +1438,53 @@ fn semantic_query_builder_resolves_active_selector_before_query() {
     assert_eq!(req.top_k, 5);
     assert_eq!(req.query_text.as_str(), "0.1 0.2 0.3");
     assert_eq!(req.generation, Some(sample_generation_pin()));
-    assert_eq!(req.generation_selector, None);
+    assert!(matches!(
+        req.generation_selector,
+        Some(GenerationSelector::Active { .. })
+    ));
+}
+
+#[test]
+fn semantic_active_keeps_catalog_selector_and_rejects_wrong_generation() {
+    let wrong = quanta_index_contract::GenerationPin::new(
+        repo_id(),
+        revision_id(),
+        ManifestGeneration::new(8),
+    );
+    let query = Arc::new(StubQueryTransport::sequence([
+        SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(GenerationSnapshot {
+            repo_id: repo_id(),
+            revision_id: revision_id(),
+            track: quanta_index_contract::SearchPlaneTrackKind::Semantic,
+            manifest_generation: ManifestGeneration::new(7),
+            manifest_digest:
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    .to_string(),
+        }),
+        SearchPlaneQueryIpcResponse::Semantic(SemanticQueryResponse {
+            generation: wrong,
+            results: vec![],
+            window: QueryResultWindowV2::exact_probe(0),
+            explanation: sample_explanation(),
+        }),
+    ]));
+    let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+    let error = client
+        .semantic()
+        .query()
+        .active(repo_id(), revision_id())
+        .text("0.1 0.2 0.3")
+        .top_k(5)
+        .execute()
+        .expect_err("same-domain wrong semantic generation must be refused");
+    assert!(matches!(error, crate::SdkError::Binding { .. }));
+    let requests = ok_or_fail!(query.requests.lock());
+    assert!(matches!(
+        requests.last().map(|request| &request.payload),
+        Some(quanta_index_contract::SearchPlaneQueryIpcRequest::Semantic(request))
+            if request.generation == Some(sample_generation_pin())
+                && matches!(request.generation_selector, Some(GenerationSelector::Active { .. }))
+    ));
 }
 
 #[test]
@@ -1909,7 +1955,7 @@ fn semantic_query_request_resolves_active_before_forwarding() {
         panic!("expected pinned semantic query");
     };
     assert_eq!(pinned.generation, Some(sample_generation_pin()));
-    assert_eq!(pinned.generation_selector, None);
+    assert_eq!(pinned.generation_selector, request.generation_selector);
     assert_eq!(pinned.query_text, request.query_text);
 }
 
@@ -1951,7 +1997,7 @@ fn hybrid_seed_request_resolves_active_before_forwarding() {
         panic!("expected pinned hybrid-seed query");
     };
     assert_eq!(pinned.generation, Some(sample_generation_pin()));
-    assert_eq!(pinned.generation_selector, None);
+    assert_eq!(pinned.generation_selector, request.generation_selector);
     assert_eq!(pinned.semantic_query_text, request.semantic_query_text);
 }
 
