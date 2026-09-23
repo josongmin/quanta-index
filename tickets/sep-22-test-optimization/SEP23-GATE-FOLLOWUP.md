@@ -1,6 +1,6 @@
 # Sep 23 gate follow-up — shared checkout
 
-Status: `BLOCKED — artifact isolation repaired; full exact-source rails, runtime timeout investigation, and TOPT-00 timing evidence remain`
+Status: `BLOCKED — 1e9f9475 code rails passed; newer main source and TOPT-00 timing remain`
 
 This is a current shared-worktree repair record, **not** a clean-HEAD or
 performance qualification. At initial capture, `main` was
@@ -245,3 +245,32 @@ timeout under host contention likewise remains unresolved; do not call it a
 producer regression or delete/relax the oracle. TOPT-00 quiet-host paired
 performance evidence and the irrecoverable historical pre-implementation
 admission record remain separate open items.
+
+## Frozen-source qualification result — `1e9f9475`
+
+In the clean checkout-scoped detached worktree, with sccache disabled:
+
+- `just fmt-check`, full-workspace `just rust-clippy`, `just rust-policy`,
+  `just rust-machete`, `just rust-public-api`, and
+  `just rust-cargo-modules` passed.
+- `QUANTA_INDEX_TEST_THREADS=1 just rust-profile test-daemon` passed:
+  203/203 executed tests, one policy skip.
+- The same one-thread `test-daemon-all` passed: 322/322 executed tests,
+  one policy skip. The 10,001-row top-k real-daemon oracle passed in both
+  selectors with its existing 600-second IPC deadline unchanged.
+- `just rust-fuzz-smoke` passed all four 60-second nightly targets:
+  IPC request, IPC response, search-corpus ingest, and parse pipeline.
+- `RUST_TEST_THREADS=1 just rust-profile verify-rust` exited 0, including
+  format, strict Clippy, policy, dependency hygiene, bench `--no-run`, full
+  workspace tests, and strict rustdoc. Its runtime risk binary passed
+  137/137, including the activation-concurrency and 10,001-row cases.
+
+This is a `CODE_QUALIFIED` receipt for the frozen `1e9f9475` tree only. While
+that isolated rail ran, peer commits advanced shared `main` to at least
+`7d4994b9`, changing search-plane readiness, searchd runtime/state migration,
+and the retrieval SDK. The current shared checkout also has peer-owned dirty
+benchmark and receipt-generator edits. Do not promote the `1e9f9475` full
+rail to a later HEAD or dirty overlay. Re-freeze and rerun the impacted rails
+after those owners finish. The passing contended 10,001-row runs retire the
+old *correctness* timeout concern on `1e9f9475`, not TOPT-00's quiet-host
+performance requirement or its irrecoverable pre-implementation admission gap.

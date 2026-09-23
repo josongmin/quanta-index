@@ -1,6 +1,6 @@
 # TOPT-08 — Same-Source Integration and Qualification
 
-Status: `blocked — exact-source full Rust rails, 10,001-row timeout investigation, uncontended performance evidence`
+Status: `blocked — code-qualified at 1e9f9475 only; newer main and uncontended performance evidence remain`
 
 Depends on: TOPT-01 through TOPT-07
 
@@ -173,3 +173,19 @@ thread. The 10,001-row ingest timeout must be retried on a quiet host without
 changing its limit. `PERF_EVIDENCE_CLEAN` is blocked independently on TOPT-00's
 retrospective paired protocol. The missing historical admission record cannot
 be retroactively manufactured.
+
+## Frozen `1e9f9475` code verdict
+
+The isolated checkout passed the exact-source full `verify-rust` gate,
+`test-daemon` (203/203), `test-daemon-all` (322/322), four 60-second fuzz
+smokes, public API, and module-boundary snapshot checks. Each daemon selector
+had one existing policy skip. The 10,001-row real-daemon case passed twice
+without timeout or oracle changes and once more inside the full workspace
+test run. Emit `CODE_QUALIFIED` **only for `1e9f9475`**.
+
+Shared `main` advanced to at least `7d4994b9` during the isolated verification
+and contains newer search-plane/searchd/SDK code plus unrelated dirty work.
+Those later sources have no adopted full gate receipt from this run. TOPT-00's
+quiet-host retrospective paired measurements and the historical admission gap
+remain open, so neither `PERF_EVIDENCE_CLEAN` nor `PRODUCT_QUALIFIED` is
+emitted.
