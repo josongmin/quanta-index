@@ -296,3 +296,39 @@ other writers in shared `main`. Those changes require owner integration and
 their own source-bound gates. The host was contended during these passes;
 TOPT-00's quiet-host paired timing and the historical admission gap remain
 open. A passing correctness run is not `PERF_EVIDENCE_CLEAN`.
+
+## Session-hardening follow-up — `b0e147a4`
+
+The generation-selector audit found two classification defects. A mismatched
+fixed pin could be reported as retryable `NOT_READY` merely because a different
+operand was `Active`; conversely an unpinned semantic `Active` drift could be
+reported as permanent `INVALID_REQUEST`. A foreign repo/revision on an
+unresolved `Active` selector could also reach catalog lookup before identity
+validation. `selection.rs` and `semantic_query.rs` now validate identity before
+lookup and classify the *differing operands*: same-identity active generation
+drift remains retryable; fixed or foreign identity conflicts are invalid. The
+semantic test matrix covers each route and the unresolved foreign case.
+
+The workspace lint guard enumerated only `crates/*/Cargo.toml`, excluding the
+real `benchmarks/retrieval` workspace member. It now reads root
+`[workspace].members` and inspects every member. The pre-push scope now
+includes Rust source edits as well as manifests and the guard, so a source-only
+crate-local lint override cannot bypass this gate. Both defects had failing
+regressions before the producer/guard fixes.
+
+Exact-source receipt: clean detached worktree at
+`b0e147a443243aef2c16d38b39ebed0985868649`, tree
+`cf0bc05e1a99d3a6d9f0f5bc4ceb8ccadd7b7836`. The 12 focused Python policy
+tests, 402 search-plane library tests, and strict Clippy passed. With
+`RUST_TEST_THREADS=1`, `just rust-profile verify-rust` exited 0, covering format,
+strict full-workspace Clippy, policy (all 26 workspace members), dependency
+hygiene, bench `--no-run`, workspace tests, and strict rustdoc. The runtime
+risk binary passed 137/137, including unchanged 10,001-row top-k and
+activation-concurrency oracles. The independent exact-source
+`QUANTA_INDEX_TEST_THREADS=1 just rust-profile test-daemon-all` remains in
+progress; do not count it as passed until its process exits 0.
+
+This source-bound `verify-rust` result does not qualify later shared-main
+commits or its peer-owned dirty benchmark overlay. TOPT-00 quiet-host paired
+timing and the irrecoverable historical pre-implementation admission record
+remain open. Correctness under contention is not performance evidence.

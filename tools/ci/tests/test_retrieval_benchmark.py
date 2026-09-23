@@ -117,6 +117,11 @@ def test_budgeted_bcy_abstention_and_paired_ablation(tmp_path):
     assert large["routes"]["lexical"]["bcy"] == 0
     assert large["comparison"]["paired_wins"] == 2
     assert large["comparison"]["paired_losses"] == 0
+    no_answer = report["rank_metrics"]["comparison"]["no_answer_abstention_delta"]
+    assert no_answer["sample_count"] == 1
+    assert no_answer["mean_delta"] == pytest.approx(1.0)
+    assert no_answer["strata"]["category"]["uncategorized"]["sample_count"] == 1
+    assert no_answer["strata"]["language"]["not_applicable:no_gold"]["sample_count"] == 1
     assert set(report["budgets"]) == {"2000", "4000", "8000", "16000"}
     assert "gold" not in json.dumps(loaded[1])
 
@@ -1008,6 +1013,96 @@ def test_v2_confidence_interval_available_on_sufficient_sample(tmp_path):
     ]["comparison"]["primary_delta_ci_95"]
     assert repeated == ci
     assert report["rank_metrics"]["comparison"]["paired_losses"] == 10
+    stratified = report["rank_metrics"]["comparison"]["stratified_primary_delta"]
+    assert stratified["category"]["uncategorized"]["sample_count"] == 20
+    assert stratified["language"]["txt"]["sample_count"] == 20
+    assert stratified["repository"][commit]["sample_count"] == 20
+    no_answer = report["rank_metrics"]["comparison"]["no_answer_abstention_delta"]
+    assert no_answer["sample_count"] == 0
+    assert no_answer["mean_delta"] == ev.NOT_APPLICABLE
+    assert no_answer["strata"] == {"category": {}, "language": {}, "repository": {}}
+
+
+def test_bootstrap_is_order_independent_and_rejects_invalid_pairs(monkeypatch):
+    monkeypatch.setattr(ev, "MIN_CI_SAMPLE", 4)
+    deltas = [0.4, -0.2, 0.1, 0.7]
+    strata = [("T2", "semantic"), ("T1", "symbol"), ("T4", "semantic"), ("T3", "symbol")]
+    expected = ev.mean_ci(deltas, strata)
+    assert ev.mean_ci(list(reversed(deltas)), list(reversed(strata))) == expected
+    with pytest.raises(ev.EvidenceError, match="identities must be unique"):
+        ev.mean_ci(deltas, [("T1", "a"), ("T1", "b"), ("T3", "a"), ("T4", "b")])
+    with pytest.raises(ev.EvidenceError, match="deltas must be finite"):
+        ev.mean_ci([0.0, 1.0, float("nan"), 2.0], strata)
+
+
+def test_stratified_delta_summary_binds_category_language_and_repository(monkeypatch):
+    monkeypatch.setattr(ev, "MIN_CI_SAMPLE", 2)
+    rows = [
+        ("T1", {"category": "symbol", "gold": [{"path": "src/a.rs"}]}, 0.5),
+        ("T2", {"category": "symbol", "gold": [{"path": "src/b.rs"}]}, -0.5),
+        ("T3", {"category": "semantic", "gold": [{"path": "pkg/c.py"}]}, 0.25),
+        (
+            "T4",
+            {
+                "category": "semantic",
+                "gold": [{"path": "pkg/d.py"}, {"path": "web/e.ts"}],
+            },
+            0.75,
+        ),
+    ]
+    commit = "a" * 40
+    summary = ev.stratified_delta_summary(rows, commit)
+    assert set(summary) == {"category", "language", "repository"}
+    assert summary["category"]["symbol"]["sample_count"] == 2
+    assert summary["category"]["symbol"]["mean_delta"] == pytest.approx(0.0)
+    assert summary["category"]["semantic"]["mean_delta"] == pytest.approx(0.5)
+    assert summary["language"]["rs"]["sample_count"] == 2
+    assert summary["language"]["py"]["sample_count"] == 1
+    assert summary["language"]["mixed:py+ts"]["sample_count"] == 1
+    assert summary["repository"][commit]["sample_count"] == 4
+    assert summary["repository"][commit]["ci_95"].get("status") != ev.NOT_APPLICABLE
+    assert ev.stratified_delta_summary(list(reversed(rows)), commit) == summary
+
+    no_answer_rows = [
+        ("N1", {"category": "negative", "gold": []}, 1.0),
+        ("N2", {"category": "negative", "gold": []}, 0.0),
+    ]
+    no_answer = ev.no_answer_delta_summary(no_answer_rows, commit)
+    assert no_answer["metric"] == "no_answer_abstention"
+    assert no_answer["sample_count"] == 2
+    assert no_answer["mean_delta"] == pytest.approx(0.5)
+    assert no_answer["strata"]["language"]["not_applicable:no_gold"]["sample_count"] == 2
+
+
+def test_qualified_uncertainty_contract_rejects_incomplete_or_forged_strata(monkeypatch):
+    monkeypatch.setattr(ev, "MIN_CI_SAMPLE", 2)
+    rows = [
+        ("T1", {"category": "symbol", "gold": [{"path": "a.rs"}]}, 0.25),
+        ("T2", {"category": "symbol", "gold": [{"path": "b.rs"}]}, -0.25),
+    ]
+    comparison = {
+        "primary_delta_ci_95": ev.mean_ci([0.25, -0.25], [("T1", "symbol"), ("T2", "symbol")]),
+        "stratified_primary_delta": ev.stratified_delta_summary(rows, "a" * 40),
+        "no_answer_abstention_delta": ev.no_answer_delta_summary([], "a" * 40),
+    }
+    assert pairrun._qualified_uncertainty(comparison)
+
+    mutants = []
+    for mutate in (
+        lambda value: value["primary_delta_ci_95"].update(method="normal_approximation"),
+        lambda value: value["primary_delta_ci_95"].update(resamples=100),
+        lambda value: value["primary_delta_ci_95"].update(seed_sha256="bad"),
+        lambda value: value["primary_delta_ci_95"].update(strata={"symbol": 1}),
+        lambda value: value["stratified_primary_delta"].pop("language"),
+        lambda value: value["stratified_primary_delta"]["category"].clear(),
+        lambda value: value["stratified_primary_delta"]["category"]["symbol"].pop("mean_delta"),
+        lambda value: value.pop("no_answer_abstention_delta"),
+        lambda value: value["no_answer_abstention_delta"].update(sample_count=1),
+    ):
+        mutant = json.loads(json.dumps(comparison))
+        mutate(mutant)
+        mutants.append(mutant)
+    assert all(not pairrun._qualified_uncertainty(mutant) for mutant in mutants)
 
 
 @pytest.mark.parametrize(
@@ -2113,6 +2208,28 @@ def _receipt(command, results_bytes, revision, rail, raw_inputs):
     }
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda closure: closure.update(profile="other"),
+        lambda closure: closure.update(revision="short"),
+        lambda closure: closure.update(roots=[]),
+        lambda closure: closure.update(roots=["Cargo.toml", "Cargo.toml"]),
+        lambda closure: closure.update(roots=[1]),
+        lambda closure: closure.update(files=[]),
+        lambda closure: closure["files"][0].update(path=""),
+        lambda closure: closure["files"][0].update(sha256="0"),
+        lambda closure: closure["files"].append(dict(closure["files"][0])),
+        lambda closure: closure.update(digest=_fake_sha("forged-closure")),
+    ],
+)
+def test_driver_source_closure_shape_rejects_malformed_authority(mutation):
+    closure = _receipt("cmd", b"{}", "a" * 40, "rail", {"raw": b"raw"})["source_closure"]
+    mutation(closure)
+    with pytest.raises(pairrun.RunError):
+        pairrun._validate_source_closure_shape(closure, "driver source closure")
+
+
 def _sdk_results(command, binary_digest):
     return {
         "command": command,
@@ -2664,7 +2781,17 @@ def _pair_stage(
             frozen[key] = str(target)
 
     frozen_admission = {}
+    driver_source_closure_digest = None
     if scope == "qualified":
+        source_receipt = json.loads(
+            Path(frozen["contract_python_receipt"]).read_text(encoding="utf-8")
+        )
+        source_closure_path = stage / "driver-source-closure.json"
+        source_closure_path.write_text(
+            json.dumps(source_receipt["source_closure"]), encoding="utf-8"
+        )
+        spec["_driver_source_closure"] = str(source_closure_path)
+        driver_source_closure_digest = source_receipt["source_closure"]["digest"]
         evidence_dir = stage / "admission"
         evidence_dir.mkdir(exist_ok=True)
         license_path = evidence_dir / "license-receipt.json"
@@ -2753,6 +2880,7 @@ def _pair_stage(
                     if frozen_admission
                     else None
                 ),
+                "driver_source_closure_digest": driver_source_closure_digest,
                 "repetitions": repetitions,
             }
         ),
@@ -3259,6 +3387,40 @@ def test_qualified_speed_refuses_asymmetric_warm_protocol():
         )
 
 
+def test_source_closure_driver_uses_canonical_capture_and_verify_commands(tmp_path, monkeypatch):
+    observed = []
+
+    def fake_run(command, **kwargs):
+        observed.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(pairrun.subprocess, "run", fake_run)
+    closure = tmp_path / "closure.json"
+    pairrun._source_closure(tmp_path, "capture", closure)
+    pairrun._source_closure(tmp_path, "verify", closure)
+    assert observed[0][0][-5:] == [
+        "capture",
+        "--profile",
+        "retrieval",
+        "--out",
+        str(closure),
+    ]
+    assert observed[1][0][-3:] == ["verify", "--manifest", str(closure)]
+    assert all(call[1]["cwd"] == tmp_path and call[1]["timeout"] == 300 for call in observed)
+
+
+def test_source_closure_driver_fails_closed_on_tool_refusal(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        pairrun.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 2, stdout="", stderr="dirty"),
+    )
+    with pytest.raises(pairrun.RunError, match="source-closure capture refused: dirty"):
+        pairrun._source_closure(tmp_path, "capture", tmp_path / "closure.json")
+    with pytest.raises(pairrun.RunError, match="unsupported source-closure command"):
+        pairrun._source_closure(tmp_path, "check", None)
+
+
 def test_verdict_cannot_upgrade_qualified_warm_cache(tmp_path):
     st = _pair_stage(tmp_path, scope="qualified", claims={"speed": True}, cache_regime="warm_cache")
     verdict = _stage_verdict(st)
@@ -3271,6 +3433,86 @@ def test_qualified_quality_requires_estimable_uncertainty(tmp_path):
     verdict = _stage_verdict(st)
     assert verdict["states"]["QUALITY_DELTA"] == "fail"
     assert verdict["state_evidence"]["QUALITY_DELTA"]["reason"] == "uncertainty_unqualified"
+
+
+def test_qualified_verdict_refuses_tampered_driver_source_closure(tmp_path):
+    st = _pair_stage(tmp_path, scope="qualified")
+    closure_path = st["stage"] / "driver-source-closure.json"
+    closure = json.loads(closure_path.read_text(encoding="utf-8"))
+    closure["files"][0]["sha256"] = _fake_sha("tampered-source")
+    closure_path.write_text(json.dumps(closure), encoding="utf-8")
+    with pytest.raises(pairrun.RunError, match="driver source closure.digest mismatch"):
+        _stage_verdict(st)
+
+
+def test_qualified_verdict_refuses_valid_but_unbound_driver_source_closure(tmp_path):
+    st = _pair_stage(tmp_path, scope="qualified")
+    closure_path = st["stage"] / "driver-source-closure.json"
+    closure = json.loads(closure_path.read_text(encoding="utf-8"))
+    closure["files"][0]["sha256"] = _fake_sha("different-source")
+    core = {
+        key: closure[key] for key in ("schema_version", "profile", "revision", "roots", "files")
+    }
+    closure["digest"] = ev.digest(ev.canonical(core))
+    closure_path.write_text(json.dumps(closure), encoding="utf-8")
+    verdict = _stage_verdict(st)
+    assert verdict["states"]["PAIR_VALID"] == "fail"
+    assert verdict["state_evidence"]["PAIR_VALID"]["reason"] == (
+        "driver_source_closure_digest_drift"
+    )
+
+
+def test_qualified_verdict_refuses_receipt_capture_closure_mismatch(tmp_path, monkeypatch):
+    monkeypatch.setattr(ev, "MIN_CI_SAMPLE", 2)
+    st = _pair_stage(tmp_path, blinding="isolated", scope="qualified", claims={"quality": True})
+    receipt_path = st["stage"] / "receipts" / "sdk_receipt.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["source_closure"]["files"][0]["sha256"] = _fake_sha("other-source")
+    core = {
+        key: receipt["source_closure"][key]
+        for key in ("schema_version", "profile", "revision", "roots", "files")
+    }
+    receipt["source_closure"]["digest"] = ev.digest(ev.canonical(core))
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+
+    admission_path = st["stage"] / "admission" / "admission.json"
+    admission = json.loads(admission_path.read_text(encoding="utf-8"))
+    admission["verification"]["sdk_receipt_sha256"] = pairrun.sha_file(receipt_path)
+    admission_path.write_text(json.dumps(admission), encoding="utf-8")
+    admission_digest = pairrun.sha_file(admission_path)
+    protocol_path = st["stage"] / "protocol-lock.json"
+    protocol = json.loads(protocol_path.read_text(encoding="utf-8"))
+    protocol["admission_digest"] = admission_digest
+    protocol_path.write_text(json.dumps(protocol), encoding="utf-8")
+    _rewrite_manifest(
+        st,
+        lambda manifest: manifest["provenance"]["admission"].update(
+            manifest_digest=admission_digest
+        ),
+    )
+    verdict = _stage_verdict(st)
+    assert verdict["states"]["SDK_PATH_GREEN"] == "fail"
+    assert verdict["states"]["QUALITY_DELTA"] == "fail"
+    assert (
+        "source closure differs from capture closure"
+        in verdict["state_evidence"]["QUALITY_DELTA"]["reason"]
+    )
+
+
+def test_isolation_proof_refuses_tampered_frozen_runner_tool(tmp_path, monkeypatch):
+    monkeypatch.setattr(ev, "MIN_CI_SAMPLE", 2)
+    st = _pair_stage(tmp_path, blinding="isolated", scope="qualified", claims={"quality": True})
+    (st["stage"] / "runner-tools" / "semble.py").write_text("tampered adapter", encoding="utf-8")
+    verdict = _stage_verdict(st)
+    assert verdict["states"]["QUALITY_DELTA"] == "fail"
+    assert "runner tool digest mismatch" in verdict["state_evidence"]["QUALITY_DELTA"]["reason"]
+
+
+def test_runtime_manifest_requires_qualified_source_closure_artifact(tmp_path):
+    st = _pair_stage(tmp_path, scope="qualified")
+    _rewrite_manifest(st, lambda manifest: manifest["artifacts"].pop("driver_source_closure"))
+    with pytest.raises(pairrun.RunError, match="driver source closure"):
+        _stage_verdict(st)
 
 
 def test_verdict_refusals(tmp_path):
@@ -4206,6 +4448,7 @@ def _g0_manifest() -> dict:
         "provenance": {
             "quanta": {
                 "source_sha": "a" * 40,
+                "source_closure_digest": None,
                 "binary_digest": _fake_sha("qb"),
                 "embedder": "potion-code",
             },
@@ -4242,10 +4485,36 @@ def test_v3_manifest_schema():
     invalid(lambda m: m["evidence"].pop("pair"))
     invalid(lambda m: m["provenance"]["semble"].update(revision="0.7.0"))
     invalid(lambda m: m["provenance"]["quanta"].update(source_sha="unresolved"))
+    invalid(lambda m: m["provenance"]["quanta"].pop("source_closure_digest"))
+    invalid(lambda m: m["provenance"]["quanta"].update(source_closure_digest=_fake_sha("x")))
     invalid(lambda m: m["provenance"]["quanta"].update(embedder="openai"))
     invalid(lambda m: m["provenance"]["quanta"].pop("embedder"))
     invalid(lambda m: m["host"].update(cache_regime="lukewarm"))
     invalid(lambda m: m["host"].pop("cache_regime"))
+
+    qualified = json.loads(json.dumps(_g0_manifest()))
+    qualified["scope"] = "qualified"
+    qualified["artifacts"].update(
+        {
+            "admission_manifest": "admission.json",
+            "license_receipt": "license.json",
+            "annotation_receipts": ["annotation-a.json", "annotation-b.json"],
+            "adjudication_receipt": "adjudication.json",
+            "driver_source_closure": "driver-source-closure.json",
+        }
+    )
+    qualified["provenance"]["admission"]["manifest_digest"] = _fake_sha("admission")
+    qualified["provenance"]["quanta"]["source_closure_digest"] = _fake_sha("closure")
+    jsonschema.validate(qualified, schema)
+    for mutator in (
+        lambda value: value["artifacts"].pop("driver_source_closure"),
+        lambda value: value["provenance"]["quanta"].update(source_closure_digest=None),
+        lambda value: value["provenance"]["admission"].update(manifest_digest=None),
+    ):
+        mutant = json.loads(json.dumps(qualified))
+        mutator(mutant)
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(mutant, schema)
 
 
 def _g0_verdict() -> dict:

@@ -14,7 +14,7 @@ The prior free-form `host_profile` label is no longer authority. `host-profile` 
 
 No real pair has run, so neither the performance authority nor the isolation authority has issued a qualified receipt. Attested capture remains available for diagnostics; an isolated claim fails closed without the versioned Seatbelt proof. A non-macOS isolation backend is not implemented.
 
-Qualified capture now refuses dirty retrieval source before staging. Isolated execution uses SHA-bound stage-local adapter/evaluator copies, and `QUALITY_DELTA` refuses sub-floor samples whose paired category-stratified bootstrap interval is not estimable.
+Qualified capture now freezes clean retrieval source before staging, re-verifies it after capture, and cross-binds that closure to the contract/SDK receipts, protocol lock and run manifest. Isolated execution uses SHA-bound stage-local adapter/evaluator copies, and `QUALITY_DELTA` refuses sub-floor samples whose paired category-stratified bootstrap interval is not estimable.
 
 ## Goal
 

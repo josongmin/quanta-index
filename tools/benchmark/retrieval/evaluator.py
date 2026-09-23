@@ -1229,9 +1229,18 @@ def mean_ci(
     if strata is None:
         strata = [(str(index), "uncategorized") for index in range(n)]
     require(len(strata) == n, "confidence strata must align with paired deltas")
-    grouped: dict[str, list[tuple[str, float]]] = {}
+    paired = []
     for (task_id, category), delta in zip(strata, deltas):
         require(bool(task_id) and bool(category), "confidence strata identities must be nonempty")
+        require(math.isfinite(delta), "confidence deltas must be finite")
+        paired.append((task_id, category, delta))
+    require(
+        len({task_id for task_id, _category, _delta in paired}) == n,
+        "confidence task identities must be unique",
+    )
+    paired.sort(key=lambda row: (row[0], row[1]))
+    grouped: dict[str, list[tuple[str, float]]] = {}
+    for task_id, category, delta in paired:
         grouped.setdefault(category, []).append((task_id, delta))
     stratum_counts = {key: len(grouped[key]) for key in sorted(grouped)}
     if n < MIN_CI_SAMPLE:
@@ -1243,10 +1252,10 @@ def mean_ci(
             "method": "paired_stratified_bootstrap_percentile_v1",
             "strata": stratum_counts,
         }
-    mean = sum(deltas) / n
+    mean = sum(delta for _task_id, _category, delta in paired) / n
     seed_material = [
         {"task_id": task_id, "stratum": category, "delta": delta}
-        for (task_id, category), delta in zip(strata, deltas)
+        for task_id, category, delta in paired
     ]
     seed_sha256 = digest(canonical(seed_material))
     rng = random.Random(int(seed_sha256[:16], 16))
@@ -1281,6 +1290,64 @@ def mean_ci(
         "mean": mean,
         "lower_95": quantile(0.025),
         "upper_95": quantile(0.975),
+    }
+
+
+def _task_language(task: dict[str, Any]) -> str:
+    suffixes = sorted(
+        {
+            (Path(label["path"]).suffix.lower().lstrip(".") or "extensionless")
+            for label in task["gold"]
+        }
+    )
+    if not suffixes:
+        return "not_applicable:no_gold"
+    return suffixes[0] if len(suffixes) == 1 else "mixed:" + "+".join(suffixes)
+
+
+def stratified_delta_summary(
+    rows: list[tuple[str, dict[str, Any], float]], repository_commit: str
+) -> dict[str, Any]:
+    dimensions = {
+        "category": lambda task: str(task.get("category", "uncategorized")),
+        "language": _task_language,
+        "repository": lambda _task: repository_commit,
+    }
+    output: dict[str, Any] = {}
+    for dimension, key_fn in dimensions.items():
+        groups: dict[str, list[tuple[str, float]]] = {}
+        for task_id, task, delta in rows:
+            groups.setdefault(key_fn(task), []).append((task_id, delta))
+        output[dimension] = {
+            key: {
+                "sample_count": len(group),
+                "mean_delta": sum(delta for _task_id, delta in group) / len(group),
+                "ci_95": mean_ci(
+                    [delta for _task_id, delta in group],
+                    [(task_id, key) for task_id, _delta in group],
+                ),
+            }
+            for key, group in sorted(groups.items())
+        }
+    return output
+
+
+def no_answer_delta_summary(
+    rows: list[tuple[str, dict[str, Any], float]], repository_commit: str
+) -> dict[str, Any]:
+    deltas = [delta for _task_id, _task, delta in rows]
+    return {
+        "metric": "no_answer_abstention",
+        "sample_count": len(rows),
+        "mean_delta": (sum(deltas) / len(deltas)) if deltas else NOT_APPLICABLE,
+        "ci_95": mean_ci(
+            deltas,
+            [
+                (task_id, str(task.get("category", "uncategorized")))
+                for task_id, task, _delta in rows
+            ],
+        ),
+        "strata": stratified_delta_summary(rows, repository_commit),
     }
 
 
@@ -1527,6 +1594,16 @@ def evaluate(
             "status_counts": status_counts,
             "sample_count": len(task_ids),
         }
+    no_answer_rows = [
+        (
+            task_id,
+            eval_tasks[task_id],
+            float(_result_status(results[(task_id, candidate)], version) == "abstained")
+            - float(_result_status(results[(task_id, baseline)], version) == "abstained"),
+        )
+        for task_id in no_gold_ids
+    ]
+    no_answer_evidence = no_answer_delta_summary(no_answer_rows, suite["repository_commit"])
     if answerable_ids:
         primary_deltas = [
             per_task_primary[t][candidate] - per_task_primary[t][baseline] for t in answerable_ids
@@ -1559,6 +1636,14 @@ def evaluate(
                     for task_id in answerable_ids
                 ],
             ),
+            "stratified_primary_delta": stratified_delta_summary(
+                [
+                    (task_id, eval_tasks[task_id], delta)
+                    for task_id, delta in zip(answerable_ids, primary_deltas)
+                ],
+                suite["repository_commit"],
+            ),
+            "no_answer_abstention_delta": no_answer_evidence,
         }
     else:
         rank_comparison = {
@@ -1572,6 +1657,12 @@ def evaluate(
             "paired_ties": 0,
             "sample_count": 0,
             "primary_delta_ci_95": mean_ci([]),
+            "stratified_primary_delta": {
+                "category": {},
+                "language": {},
+                "repository": {},
+            },
+            "no_answer_abstention_delta": no_answer_evidence,
         }
     output["rank_metrics"] = {"routes": rank_routes, "comparison": rank_comparison}
     # Per-query rows in deterministic task/route order.

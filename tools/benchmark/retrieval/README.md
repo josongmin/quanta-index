@@ -270,7 +270,9 @@ driver records `attested` blinding, so its output alone cannot qualify an
 isolated-blind quality or phase-qualified speed verdict.
 
 Qualified capture runs the canonical retrieval source-closure check before staging;
-dirty relevant source is a hard refusal. Isolated capture executes stage-local,
+dirty relevant source is a hard refusal. The closure is frozen into the run,
+reverified after capture, cross-bound to all contract/SDK receipt closures, and
+bound by both the protocol lock and run manifest. Isolated capture executes stage-local,
 SHA-bound copies of the Semble adapter/evaluator rather than reading the checkout.
 Qualified quality also requires an estimable paired category-stratified bootstrap CI.
 

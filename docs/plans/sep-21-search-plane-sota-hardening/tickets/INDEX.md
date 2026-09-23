@@ -16,6 +16,7 @@ Authority inputs:
 - `docs/bugbash/sep-16/test-plan.md`
 - [final plan audit](FINAL-AUDIT.md)
 - [file-level execution action list](ACTION-LIST.md)
+- [final current-source residual execution plan](FINAL-RESIDUAL-EXECUTION-PLAN.md)
 - [copy/paste lane prompt runbook](prompts/README.md)
 - [execution progress ledger](EXECUTION-PROGRESS.md)
 

@@ -2076,12 +2076,16 @@ def _validate_manifest_shape(payload: object) -> dict:
         "annotation_receipts",
         "adjudication_receipt",
     }
-    optional_artifacts = set(RECEIPT_KEYS) | {"isolation_proof"} | admission_artifacts
+    optional_artifacts = (
+        set(RECEIPT_KEYS) | {"isolation_proof", "driver_source_closure"} | admission_artifacts
+    )
     if not required_artifacts <= set(artifacts) <= required_artifacts | optional_artifacts:
         raise RunError("run manifest artifacts hold missing/unknown keys")
     present_admission = set(artifacts).intersection(admission_artifacts)
     if manifest["scope"] == "qualified" and present_admission != admission_artifacts:
         raise RunError("qualified run manifest lacks the complete admission bundle")
+    if manifest["scope"] == "qualified" and "driver_source_closure" not in artifacts:
+        raise RunError("qualified run manifest lacks the driver source closure")
     if manifest["scope"] != "qualified" and present_admission:
         raise RunError("exploratory run manifest carries qualification admission artifacts")
     for key in required_artifacts | optional_artifacts:
@@ -2120,12 +2124,19 @@ def _validate_manifest_shape(payload: object) -> dict:
     elif admission_digest is not None:
         raise RunError("exploratory manifest admission digest must be null")
     quanta = _exact_keys(
-        provenance["quanta"], {"source_sha", "binary_digest", "embedder"}, "manifest quanta"
+        provenance["quanta"],
+        {"source_sha", "source_closure_digest", "binary_digest", "embedder"},
+        "manifest quanta",
     )
     if not _is_hex(quanta["source_sha"], 40) or not _is_hex(quanta["binary_digest"], 64):
         raise RunError("manifest quanta provenance digests malformed")
     if quanta["embedder"] not in ("potion-code", "hash-dev"):
         raise RunError("manifest quanta embedder must be a frozen embedder")
+    if manifest["scope"] == "qualified":
+        if not _is_hex(quanta["source_closure_digest"], 64):
+            raise RunError("qualified manifest source closure digest is malformed")
+    elif quanta["source_closure_digest"] is not None:
+        raise RunError("exploratory manifest source closure digest must be null")
     semble = _exact_keys(
         provenance["semble"],
         {"revision", "lockfile_digest", "interpreter_digest", "model_asset_digest"},
@@ -2218,6 +2229,73 @@ def _probe_clean(probe: object, profile: dict) -> bool:
         and isinstance(probe.get("power"), dict)
         and probe["power"].get("status") == "bounded"
     )
+
+
+def _qualified_uncertainty(comparison: object) -> bool:
+    if not isinstance(comparison, dict):
+        return False
+    ci = comparison.get("primary_delta_ci_95")
+    strata = comparison.get("stratified_primary_delta")
+    no_answer = comparison.get("no_answer_abstention_delta")
+    if not isinstance(ci, dict) or ci.get("status") == "not_applicable":
+        return False
+    if (
+        ci.get("method") != "paired_stratified_bootstrap_percentile_v1"
+        or ci.get("resamples") != 10_000
+        or type(ci.get("sample_count")) is not int
+        or ci["sample_count"] < 1
+        or not _is_hex(ci.get("seed_sha256"), 64)
+    ):
+        return False
+    counts = ci.get("strata")
+    if (
+        not isinstance(counts, dict)
+        or not counts
+        or any(type(value) is not int or value < 1 for value in counts.values())
+        or sum(counts.values()) != ci["sample_count"]
+    ):
+        return False
+    if not isinstance(strata, dict) or set(strata) != {"category", "language", "repository"}:
+        return False
+    for dimension in strata.values():
+        if not isinstance(dimension, dict) or not dimension:
+            return False
+        for entry in dimension.values():
+            if not isinstance(entry, dict) or set(entry) != {"sample_count", "mean_delta", "ci_95"}:
+                return False
+            if type(entry["sample_count"]) is not int or entry["sample_count"] < 1:
+                return False
+            if not isinstance(entry["mean_delta"], (int, float)) or not math.isfinite(
+                entry["mean_delta"]
+            ):
+                return False
+            if not isinstance(entry["ci_95"], dict):
+                return False
+    if not isinstance(no_answer, dict) or set(no_answer) != {
+        "metric",
+        "sample_count",
+        "mean_delta",
+        "ci_95",
+        "strata",
+    }:
+        return False
+    if (
+        no_answer["metric"] != "no_answer_abstention"
+        or type(no_answer["sample_count"]) is not int
+        or no_answer["sample_count"] < 0
+        or not isinstance(no_answer["ci_95"], dict)
+        or not isinstance(no_answer["strata"], dict)
+        or set(no_answer["strata"]) != {"category", "language", "repository"}
+    ):
+        return False
+    if no_answer["sample_count"] == 0:
+        if no_answer["mean_delta"] != "not_applicable" or any(no_answer["strata"].values()):
+            return False
+    elif not isinstance(no_answer["mean_delta"], (int, float)) or not math.isfinite(
+        no_answer["mean_delta"]
+    ):
+        return False
+    return True
 
 
 def _validate_phase_metrics(payload: object, where: str) -> dict:
@@ -2696,6 +2774,9 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         if key in artifacts:
             resolved[key] = _resolve_artifact(root, artifacts[key], f"artifacts.{key}")
     if manifest["scope"] == "qualified":
+        resolved["driver_source_closure"] = _resolve_artifact(
+            root, artifacts["driver_source_closure"], "artifacts.driver_source_closure"
+        )
         for key in ("admission_manifest", "license_receipt", "adjudication_receipt"):
             resolved[key] = _resolve_artifact(root, artifacts[key], f"artifacts.{key}")
         resolved["annotation_receipts"] = [
@@ -2779,6 +2860,16 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             != provenance_claims["admission"]["manifest_digest"]
         ):
             pair_note("protocol_lock_admission_drift", ("T17",))
+        if manifest["scope"] == "qualified":
+            closure = _validate_source_closure_shape(
+                read_json(resolved["driver_source_closure"]), "driver source closure"
+            )
+            if closure["revision"] != provenance_claims["quanta"]["source_sha"]:
+                pair_note("driver_source_closure_revision_drift", ("T12", "T17"))
+            if closure["digest"] != provenance_claims["quanta"]["source_closure_digest"]:
+                pair_note("driver_source_closure_digest_drift", ("T12", "T17"))
+            if protocol_payload.get("driver_source_closure_digest") != closure["digest"]:
+                pair_note("protocol_lock_source_closure_drift", ("T12", "T17"))
     if isinstance(corpus_payload, dict) and isinstance(mapping_payload, dict):
         if not mapping_matches_manifest(mapping_payload, corpus_payload):
             pair_note("mapping_proof_not_clean", ("T00", "T11", "T12"), "corpus_mismatch")
@@ -2918,6 +3009,8 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 "report_digest": report_digest,
                 "graded": bool(rescored.get("graded")),
                 "primary_delta_ci_95": rank_comparison["primary_delta_ci_95"],
+                "stratified_primary_delta": rank_comparison["stratified_primary_delta"],
+                "no_answer_abstention_delta": rank_comparison["no_answer_abstention_delta"],
                 "report_sha": digest(canonical(content)),
             }
         )
@@ -3145,6 +3238,13 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 for key in ("contract_python_receipt", "contract_rust_receipt", "sdk_receipt")
                 if key in resolved
             }
+            driver_closure = _validate_source_closure_shape(
+                read_json(resolved["driver_source_closure"]), "driver source closure"
+            )
+            for key, path in receipt_paths.items():
+                receipt = _validate_receipt_shape(read_json(path), key)
+                if receipt["source_closure"]["digest"] != driver_closure["digest"]:
+                    raise RunError(f"{key} source closure differs from capture closure")
             admission_evidence = verify_admission_bundle(
                 resolved["admission_manifest"],
                 resolved["license_receipt"],
@@ -3565,7 +3665,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     elif not all(entry["graded"] for entry in matched):
         set_state("QUALITY_DELTA", "fail", "reports_ungraded", None)
         classes.append("scoring")
-    elif any(entry["primary_delta_ci_95"].get("status") == "not_applicable" for entry in matched):
+    elif any(not _qualified_uncertainty(entry) for entry in matched):
         set_state("QUALITY_DELTA", "fail", "uncertainty_unqualified", None)
         classes.append("scoring")
     else:
@@ -3695,6 +3795,23 @@ def cmd_pair(args: argparse.Namespace) -> int:
         return 2
 
 
+def _source_closure(repo_root: Path, command: str, path: Path | None = None) -> None:
+    args = [sys.executable, str(repo_root / "tools/ci/source_closure.py"), command]
+    if command == "capture":
+        args.extend(("--profile", "retrieval", "--out", str(path)))
+    elif command == "verify":
+        args.extend(("--manifest", str(path)))
+    else:
+        raise RunError(f"unsupported source-closure command: {command}")
+    try:
+        completed = subprocess.run(args, cwd=repo_root, capture_output=True, text=True, timeout=300)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RunError(f"source-closure {command} failed: {exc}") from exc
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip()
+        raise RunError(f"source-closure {command} refused: {detail}")
+
+
 def run_pair(spec: dict) -> int:
     """Sequential Quanta + Semble capture with merged scoring and verdict.
 
@@ -3736,28 +3853,15 @@ def run_pair(spec: dict) -> int:
         raise RunError("qualified speed capture with potion-code requires quanta_model_dir")
     if "quanta_model_dir" in spec and not Path(spec["quanta_model_dir"]).is_dir():
         raise RunError("quanta_model_dir must name an existing directory")
-    if scope == "qualified":
-        repo_root = Path(__file__).resolve().parents[3]
-        closure = subprocess.run(
-            [
-                sys.executable,
-                str(repo_root / "tools/ci/source_closure.py"),
-                "check",
-                "--profile",
-                "retrieval",
-            ],
-            cwd=repo_root,
-            capture_output=True,
-            text=True,
-        )
-        if closure.returncode != 0:
-            detail = (closure.stderr or closure.stdout).strip()
-            raise RunError(f"qualified capture requires clean current retrieval source: {detail}")
     out_root = preflight_capture(spec)
     stage = out_root.parent / (out_root.name + ".staging")
     if out_root.exists() or stage.exists():
         raise RunError("output root or staging dir already exists (refusing reuse)")
     stage.mkdir(parents=True)
+    if scope == "qualified":
+        closure_path = stage / "driver-source-closure.json"
+        _source_closure(Path(__file__).resolve().parents[3], "capture", closure_path)
+        spec = dict(spec, _driver_source_closure=str(closure_path))
     try:
         summary = _run_pair_staged(spec, stage)
     except Exception:
@@ -3884,6 +3988,14 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
         json.dumps(build_latency_matrix(rep_layouts), indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    driver_closure_digest = None
+    if spec.get("scope", "exploratory") == "qualified":
+        closure_path = Path(spec.get("_driver_source_closure", ""))
+        _source_closure(Path(__file__).resolve().parents[3], "verify", closure_path)
+        driver_closure = _validate_source_closure_shape(
+            read_json(closure_path), "driver source closure"
+        )
+        driver_closure_digest = driver_closure["digest"]
     protocol_lock = {
         "suite_digest": sha_file(Path(spec["suite"])),
         "query_pack_digest": sha_file(stage / "query-pack.json"),
@@ -3897,6 +4009,7 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
         "admission_digest": (
             sha_file(Path(str(frozen_admission["manifest"]))) if frozen_admission else None
         ),
+        "driver_source_closure_digest": driver_closure_digest,
         "repetitions": repetitions,
     }
     (stage / "protocol-lock.json").write_text(
@@ -4226,6 +4339,43 @@ def _validate_receipt_shape(payload: object, where: str) -> dict:
     if roles != sorted(set(roles)):
         raise RunError(f"{where}.input_evidence must be sorted by unique role")
     return receipt
+
+
+def _validate_source_closure_shape(payload: object, where: str) -> dict:
+    closure = _exact_keys(
+        payload,
+        {"schema_version", "profile", "revision", "roots", "files", "digest"},
+        where,
+    )
+    if closure["schema_version"] != 1 or closure["profile"] != "retrieval":
+        raise RunError(f"{where} schema/profile mismatch")
+    if not _is_hex(closure["revision"], 40):
+        raise RunError(f"{where}.revision must be a full lowercase Git SHA")
+    roots = closure["roots"]
+    if (
+        not isinstance(roots, list)
+        or not roots
+        or any(not isinstance(root, str) or not root for root in roots)
+        or roots != sorted(set(roots))
+    ):
+        raise RunError(f"{where}.roots must be nonempty, sorted and unique")
+    files = closure["files"]
+    if not isinstance(files, list) or not files:
+        raise RunError(f"{where}.files must be nonempty")
+    paths = []
+    for index, entry in enumerate(files):
+        row = _exact_keys(entry, {"path", "sha256"}, f"{where}.files[{index}]")
+        if not isinstance(row["path"], str) or not row["path"] or not _is_hex(row["sha256"], 64):
+            raise RunError(f"{where}.files[{index}] is malformed")
+        paths.append(row["path"])
+    if paths != sorted(set(paths)):
+        raise RunError(f"{where}.files must be sorted and unique")
+    core = {
+        key: closure[key] for key in ("schema_version", "profile", "revision", "roots", "files")
+    }
+    if closure["digest"] != digest(canonical(core)):
+        raise RunError(f"{where}.digest mismatch")
+    return closure
 
 
 def _verify_receipt_inputs(receipt: dict, expected: dict[str, Path], where: str) -> None:
@@ -4698,6 +4848,18 @@ def build_run_manifest(
         "resource_metrics": sorted(resource_metrics),
         "protocol_lock": "protocol-lock.json",
     }
+    source_closure_digest = None
+    if scope == "qualified":
+        closure_path = Path(spec.get("_driver_source_closure", ""))
+        closure = _validate_source_closure_shape(read_json(closure_path), "driver source closure")
+        if closure["revision"] != source_sha:
+            raise RunError("driver source closure revision differs from current HEAD")
+        source_closure_digest = closure["digest"]
+        for key in ("contract_python_receipt", "contract_rust_receipt", "sdk_receipt"):
+            receipt = _validate_receipt_shape(read_json(Path(frozen[key])), key)
+            if receipt["source_closure"]["digest"] != source_closure_digest:
+                raise RunError(f"{key} source closure differs from the capture closure")
+        artifacts["driver_source_closure"] = relative(closure_path)
     if spec.get("blinding", "attested") == "isolated":
         proof_path = out_root / "isolation-proof.json"
         if not proof_path.is_file():
@@ -4738,6 +4900,7 @@ def build_run_manifest(
             "admission": {"manifest_digest": admission_digest},
             "quanta": {
                 "source_sha": source_sha,
+                "source_closure_digest": source_closure_digest,
                 "binary_digest": runner_binary_digest,
                 "embedder": spec.get("embedder", "potion-code"),
             },

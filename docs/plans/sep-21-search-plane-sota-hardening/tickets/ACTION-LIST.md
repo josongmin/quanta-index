@@ -2,6 +2,11 @@
 
 Status: implementation checklist; no item is complete from this document alone.
 
+For residual work after the historical P03–P10 handoffs, use the
+[final current-source execution plan](FINAL-RESIDUAL-EXECUTION-PLAN.md).
+The wave checklist below records the original execution decomposition; it is
+not a current-source completion or release verdict.
+
 Copy/paste execution prompts: [prompt runbook](prompts/README.md)
 
 Execution rule: `P00 → P01A → (P02A ∥ P02B) → P02I → P03 → P04 → … → P11 → P12A → P12Q`. Only P02A/P02B may run in

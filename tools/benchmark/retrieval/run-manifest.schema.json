@@ -125,6 +125,10 @@
           "type": "string", "minLength": 1,
           "description": "Frozen input digests + pins. The verdict re-verifies its digests against the frozen bytes."
         },
+        "driver_source_closure": {
+          "type": "string", "minLength": 1,
+          "description": "Qualified capture's start/end verified retrieval source closure."
+        },
         "isolation_proof": {
           "type": "string", "minLength": 1,
           "description": "Required by the verdict for isolated QUALITY_DELTA: versioned Seatbelt policy identity, denied roots, file bindings and deny/allow probes."
@@ -161,9 +165,15 @@
         },
         "quanta": {
           "type": "object", "additionalProperties": false,
-          "required": ["source_sha", "binary_digest", "embedder"],
+          "required": ["source_sha", "source_closure_digest", "binary_digest", "embedder"],
           "properties": {
             "source_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+            "source_closure_digest": {
+              "anyOf": [
+                {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                {"type": "null"}
+              ]
+            },
             "binary_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
             "embedder": {"enum": ["potion-code", "hash-dev"]}
           }
@@ -215,13 +225,18 @@
       "then": {
         "properties": {
           "artifacts": {
-            "required": ["admission_manifest", "license_receipt", "annotation_receipts", "adjudication_receipt"]
+            "required": ["admission_manifest", "license_receipt", "annotation_receipts", "adjudication_receipt", "driver_source_closure"]
           },
           "provenance": {
             "properties": {
               "admission": {
                 "properties": {
                   "manifest_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+                }
+              },
+              "quanta": {
+                "properties": {
+                  "source_closure_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
                 }
               }
             }
@@ -234,6 +249,9 @@
             "properties": {
               "admission": {
                 "properties": {"manifest_digest": {"type": "null"}}
+              },
+              "quanta": {
+                "properties": {"source_closure_digest": {"type": "null"}}
               }
             }
           }
