@@ -379,14 +379,15 @@ fn hard_deadline_escalation_is_not_graceful() {
 /// child rather than the supervisor's terminal receipt.
 #[test]
 fn escalated_child_retains_guards_until_it_actually_exits() {
-    let (release_tx, release_rx) = mpsc::channel();
-    let (drop_tx, drop_rx) = mpsc::channel();
     struct NotifyingGuard(mpsc::Sender<()>);
     impl Drop for NotifyingGuard {
         fn drop(&mut self) {
             self.0.send(()).expect("drop receiver is alive");
         }
     }
+
+    let (release_tx, release_rx) = mpsc::channel();
+    let (drop_tx, drop_rx) = mpsc::channel();
 
     let root = CancelRoot::new();
     let mut supervisor = SearchdSupervisor::new(
@@ -423,14 +424,15 @@ fn escalated_child_retains_guards_until_it_actually_exits() {
 /// release the lease before the custody reaper joins it.
 #[test]
 fn reported_but_unfinished_child_is_bounded_and_retains_guards() {
-    let (release_tx, release_rx) = mpsc::channel();
-    let (drop_tx, drop_rx) = mpsc::channel();
     struct NotifyingGuard(mpsc::Sender<()>);
     impl Drop for NotifyingGuard {
         fn drop(&mut self) {
             let _sent = self.0.send(());
         }
     }
+
+    let (release_tx, release_rx) = mpsc::channel();
+    let (drop_tx, drop_rx) = mpsc::channel();
 
     let root = CancelRoot::new();
     let mut supervisor = SearchdSupervisor::new(
@@ -469,14 +471,15 @@ fn reported_but_unfinished_child_is_bounded_and_retains_guards() {
 /// transfers its registered child and guard to the custody reaper.
 #[test]
 fn early_supervisor_drop_retains_guard_until_child_exit() {
-    let (release_tx, release_rx) = mpsc::channel();
-    let (drop_tx, drop_rx) = mpsc::channel();
     struct NotifyingGuard(mpsc::Sender<()>);
     impl Drop for NotifyingGuard {
         fn drop(&mut self) {
             let _sent = self.0.send(());
         }
     }
+
+    let (release_tx, release_rx) = mpsc::channel();
+    let (drop_tx, drop_rx) = mpsc::channel();
 
     let root = CancelRoot::new();
     let mut supervisor = SearchdSupervisor::new(
@@ -787,13 +790,13 @@ fn orphan_a_holder(
     let deadline = std::time::Instant::now()
         .checked_add(Duration::from_secs(10))
         .expect("the deadline is representable");
-    while std::fs::read(&holder_report).ok().as_deref() != Some(b"held\n")
+    while !matches!(std::fs::read(holder_report), Ok(bytes) if bytes == b"held\n")
         && std::time::Instant::now() < deadline
     {
         std::thread::sleep(Duration::from_millis(20));
     }
     assert_eq!(
-        std::fs::read(&holder_report).expect("holder report exists"),
+        std::fs::read(holder_report).expect("holder report exists"),
         b"held\n",
         "the holder reported holding before the abort"
     );

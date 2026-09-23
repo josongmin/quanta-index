@@ -750,6 +750,8 @@ fn verify_publish_dispatch_lexical_roundtrip(socket: &Path) -> TestResult {
                 | SearchPlaneQueryIpcResponse::HybridSeed(_)
                 | quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
                 | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+                | SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+                | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
                 | SearchPlaneQueryIpcResponse::Error(_) => false,
             },
             Err(_) => false,

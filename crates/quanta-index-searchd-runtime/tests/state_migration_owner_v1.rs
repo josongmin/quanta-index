@@ -263,6 +263,7 @@ fn verify_backup(root: &Path) -> Result<OfflineStateVerificationV1, Box<dyn std:
 /// Every file and directory name under `root`, sorted. The catalog subtree
 /// is excluded: the engine's backup API necessarily opens the live catalog,
 /// and directory mtimes there are vendor bookkeeping, not source state.
+///
 /// Everywhere else the name set must be exactly stable across an operation.
 fn tree_names_outside_catalog(root: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let mut names = Vec::new();
@@ -292,8 +293,9 @@ fn tree_names_outside_catalog(root: &Path) -> Result<Vec<String>, Box<dyn std::e
 /// No migration marker, migration receipt or produced-current manifest may
 /// appear inside a source root: those authorities live in staging/destination
 /// only. Track-local files such as `indexes/.../manifest.cbor` are ordinary
-/// source payload and must not be rejected by a substring match. Lock files
-/// are covered separately: the daemon's own pre-existing lock may stand, but
+/// source payload and must not be rejected by a substring match.
+///
+/// Lock files are covered separately: the daemon's own pre-existing lock may stand, but
 /// the name set ([`tree_names_outside_catalog`]) must prove no lock was
 /// added, and callers compare its bytes directly.
 fn assert_no_source_markers(root: &Path) -> TestResult {
@@ -1397,8 +1399,9 @@ impl LegacyStateImportPort for StubImporterV1 {
 }
 
 /// A current root's byte fingerprint is identical before and after a
-/// successful backup, and no marker, receipt or manifest appears inside the
-/// source. Custody (the daemon lock) is established as fixture setup, before
+/// successful backup, and no marker, receipt or manifest appears inside the source.
+///
+/// Custody (the daemon lock) is established as fixture setup, before
 /// the fingerprint window opens.
 #[test]
 fn backup_keeps_the_source_fingerprint_bit_identical() -> TestResult {
@@ -1519,7 +1522,7 @@ fn migrate_keeps_the_legacy_source_bit_identical() -> TestResult {
     assert_no_source_markers(legacy.path())?;
     assert!(
         !legacy.path().join("semantic").exists()
-            || legacy.path().join("semantic/MIGRATED").exists() == false,
+            || !legacy.path().join("semantic/MIGRATED").exists(),
         "no source-side migration receipt may exist"
     );
     assert!(
@@ -1656,8 +1659,9 @@ fn verify_state_with_a_live_lease_refuses_state_root_in_use() -> TestResult {
 }
 
 /// A mid-migration source byte change publishes no destination: the drift
-/// gate recomputes the inventory immediately before the cutover and refuses,
-/// removing the staging it prepared. Same-length mutation proves the digest
+/// gate recomputes the inventory immediately before the cutover and refuses.
+///
+/// It removes the staging it prepared. Same-length mutation proves the digest
 /// (not just the size) is compared.
 #[test]
 fn mid_migration_source_byte_change_publishes_no_destination() -> TestResult {
@@ -1784,6 +1788,7 @@ fn corrupt_and_truncated_legacy_journal_fail_closed() -> TestResult {
 
 /// New binary, old root: a source-side `MIGRATED` receipt is old-binary
 /// authority and refuses the journal immutable, with no destination.
+///
 /// Old-binary residue of the other kind — a stale `MIGRATED.lock` — is
 /// inert and does not block the migration.
 #[test]
@@ -1922,8 +1927,9 @@ fn alias_symlink_and_hardlink_sources_are_refused() -> TestResult {
 }
 
 /// Wrong-custody sessions never reach the engine: backup needs the daemon
-/// lease, migrate needs a legacy session, restore needs a backup session,
-/// and verify refuses a legacy session. No destination is published.
+/// lease, migrate needs a legacy session, restore needs a backup session.
+///
+/// Verify refuses a legacy session. No destination is published.
 #[test]
 fn wrong_custody_sessions_never_reach_the_engine() -> TestResult {
     let legacy = private_root()?;

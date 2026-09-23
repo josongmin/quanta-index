@@ -118,7 +118,9 @@ fn typed_code(response: &SearchPlaneQueryIpcResponse) -> Option<(&'static str, S
         | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
-        | SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => None,
+        | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+        | SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+        | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_) => None,
     }
 }
 
