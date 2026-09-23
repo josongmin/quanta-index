@@ -82,8 +82,9 @@ to validated lane handoffs and immutable proof manifests, not this document.
   Sep-23 retrieval-benchmark and agent-rule edits preserved. The active-pin
   checkpoint is committed at `599ad8b`; the non-lexical time-rebind
   restriction is committed at `98153c1`. Neither is final-source release
-  proof. The lexical planner preflight is a further local checkpoint, not
-  final-source release proof.
+  proof. The lexical planner preflight is committed at `ee6d1b4` and the
+  semantic active-authority correction at `f10a6c4`; neither is final-source
+  release proof.
 - The query IPC now exposes a read-only active-generation resolution opcode
   backed by `ActivationCatalog::resolve_record`. SDK query dispatch centrally
   resolves active lexical/semantic selectors on that same query socket,
