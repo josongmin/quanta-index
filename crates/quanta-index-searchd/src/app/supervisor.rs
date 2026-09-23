@@ -27,7 +27,7 @@
 //! unfinished child before it drops the guards. A second-signal abort uses
 //! the same custody transfer without waiting in the supervisor.
 
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -49,6 +49,7 @@ const SUPERVISOR_POLL: Duration = Duration::from_millis(10);
 
 /// The phases of one supervised runtime.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
 pub enum SupervisorPhase {
     /// Children are being spawned; all-or-rollback.
     Starting,
@@ -61,6 +62,62 @@ pub enum SupervisorPhase {
     /// A required child was lost, startup rolled back, or the hard
     /// deadline escalated remaining children.
     Failed,
+}
+
+/// A process-wide observation of the supervisor and required serving loops.
+/// The supervisor owns phase transitions; child adapters own their liveness
+/// bits. A surviving control socket therefore cannot report the process as
+/// ready after another required accept loop has exited.
+#[derive(Debug, Default)]
+pub(crate) struct SupervisorStatus {
+    phase: AtomicU8,
+    query: AtomicBool,
+    control: AtomicBool,
+    ingest: AtomicBool,
+    provider: AtomicBool,
+}
+
+impl SupervisorStatus {
+    fn set_phase(&self, phase: SupervisorPhase) {
+        self.phase.store(phase as u8, Ordering::Release);
+    }
+
+    /// Read the supervisor's last published lifecycle phase.
+    #[must_use]
+    pub(crate) fn phase(&self) -> SupervisorPhase {
+        match self.phase.load(Ordering::Acquire) {
+            1 => SupervisorPhase::Ready,
+            2 => SupervisorPhase::Draining,
+            3 => SupervisorPhase::Stopped,
+            4 => SupervisorPhase::Failed,
+            _ => SupervisorPhase::Starting,
+        }
+    }
+
+    pub(crate) fn set_child_running(&self, name: &'static str, running: bool) {
+        let flag = match name {
+            "query-accept" => &self.query,
+            "control-accept" => &self.control,
+            "ingest-accept" => &self.ingest,
+            "provider-attempts" => &self.provider,
+            _ => return,
+        };
+        flag.store(running, Ordering::Release);
+    }
+
+    #[must_use]
+    pub(crate) fn required_planes(&self) -> (bool, bool, bool) {
+        (
+            self.query.load(Ordering::Acquire),
+            self.control.load(Ordering::Acquire),
+            self.ingest.load(Ordering::Acquire),
+        )
+    }
+
+    #[must_use]
+    pub(crate) fn provider_running(&self) -> bool {
+        self.provider.load(Ordering::Acquire)
+    }
 }
 
 /// How one registered child ended.
@@ -323,6 +380,7 @@ struct DrainTally {
 /// joins, or transferred with unfinished children to the custody reaper.
 pub struct SearchdSupervisor<G: Send + 'static> {
     phase: SupervisorPhase,
+    status: Option<Arc<SupervisorStatus>>,
     cancel: CancelRoot,
     children: Vec<RegisteredChild>,
     exits: Receiver<ChildExit>,
@@ -337,6 +395,7 @@ pub struct SearchdSupervisor<G: Send + 'static> {
 impl<G: Send + 'static> Drop for SearchdSupervisor<G> {
     fn drop(&mut self) {
         if self.guards.is_some() {
+            self.set_phase(SupervisorPhase::Failed);
             self.cancel.request_shutdown();
             self.release_guards_after_children();
         }
@@ -362,6 +421,7 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
         let (exits_tx, exits) = channel();
         Self {
             phase: SupervisorPhase::Starting,
+            status: None,
             cancel,
             children: Vec::new(),
             exits,
@@ -371,6 +431,21 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
             hard_deadline,
             cooperative_overdue: Vec::new(),
             guards: Some(guards),
+        }
+    }
+
+    /// Publish lifecycle transitions to the process-readiness authority.
+    #[must_use]
+    pub(crate) fn with_status(mut self, status: Arc<SupervisorStatus>) -> Self {
+        status.set_phase(self.phase);
+        self.status = Some(status);
+        self
+    }
+
+    fn set_phase(&mut self, phase: SupervisorPhase) {
+        self.phase = phase;
+        if let Some(status) = &self.status {
+            status.set_phase(phase);
         }
     }
 
@@ -465,7 +540,7 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
                 escalated.push(child.name);
             }
         }
-        self.phase = SupervisorPhase::Failed;
+        self.set_phase(SupervisorPhase::Failed);
         if let Some(signum) = self.latched_abort() {
             return self.abort(signum);
         }
@@ -493,7 +568,7 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
         if let Some(lost) = self.take_pending_exits() {
             return self.required_child_lost(lost);
         }
-        self.phase = SupervisorPhase::Ready;
+        self.set_phase(SupervisorPhase::Ready);
 
         // Serving: watch the cancellation root and the children.
         loop {
@@ -537,7 +612,7 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
     /// finished are joined. A reported child still in teardown at the
     /// hard deadline is escalated with its join handle and guards.
     fn drain(mut self) -> SupervisionOutcome {
-        self.phase = SupervisorPhase::Draining;
+        self.set_phase(SupervisorPhase::Draining);
         self.stop_all();
         // Fold any terminal events that queued during the serving loop.
         let _queued = self.take_pending_exits();
@@ -578,7 +653,7 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
     /// A child ended while serving: readiness is down, fire every stop,
     /// then drain under the same hard deadline.
     fn required_child_lost(mut self, lost: ChildExit) -> SupervisionOutcome {
-        self.phase = SupervisorPhase::Failed;
+        self.set_phase(SupervisorPhase::Failed);
         // Global cancellation: every well-behaved peer stops now.
         self.cancel.request_shutdown();
         let cancel = CancelRoot::clone(&self.cancel);
@@ -622,7 +697,7 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
 
     /// The abort answer to a second signal: nothing is waited for.
     fn abort(mut self, signum: i32) -> SupervisionOutcome {
-        self.phase = SupervisorPhase::Failed;
+        self.set_phase(SupervisorPhase::Failed);
         self.release_guards_after_children();
         SupervisionOutcome::SignalAbort { signum }
     }
@@ -630,11 +705,11 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
     /// Classify the drain tally into the final outcome. Consumes the
     /// guards after every join or escalation.
     fn finish_drain(mut self, tally: DrainTally) -> SupervisionOutcome {
-        self.phase = if tally.unfinished.is_empty() && tally.failed.is_empty() {
+        self.set_phase(if tally.unfinished.is_empty() && tally.failed.is_empty() {
             SupervisorPhase::Stopped
         } else {
             SupervisorPhase::Failed
-        };
+        });
         self.release_guards_after_children();
         if !tally.unfinished.is_empty() {
             return SupervisionOutcome::HardDeadlineEscalated {
@@ -900,7 +975,20 @@ impl DrainTally {
 
 #[cfg(test)]
 mod tests {
-    // The supervisor's own semantics are proven end-to-end by the
-    // registered owner suite
-    // (`crates/quanta-index-searchd-runtime/tests/runtime_supervisor_owner_v1.rs`).
+    use super::{SupervisorPhase, SupervisorStatus};
+
+    #[test]
+    fn status_publishes_phase_and_required_child_loss() {
+        let status = SupervisorStatus::default();
+        assert_eq!(status.phase(), SupervisorPhase::Starting);
+        status.set_child_running("query-accept", true);
+        status.set_child_running("control-accept", true);
+        status.set_child_running("ingest-accept", true);
+        status.set_phase(SupervisorPhase::Ready);
+        assert_eq!(status.required_planes(), (true, true, true));
+        status.set_child_running("query-accept", false);
+        assert_eq!(status.required_planes(), (false, true, true));
+        status.set_phase(SupervisorPhase::Failed);
+        assert_eq!(status.phase(), SupervisorPhase::Failed);
+    }
 }

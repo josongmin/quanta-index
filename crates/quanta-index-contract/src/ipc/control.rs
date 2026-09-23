@@ -1867,6 +1867,51 @@ pub struct ProcessReadinessV1 {
     pub not_ready_reasons: Vec<ProcessReadinessReasonV1>,
 }
 
+impl ProcessReadinessV1 {
+    /// Reject self-contradictory process reports even when the response
+    /// variant and request ID are correct. Reasons are a canonical ordered
+    /// projection of the observed components, never free-form assertions.
+    pub fn validate_v1(&self) -> Result<(), &'static str> {
+        if (self.active_repositories == 0) != self.active_candidate_integrity.is_none() {
+            return Err("active candidate integrity presence differs from active repository count");
+        }
+        let mut expected = Vec::new();
+        if self.supervisor_phase != ProcessReadinessPhaseV1::Ready {
+            expected.push(ProcessReadinessReasonV1::SupervisorNotReady);
+        }
+        if !self.components.query_plane {
+            expected.push(ProcessReadinessReasonV1::QueryPlaneUnhealthy);
+        }
+        if !self.components.control_plane {
+            expected.push(ProcessReadinessReasonV1::ControlPlaneUnhealthy);
+        }
+        if !self.components.ingest_plane {
+            expected.push(ProcessReadinessReasonV1::IngestPlaneUnhealthy);
+        }
+        if !self.components.maintenance_heartbeat {
+            expected.push(ProcessReadinessReasonV1::MaintenanceHeartbeatStale);
+        }
+        if !self.components.required_backend {
+            expected.push(ProcessReadinessReasonV1::RequiredBackendOpenUnproven);
+        }
+        if self.components.provider.claim == ProcessProviderClaimV1::Required
+            && !self.components.provider.healthy
+        {
+            expected.push(ProcessReadinessReasonV1::ProviderRequiredUnhealthy);
+        }
+        if self.active_candidate_integrity == Some(false) {
+            expected.push(ProcessReadinessReasonV1::ActiveCandidateIntegrityFailed);
+        }
+        if self.not_ready_reasons != expected {
+            return Err("not_ready_reasons differ from observed component failures");
+        }
+        if self.ready != expected.is_empty() {
+            return Err("ready differs from required component conjunction");
+        }
+        Ok(())
+    }
+}
+
 const PROCESS_READINESS_FIELDS: &[&str] = &[
     "ready",
     "supervisor_phase",
@@ -1963,18 +2008,23 @@ impl<'de> Visitor<'de> for ProcessReadinessV1Visitor {
         let supervisor_phase =
             supervisor_phase.ok_or_else(|| de::Error::missing_field("supervisor_phase"))?;
         let components = components.ok_or_else(|| de::Error::missing_field("components"))?;
+        if !active_candidate_integrity_seen {
+            return Err(de::Error::missing_field("active_candidate_integrity"));
+        }
         let active_repositories =
             active_repositories.ok_or_else(|| de::Error::missing_field("active_repositories"))?;
         let not_ready_reasons =
             not_ready_reasons.ok_or_else(|| de::Error::missing_field("not_ready_reasons"))?;
-        Ok(Self::Value {
+        let report = Self::Value {
             ready,
             supervisor_phase,
             components,
             active_candidate_integrity,
             active_repositories,
             not_ready_reasons,
-        })
+        };
+        report.validate_v1().map_err(de::Error::custom)?;
+        Ok(report)
     }
 }
 
@@ -1988,6 +2038,55 @@ impl<'de> Deserialize<'de> for ProcessReadinessV1 {
             PROCESS_READINESS_FIELDS,
             ProcessReadinessV1Visitor,
         )
+    }
+}
+
+#[cfg(test)]
+mod process_readiness_contract_tests {
+    use super::*;
+
+    fn sample() -> ProcessReadinessV1 {
+        ProcessReadinessV1 {
+            ready: true,
+            supervisor_phase: ProcessReadinessPhaseV1::Ready,
+            components: ProcessComponentsHealthV1 {
+                query_plane: true,
+                control_plane: true,
+                ingest_plane: true,
+                maintenance_heartbeat: true,
+                required_backend: true,
+                provider: ProcessProviderReadinessV1 {
+                    claim: ProcessProviderClaimV1::Degraded,
+                    healthy: false,
+                },
+            },
+            active_candidate_integrity: None,
+            active_repositories: 0,
+            not_ready_reasons: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn decoder_rejects_self_contradictory_readiness() {
+        let report = sample();
+        assert!(report.validate_v1().is_ok());
+        let encoded = serde_json::to_value(&report).expect("valid report encodes");
+        assert!(serde_json::from_value::<ProcessReadinessV1>(encoded.clone()).is_ok());
+        let mut false_ready = encoded.clone();
+        false_ready["ready"] = serde_json::json!(false);
+        assert!(serde_json::from_value::<ProcessReadinessV1>(false_ready).is_err());
+        let mut missing_reason = encoded.clone();
+        missing_reason["components"]["query_plane"] = serde_json::json!(false);
+        assert!(serde_json::from_value::<ProcessReadinessV1>(missing_reason).is_err());
+        let mut fake_active = encoded;
+        fake_active["active_candidate_integrity"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<ProcessReadinessV1>(fake_active).is_err());
+        let mut missing_integrity = serde_json::to_value(&report).expect("valid report encodes");
+        let _removed = missing_integrity
+            .as_object_mut()
+            .expect("report is an object")
+            .remove("active_candidate_integrity");
+        assert!(serde_json::from_value::<ProcessReadinessV1>(missing_integrity).is_err());
     }
 }
 

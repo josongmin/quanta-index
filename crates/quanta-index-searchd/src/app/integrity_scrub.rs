@@ -39,6 +39,15 @@ pub struct ScrubTalliesV1 {
 }
 
 impl ScrubTalliesV1 {
+    /// Monotonic invalidation token for cached active-candidate proof.
+    #[must_use]
+    pub fn proof_invalidation_epoch(&self) -> (u64, u64) {
+        (
+            self.corruptions.load(Ordering::Acquire),
+            self.errors.load(Ordering::Acquire),
+        )
+    }
+
     fn record_step(&self, files: u64, bytes: u64) {
         let _previous = self.runs.fetch_add(1, Ordering::Relaxed);
         let _previous = self.bytes.fetch_add(bytes, Ordering::Relaxed);
@@ -308,6 +317,16 @@ mod tests {
     use quanta_index_search_plane::{OpenedSnapshot, SnapshotRegistryPolicy};
 
     use super::*;
+
+    #[test]
+    fn corruption_and_scrub_error_invalidate_cached_active_proof() {
+        let tallies = ScrubTalliesV1::default();
+        assert_eq!(tallies.proof_invalidation_epoch(), (0, 0));
+        tallies.record_error();
+        assert_eq!(tallies.proof_invalidation_epoch(), (0, 1));
+        tallies.record_corruption();
+        assert_eq!(tallies.proof_invalidation_epoch(), (1, 1));
+    }
 
     /// A resident semantic handle that answers nothing: only its residency
     /// in the registry matters to these tests.

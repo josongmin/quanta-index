@@ -14,13 +14,14 @@ use quanta_index_contract::{
     AuxEpochV1, ContinuationTokenV2, EarlyStopReason, EngineTouched, ExplainCandidateV1,
     GenerationPin, HistoryOrderV1, HistoryQueryRequest, HybridCandidateV1, HybridQueryRequest,
     HybridQueryResponse, HybridSeedQueryRequest, HybridSeedQueryResponse, LexicalCandidate,
-    ManifestGeneration, PlannerTraceEntry, QueryConstraintSetV1, QueryErrorRepair,
-    QueryResultWindowV2, RepoId, RepoMapDocType, RepoMapFocusSubjectDto, RepoMapQueryRequest,
-    RevisionId, RuntimeMetadataQueryRequest, SearchExplanation, SearchPlaneHistoryQueryResponse,
-    SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope,
-    SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneStructuralQueryResponse,
-    SemanticQueryRequest, StructuralQueryRequest, SymbolCandidate, SymbolQueryRequest,
-    SymbolQueryResponse, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
+    ManifestGeneration, PlannerTraceEntry, ProcessReadinessV1, QueryConstraintSetV1,
+    QueryErrorRepair, QueryResultWindowV2, RepoId, RepoMapDocType, RepoMapFocusSubjectDto,
+    RepoMapQueryRequest, RevisionId, RuntimeMetadataQueryRequest, SearchExplanation,
+    SearchPlaneHistoryQueryResponse, SearchPlaneQueryIpcResponse,
+    SearchPlaneQueryIpcResponseEnvelope, SearchPlaneRuntimeMetadataQueryResponse,
+    SearchPlaneStructuralQueryResponse, SemanticQueryRequest, StructuralQueryRequest,
+    SymbolCandidate, SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest, TextQueryResponse,
+    TextQuerySyntax,
     ipc::{
         GenerationStatusReport, MetricHistogramV1, MetricsSnapshotV1, QuarantineDiscardAck,
         QuarantineDiscardOutcomeDtoV1, QuarantineInventoryV1, QuarantineTargetV1,
@@ -71,11 +72,11 @@ where
         request,
     } = ParsedCommand::parse(args)?;
     let client = QuantaIndex::connect(connect_options).map_err(map_sdk_error)?;
-    // J7Q-05: `readiness` and `doctor` dispatch via the CONTROL plane, not the
+    // Process readiness, generation status and doctor dispatch via CONTROL, not the
     // query plane. Branch them here so the query path (`dispatch_query_request`
     // -> `validate_response_kind` -> `render_response`) stays untouched.
     match request {
-        CliRequest::Readiness {
+        CliRequest::GenerationStatus {
             repo_id,
             revision_id,
         } => {
@@ -83,7 +84,15 @@ where
                 .generations()
                 .status(repo_id, revision_id)
                 .map_err(map_sdk_error)?;
-            write_stdout(stdout, &render_readiness(&report, output)?)?;
+            write_stdout(stdout, &render_generation_status(&report, output)?)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        CliRequest::ProcessReadiness => {
+            let report = client
+                .observability()
+                .process_readiness()
+                .map_err(map_sdk_error)?;
+            write_stdout(stdout, &render_process_readiness(&report, output)?)?;
             Ok(ExitCode::SUCCESS)
         }
         CliRequest::Doctor {
@@ -188,6 +197,7 @@ enum CommandKind {
     History,
     Structural,
     Readiness,
+    GenerationStatus,
     Doctor,
     Metrics,
     Quarantine,
@@ -265,10 +275,11 @@ enum CliRequest {
     RuntimeMetadata(RuntimeMetadataQueryRequest),
     History(HistoryQueryRequest),
     Structural(StructuralQueryRequest),
-    Readiness {
+    GenerationStatus {
         repo_id: RepoId,
         revision_id: RevisionId,
     },
+    ProcessReadiness,
     Doctor {
         repo_id: RepoId,
         revision_id: RevisionId,
@@ -336,7 +347,11 @@ impl ParsedCommand {
             ),
             "readiness" => (
                 CommandKind::Readiness,
-                parse_readiness(&mut common, &mut rest)?,
+                parse_process_readiness(&mut common, &mut rest)?,
+            ),
+            "generation-status" => (
+                CommandKind::GenerationStatus,
+                parse_generation_status(&mut common, &mut rest)?,
             ),
             "doctor" => (CommandKind::Doctor, parse_doctor(&mut common, &mut rest)?),
             "metrics" => (CommandKind::Metrics, parse_metrics(&mut common, &mut rest)?),
@@ -346,7 +361,7 @@ impl ParsedCommand {
             ),
             other => {
                 return Err(CliError::usage(format!(
-                    "unknown subcommand `{other}`; expected lexical|symbol|semantic|hybrid|hybrid-seed|explain|repomap|runtime-metadata|history|structural|readiness|doctor|metrics|quarantine"
+                    "unknown subcommand `{other}`; expected lexical|symbol|semantic|hybrid|hybrid-seed|explain|repomap|runtime-metadata|history|structural|readiness|generation-status|doctor|metrics|quarantine"
                 )));
             }
         };
@@ -629,16 +644,31 @@ fn parse_repo_revision(
     ))
 }
 
-/// J7Q-05: parse `readiness --repo-id <ID> --revision-id <REV>`.
-fn parse_readiness(
+/// Per-repository generation status, intentionally not process readiness.
+fn parse_generation_status(
     common: &mut CommonOptions,
     rest: &mut VecDeque<String>,
 ) -> CliResult<CliRequest> {
-    let (repo_id, revision_id) = parse_repo_revision(common, rest, "readiness")?;
-    Ok(CliRequest::Readiness {
+    let (repo_id, revision_id) = parse_repo_revision(common, rest, "generation-status")?;
+    Ok(CliRequest::GenerationStatus {
         repo_id,
         revision_id,
     })
+}
+
+fn parse_process_readiness(
+    common: &mut CommonOptions,
+    rest: &mut VecDeque<String>,
+) -> CliResult<CliRequest> {
+    while let Some(current) = rest.pop_front() {
+        if common.parse_flag(&current, rest)? {
+            continue;
+        }
+        return Err(CliError::usage(format!(
+            "unknown readiness flag `{current}`"
+        )));
+    }
+    Ok(CliRequest::ProcessReadiness)
 }
 
 /// QI-BB-015: parse `metrics`, which takes only the global flags.
@@ -1283,13 +1313,14 @@ fn dispatch_query_request(
         // them before reaching the query dispatcher. Reaching here is a routing
         // bug, so fail-closed with a typed protocol error rather than fabricate a
         // query.
-        CliRequest::Readiness { .. }
+        CliRequest::GenerationStatus { .. }
+        | CliRequest::ProcessReadiness
         | CliRequest::Doctor { .. }
         | CliRequest::Metrics
         | CliRequest::QuarantineList
         | CliRequest::QuarantineDiscard(_) => {
             return Err(CliError::protocol(
-                "readiness/doctor/metrics/quarantine are control-plane commands and must not reach the query dispatcher"
+                "readiness/generation-status/doctor/metrics/quarantine are control-plane commands and must not reach the query dispatcher"
                     .to_string(),
             ));
         }
@@ -1471,7 +1502,10 @@ fn render_response(
 /// activated track in `tracks` declaration order. An empty `tracks` vec renders
 /// an explicit `tracks: 0 (none activated)` line — never a silent blank — to
 /// keep "nothing activated" distinct from a malformed report.
-fn render_readiness(report: &GenerationStatusReport, output: OutputMode) -> CliResult<String> {
+fn render_generation_status(
+    report: &GenerationStatusReport,
+    output: OutputMode,
+) -> CliResult<String> {
     match output {
         OutputMode::Json => serde_json::to_string_pretty(report)
             .map(|mut text| {
@@ -1479,10 +1513,10 @@ fn render_readiness(report: &GenerationStatusReport, output: OutputMode) -> CliR
                 text
             })
             .map_err(|err| CliError::protocol(format!("failed to encode json output: {err}"))),
-        OutputMode::Prometheus => Err(prometheus_is_metrics_only("readiness")),
+        OutputMode::Prometheus => Err(prometheus_is_metrics_only("generation-status")),
         OutputMode::Pretty => {
             let mut rendered = String::new();
-            fmt_ok(writeln!(rendered, "kind: readiness"))?;
+            fmt_ok(writeln!(rendered, "kind: generation-status"))?;
             fmt_ok(writeln!(
                 rendered,
                 "generation_status: repo_id={} revision_id={}",
@@ -1496,7 +1530,7 @@ fn render_readiness(report: &GenerationStatusReport, output: OutputMode) -> CliR
             fmt_ok(writeln!(rendered, "tracks: {}", report.tracks.len()))?;
             for (index, record) in report.tracks.iter().enumerate() {
                 let display_index = index.checked_add(1).ok_or_else(|| {
-                    CliError::protocol("readiness track index overflow".to_string())
+                    CliError::protocol("generation-status track index overflow".to_string())
                 })?;
                 fmt_ok(writeln!(
                     rendered,
@@ -1516,6 +1550,81 @@ fn render_readiness(report: &GenerationStatusReport, output: OutputMode) -> CliR
                     "semantic_content: row_root={} membership_root={}",
                     roots.row_root_digest, roots.membership_root_digest
                 ))?;
+            }
+            Ok(rendered)
+        }
+    }
+}
+
+fn render_process_readiness(report: &ProcessReadinessV1, output: OutputMode) -> CliResult<String> {
+    match output {
+        OutputMode::Json => serde_json::to_string_pretty(report)
+            .map(|mut text| {
+                text.push('\n');
+                text
+            })
+            .map_err(|error| CliError::protocol(format!("failed to encode json output: {error}"))),
+        OutputMode::Prometheus => Err(prometheus_is_metrics_only("readiness")),
+        OutputMode::Pretty => {
+            let mut rendered = String::new();
+            fmt_ok(writeln!(rendered, "kind: process-readiness"))?;
+            fmt_ok(writeln!(rendered, "ready: {}", report.ready))?;
+            fmt_ok(writeln!(
+                rendered,
+                "supervisor_phase: {}",
+                report.supervisor_phase.as_code_str()
+            ))?;
+            fmt_ok(writeln!(
+                rendered,
+                "active_repositories: {}",
+                report.active_repositories
+            ))?;
+            fmt_ok(writeln!(
+                rendered,
+                "active_candidate_integrity: {}",
+                report
+                    .active_candidate_integrity
+                    .map_or("not_applicable", |healthy| {
+                        if healthy { "true" } else { "false" }
+                    })
+            ))?;
+            fmt_ok(writeln!(
+                rendered,
+                "query_plane: {}",
+                report.components.query_plane
+            ))?;
+            fmt_ok(writeln!(
+                rendered,
+                "control_plane: {}",
+                report.components.control_plane
+            ))?;
+            fmt_ok(writeln!(
+                rendered,
+                "ingest_plane: {}",
+                report.components.ingest_plane
+            ))?;
+            fmt_ok(writeln!(
+                rendered,
+                "maintenance_heartbeat: {}",
+                report.components.maintenance_heartbeat
+            ))?;
+            fmt_ok(writeln!(
+                rendered,
+                "required_backend: {}",
+                report.components.required_backend
+            ))?;
+            fmt_ok(writeln!(
+                rendered,
+                "provider_claim: {}",
+                report.components.provider.claim.as_code_str()
+            ))?;
+            fmt_ok(writeln!(
+                rendered,
+                "provider_healthy: {}",
+                report.components.provider.healthy
+            ))?;
+            for reason in &report.not_ready_reasons {
+                fmt_ok(writeln!(rendered, "not_ready: {}", reason.as_code_str()))?;
             }
             Ok(rendered)
         }
@@ -2552,6 +2661,7 @@ fn command_kind_name(kind: CommandKind) -> &'static str {
         CommandKind::History => "history",
         CommandKind::Structural => "structural",
         CommandKind::Readiness => "readiness",
+        CommandKind::GenerationStatus => "generation-status",
         CommandKind::Doctor => "doctor",
         CommandKind::Metrics => "metrics",
         CommandKind::Quarantine => "quarantine",
@@ -2662,7 +2772,8 @@ Read-only subcommands:
   explain          --repo-id ID --revision-id REV --manifest-generation N --hybrid-candidate-json PATH|- --syntax native|sourcegraph --query-text TEXT --semantic-query-text TEXT --top-k N
   repomap          --repo-id ID --revision-id REV --manifest-generation N --query-text TEXT --top-k N --token-budget N [--focus-subject subject_identity:subject_doc_type]
     history          --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N --order recency|relevance, history          --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N [--cursor-json PATH|-], runtime-metadata --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N, runtime-metadata --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N [--cursor-json PATH|-], structural       --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N, structural       --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N [--cursor-json PATH|-],
-  readiness        --repo-id ID --revision-id REV
+  readiness
+  generation-status --repo-id ID --revision-id REV
   doctor           --repo-id ID --revision-id REV
   metrics
   quarantine       list
@@ -3662,28 +3773,33 @@ mod tests {
     }
 
     #[test]
-    fn parses_readiness_request() {
-        let parsed =
-            ParsedCommand::parse(["readiness", "--repo-id", "repo-1", "--revision-id", "rev-1"]);
+    fn parses_generation_status_request() {
+        let parsed = ParsedCommand::parse([
+            "generation-status",
+            "--repo-id",
+            "repo-1",
+            "--revision-id",
+            "rev-1",
+        ]);
         assert!(parsed.is_ok());
         let Ok(parsed) = parsed else {
             return;
         };
-        assert_eq!(parsed.kind, CommandKind::Readiness);
-        let CliRequest::Readiness {
+        assert_eq!(parsed.kind, CommandKind::GenerationStatus);
+        let CliRequest::GenerationStatus {
             repo_id,
             revision_id,
         } = parsed.request
         else {
-            panic!("expected readiness payload");
+            panic!("expected generation-status payload");
         };
         assert_eq!(repo_id.as_str(), "repo-1");
         assert_eq!(revision_id.as_str(), "rev-1");
     }
 
     #[test]
-    fn rejects_readiness_missing_repo_id() {
-        let parsed = ParsedCommand::parse(["readiness", "--revision-id", "rev-1"]);
+    fn rejects_generation_status_missing_repo_id() {
+        let parsed = ParsedCommand::parse(["generation-status", "--revision-id", "rev-1"]);
         assert!(parsed.is_err());
         let Err(error) = parsed else {
             return;
@@ -3693,14 +3809,26 @@ mod tests {
     }
 
     #[test]
-    fn rejects_readiness_missing_revision_id() {
-        let parsed = ParsedCommand::parse(["readiness", "--repo-id", "repo-1"]);
+    fn rejects_generation_status_missing_revision_id() {
+        let parsed = ParsedCommand::parse(["generation-status", "--repo-id", "repo-1"]);
         assert!(parsed.is_err());
         let Err(error) = parsed else {
             return;
         };
         assert_eq!(error.exit_code, EXIT_USAGE);
         assert!(error.message.contains("--revision-id"));
+    }
+
+    #[test]
+    fn process_readiness_has_no_repository_selector() {
+        let parsed = ParsedCommand::parse(["readiness", "--output", "json"]);
+        let Ok(parsed) = parsed else {
+            panic!("process readiness parses");
+        };
+        assert_eq!(parsed.kind, CommandKind::Readiness);
+        assert_eq!(parsed.request, CliRequest::ProcessReadiness);
+        let with_repo = ParsedCommand::parse(["readiness", "--repo-id", "repo-1"]);
+        assert!(with_repo.is_err());
     }
 
     fn metrics_fixture() -> MetricsSnapshotV1 {
@@ -3844,15 +3972,7 @@ mod tests {
         assert_eq!(error.exit_code, EXIT_USAGE);
         assert!(error.message.contains("unknown metrics flag `--repo-id`"));
 
-        let readiness = ParsedCommand::parse([
-            "readiness",
-            "--repo-id",
-            "repo",
-            "--revision-id",
-            "rev",
-            "--output",
-            "prometheus",
-        ]);
+        let readiness = ParsedCommand::parse(["readiness", "--output", "prometheus"]);
         assert!(readiness.is_err(), "{readiness:?}");
         let Err(error) = readiness else {
             return;
@@ -4134,7 +4254,7 @@ mod tests {
     }
 
     #[test]
-    fn render_readiness_json_emits_report_shape() {
+    fn render_generation_status_json_emits_report_shape() {
         use quanta_index_contract::ipc::{
             GenerationStatusReport, SearchPlaneTrackKind, TrackReadinessRecord,
         };
@@ -4149,7 +4269,7 @@ mod tests {
                 manifest_digest: "digest-11".to_string(),
             }],
         };
-        let rendered = render_readiness(&report, OutputMode::Json);
+        let rendered = render_generation_status(&report, OutputMode::Json);
         assert!(rendered.is_ok());
         let Ok(text) = rendered else {
             return;
@@ -4164,7 +4284,7 @@ mod tests {
     }
 
     #[test]
-    fn render_readiness_pretty_marks_empty_tracks() {
+    fn render_generation_status_pretty_marks_empty_tracks() {
         use quanta_index_contract::ipc::GenerationStatusReport;
         let report = GenerationStatusReport {
             repo_id: RepoId::new("repo-1").expect("static fixture ID satisfies canonical policy"),
@@ -4173,17 +4293,55 @@ mod tests {
             semantic_content: None,
             tracks: vec![],
         };
-        let rendered = render_readiness(&report, OutputMode::Pretty);
+        let rendered = render_generation_status(&report, OutputMode::Pretty);
         assert!(rendered.is_ok());
         let Ok(text) = rendered else {
             return;
         };
-        assert!(text.contains("kind: readiness"));
+        assert!(text.contains("kind: generation-status"));
         assert!(text.contains("tracks: 0 (none activated)"));
     }
 
     #[test]
-    fn render_readiness_pretty_lists_tracks() {
+    fn process_readiness_renderer_keeps_component_failure_distinct_from_generation_status() {
+        use quanta_index_contract::{
+            ProcessComponentsHealthV1, ProcessProviderClaimV1, ProcessProviderReadinessV1,
+            ProcessReadinessPhaseV1, ProcessReadinessReasonV1,
+        };
+        let report = ProcessReadinessV1 {
+            ready: false,
+            supervisor_phase: ProcessReadinessPhaseV1::Failed,
+            components: ProcessComponentsHealthV1 {
+                query_plane: false,
+                control_plane: true,
+                ingest_plane: true,
+                maintenance_heartbeat: true,
+                required_backend: true,
+                provider: ProcessProviderReadinessV1 {
+                    claim: ProcessProviderClaimV1::Required,
+                    healthy: true,
+                },
+            },
+            active_candidate_integrity: None,
+            active_repositories: 0,
+            not_ready_reasons: vec![
+                ProcessReadinessReasonV1::SupervisorNotReady,
+                ProcessReadinessReasonV1::QueryPlaneUnhealthy,
+            ],
+        };
+        let pretty = render_process_readiness(&report, OutputMode::Pretty)
+            .expect("well-formed process readiness renders");
+        assert!(pretty.contains("kind: process-readiness"));
+        assert!(pretty.contains("query_plane: false"));
+        assert!(pretty.contains("not_ready: query_plane_unhealthy"));
+        let json = render_process_readiness(&report, OutputMode::Json)
+            .expect("well-formed process readiness serializes");
+        assert!(json.contains("\"ready\": false"));
+        assert!(json.contains("\"active_repositories\": 0"));
+    }
+
+    #[test]
+    fn render_generation_status_pretty_lists_tracks() {
         use quanta_index_contract::ipc::{
             GenerationStatusReport, SearchPlaneTrackKind, TrackReadinessRecord,
         };
@@ -4205,7 +4363,7 @@ mod tests {
                 },
             ],
         };
-        let rendered = render_readiness(&report, OutputMode::Pretty);
+        let rendered = render_generation_status(&report, OutputMode::Pretty);
         assert!(rendered.is_ok());
         let Ok(text) = rendered else {
             return;

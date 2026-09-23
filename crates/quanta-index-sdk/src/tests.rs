@@ -4447,6 +4447,57 @@ fn observability_metrics_snapshot_refuses_wrong_kind_and_surfaces_remote_errors(
     }
 }
 
+#[test]
+fn process_readiness_binds_the_control_route_and_rejects_forged_green() {
+    use quanta_index_contract::{
+        ProcessComponentsHealthV1, ProcessProviderClaimV1, ProcessProviderReadinessV1,
+        ProcessReadinessPhaseV1, ProcessReadinessV1, SearchPlaneControlIpcRequest,
+        SearchPlaneControlIpcResponse,
+    };
+    let report = ProcessReadinessV1 {
+        ready: true,
+        supervisor_phase: ProcessReadinessPhaseV1::Ready,
+        components: ProcessComponentsHealthV1 {
+            query_plane: true,
+            control_plane: true,
+            ingest_plane: true,
+            maintenance_heartbeat: true,
+            required_backend: true,
+            provider: ProcessProviderReadinessV1 {
+                claim: ProcessProviderClaimV1::Degraded,
+                healthy: false,
+            },
+        },
+        active_candidate_integrity: None,
+        active_repositories: 0,
+        not_ready_reasons: Vec::new(),
+    };
+    let control = Arc::new(StubControlTransport::new(
+        SearchPlaneControlIpcResponse::ProcessReadinessReport(report.clone()),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), control.clone(), unused_ingest());
+    assert_eq!(
+        ok_or_fail!(client.observability().process_readiness()),
+        report
+    );
+    let sent = control.requests.lock().expect("stub request lock");
+    assert!(matches!(
+        sent.first().map(|request| &request.payload),
+        Some(SearchPlaneControlIpcRequest::ProcessReadiness(_))
+    ));
+
+    let mut forged = report;
+    forged.components.query_plane = false;
+    let control = Arc::new(StubControlTransport::new(
+        SearchPlaneControlIpcResponse::ProcessReadinessReport(forged),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), control, unused_ingest());
+    assert!(matches!(
+        client.observability().process_readiness(),
+        Err(crate::SdkError::Protocol(_))
+    ));
+}
+
 /// QI-BB-026: the quarantine listing rides the control socket and comes
 /// back as the typed inventory; a discard sends the target verbatim and
 /// returns the daemon's ack once it names the same target.

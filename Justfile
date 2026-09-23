@@ -1033,9 +1033,10 @@ proof-p05-query-truth-owner:
 rust-proof-p04-read-view: proof-p04-read-view-lifetime-owner
 
 # P09 (S21-10) control authorization + readiness owner proof: the scoped
-# integration target proves the capability/access matrix, the lib scope
-# proves the dispatch-level default-deny (zero mutation) and the readiness
-# truth table. Rustx/fuzz rails guard the wire shapes the DTOs added.
+# integration targets prove the capability/access matrix and real supervised
+# control-UDS readiness; the lib scope proves dispatch-level default-deny
+# (zero mutation) and the readiness truth table. Rustx/fuzz rails guard the
+# wire shapes the DTOs added.
 proof-p09-control-readiness-owner:
     @just rust-profile test-control-readiness-owner
     @just rust-profile test-control-readiness-owner-lib

@@ -7,6 +7,7 @@ mod ipc_dispatcher;
 mod legacy_semantic_migration;
 pub mod maintenance;
 pub mod process_memory;
+mod readiness;
 pub mod runtime;
 pub mod searchd;
 pub mod semantic_boot;

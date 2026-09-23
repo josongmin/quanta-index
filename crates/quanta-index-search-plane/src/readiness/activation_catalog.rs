@@ -77,6 +77,26 @@ pub struct ActivationCatalog {
 }
 
 impl ActivationCatalog {
+    /// A single catalog snapshot for process readiness. Comparing the
+    /// complete pair identities before and after a physical probe rejects
+    /// a concurrent replacement even when the pair count is unchanged.
+    pub fn active_inventory_v1(&self) -> Result<(Vec<SearchCorpusGenerationV1>, u64), CoreError> {
+        self.ensure_durability_certain_v1()?;
+        let entries = self.entries.read().map_err(|error| {
+            CoreError::Storage(format!("search-plane activation catalog poisoned: {error}"))
+        })?;
+        self.ensure_durability_certain_v1()?;
+        let repositories = entries
+            .keys()
+            .map(|key| &key.repo_id)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        let repositories = u64::try_from(repositories).map_err(|error| {
+            CoreError::Storage(format!("active repository count overflow: {error}"))
+        })?;
+        Ok((entries.values().cloned().collect(), repositories))
+    }
+
     #[cfg(test)]
     pub fn open(root: impl AsRef<Path>) -> Result<Self, CoreError> {
         Self::open_with_parent_sync(

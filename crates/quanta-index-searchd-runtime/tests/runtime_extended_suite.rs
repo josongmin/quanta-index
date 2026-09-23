@@ -33,6 +33,8 @@ mod e2e_long_state_root_sockets;
 mod e2e_metrics_scrape;
 #[path = "e2e_process_envelope.rs"]
 mod e2e_process_envelope;
+#[path = "e2e_process_readiness.rs"]
+mod e2e_process_readiness;
 #[path = "e2e_ranked_pages.rs"]
 mod e2e_ranked_pages;
 #[path = "e2e_semantic_budget_interruption.rs"]

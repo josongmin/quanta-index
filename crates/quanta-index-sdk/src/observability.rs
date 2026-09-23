@@ -1,6 +1,6 @@
 use quanta_index_contract::ipc::{
-    MetricsSnapshotRequest, MetricsSnapshotV1, SearchPlaneControlIpcRequest,
-    SearchPlaneControlIpcResponse,
+    MetricsSnapshotRequest, MetricsSnapshotV1, ProcessReadinessRequest, ProcessReadinessV1,
+    SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse,
 };
 
 use crate::{QuantaIndex, SdkError};
@@ -40,6 +40,27 @@ impl<'a> ObservabilityNamespace<'a> {
                     QuantaIndex::control_response_kind(&other)
                 )))
             }
+        }
+    }
+
+    /// Process-wide readiness, not the status of one repository generation.
+    pub fn process_readiness(&self) -> Result<ProcessReadinessV1, SdkError> {
+        let response =
+            self.client
+                .dispatch_control(SearchPlaneControlIpcRequest::ProcessReadiness(
+                    ProcessReadinessRequest,
+                ))?;
+        match response {
+            SearchPlaneControlIpcResponse::ProcessReadinessReport(report) => {
+                report.validate_v1().map_err(|error| {
+                    SdkError::Protocol(format!("invalid process readiness report: {error}"))
+                })?;
+                Ok(report)
+            }
+            other => Err(SdkError::Protocol(format!(
+                "expected process readiness report, got {}",
+                QuantaIndex::control_response_kind(&other)
+            ))),
         }
     }
 }

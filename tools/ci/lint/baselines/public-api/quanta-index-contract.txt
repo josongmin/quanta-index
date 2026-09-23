@@ -2406,6 +2406,8 @@ pub quanta_index_contract::ipc::ProcessReadinessV1::components: quanta_index_con
 pub quanta_index_contract::ipc::ProcessReadinessV1::not_ready_reasons: alloc::vec::Vec<quanta_index_contract::ProcessReadinessReasonV1>
 pub quanta_index_contract::ipc::ProcessReadinessV1::ready: bool
 pub quanta_index_contract::ipc::ProcessReadinessV1::supervisor_phase: quanta_index_contract::ProcessReadinessPhaseV1
+impl quanta_index_contract::ProcessReadinessV1
+pub fn quanta_index_contract::ProcessReadinessV1::validate_v1(&self) -> core::result::Result<(), &'static str>
 impl core::clone::Clone for quanta_index_contract::ProcessReadinessV1
 pub fn quanta_index_contract::ProcessReadinessV1::clone(&self) -> quanta_index_contract::ProcessReadinessV1
 impl core::cmp::Eq for quanta_index_contract::ProcessReadinessV1
@@ -11823,6 +11825,8 @@ pub quanta_index_contract::ProcessReadinessV1::components: quanta_index_contract
 pub quanta_index_contract::ProcessReadinessV1::not_ready_reasons: alloc::vec::Vec<quanta_index_contract::ProcessReadinessReasonV1>
 pub quanta_index_contract::ProcessReadinessV1::ready: bool
 pub quanta_index_contract::ProcessReadinessV1::supervisor_phase: quanta_index_contract::ProcessReadinessPhaseV1
+impl quanta_index_contract::ProcessReadinessV1
+pub fn quanta_index_contract::ProcessReadinessV1::validate_v1(&self) -> core::result::Result<(), &'static str>
 impl core::clone::Clone for quanta_index_contract::ProcessReadinessV1
 pub fn quanta_index_contract::ProcessReadinessV1::clone(&self) -> quanta_index_contract::ProcessReadinessV1
 impl core::cmp::Eq for quanta_index_contract::ProcessReadinessV1

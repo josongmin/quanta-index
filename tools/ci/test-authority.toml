@@ -141,6 +141,7 @@ lane = "test-control-readiness-owner-lane"
 test_threads = 4
 targets = [
   "control-readiness-owner-v1",
+  "process-readiness-owner-v1",
 ]
 
 [local_scopes.control-readiness-owner-lib]
@@ -355,6 +356,12 @@ rail = "pr-workspace-nextest"
 id = "control-readiness-owner-v1"
 path = "crates/quanta-index-search-plane/tests/control_readiness_owner_v1.rs"
 owner = "quanta-index-search-plane"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "process-readiness-owner-v1"
+path = "crates/quanta-index-searchd-runtime/tests/process_readiness_owner_v1.rs"
+owner = "quanta-index-searchd-runtime"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
@@ -1055,6 +1062,13 @@ rail = "pr-workspace-nextest"
 [[integration_targets]]
 id = "searchd-runtime-e2e-process-envelope"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_process_envelope.rs"
+owner = "quanta-index-searchd-runtime"
+target = "runtime_extended_suite"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-e2e-process-readiness"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_process_readiness.rs"
 owner = "quanta-index-searchd-runtime"
 target = "runtime_extended_suite"
 rail = "pr-workspace-nextest"

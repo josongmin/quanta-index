@@ -815,6 +815,11 @@ impl<'a> ControlClient<'a> {
         self.client.observability().metrics_snapshot()
     }
 
+    /// Process-wide readiness, separate from per-repository generation status.
+    pub fn process_readiness(&self) -> Result<quanta_index_contract::ProcessReadinessV1, SdkError> {
+        self.client.observability().process_readiness()
+    }
+
     /// What the daemon quarantines right now (QI-BB-026).
     pub fn quarantine_inventory(
         &self,

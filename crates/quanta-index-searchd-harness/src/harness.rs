@@ -31,10 +31,10 @@ use quanta_index_contract::{
     FileOwnerProjectionRow, GenerationPin, GenerationSnapshot, GenerationStatusReport,
     GenerationStatusRequest, HistoryOrderV1, HistoryQueryRequest, HistoryScoreV1,
     HybridCandidateV1, HybridQueryRequest, LexicalCandidate, ManifestGeneration,
-    MetricsSnapshotRequest, MetricsSnapshotV1, OwnerDocKind, QuarantineDiscardAck,
-    QuarantineDiscardRequest, QuarantineInventoryRequest, QuarantineInventoryV1,
-    QuarantineTargetV1, QueryResultWindowV2, RawFallbackReasonV1, RepoId, RepoRelativePath,
-    RevisionId, RuntimeMetadataQueryRequest, SearchCorpusGenerationIdentityV1,
+    MetricsSnapshotRequest, MetricsSnapshotV1, OwnerDocKind, ProcessReadinessRequest,
+    ProcessReadinessV1, QuarantineDiscardAck, QuarantineDiscardRequest, QuarantineInventoryRequest,
+    QuarantineInventoryV1, QuarantineTargetV1, QueryResultWindowV2, RawFallbackReasonV1, RepoId,
+    RepoRelativePath, RevisionId, RuntimeMetadataQueryRequest, SearchCorpusGenerationIdentityV1,
     SearchCorpusIngestBatch, SearchCorpusReplaceScope, SearchCorpusTombstoneScope,
     SearchExplanation, SearchPlaneActivateSearchCorpusGenerationCasRequest,
     SearchPlaneControlIpcRequest, SearchPlaneControlIpcRequestEnvelope,
@@ -963,6 +963,19 @@ impl E2eRuntime {
             ));
         };
         Ok(snapshot)
+    }
+
+    /// The supervised daemon's process readiness over its control socket.
+    pub fn process_readiness(&mut self) -> AnyResult<ProcessReadinessV1> {
+        let response = self.dispatch_control(SearchPlaneControlIpcRequest::ProcessReadiness(
+            ProcessReadinessRequest,
+        ))?;
+        let SearchPlaneControlIpcResponse::ProcessReadinessReport(report) = response else {
+            return Err(anyhow::anyhow!(
+                "e2e-harness: process readiness returned an unexpected control response: {response:?}"
+            ));
+        };
+        Ok(report)
     }
 
     /// Promote a sealed harness generation as one lexical plus semantic corpus.

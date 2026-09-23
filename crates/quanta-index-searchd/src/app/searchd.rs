@@ -24,8 +24,26 @@ use crate::app::runtime::{RuntimeGuards, RuntimeServers, SearchdRuntime};
 use crate::app::server::QueryServer;
 use crate::app::supervisor::{
     CancelRoot, ChildContext, ChildExitKind, ChildSpawnFailure, DEFAULT_COOPERATIVE_DRAIN_DEADLINE,
-    HARD_DRAIN_DEADLINE, SearchdSupervisor, SupervisionError, SupervisionOutcome,
+    HARD_DRAIN_DEADLINE, SearchdSupervisor, SupervisionError, SupervisionOutcome, SupervisorStatus,
 };
+
+struct ChildAlive {
+    status: Arc<SupervisorStatus>,
+    name: &'static str,
+}
+
+impl ChildAlive {
+    fn new(status: Arc<SupervisorStatus>, name: &'static str) -> Self {
+        status.set_child_running(name, true);
+        Self { status, name }
+    }
+}
+
+impl Drop for ChildAlive {
+    fn drop(&mut self) {
+        self.status.set_child_running(self.name, false);
+    }
+}
 
 // Query clients use one-shot UDS connections, so the accept-loop idle cadence
 // is directly observable in warm p95. Keep query polling tight; control/ingest
@@ -68,7 +86,7 @@ fn bridge_external_shutdown(
         .name("searchd-shutdown-bridge".to_string())
         .spawn(move || {
             loop {
-                if shutdown.load(Ordering::Acquire) {
+                if shutdown.load(Ordering::Acquire) || root.shutdown_requested() {
                     root.request_shutdown();
                     return;
                 }
@@ -78,6 +96,33 @@ fn bridge_external_shutdown(
     bridged.map_err(|_refused| ChildSpawnFailure {
         name: "shutdown-bridge",
     })
+}
+
+#[cfg(test)]
+mod shutdown_bridge_tests {
+    use super::*;
+
+    #[test]
+    fn bridge_joins_after_supervisor_initiates_shutdown() -> Result<()> {
+        let flag = Arc::new(AtomicBool::new(false));
+        let root = Arc::new(CancelRoot::new());
+        let bridge = bridge_external_shutdown(Arc::clone(&flag), Arc::clone(&root))?;
+        root.request_shutdown();
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while !bridge.is_finished() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            bridge.is_finished(),
+            "shutdown bridge exceeded its deadline"
+        );
+        bridge
+            .join()
+            .map_err(|_| anyhow::anyhow!("shutdown bridge panicked"))?;
+        assert!(root.shutdown_requested());
+        assert!(!flag.load(Ordering::Acquire));
+        Ok(())
+    }
 }
 
 /// Supervise one fully-assembled runtime: spawn every child, serve
@@ -97,6 +142,7 @@ pub fn supervise_runtime(
     // `openai` runtime drains its attempt threads as a supervised child
     // (S21-09); local-only compositions have nothing to drain.
     let attempt_pool = runtime.provider_attempt_pool.clone();
+    let status = Arc::clone(&runtime.process_status);
     let (servers, maintenance, guards, _boot_notices) =
         runtime.into_servers_maintenance_guards_and_boot_notices();
     let RuntimeServers {
@@ -109,7 +155,8 @@ pub fn supervise_runtime(
         hard_deadline,
         guards,
         CancelRoot::clone(root),
-    );
+    )
+    .with_status(Arc::clone(&status));
 
     // Adopt the already-running timer first. Enroll the provider drain
     // before any accept loop can admit requests and start attempts. Every
@@ -119,7 +166,8 @@ pub fn supervise_runtime(
         return supervisor.rollback(failure.name);
     }
     if let Some(pool) = attempt_pool
-        && let Err(failure) = spawn_provider_child(&mut supervisor, pool, hard_deadline)
+        && let Err(failure) =
+            spawn_provider_child(&mut supervisor, pool, hard_deadline, Arc::clone(&status))
     {
         return supervisor.rollback(failure.name);
     }
@@ -128,6 +176,7 @@ pub fn supervise_runtime(
         "query-accept",
         query_server,
         QUERY_ACCEPT_IDLE,
+        Arc::clone(&status),
     ) {
         return supervisor.rollback(failure.name);
     }
@@ -136,6 +185,7 @@ pub fn supervise_runtime(
         "control-accept",
         control_server,
         CONTROL_ACCEPT_IDLE,
+        Arc::clone(&status),
     ) {
         return supervisor.rollback(failure.name);
     }
@@ -144,6 +194,7 @@ pub fn supervise_runtime(
         "ingest-accept",
         ingest_server,
         INGEST_ACCEPT_IDLE,
+        status,
     ) {
         return supervisor.rollback(failure.name);
     }
@@ -158,6 +209,7 @@ fn spawn_accept_child<RequestEnvelopeT, Request: 'static, ResponseEnvelopeT, Res
     name: &'static str,
     server: QueryServer<RequestEnvelopeT, Request, ResponseEnvelopeT, Response, D>,
     accept_idle: Duration,
+    status: Arc<SupervisorStatus>,
 ) -> Result<(), ChildSpawnFailure>
 where
     RequestEnvelopeT: RequestEnvelope<Request>,
@@ -172,6 +224,7 @@ where
             std::thread::Builder::new()
                 .name(format!("supervised-{name}"))
                 .spawn(move || {
+                    let alive = ChildAlive::new(status, name);
                     let kind = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         server.run(accept_idle)
                     })) {
@@ -179,6 +232,7 @@ where
                         Ok(Err(_ipc)) => ChildExitKind::Failed,
                         Err(_panic) => ChildExitKind::Panicked,
                     };
+                    drop(alive);
                     context.report_exit(kind);
                 })
                 .map_err(anyhow::Error::new)
@@ -196,6 +250,7 @@ fn spawn_provider_child(
     supervisor: &mut SearchdSupervisor<RuntimeGuards>,
     pool: Arc<ProviderAttemptPool>,
     hard_deadline: Duration,
+    status: Arc<SupervisorStatus>,
 ) -> Result<(), ChildSpawnFailure> {
     let pool_for_stop = Arc::clone(&pool);
     supervisor.spawn_child(
@@ -205,6 +260,7 @@ fn spawn_provider_child(
             let adapter = std::thread::Builder::new()
                 .name("supervised-provider-drain".to_string())
                 .spawn(move || {
+                    let alive = ChildAlive::new(status, "provider-attempts");
                     // Park until the supervisor asks for shutdown, then
                     // drain: attempts keep running while serving.
                     while !context.shutdown().load(Ordering::Acquire) {
@@ -224,6 +280,7 @@ fn spawn_provider_child(
                     } else {
                         ChildExitKind::Completed
                     };
+                    drop(alive);
                     context.report_exit(kind);
                 });
             adapter.map_err(anyhow::Error::new)

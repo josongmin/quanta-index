@@ -4,7 +4,47 @@ Status: open. This is a source-inspection ledger, not a qualification receipt.
 The authoritative result SHA, source digest, command counts, and push state belong
 to validated lane handoffs and immutable proof manifests, not this document.
 
-## Current checkpoint (2026-09-23)
+## Current checkpoint (2026-09-24)
+
+- 2026-09-24 current-main P08/P09 follow-up is in progress on a shared dirty
+  checkout. `searchd` now composes a process-readiness port from supervisor
+  phase, actual accept-loop/provider child liveness, maintenance heartbeat,
+  activation-catalog identity, and a producer-owned physical active-pair
+  proof. Boot's already-proven active pair identity seeds the cache, so the
+  first health poll does not repeat a deep open. The proof is cached only for
+  an exact active identity and scrub
+  invalidation epoch; mutation, scrub corruption/error, or a racing catalog
+  change forces a fresh proof or a not-ready result. A process/UDS owner test
+  covers zero-active and active-repository reports. The contract decoder and
+  SDK reject self-contradictory same-variant reports, including an omitted
+  integrity field. A final catalog/scrub recheck refuses a readiness
+  observation whose active identity or invalidation epoch raced the probe.
+  `searchctl readiness`
+  now names process readiness; the former per-repository behavior is exposed
+  separately as `searchctl generation-status`. `drive()` also stops its
+  shutdown bridge when supervision itself initiates shutdown, avoiding an
+  unbounded join after required-child loss. `./scripts/cargow --lane fast-lane
+  check -p quanta-index-searchd --lib --locked` completed on an earlier dirty
+  source. `just rust-wire-inventory` and `just rust-public-api` passed after
+  intentional contract/SDK baseline updates. The changed-package check
+  (`./scripts/cargow --lane fast-lane check -p quanta-index-contract -p
+  quanta-index-sdk -p quanta-index-searchctl -p quanta-index-searchd-harness
+  -p quanta-index-searchd-runtime --locked`) passed on the dirty source.
+  Focused contract readiness decoder (1/1), SDK forged-green refusal (1/1),
+  and complete searchctl library tests (42/42) passed. The focused searchd
+  readiness synthesis tests passed (3/3), as did maintenance heartbeat (1/1)
+  and shutdown-bridge (1/1). The P09 owner selector now includes a dedicated
+  real-UDS process-readiness test target; `just rust-test-authority`,
+  `just proof-authority-lint`, and `./scripts/cargow --lane fast-lane check
+  -p quanta-index-searchd-runtime --test process_readiness_owner_v1 --locked`
+  passed.
+  The real-UDS test execution remains `NOT_RUN`: its extended-suite attempt
+  was interrupted after 20 minutes while compiling `lancedb` under concurrent
+  Mac load, before the test body or linker ran. No release daemon or Linux
+  process receipt is inferred from a test-target compile.
+  These changes are not
+  yet a clean-source owner or Linux release receipt, and they do not close the
+  P09 request-correlation/metrics work outside readiness.
 
 - Integration follow-up on local `main`: W10 integrate's two unique test
   corrections were cherry-picked as `ed954e0a` (cursor negative wire fixtures)
@@ -74,8 +114,8 @@ to validated lane handoffs and immutable proof manifests, not this document.
 | Order | Owner | Current finding | Required closeout |
 | --- | --- | --- | --- |
 | 1 | P06 / S21-07 | Query-plane active resolution and exact SDK pin binding are implemented. Hybrid/semantic-scope server selection now reads one composite active head. Durable activation epoch, request/read-view commitment binding, final-source owner/release proof remain open. | A response from the same repo/revision but wrong resolved generation/epoch/commitment is rejected by a consumer-visible negative oracle. |
-| 2 | P08 / S21-09 | Candidate `8b78f35` repairs guard custody and passes owner proof; release/process proof is still absent. | No live child can outlast state-root lease custody; required-child failure and hard drain have release process-boundary evidence. |
-| 3 | P09 / S21-10 | Production control dispatcher composes `readiness: None`. | Supervisor-owned process readiness is wired; component death or stale heartbeat makes readiness false without confusing it with repository generation status. |
+| 2 | P08 / S21-09 | Candidate `8b78f35` repairs guard custody and passes owner proof. A current-main follow-up fixes the shutdown bridge join after supervisor-initiated failure; release/process proof is still absent. | No live child can outlast state-root lease custody; required-child failure and hard drain have release process-boundary evidence. |
+| 3 | P09 / S21-10 | Current-main patch wires supervisor-owned process readiness and active-pair proof. Focused contract/SDK/CLI/searchd tests and owner-target compilation passed on dirty source; real-UDS execution, clean-source process/release receipts, bounded request-stage diagnostics and zero-hit/contribution metric proof remain open. | Supervisor-owned process readiness is wired; component death or stale heartbeat makes readiness false without confusing it with repository generation status. |
 | 4 | P10 / S21-11 | Read-only semantic and pre-catalog auxiliary import are wired offline. Boot refuses legacy snapshots before adapter/catalog open; mixed roots with unconverted data and nonempty V1 RepoMap fail closed. | Producer replay for materialized V1 RepoMap, source-to-destination active identity/replay floor/high-water equivalence, and final-source owner/release proof remain required. |
 | 5 | P11 / S21-12 | V1 RepoMap mutation entrypoints remain reachable; no exact Quanta/Semantica commitment-chain or four P11 receipts. | One clean source pair and attested daemon binary pass publish, activate, replay, incompatibility, deployment, activation, and rollback proofs as separate nodes. |
 | 6 | P12A / S21-13B | Aggregate schema/writer/validator do not consume the product handoff DAG or separate P12A infrastructure handoff. | Exact P00–P11 fork/join and serial chain, historical and final receipt ledgers, paired source, binary, and negative tamper cases validate. |

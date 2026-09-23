@@ -29,6 +29,10 @@ name = "runtime_supervisor_owner_v1"
 path = "tests/runtime_supervisor_owner_v1.rs"
 
 [[test]]
+name = "process_readiness_owner_v1"
+path = "tests/process_readiness_owner_v1.rs"
+
+[[test]]
 name = "state_migration_owner_v1"
 path = "tests/state_migration_owner_v1.rs"
 

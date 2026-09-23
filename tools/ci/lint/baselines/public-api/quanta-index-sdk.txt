@@ -368,6 +368,7 @@ pub fn quanta_index_sdk::ControlClient<'a>::activate_repomap_v2(&self, request: 
 pub fn quanta_index_sdk::ControlClient<'a>::current(&self, repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, track: quanta_index_contract::ipc::control::SearchPlaneTrackKind) -> core::result::Result<quanta_index_contract::ipc::control::GenerationSnapshot, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::ControlClient<'a>::discard_quarantined(&self, target: &quanta_index_contract::ipc::quarantine::QuarantineTargetV1) -> core::result::Result<quanta_index_contract::ipc::quarantine::QuarantineDiscardAck, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::ControlClient<'a>::metrics_snapshot(&self) -> core::result::Result<quanta_index_contract::ipc::metrics::MetricsSnapshotV1, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::ControlClient<'a>::process_readiness(&self) -> core::result::Result<quanta_index_contract::ipc::control::ProcessReadinessV1, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::ControlClient<'a>::quarantine_inventory(&self) -> core::result::Result<quanta_index_contract::ipc::quarantine::QuarantineInventoryV1, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::ControlClient<'a>::rollback(&self, request: quanta_index_contract::ipc::control::SearchPlaneRollbackSearchCorpusGenerationCasRequest) -> core::result::Result<quanta_index_contract::ipc::control::SearchPlaneSearchCorpusRollbackCasAck, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::ControlClient<'a>::status(&self, repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId) -> core::result::Result<quanta_index_contract::ipc::control::GenerationStatusReport, quanta_index_sdk::SdkError>
@@ -667,6 +668,7 @@ impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
 pub struct quanta_index_sdk::ObservabilityNamespace<'a>
 impl<'a> quanta_index_sdk::ObservabilityNamespace<'a>
 pub fn quanta_index_sdk::ObservabilityNamespace<'a>::metrics_snapshot(&self) -> core::result::Result<quanta_index_contract::ipc::metrics::MetricsSnapshotV1, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::ObservabilityNamespace<'a>::process_readiness(&self) -> core::result::Result<quanta_index_contract::ipc::control::ProcessReadinessV1, quanta_index_sdk::SdkError>
 impl<'a> core::marker::Freeze for quanta_index_sdk::ObservabilityNamespace<'a>
 impl<'a> core::marker::Send for quanta_index_sdk::ObservabilityNamespace<'a>
 impl<'a> core::marker::Sync for quanta_index_sdk::ObservabilityNamespace<'a>

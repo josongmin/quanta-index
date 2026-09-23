@@ -17,9 +17,9 @@ use memchr::memchr_iter;
 use quanta_index_contract::lex::LexicalErrorCode;
 use quanta_index_contract::{
     ChunkId, ChunkRecord, GenerationPin, GenerationSelector, LqFileScope, LqStructuralBlock,
-    SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse, SearchPlaneIngestIpcRequest,
-    SearchPlaneIngestIpcResponse, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
-    SearchPlaneTrackKind,
+    ProcessProviderClaimV1, SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse,
+    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse, SearchPlaneQueryIpcRequest,
+    SearchPlaneQueryIpcResponse, SearchPlaneTrackKind,
 };
 use quanta_index_core::domains::structural::{
     StructuralExecutableFilter, StructuralProducerPort,
@@ -59,12 +59,13 @@ use quanta_index_search_plane::{
     BoundedQueryObsStore, CursorKeyStore, DirectHistoryMaterializer,
     DirectRuntimeMetadataMaterializer, DirectSearchCorpusMaterializer, DirectSemanticMaterializer,
     DirectStructuralMaterializer, HashingQueryTextEmbedder, HistoryIngestPort,
-    HistoryTextIndexParts, Ledger, ObservabilityScrape, ProviderBoundaryQueryEmbedder,
-    QuarantineService, QuarantineServiceParts, QueryObsSink, QueryTextEmbedderPort,
-    RuntimeMetadataIngestPort, SEARCH_OWNED_SEMANTIC_DIMENSION, SearchCorpusAuthorityInspectPort,
-    SearchCorpusAuthorityWritePort, SearchCorpusLifecycleOwner, SearchCorpusLifecycleParts,
-    SearchCorpusMaterializerParts, SearchPlaneControlDispatcher, SearchPlaneControlDispatcherParts,
-    SearchPlaneDispatcher, SearchPlaneIngestDispatcher, SnapshotRegistries, StructuralIngestPort,
+    HistoryTextIndexParts, Ledger, ObservabilityScrape, ProcessReadinessPort,
+    ProviderBoundaryQueryEmbedder, QuarantineService, QuarantineServiceParts, QueryObsSink,
+    QueryTextEmbedderPort, RuntimeMetadataIngestPort, SEARCH_OWNED_SEMANTIC_DIMENSION,
+    SearchCorpusAuthorityInspectPort, SearchCorpusAuthorityWritePort, SearchCorpusLifecycleOwner,
+    SearchCorpusLifecycleParts, SearchCorpusMaterializerParts, SearchPlaneControlDispatcher,
+    SearchPlaneControlDispatcherParts, SearchPlaneDispatcher, SearchPlaneIngestDispatcher,
+    SnapshotRegistries, StructuralIngestPort,
 };
 use regex::Regex;
 
@@ -77,11 +78,13 @@ use crate::app::ipc_dispatcher::{
     SearchPlaneControlIpcAdapter, SearchPlaneIngestIpcAdapter, SearchPlaneQueryIpcAdapter,
 };
 use crate::app::maintenance::{MaintenanceMetricSource, MaintenanceParts, MaintenanceTimer};
+use crate::app::readiness::RuntimeReadiness;
 use crate::app::semantic_boot;
 use crate::app::server::{
     SearchPlaneControlServer, SearchPlaneIngestServer, SearchPlaneQueryServer,
 };
 use crate::app::socket_access::SocketRole;
+use crate::app::supervisor::SupervisorStatus;
 
 const BENCH_DISABLE_QUERY_OBS_ENV: &str = "QUANTA_INDEX_BENCH_DISABLE_QUERY_OBS";
 
@@ -1142,6 +1145,8 @@ pub struct SearchdRuntime {
     /// exactly when the composition can spawn attempt threads. The
     /// daemon entry drains it as a supervised child.
     pub provider_attempt_pool: Option<Arc<ProviderAttemptPool>>,
+    /// Live process readiness, published by the supervisor and child loops.
+    pub(crate) process_status: Arc<SupervisorStatus>,
     pub semantic_boot: semantic_boot::SemanticBootReport,
     /// What boot inventoried, quarantined and proved (QI-BB-026).
     pub boot_inventory: BootInventoryReportV1,
@@ -1352,9 +1357,24 @@ impl SearchdRuntime {
             semantic_door_findings,
             snapshots: snapshots.clone(),
         };
+        let boot_active_before = activation_catalog
+            .active_inventory_v1()
+            .map_err(anyhow::Error::from)?
+            .0;
         let active_pairs_validated = search_corpus_lifecycle
             .validate_rehydrated_active_generations_v1(&promotion)
             .map_err(anyhow::Error::from)?;
+        let boot_proven_active = activation_catalog
+            .active_inventory_v1()
+            .map_err(anyhow::Error::from)?
+            .0;
+        if boot_proven_active != boot_active_before
+            || boot_proven_active.len() != active_pairs_validated
+        {
+            return Err(anyhow::anyhow!(
+                "boot active identity changed during physical pair proof"
+            ));
+        }
         // Legacy auxiliary snapshots are refused by the format gate above.
         // Boot only restores rows already present in the current catalog.
         let auxiliary_rows_restored = {
@@ -1513,7 +1533,7 @@ impl SearchdRuntime {
                 Instant::now(),
             ))
         });
-        let scrub_source: Arc<dyn MetricSourcePort> = scrub_tallies;
+        let scrub_source: Arc<dyn MetricSourcePort> = scrub_tallies.clone();
         metric_sources.push(scrub_source);
         // The maintenance timer (QI-BB-016, QI-BB-015): the idle writer
         // sweep, the per-track disk gauges and the scrub run on it, and its
@@ -1565,6 +1585,28 @@ impl SearchdRuntime {
             ledger: Arc::clone(&ledger),
             snapshots,
         });
+        let process_status = Arc::new(SupervisorStatus::default());
+        let readiness: Arc<dyn ProcessReadinessPort> = Arc::new(RuntimeReadiness {
+            status: Arc::clone(&process_status),
+            maintenance: maintenance.tallies(),
+            maintenance_cadence: config.maintenance_policy().tick(),
+            activation_catalog: Arc::clone(&activation_catalog),
+            lifecycle: Arc::clone(&search_corpus_lifecycle),
+            promotion: promotion.clone(),
+            provider_claim: if matches!(profile, SemanticEmbedderProfile::Unavailable) {
+                ProcessProviderClaimV1::Degraded
+            } else {
+                ProcessProviderClaimV1::Required
+            },
+            provider_child_required: provider_attempt_pool.is_some(),
+            scrub: Arc::clone(&scrub_tallies),
+            // Boot already opened and proved these exact active pairs. The
+            // scrub tally starts at zero; any finding before the first
+            // readiness poll invalidates this cache entry.
+            proven_active: Mutex::new(
+                (!boot_proven_active.is_empty()).then_some((boot_proven_active, (0, 0))),
+            ),
+        });
         let control_dispatcher = Arc::new(SearchPlaneControlDispatcher::new(
             SearchPlaneControlDispatcherParts {
                 repo_map_activate: repo_map_generation_activate_port,
@@ -1576,9 +1618,7 @@ impl SearchdRuntime {
                 },
                 observability,
                 quarantine,
-                // No readiness authority is wired in this composition yet:
-                // the readiness opcode refuses typed until one is injected.
-                readiness: None,
+                readiness: Some(readiness),
             },
         ));
         let ingest_dispatcher = Arc::new(SearchPlaneIngestDispatcher::new(
@@ -1660,6 +1700,7 @@ impl SearchdRuntime {
             query_obs_store,
             provider_ledger,
             provider_attempt_pool,
+            process_status,
             semantic_boot: boot_report,
             boot_inventory,
             process_memory_envelope,
