@@ -163,3 +163,83 @@ statuses, never on runner identity strings.
 The report is evidence only for the supplied frozen suite, pinned repository
 and runner record. No arbitrary pass threshold or claim of production retrieval
 quality is inferred.
+
+## Runners and paired orchestration
+
+`semble.py` runs a pinned Semble install (an outside-the-checkout virtualenv)
+against the admitted manifest and a projected query pack, then normalizes
+native hits into a v2 record with proven spans. It always emits the
+path-mapping proof (path map plus both-side path+SHA diff); any skipped or
+extra file fails the common-universe pair with a typed reason. `run.py`
+drives the Rust SDK runner per chunking strategy (`quanta`), runs both
+systems sequentially from a pinned spec (`pair`), deterministically merges
+per-system records (`merge`), re-scores immutable records into the TEST-PLAN
+§8 verdict artifact (`verdict`), and records the host check (`host-probe`).
+
+Each system consumes a projected pack (same tasks/universe/commit, narrowed
+routes, rebound suite commitment); the merge re-derives and re-validates
+every projection with this evaluator before scoring. Records, corpora,
+caches and reports stay under an explicit output root outside the checkout.
+See `docs/plans/sep-23-retrieval-bench/tickets/` for the protocol and the
+`just retrieval-*` recipes for the registered entry points.
+
+## Pair spec schema
+
+`run.py pair --spec SPEC` (and `run.py quanta`) take a JSON spec. Required
+keys: `repo`, `manifest`, `suite`, `query_pack`, `top_k`, `output_root`,
+`runner_binary`. Optional keys and defaults:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `routes` | `["lexical","semantic","hybrid"]` | Quanta routes (must be suite routes) |
+| `strategies` | required for `quanta`/`pair` | e.g. `[{"name":"whole_file"},{"name":"syntax"}]` |
+| `searchd_binary` | runtime resolution | explicit daemon pin (recommended) |
+| `embedder` | `hash-dev` | Rust runner embedder profile |
+| `repo_id`/`revision_id`/`generation` | `bench-repo`/`bench-rev`/`7` | batch identity |
+| `runner_name`/`runner_revision`/`run_id` | `quanta-sdk-runner`/`unpinned`/`run` | runner identity |
+| `blinding` | `attested` | only `attested` is supported today |
+| `isolation_method`/`access_block_log` | `attested-only…` | blinding evidence text |
+| `semble_python` | required for `pair` | pinned Semble venv interpreter |
+| `semble_route` | `semble-hybrid` | Semble record route name |
+| `semble_cache_root` | `<out>/semble-cache` | Semble + HF caches (outside checkout) |
+| `semble_repetitions`/`seed` | `1`/`0` | worker query sampling (1 untimed warmup pass) |
+| `semble_model_revision` | observed | pinned HF revision (drift fails) |
+| `repetitions` | `1` | external reps on fresh state |
+| `alternate_order` | `true` | alternate system order per rep |
+| `order` | `["quanta","semble"]` | base system order |
+| `baseline_route` | Semble route | report baseline |
+| `scope` | `exploratory` | `exploratory` or `qualified` |
+| `claims` | all `false` | `{quality,speed,same_model,incremental}` |
+| `evidence` | `{}` | passthrough from actual CI/test runs |
+| `timeout_secs` | `1800` | per-capture timeout |
+
+Notes: the first Semble index includes the model download (later runs reuse
+the cache; `index_stats` and `semble_index_ms` always record what ran).
+Partial output is never resumed — rerun from a fresh output root. For
+`just retrieval-verdict`, pass space-separated record paths as one quoted
+`records` argument.
+
+## T00–T16 evidence map
+
+Blocking IDs map to a test target, command and artifact. `NOT_RUN` means no
+evidence exists yet; conditional IDs apply only when the claim is made.
+
+| ID | Target | Command / artifact |
+| --- | --- | --- |
+| T00 | `benchmarks/retrieval` corpus loader + `semble.py` mapping proof | `just retrieval-sdk-proof`; `mapping-proof.json` (path map + both-side path+SHA diff) |
+| T01 | `tools/ci/tests/test_retrieval_benchmark.py` (runner independence) | `just benchmark-prep-local`; tampered-record mutants must fail |
+| T02 | same (unsupported system/model mutants) | `just benchmark-prep-local` |
+| T03 | same (schema rejection: fields/routes/timings/status) | `just benchmark-prep-local` |
+| T04 | same (query uniformity; no rewrite) | `just benchmark-prep-local` |
+| T05 | `benchmarks/retrieval/tests/sdk_roundtrip.rs` (SDK frontdoor) | `just retrieval-sdk-proof`; sealed receipt + activation ACK asserted |
+| T06 | same (SDK-only growth rule) | static guard test in `sdk_roundtrip.rs` |
+| T07 | same (direct IPC refusal) | static guard test in `sdk_roundtrip.rs` |
+| T08 | `benchmarks/retrieval/tests/chunking_contract.rs` | `just benchmark-prep-local` (chunking contract, no daemon) |
+| T09 | same (oracle cases + fallback accounting) | `just benchmark-prep-local` |
+| T10 | `sdk_roundtrip.rs` determinism probe + `run.py merge` order test | `just retrieval-sdk-proof`; `just benchmark-prep-local` |
+| T11 | `semble.py` mapping proof + adapter tests | `mapping-proof.json`; `just benchmark-prep-local` |
+| T12 | `run.py pair` (same universe/host) + `host.json` | `just retrieval-pair <spec>`; NOT_RUN until a frozen pilot |
+| T13 | `run.py verdict` (deterministic re-score) | `just retrieval-verdict …`; `verdict.json` |
+| T14 | CI rails | `just benchmark-prep-local` (no model/Semble download on this path) |
+| T15 | model parity (conditional on a same-model claim) | NOT_RUN (no same-model claim; `model_revision` recorded per run) |
+| T16 | incremental capture (conditional on an incremental claim) | NOT_RUN (no incremental claim) |

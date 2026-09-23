@@ -9,6 +9,8 @@ from pathlib import Path
 import pytest
 
 from tools.benchmark.retrieval import evaluator as ev
+from tools.benchmark.retrieval import run as pairrun
+from tools.benchmark.retrieval import semble as semble_adapter
 
 
 def fixture(tmp_path: Path):
@@ -877,3 +879,264 @@ def test_v2_cli_freeze_evaluate_roundtrip(tmp_path, capsys):
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["schema_version"] == 2
     assert report["rank_metrics"]["comparison"]["sample_count"] == 1
+
+
+# --- RB-04/RB-05 adapter and merge contracts (T11–T13) ---
+
+def _admitted_rows(files: dict[str, bytes]) -> list[tuple[str, str]]:
+    return [(name, ev.digest(data)) for name, data in sorted(files.items())]
+
+
+def test_mapping_proof_clean_and_mismatch_detected(tmp_path):
+    _repo, _suite, _run, _sp, _rp, files = fixture_v2(tmp_path)
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    for name, data in files.items():
+        if name != "excluded.txt":
+            (corpus / name).write_bytes(data)
+    admitted = _admitted_rows({k: v for k, v in files.items() if k != "excluded.txt"})
+    proof, diff = semble_adapter.mapping_proof(admitted, ["a.txt", "b.txt"], corpus)
+    assert proof["skipped"] == [] and proof["extra"] == []
+    assert len(diff) == 64
+    assert all(row["status"] == "indexed" for row in proof["per_file"])
+
+    skipped, _ = semble_adapter.mapping_proof(admitted, ["a.txt"], corpus)
+    assert skipped["skipped"] == ["b.txt"]
+    extra, _ = semble_adapter.mapping_proof(admitted, ["a.txt", "b.txt", "zzz.txt"], corpus)
+    assert extra["extra"] == ["zzz.txt"]
+    assert extra["semble_side"][-1]["readable"] is False
+
+
+def test_normalize_record_proves_spans_and_order(tmp_path):
+    repo, suite, _run, suite_path, _rp, files = fixture_v2(tmp_path, answerable_only=True)
+    _, pack, _ = ev.validate_suite(repo, suite)
+    pack_sha = ev.digest(ev.canonical(pack))
+    file_shas = {name: ev.digest(data) for name, data in files.items()}
+    file_lines = {name: data.splitlines(keepends=True) for name, data in files.items()}
+    native = [
+        {"task_id": "T1", "results": [
+            {"file_path": "a.txt", "start_line": 2, "end_line": 2, "score": 0.9},
+            {"file_path": "b.txt", "start_line": 1, "end_line": 1, "score": 0.1},
+        ]},
+        {"task_id": "T2", "results": []},
+    ]
+    record = semble_adapter.normalize_record(
+        pack, pack_sha, native, {"T1": [3.0], "T2": [1.0]}, repo, file_shas,
+        file_lines, 5, "run-1", "attested", "method", "log",
+        "minishlab/potion-code-16M-v2", "rev", "semble-hybrid",
+    )
+    assert [row["status"] for row in record["results"]] == ["success", "abstained"]
+    assert [c["rank"] for c in record["results"][0]["candidates"]] == [1, 2]
+    assert record["results"][0]["candidates"][0]["path"] == "a.txt"
+
+    drifted = [{"task_id": "T1", "results": [
+        {"file_path": "elsewhere/a.txt", "start_line": 1, "end_line": 1, "score": 1.0}]}]
+    with pytest.raises(semble_adapter.AdapterError, match="outside admitted universe"):
+        semble_adapter.normalize_record(
+            pack, pack_sha, drifted, {"T1": [1.0]}, repo, file_shas,
+            file_lines, 5, "run-1", "attested", "method", "log", "m", "r", "semble-hybrid")
+
+    truncated = [{"task_id": "T1", "results": [
+        {"file_path": "a.txt", "start_line": 1, "end_line": 99, "score": 1.0}]}]
+    with pytest.raises(semble_adapter.AdapterError, match="beyond EOF"):
+        semble_adapter.normalize_record(
+            pack, pack_sha, truncated, {"T1": [1.0]}, repo, file_shas,
+            file_lines, 5, "run-1", "attested", "method", "log", "m", "r", "semble-hybrid")
+
+    over = [{"task_id": "T1", "results": [
+        {"file_path": "a.txt", "start_line": 1, "end_line": 1, "score": 1.0},
+        {"file_path": "a.txt", "start_line": 2, "end_line": 2, "score": 0.5}]}]
+    with pytest.raises(semble_adapter.AdapterError, match="exceeded top_k"):
+        semble_adapter.normalize_record(
+            pack, pack_sha, over, {"T1": [1.0]}, repo, file_shas,
+            file_lines, 1, "run-1", "attested", "method", "log", "m", "r", "semble-hybrid")
+
+    missing = semble_adapter.normalize_record(
+        {"tasks": [{"task_id": "T9", "query": "q", "query_sha256": "s"}]},
+        pack_sha, [], {}, repo, file_shas, file_lines, 5, "run-1",
+        "attested", "method", "log", "m", "r", "semble-hybrid")
+    assert missing["results"][0]["status"] == "error"
+    assert missing["results"][0]["error"]["code"] == "semble_missing_query"
+
+
+def _single_route_record(pack_sha: str, route: str, system: str, rows: list[dict]) -> dict:
+    return {
+        "schema_version": 2,
+        "query_pack_sha256": pack_sha,
+        "runner": {
+            "name": f"{system}-runner", "revision": "r", "run_id": "run",
+            "tokenizer": ev.TOKENIZER,
+            "tokenizer_budget_version": ev.TOKENIZER_BUDGET_VERSION,
+            "gold_access": False, "blinding": "attested",
+            "isolation_method": "m", "access_block_log": "l",
+        },
+        "route_provenance": {route: {"system": system, "model": "m", "model_revision": "r"}},
+        "results": rows,
+    }
+
+
+def test_merge_combines_disjoint_records_and_scores(tmp_path):
+    repo, suite, _run, suite_path, _rp, files = fixture_v2(tmp_path, answerable_only=True)
+    suite["routes"] = ["lexical", "semble-hybrid"]
+    suite_path.write_text(json.dumps(suite), encoding="utf-8")
+    _, pack, _ = ev.validate_suite(repo, suite)
+
+    def cand(path, start, end, rank):
+        file_sha, block_sha, tokens = _span_meta(files[path], start, end)
+        return {"path": path, "start_line": start, "end_line": end,
+                "file_sha256": file_sha, "block_sha256": block_sha,
+                "tokens": tokens, "rank": rank}
+
+    def row(task_id, route, spans):
+        return {"task_id": task_id, "route": route, "status": "success",
+                "candidates": [cand(*span, rank=i + 1) for i, span in enumerate(spans)],
+                "timings": {"query_latency_ms": 2.0}, "error": None}
+
+    lex_pack, _ = pairrun.project_pack_and_suite(pack, suite, ["lexical"])
+    sem_pack, _ = pairrun.project_pack_and_suite(pack, suite, ["semble-hybrid"])
+    lex = _single_route_record(
+        ev.digest(ev.canonical(lex_pack)), "lexical", "quanta",
+        [row("T1", "lexical", [("a.txt", 2, 2)]), row("T2", "lexical", [("a.txt", 3, 3)])])
+    sem = _single_route_record(
+        ev.digest(ev.canonical(sem_pack)), "semble-hybrid", "semble",
+        [row("T1", "semble-hybrid", [("b.txt", 1, 1)]), row("T2", "semble-hybrid", [("a.txt", 4, 4)])])
+    lex_path = tmp_path / "lex.json"
+    sem_path = tmp_path / "sem.json"
+    lex_path.write_text(json.dumps(lex), encoding="utf-8")
+    sem_path.write_text(json.dumps(sem), encoding="utf-8")
+
+    merged_suite, merged_pack, combined = pairrun.merge_records(repo, suite_path, [lex_path, sem_path])
+    assert sorted(combined["route_provenance"]) == ["lexical", "semble-hybrid"]
+    assert len(combined["results"]) == 4
+    report = ev.evaluate(merged_suite, merged_pack, combined, "semble-hybrid", "lexical")
+    assert report["rank_metrics"]["comparison"]["sample_count"] == 2
+
+    # Deterministic under input order.
+    _, _, swapped = pairrun.merge_records(repo, suite_path, [sem_path, lex_path])
+    assert ev.digest(ev.canonical(swapped)) == ev.digest(ev.canonical(combined))
+
+    # Duplicate route refused.
+    with pytest.raises(pairrun.RunError, match="recorded twice"):
+        pairrun.merge_records(repo, suite_path, [lex_path, lex_path])
+    # Union must cover the suite.
+    with pytest.raises(pairrun.RunError, match="!= suite routes"):
+        pairrun.merge_records(repo, suite_path, [lex_path])
+
+    # Tampered pack binding refused: routes doctored after signing.
+    tampered = json.loads(lex_path.read_text(encoding="utf-8"))
+    tampered["route_provenance"]["semble-hybrid"] = {
+        "system": "semble", "model": "m", "model_revision": "r"}
+    tampered_path = tmp_path / "tampered.json"
+    tampered_path.write_text(json.dumps(tampered), encoding="utf-8")
+    with pytest.raises(pairrun.RunError, match="projected pack"):
+        pairrun.merge_records(repo, suite_path, [tampered_path, sem_path])
+
+
+def test_verdict_states_and_conditional_ids(tmp_path):
+    repo, suite, _run, suite_path, _rp, files = fixture_v2(tmp_path, answerable_only=True)
+    suite["routes"] = ["lexical", "semble-hybrid"]
+    suite_path.write_text(json.dumps(suite), encoding="utf-8")
+    _, pack, _ = ev.validate_suite(repo, suite)
+
+    def cand(path, start, end, rank):
+        file_sha, block_sha, tokens = _span_meta(files[path], start, end)
+        return {"path": path, "start_line": start, "end_line": end,
+                "file_sha256": file_sha, "block_sha256": block_sha,
+                "tokens": tokens, "rank": rank}
+
+    def row(task_id, route, spans):
+        return {"task_id": task_id, "route": route, "status": "success",
+                "candidates": [cand(*span, rank=i + 1) for i, span in enumerate(spans)],
+                "timings": {"query_latency_ms": 2.0}, "error": None}
+
+    lex_pack, _ = pairrun.project_pack_and_suite(pack, suite, ["lexical"])
+    sem_pack, _ = pairrun.project_pack_and_suite(pack, suite, ["semble-hybrid"])
+    lex = _single_route_record(
+        ev.digest(ev.canonical(lex_pack)), "lexical", "quanta",
+        [row("T1", "lexical", [("a.txt", 2, 2)]), row("T2", "lexical", [("a.txt", 3, 3)])])
+    sem = _single_route_record(
+        ev.digest(ev.canonical(sem_pack)), "semble-hybrid", "semble",
+        [row("T1", "semble-hybrid", [("b.txt", 1, 1)]), row("T2", "semble-hybrid", [("a.txt", 4, 4)])])
+    lex_path = tmp_path / "lex.json"
+    sem_path = tmp_path / "sem.json"
+    lex_path.write_text(json.dumps(lex), encoding="utf-8")
+    sem_path.write_text(json.dumps(sem), encoding="utf-8")
+
+    manifest = {
+        "blinding": "attested",
+        "scope": "exploratory",
+        "claims": {"quality": True, "speed": False},
+        "evidence": {
+            "contract_suites": {"python": {"passed": 65, "failed": 0}, "rust": {"passed": 30, "failed": 0}},
+            "sdk_path": {"separate_process": True, "sealed_receipt": True,
+                         "activation_ack": True, "empty_check": True},
+            "pair": {"mapping_proof_clean": True, "same_commit": True,
+                     "same_files": True, "same_host": True},
+        },
+        "provenance": {"quanta_source_sha": "abc", "host_profile": "test"},
+    }
+    verdict = pairrun.build_verdict(
+        repo, suite_path, [lex_path, sem_path], manifest, "semble-hybrid", "lexical")
+    assert verdict["verdict_version"] == 1
+    assert verdict["states"]["CONTRACT_GREEN"] == "pass"
+    assert verdict["states"]["SDK_PATH_GREEN"] == "pass"
+    assert verdict["states"]["PAIR_VALID"] == "pass"
+    assert verdict["states"]["PERF_QUALIFIED"] == "not_applicable"
+    assert verdict["states"]["QUALITY_DELTA"] == "not_applicable"
+    assert "T15" in verdict["not_applicable_t_ids"]
+    assert "T16" in verdict["not_applicable_t_ids"]
+    assert verdict["failure_class"] == "none"
+
+    empty = pairrun.build_verdict(
+        repo, suite_path, [lex_path, sem_path],
+        {"blinding": "attested", "scope": "exploratory", "claims": {}, "provenance": {}},
+        "semble-hybrid", "lexical")
+    assert empty["states"]["PAIR_VALID"] == "not_run"
+    assert "T00" in empty["missing_t_ids"]
+    assert "T05" in empty["missing_t_ids"]
+    # Isolated + qualified + graded quality claim passes QUALITY_DELTA.
+    qualified = pairrun.build_verdict(
+        repo, suite_path, [lex_path, sem_path],
+        {"blinding": "isolated", "isolation_method": "m", "access_block_log": "l",
+         "scope": "qualified", "claims": {"quality": True},
+         "evidence": manifest["evidence"], "provenance": {"s": "x"}},
+        "semble-hybrid", "lexical")
+    assert qualified["states"]["QUALITY_DELTA"] == "pass"
+    assert qualified["states"]["PAIR_VALID"] == "pass"
+
+    # Perf: floors + clean host + phases pass; contention fails host;
+    # thin evidence without contention fails provenance.
+    clean_host = {"start": {"concurrent_processes": {"none": []}},
+                  "end": {"concurrent_processes": {}}}
+    perf_pass = {"observations_per_route": 1000, "phase_boundaries": True,
+                 "resource_accounting": True}
+    good = pairrun.build_verdict(
+        repo, suite_path, [lex_path, sem_path],
+        {"blinding": "attested", "scope": "exploratory", "claims": {"speed": True},
+         "evidence": {"perf": perf_pass}, "host": clean_host, "provenance": {}},
+        "semble-hybrid", "lexical")
+    assert good["states"]["PERF_QUALIFIED"] == "pass"
+    busy_host = {"start": {"concurrent_processes": {"cargo": [123]}},
+                 "end": {"concurrent_processes": {}}}
+    busy = pairrun.build_verdict(
+        repo, suite_path, [lex_path, sem_path],
+        {"blinding": "attested", "scope": "exploratory", "claims": {"speed": True},
+         "evidence": {"perf": perf_pass}, "host": busy_host, "provenance": {}},
+        "semble-hybrid", "lexical")
+    assert busy["states"]["PERF_QUALIFIED"] == "fail"
+    assert busy["failure_class"] == "host"
+    thin = pairrun.build_verdict(
+        repo, suite_path, [lex_path, sem_path],
+        {"blinding": "attested", "scope": "exploratory", "claims": {"speed": True},
+         "evidence": {"perf": {"observations_per_route": 4}}, "host": clean_host,
+         "provenance": {}},
+        "semble-hybrid", "lexical")
+    assert thin["states"]["PERF_QUALIFIED"] == "fail"
+    assert thin["failure_class"] == "provenance"
+
+
+def test_host_probe_records_without_fabrication():
+    probe = pairrun.host_probe()
+    for key in ("system", "machine", "cpu_count", "python", "concurrent_processes",
+                "thermal", "frequency"):
+        assert key in probe, f"host probe lacks {key}"
