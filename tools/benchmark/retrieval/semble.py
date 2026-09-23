@@ -94,8 +94,6 @@ def main() -> int:
     seed = int(spec.get("seed", 0))
     warmup = int(spec.get("warmup_passes", 1))
     repetitions = int(spec.get("repetitions", 1))
-    import random
-
     order = list(range(len(queries)))
     for _ in range(warmup):
         for task_id, query in queries:
@@ -108,8 +106,6 @@ def main() -> int:
     first_query_start_ns = None
     first_query_end_ns = None
     for rep in range(repetitions):
-        rng = random.Random(seed + rep)
-        rng.shuffle(order)
         for position in order:
             task_id, query = queries[position]
             t0 = time.monotonic_ns()
@@ -172,6 +168,7 @@ def main() -> int:
         "configured_model_name": os.environ["SEMBLE_MODEL_NAME"],
         "observed_files": observed,
         "stats": stats,
+        "query_schedule": [task_id for task_id, _ in queries],
         "native": native,
         "latencies_ms": latencies,
         "timing_layer": "worker_wall_per_query_ms",
@@ -238,7 +235,11 @@ def load_manifest(path: Path) -> tuple[str, list[tuple[str, str]]]:
         raise AdapterError("manifest must be an object")
     commit = payload.get("repository_commit")
     files = payload.get("files")
-    if not isinstance(commit, str) or len(commit) != 40 or any(c not in "0123456789abcdef" for c in commit):
+    if (
+        not isinstance(commit, str)
+        or len(commit) != 40
+        or any(c not in "0123456789abcdef" for c in commit)
+    ):
         raise AdapterError("manifest lacks repository_commit")
     if not isinstance(files, list) or not files:
         raise AdapterError("manifest admits no files")
@@ -249,7 +250,11 @@ def load_manifest(path: Path) -> tuple[str, list[tuple[str, str]]]:
         name, sha = entry.get("path"), entry.get("file_sha256")
         if not isinstance(name, str) or not name or not isinstance(sha, str):
             raise AdapterError("manifest entry lacks path/file_sha256")
-        if name.startswith("/") or "\\" in name or any(part in ("", ".", "..") for part in name.split("/")):
+        if (
+            name.startswith("/")
+            or "\\" in name
+            or any(part in ("", ".", "..") for part in name.split("/"))
+        ):
             raise AdapterError(f"unsafe manifest path: {name}")
         if len(sha) != 64 or any(c not in "0123456789abcdef" for c in sha):
             raise AdapterError(f"manifest entry has invalid file_sha256: {name}")
@@ -265,10 +270,19 @@ def load_query_pack(path: Path) -> dict:
         raise AdapterError("query pack must be an object")
     if payload.get("schema_version") != 3:
         raise AdapterError("query pack schema_version must be 3")
-    expected = {"schema_version", "suite_id", "suite_commitment_sha256",
-                "repository_commit", "tokenizer", "tokenizer_budget_version",
-                "routes", "file_universe", "file_universe_digest",
-                "comparison_contract", "tasks"}
+    expected = {
+        "schema_version",
+        "suite_id",
+        "suite_commitment_sha256",
+        "repository_commit",
+        "tokenizer",
+        "tokenizer_budget_version",
+        "routes",
+        "file_universe",
+        "file_universe_digest",
+        "comparison_contract",
+        "tasks",
+    }
     if set(payload) != expected:
         raise AdapterError("query pack holds unexpected or missing top-level keys")
     try:
@@ -283,7 +297,9 @@ def load_query_pack(path: Path) -> dict:
         if not isinstance(task, dict):
             raise AdapterError("query pack task must be an object")
         if set(task) != {"task_id", "query", "query_sha256"}:
-            raise AdapterError("query pack task holds unexpected keys (gold/grade smuggling refused)")
+            raise AdapterError(
+                "query pack task holds unexpected keys (gold/grade smuggling refused)"
+            )
         for key in ("task_id", "query", "query_sha256"):
             if not isinstance(task.get(key), str) or not task[key]:
                 raise AdapterError(f"query pack task lacks {key}")
@@ -306,9 +322,10 @@ def verify_lockfile(lockfile_bytes: bytes, expected_sha256: str, freeze_text: st
     observed = hashlib.sha256(bytes(lockfile_bytes)).hexdigest()
     if observed != expected_sha256:
         raise AdapterError("external lockfile digest differs from the spec pin")
-    locked = {
-        line.strip() for line in lockfile_bytes.decode("utf-8", "strict").splitlines()
-    } - {"", "#"}
+    locked = {line.strip() for line in lockfile_bytes.decode("utf-8", "strict").splitlines()} - {
+        "",
+        "#",
+    }
     locked = {line for line in locked if not line.startswith("#")}
     frozen = {line.strip() for line in freeze_text.splitlines() if line.strip()}
     if f"semble=={SEMBLE_PINNED_VERSION}" not in frozen:
@@ -398,9 +415,7 @@ def check_semble_env(python: Path) -> dict:
     # Freeze is the env observation, never the authoritative pin: the external
     # hash-pinned lockfile is the expectation (see verify_lockfile).
     report["observed_freeze"] = freeze.stdout
-    report["observed_freeze_sha256"] = hashlib.sha256(
-        freeze.stdout.encode("utf-8")
-    ).hexdigest()
+    report["observed_freeze_sha256"] = hashlib.sha256(freeze.stdout.encode("utf-8")).hexdigest()
     resolved = python.resolve()
     try:
         interpreter_digest = sha_file(resolved)
@@ -440,9 +455,7 @@ def build_isolated_corpus(
     return rows, max_bytes
 
 
-def verify_materialized_corpus(
-    repo: Path, manifest_rows: list[tuple[str, str]]
-) -> Path:
+def verify_materialized_corpus(repo: Path, manifest_rows: list[tuple[str, str]]) -> Path:
     """Prove a Git-free directory contains exactly the admitted file universe."""
     repo = repo.resolve()
     if not repo.is_dir() or (repo / ".git").exists():
@@ -830,9 +843,7 @@ def run_adapter(args: argparse.Namespace) -> int:
         raise AdapterError("repetitions must be positive and warmup_passes non-negative")
     spec = {
         "corpus_dir": str(corpus_dir),
-        "tasks": [
-            {"task_id": task["task_id"], "query": task["query"]} for task in pack["tasks"]
-        ],
+        "tasks": [{"task_id": task["task_id"], "query": task["query"]} for task in pack["tasks"]],
         "top_k": top_k,
         "seed": seed,
         "warmup_passes": warmup_passes,
@@ -929,9 +940,7 @@ def run_adapter(args: argparse.Namespace) -> int:
         worker_digest,
     )
     record_path = out_root / "record.json"
-    record_path.write_text(
-        json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    record_path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     phase_values = {
         "discovery": native_payload.get("discovery_ms"),
         "model_provider_prepare": native_payload.get("model_provider_prepare_ms"),
@@ -960,6 +969,9 @@ def run_adapter(args: argparse.Namespace) -> int:
         "route_count": 1,
         "file_count": native_payload.get("stats", {}).get("indexed_files"),
         "chunk_count": native_payload.get("stats", {}).get("total_chunks"),
+        "query_schedule": native_payload.get("query_schedule"),
+        "warmup_passes": warmup_passes,
+        "measurement_repetitions": repetitions,
         "phases_ms": phase_values,
         "phase_boundaries_ns": phase_boundaries_ns,
         "total_ms": worker_total_ms,
@@ -1023,17 +1035,17 @@ def model_asset_digest(hf_home: Path, model_id: str, revision: str) -> str:
     return digestor.hexdigest()
 
 
-def resolve_model_revision(
-    hf_home: Path, model_id: str, pinned: str | None
-) -> tuple[str, str]:
+def resolve_model_revision(hf_home: Path, model_id: str, pinned: str | None) -> tuple[str, str]:
     """Return (revision, model_asset_digest) for the pinned model snapshot."""
     observed = read_hf_revision(hf_home, model_id)
-    if observed is None or len(observed) != 40 or any(c not in "0123456789abcdef" for c in observed):
+    if (
+        observed is None
+        or len(observed) != 40
+        or any(c not in "0123456789abcdef" for c in observed)
+    ):
         raise AdapterError(f"model revision unavailable or invalid in HF cache: {model_id}")
     if pinned and observed != pinned:
-        raise AdapterError(
-            f"model revision drift: pinned {pinned} but cache holds {observed}"
-        )
+        raise AdapterError(f"model revision drift: pinned {pinned} but cache holds {observed}")
     revision = pinned or observed
     return revision, model_asset_digest(hf_home, model_id, revision)
 

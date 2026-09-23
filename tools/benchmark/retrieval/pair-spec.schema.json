@@ -55,6 +55,7 @@
     "semble_model_revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "quanta_model_dir": {"type": "string", "minLength": 1},
     "semble_repetitions": {"type": "integer", "minimum": 1},
+    "semble_warmup_passes": {"type": "integer", "minimum": 0},
     "baseline_route": {"type": "string", "minLength": 1},
     "candidate_route": {"type": "string", "minLength": 1},
     "host_profile": {

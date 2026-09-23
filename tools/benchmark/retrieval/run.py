@@ -188,9 +188,10 @@ def run_monitored_process(
     samples = 0
     sample_error: str | None = None
     timed_out = False
-    with stdout_path.open("x", encoding="utf-8") as stdout, stderr_path.open(
-        "x", encoding="utf-8"
-    ) as stderr:
+    with (
+        stdout_path.open("x", encoding="utf-8") as stdout,
+        stderr_path.open("x", encoding="utf-8") as stderr,
+    ):
         try:
             process = subprocess.Popen(
                 command,
@@ -212,19 +213,18 @@ def run_monitored_process(
                     peak_cpu_percent = max(peak_cpu_percent, cpu)
                     samples += 1
                     for row in sample:
-                        peak = process_peaks.setdefault(row["pid"], {
-                            "pid": row["pid"],
-                            "command": row["command"],
-                            "peak_rss_bytes": 0,
-                            "peak_cpu_percent": 0.0,
-                            "samples": 0,
-                        })
-                        peak["peak_rss_bytes"] = max(
-                            peak["peak_rss_bytes"], row["rss_bytes"]
+                        peak = process_peaks.setdefault(
+                            row["pid"],
+                            {
+                                "pid": row["pid"],
+                                "command": row["command"],
+                                "peak_rss_bytes": 0,
+                                "peak_cpu_percent": 0.0,
+                                "samples": 0,
+                            },
                         )
-                        peak["peak_cpu_percent"] = max(
-                            peak["peak_cpu_percent"], row["cpu_percent"]
-                        )
+                        peak["peak_rss_bytes"] = max(peak["peak_rss_bytes"], row["rss_bytes"])
+                        peak["peak_cpu_percent"] = max(peak["peak_cpu_percent"], row["cpu_percent"])
                         peak["samples"] += 1
             except (OSError, subprocess.CalledProcessError) as error:
                 if sample_error is None:
@@ -272,9 +272,7 @@ def run_monitored_process(
         "cleanup_error": cleanup_error,
         "isolation": isolation,
     }
-    resource_path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    resource_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return payload
 
 
@@ -339,14 +337,25 @@ def _seatbelt_profile(
 ) -> str:
     """Build a deterministic default-deny profile with explicit file authority."""
     system_read_roots = [
-        "/System", "/usr", "/bin", "/sbin", "/Library/Apple",
-        "/private/var/db/dyld", "/private/var/db/timezone", "/dev",
+        "/System",
+        "/usr",
+        "/bin",
+        "/sbin",
+        "/Library/Apple",
+        "/private/var/db/dyld",
+        "/private/var/db/timezone",
+        "/dev",
     ]
 
     def validated(values: list[str], label: str) -> list[str]:
         roots = sorted(set(values))
         for root in roots:
-            if not isinstance(root, str) or not Path(root).is_absolute() or "\n" in root or "\x00" in root:
+            if (
+                not isinstance(root, str)
+                or not Path(root).is_absolute()
+                or "\n" in root
+                or "\x00" in root
+            ):
                 raise RunError(f"invalid Seatbelt {label} root: {root!r}")
         return roots
 
@@ -391,8 +400,7 @@ def _probe_seatbelt(profile: str, suite_path: Path, pack_path: Path) -> dict:
             timeout=15,
         )
         allowed = subprocess.run(
-            [str(SANDBOX_EXEC), "-p", profile, "/usr/bin/shasum", "-a", "256",
-             str(pack_path)],
+            [str(SANDBOX_EXEC), "-p", profile, "/usr/bin/shasum", "-a", "256", str(pack_path)],
             capture_output=True,
             text=True,
             timeout=15,
@@ -407,9 +415,7 @@ def _probe_seatbelt(profile: str, suite_path: Path, pack_path: Path) -> dict:
         ),
     }
     if not all(result.values()):
-        raise RunError(
-            "Seatbelt isolation probe did not deny suite and allow the exact query pack"
-        )
+        raise RunError("Seatbelt isolation probe did not deny suite and allow the exact query pack")
     return result
 
 
@@ -488,7 +494,11 @@ def materialize_corpus_view(spec: dict, stage: Path, source_repo: Path) -> dict:
     view.mkdir()
     for name, expected in rows:
         source = source_repo / name
-        if source.is_symlink() or not source.is_file() or source_repo not in source.resolve().parents:
+        if (
+            source.is_symlink()
+            or not source.is_file()
+            or source_repo not in source.resolve().parents
+        ):
             raise RunError(f"admitted source is not a regular in-repository file: {name}")
         if sha_file(source) != expected:
             raise RunError(f"admitted source digest drifted during materialization: {name}")
@@ -524,9 +534,7 @@ def prepare_isolation(spec: dict, stage: Path, original_suite: Path) -> dict:
     materialized = spec.get("_materialized_corpus")
     if not isinstance(materialized, dict):
         raise RunError("isolated blinding requires a verified materialized corpus view")
-    _verify_materialized_corpus(
-        repo, Path(spec["manifest"]), materialized.get("proof_sha256")
-    )
+    _verify_materialized_corpus(repo, Path(spec["manifest"]), materialized.get("proof_sha256"))
     if repo == source_repo or _path_within(repo, source_repo):
         raise RunError("materialized corpus must be outside the denied source checkout")
     if not secret_root.is_dir() or not _path_within(original_suite, secret_root):
@@ -544,8 +552,13 @@ def prepare_isolation(spec: dict, stage: Path, original_suite: Path) -> dict:
     readable_inputs = [
         Path(spec[key]).resolve()
         for key in (
-            "repo", "manifest", "query_pack", "runner_binary", "searchd_binary",
-            "semble_python", "semble_lockfile",
+            "repo",
+            "manifest",
+            "query_pack",
+            "runner_binary",
+            "searchd_binary",
+            "semble_python",
+            "semble_lockfile",
         )
     ]
     readable_inputs.extend((stage.resolve(), Path(spec["output_root"]).resolve()))
@@ -555,6 +568,10 @@ def prepare_isolation(spec: dict, stage: Path, original_suite: Path) -> dict:
             "suite_secret_root also contains runner-readable inputs: " + ", ".join(conflicts)
         )
     evaluator_root = (stage / "evaluator-only").resolve()
+    runner_tools = (stage / "runner-tools").resolve()
+    runner_tools.mkdir()
+    for name in ("semble.py", "evaluator.py"):
+        shutil.copyfile(Path(__file__).resolve().parent / name, runner_tools / name)
     suite_path = Path(spec["suite"]).resolve()
     pack_path = Path(spec["query_pack"]).resolve()
     if not _path_within(suite_path, evaluator_root):
@@ -562,11 +579,17 @@ def prepare_isolation(spec: dict, stage: Path, original_suite: Path) -> dict:
     denied_roots = sorted({str(secret_root), str(evaluator_root), str(source_repo)})
     semble_env_root = Path(spec["semble_python"]).resolve().parent.parent
     extra_read_roots = [
-        str(repo), str(Path(spec["manifest"]).resolve()), str(pack_path),
-        str(Path(spec["runner_binary"]).resolve()), str(Path(spec["searchd_binary"]).resolve()),
-        str(Path(spec["semble_lockfile"]).resolve()), str(semble_env_root),
+        str(repo),
+        str(Path(spec["manifest"]).resolve()),
+        str(pack_path),
+        str(Path(spec["runner_binary"]).resolve()),
+        str(Path(spec["searchd_binary"]).resolve()),
+        str(Path(spec["semble_lockfile"]).resolve()),
+        str(semble_env_root),
+        str(Path(sys.executable).resolve().parent.parent),
         str(Path(spec.get("semble_cache_root", stage / "semble-cache")).resolve()),
-        str(stage.resolve()), str(Path(spec["output_root"]).resolve()),
+        str(stage.resolve()),
+        str(Path(spec["output_root"]).resolve()),
     ]
     for optional in ("quanta_model_dir",):
         if optional in spec:
@@ -602,6 +625,13 @@ def prepare_isolation(spec: dict, stage: Path, original_suite: Path) -> dict:
             "proof_sha256": materialized["proof_sha256"],
             "file_count": len(materialized["files"]),
         },
+        "runner_tools": [
+            {
+                "path": (runner_tools / name).relative_to(stage.resolve()).as_posix(),
+                "sha256": sha_file(runner_tools / name),
+            }
+            for name in ("evaluator.py", "semble.py")
+        ],
         "probes": probes,
     }
     proof_path = stage / "isolation-proof.json"
@@ -616,6 +646,7 @@ def prepare_isolation(spec: dict, stage: Path, original_suite: Path) -> dict:
         "profile_sha256": proof["profile_sha256"],
         "proof_sha256": proof_sha256,
     }
+    updated["_semble_adapter"] = str(runner_tools / "semble.py")
     return updated
 
 
@@ -624,13 +655,16 @@ def sandbox_command(spec: dict, command: list[str]) -> tuple[list[str], dict | N
         return command, None
     isolation = spec.get("_isolation")
     if not isinstance(isolation, dict) or set(isolation) != {
-        "profile", "profile_sha256", "proof_sha256"
+        "profile",
+        "profile_sha256",
+        "proof_sha256",
     }:
         raise RunError("isolated capture lacks the verified driver isolation context")
     profile = isolation["profile"]
-    if not isinstance(profile, str) or hashlib.sha256(profile.encode()).hexdigest() != isolation[
-        "profile_sha256"
-    ]:
+    if (
+        not isinstance(profile, str)
+        or hashlib.sha256(profile.encode()).hexdigest() != isolation["profile_sha256"]
+    ):
         raise RunError("isolated capture profile digest mismatch")
     evidence = {
         "backend": ISOLATION_BACKEND,
@@ -656,9 +690,14 @@ def tree_size(root: Path) -> int:
 def bind_storage_metrics(resource_path: Path, storage: dict) -> dict:
     """Atomically bind post-process storage/cache accounting to resource evidence."""
     expected = {
-        "index_bytes", "model_cache_bytes", "parser_cache_bytes",
-        "embedding_cache_bytes", "discovered_files", "indexed_chunks",
-        "index_storage", "index_measurement",
+        "index_bytes",
+        "model_cache_bytes",
+        "parser_cache_bytes",
+        "embedding_cache_bytes",
+        "discovered_files",
+        "indexed_chunks",
+        "index_storage",
+        "index_measurement",
     }
     if set(storage) != expected:
         raise RunError("storage metrics hold missing or unknown keys")
@@ -667,9 +706,7 @@ def bind_storage_metrics(resource_path: Path, storage: dict) -> dict:
         raise RunError("resource evidence is not an unbound object")
     payload["storage"] = storage
     temporary = resource_path.with_suffix(resource_path.suffix + ".tmp")
-    temporary.write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     os.replace(temporary, resource_path)
     return payload
 
@@ -692,9 +729,7 @@ def host_probe() -> dict:
         completed = subprocess.run(
             ["rustc", "--version"], capture_output=True, text=True, timeout=30
         )
-        record["rustc"] = (
-            completed.stdout.strip() if completed.returncode == 0 else "unavailable"
-        )
+        record["rustc"] = completed.stdout.strip() if completed.returncode == 0 else "unavailable"
     except (OSError, subprocess.SubprocessError):
         record["rustc"] = "unavailable"
     record["concurrent_processes"] = find_competing_processes()
@@ -758,16 +793,21 @@ def read_power() -> dict:
         active_source = _darwin_power_source(source_text)
         active_settings = (
             _darwin_power_settings(settings_text, active_source)
-            if active_source is not None else None
+            if active_source is not None
+            else None
         )
         if active_source is None or active_settings is None:
             return {"status": "unavailable", "digest": None}
         return {
             "status": "bounded",
-            "digest": digest(canonical({
-                "active_source": active_source,
-                "settings": active_settings,
-            })),
+            "digest": digest(
+                canonical(
+                    {
+                        "active_source": active_source,
+                        "settings": active_settings,
+                    }
+                )
+            ),
             "active_source": active_source,
             "observation_digest": digest(source_text.encode("utf-8")),
         }
@@ -828,9 +868,14 @@ def read_thermal() -> dict:
         if completed.returncode != 0 or not text:
             return {"status": "unavailable", "evidence": text}
         lowered = text.lower()
-        no_pressure = all(phrase in lowered for phrase in (
-            "no thermal warning", "no performance warning", "no cpu power status",
-        ))
+        no_pressure = all(
+            phrase in lowered
+            for phrase in (
+                "no thermal warning",
+                "no performance warning",
+                "no cpu power status",
+            )
+        )
         limits = {
             key: int(value)
             for key, value in re.findall(
@@ -841,7 +886,9 @@ def read_thermal() -> dict:
         }
         expected_cpus = os.cpu_count()
         full_limits = set(limits) == {
-            "CPU_Scheduler_Limit", "CPU_Available_CPUs", "CPU_Speed_Limit"
+            "CPU_Scheduler_Limit",
+            "CPU_Available_CPUs",
+            "CPU_Speed_Limit",
         }
         limits_clean = (
             full_limits
@@ -908,9 +955,7 @@ def read_sysctl(keys: list[str]) -> dict:
     return out
 
 
-def project_pack_and_suite(
-    pack: dict, suite: dict, routes: list[str]
-) -> tuple[dict, dict]:
+def project_pack_and_suite(pack: dict, suite: dict, routes: list[str]) -> tuple[dict, dict]:
     """Project a frozen pack+suite to one system's route set.
 
     Tasks, universe, commit and tokenizer stay identical; the route list
@@ -927,9 +972,9 @@ def project_pack_and_suite(
 
 
 def canonical_bytes(payload: object) -> bytes:
-    return json.dumps(
-        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    ).encode("utf-8")
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
+        "utf-8"
+    )
 
 
 def merge_records(
@@ -988,23 +1033,23 @@ def merge_records(
         if other != first:
             differing = sorted(k for k in first if first[k] != other.get(k))
             raise RunError(
-                "merged records disagree on the comparison contract: "
-                f"{differing}; refusing merge"
+                f"merged records disagree on the comparison contract: {differing}; refusing merge"
             )
     merged_blinding = (
-        "isolated" if all(r["runner"].get("blinding") == "isolated" for r in runners) else "attested"
+        "isolated"
+        if all(r["runner"].get("blinding") == "isolated" for r in runners)
+        else "attested"
     )
     expected_routes = set(suite["routes"])
     if set(provenance) != expected_routes:
         missing = sorted(expected_routes - set(provenance))
         extra = sorted(set(provenance) - expected_routes)
-        raise RunError(f"merged routes {sorted(provenance)} != suite routes "
-                       f"(missing={missing} extra={extra})")
+        raise RunError(
+            f"merged routes {sorted(provenance)} != suite routes (missing={missing} extra={extra})"
+        )
     ordered = [results[key] for key in sorted(results)]
     runners.sort(key=lambda entry: entry["path"])
-    content_digests = sorted(
-        digest(canonical_bytes(read_json(path))) for path in record_paths
-    )
+    content_digests = sorted(digest(canonical_bytes(read_json(path))) for path in record_paths)
     merge_id = digest(canonical_bytes(content_digests))[:16]
     combined = {
         "schema_version": 3,
@@ -1123,17 +1168,14 @@ def _host_fingerprint(probe: dict) -> dict:
 
 
 def validate_host_profile(payload: object) -> dict:
-    profile = _exact_keys(
-        payload, {"schema_version", "profile_id", "fingerprint"}, "host profile"
-    )
+    profile = _exact_keys(payload, {"schema_version", "profile_id", "fingerprint"}, "host profile")
     if profile["schema_version"] != 1:
         raise RunError("host profile schema version mismatch")
     if not isinstance(profile["profile_id"], str) or not profile["profile_id"]:
         raise RunError("host profile id must be nonempty")
     fingerprint = _exact_keys(
         profile["fingerprint"],
-        {"system", "release", "machine", "processor", "cpu_count", "rustc",
-         "power_digest"},
+        {"system", "release", "machine", "processor", "cpu_count", "rustc", "power_digest"},
         "host profile fingerprint",
     )
     for key in ("system", "release", "machine", "processor", "rustc"):
@@ -1148,11 +1190,13 @@ def validate_host_profile(payload: object) -> dict:
 
 def cmd_host_profile(args: argparse.Namespace) -> int:
     probe = host_probe()
-    profile = validate_host_profile({
-        "schema_version": 1,
-        "profile_id": args.profile_id,
-        "fingerprint": _host_fingerprint(probe),
-    })
+    profile = validate_host_profile(
+        {
+            "schema_version": 1,
+            "profile_id": args.profile_id,
+            "fingerprint": _host_fingerprint(probe),
+        }
+    )
     Path(args.out).write_text(
         json.dumps(profile, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
@@ -1198,6 +1242,7 @@ SPEC_OPTIONAL = (
     "semble_model_revision",
     "quanta_model_dir",
     "semble_repetitions",
+    "semble_warmup_passes",
     "baseline_route",
     "candidate_route",
     "host_profile",
@@ -1255,10 +1300,20 @@ def validate_admission_manifest(payload: object) -> dict:
     admission = _exact_keys(
         payload,
         {
-            "schema_version", "admission_id", "issued_at", "source_revision",
-            "repository_commit", "corpus_manifest_sha256", "suite_sha256",
-            "query_pack_sha256", "license", "gold", "models",
-            "semble_lockfile_sha256", "host_profile_sha256", "cache_regime",
+            "schema_version",
+            "admission_id",
+            "issued_at",
+            "source_revision",
+            "repository_commit",
+            "corpus_manifest_sha256",
+            "suite_sha256",
+            "query_pack_sha256",
+            "license",
+            "gold",
+            "models",
+            "semble_lockfile_sha256",
+            "host_profile_sha256",
+            "cache_regime",
             "verification",
         },
         "qualification admission",
@@ -1272,8 +1327,11 @@ def validate_admission_manifest(payload: object) -> dict:
         if not _is_hex(admission[key], 40):
             raise RunError(f"qualification admission {key} must be a full Git SHA")
     for key in (
-        "corpus_manifest_sha256", "suite_sha256", "query_pack_sha256",
-        "semble_lockfile_sha256", "host_profile_sha256",
+        "corpus_manifest_sha256",
+        "suite_sha256",
+        "query_pack_sha256",
+        "semble_lockfile_sha256",
+        "host_profile_sha256",
     ):
         if not _is_hex(admission[key], 64):
             raise RunError(f"qualification admission {key} must be a sha256")
@@ -1281,7 +1339,8 @@ def validate_admission_manifest(payload: object) -> dict:
         raise RunError("qualified admission cannot use an undeclared cache regime")
 
     license_claim = _exact_keys(
-        admission["license"], {"reviewer_id", "decision", "receipt_sha256"},
+        admission["license"],
+        {"reviewer_id", "decision", "receipt_sha256"},
         "qualification admission license",
     )
     if not isinstance(license_claim["reviewer_id"], str) or not license_claim["reviewer_id"]:
@@ -1293,8 +1352,7 @@ def validate_admission_manifest(payload: object) -> dict:
 
     gold = _exact_keys(
         admission["gold"],
-        {"frozen_before_results", "annotators", "adjudicator_id",
-         "adjudication_receipt_sha256"},
+        {"frozen_before_results", "annotators", "adjudicator_id", "adjudication_receipt_sha256"},
         "qualification admission gold",
     )
     if gold["frozen_before_results"] is not True:
@@ -1306,7 +1364,8 @@ def validate_admission_manifest(payload: object) -> dict:
     receipt_digests = []
     for index, raw in enumerate(annotators):
         annotator = _exact_keys(
-            raw, {"annotator_id", "receipt_sha256"},
+            raw,
+            {"annotator_id", "receipt_sha256"},
             f"qualification admission annotators[{index}]",
         )
         if not isinstance(annotator["annotator_id"], str) or not annotator["annotator_id"]:
@@ -1335,8 +1394,7 @@ def validate_admission_manifest(payload: object) -> dict:
 
     verification = _exact_keys(
         admission["verification"],
-        {"contract_python_receipt_sha256", "contract_rust_receipt_sha256",
-         "sdk_receipt_sha256"},
+        {"contract_python_receipt_sha256", "contract_rust_receipt_sha256", "sdk_receipt_sha256"},
         "qualification admission verification",
     )
     for key, value in verification.items():
@@ -1372,6 +1430,19 @@ def verify_admission_bundle(
         "repository_commit"
     ):
         raise RunError("qualification admission repository commit mismatch")
+    suite_payload = read_json(suite_path)
+    tasks = suite_payload.get("tasks") if isinstance(suite_payload, dict) else None
+    if not isinstance(tasks, list) or not tasks:
+        raise RunError("qualification admission suite lacks tasks")
+    uncategorized = [
+        task.get("task_id")
+        for task in tasks
+        if isinstance(task, dict)
+        and task.get("split") == "eval"
+        and (not isinstance(task.get("category"), str) or not task.get("category"))
+    ]
+    if uncategorized:
+        raise RunError("qualification admission requires a category for every eval task")
     for key, path in (
         ("corpus_manifest_sha256", corpus_manifest_path),
         ("suite_sha256", suite_path),
@@ -1407,8 +1478,11 @@ def verify_admission_bundle(
     for expected, observed, label in (
         (models["quanta_model_revision"], quanta_model_revision, "Quanta model revision"),
         (models["semble_model_revision"], semble_model_revision, "Semble model revision"),
-        (models["semble_model_asset_sha256"], semble_model_asset_sha256,
-         "Semble model asset digest"),
+        (
+            models["semble_model_asset_sha256"],
+            semble_model_asset_sha256,
+            "Semble model asset digest",
+        ),
     ):
         if observed is not None and expected != observed:
             raise RunError(f"qualification admission {label} mismatch")
@@ -1440,8 +1514,15 @@ def load_spec(path: Path) -> dict:
     unknown = sorted(set(spec) - set(SPEC_REQUIRED) - set(SPEC_OPTIONAL))
     if unknown:
         raise RunError(f"spec has unknown keys: {unknown}")
-    for key in ("repo", "manifest", "suite", "query_pack", "output_root", "runner_binary",
-                "searchd_binary"):
+    for key in (
+        "repo",
+        "manifest",
+        "suite",
+        "query_pack",
+        "output_root",
+        "runner_binary",
+        "searchd_binary",
+    ):
         if not isinstance(spec[key], str) or not spec[key]:
             raise RunError(f"spec.{key} must be a nonempty string")
     _spec_int(spec, "top_k", 1)
@@ -1453,16 +1534,16 @@ def load_spec(path: Path) -> dict:
     for entry in strategies:
         if not isinstance(entry, dict):
             raise RunError("spec.strategies entries must be objects")
-        unknown_entry = sorted(set(entry) - {"name", "window_bytes", "overlap_bytes",
-                                              "max_item_bytes"})
+        unknown_entry = sorted(
+            set(entry) - {"name", "window_bytes", "overlap_bytes", "max_item_bytes"}
+        )
         if unknown_entry:
             raise RunError(f"strategy has unknown keys: {unknown_entry}")
         if entry.get("name") not in RUNNABLE_STRATEGIES:
             raise RunError(f"unknown strategy: {entry.get('name')}")
         for key, minimum in (("window_bytes", 1), ("overlap_bytes", 0), ("max_item_bytes", 1)):
             if key in entry and (
-                type(entry[key]) is not int or isinstance(entry[key], bool)
-                or entry[key] < minimum
+                type(entry[key]) is not int or isinstance(entry[key], bool) or entry[key] < minimum
             ):
                 raise RunError(f"strategy.{key} must be an integer >= {minimum}")
     if "routes" in spec:
@@ -1479,19 +1560,40 @@ def load_spec(path: Path) -> dict:
     if "embedder" in spec and spec["embedder"] not in ("potion-code", "hash-dev"):
         raise RunError("spec.embedder must be potion-code or hash-dev")
     if "cache_regime" in spec and spec["cache_regime"] not in (
-        "true_process_cold", "warm_cache", "undeclared",
+        "true_process_cold",
+        "warm_cache",
+        "undeclared",
     ):
         raise RunError("spec.cache_regime must be true_process_cold, warm_cache or undeclared")
-    for key, minimum in (("generation", 0), ("seed", 0), ("timeout_secs", 1),
-                         ("repetitions", 1), ("semble_repetitions", 1)):
+    for key, minimum in (
+        ("generation", 0),
+        ("seed", 0),
+        ("timeout_secs", 1),
+        ("repetitions", 1),
+        ("semble_repetitions", 1),
+        ("semble_warmup_passes", 0),
+    ):
         if key in spec:
             _spec_int(spec, key, minimum)
     if "alternate_order" in spec and type(spec["alternate_order"]) is not bool:
         raise RunError("spec.alternate_order must be a boolean")
-    for key in ("suite_secret_root", "isolation_method", "access_block_log", "run_id", "runner_name", "repo_id",
-                "revision_id", "semble_route", "semble_python", "semble_cache_root",
-                "quanta_model_dir",
-                "semble_lockfile", "baseline_route", "candidate_route", "host_profile"):
+    for key in (
+        "suite_secret_root",
+        "isolation_method",
+        "access_block_log",
+        "run_id",
+        "runner_name",
+        "repo_id",
+        "revision_id",
+        "semble_route",
+        "semble_python",
+        "semble_cache_root",
+        "quanta_model_dir",
+        "semble_lockfile",
+        "baseline_route",
+        "candidate_route",
+        "host_profile",
+    ):
         if key in spec and (not isinstance(spec[key], str) or not spec[key]):
             raise RunError(f"spec.{key} must be a nonempty string")
     if "semble_lockfile_sha256" in spec and not _is_hex(spec["semble_lockfile_sha256"], 64):
@@ -1519,9 +1621,7 @@ def load_spec(path: Path) -> dict:
             if not isinstance(value, str) or not value:
                 raise RunError(f"spec.receipts.{key} must be a nonempty path")
     if "admission" in spec:
-        admission = _exact_keys(
-            spec["admission"], set(ADMISSION_KEYS), "spec.admission"
-        )
+        admission = _exact_keys(spec["admission"], set(ADMISSION_KEYS), "spec.admission")
         for key in ("manifest", "license_receipt", "adjudication_receipt"):
             if not isinstance(admission[key], str) or not admission[key]:
                 raise RunError(f"spec.admission.{key} must be a nonempty path")
@@ -1553,9 +1653,7 @@ def preflight_capture(spec: dict) -> Path:
         if not isinstance(materialized, dict):
             raise RunError("materialized corpus context must be an object")
         repo = Path(spec["repo"]).resolve()
-        _verify_materialized_corpus(
-            repo, Path(spec["manifest"]), materialized.get("proof_sha256")
-        )
+        _verify_materialized_corpus(repo, Path(spec["manifest"]), materialized.get("proof_sha256"))
     else:
         try:
             repo = verify_repo(Path(spec["repo"]), manifest["repository_commit"])
@@ -1592,9 +1690,7 @@ def cmd_quanta(args: argparse.Namespace) -> int:
         return 2
 
 
-def write_projected_pack(
-    pack_path: Path, suite_path: Path, routes: list[str], out: Path
-) -> Path:
+def write_projected_pack(pack_path: Path, suite_path: Path, routes: list[str], out: Path) -> Path:
     """Freeze-consumer projection: pack+suite narrowed to one system's routes."""
     pack = read_json(pack_path)
     suite = read_json(suite_path)
@@ -1678,25 +1774,47 @@ def run_quanta_strategy(
     command = [
         spec["runner_binary"],
         "run",
-        "--repo", spec["repo"],
-        "--manifest", spec["manifest"],
-        "--query-pack", str(pack_path),
-        "--strategy", name,
-        "--routes", ",".join(routes),
-        "--top-k", str(spec["top_k"]),
-        "--state-root", str(state_root),
-        "--repo-id", spec.get("repo_id", "bench-repo"),
-        "--revision-id", spec.get("revision_id", "bench-rev"),
-        "--generation", str(spec.get("generation", 7)),
-        "--embedder", spec.get("embedder", "potion-code"),
-        "--runner-name", spec.get("runner_name", "quanta-sdk-runner"),
-        "--runner-revision", f"sha256:{runner_binary_sha256}",
-        "--run-id", f"{spec.get('run_id', 'run')}-{name}",
-        "--blinding", spec.get("blinding", "attested"),
-        "--isolation-method", spec.get("isolation_method", "attested-only: same-checkout pack consumer"),
-        "--access-block-log", spec.get("access_block_log", "attested-only: no suite path is passed to the runner; pack blindness verified by freeze"),
-        "--metrics-out", str(phase_path),
-        "--out", str(record_path),
+        "--repo",
+        spec["repo"],
+        "--manifest",
+        spec["manifest"],
+        "--query-pack",
+        str(pack_path),
+        "--strategy",
+        name,
+        "--routes",
+        ",".join(routes),
+        "--top-k",
+        str(spec["top_k"]),
+        "--state-root",
+        str(state_root),
+        "--repo-id",
+        spec.get("repo_id", "bench-repo"),
+        "--revision-id",
+        spec.get("revision_id", "bench-rev"),
+        "--generation",
+        str(spec.get("generation", 7)),
+        "--embedder",
+        spec.get("embedder", "potion-code"),
+        "--runner-name",
+        spec.get("runner_name", "quanta-sdk-runner"),
+        "--runner-revision",
+        f"sha256:{runner_binary_sha256}",
+        "--run-id",
+        f"{spec.get('run_id', 'run')}-{name}",
+        "--blinding",
+        spec.get("blinding", "attested"),
+        "--isolation-method",
+        spec.get("isolation_method", "attested-only: same-checkout pack consumer"),
+        "--access-block-log",
+        spec.get(
+            "access_block_log",
+            "attested-only: no suite path is passed to the runner; pack blindness verified by freeze",
+        ),
+        "--metrics-out",
+        str(phase_path),
+        "--out",
+        str(record_path),
     ]
     command += ["--searchd-bin", spec["searchd_binary"]]
     command += ["--searchd-expected-sha256", spec["searchd_expected_sha256"]]
@@ -1724,27 +1842,39 @@ def run_quanta_strategy(
     )
     if resource["timed_out"]:
         write_process_failure(
-            run_dir, system="quanta", strategy=name, failure_type="timeout",
-            resource_path=resource_path, stderr_path=run_dir / "runner.stderr.log",
+            run_dir,
+            system="quanta",
+            strategy=name,
+            failure_type="timeout",
+            resource_path=resource_path,
+            stderr_path=run_dir / "runner.stderr.log",
             record_path=record_path,
         )
         raise RunError(f"Rust runner timed out for {name}")
     if resource["exit_code"] != 0:
         write_process_failure(
-            run_dir, system="quanta", strategy=name, failure_type="nonzero_exit",
-            resource_path=resource_path, stderr_path=run_dir / "runner.stderr.log",
+            run_dir,
+            system="quanta",
+            strategy=name,
+            failure_type="nonzero_exit",
+            resource_path=resource_path,
+            stderr_path=run_dir / "runner.stderr.log",
             record_path=record_path,
         )
-        stderr_tail = (run_dir / "runner.stderr.log").read_text(
-            encoding="utf-8", errors="replace"
-        )[-2000:]
+        stderr_tail = (run_dir / "runner.stderr.log").read_text(encoding="utf-8", errors="replace")[
+            -2000:
+        ]
         raise RunError(
             f"Rust runner failed for {name} (exit {resource['exit_code']}): {stderr_tail}"
         )
     if not phase_path.is_file():
         write_process_failure(
-            run_dir, system="quanta", strategy=name, failure_type="missing_phase_metrics",
-            resource_path=resource_path, stderr_path=run_dir / "runner.stderr.log",
+            run_dir,
+            system="quanta",
+            strategy=name,
+            failure_type="missing_phase_metrics",
+            resource_path=resource_path,
+            stderr_path=run_dir / "runner.stderr.log",
             record_path=record_path,
         )
         raise RunError(f"Rust runner omitted phase metrics for {name}")
@@ -1753,16 +1883,19 @@ def run_quanta_strategy(
     if not isinstance(phase, dict):
         raise RunError(f"Rust runner phase metrics are not an object for {name}")
     model_dir = Path(spec["quanta_model_dir"]) if "quanta_model_dir" in spec else None
-    bind_storage_metrics(resource_path, {
-        "index_bytes": index_bytes,
-        "model_cache_bytes": tree_size(model_dir) if model_dir is not None else 0,
-        "parser_cache_bytes": 0,
-        "embedding_cache_bytes": 0,
-        "discovered_files": phase.get("file_count"),
-        "indexed_chunks": phase.get("chunk_count"),
-        "index_storage": "disk",
-        "index_measurement": "filesystem_tree_v1",
-    })
+    bind_storage_metrics(
+        resource_path,
+        {
+            "index_bytes": index_bytes,
+            "model_cache_bytes": tree_size(model_dir) if model_dir is not None else 0,
+            "parser_cache_bytes": 0,
+            "embedding_cache_bytes": 0,
+            "discovered_files": phase.get("file_count"),
+            "indexed_chunks": phase.get("chunk_count"),
+            "index_storage": "disk",
+            "index_measurement": "filesystem_tree_v1",
+        },
+    )
     return {
         "strategy": name,
         "strategy_config": strategy,
@@ -1811,9 +1944,19 @@ def _resolve_artifact(root: Path, ref: object, where: str) -> Path:
 def _validate_manifest_shape(payload: object) -> dict:
     manifest = _exact_keys(
         payload,
-        {"manifest_version", "blinding", "isolation_method", "access_block_log",
-         "scope", "claims", "repetitions", "evidence", "host", "artifacts",
-         "provenance"},
+        {
+            "manifest_version",
+            "blinding",
+            "isolation_method",
+            "access_block_log",
+            "scope",
+            "claims",
+            "repetitions",
+            "evidence",
+            "host",
+            "artifacts",
+            "provenance",
+        },
         "run manifest",
     )
     if manifest["manifest_version"] != MANIFEST_VERSION:
@@ -1826,7 +1969,8 @@ def _validate_manifest_shape(payload: object) -> dict:
     if manifest["scope"] not in ("exploratory", "qualified"):
         raise RunError("run manifest scope must be exploratory or qualified")
     claims = _exact_keys(
-        manifest["claims"], {"quality", "speed", "same_model", "incremental"},
+        manifest["claims"],
+        {"quality", "speed", "same_model", "incremental"},
         "run manifest claims",
     )
     for key, value in claims.items():
@@ -1838,9 +1982,11 @@ def _validate_manifest_shape(payload: object) -> dict:
     evidence = manifest["evidence"]
     if not isinstance(evidence, dict):
         raise RunError("run manifest evidence must be an object")
-    if not {"pair", "perf"} <= set(evidence) <= {
-        "pair", "perf", "contract_suites", "sdk_path", "model_parity", "incremental"
-    }:
+    if (
+        not {"pair", "perf"}
+        <= set(evidence)
+        <= {"pair", "perf", "contract_suites", "sdk_path", "model_parity", "incremental"}
+    ):
         raise RunError("run manifest evidence holds missing/unknown keys")
     pair = _exact_keys(evidence["pair"], {"mapping_proof_digest"}, "manifest pair evidence")
     if not _is_hex(pair["mapping_proof_digest"], 64):
@@ -1862,7 +2008,8 @@ def _validate_manifest_shape(payload: object) -> dict:
         )
         for side in ("python", "rust"):
             claim = _exact_keys(
-                suites[side], {"test_result_digest", "raw_evidence_digest"},
+                suites[side],
+                {"test_result_digest", "raw_evidence_digest"},
                 f"manifest {side} claim",
             )
             for key in ("test_result_digest", "raw_evidence_digest"):
@@ -1871,8 +2018,15 @@ def _validate_manifest_shape(payload: object) -> dict:
     if "sdk_path" in evidence:
         sdk = _exact_keys(
             evidence["sdk_path"],
-            {"test_result_digest", "separate_process", "sealed_receipt", "activation_ack",
-             "empty_check", "nextest_digest", "runner_record_digest"},
+            {
+                "test_result_digest",
+                "separate_process",
+                "sealed_receipt",
+                "activation_ack",
+                "empty_check",
+                "nextest_digest",
+                "runner_record_digest",
+            },
             "manifest sdk evidence",
         )
         for key in ("test_result_digest", "nextest_digest", "runner_record_digest"):
@@ -1887,7 +2041,8 @@ def _validate_manifest_shape(payload: object) -> dict:
             if not _is_hex(claim["test_result_digest"], 64):
                 raise RunError(f"manifest {key} test_result_digest must be a lowercase sha256")
     host = _exact_keys(
-        manifest["host"], {"start_digest", "end_digest", "cache_regime"}, "manifest host")
+        manifest["host"], {"start_digest", "end_digest", "cache_regime"}, "manifest host"
+    )
     for key in ("start_digest", "end_digest"):
         if not _is_hex(host[key], 64):
             raise RunError(f"manifest host {key} must be a lowercase sha256")
@@ -1896,14 +2051,29 @@ def _validate_manifest_shape(payload: object) -> dict:
     artifacts = manifest["artifacts"]
     if not isinstance(artifacts, dict):
         raise RunError("run manifest artifacts must be an object")
-    required_artifacts = {"suite", "query_pack", "corpus_manifest", "mapping_proof",
-                          "latency_matrix", "host_start", "host_end", "records",
-                          "host_profile",
-                          "reports", "quanta_manifests", "semble_adapter_manifest",
-                          "semble_lockfile", "semble_native", "phase_metrics",
-                          "resource_metrics", "protocol_lock"}
+    required_artifacts = {
+        "suite",
+        "query_pack",
+        "corpus_manifest",
+        "mapping_proof",
+        "latency_matrix",
+        "host_start",
+        "host_end",
+        "records",
+        "host_profile",
+        "reports",
+        "quanta_manifests",
+        "semble_adapter_manifest",
+        "semble_lockfile",
+        "semble_native",
+        "phase_metrics",
+        "resource_metrics",
+        "protocol_lock",
+    }
     admission_artifacts = {
-        "admission_manifest", "license_receipt", "annotation_receipts",
+        "admission_manifest",
+        "license_receipt",
+        "annotation_receipts",
         "adjudication_receipt",
     }
     optional_artifacts = set(RECEIPT_KEYS) | {"isolation_proof"} | admission_artifacts
@@ -1918,8 +2088,15 @@ def _validate_manifest_shape(payload: object) -> dict:
         if key not in artifacts:
             continue
         value = artifacts[key]
-        if key in ("records", "reports", "quanta_manifests", "semble_native",
-                   "phase_metrics", "resource_metrics", "annotation_receipts"):
+        if key in (
+            "records",
+            "reports",
+            "quanta_manifests",
+            "semble_native",
+            "phase_metrics",
+            "resource_metrics",
+            "annotation_receipts",
+        ):
             if not isinstance(value, list) or not all(
                 isinstance(ref, str) and ref for ref in value
             ):
@@ -1943,7 +2120,8 @@ def _validate_manifest_shape(payload: object) -> dict:
     elif admission_digest is not None:
         raise RunError("exploratory manifest admission digest must be null")
     quanta = _exact_keys(
-        provenance["quanta"], {"source_sha", "binary_digest", "embedder"}, "manifest quanta")
+        provenance["quanta"], {"source_sha", "binary_digest", "embedder"}, "manifest quanta"
+    )
     if not _is_hex(quanta["source_sha"], 40) or not _is_hex(quanta["binary_digest"], 64):
         raise RunError("manifest quanta provenance digests malformed")
     if quanta["embedder"] not in ("potion-code", "hash-dev"):
@@ -1965,7 +2143,8 @@ def _validate_manifest_shape(payload: object) -> dict:
         if not _is_hex(corpus[key], 64):
             raise RunError(f"manifest corpus {key} must be a lowercase sha256")
     suite_prov = _exact_keys(
-        provenance["suite"], {"suite_digest", "query_pack_digest", "tokenizer_budget_version"},
+        provenance["suite"],
+        {"suite_digest", "query_pack_digest", "tokenizer_budget_version"},
         "manifest suite",
     )
     for key in ("suite_digest", "query_pack_digest"):
@@ -1974,8 +2153,7 @@ def _validate_manifest_shape(payload: object) -> dict:
     if suite_prov["tokenizer_budget_version"] != TOKENIZER_BUDGET_VERSION:
         raise RunError("manifest suite tokenizer budget version mismatch")
     host_prov = _exact_keys(
-        provenance["host"], {"profile_digest", "check_record_digest"},
-        "manifest host provenance"
+        provenance["host"], {"profile_digest", "check_record_digest"}, "manifest host provenance"
     )
     for key in ("profile_digest", "check_record_digest"):
         if not _is_hex(host_prov[key], 64):
@@ -1983,9 +2161,7 @@ def _validate_manifest_shape(payload: object) -> dict:
     return manifest
 
 
-def _validate_single_record(
-    repo: Path, suite: dict, pack: dict, path: Path
-) -> dict:
+def _validate_single_record(repo: Path, suite: dict, pack: dict, path: Path) -> dict:
     """Validate one raw v3 record against its re-derived projected pack."""
     raw = read_json(path)
     if not isinstance(raw, dict):
@@ -2050,16 +2226,42 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
     system = payload.get("system")
     system_key = "runner_binary_sha256" if system == "quanta" else "worker_sha256"
     expected_phases = (
-        {"discovery", "chunk", "model_provider_prepare",
-         "embed_publish_seal_activate", "first_query", "warm_query", "unattributed"}
+        {
+            "discovery",
+            "chunk",
+            "model_provider_prepare",
+            "embed_publish_seal_activate",
+            "first_query",
+            "warm_query",
+            "unattributed",
+        }
         if system == "quanta"
-        else {"discovery", "model_provider_prepare", "index", "warmup",
-              "first_query", "warm_query", "unattributed"}
+        else {
+            "discovery",
+            "model_provider_prepare",
+            "index",
+            "warmup",
+            "first_query",
+            "warm_query",
+            "unattributed",
+        }
     )
     metric_keys = {
-        "schema_version", "system", "timing_layer", "strategy", "record_sha256",
-        system_key, "task_count", "route_count", "file_count", "chunk_count",
-        "phases_ms", "total_ms",
+        "schema_version",
+        "system",
+        "timing_layer",
+        "strategy",
+        "record_sha256",
+        system_key,
+        "task_count",
+        "route_count",
+        "file_count",
+        "chunk_count",
+        "query_schedule",
+        "warmup_passes",
+        "measurement_repetitions",
+        "phases_ms",
+        "total_ms",
     }
     if system == "semble":
         metric_keys.add("phase_boundaries_ns")
@@ -2083,6 +2285,21 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
     for key in ("task_count", "route_count", "file_count", "chunk_count"):
         if type(metrics[key]) is not int or metrics[key] < 1:
             raise RunError(f"{where}.{key} must be an integer >= 1")
+    schedule = metrics["query_schedule"]
+    if (
+        not isinstance(schedule, list)
+        or len(schedule) != metrics["task_count"]
+        or len(set(schedule)) != len(schedule)
+        or any(not isinstance(task_id, str) or not task_id for task_id in schedule)
+    ):
+        raise RunError(f"{where}.query_schedule must list each task exactly once")
+    if type(metrics["warmup_passes"]) is not int or metrics["warmup_passes"] < 0:
+        raise RunError(f"{where}.warmup_passes must be nonnegative")
+    if (
+        type(metrics["measurement_repetitions"]) is not int
+        or metrics["measurement_repetitions"] < 1
+    ):
+        raise RunError(f"{where}.measurement_repetitions must be positive")
     phases = _exact_keys(metrics["phases_ms"], expected_phases, f"{where}.phases_ms")
     for key, value in phases.items():
         if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
@@ -2095,17 +2312,33 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
     if system == "semble":
         boundaries = _exact_keys(
             metrics["phase_boundaries_ns"],
-            {"worker_start", "discovery_end", "model_provider_prepare_end", "index_end",
-             "warmup_end", "query_start", "first_query_start", "first_query_end",
-             "query_end", "worker_end"},
+            {
+                "worker_start",
+                "discovery_end",
+                "model_provider_prepare_end",
+                "index_end",
+                "warmup_end",
+                "query_start",
+                "first_query_start",
+                "first_query_end",
+                "query_end",
+                "worker_end",
+            },
             f"{where}.phase_boundaries_ns",
         )
         ordered = [
             boundaries[key]
             for key in (
-                "worker_start", "discovery_end", "model_provider_prepare_end", "index_end",
-                "warmup_end", "query_start", "first_query_start", "first_query_end",
-                "query_end", "worker_end",
+                "worker_start",
+                "discovery_end",
+                "model_provider_prepare_end",
+                "index_end",
+                "warmup_end",
+                "query_start",
+                "first_query_start",
+                "first_query_end",
+                "query_end",
+                "worker_end",
             )
         ]
         if any(type(value) is not int or value < 0 for value in ordered):
@@ -2116,18 +2349,18 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
             "discovery": (boundaries["discovery_end"] - boundaries["worker_start"]) / 1e6,
             "model_provider_prepare": (
                 boundaries["model_provider_prepare_end"] - boundaries["discovery_end"]
-            ) / 1e6,
-            "index": (
-                boundaries["index_end"] - boundaries["model_provider_prepare_end"]
-            ) / 1e6,
+            )
+            / 1e6,
+            "index": (boundaries["index_end"] - boundaries["model_provider_prepare_end"]) / 1e6,
             "warmup": (boundaries["warmup_end"] - boundaries["index_end"]) / 1e6,
-            "first_query": (
-                boundaries["first_query_end"] - boundaries["first_query_start"]
-            ) / 1e6,
+            "first_query": (boundaries["first_query_end"] - boundaries["first_query_start"]) / 1e6,
             "warm_query": (
-                boundaries["query_end"] - boundaries["query_start"]
-                - boundaries["first_query_end"] + boundaries["first_query_start"]
-            ) / 1e6,
+                boundaries["query_end"]
+                - boundaries["query_start"]
+                - boundaries["first_query_end"]
+                + boundaries["first_query_start"]
+            )
+            / 1e6,
         }
         derived["unattributed"] = (
             boundaries["worker_end"] - boundaries["worker_start"]
@@ -2139,11 +2372,27 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
 
 
 def _validate_resource_metrics(payload: object, where: str) -> dict:
-    keys = {"schema_version", "sampler", "sample_interval_ms", "command_sha256", "root_pid",
-            "subject_sha256", "exit_code", "timed_out", "elapsed_ms", "peak_rss_bytes",
-            "peak_cpu_percent", "processes", "storage",
-            "samples", "complete", "error", "cleanup_complete", "cleanup_escalated",
-            "cleanup_error"}
+    keys = {
+        "schema_version",
+        "sampler",
+        "sample_interval_ms",
+        "command_sha256",
+        "root_pid",
+        "subject_sha256",
+        "exit_code",
+        "timed_out",
+        "elapsed_ms",
+        "peak_rss_bytes",
+        "peak_cpu_percent",
+        "processes",
+        "storage",
+        "samples",
+        "complete",
+        "error",
+        "cleanup_complete",
+        "cleanup_escalated",
+        "cleanup_error",
+    }
     if not isinstance(payload, dict) or set(payload) not in (keys, keys | {"isolation"}):
         raise RunError(f"{where} must hold the exact resource metric fields")
     metrics = payload
@@ -2197,13 +2446,19 @@ def _validate_resource_metrics(payload: object, where: str) -> dict:
             raise RunError(f"{where}.processes[{index}].peak_cpu_percent is invalid")
     storage = _exact_keys(
         metrics["storage"],
-        {"index_bytes", "model_cache_bytes", "parser_cache_bytes",
-         "embedding_cache_bytes", "discovered_files", "indexed_chunks",
-         "index_storage", "index_measurement"},
+        {
+            "index_bytes",
+            "model_cache_bytes",
+            "parser_cache_bytes",
+            "embedding_cache_bytes",
+            "discovered_files",
+            "indexed_chunks",
+            "index_storage",
+            "index_measurement",
+        },
         f"{where}.storage",
     )
-    for key in ("index_bytes", "model_cache_bytes", "parser_cache_bytes",
-                "embedding_cache_bytes"):
+    for key in ("index_bytes", "model_cache_bytes", "parser_cache_bytes", "embedding_cache_bytes"):
         if type(storage[key]) is not int or storage[key] < 0:
             raise RunError(f"{where}.storage.{key} must be nonnegative")
     for key in ("discovered_files", "indexed_chunks"):
@@ -2212,8 +2467,7 @@ def _validate_resource_metrics(payload: object, where: str) -> dict:
     if storage["index_storage"] not in ("disk", "memory"):
         raise RunError(f"{where}.storage.index_storage is invalid")
     expected_measurement = (
-        "filesystem_tree_v1" if storage["index_storage"] == "disk"
-        else "process_peak_rss_delta_v1"
+        "filesystem_tree_v1" if storage["index_storage"] == "disk" else "process_peak_rss_delta_v1"
     )
     if storage["index_measurement"] != expected_measurement:
         raise RunError(f"{where}.storage.index_measurement is invalid")
@@ -2232,7 +2486,8 @@ def _validate_resource_metrics(payload: object, where: str) -> dict:
     isolation = metrics.get("isolation")
     if isolation is not None:
         proof = _exact_keys(
-            isolation, {"backend", "profile_sha256", "proof_sha256"},
+            isolation,
+            {"backend", "profile_sha256", "proof_sha256"},
             f"{where}.isolation",
         )
         if proof["backend"] != ISOLATION_BACKEND:
@@ -2255,16 +2510,25 @@ def _validate_isolation_proof(
 ) -> dict:
     proof = _exact_keys(
         payload,
-        {"schema_version", "backend", "sandbox_exec", "profile_sha256",
-         "denied_roots", "allowed_read_roots", "allowed_write_roots",
-         "suite", "query_pack", "corpus_view", "probes"},
+        {
+            "schema_version",
+            "backend",
+            "sandbox_exec",
+            "profile_sha256",
+            "denied_roots",
+            "allowed_read_roots",
+            "allowed_write_roots",
+            "suite",
+            "query_pack",
+            "corpus_view",
+            "runner_tools",
+            "probes",
+        },
         "isolation proof",
     )
     if proof["schema_version"] != 1 or proof["backend"] != ISOLATION_BACKEND:
         raise RunError("isolation proof schema/backend mismatch")
-    backend = _exact_keys(
-        proof["sandbox_exec"], {"path", "sha256"}, "isolation proof sandbox_exec"
-    )
+    backend = _exact_keys(proof["sandbox_exec"], {"path", "sha256"}, "isolation proof sandbox_exec")
     if backend["path"] != str(SANDBOX_EXEC) or not _is_hex(backend["sha256"], 64):
         raise RunError("isolation proof sandbox executable identity is malformed")
     if not SANDBOX_EXEC.is_file() or sha_file(SANDBOX_EXEC) != backend["sha256"]:
@@ -2277,6 +2541,7 @@ def _validate_isolation_proof(
         or any(not isinstance(path, str) or not Path(path).is_absolute() for path in roots)
     ):
         raise RunError("isolation proof denied_roots must be sorted unique absolute paths")
+
     def absolute_roots(key: str) -> list[str]:
         values = proof[key]
         if (
@@ -2298,7 +2563,8 @@ def _validate_isolation_proof(
     capture_paths: dict[str, Path] = {}
     for key, actual_path in (("suite", suite_path), ("query_pack", pack_path)):
         entry = _exact_keys(
-            proof[key], {"path", "capture_path", "sha256"},
+            proof[key],
+            {"path", "capture_path", "sha256"},
             f"isolation proof {key}",
         )
         if _resolve_artifact(root, entry["path"], f"isolation proof {key}.path") != actual_path:
@@ -2334,8 +2600,17 @@ def _validate_isolation_proof(
     )
     if corpus_view["file_count"] != len(materialized["files"]):
         raise RunError("isolation proof corpus file count mismatch")
+    runner_tools = proof["runner_tools"]
+    if not isinstance(runner_tools, list) or len(runner_tools) != 2:
+        raise RunError("isolation proof runner_tools must bind two files")
+    for index, entry in enumerate(runner_tools):
+        row = _exact_keys(entry, {"path", "sha256"}, f"isolation proof runner_tools[{index}]")
+        tool_path = _resolve_artifact(root, row["path"], "isolation proof runner tool")
+        if not _is_hex(row["sha256"], 64) or sha_file(tool_path) != row["sha256"]:
+            raise RunError("isolation proof runner tool digest mismatch")
     probes = _exact_keys(
-        proof["probes"], {"suite_read_denied", "query_pack_read_allowed"},
+        proof["probes"],
+        {"suite_read_denied", "query_pack_read_allowed"},
         "isolation proof probes",
     )
     if probes != {"suite_read_denied": True, "query_pack_read_allowed": True}:
@@ -2394,15 +2669,29 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     manifest = _validate_manifest_shape(read_json(manifest_path))
     artifacts = manifest["artifacts"]
     resolved: dict[str, object] = {}
-    for key in ("suite", "query_pack", "corpus_manifest", "mapping_proof",
-                "latency_matrix", "host_start", "host_end", "host_profile",
-                "semble_adapter_manifest", "semble_lockfile", "protocol_lock"):
+    for key in (
+        "suite",
+        "query_pack",
+        "corpus_manifest",
+        "mapping_proof",
+        "latency_matrix",
+        "host_start",
+        "host_end",
+        "host_profile",
+        "semble_adapter_manifest",
+        "semble_lockfile",
+        "protocol_lock",
+    ):
         resolved[key] = _resolve_artifact(root, artifacts[key], f"artifacts.{key}")
-    for key in ("records", "reports", "quanta_manifests", "semble_native",
-                "phase_metrics", "resource_metrics"):
-        resolved[key] = [
-            _resolve_artifact(root, ref, f"artifacts.{key}") for ref in artifacts[key]
-        ]
+    for key in (
+        "records",
+        "reports",
+        "quanta_manifests",
+        "semble_native",
+        "phase_metrics",
+        "resource_metrics",
+    ):
+        resolved[key] = [_resolve_artifact(root, ref, f"artifacts.{key}") for ref in artifacts[key]]
     for key in RECEIPT_KEYS:
         if key in artifacts:
             resolved[key] = _resolve_artifact(root, artifacts[key], f"artifacts.{key}")
@@ -2485,16 +2774,22 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             pair_note("protocol_lock_pack_drift", ("T12",))
         if protocol_payload.get("corpus_manifest_digest") != corpus_digest:
             pair_note("protocol_lock_corpus_drift", ("T12",))
-        if protocol_payload.get("admission_digest") != provenance_claims["admission"][
-            "manifest_digest"
-        ]:
+        if (
+            protocol_payload.get("admission_digest")
+            != provenance_claims["admission"]["manifest_digest"]
+        ):
             pair_note("protocol_lock_admission_drift", ("T17",))
     if isinstance(corpus_payload, dict) and isinstance(mapping_payload, dict):
         if not mapping_matches_manifest(mapping_payload, corpus_payload):
             pair_note("mapping_proof_not_clean", ("T00", "T11", "T12"), "corpus_mismatch")
-        if mapping_payload.get("diff_digest") != provenance_claims["corpus"]["path_sha_diff_digest"]:
+        if (
+            mapping_payload.get("diff_digest")
+            != provenance_claims["corpus"]["path_sha_diff_digest"]
+        ):
             pair_note("path_sha_diff_digest_mismatch", ("T00", "T11"))
-        pack_commit = pack_payload.get("repository_commit") if isinstance(pack_payload, dict) else None
+        pack_commit = (
+            pack_payload.get("repository_commit") if isinstance(pack_payload, dict) else None
+        )
         commits = {corpus_payload.get("repository_commit"), pack_commit, suite["repository_commit"]}
         if len(commits) != 1 or None in commits:
             pair_note("commit_mismatch", ("T00", "T12"), "corpus_mismatch")
@@ -2571,7 +2866,8 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         for strategy in sorted(quanta_by_strategy):
             try:
                 _suite, _pack, merged = merge_records(
-                    repo, resolved["suite"],
+                    repo,
+                    resolved["suite"],
                     [Path(quanta_by_strategy[strategy]), Path(semble_rep0)],
                 )
             except (RunError, ValueError):
@@ -2591,8 +2887,11 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             continue
         strategy = hits[0]
         merged, merged_digest = combos[strategy]
-        comparison = content.get("rank_metrics", {}).get("comparison", {}) \
-            if isinstance(content.get("rank_metrics"), dict) else {}
+        comparison = (
+            content.get("rank_metrics", {}).get("comparison", {})
+            if isinstance(content.get("rank_metrics"), dict)
+            else {}
+        )
         try:
             rescored = evaluate(
                 suite, pack, merged, comparison.get("baseline"), comparison.get("candidate")
@@ -2608,17 +2907,20 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         if primary_delta == "not_applicable":
             primary_delta = None
         report_digest = sha_note(path, "report_bytes", ("T13",))
-        matched.append({
-            "strategy": strategy,
-            "baseline_route": rank_comparison["baseline"],
-            "candidate_route": rank_comparison["candidate"],
-            "primary_metric": rank_comparison["primary_metric"],
-            "primary_delta": primary_delta,
-            "record_digest": merged_digest,
-            "report_digest": report_digest,
-            "graded": bool(rescored.get("graded")),
-            "report_sha": digest(canonical(content)),
-        })
+        matched.append(
+            {
+                "strategy": strategy,
+                "baseline_route": rank_comparison["baseline"],
+                "candidate_route": rank_comparison["candidate"],
+                "primary_metric": rank_comparison["primary_metric"],
+                "primary_delta": primary_delta,
+                "record_digest": merged_digest,
+                "report_digest": report_digest,
+                "graded": bool(rescored.get("graded")),
+                "primary_delta_ci_95": rank_comparison["primary_delta_ci_95"],
+                "report_sha": digest(canonical(content)),
+            }
+        )
     for strategy in quanta_by_strategy:
         if strategy not in {entry["strategy"] for entry in matched}:
             pair_note(f"strategy_without_report:{strategy}", ("T12", "T13"))
@@ -2643,10 +2945,19 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     record_digests = {sha_file(Path(path)) for path in resolved["records"]}
     phase_record_digests: list[str] = []
     phase_ok = len(resolved["phase_metrics"]) == len(resolved["records"])
+    expected_query_schedule = [task["task_id"] for task in pack["tasks"]]
     for path in resolved["phase_metrics"]:
         try:
             metrics = _validate_phase_metrics(read_json(Path(path)), f"phase metrics {path}")
             phase_record_digests.append(metrics["record_sha256"])
+            if metrics["query_schedule"] != expected_query_schedule:
+                phase_ok = False
+            if (
+                manifest["scope"] == "qualified"
+                and claims["speed"]
+                and (metrics["warmup_passes"] != 0 or metrics["measurement_repetitions"] != 1)
+            ):
+                phase_ok = False
         except (RunError, ValueError, OSError):
             phase_ok = False
     if set(phase_record_digests) != record_digests or len(phase_record_digests) != len(
@@ -2660,9 +2971,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     resource_isolation: list[dict | None] = []
     for path in resolved["resource_metrics"]:
         try:
-            metrics = _validate_resource_metrics(
-                read_json(Path(path)), f"resource metrics {path}"
-            )
+            metrics = _validate_resource_metrics(read_json(Path(path)), f"resource metrics {path}")
             resource_subject_digests.append(metrics["subject_sha256"])
             if metrics["subject_sha256"] in resource_by_subject:
                 resource_ok = False
@@ -2700,8 +3009,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 raise RunError("Semble native artifact lacks index statistics")
             if (
                 stats.get("index_resident_bytes") != metrics["storage"]["index_bytes"]
-                or stats.get("index_measurement")
-                != metrics["storage"]["index_measurement"]
+                or stats.get("index_measurement") != metrics["storage"]["index_measurement"]
             ):
                 raise RunError("Semble index memory attribution differs from native evidence")
         except (KeyError, RunError, ValueError, OSError):
@@ -2788,7 +3096,10 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             pair_note("adapter_lockfile_mismatch", ("T11",))
         if lockfile_digest != provenance_claims["semble"]["lockfile_digest"]:
             pair_note("lockfile_digest_mismatch", ("T11",))
-        if adapter.get("interpreter", {}).get("digest") != provenance_claims["semble"]["interpreter_digest"]:
+        if (
+            adapter.get("interpreter", {}).get("digest")
+            != provenance_claims["semble"]["interpreter_digest"]
+        ):
             pair_note("interpreter_digest_mismatch", ("T11",))
         if adapter.get("model_asset_digest") != provenance_claims["semble"]["model_asset_digest"]:
             pair_note("model_asset_digest_mismatch", ("T11",))
@@ -2831,9 +3142,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 raise RunError("qualified verdict lacks the Semble adapter manifest")
             receipt_paths = {
                 key: resolved[key]
-                for key in (
-                    "contract_python_receipt", "contract_rust_receipt", "sdk_receipt"
-                )
+                for key in ("contract_python_receipt", "contract_rust_receipt", "sdk_receipt")
                 if key in resolved
             }
             admission_evidence = verify_admission_bundle(
@@ -2863,8 +3172,13 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     # pair never silently compares a system that failed to observe a query.
     for _path, entry in validated.items():
         rows = entry["run"].get("results", [])
-        bad = sorted({row["task_id"] for row in rows
-                      if row.get("status") in ("error", "timeout", "unavailable")})
+        bad = sorted(
+            {
+                row["task_id"]
+                for row in rows
+                if row.get("status") in ("error", "timeout", "unavailable")
+            }
+        )
         if bad:
             pair_note(
                 f"incomplete_observation:{entry['rep']}:{entry['system']}"
@@ -2875,10 +3189,18 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     pair_t_ids: list[str] = []
     for _reason, t_ids, _class in pair_notes:
         pair_t_ids.extend(t_ids)
-    pair_proof = digest(canonical({
-        "mapping": mapping_payload,
-        "reports": sorted(entry["report_sha"] for entry in matched),
-    })) if not pair_notes else None
+    pair_proof = (
+        digest(
+            canonical(
+                {
+                    "mapping": mapping_payload,
+                    "reports": sorted(entry["report_sha"] for entry in matched),
+                }
+            )
+        )
+        if not pair_notes
+        else None
+    )
     pair_state = "fail" if pair_notes else "pass"
     pair_reason = pair_notes[0][0] if pair_notes else "mapping_reports_rederived"
     pair_class = pair_notes[0][2] if pair_notes else ""
@@ -2924,8 +3246,12 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 raw_ref = f"contract_{side}_raw"
                 if any(ref not in resolved for ref in (receipt_ref, results_ref, raw_ref)):
                     raise RunError(f"contract {side} artifacts missing")
-                receipt = _validate_receipt_shape(read_json(resolved[receipt_ref]), f"contract {side} receipt")
-                results = _validate_counts_shape(read_json(resolved[results_ref]), f"contract {side} results")
+                receipt = _validate_receipt_shape(
+                    read_json(resolved[receipt_ref]), f"contract {side} receipt"
+                )
+                results = _validate_counts_shape(
+                    read_json(resolved[results_ref]), f"contract {side} results"
+                )
                 actual = sha_file(resolved[results_ref])
                 if actual != receipt["evidence_sha256"]:
                     raise RunError(f"contract {side} receipt digest mismatch")
@@ -2949,9 +3275,12 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                     raise RunError(f"contract {side} summary is not reproducible")
                 if receipt["revision"] != provenance_claims["quanta"]["source_sha"]:
                     raise RunError(f"contract {side} revision mismatch")
-                if not (results["failed"] == 0 and results["passed"] > 0
-                        and results["passed"] + results["failed"] == results["executed"]
-                        and results["executed"] <= results["selected"]):
+                if not (
+                    results["failed"] == 0
+                    and results["passed"] > 0
+                    and results["passed"] + results["failed"] == results["executed"]
+                    and results["executed"] <= results["selected"]
+                ):
                     raise RunError(f"contract {side} counts inconsistent")
                 contract_source_digests.add(receipt["source_closure"]["digest"])
                 proofs[side] = results
@@ -2974,14 +3303,19 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             if "sdk_receipt" not in resolved or "sdk_results" not in resolved:
                 raise RunError("sdk artifacts missing")
             sdk_receipt = _validate_receipt_shape(read_json(resolved["sdk_receipt"]), "sdk receipt")
-            sdk_results = _validate_sdk_results_shape(read_json(resolved["sdk_results"]), "sdk results")
+            sdk_results = _validate_sdk_results_shape(
+                read_json(resolved["sdk_results"]), "sdk results"
+            )
             sdk_actual = sha_file(resolved["sdk_results"])
             if sdk_actual != sdk_receipt["evidence_sha256"]:
                 raise RunError("sdk receipt digest mismatch")
             if sdk_actual != evidence["sdk_path"]["test_result_digest"]:
                 raise RunError("sdk manifest digest mismatch")
             sdk_command = "just retrieval-sdk-proof"
-            if sdk_receipt["rail"] != "retrieval-sdk-proof" or sdk_receipt["command"] != sdk_command:
+            if (
+                sdk_receipt["rail"] != "retrieval-sdk-proof"
+                or sdk_receipt["command"] != sdk_command
+            ):
                 raise RunError("sdk receipt authority mismatch")
             if sdk_results["command"] != sdk_command:
                 raise RunError("sdk results command mismatch")
@@ -3023,16 +3357,21 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 raise RunError("sdk receipt/ack not claimed")
             if sdk_results["binary_digest"] != binary_digest:
                 raise RunError("sdk binary differs from pair captures")
-            if not (sdk_results["failed"] == 0 and sdk_results["passed"] > 0
-                    and sdk_results["passed"] + sdk_results["failed"] == sdk_results["executed"]
-                    and sdk_results["executed"] <= sdk_results["selected"]):
+            if not (
+                sdk_results["failed"] == 0
+                and sdk_results["passed"] > 0
+                and sdk_results["passed"] + sdk_results["failed"] == sdk_results["executed"]
+                and sdk_results["executed"] <= sdk_results["selected"]
+            ):
                 raise RunError("sdk counts inconsistent")
         except (RunError, ValueError, OSError) as exc:
             set_state("SDK_PATH_GREEN", "fail", f"sdk_refused: {exc}", None)
             missing.extend(sdk_ids)
             classes.append("provenance")
         else:
-            set_state("SDK_PATH_GREEN", "pass", "sdk_proof_verified", digest(canonical(sdk_results)))
+            set_state(
+                "SDK_PATH_GREEN", "pass", "sdk_proof_verified", digest(canonical(sdk_results))
+            )
 
     set_state("PAIR_VALID", pair_state, pair_reason, pair_proof)
     if pair_state == "fail":
@@ -3047,13 +3386,19 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         not_applicable.append("scope:exploratory_only")
     elif admission_error is not None or admission_evidence is None:
         set_state(
-            "PERF_QUALIFIED", "fail",
-            f"admission_unverified: {admission_error or 'missing admission'}", None,
+            "PERF_QUALIFIED",
+            "fail",
+            f"admission_unverified: {admission_error or 'missing admission'}",
+            None,
         )
         missing.append("T17")
         classes.append("admission")
     else:
-        perf_fail: tuple[str, str] | None = None
+        perf_fail: tuple[str, str] | None = (
+            None
+            if manifest.get("host", {}).get("cache_regime") == "true_process_cold"
+            else ("unsupported_cache_protocol", "host")
+        )
         try:
             cells = []
             for rep in sorted(rep_records, key=_rep_sort_key):
@@ -3074,7 +3419,9 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 if not isinstance(native_content, dict):
                     raise RunError(f"rep {rep} native output is not an object")
                 scell = _cell_from_record("semble", "native", validated[semble_paths[0]]["run"])
-                routes = {row["route"] for row in validated[semble_paths[0]]["run"].get("results", [])}
+                routes = {
+                    row["route"] for row in validated[semble_paths[0]]["run"].get("results", [])
+                }
                 if len(routes) != 1:
                     raise RunError("semble record must carry exactly one route")
                 scell["native_latencies"] = native_content.get("latencies_ms", {})
@@ -3110,23 +3457,27 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 and _probe_clean(host_end_payload, host_profile)
             ):
                 perf_fail = ("host_contended", "host")
-            elif manifest.get("host", {}).get("cache_regime", "undeclared") == "undeclared":
-                # T12: a speed claim without a declared cache regime (true
-                # process-cold vs warm cache) cannot be compared or repeated.
-                perf_fail = ("cache_regime_undeclared", "host")
+            elif manifest.get("host", {}).get("cache_regime") != "true_process_cold":
+                perf_fail = ("unsupported_cache_protocol", "host")
         if perf_fail is None:
             set_state(
                 "PERF_QUALIFIED",
                 "pass",
                 "phase_and_process_tree_resources_verified",
-                digest(canonical({
-                    "admission": admission_evidence,
-                    "latency_matrix": rebuilt,
-                    "phase_metrics": [sha_file(Path(path)) for path in resolved["phase_metrics"]],
-                    "resource_metrics": [
-                        sha_file(Path(path)) for path in resolved["resource_metrics"]
-                    ],
-                })),
+                digest(
+                    canonical(
+                        {
+                            "admission": admission_evidence,
+                            "latency_matrix": rebuilt,
+                            "phase_metrics": [
+                                sha_file(Path(path)) for path in resolved["phase_metrics"]
+                            ],
+                            "resource_metrics": [
+                                sha_file(Path(path)) for path in resolved["resource_metrics"]
+                            ],
+                        }
+                    )
+                ),
             )
         else:
             set_state("PERF_QUALIFIED", "fail", perf_fail[0], None)
@@ -3168,9 +3519,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             )
             if manifest["isolation_method"] != ISOLATION_BACKEND:
                 raise RunError("manifest isolation method differs from the proof backend")
-            if manifest["access_block_log"] != (
-                "sha256:" + isolation_evidence["proof_sha256"]
-            ):
+            if manifest["access_block_log"] != ("sha256:" + isolation_evidence["proof_sha256"]):
                 raise RunError("manifest access_block_log does not bind the isolation proof")
             if len(resource_isolation) != len(resolved["records"]) or any(
                 entry != isolation_evidence for entry in resource_isolation
@@ -3187,8 +3536,10 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         not_applicable.append("scope:exploratory_only")
     elif admission_error is not None or admission_evidence is None:
         set_state(
-            "QUALITY_DELTA", "fail",
-            f"admission_unverified: {admission_error or 'missing admission'}", None,
+            "QUALITY_DELTA",
+            "fail",
+            f"admission_unverified: {admission_error or 'missing admission'}",
+            None,
         )
         missing.append("T17")
         classes.append("admission")
@@ -3205,21 +3556,32 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         not_applicable.append("blinding:attested_only")
     elif isolation_error is not None or isolation_evidence is None:
         set_state(
-            "QUALITY_DELTA", "fail",
-            f"isolation_proof_unverified: {isolation_error or 'missing proof'}", None,
+            "QUALITY_DELTA",
+            "fail",
+            f"isolation_proof_unverified: {isolation_error or 'missing proof'}",
+            None,
         )
         classes.append("blinding")
     elif not all(entry["graded"] for entry in matched):
         set_state("QUALITY_DELTA", "fail", "reports_ungraded", None)
         classes.append("scoring")
+    elif any(entry["primary_delta_ci_95"].get("status") == "not_applicable" for entry in matched):
+        set_state("QUALITY_DELTA", "fail", "uncertainty_unqualified", None)
+        classes.append("scoring")
     else:
         set_state(
-            "QUALITY_DELTA", "pass", "blinded_graded_delta",
-            digest(canonical({
-                "admission": admission_evidence,
-                "reports": sorted(entry["report_sha"] for entry in matched),
-                "isolation": isolation_evidence,
-            })),
+            "QUALITY_DELTA",
+            "pass",
+            "blinded_graded_delta",
+            digest(
+                canonical(
+                    {
+                        "admission": admission_evidence,
+                        "reports": sorted(entry["report_sha"] for entry in matched),
+                        "isolation": isolation_evidence,
+                    }
+                )
+            ),
         )
 
     for key, claim_key, tid, fail_class in (
@@ -3238,9 +3600,12 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             results = _validate_parity_results_shape(read_json(resolved[ref]), f"{key} results")
             if sha_file(resolved[ref]) != evidence[key]["test_result_digest"]:
                 raise RunError("manifest digest mismatch")
-            if not (results["status"] == "pass" and results["failed"] == 0
-                    and results["executed"] >= 1
-                    and results["passed"] + results["failed"] == results["executed"]):
+            if not (
+                results["status"] == "pass"
+                and results["failed"] == 0
+                and results["executed"] >= 1
+                and results["passed"] + results["failed"] == results["executed"]
+            ):
                 raise RunError("parity/incremental not proven")
         except (RunError, ValueError, OSError):
             missing.append(tid)
@@ -3256,14 +3621,18 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     blinding = "isolated" if all_isolated else "attested"
     total_rows = [row for entry in validated.values() for row in entry["run"].get("results", [])]
     rep0_rows = [
-        row for path, entry in validated.items()
-        if entry["rep"] == "rep-00" for row in entry["run"].get("results", [])
+        row
+        for path, entry in validated.items()
+        if entry["rep"] == "rep-00"
+        for row in entry["run"].get("results", [])
     ]
     counts = {
         "selected": len(rep0_rows),
         "executed": len(total_rows),
         "passed": sum(1 for row in total_rows if row.get("status") in ("success", "capped")),
-        "failed": sum(1 for row in total_rows if row.get("status") not in ("success", "capped", "abstained")),
+        "failed": sum(
+            1 for row in total_rows if row.get("status") not in ("success", "capped", "abstained")
+        ),
     }
     comparisons = [
         {
@@ -3275,17 +3644,22 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             "record_digest": entry["record_digest"],
             "report_digest": entry["report_digest"],
         }
-        for entry in sorted(matched, key=lambda e: (e["strategy"], e["baseline_route"], e["candidate_route"]))
+        for entry in sorted(
+            matched, key=lambda e: (e["strategy"], e["baseline_route"], e["candidate_route"])
+        )
     ]
     diff_digest = mapping_diff if _is_hex(mapping_diff, 64) else "0" * 64
     provenance = {
-        "admission": {
-            "manifest_digest": provenance_claims["admission"]["manifest_digest"]
+        "admission": {"manifest_digest": provenance_claims["admission"]["manifest_digest"]},
+        "quanta": {
+            "source_sha": provenance_claims["quanta"]["source_sha"],
+            "binary_digest": binary_digest,
+            "embedder": provenance_claims["quanta"].get("embedder", "undeclared"),
         },
-        "quanta": {"source_sha": provenance_claims["quanta"]["source_sha"],
-                   "binary_digest": binary_digest,
-                   "embedder": provenance_claims["quanta"].get("embedder", "undeclared")},
-        "semble": {"revision": SEMBLE_PINNED_VERSION, "lockfile_digest": lockfile_digest or "0" * 64},
+        "semble": {
+            "revision": SEMBLE_PINNED_VERSION,
+            "lockfile_digest": lockfile_digest or "0" * 64,
+        },
         "corpus": {"digest": corpus_digest or "0" * 64, "path_sha_diff_digest": diff_digest},
         "suite": {
             "suite_digest": suite_digest or "0" * 64,
@@ -3336,6 +3710,15 @@ def run_pair(spec: dict) -> int:
         raise RunError("qualified pair capture requires spec.admission")
     if scope != "qualified" and "admission" in spec:
         raise RunError("spec.admission is valid only for a qualified capture")
+    if scope == "qualified" and spec.get("claims", {}).get("speed") is True:
+        if spec.get("cache_regime") != "true_process_cold":
+            raise RunError(
+                "qualified speed currently requires the symmetric true_process_cold protocol"
+            )
+        if _int(spec.get("semble_repetitions", 1), "spec.semble_repetitions") != 1:
+            raise RunError("qualified cold speed requires one Semble measurement repetition")
+        if _int(spec.get("semble_warmup_passes", 0), "spec.semble_warmup_passes") != 0:
+            raise RunError("qualified cold speed forbids Semble-only warmup passes")
     lockfile_sha = spec.get("semble_lockfile_sha256")
     if not _is_hex(lockfile_sha, 64):
         raise RunError("pair requires a pinned semble_lockfile_sha256")
@@ -3353,6 +3736,23 @@ def run_pair(spec: dict) -> int:
         raise RunError("qualified speed capture with potion-code requires quanta_model_dir")
     if "quanta_model_dir" in spec and not Path(spec["quanta_model_dir"]).is_dir():
         raise RunError("quanta_model_dir must name an existing directory")
+    if scope == "qualified":
+        repo_root = Path(__file__).resolve().parents[3]
+        closure = subprocess.run(
+            [
+                sys.executable,
+                str(repo_root / "tools/ci/source_closure.py"),
+                "check",
+                "--profile",
+                "retrieval",
+            ],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+        )
+        if closure.returncode != 0:
+            detail = (closure.stderr or closure.stdout).strip()
+            raise RunError(f"qualified capture requires clean current retrieval source: {detail}")
     out_root = preflight_capture(spec)
     stage = out_root.parent / (out_root.name + ".staging")
     if out_root.exists() or stage.exists():
@@ -3495,8 +3895,7 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
         "semble_lockfile_sha256": spec["semble_lockfile_sha256"],
         "host_profile_digest": sha_file(Path(spec["host_profile"])),
         "admission_digest": (
-            sha_file(Path(str(frozen_admission["manifest"])))
-            if frozen_admission else None
+            sha_file(Path(str(frozen_admission["manifest"]))) if frozen_admission else None
         ),
         "repetitions": repetitions,
     }
@@ -3504,7 +3903,13 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
         json.dumps(protocol_lock, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     manifest = build_run_manifest(
-        spec, stage, rep_layouts, host_start, host_end, reports, frozen_receipts,
+        spec,
+        stage,
+        rep_layouts,
+        host_start,
+        host_end,
+        reports,
+        frozen_receipts,
         frozen_admission,
     )
     manifest_path = stage / "run-manifest.json"
@@ -3644,8 +4049,13 @@ def _cell_from_record(system: str, strategy: str, payload: dict) -> dict:
                 row.get("timings", {}).get("query_latency_ms"),
             )
         )
-    return {"system": system, "strategy": strategy, "rows": rows,
-            "native_latencies": None, "native_route": None}
+    return {
+        "system": system,
+        "strategy": strategy,
+        "rows": rows,
+        "native_latencies": None,
+        "native_route": None,
+    }
 
 
 def build_latency_matrix(rep_layouts: list[dict]) -> dict:
@@ -3701,7 +4111,11 @@ def mapping_matches_manifest(mapping: object, manifest: object) -> bool:
         return False
     if not all(isinstance(row, dict) for rows in (files, quanta, semble, per_file) for row in rows):
         return False
-    if mapping.get("skipped") != [] or mapping.get("extra") != [] or mapping.get("mismatched") != []:
+    if (
+        mapping.get("skipped") != []
+        or mapping.get("extra") != []
+        or mapping.get("mismatched") != []
+    ):
         return False
     if any(row.get("status") != "indexed" for row in per_file):
         return False
@@ -3711,10 +4125,7 @@ def mapping_matches_manifest(mapping: object, manifest: object) -> bool:
         expected = sorted(files, key=lambda row: row["path"])
     except (KeyError, TypeError):
         return False
-    observed = [
-        {"path": row.get("path"), "file_sha256": row.get("file_sha256")}
-        for row in semble
-    ]
+    observed = [{"path": row.get("path"), "file_sha256": row.get("file_sha256")} for row in semble]
     return bool(expected) and quanta == expected == observed and len(per_file) == len(expected)
 
 
@@ -3728,8 +4139,18 @@ def _validate_receipt_shape(payload: object, where: str) -> dict:
     """Mirror of tools/ci/verification-receipt.schema.json (locked by test)."""
     receipt = _exact_keys(
         payload,
-        {"schema_version", "revision", "rail", "tier", "command", "evidence_path",
-         "evidence_sha256", "test_event_count", "source_closure", "input_evidence"},
+        {
+            "schema_version",
+            "revision",
+            "rail",
+            "tier",
+            "command",
+            "evidence_path",
+            "evidence_sha256",
+            "test_event_count",
+            "source_closure",
+            "input_evidence",
+        },
         where,
     )
     if receipt["schema_version"] != 2:
@@ -3782,8 +4203,7 @@ def _validate_receipt_shape(payload: object, where: str) -> dict:
     if paths != sorted(set(paths)):
         raise RunError(f"{where}.source_closure.files must be sorted and unique")
     core = {
-        key: closure[key]
-        for key in ("schema_version", "profile", "revision", "roots", "files")
+        key: closure[key] for key in ("schema_version", "profile", "revision", "roots", "files")
     }
     if closure["digest"] != digest(canonical(core)):
         raise RunError(f"{where}.source_closure digest mismatch")
@@ -3808,9 +4228,7 @@ def _validate_receipt_shape(payload: object, where: str) -> dict:
     return receipt
 
 
-def _verify_receipt_inputs(
-    receipt: dict, expected: dict[str, Path], where: str
-) -> None:
+def _verify_receipt_inputs(receipt: dict, expected: dict[str, Path], where: str) -> None:
     observed = {entry["role"]: entry["sha256"] for entry in receipt["input_evidence"]}
     wanted = {role: sha_file(path) for role, path in expected.items()}
     if observed != wanted:
@@ -3818,9 +4236,7 @@ def _verify_receipt_inputs(
 
 
 def _validate_counts_shape(payload: object, where: str) -> dict:
-    results = _exact_keys(
-        payload, {"command", "selected", "executed", "passed", "failed"}, where
-    )
+    results = _exact_keys(payload, {"command", "selected", "executed", "passed", "failed"}, where)
     if not isinstance(results["command"], str) or not results["command"]:
         raise RunError(f"{where}.command must be a nonempty string")
     for key in ("selected", "executed", "passed", "failed"):
@@ -3833,9 +4249,19 @@ def _validate_counts_shape(payload: object, where: str) -> dict:
 def _validate_sdk_results_shape(payload: object, where: str) -> dict:
     results = _exact_keys(
         payload,
-        {"command", "separate_process", "sealed_receipt_digest", "activation_ack_digest",
-         "empty_check", "binary_digest", "sdk_route", "selected", "executed", "passed",
-         "failed"},
+        {
+            "command",
+            "separate_process",
+            "sealed_receipt_digest",
+            "activation_ack_digest",
+            "empty_check",
+            "binary_digest",
+            "sdk_route",
+            "selected",
+            "executed",
+            "passed",
+            "failed",
+        },
         where,
     )
     if not isinstance(results["command"], str) or not results["command"]:
@@ -3895,9 +4321,7 @@ def freeze_receipts(spec: dict, stage: Path) -> dict[str, str]:
     return frozen
 
 
-def freeze_admission(
-    spec: dict, stage: Path, frozen_receipts: dict[str, str]
-) -> dict[str, object]:
+def freeze_admission(spec: dict, stage: Path, frozen_receipts: dict[str, str]) -> dict[str, object]:
     """Freeze and preflight the W0-B authority packet for a qualified run."""
     scope = spec.get("scope", "exploratory")
     raw = spec.get("admission")
@@ -3979,11 +4403,13 @@ def freeze_inputs(spec: dict, stage: Path) -> dict:
     exact bytes used rather than whatever the external paths hold later.
     """
     frozen = {}
-    for key, name in (("suite", "evaluator-only/suite.json"),
-                      ("query_pack", "query-pack.json"),
-                      ("manifest", "corpus-manifest.json"),
-                      ("semble_lockfile", "semble-lockfile.txt"),
-                      ("host_profile", "host-profile.json")):
+    for key, name in (
+        ("suite", "evaluator-only/suite.json"),
+        ("query_pack", "query-pack.json"),
+        ("manifest", "corpus-manifest.json"),
+        ("semble_lockfile", "semble-lockfile.txt"),
+        ("host_profile", "host-profile.json"),
+    ):
         source = Path(spec[key])
         try:
             before = sha_file(source)
@@ -4160,9 +4586,7 @@ def build_run_manifest(
         sdk_results = _validate_sdk_results_shape(
             read_json(Path(frozen["sdk_results"])), "sdk results"
         )
-        sdk_receipt = _validate_receipt_shape(
-            read_json(Path(frozen["sdk_receipt"])), "sdk receipt"
-        )
+        sdk_receipt = _validate_receipt_shape(read_json(Path(frozen["sdk_receipt"])), "sdk receipt")
         _verify_receipt_inputs(
             sdk_receipt,
             {
@@ -4245,9 +4669,7 @@ def build_run_manifest(
             cache_regime=spec.get("cache_regime", "undeclared"),
             receipt_paths={
                 key: Path(frozen[key])
-                for key in (
-                    "contract_python_receipt", "contract_rust_receipt", "sdk_receipt"
-                )
+                for key in ("contract_python_receipt", "contract_rust_receipt", "sdk_receipt")
                 if key in frozen
             },
             quanta_model_revision=next(iter(quanta_model_revisions)),
@@ -4283,17 +4705,18 @@ def build_run_manifest(
         artifacts["isolation_proof"] = relative(proof_path)
     artifacts.update(receipt_artifacts)
     if admission_files:
-        artifacts.update({
-            "admission_manifest": relative(Path(str(admission_files["manifest"]))),
-            "license_receipt": relative(Path(str(admission_files["license_receipt"]))),
-            "annotation_receipts": [
-                relative(Path(str(path)))
-                for path in admission_files["annotation_receipts"]
-            ],
-            "adjudication_receipt": relative(
-                Path(str(admission_files["adjudication_receipt"]))
-            ),
-        })
+        artifacts.update(
+            {
+                "admission_manifest": relative(Path(str(admission_files["manifest"]))),
+                "license_receipt": relative(Path(str(admission_files["license_receipt"]))),
+                "annotation_receipts": [
+                    relative(Path(str(path))) for path in admission_files["annotation_receipts"]
+                ],
+                "adjudication_receipt": relative(
+                    Path(str(admission_files["adjudication_receipt"]))
+                ),
+            }
+        )
     if not (out_root / "protocol-lock.json").is_file():
         raise RunError("protocol-lock.json must exist before the run manifest")
     return {
@@ -4313,8 +4736,11 @@ def build_run_manifest(
         "artifacts": artifacts,
         "provenance": {
             "admission": {"manifest_digest": admission_digest},
-            "quanta": {"source_sha": source_sha, "binary_digest": runner_binary_digest,
-                       "embedder": spec.get("embedder", "potion-code")},
+            "quanta": {
+                "source_sha": source_sha,
+                "binary_digest": runner_binary_digest,
+                "embedder": spec.get("embedder", "potion-code"),
+            },
             "semble": {
                 "revision": SEMBLE_PINNED_VERSION,
                 "lockfile_digest": sha_file(lockfile_path),
@@ -4332,9 +4758,7 @@ def build_run_manifest(
             },
             "host": {
                 "profile_digest": sha_file(profile_path),
-                "check_record_digest": digest(
-                    canonical({"start": host_start, "end": host_end})
-                ),
+                "check_record_digest": digest(canonical({"start": host_start, "end": host_end})),
             },
         },
     }
@@ -4343,27 +4767,45 @@ def build_run_manifest(
 def run_semble_capture(
     spec: dict, out_dir: Path, pack_path: Path, route: str, rep: int = 0
 ) -> dict[str, str]:
-    adapter = Path(__file__).resolve().parent / "semble.py"
+    adapter = Path(spec.get("_semble_adapter", Path(__file__).resolve().parent / "semble.py"))
     command = [
         sys.executable,
         str(adapter),
         "run",
-        "--repo", spec["repo"],
-        "--manifest", spec["manifest"],
-        "--query-pack", str(pack_path),
-        "--top-k", str(spec["top_k"]),
-        "--python", spec["semble_python"],
-        "--lockfile", spec["semble_lockfile"],
-        "--lockfile-sha256", spec["semble_lockfile_sha256"],
-        "--cache-root", spec.get("semble_cache_root", str(out_dir.parent / "semble-cache")),
-        "--output-root", str(out_dir),
-        "--route", route,
-        "--run-id", f"{spec.get('run_id', 'run')}-semble-r{rep}",
-        "--seed", str(_int(spec.get("seed", 0), "spec.seed") + rep),
-        "--blinding", spec.get("blinding", "attested"),
-        "--isolation-method", spec.get("isolation_method", "attested-only: worker sees pack+corpus only"),
-        "--access-block-log", spec.get("access_block_log", "attested-only: no suite path is passed to the worker"),
-        "--repetitions", str(spec.get("semble_repetitions", 1)),
+        "--repo",
+        spec["repo"],
+        "--manifest",
+        spec["manifest"],
+        "--query-pack",
+        str(pack_path),
+        "--top-k",
+        str(spec["top_k"]),
+        "--python",
+        spec["semble_python"],
+        "--lockfile",
+        spec["semble_lockfile"],
+        "--lockfile-sha256",
+        spec["semble_lockfile_sha256"],
+        "--cache-root",
+        spec.get("semble_cache_root", str(out_dir.parent / "semble-cache")),
+        "--output-root",
+        str(out_dir),
+        "--route",
+        route,
+        "--run-id",
+        f"{spec.get('run_id', 'run')}-semble-r{rep}",
+        "--seed",
+        str(_int(spec.get("seed", 0), "spec.seed") + rep),
+        "--blinding",
+        spec.get("blinding", "attested"),
+        "--isolation-method",
+        spec.get("isolation_method", "attested-only: worker sees pack+corpus only"),
+        "--access-block-log",
+        spec.get("access_block_log", "attested-only: no suite path is passed to the worker"),
+        "--repetitions",
+        str(spec.get("semble_repetitions", 1)),
+        "--warmup-passes",
+        str(spec.get("semble_warmup_passes", 0)),
     ]
     if "_materialized_corpus" in spec:
         command += ["--materialized-corpus"]
@@ -4385,15 +4827,23 @@ def run_semble_capture(
     )
     if resource["timed_out"]:
         write_process_failure(
-            evidence_root, system="semble", strategy="native", failure_type="timeout",
-            resource_path=resource_path, stderr_path=stderr_path,
+            evidence_root,
+            system="semble",
+            strategy="native",
+            failure_type="timeout",
+            resource_path=resource_path,
+            stderr_path=stderr_path,
             record_path=out_dir / "record.json",
         )
         raise RunError("Semble capture timed out")
     if resource["exit_code"] != 0:
         write_process_failure(
-            evidence_root, system="semble", strategy="native", failure_type="nonzero_exit",
-            resource_path=resource_path, stderr_path=stderr_path,
+            evidence_root,
+            system="semble",
+            strategy="native",
+            failure_type="nonzero_exit",
+            resource_path=resource_path,
+            stderr_path=stderr_path,
             record_path=out_dir / "record.json",
         )
         tail = stderr_path.read_text(encoding="utf-8", errors="replace")[-2000:]
@@ -4401,28 +4851,33 @@ def run_semble_capture(
     phase_path = out_dir / "phase-metrics.json"
     if not phase_path.is_file():
         write_process_failure(
-            evidence_root, system="semble", strategy="native",
-            failure_type="missing_phase_metrics", resource_path=resource_path,
-            stderr_path=stderr_path, record_path=out_dir / "record.json",
+            evidence_root,
+            system="semble",
+            strategy="native",
+            failure_type="missing_phase_metrics",
+            resource_path=resource_path,
+            stderr_path=stderr_path,
+            record_path=out_dir / "record.json",
         )
         raise RunError("Semble capture omitted phase metrics")
     native = read_json(out_dir / "native.json")
     stats = native.get("stats", {}) if isinstance(native, dict) else {}
     if not isinstance(stats, dict):
         raise RunError("Semble native output lacks index statistics")
-    cache_root = Path(
-        spec.get("semble_cache_root", str(out_dir.parent / "semble-cache"))
+    cache_root = Path(spec.get("semble_cache_root", str(out_dir.parent / "semble-cache")))
+    bind_storage_metrics(
+        resource_path,
+        {
+            "index_bytes": stats.get("index_resident_bytes"),
+            "model_cache_bytes": tree_size(cache_root),
+            "parser_cache_bytes": 0,
+            "embedding_cache_bytes": 0,
+            "discovered_files": stats.get("indexed_files"),
+            "indexed_chunks": stats.get("total_chunks"),
+            "index_storage": "memory",
+            "index_measurement": stats.get("index_measurement"),
+        },
     )
-    bind_storage_metrics(resource_path, {
-        "index_bytes": stats.get("index_resident_bytes"),
-        "model_cache_bytes": tree_size(cache_root),
-        "parser_cache_bytes": 0,
-        "embedding_cache_bytes": 0,
-        "discovered_files": stats.get("indexed_files"),
-        "indexed_chunks": stats.get("total_chunks"),
-        "index_storage": "memory",
-        "index_measurement": stats.get("index_measurement"),
-    })
     return {"phase_metrics": str(phase_path), "resource_metrics": str(resource_path)}
 
 

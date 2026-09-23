@@ -44,6 +44,7 @@ import argparse
 import hashlib
 import json
 import math
+import random
 import re
 import subprocess
 import sys
@@ -189,9 +190,7 @@ def validate_comparison_contract(value: Any, where: str) -> dict[str, Any]:
 def normalize_query(text: str) -> str:
     """Deterministic ASCII query normalization for near-duplicate detection."""
     lowered = text.lower()
-    cleaned = "".join(
-        c if "a" <= c <= "z" or "0" <= c <= "9" else " " for c in lowered
-    )
+    cleaned = "".join(c if "a" <= c <= "z" or "0" <= c <= "9" else " " for c in lowered)
     return " ".join(cleaned.split())
 
 
@@ -439,9 +438,7 @@ def block(
         try:
             text = selected.decode("utf-8")
         except UnicodeDecodeError as exc:
-            raise EvidenceError(
-                f"block byte span cuts a UTF-8 boundary: {where}"
-            ) from exc
+            raise EvidenceError(f"block byte span cuts a UTF-8 boundary: {where}") from exc
         projected = b"".join(lines[start - 1 : end])
         require(
             selected == projected,
@@ -567,7 +564,10 @@ def _validate_suite_v1(
     suite = object_keys(
         payload, ["schema_version", "suite_id", "repository_commit", "routes", "tasks"], "suite"
     )
-    require(type(suite["schema_version"]) is int and suite["schema_version"] == 1, "unsupported suite schema")
+    require(
+        type(suite["schema_version"]) is int and suite["schema_version"] == 1,
+        "unsupported suite schema",
+    )
     string(suite["suite_id"], "suite_id")
     commit = suite["repository_commit"]
     require(
@@ -907,7 +907,9 @@ def _load_run_v2(
         f"route_provenance has missing/unknown routes: {sorted(set(provenance) ^ set(suite['routes']))}",
     )
     for route, entry in provenance.items():
-        item = object_keys(entry, ["system", "model", "model_revision"], f"route_provenance.{route}")
+        item = object_keys(
+            entry, ["system", "model", "model_revision"], f"route_provenance.{route}"
+        )
         for key in ("system", "model", "model_revision"):
             string(item[key], f"route_provenance.{route}.{key}")
     universe: set[str] | None = None
@@ -1011,9 +1013,7 @@ def _load_run_v3(
     string(runner["isolation_method"], "runner.isolation_method")
     string(runner["access_block_log"], "runner.access_block_log")
     captures = run["captures"]
-    require(
-        isinstance(captures, dict) and bool(captures), "captures must be a nonempty object"
-    )
+    require(isinstance(captures, dict) and bool(captures), "captures must be a nonempty object")
     for capture_id, entry in captures.items():
         require(
             isinstance(capture_id, str) and bool(capture_id.strip()),
@@ -1220,33 +1220,67 @@ def file_recall_at_k(
     return len(hit_files) / len(gold_files)
 
 
-def mean_ci(deltas: list[float]) -> dict[str, Any]:
+def mean_ci(
+    deltas: list[float],
+    strata: list[tuple[str, str]] | None = None,
+) -> dict[str, Any]:
+    """Deterministic paired, within-stratum percentile bootstrap interval."""
     n = len(deltas)
+    if strata is None:
+        strata = [(str(index), "uncategorized") for index in range(n)]
+    require(len(strata) == n, "confidence strata must align with paired deltas")
+    grouped: dict[str, list[tuple[str, float]]] = {}
+    for (task_id, category), delta in zip(strata, deltas):
+        require(bool(task_id) and bool(category), "confidence strata identities must be nonempty")
+        grouped.setdefault(category, []).append((task_id, delta))
+    stratum_counts = {key: len(grouped[key]) for key in sorted(grouped)}
     if n < MIN_CI_SAMPLE:
         return {
             "status": NOT_APPLICABLE,
             "reason": "insufficient_sample",
             "sample_count": n,
             "min_sample": MIN_CI_SAMPLE,
+            "method": "paired_stratified_bootstrap_percentile_v1",
+            "strata": stratum_counts,
         }
     mean = sum(deltas) / n
-    if n == 1:
-        return {
-            "sample_count": n,
-            "method": "normal_approx",
-            "mean": mean,
-            "lower_95": mean,
-            "upper_95": mean,
-        }
-    var = sum((d - mean) ** 2 for d in deltas) / (n - 1)
-    se = math.sqrt(var) / math.sqrt(n)
-    margin = 1.96 * se
+    seed_material = [
+        {"task_id": task_id, "stratum": category, "delta": delta}
+        for (task_id, category), delta in zip(strata, deltas)
+    ]
+    seed_sha256 = digest(canonical(seed_material))
+    rng = random.Random(int(seed_sha256[:16], 16))
+    resamples = 10_000
+    sampled_means: list[float] = []
+    for _ in range(resamples):
+        total = 0.0
+        count = 0
+        for category in sorted(grouped):
+            rows = grouped[category]
+            for _index in range(len(rows)):
+                total += rows[rng.randrange(len(rows))][1]
+                count += 1
+        sampled_means.append(total / count)
+    sampled_means.sort()
+
+    def quantile(p: float) -> float:
+        position = p * (len(sampled_means) - 1)
+        lower = math.floor(position)
+        upper = math.ceil(position)
+        if lower == upper:
+            return sampled_means[lower]
+        weight = position - lower
+        return sampled_means[lower] * (1.0 - weight) + sampled_means[upper] * weight
+
     return {
         "sample_count": n,
-        "method": "normal_approx",
+        "method": "paired_stratified_bootstrap_percentile_v1",
+        "resamples": resamples,
+        "seed_sha256": seed_sha256,
+        "strata": stratum_counts,
         "mean": mean,
-        "lower_95": mean - margin,
-        "upper_95": mean + margin,
+        "lower_95": quantile(0.025),
+        "upper_95": quantile(0.975),
     }
 
 
@@ -1402,12 +1436,8 @@ def evaluate(
                 comparisons[metric] = NOT_APPLICABLE
             else:
                 comparisons[metric] = b - a
-        wins = sum(
-            successes[candidate][t] and not successes[baseline][t] for t in task_ids
-        )
-        losses = sum(
-            successes[baseline][t] and not successes[candidate][t] for t in task_ids
-        )
+        wins = sum(successes[candidate][t] and not successes[baseline][t] for t in task_ids)
+        losses = sum(successes[baseline][t] and not successes[candidate][t] for t in task_ids)
         binary_deltas = [
             float(successes[candidate][t]) - float(successes[baseline][t]) for t in task_ids
         ]
@@ -1421,7 +1451,13 @@ def evaluate(
                 "paired_losses": losses,
                 "paired_ties": len(task_ids) - wins - losses,
                 "sample_count": len(task_ids),
-                "success_delta_ci_95": mean_ci(binary_deltas),
+                "success_delta_ci_95": mean_ci(
+                    binary_deltas,
+                    [
+                        (task_id, str(eval_tasks[task_id].get("category", "uncategorized")))
+                        for task_id in task_ids
+                    ],
+                ),
             },
         }
     # Rank-based quality view with chunk-level and same-file-collapsed behavior.
@@ -1448,7 +1484,9 @@ def evaluate(
             if status in SCORED_STATUSES:
                 candidates = _ordered_candidates(result, version)
                 collapsed = collapse_by_file(candidates)
-                chunk_vals = {f"recall_at_{k}": recall_at_k(candidates, labels, k) for k in RECALL_KS}
+                chunk_vals = {
+                    f"recall_at_{k}": recall_at_k(candidates, labels, k) for k in RECALL_KS
+                }
                 chunk_vals["mrr_at_10"] = mrr_at_k(candidates, labels, MRR_K)
                 chunk_vals["ndcg_at_10"] = ndcg_at_k(candidates, labels, NDCG_K) if graded else 0.0
                 chunk_vals["file_recall_at_10"] = file_recall_at_k(candidates, labels, MRR_K)
@@ -1501,7 +1539,9 @@ def evaluate(
         for key in base_chunk:
             a = base_chunk[key]
             b = cand_chunk[key]
-            rank_delta[key] = NOT_APPLICABLE if (a == NOT_APPLICABLE or b == NOT_APPLICABLE) else (b - a)
+            rank_delta[key] = (
+                NOT_APPLICABLE if (a == NOT_APPLICABLE or b == NOT_APPLICABLE) else (b - a)
+            )
         rank_comparison: dict[str, Any] = {
             "baseline": baseline,
             "candidate": candidate,
@@ -1512,7 +1552,13 @@ def evaluate(
             "paired_losses": rank_losses,
             "paired_ties": len(answerable_ids) - rank_wins - rank_losses,
             "sample_count": len(answerable_ids),
-            "primary_delta_ci_95": mean_ci(primary_deltas),
+            "primary_delta_ci_95": mean_ci(
+                primary_deltas,
+                [
+                    (task_id, str(eval_tasks[task_id].get("category", "uncategorized")))
+                    for task_id in answerable_ids
+                ],
+            ),
         }
     else:
         rank_comparison = {

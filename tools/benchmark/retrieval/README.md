@@ -235,7 +235,7 @@ keys: `repo`, `manifest`, `suite`, `query_pack`, `top_k`, `output_root`,
 | `semble_lockfile_sha256` | required for `pair` | SHA-256 of the external lockfile; env must carry every locked line plus `semble==0.6.0` |
 | `semble_route` | `semble-hybrid` | Semble record route name |
 | `semble_cache_root` | `<out>/semble-cache` | Semble + HF caches (outside checkout) |
-| `semble_repetitions`/`seed` | `1`/`0` | worker query sampling (1 untimed warmup pass) |
+| `semble_repetitions`/`semble_warmup_passes` | `1`/`0` | internal Semble schedule; qualified cold speed fixes these at 1/0 and uses query-pack order, matching Quanta |
 | `semble_model_revision` | observed | pinned HF revision (drift fails) |
 | `quanta_model_dir` | none | explicit local model directory; required for a `potion-code` speed claim and counted separately from index storage |
 | `repetitions` | `1` | external reps on fresh state |
@@ -243,6 +243,7 @@ keys: `repo`, `manifest`, `suite`, `query_pack`, `top_k`, `output_root`,
 | `order` | `["quanta","semble"]` | base system order |
 | `baseline_route` | Semble route | report baseline |
 | `scope` | `exploratory` | `exploratory` or `qualified` |
+| `admission` | required for `qualified` | paths to the W0-B manifest, license receipt, two independent annotation receipts, and adjudication receipt |
 | `host_profile` | required for `pair` | path to a generated host-profile JSON; the file is frozen, digest-bound, and matched against both host probes |
 | `claims` | all `false` | `{quality,speed,same_model,incremental}` |
 | `receipts` | omitted | paths to contract/SDK summaries, receipts, raw JUnit/nextest JSONL and actual-runner record; all bytes are frozen and raw evidence is reparsed by the verdict |
@@ -268,10 +269,16 @@ cache revision and rejects a supplied revision that disagrees with it.
 driver records `attested` blinding, so its output alone cannot qualify an
 isolated-blind quality or phase-qualified speed verdict.
 
+Qualified capture runs the canonical retrieval source-closure check before staging;
+dirty relevant source is a hard refusal. Isolated capture executes stage-local,
+SHA-bound copies of the Semble adapter/evaluator rather than reading the checkout.
+Qualified quality also requires an estimable paired category-stratified bootstrap CI.
+
 Generate the host profile on the measurement host before authoring the pair
-spec. `PERF_QUALIFIED` requires the frozen fingerprint, power digest, clean
-thermal/frequency states, and no competing benchmark/build process at both
-start and end:
+spec. `PERF_QUALIFIED` requires the frozen fingerprint, normalized active-source
+power digest, clean thermal state, directly observed frequency bounds, and no
+competing benchmark/build process at both start and end. Missing Apple Silicon
+frequency telemetry is `unavailable`, not inferred from a power plan:
 
 ```sh
 python3 tools/benchmark/retrieval/run.py host-profile \
@@ -280,10 +287,14 @@ python3 tools/benchmark/retrieval/run.py host-profile \
 
 Resource evidence is schema-closed: aggregate and per-process peak RSS/CPU,
 index/model/parser/embedding-cache bytes, discovered file count, indexed chunk
-count and disk-vs-memory index ownership are mandatory. Phase evidence splits
-discovery, model/provider preparation, indexing/chunking, publish/activation,
-first query and remaining warm queries; missing or coarsened evidence cannot
-pass `PERF_QUALIFIED`.
+count, disk-vs-memory ownership, and the measurement method are mandatory.
+Semble in-memory index bytes are a worker-observed peak-RSS delta and must be
+positive and byte-equal in native/resource evidence. Phase evidence carries the
+exact query-pack schedule, warmup/repetition counts, and monotonic boundaries;
+the verdict re-derives every Semble phase. Qualified speed currently supports
+only symmetric `true_process_cold` captures (one measurement, zero one-sided
+warmups). `warm_cache` is diagnostic until both runners implement one shared
+within-process schedule.
 
 Notes: the first Semble index includes the model download (later runs reuse
 the cache; `index_stats` and `semble_index_ms` always record what ran).
@@ -291,7 +302,7 @@ Partial output is never resumed — rerun from a fresh output root. For
 `just retrieval-verdict`, pass space-separated record paths as one quoted
 `records` argument.
 
-## T00–T16 evidence map
+## T00–T17 evidence map
 
 Blocking IDs map to a test target, command and artifact. `NOT_RUN` means no
 evidence exists yet; conditional IDs apply only when the claim is made.
@@ -315,6 +326,7 @@ evidence exists yet; conditional IDs apply only when the claim is made.
 | T14 | registered commands and external artifact root | `just benchmark-prep-local`, `just retrieval-contract-proof <fresh-output-root>` and `just retrieval-sdk-proof <fresh-output-root>`; none downloads Semble/model assets implicitly |
 | T15 | model parity (conditional on a same-model claim) | NOT_RUN (no same-model claim; `model_revision` recorded per run) |
 | T16 | incremental capture (conditional on an incremental claim) | NOT_RUN (no incremental claim) |
+| T17 | W0-B qualification admission | `admission.schema.json` plus license, two annotation, adjudication, model, host, lockfile and exact contract/SDK receipt digests; exploratory runs are never promoted |
 
 Current closeout blockers are explicit: the contract/SDK receipt recipes must
 be run and frozen from one v2 source closure; the generic workspace rail must

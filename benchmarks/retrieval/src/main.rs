@@ -743,6 +743,9 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         "route_count": routes.len(),
         "file_count": selection.coverage.files,
         "chunk_count": selection.coverage.chunks,
+        "query_schedule": pack.tasks.iter().map(|task| task.task_id.as_str()).collect::<Vec<_>>(),
+        "warmup_passes": 0,
+        "measurement_repetitions": 1,
         "phases_ms": {
             "discovery": discovery_elapsed.as_secs_f64() * 1000.0,
             "chunk": chunk_elapsed.as_secs_f64() * 1000.0,
