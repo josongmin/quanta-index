@@ -290,7 +290,7 @@ fn real_daemon_roundtrip_publishes_and_queries() {
         publish_and_activate(&session, &batch, &identity, None).expect("publish+activate");
 
     // A stale generation pin never reads another generation's rows.
-    let stale = query_route(&RouteQuery {
+    let stale_result = query_route(&RouteQuery {
         client: session.client(),
         route: "lexical",
         query_text: "sphinx",
@@ -301,9 +301,11 @@ fn real_daemon_roundtrip_publishes_and_queries() {
         ),
         top_k: 10,
     });
-    match &stale {
+    match &stale_result {
         QueryOutcome::Failed { code, .. } => assert_eq!(code, "stale_generation"),
-        other => panic!("stale generation must fail, got {other:?}"),
+        QueryOutcome::Hits { .. } => {
+            panic!("stale generation must fail, got {stale_result:?}")
+        }
     }
     assert_eq!(receipt.batch_digest, batch.batch_digest().expect("digest"));
     assert_eq!(

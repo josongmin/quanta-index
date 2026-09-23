@@ -544,8 +544,8 @@ mod empty_status_tests {
 
     fn forged_roots() -> quanta_index_contract::SemanticContentRootsV1 {
         quanta_index_contract::SemanticContentRootsV1 {
-            row_root_digest: "sha256:".to_string() + &"a".repeat(64),
-            membership_root_digest: "sha256:".to_string() + &"b".repeat(64),
+            row_root_digest: format!("sha256:{}", "a".repeat(64)),
+            membership_root_digest: format!("sha256:{}", "b".repeat(64)),
         }
     }
 
