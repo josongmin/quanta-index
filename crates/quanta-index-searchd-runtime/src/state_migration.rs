@@ -22,17 +22,18 @@ use quanta_index_catalog::{
 };
 use quanta_index_core::CoreError;
 use quanta_index_repomap::RepoMapGenerationStore;
-use quanta_index_searchd::app::LegacySemanticJournalStore;
+use quanta_index_searchd::app::LegacySemanticJournalReaderV1;
+use quanta_index_searchd::app::runtime::StateRootLease;
 use quanta_index_searchd::app::semantic_boot;
 use quanta_index_searchd::app::state_format::{
     EnvironmentStateMigrationFaultV1, LEGACY_SEMANTIC_JOURNAL_RELATIVE, StateMigrationFaultPort,
 };
 use quanta_index_searchd::app::state_migration::{
     CatalogFreezeV1, CatalogSnapshotPort, CatalogSnapshotV1, LegacyImportOutcomeV1,
-    LegacyStateImportPort, OfflineStateCommandV1, OfflineStateOperationV1, OfflineStateOutcomeV1,
-    OfflineStateRequestV1, OfflineStateVerificationV1, StateRootDeepOpenPort,
-    StateRootDeepOpenReceiptV1, run_offline_backup_v1, run_offline_migrate_v1,
-    run_offline_restore_v1, run_offline_verify_v1,
+    LegacyStateImportPort, OfflineSourceSessionV1, OfflineStateCommandV1, OfflineStateOperationV1,
+    OfflineStateOutcomeV1, OfflineStateVerificationV1, StateRootDeepOpenPort,
+    StateRootDeepOpenReceiptV1, VerifyManifestKindV1, peek_verify_manifest_v1,
+    run_offline_backup_v1, run_offline_migrate_v1, run_offline_restore_v1, run_offline_verify_v1,
 };
 use quanta_index_semantic::SemanticAdapter;
 
@@ -108,9 +109,12 @@ impl LegacyStateImportPort for LegacyStateImporterV1 {
         if source_root.join(LEGACY_SEMANTIC_JOURNAL_RELATIVE).exists() {
             let semantic_root = quanta_index_semantic::semantic_state_root(staging_root);
             let adapter = SemanticAdapter::with_state_root(semantic_root.clone())?;
-            let store = LegacySemanticJournalStore::open(source_root.join("semantic"))?;
+            // Read-only open of the source journal: no lock, no receipt, no
+            // cleanup inside the source. The receipt lands in the staging
+            // semantic root only.
+            let reader = LegacySemanticJournalReaderV1::open(source_root.join("semantic"))?;
             let outcome = semantic_boot::migrate_legacy_semantic_journal(
-                &store,
+                &reader,
                 &adapter,
                 &semantic_root,
                 adapter.window_policy(),
@@ -254,51 +258,69 @@ pub fn run_offline_state_command_v1(
 }
 
 /// The fault-injectable body of [`run_offline_state_command_v1`].
+///
+/// Custody is established here, once per command, before the engine runs:
+/// a current root's session binds the daemon's own lease (a live owner
+/// fails that handover with the existing `STATE_ROOT_IN_USE`), while legacy
+/// and backup roots open under read-only custody that creates nothing
+/// inside the source.
 pub fn run_offline_state_command_with_v1(
     command: &OfflineStateCommandV1,
     fault: &dyn StateMigrationFaultPort,
 ) -> Result<OfflineStateCommandOutcomeV1> {
     let catalog = CatalogSnapshotAdapter;
     let produced = match command.operation {
-        OfflineStateOperationV1::Backup => run_offline_backup_v1(
-            &producing_request_v1(command)?,
-            &catalog,
-            &RootDeepOpenAdapter,
-            fault,
-        )?,
-        OfflineStateOperationV1::Restore => run_offline_restore_v1(
-            &producing_request_v1(command)?,
-            &catalog,
-            &RootDeepOpenAdapter,
-            fault,
-        )?,
-        OfflineStateOperationV1::Migrate => run_offline_migrate_v1(
-            &producing_request_v1(command)?,
-            &LegacyStateImporterV1,
-            &catalog,
-            &RootDeepOpenAdapter,
-            fault,
-        )?,
+        OfflineStateOperationV1::Backup => {
+            let (session, destination) = backup_session_v1(command)?;
+            run_offline_backup_v1(
+                &session,
+                &destination,
+                &catalog,
+                &RootDeepOpenAdapter,
+                fault,
+            )?
+        }
+        OfflineStateOperationV1::Restore => {
+            let (session, destination) = restore_session_v1(command)?;
+            run_offline_restore_v1(
+                &session,
+                &destination,
+                &catalog,
+                &RootDeepOpenAdapter,
+                fault,
+            )?
+        }
+        OfflineStateOperationV1::Migrate => {
+            let (session, destination) = migrate_session_v1(command)?;
+            run_offline_migrate_v1(
+                &session,
+                &destination,
+                &LegacyStateImporterV1,
+                &catalog,
+                &RootDeepOpenAdapter,
+                fault,
+            )?
+        }
         // `verify-state` names one root; its arm returns the verified
         // outcome directly rather than through a produced-root receipt, and
         // so it never requires a destination.
         OfflineStateOperationV1::Verify => {
             return Ok(OfflineStateCommandOutcomeV1::Verified(
-                run_offline_verify_v1(&command.source_root, &catalog)?,
+                run_offline_verify_v1(&verify_session_v1(command)?, &catalog)?,
             ));
         }
     };
     Ok(OfflineStateCommandOutcomeV1::Produced(Box::new(produced)))
 }
 
-/// The engine request for one *producing* offline command.
+/// The destination one *producing* offline command requires.
 ///
 /// Only the three producing operations reach this, so a missing destination
 /// is refused typed here rather than reaching the engine.
-fn producing_request_v1(
+fn producing_destination_v1(
     command: &OfflineStateCommandV1,
-) -> Result<OfflineStateRequestV1, CoreError> {
-    let destination = command
+) -> Result<std::path::PathBuf, CoreError> {
+    command
         .destination_root
         .clone()
         .ok_or_else(|| CoreError::Typed {
@@ -307,12 +329,68 @@ fn producing_request_v1(
                 "{} requires a destination root",
                 command.operation.command_name()
             ),
-        })?;
-    Ok(OfflineStateRequestV1 {
-        operation: command.operation,
-        source_root: command.source_root.clone(),
-        destination_root: destination,
-    })
+        })
+}
+
+/// Custody for `backup-state`: the daemon's own lease on the source.
+///
+/// The existence precheck runs first so a missing source is `NotFound`
+/// without creating anything; the acquisition itself is the daemon's lease
+/// handover, reused verbatim — a live owner is the existing
+/// `STATE_ROOT_IN_USE`.
+fn backup_session_v1(
+    command: &OfflineStateCommandV1,
+) -> Result<(OfflineSourceSessionV1, std::path::PathBuf), CoreError> {
+    let destination = producing_destination_v1(command)?;
+    if !command.source_root.is_dir() {
+        return Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::NotFound,
+            message: format!(
+                "offline state source root {} does not exist",
+                command.source_root.display()
+            ),
+        });
+    }
+    let lease = StateRootLease::acquire(&command.source_root)?;
+    let session = OfflineSourceSessionV1::open_current(lease)?;
+    Ok((session, destination))
+}
+
+/// Custody for `migrate-state`: read-only custody of the legacy source.
+/// Nothing is created inside it.
+fn migrate_session_v1(
+    command: &OfflineStateCommandV1,
+) -> Result<(OfflineSourceSessionV1, std::path::PathBuf), CoreError> {
+    let destination = producing_destination_v1(command)?;
+    let session = OfflineSourceSessionV1::open_legacy_read_only(&command.source_root)?;
+    Ok((session, destination))
+}
+
+/// Custody for `restore-state`: read-only custody of the backup source.
+/// Nothing is created inside it.
+fn restore_session_v1(
+    command: &OfflineStateCommandV1,
+) -> Result<(OfflineSourceSessionV1, std::path::PathBuf), CoreError> {
+    let destination = producing_destination_v1(command)?;
+    let session = OfflineSourceSessionV1::open_produced_backup(&command.source_root)?;
+    Ok((session, destination))
+}
+
+/// Custody for `verify-state`: routed read-only by the advertised manifest,
+/// so a backup root never takes a lease and a missing or ambiguous root
+/// never creates anything. A current root's verification binds the daemon's
+/// lease — a live owner fails that handover with the existing
+/// `STATE_ROOT_IN_USE`.
+fn verify_session_v1(command: &OfflineStateCommandV1) -> Result<OfflineSourceSessionV1, CoreError> {
+    match peek_verify_manifest_v1(&command.source_root)? {
+        VerifyManifestKindV1::BackupRoot => {
+            OfflineSourceSessionV1::open_produced_backup(&command.source_root)
+        }
+        VerifyManifestKindV1::CurrentRoot => {
+            let lease = StateRootLease::acquire(&command.source_root)?;
+            OfflineSourceSessionV1::open_current(lease)
+        }
+    }
 }
 
 /// Render an outcome as the operator-facing line the CLI prints.
