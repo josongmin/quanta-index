@@ -2259,6 +2259,12 @@ impl E2eRuntime {
                     message: err.message,
                 }),
             },
+            SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_) => {
+                unexpected_history_response("ActiveGenerationSnapshot")
+            }
+            SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_) => {
+                unexpected_history_response("ResolvedLexicalGeneration")
+            }
             SearchPlaneQueryIpcResponse::Text(_) => unexpected_history_response("Text"),
             SearchPlaneQueryIpcResponse::Symbol(_) => unexpected_history_response("Symbol"),
             SearchPlaneQueryIpcResponse::Semantic(_) => unexpected_history_response("Semantic"),
@@ -2333,7 +2339,9 @@ impl E2eRuntime {
             query_response_ready,
             |payload| match payload {
                 SearchPlaneQueryIpcResponse::RuntimeMetadata(page) => Ok(page),
-                other @ (SearchPlaneQueryIpcResponse::Text(_)
+                other @ (SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+                | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
+                | SearchPlaneQueryIpcResponse::Text(_)
                 | SearchPlaneQueryIpcResponse::Symbol(_)
                 | SearchPlaneQueryIpcResponse::Semantic(_)
                 | SearchPlaneQueryIpcResponse::Hybrid(_)
@@ -2370,7 +2378,9 @@ impl E2eRuntime {
             query_response_ready,
             |payload| match payload {
                 SearchPlaneQueryIpcResponse::Text(page) => Ok(page),
-                other @ (SearchPlaneQueryIpcResponse::Symbol(_)
+                other @ (SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+                | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
+                | SearchPlaneQueryIpcResponse::Symbol(_)
                 | SearchPlaneQueryIpcResponse::Semantic(_)
                 | SearchPlaneQueryIpcResponse::Hybrid(_)
                 | SearchPlaneQueryIpcResponse::HybridSeed(_)
@@ -2424,7 +2434,9 @@ impl E2eRuntime {
             query_response_ready,
             |payload| match payload {
                 SearchPlaneQueryIpcResponse::Structural(page) => Ok(page),
-                other @ (SearchPlaneQueryIpcResponse::Text(_)
+                other @ (SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+                | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
+                | SearchPlaneQueryIpcResponse::Text(_)
                 | SearchPlaneQueryIpcResponse::Symbol(_)
                 | SearchPlaneQueryIpcResponse::Semantic(_)
                 | SearchPlaneQueryIpcResponse::Hybrid(_)
@@ -2472,7 +2484,9 @@ impl E2eRuntime {
                 code: E2eErrorCode::Remote(err.code),
                 message: err.message,
             })),
-            payload @ (SearchPlaneQueryIpcResponse::Text(_)
+            payload @ (SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+            | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
+            | SearchPlaneQueryIpcResponse::Text(_)
             | SearchPlaneQueryIpcResponse::Symbol(_)
             | SearchPlaneQueryIpcResponse::Semantic(_)
             | SearchPlaneQueryIpcResponse::Hybrid(_)
@@ -2573,6 +2587,12 @@ impl E2eRuntime {
                     message: err.message,
                 }),
             },
+            SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_) => {
+                unexpected_response("ActiveGenerationSnapshot")
+            }
+            SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_) => {
+                unexpected_response("ResolvedLexicalGeneration")
+            }
             SearchPlaneQueryIpcResponse::Symbol(_) => unexpected_response("Symbol"),
             SearchPlaneQueryIpcResponse::Semantic(_) => unexpected_response("Semantic"),
             SearchPlaneQueryIpcResponse::Hybrid(_) => unexpected_response("Hybrid"),
@@ -2724,6 +2744,12 @@ impl E2eRuntime {
                     message: err.message,
                 }),
             },
+            SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_) => {
+                unexpected_response("ActiveGenerationSnapshot")
+            }
+            SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_) => {
+                unexpected_response("ResolvedLexicalGeneration")
+            }
             SearchPlaneQueryIpcResponse::Text(_) => unexpected_response("Text"),
             SearchPlaneQueryIpcResponse::Symbol(_) => unexpected_response("Symbol"),
             SearchPlaneQueryIpcResponse::Hybrid(_) => unexpected_response("Hybrid"),
@@ -2824,6 +2850,12 @@ impl E2eRuntime {
                     message: err.message,
                 }),
             },
+            SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_) => {
+                unexpected_response("ActiveGenerationSnapshot")
+            }
+            SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_) => {
+                unexpected_response("ResolvedLexicalGeneration")
+            }
             SearchPlaneQueryIpcResponse::Text(_) => unexpected_response("Text"),
             SearchPlaneQueryIpcResponse::Symbol(_) => unexpected_response("Symbol"),
             SearchPlaneQueryIpcResponse::Semantic(_) => unexpected_response("Semantic"),
@@ -3053,6 +3085,12 @@ impl E2eRuntime {
                     message: err.message,
                 }),
             },
+            SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_) => {
+                unexpected_explain_response("ActiveGenerationSnapshot")
+            }
+            SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_) => {
+                unexpected_explain_response("ResolvedLexicalGeneration")
+            }
             SearchPlaneQueryIpcResponse::Text(_) => unexpected_explain_response("Text"),
             SearchPlaneQueryIpcResponse::Symbol(_) => unexpected_explain_response("Symbol"),
             SearchPlaneQueryIpcResponse::Semantic(_) => unexpected_explain_response("Semantic"),
@@ -3328,7 +3366,9 @@ impl Drop for E2eRuntime {
 fn query_response_ready(response: &SearchPlaneQueryIpcResponseEnvelope) -> bool {
     match &response.payload {
         SearchPlaneQueryIpcResponse::Error(err) => err.code != SearchPlaneErrorCodeV2::NotReady,
-        SearchPlaneQueryIpcResponse::Text(_)
+        SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+        | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
+        | SearchPlaneQueryIpcResponse::Text(_)
         | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::Semantic(_)
         | SearchPlaneQueryIpcResponse::Hybrid(_)
@@ -3350,7 +3390,9 @@ fn query_response_ready_allow_structural_not_ready(
             err.code != SearchPlaneErrorCodeV2::NotReady
                 && err.code != SearchPlaneErrorCodeV2::StrGenerationNotReady
         }
-        SearchPlaneQueryIpcResponse::Text(_)
+        SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+        | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
+        | SearchPlaneQueryIpcResponse::Text(_)
         | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::Semantic(_)
         | SearchPlaneQueryIpcResponse::Hybrid(_)
@@ -3369,6 +3411,12 @@ fn query_response_ready_allow_structural_not_ready(
 fn describe_query_response_payload(payload: &SearchPlaneQueryIpcResponse) -> String {
     match payload {
         SearchPlaneQueryIpcResponse::Error(err) => format!("Error({:?})", err.code),
+        SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_) => {
+            "ActiveGenerationSnapshot".to_string()
+        }
+        SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_) => {
+            "ResolvedLexicalGeneration".to_string()
+        }
         SearchPlaneQueryIpcResponse::Text(_) => "Text".to_string(),
         SearchPlaneQueryIpcResponse::Symbol(_) => "Symbol".to_string(),
         SearchPlaneQueryIpcResponse::Semantic(_) => "Semantic".to_string(),
@@ -3623,7 +3671,9 @@ fn route_window_probe_from_response(
         SearchPlaneQueryIpcResponse::Structural(structural) => {
             (structural.results.len(), Some(structural.window))
         }
-        SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+        SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+        | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
+        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_) => {
             return Err(anyhow::anyhow!(
@@ -3642,6 +3692,8 @@ fn route_window_probe_from_response(
 /// names what a route answered with instead of its own page.
 fn query_response_kind(payload: &SearchPlaneQueryIpcResponse) -> &'static str {
     match payload {
+        SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_) => "ActiveGenerationSnapshot",
+        SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_) => "ResolvedLexicalGeneration",
         SearchPlaneQueryIpcResponse::Text(_) => "Text",
         SearchPlaneQueryIpcResponse::Symbol(_) => "Symbol",
         SearchPlaneQueryIpcResponse::Semantic(_) => "Semantic",

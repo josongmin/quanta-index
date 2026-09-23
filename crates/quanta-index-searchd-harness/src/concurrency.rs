@@ -190,7 +190,9 @@ fn result_count_of(response: &SearchPlaneQueryIpcResponse) -> Option<u64> {
         SearchPlaneQueryIpcResponse::Symbol(page) => page.results.len(),
         SearchPlaneQueryIpcResponse::Semantic(page) => page.results.len(),
         SearchPlaneQueryIpcResponse::Hybrid(page) => page.results.len(),
-        SearchPlaneQueryIpcResponse::HybridSeed(_)
+        SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+        | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
+        | SearchPlaneQueryIpcResponse::HybridSeed(_)
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
         | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
