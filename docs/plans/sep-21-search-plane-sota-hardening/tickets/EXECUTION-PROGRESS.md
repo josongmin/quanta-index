@@ -87,8 +87,12 @@ to validated lane handoffs and immutable proof manifests, not this document.
   `./scripts/cargow test -p quanta-index-search-plane
   joint_active_selection_uses_one_composite_head_and_checks_explicit_pin
   --lib` (1/1), `query_dispatcher::tests::semantic` (8/8), and
-  `query_dispatcher::tests::hybrid` (18/18). This is a server-side
-  same-snapshot correction, not durable epoch/commitment or a release proof.
+  `query_dispatcher::tests::hybrid` (18/18). After the test-oracle lint
+  correction, focused Clippy (`./scripts/cargow clippy -p
+  quanta-index-search-plane --lib --tests -- -D warnings`) and the joint
+  selection test (1/1) passed on the updated dirty source. This is a
+  server-side same-snapshot correction, not durable epoch/commitment or a
+  release proof.
 
 - Work is being performed directly on local `main`, with the unrelated
   Sep-23 retrieval-benchmark and agent-rule edits preserved. The active-pin

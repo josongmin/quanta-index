@@ -31,6 +31,14 @@ use crate::{
     SnapshotRegistries, SnapshotRegistryPolicy,
 };
 
+fn require_joint_selection(condition: bool, message: &'static str) -> TestResult {
+    if condition {
+        Ok(())
+    } else {
+        Err(message.into())
+    }
+}
+
 #[test]
 fn joint_active_selection_uses_one_composite_head_and_checks_explicit_pin() -> TestResult {
     let dir = tempdir()?;
@@ -60,14 +68,17 @@ fn joint_active_selection_uses_one_composite_head_and_checks_explicit_pin() -> T
         "hybrid",
     )?
     .ok_or("matching active selectors must resolve together")?;
-    assert_eq!(first_selection.pin, pinned_first);
-    assert_eq!(
-        first_selection.expected_manifest_digest.as_deref(),
-        Some("joint-digest-9")
-    );
+    require_joint_selection(
+        first_selection.pin == pinned_first,
+        "wrong first active pin",
+    )?;
+    require_joint_selection(
+        first_selection.expected_manifest_digest.as_deref() == Some("joint-digest-9"),
+        "wrong first active digest",
+    )?;
 
     let second = corpus_generation(
-        repo.clone(),
+        repo,
         revision.clone(),
         ManifestGeneration::new(10),
         "joint-digest-10",
@@ -78,11 +89,14 @@ fn joint_active_selection_uses_one_composite_head_and_checks_explicit_pin() -> T
     let latest =
         resolve_joint_active_selection(&catalog, Some(&selector), Some(&selector), None, "hybrid")?
             .ok_or("active selectors must resolve after activation")?;
-    assert_eq!(latest.pin.manifest_generation, ManifestGeneration::new(10));
-    assert_eq!(
-        latest.expected_manifest_digest.as_deref(),
-        Some("joint-digest-10")
-    );
+    require_joint_selection(
+        latest.pin.manifest_generation == ManifestGeneration::new(10),
+        "wrong advanced active generation",
+    )?;
+    require_joint_selection(
+        latest.expected_manifest_digest.as_deref() == Some("joint-digest-10"),
+        "wrong advanced active digest",
+    )?;
     let text_scope = TextQueryRequest {
         syntax: TextQuerySyntax::Native,
         query_text: "needle".to_string(),
@@ -101,28 +115,31 @@ fn joint_active_selection_uses_one_composite_head_and_checks_explicit_pin() -> T
         top_k: 5,
     };
     let semantic_selection = resolve_semantic_request_selection(&catalog, &semantic_request)?;
-    assert_eq!(semantic_selection.pin, latest.pin);
-    assert_eq!(
-        semantic_selection.expected_manifest_digest,
-        latest.expected_manifest_digest
-    );
+    require_joint_selection(
+        semantic_selection.pin == latest.pin
+            && semantic_selection.expected_manifest_digest == latest.expected_manifest_digest,
+        "semantic scope did not select the composite active head",
+    )?;
     let hybrid_request = HybridQueryRequest {
-        text_query: text_scope.clone(),
+        text_query: text_scope,
         semantic_query_text: "semantic".to_string(),
         generation: Some(latest.pin.clone()),
         generation_selector: Some(selector.clone()),
         top_k: 5,
     };
     let hybrid_selection = resolve_hybrid_request_selection(&catalog, &hybrid_request)?;
-    assert_eq!(hybrid_selection.pin, latest.pin);
-    assert_eq!(
-        hybrid_selection.expected_manifest_digest,
-        latest.expected_manifest_digest
-    );
+    require_joint_selection(
+        hybrid_selection.pin == latest.pin
+            && hybrid_selection.expected_manifest_digest == latest.expected_manifest_digest,
+        "hybrid did not select the composite active head",
+    )?;
     let mut stale_hybrid = hybrid_request;
     stale_hybrid.text_query.generation = Some(pinned_first.clone());
-    assert!(resolve_hybrid_request_selection(&catalog, &stale_hybrid).is_err());
-    assert!(
+    require_joint_selection(
+        resolve_hybrid_request_selection(&catalog, &stale_hybrid).is_err(),
+        "hybrid accepted stale lexical pin",
+    )?;
+    require_joint_selection(
         resolve_joint_active_selection(
             &catalog,
             Some(&selector),
@@ -130,16 +147,18 @@ fn joint_active_selection_uses_one_composite_head_and_checks_explicit_pin() -> T
             Some(&pinned_first),
             "hybrid",
         )
-        .is_err()
-    );
+        .is_err(),
+        "joint selection accepted stale lexical pin",
+    )?;
     let foreign = GenerationSelector::Active {
         repo_id: RepoId::new("foreign-repo")?,
         revision_id: revision,
     };
-    assert!(
-        resolve_joint_active_selection(&catalog, Some(&selector), Some(&foreign), None, "hybrid",)
-            .is_err()
-    );
+    require_joint_selection(
+        resolve_joint_active_selection(&catalog, Some(&selector), Some(&foreign), None, "hybrid")
+            .is_err(),
+        "joint selection accepted a foreign active pair",
+    )?;
     Ok(())
 }
 
