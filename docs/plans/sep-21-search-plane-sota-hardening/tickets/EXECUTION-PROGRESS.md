@@ -50,7 +50,7 @@ to validated lane handoffs and immutable proof manifests, not this document.
 
 ## Current-main implementation log
 
-### P08 custody correction — local working tree, not a checkpoint
+### P08 custody correction — candidate checkpoint `8b78f35`
 
 - Owner: `SearchdSupervisor` and its runtime owner suite. On hard escalation,
   startup rollback with unfinished children, required-child loss, or second
@@ -77,7 +77,7 @@ to validated lane handoffs and immutable proof manifests, not this document.
   now requests shutdown and transfers child handles with guards to the
   same custody reaper. A panicking child stop callback cannot unwind that
   reaper before it joins its children.
-- Local proof on the current dirty working tree: `just fmt-check` exited 0;
+- Local proof before the candidate commit: `just fmt-check` exited 0;
   `./scripts/cargow test -p quanta-index-searchd-runtime --test
   runtime_supervisor_owner_v1` exited 0 with 15 passed, 0 failed, 0 ignored;
   `./scripts/cargow test -p quanta-index-embed
@@ -89,8 +89,13 @@ to validated lane handoffs and immutable proof manifests, not this document.
   owner fix. These commands are not exact-commit P08 proof. An earlier
   owner-suite run failed one fixture because the parent observed a
   partially written helper report; its exact-content gate fixed that race.
-- Remaining for P08: final owner recipe and required daemon process rail
-  on a committed source. The release-bound `p08-runtime-supervisor` node
+- Exact candidate-commit owner proof: at `8b78f35`, `just
+  proof-p08-runtime-supervisor-owner` exited 0: 15 owner tests passed,
+  hexagonal boundaries passed, wire inventory matched, and contract/core
+  module trees were unchanged. This is owner proof only, not the
+  `p08-runtime-supervisor` release/process node.
+- Remaining for P08: the required daemon process rail on a release-bound,
+  final source/binary. The release-bound `p08-runtime-supervisor` node
   remains `NOT_RUN`.
 
 ## Audit corrections
@@ -101,7 +106,7 @@ to validated lane handoffs and immutable proof manifests, not this document.
   exact lane when the scope has unseen rows. Therefore a short ANN result
   alone is not a proven `ExactExhausted` defect. Do not reopen that claim
   without a reachable counterexample.
-- The W10-R3 custody branch has two local commits and is clean at this
+- The W10-R3 custody branch has at least three local commits and was clean at this
   inspection. It adds source immutability proof, but its legacy migration
   owner test still asserts that RepoMap activation bytes land only under
   non-serving `legacy-import/`. This does not establish active-authority
