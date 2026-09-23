@@ -12,8 +12,8 @@
 #     `RECEIPT_FORMAT`, plus the text normalizer stamp) must be named by
 #     exactly one `[[artifact]]` with the value the code declares.
 #   * every `[[tool_artifact]]` must name its owner, producer, consumers,
-#     decoder, compatibility rule and JSON schema; the registered version
-#     must equal that schema's `schema_version` constant.
+#     decoder, compatibility rule and JSON schema; every version accepted by
+#     that schema must have exactly one inventory row.
 #
 # The `reproduction` field is the cutover classification plan §11 asks for:
 #
@@ -101,6 +101,19 @@ decoder = "tools/ci/write-verification-receipt.py"
 compatibility = "Legacy CI receipt only; ProofManifestV1 validators never accept it as release authority. It is replaced, not upgraded live."
 migration_fixture = "verification_receipt_v1_not_release_authority"
 notes = "Retained temporarily for existing CI consumers. S21-13 removes it after all producers emit ProofManifestV1."
+
+[[tool_artifact]]
+id = "verification-receipt-v2-retrieval"
+owner = "tools/ci/write-verification-receipt.py"
+path = "retrieval run output/*_receipt.json"
+producer = "tools/ci/write-verification-receipt.py --source-closure --input-evidence"
+consumers = ["tools/benchmark/retrieval/run.py"]
+version = 2
+schema_file = "tools/ci/verification-receipt.schema.json"
+decoder = "tools/benchmark/retrieval/run.py"
+compatibility = "Retrieval verification accepts only schema 2 with source closure and raw input evidence; the schema 1 CI receipt is refused. Neither version is a ProofManifestV1 release receipt."
+migration_fixture = "verification_receipt_v1_refused_by_retrieval"
+notes = "Separate retrieval-authoritative receipt. Its source closure, input digests, result counts and command are checked before a benchmark verdict."
 
 # ---------------------------------------------------------------------------
 # IPC opcodes

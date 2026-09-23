@@ -187,6 +187,43 @@ def test_tools_owned_schema_version_is_checked(tmp_path: Path):
     assert any("inventory version 1 differs from schema const 2" in message for message in found)
 
 
+def test_multiversion_receipt_schema_requires_both_inventory_rows():
+    inventory = MODULE.load_inventory()
+    inventory["tool_artifact"] = [
+        row for row in inventory["tool_artifact"]
+        if row["id"] != "verification-receipt-v2-retrieval"
+    ]
+    findings = messages(MODULE.check_tool_artifacts(inventory, REPO_ROOT))
+    assert any(
+        "schema version 2 has no inventory row" in message
+        and "verification-receipt.schema.json" in message
+        for message in findings
+    )
+
+
+def test_malformed_tool_version_is_a_finding_not_a_checker_crash():
+    inventory = MODULE.load_inventory()
+    row = next(
+        row for row in inventory["tool_artifact"]
+        if row["id"] == "verification-receipt-v2-retrieval"
+    )
+    row["version"] = []
+    findings = messages(MODULE.check_tool_artifacts(inventory, REPO_ROOT))
+    assert any("`version` must be a positive integer" in message for message in findings)
+    assert any("schema version 2 has no inventory row" in message for message in findings)
+
+
+def test_multiversion_receipt_rejects_duplicate_version_claim():
+    inventory = MODULE.load_inventory()
+    row = next(
+        row for row in inventory["tool_artifact"]
+        if row["id"] == "verification-receipt-v2-retrieval"
+    )
+    inventory["tool_artifact"].append({**row, "id": "duplicate-v2"})
+    findings = messages(MODULE.check_tool_artifacts(inventory, REPO_ROOT))
+    assert any("schema version 2 is listed twice" in message for message in findings)
+
+
 def test_ipc_enum_parser_reads_only_opcode_enums():
     enums = MODULE.parse_ipc_enums(textwrap.dedent(SPLIT_RS))
     assert enums == {

@@ -111,6 +111,10 @@ TOOL_MIGRATION_FIXTURES = {
         "tools/ci/tests/test_check_proof_authority.py",
         "test_legacy_verification_receipt_is_not_proof_manifest",
     ),
+    "verification_receipt_v1_refused_by_retrieval": (
+        "tools/ci/tests/test_retrieval_receipt_version_contract.py",
+        "test_retrieval_refuses_legacy_verification_receipt",
+    ),
 }
 
 
@@ -118,6 +122,8 @@ def check_tool_artifacts(inventory: dict, root: Path = ROOT) -> list[Finding]:
     """Validate tools-owned JSON formats that do not have Rust constants."""
     findings: list[Finding] = []
     ids: set[str] = set()
+    schema_versions: dict[str, set[int]] = {}
+    claimed_versions: dict[str, set[int]] = {}
     for row in inventory.get("tool_artifact", []):
         artifact_id = row.get("id")
         where = f"wire-surface.toml [[tool_artifact]] id={artifact_id!r}"
@@ -190,19 +196,59 @@ def check_tool_artifacts(inventory: dict, root: Path = ROOT) -> list[Finding]:
             else:
                 try:
                     schema = json.loads(schema_path.read_text(encoding="utf-8"))
-                    declared = schema["properties"]["schema_version"]["const"]
-                except (OSError, json.JSONDecodeError, KeyError, TypeError) as error:
+                    version_property = schema["properties"]["schema_version"]
+                    if "const" in version_property:
+                        declared = version_property["const"]
+                        if type(declared) is not int or declared < 1:
+                            raise ValueError("schema_version const must be a positive integer")
+                        supported = {declared}
+                    else:
+                        declared = None
+                        values = version_property["enum"]
+                        branches = schema["oneOf"]
+                        if (
+                            not isinstance(values, list)
+                            or not values
+                            or any(type(value) is not int or value < 1 for value in values)
+                            or len(set(values)) != len(values)
+                            or not isinstance(branches, list)
+                        ):
+                            raise ValueError("invalid schema_version enum or oneOf")
+                        branch_versions = [
+                            branch["properties"]["schema_version"]["const"]
+                            for branch in branches
+                        ]
+                        if (
+                            len(branch_versions) != len(values)
+                            or any(type(value) is not int for value in branch_versions)
+                            or set(branch_versions) != set(values)
+                        ):
+                            raise ValueError("oneOf version branches must match schema_version enum")
+                        supported = set(values)
+                except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
                     findings.append(
-                        Finding(where, f"schema has no readable schema_version const: {error}")
+                        Finding(where, f"schema has no readable schema_version contract: {error}")
                     )
                 else:
-                    if declared != version:
+                    schema_versions[schema_file] = supported
+                    if type(version) is not int or version < 1:
+                        continue
+                    if version not in supported:
                         findings.append(
                             Finding(
                                 where,
-                                f"inventory version {version!r} differs from schema const {declared!r}",
+                                f"inventory version {version!r} differs from schema const {declared!r}"
+                                if declared is not None else
+                                f"inventory version {version!r} is not supported by schema {sorted(supported)!r}",
                             )
                         )
+                    elif version in claimed_versions.setdefault(schema_file, set()):
+                        findings.append(Finding(where, f"schema version {version} is listed twice"))
+                    else:
+                        claimed_versions[schema_file].add(version)
+    for schema_file, supported in schema_versions.items():
+        for missing in sorted(supported - claimed_versions.get(schema_file, set())):
+            findings.append(Finding(schema_file, f"schema version {missing} has no inventory row"))
     return findings
 
 
