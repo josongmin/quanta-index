@@ -1097,8 +1097,10 @@ mod tests {
         Ok(())
     }
 
-    /// New binary, old root: a source-side `MIGRATED` receipt is old-binary
-    /// authority this binary does not verify, so the journal is refused
+    /// Refuse a source-side `MIGRATED` receipt from an old binary.
+    ///
+    /// New binary, old root: this binary does not verify that authority,
+    /// so the journal is refused
     /// immutable. A stale `MIGRATED.lock` beside it is inert residue and is
     /// ignored.
     #[test]

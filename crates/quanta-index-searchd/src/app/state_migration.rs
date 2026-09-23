@@ -74,8 +74,10 @@ const LIVE_ROOT_EXCLUSIONS: [&str; 4] = [
     STATE_CATALOG_DIRECTORY,
 ];
 
-/// Exclusions for an inventory taken over a **produced** (staging or
-/// destination) root: only the manifest files themselves.
+/// Exclusions for an inventory taken over a **produced** root.
+///
+/// This includes staging and destination roots. Only the manifest files
+/// themselves are excluded.
 const PRODUCED_ROOT_EXCLUSIONS: [&str; 2] = [
     STATE_ROOT_MANIFEST_FILE_NAME,
     STATE_BACKUP_MANIFEST_FILE_NAME,
@@ -240,9 +242,11 @@ pub enum SourceEntryKindV1 {
     Directory,
 }
 
-/// One frozen source entry: the canonical relative path, the entry type, the
-/// filesystem identity (device, inode, mode, owner, link count), the size,
-/// the mtime, and — for regular files only — the content digest.
+/// One frozen source entry.
+///
+/// This records the canonical relative path, the entry type, the filesystem
+/// identity (device, inode, mode, owner, link count), the size, the mtime,
+/// and — for regular files only — the content digest.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SourceFrozenFileV1 {
     pub relative_path: String,
@@ -394,7 +398,8 @@ impl OfflineSourceSessionV1 {
     ) -> Result<&StateRootLease, CoreError> {
         match &self.custody {
             OfflineSourceCustodyV1::Current(lease) => Ok(lease),
-            _ => Err(typed(
+            OfflineSourceCustodyV1::LegacyReadOnly(_)
+            | OfflineSourceCustodyV1::ProducedBackup(_) => Err(typed(
                 SearchPlaneErrorCodeV2::InvalidRequest,
                 format!(
                     "offline {} requires a current-root session holding the daemon lease",
@@ -412,13 +417,15 @@ impl OfflineSourceSessionV1 {
     ) -> Result<&ReadOnlyRootLeaseV1, CoreError> {
         match &self.custody {
             OfflineSourceCustodyV1::LegacyReadOnly(lease) => Ok(lease),
-            _ => Err(typed(
-                SearchPlaneErrorCodeV2::InvalidRequest,
-                format!(
-                    "offline {} requires a legacy-root read-only session",
-                    operation.command_name(),
-                ),
-            )),
+            OfflineSourceCustodyV1::Current(_) | OfflineSourceCustodyV1::ProducedBackup(_) => {
+                Err(typed(
+                    SearchPlaneErrorCodeV2::InvalidRequest,
+                    format!(
+                        "offline {} requires a legacy-root read-only session",
+                        operation.command_name(),
+                    ),
+                ))
+            }
         }
     }
 
@@ -430,13 +437,15 @@ impl OfflineSourceSessionV1 {
     ) -> Result<&ReadOnlyRootLeaseV1, CoreError> {
         match &self.custody {
             OfflineSourceCustodyV1::ProducedBackup(lease) => Ok(lease),
-            _ => Err(typed(
-                SearchPlaneErrorCodeV2::InvalidRequest,
-                format!(
-                    "offline {} requires a produced-backup read-only session",
-                    operation.command_name(),
-                ),
-            )),
+            OfflineSourceCustodyV1::Current(_) | OfflineSourceCustodyV1::LegacyReadOnly(_) => {
+                Err(typed(
+                    SearchPlaneErrorCodeV2::InvalidRequest,
+                    format!(
+                        "offline {} requires a produced-backup read-only session",
+                        operation.command_name(),
+                    ),
+                ))
+            }
         }
     }
 }
@@ -641,7 +650,7 @@ fn frozen_entry_v1(
                 &format_args!("{error}"),
             )
         })?;
-        return Ok(SourceFrozenFileV1 {
+        Ok(SourceFrozenFileV1 {
             relative_path: relative.to_string(),
             entry_kind,
             device: metadata.dev(),
@@ -658,7 +667,7 @@ fn frozen_entry_v1(
     #[cfg(not(unix))]
     {
         let _ = metadata;
-        return Ok(SourceFrozenFileV1 {
+        Ok(SourceFrozenFileV1 {
             relative_path: relative.to_string(),
             entry_kind,
             device: 0,
@@ -697,8 +706,9 @@ pub struct OfflineStateVerificationV1 {
     pub catalog_rows: u64,
 }
 
-/// Resolve and refuse the destination of an offline operation before any
-/// mutation. The source already stands pinned in the session; the
+/// Resolve and refuse an offline operation's destination before mutation.
+///
+/// The source already stands pinned in the session; the
 /// destination must be fresh, outside the source tree (a destination inside
 /// the source would mutate it), and not an alias of the source reached
 /// through a symlink.
@@ -1010,11 +1020,11 @@ pub fn run_offline_backup_v1(
     let objects = inventory_state_root_v1(source, &LIVE_ROOT_EXCLUSIONS)?;
     let directories = inventory_state_directories_v1(source, &LIVE_ROOT_EXCLUSIONS)?;
     let staging = prepare_staging_v1(&destination)?;
-    copy_data_objects_v1(&source, &staging, &directories, &objects)?;
+    copy_data_objects_v1(source, &staging, &directories, &objects)?;
     let catalog_dir = staging.join(STATE_CATALOG_DIRECTORY);
     create_private_directory_v1(&catalog_dir)?;
     let freeze =
-        catalog.snapshot_into(&source, &catalog_dir.join(STATE_BACKUP_CATALOG_FILE_NAME))?;
+        catalog.snapshot_into(source, &catalog_dir.join(STATE_BACKUP_CATALOG_FILE_NAME))?;
     if !freeze.is_consistent() {
         return Err(typed(
             SearchPlaneErrorCodeV2::CatalogRowCorrupt,
@@ -1071,7 +1081,7 @@ pub fn run_offline_restore_v1(
     let objects = inventory_state_root_v1(source, &PRODUCED_ROOT_EXCLUSIONS)?;
     let directories = inventory_state_directories_v1(source, &PRODUCED_ROOT_EXCLUSIONS)?;
     let staging = prepare_staging_v1(&destination)?;
-    copy_data_objects_v1(&source, &staging, &directories, &objects)?;
+    copy_data_objects_v1(source, &staging, &directories, &objects)?;
     let staged_catalog = staging
         .join(STATE_CATALOG_DIRECTORY)
         .join(STATE_BACKUP_CATALOG_FILE_NAME);

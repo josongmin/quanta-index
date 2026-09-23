@@ -118,10 +118,10 @@ pub fn supervise_runtime(
     if let Err(failure) = spawn_maintenance_child(&mut supervisor, maintenance) {
         return supervisor.rollback(failure.name);
     }
-    if let Some(pool) = attempt_pool {
-        if let Err(failure) = spawn_provider_child(&mut supervisor, pool, hard_deadline) {
-            return supervisor.rollback(failure.name);
-        }
+    if let Some(pool) = attempt_pool
+        && let Err(failure) = spawn_provider_child(&mut supervisor, pool, hard_deadline)
+    {
+        return supervisor.rollback(failure.name);
     }
     if let Err(failure) = spawn_accept_child(
         &mut supervisor,
