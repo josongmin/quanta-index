@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -4477,6 +4478,26 @@ def test_retrieval_recipes_download_nothing():
         text = "\n".join(bodies[name]).lower()
         for verb in verbs:
             assert verb not in text, f"{name} downloads via {verb}"
+
+
+def test_retrieval_verdict_recipe_matches_cli_parser():
+    root = Path(pairrun.__file__).resolve().parents[3]
+    values = ("/tmp/repo", "/tmp/suite.json", "/tmp/run-manifest.json", "/tmp/verdict.json")
+    completed = subprocess.run(
+        ["just", "--dry-run", "retrieval-verdict", *values],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    rendered = completed.stderr.strip() or completed.stdout.strip()
+    command = shlex.split(rendered)
+    assert command[:2] == ["python3", "tools/benchmark/retrieval/run.py"]
+    parsed = pairrun.build_parser().parse_args(command[2:])
+    assert (parsed.command, parsed.repo, parsed.suite, parsed.run_manifest, parsed.out) == (
+        "verdict",
+        *values,
+    )
 
 
 def _g0_manifest() -> dict:

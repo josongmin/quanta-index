@@ -1,12 +1,12 @@
 # SEP-23 Retrieval Benchmark — Ticket Index
 
-Status: `implementation-landed / qualification-blocked`. The benchmark machinery is present, but no W0-B pilot freeze, paired pilot receipt, or qualified quality/performance verdict exists. This packet is not evidence that Quanta beats Semble.
+Status: `contract-and-capture-paths-landed / qualified-speed-unimplemented / qualification-blocked`. The benchmark machinery is present, but the shared warm-query speed protocol is not implemented and no W0-B pilot freeze, paired pilot receipt, or qualified quality/performance verdict exists. This packet is not evidence that Quanta beats Semble.
 
 Required verification contract: [TEST-PLAN.md](TEST-PLAN.md). Its T00–T17 matrix and qualification ladder are part of every ticket's acceptance, not optional follow-up work.
 
 ## Current code audit (2026-09-24)
 
-Latest implementation audit started at `54cfb96fad859f733c1e095612016a82cff4945b`; the shared `main` continued advancing during implementation and was observed at `41068a5e53f45f2f0dfea996614e87454ef0c3f6` after the receipt-schema commits. The changes and results below are working-tree implementation evidence, not an exact-source qualification receipt. Retrieval receipts bind a v2 source closure: the transitive local Cargo package set plus retrieval proof tools/schemas, exact file list, per-file SHA-256 and full Git revision. Unrelated dirty paths are allowed; a relevant dirty/add/remove/HEAD change refuses capture or receipt issuance. Re-freeze the final HEAD after shared-writer activity stops.
+The current audit started at clean `main` `fa17e0f14672548bf7116074b7064c7c5e455d03`; the retrieval source-closure check accepted 785 files, but no source-bound contract/SDK receipt or real pair was located in the repository. The `retrieval-verdict` Just recipe still passed three CLI arguments removed by the v3 driver; this audit repaired the recipe and added a parser-backed regression. Re-freeze after those changes. The results below were collected during the earlier `54cfb96`–`41068a5` dirty-checkout implementation audit and are historical implementation evidence, not current-source qualification. Retrieval receipts bind a v2 source closure: the transitive local Cargo package set plus retrieval proof tools/schemas, exact file list, per-file SHA-256 and full Git revision. Unrelated dirty paths are allowed; a relevant dirty/add/remove/HEAD change refuses capture or receipt issuance.
 
 | Ticket / wave | Current code state | Remaining terminal condition |
 | --- | --- | --- |
@@ -18,10 +18,10 @@ Latest implementation audit started at `54cfb96fad859f733c1e095612016a82cff4945b
 | RB-05 / W2 | Pair orchestration, immutable staging, admission/manifest/verdict validation, deterministic re-score and conditional T15/T16 handling are implemented. Exploratory scope cannot emit qualified quality/performance. Qualified cold speed binds one shared query order, zero one-sided warmups, monotonic phase boundaries, typed positive index bytes and fail-closed host telemetry. Isolated capture uses a default-deny Seatbelt allowlist over an exact Git-free corpus. | No admitted paired pilot has exercised the performance or isolation authority. Symmetric warm-cache qualification and non-macOS isolation backends are not implemented. |
 | RB-06 / W3 | Named proof/capture/verdict/host-profile commands and Rust integration targets exist. Receipt v2 binds the retrieval source closure plus role-tagged raw JUnit/nextest/runner evidence, which the verdict reparses. | No final clean-source contract/SDK receipt or real paired verdict exists; pilot/broader qualification remain unrun. |
 
-Latest focused execution on the dirty shared checkout:
+Historical focused execution on the earlier dirty shared checkout:
 
-- `python3 -m pytest tools/ci/tests/test_retrieval_benchmark.py tools/ci/tests/test_write_verification_receipt.py -q`: 157 passed, 0 failed on the current dirty implementation tree. This is not a qualification receipt.
-- Retrieval Rust package inventory is now 63 tests. On the current dirty implementation tree, the 49 lib/chunking tests, 12 explicit-searchd-pinned SDK tests, and 2 binary contract tests all passed; this split execution is implementation evidence, not a receipt.
+- `python3 -m pytest tools/ci/tests/test_retrieval_benchmark.py tools/ci/tests/test_write_verification_receipt.py -q`: historical 157 passed, 0 failed on the earlier dirty implementation tree. This is not a qualification receipt or a current-source count.
+- The earlier retrieval Rust package inventory was 63 tests. On that dirty implementation tree, the 49 lib/chunking tests, 12 explicit-searchd-pinned SDK tests, and 2 binary contract tests passed; this split execution is implementation evidence, not a current-source receipt.
 - The 12-test parallel SDK run marked `stale_state_root_is_refused` as nextest `LEAK` while passing; its immediate isolated rerun passed in 0.013s without a leak marker. Preserve this as scheduler/process-attribution noise to recheck on the final clean receipt instead of hiding it or promoting it to a product failure.
 - A deliberately unpinned package-only nextest invocation remains expected to fail live daemon tests with `searchd binary is not pinned`; this is not a qualified Rust receipt and confirms the pin is mandatory outside the registered proof recipe.
 - On `f2897a28`, live SDK tests initially reproduced `STATE_ROOT_FORMAT_UNSUPPORTED` because the harness placed logs inside the fresh state root. Commit `7d4994b9` moved logs to sibling evidence without weakening state-format detection. The current 63-test inventory adds exact materialized-corpus coverage.
@@ -51,7 +51,7 @@ Implemented authorities:
 - `tools/benchmark/retrieval/{evaluator.py,suite.schema.json,runner.schema.json}`: v3 frozen-label validation, blind query pack, byte-span/context-budget scoring and legacy v1/v2 migration reads. Candidate generation remains runner-owned.
 - `quanta-index-sdk::SearchCorpusBatch::{replace_generation,replace_scope,replace_semantic_scope}`, `SearchCorpusNamespace::publish_and_activate`, and SDK query namespaces: product ingest/read path. The benchmark must not use `E2eRuntime::ingest_text*` or dispatch IPC directly.
 - Existing search-quality/latency rails remain engine regression and operational evidence. They are not replaced or reclassified as real-repository retrieval quality.
-- Current checkout has unrelated in-flight changes, including a local `potion-code`/Model2Vec path. No clean-source, model-backed head-to-head qualification exists merely because that code is present. Freeze a clean implementation and model asset digest before quality capture.
+- The `potion-code`/Model2Vec path is present in committed code. Its presence is not a model-backed head-to-head qualification. Freeze the exact implementation and model asset digest before quality capture.
 
 ## Repository layout
 

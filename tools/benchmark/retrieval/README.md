@@ -260,14 +260,17 @@ python3 -m tools.benchmark.retrieval.semble check \
   --python /absolute/semble-venv/bin/python
 ```
 
-This pins the installed package inventory; it does not prove which model
+The external lockfile and installed-distribution checks pin the declared
+environment; they do not by themselves prove which model
 weights Semble loaded. The adapter sets Semble's documented
 `SEMBLE_MODEL_NAME` to the requested model and verifies the worker-reported
 setting. It also requires an observed Hugging Face
 cache revision and rejects a supplied revision that disagrees with it.
-`same_model` remains an external claim needing its own evidence. The paired
-driver records `attested` blinding, so its output alone cannot qualify an
-isolated-blind quality or phase-qualified speed verdict.
+`same_model` remains an external claim needing its own evidence. An
+`attested` pair cannot qualify isolated-blind quality. The macOS paired
+driver can instead attempt `isolated` capture under its verified Seatbelt
+policy; the verdict still requires the frozen isolation proof. Neither mode
+alone qualifies speed.
 
 Qualified capture runs the canonical retrieval source-closure check before staging;
 dirty relevant source is a hard refusal. The closure is frozen into the run,
@@ -301,9 +304,10 @@ cannot be upgraded by editing its claim fields.
 
 Notes: the first Semble index includes the model download (later runs reuse
 the cache; `index_stats` and `semble_index_ms` always record what ran).
-Partial output is never resumed — rerun from a fresh output root. For
-`just retrieval-verdict`, pass space-separated record paths as one quoted
-`records` argument.
+Partial output is never resumed — rerun from a fresh output root. To re-score
+a frozen pair, use `just retrieval-verdict <repo> <suite> <run-manifest> <out>`.
+The verdict resolves and revalidates record/report paths from the manifest;
+there are no separate records, route, or baseline CLI arguments.
 
 ## T00–T17 evidence map
 
@@ -333,7 +337,9 @@ evidence exists yet; conditional IDs apply only when the claim is made.
 
 Current closeout blockers are explicit: the contract/SDK receipt recipes must
 be run and frozen from one v2 source closure; the generic workspace rail must
-record a post-change frozen-source GREEN; the Seatbelt isolation authority and
-phase/process-tree RSS authority still need a real admitted quiet-host pair
-meeting their proof and sample floors. The commands above prove code paths, not W0-B,
-`PAIR_VALID`, `PERF_QUALIFIED` or `QUALITY_DELTA`.
+record a post-change frozen-source result; and the Seatbelt isolation and
+phase/process-tree RSS paths still need a real admitted quiet-host pair
+meeting their proof and sample floors. The commands above prove code paths,
+not W0-B, `PAIR_VALID`, `PERF_QUALIFIED` or `QUALITY_DELTA`. No tracked
+real-pair `run-manifest.json` or `verdict.json` is a benchmark result here;
+external evidence must be supplied and revalidated before a quality claim.

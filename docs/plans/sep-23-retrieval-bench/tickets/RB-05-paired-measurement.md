@@ -1,6 +1,6 @@
 # RB-05 — Paired Quality, Speed and Resource Measurement
 
-Status: `orchestration-and-perf-authority-landed / measurement-blocked`
+Status: `orchestration-and-diagnostic-perf-landed / qualified-speed-unimplemented / measurement-blocked`
 
 Depends on: RB-01, RB-02, RB-03, RB-04; requires RB-00 stage B measurement-entry gate
 

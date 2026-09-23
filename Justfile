@@ -422,8 +422,8 @@ retrieval-pair spec:
 
 # Retrieval benchmark: re-score immutable records into the TEST-PLAN §8
 # verdict artifact (deterministic re-score path, T13).
-retrieval-verdict repo suite records run_manifest baseline candidate out:
-    python3 tools/benchmark/retrieval/run.py verdict --repo {{repo}} --suite {{suite}} --records {{records}} --run-manifest {{run_manifest}} --baseline-route {{baseline}} --candidate-route {{candidate}} --out {{out}}
+retrieval-verdict repo suite run_manifest out:
+    python3 tools/benchmark/retrieval/run.py verdict --repo {{repo}} --suite {{suite}} --run-manifest {{run_manifest}} --out {{out}}
 
 # Retrieval benchmark: host check-record (identity, load, thermal/frequency).
 retrieval-host-probe out="":
