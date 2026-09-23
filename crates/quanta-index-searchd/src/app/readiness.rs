@@ -37,6 +37,15 @@ pub(crate) struct ProvenActive {
     scrub_epoch: (u64, u64),
 }
 
+impl ProvenActive {
+    pub(crate) fn new(identity: Vec<SearchCorpusGenerationV1>, scrub_epoch: (u64, u64)) -> Self {
+        Self {
+            identity,
+            scrub_epoch,
+        }
+    }
+}
+
 impl ProcessReadinessPort for RuntimeReadiness {
     fn readiness(&self) -> Result<ProcessReadinessV1, CoreError> {
         let before = self.activation_catalog.active_inventory_v1()?;
@@ -63,10 +72,7 @@ impl ProcessReadinessPort for RuntimeReadiness {
                 let after = self.activation_catalog.active_inventory_v1()?;
                 let valid = matches!(proof, Ok(count) if count == before.0.len() && after == before)
                     && self.scrub.proof_invalidation_epoch() == scrub_epoch;
-                *cached_proof = valid.then(|| ProvenActive {
-                    identity: before.0.clone(),
-                    scrub_epoch,
-                });
+                *cached_proof = valid.then(|| ProvenActive::new(before.0.clone(), scrub_epoch));
                 drop(cached_proof);
                 Some(valid)
             }

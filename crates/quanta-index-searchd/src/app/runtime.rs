@@ -78,7 +78,7 @@ use crate::app::ipc_dispatcher::{
     SearchPlaneControlIpcAdapter, SearchPlaneIngestIpcAdapter, SearchPlaneQueryIpcAdapter,
 };
 use crate::app::maintenance::{MaintenanceMetricSource, MaintenanceParts, MaintenanceTimer};
-use crate::app::readiness::RuntimeReadiness;
+use crate::app::readiness::{ProvenActive, RuntimeReadiness};
 use crate::app::semantic_boot;
 use crate::app::server::{
     SearchPlaneControlServer, SearchPlaneIngestServer, SearchPlaneQueryServer,
@@ -1604,7 +1604,8 @@ impl SearchdRuntime {
             // scrub tally starts at zero; any finding before the first
             // readiness poll invalidates this cache entry.
             proven_active: Mutex::new(
-                (!boot_proven_active.is_empty()).then_some((boot_proven_active, (0, 0))),
+                (!boot_proven_active.is_empty())
+                    .then(|| ProvenActive::new(boot_proven_active, (0, 0))),
             ),
         });
         let control_dispatcher = Arc::new(SearchPlaneControlDispatcher::new(
