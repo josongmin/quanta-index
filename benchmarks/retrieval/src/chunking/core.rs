@@ -10,9 +10,23 @@ use crate::corpus::SourceFile;
 use crate::{BenchError, BenchResult, sha256_hex};
 
 pub const STRATEGY_WHOLE_FILE: &str = "whole_file";
-pub const STRATEGY_FIXED_WINDOW: &str = "fixed_window";
-pub const STRATEGY_SYNTAX: &str = "syntax";
-pub const CHUNKER_VERSION: &str = "rb03-v1";
+pub const STRATEGY_FIXED_WINDOW_STRICT: &str = "fixed_window_strict";
+pub const STRATEGY_FIXED_WINDOW_LINE_ALIGNED: &str = "fixed_window_line_aligned";
+pub const STRATEGY_BRACE_HEURISTIC: &str = "brace_heuristic";
+pub const CHUNKER_VERSION: &str = "rb03-v2";
+
+/// Validate a CLI strategy as a frozen v3 record name. Unknown names
+/// refuse; the record never carries a non-frozen strategy string.
+#[must_use]
+pub fn record_strategy_name(name: &str) -> Option<&'static str> {
+    match name {
+        STRATEGY_WHOLE_FILE => Some(STRATEGY_WHOLE_FILE),
+        STRATEGY_FIXED_WINDOW_STRICT => Some(STRATEGY_FIXED_WINDOW_STRICT),
+        STRATEGY_FIXED_WINDOW_LINE_ALIGNED => Some(STRATEGY_FIXED_WINDOW_LINE_ALIGNED),
+        STRATEGY_BRACE_HEURISTIC => Some(STRATEGY_BRACE_HEURISTIC),
+        _ => None,
+    }
+}
 
 /// One emitted chunk. Byte offsets are end-exclusive; line spans are 1-based
 /// inclusive. `chunk_id` binds strategy, version, config, span and content.
@@ -89,6 +103,10 @@ pub fn count_tokens(text: &str) -> usize {
 pub trait Chunker {
     fn name(&self) -> &'static str;
     fn config(&self) -> String;
+    /// Structured v3 `chunk_config` object: only the frozen keys
+    /// (`window_bytes`, `overlap_bytes`, `max_item_bytes`, `alignment`,
+    /// `byte_cap_strict`) with their frozen value types.
+    fn config_value(&self) -> serde_json::Value;
     fn chunk(&self, file: &SourceFile) -> BenchResult<Vec<Chunk>>;
 }
 

@@ -32,11 +32,12 @@ python3 -m tools.benchmark.retrieval freeze \
 ./scripts/cargow --lane bench-lane run -p quanta-index-retrieval-bench \
   --bin quanta-index-retrieval-bench --locked -- run \
   --repo /absolute/clean/repository --manifest /absolute/manifest.json \
-  --query-pack /absolute/query-pack.json --strategy syntax \
+  --query-pack /absolute/query-pack.json --strategy brace_heuristic \
   --routes lexical,semantic,hybrid --top-k 20 \
   --repo-id benchmark-repo --revision-id pinned-revision --generation 1 \
   --state-root /absolute/fresh-state-root \
   --searchd-bin /absolute/quanta-index-searchd \
+  --searchd-expected-sha256 <lowercase-sha256-of-searchd> \
   --runner-name quanta-sdk --runner-revision pinned-revision --run-id run-1 \
   --blinding attested --isolation-method query-pack-only \
   --access-block-log runner-was-not-given-gold \
@@ -199,7 +200,7 @@ keys: `repo`, `manifest`, `suite`, `query_pack`, `top_k`, `output_root`,
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `routes` | `["lexical","semantic","hybrid"]` | Quanta routes (must be suite routes) |
-| `strategies` | required for `quanta`/`pair` | e.g. `[{"name":"whole_file"},{"name":"syntax"}]` |
+| `strategies` | required for `quanta`/`pair` | e.g. `[{"name":"whole_file"},{"name":"brace_heuristic"}]` |
 | `searchd_binary` | runtime resolution | explicit daemon pin (recommended) |
 | `embedder` | `potion-code` | Rust runner embedder profile (`hash-dev` is an explicit diagnostic control) |
 | `repo_id`/`revision_id`/`generation` | `bench-repo`/`bench-rev`/`7` | batch identity |
@@ -207,7 +208,8 @@ keys: `repo`, `manifest`, `suite`, `query_pack`, `top_k`, `output_root`,
 | `blinding` | `attested` | only `attested` is supported today |
 | `isolation_method`/`access_block_log` | `attested-only…` | blinding evidence text |
 | `semble_python` | required for `pair` | pinned Semble venv interpreter |
-| `semble_lockfile_sha256` | required for `pair` | SHA-256 of successful Semble `pip freeze` preflight; drift fails |
+| `semble_lockfile` | required for `pair` | external hash-pinned lockfile path (frozen into the stage) |
+| `semble_lockfile_sha256` | required for `pair` | SHA-256 of the external lockfile; env must carry every locked line plus `semble==0.6.0` |
 | `semble_route` | `semble-hybrid` | Semble record route name |
 | `semble_cache_root` | `<out>/semble-cache` | Semble + HF caches (outside checkout) |
 | `semble_repetitions`/`seed` | `1`/`0` | worker query sampling (1 untimed warmup pass) |
@@ -221,8 +223,11 @@ keys: `repo`, `manifest`, `suite`, `query_pack`, `top_k`, `output_root`,
 | `evidence` | `{}` | external contract/SDK receipts; cannot override driver-observed `pair` or `perf` |
 | `timeout_secs` | `1800` | per-capture timeout |
 
-Before a paired run, preflight the exact external Semble virtualenv and copy
-the reported `lockfile_sha256` into `semble_lockfile_sha256` in the spec:
+Before a paired run, author a hash-pinned external lockfile for the exact
+Semble virtualenv, put its path in `semble_lockfile` and its SHA-256 in
+`semble_lockfile_sha256`, then preflight the env (the observed `pip freeze`
+must carry every locked line; the recorded `installed_distribution`
+RECORD/direct_url digests identify the installed bytes):
 
 ```sh
 python3 -m tools.benchmark.retrieval.semble check \

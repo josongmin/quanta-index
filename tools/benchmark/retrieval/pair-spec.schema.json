@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://quanta-index.invalid/benchmark/retrieval/pair-spec-v1",
+  "title": "Retrieval pair/quanta capture spec v1 (W0-A comparison contract)",
+  "description": "Structural contract for the JSON spec consumed by run.py quanta/pair. Claims are strict booleans (the string \"false\" is never a claim). runner_revision is derived, never supplied. searchd pin is mandatory: an unpinned capture cannot produce a qualified verdict. Semble keys are optional here but run_pair refuses a pair spec without semble_python + semble_lockfile + semble_lockfile_sha256.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["repo", "manifest", "suite", "query_pack", "top_k", "output_root", "runner_binary", "strategies", "searchd_binary", "searchd_expected_sha256"],
+  "properties": {
+    "repo": {"type": "string", "minLength": 1},
+    "manifest": {"type": "string", "minLength": 1},
+    "suite": {"type": "string", "minLength": 1},
+    "query_pack": {"type": "string", "minLength": 1},
+    "top_k": {
+      "type": "integer", "minimum": 1,
+      "description": "Must equal suite comparison_contract.top_k; the driver checks this before any capture."
+    },
+    "output_root": {"type": "string", "minLength": 1},
+    "runner_binary": {"type": "string", "minLength": 1},
+    "strategies": {
+      "type": "array", "minItems": 1,
+      "items": {"$ref": "#/$defs/strategy"}
+    },
+    "searchd_binary": {"type": "string", "minLength": 1},
+    "searchd_expected_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "routes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "blinding": {"enum": ["isolated", "attested"]},
+    "isolation_method": {"type": "string", "minLength": 1},
+    "access_block_log": {"type": "string", "minLength": 1},
+    "scope": {"enum": ["exploratory", "qualified"]},
+    "run_id": {"type": "string", "minLength": 1},
+    "runner_name": {"type": "string", "minLength": 1},
+    "repo_id": {"type": "string", "minLength": 1},
+    "revision_id": {"type": "string", "minLength": 1},
+    "generation": {"type": "integer", "minimum": 0},
+    "embedder": {"enum": ["potion-code", "hash-dev"]},
+    "cache_regime": {"enum": ["true_process_cold", "warm_cache", "undeclared"]},
+    "seed": {"type": "integer", "minimum": 0},
+    "timeout_secs": {"type": "integer", "minimum": 1},
+    "repetitions": {"type": "integer", "minimum": 1},
+    "alternate_order": {"type": "boolean"},
+    "order": {
+      "type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true,
+      "items": {"enum": ["quanta", "semble"]}
+    },
+    "semble_route": {"type": "string", "minLength": 1},
+    "semble_python": {"type": "string", "minLength": 1},
+    "semble_lockfile": {"type": "string", "minLength": 1},
+    "semble_lockfile_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "semble_cache_root": {"type": "string", "minLength": 1},
+    "semble_model_revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "semble_repetitions": {"type": "integer", "minimum": 1},
+    "baseline_route": {"type": "string", "minLength": 1},
+    "candidate_route": {"type": "string", "minLength": 1},
+    "host_profile": {
+      "type": "string", "minLength": 1,
+      "description": "Canonical quiet-host profile name. Optional in the schema; run_pair refuses a pair spec without it."
+    },
+    "claims": {"$ref": "#/$defs/claims"},
+    "receipts": {
+      "type": "object", "additionalProperties": false,
+      "description": "Paths to externally produced receipt/result artifacts. The driver freezes them by copying into the stage; the verdict re-verifies the frozen bytes. No evidence content travels through the spec.",
+      "properties": {
+        "contract_python_receipt": {"type": "string", "minLength": 1},
+        "contract_python_results": {"type": "string", "minLength": 1},
+        "contract_rust_receipt": {"type": "string", "minLength": 1},
+        "contract_rust_results": {"type": "string", "minLength": 1},
+        "sdk_receipt": {"type": "string", "minLength": 1},
+        "sdk_results": {"type": "string", "minLength": 1},
+        "model_parity_results": {"type": "string", "minLength": 1},
+        "incremental_results": {"type": "string", "minLength": 1}
+      }
+    },
+    "contention_override": {
+      "type": "boolean",
+      "description": "Operator-declared contention acknowledgement. Recorded in the host artifacts; any speed claim with contention or override is diagnostic-only."
+    }
+  },
+  "$defs": {
+    "strategy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": {"enum": ["whole_file", "fixed_window_strict", "fixed_window_line_aligned", "brace_heuristic"]},
+        "window_bytes": {"type": "integer", "minimum": 1},
+        "overlap_bytes": {"type": "integer", "minimum": 0},
+        "max_item_bytes": {"type": "integer", "minimum": 1}
+      }
+    },
+    "claims": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "quality": {"type": "boolean"},
+        "speed": {"type": "boolean"},
+        "same_model": {"type": "boolean"},
+        "incremental": {"type": "boolean"}
+      }
+    }
+  }
+}

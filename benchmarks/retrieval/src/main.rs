@@ -1,7 +1,7 @@
 //! `quanta-index-retrieval-bench`: real-repository SDK runner binary.
 //!
 //! `run` loads an admitted manifest, chunks it, boots a real `searchd`,
-//! publishes through the public SDK, queries SDK routes and emits a v2
+//! publishes through the public SDK, queries SDK routes and emits a v3
 //! runner record. `chunk` inspects chunking without a daemon. Unknown flags
 //! fail; nothing is guessed.
 
@@ -12,22 +12,26 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use quanta_index_retrieval_bench::batch::{BatchIdentity, assemble_batch};
+use quanta_index_retrieval_bench::batch::{
+    BatchIdentity, activation_digest, assemble_batch, receipt_digest,
+};
 use quanta_index_retrieval_bench::chunking::{
-    Chunker, CoverageReport, STRATEGY_FIXED_WINDOW, STRATEGY_SYNTAX, STRATEGY_WHOLE_FILE,
-    chunk_corpus, fixed_window::FixedWindowChunker, syntax::SyntaxChunker,
-    whole_file::WholeFileChunker,
+    Chunker, CoverageReport, STRATEGY_BRACE_HEURISTIC, STRATEGY_FIXED_WINDOW_LINE_ALIGNED,
+    STRATEGY_FIXED_WINDOW_STRICT, STRATEGY_WHOLE_FILE, chunk_corpus,
+    fixed_window::FixedWindowChunker, fixed_window::StrictWindowChunker, record_strategy_name,
+    syntax::SyntaxChunker, whole_file::WholeFileChunker,
 };
 use quanta_index_retrieval_bench::corpus::{
     CorpusLimits, SourceFile, load_corpus, load_manifest, verify_checkout,
 };
 use quanta_index_retrieval_bench::profile::EmbedderProfile;
 use quanta_index_retrieval_bench::record::{
-    QueryPack, RouteProvenance, RunnerIdentity, RunnerRecordInput, load_query_pack, runner_record,
+    CaptureProvenance, QueryPack, RouteProvenance, RunnerIdentity, RunnerRecordInput,
+    load_query_pack, runner_record,
 };
 use quanta_index_retrieval_bench::sdk::{
     DEFAULT_IO_TIMEOUT, DEFAULT_READY_TIMEOUT, DaemonConfig, DaemonSession, QueryOutcome,
-    RouteQuery, publish_and_activate, query_route,
+    RouteQuery, publish_and_activate, query_route, resolve_searchd_binary, verify_searchd_digest,
 };
 use quanta_index_retrieval_bench::{BenchError, BenchResult, sha256_hex};
 
@@ -43,17 +47,18 @@ fn print_help() -> BenchResult<()> {
         .write_all(
             b"quanta-index-retrieval-bench run|chunk [flags]\n\
          \n\
-         run: manifest -> chunks -> real searchd publish/activate -> SDK queries -> v2 record\n\
+         run: manifest -> chunks -> real searchd publish/activate -> SDK queries -> v3 record\n\
          chunk: manifest -> chunks + coverage JSON (no daemon)\n\
          \n\
-         shared: --repo PATH --manifest PATH --strategy whole_file|fixed_window|syntax\n\
-         fixed_window: --window-bytes N (default 4000) --overlap-bytes N (default 400)\n\
-         syntax: --max-item-bytes N (default 32768)\n\
+         shared: --repo PATH --manifest PATH --strategy whole_file|fixed_window_strict|fixed_window_line_aligned|brace_heuristic\n\
+         fixed_window_*: --window-bytes N (default 4000) --overlap-bytes N (default 400)\n\
+         brace_heuristic: --max-item-bytes N (default 32768)\n\
          run adds: --query-pack PATH --routes a,b --top-k N --state-root PATH\n\
          --repo-id ID --revision-id ID --generation N\n\
          --runner-name NAME --runner-revision REV --run-id ID\n\
          --blinding attested --isolation-method TEXT --access-block-log TEXT\n\
-         --out PATH [--searchd-bin PATH] [--embedder potion-code|hash-dev]\n\
+         --searchd-bin PATH --searchd-expected-sha256 HEX\n\
+         --out PATH [--embedder potion-code|hash-dev]\n\
          [--max-file-bytes N]\n\
          [--io-timeout-secs N] [--ready-timeout-secs N]\n",
         )
@@ -167,6 +172,7 @@ fn parse_routes(raw: &str) -> BenchResult<Vec<&'static str>> {
 struct ChunkSelection {
     name: String,
     config: String,
+    config_value: serde_json::Value,
     chunks: BTreeMap<String, Vec<quanta_index_retrieval_bench::chunking::Chunk>>,
     coverage: CoverageReport,
 }
@@ -183,11 +189,26 @@ fn chunk_with_strategy(
             Ok(ChunkSelection {
                 name: chunker.name().to_string(),
                 config: chunker.config(),
+                config_value: chunker.config_value(),
                 chunks,
                 coverage,
             })
         }
-        STRATEGY_FIXED_WINDOW => {
+        STRATEGY_FIXED_WINDOW_STRICT => {
+            let chunker = StrictWindowChunker::new(
+                optional_usize(args, "window-bytes", 4000)?,
+                optional_usize(args, "overlap-bytes", 400)?,
+            );
+            let (chunks, coverage) = chunk_corpus(&chunker, files)?;
+            Ok(ChunkSelection {
+                name: chunker.name().to_string(),
+                config: chunker.config(),
+                config_value: chunker.config_value(),
+                chunks,
+                coverage,
+            })
+        }
+        STRATEGY_FIXED_WINDOW_LINE_ALIGNED => {
             let chunker = FixedWindowChunker::new(
                 optional_usize(args, "window-bytes", 4000)?,
                 optional_usize(args, "overlap-bytes", 400)?,
@@ -196,11 +217,12 @@ fn chunk_with_strategy(
             Ok(ChunkSelection {
                 name: chunker.name().to_string(),
                 config: chunker.config(),
+                config_value: chunker.config_value(),
                 chunks,
                 coverage,
             })
         }
-        STRATEGY_SYNTAX => {
+        STRATEGY_BRACE_HEURISTIC => {
             let chunker = SyntaxChunker::new(optional_usize(
                 args,
                 "max-item-bytes",
@@ -210,6 +232,7 @@ fn chunk_with_strategy(
             Ok(ChunkSelection {
                 name: chunker.name().to_string(),
                 config: chunker.config(),
+                config_value: chunker.config_value(),
                 chunks,
                 coverage,
             })
@@ -368,6 +391,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             "top-k",
             "state-root",
             "searchd-bin",
+            "searchd-expected-sha256",
             "embedder",
             "repo-id",
             "revision-id",
@@ -401,6 +425,12 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         .map_err(|err| usage_error(format!("flag --top-k exceeds u32 range: {err}")))?;
     if top_k == 0 {
         return Err(usage_error("flag --top-k must be positive".to_string()));
+    }
+    if top_k != pack.contract_top_k {
+        return Err(BenchError::Protocol(format!(
+            "flag --top-k={top_k} differs from the query-pack comparison contract top_k={}",
+            pack.contract_top_k
+        )));
     }
     let limits = CorpusLimits {
         max_file_bytes: optional_u64(
@@ -463,7 +493,10 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             out.display()
         )));
     }
-    let searchd_bin = args.flags.get("searchd-bin").map(PathBuf::from);
+    let searchd_bin =
+        resolve_searchd_binary(args.flags.get("searchd-bin").map(PathBuf::from).as_deref())?;
+    let searchd_digest =
+        verify_searchd_digest(&searchd_bin, &required(args, "searchd-expected-sha256")?)?;
     let profile = EmbedderProfile::resolve(args.flags.get("embedder").map(String::as_str))?;
     let blinding = required(args, "blinding")?;
     if blinding != "attested" {
@@ -492,19 +525,21 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     )?);
     let config = DaemonConfig {
         state_root: &state_root,
-        searchd_binary: searchd_bin.as_deref(),
+        searchd_binary: Some(searchd_bin.as_path()),
         embedder: profile.selector,
+        repo_id: &identity.repo_id,
+        revision_id: &identity.revision_id,
         ready_timeout,
         io_timeout,
         history_max_generations: 8,
     };
     let boot_start = Instant::now();
+    // Boot proves the fresh index empty; readiness precedes publish.
     let session = DaemonSession::boot(&config)?;
     let boot_elapsed = boot_start.elapsed();
-    session.assert_index_empty(&identity.repo_id, &identity.revision_id)?;
 
     let publish_start = Instant::now();
-    let (receipt, ack) = publish_and_activate(&session, &batch, None)?;
+    let (receipt, ack) = publish_and_activate(&session, &batch, &identity, None)?;
     let publish_elapsed = publish_start.elapsed();
     let accepted_scopes = usize::try_from(receipt.accepted_replace_scopes).map_err(|err| {
         BenchError::Protocol(format!("receipt scope count cannot fit usize: {err}"))
@@ -517,25 +552,58 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         )));
     }
 
-    let mut provenance = BTreeMap::new();
+    let record_strategy = record_strategy_name(&selection.name).ok_or_else(|| {
+        BenchError::Protocol(format!(
+            "chunk strategy {} has no frozen v3 record name",
+            selection.name
+        ))
+    })?;
+    let receipt_binding = receipt_digest(&receipt)?;
+    let activation_binding = activation_digest(&ack)?;
+    let runner_digest = runner_binary_digest()?;
+    let run_id = required(args, "run-id")?;
+    let runner_name = required(args, "runner-name")?;
+    let mut provenance: BTreeMap<String, RouteProvenance> = BTreeMap::new();
+    let mut captures: BTreeMap<String, CaptureProvenance> = BTreeMap::new();
     for route in routes.iter().copied() {
         let (model, model_revision) = if route == "lexical" {
             ("none:lexical", "not-applicable")
         } else {
             (profile.model_id, profile.model_revision)
         };
+        let capture_id = format!("{run_id}-{route}");
         if provenance
             .insert(
                 route.to_string(),
                 RouteProvenance {
-                    system: "quanta-index".to_string(),
+                    capture_id: capture_id.clone(),
+                },
+            )
+            .is_some()
+        {
+            return Err(BenchError::Protocol(format!("duplicate route: {route}")));
+        }
+        if captures
+            .insert(
+                capture_id.clone(),
+                CaptureProvenance {
+                    chunk_strategy: record_strategy.to_string(),
+                    chunk_config: selection.config_value.clone(),
+                    runner_binary_name: runner_name.clone(),
+                    runner_binary_digest: runner_digest.clone(),
+                    searchd_binary_digest: searchd_digest.clone(),
+                    generation: identity.generation.get(),
+                    receipt_digest: receipt_binding.clone(),
+                    activation_digest: activation_binding.clone(),
                     model: model.to_string(),
                     model_revision: model_revision.to_string(),
                 },
             )
             .is_some()
         {
-            return Err(BenchError::Protocol(format!("duplicate route: {route}")));
+            return Err(BenchError::Protocol(format!(
+                "duplicate capture_id: {capture_id}"
+            )));
         }
     }
     let query_start = Instant::now();
@@ -568,6 +636,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         pack: &pack,
         identity: &identity_block,
         provenance: &provenance,
+        captures: &captures,
         outcomes: &outcomes,
         top_k,
         files: &by_path,
@@ -603,6 +672,21 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         overall.elapsed().as_millis(),
     ))?;
     Ok(())
+}
+
+/// SHA-256 of the actual runner executable at capture time: the
+/// `runner_binary.digest` binding. A replaced binary mid-run cannot keep
+/// the old digest.
+fn runner_binary_digest() -> BenchResult<String> {
+    let exe = std::env::current_exe().map_err(|err| BenchError::Io {
+        path: "<runner-executable>".to_string(),
+        message: format!("cannot resolve the runner executable: {err}"),
+    })?;
+    let bytes = std::fs::read(&exe).map_err(|err| BenchError::Io {
+        path: exe.display().to_string(),
+        message: format!("cannot hash the runner executable: {err}"),
+    })?;
+    Ok(sha256_hex(&bytes))
 }
 
 fn batch_manifest_digest(

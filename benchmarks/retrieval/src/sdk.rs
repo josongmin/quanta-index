@@ -19,6 +19,7 @@ use quanta_index_contract::{
 };
 use quanta_index_sdk::{BatchReceipt, ConnectOptions, QuantaIndex, SdkError, SearchCorpusBatch};
 
+use crate::batch::BatchIdentity;
 use crate::{BenchError, BenchResult};
 
 pub const DEFAULT_READY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -28,54 +29,57 @@ pub const EMBEDDER_ENV: &str = "QUANTA_INDEX_EMBEDDER";
 
 /// Resolve the daemon binary.
 ///
-/// An explicit path or environment override is authoritative: a bad pin
-/// must fail instead of silently selecting another
-/// binary. Only an unset pin permits next-to-runner discovery.
+/// An explicit path or environment pin is authoritative: a bad pin must
+/// fail instead of silently selecting another binary, and an unset pin
+/// refuses outright. There is deliberately no next-to-runner discovery:
+/// the benchmark never measures a daemon it did not explicitly pin.
 pub fn resolve_searchd_binary(explicit: Option<&Path>) -> BenchResult<PathBuf> {
+    resolve_searchd_binary_with_env(explicit, &|key| std::env::var_os(key))
+}
+
+/// [`resolve_searchd_binary`] with an injectable environment lookup, so
+/// tests can prove the refusal without mutating process globals.
+pub fn resolve_searchd_binary_with_env(
+    explicit: Option<&Path>,
+    get_env: &dyn Fn(&str) -> Option<std::ffi::OsString>,
+) -> BenchResult<PathBuf> {
     if let Some(path) = explicit {
         return require_searchd_binary(path, "--searchd-bin");
     }
-    if let Some(path) = std::env::var_os(SEARCHD_BIN_ENV) {
+    if let Some(path) = get_env(SEARCHD_BIN_ENV) {
         return require_searchd_binary(&PathBuf::from(path), SEARCHD_BIN_ENV);
     }
-    let mut tried: Vec<String> = Vec::new();
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    // Compile-time workspace layout (this crate lives two levels below root).
-    for profile in ["debug", "release"] {
-        candidates.push(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../target")
-                .join(profile)
-                .join("quanta-index-searchd"),
-        );
-    }
-    // Runtime target-dir override (custom lanes set CARGO_TARGET_DIR).
-    if let Some(target) = std::env::var_os("CARGO_TARGET_DIR") {
-        let target = PathBuf::from(target);
-        for profile in ["debug", "release"] {
-            candidates.push(target.join(profile).join("quanta-index-searchd"));
-        }
-    }
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(dir) = exe.parent()
-    {
-        candidates.push(dir.join("quanta-index-searchd"));
-        if dir.ends_with("deps")
-            && let Some(parent) = dir.parent()
-        {
-            candidates.push(parent.join("quanta-index-searchd"));
-        }
-    }
-    for candidate in candidates {
-        tried.push(candidate.display().to_string());
-        if candidate.is_file() {
-            return Ok(candidate);
-        }
-    }
     Err(BenchError::Daemon(format!(
-        "searchd binary not found; tried: {} (pass --searchd-bin or set {SEARCHD_BIN_ENV}, or build the searchd package first)",
-        tried.join(", ")
+        "searchd binary is not pinned (pass --searchd-bin or set {SEARCHD_BIN_ENV}); refusing undiscovered daemon binaries",
     )))
+}
+
+/// Verify the resolved daemon binary against the pinned digest.
+///
+/// Returns the observed digest for the capture record. The driver pins
+/// the digest; the runner re-verifies it so a directly invoked binary
+/// cannot measure an unpinned daemon.
+pub fn verify_searchd_digest(binary: &Path, expected_sha256: &str) -> BenchResult<String> {
+    if expected_sha256.len() != 64
+        || !expected_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err(BenchError::Config(
+            "--searchd-expected-sha256 must be a lowercase sha256".to_string(),
+        ));
+    }
+    let bytes = std::fs::read(binary).map_err(|err| BenchError::Io {
+        path: binary.display().to_string(),
+        message: format!("cannot hash the pinned searchd binary: {err}"),
+    })?;
+    let observed = crate::sha256_hex(&bytes);
+    if observed != expected_sha256 {
+        return Err(BenchError::Daemon(
+            "searchd binary digest differs from the pinned digest; refusing to boot".to_string(),
+        ));
+    }
+    Ok(observed)
 }
 
 fn require_searchd_binary(path: &Path, source: &str) -> BenchResult<PathBuf> {
@@ -125,17 +129,32 @@ fn remove_socket_files(state_root: &Path) -> BenchResult<()> {
     Ok(())
 }
 
-/// The daemon requires a 0700 state root; enforce it on roots the runner
-/// creates so a umask-dependent boot can never fail closed spuriously.
+/// The daemon requires a 0700 state root; enforce it on every accepted
+/// root — created or pre-existing-but-empty — so a umask-dependent boot
+/// can never fail closed spuriously, and verify the result.
 #[cfg(unix)]
 fn secure_state_root(state_root: &Path) -> BenchResult<()> {
     use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(state_root, std::fs::Permissions::from_mode(0o700)).map_err(|err| {
-        BenchError::Io {
+    std::fs::set_permissions(state_root, std::fs::Permissions::from_mode(0o700)).map_err(
+        |err| BenchError::Io {
             path: state_root.display().to_string(),
             message: format!("failed to secure state root mode 0700: {err}"),
-        }
-    })
+        },
+    )?;
+    let mode = std::fs::metadata(state_root)
+        .map_err(|err| BenchError::Io {
+            path: state_root.display().to_string(),
+            message: format!("cannot stat state root mode: {err}"),
+        })?
+        .permissions()
+        .mode()
+        & 0o777;
+    if mode != 0o700 {
+        return Err(BenchError::Daemon(format!(
+            "state root mode is {mode:o}, not 0700; refusing to boot"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(not(unix))]
@@ -180,6 +199,8 @@ pub struct DaemonConfig<'a> {
     pub state_root: &'a Path,
     pub searchd_binary: Option<&'a Path>,
     pub embedder: &'a str,
+    pub repo_id: &'a RepoId,
+    pub revision_id: &'a RevisionId,
     pub ready_timeout: Duration,
     pub io_timeout: Duration,
     pub history_max_generations: usize,
@@ -188,11 +209,23 @@ pub struct DaemonConfig<'a> {
 impl DaemonSession {
     /// Boot over a runner-owned fresh state root. A pre-existing non-empty
     /// root is refused: the runner never inherits a possibly stale index.
+    /// A symlink root is refused: the daemon must serve the exact directory
+    /// the runner named, never a redirected one. Boot completes only after
+    /// the fresh-index product query proves no active generation, so
+    /// readiness precedes publish by construction, not by caller ordering.
     pub fn boot(config: &DaemonConfig<'_>) -> BenchResult<Self> {
         if config.embedder.trim().is_empty() {
             return Err(BenchError::Config(
                 "embedder profile must not be empty".to_string(),
             ));
+        }
+        if std::fs::symlink_metadata(config.state_root)
+            .is_ok_and(|metadata| metadata.file_type().is_symlink())
+        {
+            return Err(BenchError::Daemon(format!(
+                "state root must not be a symlink: {}",
+                config.state_root.display()
+            )));
         }
         if config.state_root.exists() {
             let non_empty = std::fs::read_dir(config.state_root)
@@ -218,8 +251,8 @@ impl DaemonSession {
                 path: config.state_root.display().to_string(),
                 message: err.to_string(),
             })?;
-            secure_state_root(config.state_root)?;
         }
+        secure_state_root(config.state_root)?;
         let binary = resolve_searchd_binary(config.searchd_binary)?;
         // Daemon output lands in runner-owned log files inside the fresh
         // state root: no pipe deadlock on long runs, and failures carry
@@ -307,6 +340,23 @@ impl DaemonSession {
             let _cleanup = remove_socket_files(config.state_root);
             BenchError::Sdk(format!("SDK connect failed: {err}"))
         })?;
+        // The fresh-index product query: boot is incomplete until the
+        // daemon proves no active generation for this exact repository.
+        // Transport, protocol, and readiness errors are not evidence of
+        // an empty index.
+        let report = client
+            .generations()
+            .status(config.repo_id.clone(), config.revision_id.clone())
+            .map_err(|err| {
+                let _termination = terminate_child(&mut child);
+                let _cleanup = remove_socket_files(config.state_root);
+                BenchError::Sdk(format!("fresh-index status probe failed: {err}"))
+            })?;
+        if let Err(err) = verify_empty_status(&report, config.repo_id, config.revision_id) {
+            let _termination = terminate_child(&mut child);
+            let _cleanup = remove_socket_files(config.state_root);
+            return Err(err);
+        }
         Ok(Self {
             state_root: config.state_root.to_path_buf(),
             child: Some(child),
@@ -334,21 +384,6 @@ impl DaemonSession {
     #[must_use]
     pub fn embedder(&self) -> &str {
         &self.embedder
-    }
-
-    /// Prove the fresh daemon has no active generation. Transport, protocol,
-    /// and readiness errors are not evidence of an empty index.
-    pub fn assert_index_empty(
-        &self,
-        repo_id: &RepoId,
-        revision_id: &RevisionId,
-    ) -> BenchResult<()> {
-        let report = self
-            .client
-            .generations()
-            .status(repo_id.clone(), revision_id.clone())
-            .map_err(|err| BenchError::Sdk(format!("fresh-index status probe failed: {err}")))?;
-        verify_empty_status(&report, repo_id, revision_id)
     }
 
     /// Bounded shutdown of the runner-owned daemon.
@@ -417,6 +452,219 @@ mod empty_status_tests {
         assert!(resolve_searchd_binary(Some(Path::new("/does-not-exist/searchd"))).is_err());
         assert!(require_searchd_binary(Path::new("relative/searchd"), "test").is_err());
     }
+
+    #[test]
+    fn unset_pin_refuses_without_discovery() {
+        let err =
+            resolve_searchd_binary_with_env(None, &|_key| None).expect_err("unset pin must refuse");
+        let text = err.to_string();
+        assert!(text.contains("not pinned"), "{text}");
+        assert!(text.contains("refusing undiscovered"), "{text}");
+    }
+
+    #[test]
+    fn error_classification_preserves_typed_outcomes() {
+        use quanta_index_contract::SearchPlaneErrorCodeV2;
+        use quanta_index_ipc::{IpcError, IpcIoOperation};
+        use quanta_index_sdk::{ResponseBindingAxis, SdkError};
+
+        let timeout = SdkError::Transport(IpcError::Timeout {
+            operation: IpcIoOperation::Read,
+            timeout: Duration::from_secs(1),
+        });
+        assert_eq!(classify_sdk_error(&timeout).0, "timeout");
+        assert_eq!(classify_sdk_error(&timeout).1, "ipc_timeout");
+        let fatal = SdkError::Transport(IpcError::Truncated);
+        assert_eq!(classify_sdk_error(&fatal).0, "error");
+        assert_eq!(classify_sdk_error(&fatal).1, "ipc_transport");
+        let down = SdkError::PlaneUnavailable { plane: "search" };
+        assert_eq!(classify_sdk_error(&down).0, "unavailable");
+
+        let remote = |wire: &str| SdkError::Remote {
+            code: SearchPlaneErrorCodeV2::from_wire_str(wire).expect("known wire code"),
+            message: "wire".to_string(),
+            repair: None,
+        };
+        assert_eq!(
+            classify_sdk_error(&remote("SEM_NOT_READY")).0,
+            "unavailable"
+        );
+        assert_eq!(
+            classify_sdk_error(&remote("SEM_NOT_READY")).1,
+            "SEM_NOT_READY"
+        );
+        assert_eq!(classify_sdk_error(&remote("QUERY_TIMEOUT")).0, "timeout");
+        // Any code outside the timeout/unavailable tables is a typed error,
+        // never silently downgraded to empty or success.
+        let other = SearchPlaneErrorCodeV2::ALL
+            .iter()
+            .map(|code| code.as_wire_str())
+            .find(|wire| {
+                !matches!(
+                    *wire,
+                    "QUERY_TIMEOUT"
+                        | "LEX_QUERY_TIMEOUT"
+                        | "SEM_NOT_READY"
+                        | "SEM_PROVIDER_UNAVAILABLE"
+                        | "SEM_PROVIDER_AUTH"
+                        | "SEM_PROVIDER_TRANSPORT"
+                        | "HISTORY_SHARD_UNAVAILABLE"
+                        | "FILE_CONTRIBUTOR_UNAVAILABLE"
+                        | "FILE_OWNERSHIP_UNAVAILABLE"
+                )
+            })
+            .expect("an error-table code exists");
+        assert_eq!(classify_sdk_error(&remote(other)).0, "error");
+
+        assert_eq!(
+            classify_sdk_error(&SdkError::Usage("u".to_string())).1,
+            "sdk_usage"
+        );
+        assert_eq!(
+            classify_sdk_error(&SdkError::Protocol("p".to_string())).1,
+            "sdk_protocol"
+        );
+        assert_eq!(
+            classify_sdk_error(&SdkError::Serialization("s".to_string())).1,
+            "sdk_serialization"
+        );
+        let binding = SdkError::Binding {
+            route: "lexical",
+            axis: ResponseBindingAxis::Variant,
+            expected: "a".to_string(),
+            actual: "b".to_string(),
+        };
+        assert_eq!(classify_sdk_error(&binding).1, "sdk_binding");
+    }
+
+    fn forged_identity() -> BatchIdentity {
+        BatchIdentity::new("bench-repo", "bench-rev", 7, "manifest:forged".to_string())
+            .expect("identity")
+    }
+
+    fn forged_roots() -> quanta_index_contract::SemanticContentRootsV1 {
+        quanta_index_contract::SemanticContentRootsV1 {
+            row_root_digest: "sha256:".to_string() + &"a".repeat(64),
+            membership_root_digest: "sha256:".to_string() + &"b".repeat(64),
+        }
+    }
+
+    fn forged_receipt(identity: &BatchIdentity) -> BatchReceipt {
+        BatchReceipt {
+            generation: identity.generation,
+            manifest_digest: Some(identity.manifest_digest.clone()),
+            batch_digest: "batch:digest".to_string(),
+            accepted_replace_scopes: 1,
+            accepted_tombstone_scopes: 0,
+            accepted_semantic_replace_scopes: 1,
+            accepted_semantic_tombstone_scopes: 0,
+            accepted_clear_surfaces: 0,
+            sealed: true,
+            applied: true,
+            durable_sequence: 1,
+            semantic_content: Some(forged_roots()),
+        }
+    }
+
+    fn forged_active(
+        identity: &BatchIdentity,
+    ) -> quanta_index_contract::SearchCorpusGenerationIdentityV1 {
+        use quanta_index_contract::{GenerationSnapshot, SearchPlaneTrackKind};
+        let snapshot = |track| GenerationSnapshot {
+            repo_id: identity.repo_id.clone(),
+            revision_id: identity.revision_id.clone(),
+            track,
+            manifest_generation: identity.generation,
+            manifest_digest: identity.manifest_digest.clone(),
+        };
+        quanta_index_contract::SearchCorpusGenerationIdentityV1 {
+            lexical: snapshot(SearchPlaneTrackKind::Lexical),
+            semantic: snapshot(SearchPlaneTrackKind::Semantic),
+            semantic_content: forged_roots(),
+        }
+    }
+
+    fn forged_ack(
+        identity: &BatchIdentity,
+        previous: Option<quanta_index_contract::SearchCorpusGenerationIdentityV1>,
+    ) -> SearchPlaneSearchCorpusActivationCasAck {
+        SearchPlaneSearchCorpusActivationCasAck {
+            active: forged_active(identity),
+            previous_sealed_active: previous,
+        }
+    }
+
+    #[test]
+    fn sealed_receipt_forgeries_refuse() {
+        let identity = forged_identity();
+        let good = forged_receipt(&identity);
+        assert!(verify_sealed_receipt(&good, "batch:digest", &identity).is_ok());
+        assert!(verify_sealed_receipt(&good, "batch:other", &identity).is_err());
+        for mutate in [
+            |receipt: &mut BatchReceipt| receipt.sealed = false,
+            |receipt: &mut BatchReceipt| receipt.applied = false,
+            |receipt: &mut BatchReceipt| receipt.semantic_content = None,
+            |receipt: &mut BatchReceipt| {
+                receipt.manifest_digest = Some("manifest:other".to_string());
+            },
+            |receipt: &mut BatchReceipt| {
+                receipt.generation = quanta_index_contract::ManifestGeneration::new(8);
+            },
+        ] {
+            let mut receipt = good.clone();
+            mutate(&mut receipt);
+            assert!(verify_sealed_receipt(&receipt, "batch:digest", &identity).is_err());
+        }
+    }
+
+    #[test]
+    fn activation_ack_forgeries_refuse() {
+        let identity = forged_identity();
+        let good = forged_ack(&identity, None);
+        assert!(verify_activation_ack(&good, &identity, None).is_ok());
+        // A stale predecessor on a fresh daemon refuses.
+        let stale = forged_ack(&identity, Some(forged_active(&identity)));
+        assert!(verify_activation_ack(&stale, &identity, None).is_err());
+        // The CAS expectation must equal the predecessor exactly.
+        let other_identity =
+            BatchIdentity::new("bench-repo", "bench-rev", 6, "manifest:old".to_string())
+                .expect("identity");
+        let previous = forged_active(&other_identity);
+        let advanced = forged_ack(&identity, Some(previous.clone()));
+        assert!(verify_activation_ack(&advanced, &identity, Some(&previous)).is_ok());
+        assert!(verify_activation_ack(&advanced, &identity, None).is_err());
+        // Wrong generation on one track refuses.
+        let mut wrong_gen = forged_active(&identity);
+        wrong_gen.semantic.manifest_generation = quanta_index_contract::ManifestGeneration::new(8);
+        let ack = SearchPlaneSearchCorpusActivationCasAck {
+            active: wrong_gen,
+            previous_sealed_active: None,
+        };
+        assert!(verify_activation_ack(&ack, &identity, None).is_err());
+        // An invalid identity (swapped tracks) refuses.
+        let mut swapped = forged_active(&identity);
+        swapped.semantic.track = quanta_index_contract::SearchPlaneTrackKind::Lexical;
+        let ack = SearchPlaneSearchCorpusActivationCasAck {
+            active: swapped,
+            previous_sealed_active: None,
+        };
+        assert!(verify_activation_ack(&ack, &identity, None).is_err());
+    }
+
+    #[test]
+    fn daemon_digest_pin_is_verified() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let binary = dir.path().join("searchd");
+        std::fs::write(&binary, b"fake-daemon").expect("write");
+        let digest = crate::sha256_hex(b"fake-daemon");
+        assert_eq!(
+            verify_searchd_digest(&binary, &digest).expect("pin holds"),
+            digest
+        );
+        assert!(verify_searchd_digest(&binary, &"0".repeat(64)).is_err());
+        assert!(verify_searchd_digest(&binary, "not-hex").is_err());
+        assert!(verify_searchd_digest(&dir.path().join("absent"), &digest).is_err());
+    }
 }
 
 impl Drop for DaemonSession {
@@ -428,14 +676,18 @@ impl Drop for DaemonSession {
     }
 }
 
-/// Publish + activate, asserting the receipt names this exact batch.
+/// Publish + activate, asserting the receipt names this exact batch and
+/// the ACK promotes this exact candidate.
 ///
-/// The ACK must promote this exact candidate. `expected_active` is `None` on a fresh
-/// daemon; callers testing conflicts pass an explicit expectation.
+/// Both tracks of the ACK must name the expected repo/revision/generation,
+/// the identity must validate, and the CAS predecessor must equal our
+/// expectation (`None` on a fresh daemon, so a replay or a stale active
+/// refuses). Callers testing conflicts pass an explicit expectation.
 pub fn publish_and_activate(
     session: &DaemonSession,
     batch: &SearchCorpusBatch,
-    expected_active: Option<quanta_index_contract::SearchCorpusGenerationIdentityV1>,
+    expected: &BatchIdentity,
+    expected_active: Option<&quanta_index_contract::SearchCorpusGenerationIdentityV1>,
 ) -> BenchResult<(BatchReceipt, SearchPlaneSearchCorpusActivationCasAck)> {
     let digest = batch
         .batch_digest()
@@ -443,20 +695,90 @@ pub fn publish_and_activate(
     let (receipt, ack) = session
         .client()
         .search_corpus()
-        .publish_and_activate(batch, expected_active)
+        .publish_and_activate(batch, expected_active.cloned())
         .map_err(|err| BenchError::Sdk(format!("publish_and_activate failed: {err}")))?;
+    verify_sealed_receipt(&receipt, &digest, expected)?;
+    verify_activation_ack(&ack, expected, expected_active)?;
+    if receipt.semantic_content.as_ref() != Some(&ack.active.semantic_content) {
+        return Err(BenchError::Protocol(
+            "sealed receipt roots differ from the activated roots".to_string(),
+        ));
+    }
+    Ok((receipt, ack))
+}
+
+pub(crate) fn verify_sealed_receipt(
+    receipt: &BatchReceipt,
+    digest: &str,
+    expected: &BatchIdentity,
+) -> BenchResult<()> {
     if receipt.batch_digest != digest {
         return Err(BenchError::Protocol(format!(
             "sealed receipt names batch {} but the runner published {digest}",
             receipt.batch_digest
         )));
     }
+    if !receipt.sealed {
+        return Err(BenchError::Protocol(
+            "publish receipt is not sealed: failed or partial seal".to_string(),
+        ));
+    }
+    if !receipt.applied {
+        return Err(BenchError::Protocol(
+            "publish receipt is a replay ack on a fresh daemon: stale index suspected".to_string(),
+        ));
+    }
+    if receipt.generation != expected.generation {
+        return Err(BenchError::Protocol(format!(
+            "sealed receipt names generation {} but the runner published {}",
+            receipt.generation.get(),
+            expected.generation.get(),
+        )));
+    }
+    if receipt.manifest_digest.as_deref() != Some(expected.manifest_digest.as_str()) {
+        return Err(BenchError::Protocol(
+            "sealed receipt manifest digest differs from the published batch".to_string(),
+        ));
+    }
     if receipt.semantic_content.is_none() {
         return Err(BenchError::Protocol(
             "sealed receipt attests no semantic content roots".to_string(),
         ));
     }
-    Ok((receipt, ack))
+    Ok(())
+}
+
+pub(crate) fn verify_activation_ack(
+    ack: &SearchPlaneSearchCorpusActivationCasAck,
+    expected: &BatchIdentity,
+    expected_active: Option<&quanta_index_contract::SearchCorpusGenerationIdentityV1>,
+) -> BenchResult<()> {
+    ack.active.validate_v1().map_err(|err| {
+        BenchError::Protocol(format!("activation ACK identity is invalid: {err}"))
+    })?;
+    for (track, snapshot) in [
+        ("lexical", &ack.active.lexical),
+        ("semantic", &ack.active.semantic),
+    ] {
+        if snapshot.repo_id != expected.repo_id || snapshot.revision_id != expected.revision_id {
+            return Err(BenchError::Protocol(format!(
+                "activation ACK promotes another repository on the {track} track"
+            )));
+        }
+        if snapshot.manifest_generation != expected.generation {
+            return Err(BenchError::Protocol(format!(
+                "activation ACK promotes generation {} on the {track} track, expected {}",
+                snapshot.manifest_generation.get(),
+                expected.generation.get(),
+            )));
+        }
+    }
+    if ack.previous_sealed_active.as_ref() != expected_active {
+        return Err(BenchError::Protocol(
+            "activation ACK predecessor differs from the CAS expectation".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// One ranked SDK hit normalized across routes.

@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://quanta-index.invalid/benchmark/retrieval/verdict-v2",
+  "title": "Retrieval run verdict v2 (W0-A comparison contract)",
+  "description": "One verdict per run: five global states plus per-comparison metric/record/report digests. failure_class is none only when every applicable state passes. Provenance digests must equal the re-derived run-manifest digests; a missing mandatory digest fails the verdict.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict_version", "states", "state_evidence", "blinding", "isolation_method", "access_block_log", "missing_t_ids", "not_applicable_t_ids", "failure_class", "provenance", "counts", "comparisons"],
+  "properties": {
+    "verdict_version": {"const": 2},
+    "states": {
+      "type": "object", "additionalProperties": false,
+      "required": ["CONTRACT_GREEN", "SDK_PATH_GREEN", "PAIR_VALID", "PERF_QUALIFIED", "QUALITY_DELTA"],
+      "properties": {
+        "CONTRACT_GREEN": {"enum": ["pass", "fail", "not_run"]},
+        "SDK_PATH_GREEN": {"enum": ["pass", "fail", "not_run"]},
+        "PAIR_VALID": {"enum": ["pass", "fail", "not_run"]},
+        "PERF_QUALIFIED": {"enum": ["pass", "fail", "not_run", "not_applicable"]},
+        "QUALITY_DELTA": {"enum": ["pass", "fail", "not_run", "not_applicable"]}
+      }
+    },
+    "state_evidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["CONTRACT_GREEN", "SDK_PATH_GREEN", "PAIR_VALID", "PERF_QUALIFIED", "QUALITY_DELTA"],
+      "properties": {
+        "CONTRACT_GREEN": {"$ref": "#/$defs/state_proof"},
+        "SDK_PATH_GREEN": {"$ref": "#/$defs/state_proof"},
+        "PAIR_VALID": {"$ref": "#/$defs/state_proof"},
+        "PERF_QUALIFIED": {"$ref": "#/$defs/state_proof"},
+        "QUALITY_DELTA": {"$ref": "#/$defs/state_proof"}
+      }
+    },
+    "blinding": {"enum": ["isolated", "attested"]},
+    "isolation_method": {"type": "string", "minLength": 1},
+    "access_block_log": {"type": "string", "minLength": 1},
+    "missing_t_ids": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "not_applicable_t_ids": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "failure_class": {"enum": ["none", "corpus_mismatch", "blinding", "provenance", "model", "host", "scoring", "infra"]},
+    "provenance": {
+      "type": "object", "additionalProperties": false,
+      "required": ["quanta", "semble", "corpus", "suite", "host"],
+      "properties": {
+        "quanta": {
+          "type": "object", "additionalProperties": false,
+          "required": ["source_sha", "binary_digest", "embedder"],
+          "properties": {
+            "source_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+            "binary_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "embedder": {"enum": ["potion-code", "hash-dev", "undeclared"]}
+          }
+        },
+        "semble": {
+          "type": "object", "additionalProperties": false,
+          "required": ["revision", "lockfile_digest"],
+          "properties": {
+            "revision": {"const": "0.6.0"},
+            "lockfile_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+          }
+        },
+        "corpus": {
+          "type": "object", "additionalProperties": false,
+          "required": ["digest", "path_sha_diff_digest"],
+          "properties": {
+            "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "path_sha_diff_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+          }
+        },
+        "suite": {
+          "type": "object", "additionalProperties": false,
+          "required": ["suite_digest", "query_pack_digest", "tokenizer_budget_version"],
+          "properties": {
+            "suite_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "query_pack_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "tokenizer_budget_version": {"const": "qb-v1"}
+          }
+        },
+        "host": {
+          "type": "object", "additionalProperties": false,
+          "required": ["profile", "check_record_digest"],
+          "properties": {
+            "profile": {"type": "string", "minLength": 1},
+            "check_record_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+          }
+        }
+      }
+    },
+    "counts": {
+      "type": "object", "additionalProperties": false,
+      "required": ["selected", "executed", "passed", "failed"],
+      "properties": {
+        "selected": {"type": "integer", "minimum": 0},
+        "executed": {"type": "integer", "minimum": 0},
+        "passed": {"type": "integer", "minimum": 0},
+        "failed": {"type": "integer", "minimum": 0}
+      }
+    },
+    "comparisons": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/comparison"},
+      "description": "One entry per verified comparison. Empty only when no comparison verified, in which case PAIR_VALID fails."
+    }
+  },
+  "$defs": {
+    "state_proof": {
+      "type": "object", "additionalProperties": false,
+      "required": ["reason", "proof_digest"],
+      "properties": {
+        "reason": {
+          "type": "string", "minLength": 1,
+          "description": "Short machine-readable decision code, e.g. receipts_verified, receipt_digest_mismatch, no_evidence."
+        },
+        "proof_digest": {
+          "description": "Digest of the re-derived proof bytes behind this decision, or null when there is no proof (not_run / not_applicable).",
+          "anyOf": [{"type": "string", "pattern": "^[0-9a-f]{64}$"}, {"type": "null"}]
+        }
+      }
+    },
+    "comparison": {
+      "type": "object", "additionalProperties": false,
+      "required": ["strategy", "baseline_route", "candidate_route", "primary_metric", "primary_delta", "record_digest", "report_digest"],
+      "properties": {
+        "strategy": {"type": "string", "minLength": 1},
+        "baseline_route": {"type": "string", "minLength": 1},
+        "candidate_route": {"type": "string", "minLength": 1},
+        "primary_metric": {"type": "string", "minLength": 1},
+        "primary_delta": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+        "record_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "report_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  }
+}

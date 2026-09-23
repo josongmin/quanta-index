@@ -1,0 +1,8 @@
+[
+  {"name": "key-order", "value": {"b": 1, "a": [1, 2]}, "canonical": "{\"a\":[1,2],\"b\":1}"},
+  {"name": "nested-unicode", "value": {"z": "é", "a": {"d": null, "c": true}}, "canonical": "{\"a\":{\"c\":true,\"d\":null},\"z\":\"é\"}"},
+  {"name": "numbers", "value": {"f": -1.5, "i": 42, "n": 0}, "canonical": "{\"f\":-1.5,\"i\":42,\"n\":0}"},
+  {"name": "empty-containers", "value": {"e": {}, "l": []}, "canonical": "{\"e\":{},\"l\":[]}"},
+  {"name": "escapes", "value": {"s": "a\"b\\c\nd"}, "canonical": "{\"s\":\"a\\\"b\\\\c\\nd\"}"},
+  {"name": "control-char", "value": {"c": "\u0001"}, "canonical": "{\"c\":\"\\u0001\"}"}
+]

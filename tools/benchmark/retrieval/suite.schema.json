@@ -1,23 +1,62 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://quanta-index.invalid/benchmark/retrieval/suite-v2",
-  "title": "Frozen retrieval suite v2",
+  "$id": "https://quanta-index.invalid/benchmark/retrieval/suite-v3",
+  "title": "Frozen retrieval suite v3 (W0-A comparison contract)",
+  "description": "V3 cutover: v2 suites are never valid v3. Adds the required comparison contract (top_k, tokenizer, budget version, output-unit policy) that packs and records must match byte-for-byte.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "suite_id", "repository_commit", "routes", "tasks"],
+  "required": ["schema_version", "suite_id", "repository_commit", "comparison_contract", "routes", "file_universe", "file_universe_digest", "tasks"],
   "properties": {
-    "schema_version": {"const": 2},
+    "schema_version": {"const": 3},
     "suite_id": {"type": "string", "minLength": 1},
     "repository_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "comparison_contract": {"$ref": "#/$defs/comparison_contract"},
     "routes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
     "file_universe": {
       "type": "array",
       "minItems": 1,
       "items": {"$ref": "#/$defs/universe_entry"}
     },
+    "file_universe_digest": {
+      "type": "string", "pattern": "^[0-9a-f]{64}$",
+      "description": "sha256 of the canonical path-sorted universe entries; the evaluator recomputes it."
+    },
+    "leakage_allowlist": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/allowlisted_span"},
+      "description": "Spans explicitly permitted to overlap across splits, each with a reviewer rationale digest."
+    },
     "tasks": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/task"}}
   },
   "$defs": {
+    "comparison_contract": {
+      "type": "object", "additionalProperties": false,
+      "required": ["top_k", "tokenizer", "tokenizer_budget_version", "output_unit_policy", "span_unit"],
+      "properties": {
+        "top_k": {"type": "integer", "minimum": 1},
+        "tokenizer": {"const": "qi-regex-v1"},
+        "tokenizer_budget_version": {"const": "qb-v1"},
+        "output_unit_policy": {
+          "enum": ["rank_prefix"],
+          "description": "Only rank-prefix budget truncation is implemented. Any other policy needs a contract amendment, not a new string."
+        },
+        "span_unit": {
+          "const": "byte_span_with_line_projection_v1",
+          "description": "Coverage is decided by byte-span containment; line spans are a consistency-checked projection only."
+        }
+      }
+    },
+    "allowlisted_span": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "start_line", "end_line", "rationale_digest"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "start_line": {"type": "integer", "minimum": 1},
+        "end_line": {"type": "integer", "minimum": 1},
+        "rationale_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
     "universe_entry": {
       "type": "object",
       "additionalProperties": false,
@@ -30,9 +69,11 @@
     "block": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["path", "start_line", "end_line", "file_sha256", "block_sha256"],
+      "required": ["path", "start_byte", "end_byte", "start_line", "end_line", "file_sha256", "block_sha256"],
       "properties": {
         "path": {"type": "string", "minLength": 1},
+        "start_byte": {"type": "integer", "minimum": 0},
+        "end_byte": {"type": "integer", "minimum": 1},
         "start_line": {"type": "integer", "minimum": 1},
         "end_line": {"type": "integer", "minimum": 1},
         "file_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
@@ -43,12 +84,16 @@
     "task": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["task_id", "split", "query", "query_sha256", "answerable", "gold"],
+      "required": ["task_id", "split", "query", "query_sha256", "query_family_id", "answerable", "gold"],
       "properties": {
         "task_id": {"type": "string", "minLength": 1},
         "split": {"enum": ["train", "eval"]},
         "query": {"type": "string", "minLength": 1},
         "query_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "query_family_id": {
+          "type": "string", "minLength": 1,
+          "description": "Paraphrase family. One family must not appear in both train and eval."
+        },
         "answerable": {"type": "boolean"},
         "category": {"type": "string", "minLength": 1},
         "gold": {"type": "array", "items": {"$ref": "#/$defs/block"}}

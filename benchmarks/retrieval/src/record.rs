@@ -1,10 +1,12 @@
-//! Runner record v2 emission (RB-02 single owner, RB-05 read-only).
+//! Runner record v3 emission (RB-02 single owner, RB-05 read-only).
 //!
-//! Maps SDK query outcomes to the exact `runner.schema.json` v2 wire form:
-//! ordered results per `(task, route)`, recomputed block hashes and
-//! `qi-regex-v1` token counts from pinned source bytes, finite timings,
-//! and typed non-success statuses. RB-05 consumes these records without
-//! editing this module.
+//! Maps SDK query outcomes to the exact `runner.schema.json` v3 wire form:
+//! ordered results per `(task, route)`, recomputed byte spans, block hashes
+//! and `qi-regex-v1` token counts from pinned source bytes, finite
+//! timings, typed non-success statuses, the echoed comparison contract,
+//! and per-capture provenance (chunk strategy/config, runner + searchd
+//! binary identity, generation, receipt/activation digests, model).
+//! RB-05 consumes these records without editing this module.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -20,9 +22,12 @@ use crate::corpus::SourceFile;
 use crate::sdk::{QueryOutcome, RankedHit};
 use crate::{BenchError, BenchResult, sha256_hex};
 
-pub const RUNNER_SCHEMA_VERSION: u64 = 2;
+pub const RUNNER_SCHEMA_VERSION: u64 = 3;
 pub const TOKENIZER: &str = "qi-regex-v1";
 pub const TOKENIZER_BUDGET_VERSION: &str = "qb-v1";
+pub const OUTPUT_UNIT_POLICY: &str = "rank_prefix";
+pub const SPAN_UNIT: &str = "byte_span_with_line_projection_v1";
+pub const CAPTURE_SYSTEM_QUANTA: &str = "quanta";
 
 /// Parse the raw pack without discarding repeated JSON keys.
 ///
@@ -117,8 +122,13 @@ pub struct QueryPack {
     pub tokenizer_budget_version: Option<String>,
     pub routes: Vec<String>,
     pub file_universe: Vec<(String, String)>,
+    pub file_universe_digest: String,
     pub tasks: Vec<PackTask>,
     pub pack_sha256: String,
+    /// The validated comparison contract, echoed verbatim into records.
+    pub comparison_contract: Value,
+    /// The contract's `top_k`: the CLI-declared cap must equal it exactly.
+    pub contract_top_k: u32,
 }
 
 /// Canonical JSON: sorted keys, no whitespace, raw UTF-8, no floats.
@@ -219,6 +229,72 @@ fn exact_keys(object: &Map<String, Value>, expected: &[&str], context: &str) -> 
     Ok(())
 }
 
+fn is_hex64(text: &str) -> bool {
+    text.len() == 64
+        && text
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+/// File-universe digest, byte-identical to the evaluator's formula:
+/// canonical JSON of `[{path, file_sha256}]` sorted by path, SHA-256.
+pub fn pack_universe_digest(universe: &[(String, String)]) -> BenchResult<String> {
+    let mut rows: Vec<(&str, &str)> = universe
+        .iter()
+        .map(|(path, digest)| (path.as_str(), digest.as_str()))
+        .collect();
+    rows.sort_unstable();
+    let entries: Vec<Value> = rows
+        .iter()
+        .map(|(path, digest)| serde_json::json!({"path": path, "file_sha256": digest}))
+        .collect();
+    let rendered = canonical_json(&Value::Array(entries))?;
+    Ok(sha256_hex(rendered.as_bytes()))
+}
+
+/// Validate the v3 comparison contract, returning its `top_k`.
+fn validate_contract(contract: &Value) -> BenchResult<u32> {
+    let object = contract
+        .as_object()
+        .ok_or_else(|| BenchError::Protocol("comparison contract must be an object".to_string()))?;
+    exact_keys(
+        object,
+        &[
+            "top_k",
+            "tokenizer",
+            "tokenizer_budget_version",
+            "output_unit_policy",
+            "span_unit",
+        ],
+        "comparison contract",
+    )?;
+    let top_k = object
+        .get("top_k")
+        .and_then(Value::as_u64)
+        .filter(|value| *value >= 1)
+        .ok_or_else(|| {
+            BenchError::Protocol("comparison contract top_k must be a positive integer".to_string())
+        })?;
+    let top_k = u32::try_from(top_k).map_err(|err| {
+        BenchError::Protocol(format!(
+            "comparison contract top_k exceeds u32 range: {err}"
+        ))
+    })?;
+    for (key, expected) in [
+        ("tokenizer", TOKENIZER),
+        ("tokenizer_budget_version", TOKENIZER_BUDGET_VERSION),
+        ("output_unit_policy", OUTPUT_UNIT_POLICY),
+        ("span_unit", SPAN_UNIT),
+    ] {
+        if object.get(key).and_then(Value::as_str) != Some(expected) {
+            return Err(BenchError::Protocol(format!(
+                "comparison contract {key} must be {expected}"
+            )));
+        }
+    }
+    Ok(top_k)
+}
+
 /// Load a `freeze`-produced query pack, verifying blindness (no gold-bearing
 /// keys anywhere), query hashes and tokenizer binding.
 pub fn load_query_pack(path: &Path) -> BenchResult<QueryPack> {
@@ -249,6 +325,8 @@ pub fn load_query_pack(path: &Path) -> BenchResult<QueryPack> {
             "tokenizer_budget_version",
             "routes",
             "file_universe",
+            "file_universe_digest",
+            "comparison_contract",
             "tasks",
         ],
         "query pack",
@@ -262,11 +340,15 @@ pub fn load_query_pack(path: &Path) -> BenchResult<QueryPack> {
             .ok_or_else(|| BenchError::Protocol(format!("query pack lacks nonempty string: {key}")))
     };
     let version = object.get("schema_version").and_then(Value::as_u64);
-    if version != Some(2) {
+    if version != Some(3) {
         return Err(BenchError::Protocol(
-            "query pack schema_version must be 2".to_string(),
+            "query pack schema_version must be 3".to_string(),
         ));
     }
+    let contract = object
+        .get("comparison_contract")
+        .ok_or_else(|| BenchError::Protocol("query pack lacks comparison_contract".to_string()))?;
+    let contract_top_k = validate_contract(contract)?;
     let tokenizer = get_str("tokenizer")?;
     if tokenizer != TOKENIZER {
         return Err(BenchError::Protocol(format!(
@@ -298,31 +380,31 @@ pub fn load_query_pack(path: &Path) -> BenchResult<QueryPack> {
             "query pack routes must be nonempty and unique".to_string(),
         ));
     }
-    let mut universe = Vec::new();
-    if let Some(entries) = object.get("file_universe") {
-        let list = entries
-            .as_array()
-            .ok_or_else(|| BenchError::Protocol("file_universe must be a list".to_string()))?;
-        for entry in list {
-            let item = entry.as_object().ok_or_else(|| {
-                BenchError::Protocol("file_universe entry must be an object".to_string())
+    let entries = object
+        .get("file_universe")
+        .ok_or_else(|| BenchError::Protocol("query pack lacks file_universe".to_string()))?;
+    let list = entries
+        .as_array()
+        .ok_or_else(|| BenchError::Protocol("file_universe must be a list".to_string()))?;
+    let mut universe = Vec::with_capacity(list.len());
+    for entry in list {
+        let item = entry.as_object().ok_or_else(|| {
+            BenchError::Protocol("file_universe entry must be an object".to_string())
+        })?;
+        exact_keys(item, &["path", "file_sha256"], "file_universe entry")?;
+        let path = item
+            .get("path")
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+            .ok_or_else(|| BenchError::Protocol("file_universe entry lacks path".to_string()))?;
+        let digest = item
+            .get("file_sha256")
+            .and_then(Value::as_str)
+            .filter(|text| is_hex64(text))
+            .ok_or_else(|| {
+                BenchError::Protocol("file_universe entry lacks a file_sha256 digest".to_string())
             })?;
-            exact_keys(item, &["path", "file_sha256"], "file_universe entry")?;
-            let path = item
-                .get("path")
-                .and_then(Value::as_str)
-                .filter(|text| !text.is_empty())
-                .ok_or_else(|| {
-                    BenchError::Protocol("file_universe entry lacks path".to_string())
-                })?;
-            let digest = item
-                .get("file_sha256")
-                .and_then(Value::as_str)
-                .ok_or_else(|| {
-                    BenchError::Protocol("file_universe entry lacks file_sha256".to_string())
-                })?;
-            universe.push((path.to_string(), digest.to_string()));
-        }
+        universe.push((path.to_string(), digest.to_string()));
     }
     if universe
         .iter()
@@ -333,6 +415,17 @@ pub fn load_query_pack(path: &Path) -> BenchResult<QueryPack> {
     {
         return Err(BenchError::Protocol(
             "duplicate file_universe path".to_string(),
+        ));
+    }
+    let file_universe_digest = get_str("file_universe_digest")?;
+    if !is_hex64(&file_universe_digest) {
+        return Err(BenchError::Protocol(
+            "query pack file_universe_digest must be a lowercase sha256".to_string(),
+        ));
+    }
+    if pack_universe_digest(&universe)? != file_universe_digest {
+        return Err(BenchError::Protocol(
+            "query pack file universe digest mismatch".to_string(),
         ));
     }
     let tasks = object
@@ -400,8 +493,11 @@ pub fn load_query_pack(path: &Path) -> BenchResult<QueryPack> {
         tokenizer_budget_version: Some(budget_version),
         routes: route_names,
         file_universe: universe,
+        file_universe_digest,
         tasks: parsed,
         pack_sha256,
+        comparison_contract: contract.clone(),
+        contract_top_k,
     })
 }
 
@@ -454,12 +550,133 @@ impl RunnerIdentity {
     }
 }
 
-/// Per-route provenance: what system/model actually served the route.
+/// Per-route provenance: a reference to the capture that served it.
+/// System/model facts live in the capture, not here.
 #[derive(Debug, Clone)]
 pub struct RouteProvenance {
-    pub system: String,
+    pub capture_id: String,
+}
+
+/// One v3 capture: the complete provenance of a routed observation.
+#[derive(Debug, Clone)]
+pub struct CaptureProvenance {
+    pub chunk_strategy: String,
+    pub chunk_config: Value,
+    pub runner_binary_name: String,
+    pub runner_binary_digest: String,
+    pub searchd_binary_digest: String,
+    pub generation: u64,
+    pub receipt_digest: String,
+    pub activation_digest: String,
     pub model: String,
     pub model_revision: String,
+}
+
+fn validate_chunk_config_value(config: &Value) -> BenchResult<()> {
+    let object = config.as_object().ok_or_else(|| {
+        BenchError::Protocol("capture chunk_config must be an object".to_string())
+    })?;
+    for (key, value) in object {
+        match key.as_str() {
+            "window_bytes" | "max_item_bytes" => {
+                if value.as_u64().filter(|n| *n >= 1).is_none() {
+                    return Err(BenchError::Protocol(format!(
+                        "capture chunk_config.{key} must be a positive integer"
+                    )));
+                }
+            }
+            "overlap_bytes" => {
+                if value.as_u64().is_none() {
+                    return Err(BenchError::Protocol(
+                        "capture chunk_config.overlap_bytes must be a non-negative integer"
+                            .to_string(),
+                    ));
+                }
+            }
+            "alignment" => {
+                if value.as_str() != Some("byte") && value.as_str() != Some("line") {
+                    return Err(BenchError::Protocol(
+                        "capture chunk_config.alignment must be byte or line".to_string(),
+                    ));
+                }
+            }
+            "byte_cap_strict" => {
+                if value.as_bool().is_none() {
+                    return Err(BenchError::Protocol(
+                        "capture chunk_config.byte_cap_strict must be a boolean".to_string(),
+                    ));
+                }
+            }
+            other => {
+                return Err(BenchError::Protocol(format!(
+                    "capture chunk_config holds unknown key: {other}"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn capture_value(capture_id: &str, capture: &CaptureProvenance) -> BenchResult<Value> {
+    if ![
+        "whole_file",
+        "fixed_window_strict",
+        "fixed_window_line_aligned",
+        "brace_heuristic",
+    ]
+    .contains(&capture.chunk_strategy.as_str())
+    {
+        return Err(BenchError::Protocol(format!(
+            "capture {capture_id} chunk_strategy is not a frozen quanta strategy: {}",
+            capture.chunk_strategy
+        )));
+    }
+    validate_chunk_config_value(&capture.chunk_config)?;
+    if capture.runner_binary_name.trim().is_empty() {
+        return Err(BenchError::Protocol(format!(
+            "capture {capture_id} runner_binary.name must not be empty"
+        )));
+    }
+    for (label, digest) in [
+        ("runner_binary.digest", &capture.runner_binary_digest),
+        (
+            "searchd_binary.binary_digest",
+            &capture.searchd_binary_digest,
+        ),
+        ("receipt_digest", &capture.receipt_digest),
+        ("activation_digest", &capture.activation_digest),
+    ] {
+        if !is_hex64(digest) {
+            return Err(BenchError::Protocol(format!(
+                "capture {capture_id} {label} must be a lowercase sha256"
+            )));
+        }
+    }
+    for (label, text) in [
+        ("model", &capture.model),
+        ("model_revision", &capture.model_revision),
+    ] {
+        if text.trim().is_empty() {
+            return Err(BenchError::Protocol(format!(
+                "capture {capture_id} {label} must not be empty"
+            )));
+        }
+    }
+    Ok(serde_json::json!({
+        "system": CAPTURE_SYSTEM_QUANTA,
+        "chunk_strategy": capture.chunk_strategy,
+        "chunk_config": capture.chunk_config,
+        "runner_binary": {
+            "name": capture.runner_binary_name,
+            "digest": capture.runner_binary_digest,
+        },
+        "searchd_binary": {"binary_digest": capture.searchd_binary_digest},
+        "generation": capture.generation,
+        "receipt_digest": capture.receipt_digest,
+        "activation_digest": capture.activation_digest,
+        "model": capture.model,
+        "model_revision": capture.model_revision,
+    }))
 }
 
 fn duration_ms(latency: Duration) -> BenchResult<f64> {
@@ -545,8 +762,14 @@ fn prove_hit(
     })?;
     let rank = u64::try_from(rank)
         .map_err(|err| BenchError::Protocol(format!("SDK hit rank cannot fit u64: {err}")))?;
+    let start_byte = u64::try_from(start)
+        .map_err(|err| BenchError::Protocol(format!("SDK hit start byte cannot fit u64: {err}")))?;
+    let end_byte = u64::try_from(end)
+        .map_err(|err| BenchError::Protocol(format!("SDK hit end byte cannot fit u64: {err}")))?;
     Ok(serde_json::json!({
         "path": hit.path,
+        "start_byte": start_byte,
+        "end_byte": end_byte,
         "start_line": start_line,
         "end_line": end_line,
         "file_sha256": file.sha256,
@@ -568,7 +791,7 @@ fn timings_value(latency: Duration) -> BenchResult<Value> {
     Ok(serde_json::json!({"query_latency_ms": number}))
 }
 
-/// Map one query outcome to a v2 result object. `top_k` is the declared cap;
+/// Map one query outcome to a v3 result object. `top_k` is the declared cap;
 /// more hits than the cap is a protocol violation, never a truncation.
 pub fn result_value(
     task_id: &str,
@@ -653,13 +876,18 @@ pub fn result_value(
     }
 }
 
-/// Assemble the complete v2 runner record. Results emit in deterministic
-/// `(task_id, route)` order from the pack's task order and sorted routes.
+/// Assemble the complete v3 runner record.
+///
+/// Results emit in deterministic `(task_id, route)` order from the
+/// pack's task order and sorted routes. Every route resolves to a
+/// validated capture; unreferenced captures refuse (a capture with no
+/// route is meaningless provenance).
 #[derive(Clone, Copy)]
 pub struct RunnerRecordInput<'a> {
     pub pack: &'a QueryPack,
     pub identity: &'a RunnerIdentity,
     pub provenance: &'a BTreeMap<String, RouteProvenance>,
+    pub captures: &'a BTreeMap<String, CaptureProvenance>,
     pub outcomes: &'a BTreeMap<(String, String), QueryOutcome>,
     pub top_k: u32,
     pub files: &'a BTreeMap<String, SourceFile>,
@@ -671,11 +899,18 @@ pub fn runner_record(input: &RunnerRecordInput<'_>) -> BenchResult<Value> {
         pack,
         identity,
         provenance,
+        captures,
         outcomes,
         top_k,
         files,
         chunks_by_id,
     } = *input;
+    if top_k != pack.contract_top_k {
+        return Err(BenchError::Protocol(format!(
+            "runner top_k={top_k} differs from the comparison contract top_k={}",
+            pack.contract_top_k
+        )));
+    }
     let mut routes: Vec<&String> = provenance.keys().collect();
     routes.sort();
     if routes.is_empty() {
@@ -691,18 +926,37 @@ pub fn runner_record(input: &RunnerRecordInput<'_>) -> BenchResult<Value> {
         }
     }
     let mut provenance_value = Map::new();
+    let mut referenced: BTreeSet<&str> = BTreeSet::new();
     for route in &routes {
         let entry = provenance
             .get(*route)
             .ok_or_else(|| BenchError::Protocol(format!("missing provenance for route {route}")))?;
+        if entry.capture_id.trim().is_empty() {
+            return Err(BenchError::Protocol(format!(
+                "route {route} has an empty capture_id"
+            )));
+        }
+        if !captures.contains_key(&entry.capture_id) {
+            return Err(BenchError::Protocol(format!(
+                "route {route} references unknown capture_id {}",
+                entry.capture_id
+            )));
+        }
+        let _used = referenced.insert(entry.capture_id.as_str());
         let _previous = provenance_value.insert(
             (*route).clone(),
-            serde_json::json!({
-                "system": entry.system,
-                "model": entry.model,
-                "model_revision": entry.model_revision,
-            }),
+            serde_json::json!({"capture_id": entry.capture_id}),
         );
+    }
+    let mut captures_value = Map::new();
+    for (capture_id, capture) in captures {
+        if !referenced.contains(capture_id.as_str()) {
+            return Err(BenchError::Protocol(format!(
+                "capture_id {capture_id} is not referenced by any route"
+            )));
+        }
+        let _previous =
+            captures_value.insert(capture_id.clone(), capture_value(capture_id, capture)?);
     }
     let mut results = Vec::new();
     for task in &pack.tasks {
@@ -725,6 +979,7 @@ pub fn runner_record(input: &RunnerRecordInput<'_>) -> BenchResult<Value> {
     Ok(serde_json::json!({
         "schema_version": RUNNER_SCHEMA_VERSION,
         "query_pack_sha256": pack.pack_sha256,
+        "comparison_contract": pack.comparison_contract,
         "runner": {
             "name": identity.name,
             "revision": identity.revision,
@@ -736,12 +991,17 @@ pub fn runner_record(input: &RunnerRecordInput<'_>) -> BenchResult<Value> {
             "isolation_method": identity.isolation_method,
             "access_block_log": identity.access_block_log,
         },
+        "captures": captures_value,
         "route_provenance": provenance_value,
         "results": results,
     }))
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "fixture JSON assertions intentionally index known keys"
+)]
 mod tests {
     use super::*;
 
@@ -886,5 +1146,354 @@ mod tests {
         anchored.path = path.to_string();
         anchored.end_line = 2;
         assert!(prove_hit(&anchored, 1, &files, &chunks).is_err());
+    }
+
+    #[test]
+    fn pack_universe_digest_matches_evaluator_oracle() {
+        // Independent oracle: evaluator.universe_digest over the same rows.
+        let one = vec![("a.txt".to_string(), "a".repeat(64))];
+        assert_eq!(
+            pack_universe_digest(&one).expect("digest"),
+            "8451038bb67eef77ce2bc5966579609ed4555d18bfdddad0569e1566709694c3"
+        );
+        let two = vec![
+            ("b.txt".to_string(), "b".repeat(64)),
+            ("a.txt".to_string(), "a".repeat(64)),
+        ];
+        assert_eq!(
+            pack_universe_digest(&two).expect("digest"),
+            "4b65c29126852e1fdcac332733a3ea4ede6bf60bc4f2714e3ddf7880ba70e717"
+        );
+    }
+
+    fn v3_pack_fixture() -> Value {
+        let universe = vec![("a.txt".to_string(), "a".repeat(64))];
+        let digest = pack_universe_digest(&universe).expect("universe digest");
+        let query = "needle";
+        serde_json::json!({
+            "schema_version": 3,
+            "suite_id": "s",
+            "suite_commitment_sha256": "c".repeat(64),
+            "repository_commit": "d".repeat(40),
+            "tokenizer": TOKENIZER,
+            "tokenizer_budget_version": TOKENIZER_BUDGET_VERSION,
+            "routes": ["lexical"],
+            "file_universe": [{"path": "a.txt", "file_sha256": "a".repeat(64)}],
+            "file_universe_digest": digest,
+            "comparison_contract": {
+                "top_k": 10,
+                "tokenizer": TOKENIZER,
+                "tokenizer_budget_version": TOKENIZER_BUDGET_VERSION,
+                "output_unit_policy": OUTPUT_UNIT_POLICY,
+                "span_unit": SPAN_UNIT,
+            },
+            "tasks": [{
+                "task_id": "T1",
+                "query": query,
+                "query_sha256": sha256_hex(query.as_bytes()),
+            }],
+        })
+    }
+
+    fn load_fixture(pack: &Value) -> BenchResult<QueryPack> {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("pack.json");
+        std::fs::write(&path, serde_json::to_string(pack).expect("pack renders"))
+            .expect("pack writes");
+        load_query_pack(&path)
+    }
+
+    #[test]
+    fn v3_pack_loads_and_echoes_contract() {
+        let pack = load_fixture(&v3_pack_fixture()).expect("v3 pack loads");
+        assert_eq!(pack.contract_top_k, 10);
+        assert_eq!(
+            pack.comparison_contract["span_unit"].as_str(),
+            Some(SPAN_UNIT)
+        );
+        assert_eq!(pack.pack_sha256.len(), 64);
+        assert_eq!(
+            pack.file_universe,
+            vec![("a.txt".to_string(), "a".repeat(64))]
+        );
+    }
+
+    #[test]
+    fn v3_pack_rejects_v2_and_contract_drift() {
+        let mut legacy = v3_pack_fixture();
+        legacy["schema_version"] = Value::from(2);
+        assert!(load_fixture(&legacy).is_err());
+        for mutate in [
+            |pack: &mut Value| pack["comparison_contract"]["top_k"] = Value::from(0),
+            |pack: &mut Value| pack["comparison_contract"]["span_unit"] = Value::from("lines"),
+            |pack: &mut Value| {
+                pack["comparison_contract"]["output_unit_policy"] = Value::from("other");
+            },
+            |pack: &mut Value| pack["file_universe_digest"] = Value::from("0".repeat(64)),
+        ] {
+            let mut pack = v3_pack_fixture();
+            mutate(&mut pack);
+            assert!(load_fixture(&pack).is_err());
+        }
+    }
+
+    fn status_fixture() -> (
+        BTreeMap<String, SourceFile>,
+        BTreeMap<String, Chunk>,
+        RankedHit,
+    ) {
+        let text = "fn main() {}\n";
+        let file = SourceFile {
+            path: "a.txt".to_string(),
+            bytes: text.as_bytes().to_vec(),
+            text: text.to_string(),
+            line_starts: vec![0],
+            sha256: "a".repeat(64),
+        };
+        let chunk = Chunk {
+            path: "a.txt".to_string(),
+            start_byte: 0,
+            end_byte: u32::try_from(text.len()).expect("short"),
+            start_line: 1,
+            end_line: 1,
+            text: text.to_string(),
+            strategy: "whole_file".to_string(),
+            version: "test".to_string(),
+            config: "test".to_string(),
+            chunk_id: "chunk-id".to_string(),
+            fallback: false,
+        };
+        let hit = RankedHit {
+            candidate_id: "chunk-id".to_string(),
+            path: "a.txt".to_string(),
+            start_line: 1,
+            end_line: 1,
+            snippet: text.to_string(),
+            score: 1.0,
+        };
+        (
+            BTreeMap::from([("a.txt".to_string(), file)]),
+            BTreeMap::from([("chunk-id".to_string(), chunk)]),
+            hit,
+        )
+    }
+
+    #[test]
+    fn outcome_statuses_never_silently_downgrade() {
+        use quanta_index_contract::ExecutionOutcomeV2;
+        let (files, chunks, hit) = status_fixture();
+        let run = |outcome: QueryOutcome| {
+            result_value("T1", "lexical", &outcome, 10, &files, &chunks).expect("maps")
+        };
+        let exhausted = run(QueryOutcome::Hits {
+            hits: vec![hit.clone()],
+            outcome: ExecutionOutcomeV2::ExactExhausted,
+            latency: Duration::from_millis(1),
+        });
+        assert_eq!(exhausted["status"].as_str(), Some("success"));
+        let capped = run(QueryOutcome::Hits {
+            hits: vec![hit],
+            outcome: ExecutionOutcomeV2::LowerBound {
+                continuation: false,
+            },
+            latency: Duration::from_millis(1),
+        });
+        assert_eq!(capped["status"].as_str(), Some("capped"));
+        let empty_capped = run(QueryOutcome::Hits {
+            hits: Vec::new(),
+            outcome: ExecutionOutcomeV2::LowerBound { continuation: true },
+            latency: Duration::from_millis(1),
+        });
+        assert_eq!(empty_capped["status"].as_str(), Some("error"));
+        assert_eq!(
+            empty_capped["error"]["code"].as_str(),
+            Some("empty_non_exhausted_window")
+        );
+        let abstained = run(QueryOutcome::Hits {
+            hits: Vec::new(),
+            outcome: ExecutionOutcomeV2::ExactExhausted,
+            latency: Duration::from_millis(1),
+        });
+        assert_eq!(abstained["status"].as_str(), Some("abstained"));
+        // A capped rank is never treated as exhaustive: it keeps its
+        // status even when the merge would otherwise score it.
+        assert_eq!(capped["candidates"].as_array().expect("hits").len(), 1);
+    }
+
+    fn v3_capture_fixture() -> CaptureProvenance {
+        CaptureProvenance {
+            chunk_strategy: "whole_file".to_string(),
+            chunk_config: serde_json::json!({}),
+            runner_binary_name: "quanta-sdk-runner".to_string(),
+            runner_binary_digest: "e".repeat(64),
+            searchd_binary_digest: "f".repeat(64),
+            generation: 7,
+            receipt_digest: "a".repeat(64),
+            activation_digest: "b".repeat(64),
+            model: "none:lexical".to_string(),
+            model_revision: "not-applicable".to_string(),
+        }
+    }
+
+    #[test]
+    fn v3_record_assembles_captures_and_byte_spans() {
+        let pack = load_fixture(&v3_pack_fixture()).expect("v3 pack loads");
+        let identity = RunnerIdentity::new(
+            "quanta-sdk-runner".to_string(),
+            "sha256:".to_string() + &"e".repeat(64),
+            "run-1".to_string(),
+            "attested".to_string(),
+            "m".to_string(),
+            "l".to_string(),
+        )
+        .expect("identity");
+        let text = "fn main() {}\n";
+        let file = SourceFile {
+            path: "a.txt".to_string(),
+            bytes: text.as_bytes().to_vec(),
+            text: text.to_string(),
+            line_starts: vec![0],
+            sha256: "a".repeat(64),
+        };
+        let files = BTreeMap::from([("a.txt".to_string(), file)]);
+        let chunk = Chunk {
+            path: "a.txt".to_string(),
+            start_byte: 0,
+            end_byte: u32::try_from(text.len()).expect("short"),
+            start_line: 1,
+            end_line: 1,
+            text: text.to_string(),
+            strategy: "whole_file".to_string(),
+            version: "test".to_string(),
+            config: "test".to_string(),
+            chunk_id: "chunk-id".to_string(),
+            fallback: false,
+        };
+        let chunks = BTreeMap::from([("chunk-id".to_string(), chunk)]);
+        let hit = RankedHit {
+            candidate_id: "chunk-id".to_string(),
+            path: "a.txt".to_string(),
+            start_line: 1,
+            end_line: 1,
+            snippet: text.to_string(),
+            score: 1.0,
+        };
+        let outcome = QueryOutcome::Hits {
+            hits: vec![hit],
+            outcome: quanta_index_contract::ExecutionOutcomeV2::ExactExhausted,
+            latency: Duration::from_millis(3),
+        };
+        let outcomes = BTreeMap::from([(("T1".to_string(), "lexical".to_string()), outcome)]);
+        let provenance = BTreeMap::from([(
+            "lexical".to_string(),
+            RouteProvenance {
+                capture_id: "cap-1".to_string(),
+            },
+        )]);
+        let captures = BTreeMap::from([("cap-1".to_string(), v3_capture_fixture())]);
+        let record = runner_record(&RunnerRecordInput {
+            pack: &pack,
+            identity: &identity,
+            provenance: &provenance,
+            captures: &captures,
+            outcomes: &outcomes,
+            top_k: 10,
+            files: &files,
+            chunks_by_id: &chunks,
+        })
+        .expect("v3 record assembles");
+        assert_eq!(record["schema_version"], serde_json::json!(3));
+        assert_eq!(record["comparison_contract"], pack.comparison_contract);
+        assert_eq!(
+            record["captures"]["cap-1"]["system"],
+            serde_json::json!("quanta")
+        );
+        assert_eq!(
+            record["captures"]["cap-1"]["generation"],
+            serde_json::json!(7)
+        );
+        assert_eq!(
+            record["route_provenance"]["lexical"]["capture_id"],
+            serde_json::json!("cap-1")
+        );
+        let candidate = &record["results"][0]["candidates"][0];
+        assert_eq!(candidate["start_byte"], serde_json::json!(0));
+        assert_eq!(candidate["end_byte"], serde_json::json!(text.len()));
+        assert_eq!(record["results"][0]["status"], serde_json::json!("success"));
+    }
+
+    #[test]
+    fn v3_record_refuses_broken_capture_binding() {
+        let pack = load_fixture(&v3_pack_fixture()).expect("v3 pack loads");
+        let identity = RunnerIdentity::new(
+            "r".to_string(),
+            "rev".to_string(),
+            "run-1".to_string(),
+            "attested".to_string(),
+            "m".to_string(),
+            "l".to_string(),
+        )
+        .expect("identity");
+        let failed = QueryOutcome::Failed {
+            status: "error",
+            code: "boom".to_string(),
+            message: "typed".to_string(),
+            latency: Duration::from_millis(1),
+        };
+        let outcomes = BTreeMap::from([(("T1".to_string(), "lexical".to_string()), failed)]);
+        let files = BTreeMap::new();
+        let chunks = BTreeMap::new();
+        let build = |provenance: &BTreeMap<String, RouteProvenance>,
+                     captures: &BTreeMap<String, CaptureProvenance>,
+                     top_k: u32|
+         -> BenchResult<Value> {
+            runner_record(&RunnerRecordInput {
+                pack: &pack,
+                identity: &identity,
+                provenance,
+                captures,
+                outcomes: &outcomes,
+                top_k,
+                files: &files,
+                chunks_by_id: &chunks,
+            })
+        };
+        let good_provenance = BTreeMap::from([(
+            "lexical".to_string(),
+            RouteProvenance {
+                capture_id: "cap-1".to_string(),
+            },
+        )]);
+        let good_captures = BTreeMap::from([("cap-1".to_string(), v3_capture_fixture())]);
+        assert!(build(&good_provenance, &good_captures, 10).is_ok());
+        // Dangling capture_id.
+        let dangling = BTreeMap::from([(
+            "lexical".to_string(),
+            RouteProvenance {
+                capture_id: "cap-9".to_string(),
+            },
+        )]);
+        assert!(build(&dangling, &good_captures, 10).is_err());
+        // Unreferenced capture.
+        let mut extra = good_captures.clone();
+        let _previous = extra.insert("cap-2".to_string(), v3_capture_fixture());
+        assert!(build(&good_provenance, &extra, 10).is_err());
+        // Bad digest.
+        let mut bad = v3_capture_fixture();
+        bad.receipt_digest = "zz".to_string();
+        let bad_captures = BTreeMap::from([("cap-1".to_string(), bad)]);
+        assert!(build(&good_provenance, &bad_captures, 10).is_err());
+        // Non-frozen strategy.
+        let mut bad = v3_capture_fixture();
+        bad.chunk_strategy = "syntax".to_string();
+        let bad_captures = BTreeMap::from([("cap-1".to_string(), bad)]);
+        assert!(build(&good_provenance, &bad_captures, 10).is_err());
+        // Unknown chunk_config key.
+        let mut bad = v3_capture_fixture();
+        bad.chunk_config = serde_json::json!({"nope": 1});
+        let bad_captures = BTreeMap::from([("cap-1".to_string(), bad)]);
+        assert!(build(&good_provenance, &bad_captures, 10).is_err());
+        // top_k drift.
+        assert!(build(&good_provenance, &good_captures, 9).is_err());
     }
 }

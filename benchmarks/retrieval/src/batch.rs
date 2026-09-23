@@ -15,7 +15,7 @@ use quanta_index_contract::{
     SemanticCorpusKindV1, SemanticSourceRecordV1, SemanticSourceReplaceScopeV1,
     SemanticSourceScopeKeyV1, SourceRoleV1,
 };
-use quanta_index_sdk::SearchCorpusBatch;
+use quanta_index_sdk::{BatchReceipt, SearchCorpusBatch};
 
 use crate::chunking::Chunk;
 use crate::{BenchError, BenchResult, sha256_hex};
@@ -219,20 +219,27 @@ pub struct BatchAssemblyReport {
     pub skipped_empty: Vec<String>,
 }
 
-/// Expected composite identity the activation ACK must match. The SDK
-/// validates the ACK itself; the runner re-checks the lexical/revision
-/// binding against the batch it built.
-#[must_use]
-pub fn expected_candidate_description(
-    identity: &BatchIdentity,
-    ack: &SearchPlaneSearchCorpusActivationCasAck,
-) -> String {
-    format!(
-        "repo={} rev={} gen={} manifest={} active={:?}",
-        identity.repo_id.as_str(),
-        identity.revision_id.as_str(),
-        identity.generation.get(),
-        identity.manifest_digest,
-        ack.active,
-    )
+/// Digest of the canonical sealed-receipt JSON: the capture's
+/// `receipt_digest` binding. Fails rather than digesting a value the
+/// canonical form refuses (floats would diverge from the evaluator).
+pub fn receipt_digest(receipt: &BatchReceipt) -> BenchResult<String> {
+    let value = serde_json::to_value(receipt).map_err(|err| BenchError::Json {
+        path: "<batch-receipt>".to_string(),
+        message: err.to_string(),
+    })?;
+    Ok(sha256_hex(
+        crate::record::canonical_json(&value)?.as_bytes(),
+    ))
+}
+
+/// Digest of the canonical activated-identity JSON (`ack.active`): the
+/// capture's `activation_digest` binding.
+pub fn activation_digest(ack: &SearchPlaneSearchCorpusActivationCasAck) -> BenchResult<String> {
+    let value = serde_json::to_value(&ack.active).map_err(|err| BenchError::Json {
+        path: "<activation-identity>".to_string(),
+        message: err.to_string(),
+    })?;
+    Ok(sha256_hex(
+        crate::record::canonical_json(&value)?.as_bytes(),
+    ))
 }

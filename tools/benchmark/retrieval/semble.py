@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Pinned Semble same-corpus comparison adapter (RB-04).
 
-Runs a pinned Semble install (an outside-the-checkout virtualenv) against
-the exact admitted file universe and blind query pack, then normalizes its
-native results into a v2 runner record for the single Quanta-owned
-evaluator. Semble ranking is never reimplemented here.
+Runs a pinned Semble 0.6.0 install (an outside-the-checkout virtualenv)
+against the exact admitted file universe and blind query pack, then
+normalizes its native results into a v3 runner record for the single
+Quanta-owned evaluator. Semble ranking is never reimplemented here.
 
 Layout contract (all outside the source checkout):
   <output-root>/
@@ -13,7 +13,7 @@ Layout contract (all outside the source checkout):
     native.json             # Semble-native results + timings + observed files
     mapping-proof.json      # path map + both-side path+SHA diff
     record.json             # v2 runner record
-    lockfile.txt            # pip freeze of the Semble env (+ digest)
+    lockfile.txt            # external hash-pinned lockfile copy (+ digest)
 
 A common-universe pair requires a clean mapping proof: every admitted file
 observed in Semble's indexed chunks with matching bytes. Anything else is a
@@ -35,7 +35,9 @@ try:
         TOKEN_RE,
         TOKENIZER,
         TOKENIZER_BUDGET_VERSION,
+        canonical,
         digest,
+        validate_comparison_contract,
         verify_repo,
     )
 except ImportError:  # direct script invocation: import the sibling module
@@ -44,9 +46,13 @@ except ImportError:  # direct script invocation: import the sibling module
         TOKEN_RE,
         TOKENIZER,
         TOKENIZER_BUDGET_VERSION,
+        canonical,
         digest,
+        validate_comparison_contract,
         verify_repo,
     )
+
+SEMBLE_PINNED_VERSION = "0.6.0"
 
 WORKER_TEMPLATE = '''"""Spawned Semble worker (pinned env only). Reads SPEC_JSON, writes NATIVE_JSON."""
 import json
@@ -71,6 +77,8 @@ def main() -> int:
         "languages": {str(k): int(v) for k, v in dict(index.stats.languages).items()},
     }
     queries = [(task["task_id"], task["query"]) for task in spec["tasks"]]
+    if len({task_id for task_id, _ in queries}) != len(queries):
+        raise SystemExit("worker refuses a spec with duplicate task_ids")
     top_k = int(spec["top_k"])
     seed = int(spec.get("seed", 0))
     warmup = int(spec.get("warmup_passes", 1))
@@ -107,6 +115,10 @@ def main() -> int:
                         ],
                     }
                 )
+    emitted = sorted(row["task_id"] for row in native)
+    expected = sorted(task_id for task_id, _ in queries)
+    if emitted != expected:
+        raise SystemExit("worker output task set differs from the spec task set")
     payload = {
         "semble_index_ms": index_ms,
         "configured_model_name": os.environ["SEMBLE_MODEL_NAME"],
@@ -114,6 +126,8 @@ def main() -> int:
         "stats": stats,
         "native": native,
         "latencies_ms": latencies,
+        "timing_layer": "worker_wall_per_query_ms",
+        "worker_pid": os.getpid(),
         "repetitions": repetitions,
         "warmup_passes": warmup,
         "seed": seed,
@@ -201,31 +215,83 @@ def load_query_pack(path: Path) -> dict:
     payload = read_json(path)
     if not isinstance(payload, dict):
         raise AdapterError("query pack must be an object")
-    if payload.get("schema_version") != 2:
-        raise AdapterError("query pack schema_version must be 2")
+    if payload.get("schema_version") != 3:
+        raise AdapterError("query pack schema_version must be 3")
+    expected = {"schema_version", "suite_id", "suite_commitment_sha256",
+                "repository_commit", "tokenizer", "tokenizer_budget_version",
+                "routes", "file_universe", "file_universe_digest",
+                "comparison_contract", "tasks"}
+    if set(payload) != expected:
+        raise AdapterError("query pack holds unexpected or missing top-level keys")
+    try:
+        validate_comparison_contract(payload.get("comparison_contract"), "pack.comparison_contract")
+    except ValueError as exc:
+        raise AdapterError(f"query pack comparison contract invalid: {exc}") from exc
     tasks = payload.get("tasks")
     if not isinstance(tasks, list) or not tasks:
         raise AdapterError("query pack holds no tasks")
+    seen = set()
     for task in tasks:
         if not isinstance(task, dict):
             raise AdapterError("query pack task must be an object")
+        if set(task) != {"task_id", "query", "query_sha256"}:
+            raise AdapterError("query pack task holds unexpected keys (gold/grade smuggling refused)")
         for key in ("task_id", "query", "query_sha256"):
             if not isinstance(task.get(key), str) or not task[key]:
                 raise AdapterError(f"query pack task lacks {key}")
+        if task["task_id"] in seen:
+            raise AdapterError(f"query pack holds a duplicate task_id: {task['task_id']!r}")
+        seen.add(task["task_id"])
     return payload
 
 
+def verify_lockfile(lockfile_bytes: bytes, expected_sha256: str, freeze_text: str) -> str:
+    """Check the external hash-pinned lockfile against the observed env.
+
+    The authoritative pin is the external lockfile (path + digest), never the
+    observed ``pip freeze`` output: freeze is the env observation, the lockfile
+    is the expectation. The env must carry every lockfile line plus the exact
+    pinned Semble line; anything else is env drift and refuses.
+    """
+    if not isinstance(expected_sha256, str) or len(expected_sha256) != 64:
+        raise AdapterError("lockfile pin must be a lowercase sha256")
+    observed = hashlib.sha256(bytes(lockfile_bytes)).hexdigest()
+    if observed != expected_sha256:
+        raise AdapterError("external lockfile digest differs from the spec pin")
+    locked = {
+        line.strip() for line in lockfile_bytes.decode("utf-8", "strict").splitlines()
+    } - {"", "#"}
+    locked = {line for line in locked if not line.startswith("#")}
+    frozen = {line.strip() for line in freeze_text.splitlines() if line.strip()}
+    if f"semble=={SEMBLE_PINNED_VERSION}" not in frozen:
+        raise AdapterError("observed freeze lacks the pinned Semble line")
+    missing = sorted(locked - frozen)
+    if missing:
+        raise AdapterError(f"observed freeze lacks {len(missing)} locked lines")
+    return observed
+
+
 def check_semble_env(python: Path) -> dict:
-    """Verify the pinned Semble interpreter: version, imports, model id."""
+    """Verify the pinned Semble interpreter: exact version, imports, identity."""
     if not python.is_file():
         raise AdapterError(f"Semble python is not a file: {python}")
     probe = (
-        "import importlib.metadata, json; "
+        "import hashlib, importlib.metadata, json, pathlib, sys; "
+        "import semble; "
         "from semble import SembleIndex; "
+        "pkg = pathlib.Path(semble.__file__).resolve().parent; "
+        "infos = sorted(pkg.parent.glob('semble-*.dist-info')); "
+        "info = infos[0] if infos else None; "
+        "record = (info / 'RECORD').read_bytes() if info and (info / 'RECORD').is_file() else None; "
+        "direct = (info / 'direct_url.json').read_bytes() if info and (info / 'direct_url.json').is_file() else None; "
         "print(json.dumps({"
         "'semble_version': importlib.metadata.version('semble'), "
+        "'python_version': sys.version, "
         "'has_from_path': hasattr(SembleIndex, 'from_path'), "
-        "'has_search': hasattr(SembleIndex, 'search')}))"
+        "'has_search': hasattr(SembleIndex, 'search'), "
+        "'dist_info': info.name if info else None, "
+        "'record_sha256': hashlib.sha256(record).hexdigest() if record else None, "
+        "'direct_url_sha256': hashlib.sha256(direct).hexdigest() if direct else None}))"
     )
     try:
         completed = subprocess.run(
@@ -243,6 +309,35 @@ def check_semble_env(python: Path) -> dict:
         raise AdapterError(f"Semble env probe is not JSON: {exc}") from exc
     if not report.get("has_from_path") or not report.get("has_search"):
         raise AdapterError("pinned Semble lacks the from_path/search API")
+    observed_version = report.get("semble_version")
+    if observed_version != SEMBLE_PINNED_VERSION:
+        raise AdapterError(
+            f"Semble {SEMBLE_PINNED_VERSION} is pinned but the env holds {observed_version!r}"
+        )
+    if not isinstance(report.get("python_version"), str) or not report["python_version"]:
+        raise AdapterError("Semble env probe lacks the interpreter version")
+    installed = {
+        "dist_info": report.get("dist_info"),
+        "record_sha256": report.get("record_sha256"),
+        "direct_url_sha256": report.get("direct_url_sha256"),
+    }
+    if not isinstance(installed["dist_info"], str) or not installed["dist_info"]:
+        raise AdapterError("installed Semble lacks dist-info identity proof")
+    record_digest = installed["record_sha256"]
+    if (
+        not isinstance(record_digest, str)
+        or len(record_digest) != 64
+        or any(c not in "0123456789abcdef" for c in record_digest)
+    ):
+        raise AdapterError("installed Semble lacks a RECORD digest proof")
+    direct_digest = installed["direct_url_sha256"]
+    if direct_digest is not None and (
+        not isinstance(direct_digest, str)
+        or len(direct_digest) != 64
+        or any(c not in "0123456789abcdef" for c in direct_digest)
+    ):
+        raise AdapterError("installed Semble holds a malformed direct_url digest")
+    report["installed_distribution"] = installed
     freeze = subprocess.run(
         [str(python), "-m", "pip", "freeze"],
         check=False,
@@ -251,9 +346,24 @@ def check_semble_env(python: Path) -> dict:
         timeout=120,
     )
     if freeze.returncode != 0 or not freeze.stdout.strip():
-        raise AdapterError("Semble environment pip freeze failed or produced an empty lockfile")
-    report["lockfile"] = freeze.stdout
-    report["lockfile_sha256"] = hashlib.sha256(freeze.stdout.encode("utf-8")).hexdigest()
+        raise AdapterError("Semble environment pip freeze failed or is empty")
+    # Freeze is the env observation, never the authoritative pin: the external
+    # hash-pinned lockfile is the expectation (see verify_lockfile).
+    report["observed_freeze"] = freeze.stdout
+    report["observed_freeze_sha256"] = hashlib.sha256(
+        freeze.stdout.encode("utf-8")
+    ).hexdigest()
+    resolved = python.resolve()
+    try:
+        interpreter_digest = sha_file(resolved)
+    except OSError as exc:
+        raise AdapterError(f"cannot hash the Semble interpreter: {exc}") from exc
+    report["interpreter"] = {
+        "path": str(python),
+        "realpath": str(resolved),
+        "version": report.pop("python_version"),
+        "digest": interpreter_digest,
+    }
     return report
 
 
@@ -376,7 +486,7 @@ def normalize_record(
     repo: Path,
     file_shas: dict[str, str],
     file_lines: dict[str, list[bytes]],
-    top_k: int,
+    contract: dict,
     run_id: str,
     blinding: str,
     isolation_method: str,
@@ -384,9 +494,37 @@ def normalize_record(
     model: str,
     model_revision: str,
     route: str,
+    capture_id: str,
+    receipt_digest: str,
+    worker_digest: str,
 ) -> dict:
-    """Native Semble hits -> v2 runner record. Order preserved, spans proven."""
-    by_task = {row["task_id"]: row.get("results", []) for row in native}
+    """Native Semble hits -> v3 runner record. Order preserved, spans proven.
+
+    Unknown latency is null, never 0. The capture binds the Semble-owned
+    chunker, the exact worker bytes, and the mapping-proof anchor.
+    """
+    if not isinstance(contract, dict) or pack.get("comparison_contract") != contract:
+        raise AdapterError("pack comparison contract differs from the capture contract")
+    top_k = contract.get("top_k")
+    if not isinstance(top_k, int) or isinstance(top_k, bool) or top_k <= 0:
+        raise AdapterError("capture contract top_k must be a positive integer")
+    if not isinstance(capture_id, str) or not capture_id.strip():
+        raise AdapterError("capture_id must be a nonempty string")
+    for label, value in (("receipt_digest", receipt_digest), ("worker_digest", worker_digest)):
+        if (
+            not isinstance(value, str)
+            or len(value) != 64
+            or any(c not in "0123456789abcdef" for c in value)
+        ):
+            raise AdapterError(f"{label} must be a lowercase sha256")
+    by_task: dict[str, object] = {}
+    for row in native:
+        task_key = row.get("task_id") if isinstance(row, dict) else None
+        if not isinstance(task_key, str) or not task_key:
+            raise AdapterError("Semble native row lacks a task_id")
+        if task_key in by_task:
+            raise AdapterError(f"Semble emitted a duplicate native row: {task_key}")
+        by_task[task_key] = row.get("results", [])
     results = []
     for task in pack["tasks"]:
         task_id = task["task_id"]
@@ -396,8 +534,8 @@ def normalize_record(
                     "task_id": task_id,
                     "route": route,
                     "status": "error",
+                    "timings": {"query_latency_ms": None},
                     "candidates": [],
-                    "timings": {"query_latency_ms": 0.0},
                     "error": {
                         "code": "semble_missing_query",
                         "message": "Semble emitted no row for this query",
@@ -406,7 +544,7 @@ def normalize_record(
             )
             continue
         samples = latencies.get(task_id, [])
-        latency = samples[0] if samples else 0.0
+        latency = samples[0] if samples else None
         hits = by_task[task_id]
         if not isinstance(hits, list):
             raise AdapterError(f"Semble native row is not a list: {task_id}")
@@ -425,33 +563,61 @@ def normalize_record(
             )
             continue
         candidates = []
+        hit_error = None
         for rank, hit in enumerate(hits, start=1):
-            path = hit.get("file_path")
-            start = hit.get("start_line")
-            end = hit.get("end_line")
+            # Per-hit content failures become error rows (pair-incomplete at
+            # verdict) instead of silently clamped spans or fabricated bytes.
+            path = hit.get("file_path") if isinstance(hit, dict) else None
+            start = hit.get("start_line") if isinstance(hit, dict) else None
+            end = hit.get("end_line") if isinstance(hit, dict) else None
             if not isinstance(path, str) or path not in file_shas:
-                raise AdapterError(f"Semble hit outside admitted universe: {path!r}")
+                hit_error = {
+                    "code": "semble_hit_outside_universe",
+                    "message": f"Semble hit outside admitted universe: {path!r}",
+                }
+                break
             if (
                 not isinstance(start, int)
                 or not isinstance(end, int)
+                or isinstance(start, bool)
+                or isinstance(end, bool)
                 or start < 1
                 or end < start
             ):
-                raise AdapterError(f"Semble hit has a bad span: {path}:{start}-{end}")
+                hit_error = {
+                    "code": "semble_hit_bad_span",
+                    "message": f"Semble hit has a bad span: {path}:{start}-{end}",
+                }
+                break
             lines = file_lines[path]
             if end > len(lines):
-                raise AdapterError(f"Semble hit spans beyond EOF: {path}:{start}-{end}")
+                hit_error = {
+                    "code": "semble_hit_beyond_eof",
+                    "message": f"Semble hit spans beyond EOF: {path}:{start}-{end}",
+                }
+                break
             block = b"".join(lines[start - 1 : end])
             try:
                 text = block.decode("utf-8")
-            except UnicodeDecodeError as exc:
-                raise AdapterError(f"Semble hit block is not UTF-8: {path}") from exc
+            except UnicodeDecodeError:
+                hit_error = {
+                    "code": "semble_hit_not_utf8",
+                    "message": f"Semble hit block is not UTF-8: {path}",
+                }
+                break
             tokens = count_tokens(text)
             if tokens == 0:
-                raise AdapterError(f"Semble hit holds no tokens: {path}:{start}-{end}")
+                hit_error = {
+                    "code": "semble_hit_no_tokens",
+                    "message": f"Semble hit holds no tokens: {path}:{start}-{end}",
+                }
+                break
+            start_byte = sum(len(line) for line in lines[: start - 1])
             candidates.append(
                 {
                     "path": path,
+                    "start_byte": start_byte,
+                    "end_byte": start_byte + len(block),
                     "start_line": start,
                     "end_line": end,
                     "file_sha256": file_shas[path],
@@ -460,6 +626,18 @@ def normalize_record(
                     "rank": rank,
                 }
             )
+        if hit_error is not None:
+            results.append(
+                {
+                    "task_id": task_id,
+                    "route": route,
+                    "status": "error",
+                    "timings": {"query_latency_ms": latency},
+                    "candidates": [],
+                    "error": hit_error,
+                }
+            )
+            continue
         results.append(
             {
                 "task_id": task_id,
@@ -470,9 +648,11 @@ def normalize_record(
                 "error": None,
             }
         )
+    ordered_native = sorted(native, key=lambda row: str(row.get("task_id")))
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "query_pack_sha256": pack_sha256,
+        "comparison_contract": contract,
         "runner": {
             "name": "semble-adapter",
             "revision": run_id,
@@ -484,13 +664,21 @@ def normalize_record(
             "isolation_method": isolation_method,
             "access_block_log": access_block_log,
         },
-        "route_provenance": {
-            route: {
+        "captures": {
+            capture_id: {
                 "system": "semble",
+                "chunk_strategy": "semble_native",
+                "chunk_config": {},
+                "runner_binary": {"name": "semble-worker", "digest": worker_digest},
+                "searchd_binary": None,
+                "generation": 0,
+                "receipt_digest": receipt_digest,
+                "activation_digest": digest(canonical(ordered_native)),
                 "model": model,
                 "model_revision": model_revision,
             }
         },
+        "route_provenance": {route: {"capture_id": capture_id}},
         "results": results,
     }
 
@@ -535,16 +723,23 @@ def run_adapter(args: argparse.Namespace) -> int:
     top_k = _int(args.top_k, "top_k")
     if top_k <= 0:
         raise AdapterError("top_k must be positive")
+    if pack["comparison_contract"]["top_k"] != top_k:
+        raise AdapterError("CLI top_k differs from the query-pack comparison contract")
     if args.blinding not in ("isolated", "attested"):
         raise AdapterError("blinding must be isolated or attested")
 
     env_report = check_semble_env(Path(args.python))
-    if env_report["lockfile_sha256"] != args.lockfile_sha256:
-        raise AdapterError("Semble lockfile SHA-256 differs from the pinned preflight digest")
+    try:
+        external_lock = Path(args.lockfile).read_bytes()
+    except OSError as exc:
+        raise AdapterError(f"cannot read the external lockfile: {exc}") from exc
+    lockfile_digest = verify_lockfile(
+        external_lock, args.lockfile_sha256, env_report["observed_freeze"]
+    )
     semble_version = env_report["semble_version"]
     lockfile = out_root / "lockfile.txt"
-    lockfile.write_text(env_report.get("lockfile", ""), encoding="utf-8")
-    lockfile_digest = sha_file(lockfile)
+    lockfile.write_bytes(external_lock)
+    assert sha_file(lockfile) == lockfile_digest
 
     corpus_dir = out_root / "corpus"
     admitted_rows, max_bytes = build_isolated_corpus(repo, manifest_rows, corpus_dir)
@@ -637,7 +832,9 @@ def run_adapter(args: argparse.Namespace) -> int:
     )
     pack_sha256 = digest(pack_canonical.encode("utf-8"))
     model_id = args.model_id
-    model_revision = resolve_model_revision(cache_root / "hf", model_id, args.model_revision)
+    model_revision, model_asset = resolve_model_revision(
+        cache_root / "hf", model_id, args.model_revision
+    )
     record = normalize_record(
         pack,
         pack_sha256,
@@ -646,7 +843,7 @@ def run_adapter(args: argparse.Namespace) -> int:
         repo,
         file_shas,
         file_lines,
-        top_k,
+        pack["comparison_contract"],
         args.run_id,
         args.blinding,
         args.isolation_method,
@@ -654,17 +851,26 @@ def run_adapter(args: argparse.Namespace) -> int:
         model_id,
         model_revision,
         args.route,
+        args.run_id,
+        diff_digest,
+        worker_digest,
     )
-    (out_root / "record.json").write_text(
+    record_path = out_root / "record.json"
+    record_path.write_text(
         json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     manifest_out = {
         "semble_version": semble_version,
         "semble_python": str(Path(args.python)),
+        "interpreter": env_report["interpreter"],
         "worker_digest": worker_digest,
         "lockfile_digest": lockfile_digest,
+        "observed_freeze_digest": env_report["observed_freeze_sha256"],
+        "installed_distribution": env_report["installed_distribution"],
         "model_id": model_id,
         "model_revision": model_revision,
+        "model_asset_digest": model_asset,
+        "record_digest": sha_file(record_path),
         "timing_layer": "library",
         "semble_index_ms": native_payload.get("semble_index_ms"),
         "index_stats": native_payload.get("stats"),
@@ -682,17 +888,46 @@ def run_adapter(args: argparse.Namespace) -> int:
     return 0
 
 
-def resolve_model_revision(hf_home: Path, model_id: str, pinned: str | None) -> str:
+def model_asset_digest(hf_home: Path, model_id: str, revision: str) -> str:
+    """Digest every byte of the pinned model snapshot. Symlinks refused."""
+    slug = "models--" + model_id.replace("/", "--")
+    snapshot = hf_home / "hub" / slug / "snapshots" / revision
+    if not snapshot.is_dir():
+        raise AdapterError(f"model snapshot unavailable in HF cache: {model_id}@{revision}")
+    digestor = hashlib.sha256()
+    members = []
+    for path in sorted(snapshot.rglob("*")):
+        if path.is_symlink():
+            raise AdapterError(f"model snapshot holds a symlink: {path}")
+        if path.is_file():
+            members.append(path)
+    if not members:
+        raise AdapterError(f"model snapshot holds no files: {model_id}@{revision}")
+    for path in members:
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            raise AdapterError(f"cannot read model asset {path}: {exc}") from exc
+        digestor.update(path.relative_to(snapshot).as_posix().encode("utf-8"))
+        digestor.update(b"\0")
+        digestor.update(data)
+        digestor.update(b"\0")
+    return digestor.hexdigest()
+
+
+def resolve_model_revision(
+    hf_home: Path, model_id: str, pinned: str | None
+) -> tuple[str, str]:
+    """Return (revision, model_asset_digest) for the pinned model snapshot."""
     observed = read_hf_revision(hf_home, model_id)
     if observed is None or len(observed) != 40 or any(c not in "0123456789abcdef" for c in observed):
         raise AdapterError(f"model revision unavailable or invalid in HF cache: {model_id}")
-    if pinned:
-        if observed != pinned:
-            raise AdapterError(
-                f"model revision drift: pinned {pinned} but cache holds {observed}"
-            )
-        return pinned
-    return observed
+    if pinned and observed != pinned:
+        raise AdapterError(
+            f"model revision drift: pinned {pinned} but cache holds {observed}"
+        )
+    revision = pinned or observed
+    return revision, model_asset_digest(hf_home, model_id, revision)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -706,6 +941,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--query-pack", required=True)
     run.add_argument("--top-k", required=True)
     run.add_argument("--python", required=True)
+    run.add_argument("--lockfile", required=True)
     run.add_argument("--lockfile-sha256", required=True)
     run.add_argument("--cache-root", required=True)
     run.add_argument("--output-root", required=True)

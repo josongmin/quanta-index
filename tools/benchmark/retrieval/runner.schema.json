@@ -1,13 +1,15 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://quanta-index.invalid/benchmark/retrieval/runner-v2",
-  "title": "Externally recorded retrieval results v2",
+  "$id": "https://quanta-index.invalid/benchmark/retrieval/runner-v3",
+  "title": "Frozen retrieval runner record v3 (W0-A comparison contract)",
+  "description": "V3 cutover: v2 records are never valid v3. Adds the comparison contract (top_k, tokenizer, budget version, output-unit policy), per-capture provenance with runner/searchd binary identity and generation/receipt binding, route->capture_id references, and nullable timings (unknown is null; 0 only when actually measured).",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "query_pack_sha256", "runner", "route_provenance", "results"],
+  "required": ["schema_version", "query_pack_sha256", "comparison_contract", "runner", "captures", "route_provenance", "results"],
   "properties": {
-    "schema_version": {"const": 2},
+    "schema_version": {"const": 3},
     "query_pack_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "comparison_contract": {"$ref": "#/$defs/comparison_contract"},
     "runner": {
       "type": "object", "additionalProperties": false,
       "required": ["name", "revision", "run_id", "tokenizer", "tokenizer_budget_version", "gold_access", "blinding", "isolation_method", "access_block_log"],
@@ -23,28 +25,133 @@
         "access_block_log": {"type": "string", "minLength": 1}
       }
     },
+    "captures": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"type": "string", "minLength": 1},
+      "additionalProperties": {"$ref": "#/$defs/capture"}
+    },
     "route_provenance": {
       "type": "object",
       "minProperties": 1,
-      "additionalProperties": {"$ref": "#/$defs/provenance"}
+      "additionalProperties": {"$ref": "#/$defs/route_entry"}
     },
     "results": {"type": "array", "items": {"$ref": "#/$defs/result"}}
   },
   "$defs": {
-    "provenance": {
+    "comparison_contract": {
       "type": "object", "additionalProperties": false,
-      "required": ["system", "model", "model_revision"],
+      "required": ["top_k", "tokenizer", "tokenizer_budget_version", "output_unit_policy", "span_unit"],
       "properties": {
-        "system": {"type": "string", "minLength": 1},
+        "top_k": {"type": "integer", "minimum": 1},
+        "tokenizer": {"const": "qi-regex-v1"},
+        "tokenizer_budget_version": {"const": "qb-v1"},
+        "output_unit_policy": {
+          "enum": ["rank_prefix"],
+          "description": "Only rank-prefix budget truncation is implemented. Any other policy needs a contract amendment, not a new string."
+        },
+        "span_unit": {
+          "const": "byte_span_with_line_projection_v1",
+          "description": "Coverage is decided by byte-span containment; line spans are a consistency-checked projection only."
+        }
+      }
+    },
+    "capture": {
+      "type": "object", "additionalProperties": false,
+      "required": ["system", "chunk_strategy", "chunk_config", "runner_binary", "searchd_binary", "generation", "receipt_digest", "activation_digest", "model", "model_revision"],
+      "properties": {
+        "system": {"enum": ["quanta", "semble"]},
+        "chunk_strategy": {
+          "enum": ["whole_file", "fixed_window_strict", "fixed_window_line_aligned", "brace_heuristic", "semble_native"],
+          "description": "Frozen post-Lane-C names plus the Semble-owned chunker. 'syntax' and bare 'fixed_window' are not valid v3 strategies."
+        },
+        "chunk_config": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "window_bytes": {"type": "integer", "minimum": 1},
+            "overlap_bytes": {"type": "integer", "minimum": 0},
+            "max_item_bytes": {"type": "integer", "minimum": 1},
+            "alignment": {"enum": ["byte", "line"]},
+            "byte_cap_strict": {"type": "boolean"}
+          }
+        },
+        "runner_binary": {
+          "type": "object", "additionalProperties": false,
+          "required": ["name", "digest"],
+          "properties": {
+            "name": {"type": "string", "minLength": 1},
+            "digest": {
+              "type": "string", "pattern": "^[0-9a-f]{64}$",
+              "description": "Quanta: sha256 of the actual runner executable at capture time. Semble: sha256 of the exact spawned worker.py bytes."
+            }
+          }
+        },
+        "searchd_binary": {
+          "description": "Quanta captures pin the verified searchd digest; Semble captures must be null (no searchd exists).",
+          "anyOf": [
+            {
+              "type": "object", "additionalProperties": false,
+              "required": ["binary_digest"],
+              "properties": {
+                "binary_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+              }
+            },
+            {"type": "null"}
+          ]
+        },
+        "generation": {
+          "type": "integer", "minimum": 0,
+          "description": "Quanta: SDK query-visible generation. Semble: must be 0 (no generation concept)."
+        },
+        "receipt_digest": {
+          "type": "string", "pattern": "^[0-9a-f]{64}$",
+          "description": "Quanta: sealed batch-receipt digest. Semble: mapping-proof diff_digest (the integrity anchor of that capture)."
+        },
+        "activation_digest": {
+          "type": "string", "pattern": "^[0-9a-f]{64}$",
+          "description": "Quanta: composite activation-identity digest. Semble: digest of the canonical native rows normalized into this record."
+        },
         "model": {"type": "string", "minLength": 1},
         "model_revision": {"type": "string", "minLength": 1}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"system": {"const": "semble"}}},
+          "then": {"properties": {"searchd_binary": {"type": "null"}, "generation": {"const": 0}}}
+        },
+        {
+          "if": {"properties": {"system": {"const": "quanta"}}},
+          "then": {
+            "properties": {
+              "searchd_binary": {
+                "type": "object", "additionalProperties": false,
+                "required": ["binary_digest"],
+                "properties": {
+                  "binary_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "route_entry": {
+      "type": "object", "additionalProperties": false,
+      "required": ["capture_id"],
+      "properties": {
+        "capture_id": {
+          "type": "string", "minLength": 1,
+          "description": "Must resolve to a key of the sibling captures map. Model/system facts live in the capture, not here."
+        }
       }
     },
     "candidate": {
       "type": "object", "additionalProperties": false,
-      "required": ["path", "start_line", "end_line", "file_sha256", "block_sha256", "tokens", "rank"],
+      "required": ["path", "start_byte", "end_byte", "start_line", "end_line", "file_sha256", "block_sha256", "tokens", "rank"],
       "properties": {
         "path": {"type": "string", "minLength": 1},
+        "start_byte": {"type": "integer", "minimum": 0},
+        "end_byte": {"type": "integer", "minimum": 1},
         "start_line": {"type": "integer", "minimum": 1},
         "end_line": {"type": "integer", "minimum": 1},
         "file_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
@@ -57,7 +164,10 @@
       "type": "object", "additionalProperties": false,
       "required": ["query_latency_ms"],
       "properties": {
-        "query_latency_ms": {"type": "number", "minimum": 0}
+        "query_latency_ms": {
+          "description": "Unknown latency is null, never 0. A 0 value asserts an actual measured zero. Any speed claim with null on an eligible row fails PERF_QUALIFIED.",
+          "anyOf": [{"type": "number", "minimum": 0}, {"type": "null"}]
+        }
       }
     },
     "error": {

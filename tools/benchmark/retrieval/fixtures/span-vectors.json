@@ -1,0 +1,72 @@
+[
+  {
+    "name": "simple-lf",
+    "file": "ab\ncd\nef\n",
+    "start_line": 2,
+    "end_line": 2,
+    "start_byte": 3,
+    "end_byte": 6,
+    "block_sha256": "6ebc5b1b9edd24cc64d2303df6e78d920a4e7f948bbcda177913a9ed34b8a7f6",
+    "tokens": 1
+  },
+  {
+    "name": "crlf",
+    "file": "ab\r\ncd\r\n",
+    "start_line": 1,
+    "end_line": 1,
+    "start_byte": 0,
+    "end_byte": 4,
+    "block_sha256": "c7c0875507bd96d407f116eaf706de057c9f1f0255f07ff8f57d0f8a527d7a50",
+    "tokens": 1
+  },
+  {
+    "name": "no-trailing-newline",
+    "file": "ab\ncd",
+    "start_line": 2,
+    "end_line": 2,
+    "start_byte": 3,
+    "end_byte": 5,
+    "block_sha256": "21e721c35a5823fdb452fa2f9f0a612c74fb952e06927489c6b27a43b817bed4",
+    "tokens": 1
+  },
+  {
+    "name": "unicode-multibyte",
+    "file": "aé\nb\n",
+    "start_line": 1,
+    "end_line": 1,
+    "start_byte": 0,
+    "end_byte": 4,
+    "block_sha256": "3861dc9bc835a3c290fb1650fe4d8c319d901d41c20e0bb6af00b037c33d2fc3",
+    "tokens": 2
+  },
+  {
+    "name": "multi-line",
+    "file": "ab\ncd\nef\n",
+    "start_line": 1,
+    "end_line": 2,
+    "start_byte": 0,
+    "end_byte": 6,
+    "block_sha256": "5141648ccbe924f6462cfc7085ccd21779b89d8cee1438281bf1b4cd8d63ac2a",
+    "tokens": 2
+  },
+  {
+    "name": "bom",
+    "file": "﻿ab\n",
+    "start_line": 1,
+    "end_line": 1,
+    "start_byte": 0,
+    "end_byte": 6,
+    "block_sha256": "74f43c31202d46f88b97ca1f32c419b62c6028c49fed05cda1cd8c74c36e6645",
+    "tokens": 2
+  },
+  {
+    "name": "empty-middle-line",
+    "file": "a\n\nb\n",
+    "start_line": 1,
+    "end_line": 3,
+    "start_byte": 0,
+    "end_byte": 5,
+    "block_sha256": "770423513bd0765c18e500000baec91976bcd8267a245437b32572665c6ac370",
+    "tokens": 2
+  }
+]

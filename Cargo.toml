@@ -162,6 +162,11 @@ tempfile = "3.16.0"
 thiserror = "1.0.69"
 toml = "0.8"
 tokio = { version = "1.42", default-features = false, features = ["fs", "rt", "rt-multi-thread", "net", "io-util", "macros", "signal", "sync", "time"] }
+# Benchmark-only parsing for the retrieval brace-heuristic chunker (RB-03):
+# tree-sitter boundaries replace the retired hand lexer. No product crate
+# may depend on these.
+tree-sitter = "0.25"
+tree-sitter-rust = "0.24"
 unicode-normalization = "0.1"
 
 [profile.dev]

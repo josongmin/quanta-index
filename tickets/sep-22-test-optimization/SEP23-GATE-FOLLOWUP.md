@@ -87,8 +87,14 @@ quiet host, then investigate producer cost if it still fails.
 
 The existing isolated checkout was moved from `d9b39c3` to clean commit
 `f478f69e5e0006afb7ea36360be9b4dd7558d252`. On that source,
-`just fmt-check`, `just rust-policy`, `just rust-machete`, and
-`just rust-public-api` passed. The
+`just fmt-check`, `just rust-policy`, `just rust-machete`,
+`just rust-public-api`, and `just rust-doc` passed.
+`just rust-profile test-fast` exited 0.
+`just rust-profile test-integration` exited 0:
+204/204 fast, 6/6 storage, 58/58 semantic (nextest runs
+`cfb14792-2786-487a-996c-9863e2b010ea`,
+`c90dc8e5-85e1-4892-8aed-eb570f32f5cb`, and
+`76c805c5-8721-4944-911d-8fe813c5163e`). The
 policy gate found zero benchmark artifacts attributed to that HEAD. These
 static results are not a full `verify-rust` or runtime qualification receipt.
 

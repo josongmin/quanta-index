@@ -11,6 +11,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use quanta_index_retrieval_bench::chunking::fixed_window::FixedWindowChunker;
+use quanta_index_retrieval_bench::chunking::fixed_window::StrictWindowChunker;
 use quanta_index_retrieval_bench::chunking::syntax::SyntaxChunker;
 use quanta_index_retrieval_bench::chunking::whole_file::WholeFileChunker;
 use quanta_index_retrieval_bench::chunking::{
@@ -40,6 +41,10 @@ fn write_oracle(root: &Path) {
         ("notes/nested.rs", b"pub mod outer {\n    pub mod inner {\n        pub fn deep() -> u32 {\n            42\n        }\n    }\n}\n"),
         ("notes/unbalanced.rs", b"pub fn broken() -> u32 {\n    if true {\n        1\n}\n"),
         ("notes/plain.py", b"def greet():\n    return 'hello'\n"),
+        (
+            "notes/unsafe_impl.rs",
+            b"pub struct Nope;\n\nunsafe impl Send for Nope {}\n\npub fn first() -> u32 {\n    1\n}\n",
+        ),
     ];
     for (path, bytes) in files {
         let absolute = root.join(path);
@@ -85,6 +90,7 @@ fn oracle_files() -> Vec<&'static str> {
         "notes/nested.rs",
         "notes/unbalanced.rs",
         "notes/plain.py",
+        "notes/unsafe_impl.rs",
     ]
 }
 
@@ -183,6 +189,82 @@ fn syntax_splits_rust_items_and_flags_fallbacks() {
 }
 
 #[test]
+fn syntax_follows_parser_items_not_head_keywords() {
+    // The retired brace lexer only recognized head keywords (`unsafe`
+    // was not one); the parser must split the unsafe impl as its own
+    // item with exact spans.
+    let (_root, files) = load_oracle();
+    let chunker = SyntaxChunker::default();
+    let (chunks, _) = chunk_corpus(&chunker, &files).expect("chunk");
+    let items = &chunks["notes/unsafe_impl.rs"];
+    assert_eq!(items.len(), 3, "struct + unsafe impl + fn: {items:?}");
+    assert!(items.iter().all(|chunk| !chunk.fallback));
+    assert!(items[1].text.contains("unsafe impl Send for Nope"));
+    assert_eq!(items[0].start_byte, 0);
+    // Ordered and disjoint: parser siblings never overlap.
+    for pair in items.windows(2) {
+        assert!(pair[0].end_byte <= pair[1].start_byte);
+    }
+}
+
+#[test]
+fn strict_window_ends_at_byte_caps_not_line_ends() {
+    let (_root, files) = load_oracle();
+    let chunker = StrictWindowChunker::new(120, 40);
+    assert_eq!(chunker.name(), "fixed_window_strict");
+    let (chunks, coverage) = chunk_corpus(&chunker, &files).expect("chunk");
+    assert!(chunks["notes/long.rs"].len() > 2);
+    assert!(coverage.overlap_bytes > 0);
+    assert_eq!(coverage.uncovered_bytes, 0);
+    // At least one strict end lands mid-line (never line-extended).
+    let mut midline = false;
+    for file in &files {
+        for chunk in &chunks[&file.path] {
+            let (_, end) = file
+                .line_span_bytes(
+                    usize::try_from(chunk.end_line).unwrap(),
+                    usize::try_from(chunk.end_line).unwrap(),
+                )
+                .expect("line span");
+            if usize::try_from(chunk.end_byte).unwrap() != end {
+                midline = true;
+            }
+        }
+    }
+    assert!(midline, "strict windows must end mid-line somewhere");
+    let file = files.iter().find(|file| file.path == "src/lib.rs").unwrap();
+    assert!(StrictWindowChunker::new(0, 0).chunk(file).is_err());
+    assert!(StrictWindowChunker::new(100, 100).chunk(file).is_err());
+}
+
+#[test]
+fn chunker_names_and_configs_match_frozen_v3() {
+    let line = FixedWindowChunker::new(4000, 400);
+    assert_eq!(line.name(), "fixed_window_line_aligned");
+    assert_eq!(
+        line.config_value(),
+        serde_json::json!({"window_bytes": 4000, "overlap_bytes": 400, "alignment": "line"})
+    );
+    let strict = StrictWindowChunker::new(4000, 400);
+    assert_eq!(strict.name(), "fixed_window_strict");
+    assert_eq!(
+        strict.config_value(),
+        serde_json::json!({
+            "window_bytes": 4000, "overlap_bytes": 400,
+            "alignment": "byte", "byte_cap_strict": true,
+        })
+    );
+    let brace = SyntaxChunker::default();
+    assert_eq!(brace.name(), "brace_heuristic");
+    assert_eq!(
+        brace.config_value(),
+        serde_json::json!({"max_item_bytes": 32768})
+    );
+    assert_eq!(WholeFileChunker.name(), "whole_file");
+    assert_eq!(WholeFileChunker.config_value(), serde_json::json!({}));
+}
+
+#[test]
 fn syntax_handles_crlf_unicode_and_missing_trailing_newline() {
     let (_root, files) = load_oracle();
     let chunker = SyntaxChunker::default();
@@ -208,6 +290,7 @@ fn oversized_items_fall_back_instead_of_silently_rechunking() {
 fn chunking_is_deterministic_across_runs() {
     let (_root, files) = load_oracle();
     let fixed = FixedWindowChunker::new(200, 50);
+    let strict = StrictWindowChunker::new(200, 50);
     let syntax = SyntaxChunker::default();
     for (name, first, second) in [
         (
@@ -216,7 +299,12 @@ fn chunking_is_deterministic_across_runs() {
             chunk_corpus(&fixed, &files),
         ),
         (
-            "syntax",
+            "strict",
+            chunk_corpus(&strict, &files),
+            chunk_corpus(&strict, &files),
+        ),
+        (
+            "brace",
             chunk_corpus(&syntax, &files),
             chunk_corpus(&syntax, &files),
         ),
@@ -443,6 +531,34 @@ fn exotic_line_boundaries_are_refused() {
     let error = load_corpus(root.path(), &manifest, &CorpusLimits::default())
         .expect_err("exotic boundary must fail");
     assert!(error.to_string().contains("exotic"), "{error}");
+}
+
+#[test]
+fn bom_flows_through_as_plain_utf8_bytes() {
+    // T08: a BOM is valid UTF-8, not an exotic boundary: it loads and
+    // chunks with consistent spans (the parser either splits the item
+    // or takes declared whole-file fallback, never silent corruption).
+    let root = tempfile::tempdir().expect("temp root");
+    let bytes = "\u{feff}fn main() {}\n".as_bytes().to_vec();
+    std::fs::write(root.path().join("bom.rs"), &bytes).expect("bom");
+    let manifest_path = write_manifest(root.path(), &["bom.rs"]);
+    let manifest = load_manifest(&manifest_path).expect("manifest parses");
+    let files = load_corpus(root.path(), &manifest, &CorpusLimits::default()).expect("bom loads");
+    assert_eq!(files.len(), 1);
+    let chunker = WholeFileChunker;
+    let (chunks, _) = chunk_corpus(&chunker, &files).expect("chunk");
+    assert_eq!(chunks["bom.rs"][0].start_byte, 0);
+    assert!(chunks["bom.rs"][0].text.starts_with('\u{feff}'));
+    let brace = SyntaxChunker::default();
+    let (bchunks, _) = chunk_corpus(&brace, &files).expect("chunk");
+    assert_eq!(bchunks["bom.rs"].len(), 1);
+    if bchunks["bom.rs"][0].fallback {
+        assert_eq!(bchunks["bom.rs"][0].start_byte, 0);
+        assert_eq!(
+            usize::try_from(bchunks["bom.rs"][0].end_byte).unwrap(),
+            bytes.len()
+        );
+    }
 }
 
 #[test]

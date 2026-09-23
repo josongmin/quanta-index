@@ -384,7 +384,7 @@ benchmark-prep-local:
 retrieval-sdk-proof:
     env CARGO_NET_OFFLINE=true {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-runtime --bin quanta-index-searchd --locked
     env CARGO_NET_OFFLINE=true {{cargo}} --lane test-daemon-lane build -p quanta-index-retrieval-bench --bin quanta-index-retrieval-bench --locked
-    {{cargo}} --lane test-daemon-lane test -p quanta-index-retrieval-bench --test sdk_roundtrip --all-features --locked
+    QUANTA_INDEX_SEARCHD_BIN="$({{cargo}} --lane test-daemon-lane metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"] + "/debug/quanta-index-searchd")')" {{cargo}} --lane test-daemon-lane test -p quanta-index-retrieval-bench --test sdk_roundtrip --all-features --locked
 
 # Retrieval benchmark: Quanta-only chunk A/B from a pinned spec file.
 # The spec names repo/manifest/suite/pack, strategies, binaries and output

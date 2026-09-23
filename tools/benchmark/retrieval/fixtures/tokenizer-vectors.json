@@ -1,0 +1,10 @@
+[
+  {"text": "hello world", "tokens": ["hello", "world"], "count": 2},
+  {"text": "a,b;c", "tokens": ["a", ",", "b", ";", "c"], "count": 5},
+  {"text": "find alpha_two 2go", "tokens": ["find", "alpha_two", "2go"], "count": 3},
+  {"text": "café x", "tokens": ["caf", "é", "x"], "count": 3},
+  {"text": "  spaced\tout\n", "tokens": ["spaced", "out"], "count": 2},
+  {"text": "a_b-c.d:e", "tokens": ["a_b", "-", "c", ".", "d", ":", "e"], "count": 7},
+  {"text": "", "tokens": [], "count": 0},
+  {"text": "x+y=z", "tokens": ["x", "+", "y", "=", "z"], "count": 5}
+]

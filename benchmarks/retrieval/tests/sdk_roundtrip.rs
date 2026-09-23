@@ -1,9 +1,9 @@
 //! SDK roundtrip tests (RB-02, T05–T07): a real `searchd` process,
 //! actual SDK publish/activate/query, plus the static SDK-frontdoor guard.
 //!
-//! The daemon binary resolves via `--searchd-bin` equivalent
-//! (`QUANTA_INDEX_SEARCHD_BIN`) or the workspace target layout; a missing
-//! binary fails with an explicit build-first message, never a skip.
+//! The daemon binary resolves via the `--searchd-bin` equivalent
+//! (`QUANTA_INDEX_SEARCHD_BIN`); an unset pin refuses outright, never
+//! a skip and never undiscovered selection.
 
 #![expect(
     clippy::expect_used,
@@ -15,16 +15,21 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use quanta_index_retrieval_bench::batch::{BatchIdentity, assemble_batch};
+use quanta_index_retrieval_bench::batch::{
+    BatchIdentity, activation_digest, assemble_batch, receipt_digest,
+};
 use quanta_index_retrieval_bench::chunking::chunk_corpus;
 use quanta_index_retrieval_bench::chunking::whole_file::WholeFileChunker;
 use quanta_index_retrieval_bench::corpus::{CorpusLimits, load_corpus, load_manifest};
-use quanta_index_retrieval_bench::record::result_value;
+use quanta_index_retrieval_bench::record::{
+    CaptureProvenance, PackTask, QueryPack, RouteProvenance, RunnerIdentity, RunnerRecordInput,
+    pack_universe_digest, result_value, runner_record,
+};
 use quanta_index_retrieval_bench::sdk::{
     DaemonConfig, DaemonSession, QueryOutcome, RouteQuery, publish_and_activate, query_route,
     resolve_searchd_binary,
 };
-use quanta_index_retrieval_bench::sha256_hex;
+use quanta_index_retrieval_bench::{BenchError, sha256_hex};
 
 const EMBEDDER: &str = "hash-dev";
 
@@ -69,11 +74,13 @@ fn write_tiny_repo(root: &Path) {
     .expect("manifest");
 }
 
-fn boot_session(state_root: &Path) -> DaemonSession {
+fn boot_session(state_root: &Path, identity: &BatchIdentity) -> DaemonSession {
     let config = DaemonConfig {
         state_root,
         searchd_binary: None,
         embedder: EMBEDDER,
+        repo_id: &identity.repo_id,
+        revision_id: &identity.revision_id,
         ready_timeout: Duration::from_secs(60),
         io_timeout: Duration::from_secs(30),
         history_max_generations: 8,
@@ -149,10 +156,16 @@ fn stale_state_root_is_refused() {
     let state_root = root.path().join("state");
     std::fs::create_dir_all(state_root.join("search-plane")).expect("dir");
     std::fs::write(state_root.join("search-plane").join("stale.txt"), b"stale").expect("stale");
+    // Boot refuses the stale root before spawning, so the probe identity
+    // below never reaches a daemon.
+    let identity = BatchIdentity::new("bench-repo", "bench-rev", 7, "manifest:stale".to_string())
+        .expect("identity");
     let config = DaemonConfig {
         state_root: &state_root,
         searchd_binary: None,
         embedder: EMBEDDER,
+        repo_id: &identity.repo_id,
+        revision_id: &identity.revision_id,
         ready_timeout: Duration::from_secs(5),
         io_timeout: Duration::from_secs(5),
         history_max_generations: 8,
@@ -161,6 +174,66 @@ fn stale_state_root_is_refused() {
         .err()
         .expect("stale root must fail");
     assert!(err.to_string().contains("not fresh"), "{err}");
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_state_root_is_refused() {
+    let root = tempfile::tempdir().expect("temp root");
+    let target = root.path().join("target");
+    std::fs::create_dir_all(&target).expect("dir");
+    let link = root.path().join("link");
+    std::os::unix::fs::symlink(&target, &link).expect("symlink");
+    let identity = BatchIdentity::new("bench-repo", "bench-rev", 7, "manifest:link".to_string())
+        .expect("identity");
+    let config = DaemonConfig {
+        state_root: &link,
+        searchd_binary: None,
+        embedder: EMBEDDER,
+        repo_id: &identity.repo_id,
+        revision_id: &identity.revision_id,
+        ready_timeout: Duration::from_secs(5),
+        io_timeout: Duration::from_secs(5),
+        history_max_generations: 8,
+    };
+    let err = DaemonSession::boot(&config)
+        .err()
+        .expect("symlink root must fail");
+    assert!(err.to_string().contains("must not be a symlink"), "{err}");
+}
+
+#[cfg(unix)]
+#[test]
+fn boot_times_out_when_daemon_never_opens_sockets() {
+    let root = tempfile::tempdir().expect("temp root");
+    let script = root.path().join("fake-searchd");
+    std::fs::write(&script, "#!/bin/sh\nsleep 30\n").expect("script");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+    let state_root = root.path().join("state");
+    let identity = BatchIdentity::new("bench-repo", "bench-rev", 7, "manifest:timeout".to_string())
+        .expect("identity");
+    let config = DaemonConfig {
+        state_root: &state_root,
+        searchd_binary: Some(&script),
+        embedder: EMBEDDER,
+        repo_id: &identity.repo_id,
+        revision_id: &identity.revision_id,
+        ready_timeout: Duration::from_secs(2),
+        io_timeout: Duration::from_secs(2),
+        history_max_generations: 8,
+    };
+    let started = std::time::Instant::now();
+    let err = DaemonSession::boot(&config)
+        .err()
+        .expect("boot must time out");
+    assert!(matches!(err, BenchError::Timeout(_, _)), "{err}");
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "readiness must time out promptly"
+    );
 }
 
 #[test]
@@ -195,12 +268,43 @@ fn real_daemon_roundtrip_publishes_and_queries() {
 
     let state = tempfile::tempdir().expect("state root");
     let state_root = state.path().join("daemon");
-    let session = boot_session(&state_root);
-    session
-        .assert_index_empty(&identity.repo_id, &identity.revision_id)
-        .expect("fresh index is empty");
+    // Boot proves the fresh index empty; readiness precedes publish.
+    let session = boot_session(&state_root, &identity);
 
-    let (receipt, ack) = publish_and_activate(&session, &batch, None).expect("publish+activate");
+    // A query before activation never fabricates rows: typed failure.
+    let premature = query_route(&RouteQuery {
+        client: session.client(),
+        route: "lexical",
+        query_text: "sphinx",
+        repo_id: &identity.repo_id,
+        revision_id: &identity.revision_id,
+        generation: identity.generation,
+        top_k: 10,
+    });
+    assert!(
+        matches!(premature, QueryOutcome::Failed { .. }),
+        "query before activation must fail, got {premature:?}"
+    );
+
+    let (receipt, ack) =
+        publish_and_activate(&session, &batch, &identity, None).expect("publish+activate");
+
+    // A stale generation pin never reads another generation's rows.
+    let stale = query_route(&RouteQuery {
+        client: session.client(),
+        route: "lexical",
+        query_text: "sphinx",
+        repo_id: &identity.repo_id,
+        revision_id: &identity.revision_id,
+        generation: quanta_index_contract::ManifestGeneration::new(
+            identity.generation.get().saturating_add(1),
+        ),
+        top_k: 10,
+    });
+    match &stale {
+        QueryOutcome::Failed { code, .. } => assert_eq!(code, "stale_generation"),
+        other => panic!("stale generation must fail, got {other:?}"),
+    }
     assert_eq!(receipt.batch_digest, batch.batch_digest().expect("digest"));
     assert_eq!(
         usize::try_from(receipt.accepted_replace_scopes).expect("scope count fits usize"),
@@ -218,6 +322,8 @@ fn real_daemon_roundtrip_publishes_and_queries() {
         generation: identity.generation,
         top_k: 10,
     });
+    let mut outcomes: BTreeMap<(String, String), QueryOutcome> = BTreeMap::new();
+    let _previous = outcomes.insert(("T1".to_string(), "lexical".to_string()), lexical.clone());
     match &lexical {
         QueryOutcome::Hits { hits, .. } => {
             assert!(!hits.is_empty(), "lexical must hit the sphinx term");
@@ -246,6 +352,7 @@ fn real_daemon_roundtrip_publishes_and_queries() {
             generation: identity.generation,
             top_k: 10,
         });
+        let _previous = outcomes.insert(("T1".to_string(), route.to_string()), outcome.clone());
         match &outcome {
             QueryOutcome::Hits { .. } => {}
             QueryOutcome::Failed {
@@ -299,6 +406,134 @@ fn real_daemon_roundtrip_publishes_and_queries() {
     assert!(receipt.semantic_content.is_some());
     assert_eq!(ack.active.lexical.manifest_generation, identity.generation);
     assert_eq!(ack.active.semantic.manifest_generation, identity.generation);
+
+    // The live session assembles a schema-valid v3 record: contract echo,
+    // per-route captures bound to the real receipt, ACK, daemon binary
+    // and runner executable, and byte-span candidates.
+    let universe: Vec<(String, String)> = files
+        .iter()
+        .map(|file| (file.path.clone(), file.sha256.clone()))
+        .collect();
+    let pack = QueryPack {
+        suite_id: "roundtrip".to_string(),
+        suite_commitment_sha256: "c".repeat(64),
+        repository_commit: "c".repeat(40),
+        tokenizer: "qi-regex-v1".to_string(),
+        tokenizer_budget_version: Some("qb-v1".to_string()),
+        routes: ["lexical", "semantic", "hybrid"]
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+        file_universe: universe.clone(),
+        file_universe_digest: pack_universe_digest(&universe).expect("universe digest"),
+        tasks: vec![PackTask {
+            task_id: "T1".to_string(),
+            query: "sphinx quartz vaults".to_string(),
+            query_sha256: sha256_hex(b"sphinx quartz vaults"),
+        }],
+        pack_sha256: "d".repeat(64),
+        comparison_contract: serde_json::json!({
+            "top_k": 10,
+            "tokenizer": "qi-regex-v1",
+            "tokenizer_budget_version": "qb-v1",
+            "output_unit_policy": "rank_prefix",
+            "span_unit": "byte_span_with_line_projection_v1",
+        }),
+        contract_top_k: 10,
+    };
+    let runner_identity = RunnerIdentity::new(
+        "quanta-sdk-runner".to_string(),
+        "sha256:test".to_string(),
+        "run-roundtrip".to_string(),
+        "attested".to_string(),
+        "m".to_string(),
+        "l".to_string(),
+    )
+    .expect("identity");
+    let searchd_bytes = std::fs::read(session.searchd_binary()).expect("searchd bytes");
+    let runner_exe = std::env::current_exe().expect("test executable");
+    let runner_bytes = std::fs::read(&runner_exe).expect("runner bytes");
+    let receipt_binding = receipt_digest(&receipt).expect("receipt digest");
+    let activation_binding = activation_digest(&ack).expect("activation digest");
+    assert_eq!(receipt_binding.len(), 64);
+    assert_eq!(activation_binding.len(), 64);
+    let mut provenance = BTreeMap::new();
+    let mut captures = BTreeMap::new();
+    for route in ["lexical", "semantic", "hybrid"] {
+        let (model, model_revision) = if route == "lexical" {
+            ("none:lexical", "not-applicable")
+        } else {
+            (
+                quanta_index_search_plane::SEARCH_OWNED_SEMANTIC_MODEL_ID,
+                quanta_index_search_plane::SEARCH_OWNED_SEMANTIC_MODEL_REVISION,
+            )
+        };
+        let capture_id = format!("run-roundtrip-{route}");
+        let _previous = provenance.insert(
+            route.to_string(),
+            RouteProvenance {
+                capture_id: capture_id.clone(),
+            },
+        );
+        let _previous = captures.insert(
+            capture_id,
+            CaptureProvenance {
+                chunk_strategy: "whole_file".to_string(),
+                chunk_config: serde_json::json!({}),
+                runner_binary_name: "sdk_roundtrip".to_string(),
+                runner_binary_digest: sha256_hex(&runner_bytes),
+                searchd_binary_digest: sha256_hex(&searchd_bytes),
+                generation: identity.generation.get(),
+                receipt_digest: receipt_binding.clone(),
+                activation_digest: activation_binding.clone(),
+                model: model.to_string(),
+                model_revision: model_revision.to_string(),
+            },
+        );
+    }
+    let record = runner_record(&RunnerRecordInput {
+        pack: &pack,
+        identity: &runner_identity,
+        provenance: &provenance,
+        captures: &captures,
+        outcomes: &outcomes,
+        top_k: 10,
+        files: &files_by_path,
+        chunks_by_id: &chunks_by_id,
+    })
+    .expect("live v3 record assembles");
+    // Pilot-debugging hook: dump the exact record bytes for out-of-band
+    // schema/evaluator validation. Never part of assertions.
+    if let Some(path) = std::env::var_os("QUANTA_BENCH_DUMP_RECORD") {
+        let rendered = serde_json::to_string_pretty(&record).expect("record renders");
+        std::fs::write(&path, rendered).expect("record dumps");
+    }
+    assert_eq!(record["schema_version"], serde_json::json!(3));
+    assert_eq!(record["comparison_contract"], pack.comparison_contract);
+    assert_eq!(
+        record["captures"]
+            .as_object()
+            .expect("captures object")
+            .len(),
+        3
+    );
+    assert_eq!(record["results"].as_array().expect("results").len(), 3);
+    for row in record["results"].as_array().expect("results") {
+        let route = row["route"].as_str().expect("route");
+        let capture_id = format!("run-roundtrip-{route}");
+        assert_eq!(
+            record["route_provenance"][route]["capture_id"].as_str(),
+            Some(capture_id.as_str())
+        );
+        assert_eq!(
+            record["captures"][capture_id.as_str()]["receipt_digest"].as_str(),
+            Some(receipt_binding.as_str())
+        );
+    }
+
+    // A replayed publish on the live daemon refuses: either the CAS
+    // fails or the replay ack trips the fresh-daemon applied check.
+    assert!(publish_and_activate(&session, &batch, &identity, None).is_err());
     session.stop().expect("bounded shutdown");
 }
 
@@ -315,14 +550,17 @@ fn second_boot_over_used_root_is_refused_without_cleanup() {
 
     let state = tempfile::tempdir().expect("state root");
     let state_root = state.path().join("daemon");
-    let session = boot_session(&state_root);
-    let (_receipt, _ack) = publish_and_activate(&session, &batch, None).expect("publish");
+    let session = boot_session(&state_root, &identity);
+    let (_receipt, _ack) =
+        publish_and_activate(&session, &batch, &identity, None).expect("publish");
     session.stop().expect("stop");
     // The used root still holds index data: a second boot must refuse it.
     let config = DaemonConfig {
         state_root: &state_root,
         searchd_binary: None,
         embedder: EMBEDDER,
+        repo_id: &identity.repo_id,
+        revision_id: &identity.revision_id,
         ready_timeout: Duration::from_secs(5),
         io_timeout: Duration::from_secs(5),
         history_max_generations: 8,

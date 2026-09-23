@@ -14,6 +14,25 @@ runner records remain readable for migration; v1 requires both answerable and
 no-gold eval tasks while v2 permits an all-answerable external suite (the
 absent stratum reports ``not_applicable`` instead of invented tasks).
 
+Schema v3 (W0-A comparison-contract cutover) adds: a required comparison
+contract (top_k, tokenizer, budget version, output-unit policy) on the
+suite, the blinded query pack and every record, with byte-equality
+required between all three; per-capture provenance (chunk strategy and
+config, runner/searchd binary identity, generation, receipt and
+activation digests, model identity) preserved under ``captures`` with
+each route referencing one ``capture_id``; and nullable timings where
+unknown latency is null and 0 asserts an actually measured zero. V3
+spans are byte spans with a consistency-checked line projection:
+coverage is byte containment, and a byte span that disagrees with its
+line bytes is refused. V3 suites require the file universe with a
+recomputed digest, per-task query families that must not span splits,
+normalized/shingle near-duplicate query refusal, and an explicit
+rationale-backed allowlist for any cross-split span overlap. Executed
+timeouts must carry their measured duration, and duplicate candidate
+byte spans are refused. V1/v2 artifacts still load for migration but
+are never valid v3: version dispatch is exact, so a v2 artifact is
+validated as v2 and refused wherever v3 is required.
+
 Freeze output never contains gold spans, grades, answerability bits, or train
 tasks. Score computation depends only on recorded candidates and statuses,
 never on runner identity or provenance strings.
@@ -32,9 +51,9 @@ from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-SCHEMA_VERSION = 2
-SUITE_VERSIONS = (1, 2)
-RUNNER_VERSIONS = (1, 2)
+SCHEMA_VERSION = 3
+SUITE_VERSIONS = (1, 2, 3)
+RUNNER_VERSIONS = (1, 2, 3)
 BUDGETS = (2000, 4000, 8000, 16000)
 TOKENIZER = "qi-regex-v1"
 TOKENIZER_BUDGET_VERSION = "qb-v1"
@@ -51,6 +70,18 @@ RESULT_STATUSES = ("success", "abstained", "capped", "error", "timeout", "unavai
 NON_SUCCESS_EMPTY = ("abstained", "error", "timeout", "unavailable")
 SCORED_STATUSES = ("success", "capped")
 BLINDING_VALUES = ("isolated", "attested")
+OUTPUT_UNIT_POLICIES = ("rank_prefix",)
+SPAN_UNIT = "byte_span_with_line_projection_v1"
+QUERY_SHINGLE_N = 5
+QUERY_NEAR_DUP_JACCARD = 0.8
+CHUNK_STRATEGIES = (
+    "whole_file",
+    "fixed_window_strict",
+    "fixed_window_line_aligned",
+    "brace_heuristic",
+    "semble_native",
+)
+CAPTURE_SYSTEMS = ("quanta", "semble")
 NOT_APPLICABLE = "not_applicable"
 MIN_CI_SAMPLE = 20
 
@@ -116,6 +147,139 @@ def finite_timing(value: Any, where: str) -> float:
         f"{where} timing must be a finite number >= 0",
     )
     return float(value)
+
+
+def nonnegative_int(value: Any, where: str) -> int:
+    require(type(value) is int and value >= 0, f"{where} must be an integer >= 0")
+    return value
+
+
+def strict_bool(value: Any, where: str) -> bool:
+    require(type(value) is bool, f"{where} must be a strict boolean")
+    return value
+
+
+def nullable_timing(value: Any, where: str) -> float | None:
+    """V3 timing: null means unknown, 0 asserts an actually measured zero."""
+    if value is None:
+        return None
+    return finite_timing(value, where)
+
+
+def validate_comparison_contract(value: Any, where: str) -> dict[str, Any]:
+    contract = object_keys(
+        value,
+        ["top_k", "tokenizer", "tokenizer_budget_version", "output_unit_policy", "span_unit"],
+        where,
+    )
+    positive_int(contract["top_k"], where + ".top_k")
+    require(contract["tokenizer"] == TOKENIZER, where + " tokenizer mismatch")
+    require(
+        contract["tokenizer_budget_version"] == TOKENIZER_BUDGET_VERSION,
+        where + " tokenizer/budget version mismatch",
+    )
+    require(
+        contract["output_unit_policy"] in OUTPUT_UNIT_POLICIES,
+        where + " output_unit_policy is not a frozen policy",
+    )
+    require(contract["span_unit"] == SPAN_UNIT, where + " span_unit mismatch")
+    return contract
+
+
+def normalize_query(text: str) -> str:
+    """Deterministic ASCII query normalization for near-duplicate detection."""
+    lowered = text.lower()
+    cleaned = "".join(
+        c if "a" <= c <= "z" or "0" <= c <= "9" else " " for c in lowered
+    )
+    return " ".join(cleaned.split())
+
+
+def query_shingles(normalized: str, n: int = QUERY_SHINGLE_N) -> set[str]:
+    if not normalized:
+        return set()
+    if len(normalized) < n:
+        return {normalized}
+    return {normalized[i : i + n] for i in range(len(normalized) - n + 1)}
+
+
+def shingle_jaccard(first: set[str], second: set[str]) -> float:
+    if not first and not second:
+        return 1.0
+    if not first or not second:
+        return 0.0
+    return len(first & second) / len(first | second)
+
+
+def universe_digest(entries: list[dict[str, str]]) -> str:
+    ordered = sorted(entries, key=lambda e: str(e["path"]))
+    return digest(canonical(ordered))
+
+
+def validate_chunk_config(value: Any, where: str) -> dict[str, Any]:
+    config = object_keys_optional(
+        value,
+        [],
+        ["window_bytes", "overlap_bytes", "max_item_bytes", "alignment", "byte_cap_strict"],
+        where,
+    )
+    if "window_bytes" in config:
+        positive_int(config["window_bytes"], where + ".window_bytes")
+    if "overlap_bytes" in config:
+        nonnegative_int(config["overlap_bytes"], where + ".overlap_bytes")
+    if "max_item_bytes" in config:
+        positive_int(config["max_item_bytes"], where + ".max_item_bytes")
+    if "alignment" in config:
+        require(
+            config["alignment"] in ("byte", "line"),
+            where + ".alignment must be byte or line",
+        )
+    if "byte_cap_strict" in config:
+        strict_bool(config["byte_cap_strict"], where + ".byte_cap_strict")
+    return config
+
+
+def validate_capture(value: Any, where: str) -> dict[str, Any]:
+    capture = object_keys(
+        value,
+        [
+            "system",
+            "chunk_strategy",
+            "chunk_config",
+            "runner_binary",
+            "searchd_binary",
+            "generation",
+            "receipt_digest",
+            "activation_digest",
+            "model",
+            "model_revision",
+        ],
+        where,
+    )
+    system = capture["system"]
+    require(system in CAPTURE_SYSTEMS, f"{where}.system must be quanta or semble")
+    require(
+        capture["chunk_strategy"] in CHUNK_STRATEGIES,
+        f"{where}.chunk_strategy is not a frozen v3 strategy",
+    )
+    validate_chunk_config(capture["chunk_config"], where + ".chunk_config")
+    binary = object_keys(capture["runner_binary"], ["name", "digest"], where + ".runner_binary")
+    string(binary["name"], where + ".runner_binary.name")
+    sha(binary["digest"], where + ".runner_binary.digest")
+    searchd = capture["searchd_binary"]
+    if system == "semble":
+        require(searchd is None, f"{where}.searchd_binary must be null for semble captures")
+    else:
+        pinned = object_keys(searchd, ["binary_digest"], where + ".searchd_binary")
+        sha(pinned["binary_digest"], where + ".searchd_binary.binary_digest")
+    generation = nonnegative_int(capture["generation"], where + ".generation")
+    if system == "semble":
+        require(generation == 0, f"{where}.generation must be 0 for semble captures")
+    sha(capture["receipt_digest"], where + ".receipt_digest")
+    sha(capture["activation_digest"], where + ".activation_digest")
+    string(capture["model"], where + ".model")
+    string(capture["model_revision"], where + ".model_revision")
+    return capture
 
 
 def digest(data: bytes) -> str:
@@ -240,8 +404,11 @@ def block(
     universe: set[str] | None = None,
     allow_grade: bool = False,
     require_rank: bool = False,
+    byte_spans: bool = False,
 ) -> dict[str, Any]:
     required = ["path", "start_line", "end_line", "file_sha256", "block_sha256"]
+    if byte_spans:
+        required.extend(["start_byte", "end_byte"])
     if candidate:
         required.append("tokens")
     if require_rank:
@@ -255,7 +422,7 @@ def block(
     start = positive_int(item["start_line"], where + ".start_line")
     end = positive_int(item["end_line"], where + ".end_line")
     require(start <= end, where + " has inverted line span")
-    _, lines, file_digest = source.file(path)
+    raw, lines, file_digest = source.file(path)
     require(end <= len(lines), where + " spans beyond EOF")
     require(
         sha(item["file_sha256"], where + ".file_sha256") == file_digest,
@@ -263,7 +430,28 @@ def block(
     )
     if universe is not None:
         require(path in universe, where + f" file excluded from file universe: {path}")
-    block_digest, count = source.block_data(path, start, end)
+    if byte_spans:
+        start_byte = nonnegative_int(item["start_byte"], where + ".start_byte")
+        end_byte = positive_int(item["end_byte"], where + ".end_byte")
+        require(end_byte > start_byte, where + " has an empty byte span")
+        require(end_byte <= len(raw), where + " byte span runs past EOF")
+        selected = raw[start_byte:end_byte]
+        try:
+            text = selected.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise EvidenceError(
+                f"block byte span cuts a UTF-8 boundary: {where}"
+            ) from exc
+        projected = b"".join(lines[start - 1 : end])
+        require(
+            selected == projected,
+            where + " byte span disagrees with its line projection",
+        )
+        block_digest = digest(selected)
+        count = len(TOKEN_RE.findall(text))
+        require(count > 0, where + " block contains no retrievable tokens")
+    else:
+        block_digest, count = source.block_data(path, start, end)
     require(
         sha(item["block_sha256"], where + ".block_sha256") == block_digest,
         where + " block hash mismatch",
@@ -300,17 +488,77 @@ def validate_file_universe(
     return entries, ordered
 
 
-def _check_split_leakage(labels_by_split: dict[str, set[tuple[str, int, int]]]) -> None:
-    spans_by_path: dict[str, list[tuple[int, int, str]]] = {}
+def validate_leakage_allowlist(
+    source: SourceSnapshot, value: Any
+) -> frozenset[tuple[str, int, int]]:
+    require(isinstance(value, list), "leakage_allowlist must be a list")
+    allowed: set[tuple[str, int, int]] = set()
+    for entry in value:
+        item = object_keys(
+            entry,
+            ["path", "start_line", "end_line", "rationale_digest"],
+            "leakage allowlist entry",
+        )
+        path = string(item["path"], "allowlist entry.path")
+        safe_path(source, path)
+        _raw, lines, _digest = source.file(path)
+        start = positive_int(item["start_line"], "allowlist entry.start_line")
+        end = positive_int(item["end_line"], "allowlist entry.end_line")
+        require(start <= end, "allowlist entry has an inverted line span")
+        require(end <= len(lines), "allowlist entry spans beyond EOF")
+        sha(item["rationale_digest"], "allowlist entry.rationale_digest")
+        key = (path, start, end)
+        require(key not in allowed, "duplicate leakage allowlist entry")
+        allowed.add(key)
+    return frozenset(allowed)
+
+
+def check_query_near_duplicates(queries: list[tuple[str, str]]) -> None:
+    normalized = [(task_id, normalize_query(query)) for task_id, query in queries]
+    seen: dict[str, str] = {}
+    for task_id, text in normalized:
+        if text in seen:
+            raise EvidenceError(
+                "query leakage/duplication across tasks (normalized match): "
+                + task_id
+                + " vs "
+                + seen[text]
+            )
+        seen[text] = task_id
+    shingles = [(task_id, query_shingles(text)) for task_id, text in normalized]
+    for index, (task_id, grams) in enumerate(shingles):
+        for other_id, other_grams in shingles[index + 1 :]:
+            score = shingle_jaccard(grams, other_grams)
+            require(
+                score < QUERY_NEAR_DUP_JACCARD,
+                "query near-duplicate across tasks: "
+                + task_id
+                + " vs "
+                + other_id
+                + f" (shingle jaccard {score:.3f})",
+            )
+
+
+def _check_split_leakage(
+    labels_by_split: dict[str, set[tuple[str, int, int]]],
+    allowlist: frozenset[tuple[str, int, int]] = frozenset(),
+) -> None:
+    by_path: dict[str, dict[str, list[tuple[int, int]]]] = {}
     for split, labels in labels_by_split.items():
         for path, start, end in labels:
-            spans_by_path.setdefault(path, []).append((start, end, split))
-    for spans in spans_by_path.values():
-        furthest = {"train": 0, "eval": 0}
-        for start, end, split in sorted(spans):
-            other = "eval" if split == "train" else "train"
-            require(furthest[other] < start, "gold label leakage across train/eval split")
-            furthest[split] = max(furthest[split], end)
+            by_path.setdefault(path, {}).setdefault(split, []).append((start, end))
+    for path, splits in by_path.items():
+        for train in splits.get("train", []):
+            for eval_span in splits.get("eval", []):
+                overlap = train[0] <= eval_span[1] and eval_span[0] <= train[1]
+                if not overlap:
+                    continue
+                allowed = (path, *train) in allowlist and (path, *eval_span) in allowlist
+                require(
+                    allowed,
+                    "gold label leakage across train/eval split: "
+                    f"{path}:{train[0]}-{train[1]} vs eval {eval_span[0]}-{eval_span[1]}",
+                )
 
 
 def _validate_suite_v1(
@@ -398,16 +646,27 @@ def _validate_suite_v1(
     return suite, blinded, source
 
 
-def _validate_suite_v2(
-    repo: Path, payload: Any
+def _validate_suite_v2_v3(
+    repo: Path, payload: Any, version: int
 ) -> tuple[dict[str, Any], dict[str, Any], SourceSnapshot]:
+    required = ["schema_version", "suite_id", "repository_commit", "routes", "tasks"]
+    optional = ["file_universe"]
+    if version == 3:
+        required.insert(3, "comparison_contract")
+        required.extend(["file_universe", "file_universe_digest"])
+        optional = ["leakage_allowlist"]
     suite = object_keys_optional(
         payload,
-        ["schema_version", "suite_id", "repository_commit", "routes", "tasks"],
-        ["file_universe"],
+        required,
+        optional,
         "suite",
     )
-    require(type(suite["schema_version"]) is int and suite["schema_version"] == 2, "unsupported suite schema")
+    require(
+        type(suite["schema_version"]) is int and suite["schema_version"] == version,
+        "unsupported suite schema",
+    )
+    if version == 3:
+        validate_comparison_contract(suite["comparison_contract"], "suite.comparison_contract")
     string(suite["suite_id"], "suite_id")
     commit = suite["repository_commit"]
     require(
@@ -425,16 +684,30 @@ def _validate_suite_v2(
     if "file_universe" in suite:
         entries, ordered_universe = validate_file_universe(source, suite["file_universe"])
         universe = set(entries)
+    if version == 3:
+        require(
+            sha(suite["file_universe_digest"], "file_universe_digest")
+            == universe_digest(ordered_universe),
+            "file universe digest mismatch",
+        )
+    allowlist: frozenset[tuple[str, int, int]] = frozenset()
+    if version == 3 and "leakage_allowlist" in suite:
+        allowlist = validate_leakage_allowlist(source, suite["leakage_allowlist"])
     tasks = suite["tasks"]
     require(isinstance(tasks, list) and bool(tasks), "suite requires tasks")
     seen_ids = set()
     seen_queries = set()
     eval_count = 0
+    families: dict[str, set[str]] = {}
+    queries: list[tuple[str, str]] = []
     labels_by_split: dict[str, set[tuple[str, int, int]]] = {"train": set(), "eval": set()}
+    task_required = ["task_id", "split", "query", "query_sha256", "answerable", "gold"]
+    if version == 3:
+        task_required.insert(4, "query_family_id")
     for raw in tasks:
         task = object_keys_optional(
             raw,
-            ["task_id", "split", "query", "query_sha256", "answerable", "gold"],
+            task_required,
             ["category"],
             "task",
         )
@@ -451,6 +724,10 @@ def _validate_suite_v2(
             query_hash not in seen_queries, "query leakage/duplication across tasks: " + task_id
         )
         seen_queries.add(query_hash)
+        queries.append((task_id, query))
+        if version == 3:
+            family = string(task["query_family_id"], "query_family_id for " + task_id)
+            families.setdefault(family, set()).add(task["split"])
         require(type(task["answerable"]) is bool, "answerable must be boolean: " + task_id)
         labels = task["gold"]
         require(isinstance(labels, list), "gold must be a list: " + task_id)
@@ -464,6 +741,7 @@ def _validate_suite_v2(
                 candidate=False,
                 universe=universe,
                 allow_grade=True,
+                byte_spans=(version == 3),
             )
             key = (label["path"], label["start_line"], label["end_line"])
             require(key not in seen_labels, "duplicate gold label: " + task_id)
@@ -472,9 +750,16 @@ def _validate_suite_v2(
         if task["split"] == "eval":
             eval_count += 1
     require(eval_count > 0, "eval split requires at least one task")
-    _check_split_leakage(labels_by_split)
+    if version == 3:
+        for family, splits in sorted(families.items()):
+            require(
+                len(splits) == 1,
+                f"query family spans train and eval: {family}",
+            )
+        check_query_near_duplicates(queries)
+    _check_split_leakage(labels_by_split, allowlist)
     blinded = {
-        "schema_version": 2,
+        "schema_version": version,
         "suite_id": suite["suite_id"],
         "suite_commitment_sha256": digest(canonical(suite)),
         "repository_commit": commit,
@@ -492,7 +777,22 @@ def _validate_suite_v2(
             if task["split"] == "eval"
         ],
     }
+    if version == 3:
+        blinded["comparison_contract"] = suite["comparison_contract"]
+        blinded["file_universe_digest"] = suite["file_universe_digest"]
     return suite, blinded, source
+
+
+def _validate_suite_v2(
+    repo: Path, payload: Any
+) -> tuple[dict[str, Any], dict[str, Any], SourceSnapshot]:
+    return _validate_suite_v2_v3(repo, payload, 2)
+
+
+def _validate_suite_v3(
+    repo: Path, payload: Any
+) -> tuple[dict[str, Any], dict[str, Any], SourceSnapshot]:
+    return _validate_suite_v2_v3(repo, payload, 3)
 
 
 def validate_suite(
@@ -503,7 +803,9 @@ def validate_suite(
     require(type(version) is int and version in SUITE_VERSIONS, "unsupported suite schema")
     if version == 1:
         return _validate_suite_v1(repo, payload)
-    return _validate_suite_v2(repo, payload)
+    if version == 2:
+        return _validate_suite_v2(repo, payload)
+    return _validate_suite_v3(repo, payload)
 
 
 def _load_run_v1(
@@ -658,6 +960,143 @@ def _load_run_v2(
     return run
 
 
+def _load_run_v3(
+    run: dict[str, Any],
+    pack: dict[str, Any],
+    suite: dict[str, Any],
+    source: SourceSnapshot,
+) -> dict[str, Any]:
+    require(
+        type(run["schema_version"]) is int and run["schema_version"] == 3,
+        "unsupported runner schema",
+    )
+    require(
+        sha(run["query_pack_sha256"], "query_pack_sha256") == digest(canonical(pack)),
+        "runner query pack hash mismatch",
+    )
+    contract = validate_comparison_contract(
+        run["comparison_contract"], "record.comparison_contract"
+    )
+    pack_contract = pack.get("comparison_contract")
+    require(
+        isinstance(pack_contract, dict) and pack_contract == contract,
+        "record comparison contract differs from the query-pack contract",
+    )
+    runner = object_keys(
+        run["runner"],
+        [
+            "name",
+            "revision",
+            "run_id",
+            "tokenizer",
+            "tokenizer_budget_version",
+            "gold_access",
+            "blinding",
+            "isolation_method",
+            "access_block_log",
+        ],
+        "runner",
+    )
+    for key in ("name", "revision", "run_id"):
+        string(runner[key], "runner." + key)
+    require(runner["tokenizer"] == TOKENIZER, "runner tokenizer mismatch")
+    require(
+        runner["tokenizer_budget_version"] == TOKENIZER_BUDGET_VERSION,
+        "runner tokenizer/budget version mismatch",
+    )
+    require(
+        runner["gold_access"] is False, "runner attests gold access or lacks no-gold attestation"
+    )
+    require(runner["blinding"] in BLINDING_VALUES, "runner blinding must be isolated or attested")
+    string(runner["isolation_method"], "runner.isolation_method")
+    string(runner["access_block_log"], "runner.access_block_log")
+    captures = run["captures"]
+    require(
+        isinstance(captures, dict) and bool(captures), "captures must be a nonempty object"
+    )
+    for capture_id, entry in captures.items():
+        require(
+            isinstance(capture_id, str) and bool(capture_id.strip()),
+            "capture_id must be a nonempty string",
+        )
+        validate_capture(entry, f"captures.{capture_id}")
+    provenance = run["route_provenance"]
+    require(isinstance(provenance, dict), "route_provenance must be an object")
+    require(
+        set(provenance) == set(suite["routes"]),
+        f"route_provenance has missing/unknown routes: {sorted(set(provenance) ^ set(suite['routes']))}",
+    )
+    for route, entry in provenance.items():
+        item = object_keys(entry, ["capture_id"], f"route_provenance.{route}")
+        capture_id = string(item["capture_id"], f"route_provenance.{route}.capture_id")
+        require(
+            capture_id in captures,
+            f"route_provenance.{route} references unknown capture_id: {capture_id}",
+        )
+    universe: set[str] | None = None
+    if "file_universe" in suite:
+        universe = {entry["path"] for entry in suite["file_universe"]}
+    results = run["results"]
+    require(isinstance(results, list), "results must be a list")
+    tasks = {task["task_id"]: task for task in suite["tasks"] if task["split"] == "eval"}
+    expected = {(task_id, route) for task_id in tasks for route in suite["routes"]}
+    found = set()
+    for raw in results:
+        result = object_keys(
+            raw, ["task_id", "route", "status", "candidates", "timings", "error"], "result"
+        )
+        key = (string(result["task_id"], "result.task_id"), string(result["route"], "result.route"))
+        require(key in expected and key not in found, f"unexpected/duplicate task route: {key}")
+        found.add(key)
+        status = result["status"]
+        require(status in RESULT_STATUSES, f"unknown result status for {key}: {status!r}")
+        candidates = result["candidates"]
+        require(isinstance(candidates, list), f"candidates must be a list: {key}")
+        timings = object_keys(result["timings"], ["query_latency_ms"], f"timings for {key}")
+        measured = nullable_timing(timings["query_latency_ms"], f"timings for {key}")
+        if status == "timeout":
+            require(
+                measured is not None,
+                f"executed timeout must carry its measured duration: {key}",
+            )
+        error = result["error"]
+        if status in SCORED_STATUSES:
+            require(error is None, f"error must be null for {status} result: {key}")
+            require(bool(candidates), f"empty non-abstaining result: {key}")
+        else:
+            require(not candidates, f"non-success result cannot contain candidates: {key}")
+            if status == "abstained":
+                require(error is None, f"error must be null for abstained result: {key}")
+            else:
+                item = object_keys(error, ["code", "message"], f"error for {key}")
+                string(item["code"], f"error.code for {key}")
+                string(item["message"], f"error.message for {key}")
+        seen_spans = set()
+        for index, candidate in enumerate(candidates, start=1):
+            block(
+                source,
+                candidate,
+                f"candidate for {key}",
+                candidate=True,
+                universe=universe,
+                require_rank=True,
+                byte_spans=True,
+            )
+            require(
+                candidate["rank"] == index,
+                f"duplicate/non-sequential candidate rank for {key}: expected {index}",
+            )
+            span = (
+                candidate["path"],
+                candidate["start_byte"],
+                candidate["end_byte"],
+            )
+            require(span not in seen_spans, f"duplicate candidate byte span: {key}")
+            seen_spans.add(span)
+    require(found == expected, f"missing task route evidence: {sorted(expected - found)}")
+    return run
+
+
 def load_evidence(
     repo: Path, suite_path: Path, runner_path: Path
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
@@ -676,13 +1115,28 @@ def load_evidence(
             "runner record",
         )
         _load_run_v1(run, pack, suite, source)
-    else:
+    elif version == 2:
         run = object_keys(
             payload,
             ["schema_version", "query_pack_sha256", "runner", "route_provenance", "results"],
             "runner record",
         )
         _load_run_v2(run, pack, suite, source)
+    else:
+        run = object_keys(
+            payload,
+            [
+                "schema_version",
+                "query_pack_sha256",
+                "comparison_contract",
+                "runner",
+                "captures",
+                "route_provenance",
+                "results",
+            ],
+            "runner record",
+        )
+        _load_run_v3(run, pack, suite, source)
     verify_repo(repo, suite["repository_commit"])
     return suite, pack, run
 
@@ -699,9 +1153,19 @@ def selected(candidates: list[dict[str, Any]], budget: int) -> tuple[list[dict[s
 
 
 def covers(candidate: dict[str, Any], label: dict[str, Any]) -> bool:
+    if candidate["path"] != label["path"]:
+        return False
+    # Byte spans decide coverage whenever both sides carry them (v3);
+    # line spans are a consistency-checked projection only, so a window
+    # that cuts a line mid-way can never claim full-line credit.
+    keys = ("start_byte", "end_byte")
+    if all(k in candidate and k in label for k in keys):
+        return (
+            candidate["start_byte"] <= label["start_byte"]
+            and candidate["end_byte"] >= label["end_byte"]
+        )
     return (
-        candidate["path"] == label["path"]
-        and candidate["start_line"] <= label["start_line"]
+        candidate["start_line"] <= label["start_line"]
         and candidate["end_line"] >= label["end_line"]
     )
 
@@ -795,7 +1259,10 @@ def _result_status(result: dict[str, Any], version: int) -> str:
 def _result_latency(result: dict[str, Any], version: int) -> float | None:
     if version == 1:
         return None
-    return float(result["timings"]["query_latency_ms"])
+    value = result["timings"]["query_latency_ms"]
+    if value is None:
+        return None
+    return float(value)
 
 
 def _result_error_code(result: dict[str, Any], version: int) -> str | None:
@@ -806,7 +1273,7 @@ def _result_error_code(result: dict[str, Any], version: int) -> str | None:
 
 def _ordered_candidates(result: dict[str, Any], version: int) -> list[dict[str, Any]]:
     candidates = list(result["candidates"])
-    if version == 2:
+    if version in (2, 3):
         candidates.sort(key=lambda c: int(c["rank"]))
     return candidates
 
@@ -852,10 +1319,13 @@ def evaluate(
         "sample_count": len(task_ids),
         "budgets": {},
     }
-    if version == 2:
+    if version in (2, 3):
         output["rank_metric_version"] = "rb-rank-v2-first-coverage"
         output["route_provenance"] = run["route_provenance"]
         output["blinding"] = run["runner"]["blinding"]
+    if version == 3:
+        output["comparison_contract"] = run["comparison_contract"]
+        output["captures"] = run["captures"]
     # Budgeted BCY view (v1-compatible numbers, NA-aware for v2 strata).
     for budget in BUDGETS:
         per_route: dict[str, Any] = {}

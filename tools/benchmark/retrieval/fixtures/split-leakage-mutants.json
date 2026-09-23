@@ -1,0 +1,10 @@
+[
+  {"name": "disjoint-ok", "train": [["a.txt", 1, 2]], "eval": [["a.txt", 3, 4]], "allowlist": [], "expect_ok": true},
+  {"name": "exact-reuse-refused", "train": [["a.txt", 2, 2]], "eval": [["a.txt", 2, 2]], "allowlist": [], "expect_ok": false},
+  {"name": "partial-overlap-refused", "train": [["a.txt", 1, 3]], "eval": [["a.txt", 3, 5]], "allowlist": [], "expect_ok": false},
+  {"name": "adjacent-ok", "train": [["a.txt", 1, 2]], "eval": [["a.txt", 3, 3]], "allowlist": [], "expect_ok": true},
+  {"name": "different-paths-ok", "train": [["a.txt", 1, 9]], "eval": [["b.txt", 1, 9]], "allowlist": [], "expect_ok": true},
+  {"name": "allowlisted-pair-ok", "train": [["a.txt", 2, 2]], "eval": [["a.txt", 2, 2]], "allowlist": [["a.txt", 2, 2]], "expect_ok": true},
+  {"name": "allowlist-one-sided-refused", "train": [["a.txt", 2, 4]], "eval": [["a.txt", 3, 3]], "allowlist": [["a.txt", 3, 3]], "expect_ok": false},
+  {"name": "contained-refused", "train": [["a.txt", 1, 10]], "eval": [["a.txt", 3, 4]], "allowlist": [], "expect_ok": false}
+]

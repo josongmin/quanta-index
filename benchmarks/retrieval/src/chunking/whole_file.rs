@@ -16,6 +16,10 @@ impl Chunker for WholeFileChunker {
         "control".to_string()
     }
 
+    fn config_value(&self) -> serde_json::Value {
+        serde_json::json!({})
+    }
+
     fn chunk(&self, file: &SourceFile) -> BenchResult<Vec<Chunk>> {
         if file.bytes.is_empty() {
             return Ok(Vec::new());

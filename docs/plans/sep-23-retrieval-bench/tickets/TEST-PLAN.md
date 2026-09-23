@@ -16,6 +16,8 @@ These states are separate. A 20-query pilot is labeled **exploratory-only**: it 
 
 `PAIR_VALID` asserts paired protocol/universe validity (same commit, files, queries, `top_k`, output-unit policy, host, complete records). A blinded `QUALITY_DELTA` additionally requires proven runner blinding. Blinding is recorded as `blinding: isolated | attested`, plus `isolation_method` (how the runner was prevented from reading gold, e.g. separate suite access, path/permission denial, process sandbox) and an `access_block_log` (what was blocked/verified, or why only attestation holds). An `attested` run keeps `gold_access: false` as an attestation only and cannot claim an isolated quality verdict. T15 gates only the same-model claim, never `PAIR_VALID` itself. T16 is required only when an incremental-update claim is made.
 
+W0-A comparison-contract freeze (schema v3 cutover): the suite, the blinded query pack and every runner record carry an identical `comparison_contract` (`top_k`, `tokenizer`, `tokenizer_budget_version`, `output_unit_policy`); any mismatch refuses merge/score. Records preserve per-system raw captures (`captures{capture_id: ...}`: chunk strategy/config, runner binary identity, searchd binary identity, generation, receipt/activation digests, model identity) and each route references one `capture_id`. Unknown latency is `null`, never `0`; a `0` asserts an actually measured zero, and any speed claim with `null` on an eligible row fails `PERF_QUALIFIED`. V1/v2 artifacts remain readable for migration but are never valid v3. Frozen chunk strategies: `whole_file`, `fixed_window_strict`, `fixed_window_line_aligned`, `brace_heuristic`, `semble_native` (Semble-owned chunker only). Frozen output-unit policy: `rank_prefix`. Frozen Semble revision: `0.6.0`.
+
 ## 2. Test data and anti-leakage custody
 
 1. **Tiny oracle repo**: generated for tests, contains multi-file Rust/Python examples with known byte/line answers, comments/strings, duplicate symbols, Unicode, CRLF, long functions, no-answer queries, generated/binary/symlink exclusions and one incremental edit. This tests mechanics, not search quality.
@@ -30,10 +32,10 @@ These states are separate. A 20-query pilot is labeled **exploratory-only**: it 
 | ID | Layer / owner | Positive oracle | Negative or mutant that must fail |
 | --- | --- | --- | --- |
 | T00 | RB-00 corpus | One canonical sorted tracked-file inventory and byte digest for both runners | Dirty/wrong HEAD; ignored/extra/missing/symlink/binary/oversize file; divergent Semble filter |
-| T01 | RB-01 suite | Valid pinned labels, distinct IDs, blind query-pack SHA | Wrong file/line hash; unsafe path; missing gold; accidental gold or grade in runner pack |
-| T02 | RB-01 split | Tuning vs eval separation, reviewed grade and category | Duplicate/paraphrased query or overlapping answer span across splits; invented no-answer label |
-| T03 | RB-01 record | Every eligible `(task, route)` has one ordered result and route-specific provenance | Missing/duplicate result, unknown field, mismatched model/repo/query hash, nonfinite timing |
-| T04 | RB-01 scoring | Hand-calculated span Recall/MRR/NDCG and BCY golden cases | Same-file wrong lines, partial span for full-cover credit, duplicate chunk boosting, out-of-budget result credited |
+| T01 | RB-01 suite | Valid pinned labels, distinct IDs, blind query-pack SHA, mandatory file universe with recomputed digest | Wrong file/line/byte hash; unsafe path; missing gold; accidental gold or grade in runner pack; universe digest mismatch |
+| T02 | RB-01 split | Tuning vs eval separation, query families confined to one split, reviewed grade and category, explicit rationale-backed overlap allowlist only | Duplicate/normalized/shingle near-duplicate query, cross-split family, overlapping answer span across splits without a both-sides allowlist entry; invented no-answer label |
+| T03 | RB-01 record | Every eligible `(task, route)` has one ordered result, capture-referenced route provenance, byte spans consistent with line projections, and a comparison contract byte-equal to the pack | Missing/duplicate result, unknown field, mismatched model/repo/query hash, nonfinite timing, null/0 timing confusion, timeout without measured duration, duplicate candidate byte span, contract field mismatch per field, dangling capture_id |
+| T04 | RB-01 scoring | Hand-calculated byte-span Recall/MRR/NDCG and BCY golden cases; coverage is byte containment | Same-file wrong lines, partial byte span credited for full-line gold, duplicate chunk boosting, out-of-budget result credited |
 | T05 | RB-02 process | Isolated daemon boots, SDK full client connects and readiness precedes publish | Wrong socket/state root, no readiness, stale daemon or accidental old index reuse |
 | T06 | RB-02 SDK write | `SearchCorpusBatch` publish returns sealed receipt; CAS activation acknowledges exact identity | Direct IPC, mismatched digest, failed/partial seal, activation conflict, query before activation |
 | T07 | RB-02 SDK read | SDK lexical/semantic/hybrid query produces real ranked spans under expected generation | Wrong route, stale generation, typed timeout/error converted to empty or success, capped result treated exhaustive |
@@ -84,7 +86,7 @@ Before a paired run, pin Semble commit/package, model weights/revision, Python/r
 
 ## 7. Execution ladder and command ownership
 
-1. **Static PREP (cheap):** `python3 -m pytest tools/ci/tests/test_retrieval_benchmark.py -q` currently covers the v1 evaluator. After implementation, add new schema/adapter mutants and run the registered Rust owner tests via `./scripts/cargow test -p quanta-index-retrieval-bench`. Update `just benchmark-prep-local` and `tools/ci/test-authority.toml` to include actual targets; verify selection counts. These are contract checks, not benchmark measurements. W0-A exit (protocol + schema freeze) is required before scaffolding/scorer finalization.
+1. **Static PREP (cheap):** `python3 -m pytest tools/ci/tests/test_retrieval_benchmark.py -q` covers the v3 evaluator/schemas, merge, matrix, frozen receipts and the verdict state machine. Run the registered Rust owner tests via `./scripts/cargow test -p quanta-index-retrieval-bench`. Update `just benchmark-prep-local` and `tools/ci/test-authority.toml` to include actual targets; verify selection counts. These are contract checks, not benchmark measurements. W0-A exit (protocol + schema freeze) is required before scaffolding/scorer finalization.
 2. **SDK process proof:** a future named `Justfile` recipe runs T05–T10 on a tiny repo with an actual daemon process. It emits a terminal receipt with binary hash, SDK route, selected/executed counts and failures. A unit test cannot substitute.
 3. **Pilot pair (exploratory-only):** a future explicit `Justfile` recipe freezes one repo/suite, runs Quanta and Semble sequentially, validates T00–T14 plus T15/T16 only as applicable (T15 only for a same-model control claim; T16 only for an incremental claim), then scores. If any shared-universe prerequisite fails, stop before expensive repetitions. W0-B exit (repo + gold + model + host freeze) is the measurement-entry gate. Pilot output is `PAIR_VALID` or a typed refusal; quality/speed claims require the additional qualification conditions.
 4. **Qualified full run:** repeat the same immutable protocol on the reviewed broader suite and quiet canonical host profile. Preserve raw records, complete per-query report, failed/ineligible rows and provenance. No committed baseline or registered `benchctl` family until its artifact/host/source controls are actually wired and tested.
@@ -93,17 +95,24 @@ Every closeout states the exact command, source SHA and dirty state, selected/ex
 
 ## 8. Verdict artifact JSON schema
 
-Every pilot and qualified run emits one `verdict.json` under the external output root. It carries the five states independently plus the evidence needed to audit them. No run is authoritative without this artifact.
+Every paired run emits exactly one `verdict.json` under the external output root. It carries the five global states independently, per-state proof references, structured provenance, and one entry per scored comparison. No run is authoritative without this artifact. The machine-readable contract is `tools/benchmark/retrieval/verdict.schema.json` (`verdict_version` 2); this section is its human mirror.
 
 ```json
 {
-  "verdict_version": 1,
+  "verdict_version": 2,
   "states": {
     "CONTRACT_GREEN": "pass | fail | not_run",
     "SDK_PATH_GREEN": "pass | fail | not_run",
     "PAIR_VALID": "pass | fail | not_run",
     "PERF_QUALIFIED": "pass | fail | not_run | not_applicable",
     "QUALITY_DELTA": "pass | fail | not_run | not_applicable"
+  },
+  "state_evidence": {
+    "CONTRACT_GREEN": {"reason": "receipts_verified", "proof_digest": "hex|null"},
+    "SDK_PATH_GREEN": {"reason": "sdk_proof_verified", "proof_digest": "hex|null"},
+    "PAIR_VALID": {"reason": "mapping_rederived", "proof_digest": "hex|null"},
+    "PERF_QUALIFIED": {"reason": "no_speed_claim", "proof_digest": "hex|null"},
+    "QUALITY_DELTA": {"reason": "attested_only", "proof_digest": "hex|null"}
   },
   "blinding": "isolated | attested",
   "isolation_method": "string describing how runner gold access was prevented",
@@ -112,20 +121,25 @@ Every pilot and qualified run emits one `verdict.json` under the external output
   "not_applicable_t_ids": ["T16"],
   "failure_class": "none | corpus_mismatch | blinding | provenance | model | host | scoring | infra",
   "provenance": {
-    "quanta_source_sha": "hex",
-    "quanta_binary_digest": "hex",
-    "semble_revision": "string",
-    "semble_lockfile_digest": "hex",
-    "corpus_digest": "hex",
-    "path_sha_diff_digest": "hex",
-    "suite_digest": "hex",
-    "query_pack_digest": "hex",
-    "tokenizer_budget_version": "string",
-    "host_profile": "string",
-    "host_check_record": "string"
+    "quanta": {"source_sha": "40-hex git sha", "binary_digest": "hex"},
+    "semble": {"revision": "0.6.0", "lockfile_digest": "hex"},
+    "corpus": {"digest": "hex", "path_sha_diff_digest": "hex"},
+    "suite": {"suite_digest": "hex", "query_pack_digest": "hex", "tokenizer_budget_version": "qb-v1"},
+    "host": {"profile": "string", "check_record_digest": "hex"}
   },
-  "counts": {"selected": 0, "executed": 0, "passed": 0, "failed": 0}
+  "counts": {"selected": 0, "executed": 0, "passed": 0, "failed": 0},
+  "comparisons": [
+    {
+      "strategy": "whole_file",
+      "baseline_route": "semble-hybrid",
+      "candidate_route": "lexical",
+      "primary_metric": "recall_at_10",
+      "primary_delta": 0.0,
+      "record_digest": "hex",
+      "report_digest": "hex"
+    }
+  ]
 }
 ```
 
-Rules: `missing_t_ids` lists blocking IDs with no evidence; `not_applicable_t_ids` lists conditionally scoped IDs (T15 without a same-model claim, T16 without an incremental claim). `failure_class` is `none` only when every applicable state passes. `provenance` digests must match the run manifest; a missing mandatory digest fails the verdict. RB-05 writes this artifact; RB-06 verifies it at closeout.
+Rules: `missing_t_ids` lists blocking IDs with no evidence; `not_applicable_t_ids` lists conditionally scoped IDs (T15 without a same-model claim, T16 without an incremental claim). `failure_class` is `none` only when no state failed and no claimed conditional failed; `not_run`/`not_applicable` states do not taint it but their IDs stay listed. Every `provenance` digest is re-derived from the run-manifest sibling artifacts by the verdict itself; a missing or mismatched mandatory digest fails the verdict. Manifest booleans/counts are never verdict authority. `comparisons[]` holds one entry per verified strategy x candidate comparison with the digests of the exact record and report scored; it is empty only when no comparison verified (then `PAIR_VALID` fails). RB-05 writes this artifact atomically with the pair output; RB-06 verifies it at closeout.

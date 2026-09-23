@@ -1,0 +1,200 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://quanta-index.invalid/benchmark/retrieval/run-manifest-v1",
+  "title": "Retrieval run manifest v1 (W0-A comparison contract)",
+  "description": "Driver-observed manifest. Booleans/counts here are NEVER verdict authority: every digest claim is re-derived by the verdict from the sibling artifact bytes (paths resolve relative to this manifest file; absolute paths and '..' escape are refused). Contract/SDK evidence binds verification receipts to their underlying test-result artifacts by digest.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["manifest_version", "blinding", "isolation_method", "access_block_log", "scope", "claims", "repetitions", "evidence", "host", "artifacts", "provenance"],
+  "properties": {
+    "manifest_version": {"const": 1},
+    "blinding": {"enum": ["isolated", "attested"]},
+    "isolation_method": {"type": "string", "minLength": 1},
+    "access_block_log": {"type": "string", "minLength": 1},
+    "scope": {"enum": ["exploratory", "qualified"]},
+    "claims": {
+      "type": "object", "additionalProperties": false,
+      "required": ["quality", "speed", "same_model", "incremental"],
+      "properties": {
+        "quality": {"type": "boolean"},
+        "speed": {"type": "boolean"},
+        "same_model": {"type": "boolean"},
+        "incremental": {"type": "boolean"}
+      }
+    },
+    "repetitions": {"type": "integer", "minimum": 1},
+    "evidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["pair", "perf"],
+      "properties": {
+        "contract_suites": {
+          "type": "object", "additionalProperties": false,
+          "required": ["python", "rust"],
+          "properties": {
+            "python": {"$ref": "#/$defs/digest_claim"},
+            "rust": {"$ref": "#/$defs/digest_claim"}
+          }
+        },
+        "sdk_path": {
+          "type": "object", "additionalProperties": false,
+          "required": ["test_result_digest", "separate_process", "sealed_receipt", "activation_ack", "empty_check"],
+          "properties": {
+            "test_result_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "separate_process": {"type": "boolean"},
+            "sealed_receipt": {"type": "boolean"},
+            "activation_ack": {"type": "boolean"},
+            "empty_check": {"type": "boolean"}
+          }
+        },
+        "pair": {
+          "type": "object", "additionalProperties": false,
+          "required": ["mapping_proof_digest"],
+          "properties": {
+            "mapping_proof_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+          }
+        },
+        "perf": {
+          "type": "object", "additionalProperties": false,
+          "required": ["observations_floor", "fresh_roots", "phase_boundaries", "resource_accounting"],
+          "properties": {
+            "observations_floor": {"type": "integer", "minimum": 0},
+            "fresh_roots": {"type": "integer", "minimum": 0},
+            "phase_boundaries": {"type": "boolean"},
+            "resource_accounting": {"type": "boolean"}
+          }
+        },
+        "model_parity": {"$ref": "#/$defs/digest_claim"},
+        "incremental": {"$ref": "#/$defs/digest_claim"}
+      }
+    },
+    "host": {
+      "type": "object", "additionalProperties": false,
+      "required": ["start_digest", "end_digest", "cache_regime"],
+      "properties": {
+        "start_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "end_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "cache_regime": {"enum": ["true_process_cold", "warm_cache", "undeclared"]}
+      }
+    },
+    "artifacts": {
+      "type": "object", "additionalProperties": false,
+      "required": ["suite", "query_pack", "corpus_manifest", "mapping_proof", "latency_matrix", "host_start", "host_end", "records", "reports", "quanta_manifests", "semble_adapter_manifest", "semble_lockfile", "semble_native", "protocol_lock"],
+      "properties": {
+        "suite": {"type": "string", "minLength": 1},
+        "query_pack": {"type": "string", "minLength": 1},
+        "corpus_manifest": {"type": "string", "minLength": 1},
+        "mapping_proof": {"type": "string", "minLength": 1},
+        "latency_matrix": {"type": "string", "minLength": 1},
+        "host_start": {"type": "string", "minLength": 1},
+        "host_end": {"type": "string", "minLength": 1},
+        "records": {
+          "type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1},
+          "description": "Every rep's per-system records (rep-0 for scoring, all reps for the latency matrix)."
+        },
+        "reports": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "quanta_manifests": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "semble_adapter_manifest": {
+          "type": "string", "minLength": 1,
+          "description": "Rep-0 adapter manifest: Semble version, interpreter identity, model asset digest."
+        },
+        "semble_lockfile": {
+          "type": "string", "minLength": 1,
+          "description": "Rep-0 external hash-pinned lockfile copy whose digest must equal the pinned digest."
+        },
+        "semble_native": {
+          "type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1},
+          "description": "Every rep's native.json: the verdict re-derives the full latency matrix from records + natives."
+        },
+        "protocol_lock": {
+          "type": "string", "minLength": 1,
+          "description": "Frozen input digests + pins. The verdict re-verifies its digests against the frozen bytes."
+        },
+        "contract_python_receipt": {"type": "string", "minLength": 1},
+        "contract_python_results": {"type": "string", "minLength": 1},
+        "contract_rust_receipt": {"type": "string", "minLength": 1},
+        "contract_rust_results": {"type": "string", "minLength": 1},
+        "sdk_receipt": {"type": "string", "minLength": 1},
+        "sdk_results": {"type": "string", "minLength": 1},
+        "model_parity_results": {"type": "string", "minLength": 1},
+        "incremental_results": {"type": "string", "minLength": 1}
+      }
+    },
+    "provenance": {
+      "type": "object", "additionalProperties": false,
+      "required": ["quanta", "semble", "corpus", "suite", "host"],
+      "properties": {
+        "quanta": {
+          "type": "object", "additionalProperties": false,
+          "required": ["source_sha", "binary_digest", "embedder"],
+          "properties": {
+            "source_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+            "binary_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "embedder": {"enum": ["potion-code", "hash-dev"]}
+          }
+        },
+        "semble": {
+          "type": "object", "additionalProperties": false,
+          "required": ["revision", "lockfile_digest", "interpreter_digest", "model_asset_digest"],
+          "properties": {
+            "revision": {"const": "0.6.0"},
+            "lockfile_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "interpreter_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "model_asset_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+          }
+        },
+        "corpus": {
+          "type": "object", "additionalProperties": false,
+          "required": ["digest", "path_sha_diff_digest"],
+          "properties": {
+            "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "path_sha_diff_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+          }
+        },
+        "suite": {
+          "type": "object", "additionalProperties": false,
+          "required": ["suite_digest", "query_pack_digest", "tokenizer_budget_version"],
+          "properties": {
+            "suite_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "query_pack_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "tokenizer_budget_version": {"const": "qb-v1"}
+          }
+        },
+        "host": {
+          "type": "object", "additionalProperties": false,
+          "required": ["profile", "check_record_digest"],
+          "properties": {
+            "profile": {"type": "string", "minLength": 1},
+            "check_record_digest": {
+              "type": "string", "pattern": "^[0-9a-f]{64}$",
+              "description": "sha256 of canonical({\"start\": host_start_bytes, \"end\": host_end_bytes}) re-derived from the host artifacts."
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "digest_claim": {
+      "type": "object", "additionalProperties": false,
+      "required": ["test_result_digest"],
+      "properties": {
+        "test_result_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "verification_receipt": {
+      "description": "Must stay identical to tools/ci/verification-receipt.schema.json (a CI test locks the two together). Receipts are sibling artifacts, not embedded here.",
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "revision", "rail", "tier", "command", "evidence_path", "evidence_sha256", "test_event_count"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "revision": {"type": "string", "minLength": 7},
+        "rail": {"type": "string", "minLength": 1},
+        "tier": {"enum": ["pr", "merge", "correctness", "nightly", "weekly"]},
+        "command": {"type": "string", "minLength": 1},
+        "evidence_path": {"type": "string", "minLength": 1},
+        "evidence_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "test_event_count": {"type": "integer", "minimum": 1}
+      }
+    }
+  }
+}
