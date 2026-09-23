@@ -471,6 +471,7 @@ fn admitted_call_settles_success_with_outcome() {
 /// W10-R2: the audit event carries the settling budget's correlation —
 /// reserve stamps it pre-call, settle copies it through the receipt, and
 /// the ring event reads it from the receipt, never from ambient state.
+///
 /// The off-transport twin on the same ledger stays `None`, proving the
 /// ring mixes correlated and uncorrelated events without confusion.
 #[test]
@@ -489,15 +490,14 @@ fn audit_event_carries_the_settling_budgets_correlation() {
     assert!(!correlated_vector.is_empty() && !plain_vector.is_empty());
     assert_eq!(spy.calls(), 2);
     let audit = ledger.audit_tail(2).expect("audit tail");
-    assert_eq!(audit.len(), 2);
-    assert_eq!(audit[0].kind, ProviderSettlementKindV1::Success);
-    assert_eq!(audit[1].kind, ProviderSettlementKindV1::Success);
-    assert_eq!(audit[0].correlation, Some(correlation));
-    assert_eq!(
-        audit[0].correlation.map(RequestCorrelationV1::get),
-        Some(77)
-    );
-    assert_eq!(audit[1].correlation, None);
+    let [first, second] = audit.as_slice() else {
+        panic!("expected exactly two audit events, got {}", audit.len());
+    };
+    assert_eq!(first.kind, ProviderSettlementKindV1::Success);
+    assert_eq!(second.kind, ProviderSettlementKindV1::Success);
+    assert_eq!(first.correlation, Some(correlation));
+    assert_eq!(first.correlation.map(RequestCorrelationV1::get), Some(77));
+    assert_eq!(second.correlation, None);
 }
 
 /// Declared vs observed: a provider answering with an unexpected model,
