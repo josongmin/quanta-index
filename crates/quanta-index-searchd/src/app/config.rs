@@ -159,6 +159,13 @@ pub struct ProviderEgressGrantConfig {
 }
 
 impl ProviderEgressGrantConfig {
+    /// Resolve the operator's egress authorization at a CLI boundary.
+    /// Missing fields remain empty and are refused when an external provider
+    /// is composed; this does not manufacture a test grant.
+    pub fn from_env() -> Result<Self> {
+        provider_grant_from_env_with(&optional_env)
+    }
+
     /// The egress grant for one embedder profile: the operator-named
     /// fields plus the profile's provider, model and revision.
     #[must_use]

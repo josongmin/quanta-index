@@ -582,7 +582,17 @@ fn the_provider_and_cache_open_metrics_are_scraped_under_the_openai_profile() ->
             api_key: "sk-scrape-test".to_string(),
             tuning: quanta_index_searchd::app::config::OpenAiEmbedderTuning::default(),
         },
-    )?;
+    )?
+    .with_provider_egress_grant(
+        quanta_index_searchd::app::config::ProviderEgressGrantConfig {
+            tenant_id: "metrics-test-tenant".to_string(),
+            endpoint: "https://metrics.test/v1".to_string(),
+            region: "metrics-test-region".to_string(),
+            retention: "metrics-test-retention".to_string(),
+            profile: "metrics-test-profile".to_string(),
+            source_content_consent: false,
+        },
+    );
     rt.start()?;
     let scrape = Scrape::take(&mut rt)?;
     for name in [

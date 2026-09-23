@@ -60,6 +60,7 @@ use quanta_index_ipc::{
 use quanta_index_search_plane::{
     BoundedQueryObsStore, MetricSample, ObsError, ResponsePayloadBudget,
 };
+use quanta_index_searchd::app::config::ProviderEgressGrantConfig;
 use quanta_index_searchd::app::searchd::drive;
 use quanta_index_searchd::app::semantic_boot::SemanticBootReport;
 use quanta_index_searchd::app::{
@@ -129,6 +130,7 @@ type DriverHandles = (
 struct DriverSpec<'a> {
     state_root: &'a Path,
     embedder_profile: &'a SemanticEmbedderProfile,
+    provider_egress_grant: &'a ProviderEgressGrantConfig,
     history_max_generations: usize,
     history_max_bytes: u64,
     ingest_resource_policy: IngestResourcePolicy,
@@ -195,6 +197,9 @@ pub struct E2eRuntime {
     /// Held on the runtime (not mutated through process-global env) so two
     /// harness instances in one process can disagree on embedder.
     embedder_profile: SemanticEmbedderProfile,
+    /// Explicit authorization for external provider profiles. The default
+    /// remains incomplete, so selecting OpenAI alone never grants egress.
+    provider_egress_grant: ProviderEgressGrantConfig,
     /// Sealed generations the daemon keeps per repo/revision pair. The
     /// harness default (8) is wide enough that ordinary tests never reap;
     /// GC tests narrow it through [`Self::boot_with_history_max_generations`].
@@ -463,9 +468,18 @@ impl E2eRuntime {
     /// starts, so this is the harness-owned override the relevance rail uses to
     /// run a deterministic `Hash` semantic gate in CI and a real-neural profile
     /// locally — without touching process-global env. Selecting `OpenAi`
-    /// requires a key/network at query time; CI MUST stay on the `Hash` default.
+    /// also requires [`Self::with_provider_egress_grant`] before start, plus a
+    /// key/network at query time; CI MUST stay on the `Hash` default.
     pub fn boot_with_embedder_profile(profile: SemanticEmbedderProfile) -> AnyResult<Self> {
         Self::boot_with_profile_and_history(profile, DEFAULT_HISTORY_MAX_GENERATIONS)
+    }
+
+    /// Authorize the external provider selected for the next daemon start.
+    /// The caller owns the grant; the harness never synthesizes consent.
+    #[must_use]
+    pub fn with_provider_egress_grant(mut self, grant: ProviderEgressGrantConfig) -> Self {
+        self.provider_egress_grant = grant;
+        self
     }
 
     /// Like [`Self::boot`] but keeps only `max_generations` sealed
@@ -632,6 +646,7 @@ impl E2eRuntime {
             tempdir: Some(tempdir),
             state_root,
             embedder_profile: profile,
+            provider_egress_grant: ProviderEgressGrantConfig::default(),
             history_max_generations,
             history_max_bytes: HARNESS_HISTORY_MAX_BYTES,
             ingest_resource_policy: IngestResourcePolicy::DEFAULT,
@@ -790,6 +805,7 @@ impl E2eRuntime {
             ) = start_driver(&DriverSpec {
                 state_root: &self.state_root,
                 embedder_profile: &self.embedder_profile,
+                provider_egress_grant: &self.provider_egress_grant,
                 history_max_generations: self.history_max_generations,
                 history_max_bytes: self.history_max_bytes,
                 ingest_resource_policy: self.ingest_resource_policy,
@@ -3597,6 +3613,7 @@ fn build_config(spec: &DriverSpec<'_>) -> AnyResult<SearchdConfig> {
     cfg = SearchdConfig::with_ingest_socket_override(cfg, ingest_socket);
     Ok(cfg
         .with_semantic_embedder_profile(spec.embedder_profile.clone())
+        .with_provider_egress_grant(spec.provider_egress_grant.clone())
         .with_ingest_resource_policy(spec.ingest_resource_policy)
         .with_semantic_stream_window_policy(spec.semantic_stream_window_policy)
         .with_integrity_scrub_policy(spec.integrity_scrub_policy)

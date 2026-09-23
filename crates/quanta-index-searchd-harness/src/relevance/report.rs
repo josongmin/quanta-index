@@ -23,6 +23,7 @@ use quanta_index_embed::{
     OpenAiEmbedStatsSnapshot, reset_openai_embed_stats, snapshot_openai_embed_stats,
 };
 use quanta_index_searchd::app::SemanticEmbedderProfile;
+use quanta_index_searchd::app::config::ProviderEgressGrantConfig;
 use serde_json::{Value, json};
 
 use crate::artifact::{
@@ -270,7 +271,12 @@ fn prepare_semantic_relevance_runtime_with_profile(
     profile: SemanticEmbedderProfile,
 ) -> AnyResult<E2eRuntime> {
     use quanta_index_contract::SearchPlaneTrackKind;
-    let mut rt = E2eRuntime::boot_with_embedder_profile(profile)?;
+    let grant = if matches!(profile, SemanticEmbedderProfile::OpenAi { .. }) {
+        ProviderEgressGrantConfig::from_env()?
+    } else {
+        ProviderEgressGrantConfig::default()
+    };
+    let mut rt = E2eRuntime::boot_with_embedder_profile(profile)?.with_provider_egress_grant(grant);
     seed_semantic_relevance_fixture(&mut rt)?;
     let _generation = rt.seal_lexical_generation_for_tracks(&[
         SearchPlaneTrackKind::Lexical,

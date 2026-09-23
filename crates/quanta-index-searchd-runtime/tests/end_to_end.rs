@@ -81,7 +81,18 @@ impl ScenarioFixture {
     }
 
     fn boot_with_profile(profile: SemanticEmbedderProfile) -> Result<Self, Box<dyn Error>> {
-        let mut runtime = E2eRuntime::boot_with_embedder_profile(profile)?;
+        Self::boot_with_profile_and_grant(
+            profile,
+            quanta_index_searchd::app::config::ProviderEgressGrantConfig::default(),
+        )
+    }
+
+    fn boot_with_profile_and_grant(
+        profile: SemanticEmbedderProfile,
+        grant: quanta_index_searchd::app::config::ProviderEgressGrantConfig,
+    ) -> Result<Self, Box<dyn Error>> {
+        let mut runtime =
+            E2eRuntime::boot_with_embedder_profile(profile)?.with_provider_egress_grant(grant);
         // Eager start surfaces a boot refusal here and binds all three
         // sockets before any byte is published.
         runtime.start()?;
@@ -1581,7 +1592,9 @@ fn verify_semantic_without_lexical_scope(socket: &Path) -> TestResult {
 /// semantically-related "cat" doc above the unrelated "finance" doc. This is
 /// the end-to-end capability that was structurally impossible before.
 ///
-/// `#[ignore]` because it hits the real `OpenAI` API; run with `OPENAI_API_KEY` set:
+/// `#[ignore]` because it hits the real `OpenAI` API. The operator must set
+/// `OPENAI_API_KEY` and the `QUANTA_INDEX_PROVIDER_{TENANT,ENDPOINT,REGION,
+/// RETENTION,PROFILE,SOURCE_CONTENT_CONSENT}` grant fields before running:
 /// `OPENAI_API_KEY=<key> ./scripts/cargow --lane test-daemon-lane test \
 ///   -p quanta-index-searchd-runtime --test runtime_fast_suite \
 ///   end_to_end::openai_semantic_paraphrase_outranks_unrelated_v1 \
@@ -1594,13 +1607,16 @@ fn openai_semantic_paraphrase_outranks_unrelated_v1() -> TestResult {
         _ => return Err("OPENAI_API_KEY must be set to run this gated test".into()),
     };
 
-    let fixture = ScenarioFixture::boot_with_profile(SemanticEmbedderProfile::OpenAi {
-        model: "text-embedding-3-small".to_string(),
-        model_revision: "live".to_string(),
-        dimension: 1536,
-        api_key,
-        tuning: OpenAiEmbedderTuning::default(),
-    })?;
+    let fixture = ScenarioFixture::boot_with_profile_and_grant(
+        SemanticEmbedderProfile::OpenAi {
+            model: "text-embedding-3-small".to_string(),
+            model_revision: "live".to_string(),
+            dimension: 1536,
+            api_key,
+            tuning: OpenAiEmbedderTuning::default(),
+        },
+        quanta_index_searchd::app::config::ProviderEgressGrantConfig::from_env()?,
+    )?;
     let socket = fixture.query_socket.clone();
     let ingest_socket = fixture.ingest_socket.clone();
 
