@@ -13,23 +13,24 @@ implementation-status statements, not the required clean-source proof gates.
 
 ### Current-source re-audit (2026-09-24; static only)
 
-Quanta `main` HEAD `1a1458f00652ab53d2bcc170304b4d26ba2556cb`
-(advanced during this review from `b9e7c712`; intervening change touched
-only process-readiness test diagnostics, not the audited production owners),
-ahead of `origin/main` by four and behind by two commits at final inspection,
-with concurrent dirty IPC/P09, P12A,
-retrieval-benchmark, prompt-policy and RFC files. These working-tree bytes
-are not a clean result SHA. Semantica HEAD/dirty state and actual deployed
-state roots were **not** revalidated in this pass. No tests, release proof,
-deployment, activation, or rollback drill ran for this re-audit.
+Quanta source snapshot `a0ac1853256d9b507ae8dc76f7437a4c7568434c`
+(`main`, ahead of `origin/main` by six and behind by two commits at inspection).
+This shared commit absorbed the P09 IPC and P12A handoff code together with
+unrelated retrieval work. The checkout still had dirty `Justfile`, SEP-21
+progress/plan docs and a retrieval proof test. Re-freeze before execution;
+the repository is not a clean result SHA. Semantica HEAD/dirty state and
+actual deployed state roots were **not** revalidated in this pass. No
+release proof, deployment, activation or rollback drill ran for this audit.
+Local focused tests are recorded separately in `EXECUTION-PROGRESS.md` and
+are not a clean-source qualification receipt.
 
 | Lane | Confirmed current source | Residual / no-duplicate decision |
 | --- | --- | --- |
 | P06 | SDK `binding.rs` compares complete typed activation/rollback identity; the old `same_identity` field subset is gone. `ActivationCatalog::ActiveRoots` remains `BTreeMap<ActivationKey, SearchCorpusGenerationV1>` and persists `PersistedSearchCorpusGenerationRootV1`. | Treat the SDK fix as partial, not another task. Add one catalog-owned event token and extend the existing contract, resolution, read-view and SDK path. No parallel head map or SDK epoch. |
-| P09 | Dirty IPC code adds `RequestEventScope` and a bounded 1024-entry `IpcServerCounters` tail with a dropped count; searchd's generic adapter now projects closed route and top-level typed error. Overload encode/write events are distinguished. Query and ingest `PlaneDispatch` still ignore `DispatchContextV1`; the tail has no operator read path. `RuntimeReadiness` still sets `required_backend: true`, and its active proof cache has no age horizon. | Finish provider-stage correlation and a bounded, authorized diagnostic read path on the existing control plane; do not create a second event bus, request-ID allocator or provider-usage ledger. Define the backend/physical-proof detection interval. Dirty changes require ownership reconciliation before editing. |
+| P09 | IPC code at this HEAD has `RequestEventScope`, a bounded 1024-entry `IpcServerCounters` tail and a dropped count; searchd's generic adapter projects closed route and top-level typed error. Overload encode/write events are distinguished. Query and ingest `PlaneDispatch` still ignore `DispatchContextV1`; the tail has no operator read path. `RuntimeReadiness` still sets `required_backend: true`, and its active proof cache has no age horizon. | Finish provider-stage correlation and a bounded, authorized diagnostic read path on the existing control plane; do not create a second event bus, request-ID allocator or provider-usage ledger. Define the backend/physical-proof detection interval. |
 | P10 | `LegacyStateImporterV1` explicitly refuses materialized V1 RepoMap and generic unconsumed legacy objects; no source-bundle replay exists. | Preserve refusal. Replay is conditional on real root plus exact original bundles; do not build an importer-only graph IR or guess a no-legacy waiver. |
 | P11 | Public V1 SDK/wire/dispatcher/store mutation remains reachable. `RepoMapActivateGenerationRequestV2.request_v1` is a V1 DTO, and `RepoMapGenerationStore::activate_generation_v2` calls public `activate_generation`. | Extract one private commit primitive, then remove all V1 success surfaces in one breaking cutover. No V2-to-V1 adapter and no duplicate catalog transaction. |
-| P12A/Q | Dirty `handoff_validation.py` is already the single Git/archive/chain leaf used by CLI and aggregate; aggregate schema/writer/checker have product and infrastructure handoff fields. | Do not reimplement P12A from the old ticket prose. Reconcile dirty ownership, validate the leaf/aggregate against independent negatives and real artifacts, then issue clean-source proofs. Missing historical handoffs and final-source receipts are not repaired by synthetic records. |
+| P12A/Q | `handoff_validation.py` is already the single Git/archive/chain leaf used by CLI and aggregate; aggregate schema/writer/checker have product and infrastructure handoff fields. | Do not reimplement P12A from the old ticket prose. Validate the leaf/aggregate against independent negatives and real artifacts, then issue clean-source proofs. Missing historical handoffs and final-source receipts are not repaired by synthetic records. |
 
 Status of every row above: source observation only (`NOT_RUN` qualification).
 No assertion about Semantica's present producer wrappers, deployed state, or
@@ -47,7 +48,7 @@ writer; a dirty file is not an invitation to overwrite its current owner.
 | `search-plane/src/readiness/{activation_catalog,search_corpus_generation}.rs`, `searchd/src/app/{state_format,state_migration,runtime}.rs` | P06 owns head event and root-incarnation format. P10 consumes that exact format through the existing offline staging/import path. | Migration-local head schema, inferred incarnation from an empty directory, or a second runtime catalog. |
 | `ipc/src/{server,counters}.rs`, `searchd/src/app/ipc_dispatcher.rs`, `search-plane/src/query_embedder.rs` | P09 completes the dirty transport sink and projects backend/provider stages from the existing dispatch budget and provider audit. | A route-local ring, new request ID, duplicate cost ledger, or labels containing request IDs. |
 | `repomap/src/{materializer,store}.rs`, `contract/src/repomap/terminal_receipt_v2.rs` | P11 first extracts the production V2 private commit path; P10 replay calls only that path and the existing compiler/catalog sequence authority. If migration work precedes P11, it may define offline input/negative tests but cannot mint an importer-only mutation API. | `activate_generation_v2 → activate_generation(V1)`, snapshot-to-source reconstruction, or a second replay sequence allocator. |
-| `tools/ci/lint/handoff_validation.py`, proof aggregate schema/writer/checker | P12A reconciles the existing dirty leaf once. Registry declarations and independent expected DAG remain separate by design. | Duplicate Git/archive parser in writer, checker-import cycle, or a registry-derived expected graph. |
+| `tools/ci/lint/handoff_validation.py`, proof aggregate schema/writer/checker | P12A validates the now-committed leaf once. Registry declarations and independent expected DAG remain separate by design. | Duplicate Git/archive parser in writer, checker-import cycle, or a registry-derived expected graph. |
 
 The Sep-24 single-IR note concerns internal IR and benchmark artifacts; it
 does not authorize removing persisted state/wire format stamps or changing
@@ -173,7 +174,7 @@ it; metric aggregates and tails are not a request-stage terminal record.
 
 | Owner files | Action |
 | --- | --- |
-| `crates/quanta-index-ipc/src/{server,counters}.rs` | Reconcile the dirty implementation of the one bounded request-event tail (1024 entries), nonzero envelope ID, connection ID and dropped count. Preserve transport-owned admission/terminal events and existing counter authority. Correct overload `write_response` error classification (`ResponseEncodeFailed` versus `ResponseWriteFailed`), assert dropped-count scrape and panic/abort terminal behavior, and make explicit whether ring loss prevents a complete per-request trace. Do not add another sink or ID allocator. |
+| `crates/quanta-index-ipc/src/{server,counters}.rs` | Preserve the committed one bounded request-event tail (1024 entries), nonzero envelope ID, connection ID, dropped count and corrected overload encode/write classification. Keep transport-owned admission/terminal events and counter authority. Add/retain panic/abort terminal tests, and make explicit that ring loss prevents a complete per-request trace. Do not add another sink or ID allocator. |
 | `crates/quanta-index-searchd/src/app/ipc_dispatcher.rs`, `crates/quanta-index-search-plane/src/{query_dispatcher,query_embedder,observability}.rs`, existing provider-audit owner | Keep the generic backend start/return and closed route/typed-error projection in one adapter. Pass `DispatchContextV1` or its established correlation through query/ingest instead of discarding it. Provider stage references the existing `RequestBudgetV1::correlation`/`ProviderBudgetLedger` audit, never duplicates usage settlement. Never emit query/source bytes, credentials or high-cardinality metric labels. |
 | control-plane diagnostic contract/dispatcher, `crates/quanta-index-searchd/src/app/runtime.rs`, SDK/searchctl observability owners | Expose a fixed-limit read of the existing IPC event tail under the existing diagnostic/control capability; include dropped count, process/plane identity and bounded time/window semantics so clients cannot infer a complete trace after loss. Reuse the same sink; a new ring or metrics labels keyed by request ID is forbidden. |
 | `crates/quanta-index-searchd/src/app/readiness.rs`, maintenance/scrub owners, process-readiness contract | Replace the unconditional backend component with an observed proof/freshness status. Define the detection horizon and invalidate cached active integrity on catalog mutation, scrub findings and expired proof. Keep process readiness separate from generation status. |
@@ -228,13 +229,13 @@ producer/daemon cutover; do not infer deploy/activate/rollback from code proof.
 ## 6. R5 — P12A proof closure, then P12Q qualification
 
 Historical root cause: aggregate validation consumed proof manifests but not
-the product handoff graph. The current dirty implementation adds that graph;
+the product handoff graph. The current implementation adds that graph;
 it still needs reconciliation and clean-source proof. The operational registry
 and fixed checker oracles must not be collapsed into self-validation.
 
 | Owner files | Action |
 | --- | --- |
-| `tools/ci/lint/{check-lane-handoff,handoff_validation}.py` | Reconcile the existing dirty acyclic leaf and CLI adapter; inspect the actual current diff before changing semantics. Preserve its one fixed lane policy, single-handoff Git/archive checks and historical-chain fork/join. Historical result SHA need not be current HEAD. Keep proof-checker injection; no leaf import back into the aggregate checker. |
+| `tools/ci/lint/{check-lane-handoff,handoff_validation}.py` | Inspect the committed acyclic leaf and CLI adapter before changing semantics. Preserve its one fixed lane policy, single-handoff Git/archive checks and historical-chain fork/join. Historical result SHA need not be current HEAD. Keep proof-checker injection; no leaf import back into the aggregate checker. |
 | `tools/ci/{proof-aggregate.schema.json,write-proof-aggregate.py}`, `tools/ci/lint/check-proof-authority.py` | Reconcile the already-present `product_handoffs`, `product_chain_status` and `infrastructure_handoff` fields. Validate archive/proof bytes using the same leaf and independently compare the aggregate to fixed expected dependencies/verdicts. Four final-source verdicts derive from final-current receipts only; historical chain gates `production_ready` separately. |
 | `tools/ci/tests/{test_check_lane_handoff,test_write_proof_aggregate,test_check_proof_authority}.py`, `Justfile`, test/proof authority registry | Retain and extend missing/duplicate/reordered, wrong fork/join, tampered/symlink/archive, wrong pair/binary/host, and historical-versus-final negatives; add a real positive chain only from authentic artifacts. Re-run the executable P12A owner rail on a clean result SHA. Do not issue P12 final proof from P12A. |
 

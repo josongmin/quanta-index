@@ -1,7 +1,7 @@
 # RFC: Quanta Index Rust SDK interface, scoped to current contracts
 
 - Status: **proposed; adversarial revision**. This document implements no SDK, wire, daemon, or producer change.
-- Source audited: Quanta HEAD `1a1458f00652ab53d2bcc170304b4d26ba2556cb` on 2026-09-24, with unrelated concurrent dirty files. During review HEAD advanced to `f154f2f25cac107765f6625aa354156f3e0e38c6`; the intervening commit changed only two searchd-runtime readiness test files, not the SDK/contract/lifecycle paths cited here. Semantica `index_sdk_ingress` was read as a consumer, but its revision and dirty-state identity were not frozen. Re-freeze both before implementation or qualification.
+- Source audited: the original SDK review used Quanta HEAD `1a1458f00652ab53d2bcc170304b4d26ba2556cb`. The external producer-input boundary in §8 was rechecked at `a0ac1853256d9b507ae8dc76f7437a4c7568434c` on 2026-09-24; the later `0743cda05fb07f38442eec3d0233daf9d3a5b3dd` commit changed only `Justfile` and a retrieval-proof test. The checkout has concurrent dirty work. Semantica `index_sdk_ingress` was read as a consumer, but its revision and dirty-state identity were not frozen. Re-freeze both before implementation or qualification.
 - Scope: Rust SDK over local query, ingest, and control UDS planes; not an in-process Tantivy/LanceDB handle.
 - Related: [search configuration RFC](sep-23-search-config-profiles/rfc.md), [earlier SDK target](sep-23-search-config-profiles/sdk-interface.md). This RFC supersedes the earlier target where its public-shape proposals conflict. Server profile/config policy stays with the configuration RFC.
 
@@ -118,3 +118,19 @@ Stop/reopen if supplied receipt cannot be validated against its batch, Semantica
 | [Cargo SemVer guide](https://doc.rust-lang.org/cargo/reference/semver.html) | Public shapes have source-compatibility cost. | A permitted break still has migration cost; change only demonstrated pain points. |
 
 These references are design examples, not proof of Quanta correctness/performance. This RFC is a static source audit. Implementation, execution, integration, and production behavior are **NOT_RUN** here.
+
+## 8. External producer input boundary
+
+The supported input is **producer-authored indexed material**, not an arbitrary raw-source upload. A producer creates stable `ChunkRecord` IDs, paths, byte/line spans, text and optional structural metadata, then sends `SearchCorpusBatch::replace_scope`/`tombstone_scope`/`clear_surface` under a generation. For semantic search, it may send typed `SemanticSourceRecordV1` groups through `replace_semantic_scope`; the search plane validates those sources and derives embeddings with the daemon's model. The batch carries shared generation, digest, mutation and seal identity. The daemon owns lexical/semantic materialization, idempotency, receipts and activation.
+
+| Input | Current support | Boundary |
+|---|---|---|
+| External pre-chunked code/text | `ChunkRecord` inside `SearchCorpusReplaceScope` | Producer chooses boundaries and IDs; Quanta validates/indexes them. Quanta does not parse arbitrary source into chunks. |
+| External semantic cards/sections/summaries | `SemanticSourceRecordV1` inside `SemanticSourceReplaceScopeV1` | Producer owns source text, owner/provenance and render-policy identity; Quanta owns embedding and sealed generation. The corpus-kind vocabulary is closed and has kind-specific rules. |
+| Raw file bytes with automatic chunking | No general SDK entrypoint. Wire has `bundle_payload`, but `SearchCorpusBatch` emits `None` and the Semantica SDK ingress rejects non-`None`. | Do not advertise this as a generic source-ingest API or infer its semantics from the optional wire field. |
+
+Commonality is at the **batch lifecycle** (scope mutations, canonical digest, resource preflight, idempotent publish, seal, receipt and CAS). Representation is deliberately separate: lexical chunks/symbols, semantic source records/cluster memberships, and other domain batches have different authority and validation. `SearchCorpusBatch` should remain the shared SDK gateway for search-corpus ingest; do not introduce a schema-free `Source`, universal `Document`, or pluggable chunker in the daemon. A new producer can map its own parser/chunker output to existing records without changing the SDK. A genuinely new searchable corpus kind, provenance field or ranking behavior requires explicit contract/daemon changes and migration proof.
+
+Two practical limits need tests before claiming broader extensibility: the default semantic derivation mode permits legacy chunk-text fallback when typed sources are absent, so inspect the resulting provenance/capability rather than assuming typed semantic quality; and `ChunkRecord` has `source_repo_id` while `SemanticSourceRecordV1` has no parallel field, so a multi-repository semantic-source producer needs an explicit authority/provenance design before it is declared supported. Neither limit alone proves a current production failure.
+
+When onboarding a second external producer, first add producer-local mapping and fixtures, then prove stable IDs/spans, deterministic batch digest, replacement/tombstone/delete behavior, typed-source validation, fallback/refusal mode, receipt replay and publish→activate→query→restart. Owners: `crates/quanta-index-contract/src/{channel/records.rs,ipc/ingest.rs,ipc/semantic_source.rs}` for shared input; `crates/quanta-index-sdk/src/lexical.rs` for the SDK gateway; `crates/quanta-index-search-plane/src/{semantic_derive.rs,ingest_dispatcher/search_corpus.rs}` for build behavior. Change these only for a demonstrated missing contract, not to accommodate a producer's private parsing algorithm.

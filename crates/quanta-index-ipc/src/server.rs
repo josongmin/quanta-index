@@ -2923,6 +2923,19 @@ mod tests {
         callback_entered: mpsc::Sender<()>,
     }
 
+    struct PanickingDispatcher;
+
+    impl IpcDispatcher<u64, u64> for PanickingDispatcher {
+        fn dispatch(
+            &self,
+            _context: &super::DispatchContextV1,
+            _request: u64,
+            _budget: &RequestBudgetV1,
+        ) -> u64 {
+            panic!("scripted dispatcher panic");
+        }
+    }
+
     impl IpcDispatcher<u64, u64> for FailingWatchDispatcher {
         fn dispatch(
             &self,
@@ -3364,6 +3377,61 @@ mod tests {
             if !matches!(events.last(), Some(event) if event.stage == RequestEventStageV1::ResponseEncodeFailed && event.request_id.get() == 18 && event.connection_id == 2)
             {
                 return Err(format!("wrong overload terminal event: {events:?}"));
+            }
+            Ok(())
+        })();
+        assert_test_ok(&result);
+    }
+
+    #[test]
+    fn dispatcher_panic_emits_one_terminal_event_and_releases_slot() {
+        let result = (|| -> TestRes {
+            let (mut client, server) = UnixStream::pair().map_err(|err| err.to_string())?;
+            client
+                .write_all(&encode_test_frame(19, 4)?)
+                .map_err(|err| err.to_string())?;
+            let counters = test_counters();
+            let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                handle_connection::<
+                    TestRequestEnvelope,
+                    u64,
+                    TestResponseEnvelope,
+                    u64,
+                    PanickingDispatcher,
+                >(
+                    server,
+                    &PanickingDispatcher,
+                    &test_slots(),
+                    test_policy(),
+                    IpcPlane::Query,
+                    PeerCredentials {
+                        uid: 1000,
+                        gid: 1000,
+                        pid: None,
+                    },
+                    1000,
+                    3,
+                    &AtomicBool::new(false),
+                    &counters,
+                )
+            }));
+            if caught.is_ok() {
+                return Err("dispatcher panic was not observed".to_owned());
+            }
+            let events = counters
+                .recent_request_events_v1()
+                .map_err(|err| err.to_string())?;
+            let terminal = events
+                .iter()
+                .filter(|event| event.stage == RequestEventStageV1::Panicked)
+                .count();
+            if terminal != 1
+                || !matches!(events.last(), Some(event) if event.request_id.get() == 19 && event.connection_id == 3 && event.stage == RequestEventStageV1::Panicked)
+            {
+                return Err(format!("panic terminal event invalid: {events:?}"));
+            }
+            if counters.snapshot().dispatch_in_flight != 0 {
+                return Err("panic leaked an in-flight slot".to_owned());
             }
             Ok(())
         })();

@@ -6,9 +6,10 @@ to validated lane handoffs and immutable proof manifests, not this document.
 
 ## Current checkpoint (2026-09-24)
 
-- P09 request-event follow-up on moving shared `main` (latest observed
-  `f154f2f25cac107765f6625aa354156f3e0e38c6`; source dirty, not an
-  exact-source receipt): IPC now owns one bounded 1024-entry, nonblocking
+- P09 request-event follow-up on moving shared `main`: the code was absorbed
+  by local `a0ac1853256d9b507ae8dc76f7437a4c7568434c` together with
+  unrelated changes. Tests below ran on its dirty predecessor bytes, not an
+  exact-clean-source receipt. IPC now owns one bounded 1024-entry, nonblocking
   request-event tail keyed by validated envelope ID and connection ID, with
   visible dropped-event counter. The generic searchd adapter adds a closed
   route projection and top-level typed error code without new request IDs or
@@ -16,12 +17,18 @@ to validated lane handoffs and immutable proof manifests, not this document.
   emitted `ResponseWriteFailed`; a real `handle_connection` RED failed 1/1,
   then the classification patch made the same test pass 1/1. `./scripts/cargow
   test -p quanta-index-ipc --lib --locked` passed 49/49; `./scripts/cargow
+  test -p quanta-index-ipc --test admission --locked` passed 3/3 real-UDS
+  admission tests. `./scripts/cargow
   --lane fast-lane check -p quanta-index-searchd --lib --tests --locked`
   passed compilation only. A filtered searchd test attempt was interrupted
   during DataFusion/Lance compilation (exit 130), before test execution.
   `just rust-hexagonal`, `just rust-wire-inventory` and `just
   rust-public-api` passed; `just rust-cargo-modules` was interrupted after
   90 seconds waiting on its tool subprocess (exit 130), with no verdict.
+  A real-handler panic terminal/RAII regression test was added after the
+  49/49 library run; its focused run was interrupted while waiting for the
+  shared Cargo cache lock (exit 130), before execution. Its assertion and
+  the updated library test count are therefore `NOT_RUN`.
   Query/ingest still discard `DispatchContextV1`; provider-stage linkage,
   an operator-readable bounded event path, observed backend liveness and an
   explicit readiness proof-age horizon remain open. The P09 owner/release
