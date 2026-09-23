@@ -65,6 +65,7 @@ pub enum SupervisorPhase {
 }
 
 /// A process-wide observation of the supervisor and required serving loops.
+///
 /// The supervisor owns phase transitions; child adapters own their liveness
 /// bits. A surviving control socket therefore cannot report the process as
 /// ready after another required accept loop has exited.
@@ -79,7 +80,14 @@ pub(crate) struct SupervisorStatus {
 
 impl SupervisorStatus {
     fn set_phase(&self, phase: SupervisorPhase) {
-        self.phase.store(phase as u8, Ordering::Release);
+        let code = match phase {
+            SupervisorPhase::Starting => 0,
+            SupervisorPhase::Ready => 1,
+            SupervisorPhase::Draining => 2,
+            SupervisorPhase::Stopped => 3,
+            SupervisorPhase::Failed => 4,
+        };
+        self.phase.store(code, Ordering::Release);
     }
 
     /// Read the supervisor's last published lifecycle phase.

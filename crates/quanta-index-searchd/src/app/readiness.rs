@@ -29,7 +29,12 @@ pub(crate) struct RuntimeReadiness {
     pub provider_child_required: bool,
     pub scrub: Arc<ScrubTalliesV1>,
     /// One physical proof per active identity and scrub invalidation epoch.
-    pub proven_active: Mutex<Option<(Vec<SearchCorpusGenerationV1>, (u64, u64))>>,
+    pub proven_active: Mutex<Option<ProvenActive>>,
+}
+
+pub(crate) struct ProvenActive {
+    identity: Vec<SearchCorpusGenerationV1>,
+    scrub_epoch: (u64, u64),
 }
 
 impl ProcessReadinessPort for RuntimeReadiness {
@@ -42,12 +47,12 @@ impl ProcessReadinessPort for RuntimeReadiness {
         let active_integrity = if before.0.is_empty() {
             None
         } else {
-            let mut proven = self.proven_active.lock().map_err(|error| {
+            let mut cached_proof = self.proven_active.lock().map_err(|error| {
                 CoreError::Storage(format!("process readiness proof cache poisoned: {error}"))
             })?;
-            if proven
+            if cached_proof
                 .as_ref()
-                .is_some_and(|(identity, epoch)| *identity == before.0 && *epoch == scrub_epoch)
+                .is_some_and(|proof| proof.identity == before.0 && proof.scrub_epoch == scrub_epoch)
                 && self.scrub.proof_invalidation_epoch() == scrub_epoch
             {
                 Some(true)
@@ -56,10 +61,14 @@ impl ProcessReadinessPort for RuntimeReadiness {
                     .lifecycle
                     .validate_rehydrated_active_generations_v1(&self.promotion);
                 let after = self.activation_catalog.active_inventory_v1()?;
-                let proved = matches!(proof, Ok(count) if count == before.0.len() && after == before)
+                let valid = matches!(proof, Ok(count) if count == before.0.len() && after == before)
                     && self.scrub.proof_invalidation_epoch() == scrub_epoch;
-                *proven = proved.then(|| (before.0.clone(), scrub_epoch));
-                Some(proved)
+                *cached_proof = valid.then(|| ProvenActive {
+                    identity: before.0.clone(),
+                    scrub_epoch,
+                });
+                drop(cached_proof);
+                Some(valid)
             }
         };
         let (query_plane, control_plane, ingest_plane) = self.status.required_planes();
@@ -74,7 +83,7 @@ impl ProcessReadinessPort for RuntimeReadiness {
             query_plane,
             control_plane,
             ingest_plane,
-            maintenance_heartbeat: self.maintenance.heartbeat_fresh(self.maintenance_cadence),
+            maintenance_heartbeat: self.maintenance.heartbeat_fresh(self.maintenance_cadence)?,
             required_backend: true, // Successful runtime assembly opened and proved required adapters.
             provider: ProcessProviderReadinessV1 {
                 claim: self.provider_claim,

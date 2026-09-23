@@ -49,15 +49,14 @@ pub struct MaintenanceTallies {
 impl MaintenanceTallies {
     /// A stalled or dead timer is unhealthy even when earlier ticks succeeded.
     #[must_use]
-    pub fn heartbeat_fresh(&self, cadence: Duration) -> bool {
+    pub fn heartbeat_fresh(&self, cadence: Duration) -> Result<bool, CoreError> {
         let Some(limit) = cadence.checked_mul(3) else {
-            return false;
+            return Ok(false);
         };
-        self.last_completed_tick
-            .lock()
-            .ok()
-            .and_then(|last| *last)
-            .is_some_and(|last| last.elapsed() <= limit)
+        let last = *self.last_completed_tick.lock().map_err(|error| {
+            CoreError::Storage(format!("maintenance heartbeat lock poisoned: {error}"))
+        })?;
+        Ok(last.is_some_and(|last| last.elapsed() <= limit))
     }
 
     /// Ticks the timer has run.
@@ -324,12 +323,30 @@ mod tests {
     fn maintenance_heartbeat_rejects_stale_or_unknown_tick() {
         let tallies = MaintenanceTallies::default();
         let cadence = Duration::from_secs(1);
-        assert!(!tallies.heartbeat_fresh(cadence));
-        *tallies.last_completed_tick.lock().expect("fixture lock") =
-            Some(Instant::now() - Duration::from_secs(4));
-        assert!(!tallies.heartbeat_fresh(cadence));
+        assert!(!tallies.heartbeat_fresh(cadence).expect("heartbeat check"));
+        *tallies.last_completed_tick.lock().expect("fixture lock") = Some(
+            Instant::now()
+                .checked_sub(Duration::from_secs(4))
+                .expect("representable instant"),
+        );
+        assert!(!tallies.heartbeat_fresh(cadence).expect("heartbeat check"));
         *tallies.last_completed_tick.lock().expect("fixture lock") = Some(Instant::now());
-        assert!(tallies.heartbeat_fresh(cadence));
+        assert!(tallies.heartbeat_fresh(cadence).expect("heartbeat check"));
+    }
+
+    #[test]
+    fn maintenance_heartbeat_reports_poisoned_lock() {
+        let tallies = MaintenanceTallies::default();
+        let _caught = std::panic::catch_unwind(|| {
+            let _guard = tallies.last_completed_tick.lock().expect("fixture lock");
+            panic!("poison the heartbeat lock");
+        });
+        let error = tallies
+            .heartbeat_fresh(Duration::from_secs(1))
+            .expect_err("a poisoned heartbeat lock must not become a stale value");
+        assert!(
+            matches!(error, CoreError::Storage(message) if message.contains("heartbeat lock poisoned"))
+        );
     }
 
     struct CountingSweep(AtomicU64);

@@ -98,33 +98,6 @@ fn bridge_external_shutdown(
     })
 }
 
-#[cfg(test)]
-mod shutdown_bridge_tests {
-    use super::*;
-
-    #[test]
-    fn bridge_joins_after_supervisor_initiates_shutdown() -> Result<()> {
-        let flag = Arc::new(AtomicBool::new(false));
-        let root = Arc::new(CancelRoot::new());
-        let bridge = bridge_external_shutdown(Arc::clone(&flag), Arc::clone(&root))?;
-        root.request_shutdown();
-        let deadline = std::time::Instant::now() + Duration::from_secs(1);
-        while !bridge.is_finished() && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        assert!(
-            bridge.is_finished(),
-            "shutdown bridge exceeded its deadline"
-        );
-        bridge
-            .join()
-            .map_err(|_| anyhow::anyhow!("shutdown bridge panicked"))?;
-        assert!(root.shutdown_requested());
-        assert!(!flag.load(Ordering::Acquire));
-        Ok(())
-    }
-}
-
 /// Supervise one fully-assembled runtime: spawn every child, serve
 /// until the cancellation root fires or a child is lost, then drain
 /// under the two-deadline policy.
@@ -302,4 +275,36 @@ fn spawn_maintenance_child(
         })?;
     supervisor.adopt_child("maintenance-timer", Box::new(move || stop.stop()), join);
     Ok(())
+}
+
+#[cfg(test)]
+mod shutdown_bridge_tests {
+    use super::*;
+
+    #[test]
+    fn bridge_joins_after_supervisor_initiates_shutdown() -> Result<()> {
+        let flag = Arc::new(AtomicBool::new(false));
+        let root = Arc::new(CancelRoot::new());
+        let bridge = bridge_external_shutdown(Arc::clone(&flag), Arc::clone(&root))?;
+        root.request_shutdown();
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while !bridge.is_finished() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        anyhow::ensure!(
+            bridge.is_finished(),
+            "shutdown bridge exceeded its deadline"
+        );
+        bridge.join().map_err(|panic_payload| {
+            let detail = panic_payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| panic_payload.downcast_ref::<&str>().copied())
+                .unwrap_or("non-string panic");
+            anyhow::anyhow!("shutdown bridge panicked: {detail}")
+        })?;
+        anyhow::ensure!(root.shutdown_requested(), "shutdown was not requested");
+        anyhow::ensure!(!flag.load(Ordering::Acquire), "external flag was set");
+        Ok(())
+    }
 }
