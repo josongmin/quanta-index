@@ -6,6 +6,34 @@ to validated lane handoffs and immutable proof manifests, not this document.
 
 ## Current checkpoint (2026-09-24)
 
+- P12A aggregate follow-up is now present on shared local `main`
+  `fa17e0f14672548bf7116074b7064c7c5e455d03`: the single-handoff
+  Git/archive/proof semantics moved into the acyclic
+  `tools/ci/lint/handoff_validation.py` leaf; CLI and aggregate checker inject
+  the proof checker instead of importing it from the leaf. The aggregate
+  schema/writer/checker derive separate product handoff refs, a fixed-chain
+  verdict, and the P12A infrastructure handoff from canonical files. Four
+  final-source verdicts remain based on final-current proof receipts; missing
+  historical handoffs prevent only `production_ready` and final P12 issuance.
+  A real `just lane-handoff-chain-check` run exited 1 for missing P00, P01,
+  P02A, P02B, P02I and P11 artifacts. After the shared commit, `just
+  proof-p12a-proof-infrastructure` exited 0 with test-authority lint,
+  proof-authority lint (26 registered, zero manifests validated), and 28/28
+  Python tests. This rail ran on a dirty checkout because the aggregate
+  regression test and concurrent retrieval-benchmark files were modified;
+  it is not an exact-clean-source P12A proof. The ready-path unit tests stub
+  an already-validated handoff ledger; the real missing-ledger negative is
+  exercised, but a full real-artifact positive chain is still unavailable.
+  A further handoff hardening batch requires a non-empty exact Git write set,
+  refuses blocked P12A handoffs even after single-record validation, and
+  binds each handoff digest to the same no-follow regular-file bytes that
+  JSON parsing consumes. The product-chain and infrastructure-ledger failure
+  axes are separately covered. `just proof-p12a-proof-infrastructure` then
+  exited 0 with 32/32 Python tests; `git diff --check` exited 0. Shared
+  `main` advanced again during this session (last observed `449197fe`), and
+  unrelated benchmark work plus these P12A edits remained dirty, so this is
+  local behavior/governance evidence, not exact-source qualification.
+
 - P12A partial implementation on Quanta `main` base `565be6ac` adds one
   fixed handoff lane policy in `tools/ci/lint/handoff_validation.py`, a pure
   product fork/join/serial-chain check, and a historical directory CLI rail.

@@ -264,6 +264,14 @@ def test_handoff_refuses_false_write_set_and_empty_exports(tmp_path: Path) -> No
     assert any("write_set differs from exact base..result Git delta" in error for error in errors)
 
 
+def test_handoff_refuses_noop_result_commit(tmp_path: Path) -> None:
+    root, handoff, _ = _fixture(tmp_path)
+    handoff["base_sha"] = handoff["result_sha"]
+    handoff["write_set"] = []
+    errors = HANDOFF.validate_handoff(handoff, handoff_path=root / "P00.json", root=root)
+    assert any("schema write_set" in error for error in errors)
+
+
 def test_strict_handoff_refuses_current_source_drift(tmp_path: Path) -> None:
     root, handoff, _ = _fixture(tmp_path)
     (root / "tracked").write_text("dirty after handoff\n", encoding="utf-8")
@@ -338,3 +346,22 @@ def test_ledger_keeps_historical_product_and_infrastructure_separate(tmp_path: P
     assert ledger["product_handoffs"][1]["status"] == "FAILED"
     assert ledger["product_chain_status"] == "FAILED"
     assert any("P01.json: handoff is not a regular non-symlink file" in item for item in findings)
+
+
+def test_ledger_refuses_blocked_infrastructure_even_after_single_validation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root, _, _ = _fixture(tmp_path)
+    directory = root / "artifacts/sep-21/handoffs"
+    directory.mkdir(parents=True)
+    (directory / "P12A.json").write_text(
+        json.dumps({"lane": "P12A", "status": "BLOCKED"}), encoding="utf-8"
+    )
+    monkeypatch.setattr(HANDOFF.CHAIN_VALIDATOR, "validate_handoff", lambda *_args, **_kw: [])
+
+    ledger, findings = HANDOFF.CHAIN_VALIDATOR.inspect_handoff_ledger(
+        root=root, proof_checker=PROOF
+    )
+
+    assert ledger["infrastructure_handoff"]["status"] == "FAILED"
+    assert any("P12A.json: no recorded owner-proof handoff" in item for item in findings)

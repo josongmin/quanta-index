@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
 import subprocess
 from pathlib import Path
 from types import ModuleType
@@ -95,6 +97,7 @@ HANDOFF_POLICIES: dict[str, dict[str, Any]] = {
 }
 
 PRODUCT_LANES: tuple[str, ...] = tuple(HANDOFF_POLICIES)[:-2]
+RECORDED_OWNER_STATES = frozenset(("OWNER_PROOF_GREEN", "RELEASE_PROOF_PENDING"))
 
 
 def validate_product_handoff_chain(handoffs: Sequence[dict[str, Any]]) -> list[str]:
@@ -111,7 +114,7 @@ def validate_product_handoff_chain(handoffs: Sequence[dict[str, Any]]) -> list[s
     by_lane = dict(zip(PRODUCT_LANES, handoffs))
     errors: list[str] = []
     for lane, item in by_lane.items():
-        if item.get("status") not in ("OWNER_PROOF_GREEN", "RELEASE_PROOF_PENDING"):
+        if item.get("status") not in RECORDED_OWNER_STATES:
             errors.append(f"{lane} has no recorded owner-proof handoff")
 
     def edge(predecessor: str, successor: str) -> None:
@@ -149,6 +152,22 @@ def validate_product_handoff_chain(handoffs: Sequence[dict[str, Any]]) -> list[s
 
 def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _read_regular_bytes_nofollow(path: Path) -> bytes:
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), "rb") as handle:
+        before = os.fstat(handle.fileno())
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError(f"not a regular handoff file: {path}")
+        content = handle.read()
+        after = os.fstat(handle.fileno())
+        if (
+            len(content) != before.st_size
+            or after.st_size != before.st_size
+            or after.st_mtime_ns != before.st_mtime_ns
+        ):
+            raise ValueError(f"handoff changed while being read: {path}")
+        return content
 
 
 def _read_toml(path: Path) -> dict[str, Any]:
@@ -551,9 +570,10 @@ def inspect_handoff_ledger(
         if path.is_symlink() or not path.is_file():
             findings.append(f"{relative}: handoff is not a regular non-symlink file")
             return reference
-        reference["sha256"] = _sha256(path)
         try:
-            payload = _read_json(path)
+            content = _read_regular_bytes_nofollow(path)
+            reference["sha256"] = hashlib.sha256(content).hexdigest()
+            payload = json.loads(content)
             errors = validate_handoff(
                 payload,
                 handoff_path=path,
@@ -572,6 +592,9 @@ def inspect_handoff_ledger(
             return reference
         findings.extend(f"{relative}: {error}" for error in errors)
         if errors:
+            return reference
+        if payload.get("status") not in RECORDED_OWNER_STATES:
+            findings.append(f"{relative}: no recorded owner-proof handoff")
             return reference
         reference["status"] = "VERIFIED"
         if lane in PRODUCT_LANES:

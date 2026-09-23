@@ -220,6 +220,37 @@ def _paired_checkout(tmp_path: Path, templates: AggregateTemplates) -> Path:
     return checkout
 
 
+def _stub_verified_handoffs(monkeypatch: pytest.MonkeyPatch) -> dict:
+    """Isolate aggregate derivation; real handoff validation has owner tests."""
+    lanes = CHECKER.HANDOFF_VALIDATION.PRODUCT_LANES
+    ledger = {
+        "product_handoffs": [
+            {
+                "lane": lane,
+                "path": f"artifacts/sep-21/handoffs/{lane}.json",
+                "sha256": "a" * 64,
+                "status": "VERIFIED",
+            }
+            for lane in lanes
+        ],
+        "product_chain_status": "VERIFIED",
+        "infrastructure_handoff": {
+            "lane": "P12A",
+            "path": "artifacts/sep-21/handoffs/P12A.json",
+            "sha256": "b" * 64,
+            "status": "VERIFIED",
+        },
+    }
+    monkeypatch.setattr(WRITER, "_load_checker", lambda: CHECKER)
+    monkeypatch.setattr(MANIFEST_WRITER, "_load_checker", lambda: CHECKER)
+    monkeypatch.setattr(
+        CHECKER.HANDOFF_VALIDATION,
+        "inspect_handoff_ledger",
+        lambda **_kwargs: (ledger, []),
+    )
+    return ledger
+
+
 def _write_dependency_manifests(
     root: Path,
     registry: dict,
@@ -426,11 +457,13 @@ def test_writer_rebinds_source_after_publication(
 
 def test_writer_derives_ready_receipt_from_full_valid_closure(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     aggregate_templates: AggregateTemplates,
 ) -> None:
     root, registry = _fixture_root(tmp_path, executable=True, templates=aggregate_templates)
     paired = _paired_checkout(tmp_path, aggregate_templates)
     _write_dependency_manifests(root, registry, paired)
+    _stub_verified_handoffs(monkeypatch)
 
     output, _, ready = WRITER.publish_aggregate(
         root=root,
@@ -451,6 +484,70 @@ def test_writer_derives_ready_receipt_from_full_valid_closure(
     }
     assert payload["release_host"]["profile"] == "linux-production-like"
     assert payload["state_root_format"] == "v2"
+
+
+def test_full_proof_closure_without_historical_handoffs_is_not_ready(
+    tmp_path: Path,
+    aggregate_templates: AggregateTemplates,
+) -> None:
+    root, registry = _fixture_root(tmp_path, executable=True, templates=aggregate_templates)
+    paired = _paired_checkout(tmp_path, aggregate_templates)
+    _write_dependency_manifests(root, registry, paired)
+
+    output, _, ready = WRITER.publish_aggregate(
+        root=root,
+        registry_path=root / "tools/ci/proof-authority.toml",
+        paired_checkout=paired,
+    )
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert not ready
+    assert all(item["status"] == "PASSED" for item in payload["dependency_receipts"])
+    assert all(item["status"] == "PASSED" for item in payload["verdicts"].values())
+    assert payload["product_chain_status"] == "NOT_RUN"
+    assert payload["infrastructure_handoff"]["status"] == "NOT_RUN"
+    assert payload["production_ready"] is False
+
+    forged = dict(payload, product_chain_status="VERIFIED", production_ready=True)
+    findings = CHECKER.check_aggregate_receipt(
+        forged,
+        receipt_path=output,
+        registry=registry,
+        registry_path=root / "tools/ci/proof-authority.toml",
+        schema=json.loads((root / "tools/ci/proof-aggregate.schema.json").read_text()),
+        root=root,
+        bind_source=True,
+        paired_checkouts={"github:josongmin/semantica-codegraph-v2": paired},
+    )
+    assert any("product_chain_status is not derived" in item.message for item in findings)
+    assert any("production_ready is not derived" in item.message for item in findings)
+
+
+@pytest.mark.parametrize("missing_axis", ["product", "infrastructure"])
+def test_complete_proof_verdicts_cannot_bypass_either_handoff_ledger(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    aggregate_templates: AggregateTemplates,
+    missing_axis: str,
+) -> None:
+    root, registry = _fixture_root(tmp_path, executable=True, templates=aggregate_templates)
+    paired = _paired_checkout(tmp_path, aggregate_templates)
+    _write_dependency_manifests(root, registry, paired)
+    ledger = _stub_verified_handoffs(monkeypatch)
+    if missing_axis == "product":
+        ledger["product_chain_status"] = "FAILED"
+    else:
+        ledger["infrastructure_handoff"]["status"] = "NOT_RUN"
+        ledger["infrastructure_handoff"]["sha256"] = None
+
+    output, _, ready = WRITER.publish_aggregate(
+        root=root,
+        registry_path=root / "tools/ci/proof-authority.toml",
+        paired_checkout=paired,
+    )
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert not ready
+    assert all(item["status"] == "PASSED" for item in payload["verdicts"].values())
+    assert payload["production_ready"] is False
 
 
 def test_writer_refuses_stale_p12a_exact_pair_after_paired_source_change(
@@ -485,6 +582,7 @@ def test_aggregate_validation_refuses_source_change_during_cached_pass(
     root, registry = _fixture_root(tmp_path, executable=True, templates=aggregate_templates)
     paired = _paired_checkout(tmp_path, aggregate_templates)
     _write_dependency_manifests(root, registry, paired)
+    _stub_verified_handoffs(monkeypatch)
     output, _, ready = WRITER.publish_aggregate(
         root=root,
         registry_path=root / "tools/ci/proof-authority.toml",
@@ -557,6 +655,7 @@ def test_ready_aggregate_is_mandatory_and_sufficient_for_p12_issuance(
     root, registry = _fixture_root(tmp_path, executable=True, templates=aggregate_templates)
     paired = _paired_checkout(tmp_path, aggregate_templates)
     _write_dependency_manifests(root, registry, paired)
+    _stub_verified_handoffs(monkeypatch)
     aggregate_path, _, ready = WRITER.publish_aggregate(
         root=root,
         registry_path=root / "tools/ci/proof-authority.toml",

@@ -28,7 +28,7 @@
     "base_sha": { "$ref": "#/$defs/sha" },
     "result_sha": { "$ref": "#/$defs/sha" },
     "dirty_digest": { "$ref": "#/$defs/digest" },
-    "write_set": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+    "write_set": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
     "exported_contracts": {
       "type": "array",
       "minItems": 1,
