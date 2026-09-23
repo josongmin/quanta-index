@@ -57,10 +57,21 @@ impl<'a> ObservabilityNamespace<'a> {
                 })?;
                 Ok(report)
             }
-            other => Err(SdkError::Protocol(format!(
-                "expected process readiness report, got {}",
-                QuantaIndex::control_response_kind(&other)
-            ))),
+            other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
+            | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
+            | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
+            | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
+            | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
+            | SearchPlaneControlIpcResponse::Error(_)
+            | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
+            | SearchPlaneControlIpcResponse::QuarantineInventory(_)
+            | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)) => {
+                Err(SdkError::Protocol(format!(
+                    "expected process readiness report, got {}",
+                    QuantaIndex::control_response_kind(&other)
+                )))
+            }
         }
     }
 }

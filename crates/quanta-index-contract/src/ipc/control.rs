@@ -2073,13 +2073,19 @@ mod process_readiness_contract_tests {
         let encoded = serde_json::to_value(&report).expect("valid report encodes");
         assert!(serde_json::from_value::<ProcessReadinessV1>(encoded.clone()).is_ok());
         let mut false_ready = encoded.clone();
-        false_ready["ready"] = serde_json::json!(false);
+        *false_ready.get_mut("ready").expect("ready field exists") = serde_json::json!(false);
         assert!(serde_json::from_value::<ProcessReadinessV1>(false_ready).is_err());
         let mut missing_reason = encoded.clone();
-        missing_reason["components"]["query_plane"] = serde_json::json!(false);
+        *missing_reason
+            .get_mut("components")
+            .expect("components field exists")
+            .get_mut("query_plane")
+            .expect("query_plane field exists") = serde_json::json!(false);
         assert!(serde_json::from_value::<ProcessReadinessV1>(missing_reason).is_err());
         let mut fake_active = encoded;
-        fake_active["active_candidate_integrity"] = serde_json::json!(true);
+        *fake_active
+            .get_mut("active_candidate_integrity")
+            .expect("active_candidate_integrity field exists") = serde_json::json!(true);
         assert!(serde_json::from_value::<ProcessReadinessV1>(fake_active).is_err());
         let mut missing_integrity = serde_json::to_value(&report).expect("valid report encodes");
         let _removed = missing_integrity

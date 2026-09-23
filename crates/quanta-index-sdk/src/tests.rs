@@ -4480,11 +4480,14 @@ fn process_readiness_binds_the_control_route_and_rejects_forged_green() {
         ok_or_fail!(client.observability().process_readiness()),
         report
     );
-    let sent = control.requests.lock().expect("stub request lock");
-    assert!(matches!(
-        sent.first().map(|request| &request.payload),
-        Some(SearchPlaneControlIpcRequest::ProcessReadiness(_))
-    ));
+    let sent_readiness = {
+        let sent = control.requests.lock().expect("stub request lock");
+        matches!(
+            sent.first().map(|request| &request.payload),
+            Some(SearchPlaneControlIpcRequest::ProcessReadiness(_))
+        )
+    };
+    assert!(sent_readiness);
 
     let mut forged = report;
     forged.components.query_plane = false;
