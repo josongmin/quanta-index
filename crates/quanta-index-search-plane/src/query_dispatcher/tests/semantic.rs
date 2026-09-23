@@ -297,9 +297,15 @@ fn query_plane_resolves_only_catalog_active_generation() -> TestResult {
         }),
         &RequestBudgetV1::unbounded(),
     );
-    let (code, _) = ipc_error_from(stale).map_err(Box::<dyn std::error::Error>::from)?;
-    if code != quanta_index_contract::SearchPlaneErrorCodeV2::InvalidRequest {
-        return Err(format!("stale Active+pin must be INVALID_REQUEST, got {code}").into());
+    let (code, message) = ipc_error_from(stale).map_err(Box::<dyn std::error::Error>::from)?;
+    if code != quanta_index_contract::SearchPlaneErrorCodeV2::NotReady
+        || !message
+            .contains("explicit generation pin does not match generation selector resolution")
+    {
+        return Err(format!(
+            "stale Active+pin must be NOT_READY with the drift cause, got {code}: {message}"
+        )
+        .into());
     }
     let missing = dispatcher.dispatch(
         SearchPlaneQueryIpcRequest::ResolveActiveGeneration(CurrentGenerationRequest {
