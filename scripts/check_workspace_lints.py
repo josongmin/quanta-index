@@ -10,7 +10,6 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
 
 
 ROOT = Path(__file__).resolve().parent.parent
-CRATES_DIR = ROOT / "crates"
 DUPLICATE_LINT = "clippy::multiple_crate_versions"
 
 
@@ -22,11 +21,20 @@ def local_duplicate_lint_overrides(crate_dir: Path) -> list[Path]:
     )
 
 
+def workspace_member_manifests() -> list[Path]:
+    data = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))
+    members = data.get("workspace", {}).get("members")
+    if not isinstance(members, list) or not members:
+        raise ValueError("workspace.members must name the audited crates")
+    return sorted(ROOT / member / "Cargo.toml" for member in members)
+
+
 def main() -> int:
     bad: list[Path] = []
     duplicate_lint_overrides: list[Path] = []
+    manifests = workspace_member_manifests()
 
-    for cargo_toml in sorted(CRATES_DIR.glob("*/Cargo.toml")):
+    for cargo_toml in manifests:
         data = tomllib.loads(cargo_toml.read_text(encoding="utf-8"))
         lints = data.get("lints")
         if not isinstance(lints, dict) or lints.get("workspace") is not True:
@@ -49,7 +57,7 @@ def main() -> int:
         return 1
 
     print(
-        f"All {len(list(CRATES_DIR.glob('*/Cargo.toml')))} workspace crates inherit workspace lints."
+        f"All {len(manifests)} workspace crates inherit workspace lints."
     )
     print("No crate-local multiple_crate_versions overrides.")
     return 0

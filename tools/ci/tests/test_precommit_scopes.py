@@ -31,7 +31,15 @@ def test_scoped_repository_lints_skip_unrelated_docs_and_cover_their_inputs() ->
     }
     inputs = {
         "lock-freshness": ("Cargo.lock", "scripts/check-lock-freshness.sh"),
-        "workspace-lints": ("Cargo.toml", "scripts/check_workspace_lints.py"),
+        "workspace-lints": (
+            "Cargo.toml",
+            "crates/quanta-index-core/Cargo.toml",
+            "crates/quanta-index-core/src/lib.rs",
+            "benchmarks/retrieval/Cargo.toml",
+            "benchmarks/retrieval/src/lib.rs",
+            "scripts/check_workspace_lints.py",
+            "tools/ci/tests/test_check_workspace_lints.py",
+        ),
         "hexagonal-boundaries": (
             "crates/quanta-index-core/src/lib.rs",
             "tools/ci/lint/lint-hexagonal-boundaries.py",

@@ -135,6 +135,217 @@ fn joint_active_selection_uses_one_composite_head_and_checks_explicit_pin() -> T
             && hybrid_selection.expected_manifest_digest == latest.expected_manifest_digest,
         "hybrid did not select the composite active head",
     )?;
+    let mut fixed_mismatch_semantic = semantic_request.clone();
+    let fixed_scope = fixed_mismatch_semantic
+        .lexical_scope
+        .as_mut()
+        .ok_or("semantic test scope missing")?;
+    fixed_scope.generation = Some(pinned_first.clone());
+    fixed_scope.generation_selector = Some(GenerationSelector::Pinned(pinned_first.clone()));
+    require_joint_selection(
+        matches!(
+            resolve_semantic_request_selection(&catalog, &fixed_mismatch_semantic),
+            Err(CoreError::InvalidContract(_))
+        ),
+        "a fixed semantic scope mismatch must be an invalid request, not retryable",
+    )?;
+    let mut fixed_mismatch_hybrid = hybrid_request.clone();
+    fixed_mismatch_hybrid.text_query.generation = Some(pinned_first.clone());
+    fixed_mismatch_hybrid.text_query.generation_selector =
+        Some(GenerationSelector::Pinned(pinned_first.clone()));
+    require_joint_selection(
+        matches!(
+            resolve_hybrid_request_selection(&catalog, &fixed_mismatch_hybrid),
+            Err(CoreError::InvalidContract(_))
+        ),
+        "a fixed hybrid text-query mismatch must be an invalid request, not retryable",
+    )?;
+    let unrelated_pin = GenerationPin::new(
+        pinned_first.repo_id.clone(),
+        pinned_first.revision_id.clone(),
+        ManifestGeneration::new(8),
+    );
+    fixed_mismatch_semantic.generation = Some(unrelated_pin.clone());
+    fixed_mismatch_hybrid.generation = Some(unrelated_pin);
+    require_joint_selection(
+        matches!(
+            resolve_semantic_request_selection(&catalog, &fixed_mismatch_semantic),
+            Err(CoreError::InvalidContract(_))
+        ) && matches!(
+            resolve_hybrid_request_selection(&catalog, &fixed_mismatch_hybrid),
+            Err(CoreError::InvalidContract(_))
+        ),
+        "a fixed mismatch must dominate concurrent active drift",
+    )?;
+    let mut active_scope_semantic = semantic_request.clone();
+    active_scope_semantic.generation = Some(pinned_first.clone());
+    active_scope_semantic.generation_selector =
+        Some(GenerationSelector::Pinned(pinned_first.clone()));
+    active_scope_semantic
+        .lexical_scope
+        .as_mut()
+        .ok_or("semantic test scope missing")?
+        .generation = None;
+    require_joint_selection(
+        matches!(
+            resolve_semantic_request_selection(&catalog, &active_scope_semantic),
+            Err(CoreError::NotReady(_))
+        ),
+        "an active-only scope drift must remain retryable",
+    )?;
+    let mut active_text_hybrid = hybrid_request.clone();
+    active_text_hybrid.generation = Some(pinned_first.clone());
+    active_text_hybrid.generation_selector = Some(GenerationSelector::Pinned(pinned_first.clone()));
+    active_text_hybrid.text_query.generation = None;
+    require_joint_selection(
+        matches!(
+            resolve_hybrid_request_selection(&catalog, &active_text_hybrid),
+            Err(CoreError::NotReady(_))
+        ),
+        "an active-only text-query drift must remain retryable",
+    )?;
+    let future_pin = GenerationPin::new(
+        pinned_first.repo_id.clone(),
+        pinned_first.revision_id.clone(),
+        ManifestGeneration::new(11),
+    );
+    let mut future_explicit_semantic = semantic_request.clone();
+    future_explicit_semantic.generation = Some(future_pin.clone());
+    future_explicit_semantic.generation_selector = None;
+    future_explicit_semantic
+        .lexical_scope
+        .as_mut()
+        .ok_or("semantic test scope missing")?
+        .generation = None;
+    require_joint_selection(
+        matches!(
+            resolve_semantic_request_selection(&catalog, &future_explicit_semantic),
+            Err(CoreError::NotReady(_))
+        ),
+        "an explicit future pin and active scope must be retryable",
+    )?;
+    let mut future_fixed_scope = semantic_request.clone();
+    future_fixed_scope.generation = None;
+    let scope = future_fixed_scope
+        .lexical_scope
+        .as_mut()
+        .ok_or("semantic test scope missing")?;
+    scope.generation = Some(future_pin.clone());
+    scope.generation_selector = Some(GenerationSelector::Pinned(future_pin));
+    require_joint_selection(
+        matches!(
+            resolve_semantic_request_selection(&catalog, &future_fixed_scope),
+            Err(CoreError::NotReady(_))
+        ),
+        "an active semantic head and future fixed scope must be retryable",
+    )?;
+    let mut fixed_only_scope = future_fixed_scope.clone();
+    fixed_only_scope.generation = Some(latest.pin.clone());
+    fixed_only_scope.generation_selector = None;
+    let mut fixed_only_pair = future_fixed_scope;
+    fixed_only_pair.generation_selector = Some(GenerationSelector::Pinned(latest.pin.clone()));
+    require_joint_selection(
+        matches!(
+            resolve_semantic_request_selection(&catalog, &fixed_only_scope),
+            Err(CoreError::InvalidContract(_))
+        ) && matches!(
+            resolve_semantic_request_selection(&catalog, &fixed_only_pair),
+            Err(CoreError::InvalidContract(_))
+        ),
+        "fixed-only semantic scope conflicts must remain invalid requests",
+    )?;
+    let foreign_pin = GenerationPin::new(
+        RepoId::new("foreign-explicit-repo")?,
+        pinned_first.revision_id.clone(),
+        ManifestGeneration::new(10),
+    );
+    let mut foreign_semantic = semantic_request.clone();
+    foreign_semantic.generation = Some(foreign_pin.clone());
+    let mut foreign_hybrid = hybrid_request.clone();
+    foreign_hybrid.generation = Some(foreign_pin.clone());
+    require_joint_selection(
+        matches!(
+            resolve_optional_selection(
+                &catalog,
+                Some(foreign_pin.clone()),
+                Some(&selector),
+                SearchPlaneTrackKind::Lexical,
+                "lexical",
+            ),
+            Err(CoreError::InvalidContract(_))
+        ) && matches!(
+            resolve_semantic_request_selection(&catalog, &foreign_semantic),
+            Err(CoreError::InvalidContract(_))
+        ) && matches!(
+            resolve_hybrid_request_selection(&catalog, &foreign_hybrid),
+            Err(CoreError::InvalidContract(_))
+        ),
+        "an Active selector cannot repair a foreign explicit repository pin",
+    )?;
+    let mut foreign_lexical_hybrid = hybrid_request.clone();
+    foreign_lexical_hybrid.text_query.generation = Some(foreign_pin.clone());
+    require_joint_selection(
+        matches!(
+            resolve_hybrid_request_selection(&catalog, &foreign_lexical_hybrid),
+            Err(CoreError::InvalidContract(_))
+        ),
+        "joint Active resolution cannot repair a foreign lexical pin",
+    )?;
+    let mut foreign_scope_semantic = semantic_request.clone();
+    foreign_scope_semantic.generation = None;
+    let scope = foreign_scope_semantic
+        .lexical_scope
+        .as_mut()
+        .ok_or("semantic test scope missing")?;
+    scope.generation = Some(foreign_pin.clone());
+    scope.generation_selector = Some(GenerationSelector::Pinned(foreign_pin.clone()));
+    let mut foreign_text_hybrid = hybrid_request.clone();
+    foreign_text_hybrid.generation = None;
+    foreign_text_hybrid.text_query.generation = Some(foreign_pin.clone());
+    foreign_text_hybrid.text_query.generation_selector =
+        Some(GenerationSelector::Pinned(foreign_pin.clone()));
+    require_joint_selection(
+        matches!(
+            resolve_semantic_request_selection(&catalog, &foreign_scope_semantic),
+            Err(CoreError::InvalidContract(_))
+        ) && matches!(
+            resolve_hybrid_request_selection(&catalog, &foreign_text_hybrid),
+            Err(CoreError::InvalidContract(_))
+        ),
+        "Active and fixed selectors naming different repositories are invalid",
+    )?;
+    let missing_foreign_selector = GenerationSelector::Active {
+        repo_id: RepoId::new("missing-foreign-repo")?,
+        revision_id: pinned_first.revision_id.clone(),
+    };
+    let mut missing_foreign_semantic = semantic_request.clone();
+    missing_foreign_semantic.generation = Some(foreign_pin.clone());
+    missing_foreign_semantic.generation_selector = Some(missing_foreign_selector.clone());
+    missing_foreign_semantic.lexical_scope = None;
+    let mut missing_foreign_hybrid = hybrid_request.clone();
+    missing_foreign_hybrid.text_query.generation = Some(foreign_pin.clone());
+    missing_foreign_hybrid.text_query.generation_selector = Some(missing_foreign_selector.clone());
+    missing_foreign_hybrid.generation = None;
+    missing_foreign_hybrid.generation_selector = None;
+    require_joint_selection(
+        matches!(
+            resolve_optional_selection(
+                &catalog,
+                Some(foreign_pin),
+                Some(&missing_foreign_selector),
+                SearchPlaneTrackKind::Lexical,
+                "lexical",
+            ),
+            Err(CoreError::InvalidContract(_))
+        ) && matches!(
+            resolve_semantic_request_selection(&catalog, &missing_foreign_semantic),
+            Err(CoreError::InvalidContract(_))
+        ) && matches!(
+            resolve_hybrid_request_selection(&catalog, &missing_foreign_hybrid),
+            Err(CoreError::InvalidContract(_))
+        ),
+        "scope conflicts must be rejected before an unresolved Active lookup",
+    )?;
     let mut stale_semantic = semantic_request;
     stale_semantic.generation = Some(pinned_first.clone());
     require_joint_selection(

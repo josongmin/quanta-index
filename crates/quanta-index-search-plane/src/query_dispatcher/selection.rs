@@ -16,13 +16,75 @@ pub(super) struct SemanticSelection {
 }
 
 pub(super) fn selection_mismatch_error(
-    selectors: &[Option<&GenerationSelector>],
+    left: (&GenerationPin, Option<&GenerationSelector>),
+    right: (&GenerationPin, Option<&GenerationSelector>),
     message: String,
 ) -> CoreError {
-    if selectors
-        .iter()
-        .any(|selector| matches!(selector, Some(GenerationSelector::Active { .. })))
+    if same_generation_scope(left.0, right.0)
+        && (matches!(left.1, Some(GenerationSelector::Active { .. }))
+            || matches!(right.1, Some(GenerationSelector::Active { .. })))
     {
+        CoreError::NotReady(message)
+    } else {
+        CoreError::InvalidContract(message)
+    }
+}
+
+fn same_generation_scope(left: &GenerationPin, right: &GenerationPin) -> bool {
+    left.repo_id == right.repo_id && left.revision_id == right.revision_id
+}
+
+/// Reject contradictory repository/revision declarations before consulting
+/// activation state. No future activation can change a selector's identity.
+pub(super) fn validate_generation_scope(
+    pins: &[Option<&GenerationPin>],
+    selectors: &[Option<&GenerationSelector>],
+    plane: &str,
+) -> Result<(), CoreError> {
+    let mut scope: Option<(&RepoId, &RevisionId)> = None;
+    for pin in pins.iter().flatten() {
+        let candidate = (&pin.repo_id, &pin.revision_id);
+        if scope.is_some_and(|current| current != candidate) {
+            return Err(CoreError::InvalidContract(format!(
+                "{plane}: generation declarations name different repositories or revisions"
+            )));
+        }
+        scope = Some(candidate);
+    }
+    for selector in selectors.iter().flatten() {
+        let candidate = match selector {
+            GenerationSelector::Active {
+                repo_id,
+                revision_id,
+            } => (repo_id, revision_id),
+            GenerationSelector::Pinned(pin) => (&pin.repo_id, &pin.revision_id),
+        };
+        if scope.is_some_and(|current| current != candidate) {
+            return Err(CoreError::InvalidContract(format!(
+                "{plane}: generation declarations name different repositories or revisions"
+            )));
+        }
+        scope = Some(candidate);
+    }
+    Ok(())
+}
+
+/// Classify each constraint that disagrees with an explicit pin. A fixed
+/// disagreement cannot become valid by retrying, even if another constraint
+/// happens to resolve through `Active`.
+pub(super) fn explicit_pin_mismatch_error(
+    explicit: &GenerationPin,
+    constraints: &[(&GenerationPin, Option<&GenerationSelector>)],
+    message: String,
+) -> CoreError {
+    let active_drift_only = constraints
+        .iter()
+        .filter(|(selected, _)| *selected != explicit)
+        .all(|(selected, selector)| {
+            same_generation_scope(explicit, selected)
+                && matches!(selector, Some(GenerationSelector::Active { .. }))
+        });
+    if active_drift_only {
         CoreError::NotReady(message)
     } else {
         CoreError::InvalidContract(message)
@@ -62,6 +124,7 @@ pub(super) fn resolve_optional_selection(
     track: SearchPlaneTrackKind,
     plane: &str,
 ) -> Result<Option<GenerationPin>, CoreError> {
+    validate_generation_scope(&[generation.as_ref()], &[generation_selector], plane)?;
     let selector_pin = match generation_selector {
         Some(selector) => Some(resolve_generation_selector_pin(
             activation_catalog,
@@ -73,7 +136,8 @@ pub(super) fn resolve_optional_selection(
     };
     match (generation, selector_pin) {
         (Some(pin), Some(selected)) if pin != selected => Err(selection_mismatch_error(
-            &[generation_selector],
+            (&pin, None),
+            (&selected, generation_selector),
             format!(
                 "{plane}: explicit generation pin does not match generation selector resolution"
             ),
@@ -110,6 +174,11 @@ pub(super) fn resolve_joint_active_selection(
     lexical_generation: Option<&GenerationPin>,
     plane: &str,
 ) -> Result<Option<SemanticSelection>, CoreError> {
+    validate_generation_scope(
+        &[lexical_generation],
+        &[lexical_selector, semantic_selector],
+        plane,
+    )?;
     let (
         Some(GenerationSelector::Active {
             repo_id: lexical_repo,
@@ -142,10 +211,15 @@ pub(super) fn resolve_joint_active_selection(
         lexical_revision.clone(),
         generation.manifest_generation(),
     );
-    if lexical_generation.is_some_and(|explicit| explicit != &pin) {
-        return Err(CoreError::NotReady(format!(
+    if let Some(explicit) = lexical_generation.filter(|explicit| *explicit != &pin) {
+        let message = format!(
             "{plane}: explicit lexical generation pin does not match active composite resolution"
-        )));
+        );
+        return Err(if same_generation_scope(explicit, &pin) {
+            CoreError::NotReady(message)
+        } else {
+            CoreError::InvalidContract(message)
+        });
     }
     Ok(Some(SemanticSelection {
         pin,
