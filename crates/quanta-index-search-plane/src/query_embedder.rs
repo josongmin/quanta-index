@@ -270,6 +270,7 @@ impl ProviderBoundaryQueryEmbedder {
             SemanticInputClass::QueryText,
             &ProviderWorkEstimateV1::loopback(inflight_bytes),
             &self.supervisor_id,
+            budget.correlation(),
         )?;
         // A synchronous native provider can finish after the peer cancelled.
         // Reject its late vector before a Success receipt is committed.
@@ -356,6 +357,9 @@ impl ProviderBoundaryQueryEmbedder {
             declared_model_id: self.inner.model_id().to_string(),
             observed_model_id: observed_model_id.map(str::to_string),
             observed_dimension,
+            // W10-R2: the receipt carries the reservation-time
+            // correlation; the audit event never re-reads the budget.
+            correlation: receipt.correlation,
         })
     }
 }

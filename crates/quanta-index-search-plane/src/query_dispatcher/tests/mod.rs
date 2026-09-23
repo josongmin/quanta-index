@@ -2,6 +2,7 @@ pub(crate) mod support;
 
 mod budget;
 mod cluster_membership;
+mod execution_truth;
 mod explain;
 mod history;
 mod history_relevance;
@@ -16,6 +17,7 @@ mod query_truth_owner;
 mod read_view;
 mod read_view_lifetime;
 mod repo_map;
+mod request_correlation;
 mod rev_at_time;
 mod runtime_metadata;
 mod semantic;

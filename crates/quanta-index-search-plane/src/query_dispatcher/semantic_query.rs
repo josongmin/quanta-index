@@ -10,17 +10,17 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use quanta_index_contract::lex::LexicalErrorCode;
 use quanta_index_contract::{
-    EarlyStopReason, EngineTouched, GenerationPin, HybridCandidateV1, HybridQueryRequest,
-    HybridSeedQueryRequest, LexicalCandidate, OwnerDocKind, PlannerStage, PlannerTraceEntry,
-    QueryResultWindowV2, SearchExplanation, SearchPlaneTrackKind, SeedCandidate, SeedContribution,
-    SeedFusionIdentity, SeedLane, SemanticCorpusKindV1, SemanticQueryRequest,
-    SemanticSeedCorpusBudgetV1,
+    EarlyStopReason, GenerationPin, HybridCandidateV1, HybridQueryRequest, HybridSeedQueryRequest,
+    LexicalCandidate, OwnerDocKind, PlannerStage, PlannerTraceEntry, QueryResultWindowV2,
+    SearchExplanation, SearchPlaneTrackKind, SeedCandidate, SeedContribution, SeedFusionIdentity,
+    SeedLane, SemanticCorpusKindV1, SemanticQueryRequest, SemanticSeedCorpusBudgetV1,
 };
 use quanta_index_core::{
     CoreError, DenseLaneContractV1, HybridOrchestratorPolicy, SemanticPolicy, SemanticSearchHitV1,
 };
 
 use crate::ActivationCatalog;
+use crate::query_dispatcher::execution_trace::LaneExecutionSummaryV1;
 use crate::query_dispatcher::selection::{
     SemanticSelection, resolve_lexical_request_pin, resolve_semantic_selector_selection,
 };
@@ -75,11 +75,9 @@ pub(super) fn resolve_semantic_request_selection(
     request: &SemanticQueryRequest,
 ) -> Result<SemanticSelection, CoreError> {
     let outer_selection = match request.generation_selector.as_ref() {
-        Some(selector) => Some(resolve_semantic_selector_selection(
-            activation_catalog,
-            selector,
-            "semantic",
-        )?),
+        Some(selector) => {
+            Some(resolve_semantic_selector_selection(activation_catalog, selector, "semantic")?)
+        }
         None => None,
     };
     let scope_pin = match request.lexical_scope.as_ref() {
@@ -122,9 +120,9 @@ pub(super) fn resolve_semantic_request_selection(
             expected_manifest_digest: None,
         }),
         (None, Some(selection), _) => Ok(selection),
-        (None, None, None) => Err(CoreError::InvalidContract(
-            "semantic: generation pin required".to_string(),
-        )),
+        (None, None, None) => {
+            Err(CoreError::InvalidContract("semantic: generation pin required".to_string()))
+        }
     }
 }
 
@@ -139,11 +137,9 @@ pub(super) fn resolve_hybrid_request_selection(
         "hybrid text_query",
     )?;
     let semantic_selection = match request.generation_selector.as_ref() {
-        Some(selector) => Some(resolve_semantic_selector_selection(
-            activation_catalog,
-            selector,
-            "hybrid",
-        )?),
+        Some(selector) => {
+            Some(resolve_semantic_selector_selection(activation_catalog, selector, "hybrid")?)
+        }
         None => None,
     };
     match (request.generation.clone(), semantic_selection) {
@@ -372,13 +368,15 @@ pub(super) fn build_hybrid_seed_candidates(
         .collect()
 }
 
-/// What each seed lane produced, as hits and as fused entities.
+/// What each seed lane produced, as hits and as fused entities, plus the
+/// observed backend-invocation truth the engine lists derive from.
 pub(super) struct SeedLaneTallyV1 {
     pub(super) lexical_hits: usize,
     pub(super) lexical_entities: usize,
     pub(super) semantic_hits: usize,
     pub(super) semantic_entities: usize,
     pub(super) fused_hits: usize,
+    pub(super) execution: LaneExecutionSummaryV1,
 }
 
 /// How one hybrid execution bound its DSL filters to the dense lane.
@@ -411,6 +409,7 @@ pub(super) fn build_hybrid_seed_response_explanation(
     early_stop_reason: Option<EarlyStopReason>,
     dense_lane: &DenseLaneContractV1,
     filters: &HybridFilterTraceV1,
+    request_id: u64,
 ) -> SearchExplanation {
     let SeedLaneTallyV1 {
         lexical_hits,
@@ -418,14 +417,12 @@ pub(super) fn build_hybrid_seed_response_explanation(
         semantic_hits,
         semantic_entities,
         fused_hits,
+        execution,
     } = *tally;
-    let mut engines_touched = Vec::new();
-    if lexical_hits > 0 {
-        engines_touched.push(EngineTouched::Lexical);
-    }
-    if semantic_hits > 0 {
-        engines_touched.push(EngineTouched::Semantic);
-    }
+    // Single-sourced (W10-R1): both engine lists derive from the observed
+    // invocation truth, never from hit counts or plan shape.
+    let engines_touched = execution.touched_engines();
+    let engines_executed = execution.executed_engines();
     let strategy = match (lexical_entities > 0, semantic_entities > 0) {
         (true, true) => "rrf_entity",
         (true, false) => "bm25_entity_only",
@@ -463,11 +460,9 @@ pub(super) fn build_hybrid_seed_response_explanation(
     SearchExplanation {
         planner_trace,
         engines_touched,
-        // Plan-level execution (mirrors `LaneTraceV1.executed`): the seed
-        // route always plans both lanes, even when one returns nothing.
-        engines_executed: vec![EngineTouched::Lexical, EngineTouched::Semantic],
-        // Stamped by the transport adapter; 0 off-transport.
-        request_id: 0,
+        engines_executed,
+        // W10-R2: the route's budget correlation; 0 only off-transport.
+        request_id,
         early_stop_reason,
         contributions: Vec::new(),
         ranker_weights_hash: [0u8; 32],
@@ -655,10 +650,7 @@ mod seed_fusion_tests {
             .map(|contribution| contribution.lane)
             .collect();
         assert_eq!(lanes, vec![SeedLane::Bm25, SeedLane::Dense], "{alpha:?}");
-        assert_eq!(
-            alpha.corpus_kind,
-            Some(SemanticCorpusKindV1::RawCodeFallback)
-        );
+        assert_eq!(alpha.corpus_kind, Some(SemanticCorpusKindV1::RawCodeFallback));
         assert_eq!(alpha.seed_rank, 1, "two lanes outrank one: {seeds:?}");
         assert_eq!(
             seeds
@@ -826,6 +818,8 @@ pub(super) fn build_semantic_response_explanation(
     result_count: usize,
     early_stop_reason: Option<EarlyStopReason>,
     dense_lane: &DenseLaneContractV1,
+    execution: &LaneExecutionSummaryV1,
+    request_id: u64,
 ) -> SearchExplanation {
     let scoped = scope.is_some();
     let scope_candidate_count = scope.map_or(0, |scope| scope.candidate_ids.len());
@@ -850,24 +844,10 @@ pub(super) fn build_semantic_response_explanation(
         stage: PlannerStage::Merge,
         detail: format!("semantic.results={result_count}"),
     });
-    // Honest engine contribution (consistent with the hybrid path): report a lane
-    // only when it actually contributed, never as a fixed capability claim. The
-    // lexical scope contributed only if it narrowed to candidates; the semantic
-    // engine only if it returned results.
-    let mut engines_touched = Vec::new();
-    if scoped && scope_candidate_count > 0 {
-        engines_touched.push(EngineTouched::Lexical);
-    }
-    if result_count > 0 {
-        engines_touched.push(EngineTouched::Semantic);
-    }
-    // Plan-level execution (mirrors `LaneTraceV1.executed`): the semantic
-    // lane always runs; the lexical scope lane runs iff one was planned.
-    let engines_executed = if scoped {
-        vec![EngineTouched::Lexical, EngineTouched::Semantic]
-    } else {
-        vec![EngineTouched::Semantic]
-    };
+    // Single-sourced (W10-R1): both engine lists derive from the observed
+    // invocation truth, never from hit counts or plan shape.
+    let engines_touched = execution.touched_engines();
+    let engines_executed = execution.executed_engines();
     let summary = if scoped {
         format!(
             "semantic scoped query returned {result_count} candidates from text scope of {scope_candidate_count}"
@@ -879,8 +859,8 @@ pub(super) fn build_semantic_response_explanation(
         planner_trace,
         engines_touched,
         engines_executed,
-        // Stamped by the transport adapter; 0 off-transport.
-        request_id: 0,
+        // W10-R2: the route's budget correlation; 0 only off-transport.
+        request_id,
         early_stop_reason,
         contributions: Vec::new(),
         ranker_weights_hash: [0u8; 32],
@@ -895,12 +875,14 @@ pub(super) fn build_semantic_response_explanation(
     }
 }
 
-/// What each hybrid lane produced and what the fusion made of it.
+/// What each hybrid lane produced and what the fusion made of it, plus
+/// the observed backend-invocation truth the engine lists derive from.
 pub(super) struct HybridLaneTallyV1 {
     pub(super) lexical_hits: usize,
     pub(super) semantic_hits: usize,
     pub(super) fused_universe: usize,
     pub(super) fused_hits: usize,
+    pub(super) execution: LaneExecutionSummaryV1,
 }
 
 pub(super) fn build_hybrid_response_explanation(
@@ -909,24 +891,19 @@ pub(super) fn build_hybrid_response_explanation(
     early_stop_reason: Option<EarlyStopReason>,
     dense_lane: &DenseLaneContractV1,
     filters: &HybridFilterTraceV1,
+    request_id: u64,
 ) -> SearchExplanation {
     let HybridLaneTallyV1 {
         lexical_hits,
         semantic_hits,
         fused_universe,
         fused_hits,
+        execution,
     } = *tally;
-    // Two independent lanes (QI-BB-018): report which of them contributed
-    // and the strategy that actually ran — a genuine two-lane RRF only when
-    // BOTH lanes returned candidates, otherwise the single-lane reality (or
-    // empty), never a symmetric "rrf" over a starved lane.
-    let mut engines_touched = Vec::new();
-    if lexical_hits > 0 {
-        engines_touched.push(EngineTouched::Lexical);
-    }
-    if semantic_hits > 0 {
-        engines_touched.push(EngineTouched::Semantic);
-    }
+    // Strategy still reflects which lanes returned candidates (a genuine
+    // two-lane RRF only when BOTH did); the engine lists below are
+    // single-sourced from the observed invocation truth (W10-R1).
+    let engines_touched = execution.touched_engines();
     let strategy = match (lexical_hits > 0, semantic_hits > 0) {
         (true, true) => "rrf",
         (true, false) => "lexical_only",
@@ -957,11 +934,9 @@ pub(super) fn build_hybrid_response_explanation(
     SearchExplanation {
         planner_trace,
         engines_touched,
-        // Plan-level execution (mirrors `LaneTraceV1.executed`): the hybrid
-        // route always plans both independent lanes (QI-BB-018).
-        engines_executed: vec![EngineTouched::Lexical, EngineTouched::Semantic],
-        // Stamped by the transport adapter; 0 off-transport.
-        request_id: 0,
+        engines_executed: execution.executed_engines(),
+        // W10-R2: the route's budget correlation; 0 only off-transport.
+        request_id,
         early_stop_reason,
         contributions: Vec::new(),
         ranker_weights_hash: [0u8; 32],

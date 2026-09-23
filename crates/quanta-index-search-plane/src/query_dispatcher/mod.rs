@@ -33,6 +33,7 @@ mod cursor_key;
 mod dense_admission;
 mod dispatcher;
 mod errors;
+mod execution_trace;
 mod keyset_page;
 mod metrics;
 mod planning;

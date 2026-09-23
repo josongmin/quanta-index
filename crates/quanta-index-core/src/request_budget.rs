@@ -13,6 +13,7 @@
 //! interruption naming the checkpoint that observed it. A request that
 //! "was cancelled" always names where, never merely that the client left.
 
+use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -128,11 +129,45 @@ impl Drop for CancelWaiterGuardV1 {
     }
 }
 
+/// One request's transport identity (W10-R2).
+///
+/// The nonzero envelope id the server admitted, carried on the budget so
+/// every stage — routes, typed responses, provider audit — correlates
+/// without re-reading an envelope. The constructor is the only gate:
+/// [`RequestCorrelationV1::from_raw`] refuses 0, so a value of this type
+/// is proof a nonzero id was observed. There is deliberately no `Default`
+/// and no 0-valued instance.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct RequestCorrelationV1(NonZeroU64);
+
+impl RequestCorrelationV1 {
+    /// Admit a raw wire id. `None` (for 0) means the caller never had a
+    /// transport identity and must stay uncorrelated — never a fallback id.
+    #[must_use]
+    pub fn from_raw(raw: u64) -> Option<Self> {
+        NonZeroU64::new(raw).map(Self::from_admitted)
+    }
+
+    /// Wrap an id the transport gate already admitted. Infallible by
+    /// construction — only call sites holding a validated id use this.
+    #[must_use]
+    pub fn from_admitted(admitted: NonZeroU64) -> Self {
+        Self(admitted)
+    }
+
+    /// The wire id to echo in typed responses and audit events.
+    #[must_use]
+    pub fn get(self) -> u64 {
+        self.0.get()
+    }
+}
+
 /// One request's deadline and cancellation state.
 #[derive(Clone, Debug)]
 pub struct RequestBudgetV1 {
     deadline: Instant,
     shared: Arc<CancelSharedV1>,
+    correlation: Option<RequestCorrelationV1>,
 }
 
 impl RequestBudgetV1 {
@@ -145,7 +180,31 @@ impl RequestBudgetV1 {
                 cancelled: AtomicBool::new(false),
                 waiters: std::sync::Mutex::new(CancelWaiterSetV1::default()),
             }),
+            correlation: None,
         }
+    }
+
+    /// Attach the admitted transport identity. The IPC server calls this
+    /// once per request, right after the envelope validation refuses 0;
+    /// every other constructor leaves the budget uncorrelated.
+    #[must_use]
+    pub fn with_correlation(mut self, correlation: RequestCorrelationV1) -> Self {
+        self.correlation = Some(correlation);
+        self
+    }
+
+    /// The admitted transport identity, if this budget runs under one.
+    #[must_use]
+    pub fn correlation(&self) -> Option<RequestCorrelationV1> {
+        self.correlation
+    }
+
+    /// The `request_id` typed responses and audit events must carry: the
+    /// admitted id on a served request, 0 off-transport. This is the only
+    /// place `None` becomes 0 — callers never invent the mapping.
+    #[must_use]
+    pub fn response_request_id(&self) -> u64 {
+        self.correlation.map_or(0, RequestCorrelationV1::get)
     }
 
     /// A budget of `budget` from now.

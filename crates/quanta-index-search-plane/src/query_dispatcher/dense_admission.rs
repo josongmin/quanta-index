@@ -15,6 +15,8 @@ use quanta_index_core::{
     LexicalSearcher, RequestBudgetV1, dense_admission_round_outcome_v1,
 };
 
+use super::execution_trace::LaneExecutionRecorderV1;
+
 /// One dense lane after admission.
 pub(super) struct AdmittedDenseLaneV1<T> {
     /// The lane's rows in the engine's order: every fetched row when no
@@ -61,12 +63,18 @@ impl<T> AdmittedDenseLaneV1<T> {
 /// [`HybridOrchestratorPolicy::next_dense_admission_fetch`] gives until the
 /// admitted rows reach `target`, the engine returns fewer rows than asked,
 /// or the ceiling was fetched; the outcome names which.
+///
+/// Invocation truth (W10-R1): the caller's `fetch` closure records each
+/// fetch that reaches the semantic backend (a short-circuited closure
+/// records nothing); this loop records each filter round that reaches the
+/// lexical backend through `admitted_candidates`.
 pub(super) fn admit_dense_lane_v1<T>(
     plan: &HybridFilterPlanV1,
     lexical: &dyn LexicalSearcher,
     constraints: &QueryConstraintSetV1,
     target: u32,
     budget: &RequestBudgetV1,
+    execution: &LaneExecutionRecorderV1,
     id_of: impl Fn(&T) -> &str,
     mut fetch: impl FnMut(u32) -> Result<Vec<T>, CoreError>,
 ) -> Result<AdmittedDenseLaneV1<T>, CoreError> {
@@ -94,6 +102,7 @@ pub(super) fn admit_dense_lane_v1<T>(
             .map(str::to_owned)
             .collect::<BTreeSet<String>>();
         if !unknown.is_empty() {
+            execution.record_lexical_invocation();
             let admitted = lexical.admitted_candidates(admission, constraints, &unknown, budget)?;
             for id in unknown {
                 let verdict = admitted.contains(&id);

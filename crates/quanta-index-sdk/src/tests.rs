@@ -4920,3 +4920,92 @@ fn hybrid_duplicate_identity_is_refused_without_payload_leakage() {
         "a binding refusal must not leak the payload identity: {rendered}"
     );
 }
+
+// W10-R2: the allocator seeds at 1 and skips 0 exactly once at wrap —
+// the transport never emits a request id the server would refuse.
+#[test]
+fn request_id_allocator_never_emits_zero_across_wrap() {
+    let client = QuantaIndex::from_transports(
+        Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Error(
+            SearchPlaneIpcError {
+                code: SearchPlaneErrorCodeV2::Internal,
+                message: "unused".to_string(),
+                repair: None,
+            },
+        ))),
+        unused_control(),
+        unused_ingest(),
+    );
+    assert_eq!(
+        client.test_next_request_id(),
+        1,
+        "a fresh allocator starts at 1, never 0"
+    );
+    client.test_seed_next_request_id(u64::MAX);
+    assert_eq!(
+        client.test_next_request_id(),
+        u64::MAX,
+        "the pre-wrap id is still emitted"
+    );
+    assert_eq!(
+        client.test_next_request_id(),
+        1,
+        "the wrapped 0 is skipped, the sequence resumes at 1"
+    );
+    assert_eq!(client.test_next_request_id(), 2);
+}
+
+/// W10-R2: a transport that answers with request id 0 — the one id no
+/// legitimate server emits — for testing the client's echo gate.
+struct ZeroIdQueryTransport {
+    response: Mutex<Option<SearchPlaneQueryIpcResponse>>,
+}
+
+impl QueryTransport for ZeroIdQueryTransport {
+    fn send(
+        &self,
+        _request: SearchPlaneQueryIpcRequestEnvelope,
+    ) -> Result<SearchPlaneQueryIpcResponseEnvelope, crate::SdkError> {
+        let payload = self
+            .response
+            .lock()
+            .map_err(|err| crate::SdkError::Protocol(format!("zero-id response poisoned: {err}")))?
+            .take()
+            .ok_or_else(|| crate::SdkError::Protocol("missing zero-id response".to_string()))?;
+        Ok(SearchPlaneQueryIpcResponseEnvelope {
+            request_id: 0,
+            payload,
+        })
+    }
+}
+
+// W10-R2: a 0 response fails the echo check typed — the client never
+// accepts the one id the server never sends.
+#[test]
+fn zero_response_id_fails_the_echo_check_typed() {
+    let transport = Arc::new(ZeroIdQueryTransport {
+        response: Mutex::new(Some(SearchPlaneQueryIpcResponse::Error(
+            SearchPlaneIpcError {
+                code: SearchPlaneErrorCodeV2::Internal,
+                message: "the echo gate fires before the payload matters".to_string(),
+                repair: None,
+            },
+        ))),
+    });
+    let client = QuantaIndex::from_transports(transport, unused_control(), unused_ingest());
+    let request = sample_cluster_membership_request();
+    let payload = quanta_index_contract::SearchPlaneQueryIpcRequest::ClusterMembershipRead(
+        quanta_index_contract::ClusterMembershipBatchReadRequestV1::single_v1(request),
+    );
+    let err = match client.dispatch_query(payload) {
+        Ok(response) => panic!("a 0 response must be refused, got {response:?}"),
+        Err(err) => err,
+    };
+    let crate::SdkError::Protocol(message) = &err else {
+        panic!("a 0 response must fail as Protocol, got {err:?}");
+    };
+    assert!(
+        message.contains("request_id 0"),
+        "the refusal must name the zero id, got {message}"
+    );
+}

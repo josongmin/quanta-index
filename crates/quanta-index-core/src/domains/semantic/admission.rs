@@ -16,6 +16,7 @@ use quanta_index_contract::SearchPlaneErrorCodeV2;
 use quanta_index_contract::lex::LexicalErrorCode;
 
 use crate::error::CoreError;
+use crate::request_budget::RequestCorrelationV1;
 
 /// Typed refusal when egress policy does not explicitly admit the input.
 pub const PROVIDER_EGRESS_DENIED_CODE: SearchPlaneErrorCodeV2 =
@@ -293,6 +294,10 @@ pub struct ProviderReservationTicketV1 {
     pub reserved_cost_micros: u64,
     pub reserved_retry_attempts: u32,
     pub enrollment: ProviderSupervisorEnrollmentV1,
+    /// The transport identity stamped pre-call (W10-R2): the budget's
+    /// correlation at reservation time, carried through settlement into
+    /// the audit event so reserve and settle share one request id.
+    pub correlation: Option<RequestCorrelationV1>,
 }
 
 /// What a settlement observed, for audit and cost accounting.
@@ -319,6 +324,9 @@ pub struct ProviderSettlementReceiptV1 {
     pub ticket_id: u64,
     pub kind: ProviderSettlementKindV1,
     pub observed: ProviderSettlementUsageV1,
+    /// Copied from the settled ticket (W10-R2): the audit event reads the
+    /// request id from here, never from ambient state.
+    pub correlation: Option<RequestCorrelationV1>,
 }
 
 /// How many settled provider calls the ledger's audit ring keeps (S21-08
@@ -340,6 +348,10 @@ pub struct ProviderAuditEventV1 {
     pub declared_model_id: String,
     pub observed_model_id: Option<String>,
     pub observed_dimension: usize,
+    /// The settled request's transport identity (W10-R2): `Some` on every
+    /// served request, `None` only when the settling budget ran
+    /// off-transport. A fixed-shape field, never a metric label.
+    pub correlation: Option<RequestCorrelationV1>,
 }
 
 /// Process-global snapshot of the provider work ledger.
@@ -395,6 +407,7 @@ impl ProviderBudgetLedger {
         class: SemanticInputClass,
         estimate: &ProviderWorkEstimateV1,
         supervisor_id: &str,
+        correlation: Option<RequestCorrelationV1>,
     ) -> Result<ProviderReservationTicketV1, CoreError> {
         if supervisor_id.is_empty() {
             return Err(CoreError::InvalidContract(
@@ -460,6 +473,7 @@ impl ProviderBudgetLedger {
                 ticket_id,
                 input_class: class,
             },
+            correlation,
         })
     }
 
@@ -539,6 +553,7 @@ impl ProviderBudgetLedger {
             ticket_id: ticket.ticket_id,
             kind,
             observed,
+            correlation: ticket.correlation,
         })
     }
 
@@ -774,6 +789,7 @@ mod tests {
             declared_model_id: "search-owned-hash-text-v1".to_string(),
             observed_model_id: Some("search-owned-hash-text-v1".to_string()),
             observed_dimension: 64,
+            correlation: None,
         }
     }
 

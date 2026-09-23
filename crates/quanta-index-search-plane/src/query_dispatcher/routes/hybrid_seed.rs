@@ -13,6 +13,7 @@ use quanta_index_core::{
 use crate::lower_lexical_text_query;
 use crate::query_dispatcher::dense_admission::admit_dense_lane_v1;
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
+use crate::query_dispatcher::execution_trace::LaneExecutionRecorderV1;
 use crate::query_dispatcher::planning::prepare_language_query_v1;
 use crate::query_dispatcher::ranking::{
     stabilize_ranked_candidates, stabilize_semantic_seed_hits_v1,
@@ -63,10 +64,14 @@ impl SearchPlaneDispatcher {
         let lex_searcher = view.lexical()?;
         let sem_searcher = view.semantic()?;
         let internal_top_k = hybrid_probe_top_k_v1(request.top_k)?;
+        // Invocation truth (W10-R1): only backend calls record. A
+        // `force_empty` plan invokes nothing and records nothing.
+        let execution = LaneExecutionRecorderV1::new();
         budget.checkpoint("hybrid-seed:lexical")?;
         let mut lex_results = if prepared_language.force_empty {
             Vec::new()
         } else {
+            execution.record_lexical_invocation();
             lex_searcher
                 .search_constrained(
                     &prepared_language.query,
@@ -106,9 +111,11 @@ impl SearchPlaneDispatcher {
                 &prepared_language.constraints,
                 internal_top_k,
                 budget,
+                &execution,
                 |hit: &SemanticSearchHitV1| hit.candidate.candidate_id.as_str(),
                 |fetch_size| {
                     budget.checkpoint("hybrid-seed:dense")?;
+                    execution.record_semantic_invocation();
                     sem_searcher.search_hits_constrained(
                         &query_vector,
                         &prepared_language.constraints,
@@ -131,10 +138,12 @@ impl SearchPlaneDispatcher {
                     &prepared_language.constraints,
                     corpus_budget.top_k,
                     budget,
+                    &execution,
                     |hit: &SemanticSearchHitV1| hit.candidate.candidate_id.as_str(),
                     |fetch_size| {
                         // Each native call gets its own checkpoint.
                         budget.checkpoint("hybrid-seed:dense")?;
+                        execution.record_semantic_invocation();
                         sem_searcher.search_hits_for_corpus_constrained(
                             &query_vector,
                             corpus_kind,
@@ -191,6 +200,15 @@ impl SearchPlaneDispatcher {
         } else {
             None
         };
+        // Contribution, same rule the builder used to apply inline: a lane
+        // contributed iff it returned hits.
+        if !lex_results.is_empty() {
+            execution.record_lexical_contribution();
+        }
+        if !semantic_hits.is_empty() {
+            execution.record_semantic_contribution();
+        }
+        let summary = execution.summary();
         let mut explanation = build_hybrid_seed_response_explanation(
             &SeedLaneTallyV1 {
                 lexical_hits: lex_results.len(),
@@ -198,6 +216,7 @@ impl SearchPlaneDispatcher {
                 semantic_hits: semantic_hits.len(),
                 semantic_entities: semantic_entity_count,
                 fused_hits: seed_candidates.len(),
+                execution: summary,
             },
             internal_top_k,
             &unavailable_corpus_reasons,
@@ -207,6 +226,7 @@ impl SearchPlaneDispatcher {
                 filters: format!("hybrid_seed.filters={filter_plan}"),
                 admission: admission_traces,
             },
+            budget.response_request_id(),
         );
         attach_read_view_trace(&mut explanation, view.identity());
         // Aggregate dense admission: one capped lane caps the whole
@@ -222,12 +242,18 @@ impl SearchPlaneDispatcher {
             None
         };
         let seed_lane_traces = vec![
-            LaneTraceV1::new("hybrid_seed.lexical", true, !lex_results.is_empty()).with_candidates(
-                CandidateCountV1::AtLeast(lane_count_u64(lexical_entity_count)?),
-            ),
-            LaneTraceV1::new("hybrid_seed.dense", true, semantic_entity_count > 0).with_candidates(
-                CandidateCountV1::AtLeast(lane_count_u64(semantic_entity_count)?),
-            ),
+            LaneTraceV1::new(
+                "hybrid_seed.lexical",
+                summary.lexical_executed(),
+                summary.lexical_contributed,
+            )
+            .with_candidates(CandidateCountV1::AtLeast(lane_count_u64(lexical_entity_count)?)),
+            LaneTraceV1::new(
+                "hybrid_seed.dense",
+                summary.semantic_executed(),
+                summary.semantic_contributed,
+            )
+            .with_candidates(CandidateCountV1::AtLeast(lane_count_u64(semantic_entity_count)?)),
         ];
         let window_v2 = fused_window_v2(
             request.top_k,

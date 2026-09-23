@@ -398,7 +398,26 @@ impl QuantaIndex {
     }
 
     fn next_request_id(&self) -> u64 {
-        self.inner.next_request_id.fetch_add(1, Ordering::Relaxed)
+        // W10-R2: the allocator never emits 0 — not at start (the
+        // counter seeds at 1) and not at wrap (fetch_add past u64::MAX
+        // yields 0 exactly once, skipped here). The server refuses 0
+        // anyway, so skipping is belt and braces, never load-bearing.
+        loop {
+            let id = self.inner.next_request_id.fetch_add(1, Ordering::Relaxed);
+            if id != 0 {
+                return id;
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_seed_next_request_id(&self, first: u64) {
+        self.inner.next_request_id.store(first, Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_next_request_id(&self) -> u64 {
+        self.next_request_id()
     }
 }
 
