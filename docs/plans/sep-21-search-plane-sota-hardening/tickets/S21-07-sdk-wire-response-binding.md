@@ -199,7 +199,9 @@ open.
   `SearchCorpusActiveHeadV1`; the catalog compares the whole generation and
   token and mints the next sequence. The SDK binds target, prior head, and
   sequence advance. The producer freezes the optional head through one
-  catalog-owned control read. No separate producer token authority was added.
+  catalog-owned control read. That read is `Observe` because query active
+  resolution already exposes the same token; CAS mutations remain `Admin`.
+  No separate producer token authority was added.
 - The Semantica generation-bound query view now obtains its captured identity
   from that same active-head API; it still submits immutable generation-pinned
   queries. The previous `GenerationStatusReport` identity assembler was
@@ -211,3 +213,24 @@ open.
   must not become the producer's CAS authority. These cross-repository changes
   have not received a frozen-source owner, UDS, Linux release, or exact-pair
   proof; P06 remains open.
+
+At Quanta `563da185` with dirty P06/P09 changes, `./scripts/cargow check
+--workspace --all-targets --message-format short` passed. Focused executed
+tests passed for stale A→B→A activation/rollback CAS (1), control active-head
+observation (1), capability matrix (3), SDK ACK roots/token binding (2), SDK
+active-head failure semantics (1), and real child-process restart/rollback
+(2, including cross-repository rollback). These are dirty-source local checks,
+not a P06 owner manifest, frozen
+cross-repository proof, or Linux release receipt. The old-type runtime test
+fixtures were migrated to typed heads; the full runtime suite remains unrun.
+
+The same dirty-source snapshot passed `just proof-p06-sdk-binding-owner`
+(exit 0): SDK owner profile 13/13, SDK library profile 650/650,
+hexagonal ownership, wire inventory, public API drift, and four 60-second
+fuzz smoke targets. The owner run first exposed missing
+`SearchCorpusActiveHead` request / `SearchCorpusActiveHeadObservation` response
+inventory rows and the intentional P06/P11 contract + SDK public API delta.
+Those rows and the two package baselines were synchronized, then the complete
+recipe was rerun to exit 0. This is local dirty-source owner execution only:
+no registered owner manifest, Linux release receipt, frozen exact-pair
+Semantica consumer proof, or deployment/activation proof exists from it.

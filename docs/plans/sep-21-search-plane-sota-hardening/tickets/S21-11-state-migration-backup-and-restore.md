@@ -51,3 +51,13 @@ command syntax and operational order.
 
 Historical importer designs and their dated RCA remain in Git history.
 They are not implementation instructions.
+
+## Dirty-source local checkpoint (2026-09-24; not an owner receipt)
+
+At Quanta `563da185` with unrelated and P06/P09 dirty changes,
+`./scripts/cargow test -p quanta-index-searchd-runtime --test
+state_migration_owner_v1 -- --nocapture` executed 36/36 tests successfully.
+This covers disposable-root backup, restore, verification, interruption,
+corruption, lease/path ownership, and typed legacy refusal. It does not prove
+any real target-root inventory, retained-data decision, Linux release binary,
+or registered P10 owner/release manifest.

@@ -21,8 +21,8 @@ use crate::readiness::search_corpus_generation::{
     PreparedSearchCorpusGenerationV1, SearchCorpusGenerationV1,
 };
 use crate::readiness::tests::support::{
-    AlwaysFailParentSync, FailAtParentSync, TestResult, ToggleParentSyncFailure,
-    active_head, assert_active_composite_v1, corpus_generation, corpus_identity, corpus_snapshot,
+    AlwaysFailParentSync, FailAtParentSync, TestResult, ToggleParentSyncFailure, active_head,
+    assert_active_composite_v1, corpus_generation, corpus_identity, corpus_snapshot,
     search_corpus_retention,
 };
 use crate::search_corpus_lifecycle::SearchCorpusPairMutationCoordinator;
@@ -87,7 +87,11 @@ fn activation_catalog_persists_composite_root_and_rolls_back_both_tracks_v1() ->
         target: corpus_generation(16, "digest-16")?.to_contract_v1(),
     })?;
     assert_eq!(
-        rollback.previous_sealed_active.generation.lexical.manifest_generation,
+        rollback
+            .previous_sealed_active
+            .generation
+            .lexical
+            .manifest_generation,
         ManifestGeneration::new(17)
     );
     assert_eq!(
@@ -292,8 +296,10 @@ fn prepared_search_corpus_activation_is_durable_before_reopen_and_rejects_stale_
     assert_eq!(promoted.active.generation, second.to_contract_v1());
     assert_eq!(promoted.previous_active, Some(first_head.clone()));
 
-    let stale_prepared =
-        PreparedSearchCorpusGenerationV1::new(corpus_generation(19, "digest-19")?, Some(first_head))?;
+    let stale_prepared = PreparedSearchCorpusGenerationV1::new(
+        corpus_generation(19, "digest-19")?,
+        Some(first_head),
+    )?;
     let stale = catalog.activate_prepared_search_corpus_generation_v1(&stale_prepared);
     let Err(CoreError::Typed { code, .. }) = stale else {
         return Err("stale composite expectation unexpectedly succeeded".into());
@@ -321,6 +327,60 @@ fn prepared_search_corpus_activation_is_durable_before_reopen_and_rejects_stale_
 }
 
 #[test]
+fn reactivated_generation_rejects_stale_activation_and_rollback_cas_tokens() -> TestResult {
+    let dir = tempdir()?;
+    let catalog = ActivationCatalog::open(dir.path())?;
+    let a = corpus_generation(17, "digest-17")?;
+    let b = corpus_generation(18, "digest-18")?;
+    let first = catalog.activate_prepared_search_corpus_generation_v1(
+        &PreparedSearchCorpusGenerationV1::new(a.clone(), None)?,
+    )?;
+    let stale_a = first.active;
+    let first_inventory = catalog.active_inventory_v1()?;
+    let second = catalog.activate_prepared_search_corpus_generation_v1(
+        &PreparedSearchCorpusGenerationV1::new(b, Some(stale_a.clone()))?,
+    )?;
+    let third = catalog.rollback(&SearchPlaneRollbackSearchCorpusGenerationCasRequest {
+        expected_active: second.active,
+        target: a.to_contract_v1(),
+    })?;
+    assert_eq!(third.active.generation, stale_a.generation);
+    assert_ne!(third.active.activation_token, stale_a.activation_token);
+    let third_inventory = catalog.active_inventory_v1()?;
+    assert_eq!(first_inventory.0.len(), 1);
+    assert_eq!(third_inventory.0.len(), 1);
+    assert_eq!(first_inventory.0[0].0, third_inventory.0[0].0);
+    assert_ne!(first_inventory.0[0].1, third_inventory.0[0].1);
+
+    let activation = catalog.activate_prepared_search_corpus_generation_v1(
+        &PreparedSearchCorpusGenerationV1::new(
+            corpus_generation(19, "digest-19")?,
+            Some(stale_a.clone()),
+        )?,
+    );
+    assert!(matches!(
+        activation,
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::CompositeActivationCasConflict,
+            ..
+        })
+    ));
+
+    let rollback = catalog.rollback(&SearchPlaneRollbackSearchCorpusGenerationCasRequest {
+        expected_active: stale_a,
+        target: corpus_generation(16, "digest-16")?.to_contract_v1(),
+    });
+    assert!(matches!(
+        rollback,
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::RollbackCasConflict,
+            ..
+        })
+    ));
+    assert_active_composite_v1(&catalog, &a)
+}
+
+#[test]
 fn activation_catalog_concurrent_cas_promotions_select_one_composite_winner() -> TestResult {
     let dir = tempdir()?;
     let catalog = Arc::new(ActivationCatalog::open(dir.path())?);
@@ -336,8 +396,10 @@ fn activation_catalog_concurrent_cas_promotions_select_one_composite_winner() ->
         first_candidate.clone(),
         Some(initial_active.clone()),
     )?;
-    let second_prepared =
-        PreparedSearchCorpusGenerationV1::new(second_candidate.clone(), Some(initial_active.clone()))?;
+    let second_prepared = PreparedSearchCorpusGenerationV1::new(
+        second_candidate.clone(),
+        Some(initial_active.clone()),
+    )?;
 
     // Both contenders are fully prepared before either can enter the
     // catalog. The barrier releases their CAS calls together; winner
@@ -403,10 +465,22 @@ fn activation_catalog_concurrent_cas_promotions_select_one_composite_winner() ->
         &winner.generation.lexical.revision_id,
         SearchPlaneTrackKind::Semantic,
     )?;
-    assert_eq!(lexical.manifest_generation, winner.generation.lexical.manifest_generation);
-    assert_eq!(semantic.manifest_generation, winner.generation.lexical.manifest_generation);
-    assert_eq!(lexical.manifest_digest, winner.generation.lexical.manifest_digest);
-    assert_eq!(semantic.manifest_digest, winner.generation.semantic.manifest_digest);
+    assert_eq!(
+        lexical.manifest_generation,
+        winner.generation.lexical.manifest_generation
+    );
+    assert_eq!(
+        semantic.manifest_generation,
+        winner.generation.lexical.manifest_generation
+    );
+    assert_eq!(
+        lexical.manifest_digest,
+        winner.generation.lexical.manifest_digest
+    );
+    assert_eq!(
+        semantic.manifest_digest,
+        winner.generation.semantic.manifest_digest
+    );
     Ok(())
 }
 

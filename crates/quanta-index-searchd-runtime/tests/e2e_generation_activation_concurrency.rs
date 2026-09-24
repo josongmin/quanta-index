@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 
 use quanta_index_contract::{
     ChunkId, ChunkRecord, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
-    SearchCorpusGenerationIdentityV1, SearchPlaneErrorCodeV2, SearchScopeKey, SearchScopeSurface,
+    SearchCorpusActiveHeadV1, SearchPlaneErrorCodeV2, SearchScopeKey, SearchScopeSurface,
     lex::LanguageCode,
 };
 use quanta_index_sdk::{ConnectOptions, QuantaIndex, RepoMetaBatch, SdkError, SearchCorpusBatch};
@@ -199,16 +199,16 @@ fn authority_batch(raw_generation: u64) -> RepoMetaBatch {
 fn publish_and_activate(
     client: &QuantaIndex,
     raw_generation: u64,
-    expected_active: Option<SearchCorpusGenerationIdentityV1>,
-) -> Result<SearchCorpusGenerationIdentityV1, Box<dyn Error>> {
+    expected_active: Option<SearchCorpusActiveHeadV1>,
+) -> Result<SearchCorpusActiveHeadV1, Box<dyn Error>> {
     let _receipt = client
         .history()
         .publish_repo_meta(&authority_batch(raw_generation))?;
     let (_receipt, activation) = client
         .search_corpus()
         .publish_and_activate(&corpus_batch(raw_generation)?, expected_active)?;
-    if activation.active.lexical.manifest_generation != generation(raw_generation)
-        || activation.active.semantic.manifest_generation != generation(raw_generation)
+    if activation.active.generation.lexical.manifest_generation != generation(raw_generation)
+        || activation.active.generation.semantic.manifest_generation != generation(raw_generation)
     {
         return Err(format!(
             "activation did not promote complete generation {raw_generation}: {:?}",
@@ -335,7 +335,7 @@ fn concurrent_queries_observe_only_complete_predicate_authority_generations() ->
         transition_open.store(true, Ordering::Release);
         expect_query_event(&events_rx, &QueryEvent::TransitionQueryCompleted)?;
         let active_g2 = publish_and_activate(&publisher, G2, Some(active_g1.clone()))?;
-        if active_g2.lexical.manifest_generation != generation(G2) {
+        if active_g2.generation.lexical.manifest_generation != generation(G2) {
             return Err("generation two activation acknowledgement did not select G2".into());
         }
         expect_query_event(&events_rx, &QueryEvent::Generation(G2))?;

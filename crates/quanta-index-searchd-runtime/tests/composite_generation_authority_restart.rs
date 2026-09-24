@@ -15,7 +15,8 @@ use std::error::Error;
 use std::path::Path;
 
 use quanta_index_contract::{
-    SearchPlaneErrorCodeV2, SearchPlaneRollbackSearchCorpusGenerationCasRequest,
+    SearchCorpusActiveHeadV1, SearchPlaneErrorCodeV2,
+    SearchPlaneRollbackSearchCorpusGenerationCasRequest,
 };
 use quanta_index_core::{CoreError, GenerationStorageKeyV1};
 use quanta_index_sdk::{
@@ -182,9 +183,9 @@ fn batch_for(
 /// learned from its receipts, so every later comparison and rollback names
 /// them from here.
 struct Activated {
-    g0: Option<SearchCorpusGenerationIdentityV1>,
-    g1: SearchCorpusGenerationIdentityV1,
-    g2: SearchCorpusGenerationIdentityV1,
+    g0: Option<SearchCorpusActiveHeadV1>,
+    g1: SearchCorpusActiveHeadV1,
+    g2: SearchCorpusActiveHeadV1,
 }
 
 /// Publish and activate `raw_generation`, checking the ack names the
@@ -193,14 +194,14 @@ fn publish_generation(
     client: &QuantaIndex,
     raw_generation: u64,
     digest: &str,
-    expected_active: Option<SearchCorpusGenerationIdentityV1>,
-) -> Result<SearchCorpusGenerationIdentityV1, Box<dyn Error>> {
+    expected_active: Option<SearchCorpusActiveHeadV1>,
+) -> Result<SearchCorpusActiveHeadV1, Box<dyn Error>> {
     let (receipt, activation) = client
         .search_corpus()
         .publish_and_activate(&batch(raw_generation, digest)?, expected_active)?;
     let expected_tracks = composite_identity_for(REPO, REVISION, raw_generation, digest);
-    if activation.active.lexical != expected_tracks.lexical
-        || activation.active.semantic != expected_tracks.semantic
+    if activation.active.generation.lexical != expected_tracks.lexical
+        || activation.active.generation.semantic != expected_tracks.semantic
     {
         return Err(format!(
             "activation of G{raw_generation} selected foreign tracks: {:?}",
@@ -208,10 +209,10 @@ fn publish_generation(
         )
         .into());
     }
-    if Some(&activation.active.semantic_content) != receipt.semantic_content.as_ref() {
+    if Some(&activation.active.generation.semantic_content) != receipt.semantic_content.as_ref() {
         return Err(format!(
             "activation of G{raw_generation} names roots the sealed receipt did not attest: ack={:?} receipt={:?}",
-            activation.active.semantic_content, receipt.semantic_content
+            activation.active.generation.semantic_content, receipt.semantic_content
         )
         .into());
     }
@@ -240,7 +241,7 @@ fn rollback_g2_to_g1(client: &QuantaIndex, activated: &Activated) -> Result<(), 
         .generations()
         .rollback(SearchPlaneRollbackSearchCorpusGenerationCasRequest {
             expected_active: activated.g2.clone(),
-            target: activated.g1.clone(),
+            target: activated.g1.generation.clone(),
         })
         .map(|_ack| ())
 }
@@ -282,38 +283,21 @@ fn current_composite(client: &QuantaIndex) -> Result<SearchCorpusGenerationIdent
     current_composite_for(client, REPO, REVISION)
 }
 
-/// The active composite identity as the daemon reports it: both track
-/// snapshots plus the semantic content roots from the status report.
+/// Project the generation from the catalog-owned active head, avoiding a
+/// second identity assembled from independently observed track/status reads.
 fn current_composite_for(
     client: &QuantaIndex,
     repo_id: &str,
     revision_id: &str,
 ) -> Result<SearchCorpusGenerationIdentityV1, SdkError> {
-    let lexical = client.generations().current(
-        RepoId::new(repo_id).expect("test fixture ID satisfies canonical policy"),
-        RevisionId::new(revision_id).expect("test fixture ID satisfies canonical policy"),
-        SearchPlaneTrackKind::Lexical,
-    )?;
-    let semantic = client.generations().current(
-        RepoId::new(repo_id).expect("test fixture ID satisfies canonical policy"),
-        RevisionId::new(revision_id).expect("test fixture ID satisfies canonical policy"),
-        SearchPlaneTrackKind::Semantic,
-    )?;
-    let semantic_content = client
+    let head = client
         .generations()
-        .status(
+        .active_head(
             RepoId::new(repo_id).expect("test fixture ID satisfies canonical policy"),
             RevisionId::new(revision_id).expect("test fixture ID satisfies canonical policy"),
         )?
-        .semantic_content
-        .ok_or_else(|| {
-            SdkError::Protocol("an active pair reports no semantic content roots".to_string())
-        })?;
-    Ok(SearchCorpusGenerationIdentityV1 {
-        lexical,
-        semantic,
-        semantic_content,
-    })
+        .ok_or_else(|| SdkError::Protocol("expected an active search corpus head".to_string()))?;
+    Ok(head.generation)
 }
 
 fn publish_and_activate_for(
@@ -322,16 +306,16 @@ fn publish_and_activate_for(
     revision_id: &str,
     raw_generation: u64,
     digest: &str,
-    expected_active: Option<SearchCorpusGenerationIdentityV1>,
-) -> Result<SearchCorpusGenerationIdentityV1, Box<dyn Error>> {
+    expected_active: Option<SearchCorpusActiveHeadV1>,
+) -> Result<SearchCorpusActiveHeadV1, Box<dyn Error>> {
     let (receipt, activation) = client.search_corpus().publish_and_activate(
         &batch_for(repo_id, revision_id, raw_generation, digest)?,
         expected_active,
     )?;
     let expected = composite_identity_for(repo_id, revision_id, raw_generation, digest);
-    if activation.active.lexical != expected.lexical
-        || activation.active.semantic != expected.semantic
-        || Some(&activation.active.semantic_content) != receipt.semantic_content.as_ref()
+    if activation.active.generation.lexical != expected.lexical
+        || activation.active.generation.semantic != expected.semantic
+        || Some(&activation.active.generation.semantic_content) != receipt.semantic_content.as_ref()
     {
         return Err(format!(
             "publish-and-activate selected a foreign composite identity: expected tracks={expected:?} receipt roots={:?} observed={:?}",
@@ -441,7 +425,7 @@ fn rollback_rejects_stale_expected_active_and_preserves_current_composite_v1() -
             .generations()
             .rollback(SearchPlaneRollbackSearchCorpusGenerationCasRequest {
                 expected_active: activated.g1.clone(),
-                target: g0,
+                target: g0.generation,
             });
     let Err(SdkError::Remote { code, .. }) = rollback else {
         return Err(format!(
@@ -460,7 +444,7 @@ fn rollback_rejects_stale_expected_active_and_preserves_current_composite_v1() -
     current
         .validate_v1()
         .map_err(|error| format!("stale rollback split active authority: {error}"))?;
-    if current != activated.g2 {
+    if current != activated.g2.generation {
         return Err(format!("stale rollback changed active G2: {current:?}").into());
     }
     drop(first_client);
@@ -469,7 +453,7 @@ fn rollback_rejects_stale_expected_active_and_preserves_current_composite_v1() -
     let second_process = SearchdBinaryProcess::start(directory.path())?;
     let second_client = second_process.connect()?;
     let reopened = current_composite(&second_client)?;
-    if reopened != activated.g2 {
+    if reopened != activated.g2.generation {
         return Err(format!("stale rollback changed reopened G2: {reopened:?}").into());
     }
     drop(second_client);
@@ -483,7 +467,7 @@ fn real_child_process_restart_preserves_and_rolls_back_composite_generation_v1()
     let first_process = SearchdBinaryProcess::start(directory.path())?;
     let first_client = first_process.connect()?;
     let activated = publish_two_generations(&first_client)?;
-    if current_composite(&first_client)? != activated.g2 {
+    if current_composite(&first_client)? != activated.g2.generation {
         return Err("child process did not activate exact G2 composite identity".into());
     }
     drop(first_client);
@@ -491,11 +475,11 @@ fn real_child_process_restart_preserves_and_rolls_back_composite_generation_v1()
 
     let second_process = SearchdBinaryProcess::start(directory.path())?;
     let second_client = second_process.connect()?;
-    if current_composite(&second_client)? != activated.g2 {
+    if current_composite(&second_client)? != activated.g2.generation {
         return Err("child process restart did not recover exact G2 composite identity".into());
     }
     rollback_g2_to_g1(&second_client, &activated)?;
-    if current_composite(&second_client)? != activated.g1 {
+    if current_composite(&second_client)? != activated.g1.generation {
         return Err("child process rollback did not activate exact G1 composite identity".into());
     }
     drop(second_client);
@@ -503,7 +487,7 @@ fn real_child_process_restart_preserves_and_rolls_back_composite_generation_v1()
 
     let third_process = SearchdBinaryProcess::start(directory.path())?;
     let third_client = third_process.connect()?;
-    if current_composite(&third_client)? != activated.g1 {
+    if current_composite(&third_client)? != activated.g1.generation {
         return Err(
             "second child process restart did not preserve rolled-back G1 authority".into(),
         );
@@ -549,8 +533,8 @@ fn real_child_process_cross_repo_restart_retains_and_rolls_back_each_composite_v
         Some(b1.clone()),
     )?;
 
-    if current_composite_for(&first_client, REPO, REVISION)? != a2
-        || current_composite_for(&first_client, REPO_B, REVISION_B)? != b2
+    if current_composite_for(&first_client, REPO, REVISION)? != a2.generation
+        || current_composite_for(&first_client, REPO_B, REVISION_B)? != b2.generation
     {
         return Err("cross-repo setup did not preserve two independent active composites".into());
     }
@@ -572,8 +556,8 @@ fn real_child_process_cross_repo_restart_retains_and_rolls_back_each_composite_v
     let second_process =
         SearchdBinaryProcess::start_with_history_max_generations(directory.path(), 2)?;
     let second_client = second_process.connect()?;
-    if current_composite_for(&second_client, REPO, REVISION)? != a2
-        || current_composite_for(&second_client, REPO_B, REVISION_B)? != b2
+    if current_composite_for(&second_client, REPO, REVISION)? != a2.generation
+        || current_composite_for(&second_client, REPO_B, REVISION_B)? != b2.generation
     {
         return Err("restart aliased or lost one repo's active composite".into());
     }
@@ -581,28 +565,28 @@ fn real_child_process_cross_repo_restart_retains_and_rolls_back_each_composite_v
     let a_rollback = second_client.generations().rollback(
         SearchPlaneRollbackSearchCorpusGenerationCasRequest {
             expected_active: a2.clone(),
-            target: a1.clone(),
+            target: a1.generation.clone(),
         },
     )?;
-    if a_rollback.active != a1 || a_rollback.previous_sealed_active != a2 {
+    if a_rollback.active.generation != a1.generation || a_rollback.previous_sealed_active != a2 {
         return Err("repo A rollback ack did not bind the exact CAS transition".into());
     }
-    if current_composite_for(&second_client, REPO, REVISION)? != a1
-        || current_composite_for(&second_client, REPO_B, REVISION_B)? != b2
+    if current_composite_for(&second_client, REPO, REVISION)? != a1.generation
+        || current_composite_for(&second_client, REPO_B, REVISION_B)? != b2.generation
     {
         return Err("repo A rollback changed repo B or failed to select retained A1".into());
     }
     let b_rollback = second_client.generations().rollback(
         SearchPlaneRollbackSearchCorpusGenerationCasRequest {
             expected_active: b2.clone(),
-            target: b1.clone(),
+            target: b1.generation.clone(),
         },
     )?;
-    if b_rollback.active != b1 || b_rollback.previous_sealed_active != b2 {
+    if b_rollback.active.generation != b1.generation || b_rollback.previous_sealed_active != b2 {
         return Err("repo B rollback ack did not bind the exact CAS transition".into());
     }
-    if current_composite_for(&second_client, REPO, REVISION)? != a1
-        || current_composite_for(&second_client, REPO_B, REVISION_B)? != b1
+    if current_composite_for(&second_client, REPO, REVISION)? != a1.generation
+        || current_composite_for(&second_client, REPO_B, REVISION_B)? != b1.generation
     {
         return Err("repo B rollback changed repo A or failed to select retained B1".into());
     }
@@ -612,8 +596,8 @@ fn real_child_process_cross_repo_restart_retains_and_rolls_back_each_composite_v
     let third_process =
         SearchdBinaryProcess::start_with_history_max_generations(directory.path(), 2)?;
     let third_client = third_process.connect()?;
-    if current_composite_for(&third_client, REPO, REVISION)? != a1
-        || current_composite_for(&third_client, REPO_B, REVISION_B)? != b1
+    if current_composite_for(&third_client, REPO, REVISION)? != a1.generation
+        || current_composite_for(&third_client, REPO_B, REVISION_B)? != b1.generation
     {
         return Err(
             "second restart did not preserve both independently rolled-back composites".into(),

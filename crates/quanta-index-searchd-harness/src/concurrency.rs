@@ -745,15 +745,39 @@ mod tests {
         let generation = ManifestGeneration::new(1);
         let pin = GenerationPin::new(repo_id.clone(), revision_id.clone(), generation);
         let active = GenerationSnapshot {
-            repo_id,
-            revision_id,
+            repo_id: repo_id.clone(),
+            revision_id: revision_id.clone(),
             track: SearchPlaneTrackKind::Lexical,
             manifest_generation: generation,
             manifest_digest: "fixture-digest".to_string(),
         };
+        let resolution = quanta_index_contract::ActiveGenerationResolutionV1 {
+            track: SearchPlaneTrackKind::Lexical,
+            head: quanta_index_contract::SearchCorpusActiveHeadV1 {
+                generation: quanta_index_contract::SearchCorpusGenerationIdentityV1 {
+                    lexical: active,
+                    semantic: GenerationSnapshot {
+                        repo_id,
+                        revision_id,
+                        track: SearchPlaneTrackKind::Semantic,
+                        manifest_generation: generation,
+                        manifest_digest: "fixture-digest".to_string(),
+                    },
+                    semantic_content: quanta_index_contract::SemanticContentRootsV1 {
+                        row_root_digest: format!("sha256:{}", "a".repeat(64)),
+                        membership_root_digest: format!("sha256:{}", "b".repeat(64)),
+                    },
+                },
+                activation_token: quanta_index_contract::SearchCorpusActivationTokenV1::new(
+                    [7; quanta_index_contract::ACTIVATION_ROOT_INCARNATION_BYTES_V1],
+                    std::num::NonZeroU64::MIN,
+                )
+                .expect("fixture root incarnation is nonzero"),
+            },
+        };
         assert_eq!(
             result_count_of(&SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(
-                active
+                resolution
             )),
             None
         );

@@ -6,6 +6,7 @@ use std::time::Duration;
 use quanta_index_contract::{
     ProcessComponentsHealthV1, ProcessProviderClaimV1, ProcessProviderReadinessV1,
     ProcessReadinessPhaseV1, ProcessReadinessReasonV1, ProcessReadinessV1,
+    SearchCorpusActivationTokenV1,
 };
 use quanta_index_core::CoreError;
 use quanta_index_search_plane::readiness::ActivationCatalog;
@@ -33,16 +34,27 @@ pub(crate) struct RuntimeReadiness {
 }
 
 pub(crate) struct ProvenActive {
-    identity: Vec<SearchCorpusGenerationV1>,
+    identity: Vec<(SearchCorpusGenerationV1, SearchCorpusActivationTokenV1)>,
     scrub_epoch: (u64, u64),
 }
 
 impl ProvenActive {
-    pub(crate) fn new(identity: Vec<SearchCorpusGenerationV1>, scrub_epoch: (u64, u64)) -> Self {
+    pub(crate) fn new(
+        identity: Vec<(SearchCorpusGenerationV1, SearchCorpusActivationTokenV1)>,
+        scrub_epoch: (u64, u64),
+    ) -> Self {
         Self {
             identity,
             scrub_epoch,
         }
+    }
+
+    fn valid_for(
+        &self,
+        identity: &[(SearchCorpusGenerationV1, SearchCorpusActivationTokenV1)],
+        scrub_epoch: (u64, u64),
+    ) -> bool {
+        self.identity == identity && self.scrub_epoch == scrub_epoch
     }
 }
 
@@ -61,7 +73,7 @@ impl ProcessReadinessPort for RuntimeReadiness {
             })?;
             if cached_proof
                 .as_ref()
-                .is_some_and(|proof| proof.identity == before.0 && proof.scrub_epoch == scrub_epoch)
+                .is_some_and(|proof| proof.valid_for(&before.0, scrub_epoch))
                 && self.scrub.proof_invalidation_epoch() == scrub_epoch
             {
                 Some(true)
@@ -157,6 +169,10 @@ fn synthesize(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use quanta_index_contract::{
+        GenerationSnapshot, ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind,
+        SemanticContentRootsV1,
+    };
 
     fn healthy() -> ProcessComponentsHealthV1 {
         ProcessComponentsHealthV1 {
@@ -170,6 +186,41 @@ mod tests {
                 healthy: false,
             },
         }
+    }
+
+    #[test]
+    fn cached_physical_proof_does_not_survive_same_generation_reactivation() {
+        let repo_id = RepoId::new("readiness-cache").expect("fixture repo");
+        let revision_id = RevisionId::new("revision").expect("fixture revision");
+        let snapshot = |track| GenerationSnapshot {
+            repo_id: repo_id.clone(),
+            revision_id: revision_id.clone(),
+            track,
+            manifest_generation: ManifestGeneration::new(1),
+            manifest_digest: "manifest:readiness-cache".to_owned(),
+        };
+        let generation = SearchCorpusGenerationV1::new(
+            snapshot(SearchPlaneTrackKind::Lexical),
+            snapshot(SearchPlaneTrackKind::Semantic),
+            SemanticContentRootsV1 {
+                row_root_digest: format!("sha256:{}", "a".repeat(64)),
+                membership_root_digest: format!("sha256:{}", "b".repeat(64)),
+            },
+        )
+        .expect("fixture generation is coherent");
+        let incarnation = [7; quanta_index_contract::ACTIVATION_ROOT_INCARNATION_BYTES_V1];
+        let token = |sequence| {
+            SearchCorpusActivationTokenV1::new(
+                incarnation,
+                std::num::NonZeroU64::new(sequence).expect("fixture sequence is positive"),
+            )
+            .expect("fixture incarnation is nonzero")
+        };
+        let first_inventory = vec![(generation.clone(), token(1))];
+        let proof = ProvenActive::new(first_inventory.clone(), (0, 0));
+        assert!(proof.valid_for(&first_inventory, (0, 0)));
+        assert!(!proof.valid_for(&[(generation, token(3))], (0, 0)));
+        assert!(!proof.valid_for(&first_inventory, (1, 0)));
     }
 
     #[test]

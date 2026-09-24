@@ -74,20 +74,26 @@ struct ActiveSearchCorpusHeadV1 {
 }
 
 impl ActiveSearchCorpusHeadV1 {
+    fn activation_token_v1(
+        &self,
+        root_incarnation: [u8; ROOT_INCARNATION_BYTES_V1],
+    ) -> Result<SearchCorpusActivationTokenV1, CoreError> {
+        SearchCorpusActivationTokenV1::new(root_incarnation, self.activation_sequence).map_err(
+            |error| {
+                CoreError::Storage(format!(
+                    "search-plane activation catalog: invalid active token: {error}"
+                ))
+            },
+        )
+    }
+
     fn to_contract_v1(
         &self,
         root_incarnation: [u8; ROOT_INCARNATION_BYTES_V1],
     ) -> Result<SearchCorpusActiveHeadV1, CoreError> {
-        let activation_token =
-            SearchCorpusActivationTokenV1::new(root_incarnation, self.activation_sequence)
-                .map_err(|error| {
-                    CoreError::Storage(format!(
-                        "search-plane activation catalog: invalid active token: {error}"
-                    ))
-                })?;
         Ok(SearchCorpusActiveHeadV1 {
             generation: self.generation.to_contract_v1(),
-            activation_token,
+            activation_token: self.activation_token_v1(root_incarnation)?,
         })
     }
 
@@ -180,9 +186,18 @@ impl ActivationCatalog {
     }
 
     /// A single catalog snapshot for process readiness. Comparing the
-    /// complete pair identities before and after a physical probe rejects
-    /// a concurrent replacement even when the pair count is unchanged.
-    pub fn active_inventory_v1(&self) -> Result<(Vec<SearchCorpusGenerationV1>, u64), CoreError> {
+    /// complete pair identities and activation tokens before and after a
+    /// physical probe rejects replacement or A -> B -> A reactivation even
+    /// when the pair count and generation identities are unchanged.
+    pub fn active_inventory_v1(
+        &self,
+    ) -> Result<
+        (
+            Vec<(SearchCorpusGenerationV1, SearchCorpusActivationTokenV1)>,
+            u64,
+        ),
+        CoreError,
+    > {
         self.ensure_durability_certain_v1()?;
         let entries = self.entries.read().map_err(|error| {
             CoreError::Storage(format!("search-plane activation catalog poisoned: {error}"))
@@ -196,13 +211,16 @@ impl ActivationCatalog {
         let repositories = u64::try_from(repositories).map_err(|error| {
             CoreError::Storage(format!("active repository count overflow: {error}"))
         })?;
-        Ok((
-            entries
-                .values()
-                .map(|head| head.generation.clone())
-                .collect(),
-            repositories,
-        ))
+        let inventory = entries
+            .values()
+            .map(|head| {
+                Ok((
+                    head.generation.clone(),
+                    head.activation_token_v1(self.root_incarnation)?,
+                ))
+            })
+            .collect::<Result<Vec<_>, CoreError>>()?;
+        Ok((inventory, repositories))
     }
 
     #[cfg(test)]
@@ -722,13 +740,8 @@ impl ActivationCatalog {
         self.ensure_durability_certain_v1()?;
         active_search_corpus_head_v1(&entries, repo_id, revision_id)
             .map(|head| {
-                SearchCorpusActivationTokenV1::new(self.root_incarnation, head.activation_sequence)
-                    .map(|token| (head.generation, token))
-                    .map_err(|error| {
-                        CoreError::Storage(format!(
-                            "search-plane activation catalog: invalid active token: {error}"
-                        ))
-                    })
+                let token = head.activation_token_v1(self.root_incarnation)?;
+                Ok((head.generation, token))
             })
             .transpose()
     }

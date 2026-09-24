@@ -76,6 +76,10 @@ fn observe_requests() -> Vec<SearchPlaneControlIpcRequest> {
             repo_id: fixture_repo(),
             revision_id: fixture_revision(),
         }),
+        SearchPlaneControlIpcRequest::SearchCorpusActiveHead(GenerationStatusRequest {
+            repo_id: fixture_repo(),
+            revision_id: fixture_revision(),
+        }),
         SearchPlaneControlIpcRequest::MetricsSnapshot(MetricsSnapshotRequest),
         SearchPlaneControlIpcRequest::QuarantineInventory(QuarantineInventoryRequest),
         SearchPlaneControlIpcRequest::ProcessReadiness(ProcessReadinessRequest),
@@ -96,10 +100,6 @@ fn admin_requests() -> Vec<SearchPlaneControlIpcRequest> {
                 expected_active: head(),
             },
         ),
-        SearchPlaneControlIpcRequest::SearchCorpusActiveHead(GenerationStatusRequest {
-            repo_id: fixture_repo(),
-            revision_id: fixture_revision(),
-        }),
         SearchPlaneControlIpcRequest::RepoMapActivateV2(RepoMapActivateGenerationRequestV2 {
             repo_id: RepoId::new("r").expect("static fixture ID"),
             revision_id: RevisionId::new("v").expect("static fixture ID"),
@@ -126,8 +126,9 @@ fn admin_requests() -> Vec<SearchPlaneControlIpcRequest> {
 
 #[test]
 fn every_opcode_maps_to_exactly_one_capability() {
-    // Exhaustive: observe excludes sensitive head tokens; admin includes
-    // mutations and the CAS-token read. A new opcode that forgets its
+    // Exhaustive: observe includes the search-corpus head already exposed by
+    // query active resolution; admin includes mutations and RepoMap CAS-head
+    // reads. A new opcode that forgets its
     // capability cannot compile, and a mis-classified one fails here.
     for request in observe_requests() {
         assert_eq!(

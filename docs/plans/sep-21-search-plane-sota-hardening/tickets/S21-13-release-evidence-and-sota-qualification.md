@@ -10,6 +10,12 @@ in source. P12A's exact-pair receipt and the P12Q release receipt are absent;
 P12Q remains staged in the registry. Code presence does not qualify the product
 or the release.
 
+2026-09-24 dirty-source checkpoint at Quanta `563da185`: `just
+proof-p12a-proof-infrastructure` passed test-authority lint, registry-only
+proof-authority lint, and 121/121 Python owner tests. The registry lint
+validated **zero manifests**. This is local P12A infrastructure behavior,
+not an exact-pair P12A receipt or P12Q qualification.
+
 Depends on: phase A depends on S21-00; phase B depends on S21-01 through S21-12
 
 ## Goal

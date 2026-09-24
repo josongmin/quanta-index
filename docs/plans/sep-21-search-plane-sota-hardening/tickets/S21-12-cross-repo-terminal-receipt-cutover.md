@@ -17,6 +17,15 @@ verification. Quanta-local CAS code is not that proof.
 Cross-repo producer qualification, deployment, and activation remain separate
 unverified gates; this note does not close S21-12.
 
+2026-09-24 dirty-source local check at Quanta `563da185`: the live IPC
+control variants expose `RepoMapActivateV2`/`RepoMapActiveHeadV2`, the SDK
+namespace exposes only V2 content-bound publish/activate, and the RepoMap
+store's public mutation entrypoints are `ingest_bundle_v2` and
+`activate_generation_v2`. The `request_v1` string remains in a legacy-wire
+refusal fixture; that JSON/CBOR refusal test ran 1/1. This is bounded local
+source/test evidence, not a frozen Semantica/Quanta pair, release binary,
+deployment, activation, or rollback receipt.
+
 Depends on: S21-02, S21-04, S21-07, S21-11
 
 ## Goal

@@ -49,13 +49,11 @@ use crate::searchd_binary_process::{
 };
 use quanta_index_contract::{
     ChunkId, ChunkRecord, GenerationPin, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
-    SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchScopeKey, SearchScopeSurface,
+    SearchCorpusActiveHeadV1, SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchScopeKey,
+    SearchScopeSurface,
 };
 use quanta_index_core::{GenerationStorageKeyV1, RECLAIM_AREA_DIR_NAME};
-use quanta_index_sdk::{
-    ConnectOptions, LanguageCode, QuantaIndex, SdkError, SearchCorpusBatch,
-    SearchCorpusGenerationIdentityV1,
-};
+use quanta_index_sdk::{ConnectOptions, LanguageCode, QuantaIndex, SdkError, SearchCorpusBatch};
 use quanta_index_search_plane::crash_point::{
     self, AFTER_CATALOG_TRANSACTION, AFTER_FENCE, AFTER_LEDGER_RECONCILE, AFTER_RETENTION_RECEIPT,
     AFTER_SEMANTIC_SEAL, BEFORE_AUTHORITY_RECORD, BEFORE_RECORD_FORGET, BETWEEN_TRACK_RECLAIMS,
@@ -124,8 +122,8 @@ fn batch(generation: u64) -> Result<SearchCorpusBatch, Box<dyn Error>> {
 fn publish_and_activate(
     client: &QuantaIndex,
     generation: u64,
-    expected_active: Option<SearchCorpusGenerationIdentityV1>,
-) -> Result<SearchCorpusGenerationIdentityV1, Box<dyn Error>> {
+    expected_active: Option<SearchCorpusActiveHeadV1>,
+) -> Result<SearchCorpusActiveHeadV1, Box<dyn Error>> {
     let (_receipt, activation) = client
         .search_corpus()
         .publish_and_activate(&batch(generation)?, expected_active)?;
@@ -483,8 +481,8 @@ const GC_CASES: [GcCase; 6] = [
 
 /// The predecessor and the active generation the crash leaves behind.
 struct ActiveLine {
-    predecessor: SearchCorpusGenerationIdentityV1,
-    active: SearchCorpusGenerationIdentityV1,
+    predecessor: SearchCorpusActiveHeadV1,
+    active: SearchCorpusActiveHeadV1,
 }
 
 /// Seal 1, 2 and 3 active in turn, then seal 4 under a daemon that exits at
@@ -569,9 +567,9 @@ fn a_gc_crash(case: &GcCase) -> TestResult {
             .generations()
             .rollback(SearchPlaneRollbackSearchCorpusGenerationCasRequest {
                 expected_active: line.active,
-                target: line.predecessor.clone(),
+                target: line.predecessor.generation.clone(),
             })?;
-    if rolled_back.active != line.predecessor {
+    if rolled_back.active.generation != line.predecessor.generation {
         return Err(format!("the rollback activated {rolled_back:?}").into());
     }
     drop(client);

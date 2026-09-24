@@ -514,6 +514,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::FileOwnership
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::FileOwnershipMutation
 pub struct quanta_index_sdk::GenerationNamespace<'a>
 impl<'a> quanta_index_sdk::GenerationNamespace<'a>
+pub fn quanta_index_sdk::GenerationNamespace<'a>::active_head(&self, repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId) -> core::result::Result<core::option::Option<quanta_index_contract::ipc::control::SearchCorpusActiveHeadV1>, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::GenerationNamespace<'a>::current(&self, repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, track: quanta_index_contract::ipc::control::SearchPlaneTrackKind) -> core::result::Result<quanta_index_contract::ipc::control::GenerationSnapshot, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::GenerationNamespace<'a>::rollback(&self, request: quanta_index_contract::ipc::control::SearchPlaneRollbackSearchCorpusGenerationCasRequest) -> core::result::Result<quanta_index_contract::ipc::control::SearchPlaneSearchCorpusRollbackCasAck, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::GenerationNamespace<'a>::status(&self, repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId) -> core::result::Result<quanta_index_contract::ipc::control::GenerationStatusReport, quanta_index_sdk::SdkError>
@@ -680,7 +681,7 @@ pub fn quanta_index_sdk::ProducerClient<'a>::publish_dirty(&self, batch: &quanta
 pub fn quanta_index_sdk::ProducerClient<'a>::publish_history(&self, batch: &quanta_index_sdk::HistoryBatch) -> core::result::Result<quanta_index_sdk::BatchReceipt, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::ProducerClient<'a>::publish_repomap(&self, request: &quanta_index_contract::repomap::terminal_receipt_v2::RepoMapPublishBundleRequestV2) -> core::result::Result<quanta_index_contract::repomap::terminal_receipt_v2::RepoMapTerminalReceiptV2, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::ProducerClient<'a>::publish_search_corpus<const SEALED: bool>(&self, batch: &quanta_index_sdk::SearchCorpusBatch<SEALED>) -> core::result::Result<quanta_index_sdk::BatchReceipt, quanta_index_sdk::SdkError>
-pub fn quanta_index_sdk::ProducerClient<'a>::publish_search_corpus_and_activate(&self, batch: &quanta_index_sdk::SearchCorpusBatch, expected_active: core::option::Option<quanta_index_contract::ipc::control::SearchCorpusGenerationIdentityV1>) -> core::result::Result<(quanta_index_sdk::BatchReceipt, quanta_index_contract::ipc::control::SearchPlaneSearchCorpusActivationCasAck), quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::ProducerClient<'a>::publish_search_corpus_and_activate(&self, batch: &quanta_index_sdk::SearchCorpusBatch, expected_active: core::option::Option<quanta_index_contract::ipc::control::SearchCorpusActiveHeadV1>) -> core::result::Result<(quanta_index_sdk::BatchReceipt, quanta_index_contract::ipc::control::SearchPlaneSearchCorpusActivationCasAck), quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::ProducerClient<'a>::publish_structural<const SEALED: bool>(&self, batch: &quanta_index_sdk::StructuralBatch<SEALED>) -> core::result::Result<quanta_index_sdk::BatchReceipt, quanta_index_sdk::SdkError>
 impl<'a> core::clone::Clone for quanta_index_sdk::ProducerClient<'a>
 pub fn quanta_index_sdk::ProducerClient<'a>::clone(&self) -> quanta_index_sdk::ProducerClient<'a>
@@ -846,6 +847,7 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::RepoDescriptionM
 pub struct quanta_index_sdk::RepoMapNamespace<'a>
 impl<'a> quanta_index_sdk::RepoMapNamespace<'a>
 pub fn quanta_index_sdk::RepoMapNamespace<'a>::activate(&self, request: quanta_index_contract::repomap::terminal_receipt_v2::RepoMapActivateGenerationRequestV2) -> core::result::Result<quanta_index_contract::repomap::terminal_receipt_v2::RepoMapTerminalReceiptV2, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::RepoMapNamespace<'a>::active_head(&self, repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId) -> core::result::Result<core::option::Option<quanta_index_contract::repomap::terminal_receipt_v2::RepoMapExpectedActiveV2>, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::RepoMapNamespace<'a>::publish(&self, request: &quanta_index_contract::repomap::terminal_receipt_v2::RepoMapPublishBundleRequestV2) -> core::result::Result<quanta_index_contract::repomap::terminal_receipt_v2::RepoMapTerminalReceiptV2, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::RepoMapNamespace<'a>::query(&self, request: quanta_index_contract::repomap::RepoMapQueryRequest) -> core::result::Result<quanta_index_contract::repomap::RepoMapQueryResponse, quanta_index_sdk::SdkError>
 impl<'a> core::marker::Freeze for quanta_index_sdk::RepoMapNamespace<'a>
@@ -1028,7 +1030,7 @@ impl<const SEALED: bool> core::panic::unwind_safe::UnwindSafe for quanta_index_s
 pub struct quanta_index_sdk::SearchCorpusNamespace<'a>
 impl<'a> quanta_index_sdk::SearchCorpusNamespace<'a>
 pub fn quanta_index_sdk::SearchCorpusNamespace<'a>::publish<const SEALED: bool>(&self, batch: &quanta_index_sdk::SearchCorpusBatch<SEALED>) -> core::result::Result<quanta_index_sdk::BatchReceipt, quanta_index_sdk::SdkError>
-pub fn quanta_index_sdk::SearchCorpusNamespace<'a>::publish_and_activate(&self, batch: &quanta_index_sdk::SearchCorpusBatch, expected_active: core::option::Option<quanta_index_contract::ipc::control::SearchCorpusGenerationIdentityV1>) -> core::result::Result<(quanta_index_sdk::BatchReceipt, quanta_index_contract::ipc::control::SearchPlaneSearchCorpusActivationCasAck), quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::SearchCorpusNamespace<'a>::publish_and_activate(&self, batch: &quanta_index_sdk::SearchCorpusBatch, expected_active: core::option::Option<quanta_index_contract::ipc::control::SearchCorpusActiveHeadV1>) -> core::result::Result<(quanta_index_sdk::BatchReceipt, quanta_index_contract::ipc::control::SearchPlaneSearchCorpusActivationCasAck), quanta_index_sdk::SdkError>
 impl<'a> core::marker::Freeze for quanta_index_sdk::SearchCorpusNamespace<'a>
 impl<'a> core::marker::Send for quanta_index_sdk::SearchCorpusNamespace<'a>
 impl<'a> core::marker::Sync for quanta_index_sdk::SearchCorpusNamespace<'a>

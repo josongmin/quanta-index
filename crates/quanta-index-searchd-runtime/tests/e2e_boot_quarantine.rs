@@ -619,6 +619,7 @@ fn control_refusal(response: &SearchPlaneControlIpcResponse) -> Option<(&'static
         | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
         | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
         | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
+        | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
         | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
         | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
         | SearchPlaneControlIpcResponse::QuarantineInventory(_)
@@ -631,9 +632,15 @@ fn rollback_to(
     active: &SearchCorpusGenerationIdentityV1,
     target: &SearchCorpusGenerationIdentityV1,
 ) -> Result<Option<(&'static str, String)>, Box<dyn Error>> {
+    let expected_active = rt
+        .active_search_corpus_head()?
+        .ok_or("rollback requires an active catalog head")?;
+    if &expected_active.generation != active {
+        return Err("rollback fixture no longer names the observed active generation".into());
+    }
     let answer =
         rt.rollback_search_corpus_cas_raw(SearchPlaneRollbackSearchCorpusGenerationCasRequest {
-            expected_active: active.clone(),
+            expected_active,
             target: target.clone(),
         })?;
     Ok(control_refusal(&answer))

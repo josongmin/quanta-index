@@ -122,3 +122,35 @@ readiness and audit event를 공통 control boundary에서 소유한다.
   증가한다. zero-hit execution도 전자에 포함한다.
 - readiness negative proof는 query/control/ingest/maintenance/backend 각각 하나를 죽여 global ready=false를
   확인한다.
+
+### Dirty-source checkpoint (2026-09-24; not a P09 receipt)
+
+- `RuntimeReadiness` now keys its physical-proof cache on the catalog's
+  generation **and activation token**, plus scrub invalidation epoch. The
+  catalog inventory derives both from one locked snapshot. A -> B -> A cannot
+  reuse the first A's physical proof merely because its generation repeats.
+- The SearchCorpus active-head observation is `Observe`: query-plane active
+  resolution already exposes the same token. Activation and rollback remain
+  `Admin`; the capability matrix and dispatcher tests cover both boundaries.
+- The P09 owner recipe has run locally on this dirty source (details below),
+  but no registered owner manifest or Linux process/release receipt has been
+  issued. Do not infer component-loss readiness or bounded diagnostic closure
+  from the cache change alone.
+- At Quanta `563da185` plus dirty changes, the control capability target ran
+  3/3, the process-readiness target ran 9/9 (including two live-daemon cases),
+  the IPC provider-correlation case ran 1/1, and the queue-refusal correlation
+  case ran 1/1. This does not exercise the A→B→A readiness cache's physical
+  re-probe or every component-loss branch; those remain explicit proof gaps.
+- A new owner-local `ProvenActive::valid_for` regression ran 1/1 and rejects
+  a changed activation token for the same generation as well as a changed
+  scrub epoch. It proves cache-key invalidation, not the full physical re-probe.
+
+On the same dirty-source Quanta `563da185` snapshot, the registered command
+`just proof-p09-control-readiness-owner` exited 0. Its integration profile
+executed 37/37, its library profile executed 623/623 with one profile skip,
+and the hexagonal, wire-inventory, public-API, and four 60-second fuzz smoke
+rails passed. This does **not** constitute a registered owner manifest,
+a Linux process/release receipt, or an exact-source qualification.
+The A→B→A physical re-probe remains supported by the inspected
+`RuntimeReadiness::readiness` branch and owner-local cache-key regression;
+the live-daemon re-probe counterexample is still not independently executed.

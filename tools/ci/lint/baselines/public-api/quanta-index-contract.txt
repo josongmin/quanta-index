@@ -1,4 +1,6 @@
 pub mod quanta_index_contract
+pub use quanta_index_contract::ACTIVATION_ROOT_INCARNATION_BYTES_V1
+pub use quanta_index_contract::ActivationTokenValidationErrorV1
 pub use quanta_index_contract::ApproximateMethodV2
 pub use quanta_index_contract::ApproximateQualityContractV2
 pub use quanta_index_contract::CURSOR_ENVELOPE_V2_VERSION
@@ -79,6 +81,7 @@ pub use quanta_index_contract::RepoId
 pub use quanta_index_contract::RepoRelativePath
 pub use quanta_index_contract::RepositoryRevisionIdentityV1
 pub use quanta_index_contract::RevisionId
+pub use quanta_index_contract::SearchCorpusActivationTokenV1
 pub use quanta_index_contract::StructuralBinding
 pub use quanta_index_contract::StructuralCandidate
 pub use quanta_index_contract::TOP_K_OUT_OF_RANGE_CODE
@@ -1183,6 +1186,7 @@ pub quanta_index_contract::ipc::SearchPlaneControlIpcRequest::QuarantineInventor
 pub quanta_index_contract::ipc::SearchPlaneControlIpcRequest::RepoMapActivateV2(quanta_index_contract::RepoMapActivateGenerationRequestV2)
 pub quanta_index_contract::ipc::SearchPlaneControlIpcRequest::RepoMapActiveHeadV2(quanta_index_contract::RepoMapActiveHeadRequestV2)
 pub quanta_index_contract::ipc::SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(quanta_index_contract::SearchPlaneRollbackSearchCorpusGenerationCasRequest)
+pub quanta_index_contract::ipc::SearchPlaneControlIpcRequest::SearchCorpusActiveHead(quanta_index_contract::GenerationStatusRequest)
 impl core::clone::Clone for quanta_index_contract::SearchPlaneControlIpcRequest
 pub fn quanta_index_contract::SearchPlaneControlIpcRequest::clone(&self) -> quanta_index_contract::SearchPlaneControlIpcRequest
 impl core::cmp::PartialEq for quanta_index_contract::SearchPlaneControlIpcRequest
@@ -1212,6 +1216,7 @@ pub quanta_index_contract::ipc::SearchPlaneControlIpcResponse::QuarantineInvento
 pub quanta_index_contract::ipc::SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(quanta_index_contract::RepoMapActiveHeadResponseV2)
 pub quanta_index_contract::ipc::SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(quanta_index_contract::RepoMapTerminalReceiptV2)
 pub quanta_index_contract::ipc::SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(quanta_index_contract::SearchPlaneSearchCorpusActivationCasAck)
+pub quanta_index_contract::ipc::SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(quanta_index_contract::SearchCorpusActiveHeadObservationV1)
 pub quanta_index_contract::ipc::SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(quanta_index_contract::SearchPlaneSearchCorpusRollbackCasAck)
 impl core::clone::Clone for quanta_index_contract::SearchPlaneControlIpcResponse
 pub fn quanta_index_contract::SearchPlaneControlIpcResponse::clone(&self) -> quanta_index_contract::SearchPlaneControlIpcResponse
@@ -1527,7 +1532,7 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneQueryIpcReq
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneQueryIpcRequest
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneQueryIpcRequest
 pub enum quanta_index_contract::ipc::SearchPlaneQueryIpcResponse
-pub quanta_index_contract::ipc::SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(quanta_index_contract::GenerationSnapshot)
+pub quanta_index_contract::ipc::SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(quanta_index_contract::ActiveGenerationResolutionV1)
 pub quanta_index_contract::ipc::SearchPlaneQueryIpcResponse::ClusterMembershipRead(quanta_index_contract::ClusterMembershipBatchReadResponseV1)
 pub quanta_index_contract::ipc::SearchPlaneQueryIpcResponse::Error(quanta_index_contract::SearchPlaneIpcError)
 pub quanta_index_contract::ipc::SearchPlaneQueryIpcResponse::Explain(quanta_index_contract::SearchPlaneExplainQueryResponse)
@@ -1691,6 +1696,31 @@ impl core::marker::Unpin for quanta_index_contract::SourceRoleV1
 impl core::marker::UnsafeUnpin for quanta_index_contract::SourceRoleV1
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SourceRoleV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SourceRoleV1
+pub struct quanta_index_contract::ipc::ActiveGenerationResolutionV1
+pub quanta_index_contract::ipc::ActiveGenerationResolutionV1::head: quanta_index_contract::SearchCorpusActiveHeadV1
+pub quanta_index_contract::ipc::ActiveGenerationResolutionV1::track: quanta_index_contract::SearchPlaneTrackKind
+impl quanta_index_contract::ActiveGenerationResolutionV1
+pub fn quanta_index_contract::ActiveGenerationResolutionV1::snapshot_v1(&self) -> core::option::Option<&quanta_index_contract::GenerationSnapshot>
+pub fn quanta_index_contract::ActiveGenerationResolutionV1::validate_v1(&self) -> core::result::Result<(), alloc::string::String>
+impl core::clone::Clone for quanta_index_contract::ActiveGenerationResolutionV1
+pub fn quanta_index_contract::ActiveGenerationResolutionV1::clone(&self) -> quanta_index_contract::ActiveGenerationResolutionV1
+impl core::cmp::Eq for quanta_index_contract::ActiveGenerationResolutionV1
+impl core::cmp::PartialEq for quanta_index_contract::ActiveGenerationResolutionV1
+pub fn quanta_index_contract::ActiveGenerationResolutionV1::eq(&self, other: &quanta_index_contract::ActiveGenerationResolutionV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::ActiveGenerationResolutionV1
+pub fn quanta_index_contract::ActiveGenerationResolutionV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::ActiveGenerationResolutionV1
+impl serde_core::ser::Serialize for quanta_index_contract::ActiveGenerationResolutionV1
+pub fn quanta_index_contract::ActiveGenerationResolutionV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::ActiveGenerationResolutionV1
+pub fn quanta_index_contract::ActiveGenerationResolutionV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::ActiveGenerationResolutionV1
+impl core::marker::Send for quanta_index_contract::ActiveGenerationResolutionV1
+impl core::marker::Sync for quanta_index_contract::ActiveGenerationResolutionV1
+impl core::marker::Unpin for quanta_index_contract::ActiveGenerationResolutionV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::ActiveGenerationResolutionV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ActiveGenerationResolutionV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ActiveGenerationResolutionV1
 pub struct quanta_index_contract::ipc::BatchPublishReceipt
 pub quanta_index_contract::ipc::BatchPublishReceipt::accepted_clear_surfaces: u32
 pub quanta_index_contract::ipc::BatchPublishReceipt::accepted_replace_scopes: u32
@@ -2884,6 +2914,56 @@ impl core::marker::Unpin for quanta_index_contract::RuntimeSnapshotRecord
 impl core::marker::UnsafeUnpin for quanta_index_contract::RuntimeSnapshotRecord
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::RuntimeSnapshotRecord
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::RuntimeSnapshotRecord
+pub struct quanta_index_contract::ipc::SearchCorpusActiveHeadObservationV1
+impl quanta_index_contract::SearchCorpusActiveHeadObservationV1
+pub const fn quanta_index_contract::SearchCorpusActiveHeadObservationV1::head(&self) -> core::option::Option<&quanta_index_contract::SearchCorpusActiveHeadV1>
+pub fn quanta_index_contract::SearchCorpusActiveHeadObservationV1::into_head(self) -> core::option::Option<quanta_index_contract::SearchCorpusActiveHeadV1>
+pub fn quanta_index_contract::SearchCorpusActiveHeadObservationV1::new(repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, head: core::option::Option<quanta_index_contract::SearchCorpusActiveHeadV1>) -> core::result::Result<Self, &'static str>
+pub const fn quanta_index_contract::SearchCorpusActiveHeadObservationV1::repo_id(&self) -> &quanta_index_contract_base::ids::RepoId
+pub const fn quanta_index_contract::SearchCorpusActiveHeadObservationV1::revision_id(&self) -> &quanta_index_contract_base::ids::RevisionId
+impl core::clone::Clone for quanta_index_contract::SearchCorpusActiveHeadObservationV1
+pub fn quanta_index_contract::SearchCorpusActiveHeadObservationV1::clone(&self) -> quanta_index_contract::SearchCorpusActiveHeadObservationV1
+impl core::cmp::Eq for quanta_index_contract::SearchCorpusActiveHeadObservationV1
+impl core::cmp::PartialEq for quanta_index_contract::SearchCorpusActiveHeadObservationV1
+pub fn quanta_index_contract::SearchCorpusActiveHeadObservationV1::eq(&self, other: &quanta_index_contract::SearchCorpusActiveHeadObservationV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::SearchCorpusActiveHeadObservationV1
+pub fn quanta_index_contract::SearchCorpusActiveHeadObservationV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::SearchCorpusActiveHeadObservationV1
+impl serde_core::ser::Serialize for quanta_index_contract::SearchCorpusActiveHeadObservationV1
+pub fn quanta_index_contract::SearchCorpusActiveHeadObservationV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SearchCorpusActiveHeadObservationV1
+pub fn quanta_index_contract::SearchCorpusActiveHeadObservationV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::SearchCorpusActiveHeadObservationV1
+impl core::marker::Send for quanta_index_contract::SearchCorpusActiveHeadObservationV1
+impl core::marker::Sync for quanta_index_contract::SearchCorpusActiveHeadObservationV1
+impl core::marker::Unpin for quanta_index_contract::SearchCorpusActiveHeadObservationV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::SearchCorpusActiveHeadObservationV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchCorpusActiveHeadObservationV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchCorpusActiveHeadObservationV1
+pub struct quanta_index_contract::ipc::SearchCorpusActiveHeadV1
+pub quanta_index_contract::ipc::SearchCorpusActiveHeadV1::activation_token: quanta_index_contract_base::activation_token::SearchCorpusActivationTokenV1
+pub quanta_index_contract::ipc::SearchCorpusActiveHeadV1::generation: quanta_index_contract::SearchCorpusGenerationIdentityV1
+impl quanta_index_contract::SearchCorpusActiveHeadV1
+pub fn quanta_index_contract::SearchCorpusActiveHeadV1::validate_v1(&self) -> core::result::Result<(), quanta_index_contract::SearchCorpusGenerationIdentityValidationErrorV1>
+impl core::clone::Clone for quanta_index_contract::SearchCorpusActiveHeadV1
+pub fn quanta_index_contract::SearchCorpusActiveHeadV1::clone(&self) -> quanta_index_contract::SearchCorpusActiveHeadV1
+impl core::cmp::Eq for quanta_index_contract::SearchCorpusActiveHeadV1
+impl core::cmp::PartialEq for quanta_index_contract::SearchCorpusActiveHeadV1
+pub fn quanta_index_contract::SearchCorpusActiveHeadV1::eq(&self, other: &quanta_index_contract::SearchCorpusActiveHeadV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::SearchCorpusActiveHeadV1
+pub fn quanta_index_contract::SearchCorpusActiveHeadV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::SearchCorpusActiveHeadV1
+impl serde_core::ser::Serialize for quanta_index_contract::SearchCorpusActiveHeadV1
+pub fn quanta_index_contract::SearchCorpusActiveHeadV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SearchCorpusActiveHeadV1
+pub fn quanta_index_contract::SearchCorpusActiveHeadV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::SearchCorpusActiveHeadV1
+impl core::marker::Send for quanta_index_contract::SearchCorpusActiveHeadV1
+impl core::marker::Sync for quanta_index_contract::SearchCorpusActiveHeadV1
+impl core::marker::Unpin for quanta_index_contract::SearchCorpusActiveHeadV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::SearchCorpusActiveHeadV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchCorpusActiveHeadV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchCorpusActiveHeadV1
 pub struct quanta_index_contract::ipc::SearchCorpusGenerationIdentityV1
 pub quanta_index_contract::ipc::SearchCorpusGenerationIdentityV1::lexical: quanta_index_contract::GenerationSnapshot
 pub quanta_index_contract::ipc::SearchCorpusGenerationIdentityV1::semantic: quanta_index_contract::GenerationSnapshot
@@ -2993,9 +3073,9 @@ impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchCo
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchCorpusTombstoneScope
 pub struct quanta_index_contract::ipc::SearchPlaneActivateSearchCorpusGenerationCasRequest
 pub quanta_index_contract::ipc::SearchPlaneActivateSearchCorpusGenerationCasRequest::candidate: quanta_index_contract::SearchCorpusGenerationIdentityV1
-pub quanta_index_contract::ipc::SearchPlaneActivateSearchCorpusGenerationCasRequest::expected_active: core::option::Option<quanta_index_contract::SearchCorpusGenerationIdentityV1>
+pub quanta_index_contract::ipc::SearchPlaneActivateSearchCorpusGenerationCasRequest::expected_active: core::option::Option<quanta_index_contract::SearchCorpusActiveHeadV1>
 impl quanta_index_contract::SearchPlaneActivateSearchCorpusGenerationCasRequest
-pub fn quanta_index_contract::SearchPlaneActivateSearchCorpusGenerationCasRequest::validate_expected_active_v1(candidate_scope: &quanta_index_contract::GenerationSnapshot, expected_active: core::option::Option<&quanta_index_contract::SearchCorpusGenerationIdentityV1>) -> core::result::Result<(), quanta_index_contract::SearchCorpusActivationValidationErrorV1>
+pub fn quanta_index_contract::SearchPlaneActivateSearchCorpusGenerationCasRequest::validate_expected_active_v1(candidate_scope: &quanta_index_contract::GenerationSnapshot, expected_active: core::option::Option<&quanta_index_contract::SearchCorpusActiveHeadV1>) -> core::result::Result<(), quanta_index_contract::SearchCorpusActivationValidationErrorV1>
 pub fn quanta_index_contract::SearchPlaneActivateSearchCorpusGenerationCasRequest::validate_v1(&self) -> core::result::Result<(), quanta_index_contract::SearchCorpusActivationValidationErrorV1>
 impl core::clone::Clone for quanta_index_contract::SearchPlaneActivateSearchCorpusGenerationCasRequest
 pub fn quanta_index_contract::SearchPlaneActivateSearchCorpusGenerationCasRequest::clone(&self) -> quanta_index_contract::SearchPlaneActivateSearchCorpusGenerationCasRequest
@@ -3169,7 +3249,7 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneQueryIpcRes
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneQueryIpcResponseEnvelope
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneQueryIpcResponseEnvelope
 pub struct quanta_index_contract::ipc::SearchPlaneRollbackSearchCorpusGenerationCasRequest
-pub quanta_index_contract::ipc::SearchPlaneRollbackSearchCorpusGenerationCasRequest::expected_active: quanta_index_contract::SearchCorpusGenerationIdentityV1
+pub quanta_index_contract::ipc::SearchPlaneRollbackSearchCorpusGenerationCasRequest::expected_active: quanta_index_contract::SearchCorpusActiveHeadV1
 pub quanta_index_contract::ipc::SearchPlaneRollbackSearchCorpusGenerationCasRequest::target: quanta_index_contract::SearchCorpusGenerationIdentityV1
 impl quanta_index_contract::SearchPlaneRollbackSearchCorpusGenerationCasRequest
 pub fn quanta_index_contract::SearchPlaneRollbackSearchCorpusGenerationCasRequest::validate_v1(&self) -> core::result::Result<(), quanta_index_contract::SearchCorpusRollbackValidationErrorV1>
@@ -3193,8 +3273,8 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneRollbackSea
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneRollbackSearchCorpusGenerationCasRequest
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneRollbackSearchCorpusGenerationCasRequest
 pub struct quanta_index_contract::ipc::SearchPlaneSearchCorpusActivationCasAck
-pub quanta_index_contract::ipc::SearchPlaneSearchCorpusActivationCasAck::active: quanta_index_contract::SearchCorpusGenerationIdentityV1
-pub quanta_index_contract::ipc::SearchPlaneSearchCorpusActivationCasAck::previous_sealed_active: core::option::Option<quanta_index_contract::SearchCorpusGenerationIdentityV1>
+pub quanta_index_contract::ipc::SearchPlaneSearchCorpusActivationCasAck::active: quanta_index_contract::SearchCorpusActiveHeadV1
+pub quanta_index_contract::ipc::SearchPlaneSearchCorpusActivationCasAck::previous_sealed_active: core::option::Option<quanta_index_contract::SearchCorpusActiveHeadV1>
 impl core::clone::Clone for quanta_index_contract::SearchPlaneSearchCorpusActivationCasAck
 pub fn quanta_index_contract::SearchPlaneSearchCorpusActivationCasAck::clone(&self) -> quanta_index_contract::SearchPlaneSearchCorpusActivationCasAck
 impl core::cmp::Eq for quanta_index_contract::SearchPlaneSearchCorpusActivationCasAck
@@ -3215,8 +3295,8 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneSearchCorpu
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneSearchCorpusActivationCasAck
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneSearchCorpusActivationCasAck
 pub struct quanta_index_contract::ipc::SearchPlaneSearchCorpusRollbackCasAck
-pub quanta_index_contract::ipc::SearchPlaneSearchCorpusRollbackCasAck::active: quanta_index_contract::SearchCorpusGenerationIdentityV1
-pub quanta_index_contract::ipc::SearchPlaneSearchCorpusRollbackCasAck::previous_sealed_active: quanta_index_contract::SearchCorpusGenerationIdentityV1
+pub quanta_index_contract::ipc::SearchPlaneSearchCorpusRollbackCasAck::active: quanta_index_contract::SearchCorpusActiveHeadV1
+pub quanta_index_contract::ipc::SearchPlaneSearchCorpusRollbackCasAck::previous_sealed_active: quanta_index_contract::SearchCorpusActiveHeadV1
 impl core::clone::Clone for quanta_index_contract::SearchPlaneSearchCorpusRollbackCasAck
 pub fn quanta_index_contract::SearchPlaneSearchCorpusRollbackCasAck::clone(&self) -> quanta_index_contract::SearchPlaneSearchCorpusRollbackCasAck
 impl core::cmp::Eq for quanta_index_contract::SearchPlaneSearchCorpusRollbackCasAck
@@ -9591,6 +9671,7 @@ pub quanta_index_contract::SearchPlaneControlIpcRequest::QuarantineInventory(qua
 pub quanta_index_contract::SearchPlaneControlIpcRequest::RepoMapActivateV2(quanta_index_contract::RepoMapActivateGenerationRequestV2)
 pub quanta_index_contract::SearchPlaneControlIpcRequest::RepoMapActiveHeadV2(quanta_index_contract::RepoMapActiveHeadRequestV2)
 pub quanta_index_contract::SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(quanta_index_contract::SearchPlaneRollbackSearchCorpusGenerationCasRequest)
+pub quanta_index_contract::SearchPlaneControlIpcRequest::SearchCorpusActiveHead(quanta_index_contract::GenerationStatusRequest)
 impl core::clone::Clone for quanta_index_contract::SearchPlaneControlIpcRequest
 pub fn quanta_index_contract::SearchPlaneControlIpcRequest::clone(&self) -> quanta_index_contract::SearchPlaneControlIpcRequest
 impl core::cmp::PartialEq for quanta_index_contract::SearchPlaneControlIpcRequest
@@ -9620,6 +9701,7 @@ pub quanta_index_contract::SearchPlaneControlIpcResponse::QuarantineInventory(qu
 pub quanta_index_contract::SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(quanta_index_contract::RepoMapActiveHeadResponseV2)
 pub quanta_index_contract::SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(quanta_index_contract::RepoMapTerminalReceiptV2)
 pub quanta_index_contract::SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(quanta_index_contract::SearchPlaneSearchCorpusActivationCasAck)
+pub quanta_index_contract::SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(quanta_index_contract::SearchCorpusActiveHeadObservationV1)
 pub quanta_index_contract::SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(quanta_index_contract::SearchPlaneSearchCorpusRollbackCasAck)
 impl core::clone::Clone for quanta_index_contract::SearchPlaneControlIpcResponse
 pub fn quanta_index_contract::SearchPlaneControlIpcResponse::clone(&self) -> quanta_index_contract::SearchPlaneControlIpcResponse
@@ -9935,7 +10017,7 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneQueryIpcReq
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneQueryIpcRequest
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneQueryIpcRequest
 pub enum quanta_index_contract::SearchPlaneQueryIpcResponse
-pub quanta_index_contract::SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(quanta_index_contract::GenerationSnapshot)
+pub quanta_index_contract::SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(quanta_index_contract::ActiveGenerationResolutionV1)
 pub quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(quanta_index_contract::ClusterMembershipBatchReadResponseV1)
 pub quanta_index_contract::SearchPlaneQueryIpcResponse::Error(quanta_index_contract::SearchPlaneIpcError)
 pub quanta_index_contract::SearchPlaneQueryIpcResponse::Explain(quanta_index_contract::SearchPlaneExplainQueryResponse)
@@ -10123,6 +10205,31 @@ impl core::marker::Unpin for quanta_index_contract::SourceRoleV1
 impl core::marker::UnsafeUnpin for quanta_index_contract::SourceRoleV1
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SourceRoleV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SourceRoleV1
+pub struct quanta_index_contract::ActiveGenerationResolutionV1
+pub quanta_index_contract::ActiveGenerationResolutionV1::head: quanta_index_contract::SearchCorpusActiveHeadV1
+pub quanta_index_contract::ActiveGenerationResolutionV1::track: quanta_index_contract::SearchPlaneTrackKind
+impl quanta_index_contract::ActiveGenerationResolutionV1
+pub fn quanta_index_contract::ActiveGenerationResolutionV1::snapshot_v1(&self) -> core::option::Option<&quanta_index_contract::GenerationSnapshot>
+pub fn quanta_index_contract::ActiveGenerationResolutionV1::validate_v1(&self) -> core::result::Result<(), alloc::string::String>
+impl core::clone::Clone for quanta_index_contract::ActiveGenerationResolutionV1
+pub fn quanta_index_contract::ActiveGenerationResolutionV1::clone(&self) -> quanta_index_contract::ActiveGenerationResolutionV1
+impl core::cmp::Eq for quanta_index_contract::ActiveGenerationResolutionV1
+impl core::cmp::PartialEq for quanta_index_contract::ActiveGenerationResolutionV1
+pub fn quanta_index_contract::ActiveGenerationResolutionV1::eq(&self, other: &quanta_index_contract::ActiveGenerationResolutionV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::ActiveGenerationResolutionV1
+pub fn quanta_index_contract::ActiveGenerationResolutionV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::ActiveGenerationResolutionV1
+impl serde_core::ser::Serialize for quanta_index_contract::ActiveGenerationResolutionV1
+pub fn quanta_index_contract::ActiveGenerationResolutionV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::ActiveGenerationResolutionV1
+pub fn quanta_index_contract::ActiveGenerationResolutionV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::ActiveGenerationResolutionV1
+impl core::marker::Send for quanta_index_contract::ActiveGenerationResolutionV1
+impl core::marker::Sync for quanta_index_contract::ActiveGenerationResolutionV1
+impl core::marker::Unpin for quanta_index_contract::ActiveGenerationResolutionV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::ActiveGenerationResolutionV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ActiveGenerationResolutionV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ActiveGenerationResolutionV1
 pub struct quanta_index_contract::ArtifactContentDigestV1(_)
 impl quanta_index_contract::ArtifactContentDigestV1
 pub const fn quanta_index_contract::ArtifactContentDigestV1::as_bytes(&self) -> &[u8; 32]
@@ -13286,6 +13393,56 @@ impl core::marker::Unpin for quanta_index_contract::RuntimeSnapshotRecord
 impl core::marker::UnsafeUnpin for quanta_index_contract::RuntimeSnapshotRecord
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::RuntimeSnapshotRecord
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::RuntimeSnapshotRecord
+pub struct quanta_index_contract::SearchCorpusActiveHeadObservationV1
+impl quanta_index_contract::SearchCorpusActiveHeadObservationV1
+pub const fn quanta_index_contract::SearchCorpusActiveHeadObservationV1::head(&self) -> core::option::Option<&quanta_index_contract::SearchCorpusActiveHeadV1>
+pub fn quanta_index_contract::SearchCorpusActiveHeadObservationV1::into_head(self) -> core::option::Option<quanta_index_contract::SearchCorpusActiveHeadV1>
+pub fn quanta_index_contract::SearchCorpusActiveHeadObservationV1::new(repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, head: core::option::Option<quanta_index_contract::SearchCorpusActiveHeadV1>) -> core::result::Result<Self, &'static str>
+pub const fn quanta_index_contract::SearchCorpusActiveHeadObservationV1::repo_id(&self) -> &quanta_index_contract_base::ids::RepoId
+pub const fn quanta_index_contract::SearchCorpusActiveHeadObservationV1::revision_id(&self) -> &quanta_index_contract_base::ids::RevisionId
+impl core::clone::Clone for quanta_index_contract::SearchCorpusActiveHeadObservationV1
+pub fn quanta_index_contract::SearchCorpusActiveHeadObservationV1::clone(&self) -> quanta_index_contract::SearchCorpusActiveHeadObservationV1
+impl core::cmp::Eq for quanta_index_contract::SearchCorpusActiveHeadObservationV1
+impl core::cmp::PartialEq for quanta_index_contract::SearchCorpusActiveHeadObservationV1
+pub fn quanta_index_contract::SearchCorpusActiveHeadObservationV1::eq(&self, other: &quanta_index_contract::SearchCorpusActiveHeadObservationV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::SearchCorpusActiveHeadObservationV1
+pub fn quanta_index_contract::SearchCorpusActiveHeadObservationV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::SearchCorpusActiveHeadObservationV1
+impl serde_core::ser::Serialize for quanta_index_contract::SearchCorpusActiveHeadObservationV1
+pub fn quanta_index_contract::SearchCorpusActiveHeadObservationV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SearchCorpusActiveHeadObservationV1
+pub fn quanta_index_contract::SearchCorpusActiveHeadObservationV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::SearchCorpusActiveHeadObservationV1
+impl core::marker::Send for quanta_index_contract::SearchCorpusActiveHeadObservationV1
+impl core::marker::Sync for quanta_index_contract::SearchCorpusActiveHeadObservationV1
+impl core::marker::Unpin for quanta_index_contract::SearchCorpusActiveHeadObservationV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::SearchCorpusActiveHeadObservationV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchCorpusActiveHeadObservationV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchCorpusActiveHeadObservationV1
+pub struct quanta_index_contract::SearchCorpusActiveHeadV1
+pub quanta_index_contract::SearchCorpusActiveHeadV1::activation_token: quanta_index_contract_base::activation_token::SearchCorpusActivationTokenV1
+pub quanta_index_contract::SearchCorpusActiveHeadV1::generation: quanta_index_contract::SearchCorpusGenerationIdentityV1
+impl quanta_index_contract::SearchCorpusActiveHeadV1
+pub fn quanta_index_contract::SearchCorpusActiveHeadV1::validate_v1(&self) -> core::result::Result<(), quanta_index_contract::SearchCorpusGenerationIdentityValidationErrorV1>
+impl core::clone::Clone for quanta_index_contract::SearchCorpusActiveHeadV1
+pub fn quanta_index_contract::SearchCorpusActiveHeadV1::clone(&self) -> quanta_index_contract::SearchCorpusActiveHeadV1
+impl core::cmp::Eq for quanta_index_contract::SearchCorpusActiveHeadV1
+impl core::cmp::PartialEq for quanta_index_contract::SearchCorpusActiveHeadV1
+pub fn quanta_index_contract::SearchCorpusActiveHeadV1::eq(&self, other: &quanta_index_contract::SearchCorpusActiveHeadV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::SearchCorpusActiveHeadV1
+pub fn quanta_index_contract::SearchCorpusActiveHeadV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::SearchCorpusActiveHeadV1
+impl serde_core::ser::Serialize for quanta_index_contract::SearchCorpusActiveHeadV1
+pub fn quanta_index_contract::SearchCorpusActiveHeadV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SearchCorpusActiveHeadV1
+pub fn quanta_index_contract::SearchCorpusActiveHeadV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::SearchCorpusActiveHeadV1
+impl core::marker::Send for quanta_index_contract::SearchCorpusActiveHeadV1
+impl core::marker::Sync for quanta_index_contract::SearchCorpusActiveHeadV1
+impl core::marker::Unpin for quanta_index_contract::SearchCorpusActiveHeadV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::SearchCorpusActiveHeadV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchCorpusActiveHeadV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchCorpusActiveHeadV1
 pub struct quanta_index_contract::SearchCorpusGenerationIdentityV1
 pub quanta_index_contract::SearchCorpusGenerationIdentityV1::lexical: quanta_index_contract::GenerationSnapshot
 pub quanta_index_contract::SearchCorpusGenerationIdentityV1::semantic: quanta_index_contract::GenerationSnapshot
@@ -13453,9 +13610,9 @@ impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchEx
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchExplanationBuilder
 pub struct quanta_index_contract::SearchPlaneActivateSearchCorpusGenerationCasRequest
 pub quanta_index_contract::SearchPlaneActivateSearchCorpusGenerationCasRequest::candidate: quanta_index_contract::SearchCorpusGenerationIdentityV1
-pub quanta_index_contract::SearchPlaneActivateSearchCorpusGenerationCasRequest::expected_active: core::option::Option<quanta_index_contract::SearchCorpusGenerationIdentityV1>
+pub quanta_index_contract::SearchPlaneActivateSearchCorpusGenerationCasRequest::expected_active: core::option::Option<quanta_index_contract::SearchCorpusActiveHeadV1>
 impl quanta_index_contract::SearchPlaneActivateSearchCorpusGenerationCasRequest
-pub fn quanta_index_contract::SearchPlaneActivateSearchCorpusGenerationCasRequest::validate_expected_active_v1(candidate_scope: &quanta_index_contract::GenerationSnapshot, expected_active: core::option::Option<&quanta_index_contract::SearchCorpusGenerationIdentityV1>) -> core::result::Result<(), quanta_index_contract::SearchCorpusActivationValidationErrorV1>
+pub fn quanta_index_contract::SearchPlaneActivateSearchCorpusGenerationCasRequest::validate_expected_active_v1(candidate_scope: &quanta_index_contract::GenerationSnapshot, expected_active: core::option::Option<&quanta_index_contract::SearchCorpusActiveHeadV1>) -> core::result::Result<(), quanta_index_contract::SearchCorpusActivationValidationErrorV1>
 pub fn quanta_index_contract::SearchPlaneActivateSearchCorpusGenerationCasRequest::validate_v1(&self) -> core::result::Result<(), quanta_index_contract::SearchCorpusActivationValidationErrorV1>
 impl core::clone::Clone for quanta_index_contract::SearchPlaneActivateSearchCorpusGenerationCasRequest
 pub fn quanta_index_contract::SearchPlaneActivateSearchCorpusGenerationCasRequest::clone(&self) -> quanta_index_contract::SearchPlaneActivateSearchCorpusGenerationCasRequest
@@ -13703,7 +13860,7 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneQueryIpcRes
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneQueryIpcResponseEnvelope
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneQueryIpcResponseEnvelope
 pub struct quanta_index_contract::SearchPlaneRollbackSearchCorpusGenerationCasRequest
-pub quanta_index_contract::SearchPlaneRollbackSearchCorpusGenerationCasRequest::expected_active: quanta_index_contract::SearchCorpusGenerationIdentityV1
+pub quanta_index_contract::SearchPlaneRollbackSearchCorpusGenerationCasRequest::expected_active: quanta_index_contract::SearchCorpusActiveHeadV1
 pub quanta_index_contract::SearchPlaneRollbackSearchCorpusGenerationCasRequest::target: quanta_index_contract::SearchCorpusGenerationIdentityV1
 impl quanta_index_contract::SearchPlaneRollbackSearchCorpusGenerationCasRequest
 pub fn quanta_index_contract::SearchPlaneRollbackSearchCorpusGenerationCasRequest::validate_v1(&self) -> core::result::Result<(), quanta_index_contract::SearchCorpusRollbackValidationErrorV1>
@@ -13753,8 +13910,8 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneRuntimeMeta
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse
 pub struct quanta_index_contract::SearchPlaneSearchCorpusActivationCasAck
-pub quanta_index_contract::SearchPlaneSearchCorpusActivationCasAck::active: quanta_index_contract::SearchCorpusGenerationIdentityV1
-pub quanta_index_contract::SearchPlaneSearchCorpusActivationCasAck::previous_sealed_active: core::option::Option<quanta_index_contract::SearchCorpusGenerationIdentityV1>
+pub quanta_index_contract::SearchPlaneSearchCorpusActivationCasAck::active: quanta_index_contract::SearchCorpusActiveHeadV1
+pub quanta_index_contract::SearchPlaneSearchCorpusActivationCasAck::previous_sealed_active: core::option::Option<quanta_index_contract::SearchCorpusActiveHeadV1>
 impl core::clone::Clone for quanta_index_contract::SearchPlaneSearchCorpusActivationCasAck
 pub fn quanta_index_contract::SearchPlaneSearchCorpusActivationCasAck::clone(&self) -> quanta_index_contract::SearchPlaneSearchCorpusActivationCasAck
 impl core::cmp::Eq for quanta_index_contract::SearchPlaneSearchCorpusActivationCasAck
@@ -13775,8 +13932,8 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneSearchCorpu
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneSearchCorpusActivationCasAck
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneSearchCorpusActivationCasAck
 pub struct quanta_index_contract::SearchPlaneSearchCorpusRollbackCasAck
-pub quanta_index_contract::SearchPlaneSearchCorpusRollbackCasAck::active: quanta_index_contract::SearchCorpusGenerationIdentityV1
-pub quanta_index_contract::SearchPlaneSearchCorpusRollbackCasAck::previous_sealed_active: quanta_index_contract::SearchCorpusGenerationIdentityV1
+pub quanta_index_contract::SearchPlaneSearchCorpusRollbackCasAck::active: quanta_index_contract::SearchCorpusActiveHeadV1
+pub quanta_index_contract::SearchPlaneSearchCorpusRollbackCasAck::previous_sealed_active: quanta_index_contract::SearchCorpusActiveHeadV1
 impl core::clone::Clone for quanta_index_contract::SearchPlaneSearchCorpusRollbackCasAck
 pub fn quanta_index_contract::SearchPlaneSearchCorpusRollbackCasAck::clone(&self) -> quanta_index_contract::SearchPlaneSearchCorpusRollbackCasAck
 impl core::cmp::Eq for quanta_index_contract::SearchPlaneSearchCorpusRollbackCasAck
