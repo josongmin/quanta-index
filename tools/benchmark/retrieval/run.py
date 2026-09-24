@@ -30,10 +30,11 @@ import subprocess
 import sys
 import tempfile
 import time
+import zipfile
 from pathlib import Path
 
 try:
-    from tools.benchmark.retrieval import linux_isolation, linux_process
+    from tools.benchmark.retrieval import linux_isolation, linux_process, portable_proof
     from tools.benchmark.retrieval.contract_proof import nextest_summary, pytest_summary
     from tools.benchmark.retrieval.evaluator import (
         CHUNK_STRATEGIES,
@@ -55,6 +56,7 @@ except ImportError:  # direct script invocation: import the sibling module
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import linux_isolation  # noqa: E402
     import linux_process  # noqa: E402
+    import portable_proof  # noqa: E402
     from contract_proof import nextest_summary, pytest_summary  # noqa: E402
     from evaluator import (  # noqa: E402
         CHUNK_STRATEGIES,
@@ -2008,6 +2010,9 @@ SPEC_OPTIONAL = (
     "contention_override",
 )
 RECEIPT_KEYS = (
+    "contract_execution_context",
+    "contract_execution_logs",
+    "contract_source_closure",
     "contract_python_receipt",
     "contract_python_results",
     "contract_python_raw",
@@ -2016,6 +2021,9 @@ RECEIPT_KEYS = (
     "contract_rust_results",
     "contract_rust_raw",
     "contract_rust_inventory",
+    "sdk_execution_context",
+    "sdk_execution_logs",
+    "sdk_source_closure",
     "sdk_receipt",
     "sdk_results",
     "sdk_nextest_raw",
@@ -2031,6 +2039,9 @@ ADMISSION_KEYS = (
     "adjudication_receipt",
 )
 CONTRACT_EVIDENCE_KEYS = (
+    "contract_execution_context",
+    "contract_execution_logs",
+    "contract_source_closure",
     "contract_python_receipt",
     "contract_python_results",
     "contract_python_raw",
@@ -2041,12 +2052,26 @@ CONTRACT_EVIDENCE_KEYS = (
     "contract_rust_inventory",
 )
 SDK_EVIDENCE_KEYS = (
+    "sdk_execution_context",
+    "sdk_execution_logs",
+    "sdk_source_closure",
     "sdk_receipt",
     "sdk_results",
     "sdk_nextest_raw",
     "sdk_record_raw",
     "sdk_inventory",
 )
+CONTEXT_COMMAND_NAMES = {
+    "contract": (
+        "source-closure",
+        "python-collection",
+        "rust-collection",
+        "python-test",
+        "rust-test",
+    ),
+    "sdk": ("sdk-recipe", "metadata"),
+}
+MAX_CONTEXT_LOG_BYTES = 64 * 1024 * 1024
 
 
 def _is_hex(value: object, length: int) -> bool:
@@ -2383,7 +2408,9 @@ def load_spec(path: Path) -> dict:
         receipts = spec["receipts"]
         if not isinstance(receipts, dict):
             raise RunError("spec.receipts must be an object")
-        unknown_receipts = sorted(set(receipts) - set(RECEIPT_KEYS))
+        unknown_receipts = sorted(
+            set(receipts) - (set(RECEIPT_KEYS) - {"contract_execution_logs", "sdk_execution_logs"})
+        )
         if unknown_receipts:
             raise RunError(f"spec.receipts has unknown keys: {unknown_receipts}")
         for key, value in receipts.items():
@@ -4876,6 +4903,20 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         try:
             proofs: dict[str, dict] = {}
             contract_source_digests: set[str] = set()
+            if any(key not in resolved for key in CONTRACT_EVIDENCE_KEYS):
+                raise RunError("contract execution context or receipt artifacts missing")
+            contract_closure = _verify_execution_context(
+                resolved["contract_execution_context"],
+                resolved["contract_source_closure"],
+                resolved["contract_execution_logs"],
+                rail="contract",
+                raw={
+                    "python-inventory.json": resolved["contract_python_inventory"],
+                    "rust-inventory.json": resolved["contract_rust_inventory"],
+                    "python-junit.xml": resolved["contract_python_raw"],
+                    "rust-nextest.jsonl": resolved["contract_rust_raw"],
+                },
+            )
             contract_authority = {
                 "python": (
                     "retrieval-contract-python",
@@ -4904,6 +4945,8 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 receipt = _validate_receipt_shape(
                     read_json(resolved[receipt_ref]), f"contract {side} receipt"
                 )
+                if receipt["source_closure"] != contract_closure:
+                    raise RunError(f"contract {side} execution context source closure mismatch")
                 results = _validate_counts_shape(
                     read_json(resolved[results_ref]), f"contract {side} results"
                 )
@@ -4927,6 +4970,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 _verify_receipt_inputs(
                     receipt,
                     {
+                        "execution-context": resolved["contract_execution_context"],
                         role: resolved[raw_ref],
                         ("pytest-inventory" if side == "python" else "nextest-inventory"): resolved[
                             inventory_ref
@@ -4974,9 +5018,26 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         missing.extend(sdk_ids)
     else:
         try:
+            if any(key not in resolved for key in SDK_EVIDENCE_KEYS):
+                raise RunError("SDK execution context or receipt artifacts missing")
+            sdk_closure = _verify_execution_context(
+                resolved["sdk_execution_context"],
+                resolved["sdk_source_closure"],
+                resolved["sdk_execution_logs"],
+                rail="sdk",
+                raw={
+                    "nextest-inventory.json": resolved["sdk_inventory"],
+                    "nextest.jsonl": resolved["sdk_nextest_raw"],
+                    "actual-runner-record.json": resolved["sdk_record_raw"],
+                },
+                runner_sha=binary_digest,
+                searchd_sha=protocol_payload.get("searchd_expected_sha256"),
+            )
             if "sdk_receipt" not in resolved or "sdk_results" not in resolved:
                 raise RunError("sdk artifacts missing")
             sdk_receipt = _validate_receipt_shape(read_json(resolved["sdk_receipt"]), "sdk receipt")
+            if sdk_receipt["source_closure"] != sdk_closure:
+                raise RunError("SDK execution context source closure mismatch")
             sdk_results = _validate_sdk_results_shape(
                 read_json(resolved["sdk_results"]), "sdk results"
             )
@@ -5007,6 +5068,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             _verify_receipt_inputs(
                 sdk_receipt,
                 {
+                    "execution-context": resolved["sdk_execution_context"],
                     "nextest-jsonl": resolved["sdk_nextest_raw"],
                     "runner-record": resolved["sdk_record_raw"],
                     "nextest-inventory": resolved["sdk_inventory"],
@@ -5486,6 +5548,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     }
     return {
         "verdict_version": VERDICT_VERSION,
+        "os_portability": {"qualified": False, "reason": "execution_os_tool_identity_unverified"},
         "states": states,
         "state_evidence": state_evidence,
         "blinding": blinding,
@@ -6207,6 +6270,179 @@ def _verify_receipt_inputs(receipt: dict, expected: dict[str, Path], where: str)
         raise RunError(f"{where} raw input evidence mismatch")
 
 
+def _verify_execution_context(
+    path: Path,
+    closure_path: Path,
+    logs_path: Path,
+    *,
+    rail: str,
+    raw: dict[str, Path],
+    runner_sha: str | None = None,
+    searchd_sha: str | None = None,
+) -> dict:
+    """Check frozen bytes and prescribed syntax; OS/tool execution remains unattested."""
+    where = f"{rail} execution context"
+    context = _exact_keys(
+        read_json(path),
+        {
+            "schema_version",
+            "rail",
+            "revision",
+            "os",
+            "tools",
+            "binaries",
+            "commands",
+            "raw_evidence",
+        },
+        where,
+    )
+    if (
+        context["schema_version"] != 1
+        or context["rail"] != rail
+        or not _is_hex(context["revision"], 40)
+    ):
+        raise RunError(f"{where} schema/rail/revision mismatch")
+    closure = _validate_source_closure_shape(read_json(closure_path), f"{where} source closure")
+    if context["revision"] != closure["revision"]:
+        raise RunError(f"{where} source revision mismatch")
+    expected_raw = {"source-closure.json": closure_path, **raw}
+    recorded_raw = _exact_keys(context["raw_evidence"], set(expected_raw), f"{where}.raw_evidence")
+    for name, artifact in expected_raw.items():
+        if recorded_raw[name] != sha_file(artifact):
+            raise RunError(f"{where} raw evidence digest mismatch: {name}")
+    os_row = _exact_keys(
+        context["os"], {"system", "release", "machine", "python_version"}, f"{where}.os"
+    )
+    if any(not isinstance(value, str) or not value for value in os_row.values()):
+        raise RunError(f"{where} malformed OS identity")
+    tool_names = {"python", "cargo", "cargo-nextest", "rustc", "git", "bash", "just", "cargow"}
+    tools = _exact_keys(context["tools"], tool_names, f"{where}.tools")
+    for name, row in tools.items():
+        tool = _exact_keys(row, {"path", "realpath", "sha256", "version"}, f"{where}.tools.{name}")
+        if (
+            not all(
+                isinstance(tool[key], str) and tool[key] for key in ("path", "realpath", "version")
+            )
+            or not Path(tool["path"]).is_absolute()
+            or not Path(tool["realpath"]).is_absolute()
+            or not _is_hex(tool["sha256"], 64)
+        ):
+            raise RunError(f"{where} malformed tool identity: {name}")
+    binary_names = {"runner", "searchd"} if rail == "sdk" else set()
+    binaries = _exact_keys(context["binaries"], binary_names, f"{where}.binaries")
+    for name, row in binaries.items():
+        binary = _exact_keys(row, {"path", "sha256"}, f"{where}.binaries.{name}")
+        if (
+            not isinstance(binary["path"], str)
+            or not Path(binary["path"]).is_absolute()
+            or not _is_hex(binary["sha256"], 64)
+        ):
+            raise RunError(f"{where} malformed binary identity: {name}")
+    if rail == "sdk" and (
+        binaries["runner"]["sha256"] != runner_sha or binaries["searchd"]["sha256"] != searchd_sha
+    ):
+        raise RunError(f"{where} binary digest differs from independent capture/protocol pin")
+    commands = context["commands"]
+    if not isinstance(commands, list) or not commands or not isinstance(commands[0], dict):
+        raise RunError(f"{where} missing commands")
+    first_argv = commands[0].get("argv")
+    if rail == "contract":
+        if (
+            not isinstance(first_argv, list)
+            or not first_argv
+            or not isinstance(first_argv[-1], str)
+        ):
+            raise RunError(f"{where} malformed source command")
+        original_out = Path(first_argv[-1]).parent
+    else:
+        if (
+            not isinstance(first_argv, list)
+            or len(first_argv) != 3
+            or not isinstance(first_argv[-1], str)
+        ):
+            raise RunError(f"{where} malformed SDK command")
+        original_out = Path(first_argv[-1])
+    if not original_out.is_absolute():
+        raise RunError(f"{where} command output root is not absolute")
+    expected = portable_proof._expected_commands(rail, original_out, tools, binaries)
+    if len(commands) != len(expected):
+        raise RunError(f"{where} command count mismatch")
+    expected_logs = {
+        f"{name}.{stream}"
+        for name in CONTEXT_COMMAND_NAMES[rail]
+        for stream in ("stdout", "stderr")
+    }
+    try:
+        archive = zipfile.ZipFile(logs_path)
+    except (OSError, zipfile.BadZipFile, EOFError, RuntimeError) as exc:
+        raise RunError(f"{where} cannot read frozen command logs: {exc}") from exc
+    try:
+        with archive:
+            if set(archive.namelist()) != expected_logs or len(archive.namelist()) != len(
+                expected_logs
+            ):
+                raise RunError(f"{where} frozen command logs missing or duplicated")
+            total_log_bytes = 0
+            for name in expected_logs:
+                info = archive.getinfo(name)
+                total_log_bytes += info.file_size
+                if (
+                    info.compress_type != zipfile.ZIP_STORED
+                    or total_log_bytes > MAX_CONTEXT_LOG_BYTES
+                ):
+                    raise RunError(f"{where} oversized or compressed command logs")
+    except (OSError, zipfile.BadZipFile, EOFError, RuntimeError, KeyError) as exc:
+        raise RunError(f"{where} cannot inspect frozen command logs: {exc}") from exc
+    for index, (row, (name, argv, overrides)) in enumerate(zip(commands, expected)):
+        command = _exact_keys(
+            row,
+            {
+                "name",
+                "argv",
+                "cwd",
+                "environment",
+                "inherited_environment",
+                "environment_sha256",
+                "exit_code",
+                "stdout",
+                "stdout_sha256",
+                "stderr",
+                "stderr_sha256",
+            },
+            f"{where}.commands[{index}]",
+        )
+        inherited = command["inherited_environment"]
+        if (
+            command["name"] != name
+            or command["argv"] != argv
+            or command["cwd"] != str(portable_proof.ROOT)
+            or command["environment"] != overrides
+            or type(command["exit_code"]) is not int
+            or command["exit_code"] != 0
+            or not isinstance(inherited, dict)
+            or any(
+                key not in portable_proof.RELEVANT_ENV or not isinstance(value, str)
+                for key, value in inherited.items()
+            )
+            or command["environment_sha256"]
+            != portable_proof._environment_digest({**inherited, **overrides})
+        ):
+            raise RunError(f"{where} prescribed command/environment mismatch: {name}")
+        for stream in ("stdout", "stderr"):
+            if command[stream] != f"{name}.{stream}" or not _is_hex(
+                command[f"{stream}_sha256"], 64
+            ):
+                raise RunError(f"{where} malformed command output digest: {name}")
+            try:
+                with zipfile.ZipFile(logs_path) as frozen_logs:
+                    observed_digest = hashlib.sha256(frozen_logs.read(command[stream])).hexdigest()
+            except (OSError, zipfile.BadZipFile, EOFError, RuntimeError, KeyError) as exc:
+                raise RunError(f"{where} cannot read frozen command output: {exc}") from exc
+            if observed_digest != command[f"{stream}_sha256"]:
+                raise RunError(f"{where} frozen command output digest mismatch: {command[stream]}")
+    return closure
+
+
 def _verify_receipt_test_count(receipt: dict, results: dict, where: str) -> None:
     if receipt["test_event_count"] != results["executed"]:
         raise RunError(f"{where} test_event_count differs from executed tests")
@@ -6311,6 +6547,8 @@ def freeze_receipts(spec: dict, stage: Path) -> dict[str, str]:
     target_dir.mkdir(parents=True, exist_ok=True)
     frozen = {}
     for key in RECEIPT_KEYS:
+        if key in ("contract_execution_logs", "sdk_execution_logs"):
+            continue  # Generated from the context's sibling command transcripts below.
         if key not in receipts:
             continue
         source = Path(receipts[key])
@@ -6324,6 +6562,31 @@ def freeze_receipts(spec: dict, stage: Path) -> dict[str, str]:
         if before != after:
             raise RunError(f"receipt artifact changed during freeze: {key}")
         frozen[key] = str(target)
+    for rail in ("contract", "sdk"):
+        key = f"{rail}_execution_context"
+        if key not in receipts:
+            continue
+        source_dir = Path(receipts[key]).parent
+        target = target_dir / f"{rail}_execution_logs.zip"
+        total = 0
+        with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_STORED) as archive:
+            for name in CONTEXT_COMMAND_NAMES[rail]:
+                for stream in ("stdout", "stderr"):
+                    filename = f"{name}.{stream}"
+                    source = source_dir / filename
+                    try:
+                        size = source.stat().st_size
+                    except OSError as exc:
+                        raise RunError(f"missing execution command log: {source}: {exc}") from exc
+                    total += size
+                    if not source.is_file() or total > MAX_CONTEXT_LOG_BYTES:
+                        raise RunError(f"execution command logs are invalid or oversized: {source}")
+                    before = sha_file(source)
+                    payload = source.read_bytes()
+                    if len(payload) != size or before != hashlib.sha256(payload).hexdigest():
+                        raise RunError(f"execution command log changed during freeze: {source}")
+                    archive.writestr(filename, payload)
+        frozen[f"{rail}_execution_logs"] = str(target)
     return frozen
 
 
@@ -6567,6 +6830,18 @@ def build_run_manifest(
     if any(key in frozen for key in CONTRACT_EVIDENCE_KEYS):
         if not all(key in frozen for key in CONTRACT_EVIDENCE_KEYS):
             raise RunError("incomplete frozen contract receipt set")
+        contract_closure = _verify_execution_context(
+            Path(frozen["contract_execution_context"]),
+            Path(frozen["contract_source_closure"]),
+            Path(frozen["contract_execution_logs"]),
+            rail="contract",
+            raw={
+                "python-inventory.json": Path(frozen["contract_python_inventory"]),
+                "rust-inventory.json": Path(frozen["contract_rust_inventory"]),
+                "python-junit.xml": Path(frozen["contract_python_raw"]),
+                "rust-nextest.jsonl": Path(frozen["contract_rust_raw"]),
+            },
+        )
         for side in ("python", "rust"):
             _validate_counts_shape(
                 read_json(Path(frozen[f"contract_{side}_results"])),
@@ -6576,10 +6851,13 @@ def build_run_manifest(
                 read_json(Path(frozen[f"contract_{side}_receipt"])),
                 f"contract {side} receipt",
             )
+            if receipt["source_closure"] != contract_closure:
+                raise RunError(f"contract {side} execution context source closure mismatch")
             role = "pytest-junit" if side == "python" else "nextest-jsonl"
             _verify_receipt_inputs(
                 receipt,
                 {
+                    "execution-context": Path(frozen["contract_execution_context"]),
                     role: Path(frozen[f"contract_{side}_raw"]),
                     ("pytest-inventory" if side == "python" else "nextest-inventory"): Path(
                         frozen[f"contract_{side}_inventory"]
@@ -6595,13 +6873,29 @@ def build_run_manifest(
     if any(key in frozen for key in SDK_EVIDENCE_KEYS):
         if not all(key in frozen for key in SDK_EVIDENCE_KEYS):
             raise RunError("incomplete frozen SDK receipt set")
+        sdk_closure = _verify_execution_context(
+            Path(frozen["sdk_execution_context"]),
+            Path(frozen["sdk_source_closure"]),
+            Path(frozen["sdk_execution_logs"]),
+            rail="sdk",
+            raw={
+                "nextest-inventory.json": Path(frozen["sdk_inventory"]),
+                "nextest.jsonl": Path(frozen["sdk_nextest_raw"]),
+                "actual-runner-record.json": Path(frozen["sdk_record_raw"]),
+            },
+            runner_sha=sha_file(Path(spec["runner_binary"])),
+            searchd_sha=read_json(out_root / "protocol-lock.json")["searchd_expected_sha256"],
+        )
         sdk_results = _validate_sdk_results_shape(
             read_json(Path(frozen["sdk_results"])), "sdk results"
         )
         sdk_receipt = _validate_receipt_shape(read_json(Path(frozen["sdk_receipt"])), "sdk receipt")
+        if sdk_receipt["source_closure"] != sdk_closure:
+            raise RunError("SDK execution context source closure mismatch")
         _verify_receipt_inputs(
             sdk_receipt,
             {
+                "execution-context": Path(frozen["sdk_execution_context"]),
                 "nextest-jsonl": Path(frozen["sdk_nextest_raw"]),
                 "runner-record": Path(frozen["sdk_record_raw"]),
                 "nextest-inventory": Path(frozen["sdk_inventory"]),

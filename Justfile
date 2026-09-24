@@ -385,11 +385,15 @@ retrieval-contract-local:
 
 # Retrieval benchmark: real-daemon SDK proof (T05-T07, T10). Builds the
 # pinned searchd + runner binaries first, then runs the live roundtrip and
-# emits machine-counted sdk_results.json plus a digest-bound receipt. The
-# caller supplies a fresh artifact root outside the checkout.
-# Capture checks clean source before it creates the output root.
-# No model or Semble download happens on this path.
+# Public canonical route: context-bound schema-v2 receipt plus raw evidence.
+# Pass a fresh artifact root outside the checkout; no model download occurs.
+# pair-spec.receipts maps sdk_execution_context/source_closure to this root;
+# the driver freezes sibling command logs automatically.
 retrieval-sdk-proof out:
+    python3 tools/benchmark/retrieval/portable_proof.py run --rail sdk --out "{{out}}"
+
+# Internal machine-evidence recipe; invoked only by portable_proof.py.
+_retrieval-sdk-proof-raw out:
     test ! -e "{{out}}" || { echo "refusing non-fresh proof root: {{out}}" >&2; exit 2; }
     python3 tools/ci/source_closure.py capture --profile retrieval --out "{{out}}/source-closure.json"
     env CARGO_NET_OFFLINE=true {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-runtime --bin quanta-index-searchd --locked
@@ -397,22 +401,13 @@ retrieval-sdk-proof out:
     {{cargo}} --lane test-daemon-lane nextest list -p quanta-index-retrieval-bench --test sdk_roundtrip --all-features --locked --message-format json > "{{out}}/nextest-inventory.json"
     python3 tools/benchmark/retrieval/proof_inventory.py --verify "{{out}}/nextest-inventory.json" --role sdk
     set -e -o pipefail; target_dir="$({{cargo}} --lane test-daemon-lane metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"; NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1 QUANTA_BENCH_SDK_EVIDENCE_DIR="{{out}}" QUANTA_INDEX_SEARCHD_BIN="$target_dir/debug/quanta-index-searchd" {{cargo}} --lane test-daemon-lane nextest run -p quanta-index-retrieval-bench --test sdk_roundtrip --all-features --locked --message-format libtest-json-plus --message-format-version 0.1 | tee "{{out}}/nextest.jsonl"; python3 tools/benchmark/retrieval/sdk_proof.py --record "{{out}}/actual-runner-record.json" --nextest "{{out}}/nextest.jsonl" --nextest-inventory "{{out}}/nextest-inventory.json" --runner-bin "$target_dir/debug/quanta-index-retrieval-bench" --out "{{out}}/sdk_results.json"
-    python3 tools/ci/write-verification-receipt.py --rail retrieval-sdk-proof --tier correctness --command "just retrieval-sdk-proof" --evidence-format summary-json --evidence "{{out}}/sdk_results.json" --source-closure "{{out}}/source-closure.json" --input-evidence "nextest-jsonl={{out}}/nextest.jsonl" --input-evidence "nextest-inventory={{out}}/nextest-inventory.json" --input-evidence "runner-record={{out}}/actual-runner-record.json" --out "{{out}}/sdk_receipt.json"
 
-# Retrieval benchmark contract proof. Both language summaries are derived from
-# machine evidence, then independently digest-bound by the canonical receipt
-# writer. The caller supplies a fresh external artifact root.
+# Public canonical route: context-bound Python and Rust schema-v2 receipts.
+# Pass a fresh artifact root outside the checkout.
+# pair-spec.receipts maps contract_execution_context/source_closure to this root;
+# the driver freezes sibling command logs automatically.
 retrieval-contract-proof out:
-    test ! -e "{{out}}" || { echo "refusing non-fresh proof root: {{out}}" >&2; exit 2; }
-    python3 tools/ci/source_closure.py capture --profile retrieval --out "{{out}}/source-closure.json"
-    python3 tools/benchmark/retrieval/proof_inventory.py --out "{{out}}/python-inventory.json"
-    {{cargo}} --lane test-daemon-lane nextest list -p quanta-index-retrieval-bench --lib --test chunking_contract --all-features --locked --message-format json > "{{out}}/rust-inventory.json"
-    python3 tools/benchmark/retrieval/proof_inventory.py --verify "{{out}}/rust-inventory.json" --role rust
-    python3 -m pytest tools/ci/tests/test_retrieval_benchmark.py -q --junitxml="{{out}}/python-junit.xml"
-    set -o pipefail; NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1 {{cargo}} --lane test-daemon-lane nextest run -p quanta-index-retrieval-bench --lib --test chunking_contract --all-features --locked --message-format libtest-json-plus --message-format-version 0.1 | tee "{{out}}/rust-nextest.jsonl"
-    python3 tools/benchmark/retrieval/contract_proof.py --pytest-junit "{{out}}/python-junit.xml" --pytest-inventory "{{out}}/python-inventory.json" --nextest "{{out}}/rust-nextest.jsonl" --nextest-inventory "{{out}}/rust-inventory.json" --python-out "{{out}}/contract_python_results.json" --rust-out "{{out}}/contract_rust_results.json"
-    python3 tools/ci/write-verification-receipt.py --rail retrieval-contract-python --tier correctness --command "python3 -m pytest tools/ci/tests/test_retrieval_benchmark.py -q" --evidence-format summary-json --evidence "{{out}}/contract_python_results.json" --source-closure "{{out}}/source-closure.json" --input-evidence "pytest-junit={{out}}/python-junit.xml" --input-evidence "pytest-inventory={{out}}/python-inventory.json" --out "{{out}}/contract_python_receipt.json"
-    python3 tools/ci/write-verification-receipt.py --rail retrieval-contract-rust --tier correctness --command "./scripts/cargow nextest run -p quanta-index-retrieval-bench --lib --test chunking_contract --all-features --locked" --evidence-format summary-json --evidence "{{out}}/contract_rust_results.json" --source-closure "{{out}}/source-closure.json" --input-evidence "nextest-jsonl={{out}}/rust-nextest.jsonl" --input-evidence "nextest-inventory={{out}}/rust-inventory.json" --out "{{out}}/contract_rust_receipt.json"
+    python3 tools/benchmark/retrieval/portable_proof.py run --rail contract --out "{{out}}"
 
 # Retrieval benchmark: Quanta-only chunk A/B from a pinned spec file.
 # The spec names repo/manifest/suite/pack, strategies, binaries and output

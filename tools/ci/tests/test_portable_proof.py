@@ -134,7 +134,7 @@ def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             assert not Path(argv[argv.index("--out") + 1]).exists()
             write_receipt(argv)
             raw = b""
-        elif argv[1] == "retrieval-sdk-proof":
+        elif argv[1] == "_retrieval-sdk-proof-raw":
             out.mkdir()
             write_closure()
             runner.parent.mkdir(parents=True, exist_ok=True)
@@ -176,10 +176,6 @@ def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
                 searchd_path=searchd,
             )
             (out / "sdk_results.json").write_text(json.dumps(summary), encoding="utf-8")
-            legacy_argv = portable_proof._receipt_argv("sdk", out, tools["python"]["path"])
-            context_index = legacy_argv.index(f"execution-context={out / 'execution-context.json'}")
-            del legacy_argv[context_index - 1 : context_index + 1]
-            write_receipt(legacy_argv)
             raw = b""
         elif "proof_inventory.py" in argv[1]:
             (out / "python-inventory.json").write_text(
@@ -291,8 +287,7 @@ def test_producer_and_validator_bind_execution_and_inputs(fake_execution, rail: 
         ] == portable_proof._sha(receipt)
     pairrun._validate_receipt_shape(canonical_payload, "proof")
     if rail == "sdk":
-        unbound = json.loads((out / "sdk_receipt.recipe-unbound.json").read_text(encoding="utf-8"))
-        assert "execution-context" not in {row["role"] for row in unbound["input_evidence"]}
+        assert not (out / "sdk_receipt.recipe-unbound.json").exists()
     if rail == "sdk":
         runner.write_bytes(b"changed")
         with pytest.raises(ValueError, match="binary identity changed"):
@@ -327,7 +322,7 @@ def test_validator_rejects_environment_and_sdk_record_substitution(fake_executio
     with pytest.raises(ValueError, match="prescribed rail"):
         portable_proof.validate(receipt)
 
-    data["commands"][0]["argv"][1] = "retrieval-sdk-proof"
+    data["commands"][0]["argv"][1] = "_retrieval-sdk-proof-raw"
     receipt.write_text(json.dumps(data), encoding="utf-8")
     record = out / "actual-runner-record.json"
     payload = json.loads(record.read_text(encoding="utf-8"))

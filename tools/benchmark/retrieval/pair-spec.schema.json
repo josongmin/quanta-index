@@ -91,6 +91,8 @@
       "type": "object", "additionalProperties": false,
       "description": "Paths to externally produced receipt/result artifacts. The driver freezes them by copying into the stage; the verdict re-verifies the frozen bytes. No evidence content travels through the spec.",
       "properties": {
+        "contract_execution_context": {"type": "string", "minLength": 1},
+        "contract_source_closure": {"type": "string", "minLength": 1},
         "contract_python_receipt": {"type": "string", "minLength": 1},
         "contract_python_results": {"type": "string", "minLength": 1},
         "contract_python_raw": {"type": "string", "minLength": 1},
@@ -99,6 +101,8 @@
         "contract_rust_results": {"type": "string", "minLength": 1},
         "contract_rust_raw": {"type": "string", "minLength": 1},
         "contract_rust_inventory": {"type": "string", "minLength": 1},
+        "sdk_execution_context": {"type": "string", "minLength": 1},
+        "sdk_source_closure": {"type": "string", "minLength": 1},
         "sdk_receipt": {"type": "string", "minLength": 1},
         "sdk_results": {"type": "string", "minLength": 1},
         "sdk_nextest_raw": {"type": "string", "minLength": 1},

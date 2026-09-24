@@ -404,7 +404,7 @@ def _expected_commands(
             ("rust-test", _cargo(wrapper, "nextest", "run", *selector, *FORMAT), test_env),
         ]
     return [
-        ("sdk-recipe", [tools["just"]["path"], "retrieval-sdk-proof", str(out)], base),
+        ("sdk-recipe", [tools["just"]["path"], "_retrieval-sdk-proof-raw", str(out)], base),
         (
             "metadata",
             _cargo(wrapper, "metadata", "--format-version", "1", "--no-deps", "--locked"),
@@ -490,7 +490,9 @@ def produce(rail: str, out: Path) -> Path:
         _write_json(out / "contract_rust_results.json", rust_summary)
         binaries: dict[str, dict[str, str]] = {}
     else:
-        _run_fresh_recipe([tools["just"]["path"], "retrieval-sdk-proof", str(out)], out, commands)
+        _run_fresh_recipe(
+            [tools["just"]["path"], "_retrieval-sdk-proof-raw", str(out)], out, commands
+        )
         _artifact(out, "source-closure.json", raw_evidence)
         target = _target_dir(wrapper, out, commands)
         suffix = ".exe" if os.name == "nt" else ""
@@ -509,8 +511,8 @@ def produce(rail: str, out: Path) -> Path:
         sdk_proof.build_summary(
             record, out / "nextest.jsonl", runner, inventory, searchd_path=searchd
         )
-        if not (out / "sdk_results.json").is_file() or not (out / "sdk_receipt.json").is_file():
-            raise ValueError("SDK recipe omitted canonical summary or receipt")
+        if not (out / "sdk_results.json").is_file():
+            raise ValueError("SDK recipe omitted canonical summary")
     context = {
         "schema_version": 1,
         "rail": rail,
@@ -529,11 +531,6 @@ def produce(rail: str, out: Path) -> Path:
             if not (out / f"contract_{side}_receipt.json").is_file():
                 raise ValueError(f"contract {side} receipt writer omitted its output")
     else:
-        # Just emits an unbound receipt. Retain it as a diagnostic, then emit
-        # the authoritative candidate only after the context has been sealed.
-        if (out / "sdk_receipt.recipe-unbound.json").exists():
-            raise ValueError("SDK diagnostic receipt path already exists")
-        (out / "sdk_receipt.json").rename(out / "sdk_receipt.recipe-unbound.json")
         _run("sdk-bound-receipt", _receipt_argv("sdk", out, python), out, [])
         if not (out / "sdk_receipt.json").is_file():
             raise ValueError("SDK receipt writer omitted its bound output")

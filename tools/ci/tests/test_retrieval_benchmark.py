@@ -5,18 +5,21 @@ from __future__ import annotations
 import ctypes
 import hashlib
 import html
+import io
 import json
 import math
 import shlex
 import shutil
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 import jsonschema
 import pytest
 
 from tools.benchmark.retrieval import evaluator as ev
+from tools.benchmark.retrieval import portable_proof
 from tools.benchmark.retrieval import run as pairrun
 from tools.benchmark.retrieval import semble as semble_adapter
 from tools.ci import source_closure
@@ -2129,7 +2132,7 @@ def _full_receipts(commit, binary_digest):
             "tests": authority["python"],
         }
     ).encode()
-    return {
+    artifacts = {
         "contract_python_results": py_bytes,
         "contract_python_raw": py_raw,
         "contract_python_inventory": py_inventory,
@@ -2169,6 +2172,96 @@ def _full_receipts(commit, binary_digest):
             sdk_count,
         ),
     }
+    closure = artifacts["contract_python_receipt"]["source_closure"]
+    closure_bytes = json.dumps(closure).encode()
+    tools = {
+        name: {
+            "path": f"/fake/{name}",
+            "realpath": f"/fake/{name}",
+            "sha256": "a" * 64,
+            "version": "fixture",
+        }
+        for name in ("python", "cargo", "cargo-nextest", "rustc", "git", "bash", "just", "cargow")
+    }
+    for rail, raw in (
+        (
+            "contract",
+            {
+                "source-closure.json": closure_bytes,
+                "python-inventory.json": artifacts["contract_python_inventory"],
+                "rust-inventory.json": artifacts["contract_rust_inventory"],
+                "python-junit.xml": artifacts["contract_python_raw"],
+                "rust-nextest.jsonl": artifacts["contract_rust_raw"],
+            },
+        ),
+        (
+            "sdk",
+            {
+                "source-closure.json": closure_bytes,
+                "nextest-inventory.json": artifacts["sdk_inventory"],
+                "nextest.jsonl": artifacts["sdk_nextest_raw"],
+                "actual-runner-record.json": artifacts["sdk_record_raw"],
+            },
+        ),
+    ):
+        binaries = (
+            {
+                "runner": {"path": "/fake/runner", "sha256": binary_digest},
+                "searchd": {"path": "/fake/searchd", "sha256": _fake_sha("searchd")},
+            }
+            if rail == "sdk"
+            else {}
+        )
+        commands = []
+        for name, argv, overrides in portable_proof._expected_commands(
+            rail, Path("/proof"), tools, binaries
+        ):
+            commands.append(
+                {
+                    "name": name,
+                    "argv": argv,
+                    "cwd": str(portable_proof.ROOT),
+                    "environment": overrides,
+                    "inherited_environment": {},
+                    "environment_sha256": portable_proof._environment_digest(overrides),
+                    "exit_code": 0,
+                    "stdout": f"{name}.stdout",
+                    "stdout_sha256": ev.digest(b""),
+                    "stderr": f"{name}.stderr",
+                    "stderr_sha256": ev.digest(b""),
+                }
+            )
+        context = {
+            "schema_version": 1,
+            "rail": rail,
+            "revision": commit,
+            "os": {
+                "system": "fixture",
+                "release": "fixture",
+                "machine": "fixture",
+                "python_version": "fixture",
+            },
+            "tools": tools,
+            "binaries": binaries,
+            "commands": commands,
+            "raw_evidence": {name: ev.digest(value) for name, value in raw.items()},
+        }
+        context_bytes = json.dumps(context).encode()
+        artifacts[f"{rail}_execution_context"] = context_bytes
+        artifacts[f"{rail}_source_closure"] = closure_bytes
+        log_buffer = io.BytesIO()
+        with zipfile.ZipFile(log_buffer, "w", compression=zipfile.ZIP_STORED) as archive:
+            for name in pairrun.CONTEXT_COMMAND_NAMES[rail]:
+                for stream in ("stdout", "stderr"):
+                    archive.writestr(f"{name}.{stream}", b"")
+        artifacts[f"{rail}_execution_logs"] = log_buffer.getvalue()
+        for side in ("python", "rust") if rail == "contract" else ("sdk",):
+            receipt = artifacts[f"contract_{side}_receipt" if rail == "contract" else "sdk_receipt"]
+            receipt["input_evidence"].append(
+                {"role": "execution-context", "sha256": ev.digest(context_bytes)}
+            )
+            receipt["input_evidence"].sort(key=lambda row: row["role"])
+    return artifacts
 
 
 def _pair_stage(
@@ -2907,6 +3000,110 @@ def test_verdict_full_receipts_all_green(tmp_path):
     assert verdict["missing_t_ids"] == []
 
 
+@pytest.mark.parametrize("rail,state", [("contract", "CONTRACT_GREEN"), ("sdk", "SDK_PATH_GREEN")])
+@pytest.mark.parametrize(
+    "mutation", ["argv", "environment", "raw", "stdout_digest", "missing_role"]
+)
+def test_verdict_refuses_bound_execution_context_tampering(tmp_path, rail, state, mutation):
+    st = _pair_stage(tmp_path, receipts="full")
+    assert _stage_verdict(st)["states"][state] == "pass"
+    receipt_dir = st["stage"] / "receipts"
+    context_path = receipt_dir / f"{rail}_execution_context.json"
+    context = json.loads(context_path.read_text(encoding="utf-8"))
+    if mutation == "argv":
+        context["commands"][0]["argv"][1] = "different-command"
+    elif mutation == "environment":
+        context["commands"][0]["environment"]["CARGO_NET_OFFLINE"] = "false"
+    elif mutation == "raw":
+        context["raw_evidence"]["source-closure.json"] = "0" * 64
+    elif mutation == "stdout_digest":
+        context["commands"][0]["stdout_sha256"] = ev.digest(b"forged transcript")
+    if mutation != "missing_role":
+        context_path.write_text(json.dumps(context), encoding="utf-8")
+    receipt_names = (
+        ("contract_python_receipt", "contract_rust_receipt")
+        if rail == "contract"
+        else ("sdk_receipt",)
+    )
+    for name in receipt_names:
+        receipt_path = receipt_dir / f"{name}.json"
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        if mutation == "missing_role":
+            receipt["input_evidence"] = [
+                row for row in receipt["input_evidence"] if row["role"] != "execution-context"
+            ]
+        else:
+            next(row for row in receipt["input_evidence"] if row["role"] == "execution-context")[
+                "sha256"
+            ] = pairrun.sha_file(context_path)
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    verdict = _stage_verdict(st)
+    assert verdict["states"][state] == "fail"
+
+
+def test_qualified_verdict_separates_unverified_os_portability(tmp_path):
+    st = _pair_stage(tmp_path, scope="qualified", receipts="full")
+    verdict = _stage_verdict(st)
+    for state in ("CONTRACT_GREEN", "SDK_PATH_GREEN"):
+        assert verdict["states"][state] == "pass"
+    assert verdict["os_portability"] == {
+        "qualified": False,
+        "reason": "execution_os_tool_identity_unverified",
+    }
+
+
+def test_freeze_receipts_copies_command_transcript_bytes(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    context = source / "execution-context.json"
+    context.write_text("{}", encoding="utf-8")
+    for name in pairrun.CONTEXT_COMMAND_NAMES["contract"]:
+        for stream in ("stdout", "stderr"):
+            (source / f"{name}.{stream}").write_bytes(f"{name}:{stream}".encode())
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    frozen = pairrun.freeze_receipts(
+        {"receipts": {"contract_execution_context": str(context)}}, stage
+    )
+    with zipfile.ZipFile(frozen["contract_execution_logs"]) as archive:
+        assert archive.read("python-test.stdout") == b"python-test:stdout"
+    (source / "python-test.stdout").write_bytes(b"changed")
+    with zipfile.ZipFile(frozen["contract_execution_logs"]) as archive:
+        assert archive.read("python-test.stdout") == b"python-test:stdout"
+
+
+@pytest.mark.parametrize("mutation", ["digest", "crc", "duplicate"])
+def test_verdict_refuses_frozen_command_log_tampering(tmp_path, mutation):
+    st = _pair_stage(tmp_path, receipts="full")
+    assert _stage_verdict(st)["states"]["CONTRACT_GREEN"] == "pass"
+    archive_path = st["stage"] / "receipts" / "contract_execution_logs.json"
+    with zipfile.ZipFile(archive_path) as archive:
+        members = {name: archive.read(name) for name in archive.namelist()}
+    if mutation == "duplicate":
+        with pytest.warns(UserWarning, match="Duplicate name"):
+            with zipfile.ZipFile(archive_path, "a", compression=zipfile.ZIP_STORED) as archive:
+                archive.writestr("python-test.stdout", b"")
+    else:
+        members["python-test.stdout"] = b"forged transcript"
+        with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_STORED) as archive:
+            for name, payload in members.items():
+                archive.writestr(name, payload)
+        if mutation == "crc":
+            archive_path.write_bytes(
+                archive_path.read_bytes().replace(b"forged transcript", b"forged transcripu")
+            )
+    verdict = _stage_verdict(st)
+    assert verdict["states"]["CONTRACT_GREEN"] == "fail"
+    reason = verdict["state_evidence"]["CONTRACT_GREEN"]["reason"]
+    assert (
+        "frozen command output digest mismatch"
+        if mutation == "digest"
+        else "cannot read frozen command output"
+        if mutation == "crc"
+        else "frozen command logs missing or duplicated"
+    ) in reason
+
+
 @pytest.mark.parametrize(
     ("receipt_name", "state"),
     [
@@ -2988,7 +3185,10 @@ def test_verdict_stale_and_swapped_receipts(tmp_path):
     rust_receipt_path.write_text(json.dumps(rust_receipt), encoding="utf-8")
     verdict = _stage_verdict(st)
     assert verdict["states"]["CONTRACT_GREEN"] == "fail"
-    assert "different source closures" in verdict["state_evidence"]["CONTRACT_GREEN"]["reason"]
+    assert (
+        "execution context source closure mismatch"
+        in verdict["state_evidence"]["CONTRACT_GREEN"]["reason"]
+    )
     st = _pair_stage(tmp_path / "swap", receipts="full")
     rust_bytes = (st["stage"] / "receipts" / "contract_rust_results.json").read_bytes()
     (st["stage"] / "receipts" / "contract_python_results.json").write_bytes(rust_bytes)
@@ -3065,7 +3265,7 @@ def test_verdict_rejects_coordinated_partial_inventory_and_receipt_rebind(tmp_pa
     verdict = _stage_verdict(st)
     assert verdict["states"]["CONTRACT_GREEN"] == "fail"
     assert (
-        "inventory differs from source authority"
+        "execution context raw evidence digest mismatch"
         in verdict["state_evidence"]["CONTRACT_GREEN"]["reason"]
     )
 
@@ -3293,7 +3493,6 @@ def test_verdict_rejects_forged_phase_and_process_tree_resources(tmp_path, monke
     assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == (
         "resource_accounting_incomplete"
     )
-
 
     phase_stage = _pair_stage(tmp_path / "phase", scope="qualified", claims={"speed": True})
     phase_path = (
@@ -3978,7 +4177,10 @@ def test_qualified_contract_refuses_coordinated_receipt_closure_rebind(tmp_path)
         receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
     verdict = _stage_verdict(st)
     assert verdict["states"]["CONTRACT_GREEN"] == "fail"
-    assert "capture closure" in verdict["state_evidence"]["CONTRACT_GREEN"]["reason"]
+    assert (
+        "execution context source closure mismatch"
+        in verdict["state_evidence"]["CONTRACT_GREEN"]["reason"]
+    )
 
 
 def test_isolation_proof_refuses_tampered_frozen_runner_tool(tmp_path, monkeypatch):
@@ -4631,11 +4833,13 @@ def test_g0_pair_spec_receipts_are_paths_not_content():
     manifest_full = _load_schema("run-manifest.schema.json")
     pair_receipts = pair_full["properties"]["receipts"]
     manifest_artifacts = manifest_full["properties"]["artifacts"]
-    assert sorted(pair_receipts["properties"]) == sorted(pairrun.RECEIPT_KEYS)
+    generated = {"contract_execution_logs", "sdk_execution_logs"}
+    assert sorted(pair_receipts["properties"]) == sorted(set(pairrun.RECEIPT_KEYS) - generated)
     # Every spec receipt path lands on a manifest artifact of the same name.
     for key in pairrun.RECEIPT_KEYS:
         assert key in manifest_artifacts["properties"], key
-        assert pair_receipts["properties"][key] == {"type": "string", "minLength": 1}
+        if key not in generated:
+            assert pair_receipts["properties"][key] == {"type": "string", "minLength": 1}
     # Evidence content is rejected in the spec: paths only.
     spec = _g0_spec()
     spec["receipts"] = {"contract_python_results": "/tmp/results.json"}
