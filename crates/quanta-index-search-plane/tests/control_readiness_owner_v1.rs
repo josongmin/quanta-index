@@ -92,8 +92,8 @@ fn admin_requests() -> Vec<SearchPlaneControlIpcRequest> {
             manifest_digest: "a".repeat(64),
             snapshot_id: "snapshot-1".to_string(),
             projection_version: 1,
-            authority_digest: "sha256:".to_string() + &"b".repeat(64),
-            source_bundle_digest: "sha256:".to_string() + &"c".repeat(64),
+            authority_digest: format!("sha256:{}", "b".repeat(64)),
+            source_bundle_digest: format!("sha256:{}", "c".repeat(64)),
             expected_active: None,
         }),
         SearchPlaneControlIpcRequest::RepoMapActiveHeadV2(RepoMapActiveHeadRequestV2 {

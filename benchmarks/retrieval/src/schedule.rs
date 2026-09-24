@@ -141,7 +141,11 @@ mod tests {
     #[test]
     fn rejects_mutated_schedule() {
         let mut protocol = fixture();
-        protocol.measurement_schedules[0][1] = "a".into();
+        *protocol
+            .measurement_schedules
+            .get_mut(0)
+            .and_then(|schedule| schedule.get_mut(1))
+            .expect("fixture has a measurement schedule with two tasks") = "a".into();
         assert!(protocol.validate(&["a".into(), "b".into()]).is_err());
     }
 }
