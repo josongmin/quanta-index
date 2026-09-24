@@ -130,6 +130,8 @@ def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             write_closure()
             raw = b""
         elif argv[1] == str(portable_proof.RECEIPT_WRITER):
+            assert (out / "execution-context.json").is_file()
+            assert not Path(argv[argv.index("--out") + 1]).exists()
             write_receipt(argv)
             raw = b""
         elif argv[1] == "retrieval-sdk-proof":
@@ -174,7 +176,10 @@ def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
                 searchd_path=searchd,
             )
             (out / "sdk_results.json").write_text(json.dumps(summary), encoding="utf-8")
-            write_receipt(portable_proof._receipt_argv("sdk", out, tools["python"]["path"]))
+            legacy_argv = portable_proof._receipt_argv("sdk", out, tools["python"]["path"])
+            context_index = legacy_argv.index(f"execution-context={out / 'execution-context.json'}")
+            del legacy_argv[context_index - 1 : context_index + 1]
+            write_receipt(legacy_argv)
             raw = b""
         elif "proof_inventory.py" in argv[1]:
             (out / "python-inventory.json").write_text(
@@ -248,11 +253,46 @@ def test_producer_and_validator_bind_execution_and_inputs(fake_execution, rail: 
     out, runner, calls = fake_execution
     receipt = portable_proof.produce(rail, out)
     assert portable_proof.validate(receipt)["rail"] == rail
-    assert len(calls) == (7 if rail == "contract" else 2)
+    assert len(calls) == (7 if rail == "contract" else 3)
     assert all(isinstance(argv, list) for argv, _ in calls)
+    context = json.loads(receipt.read_text(encoding="utf-8"))
+    assert set(context) == {
+        "schema_version",
+        "rail",
+        "revision",
+        "os",
+        "tools",
+        "binaries",
+        "commands",
+        "raw_evidence",
+    }
+    assert not any("results" in name or "receipt" in name for name in context["raw_evidence"])
+    assert all("receipt" not in row["name"] for row in context["commands"])
+    for name in ("sdk_receipt.json", "contract_python_receipt.json", "contract_rust_receipt.json"):
+        artifact = out / name
+        if artifact.exists():
+            assert portable_proof._sha(artifact) not in receipt.read_text(encoding="utf-8")
+    for name in ("sdk_results.json", "contract_python_results.json", "contract_rust_results.json"):
+        artifact = out / name
+        if artifact.exists():
+            assert portable_proof._sha(artifact) not in receipt.read_text(encoding="utf-8")
     canonical = out / ("sdk_receipt.json" if rail == "sdk" else "contract_rust_receipt.json")
-    assert json.loads(canonical.read_text(encoding="utf-8"))["schema_version"] == 2
-    pairrun._validate_receipt_shape(json.loads(canonical.read_text(encoding="utf-8")), "proof")
+    canonical_payload = json.loads(canonical.read_text(encoding="utf-8"))
+    assert canonical_payload["schema_version"] == 2
+    assert {row["role"]: row["sha256"] for row in canonical_payload["input_evidence"]}[
+        "execution-context"
+    ] == portable_proof._sha(receipt)
+    if rail == "contract":
+        python_receipt = json.loads(
+            (out / "contract_python_receipt.json").read_text(encoding="utf-8")
+        )
+        assert {row["role"]: row["sha256"] for row in python_receipt["input_evidence"]}[
+            "execution-context"
+        ] == portable_proof._sha(receipt)
+    pairrun._validate_receipt_shape(canonical_payload, "proof")
+    if rail == "sdk":
+        unbound = json.loads((out / "sdk_receipt.recipe-unbound.json").read_text(encoding="utf-8"))
+        assert "execution-context" not in {row["role"] for row in unbound["input_evidence"]}
     if rail == "sdk":
         runner.write_bytes(b"changed")
         with pytest.raises(ValueError, match="binary identity changed"):
@@ -272,9 +312,9 @@ def test_validator_rejects_rewritten_command_and_missing_evidence(fake_execution
     with pytest.raises(ValueError, match="prescribed rail"):
         portable_proof.validate(receipt)
     data["commands"][4]["argv"][4] = "run"
-    data["evidence"].pop("python-junit.xml")
+    data["raw_evidence"].pop("python-junit.xml")
     receipt.write_text(json.dumps(data), encoding="utf-8")
-    with pytest.raises(ValueError, match="evidence set"):
+    with pytest.raises(ValueError, match="raw evidence set"):
         portable_proof.validate(receipt)
 
 
@@ -293,7 +333,7 @@ def test_validator_rejects_environment_and_sdk_record_substitution(fake_executio
     payload = json.loads(record.read_text(encoding="utf-8"))
     payload["captures"]["run"]["searchd_binary"]["binary_digest"] = "e" * 64
     record.write_text(json.dumps(payload), encoding="utf-8")
-    data["evidence"]["actual-runner-record.json"] = portable_proof._sha(record)
+    data["raw_evidence"]["actual-runner-record.json"] = portable_proof._sha(record)
     receipt.write_text(json.dumps(data), encoding="utf-8")
     with pytest.raises(SystemExit, match="searchd binary digest differs"):
         portable_proof.validate(receipt)
@@ -321,21 +361,16 @@ def test_canonical_receipt_rejects_command_and_raw_digest_tampering(fake_executi
     payload = json.loads(canonical.read_text(encoding="utf-8"))
     payload["command"] = "cargo nextest run --lib"
     canonical.write_text(json.dumps(payload), encoding="utf-8")
-    context_payload = json.loads(context.read_text(encoding="utf-8"))
-    context_payload["evidence"][canonical.name] = portable_proof._sha(canonical)
-    context.write_text(json.dumps(context_payload), encoding="utf-8")
     with pytest.raises(ValueError, match="canonical receipt differs"):
         portable_proof.validate(context)
     payload["command"] = portable_proof.RUST_COMMAND
     payload["input_evidence"][0]["sha256"] = "f" * 64
     canonical.write_text(json.dumps(payload), encoding="utf-8")
-    context_payload["evidence"][canonical.name] = portable_proof._sha(canonical)
-    context.write_text(json.dumps(context_payload), encoding="utf-8")
     with pytest.raises(ValueError, match="canonical receipt differs"):
         portable_proof.validate(context)
 
 
-def test_existing_writer_emits_verdict_consumable_receipt(
+def test_existing_writer_emits_context_bound_schema2_receipt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     out = tmp_path / "proof"
@@ -349,6 +384,7 @@ def test_existing_writer_emits_verdict_consumable_receipt(
     }
     closure["digest"] = portable_proof.source_closure._digest(closure)
     (out / "source-closure.json").write_text(json.dumps(closure), encoding="utf-8")
+    (out / "execution-context.json").write_bytes(b"pre-receipt context")
     (out / "python-junit.xml").write_bytes(b"raw junit")
     (out / "python-inventory.json").write_bytes(b"raw inventory")
     (out / "contract_python_results.json").write_text(
@@ -376,14 +412,15 @@ def test_existing_writer_emits_verdict_consumable_receipt(
     assert writer.main() == 0
     receipt = json.loads((out / "contract_python_receipt.json").read_text(encoding="utf-8"))
     pairrun._validate_receipt_shape(receipt, "contract python receipt")
-    pairrun._verify_receipt_inputs(
-        receipt,
-        {
-            "pytest-junit": out / "python-junit.xml",
-            "pytest-inventory": out / "python-inventory.json",
-        },
-        "contract python receipt",
-    )
+    with pytest.raises(pairrun.RunError, match="raw input evidence mismatch"):
+        pairrun._verify_receipt_inputs(
+            receipt,
+            {
+                "pytest-junit": out / "python-junit.xml",
+                "pytest-inventory": out / "python-inventory.json",
+            },
+            "contract python receipt",
+        )
     portable_proof._canonical_receipt(
         out / "contract_python_receipt.json",
         rail="retrieval-contract-python",
@@ -392,6 +429,7 @@ def test_existing_writer_emits_verdict_consumable_receipt(
         inputs={
             "pytest-junit": out / "python-junit.xml",
             "pytest-inventory": out / "python-inventory.json",
+            "execution-context": out / "execution-context.json",
         },
         closure=closure,
     )
@@ -402,9 +440,32 @@ def test_existing_writer_emits_verdict_consumable_receipt(
             {
                 "pytest-junit": out / "python-junit.xml",
                 "pytest-inventory": out / "python-inventory.json",
+                "execution-context": out / "execution-context.json",
             },
             "contract python receipt",
         )
+
+
+def test_bound_receipt_refuses_context_mutation_and_missing_role(fake_execution) -> None:
+    out, _, _ = fake_execution
+    context_path = portable_proof.produce("contract", out)
+    canonical_path = out / "contract_python_receipt.json"
+    original_context = context_path.read_bytes()
+    context = json.loads(original_context)
+    context["os"]["system"] = "different-host"
+    context_path.write_text(json.dumps(context), encoding="utf-8")
+    with pytest.raises(ValueError, match="canonical receipt differs"):
+        portable_proof.validate(context_path)
+
+    context_path.write_bytes(original_context)
+    assert portable_proof.validate(context_path)["rail"] == "contract"
+    canonical = json.loads(canonical_path.read_text(encoding="utf-8"))
+    canonical["input_evidence"] = [
+        row for row in canonical["input_evidence"] if row["role"] != "execution-context"
+    ]
+    canonical_path.write_text(json.dumps(canonical), encoding="utf-8")
+    with pytest.raises(ValueError, match="canonical receipt differs"):
+        portable_proof.validate(context_path)
 
 
 def test_sdk_record_rejects_duplicate_json_key(fake_execution) -> None:
@@ -417,7 +478,7 @@ def test_sdk_record_rejects_duplicate_json_key(fake_execution) -> None:
         )
     )
     data = json.loads(receipt.read_text(encoding="utf-8"))
-    data["evidence"]["actual-runner-record.json"] = portable_proof._sha(record)
+    data["raw_evidence"]["actual-runner-record.json"] = portable_proof._sha(record)
     receipt.write_text(json.dumps(data), encoding="utf-8")
     with pytest.raises(SystemExit, match="duplicate runner record JSON key"):
         portable_proof.validate(receipt)

@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""Produce canonical retrieval proof artifacts on supported hosts.
+"""Produce pre-receipt execution context and context-bound retrieval receipts.
 
-Execution context is diagnostic: the verdict currently checks canonical schema-v2
-receipts and exact summary commands, but cannot bind this separate context.
-Windows production fails closed until source_closure and cargow have an owned
-portable front door and the verdict binds execution identity.
+The verdict does not yet consume the execution context or its receipt input role.
+Windows production remains blocked by Bash-only source_closure and cargow.
 """
 
 from __future__ import annotations
@@ -48,6 +46,14 @@ def _sha(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _is_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(char in "0123456789abcdef" for char in value)
+    )
 
 
 def _json(path: Path) -> object:
@@ -288,6 +294,8 @@ def _receipt_argv(side: str, out: Path, python: str) -> list[str]:
         "summary-json",
         "--source-closure",
         str(out / "source-closure.json"),
+        "--input-evidence",
+        f"execution-context={out / 'execution-context.json'}",
     ]
     if side == "python":
         return [
@@ -394,8 +402,6 @@ def _expected_commands(
                 base,
             ),
             ("rust-test", _cargo(wrapper, "nextest", "run", *selector, *FORMAT), test_env),
-            ("python-receipt", _receipt_argv("python", out, python), base),
-            ("rust-receipt", _receipt_argv("rust", out, python), base),
         ]
     return [
         ("sdk-recipe", [tools["just"]["path"], "retrieval-sdk-proof", str(out)], base),
@@ -418,7 +424,7 @@ def produce(rail: str, out: Path) -> Path:
     revision = _source_revision()
     tools = _tools()
     commands: list[dict[str, object]] = []
-    evidence: dict[str, str] = {}
+    raw_evidence: dict[str, str] = {}
     python = tools["python"]["path"]
     wrapper = tools["cargow"]["path"]
     environment = {"NEXTEST_EXPERIMENTAL_LIBTEST_JSON": "1"}
@@ -438,7 +444,7 @@ def produce(rail: str, out: Path) -> Path:
             out,
             commands,
         )
-        _artifact(out, "source-closure.json", evidence)
+        _artifact(out, "source-closure.json", raw_evidence)
         _run(
             "python-collection",
             [
@@ -450,7 +456,7 @@ def produce(rail: str, out: Path) -> Path:
             out,
             commands,
         )
-        python_inventory = _artifact(out, "python-inventory.json", evidence)
+        python_inventory = _artifact(out, "python-inventory.json", raw_evidence)
         proof_inventory.verify_inventory_authority(python_inventory, "python")
         selector = ["-p", PACKAGE, "--lib", "--test", "chunking_contract", *FLAGS]
         _run(
@@ -461,7 +467,7 @@ def produce(rail: str, out: Path) -> Path:
         )
         rust_inventory = out / "rust-inventory.json"
         _write(rust_inventory, (out / "rust-collection.stdout").read_bytes())
-        _artifact(out, "rust-inventory.json", evidence)
+        _artifact(out, "rust-inventory.json", raw_evidence)
         proof_inventory.verify_inventory_authority(rust_inventory, "rust")
         pytest_argv = [
             python,
@@ -472,25 +478,20 @@ def produce(rail: str, out: Path) -> Path:
             f"--junitxml={out / 'python-junit.xml'}",
         ]
         _run("python-test", pytest_argv, out, commands)
-        junit = _artifact(out, "python-junit.xml", evidence)
+        junit = _artifact(out, "python-junit.xml", raw_evidence)
         nextest_argv = _cargo(wrapper, "nextest", "run", *selector, *FORMAT)
         _run("rust-test", nextest_argv, out, commands, env_overrides=environment)
         rust_events = out / "rust-test.stdout"
         _write(out / "rust-nextest.jsonl", rust_events.read_bytes())
-        _artifact(out, "rust-nextest.jsonl", evidence)
+        _artifact(out, "rust-nextest.jsonl", raw_evidence)
         python_summary = contract_proof.pytest_summary(junit, python_inventory)
         rust_summary = contract_proof.nextest_summary(rust_events, rust_inventory)
         _write_json(out / "contract_python_results.json", python_summary)
         _write_json(out / "contract_rust_results.json", rust_summary)
-        _artifact(out, "contract_python_results.json", evidence)
-        _artifact(out, "contract_rust_results.json", evidence)
-        for side in ("python", "rust"):
-            _run(f"{side}-receipt", _receipt_argv(side, out, python), out, commands)
-            _artifact(out, f"contract_{side}_receipt.json", evidence)
         binaries: dict[str, dict[str, str]] = {}
     else:
         _run_fresh_recipe([tools["just"]["path"], "retrieval-sdk-proof", str(out)], out, commands)
-        _artifact(out, "source-closure.json", evidence)
+        _artifact(out, "source-closure.json", raw_evidence)
         target = _target_dir(wrapper, out, commands)
         suffix = ".exe" if os.name == "nt" else ""
         searchd = target / "debug" / f"quanta-index-searchd{suffix}"
@@ -501,16 +502,16 @@ def produce(rail: str, out: Path) -> Path:
                 raise ValueError(f"missing built binary: {path}")
             binaries[name] = {"path": str(path), "sha256": _sha(path)}
         inventory = out / "nextest-inventory.json"
-        _artifact(out, "nextest-inventory.json", evidence)
+        _artifact(out, "nextest-inventory.json", raw_evidence)
         proof_inventory.verify_inventory_authority(inventory, "sdk")
-        _artifact(out, "nextest.jsonl", evidence)
-        record = _artifact(out, "actual-runner-record.json", evidence)
+        _artifact(out, "nextest.jsonl", raw_evidence)
+        record = _artifact(out, "actual-runner-record.json", raw_evidence)
         sdk_proof.build_summary(
             record, out / "nextest.jsonl", runner, inventory, searchd_path=searchd
         )
-        _artifact(out, "sdk_results.json", evidence)
-        _artifact(out, "sdk_receipt.json", evidence)
-    receipt = {
+        if not (out / "sdk_results.json").is_file() or not (out / "sdk_receipt.json").is_file():
+            raise ValueError("SDK recipe omitted canonical summary or receipt")
+    context = {
         "schema_version": 1,
         "rail": rail,
         "revision": revision,
@@ -518,10 +519,24 @@ def produce(rail: str, out: Path) -> Path:
         "tools": tools,
         "binaries": binaries,
         "commands": commands,
-        "evidence": evidence,
+        "raw_evidence": raw_evidence,
     }
     path = out / "execution-context.json"
-    _write_json(path, receipt)
+    _write_json(path, context)
+    if rail == "contract":
+        for side in ("python", "rust"):
+            _run(f"{side}-receipt", _receipt_argv(side, out, python), out, [])
+            if not (out / f"contract_{side}_receipt.json").is_file():
+                raise ValueError(f"contract {side} receipt writer omitted its output")
+    else:
+        # Just emits an unbound receipt. Retain it as a diagnostic, then emit
+        # the authoritative candidate only after the context has been sealed.
+        if (out / "sdk_receipt.recipe-unbound.json").exists():
+            raise ValueError("SDK diagnostic receipt path already exists")
+        (out / "sdk_receipt.json").rename(out / "sdk_receipt.recipe-unbound.json")
+        _run("sdk-bound-receipt", _receipt_argv("sdk", out, python), out, [])
+        if not (out / "sdk_receipt.json").is_file():
+            raise ValueError("SDK receipt writer omitted its bound output")
     validate(path)
     return path
 
@@ -583,26 +598,36 @@ def _canonical_receipt(
 
 
 def validate(receipt_path: Path) -> dict[str, object]:
+    receipt_path = receipt_path.resolve(strict=True)
     out = receipt_path.parent.resolve()
-    receipt = _json(receipt_path)
+    context = _json(receipt_path)
     if (
-        not isinstance(receipt, dict)
-        or set(receipt)
-        != {"schema_version", "rail", "revision", "os", "tools", "binaries", "commands", "evidence"}
-        or type(receipt["schema_version"]) is not int
-        or receipt["schema_version"] != 1
-        or receipt["rail"] not in {"contract", "sdk"}
+        not isinstance(context, dict)
+        or set(context)
+        != {
+            "schema_version",
+            "rail",
+            "revision",
+            "os",
+            "tools",
+            "binaries",
+            "commands",
+            "raw_evidence",
+        }
+        or type(context["schema_version"]) is not int
+        or context["schema_version"] != 1
+        or context["rail"] not in {"contract", "sdk"}
     ):
-        raise ValueError("invalid portable proof receipt shape")
+        raise ValueError("invalid execution context shape")
     closure = source_closure.validate_manifest_shape(_json(out / "source-closure.json"))
     if (
-        receipt["revision"] != closure["revision"]
-        or not isinstance(receipt["os"], dict)
-        or set(receipt["os"]) != {"system", "release", "machine", "python_version"}
-        or not all(isinstance(value, str) and value for value in receipt["os"].values())
+        context["revision"] != closure["revision"]
+        or not isinstance(context["os"], dict)
+        or set(context["os"]) != {"system", "release", "machine", "python_version"}
+        or not all(isinstance(value, str) and value for value in context["os"].values())
     ):
         raise ValueError("invalid portable proof source or OS identity")
-    tools = receipt["tools"]
+    tools = context["tools"]
     if not isinstance(tools, dict) or set(tools) != {
         "python",
         "cargo",
@@ -621,13 +646,12 @@ def validate(receipt_path: Path) -> dict[str, object]:
             or not all(
                 isinstance(tool[key], str) and tool[key] for key in ("path", "realpath", "version")
             )
-            or not isinstance(tool["sha256"], str)
-            or len(tool["sha256"]) != 64
+            or not _is_sha256(tool["sha256"])
         ):
             raise ValueError("invalid proof tool identity")
-    binaries = receipt["binaries"]
+    binaries = context["binaries"]
     if not isinstance(binaries, dict) or set(binaries) != (
-        {"runner", "searchd"} if receipt["rail"] == "sdk" else set()
+        {"runner", "searchd"} if context["rail"] == "sdk" else set()
     ):
         raise ValueError("invalid proof binary identities")
     for binary in binaries.values():
@@ -637,9 +661,9 @@ def validate(receipt_path: Path) -> dict[str, object]:
             or _sha(Path(binary["path"])) != binary["sha256"]
         ):
             raise ValueError("proof binary identity changed")
-    expected_commands = _expected_commands(receipt["rail"], out, receipt["tools"], binaries)
+    expected_commands = _expected_commands(context["rail"], out, tools, binaries)
     expected_names = [name for name, _, _ in expected_commands]
-    commands = receipt["commands"]
+    commands = context["commands"]
     if (
         not isinstance(commands, list)
         or [row.get("name") for row in commands if isinstance(row, dict)] != expected_names
@@ -690,35 +714,29 @@ def validate(receipt_path: Path) -> dict[str, object]:
                 or _sha(_inside(out, row[role])) != row[f"{role}_sha256"]
             ):
                 raise ValueError("proof command output changed")
-    evidence = receipt["evidence"]
-    expected_evidence = (
+    raw_evidence = context["raw_evidence"]
+    expected_raw = (
         {
             "source-closure.json",
             "python-inventory.json",
             "rust-inventory.json",
             "python-junit.xml",
             "rust-nextest.jsonl",
-            "contract_python_results.json",
-            "contract_rust_results.json",
-            "contract_python_receipt.json",
-            "contract_rust_receipt.json",
         }
-        if receipt["rail"] == "contract"
+        if context["rail"] == "contract"
         else {
             "source-closure.json",
             "nextest-inventory.json",
             "nextest.jsonl",
             "actual-runner-record.json",
-            "sdk_results.json",
-            "sdk_receipt.json",
         }
     )
-    if not isinstance(evidence, dict) or set(evidence) != expected_evidence:
-        raise ValueError("invalid portable proof evidence set")
-    for name, digest in evidence.items():
+    if not isinstance(raw_evidence, dict) or set(raw_evidence) != expected_raw:
+        raise ValueError("invalid execution context raw evidence set")
+    for name, digest in raw_evidence.items():
         if _sha(_inside(out, name)) != digest:
             raise ValueError(f"proof evidence changed: {name}")
-    if receipt["rail"] == "contract":
+    if context["rail"] == "contract":
         proof_inventory.verify_inventory_authority(out / "python-inventory.json", "python")
         proof_inventory.verify_inventory_authority(out / "rust-inventory.json", "rust")
         if (out / "rust-inventory.json").read_bytes() != (
@@ -744,6 +762,7 @@ def validate(receipt_path: Path) -> dict[str, object]:
             inputs={
                 "pytest-junit": out / "python-junit.xml",
                 "pytest-inventory": out / "python-inventory.json",
+                "execution-context": receipt_path,
             },
             closure=closure,
         )
@@ -755,6 +774,7 @@ def validate(receipt_path: Path) -> dict[str, object]:
             inputs={
                 "nextest-jsonl": out / "rust-nextest.jsonl",
                 "nextest-inventory": out / "rust-inventory.json",
+                "execution-context": receipt_path,
             },
             closure=closure,
         )
@@ -792,13 +812,14 @@ def validate(receipt_path: Path) -> dict[str, object]:
                 "nextest-jsonl": out / "nextest.jsonl",
                 "nextest-inventory": out / "nextest-inventory.json",
                 "runner-record": out / "actual-runner-record.json",
+                "execution-context": receipt_path,
             },
             closure=closure,
         )
     for name, summary in expected.items():
         if _json(out / name) != summary:
             raise ValueError(f"proof summary differs from machine evidence: {name}")
-    return receipt
+    return context
 
 
 def main() -> int:
