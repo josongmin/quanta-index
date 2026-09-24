@@ -511,8 +511,7 @@ fn query_plane_resolves_only_catalog_active_generation() -> TestResult {
         "activation-digest-9",
     )?;
     let prepared = PreparedSearchCorpusGenerationV1::new(active, None)?;
-    let activation =
-        activation_catalog.activate_prepared_search_corpus_generation_v1(&prepared)?;
+    let activation = activation_catalog.activate_prepared_search_corpus_generation_v1(&prepared)?;
     let dispatcher = SearchPlaneDispatcher::new(
         Arc::new(RejectLexicalOpener),
         Arc::new(RejectSemanticOpener),

@@ -2625,12 +2625,8 @@ mod qi_act_01_tests {
             decode::<SearchCorpusActiveHeadObservationV1>(&bytes).expect("decode observation"),
             observed
         );
-        let absent = SearchCorpusActiveHeadObservationV1::new(
-            fixture_repo(),
-            fixture_rev(),
-            None,
-        )
-        .expect("explicit absence");
+        let absent = SearchCorpusActiveHeadObservationV1::new(fixture_repo(), fixture_rev(), None)
+            .expect("explicit absence");
         assert_eq!(absent.head(), None);
         assert_eq!(
             decode::<SearchCorpusActiveHeadObservationV1>(

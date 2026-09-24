@@ -4487,12 +4487,9 @@ fn generations_active_head_binds_domain_and_does_not_map_remote_failure_to_absen
     };
 
     let head = search_corpus_head(7, "manifest:7", 3);
-    let present = SearchCorpusActiveHeadObservationV1::new(
-        repo_id(),
-        revision_id(),
-        Some(head.clone()),
-    )
-    .expect("matching fixture head");
+    let present =
+        SearchCorpusActiveHeadObservationV1::new(repo_id(), revision_id(), Some(head.clone()))
+            .expect("matching fixture head");
     let control = Arc::new(StubControlTransport::new(
         SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(present),
     ));

@@ -16,9 +16,8 @@ use quanta_index_contract::lex::{
 use quanta_index_contract::{
     BatchIngestMode, ChunkId, ChunkRecord, GenerationSnapshot, ManifestGeneration,
     ReplaceLexicalScope, RepoId, RepoRelativePath, RevisionId, SearchCorpusActiveHeadV1,
-    SearchCorpusGenerationIdentityV1,
-    SearchCorpusReplaceScope, SearchPlaneTrackKind, SearchScopeKey, SearchScopeSurface,
-    UpsertParseTree,
+    SearchCorpusGenerationIdentityV1, SearchCorpusReplaceScope, SearchPlaneTrackKind,
+    SearchScopeKey, SearchScopeSurface, UpsertParseTree,
 };
 use quanta_index_core::{
     AuxiliaryAuthorityCatalogPort, AuxiliaryGenerationKeyV1, AuxiliaryMutationBatchV1, CoreError,

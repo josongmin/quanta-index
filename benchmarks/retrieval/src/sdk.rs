@@ -651,9 +651,9 @@ mod empty_status_tests {
         identity: &BatchIdentity,
         previous: Option<SearchCorpusActiveHeadV1>,
     ) -> SearchPlaneSearchCorpusActivationCasAck {
-        let next_sequence = previous
-            .as_ref()
-            .map_or(1, |head| head.activation_token.activation_sequence().get() + 1);
+        let next_sequence = previous.as_ref().map_or(1, |head| {
+            head.activation_token.activation_sequence().get() + 1
+        });
         SearchPlaneSearchCorpusActivationCasAck {
             active: forged_head(identity, next_sequence),
             previous_sealed_active: previous,
@@ -846,7 +846,10 @@ pub(crate) fn verify_activation_ack(
         ));
     }
     let expected_sequence = expected_active.map_or(Some(1), |head| {
-        head.activation_token.activation_sequence().get().checked_add(1)
+        head.activation_token
+            .activation_sequence()
+            .get()
+            .checked_add(1)
     });
     if expected_sequence != Some(ack.active.activation_token.activation_sequence().get())
         || expected_active.is_some_and(|head| {

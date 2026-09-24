@@ -1725,9 +1725,8 @@ mod search_corpus_binding_tests {
     use super::{ControlCallBinding, bind_control_response};
     use crate::{ResponseBindingAxis, SdkError};
     use quanta_index_contract::{
-        GenerationSnapshot, ManifestGeneration, RepoId, RevisionId,
-        SearchCorpusActiveHeadV1, SearchCorpusGenerationIdentityV1,
-        SearchPlaneActivateSearchCorpusGenerationCasRequest,
+        GenerationSnapshot, ManifestGeneration, RepoId, RevisionId, SearchCorpusActiveHeadV1,
+        SearchCorpusGenerationIdentityV1, SearchPlaneActivateSearchCorpusGenerationCasRequest,
         SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse,
         SearchPlaneRollbackSearchCorpusGenerationCasRequest,
         SearchPlaneSearchCorpusActivationCasAck, SearchPlaneSearchCorpusRollbackCasAck,
@@ -1823,8 +1822,10 @@ mod search_corpus_binding_tests {
         ));
 
         let mut wrong_previous = previous.clone();
-        wrong_previous.generation.semantic_content.membership_root_digest =
-            format!("sha256:{}", "d".repeat(64));
+        wrong_previous
+            .generation
+            .semantic_content
+            .membership_root_digest = format!("sha256:{}", "d".repeat(64));
         let rollback_ack = SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(
             SearchPlaneSearchCorpusRollbackCasAck {
                 active: head(7, 2),
