@@ -2,8 +2,8 @@
 
 Status: exact-pair release qualification staged.
 
-2026-09-24 local follow-up at Quanta `7dec5965` plus uncommitted
-`crates/quanta-index-repomap/src/store.rs`: the private terminal receipt
+2026-09-24 local follow-up, tested at Quanta `7dec5965` plus the store patch
+and committed as `3b1d7b19`: the private terminal receipt
 constructor now rejects a nonpositive catalog sequence instead of emitting a
 successful receipt with sequence `0`. The exact unit test passed 1/1 and
 `./scripts/cargow test -p quanta-index-repomap --test candidate_activation_owner_v1`

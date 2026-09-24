@@ -15,8 +15,8 @@ qualification.
 | P12A | Validate existing aggregate/handoff custody and issue the exact-pair infrastructure receipt after P11. | `tools/ci/write-proof-aggregate.py`, `tools/ci/lint/handoff_validation.py` |
 | P12Q | Reissue all final-source dependencies, create the aggregate, then issue and validate the P12 manifest. | `just proof-authority-final-qualification` |
 
-2026-09-24 checkpoint at Quanta `7dec5965` plus a pending local RepoMap
-receipt fix: the owner integration target passed 19/19 and the malformed
+2026-09-24 checkpoint tested at Quanta `7dec5965` plus the RepoMap receipt
+fix, committed as `3b1d7b19`: the owner integration target passed 19/19 and the malformed
 terminal-sequence unit target passed 1/1. Before that edit, the clean-Quanta
 P12A infrastructure recipe passed 121/121 Python tests while validating zero
 proof manifests. These are local checks only. The registry still stages P09
