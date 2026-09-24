@@ -5,6 +5,11 @@
 #![deny(clippy::let_underscore_must_use)]
 #![deny(clippy::map_err_ignore)]
 
+#[cfg(not(unix))]
+compile_error!(
+    "quanta-index-ipc requires a native transport with an explicit named-pipe ACL and kernel peer identity check; the Unix socket implementation cannot serve Windows"
+);
+
 mod admission;
 mod batch_digest;
 mod codec;

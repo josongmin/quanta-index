@@ -59,8 +59,8 @@ the local PotionCode model assets on boot; missing or changed assets fail the
 run. The CLI refuses dirty or wrong-HEAD repositories, untracked admitted
 files, empty query-pack universes, stale non-empty state roots and existing
 output files. A direct CLI invocation is normally `attested`. The paired
-driver can invoke the CLI as `isolated` only inside its verified macOS
-Seatbelt boundary; the record then carries the driver-generated proof digest.
+driver can invoke the CLI as `isolated` inside a verified macOS Seatbelt or
+Linux Landlock boundary; the record then carries the driver-generated proof digest.
 For that path, the driver first materializes a Git-free directory containing
 exactly the manifest-admitted files, denies the entire original checkout and
 both suite roots, and passes only the materialized corpus to both runners.
@@ -68,6 +68,10 @@ The verdict re-enumerates every materialized path/SHA and refuses extra files,
 symlinks, Git metadata, or a corpus-proof mismatch.
 The record label alone is never authority: `verdict` requires the frozen
 policy/probe artifact and matching process-resource bindings.
+Native Windows paired capture remains unsupported while the product IPC port,
+peer admission, and sandboxed process owner are incomplete. The Semble worker's
+Windows resident-memory probe does not enable a Windows SDK roundtrip. WSL is
+classified as Linux, never as native Windows evidence.
 
 The runner computes `query_pack_sha256` as SHA-256 of UTF-8 JSON serialized
 with sorted keys, no whitespace, and `ensure_ascii=False`. A producer can use
@@ -194,7 +198,7 @@ keys: `repo`, `manifest`, `suite`, `query_pack`, `top_k`, `output_root`,
 | `embedder` | `potion-code` | Rust runner embedder profile (`hash-dev` is an explicit diagnostic control) |
 | `repo_id`/`revision_id`/`generation` | `bench-repo`/`bench-rev`/`7` | batch identity |
 | `runner_name`/`run_id` | `quanta-sdk-runner`/`run` | runner identity; `runner_revision` is derived from the binary SHA-256 |
-| `blinding` | `attested` | `isolated` is supported by `pair` on macOS only, through the enforced Seatbelt path |
+| `blinding` | `attested` | `isolated` requires the enforced Seatbelt (macOS) or Landlock (Linux) path; unsupported or unavailable backends fail closed |
 | `suite_secret_root` | none | required for `isolated`; external evaluator-only root containing the suite and no runner-readable input |
 | `isolation_method`/`access_block_log` | `attested-only…` | supplied for attested runs; driver-generated and proof-bound for isolated runs |
 | `semble_python` | required for `pair` | pinned Semble venv interpreter |
@@ -212,6 +216,7 @@ keys: `repo`, `manifest`, `suite`, `query_pack`, `top_k`, `output_root`,
 | `scope` | `exploratory` | `exploratory` or `qualified` |
 | `admission` | required for `qualified` | paths to the W0-B manifest, license receipt, two independent annotation receipts, and adjudication receipt |
 | `host_profile` | required for `pair` | path to a generated host-profile JSON; the file is frozen, digest-bound, and matched against both host probes |
+| `linux_cgroup_parent` | none | required for qualified native Linux: an explicitly delegated cgroup v2 parent, frozen by path/device/inode and rechecked with the resource owner |
 | `claims` | all `false` | `{quality,speed,same_model,incremental}` |
 | `receipts` | omitted | paths to contract/SDK summaries, receipts, raw JUnit/nextest JSONL, actual-runner record and Python/Rust/SDK collection inventories; all bytes are frozen and raw evidence is reparsed by the verdict |
 | `timeout_secs` | `1800` | per-capture timeout |
@@ -241,10 +246,12 @@ weights Semble loaded. The adapter sets Semble's documented
 setting. It also requires an observed Hugging Face
 cache revision and rejects a supplied revision that disagrees with it.
 `same_model` remains an external claim needing its own evidence. An
-`attested` pair cannot qualify isolated-blind quality. The macOS paired
-driver can instead attempt `isolated` capture under its verified Seatbelt
-policy; the verdict still requires the frozen isolation proof. Neither mode
-alone qualifies speed.
+`attested` pair cannot qualify isolated-blind quality. The paired driver can
+attempt `isolated` capture under Seatbelt on macOS or Landlock on Linux; the
+verdict still requires the frozen tagged proof v2, re-probes the boundary after
+stage relocation, and checks Linux child attestation. Landlock availability
+must be probed on the actual host. This proves a filesystem-path read boundary,
+not IPC or mount topology isolation. Neither mode alone qualifies speed.
 
 Qualified capture runs the canonical retrieval source-closure check before staging;
 dirty relevant source is a hard refusal. The closure is frozen into the run,
@@ -252,6 +259,13 @@ reverified after capture, cross-bound to all contract/SDK receipt closures, and
 bound by both the protocol lock and run manifest. Isolated capture executes stage-local,
 SHA-bound copies of the Semble adapter/evaluator rather than reading the checkout.
 Qualified quality also requires an estimable paired category-stratified bootstrap CI.
+`just retrieval-contract-proof <fresh-output-root>` and
+`just retrieval-sdk-proof <fresh-output-root>` are the public proof producers.
+They freeze an execution context, command transcripts, raw test evidence and
+context-bound receipts. The verdict rejects missing or changed bindings. Tool
+and OS identity in that context is not independently attested, so the separate
+`os_portability.qualified` verdict field remains false; it is not a native-OS
+support certificate. The internal SDK raw recipe is not a proof artifact.
 
 Generate the host profile on the measurement host before authoring the pair
 spec. `PERF_QUALIFIED` requires the frozen fingerprint, normalized active-source
@@ -267,7 +281,9 @@ python3 tools/benchmark/retrieval/run.py host-profile \
 On Linux, host-profile v2 requires an operator-selected CPU thermal zone and
 explicit limits; mere sensor presence is not speed evidence. The selected zone
 name and sensor type, per-CPU maximum frequencies, and the performance governor
-set are pinned. Both start/end probes must observe every CPU at or above the
+set are pinned. Per-CPU scaling min/max, driver, and an exposed disabled
+boost/turbo control are also pinned; hosts without these controls cannot qualify speed.
+Both start/end probes must observe every CPU at or above the
 configured percentage of its pinned maximum and the selected thermal zone at
 or below the configured ceiling. The ceiling cannot exceed 85,000 millidegrees
 and the frequency floor cannot be below 80 percent. Unsupported or partial
@@ -285,11 +301,18 @@ python3 tools/benchmark/retrieval/run.py host-profile \
   --out /absolute/host-profile.json
 ```
 
-Resource evidence is schema-closed: aggregate and per-process peak RSS/CPU,
-index/model/parser/embedding-cache bytes, discovered file count, indexed chunk
-count, disk-vs-memory ownership, and the measurement method are mandatory.
-Semble in-memory index bytes are a worker-observed peak-RSS delta and must be
-positive and byte-equal in native/resource evidence. For each fresh root the
+Resource evidence is schema-closed: aggregate and per-process resident memory
+and CPU accounting, index/model/parser/embedding-cache bytes, discovered file
+count, indexed chunk count, disk-vs-memory ownership, and the measurement
+method are mandatory. Qualified Linux capture additionally requires a delegated
+cgroup v2 parent and a complete owned-tree cleanup record; cgroup memory peak
+is recorded separately from sampled RSS, and CPU time is recorded in ns rather
+than fabricated peak percentages. An exploratory process-group capture cannot
+be promoted to qualified ownership.
+Semble in-memory index bytes are a worker-observed peak-resident delta (Unix
+peak RSS; Windows peak working set), not an exact allocation count. They must
+be positive and byte-equal in native/resource evidence. The Windows path is
+implemented but not native-host qualified. For each fresh root the
 driver emits one SHA-256-bound query protocol containing a cold probe, randomized
 warmup permutation(s), and randomized measurement permutations. Quanta and
 Semble must echo that exact protocol and raw per-route/per-task warm latency
@@ -379,7 +402,7 @@ certified contract proof; focused regressions now reject that case. Any later
 bound code, test or normative-document edit requires new contract/SDK receipts
 from one v2 source closure;
 the generic workspace rail must record a post-change frozen-source result;
-and Seatbelt isolation and phase/process-tree RSS still need a real admitted
+and OS-specific isolation and phase/process-tree RSS still need a real admitted
 quiet-host pair meeting their proof and sample floors. The commands above
 prove code paths, not W0-B, `PERF_QUALIFIED` or `QUALITY_DELTA`. An external
 2026-09-24 exploratory pair at source `96642c06` did pass `PAIR_VALID` and

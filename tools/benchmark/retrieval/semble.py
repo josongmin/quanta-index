@@ -58,9 +58,54 @@ SEMBLE_PINNED_VERSION = "0.6.0"
 WORKER_TEMPLATE = '''"""Spawned Semble worker (pinned env only). Reads SPEC_JSON, writes NATIVE_JSON."""
 import json
 import os
-import resource
 import sys
 import time
+
+def peak_resident_bytes() -> int:
+    if sys.platform == "win32":
+        import ctypes
+
+        class ProcessMemoryCounters(ctypes.Structure):
+            _fields_ = [
+                ("cb", ctypes.c_uint32),
+                ("PageFaultCount", ctypes.c_uint32),
+                ("PeakWorkingSetSize", ctypes.c_size_t),
+                ("WorkingSetSize", ctypes.c_size_t),
+                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                ("PagefileUsage", ctypes.c_size_t),
+                ("PeakPagefileUsage", ctypes.c_size_t),
+            ]
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        psapi = ctypes.WinDLL("psapi", use_last_error=True)
+        kernel.GetCurrentProcess.restype = ctypes.c_void_p
+        psapi.GetProcessMemoryInfo.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ProcessMemoryCounters),
+            ctypes.c_uint32,
+        ]
+        psapi.GetProcessMemoryInfo.restype = ctypes.c_int32
+        counters = ProcessMemoryCounters()
+        counters.cb = ctypes.sizeof(counters)
+        if not psapi.GetProcessMemoryInfo(
+            kernel.GetCurrentProcess(), ctypes.byref(counters), counters.cb
+        ):
+            raise OSError(ctypes.get_last_error(), "GetProcessMemoryInfo failed")
+        observed = int(counters.PeakWorkingSetSize)
+        if observed <= 0:
+            raise RuntimeError("Windows peak working set is not positive")
+        return observed
+
+    import resource
+
+    unit = 1 if sys.platform == "darwin" else 1024
+    observed = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) * unit
+    if observed <= 0:
+        raise RuntimeError("peak resident set is not positive")
+    return observed
 
 def main() -> int:
     worker_started_ns = time.monotonic_ns()
@@ -72,11 +117,10 @@ def main() -> int:
     from semble import SembleIndex
     model_prepare_end_ns = time.monotonic_ns()
 
-    rss_unit = 1 if sys.platform == "darwin" else 1024
-    rss_before_index = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) * rss_unit
+    rss_before_index = peak_resident_bytes()
     index = SembleIndex.from_path(spec["corpus_dir"], show_progress_bar=False)
     index_end_ns = time.monotonic_ns()
-    rss_after_index = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) * rss_unit
+    rss_after_index = peak_resident_bytes()
     index_resident_bytes = max(rss_after_index - rss_before_index, 0)
     if index_resident_bytes == 0:
         raise SystemExit("worker could not attribute positive resident bytes to the index")
@@ -726,7 +770,9 @@ def normalize_record(
         if task_key in by_task:
             raise AdapterError(f"Semble emitted a duplicate native row: {task_key}")
         by_task[task_key] = row["results"]
-    if not isinstance(latencies, dict) or any(task_id not in expected_task_ids for task_id in latencies):
+    if not isinstance(latencies, dict) or any(
+        task_id not in expected_task_ids for task_id in latencies
+    ):
         raise AdapterError("Semble latencies contain an unexpected task or invalid mapping")
     results = []
     for task in pack["tasks"]:

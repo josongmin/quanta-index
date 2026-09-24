@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from tools.benchmark.retrieval import portable_proof
 from tools.benchmark.retrieval.proof_inventory import verify_inventory_authority
 from tools.ci import source_closure
 
@@ -31,22 +32,39 @@ def test_proof_recipes_capture_source_once_before_execution(tmp_path: Path) -> N
             text=True,
         )
         commands = completed.stdout + completed.stderr
-        assert commands.count("source_closure.py capture --profile retrieval") == 1
-        assert "source_closure.py check --profile retrieval" not in commands
-        assert "mkdir -p" not in commands
-        assert commands.index("test ! -e") < commands.index("source_closure.py capture")
-        first_execution = (
-            "--lane test-daemon-lane" if name == "retrieval-sdk-proof" else "python3 -m pytest"
+        rail = "contract" if name == "retrieval-contract-proof" else "sdk"
+        assert commands.strip() == (
+            f"python3 tools/benchmark/retrieval/portable_proof.py run --rail {rail} "
+            f'--out "{tmp_path / name}"'
         )
-        assert commands.index("source_closure.py capture") < commands.index(first_execution)
-        if name == "retrieval-contract-proof":
-            assert commands.index("proof_inventory.py --out") < commands.index("nextest list")
-            assert commands.index("proof_inventory.py --verify") < commands.index("python3 -m pytest")
-        if name == "retrieval-sdk-proof":
-            assert commands.count("metadata --format-version 1 --no-deps") == 1
-            assert "set -e -o pipefail; target_dir=" in commands
-            assert 'QUANTA_INDEX_SEARCHD_BIN="$target_dir/debug/quanta-index-searchd"' in commands
-            assert '--runner-bin "$target_dir/debug/quanta-index-retrieval-bench"' in commands
+    tools = {
+        "python": {"path": sys.executable},
+        "cargow": {"path": str(portable_proof.WRAPPER)},
+        "just": {"path": "just"},
+    }
+    contract = portable_proof._expected_commands("contract", tmp_path, tools, {})
+    assert contract[0][0] == "source-closure"
+    assert [row[0] for row in contract] == [
+        "source-closure",
+        "python-collection",
+        "rust-collection",
+        "python-test",
+        "rust-test",
+    ]
+    sdk = portable_proof._expected_commands("sdk", tmp_path, tools, {})
+    assert sdk[0][1][1] == "_retrieval-sdk-proof-raw"
+    completed = subprocess.run(
+        ["just", "--dry-run", "_retrieval-sdk-proof-raw", str(tmp_path / "raw")],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    commands = completed.stdout + completed.stderr
+    assert commands.count("source_closure.py capture --profile retrieval") == 1
+    assert commands.index("test ! -e") < commands.index("source_closure.py capture")
+    assert commands.index("source_closure.py capture") < commands.index("--lane test-daemon-lane")
+    assert "write-verification-receipt.py" not in commands
 
 
 def test_retrieval_local_runs_both_rust_targets_once() -> None:

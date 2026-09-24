@@ -29,6 +29,19 @@ except ModuleNotFoundError:  # direct script invocation
 PROOF_TEST = "actual_runner_binary_emits_receipt_bound_v3_record"
 
 
+def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate runner record JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def _reject_constant(value: str) -> None:
+    raise ValueError(f"invalid runner record JSON constant: {value}")
+
+
 def _hex64(value: object, label: str) -> str:
     if (
         not isinstance(value, str)
@@ -53,13 +66,26 @@ def _nextest_counts(path: Path, inventory: Path | None = None) -> tuple[int, int
 
 
 def build_summary_from_evidence(
-    record_path: Path, nextest_path: Path, runner_digest: str, inventory_path: Path | None = None
+    record_path: Path,
+    nextest_path: Path,
+    runner_digest: str,
+    inventory_path: Path | None = None,
+    *,
+    searchd_digest: str | None = None,
 ) -> dict[str, object]:
     try:
-        record = json.loads(record_path.read_bytes())
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        record = json.loads(
+            record_path.read_bytes(),
+            object_pairs_hook=_unique_object,
+            parse_constant=_reject_constant,
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
         raise SystemExit(f"invalid runner record {record_path}: {error}") from error
-    if not isinstance(record, dict) or record.get("schema_version") != 3:
+    if (
+        not isinstance(record, dict)
+        or type(record.get("schema_version")) is not int
+        or record["schema_version"] != 3
+    ):
         raise SystemExit("runner record must be a v3 object")
     captures = record.get("captures")
     routes = record.get("route_provenance")
@@ -72,6 +98,7 @@ def build_summary_from_evidence(
     receipt_digests: set[str] = set()
     activation_digests: set[str] = set()
     capture_binary_digests: set[str] = set()
+    capture_searchd_digests: set[str] = set()
     for capture_id, capture in captures.items():
         if not isinstance(capture, dict):
             raise SystemExit(f"capture {capture_id} must be an object")
@@ -79,10 +106,21 @@ def build_summary_from_evidence(
         if not isinstance(runner, dict):
             raise SystemExit(f"capture {capture_id} lacks runner_binary")
         capture_binary_digests.add(_hex64(runner.get("digest"), "runner binary digest"))
+        if searchd_digest is not None:
+            searchd = capture.get("searchd_binary")
+            if not isinstance(searchd, dict):
+                raise SystemExit(f"capture {capture_id} lacks searchd_binary")
+            capture_searchd_digests.add(
+                _hex64(searchd.get("binary_digest"), "searchd binary digest")
+            )
         receipt_digests.add(_hex64(capture.get("receipt_digest"), "receipt digest"))
         activation_digests.add(_hex64(capture.get("activation_digest"), "activation digest"))
     if capture_binary_digests != {binary_digest}:
         raise SystemExit("record runner binary digest differs from the executable")
+    if searchd_digest is not None and capture_searchd_digests != {
+        _hex64(searchd_digest, "searchd binary digest")
+    }:
+        raise SystemExit("record searchd binary digest differs from the executable")
     if len(receipt_digests) != 1 or len(activation_digests) != 1:
         raise SystemExit("record captures do not share one receipt and activation ACK")
 
@@ -106,10 +144,23 @@ def build_summary_from_evidence(
 
 
 def build_summary(
-    record_path: Path, nextest_path: Path, runner_path: Path, inventory_path: Path | None = None
+    record_path: Path,
+    nextest_path: Path,
+    runner_path: Path,
+    inventory_path: Path | None = None,
+    *,
+    searchd_path: Path | None = None,
 ) -> dict[str, object]:
     binary_digest = hashlib.sha256(runner_path.read_bytes()).hexdigest()
-    return build_summary_from_evidence(record_path, nextest_path, binary_digest, inventory_path)
+    return build_summary_from_evidence(
+        record_path,
+        nextest_path,
+        binary_digest,
+        inventory_path,
+        searchd_digest=hashlib.sha256(searchd_path.read_bytes()).hexdigest()
+        if searchd_path is not None
+        else None,
+    )
 
 
 def main() -> int:

@@ -182,6 +182,7 @@ impl StateRootLease {
         state_root: &Path,
         access: StateRootAccessV1,
     ) -> Result<Self, CoreError> {
+        ensure_state_root_security_supported_v1(state_root)?;
         ensure_durable_state_root_v1(state_root)?;
         let state_root_identity_v1 = canonical_state_root_identity_v1(state_root)?;
         ensure_private_state_root_v1(&state_root_identity_v1, access)?;
@@ -228,6 +229,22 @@ impl StateRootLease {
     pub fn state_root_identity_v1(&self) -> &Path {
         &self.state_root_identity_v1
     }
+}
+
+#[cfg(unix)]
+fn ensure_state_root_security_supported_v1(_state_root: &Path) -> Result<(), CoreError> {
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_state_root_security_supported_v1(state_root: &Path) -> Result<(), CoreError> {
+    Err(CoreError::Typed {
+        code: quanta_index_contract::SearchPlaneErrorCodeV2::StateRootInsecure,
+        message: format!(
+            "searchd state root {} cannot be admitted: owner and access control verification is not implemented on this platform",
+            state_root.display(),
+        ),
+    })
 }
 
 #[cfg(unix)]
@@ -391,10 +408,10 @@ fn ensure_private_state_root_v1(
 
 #[cfg(not(unix))]
 fn ensure_private_state_root_v1(
-    _state_root: &Path,
+    state_root: &Path,
     _access: StateRootAccessV1,
 ) -> Result<(), CoreError> {
-    Ok(())
+    ensure_state_root_security_supported_v1(state_root)
 }
 
 #[cfg(unix)]
@@ -1792,6 +1809,29 @@ mod tests {
     use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::sync::{Arc, Mutex, RwLock};
     type TestRes = Result<(), Box<dyn std::error::Error>>;
+
+    #[cfg(not(unix))]
+    #[test]
+    fn unsupported_platform_refuses_state_root_before_creation() -> TestRes {
+        let parent = tempfile::tempdir()?;
+        let state_root = parent.path().join("uncreated-state");
+        let result = super::StateRootLease::acquire(&state_root);
+        assert!(
+            matches!(
+                result,
+                Err(quanta_index_core::CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::StateRootInsecure,
+                    ..
+                })
+            ),
+            "state-root security must fail closed on unsupported platforms"
+        );
+        assert!(
+            !state_root.exists(),
+            "refusal must precede filesystem writes"
+        );
+        Ok(())
+    }
 
     #[test]
     fn one_runtime_instance_binds_all_three_plane_windows() -> TestRes {

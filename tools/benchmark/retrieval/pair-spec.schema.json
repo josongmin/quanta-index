@@ -27,7 +27,7 @@
     "blinding": {"enum": ["isolated", "attested"]},
     "suite_secret_root": {
       "type": "string", "minLength": 1,
-      "description": "Required when blinding=isolated. The suite must be a regular file below this external evaluator-only root; the root must contain no runner-readable input. The driver denies this root and its frozen evaluator-only suite copy with macOS Seatbelt."
+      "description": "Required when blinding=isolated. The suite must be a regular file below this external evaluator-only root; the root must contain no runner-readable input. The driver checks actual runner-child deny/allow access with the current tagged macOS Seatbelt or Linux Landlock backend."
     },
     "isolation_method": {"type": "string", "minLength": 1},
     "access_block_log": {"type": "string", "minLength": 1},
@@ -68,6 +68,10 @@
       "type": "string", "minLength": 1,
       "description": "Path to a canonical host-profile JSON artifact. Optional in the schema; run_pair refuses a pair spec without it."
     },
+    "linux_cgroup_parent": {
+      "type": "string", "pattern": "^/[^\\n]+$",
+      "description": "Explicit delegated cgroup v2 parent for qualified Linux capture. The owner creates and removes only a unique child subgroup. Exploratory process-group fallback must omit this key."
+    },
     "admission": {
       "type": "object", "additionalProperties": false,
       "description": "Required when scope=qualified. Paths to the W0-B authority manifest and the independently produced evidence bytes it binds.",
@@ -87,6 +91,8 @@
       "type": "object", "additionalProperties": false,
       "description": "Paths to externally produced receipt/result artifacts. The driver freezes them by copying into the stage; the verdict re-verifies the frozen bytes. No evidence content travels through the spec.",
       "properties": {
+        "contract_execution_context": {"type": "string", "minLength": 1},
+        "contract_source_closure": {"type": "string", "minLength": 1},
         "contract_python_receipt": {"type": "string", "minLength": 1},
         "contract_python_results": {"type": "string", "minLength": 1},
         "contract_python_raw": {"type": "string", "minLength": 1},
@@ -95,6 +101,8 @@
         "contract_rust_results": {"type": "string", "minLength": 1},
         "contract_rust_raw": {"type": "string", "minLength": 1},
         "contract_rust_inventory": {"type": "string", "minLength": 1},
+        "sdk_execution_context": {"type": "string", "minLength": 1},
+        "sdk_source_closure": {"type": "string", "minLength": 1},
         "sdk_receipt": {"type": "string", "minLength": 1},
         "sdk_results": {"type": "string", "minLength": 1},
         "sdk_nextest_raw": {"type": "string", "minLength": 1},
@@ -110,6 +118,13 @@
     }
   },
   "allOf": [
+    {
+      "if": {"properties": {"blinding": {"const": "isolated"}}, "required": ["blinding"]},
+      "then": {
+        "required": ["suite_secret_root"],
+        "not": {"anyOf": [{"required": ["isolation_method"]}, {"required": ["access_block_log"]}]}
+      }
+    },
     {
       "if": {"properties": {"scope": {"const": "qualified"}}, "required": ["scope"]},
       "then": {"required": ["admission"]}

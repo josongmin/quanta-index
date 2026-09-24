@@ -2,20 +2,24 @@
 
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import html
+import io
 import json
 import math
 import shlex
 import shutil
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 import jsonschema
 import pytest
 
 from tools.benchmark.retrieval import evaluator as ev
+from tools.benchmark.retrieval import portable_proof
 from tools.benchmark.retrieval import run as pairrun
 from tools.benchmark.retrieval import semble as semble_adapter
 from tools.ci import source_closure
@@ -1405,6 +1409,37 @@ def test_run_pair_requires_lockfile_path(tmp_path):
         pairrun.run_pair(dict(base, semble_lockfile=str(tmp_path / "lock.txt")))
 
 
+def _mock_unbound_resource_metrics():
+    return {
+        "schema_version": 1,
+        "sampler": "ps-process-tree-rss-cpu-v2",
+        "sample_interval_ms": 50,
+        "command_sha256": _fake_sha("mock-command"),
+        "subject_sha256": _fake_sha("mock-subject"),
+        "root_pid": 100,
+        "exit_code": 0,
+        "timed_out": False,
+        "elapsed_ms": 1.0,
+        "peak_rss_bytes": 4096,
+        "peak_cpu_percent": 0.0,
+        "processes": [
+            {
+                "pid": 100,
+                "command": "mock-runner",
+                "peak_rss_bytes": 4096,
+                "peak_cpu_percent": 0.0,
+                "samples": 1,
+            }
+        ],
+        "samples": 1,
+        "complete": True,
+        "error": None,
+        "cleanup_complete": True,
+        "cleanup_escalated": False,
+        "cleanup_error": None,
+    }
+
+
 def test_run_semble_capture_forwards_lockfile(tmp_path, monkeypatch):
     seen = {}
 
@@ -1426,7 +1461,9 @@ def test_run_semble_capture_forwards_lockfile(tmp_path, monkeypatch):
             ),
             encoding="utf-8",
         )
-        kwargs["resource_path"].write_text("{}", encoding="utf-8")
+        kwargs["resource_path"].write_text(
+            json.dumps(_mock_unbound_resource_metrics()), encoding="utf-8"
+        )
         return {"exit_code": 0, "timed_out": False}
 
     monkeypatch.setattr(pairrun, "run_monitored_process", fake_run)
@@ -1496,8 +1533,15 @@ def test_quanta_driver_defaults_to_potion_and_binary_digest(tmp_path, monkeypatc
         assert command[command.index("--searchd-bin") + 1] == "/unused/searchd"
         assert command[command.index("--searchd-expected-sha256") + 1] == "b" * 64
         Path(command[command.index("--out") + 1]).write_text("{}", encoding="utf-8")
-        Path(command[command.index("--metrics-out") + 1]).write_text("{}", encoding="utf-8")
-        kwargs["resource_path"].write_text("{}", encoding="utf-8")
+        Path(command[command.index("--metrics-out") + 1]).write_text(
+            json.dumps({"file_count": 1, "chunk_count": 1}), encoding="utf-8"
+        )
+        state_root = Path(command[command.index("--state-root") + 1])
+        state_root.mkdir(parents=True, exist_ok=True)
+        (state_root / "mock-index").write_bytes(b"index")
+        kwargs["resource_path"].write_text(
+            json.dumps(_mock_unbound_resource_metrics()), encoding="utf-8"
+        )
         return {"exit_code": 0, "timed_out": False, "elapsed_ms": 1.0}
 
     monkeypatch.setattr(pairrun, "run_monitored_process", fake_run)
@@ -1553,6 +1597,7 @@ def test_quanta_driver_freezes_typed_failure_without_record(tmp_path, monkeypatc
     assert failure["record_emitted"] is False
 
 
+@pytest.mark.skipif(sys.platform == "linux", reason="legacy ps sampler is not Linux owner evidence")
 def test_process_tree_resource_sampler_counts_children_and_kills_timeout(tmp_path):
     child_code = (
         "import subprocess,sys,time; "
@@ -1632,7 +1677,7 @@ def test_isolation_boundary_denies_suite_and_allows_blind_pack(tmp_path):
         "suite_secret_root": str(secret_root),
     }
     prepared = pairrun.prepare_isolation(spec, stage, original_suite)
-    assert prepared["isolation_method"] == pairrun.ISOLATION_BACKEND
+    assert prepared["isolation_method"] == pairrun.MACOS_ISOLATION_BACKEND
     proof_path = stage / "isolation-proof.json"
     assert prepared["access_block_log"] == f"sha256:{pairrun.sha_file(proof_path)}"
     denied_command, evidence = pairrun.sandbox_command(prepared, ["/bin/cat", str(original_suite)])
@@ -2166,7 +2211,7 @@ def _full_receipts(commit, binary_digest):
             "tests": authority["python"],
         }
     ).encode()
-    return {
+    artifacts = {
         "contract_python_results": py_bytes,
         "contract_python_raw": py_raw,
         "contract_python_inventory": py_inventory,
@@ -2206,6 +2251,96 @@ def _full_receipts(commit, binary_digest):
             sdk_count,
         ),
     }
+    closure = artifacts["contract_python_receipt"]["source_closure"]
+    closure_bytes = json.dumps(closure).encode()
+    tools = {
+        name: {
+            "path": f"/fake/{name}",
+            "realpath": f"/fake/{name}",
+            "sha256": "a" * 64,
+            "version": "fixture",
+        }
+        for name in ("python", "cargo", "cargo-nextest", "rustc", "git", "bash", "just", "cargow")
+    }
+    for rail, raw in (
+        (
+            "contract",
+            {
+                "source-closure.json": closure_bytes,
+                "python-inventory.json": artifacts["contract_python_inventory"],
+                "rust-inventory.json": artifacts["contract_rust_inventory"],
+                "python-junit.xml": artifacts["contract_python_raw"],
+                "rust-nextest.jsonl": artifacts["contract_rust_raw"],
+            },
+        ),
+        (
+            "sdk",
+            {
+                "source-closure.json": closure_bytes,
+                "nextest-inventory.json": artifacts["sdk_inventory"],
+                "nextest.jsonl": artifacts["sdk_nextest_raw"],
+                "actual-runner-record.json": artifacts["sdk_record_raw"],
+            },
+        ),
+    ):
+        binaries = (
+            {
+                "runner": {"path": "/fake/runner", "sha256": binary_digest},
+                "searchd": {"path": "/fake/searchd", "sha256": _fake_sha("searchd")},
+            }
+            if rail == "sdk"
+            else {}
+        )
+        commands = []
+        for name, argv, overrides in portable_proof._expected_commands(
+            rail, Path("/proof"), tools, binaries
+        ):
+            commands.append(
+                {
+                    "name": name,
+                    "argv": argv,
+                    "cwd": str(portable_proof.ROOT),
+                    "environment": overrides,
+                    "inherited_environment": {},
+                    "environment_sha256": portable_proof._environment_digest(overrides),
+                    "exit_code": 0,
+                    "stdout": f"{name}.stdout",
+                    "stdout_sha256": ev.digest(b""),
+                    "stderr": f"{name}.stderr",
+                    "stderr_sha256": ev.digest(b""),
+                }
+            )
+        context = {
+            "schema_version": 1,
+            "rail": rail,
+            "revision": commit,
+            "os": {
+                "system": "fixture",
+                "release": "fixture",
+                "machine": "fixture",
+                "python_version": "fixture",
+            },
+            "tools": tools,
+            "binaries": binaries,
+            "commands": commands,
+            "raw_evidence": {name: ev.digest(value) for name, value in raw.items()},
+        }
+        context_bytes = json.dumps(context).encode()
+        artifacts[f"{rail}_execution_context"] = context_bytes
+        artifacts[f"{rail}_source_closure"] = closure_bytes
+        log_buffer = io.BytesIO()
+        with zipfile.ZipFile(log_buffer, "w", compression=zipfile.ZIP_STORED) as archive:
+            for name in pairrun.CONTEXT_COMMAND_NAMES[rail]:
+                for stream in ("stdout", "stderr"):
+                    archive.writestr(f"{name}.{stream}", b"")
+        artifacts[f"{rail}_execution_logs"] = log_buffer.getvalue()
+        for side in ("python", "rust") if rail == "contract" else ("sdk",):
+            receipt = artifacts[f"contract_{side}_receipt" if rail == "contract" else "sdk_receipt"]
+            receipt["input_evidence"].append(
+                {"role": "execution-context", "sha256": ev.digest(context_bytes)}
+            )
+            receipt["input_evidence"].sort(key=lambda row: row["role"])
+    return artifacts
 
 
 def _pair_stage(
@@ -2291,13 +2426,13 @@ def _pair_stage(
             (runner_tools / name).write_text(name, encoding="utf-8")
         profile = pairrun._seatbelt_profile(denied_roots, allowed_read_roots, allowed_write_roots)
         proof = {
-            "schema_version": 1,
-            "backend": pairrun.ISOLATION_BACKEND,
+            "schema_version": pairrun.ISOLATION_PROOF_VERSION,
+            "backend": pairrun.MACOS_ISOLATION_BACKEND,
             "sandbox_exec": {
                 "path": str(pairrun.SANDBOX_EXEC),
                 "sha256": pairrun.sha_file(pairrun.SANDBOX_EXEC),
             },
-            "profile_sha256": hashlib.sha256(profile.encode()).hexdigest(),
+            "policy_sha256": hashlib.sha256(profile.encode()).hexdigest(),
             "denied_roots": denied_roots,
             "allowed_read_roots": allowed_read_roots,
             "allowed_write_roots": allowed_write_roots,
@@ -2329,11 +2464,11 @@ def _pair_stage(
         proof_path = stage / "isolation-proof.json"
         proof_path.write_text(json.dumps(proof), encoding="utf-8")
         proof_sha = pairrun.sha_file(proof_path)
-        isolation_method = pairrun.ISOLATION_BACKEND
+        isolation_method = pairrun.MACOS_ISOLATION_BACKEND
         access_block_log = f"sha256:{proof_sha}"
         resource_isolation = {
-            "backend": pairrun.ISOLATION_BACKEND,
-            "profile_sha256": proof["profile_sha256"],
+            "backend": pairrun.MACOS_ISOLATION_BACKEND,
+            "policy_sha256": proof["policy_sha256"],
             "proof_sha256": proof_sha,
         }
     corpus_dir = work / "corpus"
@@ -2944,6 +3079,110 @@ def test_verdict_full_receipts_all_green(tmp_path):
     assert verdict["missing_t_ids"] == []
 
 
+@pytest.mark.parametrize("rail,state", [("contract", "CONTRACT_GREEN"), ("sdk", "SDK_PATH_GREEN")])
+@pytest.mark.parametrize(
+    "mutation", ["argv", "environment", "raw", "stdout_digest", "missing_role"]
+)
+def test_verdict_refuses_bound_execution_context_tampering(tmp_path, rail, state, mutation):
+    st = _pair_stage(tmp_path, receipts="full")
+    assert _stage_verdict(st)["states"][state] == "pass"
+    receipt_dir = st["stage"] / "receipts"
+    context_path = receipt_dir / f"{rail}_execution_context.json"
+    context = json.loads(context_path.read_text(encoding="utf-8"))
+    if mutation == "argv":
+        context["commands"][0]["argv"][1] = "different-command"
+    elif mutation == "environment":
+        context["commands"][0]["environment"]["CARGO_NET_OFFLINE"] = "false"
+    elif mutation == "raw":
+        context["raw_evidence"]["source-closure.json"] = "0" * 64
+    elif mutation == "stdout_digest":
+        context["commands"][0]["stdout_sha256"] = ev.digest(b"forged transcript")
+    if mutation != "missing_role":
+        context_path.write_text(json.dumps(context), encoding="utf-8")
+    receipt_names = (
+        ("contract_python_receipt", "contract_rust_receipt")
+        if rail == "contract"
+        else ("sdk_receipt",)
+    )
+    for name in receipt_names:
+        receipt_path = receipt_dir / f"{name}.json"
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        if mutation == "missing_role":
+            receipt["input_evidence"] = [
+                row for row in receipt["input_evidence"] if row["role"] != "execution-context"
+            ]
+        else:
+            next(row for row in receipt["input_evidence"] if row["role"] == "execution-context")[
+                "sha256"
+            ] = pairrun.sha_file(context_path)
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    verdict = _stage_verdict(st)
+    assert verdict["states"][state] == "fail"
+
+
+def test_qualified_verdict_separates_unverified_os_portability(tmp_path):
+    st = _pair_stage(tmp_path, scope="qualified", receipts="full")
+    verdict = _stage_verdict(st)
+    for state in ("CONTRACT_GREEN", "SDK_PATH_GREEN"):
+        assert verdict["states"][state] == "pass"
+    assert verdict["os_portability"] == {
+        "qualified": False,
+        "reason": "execution_os_tool_identity_unverified",
+    }
+
+
+def test_freeze_receipts_copies_command_transcript_bytes(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    context = source / "execution-context.json"
+    context.write_text("{}", encoding="utf-8")
+    for name in pairrun.CONTEXT_COMMAND_NAMES["contract"]:
+        for stream in ("stdout", "stderr"):
+            (source / f"{name}.{stream}").write_bytes(f"{name}:{stream}".encode())
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    frozen = pairrun.freeze_receipts(
+        {"receipts": {"contract_execution_context": str(context)}}, stage
+    )
+    with zipfile.ZipFile(frozen["contract_execution_logs"]) as archive:
+        assert archive.read("python-test.stdout") == b"python-test:stdout"
+    (source / "python-test.stdout").write_bytes(b"changed")
+    with zipfile.ZipFile(frozen["contract_execution_logs"]) as archive:
+        assert archive.read("python-test.stdout") == b"python-test:stdout"
+
+
+@pytest.mark.parametrize("mutation", ["digest", "crc", "duplicate"])
+def test_verdict_refuses_frozen_command_log_tampering(tmp_path, mutation):
+    st = _pair_stage(tmp_path, receipts="full")
+    assert _stage_verdict(st)["states"]["CONTRACT_GREEN"] == "pass"
+    archive_path = st["stage"] / "receipts" / "contract_execution_logs.json"
+    with zipfile.ZipFile(archive_path) as archive:
+        members = {name: archive.read(name) for name in archive.namelist()}
+    if mutation == "duplicate":
+        with pytest.warns(UserWarning, match="Duplicate name"):
+            with zipfile.ZipFile(archive_path, "a", compression=zipfile.ZIP_STORED) as archive:
+                archive.writestr("python-test.stdout", b"")
+    else:
+        members["python-test.stdout"] = b"forged transcript"
+        with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_STORED) as archive:
+            for name, payload in members.items():
+                archive.writestr(name, payload)
+        if mutation == "crc":
+            archive_path.write_bytes(
+                archive_path.read_bytes().replace(b"forged transcript", b"forged transcripu")
+            )
+    verdict = _stage_verdict(st)
+    assert verdict["states"]["CONTRACT_GREEN"] == "fail"
+    reason = verdict["state_evidence"]["CONTRACT_GREEN"]["reason"]
+    assert (
+        "frozen command output digest mismatch"
+        if mutation == "digest"
+        else "cannot read frozen command output"
+        if mutation == "crc"
+        else "frozen command logs missing or duplicated"
+    ) in reason
+
+
 @pytest.mark.parametrize(
     ("receipt_name", "state"),
     [
@@ -3025,7 +3264,10 @@ def test_verdict_stale_and_swapped_receipts(tmp_path):
     rust_receipt_path.write_text(json.dumps(rust_receipt), encoding="utf-8")
     verdict = _stage_verdict(st)
     assert verdict["states"]["CONTRACT_GREEN"] == "fail"
-    assert "different source closures" in verdict["state_evidence"]["CONTRACT_GREEN"]["reason"]
+    assert (
+        "execution context source closure mismatch"
+        in verdict["state_evidence"]["CONTRACT_GREEN"]["reason"]
+    )
     st = _pair_stage(tmp_path / "swap", receipts="full")
     rust_bytes = (st["stage"] / "receipts" / "contract_rust_results.json").read_bytes()
     (st["stage"] / "receipts" / "contract_python_results.json").write_bytes(rust_bytes)
@@ -3057,7 +3299,10 @@ def test_verdict_garbage_test_artifact(tmp_path):
     )
     verdict = _stage_verdict(st)
     assert verdict["states"]["CONTRACT_GREEN"] == "fail"
-    assert "raw evidence refused" in verdict["state_evidence"]["CONTRACT_GREEN"]["reason"]
+    assert (
+        "execution context raw evidence digest mismatch"
+        in verdict["state_evidence"]["CONTRACT_GREEN"]["reason"]
+    )
 
 
 def test_verdict_rejects_coordinated_partial_inventory_and_receipt_rebind(tmp_path):
@@ -3102,7 +3347,7 @@ def test_verdict_rejects_coordinated_partial_inventory_and_receipt_rebind(tmp_pa
     verdict = _stage_verdict(st)
     assert verdict["states"]["CONTRACT_GREEN"] == "fail"
     assert (
-        "inventory differs from source authority"
+        "execution context raw evidence digest mismatch"
         in verdict["state_evidence"]["CONTRACT_GREEN"]["reason"]
     )
 
@@ -3364,6 +3609,26 @@ def test_verdict_rejects_forged_phase_and_process_tree_resources(tmp_path, monke
         )
 
 
+def test_qualified_verdict_rejects_handcrafted_linux_v2_on_wrong_host(tmp_path, monkeypatch):
+    from tools.benchmark.retrieval.test_linux_resource_integration import _valid_qualified_v2
+
+    _allow_minimal_speed_fixture(monkeypatch)
+    st = _pair_stage(tmp_path, scope="qualified", claims={"speed": True})
+    parent = tmp_path / "delegated"
+    parent.mkdir()
+    resource_path = st["stage"] / "rep-00" / "semble-resource-metrics.json"
+    original = json.loads(resource_path.read_text(encoding="utf-8"))
+    forged = _valid_qualified_v2(parent)
+    forged["subject_sha256"] = original["subject_sha256"]
+    forged["storage"] = original["storage"]
+    resource_path.write_text(json.dumps(forged), encoding="utf-8")
+    verdict = _stage_verdict(st)
+    assert verdict["states"]["PERF_QUALIFIED"] == "fail"
+    assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == (
+        "resource_accounting_incomplete"
+    )
+
+
 def test_verdict_t15_t16_conditionals(tmp_path):
     st = _pair_stage(tmp_path, claims={"same_model": True})
     verdict = _stage_verdict(st)
@@ -3398,7 +3663,7 @@ def test_verdict_quality_gates(tmp_path, monkeypatch):
     assert verdict["failure_class"] == "none"
     proof_path = st["stage"] / "isolation-proof.json"
     proof = json.loads(proof_path.read_text(encoding="utf-8"))
-    proof["profile_sha256"] = _fake_sha("forged-profile")
+    proof["policy_sha256"] = _fake_sha("forged-profile")
     proof_path.write_text(json.dumps(proof), encoding="utf-8")
     verdict = _stage_verdict(st)
     assert verdict["states"]["QUALITY_DELTA"] == "fail"
@@ -3420,10 +3685,8 @@ def test_verdict_quality_gates(tmp_path, monkeypatch):
     # A manifest cannot upgrade attested records to isolated quality proof.
     st = _pair_stage(tmp_path / "spoof", scope="qualified", claims={"quality": True})
     _rewrite_manifest(st, lambda m: m.update(blinding="isolated"))
-    verdict = _stage_verdict(st)
-    assert verdict["states"]["QUALITY_DELTA"] == "fail"
-    assert verdict["state_evidence"]["QUALITY_DELTA"]["reason"] == ("isolation_record_mismatch")
-    assert verdict["blinding"] == "attested"
+    with pytest.raises(pairrun.RunError, match="current tagged backend proof binding"):
+        _stage_verdict(st)
     # T10: a quality claim over the hash-dev diagnostic control fails even
     # when every other quality gate would pass.
     st = _pair_stage(
@@ -3996,7 +4259,10 @@ def test_qualified_contract_refuses_coordinated_receipt_closure_rebind(tmp_path)
         receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
     verdict = _stage_verdict(st)
     assert verdict["states"]["CONTRACT_GREEN"] == "fail"
-    assert "capture closure" in verdict["state_evidence"]["CONTRACT_GREEN"]["reason"]
+    assert (
+        "execution context source closure mismatch"
+        in verdict["state_evidence"]["CONTRACT_GREEN"]["reason"]
+    )
 
 
 def test_isolation_proof_refuses_tampered_frozen_runner_tool(tmp_path, monkeypatch):
@@ -4375,7 +4641,14 @@ def test_darwin_thermal_limits_and_frequency_fail_closed(monkeypatch):
 
 def test_linux_speed_probe_requires_profile_bounds_and_complete_telemetry():
     governors = {"cpu0": "performance", "cpu1": "performance"}
-    power_digest = pairrun.digest(pairrun.canonical(governors))
+    settings = {
+        "governors": governors,
+        "minimum_khz": {"cpu0": 2_700_000, "cpu1": 2_700_000},
+        "maximum_khz": {"cpu0": 3_000_000, "cpu1": 3_000_000},
+        "drivers": {"cpu0": "intel_pstate", "cpu1": "intel_pstate"},
+        "boost": {"/sys/devices/system/cpu/intel_pstate/no_turbo": "1"},
+    }
+    power_digest = pairrun.digest(pairrun.canonical(settings))
     host = {
         "system": "Linux",
         "release": "test",
@@ -4397,7 +4670,12 @@ def test_linux_speed_probe_requires_profile_bounds_and_complete_telemetry():
                 "cpu1": {"current_khz": 2_800_000, "maximum_khz": 3_000_000},
             },
         },
-        "power": {"status": "bounded", "digest": power_digest, "governors": governors},
+        "power": {
+            "status": "bounded",
+            "digest": power_digest,
+            "governors": governors,
+            "settings": settings,
+        },
     }
     profile = pairrun.validate_host_profile(
         {
@@ -4470,6 +4748,91 @@ def test_linux_host_profile_rejects_unbounded_policy():
         pairrun.validate_host_profile(base)
     with pytest.raises(pairrun.RunError, match="schema version"):
         pairrun.validate_host_profile({**base, "schema_version": 1})
+
+
+def test_linux_sysfs_presence_alone_never_qualifies_speed(tmp_path, monkeypatch):
+    cpu_root = tmp_path / "cpu"
+    thermal_root = tmp_path / "thermal"
+    thermal_zone = thermal_root / "thermal_zone0"
+    thermal_zone.mkdir(parents=True)
+    (thermal_zone / "temp").write_text("60000")
+    (thermal_zone / "type").write_text("x86_pkg_temp")
+    for cpu in ("cpu0",):
+        cpufreq = cpu_root / cpu / "cpufreq"
+        cpufreq.mkdir(parents=True)
+        (cpufreq / "scaling_governor").write_text("performance")
+        (cpufreq / "scaling_cur_freq").write_text("2800000")
+        (cpufreq / "cpuinfo_max_freq").write_text("3000000")
+        (cpufreq / "scaling_min_freq").write_text("2700000")
+        (cpufreq / "scaling_max_freq").write_text("3000000")
+        (cpufreq / "scaling_driver").write_text("intel_pstate")
+    boost_node = tmp_path / "no_turbo"
+    boost_node.write_text("1")
+
+    def fake_path(value):
+        if value == "/sys/devices/system/cpu":
+            return cpu_root
+        if value == "/sys/class/thermal":
+            return thermal_root
+        if value == "/sys/devices/system/cpu/intel_pstate/no_turbo":
+            return boost_node
+        if value == "/sys/devices/system/cpu/cpufreq/boost":
+            return tmp_path / "missing-boost"
+        return Path(value)
+
+    monkeypatch.setattr(pairrun.sys, "platform", "linux")
+    monkeypatch.setattr(pairrun.os, "cpu_count", lambda: 2)
+    monkeypatch.setattr(pairrun, "Path", fake_path)
+    assert pairrun.read_power()["status"] == "unavailable"
+    assert pairrun.read_frequency()["status"] == "unavailable"
+    assert pairrun.read_thermal()["status"] == "observed"
+
+    cpufreq = cpu_root / "cpu1" / "cpufreq"
+    cpufreq.mkdir(parents=True)
+    (cpufreq / "scaling_governor").write_text("performance")
+    (cpufreq / "scaling_cur_freq").write_text("2800000")
+    (cpufreq / "cpuinfo_max_freq").write_text("3000000")
+    (cpufreq / "scaling_min_freq").write_text("2700000")
+    (cpufreq / "scaling_max_freq").write_text("3000000")
+    (cpufreq / "scaling_driver").write_text("intel_pstate")
+    assert pairrun.read_power()["status"] == "bounded"
+    assert pairrun.read_frequency()["status"] == "observed"
+    boost_node.write_text("0")
+    assert pairrun.read_power()["status"] == "unavailable"
+    boost_node.unlink()
+    assert pairrun.read_power()["status"] == "unavailable"
+    (thermal_zone / "temp").write_text("not-a-temperature")
+    assert pairrun.read_thermal()["status"] == "unavailable"
+
+
+def test_semble_worker_resident_probe_has_native_windows_path(monkeypatch):
+    namespace = {"__name__": "worker_template_test"}
+    exec(compile(semble_adapter.WORKER_TEMPLATE, "worker.py", "exec"), namespace)
+    assert namespace["peak_resident_bytes"]() > 0
+
+    class FakeFunction:
+        def __init__(self, callback):
+            self.callback = callback
+
+        def __call__(self, *args):
+            return self.callback(*args)
+
+    def read_memory(_handle, pointer, _size):
+        ctypes.cast(pointer, ctypes.POINTER(ctypes.c_size_t))[1] = 123_456
+        return 1
+
+    class FakeDll:
+        def __init__(self, name):
+            if name == "kernel32":
+                self.GetCurrentProcess = FakeFunction(lambda: 42)
+            elif name == "psapi":
+                self.GetProcessMemoryInfo = FakeFunction(read_memory)
+            else:
+                raise AssertionError(name)
+
+    monkeypatch.setattr(semble_adapter.sys, "platform", "win32")
+    monkeypatch.setattr(ctypes, "WinDLL", lambda name, **_kwargs: FakeDll(name), raising=False)
+    assert namespace["peak_resident_bytes"]() == 123_456
 
 
 @pytest.mark.skipif(
@@ -4555,11 +4918,13 @@ def test_g0_pair_spec_receipts_are_paths_not_content():
     manifest_full = _load_schema("run-manifest.schema.json")
     pair_receipts = pair_full["properties"]["receipts"]
     manifest_artifacts = manifest_full["properties"]["artifacts"]
-    assert sorted(pair_receipts["properties"]) == sorted(pairrun.RECEIPT_KEYS)
+    generated = {"contract_execution_logs", "sdk_execution_logs"}
+    assert sorted(pair_receipts["properties"]) == sorted(set(pairrun.RECEIPT_KEYS) - generated)
     # Every spec receipt path lands on a manifest artifact of the same name.
     for key in pairrun.RECEIPT_KEYS:
         assert key in manifest_artifacts["properties"], key
-        assert pair_receipts["properties"][key] == {"type": "string", "minLength": 1}
+        if key not in generated:
+            assert pair_receipts["properties"][key] == {"type": "string", "minLength": 1}
     # Evidence content is rejected in the spec: paths only.
     spec = _g0_spec()
     spec["receipts"] = {"contract_python_results": "/tmp/results.json"}
@@ -5149,10 +5514,12 @@ def test_benchmark_prep_does_not_repeat_retrieval_contracts():
     local = recipe("retrieval-contract-local")
     assert "test_retrieval_benchmark.py -q" not in prep
     assert "test -p quanta-index-retrieval-bench" not in prep
-    assert "test_retrieval_benchmark.py -q" in proof
-    assert "--test chunking_contract" in proof
+    assert "portable_proof.py run --rail contract" in proof
     assert "test_retrieval_benchmark.py -q" in local
     assert "--test chunking_contract" in local
+    portable_source = (root / "tools/benchmark/retrieval/portable_proof.py").read_text()
+    assert "proof_inventory.PYTHON_SELECTOR" in portable_source
+    assert '"--test", "chunking_contract"' in portable_source
 
 
 def test_retrieval_verdict_recipe_matches_cli_parser():
@@ -5293,6 +5660,10 @@ def _g0_verdict() -> dict:
     states = ["CONTRACT_GREEN", "SDK_PATH_GREEN", "PAIR_VALID", "PERF_QUALIFIED", "QUALITY_DELTA"]
     return {
         "verdict_version": 2,
+        "os_portability": {
+            "qualified": False,
+            "reason": "execution_os_tool_identity_unverified",
+        },
         "states": {name: "not_run" for name in states},
         "state_evidence": {
             name: {"reason": "no_evidence", "proof_digest": None} for name in states

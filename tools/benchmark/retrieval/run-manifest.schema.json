@@ -76,7 +76,16 @@
       "properties": {
         "start_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "end_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "cache_regime": {"enum": ["true_process_cold", "warm_cache", "undeclared"]}
+        "cache_regime": {"enum": ["true_process_cold", "warm_cache", "undeclared"]},
+        "delegated_cgroup_parent": {
+          "type": "object", "additionalProperties": false,
+          "required": ["path", "device", "inode"],
+          "properties": {
+            "path": {"type": "string", "pattern": "^/[^\\n]+$"},
+            "device": {"type": "integer", "minimum": 1},
+            "inode": {"type": "integer", "minimum": 1}
+          }
+        }
       }
     },
     "artifacts": {
@@ -134,8 +143,11 @@
         },
         "isolation_proof": {
           "type": "string", "minLength": 1,
-          "description": "Required by the verdict for isolated QUALITY_DELTA: versioned Seatbelt policy identity, denied roots, file bindings and deny/allow probes."
+          "description": "Required by the verdict for isolated QUALITY_DELTA: current tagged backend policy identity, denied roots, file bindings and actual runner-child deny/allow probes. Linux threat_model=filesystem-path-read-v1 assumes trusted stdio and mount topology; IPC and metadata are outside this proof."
         },
+        "contract_execution_context": {"type": "string", "minLength": 1},
+        "contract_execution_logs": {"type": "string", "minLength": 1},
+        "contract_source_closure": {"type": "string", "minLength": 1},
         "contract_python_receipt": {"type": "string", "minLength": 1},
         "contract_python_results": {"type": "string", "minLength": 1},
         "contract_python_raw": {"type": "string", "minLength": 1},
@@ -144,6 +156,9 @@
         "contract_rust_results": {"type": "string", "minLength": 1},
         "contract_rust_raw": {"type": "string", "minLength": 1},
         "contract_rust_inventory": {"type": "string", "minLength": 1},
+        "sdk_execution_context": {"type": "string", "minLength": 1},
+        "sdk_execution_logs": {"type": "string", "minLength": 1},
+        "sdk_source_closure": {"type": "string", "minLength": 1},
         "sdk_receipt": {"type": "string", "minLength": 1},
         "sdk_results": {"type": "string", "minLength": 1},
         "sdk_nextest_raw": {"type": "string", "minLength": 1},
@@ -226,6 +241,16 @@
     }
   },
   "allOf": [
+    {
+      "if": {"properties": {"blinding": {"const": "isolated"}}, "required": ["blinding"]},
+      "then": {
+        "properties": {
+          "isolation_method": {"enum": ["macos-seatbelt-v1", "linux-landlock-fs-prototype-v1"]},
+          "access_block_log": {"pattern": "^sha256:[0-9a-f]{64}$"},
+          "artifacts": {"required": ["isolation_proof"]}
+        }
+      }
+    },
     {
       "if": {"properties": {"scope": {"const": "qualified"}}},
       "then": {

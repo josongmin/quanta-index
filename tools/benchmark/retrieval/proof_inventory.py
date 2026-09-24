@@ -91,6 +91,7 @@ def verify_inventory_authority(
 
 def junit_identity(nodeid: str) -> str:
     path, separator, test = nodeid.partition("::")
+    path = path.replace("\\", "/")
     if not separator or not path.endswith(".py") or not test:
         raise ValueError(f"invalid collected pytest nodeid: {nodeid}")
     return f"{path[:-3].replace('/', '.')}.{test.replace('::', '.')}"
@@ -109,8 +110,13 @@ def collect_pytest() -> dict[str, object]:
 
     plugin = Collector()
     captured = io.StringIO()
-    with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
-        outcome = pytest.main([PYTHON_SELECTOR, "--collect-only", "-q"], plugins=[plugin])
+    original_cwd = Path.cwd()
+    try:
+        os.chdir(root)
+        with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
+            outcome = pytest.main([PYTHON_SELECTOR, "--collect-only", "-q"], plugins=[plugin])
+    finally:
+        os.chdir(original_cwd)
     if outcome != pytest.ExitCode.OK:
         raise SystemExit(f"pytest collection failed ({outcome}): {captured.getvalue()}")
     tests = sorted(junit_identity(nodeid) for nodeid in plugin.items)

@@ -5,9 +5,17 @@
   "description": "One verdict per run: five global states plus per-comparison metric/record/report digests. failure_class is none only when every applicable state passes. Provenance digests must equal the re-derived run-manifest digests; a missing mandatory digest fails the verdict.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["verdict_version", "states", "state_evidence", "blinding", "isolation_method", "access_block_log", "missing_t_ids", "not_applicable_t_ids", "failure_class", "provenance", "counts", "comparisons"],
+  "required": ["verdict_version", "os_portability", "states", "state_evidence", "blinding", "isolation_method", "access_block_log", "missing_t_ids", "not_applicable_t_ids", "failure_class", "provenance", "counts", "comparisons"],
   "properties": {
     "verdict_version": {"const": 2},
+    "os_portability": {
+      "type": "object", "additionalProperties": false,
+      "required": ["qualified", "reason"],
+      "properties": {
+        "qualified": {"const": false},
+        "reason": {"const": "execution_os_tool_identity_unverified"}
+      }
+    },
     "states": {
       "type": "object", "additionalProperties": false,
       "required": ["CONTRACT_GREEN", "SDK_PATH_GREEN", "PAIR_VALID", "PERF_QUALIFIED", "QUALITY_DELTA"],
