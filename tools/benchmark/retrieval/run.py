@@ -1363,8 +1363,6 @@ SPEC_OPTIONAL = (
     "semble_cache_root",
     "semble_model_revision",
     "quanta_model_dir",
-    "semble_repetitions",
-    "semble_warmup_passes",
     "query_repetitions_per_root",
     "query_warmup_passes",
     "baseline_route",
@@ -1700,8 +1698,6 @@ def load_spec(path: Path) -> dict:
         ("seed", 0),
         ("timeout_secs", 1),
         ("repetitions", 1),
-        ("semble_repetitions", 1),
-        ("semble_warmup_passes", 0),
         ("query_repetitions_per_root", 1),
         ("query_warmup_passes", 1),
     ):
@@ -4442,11 +4438,11 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
             task_ids,
             _int(spec.get("seed", 0), "spec.seed") + rep,
             _int(
-                spec.get("query_warmup_passes", spec.get("semble_warmup_passes", 1)),
+                spec.get("query_warmup_passes", 1),
                 "spec.query_warmup_passes",
             ),
             _int(
-                spec.get("query_repetitions_per_root", spec.get("semble_repetitions", 1)),
+                spec.get("query_repetitions_per_root", 1),
                 "spec.query_repetitions_per_root",
             ),
         )
@@ -4561,11 +4557,11 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
         "repetitions": repetitions,
         "base_seed": _int(spec.get("seed", 0), "spec.seed"),
         "query_warmup_passes": _int(
-            spec.get("query_warmup_passes", spec.get("semble_warmup_passes", 1)),
+            spec.get("query_warmup_passes", 1),
             "spec.query_warmup_passes",
         ),
         "query_repetitions_per_root": _int(
-            spec.get("query_repetitions_per_root", spec.get("semble_repetitions", 1)),
+            spec.get("query_repetitions_per_root", 1),
             "spec.query_repetitions_per_root",
         ),
         "query_protocol_sha256s": [
@@ -5601,9 +5597,9 @@ def run_semble_capture(
         "--access-block-log",
         spec.get("access_block_log", "attested-only: no suite path is passed to the worker"),
         "--repetitions",
-        str(spec.get("query_repetitions_per_root", spec.get("semble_repetitions", 1))),
+        str(spec.get("query_repetitions_per_root", 1)),
         "--warmup-passes",
-        str(spec.get("query_warmup_passes", spec.get("semble_warmup_passes", 0))),
+        str(spec.get("query_warmup_passes", 1)),
     ]
     if "_query_protocol" in spec:
         command += ["--query-protocol", spec["_query_protocol"]]

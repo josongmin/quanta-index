@@ -1352,6 +1352,8 @@ def test_run_semble_capture_forwards_lockfile(tmp_path, monkeypatch):
     command = seen["command"]
     assert command[command.index("--lockfile") + 1] == "/frozen/semble-lockfile.txt"
     assert command[command.index("--lockfile-sha256") + 1] == "c" * 64
+    assert command[command.index("--repetitions") + 1] == "1"
+    assert command[command.index("--warmup-passes") + 1] == "1"
 
 
 def test_freeze_inputs_freezes_lockfile(tmp_path):
@@ -4655,6 +4657,8 @@ def test_v3_pair_spec_schema():
     invalid(lambda s: s.update(top_k=0))
     invalid(lambda s: s.update(semble_lockfile=""))
     invalid(lambda s: s.update(cache_regime="lukewarm"))
+    invalid(lambda s: s.update(semble_repetitions=2))
+    invalid(lambda s: s.update(semble_warmup_passes=0))
 
     qualified = _g0_spec()
     qualified["scope"] = "qualified"
@@ -4684,6 +4688,12 @@ def test_v3_spec_accepts_lockfile_path(tmp_path):
     spec_path.write_text(json.dumps(bad), encoding="utf-8")
     with pytest.raises(pairrun.RunError, match="spec.cache_regime must be"):
         pairrun.load_spec(spec_path)
+    for removed_key in ("semble_repetitions", "semble_warmup_passes"):
+        bad = _g0_spec()
+        bad[removed_key] = 2
+        spec_path.write_text(json.dumps(bad), encoding="utf-8")
+        with pytest.raises(pairrun.RunError, match="unknown keys"):
+            pairrun.load_spec(spec_path)
 
 
 def test_retrieval_recipes_download_nothing():

@@ -178,7 +178,6 @@ keys: `repo`, `manifest`, `suite`, `query_pack`, `top_k`, `output_root`,
 | `semble_lockfile_sha256` | required for `pair` | SHA-256 of the external lockfile; env must carry every locked line plus `semble==0.6.0` |
 | `semble_route` | `semble-hybrid` | Semble record route name |
 | `semble_cache_root` | `<out>/semble-cache` | Semble + HF caches (outside checkout) |
-| `semble_repetitions`/`semble_warmup_passes` | `1`/`0` | exploratory Semble-only compatibility knobs; never qualify speed |
 | `query_repetitions_per_root`/`query_warmup_passes` | `1`/`1` | one driver-generated, digest-bound randomized schedule consumed by both runners; qualified speed requires warmup >= 1 and at least 1,000 warm observations per route across roots |
 | `semble_model_revision` | observed | pinned HF revision (drift fails) |
 | `quanta_model_dir` | none | explicit local model directory; required for a `potion-code` speed claim and counted separately from index storage |
