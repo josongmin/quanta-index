@@ -1,6 +1,6 @@
 # RFC: Source preparation boundary for the Quanta Index SDK
 
-- Status: **proposed**. No implementation or producer migration is claimed.
+- Status: **DRAFT — discussion only; not approved for implementation**. No implementation or producer migration is claimed.
 - Source snapshot: working-tree code inspected on 2026-09-24; final audit HEAD `f26796896e365a8eb66a516f959c460f792e7506`. Since the first inspection, concurrent commits changed benchmark/proof tooling but not the SDK/contract/lexical/semantic source files used here; those files still have concurrent uncommitted edits. The inspected `semantic_derive.rs` digest was `792f1f1d5516f2ce922ed7dfb70b771ccf90fddb4346363127ebc3ccaaf606d2`; it consumes **only typed semantic sources**, and an empty typed source set is an explicit semantic no-op. Freeze exact source and dirty ownership before implementation.
 - Scope: the **plain/Markdown adapter subdesign** under the [repository-format SDK RFC](sep-24-repository-format-sdk-rfc.md). The parent RFC owns the stable adapter/result/batch API; this document owns text splitting and typed-text mapping. Its previous default chunk-text fallback claim was corrected during review. Do not implement a lexical-only text helper from older copies.
 - Related: [SDK DSL RFC](sep-24-sdk-dsl-rfc.md).

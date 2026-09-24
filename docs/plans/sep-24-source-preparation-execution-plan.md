@@ -1,6 +1,6 @@
 # Source preparation SDK: execution plan
 
-- Status: **proposed; implementation and tests NOT_RUN**.
+- Status: **DRAFT — discussion only; not approved for implementation**. Implementation and tests are NOT_RUN.
 - Planning source: Quanta Index HEAD `d40fcf1354ea0c9ed27184a823cc7786c5c665bf`, Semantica HEAD `1e334582e0c094210df7ec21a1a21372daab6648`. Quanta advanced to `4aedeb8885a5e9b9a05b2b8c20f18763b96d5436` during drafting; `git diff --name-only` found no committed changes under the inspected contract/SDK/core/lexical/search-plane/searchd/IPC crates. Both checkouts are shared and dirty; re-freeze before execution. This is a source inspection, not a qualification receipt.
 - Design authority: [repository-format SDK RFC](sep-24-repository-format-sdk-rfc.md), [text adapter subdesign](sep-24-source-preparation-sdk-rfc.md), and [SDK DSL RFC](sep-24-sdk-dsl-rfc.md). This plan implements the shared seam plus the first format adapter; it does not claim every repository format is already indexable.
 
