@@ -312,17 +312,18 @@ required rail has no current-source evidence; T15 and T16 are
 | T16 | incremental capture (conditional on an incremental claim) | `NOT_APPLICABLE` without that claim; `NOT_RUN` only if claimed without proof |
 | T17 | W0-B qualification admission | `admission.schema.json` plus license, two annotation, adjudication, model, host, lockfile and exact contract/SDK receipt digests; exploratory runs are never promoted |
 
-At `64938975`, the required-test authority lists 173 Python contract,
-51 Rust contract and 12 SDK identities. These are inventory counts, not
-executed proof counts. `pair-spec.schema.json` names the
+At `a634b90a`, clean-source proof executed all 173 Python contract,
+51 Rust contract and 12 SDK required identities without skips and issued
+three receipts against one source closure. Those receipts qualify only their
+recorded revision and bound inputs. `pair-spec.schema.json` names the
 three inventory inputs; `run-manifest.schema.json` binds their paths and
 SHA-256 claims. Contract/SDK collection inventories and raw terminal evidence
 must match the required identities; the verdict reads the authority Git blob
 at the receipt revision and compares its digest with the receipt's source
 closure. At the audited baseline, a fixture with one pass and 159 skips
-certified contract proof; focused regressions now reject that case. Final
-contract/SDK receipt recipes must be run and frozen from one v2 source closure
-after code, tests and normative documents are final;
+certified contract proof; focused regressions now reject that case. Any later
+bound code, test or normative-document edit requires new contract/SDK receipts
+from one v2 source closure;
 the generic workspace rail must record a post-change frozen-source result;
 and Seatbelt isolation and phase/process-tree RSS still need a real admitted
 quiet-host pair meeting their proof and sample floors. The commands above
