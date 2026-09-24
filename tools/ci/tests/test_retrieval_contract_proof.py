@@ -39,6 +39,9 @@ def test_proof_recipes_capture_source_once_before_execution(tmp_path: Path) -> N
             "--lane test-daemon-lane" if name == "retrieval-sdk-proof" else "python3 -m pytest"
         )
         assert commands.index("source_closure.py capture") < commands.index(first_execution)
+        if name == "retrieval-contract-proof":
+            assert commands.index("proof_inventory.py --out") < commands.index("nextest list")
+            assert commands.index("proof_inventory.py --verify") < commands.index("python3 -m pytest")
         if name == "retrieval-sdk-proof":
             assert commands.count("metadata --format-version 1 --no-deps") == 1
             assert "set -e -o pipefail; target_dir=" in commands

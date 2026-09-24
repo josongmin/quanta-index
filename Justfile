@@ -407,9 +407,9 @@ retrieval-contract-proof out:
     test ! -e "{{out}}" || { echo "refusing non-fresh proof root: {{out}}" >&2; exit 2; }
     python3 tools/ci/source_closure.py capture --profile retrieval --out "{{out}}/source-closure.json"
     python3 tools/benchmark/retrieval/proof_inventory.py --out "{{out}}/python-inventory.json"
-    python3 -m pytest tools/ci/tests/test_retrieval_benchmark.py -q --junitxml="{{out}}/python-junit.xml"
     {{cargo}} --lane test-daemon-lane nextest list -p quanta-index-retrieval-bench --lib --test chunking_contract --all-features --locked --message-format json > "{{out}}/rust-inventory.json"
     python3 tools/benchmark/retrieval/proof_inventory.py --verify "{{out}}/rust-inventory.json" --role rust
+    python3 -m pytest tools/ci/tests/test_retrieval_benchmark.py -q --junitxml="{{out}}/python-junit.xml"
     set -o pipefail; NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1 {{cargo}} --lane test-daemon-lane nextest run -p quanta-index-retrieval-bench --lib --test chunking_contract --all-features --locked --message-format libtest-json-plus --message-format-version 0.1 | tee "{{out}}/rust-nextest.jsonl"
     python3 tools/benchmark/retrieval/contract_proof.py --pytest-junit "{{out}}/python-junit.xml" --pytest-inventory "{{out}}/python-inventory.json" --nextest "{{out}}/rust-nextest.jsonl" --nextest-inventory "{{out}}/rust-inventory.json" --python-out "{{out}}/contract_python_results.json" --rust-out "{{out}}/contract_rust_results.json"
     python3 tools/ci/write-verification-receipt.py --rail retrieval-contract-python --tier correctness --command "python3 -m pytest tools/ci/tests/test_retrieval_benchmark.py -q" --evidence-format summary-json --evidence "{{out}}/contract_python_results.json" --source-closure "{{out}}/source-closure.json" --input-evidence "pytest-junit={{out}}/python-junit.xml" --input-evidence "pytest-inventory={{out}}/python-inventory.json" --out "{{out}}/contract_python_receipt.json"

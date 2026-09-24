@@ -231,6 +231,7 @@
     "quanta-index-retrieval-bench::quanta_index_retrieval_bench$record::tests::v3_record_assembles_captures_and_byte_spans",
     "quanta-index-retrieval-bench::quanta_index_retrieval_bench$record::tests::v3_record_refuses_broken_capture_binding",
     "quanta-index-retrieval-bench::quanta_index_retrieval_bench$schedule::tests::accepts_digest_bound_permutations",
+    "quanta-index-retrieval-bench::quanta_index_retrieval_bench$schedule::tests::decoding_rejects_unknown_duplicate_and_missing_fields",
     "quanta-index-retrieval-bench::quanta_index_retrieval_bench$schedule::tests::rejects_mutated_schedule",
     "quanta-index-retrieval-bench::quanta_index_retrieval_bench$sdk::empty_status_tests::activation_ack_forgeries_refuse",
     "quanta-index-retrieval-bench::quanta_index_retrieval_bench$sdk::empty_status_tests::daemon_digest_pin_is_verified",

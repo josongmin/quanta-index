@@ -14,6 +14,8 @@ This ticket is not closed. The repository has no W0-B pilot or real paired manif
 
 The adversarial baseline accepted a correctly rebound JUnit file with one pass and 159 skips, an announced 99-test nextest suite with one terminal test, and duplicate JUnit identities as contract proof. The remediation freezes exact Python/Rust/SDK required identities in `benchmarks/retrieval/proof-required-tests.json`, checks collection and terminal evidence, and re-reads that authority as a Git blob at the receipt revision. `pair-spec.schema.json` accepts the three collection inventories; `run-manifest.schema.json` binds their paths and digest claims. The verdict compares the blob SHA-256 with the source closure before accepting an inventory and requires each receipt's `test_event_count` to equal the independently rebuilt `executed` count. The clean `a634b90a` proof executed all 173/51/12 identities; the real paired verdict remains pending.
 
+A later strict query-protocol decoder added a Rust test without adding its identity to the required-test authority. The current-source contract proof correctly refused the 52-test collection against the 51-test authority before issuing either contract receipt. The authority now includes that exact decoder test; the proof recipe verifies both Python and Rust collections before executing the slower test bodies. Reissue all receipts after the final source freeze; the earlier SDK-only receipt or a passing focused test does not close the combined proof or real pair.
+
 ## Goal
 
 Make the benchmark easy to run without turning a short fixture test into a search-quality claim or adding a mandatory Semble/model download to every CI job.
