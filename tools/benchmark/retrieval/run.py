@@ -3933,6 +3933,14 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     if pair_state == "fail":
         missing.extend(pair_t_ids)
         classes.append(pair_class)
+    qualification_dependency = next(
+        (
+            name
+            for name in ("PAIR_VALID", "CONTRACT_GREEN", "SDK_PATH_GREEN")
+            if states[name] != "pass"
+        ),
+        None,
+    )
 
     # PERF_QUALIFIED: matrix re-derivation + floors + host, only on speed claims.
     if not claims["speed"]:
@@ -3949,6 +3957,14 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         )
         missing.append("T17")
         classes.append("admission")
+    elif qualification_dependency is not None:
+        set_state(
+            "PERF_QUALIFIED",
+            "fail",
+            f"qualification_dependency_unverified:{qualification_dependency}",
+            None,
+        )
+        classes.append("provenance")
     else:
         if evidence["perf"]["phase_boundaries"] is not True or not phase_ok:
             perf_fail: tuple[str, str] | None = (
@@ -4189,6 +4205,14 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         )
         missing.append("T17")
         classes.append("admission")
+    elif qualification_dependency is not None:
+        set_state(
+            "QUALITY_DELTA",
+            "fail",
+            f"qualification_dependency_unverified:{qualification_dependency}",
+            None,
+        )
+        classes.append("provenance")
     elif provenance_claims["quanta"].get("embedder") != "potion-code":
         # T10: a quality claim over the hash-dev diagnostic control (or an
         # undeclared embedder) is not model-quality evidence.

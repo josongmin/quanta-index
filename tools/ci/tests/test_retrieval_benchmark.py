@@ -3371,6 +3371,47 @@ def test_context_density_rubric_independent_oracles(tmp_path, monkeypatch):
     assert verdict["failure_class"] == "none"
 
 
+@pytest.mark.parametrize("claim", ["quality", "speed"])
+def test_qualified_claims_require_pair_contract_and_sdk_states(tmp_path, monkeypatch, claim):
+    monkeypatch.setattr(ev, "MIN_CI_SAMPLE", 2)
+    kwargs = (
+        {"blinding": "isolated"}
+        if claim == "quality"
+        else {"repetitions": 5, "qualified_speed_sample": True}
+    )
+    st = _pair_stage(tmp_path, scope="qualified", claims={claim: True}, **kwargs)
+    target = "QUALITY_DELTA" if claim == "quality" else "PERF_QUALIFIED"
+    baseline = _stage_verdict(st)
+    assert baseline["states"]["PAIR_VALID"] == "pass"
+    assert baseline["states"]["CONTRACT_GREEN"] == "pass"
+    assert baseline["states"]["SDK_PATH_GREEN"] == "pass"
+    assert baseline["states"][target] == "pass", baseline["state_evidence"][target]
+
+    manifest = st["manifest"]
+    mutations = (
+        (st["stage"] / "protocol-lock.json", "PAIR_VALID"),
+        (
+            st["stage"] / manifest["artifacts"]["contract_python_raw"],
+            "CONTRACT_GREEN",
+        ),
+        (st["stage"] / manifest["artifacts"]["sdk_nextest_raw"], "SDK_PATH_GREEN"),
+    )
+    for path, failed_state in mutations:
+        original = path.read_bytes()
+        try:
+            if failed_state == "PAIR_VALID":
+                lock = json.loads(original)
+                lock["top_k"] += 1
+                path.write_text(json.dumps(lock), encoding="utf-8")
+            else:
+                path.write_bytes(b"invalid terminal evidence")
+            verdict = _stage_verdict(st)
+            assert verdict["states"][failed_state] == "fail"
+            assert verdict["states"][target] == "fail"
+        finally:
+            path.write_bytes(original)
+
+
 def test_validated_report_penalizes_whole_file_containing_exact_gold(tmp_path):
     repo, suite, run, suite_path, runner_path, files = fixture_v3(tmp_path)
     exact_report = ev.evaluate(

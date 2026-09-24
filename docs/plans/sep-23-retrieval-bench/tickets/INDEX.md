@@ -4,7 +4,7 @@ Status: `F1–F4-remediation-implemented / size-aware-rubric-implemented / sourc
 
 ## Current closeout boundary (2026-09-24)
 
-The previous Python/Rust/SDK receipts (183/51/12 tests) bind `a80d835a`, not the later shared-main source. Reissue all three on one clean final revision after this packet and the concurrent transitive Rust changes settle. A passing source-closure check only proves the checkout is eligible for proof capture; it does not revive the old receipts. Do not put receipt paths or digests into this source-bound packet after capture, because that edit would stale the receipts again.
+Historical Python/Rust/SDK receipts bind only their exact revision, not later shared-main source. Issue all three on one clean final revision after this packet and concurrent transitive Rust changes settle. A passing source-closure check only proves the checkout is eligible for proof capture; it does not revive old receipts. Read the current exact revision and digests from external receipts, not this source-bound packet: editing this packet after capture would stale them again.
 
 The remaining dependencies are ordered, not interchangeable:
 
@@ -12,7 +12,7 @@ The remaining dependencies are ordered, not interchangeable:
 2. W0-B external admission: provide an approved corpus license/attribution receipt, two independent annotation receipts plus adjudication, pinned pilot/holdout files and queries, both model asset/revision identities, Semble 0.6.0 environment/lockfile, and the fixed quiet-host/cache profile. The admission schema is a validator, not the source of these independent facts. No such issued packet or real pilot spec is present in this repository; the current Python interpreter also does not import Semble, which does not rule out a separately provisioned venv.
 3. Real capture: run the exploratory pair on the frozen pilot, inspect file-universe/mapping/record failures, then run an admitted isolated quality and quiet-host speed pair with the prescribed sample floors. Promote the stage atomically and replay the public verdict from the final path. Require exact `PAIR_VALID`, `PERF_QUALIFIED`, and `QUALITY_DELTA` artifacts before a comparative claim. The clean contract/SDK receipts alone cannot establish any of these states.
 
-Items 1–2 need benchmark-authority/reviewer inputs; do not fabricate grades, license approval, independent annotators, model parity, or host evidence to make a local run green. A diagnostic or attested run may exercise plumbing but remains explicitly non-qualifying.
+Item 2 needs independent benchmark-authority/reviewer inputs; do not fabricate grades, license approval, independent annotators, model parity, or host evidence to make a local run green. A diagnostic or attested run may exercise plumbing but remains explicitly non-qualifying.
 
 Required verification contract: [TEST-PLAN.md](TEST-PLAN.md). Its T00–T17 matrix and qualification ladder are part of every ticket's acceptance, not optional follow-up work.
 
@@ -30,6 +30,8 @@ At `20bd03fc98b86ee4bfb3a8a808e940ba6e090a09`, the retrieval implementation was 
 The implementation and contract/SDK proof are complete at their receipt revision. Replay the promoted pair on admitted inputs before closing the workstream. The external W0-B authorities and admitted quiet-host pilot remain unsupplied.
 
 RB-01's earlier whole-file counterexample is addressed by the W0-A context-density rubric: a rank-1 10-byte exact hit scores 1.0, while a 1 MB candidate containing those 10 bytes scores 0.00001. The scorer and independent oracles are implementation evidence; `QUALITY_DELTA` still requires real W0-B adjudicated gold, isolation and an admitted pair. Graded fixture output is not quality superiority evidence.
+
+Qualified quality and speed now fail if any prerequisite state is not `pass`: `PAIR_VALID`, `CONTRACT_GREEN`, or `SDK_PATH_GREEN`. A protocol-lock pin mutation and raw contract/SDK evidence corruption previously left the qualified state green; paired source-bound regression fixtures now require both claims to fail. This is a verifier dependency repair, not a real paired result.
 
 ## Earlier implementation audit (historical, 2026-09-24)
 
