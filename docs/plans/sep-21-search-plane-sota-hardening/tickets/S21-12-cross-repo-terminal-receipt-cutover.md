@@ -2,6 +2,17 @@
 
 Status: exact-pair release qualification staged.
 
+2026-09-24 P11 proof-command correction (local source, not execution proof):
+`Justfile::rust-verify-hellgate-cross-repo` had selected Semantica's
+file-contributor roundtrip despite declaring a RepoMap terminal-receipt
+target. It now requires the live RepoMap V2 publish/activate/restart/query
+test to exist, runs that exact test through Semantica's QBC front door, and
+requires an executable daemon binary. `just --dry-run
+rust-verify-hellgate-cross-repo` confirms the selected command. This fixes
+test selection only: the exact source pair, binary binding, adversarial
+receipt cases, P10 dependency, and Linux release receipt remain unverified;
+the registry node stays `staged`.
+
 2026-09-24 local follow-up, tested at Quanta `7dec5965` plus the store patch
 and committed as `3b1d7b19`: the private terminal receipt
 constructor now rejects a nonpositive catalog sequence instead of emitting a
