@@ -68,6 +68,10 @@
       "type": "string", "minLength": 1,
       "description": "Path to a canonical host-profile JSON artifact. Optional in the schema; run_pair refuses a pair spec without it."
     },
+    "linux_cgroup_parent": {
+      "type": "string", "pattern": "^/[^\\n]+$",
+      "description": "Explicit delegated cgroup v2 parent for qualified Linux capture. The owner creates and removes only a unique child subgroup. Exploratory process-group fallback must omit this key."
+    },
     "admission": {
       "type": "object", "additionalProperties": false,
       "description": "Required when scope=qualified. Paths to the W0-B authority manifest and the independently produced evidence bytes it binds.",

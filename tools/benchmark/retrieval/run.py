@@ -34,6 +34,7 @@ from pathlib import Path
 
 try:
     from tools.benchmark.retrieval import linux_isolation
+    from tools.benchmark.retrieval import linux_process
     from tools.benchmark.retrieval.contract_proof import nextest_summary, pytest_summary
     from tools.benchmark.retrieval.evaluator import (
         CHUNK_STRATEGIES,
@@ -54,6 +55,7 @@ try:
 except ImportError:  # direct script invocation: import the sibling module
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import linux_isolation  # noqa: E402
+    import linux_process  # noqa: E402
     from contract_proof import nextest_summary, pytest_summary  # noqa: E402
     from evaluator import (  # noqa: E402
         CHUNK_STRATEGIES,
@@ -282,14 +284,195 @@ def _cleanup_process_group(pgid: int, timeout_secs: float = 5.0) -> tuple[bool, 
     return False, True, "owned process group survived SIGKILL"
 
 
-def _require_supported_resource_schema(system: str) -> None:
-    """Do not encode Linux owner evidence as the legacy ps resource schema."""
-    if system == "Linux":
-        raise RunError(
-            "Linux resource schema v1 cannot encode cgroup-v2 owner evidence: "
-            "peak CPU percent and per-process CPU percent are unavailable; "
-            "a delegated cgroup v2 owner and revised resource schema are required"
+def _validate_cgroup_parent_identity(payload: object, where: str) -> dict:
+    identity = _exact_keys(payload, {"path", "device", "inode"}, where)
+    path = identity["path"]
+    if (
+        not isinstance(path, str)
+        or not Path(path).is_absolute()
+        or ".." in Path(path).parts
+        or str(Path(path)) != path
+    ):
+        raise RunError(f"{where}.path must be absolute and normalized")
+    for key in ("device", "inode"):
+        if type(identity[key]) is not int or identity[key] < 1:
+            raise RunError(f"{where}.{key} must be positive")
+    return identity
+
+
+def _linux_parent_identity(parent: str) -> dict:
+    if not isinstance(parent, str) or not parent:
+        raise RunError("qualified Linux requires an explicit delegated cgroup parent")
+    path = Path(parent)
+    try:
+        resolved = path.resolve(strict=True)
+        identity = path.stat()
+    except OSError as exc:
+        raise RunError(f"delegated cgroup parent unavailable: {exc}") from exc
+    if not path.is_absolute() or resolved != path or not path.is_dir():
+        raise RunError("delegated cgroup parent must be an absolute, non-symlink directory")
+    return _validate_cgroup_parent_identity(
+        {"path": str(path), "device": identity.st_dev, "inode": identity.st_ino},
+        "delegated cgroup parent",
+    )
+
+
+def _finish_linux_attestation(
+    attestation_pipe: tuple[int, int, str] | None,
+    isolation: dict | None,
+    command: list[str],
+    split: int | None,
+    exit_code: int | None,
+) -> dict | None:
+    recorded = dict(isolation) if isolation is not None else None
+    if attestation_pipe is None:
+        return recorded
+    read_fd, _write_fd, nonce = attestation_pipe
+    try:
+        raw = os.read(read_fd, 4097)
+    finally:
+        os.close(read_fd)
+    try:
+        attestation = json.loads(raw)
+    except (ValueError, UnicodeDecodeError):
+        attestation = None
+    expected_keys = {
+        "nonce", "abi", "exec_sha256", "suite_read_denied",
+        "query_pack_read_allowed", "proc_read_denied",
+    }
+    invalid = (
+        not isinstance(attestation, dict)
+        or set(attestation) != expected_keys
+        or attestation.get("nonce") != nonce
+        or split is None
+        or attestation.get("exec_sha256") != digest(canonical(command[split + 1 :]))
+        or type(attestation.get("abi")) is not int
+        or attestation["abi"] < linux_isolation.MIN_ABI
+        or any(
+            attestation[key] is not True
+            for key in ("suite_read_denied", "query_pack_read_allowed", "proc_read_denied")
         )
+        or len(raw) > 4096
+    )
+    if invalid and exit_code == 0:
+        raise RunError("Linux child did not attest deny/allow after Landlock enforcement")
+    recorded.pop("_child_check")
+    recorded["child_attestation"] = None if invalid else attestation
+    return recorded
+
+
+def _linux_owned_resource(
+    command: list[str],
+    actual_command: list[str],
+    *,
+    stdout_path: Path,
+    stderr_path: Path,
+    resource_path: Path,
+    timeout_secs: int,
+    subject_path: Path | None,
+    env: dict[str, str] | None,
+    sample_interval_ms: int,
+    isolation: dict | None,
+    attestation_pipe: tuple[int, int, str] | None,
+    split: int | None,
+    capture_scope: str,
+    cgroup_parent: str | None,
+    expected_cgroup_parent_identity: dict | None,
+) -> dict:
+    qualified = capture_scope == "qualified"
+    try:
+        parent_identity = _linux_parent_identity(cgroup_parent) if qualified else None
+        if qualified and expected_cgroup_parent_identity is not None and (
+            parent_identity != expected_cgroup_parent_identity
+        ):
+            raise RunError("delegated cgroup parent identity drifted before launch")
+    except (RunError, OSError):
+        if attestation_pipe:
+            os.close(attestation_pipe[0])
+            os.close(attestation_pipe[1])
+        raise
+    try:
+        result = linux_process.run(
+            actual_command,
+            timeout_secs=timeout_secs,
+            sample_interval_ms=sample_interval_ms,
+            env=env,
+            stdout_path=str(stdout_path),
+            stderr_path=str(stderr_path),
+            qualified=qualified,
+            cgroup_parent=cgroup_parent if qualified else None,
+            pass_fds=(attestation_pipe[1],) if attestation_pipe else (),
+        )
+    except Exception as exc:
+        if attestation_pipe:
+            os.close(attestation_pipe[0])
+            os.close(attestation_pipe[1])
+        raise RunError(f"Linux process ownership failed: {exc}") from exc
+    if attestation_pipe:
+        os.close(attestation_pipe[1])
+    if qualified and _linux_parent_identity(cgroup_parent) != parent_identity:
+        if attestation_pipe:
+            os.close(attestation_pipe[0])
+        raise RunError("delegated cgroup parent identity drifted during capture")
+    if qualified and Path(result.cgroup_path or "").parent != Path(cgroup_parent):
+        if attestation_pipe:
+            os.close(attestation_pipe[0])
+        raise RunError("owned cgroup is not below the requested delegated parent")
+    recorded_isolation = _finish_linux_attestation(
+        attestation_pipe, isolation, command, split, result.root_exit_code
+    )
+    if qualified and not result.ownership_complete:
+        raise RunError("qualified Linux capture lacks complete cgroup-v2 ownership evidence")
+    subject_sha256 = None
+    if subject_path is not None and subject_path.is_file():
+        subject_sha256 = sha_file(subject_path)
+    payload = {
+        "schema_version": 2,
+        "sampler": "linux-process-owner-v1",
+        "capture_scope": capture_scope,
+        "owner_backend": result.backend,
+        "sample_interval_ms": result.sample_interval_ms,
+        "command_sha256": digest(canonical(actual_command)),
+        **(
+            {"exec_command_sha256": digest(canonical(command[split + 1 :]))}
+            if attestation_pipe else {}
+        ),
+        "subject_sha256": subject_sha256,
+        "root_pid": result.root.pid,
+        "root_start_ticks": result.root.start_ticks,
+        "exit_code": result.root_exit_code,
+        "timed_out": result.timed_out,
+        "elapsed_ms": result.elapsed_ms,
+        "peak_rss_bytes": result.peak_tree_rss_bytes,
+        "peak_cgroup_memory_bytes": result.peak_cgroup_memory_bytes,
+        "total_user_cpu_ns": result.total_user_cpu_ns,
+        "total_kernel_cpu_ns": result.total_kernel_cpu_ns,
+        "cgroup_cpu_usage_ns": result.cgroup_cpu_usage_ns,
+        "cgroup_path": result.cgroup_path,
+        "delegated_cgroup_parent": parent_identity,
+        "processes": [
+            {
+                "pid": item.identity.pid,
+                "start_ticks": item.identity.start_ticks,
+                "peak_rss_bytes": item.peak_rss_bytes,
+                "user_cpu_ns": item.user_cpu_ns,
+                "kernel_cpu_ns": item.kernel_cpu_ns,
+            }
+            for item in result.processes
+        ],
+        "escaped": [
+            {"pid": item.pid, "start_ticks": item.start_ticks}
+            for item in result.escaped
+        ],
+        "samples": result.samples,
+        "sampling_complete": result.sampling_complete,
+        "cleanup_complete": result.cleanup_complete,
+        "ownership_complete": result.ownership_complete,
+        "isolation": recorded_isolation,
+    }
+    with resource_path.open("x", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    return payload
 
 
 def run_monitored_process(
@@ -303,9 +486,26 @@ def run_monitored_process(
     env: dict[str, str] | None = None,
     sample_interval_ms: int = 50,
     isolation: dict | None = None,
+    capture_scope: str = "exploratory",
+    linux_cgroup_parent: str | None = None,
+    linux_cgroup_parent_identity: dict | None = None,
 ) -> dict:
-    """Run a supported process sampler; refuse unrepresentable Linux evidence."""
-    _require_supported_resource_schema(platform.system())
+    """Run a platform owner and persist exact resource evidence."""
+    if capture_scope not in ("exploratory", "qualified"):
+        raise RunError("capture scope must be exploratory or qualified")
+    linux = platform.system() == "Linux"
+    if linux and capture_scope == "qualified" and (
+        not linux_cgroup_parent
+        or not isinstance(isolation, dict)
+        or isolation.get("backend") != LINUX_ISOLATION_BACKEND
+    ):
+        raise RunError("qualified Linux capture requires delegated cgroup v2 and Landlock")
+    if linux and capture_scope != "qualified" and linux_cgroup_parent is not None:
+        raise RunError("exploratory Linux fallback must not claim a cgroup parent")
+    if linux and capture_scope != "qualified" and linux_cgroup_parent_identity is not None:
+        raise RunError("exploratory Linux fallback must not claim a cgroup identity")
+    if not linux and linux_cgroup_parent is not None:
+        raise RunError("linux_cgroup_parent requires Linux")
     if timeout_secs <= 0:
         raise RunError("monitored process timeout must be positive")
     if sample_interval_ms <= 0:
@@ -315,6 +515,7 @@ def run_monitored_process(
             raise RunError(f"refusing existing process evidence: {path}")
         path.parent.mkdir(parents=True, exist_ok=True)
     attestation_pipe = None
+    split = None
     actual_command = command
     if isolation is not None and isolation.get("backend") == LINUX_ISOLATION_BACKEND:
         child_check = isolation.get("_child_check")
@@ -334,6 +535,23 @@ def run_monitored_process(
             nonce,
             *command[split:],
         ]
+    if linux:
+        return _linux_owned_resource(
+            command, actual_command,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            resource_path=resource_path,
+            timeout_secs=timeout_secs,
+            subject_path=subject_path,
+            env=env,
+            sample_interval_ms=sample_interval_ms,
+            isolation=isolation,
+            attestation_pipe=attestation_pipe,
+            split=split,
+            capture_scope=capture_scope,
+            cgroup_parent=linux_cgroup_parent,
+            expected_cgroup_parent_identity=linux_cgroup_parent_identity,
+        )
     started = time.monotonic()
     peak_rss_bytes = 0
     peak_cpu_percent = 0.0
@@ -408,42 +626,9 @@ def run_monitored_process(
             time.sleep(sample_interval_ms / 1000.0)
     elapsed_ms = (time.monotonic() - started) * 1000.0
     cleanup_complete, cleanup_escalated, cleanup_error = _cleanup_process_group(process.pid)
-    recorded_isolation = dict(isolation) if isolation is not None else None
-    if attestation_pipe:
-        read_fd, _write_fd, nonce = attestation_pipe
-        try:
-            raw_attestation = os.read(read_fd, 4097)
-        finally:
-            os.close(read_fd)
-        try:
-            attestation = json.loads(raw_attestation)
-        except (ValueError, UnicodeDecodeError):
-            attestation = None
-        expected_keys = {
-            "nonce",
-            "abi",
-            "exec_sha256",
-            "suite_read_denied",
-            "query_pack_read_allowed",
-            "proc_read_denied",
-        }
-        invalid_attestation = (
-            not isinstance(attestation, dict)
-            or set(attestation) != expected_keys
-            or attestation.get("nonce") != nonce
-            or attestation.get("exec_sha256") != digest(canonical(command[split + 1 :]))
-            or type(attestation.get("abi")) is not int
-            or attestation["abi"] < linux_isolation.MIN_ABI
-            or any(
-                attestation[key] is not True
-                for key in ("suite_read_denied", "query_pack_read_allowed", "proc_read_denied")
-            )
-            or len(raw_attestation) > 4096
-        )
-        if invalid_attestation and exit_code == 0:
-            raise RunError("Linux child did not attest deny/allow after Landlock enforcement")
-        recorded_isolation.pop("_child_check")
-        recorded_isolation["child_attestation"] = None if invalid_attestation else attestation
+    recorded_isolation = _finish_linux_attestation(
+        attestation_pipe, isolation, command, split, exit_code
+    )
     subject_sha256 = None
     if subject_path is not None and subject_path.is_file():
         subject_sha256 = sha_file(subject_path)
@@ -1123,6 +1308,7 @@ def bind_storage_metrics(resource_path: Path, storage: dict) -> dict:
     if not isinstance(payload, dict) or "storage" in payload:
         raise RunError("resource evidence is not an unbound object")
     payload["storage"] = storage
+    _validate_resource_metrics(payload, f"resource metrics {resource_path}")
     temporary = resource_path.with_suffix(resource_path.suffix + ".tmp")
     temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     os.replace(temporary, resource_path)
@@ -1807,6 +1993,7 @@ SPEC_OPTIONAL = (
     "baseline_route",
     "candidate_route",
     "host_profile",
+    "linux_cgroup_parent",
     "admission",
     "claims",
     "receipts",
@@ -2160,9 +2347,16 @@ def load_spec(path: Path) -> dict:
         "baseline_route",
         "candidate_route",
         "host_profile",
+        "linux_cgroup_parent",
     ):
         if key in spec and (not isinstance(spec[key], str) or not spec[key]):
             raise RunError(f"spec.{key} must be a nonempty string")
+    if "linux_cgroup_parent" in spec:
+        parent = Path(spec["linux_cgroup_parent"])
+        if not parent.is_absolute() or ".." in parent.parts:
+            raise RunError("spec.linux_cgroup_parent must be an absolute delegated path")
+        if spec.get("scope", "exploratory") != "qualified":
+            raise RunError("spec.linux_cgroup_parent is valid only for qualified Linux capture")
     if "semble_lockfile_sha256" in spec and not _is_hex(spec["semble_lockfile_sha256"], 64):
         raise RunError("spec.semble_lockfile_sha256 must be a lowercase sha256")
     if "semble_model_revision" in spec and not _is_hex(spec["semble_model_revision"], 40):
@@ -2408,6 +2602,9 @@ def run_quanta_strategy(
         timeout_secs=_int(spec.get("timeout_secs", 1800), "spec.timeout_secs"),
         subject_path=record_path,
         isolation=isolation,
+        capture_scope=spec.get("scope", "exploratory"),
+        linux_cgroup_parent=spec.get("linux_cgroup_parent"),
+        linux_cgroup_parent_identity=spec.get("_linux_cgroup_parent_identity"),
     )
     if resource["timed_out"]:
         write_process_failure(
@@ -2620,14 +2817,21 @@ def _validate_manifest_shape(payload: object) -> dict:
             claim = _exact_keys(evidence[key], {"test_result_digest"}, f"manifest {key} claim")
             if not _is_hex(claim["test_result_digest"], 64):
                 raise RunError(f"manifest {key} test_result_digest must be a lowercase sha256")
-    host = _exact_keys(
-        manifest["host"], {"start_digest", "end_digest", "cache_regime"}, "manifest host"
-    )
+    host_keys = {"start_digest", "end_digest", "cache_regime"}
+    if isinstance(manifest["host"], dict) and "delegated_cgroup_parent" in manifest["host"]:
+        host_keys.add("delegated_cgroup_parent")
+    host = _exact_keys(manifest["host"], host_keys, "manifest host")
     for key in ("start_digest", "end_digest"):
         if not _is_hex(host[key], 64):
             raise RunError(f"manifest host {key} must be a lowercase sha256")
     if host["cache_regime"] not in ("true_process_cold", "warm_cache", "undeclared"):
         raise RunError("manifest host cache_regime must be a frozen regime")
+    if "delegated_cgroup_parent" in host:
+        if manifest["scope"] != "qualified":
+            raise RunError("exploratory manifest cannot claim a delegated cgroup parent")
+        _validate_cgroup_parent_identity(
+            host["delegated_cgroup_parent"], "manifest host.delegated_cgroup_parent"
+        )
     artifacts = manifest["artifacts"]
     if not isinstance(artifacts, dict):
         raise RunError("run manifest artifacts must be an object")
@@ -3272,7 +3476,166 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
     return metrics
 
 
+def _validate_linux_resource_metrics(payload: dict, where: str) -> dict:
+    keys = {
+        "schema_version", "sampler", "capture_scope", "owner_backend",
+        "sample_interval_ms", "command_sha256", "subject_sha256", "root_pid",
+        "root_start_ticks", "exit_code", "timed_out", "elapsed_ms",
+        "peak_rss_bytes", "peak_cgroup_memory_bytes", "total_user_cpu_ns",
+        "total_kernel_cpu_ns", "cgroup_cpu_usage_ns", "cgroup_path",
+        "delegated_cgroup_parent",
+        "processes", "escaped", "samples", "sampling_complete",
+        "cleanup_complete", "ownership_complete", "isolation", "storage",
+    }
+    metrics = _exact_keys(
+        payload,
+        keys | ({"exec_command_sha256"} if "exec_command_sha256" in payload else set()),
+        where,
+    )
+    if metrics["schema_version"] != 2 or metrics["sampler"] != "linux-process-owner-v1":
+        raise RunError(f"{where} has unknown Linux resource schema/sampler")
+    if metrics["capture_scope"] not in ("exploratory", "qualified"):
+        raise RunError(f"{where}.capture_scope is invalid")
+    backend = metrics["owner_backend"]
+    if backend not in ("cgroup-v2", "process-group"):
+        raise RunError(f"{where}.owner_backend is invalid")
+    if type(metrics["sample_interval_ms"]) is not int or metrics["sample_interval_ms"] < 1:
+        raise RunError(f"{where}.sample_interval_ms must be positive")
+    for key in ("command_sha256", "subject_sha256"):
+        if not _is_hex(metrics[key], 64):
+            raise RunError(f"{where}.{key} must be a lowercase sha256")
+    for key in ("root_pid", "root_start_ticks", "peak_rss_bytes", "samples"):
+        if type(metrics[key]) is not int or metrics[key] < 1:
+            raise RunError(f"{where}.{key} must be positive")
+    for key in ("total_user_cpu_ns", "total_kernel_cpu_ns"):
+        if type(metrics[key]) is not int or metrics[key] < 0:
+            raise RunError(f"{where}.{key} must be nonnegative")
+    if metrics["exit_code"] != 0 or metrics["timed_out"] is not False:
+        raise RunError(f"{where} does not describe a successful bounded process")
+    if (
+        type(metrics["elapsed_ms"]) not in (int, float)
+        or not math.isfinite(metrics["elapsed_ms"])
+        or metrics["elapsed_ms"] <= 0
+    ):
+        raise RunError(f"{where}.elapsed_ms must be finite and positive")
+    if metrics["sampling_complete"] is not True or metrics["cleanup_complete"] is not True:
+        raise RunError(f"{where} Linux owner sampling or cleanup is incomplete")
+    processes = metrics["processes"]
+    if not isinstance(processes, list) or not processes:
+        raise RunError(f"{where}.processes must be nonempty")
+    identities = set()
+    for index, item in enumerate(processes):
+        row = _exact_keys(
+            item,
+            {"pid", "start_ticks", "peak_rss_bytes", "user_cpu_ns", "kernel_cpu_ns"},
+            f"{where}.processes[{index}]",
+        )
+        identity = (row["pid"], row["start_ticks"])
+        if any(type(part) is not int or part < 1 for part in identity) or identity in identities:
+            raise RunError(f"{where}.processes[{index}] identity is invalid or reused")
+        identities.add(identity)
+        for key in ("peak_rss_bytes", "user_cpu_ns", "kernel_cpu_ns"):
+            if type(row[key]) is not int or row[key] < 0:
+                raise RunError(f"{where}.processes[{index}].{key} must be nonnegative")
+    if (metrics["root_pid"], metrics["root_start_ticks"]) not in identities:
+        raise RunError(f"{where} root identity is not in owned processes")
+    escaped = metrics["escaped"]
+    if not isinstance(escaped, list):
+        raise RunError(f"{where}.escaped must be a list")
+    escaped_ids = set()
+    for index, item in enumerate(escaped):
+        row = _exact_keys(item, {"pid", "start_ticks"}, f"{where}.escaped[{index}]")
+        identity = (row["pid"], row["start_ticks"])
+        if identity not in identities or identity in escaped_ids:
+            raise RunError(f"{where}.escaped[{index}] lacks unique owned identity")
+        escaped_ids.add(identity)
+    if backend == "cgroup-v2":
+        path = metrics["cgroup_path"]
+        if (
+            not isinstance(path, str)
+            or not Path(path).is_absolute()
+            or ".." in Path(path).parts
+            or not Path(path).name.startswith("quanta-retrieval-")
+        ):
+            raise RunError(f"{where}.cgroup_path is not a dedicated child")
+        parent = _validate_cgroup_parent_identity(
+            metrics["delegated_cgroup_parent"], f"{where}.delegated_cgroup_parent"
+        )
+        if Path(path).parent != Path(parent["path"]):
+            raise RunError(f"{where}.cgroup_path is outside the delegated parent")
+        for key in ("peak_cgroup_memory_bytes", "cgroup_cpu_usage_ns"):
+            if type(metrics[key]) is not int or metrics[key] < 0:
+                raise RunError(f"{where}.{key} must be nonnegative cgroup accounting")
+    elif any(metrics[key] is not None for key in (
+        "cgroup_path", "peak_cgroup_memory_bytes", "cgroup_cpu_usage_ns",
+        "delegated_cgroup_parent",
+    )):
+        raise RunError(f"{where} diagnostic group must not claim cgroup accounting")
+    owned = backend == "cgroup-v2" and not escaped_ids
+    if type(metrics["ownership_complete"]) is not bool or metrics["ownership_complete"] != owned:
+        raise RunError(f"{where}.ownership_complete contradicts owner evidence")
+    if (metrics["capture_scope"] == "qualified") != owned:
+        raise RunError(f"{where} qualified Linux requires complete cgroup-v2 ownership")
+    if metrics["capture_scope"] == "exploratory" and backend != "process-group":
+        raise RunError(f"{where} exploratory Linux must use diagnostic process group")
+    storage = _exact_keys(
+        metrics["storage"],
+        {"index_bytes", "model_cache_bytes", "parser_cache_bytes", "embedding_cache_bytes",
+         "discovered_files", "indexed_chunks", "index_storage", "index_measurement"},
+        f"{where}.storage",
+    )
+    for key in ("index_bytes", "model_cache_bytes", "parser_cache_bytes", "embedding_cache_bytes"):
+        if type(storage[key]) is not int or storage[key] < 0:
+            raise RunError(f"{where}.storage.{key} must be nonnegative")
+    for key in ("discovered_files", "indexed_chunks"):
+        if type(storage[key]) is not int or storage[key] < 1:
+            raise RunError(f"{where}.storage.{key} must be positive")
+    expected_measurement = {
+        "disk": "filesystem_tree_v1", "memory": "process_peak_rss_delta_v1"
+    }
+    if (
+        storage["index_storage"] not in expected_measurement
+        or storage["index_measurement"] != expected_measurement[storage["index_storage"]]
+        or storage["index_bytes"] <= 0
+    ):
+        raise RunError(f"{where}.storage measurement is invalid")
+    isolation = metrics["isolation"]
+    if isolation is not None:
+        proof = _exact_keys(
+            isolation,
+            {"backend", "policy_sha256", "proof_sha256", "child_attestation"},
+            f"{where}.isolation",
+        )
+        if proof["backend"] != LINUX_ISOLATION_BACKEND:
+            raise RunError(f"{where}.isolation must be Linux Landlock")
+        if not all(_is_hex(proof[key], 64) for key in ("policy_sha256", "proof_sha256")):
+            raise RunError(f"{where}.isolation proof digest is invalid")
+        if not _is_hex(metrics.get("exec_command_sha256"), 64):
+            raise RunError(f"{where}.exec_command_sha256 is invalid")
+        child = _exact_keys(
+            proof["child_attestation"],
+            {"nonce", "abi", "exec_sha256", "suite_read_denied",
+             "query_pack_read_allowed", "proc_read_denied"},
+            f"{where}.isolation.child_attestation",
+        )
+        if (
+            not _is_hex(child["nonce"], 64)
+            or child["exec_sha256"] != metrics["exec_command_sha256"]
+            or type(child["abi"]) is not int
+            or child["abi"] < linux_isolation.MIN_ABI
+            or any(child[key] is not True for key in (
+                "suite_read_denied", "query_pack_read_allowed", "proc_read_denied"
+            ))
+        ):
+            raise RunError(f"{where}.isolation child deny/allow proof is invalid")
+    elif "exec_command_sha256" in metrics or metrics["capture_scope"] == "qualified":
+        raise RunError(f"{where} qualified Linux requires child Landlock attestation")
+    return metrics
+
+
 def _validate_resource_metrics(payload: object, where: str) -> dict:
+    if isinstance(payload, dict) and payload.get("schema_version") == 2:
+        return _validate_linux_resource_metrics(payload, where)
     keys = {
         "schema_version",
         "sampler",
@@ -3433,9 +3796,39 @@ def _validate_resource_metrics(payload: object, where: str) -> dict:
                 )
             ):
                 raise RunError(f"{where}.isolation child deny/allow proof is invalid")
-    if isinstance(isolation, dict) and isolation.get("backend") == LINUX_ISOLATION_BACKEND:
-        _require_supported_resource_schema("Linux")
     return metrics
+
+
+def _validate_resource_capture_binding(
+    metrics: dict,
+    *,
+    host_system: str,
+    scope: str,
+    manifest_parent: dict | None,
+    protocol_parent: dict | None,
+) -> None:
+    linux_host = host_system == "Linux"
+    if linux_host != (metrics["schema_version"] == 2):
+        raise RunError("resource schema does not match capture host")
+    if not linux_host:
+        if manifest_parent is not None or protocol_parent is not None:
+            raise RunError("non-Linux capture cannot claim a delegated cgroup parent")
+        return
+    if metrics["capture_scope"] != scope:
+        raise RunError("Linux owner resource scope differs from run manifest")
+    if scope == "qualified":
+        if (
+            metrics["owner_backend"] != "cgroup-v2"
+            or not metrics["ownership_complete"]
+            or manifest_parent is None
+            or protocol_parent != manifest_parent
+            or metrics["delegated_cgroup_parent"] != manifest_parent
+        ):
+            raise RunError("qualified Linux resource lacks frozen delegated owner binding")
+    elif any(value is not None for value in (
+        manifest_parent, protocol_parent, metrics["delegated_cgroup_parent"]
+    )) or metrics["owner_backend"] != "process-group":
+        raise RunError("exploratory Linux resource cannot upgrade diagnostic owner")
 
 
 def _validate_unique_linux_attestations(entries: list[dict]) -> None:
@@ -3753,8 +4146,23 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     host_profile = validate_host_profile(read_json(resolved["host_profile"]))
     if sha_file(resolved["host_profile"]) != provenance_claims["host"]["profile_digest"]:
         raise RunError("host profile artifact digest mismatch")
-    if manifest["scope"] == "qualified":
-        _require_supported_resource_schema(host_profile["fingerprint"]["system"])
+    linux_host = host_profile["fingerprint"]["system"] == "Linux"
+    parent_binding = manifest["host"].get("delegated_cgroup_parent")
+    if (manifest["scope"] == "qualified" and linux_host) != (parent_binding is not None):
+        raise RunError("qualified Linux manifest lacks exclusive delegated cgroup parent binding")
+    if linux_host and manifest["scope"] == "qualified":
+        if platform.system() != "Linux":
+            raise RunError("qualified Linux verdict requires same-host Linux cgroup revalidation")
+        if _linux_parent_identity(parent_binding["path"]) != parent_binding:
+            raise RunError("delegated cgroup parent identity drifted before verdict")
+        source_paths = {entry["path"] for entry in driver_closure["files"]}
+        required_owner_sources = {
+            "tools/benchmark/retrieval/run.py",
+            "tools/benchmark/retrieval/linux_process.py",
+            "tools/benchmark/retrieval/linux_isolation.py",
+        }
+        if not required_owner_sources <= source_paths:
+            raise RunError("qualified Linux source closure omits owner or Landlock source")
     pair_notes: list[tuple[str, list[str], str]] = []
 
     def pair_note(reason: str, t_ids: tuple[str, ...] = (), fail_class: str = "provenance") -> None:
@@ -3822,14 +4230,26 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         "query_repetitions_per_root",
         "query_protocol_sha256s",
     }
+    if parent_binding is not None:
+        protocol_keys.add("delegated_cgroup_parent")
     protocol_shape_valid = (
         isinstance(protocol_payload, dict) and set(protocol_payload) == protocol_keys
     )
     if protocol_shape_valid:
+        if parent_binding is not None:
+            try:
+                protocol_parent = _validate_cgroup_parent_identity(
+                    protocol_payload["delegated_cgroup_parent"],
+                    "protocol lock.delegated_cgroup_parent",
+                )
+            except RunError:
+                protocol_shape_valid = False
+            else:
+                protocol_shape_valid = protocol_parent == parent_binding
         strategies = protocol_payload["strategies"]
         system_orders = protocol_payload["system_orders"]
         root_digests = protocol_payload["query_protocol_sha256s"]
-        protocol_shape_valid = (
+        protocol_shape_valid = protocol_shape_valid and (
             all(
                 _is_hex(protocol_payload[key], 64)
                 for key in (
@@ -4130,6 +4550,13 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     for path in resolved["resource_metrics"]:
         try:
             metrics = _validate_resource_metrics(read_json(Path(path)), f"resource metrics {path}")
+            _validate_resource_capture_binding(
+                metrics,
+                host_system=host_profile["fingerprint"]["system"],
+                scope=manifest["scope"],
+                manifest_parent=parent_binding,
+                protocol_parent=protocol_payload.get("delegated_cgroup_parent"),
+            )
             resource_subject_digests.append(metrics["subject_sha256"])
             if metrics["subject_sha256"] in resource_by_subject:
                 resource_ok = False
@@ -5060,7 +5487,12 @@ def run_pair(spec: dict) -> int:
     root. Partial output is never resumed: rerun from a fresh root.
     """
     scope = spec.get("scope", "exploratory")
-    _require_supported_resource_schema(platform.system())
+    if scope != "qualified" and "linux_cgroup_parent" in spec:
+        raise RunError("exploratory pair must not claim linux_cgroup_parent")
+    if platform.system() == "Linux" and scope == "qualified" and (
+        spec.get("blinding") != "isolated" or not spec.get("linux_cgroup_parent")
+    ):
+        raise RunError("qualified Linux pair requires Landlock and linux_cgroup_parent")
     if scope == "qualified" and not isinstance(spec.get("admission"), dict):
         raise RunError("qualified pair capture requires spec.admission")
     if scope != "qualified" and "admission" in spec:
@@ -5090,6 +5522,11 @@ def run_pair(spec: dict) -> int:
         raise RunError("qualified speed capture with potion-code requires quanta_model_dir")
     if "quanta_model_dir" in spec and not Path(spec["quanta_model_dir"]).is_dir():
         raise RunError("quanta_model_dir must name an existing directory")
+    if platform.system() == "Linux" and scope == "qualified":
+        spec = dict(
+            spec,
+            _linux_cgroup_parent_identity=_linux_parent_identity(spec["linux_cgroup_parent"]),
+        )
     out_root = preflight_capture(spec)
     stage = out_root.parent / (out_root.name + ".staging")
     if out_root.exists() or stage.exists():
@@ -5284,6 +5721,10 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
         "searchd_expected_sha256": spec["searchd_expected_sha256"],
         "semble_lockfile_sha256": spec["semble_lockfile_sha256"],
         "host_profile_digest": sha_file(Path(spec["host_profile"])),
+        **(
+            {"delegated_cgroup_parent": spec["_linux_cgroup_parent_identity"]}
+            if "_linux_cgroup_parent_identity" in spec else {}
+        ),
         "admission_digest": (
             sha_file(Path(str(frozen_admission["manifest"]))) if frozen_admission else None
         ),
@@ -6265,6 +6706,10 @@ def build_run_manifest(
             "start_digest": sha_file(host_start_path),
             "end_digest": sha_file(host_end_path),
             "cache_regime": spec.get("cache_regime", "undeclared"),
+            **(
+                {"delegated_cgroup_parent": spec["_linux_cgroup_parent_identity"]}
+                if "_linux_cgroup_parent_identity" in spec else {}
+            ),
         },
         "artifacts": artifacts,
         "provenance": {
@@ -6360,6 +6805,9 @@ def run_semble_capture(
         timeout_secs=_int(spec.get("timeout_secs", 1800), "spec.timeout_secs"),
         subject_path=out_dir / "record.json",
         isolation=isolation,
+        capture_scope=spec.get("scope", "exploratory"),
+        linux_cgroup_parent=spec.get("linux_cgroup_parent"),
+        linux_cgroup_parent_identity=spec.get("_linux_cgroup_parent_identity"),
     )
     if resource["timed_out"]:
         write_process_failure(

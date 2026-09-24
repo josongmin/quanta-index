@@ -3294,6 +3294,7 @@ def test_verdict_rejects_forged_phase_and_process_tree_resources(tmp_path, monke
         "resource_accounting_incomplete"
     )
 
+
     phase_stage = _pair_stage(tmp_path / "phase", scope="qualified", claims={"speed": True})
     phase_path = (
         phase_stage["stage"] / "rep-00" / "quanta" / "strategy-00-whole_file" / "phase-metrics.json"
@@ -3325,6 +3326,26 @@ def test_verdict_rejects_forged_phase_and_process_tree_resources(tmp_path, monke
         _pair_stage(
             tmp_path / "cache", scope="qualified", claims={"speed": True}, cache_regime="undeclared"
         )
+
+
+def test_qualified_verdict_rejects_handcrafted_linux_v2_on_wrong_host(tmp_path, monkeypatch):
+    from tools.benchmark.retrieval.test_linux_resource_integration import _valid_qualified_v2
+
+    _allow_minimal_speed_fixture(monkeypatch)
+    st = _pair_stage(tmp_path, scope="qualified", claims={"speed": True})
+    parent = tmp_path / "delegated"
+    parent.mkdir()
+    resource_path = st["stage"] / "rep-00" / "semble-resource-metrics.json"
+    original = json.loads(resource_path.read_text(encoding="utf-8"))
+    forged = _valid_qualified_v2(parent)
+    forged["subject_sha256"] = original["subject_sha256"]
+    forged["storage"] = original["storage"]
+    resource_path.write_text(json.dumps(forged), encoding="utf-8")
+    verdict = _stage_verdict(st)
+    assert verdict["states"]["PERF_QUALIFIED"] == "fail"
+    assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == (
+        "resource_accounting_incomplete"
+    )
 
 
 def test_verdict_t15_t16_conditionals(tmp_path):

@@ -76,7 +76,16 @@
       "properties": {
         "start_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "end_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "cache_regime": {"enum": ["true_process_cold", "warm_cache", "undeclared"]}
+        "cache_regime": {"enum": ["true_process_cold", "warm_cache", "undeclared"]},
+        "delegated_cgroup_parent": {
+          "type": "object", "additionalProperties": false,
+          "required": ["path", "device", "inode"],
+          "properties": {
+            "path": {"type": "string", "pattern": "^/[^\\n]+$"},
+            "device": {"type": "integer", "minimum": 1},
+            "inode": {"type": "integer", "minimum": 1}
+          }
+        }
       }
     },
     "artifacts": {
