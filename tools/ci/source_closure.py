@@ -33,6 +33,7 @@ PROFILES = {
             "tools/ci/nextest_events.py",
             "tools/ci/source_closure.py",
             "tools/ci/timing/rust_profile_history.py",
+            "tools/ci/tests/test_portable_proof.py",
             "tools/ci/tests/test_retrieval_benchmark.py",
             "tools/ci/tests/test_retrieval_contract_proof.py",
             "tools/ci/tests/test_retrieval_sdk_proof.py",
