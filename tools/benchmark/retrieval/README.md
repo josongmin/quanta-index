@@ -198,8 +198,8 @@ keys: `repo`, `manifest`, `suite`, `query_pack`, `top_k`, `output_root`,
 | `suite_secret_root` | none | required for `isolated`; external evaluator-only root containing the suite and no runner-readable input |
 | `isolation_method`/`access_block_log` | `attested-only…` | supplied for attested runs; driver-generated and proof-bound for isolated runs |
 | `semble_python` | required for `pair` | pinned Semble venv interpreter |
-| `semble_lockfile` | required for `pair` | external hash-pinned lockfile path (frozen into the stage) |
-| `semble_lockfile_sha256` | required for `pair` | SHA-256 of the external lockfile; env must carry every locked line plus `semble==0.6.0` |
+| `semble_lockfile` | required for `pair` | external exact-environment freeze path (frozen into the stage) |
+| `semble_lockfile_sha256` | required for `pair` | SHA-256 of the external freeze; installed distributions must match every pinned line with no extras, including `semble==0.6.0` |
 | `semble_route` | `semble-hybrid` | Semble record route name |
 | `semble_cache_root` | `<out>/semble-cache` | Semble + HF caches (outside checkout) |
 | `query_repetitions_per_root`/`query_warmup_passes` | `1`/`1` | one driver-generated, digest-bound randomized schedule consumed by both runners; qualified speed requires warmup >= 1 and at least 1,000 warm observations per route across roots |
@@ -216,11 +216,18 @@ keys: `repo`, `manifest`, `suite`, `query_pack`, `top_k`, `output_root`,
 | `receipts` | omitted | paths to contract/SDK summaries, receipts, raw JUnit/nextest JSONL, actual-runner record and Python/Rust/SDK collection inventories; all bytes are frozen and raw evidence is reparsed by the verdict |
 | `timeout_secs` | `1800` | per-capture timeout |
 
-Before a paired run, author a hash-pinned external lockfile for the exact
-Semble virtualenv, put its path in `semble_lockfile` and its SHA-256 in
-`semble_lockfile_sha256`, then preflight the env (the observed `pip freeze`
-must carry every locked line; the recorded `installed_distribution`
-RECORD/direct_url digests identify the installed bytes):
+On Unix, preflight computes every searchd socket pathname from the proposed
+output root, repetition and strategy before creating capture state. macOS
+requires at most 103 pathname bytes (Linux: 107). Choose a short output root;
+a long mounted-volume path cannot be repaired by extending the timeout.
+
+Before a paired run, author an exact `pip freeze` snapshot for the Semble
+virtualenv, put its path in `semble_lockfile` and its SHA-256 in
+`semble_lockfile_sha256`, then preflight the env. The observed distribution
+set must equal the snapshot, with no extras. The adapter also records Semble's
+installed RECORD/direct_url digests. This is a whole-file environment pin,
+**not** per-wheel artifact hash or proof that the venv was installed with
+`--require-hashes`; do not claim that stronger property from this rail:
 
 ```sh
 python3 -m tools.benchmark.retrieval.semble check \
@@ -374,6 +381,9 @@ from one v2 source closure;
 the generic workspace rail must record a post-change frozen-source result;
 and Seatbelt isolation and phase/process-tree RSS still need a real admitted
 quiet-host pair meeting their proof and sample floors. The commands above
-prove code paths, not W0-B, `PAIR_VALID`, `PERF_QUALIFIED` or `QUALITY_DELTA`. No tracked
-real-pair `run-manifest.json` or `verdict.json` is a benchmark result here;
-external evidence must be supplied and revalidated before a quality claim.
+prove code paths, not W0-B, `PERF_QUALIFIED` or `QUALITY_DELTA`. An external
+2026-09-24 exploratory pair at source `96642c06` did pass `PAIR_VALID` and
+relocated verdict replay, but used self-authored gold and carried no
+qualification claim (see the ticket [index](../../../docs/plans/sep-23-retrieval-bench/tickets/INDEX.md)).
+No tracked real-pair `run-manifest.json` or `verdict.json` is a qualified
+benchmark result here; external W0-B evidence is required before a quality claim.

@@ -110,7 +110,7 @@
         },
         "semble_lockfile": {
           "type": "string", "minLength": 1,
-          "description": "Rep-0 external hash-pinned lockfile copy whose digest must equal the pinned digest."
+          "description": "Rep-0 external exact-environment freeze copy whose whole-file digest must equal the pinned digest."
         },
         "semble_native": {
           "type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1},

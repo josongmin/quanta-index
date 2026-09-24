@@ -87,6 +87,7 @@
     "tools.ci.tests.test_retrieval_benchmark.test_normalize_record_proves_spans_and_order",
     "tools.ci.tests.test_retrieval_benchmark.test_pair_capture_preflight_requires_external_root_and_clean_pin",
     "tools.ci.tests.test_retrieval_benchmark.test_pair_driver_refuses_ambiguous_json",
+    "tools.ci.tests.test_retrieval_benchmark.test_pair_preflights_searchd_socket_length_before_creating_stage",
     "tools.ci.tests.test_retrieval_benchmark.test_pair_staging_atomicity",
     "tools.ci.tests.test_retrieval_benchmark.test_process_tree_resource_sampler_counts_children_and_kills_timeout",
     "tools.ci.tests.test_retrieval_benchmark.test_protocol_phase_metrics_bind_raw_warm_counts_and_cold_separately",

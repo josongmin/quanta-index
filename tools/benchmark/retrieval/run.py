@@ -1912,6 +1912,41 @@ def preflight_capture(spec: dict) -> Path:
     return out_root
 
 
+def _unix_socket_path_limit() -> int | None:
+    # sockaddr_un.sun_path includes the trailing NUL for pathname sockets.
+    # Keep this check before creating a stage: a daemon failure after indexing
+    # is both expensive and leaves a partial forensic tree.
+    if sys.platform == "darwin":
+        return 103
+    if sys.platform.startswith("linux"):
+        return 107
+    return None
+
+
+def preflight_daemon_socket_paths(
+    output_root: Path, strategies: list[dict], *, repetitions: int = 1, paired: bool = False
+) -> None:
+    """Refuse any state root whose searchd UDS path cannot fit sun_path."""
+    limit = _unix_socket_path_limit()
+    if limit is None:
+        return
+    if repetitions < 1:
+        raise RunError("pair repetitions must be positive")
+    for rep in range(repetitions):
+        root = output_root / f"rep-{rep:02d}" / "quanta" if paired else output_root
+        for index, strategy in enumerate(strategies):
+            name = strategy.get("name")
+            if name not in RUNNABLE_STRATEGIES:
+                raise RunError(f"unknown strategy: {name}")
+            socket = root / f"strategy-{index:02d}-{name}" / "state/search-plane/control.sock"
+            length = len(os.fsencode(socket.resolve()))
+            if length > limit:
+                raise RunError(
+                    f"searchd Unix socket path is {length} bytes (limit {limit}): "
+                    f"{socket}; choose a shorter output_root"
+                )
+
+
 def cmd_quanta(args: argparse.Namespace) -> int:
     try:
         return run_quanta(load_spec(Path(args.spec)), Path(args.spec).parent)
@@ -1941,7 +1976,6 @@ def run_quanta(spec: dict, _spec_dir: Path) -> int:
     out_root = preflight_capture(spec)
     if out_root.exists():
         raise RunError(f"output root already exists (refusing reuse): {out_root}")
-    out_root.mkdir(parents=True)
     runner_bin = spec.get("runner_binary")
     if not runner_bin or not Path(runner_bin).is_file():
         raise RunError("spec.runner_binary must name a built Rust runner binary")
@@ -1952,6 +1986,8 @@ def run_quanta(spec: dict, _spec_dir: Path) -> int:
     strategies = spec.get("strategies")
     if not isinstance(strategies, list) or not strategies:
         raise RunError("spec.strategies must be a nonempty list")
+    preflight_daemon_socket_paths(out_root, strategies)
+    out_root.mkdir(parents=True)
     if not spec.get("searchd_binary") or not _is_hex(spec.get("searchd_expected_sha256"), 64):
         raise RunError("spec must pin searchd_binary with searchd_expected_sha256")
     routes = spec.get("routes", ["lexical", "semantic", "hybrid"])
@@ -4566,7 +4602,7 @@ def run_pair(spec: dict) -> int:
     if not spec.get("semble_python"):
         raise RunError("pair requires spec.semble_python")
     if not spec.get("semble_lockfile"):
-        raise RunError("pair requires spec.semble_lockfile naming the hash-pinned lockfile")
+        raise RunError("pair requires spec.semble_lockfile naming the digest-pinned environment freeze")
     if not spec.get("host_profile"):
         raise RunError("pair requires spec.host_profile naming the canonical host profile")
     if (
@@ -4581,6 +4617,13 @@ def run_pair(spec: dict) -> int:
     stage = out_root.parent / (out_root.name + ".staging")
     if out_root.exists() or stage.exists():
         raise RunError("output root or staging dir already exists (refusing reuse)")
+    if spec.get("strategies"):
+        preflight_daemon_socket_paths(
+            stage,
+            spec["strategies"],
+            repetitions=_int(spec.get("repetitions", 1), "spec.repetitions"),
+            paired=True,
+        )
     stage.mkdir(parents=True)
     if scope == "qualified":
         closure_path = stage / "driver-source-closure.json"

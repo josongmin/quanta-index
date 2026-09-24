@@ -1,6 +1,6 @@
 # RB-04 — Semble Same-Corpus Comparison Adapter
 
-Status: `adapter-landed / real-pilot-blocked`
+Status: `adapter-landed / exploratory-pair-validated / admitted-pilot-pending`
 
 Depends on: RB-00 stage B and RB-01 record contract (environment/data audit may start after stage A)
 
@@ -8,13 +8,15 @@ Owner: Quanta repository's optional competitor adapter
 
 ## Current code status (2026-09-23)
 
-`semble.py` pins Semble 0.6.0, checks the external interpreter/lockfile and observed model cache revision, consumes the admitted manifest and blind v3 pack, emits the path+SHA mapping proof, and normalizes native spans into the common v3 record. Contract tests cover missing or drifting inputs and partial/invalid rows. No real admitted Semble environment, license decision, W0-B corpus, or one-repo pilot artifact has been recorded, so T11/T12 are not closed by fixture tests.
+`semble.py` pins Semble 0.6.0, checks the external interpreter/lockfile and observed model cache revision, consumes the admitted manifest and blind v3 pack, emits the path+SHA mapping proof, and normalizes native spans into the common v3 record. Contract tests cover missing or drifting inputs and partial/invalid rows. A real separate Semble venv and one-repo exploratory pair passed `PAIR_VALID` on 2026-09-24 (see [INDEX.md](INDEX.md)); no license decision, W0-B admission, independent gold, or qualifying T11/T12 pilot receipt was produced.
 
 Normalization refuses native task rows and latency keys outside the frozen blind pack, and each native row must explicitly contain both `task_id` and `results` with no extra fields. An extra worker query is an ineligible protocol violation; it cannot be silently dropped while producing an otherwise complete-looking v3 record. A missing `results` field cannot become a false abstention. Missing native task rows remain explicit typed errors, not fabricated abstentions.
 
 The mapping proof rejects duplicate, unsafe, or symlinked worker-observed paths before reading them. The admitted path+SHA universe cannot be made to appear complete by deduplicating observed names or following a worker-controlled path outside the isolated corpus.
 
 Worker phase timings must be finite, nonnegative, and consistent with the finite total before the adapter writes a normalized record. JSON exponent overflow (for example `1e309`) is a typed refusal, not a successful capture with invalid timing JSON. Interpreter probes and environment freezes also convert subprocess timeouts into adapter errors.
+
+The external whole-file-SHA-pinned freeze now requires an exact installed distribution set; extra packages, duplicate project pins, non-version references and invalid UTF-8 refuse. This does not authenticate wheel archive hashes or prove `--require-hashes` installation. Package content qualification therefore needs a separately reviewed installer/artifact receipt if that stronger claim is selected.
 
 ## Goal
 

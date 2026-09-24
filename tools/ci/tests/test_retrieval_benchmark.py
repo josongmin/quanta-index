@@ -1091,6 +1091,29 @@ def test_pair_capture_preflight_requires_external_root_and_clean_pin(tmp_path):
         pairrun.preflight_capture(spec)
 
 
+def test_pair_preflights_searchd_socket_length_before_creating_stage(tmp_path, monkeypatch):
+    monkeypatch.setattr(pairrun, "_unix_socket_path_limit", lambda: 103)
+    strategies = [{"name": "fixed_window_strict"}]
+    pairrun.preflight_daemon_socket_paths(
+        Path("/tmp/q.staging"), strategies, repetitions=1, paired=True
+    )
+    long_root = tmp_path / ("long-" + "x" * 90)
+    stage = long_root.with_name(long_root.name + ".staging")
+    monkeypatch.setattr(pairrun, "preflight_capture", lambda _spec: long_root)
+    with pytest.raises(pairrun.RunError, match="searchd Unix socket path.*shorter output_root"):
+        pairrun.run_pair(
+            {
+                "scope": "exploratory",
+                "semble_lockfile_sha256": "a" * 64,
+                "semble_python": "python3",
+                "semble_lockfile": "lockfile",
+                "host_profile": "host-profile",
+                "strategies": strategies,
+            }
+        )
+    assert not stage.exists()
+
+
 def test_semble_model_revision_requires_observed_pinned_cache(tmp_path):
     model = "minishlab/potion-code-16M-v2"
     with pytest.raises(semble_adapter.AdapterError, match="revision unavailable"):
@@ -1195,7 +1218,7 @@ def test_semble_env_reports_lockfile_digest_and_pair_requires_pin(tmp_path, monk
 def test_verify_lockfile_pins_external_file_not_freeze():
     pin_file = b"semble==0.6.0\nnumpy==2.0.0\n# generated lock\n"
     pin = ev.digest(pin_file)
-    freeze = "numpy==2.0.0\nsemble==0.6.0\nextra==1.0\n"
+    freeze = "numpy==2.0.0\nsemble==0.6.0\n"
     assert semble_adapter.verify_lockfile(pin_file, pin, freeze) == pin
     with pytest.raises(semble_adapter.AdapterError, match="differs from the spec pin"):
         semble_adapter.verify_lockfile(b"semble==0.6.0\n", pin, freeze)
@@ -1203,6 +1226,22 @@ def test_verify_lockfile_pins_external_file_not_freeze():
         semble_adapter.verify_lockfile(pin_file, pin, "numpy==2.0.0\n")
     with pytest.raises(semble_adapter.AdapterError, match="lacks 1 locked lines"):
         semble_adapter.verify_lockfile(pin_file, pin, "semble==0.6.0\nextra==1.0\n")
+    with pytest.raises(semble_adapter.AdapterError, match="has 1 unlocked lines"):
+        semble_adapter.verify_lockfile(pin_file, pin, freeze + "extra==1.0\n")
+    duplicate = b"semble==0.6.0\nsemble==0.6.0\n"
+    with pytest.raises(semble_adapter.AdapterError, match="duplicate distribution lines"):
+        semble_adapter.verify_lockfile(duplicate, ev.digest(duplicate), freeze)
+    direct_reference = b"semble==0.6.0\nnumpy @ file:///tmp/numpy.whl\n"
+    with pytest.raises(semble_adapter.AdapterError, match="non-version-pinned"):
+        semble_adapter.verify_lockfile(direct_reference, ev.digest(direct_reference), freeze)
+    duplicate_project = b"semble==0.6.0\nNumPy==2.0.0\nnumpy==2.1.0\n"
+    with pytest.raises(semble_adapter.AdapterError, match="more than once"):
+        semble_adapter.verify_lockfile(
+            duplicate_project, ev.digest(duplicate_project), freeze
+        )
+    invalid_utf8 = b"semble==0.6.0\n\xff"
+    with pytest.raises(semble_adapter.AdapterError, match="not UTF-8"):
+        semble_adapter.verify_lockfile(invalid_utf8, ev.digest(invalid_utf8), freeze)
 
 
 def test_check_semble_env_refuses_missing_installed_proof(tmp_path, monkeypatch):

@@ -13,7 +13,7 @@ Layout contract (all outside the source checkout):
     native.json             # Semble-native results + timings + observed files
     mapping-proof.json      # path map + both-side path+SHA diff
     record.json             # current runner record (schema v3)
-    lockfile.txt            # external hash-pinned lockfile copy (+ digest)
+    lockfile.txt            # external digest-pinned exact freeze copy
 
 A common-universe pair requires a clean mapping proof: every admitted file
 observed in Semble's indexed chunks with matching bytes. Anything else is a
@@ -373,29 +373,53 @@ def load_query_pack(path: Path) -> dict:
 
 
 def verify_lockfile(lockfile_bytes: bytes, expected_sha256: str, freeze_text: str) -> str:
-    """Check the external hash-pinned lockfile against the observed env.
+    """Check the externally digest-pinned freeze against the entire observed env.
 
     The authoritative pin is the external lockfile (path + digest), never the
     observed ``pip freeze`` output: freeze is the env observation, the lockfile
-    is the expectation. The env must carry every lockfile line plus the exact
-    pinned Semble line; anything else is env drift and refuses.
+    is the expectation. Every installed distribution must match exactly; a
+    subset check would admit undeclared dependencies that can affect ranking.
+    The file digest pins this environment snapshot, not individual wheel bytes.
     """
     if not isinstance(expected_sha256, str) or len(expected_sha256) != 64:
         raise AdapterError("lockfile pin must be a lowercase sha256")
     observed = hashlib.sha256(bytes(lockfile_bytes)).hexdigest()
     if observed != expected_sha256:
         raise AdapterError("external lockfile digest differs from the spec pin")
-    locked = {line.strip() for line in lockfile_bytes.decode("utf-8", "strict").splitlines()} - {
-        "",
-        "#",
-    }
-    locked = {line for line in locked if not line.startswith("#")}
-    frozen = {line.strip() for line in freeze_text.splitlines() if line.strip()}
+    def lines(raw: str, label: str) -> set[str]:
+        entries = [line.strip() for line in raw.splitlines() if line.strip()]
+        entries = [line for line in entries if not line.startswith("#")]
+        if len(entries) != len(set(entries)):
+            raise AdapterError(f"{label} has duplicate distribution lines")
+        names: set[str] = set()
+        for line in entries:
+            if line.count("==") != 1 or any(char.isspace() for char in line):
+                raise AdapterError(f"{label} has a non-version-pinned distribution line")
+            name, version = line.split("==")
+            if not name or not version:
+                raise AdapterError(f"{label} has a non-version-pinned distribution line")
+            normalized_name = name.lower().replace("_", "-").replace(".", "-")
+            if normalized_name in names:
+                raise AdapterError(f"{label} pins a distribution more than once")
+            names.add(normalized_name)
+        return set(entries)
+
+    try:
+        lock_text = lockfile_bytes.decode("utf-8", "strict")
+    except UnicodeDecodeError as exc:
+        raise AdapterError("external lockfile is not UTF-8") from exc
+    locked = lines(lock_text, "external lockfile")
+    frozen = lines(freeze_text, "observed freeze")
+    if f"semble=={SEMBLE_PINNED_VERSION}" not in locked:
+        raise AdapterError("external lockfile lacks the pinned Semble line")
     if f"semble=={SEMBLE_PINNED_VERSION}" not in frozen:
         raise AdapterError("observed freeze lacks the pinned Semble line")
     missing = sorted(locked - frozen)
     if missing:
         raise AdapterError(f"observed freeze lacks {len(missing)} locked lines")
+    extra = sorted(frozen - locked)
+    if extra:
+        raise AdapterError(f"observed freeze has {len(extra)} unlocked lines")
     return observed
 
 
@@ -479,7 +503,7 @@ def check_semble_env(python: Path) -> dict:
     if freeze.returncode != 0 or not freeze.stdout.strip():
         raise AdapterError("Semble environment pip freeze failed or is empty")
     # Freeze is the env observation, never the authoritative pin: the external
-    # hash-pinned lockfile is the expectation (see verify_lockfile).
+    # digest-pinned environment snapshot is the expectation (see verify_lockfile).
     report["observed_freeze"] = freeze.stdout
     report["observed_freeze_sha256"] = hashlib.sha256(freeze.stdout.encode("utf-8")).hexdigest()
     resolved = python.resolve()
