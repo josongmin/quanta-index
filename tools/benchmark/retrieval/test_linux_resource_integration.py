@@ -3,10 +3,9 @@
 These fake-owner tests do not qualify a native Linux host.
 """
 
+import copy
 import json
 import os
-import copy
-from pathlib import Path
 
 import pytest
 
@@ -100,10 +99,15 @@ def _valid_qualified_v2(parent):
         "cgroup_cpu_usage_ns": 3500,
         "cgroup_path": str(parent / "quanta-retrieval-test"),
         "delegated_cgroup_parent": pairrun._linux_parent_identity(str(parent)),
-        "processes": [{
-            "pid": 321, "start_ticks": 98765, "peak_rss_bytes": 4096,
-            "user_cpu_ns": 1000, "kernel_cpu_ns": 2000,
-        }],
+        "processes": [
+            {
+                "pid": 321,
+                "start_ticks": 98765,
+                "peak_rss_bytes": 4096,
+                "user_cpu_ns": 1000,
+                "kernel_cpu_ns": 2000,
+            }
+        ],
         "escaped": [],
         "samples": 3,
         "sampling_complete": True,
@@ -161,13 +165,19 @@ def test_resource_binding_rejects_v1_linux_scope_and_parent_substitution(tmp_pat
     payload = _valid_qualified_v2(parent)
     identity = payload["delegated_cgroup_parent"]
     pairrun._validate_resource_capture_binding(
-        payload, host_system="Linux", scope="qualified",
-        manifest_parent=identity, protocol_parent=identity,
+        payload,
+        host_system="Linux",
+        scope="qualified",
+        manifest_parent=identity,
+        protocol_parent=identity,
     )
     with pytest.raises(pairrun.RunError, match="capture host"):
         pairrun._validate_resource_capture_binding(
-            {"schema_version": 1}, host_system="Linux", scope="qualified",
-            manifest_parent=identity, protocol_parent=identity,
+            {"schema_version": 1},
+            host_system="Linux",
+            scope="qualified",
+            manifest_parent=identity,
+            protocol_parent=identity,
         )
     for scope, manifest_parent, protocol_parent in (
         ("exploratory", identity, identity),
@@ -176,8 +186,11 @@ def test_resource_binding_rejects_v1_linux_scope_and_parent_substitution(tmp_pat
     ):
         with pytest.raises(pairrun.RunError, match="scope|binding"):
             pairrun._validate_resource_capture_binding(
-                payload, host_system="Linux", scope=scope,
-                manifest_parent=manifest_parent, protocol_parent=protocol_parent,
+                payload,
+                host_system="Linux",
+                scope=scope,
+                manifest_parent=manifest_parent,
+                protocol_parent=protocol_parent,
             )
 
 
@@ -190,14 +203,18 @@ def test_delegated_parent_identity_drift_refuses_launch(tmp_path, monkeypatch):
     parent.mkdir()
     assert pairrun._linux_parent_identity(str(parent)) != frozen
     monkeypatch.setattr(
-        pairrun.linux_process, "run",
+        pairrun.linux_process,
+        "run",
         lambda *_a, **_kw: pytest.fail("drifted parent must not launch"),
     )
     with pytest.raises(pairrun.RunError, match="identity drifted before launch"):
         pairrun.run_monitored_process(
             ["/usr/bin/python3", "linux_isolation.py", "--", "/bin/true"],
-            **_paths(tmp_path), timeout_secs=5, isolation=_isolation(),
-            capture_scope="qualified", linux_cgroup_parent=str(parent),
+            **_paths(tmp_path),
+            timeout_secs=5,
+            isolation=_isolation(),
+            capture_scope="qualified",
+            linux_cgroup_parent=str(parent),
             linux_cgroup_parent_identity=frozen,
         )
     assert not (tmp_path / "resource.json").exists()
@@ -257,9 +274,9 @@ def test_qualified_linux_owner_forwards_attestation_and_preserves_accounting(tmp
     assert resource["delegated_cgroup_parent"] == pairrun._linux_parent_identity(str(parent))
     assert resource["processes"][0]["start_ticks"] == 98765
     assert "peak_cpu_percent" not in resource
-    assert resource["isolation"]["child_attestation"]["exec_sha256"] == resource[
-        "exec_command_sha256"
-    ]
+    assert (
+        resource["isolation"]["child_attestation"]["exec_sha256"] == resource["exec_command_sha256"]
+    )
     bound = pairrun.bind_storage_metrics(paths["resource_path"], _storage())
     assert pairrun._validate_resource_metrics(bound, "qualified") == bound
     assert json.loads(paths["resource_path"].read_text()) == bound
@@ -331,7 +348,9 @@ def test_qualified_linux_requires_explicit_delegation_before_launch(tmp_path, mo
     if scope == "qualified":
         with pytest.raises(pairrun.RunError, match="delegated cgroup v2 and Landlock"):
             pairrun.run_monitored_process(
-                ["/bin/true"], **_paths(tmp_path), timeout_secs=5,
+                ["/bin/true"],
+                **_paths(tmp_path),
+                timeout_secs=5,
                 capture_scope=scope,
             )
         with pytest.raises(pairrun.RunError, match="linux_cgroup_parent"):
@@ -339,7 +358,9 @@ def test_qualified_linux_requires_explicit_delegation_before_launch(tmp_path, mo
     else:
         with pytest.raises(pairrun.RunError, match="must not claim a cgroup parent"):
             pairrun.run_monitored_process(
-                ["/bin/true"], **_paths(tmp_path), timeout_secs=5,
+                ["/bin/true"],
+                **_paths(tmp_path),
+                timeout_secs=5,
                 linux_cgroup_parent="/sys/fs/cgroup/delegated",
             )
     assert not (tmp_path / "resource.json").exists()
@@ -347,10 +368,16 @@ def test_qualified_linux_requires_explicit_delegation_before_launch(tmp_path, mo
 
 def test_spec_requires_absolute_delegated_parent(tmp_path):
     spec = {
-        "repo": "repo", "manifest": "manifest", "suite": "suite",
-        "query_pack": "pack", "top_k": 1, "output_root": "out",
-        "runner_binary": "runner", "strategies": [{"name": "whole_file"}],
-        "searchd_binary": "searchd", "searchd_expected_sha256": "a" * 64,
+        "repo": "repo",
+        "manifest": "manifest",
+        "suite": "suite",
+        "query_pack": "pack",
+        "top_k": 1,
+        "output_root": "out",
+        "runner_binary": "runner",
+        "strategies": [{"name": "whole_file"}],
+        "searchd_binary": "searchd",
+        "searchd_expected_sha256": "a" * 64,
         "linux_cgroup_parent": "relative",
     }
     path = tmp_path / "spec.json"
