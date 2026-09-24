@@ -274,7 +274,7 @@ jobs:
         run: |
           mkdir -p artifacts/proof-authority/raw
           started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          set -o pipefail
+          set -euo pipefail
           just proof-p00-authority-freeze \
             | tee artifacts/proof-authority/raw/p00-authority.log
           ended_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"

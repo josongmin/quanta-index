@@ -21,6 +21,30 @@ def test_ci_avoids_duplicate_branch_push_and_pull_request_runs() -> None:
     assert "merge_group" in triggers
 
 
+def test_p00_proof_step_stops_before_manifest_when_recipe_fails(tmp_path: Path) -> None:
+    workflow = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    steps = workflow["jobs"]["proof-authority-current-gate"]["steps"]
+    script = next(
+        step["run"]
+        for step in steps
+        if step.get("name") == "Produce P00 authority proof from the static gate"
+    )
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_just = fake_bin / "just"
+    fake_just.write_text("#!/bin/sh\nexit 42\n", encoding="utf-8")
+    fake_just.chmod(0o755)
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+
+    result = subprocess.run(
+        ["bash", "-c", script], cwd=tmp_path, env=env, capture_output=True, text=True
+    )
+
+    assert result.returncode == 42
+    assert not (tmp_path / "artifacts/proof-authority/raw/p00-terminal-input.json").exists()
+
+
 def test_scoped_repository_lints_skip_unrelated_docs_and_cover_their_inputs() -> None:
     config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
     hooks = {
