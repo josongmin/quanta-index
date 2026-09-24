@@ -652,7 +652,10 @@ mod empty_status_tests {
         previous: Option<SearchCorpusActiveHeadV1>,
     ) -> SearchPlaneSearchCorpusActivationCasAck {
         let next_sequence = previous.as_ref().map_or(1, |head| {
-            head.activation_token.activation_sequence().get() + 1
+            head.activation_token
+                .activation_sequence()
+                .get()
+                .saturating_add(1)
         });
         SearchPlaneSearchCorpusActivationCasAck {
             active: forged_head(identity, next_sequence),

@@ -1774,7 +1774,7 @@ mod search_corpus_binding_tests {
         let activation = ControlCallBinding::from_request(
             &SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(
                 SearchPlaneActivateSearchCorpusGenerationCasRequest {
-                    candidate,
+                    candidate: candidate.clone(),
                     expected_active: Some(previous.clone()),
                 },
             ),
@@ -1843,7 +1843,7 @@ mod search_corpus_binding_tests {
         let first_activation = ControlCallBinding::from_request(
             &SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(
                 SearchPlaneActivateSearchCorpusGenerationCasRequest {
-                    candidate: candidate.clone(),
+                    candidate,
                     expected_active: None,
                 },
             ),
