@@ -691,8 +691,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     let mut cold_latencies_ms: BTreeMap<String, f64> = BTreeMap::new();
     let mut warmup_elapsed = Duration::ZERO;
     let first_query_elapsed;
-    let warm_query_elapsed;
-    if let Some(protocol) = &query_protocol {
+    let warm_query_elapsed = if let Some(protocol) = &query_protocol {
         let cold_start = Instant::now();
         let cold_query = task_queries
             .get(protocol.cold_probe_task_id.as_str())
@@ -792,7 +791,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
                 }
             }
         }
-        warm_query_elapsed = measurement_start.elapsed();
+        measurement_start.elapsed()
     } else {
         let query_start = Instant::now();
         let mut first = Duration::ZERO;
@@ -823,8 +822,8 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             }
         }
         first_query_elapsed = first;
-        warm_query_elapsed = query_start.elapsed().saturating_sub(first);
-    }
+        query_start.elapsed().saturating_sub(first)
+    };
 
     let record = runner_record(&RunnerRecordInput {
         pack: &pack,
