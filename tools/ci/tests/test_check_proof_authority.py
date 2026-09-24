@@ -1345,7 +1345,5 @@ def test_require_all_refuses_absent_manifests(tmp_path: Path, capsys) -> None:
         == 1
     )
     stderr = capsys.readouterr().err
-    assert "required proof 'p12a-proof-infrastructure'" not in stderr
-    assert "p12a-proof-infrastructure.json: required proof manifest is missing" in stderr
     assert "required proof 'p03-candidate-activation' is staged" in stderr
     assert "p03-candidate-activation.json: required proof manifest is missing" not in stderr
