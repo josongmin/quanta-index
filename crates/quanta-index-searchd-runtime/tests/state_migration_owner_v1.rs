@@ -521,7 +521,7 @@ fn production_boot_refuses_auxiliary_snapshot_before_creating_catalog_or_lease()
 // ---------------------------------------------------------------------------
 
 #[test]
-fn backup_then_restore_round_trip_matches_the_manifest_exactly() -> TestResult {
+fn backup_then_restore_reseals_manifest_with_activation_incarnation() -> TestResult {
     let source = private_root()?;
     let backup_parent = private_root()?;
     let restore_parent = private_root()?;
@@ -543,9 +543,29 @@ fn backup_then_restore_round_trip_matches_the_manifest_exactly() -> TestResult {
     let _outcome = run_offline_state_command_with_v1(&restore, &NoStateMigrationFaultsV1)?;
 
     let restored_manifest = read_root_manifest_v1(&restored.join(STATE_ROOT_MANIFEST_FILE_NAME))?;
+    const INCARNATION: &str = "activations/.activation-root-incarnation-v1";
+    assert!(
+        backup_manifest
+            .objects
+            .iter()
+            .all(|entry| entry.relative_path != INCARNATION),
+        "the disposable source has not yet opened an activation catalog"
+    );
+    let restored_incarnation = restored_manifest
+        .objects
+        .iter()
+        .find(|entry| entry.relative_path == INCARNATION)
+        .expect("controlled restore must create a fresh activation incarnation");
+    assert_eq!(restored_incarnation.byte_size, 16);
+    let restored_other = restored_manifest
+        .objects
+        .iter()
+        .filter(|entry| entry.relative_path != INCARNATION)
+        .cloned()
+        .collect::<Vec<_>>();
     assert_eq!(
-        restored_manifest.objects, backup_manifest.objects,
-        "the restored object inventory must equal the backup's exactly"
+        restored_other, backup_manifest.objects,
+        "controlled restore may add only its activation incarnation"
     );
     assert_eq!(
         restored_manifest.catalog_digest_hex, backup_manifest.catalog_digest_hex,
@@ -558,6 +578,65 @@ fn backup_then_restore_round_trip_matches_the_manifest_exactly() -> TestResult {
         backup_manifest.catalog_digest_hex
     );
     assert_eq!(verified.catalog_rows, backup_manifest.catalog_rows);
+    Ok(())
+}
+
+#[test]
+fn restore_rotates_existing_activation_incarnation_and_reseals_manifest() -> TestResult {
+    let source = private_root()?;
+    let backup_parent = private_root()?;
+    let restore_parent = private_root()?;
+    build_live_root(source.path())?;
+    const INCARNATION: &str = "activations/.activation-root-incarnation-v1";
+    let original = [0x42_u8; 16];
+    fs::write(source.path().join(INCARNATION), original)?;
+    let backup = backup_parent.path().join("backup-root");
+    let restored = restore_parent.path().join("restored-root");
+    drop(run_offline_state_command_with_v1(
+        &backup_command(source.path(), &backup),
+        &NoStateMigrationFaultsV1,
+    )?);
+    assert_eq!(fs::read(backup.join(INCARNATION))?, original);
+
+    drop(run_offline_state_command_with_v1(
+        &OfflineStateCommandV1 {
+            operation: OfflineStateOperationV1::Restore,
+            source_root: backup.clone(),
+            destination_root: Some(restored.clone()),
+        },
+        &NoStateMigrationFaultsV1,
+    )?);
+    let rotated = fs::read(restored.join(INCARNATION))?;
+    assert_eq!(rotated.len(), original.len());
+    assert_ne!(rotated, original);
+    let backup_manifest = read_root_manifest_v1(&backup.join("state-backup-manifest-v1.txt"))?;
+    let restored_manifest = read_root_manifest_v1(&restored.join(STATE_ROOT_MANIFEST_FILE_NAME))?;
+    let backup_other = backup_manifest
+        .objects
+        .iter()
+        .filter(|entry| entry.relative_path != INCARNATION)
+        .collect::<Vec<_>>();
+    let restored_other = restored_manifest
+        .objects
+        .iter()
+        .filter(|entry| entry.relative_path != INCARNATION)
+        .collect::<Vec<_>>();
+    assert_eq!(restored_other, backup_other);
+    assert_ne!(
+        restored_manifest
+            .objects
+            .iter()
+            .find(|entry| entry.relative_path == INCARNATION)
+            .expect("restored incarnation manifest entry")
+            .digest_hex,
+        backup_manifest
+            .objects
+            .iter()
+            .find(|entry| entry.relative_path == INCARNATION)
+            .expect("backup incarnation manifest entry")
+            .digest_hex
+    );
+    let _verified = verify_current(&restored)?;
     Ok(())
 }
 

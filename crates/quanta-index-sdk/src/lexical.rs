@@ -8,13 +8,14 @@ use std::collections::BTreeMap;
 use quanta_index_contract::lex::SymbolRecord;
 use quanta_index_contract::{
     ChunkRecord, ClusterMembershipReplaceV1, ContinuationTokenV2, GenerationSelector,
-    ManifestGeneration, RepoId, RevisionId, SearchCorpusGenerationIdentityV1,
-    SearchCorpusIngestBatch, SearchCorpusReplaceScope, SearchCorpusTombstoneScope,
-    SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
-    SearchPlaneControlIpcResponse, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse,
-    SearchPlaneSearchCorpusActivationCasAck, SearchPlaneTrackKind, SearchScopeKey,
-    SearchScopeSurface, SemanticCorpusKindV1, SemanticSourceRecordV1, SemanticSourceReplaceScopeV1,
-    SemanticSourceScopeKeyV1, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
+    ManifestGeneration, RepoId, RevisionId, SearchCorpusActiveHeadV1,
+    SearchCorpusGenerationIdentityV1, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
+    SearchCorpusTombstoneScope, SearchPlaneActivateSearchCorpusGenerationCasRequest,
+    SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse, SearchPlaneIngestIpcRequest,
+    SearchPlaneIngestIpcResponse, SearchPlaneSearchCorpusActivationCasAck, SearchPlaneTrackKind,
+    SearchScopeKey, SearchScopeSurface, SemanticCorpusKindV1, SemanticSourceRecordV1,
+    SemanticSourceReplaceScopeV1, SemanticSourceScopeKeyV1, TextQueryRequest, TextQueryResponse,
+    TextQuerySyntax,
 };
 
 use crate::text_query_builder::TextQueryBuilderState;
@@ -344,7 +345,7 @@ impl<'a> SearchCorpusNamespace<'a> {
     pub fn publish_and_activate(
         &self,
         batch: &SearchCorpusBatch,
-        expected_active: Option<SearchCorpusGenerationIdentityV1>,
+        expected_active: Option<SearchCorpusActiveHeadV1>,
     ) -> Result<(BatchReceipt, SearchPlaneSearchCorpusActivationCasAck), SdkError> {
         // An expectation that could never be met — invalid, another pair,
         // or not advanced by this batch — is refused before any byte is
@@ -364,10 +365,6 @@ impl<'a> SearchCorpusNamespace<'a> {
         request.validate_v1().map_err(|error| {
             SdkError::Protocol(format!("composite activation request is invalid: {error}"))
         })?;
-        let expected_ack = SearchPlaneSearchCorpusActivationCasAck {
-            active: request.candidate.clone(),
-            previous_sealed_active: request.expected_active.clone(),
-        };
         let response = self.client.dispatch_control(
             SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(request),
         )?;
@@ -378,6 +375,7 @@ impl<'a> SearchCorpusNamespace<'a> {
             | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
@@ -393,22 +391,8 @@ impl<'a> SearchCorpusNamespace<'a> {
                 ));
             }
         };
-        validate_composite_activation_ack_v1(&activation, &expected_ack)?;
         Ok((receipt, activation))
     }
-}
-
-fn validate_composite_activation_ack_v1(
-    observed: &SearchPlaneSearchCorpusActivationCasAck,
-    expected: &SearchPlaneSearchCorpusActivationCasAck,
-) -> Result<(), SdkError> {
-    if observed != expected {
-        return Err(SdkError::Protocol(
-            "composite activation acknowledgement does not match the published candidate and expected active identity"
-                .to_string(),
-        ));
-    }
-    Ok(())
 }
 
 /// The lexical scope a batch publishes into: what the CAS expectation is

@@ -7,14 +7,15 @@ use serde::{
 };
 
 use crate::{
-    ClusterMembershipBatchReadRequestV1, ClusterMembershipBatchReadResponseV1,
-    CurrentGenerationRequest, GenerationPin, GenerationSnapshot, GenerationStatusReport,
-    GenerationStatusRequest, HistoryQueryRequest, HybridQueryRequest, HybridQueryResponse,
-    HybridSeedQueryRequest, HybridSeedQueryResponse, MetricsSnapshotRequest, MetricsSnapshotV1,
-    ProcessReadinessRequest, ProcessReadinessV1, QuarantineDiscardAck, QuarantineDiscardRequest,
-    QuarantineInventoryRequest, QuarantineInventoryV1, RepoMapActivateGenerationRequestV2,
-    RepoMapActiveHeadRequestV2, RepoMapActiveHeadResponseV2, RepoMapQueryRequest,
-    RepoMapQueryResponse, RepoMapTerminalReceiptV2, RuntimeMetadataQueryRequest,
+    ActiveGenerationResolutionV1, ClusterMembershipBatchReadRequestV1,
+    ClusterMembershipBatchReadResponseV1, CurrentGenerationRequest, GenerationPin,
+    GenerationSnapshot, GenerationStatusReport, GenerationStatusRequest, HistoryQueryRequest,
+    HybridQueryRequest, HybridQueryResponse, HybridSeedQueryRequest, HybridSeedQueryResponse,
+    MetricsSnapshotRequest, MetricsSnapshotV1, ProcessReadinessRequest, ProcessReadinessV1,
+    QuarantineDiscardAck, QuarantineDiscardRequest, QuarantineInventoryRequest,
+    QuarantineInventoryV1, RepoMapActivateGenerationRequestV2, RepoMapActiveHeadRequestV2,
+    RepoMapActiveHeadResponseV2, RepoMapQueryRequest, RepoMapQueryResponse,
+    RepoMapTerminalReceiptV2, RuntimeMetadataQueryRequest, SearchCorpusActiveHeadObservationV1,
     SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneExplainQueryRequest,
     SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse, SearchPlaneIpcError,
     SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneRuntimeMetadataQueryResponse,
@@ -64,6 +65,7 @@ const SEARCH_PLANE_CONTROL_IPC_REQUEST_VARIANTS: &[&str] = &[
     "RepoMapActiveHeadV2",
     "CurrentGeneration",
     "GenerationStatus",
+    "SearchCorpusActiveHead",
     "MetricsSnapshot",
     "QuarantineInventory",
     "QuarantineDiscard",
@@ -77,6 +79,7 @@ const SEARCH_PLANE_CONTROL_IPC_RESPONSE_VARIANTS: &[&str] = &[
     "Error",
     "CurrentGenerationSnapshot",
     "GenerationStatusReport",
+    "SearchCorpusActiveHeadObservation",
     "MetricsSnapshot",
     "QuarantineInventory",
     "QuarantineDiscardAck",
@@ -114,7 +117,7 @@ pub struct SearchPlaneQueryIpcResponseEnvelope {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum SearchPlaneQueryIpcResponse {
-    ActiveGenerationSnapshot(GenerationSnapshot),
+    ActiveGenerationSnapshot(ActiveGenerationResolutionV1),
     ResolvedLexicalGeneration(GenerationPin),
     Text(TextQueryResponse),
     Symbol(SymbolQueryResponse),
@@ -179,6 +182,8 @@ pub enum SearchPlaneControlIpcRequest {
     /// QI-ACT-01: read-only status query returning all activated tracks for
     /// one `(repo, revision)` pair.
     GenerationStatus(GenerationStatusRequest),
+    /// Read the catalog-owned optional composite head for producer CAS.
+    SearchCorpusActiveHead(GenerationStatusRequest),
     /// QI-BB-015: read-only scrape of every metric the daemon aggregates.
     MetricsSnapshot(MetricsSnapshotRequest),
     /// QI-BB-026: what the adapters quarantine right now.
@@ -208,6 +213,7 @@ pub enum SearchPlaneControlIpcResponse {
     CurrentGenerationSnapshot(GenerationSnapshot),
     /// QI-ACT-01: response to [`SearchPlaneControlIpcRequest::GenerationStatus`].
     GenerationStatusReport(GenerationStatusReport),
+    SearchCorpusActiveHeadObservation(SearchCorpusActiveHeadObservationV1),
     /// QI-BB-015: response to [`SearchPlaneControlIpcRequest::MetricsSnapshot`].
     MetricsSnapshot(MetricsSnapshotV1),
     /// QI-BB-026: response to [`SearchPlaneControlIpcRequest::QuarantineInventory`].
@@ -849,6 +855,12 @@ impl Serialize for SearchPlaneControlIpcRequest {
                 payload,
                 serializer,
             ),
+            Self::SearchCorpusActiveHead(payload) => serialize_adjacent_tagged(
+                "SearchPlaneControlIpcRequest",
+                "SearchCorpusActiveHead",
+                payload,
+                serializer,
+            ),
             Self::MetricsSnapshot(payload) => serialize_adjacent_tagged(
                 "SearchPlaneControlIpcRequest",
                 "MetricsSnapshot",
@@ -929,6 +941,9 @@ impl<'de> Visitor<'de> for SearchPlaneControlIpcRequestVisitor {
                         }
                         "GenerationStatus" => {
                             SearchPlaneControlIpcRequest::GenerationStatus(map.next_value()?)
+                        }
+                        "SearchCorpusActiveHead" => {
+                            SearchPlaneControlIpcRequest::SearchCorpusActiveHead(map.next_value()?)
                         }
                         "MetricsSnapshot" => {
                             SearchPlaneControlIpcRequest::MetricsSnapshot(map.next_value()?)
@@ -1079,6 +1094,12 @@ impl Serialize for SearchPlaneControlIpcResponse {
                 payload,
                 serializer,
             ),
+            Self::SearchCorpusActiveHeadObservation(payload) => serialize_adjacent_tagged(
+                "SearchPlaneControlIpcResponse",
+                "SearchCorpusActiveHeadObservation",
+                payload,
+                serializer,
+            ),
             Self::MetricsSnapshot(payload) => serialize_adjacent_tagged(
                 "SearchPlaneControlIpcResponse",
                 "MetricsSnapshot",
@@ -1165,6 +1186,11 @@ impl<'de> Visitor<'de> for SearchPlaneControlIpcResponseVisitor {
                         "GenerationStatusReport" => {
                             SearchPlaneControlIpcResponse::GenerationStatusReport(map.next_value()?)
                         }
+                        "SearchCorpusActiveHeadObservation" => {
+                            SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(
+                                map.next_value()?,
+                            )
+                        }
                         "MetricsSnapshot" => {
                             SearchPlaneControlIpcResponse::MetricsSnapshot(map.next_value()?)
                         }
@@ -1222,10 +1248,12 @@ impl<'de> Deserialize<'de> for SearchPlaneControlIpcResponse {
 mod tests {
     use super::*;
     use crate::{
-        ManifestGeneration, RepoId, RevisionId, SearchCorpusGenerationIdentityV1,
-        SearchPlaneTrackKind, SemanticContentRootsV1, TextQuerySyntax,
+        ManifestGeneration, RepoId, RevisionId, SearchCorpusActivationTokenV1,
+        SearchCorpusActiveHeadV1, SearchCorpusGenerationIdentityV1, SearchPlaneTrackKind,
+        SemanticContentRootsV1, TextQuerySyntax,
     };
     use serde_json::json;
+    use std::num::NonZeroU64;
 
     fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         let mut buf: Vec<u8> = Vec::new();
@@ -1280,15 +1308,38 @@ mod tests {
 
         let response = SearchPlaneQueryIpcResponseEnvelope {
             request_id: 29,
-            payload: SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(GenerationSnapshot {
-                repo_id: fixture_repo(),
-                revision_id: fixture_revision(),
-                track: SearchPlaneTrackKind::Lexical,
-                manifest_generation: ManifestGeneration::new(7),
-                manifest_digest:
-                    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                        .to_string(),
-            }),
+            payload: SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(
+                ActiveGenerationResolutionV1 {
+                    track: SearchPlaneTrackKind::Lexical,
+                    head: SearchCorpusActiveHeadV1 {
+                        generation: SearchCorpusGenerationIdentityV1 {
+                            lexical: GenerationSnapshot {
+                                repo_id: fixture_repo(),
+                                revision_id: fixture_revision(),
+                                track: SearchPlaneTrackKind::Lexical,
+                                manifest_generation: ManifestGeneration::new(7),
+                                manifest_digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+                            },
+                            semantic: GenerationSnapshot {
+                                repo_id: fixture_repo(),
+                                revision_id: fixture_revision(),
+                                track: SearchPlaneTrackKind::Semantic,
+                                manifest_generation: ManifestGeneration::new(7),
+                                manifest_digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+                            },
+                            semantic_content: SemanticContentRootsV1 {
+                                row_root_digest: format!("sha256:{}", "a".repeat(64)),
+                                membership_root_digest: format!("sha256:{}", "b".repeat(64)),
+                            },
+                        },
+                        activation_token: SearchCorpusActivationTokenV1::new(
+                            [7; 16],
+                            NonZeroU64::new(1).expect("fixture sequence is positive"),
+                        )
+                        .expect("fixture incarnation is nonzero"),
+                    },
+                },
+            ),
         };
         let response_json = serde_json::to_value(&response).expect("resolution response JSON");
         assert_eq!(
@@ -1296,10 +1347,28 @@ mod tests {
             Some(&json!("ActiveGenerationSnapshot"))
         );
         assert_eq!(
-            serde_json::from_value::<SearchPlaneQueryIpcResponseEnvelope>(response_json)
+            serde_json::from_value::<SearchPlaneQueryIpcResponseEnvelope>(response_json.clone())
                 .expect("resolution response JSON decode"),
             response
         );
+        for (path, replacement) in [
+            ("/payload/payload/track", json!("Structural")),
+            (
+                "/payload/payload/head/generation/semantic/manifest_generation",
+                json!(8),
+            ),
+            (
+                "/payload/payload/head/activation_token/activation_sequence",
+                json!(0),
+            ),
+        ] {
+            let mut invalid = response_json.clone();
+            *invalid.pointer_mut(path).expect("fixture path exists") = replacement;
+            assert!(
+                serde_json::from_value::<SearchPlaneQueryIpcResponseEnvelope>(invalid).is_err(),
+                "invalid active resolution at {path} must be refused"
+            );
+        }
         assert_eq!(
             decode::<SearchPlaneQueryIpcResponseEnvelope>(
                 &encode(&response).expect("resolution response CBOR")
@@ -1644,9 +1713,20 @@ mod tests {
         }
     }
 
+    fn corpus_head_v1(generation: u64, digest: &str, sequence: u64) -> SearchCorpusActiveHeadV1 {
+        SearchCorpusActiveHeadV1 {
+            generation: corpus_identity_v1(generation, digest),
+            activation_token: crate::SearchCorpusActivationTokenV1::new(
+                [7; crate::ACTIVATION_ROOT_INCARNATION_BYTES_V1],
+                std::num::NonZeroU64::new(sequence).expect("fixture sequence is positive"),
+            )
+            .expect("fixture incarnation is nonzero"),
+        }
+    }
+
     #[test]
     fn composite_search_corpus_activation_control_variants_round_trip_v1() {
-        let previous = corpus_identity_v1(10, "digest-10");
+        let previous = corpus_head_v1(10, "digest-10", 1);
         let candidate = corpus_identity_v1(11, "digest-11");
         let request = SearchPlaneControlIpcRequestEnvelope {
             request_id: 13,
@@ -1675,7 +1755,7 @@ mod tests {
             request_id: 13,
             payload: SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(
                 SearchPlaneSearchCorpusActivationCasAck {
-                    active: candidate,
+                    active: corpus_head_v1(11, "digest-11", 2),
                     previous_sealed_active: Some(previous),
                 },
             ),
@@ -1691,6 +1771,58 @@ mod tests {
                 &encode(&response).expect("encode composite activation ack cbor"),
             )
             .expect("decode composite activation ack cbor"),
+            response
+        );
+    }
+
+    #[test]
+    fn search_corpus_active_head_control_variants_round_trip_v1() {
+        let request = SearchPlaneControlIpcRequestEnvelope {
+            request_id: 14,
+            payload: SearchPlaneControlIpcRequest::SearchCorpusActiveHead(
+                GenerationStatusRequest {
+                    repo_id: fixture_repo(),
+                    revision_id: fixture_revision(),
+                },
+            ),
+        };
+        assert_eq!(
+            serde_json::from_value::<SearchPlaneControlIpcRequestEnvelope>(
+                serde_json::to_value(&request).expect("encode request")
+            )
+            .expect("decode request"),
+            request
+        );
+        assert_eq!(
+            decode::<SearchPlaneControlIpcRequestEnvelope>(
+                &encode(&request).expect("encode request cbor")
+            )
+            .expect("decode request cbor"),
+            request
+        );
+        let response = SearchPlaneControlIpcResponseEnvelope {
+            request_id: 14,
+            payload: SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(
+                SearchCorpusActiveHeadObservationV1::new(
+                    fixture_repo(),
+                    fixture_revision(),
+                    Some(corpus_head_v1(11, "digest-11", 2)),
+                )
+                .expect("matching fixture head"),
+            ),
+        };
+        assert_eq!(
+            serde_json::from_value::<SearchPlaneControlIpcResponseEnvelope>(
+                serde_json::to_value(&response).expect("encode response")
+            )
+            .expect("decode response"),
+            response
+        );
+        assert_eq!(
+            decode::<SearchPlaneControlIpcResponseEnvelope>(
+                &encode(&response).expect("encode response cbor")
+            )
+            .expect("decode response cbor"),
             response
         );
     }
@@ -1770,7 +1902,7 @@ mod tests {
 
     #[test]
     fn composite_rollback_control_variants_round_trip_over_json_and_cbor() {
-        let expected_active = corpus_identity_v1(11, "digest-11");
+        let expected_active = corpus_head_v1(11, "digest-11", 2);
         let target = corpus_identity_v1(10, "digest-10");
         let request = SearchPlaneControlIpcRequestEnvelope {
             request_id: 11,
@@ -1803,7 +1935,7 @@ mod tests {
             request_id: 11,
             payload: SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(
                 SearchPlaneSearchCorpusRollbackCasAck {
-                    active: target,
+                    active: corpus_head_v1(10, "digest-10", 3),
                     previous_sealed_active: expected_active,
                 },
             ),

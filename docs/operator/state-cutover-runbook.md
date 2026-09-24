@@ -24,10 +24,13 @@ Execution owner: `crates/quanta-index-searchd-runtime/src/state_migration.rs`
    with the release binary. Never configure the daemon against an unpublished
    staging directory: `verify-state` refuses a manifest-less staging root,
    and the root manifest is written+fsynced last before publication.
-6. `backup-state` / `restore-state` move one freeze boundary:
-   catalog+object+root manifests with every file/object digest and size.
-   Restored identities, receipts, replay floor, and sequence high-water
-   must exact-match the manifest.
+6. `backup-state` moves one freeze boundary: catalog+object+root manifests
+   with every file/object digest and size. `restore-state` preserves the
+   backed-up data identities, receipts, replay floor, and sequence high-water,
+   but rotates the activation-catalog root incarnation in its unpublished
+   staging root. The restored root manifest attests that new incarnation;
+   it must not be byte-for-byte identical to the backup manifest. A token
+   issued for the source root is not authority for the restored root.
 
 Boot never migrates: a legacy root is refused typed
 (`state_format::refuse_legacy_state_root_v1`), and a manifest whose

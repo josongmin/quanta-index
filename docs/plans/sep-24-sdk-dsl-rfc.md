@@ -137,7 +137,7 @@ When onboarding a second external producer, first add producer-local mapping and
 
 ## 9. Decision on optional source preparation
 
-Producer-owned **semantic** chunking remains the authority for code/HIR/cards: the index cannot infer parser symbols, graph ownership or card provenance from raw bytes. The earlier wording was too absolute for ordinary text sources. If Quanta is to accept raw Markdown/plain text from another producer, add an **optional preparation helper before `SearchCorpusBatch`** that emits both lexical chunks and typed `DocumentLeaf` semantic sources. The caller can still supply prebuilt records unchanged. The helper does not run inside `searchd`, mutate a generation, choose an embedding model or create a second ingest protocol. The detailed target is [source preparation RFC](sep-24-source-preparation-sdk-rfc.md).
+Quanta Index is intended to index repository formats through an extensible SDK, not just provide a Markdown helper. The [repository-format SDK RFC](sep-24-repository-format-sdk-rfc.md) defines source identity, a compile-time `SourceAdapter<Input>` seam, opaque typed `PreparedSource`, and `SourceBatch` lifecycle. The current engine primitive remains `SearchCorpusBatch` for prepared lexical and typed-text semantic scopes; chunks alone do not imply semantic indexing. Semantica continues HIR-aware code/card preparation through its direct path. Plain/Markdown is the first built-in adapter, specified in the [text adapter RFC](sep-24-source-preparation-sdk-rfc.md). Native media requires a typed engine and query capability, not a text-field convention or daemon plugin registry.
 
 Proposed shape, not an implemented API:
 
@@ -147,11 +147,11 @@ let prepared = source_prep::prepare_text(
     TextSource::markdown(repo.clone(), revision.clone(), key, text)?,
     &TextPreparationPolicy::v1(),
 )?;
-let batch = SearchCorpusBatch::replace_generation(repo, revision, generation, manifest_digest)
-    .replace_prepared(prepared)?;
-let receipt = client.search_corpus().publish(&batch)?;
+let batch = SourceBatch::replace_generation(repo, revision, generation, manifest_digest)
+    .replace(prepared)?;
+let receipt = client.sources().publish(&batch)?;
 ```
 
 Start with one maintained text policy; keep language/parser-specific code chunkers in their producers. The helper must produce exact UTF-8 byte and line spans for lexical chunks, typed semantic document leaves, deterministic IDs/order, bounded size and explicit policy identity bound by the producer into its manifest/scope digest. The existing wire does not independently attest that policy: document and test how the producer computes the digest before claiming reproducibility. A parse failure must not silently switch a semantic-code source to generic text chunks. Do not infer semantic code cards from raw text.
 
-Implement this helper only alongside a concrete raw-text producer/onboarding scenario; a library-only helper with no caller adds API maintenance without demonstrated value. Place it in a small producer-side module or separate prep crate if dependencies require it, then feed the existing SDK batch. Validate against independent fixtures for empty/Unicode/long text, stable IDs and spans, changed policy/content, scoped replacement/deletion, replay and query results. Do not touch `semantic_derive.rs` or the IPC contract unless one of those scenarios proves a missing server responsibility.
+Implement the shared source seam and a plain/Markdown adapter with an SDK reference client plus a second adapter fixture using a different input type; a second production app is not a prerequisite. In V1 the facade lowers to the existing SDK batch. Semantica's HIR-aware chunking and direct record path remain unchanged. Validate source identity, provenance, empty/Unicode/long text, stable IDs and spans, changed policy/content, scoped replacement/deletion, replay and query results. Do not change the text engine for a hypothetical format; add new typed capabilities when a real modality requires them.

@@ -3,16 +3,63 @@
 
 use quanta_index_contract::{
     GenerationPin, GenerationSelector, ManifestGeneration, RepoId, RevisionId,
-    SearchPlaneTrackKind, TextQueryRequest,
+    SearchCorpusActivationTokenV1, SearchPlaneTrackKind, TextQueryRequest,
 };
 use quanta_index_core::CoreError;
 
-use crate::{ActivationCatalog, ActiveGenerationRecord};
+use crate::{ActivationCatalog, SearchCorpusGenerationV1};
 
 #[derive(Clone, Debug)]
 pub(super) struct SemanticSelection {
     pub(super) pin: GenerationPin,
     pub(super) expected_manifest_digest: Option<String>,
+}
+
+fn active_selector_parts(
+    selector: &GenerationSelector,
+) -> Option<(&RepoId, &RevisionId, Option<SearchCorpusActivationTokenV1>)> {
+    match selector {
+        GenerationSelector::Active {
+            repo_id,
+            revision_id,
+        } => Some((repo_id, revision_id, None)),
+        GenerationSelector::ResolvedActive {
+            repo_id,
+            revision_id,
+            activation_token,
+        } => Some((repo_id, revision_id, Some(*activation_token))),
+        GenerationSelector::Pinned(_) => None,
+    }
+}
+
+fn resolve_active_head(
+    catalog: &ActivationCatalog,
+    repo_id: &RepoId,
+    revision_id: &RevisionId,
+    expected_token: Option<SearchCorpusActivationTokenV1>,
+    plane: &str,
+) -> Result<SearchCorpusGenerationV1, CoreError> {
+    let (generation, observed_token) = catalog
+        .active_search_corpus_with_token_v1(repo_id, revision_id)?
+        .ok_or_else(|| {
+            CoreError::NotReady(format!(
+                "{plane}: active composite generation unresolved for repo={} revision={}",
+                repo_id.as_str(),
+                revision_id.as_str()
+            ))
+        })?;
+    if expected_token.is_some_and(|expected| expected != observed_token) {
+        return Err(CoreError::NotReady(format!(
+            "{plane}: active composite activation token changed for repo={} revision={}",
+            repo_id.as_str(),
+            revision_id.as_str()
+        )));
+    }
+    Ok(generation)
+}
+
+fn is_active_selector(selector: Option<&GenerationSelector>) -> bool {
+    selector.is_some_and(|selector| active_selector_parts(selector).is_some())
 }
 
 pub(super) fn selection_mismatch_error(
@@ -21,8 +68,7 @@ pub(super) fn selection_mismatch_error(
     message: String,
 ) -> CoreError {
     if same_generation_scope(left.0, right.0)
-        && (matches!(left.1, Some(GenerationSelector::Active { .. }))
-            || matches!(right.1, Some(GenerationSelector::Active { .. })))
+        && (is_active_selector(left.1) || is_active_selector(right.1))
     {
         CoreError::NotReady(message)
     } else {
@@ -56,6 +102,11 @@ pub(super) fn validate_generation_scope(
             GenerationSelector::Active {
                 repo_id,
                 revision_id,
+            }
+            | GenerationSelector::ResolvedActive {
+                repo_id,
+                revision_id,
+                ..
             } => (repo_id, revision_id),
             GenerationSelector::Pinned(pin) => (&pin.repo_id, &pin.revision_id),
         };
@@ -81,8 +132,7 @@ pub(super) fn explicit_pin_mismatch_error(
         .iter()
         .filter(|(selected, _)| *selected != explicit)
         .all(|(selected, selector)| {
-            same_generation_scope(explicit, selected)
-                && matches!(selector, Some(GenerationSelector::Active { .. }))
+            same_generation_scope(explicit, selected) && is_active_selector(*selector)
         });
     if active_drift_only {
         CoreError::NotReady(message)
@@ -98,21 +148,31 @@ fn resolve_generation_selector_pin(
     plane: &str,
 ) -> Result<GenerationPin, CoreError> {
     match selector {
-        GenerationSelector::Active {
-            repo_id,
-            revision_id,
-        } => activation_catalog
-            .resolve(repo_id, revision_id, track)
-            .map_err(|err| match err {
-                CoreError::NotReady(msg) => {
-                    CoreError::NotReady(format!("{plane}: active generation unresolved: {msg}"))
-                }
-                err @ (CoreError::InvalidContract(_)
-                | CoreError::Typed { .. }
-                | CoreError::NotImplemented(_)
-                | CoreError::NotFound(_)
-                | CoreError::Storage(_)) => err,
-            }),
+        GenerationSelector::Active { .. } | GenerationSelector::ResolvedActive { .. } => {
+            let Some((repo_id, revision_id, expected_token)) = active_selector_parts(selector)
+            else {
+                return Err(CoreError::InvalidContract(format!(
+                    "{plane}: active selector did not carry an active domain"
+                )));
+            };
+            if track == SearchPlaneTrackKind::Structural {
+                return Err(CoreError::NotReady(format!(
+                    "{plane}: structural track has no composite active head"
+                )));
+            }
+            let generation = resolve_active_head(
+                activation_catalog,
+                repo_id,
+                revision_id,
+                expected_token,
+                plane,
+            )?;
+            Ok(GenerationPin::new(
+                repo_id.clone(),
+                revision_id.clone(),
+                generation.manifest_generation(),
+            ))
+        }
         GenerationSelector::Pinned(pin) => Ok(pin.clone()),
     }
 }
@@ -153,10 +213,21 @@ pub(super) fn resolve_semantic_selector_selection(
     plane: &str,
 ) -> Result<SemanticSelection, CoreError> {
     match selector {
-        GenerationSelector::Active {
-            repo_id,
-            revision_id,
-        } => resolve_active_semantic_selection(activation_catalog, repo_id, revision_id, plane),
+        GenerationSelector::Active { .. } | GenerationSelector::ResolvedActive { .. } => {
+            let Some((repo_id, revision_id, expected_token)) = active_selector_parts(selector)
+            else {
+                return Err(CoreError::InvalidContract(format!(
+                    "{plane}: active selector did not carry an active domain"
+                )));
+            };
+            resolve_active_semantic_selection(
+                activation_catalog,
+                repo_id,
+                revision_id,
+                expected_token,
+                plane,
+            )
+        }
         GenerationSelector::Pinned(pin) => Ok(SemanticSelection {
             pin: pin.clone(),
             expected_manifest_digest: None,
@@ -179,16 +250,17 @@ pub(super) fn resolve_joint_active_selection(
         &[lexical_selector, semantic_selector],
         plane,
     )?;
+    let (Some(lexical_selector), Some(semantic_selector)) = (lexical_selector, semantic_selector)
+    else {
+        return Ok(None);
+    };
     let (
-        Some(GenerationSelector::Active {
-            repo_id: lexical_repo,
-            revision_id: lexical_revision,
-        }),
-        Some(GenerationSelector::Active {
-            repo_id: semantic_repo,
-            revision_id: semantic_revision,
-        }),
-    ) = (lexical_selector, semantic_selector)
+        Some((lexical_repo, lexical_revision, lexical_token)),
+        Some((semantic_repo, semantic_revision, semantic_token)),
+    ) = (
+        active_selector_parts(lexical_selector),
+        active_selector_parts(semantic_selector),
+    )
     else {
         return Ok(None);
     };
@@ -197,15 +269,20 @@ pub(super) fn resolve_joint_active_selection(
             "{plane}: lexical and semantic active selectors name different repositories or revisions"
         )));
     }
-    let generation = activation_catalog
-        .active_search_corpus_v1(lexical_repo, lexical_revision)?
-        .ok_or_else(|| {
-            CoreError::NotReady(format!(
-                "{plane}: active composite generation unresolved for repo={} revision={}",
-                lexical_repo.as_str(),
-                lexical_revision.as_str()
-            ))
-        })?;
+    if let (Some(lexical_token), Some(semantic_token)) = (lexical_token, semantic_token)
+        && lexical_token != semantic_token
+    {
+        return Err(CoreError::NotReady(format!(
+            "{plane}: lexical and semantic active resolutions name different activations"
+        )));
+    }
+    let generation = resolve_active_head(
+        activation_catalog,
+        lexical_repo,
+        lexical_revision,
+        lexical_token.or(semantic_token),
+        plane,
+    )?;
     let pin = GenerationPin::new(
         lexical_repo.clone(),
         lexical_revision.clone(),
@@ -231,33 +308,25 @@ fn resolve_active_semantic_selection(
     activation_catalog: &ActivationCatalog,
     repo_id: &RepoId,
     revision_id: &RevisionId,
+    expected_token: Option<SearchCorpusActivationTokenV1>,
     plane: &str,
 ) -> Result<SemanticSelection, CoreError> {
-    let record = activation_catalog
-        .resolve_record(repo_id, revision_id, SearchPlaneTrackKind::Semantic)
-        .map_err(|err| match err {
-            CoreError::NotReady(msg) => {
-                CoreError::NotReady(format!("{plane}: active generation unresolved: {msg}"))
-            }
-            err @ (CoreError::InvalidContract(_)
-            | CoreError::Typed { .. }
-            | CoreError::NotImplemented(_)
-            | CoreError::NotFound(_)
-            | CoreError::Storage(_)) => err,
-        })?;
-    Ok(selection_from_active_semantic_record(record))
-}
-
-fn selection_from_active_semantic_record(record: ActiveGenerationRecord) -> SemanticSelection {
+    let generation = resolve_active_head(
+        activation_catalog,
+        repo_id,
+        revision_id,
+        expected_token,
+        plane,
+    )?;
     let pin = GenerationPin::new(
-        record.repo_id.clone(),
-        record.revision_id.clone(),
-        record.manifest_generation,
+        repo_id.clone(),
+        revision_id.clone(),
+        generation.manifest_generation(),
     );
-    SemanticSelection {
+    Ok(SemanticSelection {
         pin,
-        expected_manifest_digest: Some(record.manifest_digest),
-    }
+        expected_manifest_digest: Some(generation.manifest_digest().to_string()),
+    })
 }
 
 pub(super) fn resolve_lexical_request_pin(

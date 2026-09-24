@@ -6,10 +6,11 @@ use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Instant;
 
 use quanta_index_contract::{
-    ClusterMembershipBatchReadRequestV1, CurrentGenerationRequest, EarlyStopReason, GenerationPin,
-    GenerationSnapshot, HistoryQueryRequest, HybridQueryRequest, HybridSeedQueryRequest,
-    RepoMapQueryRequest, RuntimeMetadataQueryRequest, SearchPlaneExplainQueryRequest,
-    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, SemanticQueryRequest,
+    ActiveGenerationResolutionV1, ClusterMembershipBatchReadRequestV1, CurrentGenerationRequest,
+    EarlyStopReason, GenerationPin, HistoryQueryRequest, HybridQueryRequest,
+    HybridSeedQueryRequest, RepoMapQueryRequest, RuntimeMetadataQueryRequest,
+    SearchCorpusActiveHeadV1, SearchPlaneExplainQueryRequest, SearchPlaneQueryIpcRequest,
+    SearchPlaneQueryIpcResponse, SearchPlaneTrackKind, SemanticQueryRequest,
     StructuralQueryRequest, SymbolQueryRequest, TextQueryRequest,
 };
 use quanta_index_core::domains::structural::StructuralProducerPort;
@@ -210,22 +211,36 @@ impl SearchPlaneDispatcher {
     ) -> SearchPlaneQueryIpcResponse {
         self.observed_route(QueryRoute::ActiveResolution, None, || {
             let resolved = budget.checkpoint("active-resolution:entry").and_then(|()| {
-                self.activation_catalog.resolve_record(
-                    &request.repo_id,
-                    &request.revision_id,
-                    request.track,
-                )
+                if request.track == SearchPlaneTrackKind::Structural {
+                    return Err(CoreError::NotReady(
+                        "active-resolution: structural track has no composite active head"
+                            .to_string(),
+                    ));
+                }
+                let (generation, activation_token) = self
+                    .activation_catalog
+                    .active_search_corpus_with_token_v1(&request.repo_id, &request.revision_id)?
+                    .ok_or_else(|| {
+                        CoreError::NotReady(format!(
+                            "active-resolution: no active composite head for repo={} revision={}",
+                            request.repo_id.as_str(),
+                            request.revision_id.as_str()
+                        ))
+                    })?;
+                let resolution = ActiveGenerationResolutionV1 {
+                    track: request.track,
+                    head: SearchCorpusActiveHeadV1 {
+                        generation: generation.to_contract_v1(),
+                        activation_token,
+                    },
+                };
+                resolution.validate_v1().map_err(|error| {
+                    CoreError::Storage(format!("active-resolution: invalid catalog head: {error}"))
+                })?;
+                Ok(resolution)
             });
             match resolved {
-                Ok(record) => {
-                    SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(GenerationSnapshot {
-                        repo_id: record.repo_id,
-                        revision_id: record.revision_id,
-                        track: record.track,
-                        manifest_generation: record.manifest_generation,
-                        manifest_digest: record.manifest_digest,
-                    })
-                }
+                Ok(resolution) => SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(resolution),
                 Err(error) => SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(error)),
             }
         })

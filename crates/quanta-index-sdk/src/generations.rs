@@ -1,5 +1,5 @@
 use quanta_index_contract::{
-    RepoId, RevisionId, SearchPlaneTrackKind,
+    RepoId, RevisionId, SearchCorpusActiveHeadV1, SearchPlaneTrackKind,
     ipc::{
         CurrentGenerationRequest, GenerationSnapshot, GenerationStatusReport,
         GenerationStatusRequest, SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse,
@@ -30,24 +30,18 @@ impl<'a> GenerationNamespace<'a> {
         request: SearchPlaneRollbackSearchCorpusGenerationCasRequest,
     ) -> Result<SearchPlaneSearchCorpusRollbackCasAck, SdkError> {
         validate_composite_rollback_request_v1(&request)?;
-        let expected_ack = SearchPlaneSearchCorpusRollbackCasAck {
-            active: request.target.clone(),
-            previous_sealed_active: request.expected_active.clone(),
-        };
         let response = self.client.dispatch_control(
             SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(request),
         )?;
         match response {
-            SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(ack) => {
-                validate_composite_rollback_ack_v1(&ack, &expected_ack)?;
-                Ok(ack)
-            }
+            SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(ack) => Ok(ack),
             other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
             | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
             | SearchPlaneControlIpcResponse::Error(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
             | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
@@ -83,6 +77,7 @@ impl<'a> GenerationNamespace<'a> {
             | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
             | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::Error(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
@@ -121,12 +116,39 @@ impl<'a> GenerationNamespace<'a> {
             | SearchPlaneControlIpcResponse::Error(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
-            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)) => {
+            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)) => {
                 Err(SdkError::Protocol(format!(
                     "expected generation status report, got {}",
                     QuantaIndex::control_response_kind(&other)
                 )))
             }
+        }
+    }
+
+    /// Observe the exact optional catalog head for a subsequent CAS.
+    /// Catalog I/O and uncertain durability propagate as errors, not `None`.
+    pub fn active_head(
+        &self,
+        repo_id: RepoId,
+        revision_id: RevisionId,
+    ) -> Result<Option<SearchCorpusActiveHeadV1>, SdkError> {
+        let response =
+            self.client
+                .dispatch_control(SearchPlaneControlIpcRequest::SearchCorpusActiveHead(
+                    GenerationStatusRequest {
+                        repo_id,
+                        revision_id,
+                    },
+                ))?;
+        match response {
+            SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(observation) => {
+                Ok(observation.into_head())
+            }
+            other => Err(SdkError::Protocol(format!(
+                "expected search-corpus active-head observation, got {}",
+                QuantaIndex::control_response_kind(&other)
+            ))),
         }
     }
 }
@@ -137,17 +159,4 @@ fn validate_composite_rollback_request_v1(
     request.validate_v1().map_err(|error| {
         SdkError::Protocol(format!("composite rollback request is invalid: {error}"))
     })
-}
-
-fn validate_composite_rollback_ack_v1(
-    observed: &SearchPlaneSearchCorpusRollbackCasAck,
-    expected: &SearchPlaneSearchCorpusRollbackCasAck,
-) -> Result<(), SdkError> {
-    if observed != expected {
-        return Err(SdkError::Protocol(
-            "composite rollback acknowledgement does not match the requested target and expected active identity"
-                .to_string(),
-        ));
-    }
-    Ok(())
 }

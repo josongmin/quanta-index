@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, VecDeque};
+use std::num::NonZeroU64;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -8,15 +9,17 @@ use quanta_index_contract::lex::{
     SymbolSpan, compute_parse_tree_source_hash,
 };
 use quanta_index_contract::{
-    BatchPublishReceipt, CapabilityStatusV1, ChunkId, ChunkRecord, ContinuationTokenV2,
-    DiffHunkSide, ExactRepoRelativePathV1, GenerationSelector, GenerationSnapshot,
-    HistoryQueryRequest, HybridSeedQueryResponse, ManifestGeneration, OwnerDocKind, PlannerStage,
-    PlannerTraceEntry, QueryResultWindowV2, RepoId, RepoMapChunkExactness, RepoMapExactnessSummary,
-    RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapMutationAck,
-    RepoMapRedactionState, RepoRelativePath, RevisionId, RuntimeMetadataQueryRequest,
-    SearchCorpusGenerationIdentityV1, SearchExplanation, SearchPlaneControlIpcRequestEnvelope,
-    SearchPlaneControlIpcResponseEnvelope, SearchPlaneErrorCodeV2, SearchPlaneHistoryQueryResponse,
-    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
+    ActiveGenerationResolutionV1, BatchPublishReceipt, CapabilityStatusV1, ChunkId, ChunkRecord,
+    ContinuationTokenV2, DiffHunkSide, ExactRepoRelativePathV1, GenerationSelector,
+    GenerationSnapshot, HistoryQueryRequest, HybridSeedQueryResponse, ManifestGeneration,
+    OwnerDocKind, PlannerStage, PlannerTraceEntry, QueryResultWindowV2, RepoId,
+    RepoMapChunkExactness, RepoMapExactnessSummary, RepoMapGraphCoverageClass,
+    RepoMapItemIndexAvailability, RepoMapMutationAck, RepoMapRedactionState, RepoRelativePath,
+    RevisionId, RuntimeMetadataQueryRequest, SearchCorpusActivationTokenV1,
+    SearchCorpusActiveHeadV1, SearchCorpusGenerationIdentityV1, SearchExplanation,
+    SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponseEnvelope,
+    SearchPlaneErrorCodeV2, SearchPlaneHistoryQueryResponse, SearchPlaneIngestIpcRequest,
+    SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneIpcError, SearchPlaneQueryIpcRequestEnvelope,
     SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope,
     SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneRuntimeMetadataQueryResponse,
@@ -98,7 +101,9 @@ impl QueryTransport for StubQueryTransport {
             snapshot.track = resolve.track;
             return Ok(SearchPlaneQueryIpcResponseEnvelope {
                 request_id: request.request_id,
-                payload: SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(snapshot),
+                payload: SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(active_resolution(
+                    snapshot,
+                )),
             });
         }
         let payload = self
@@ -304,7 +309,7 @@ fn active_resolution_rejects_wrong_same_domain_query_generation() {
         ManifestGeneration::new(8),
     );
     let query = Arc::new(StubQueryTransport::sequence([
-        SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(resolved),
+        SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(active_resolution(resolved)),
         SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
             generation: wrong,
             results: Vec::new(),
@@ -340,7 +345,12 @@ fn active_resolution_rejects_wrong_same_domain_query_generation() {
         requests.last().map(|request| &request.payload),
         Some(quanta_index_contract::SearchPlaneQueryIpcRequest::Text(request))
             if request.generation == Some(sample_generation_pin())
-                && matches!(request.generation_selector, Some(GenerationSelector::Active { .. }))
+                && matches!(
+                    request.generation_selector.as_ref(),
+                    Some(GenerationSelector::ResolvedActive { activation_token, .. })
+                        if activation_token.root_incarnation() == [7; 16]
+                            && activation_token.activation_sequence().get() == 1
+                )
     ));
     drop(requests);
 }
@@ -508,6 +518,66 @@ fn search_corpus_identity(generation: u64, digest: &str) -> SearchCorpusGenerati
         },
         semantic_content: semantic_roots(generation),
     }
+}
+
+fn head_with_generation(
+    generation: SearchCorpusGenerationIdentityV1,
+    sequence: u64,
+) -> SearchCorpusActiveHeadV1 {
+    SearchCorpusActiveHeadV1 {
+        generation,
+        activation_token: SearchCorpusActivationTokenV1::new(
+            [7; quanta_index_contract::ACTIVATION_ROOT_INCARNATION_BYTES_V1],
+            std::num::NonZeroU64::new(sequence).expect("fixture sequence is positive"),
+        )
+        .expect("fixture incarnation is nonzero"),
+    }
+}
+
+fn search_corpus_head(generation: u64, digest: &str, sequence: u64) -> SearchCorpusActiveHeadV1 {
+    head_with_generation(search_corpus_identity(generation, digest), sequence)
+}
+
+fn active_resolution(snapshot: GenerationSnapshot) -> ActiveGenerationResolutionV1 {
+    let track = snapshot.track;
+    let generation = snapshot.manifest_generation.get();
+    let lexical = GenerationSnapshot {
+        track: Track::Lexical,
+        ..snapshot.clone()
+    };
+    let semantic = GenerationSnapshot {
+        track: Track::Semantic,
+        ..snapshot
+    };
+    ActiveGenerationResolutionV1 {
+        track,
+        head: SearchCorpusActiveHeadV1 {
+            generation: SearchCorpusGenerationIdentityV1 {
+                lexical,
+                semantic,
+                semantic_content: semantic_roots(generation),
+            },
+            activation_token: SearchCorpusActivationTokenV1::new(
+                [7; 16],
+                NonZeroU64::new(1).expect("fixture activation sequence is positive"),
+            )
+            .expect("fixture incarnation is nonzero"),
+        },
+    }
+}
+
+fn assert_resolved_active_selector(selector: Option<&GenerationSelector>) {
+    assert!(matches!(
+        selector,
+        Some(GenerationSelector::ResolvedActive {
+            repo_id: selected_repo,
+            revision_id: selected_revision,
+            activation_token,
+        }) if selected_repo == &repo_id()
+            && selected_revision == &revision_id()
+            && activation_token.root_incarnation() == [7; 16]
+            && activation_token.activation_sequence().get() == 1
+    ));
 }
 
 fn sample_hit() -> quanta_index_contract::LexicalCandidate {
@@ -1437,7 +1507,7 @@ fn semantic_query_builder_resolves_active_selector_before_query() {
     assert_eq!(req.generation, Some(sample_generation_pin()));
     assert!(matches!(
         req.generation_selector,
-        Some(GenerationSelector::Active { .. })
+        Some(GenerationSelector::ResolvedActive { .. })
     ));
 }
 
@@ -1449,15 +1519,17 @@ fn semantic_active_keeps_catalog_selector_and_rejects_wrong_generation() {
         ManifestGeneration::new(8),
     );
     let query = Arc::new(StubQueryTransport::sequence([
-        SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(GenerationSnapshot {
-            repo_id: repo_id(),
-            revision_id: revision_id(),
-            track: quanta_index_contract::SearchPlaneTrackKind::Semantic,
-            manifest_generation: ManifestGeneration::new(7),
-            manifest_digest:
-                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                    .to_string(),
-        }),
+        SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(active_resolution(
+            GenerationSnapshot {
+                repo_id: repo_id(),
+                revision_id: revision_id(),
+                track: quanta_index_contract::SearchPlaneTrackKind::Semantic,
+                manifest_generation: ManifestGeneration::new(7),
+                manifest_digest:
+                    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        .to_string(),
+            },
+        )),
         SearchPlaneQueryIpcResponse::Semantic(SemanticQueryResponse {
             generation: wrong,
             results: vec![],
@@ -1480,7 +1552,7 @@ fn semantic_active_keeps_catalog_selector_and_rejects_wrong_generation() {
         requests.last().map(|request| &request.payload),
         Some(quanta_index_contract::SearchPlaneQueryIpcRequest::Semantic(request))
             if request.generation == Some(sample_generation_pin())
-                && matches!(request.generation_selector, Some(GenerationSelector::Active { .. }))
+                && matches!(request.generation_selector, Some(GenerationSelector::ResolvedActive { .. }))
     ));
     drop(requests);
 }
@@ -1789,7 +1861,7 @@ fn lexical_query_request_resolves_active_before_forwarding() {
         panic!("expected pinned text query");
     };
     assert_eq!(pinned.generation, Some(sample_generation_pin()));
-    assert_eq!(pinned.generation_selector, request.generation_selector);
+    assert_resolved_active_selector(pinned.generation_selector.as_ref());
     assert_eq!(pinned.query_text, request.query_text);
 }
 
@@ -1953,7 +2025,7 @@ fn semantic_query_request_resolves_active_before_forwarding() {
         panic!("expected pinned semantic query");
     };
     assert_eq!(pinned.generation, Some(sample_generation_pin()));
-    assert_eq!(pinned.generation_selector, request.generation_selector);
+    assert_resolved_active_selector(pinned.generation_selector.as_ref());
     assert_eq!(pinned.query_text, request.query_text);
 }
 
@@ -1995,7 +2067,7 @@ fn hybrid_seed_request_resolves_active_before_forwarding() {
         panic!("expected pinned hybrid-seed query");
     };
     assert_eq!(pinned.generation, Some(sample_generation_pin()));
-    assert_eq!(pinned.generation_selector, request.generation_selector);
+    assert_resolved_active_selector(pinned.generation_selector.as_ref());
     assert_eq!(pinned.semantic_query_text, request.semantic_query_text);
 }
 
@@ -2528,7 +2600,7 @@ fn producer_client_publish_search_corpus_and_activate_routes_ingest_then_control
         .expect("search corpus receipt carries its manifest digest");
     let active = search_corpus_identity(receipt.generation.get(), &manifest_digest);
     let ack = SearchPlaneSearchCorpusActivationCasAck {
-        active: active.clone(),
+        active: head_with_generation(active.clone(), 1),
         previous_sealed_active: None,
     };
     let control = Arc::new(StubControlTransport::new(
@@ -2577,7 +2649,7 @@ fn producer_client_publish_search_corpus_and_activate_routes_ingest_then_control
 #[test]
 fn producer_client_rejects_activation_ack_identity_mismatches_v1() {
     let candidate = search_corpus_identity(7, "manifest:activate");
-    let previous = search_corpus_identity(6, "manifest:previous");
+    let previous = search_corpus_head(6, "manifest:previous", 1);
     let mut wrong_repo = candidate.clone();
     wrong_repo.lexical.repo_id =
         RepoId::new("other-repo").expect("static fixture ID satisfies canonical policy");
@@ -2594,50 +2666,50 @@ fn producer_client_rejects_activation_ack_identity_mismatches_v1() {
         (
             "active semantic content roots",
             SearchPlaneSearchCorpusActivationCasAck {
-                active: wrong_roots,
+                active: head_with_generation(wrong_roots, 2),
                 previous_sealed_active: Some(previous.clone()),
             },
         ),
         (
             "active repo",
             SearchPlaneSearchCorpusActivationCasAck {
-                active: wrong_repo,
+                active: head_with_generation(wrong_repo, 2),
                 previous_sealed_active: Some(previous.clone()),
             },
         ),
         (
             "active revision",
             SearchPlaneSearchCorpusActivationCasAck {
-                active: wrong_revision,
+                active: head_with_generation(wrong_revision, 2),
                 previous_sealed_active: Some(previous.clone()),
             },
         ),
         (
             "active generation",
             SearchPlaneSearchCorpusActivationCasAck {
-                active: wrong_generation,
+                active: head_with_generation(wrong_generation, 2),
                 previous_sealed_active: Some(previous.clone()),
             },
         ),
         (
             "active digest",
             SearchPlaneSearchCorpusActivationCasAck {
-                active: wrong_digest,
+                active: head_with_generation(wrong_digest, 2),
                 previous_sealed_active: Some(previous.clone()),
             },
         ),
         (
             "missing previous",
             SearchPlaneSearchCorpusActivationCasAck {
-                active: candidate.clone(),
+                active: head_with_generation(candidate.clone(), 2),
                 previous_sealed_active: None,
             },
         ),
         (
             "wrong previous",
             SearchPlaneSearchCorpusActivationCasAck {
-                active: candidate,
-                previous_sealed_active: Some(search_corpus_identity(5, "manifest:older")),
+                active: head_with_generation(candidate, 2),
+                previous_sealed_active: Some(search_corpus_head(5, "manifest:older", 1)),
             },
         ),
     ];
@@ -2912,7 +2984,7 @@ fn producer_client_rejects_invalid_expected_composite_before_ingest_v1() {
     );
     let error = client
         .producer()
-        .publish_search_corpus_and_activate(&batch, Some(invalid_expected))
+        .publish_search_corpus_and_activate(&batch, Some(head_with_generation(invalid_expected, 1)))
         .expect_err("lexical-only expected identity must be rejected before ingest");
     assert!(
         matches!(error, crate::SdkError::Protocol(ref message) if message.contains("SEMANTIC_TRACK_REQUIRED")),
@@ -2942,7 +3014,7 @@ fn producer_client_delegates_non_advancing_activation_rejection_before_ingest_v1
         .producer()
         .publish_search_corpus_and_activate(
             &batch,
-            Some(search_corpus_identity(7, "manifest:7-current")),
+            Some(search_corpus_head(7, "manifest:7-current", 1)),
         )
         .expect_err("activation candidate must strictly advance the expected active generation");
     assert!(
@@ -3800,7 +3872,7 @@ fn history_query_request_resolves_active_before_forwarding() {
     assert_eq!(pinned.text_query.generation, Some(sample_generation_pin()));
     assert!(matches!(
         pinned.text_query.generation_selector,
-        Some(GenerationSelector::Active { .. })
+        Some(GenerationSelector::ResolvedActive { .. })
     ));
     assert_eq!(pinned.text_query.query_text, request.text_query.query_text);
 }
@@ -4077,10 +4149,10 @@ fn lexical_publish_propagates_ingest_error_as_typed_remote() {
 
 #[test]
 fn generations_rollback_emits_and_accepts_only_exact_composite_ack_v1() {
-    let expected_active = search_corpus_identity(11, "manifest:11");
+    let expected_active = search_corpus_head(11, "manifest:11", 2);
     let target = search_corpus_identity(10, "manifest:10");
     let ack = SearchPlaneSearchCorpusRollbackCasAck {
-        active: target.clone(),
+        active: head_with_generation(target.clone(), 3),
         previous_sealed_active: expected_active.clone(),
     };
     let control = Arc::new(StubControlTransport::new(
@@ -4110,21 +4182,21 @@ fn generations_rollback_emits_and_accepts_only_exact_composite_ack_v1() {
 
 #[test]
 fn generations_rollback_rejects_ack_identity_mismatches_v1() {
-    let expected_active = search_corpus_identity(11, "manifest:11");
+    let expected_active = search_corpus_head(11, "manifest:11", 2);
     let target = search_corpus_identity(10, "manifest:10");
     let cases = [
         (
             "active",
             SearchPlaneSearchCorpusRollbackCasAck {
-                active: search_corpus_identity(9, "manifest:9"),
+                active: search_corpus_head(9, "manifest:9", 3),
                 previous_sealed_active: expected_active.clone(),
             },
         ),
         (
             "previous",
             SearchPlaneSearchCorpusRollbackCasAck {
-                active: target.clone(),
-                previous_sealed_active: search_corpus_identity(12, "manifest:12"),
+                active: head_with_generation(target.clone(), 3),
+                previous_sealed_active: search_corpus_head(12, "manifest:12", 2),
             },
         ),
     ];
@@ -4159,8 +4231,8 @@ fn generations_rollback_rejects_ack_identity_mismatches_v1() {
 #[test]
 fn generations_rollback_rejects_invalid_composite_request_before_transport_v1() {
     let base_ack = SearchPlaneSearchCorpusRollbackCasAck {
-        active: search_corpus_identity(10, "manifest:10"),
-        previous_sealed_active: search_corpus_identity(11, "manifest:11"),
+        active: search_corpus_head(10, "manifest:10", 3),
+        previous_sealed_active: search_corpus_head(11, "manifest:11", 2),
     };
     let mut malformed_target = search_corpus_identity(10, "manifest:10");
     malformed_target.semantic.track = Track::Lexical;
@@ -4171,15 +4243,15 @@ fn generations_rollback_rejects_invalid_composite_request_before_transport_v1() 
         RepoId::new("other-repo").expect("static fixture ID satisfies canonical policy");
     let requests = [
         SearchPlaneRollbackSearchCorpusGenerationCasRequest {
-            expected_active: search_corpus_identity(11, "manifest:11"),
+            expected_active: search_corpus_head(11, "manifest:11", 2),
             target: malformed_target,
         },
         SearchPlaneRollbackSearchCorpusGenerationCasRequest {
-            expected_active: search_corpus_identity(11, "manifest:11"),
+            expected_active: search_corpus_head(11, "manifest:11", 2),
             target: other_repo_target,
         },
         SearchPlaneRollbackSearchCorpusGenerationCasRequest {
-            expected_active: search_corpus_identity(11, "manifest:11"),
+            expected_active: search_corpus_head(11, "manifest:11", 2),
             target: search_corpus_identity(11, "manifest:same-generation"),
         },
     ];
@@ -4213,7 +4285,7 @@ fn control_request_id_mismatch_is_rejected_for_activation_and_rollback_v1() {
     let activation_control = Arc::new(StubControlTransport::with_request_id_offset(
         quanta_index_contract::SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(
             SearchPlaneSearchCorpusActivationCasAck {
-                active: candidate,
+                active: head_with_generation(candidate, 1),
                 previous_sealed_active: None,
             },
         ),
@@ -4259,12 +4331,12 @@ fn control_request_id_mismatch_is_rejected_for_activation_and_rollback_v1() {
         1
     );
 
-    let expected_active = search_corpus_identity(11, "manifest:11");
+    let expected_active = search_corpus_head(11, "manifest:11", 2);
     let target = search_corpus_identity(10, "manifest:10");
     let rollback_control = Arc::new(StubControlTransport::with_request_id_offset(
         quanta_index_contract::SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(
             SearchPlaneSearchCorpusRollbackCasAck {
-                active: target.clone(),
+                active: head_with_generation(target.clone(), 3),
                 previous_sealed_active: expected_active.clone(),
             },
         ),
@@ -4405,6 +4477,88 @@ fn generations_status_returns_empty_tracks_when_nothing_activated() {
         observed.tracks.is_empty(),
         "QI-ACT-01: empty tracks is legitimate state, distinct from NOT_READY"
     );
+}
+
+#[test]
+fn generations_active_head_binds_domain_and_does_not_map_remote_failure_to_absence() {
+    use quanta_index_contract::{
+        SearchCorpusActiveHeadObservationV1, SearchPlaneControlIpcRequest,
+        SearchPlaneControlIpcResponse, SearchPlaneIpcError,
+    };
+
+    let head = search_corpus_head(7, "manifest:7", 3);
+    let present = SearchCorpusActiveHeadObservationV1::new(
+        repo_id(),
+        revision_id(),
+        Some(head.clone()),
+    )
+    .expect("matching fixture head");
+    let control = Arc::new(StubControlTransport::new(
+        SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(present),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), control.clone(), unused_ingest());
+    assert_eq!(
+        ok_or_fail!(client.generations().active_head(repo_id(), revision_id())),
+        Some(head)
+    );
+    assert!(matches!(
+        ok_or_fail!(only_control_request(control.as_ref())).payload,
+        SearchPlaneControlIpcRequest::SearchCorpusActiveHead(_)
+    ));
+
+    let absent = SearchCorpusActiveHeadObservationV1::new(repo_id(), revision_id(), None)
+        .expect("explicit absence");
+    let client = QuantaIndex::from_transports(
+        unused_query(),
+        Arc::new(StubControlTransport::new(
+            SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(absent),
+        )),
+        unused_ingest(),
+    );
+    assert_eq!(
+        ok_or_fail!(client.generations().active_head(repo_id(), revision_id())),
+        None
+    );
+
+    let foreign = SearchCorpusActiveHeadObservationV1::new(
+        RepoId::new("foreign").expect("canonical fixture"),
+        revision_id(),
+        None,
+    )
+    .expect("explicit foreign absence");
+    let client = QuantaIndex::from_transports(
+        unused_query(),
+        Arc::new(StubControlTransport::new(
+            SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(foreign),
+        )),
+        unused_ingest(),
+    );
+    assert!(matches!(
+        client.generations().active_head(repo_id(), revision_id()),
+        Err(crate::SdkError::Binding {
+            axis: crate::ResponseBindingAxis::TargetIdentity,
+            ..
+        })
+    ));
+
+    let client = QuantaIndex::from_transports(
+        unused_query(),
+        Arc::new(StubControlTransport::new(
+            SearchPlaneControlIpcResponse::Error(SearchPlaneIpcError {
+                code: SearchPlaneErrorCodeV2::NotReady,
+                message: "catalog durability uncertain".to_string(),
+                repair: None,
+            }),
+        )),
+        unused_ingest(),
+    );
+    assert!(matches!(
+        client.generations().active_head(repo_id(), revision_id()),
+        Err(crate::SdkError::Remote {
+            code: SearchPlaneErrorCodeV2::NotReady,
+            ..
+        })
+    ));
 }
 
 /// QI-BB-015: the metrics scrape rides the control socket and comes back

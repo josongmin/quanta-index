@@ -285,7 +285,8 @@ fn pinned_repo_scope(
         return Some(pin.repo_id.as_str().to_string());
     }
     match selector? {
-        quanta_index_contract::GenerationSelector::Active { repo_id, .. } => {
+        quanta_index_contract::GenerationSelector::Active { repo_id, .. }
+        | quanta_index_contract::GenerationSelector::ResolvedActive { repo_id, .. } => {
             Some(repo_id.as_str().to_string())
         }
         quanta_index_contract::GenerationSelector::Pinned(pin) => {

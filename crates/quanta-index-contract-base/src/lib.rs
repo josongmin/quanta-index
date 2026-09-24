@@ -15,10 +15,15 @@
 #[macro_use]
 pub mod macros;
 
+mod activation_token;
 pub mod ids;
 pub mod query;
 pub mod results;
 
+pub use activation_token::{
+    ACTIVATION_ROOT_INCARNATION_BYTES_V1, ActivationTokenValidationErrorV1,
+    SearchCorpusActivationTokenV1,
+};
 pub use ids::{
     FileId, GenerationId, IdentityValidationErrorV1, LogicalGenerationIdentityV1, ManifestDigest,
     ManifestGeneration, RepoId, RepoRelativePath, RepositoryRevisionIdentityV1, RevisionId,

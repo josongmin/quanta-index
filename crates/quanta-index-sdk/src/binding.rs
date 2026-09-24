@@ -27,7 +27,7 @@ use quanta_index_contract::{
     LexicalCandidate, ManifestGeneration, RepoId, RepoMapActivateGenerationRequestV2,
     RepoMapActiveHeadRequestV2, RepoMapMutationAck, RepoMapMutationPhaseV2,
     RepoMapPublishBundleRequestV2, RepoMapQueryRequest, RepoMapQueryResponse,
-    RepoMapTerminalReceiptV2, RevisionId, RuntimeMetadataQueryRequest,
+    RepoMapTerminalReceiptV2, RevisionId, RuntimeMetadataQueryRequest, SearchCorpusActiveHeadV1,
     SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
     SearchPlaneControlIpcResponse, SearchPlaneExplainQueryRequest, SearchPlaneIngestIpcRequest,
     SearchPlaneIngestIpcResponse, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
@@ -89,6 +89,7 @@ pub(crate) enum ExpectedControlResponseV1 {
     RepoMapActiveHeadV2,
     CurrentGenerationSnapshot,
     GenerationStatusReport,
+    SearchCorpusActiveHeadObservation,
     MetricsSnapshot,
     QuarantineInventory,
     QuarantineDiscardAck,
@@ -105,6 +106,7 @@ impl ExpectedControlResponseV1 {
             Self::RepoMapActiveHeadV2 => "repomap_active_head_v2",
             Self::CurrentGenerationSnapshot => "current_generation_snapshot",
             Self::GenerationStatusReport => "generation_status_report",
+            Self::SearchCorpusActiveHeadObservation => "search_corpus_active_head_observation",
             Self::MetricsSnapshot => "metrics_snapshot",
             Self::QuarantineInventory => "quarantine_inventory",
             Self::QuarantineDiscardAck => "quarantine_discard_ack",
@@ -179,6 +181,11 @@ fn identity_from(
             GenerationSelector::Active {
                 repo_id,
                 revision_id,
+            }
+            | GenerationSelector::ResolvedActive {
+                repo_id,
+                revision_id,
+                ..
             } => {
                 domain = Some((repo_id, revision_id));
             }
@@ -648,8 +655,16 @@ pub(crate) fn bind_query_response(
     response: &SearchPlaneQueryIpcResponse,
 ) -> Result<(), SdkError> {
     match response {
-        SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(snapshot) => {
+        SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(resolution) => {
             check_variant(binding, ExpectedQueryResponseV1::ActiveGenerationSnapshot)?;
+            resolution.validate_v1().map_err(|_error| {
+                binding_error(
+                    "active_generation_snapshot",
+                    ResponseBindingAxis::ReadIdentity,
+                    "a valid composite active head",
+                    "an invalid composite active head",
+                )
+            })?;
             let request = binding.resolution_request.as_ref().ok_or_else(|| {
                 binding_error(
                     "active_generation_snapshot",
@@ -658,9 +673,17 @@ pub(crate) fn bind_query_response(
                     "a different request",
                 )
             })?;
-            if snapshot.repo_id != request.repo_id
+            let snapshot = resolution.snapshot_v1().ok_or_else(|| {
+                binding_error(
+                    "active_generation_snapshot",
+                    ResponseBindingAxis::ReadIdentity,
+                    "a lexical or semantic active resolution",
+                    "an unsupported track",
+                )
+            })?;
+            if resolution.track != request.track
+                || snapshot.repo_id != request.repo_id
                 || snapshot.revision_id != request.revision_id
-                || snapshot.track != request.track
                 || snapshot.manifest_digest.trim().is_empty()
             {
                 return Err(binding_error(
@@ -846,6 +869,10 @@ enum ControlCall {
         repo_id: RepoId,
         revision_id: RevisionId,
     },
+    SearchCorpusActiveHead {
+        repo_id: RepoId,
+        revision_id: RevisionId,
+    },
     QuarantineDiscard(quanta_index_contract::QuarantineTargetV1),
 }
 
@@ -886,6 +913,13 @@ impl ControlCallBinding {
             SearchPlaneControlIpcRequest::GenerationStatus(_) => Self {
                 expected: ExpectedControlResponseV1::GenerationStatusReport,
                 inner: ControlCall::Intrinsic,
+            },
+            SearchPlaneControlIpcRequest::SearchCorpusActiveHead(payload) => Self {
+                expected: ExpectedControlResponseV1::SearchCorpusActiveHeadObservation,
+                inner: ControlCall::SearchCorpusActiveHead {
+                    repo_id: payload.repo_id.clone(),
+                    revision_id: payload.revision_id.clone(),
+                },
             },
             SearchPlaneControlIpcRequest::MetricsSnapshot(_) => Self {
                 expected: ExpectedControlResponseV1::MetricsSnapshot,
@@ -1007,6 +1041,32 @@ fn check_repo_map_v2_receipt(
     Ok(())
 }
 
+fn check_activation_token_advance_v1(
+    route: &'static str,
+    observed: &SearchCorpusActiveHeadV1,
+    expected: Option<&SearchCorpusActiveHeadV1>,
+) -> Result<(), SdkError> {
+    let expected_sequence = expected.map_or(Some(1), |head| {
+        head.activation_token
+            .activation_sequence()
+            .get()
+            .checked_add(1)
+    });
+    if expected_sequence != Some(observed.activation_token.activation_sequence().get())
+        || expected.is_some_and(|head| {
+            head.activation_token.root_incarnation() != observed.activation_token.root_incarnation()
+        })
+    {
+        return Err(binding_error(
+            route,
+            ResponseBindingAxis::CasExpectation,
+            "the next activation token in the requested catalog incarnation",
+            "a different activation sequence or catalog incarnation",
+        ));
+    }
+    Ok(())
+}
+
 /// Bind a control response against its call. Exhaustive over the closed
 /// response enum.
 pub(crate) fn bind_control_response(
@@ -1028,7 +1088,7 @@ pub(crate) fn bind_control_response(
                 return Err(variant("search_corpus_activation_cas_ack"));
             }
             if let ControlCall::Activate(request) = &binding.inner {
-                if ack.active != request.candidate {
+                if ack.active.generation != request.candidate {
                     return Err(binding_error(
                         route,
                         ResponseBindingAxis::TargetIdentity,
@@ -1044,6 +1104,11 @@ pub(crate) fn bind_control_response(
                         "a different prior identity",
                     ));
                 }
+                check_activation_token_advance_v1(
+                    route,
+                    &ack.active,
+                    request.expected_active.as_ref(),
+                )?;
             }
             Ok(())
         }
@@ -1052,7 +1117,7 @@ pub(crate) fn bind_control_response(
                 return Err(variant("search_corpus_rollback_cas_ack"));
             }
             if let ControlCall::Rollback(request) = &binding.inner {
-                if ack.active != request.target {
+                if ack.active.generation != request.target {
                     return Err(binding_error(
                         route,
                         ResponseBindingAxis::TargetIdentity,
@@ -1068,6 +1133,11 @@ pub(crate) fn bind_control_response(
                         "a different prior identity",
                     ));
                 }
+                check_activation_token_advance_v1(
+                    route,
+                    &ack.active,
+                    Some(&request.expected_active),
+                )?;
             }
             Ok(())
         }
@@ -1092,6 +1162,25 @@ pub(crate) fn bind_control_response(
                     ResponseBindingAxis::TargetIdentity,
                     "the requested repo/revision",
                     "a different RepoMap active-head domain",
+                ));
+            }
+            Ok(())
+        }
+        SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(observation) => {
+            if binding.expected != ExpectedControlResponseV1::SearchCorpusActiveHeadObservation {
+                return Err(variant("search_corpus_active_head_observation"));
+            }
+            if let ControlCall::SearchCorpusActiveHead {
+                repo_id,
+                revision_id,
+            } = &binding.inner
+                && (observation.repo_id() != repo_id || observation.revision_id() != revision_id)
+            {
+                return Err(binding_error(
+                    route,
+                    ResponseBindingAxis::TargetIdentity,
+                    "the requested repo/revision",
+                    "a different search-corpus active-head domain",
                 ));
             }
             Ok(())
@@ -1479,6 +1568,12 @@ pub const SDK_WIRE_ROUTES_V1: &[SdkWireRouteV1] = &[
         bound_axes: &["variant", "target_identity", "cas_expectation"],
     },
     SdkWireRouteV1 {
+        route: "search_corpus_active_head_observation",
+        plane: "control",
+        expected_kind: "search_corpus_active_head_observation",
+        bound_axes: &["variant", "target_identity"],
+    },
+    SdkWireRouteV1 {
         route: "repomap_mutation_ack",
         plane: "control",
         expected_kind: "repomap_mutation_ack",
@@ -1631,7 +1726,8 @@ mod search_corpus_binding_tests {
     use crate::{ResponseBindingAxis, SdkError};
     use quanta_index_contract::{
         GenerationSnapshot, ManifestGeneration, RepoId, RevisionId,
-        SearchCorpusGenerationIdentityV1, SearchPlaneActivateSearchCorpusGenerationCasRequest,
+        SearchCorpusActiveHeadV1, SearchCorpusGenerationIdentityV1,
+        SearchPlaneActivateSearchCorpusGenerationCasRequest,
         SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse,
         SearchPlaneRollbackSearchCorpusGenerationCasRequest,
         SearchPlaneSearchCorpusActivationCasAck, SearchPlaneSearchCorpusRollbackCasAck,
@@ -1658,10 +1754,21 @@ mod search_corpus_binding_tests {
         }
     }
 
+    fn head(generation: u64, sequence: u64) -> SearchCorpusActiveHeadV1 {
+        SearchCorpusActiveHeadV1 {
+            generation: identity(generation),
+            activation_token: quanta_index_contract::SearchCorpusActivationTokenV1::new(
+                [7; quanta_index_contract::ACTIVATION_ROOT_INCARNATION_BYTES_V1],
+                std::num::NonZeroU64::new(sequence).expect("fixture sequence is positive"),
+            )
+            .expect("fixture incarnation is nonzero"),
+        }
+    }
+
     #[test]
     fn activation_and_rollback_binding_reject_swapped_semantic_roots() {
         let candidate = identity(7);
-        let previous = identity(6);
+        let previous = head(6, 1);
         let mut swapped = candidate.clone();
         swapped.semantic_content.row_root_digest = format!("sha256:{}", "c".repeat(64));
 
@@ -1675,7 +1782,10 @@ mod search_corpus_binding_tests {
         );
         let activation_ack = SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(
             SearchPlaneSearchCorpusActivationCasAck {
-                active: swapped.clone(),
+                active: SearchCorpusActiveHeadV1 {
+                    generation: swapped.clone(),
+                    activation_token: head(7, 2).activation_token,
+                },
                 previous_sealed_active: Some(previous.clone()),
             },
         );
@@ -1697,7 +1807,10 @@ mod search_corpus_binding_tests {
         );
         let rollback_ack = SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(
             SearchPlaneSearchCorpusRollbackCasAck {
-                active: swapped,
+                active: SearchCorpusActiveHeadV1 {
+                    generation: swapped,
+                    activation_token: head(7, 2).activation_token,
+                },
                 previous_sealed_active: previous.clone(),
             },
         );
@@ -1710,11 +1823,11 @@ mod search_corpus_binding_tests {
         ));
 
         let mut wrong_previous = previous.clone();
-        wrong_previous.semantic_content.membership_root_digest =
+        wrong_previous.generation.semantic_content.membership_root_digest =
             format!("sha256:{}", "d".repeat(64));
         let rollback_ack = SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(
             SearchPlaneSearchCorpusRollbackCasAck {
-                active: candidate.clone(),
+                active: head(7, 2),
                 previous_sealed_active: wrong_previous,
             },
         );
@@ -1736,12 +1849,89 @@ mod search_corpus_binding_tests {
         );
         let spurious_previous = SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(
             SearchPlaneSearchCorpusActivationCasAck {
-                active: candidate,
+                active: head(7, 1),
                 previous_sealed_active: Some(previous),
             },
         );
         assert!(matches!(
             bind_control_response(&first_activation, &spurious_previous),
+            Err(SdkError::Binding {
+                axis: ResponseBindingAxis::CasExpectation,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn activation_and_rollback_binding_reject_stale_or_foreign_token() {
+        let prior = head(6, 2);
+        let activation = ControlCallBinding::from_request(
+            &SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(
+                SearchPlaneActivateSearchCorpusGenerationCasRequest {
+                    candidate: identity(7),
+                    expected_active: Some(prior.clone()),
+                },
+            ),
+        );
+        let expected_ack = SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(
+            SearchPlaneSearchCorpusActivationCasAck {
+                active: head(7, 3),
+                previous_sealed_active: Some(prior.clone()),
+            },
+        );
+        assert!(bind_control_response(&activation, &expected_ack).is_ok());
+        for observed in [head(7, 2), head(7, 4)] {
+            let ack = SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(
+                SearchPlaneSearchCorpusActivationCasAck {
+                    active: observed,
+                    previous_sealed_active: Some(prior.clone()),
+                },
+            );
+            assert!(matches!(
+                bind_control_response(&activation, &ack),
+                Err(SdkError::Binding {
+                    axis: ResponseBindingAxis::CasExpectation,
+                    ..
+                })
+            ));
+        }
+        let mut foreign = head(7, 3);
+        foreign.activation_token = quanta_index_contract::SearchCorpusActivationTokenV1::new(
+            [8; quanta_index_contract::ACTIVATION_ROOT_INCARNATION_BYTES_V1],
+            std::num::NonZeroU64::new(3).expect("fixture sequence is positive"),
+        )
+        .expect("fixture incarnation is nonzero");
+        let ack = SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(
+            SearchPlaneSearchCorpusActivationCasAck {
+                active: foreign,
+                previous_sealed_active: Some(prior),
+            },
+        );
+        assert!(matches!(
+            bind_control_response(&activation, &ack),
+            Err(SdkError::Binding {
+                axis: ResponseBindingAxis::CasExpectation,
+                ..
+            })
+        ));
+
+        let prior = head(8, 4);
+        let rollback = ControlCallBinding::from_request(
+            &SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(
+                SearchPlaneRollbackSearchCorpusGenerationCasRequest {
+                    expected_active: prior.clone(),
+                    target: identity(7),
+                },
+            ),
+        );
+        let ack = SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(
+            SearchPlaneSearchCorpusRollbackCasAck {
+                active: head(7, 4),
+                previous_sealed_active: prior,
+            },
+        );
+        assert!(matches!(
+            bind_control_response(&rollback, &ack),
             Err(SdkError::Binding {
                 axis: ResponseBindingAxis::CasExpectation,
                 ..

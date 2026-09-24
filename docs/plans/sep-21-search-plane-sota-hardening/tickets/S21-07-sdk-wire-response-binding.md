@@ -131,13 +131,11 @@ on latency versus independent validation is pending; do not add response-only
 The query-plane `ResolveActiveGeneration` → pinned-query path binds a returned
 generation number, but it is not yet the complete target contract:
 
-Every active query retains `GenerationSelector::Active` beside the
-pre-resolved explicit pin, so the server rechecks current-active equality at
-dispatch while the SDK exact-binds the response. For semantic reads,
-`resolve_semantic_request_selection` also passes the catalog manifest digest
-to the read view; dropping `Active` would silently remove that existing
-content check. This does not substitute for the activation-epoch/commitment
-work below.
+The SDK now resolves `GenerationSelector::Active` through the query plane and
+submits `ResolvedActive` with the catalog activation token beside the explicit
+pin. The server rechecks that token at dispatch while the SDK exact-binds the
+response. Semantic reads also carry the catalog manifest digest into the read
+view. These are dirty-source implementation observations, not a P06 receipt.
 
 1. `crates/quanta-index-search-plane/src/readiness/{activation_catalog,search_corpus_generation}.rs`
    must own a durable activation epoch/commitment, including rollback and
@@ -184,3 +182,32 @@ activation/rollback oracle or the request-level epoch/commitment design in
 items 1–2. The SDK still performs independent lexical and semantic preflight
 resolution calls, so the full end-to-end composite-resolution contract remains
 open.
+
+### Dirty-source implementation checkpoint (2026-09-24; not a closure receipt)
+
+- `ActivationCatalog` now persists one positive per-pair activation sequence and
+  one root incarnation, rotates the incarnation on controlled offline restore,
+  and returns generation plus typed token from one catalog read. The token is
+  transport data, not a second catalog or an SDK epoch cache.
+- Query-plane active resolution now returns the full composite head and token.
+  The SDK rewrites an `Active` selector into `ResolvedActive` for the second
+  request; lexical, semantic and joint selectors compare that token against
+  the catalog. An A→B→A rollback regression rejects the original token even
+  when the generation number and content identity repeat. Query-only UDS
+  binding remains on the query transport.
+- Activation/rollback CAS requests and ACKs now carry the typed
+  `SearchCorpusActiveHeadV1`; the catalog compares the whole generation and
+  token and mints the next sequence. The SDK binds target, prior head, and
+  sequence advance. The producer freezes the optional head through one
+  catalog-owned control read. No separate producer token authority was added.
+- The Semantica generation-bound query view now obtains its captured identity
+  from that same active-head API; it still submits immutable generation-pinned
+  queries. The previous `GenerationStatusReport` identity assembler was
+  removed. A catalog read error or uncertain durability remains an error,
+  never an absent head.
+- `control_dispatcher::generation_status` now projects track rows and semantic
+  roots from one `active_search_corpus_with_token_v1` catalog read. This removes
+  its former mixed-head read, but the admin report remains a derived view and
+  must not become the producer's CAS authority. These cross-repository changes
+  have not received a frozen-source owner, UDS, Linux release, or exact-pair
+  proof; P06 remains open.

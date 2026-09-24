@@ -13,6 +13,7 @@ use serde::{
     ser::SerializeStruct,
 };
 
+use crate::SearchCorpusActivationTokenV1;
 use crate::ids::{ManifestGeneration, RepoId, RevisionId};
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
@@ -124,15 +125,23 @@ pub enum GenerationSelector {
         repo_id: RepoId,
         revision_id: RevisionId,
     },
+    /// A query-plane active resolution frozen to the catalog activation.
+    /// Unlike `Pinned`, the server must still confirm this is the current head.
+    ResolvedActive {
+        repo_id: RepoId,
+        revision_id: RevisionId,
+        activation_token: SearchCorpusActivationTokenV1,
+    },
     Pinned(GenerationPin),
 }
 
 impl GenerationSelector {
-    const VARIANTS: &'static [&'static str] = &["Active", "Pinned"];
+    const VARIANTS: &'static [&'static str] = &["Active", "ResolvedActive", "Pinned"];
 
     const fn kind(&self) -> &'static str {
         match self {
             Self::Active { .. } => "Active",
+            Self::ResolvedActive { .. } => "ResolvedActive",
             Self::Pinned(_) => "Pinned",
         }
     }
@@ -157,6 +166,20 @@ impl Serialize for GenerationSelector {
                     &GenerationSelectorActivePayload {
                         repo_id,
                         revision_id,
+                    },
+                )?;
+            }
+            Self::ResolvedActive {
+                repo_id,
+                revision_id,
+                activation_token,
+            } => {
+                state.serialize_field(
+                    "payload",
+                    &GenerationSelectorResolvedActivePayload {
+                        repo_id,
+                        revision_id,
+                        activation_token,
                     },
                 )?;
             }
@@ -240,6 +263,98 @@ impl<'de> Deserialize<'de> for GenerationSelectorActivePayloadOwned {
     }
 }
 
+struct GenerationSelectorResolvedActivePayload<'a> {
+    repo_id: &'a RepoId,
+    revision_id: &'a RevisionId,
+    activation_token: &'a SearchCorpusActivationTokenV1,
+}
+
+impl Serialize for GenerationSelectorResolvedActivePayload<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state =
+            serializer.serialize_struct("GenerationSelectorResolvedActivePayload", 3)?;
+        state.serialize_field("repo_id", self.repo_id)?;
+        state.serialize_field("revision_id", self.revision_id)?;
+        state.serialize_field("activation_token", self.activation_token)?;
+        state.end()
+    }
+}
+
+struct GenerationSelectorResolvedActivePayloadOwned {
+    repo_id: RepoId,
+    revision_id: RevisionId,
+    activation_token: SearchCorpusActivationTokenV1,
+}
+
+struct GenerationSelectorResolvedActivePayloadVisitor;
+
+impl<'de> Visitor<'de> for GenerationSelectorResolvedActivePayloadVisitor {
+    type Value = GenerationSelectorResolvedActivePayloadOwned;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a resolved active generation selector payload")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut repo_id = None;
+        let mut revision_id = None;
+        let mut activation_token = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "repo_id" => {
+                    if repo_id.is_some() {
+                        return Err(de::Error::duplicate_field("repo_id"));
+                    }
+                    repo_id = Some(map.next_value()?);
+                }
+                "revision_id" => {
+                    if revision_id.is_some() {
+                        return Err(de::Error::duplicate_field("revision_id"));
+                    }
+                    revision_id = Some(map.next_value()?);
+                }
+                "activation_token" => {
+                    if activation_token.is_some() {
+                        return Err(de::Error::duplicate_field("activation_token"));
+                    }
+                    activation_token = Some(map.next_value()?);
+                }
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        &["repo_id", "revision_id", "activation_token"],
+                    ));
+                }
+            }
+        }
+        Ok(GenerationSelectorResolvedActivePayloadOwned {
+            repo_id: repo_id.ok_or_else(|| de::Error::missing_field("repo_id"))?,
+            revision_id: revision_id.ok_or_else(|| de::Error::missing_field("revision_id"))?,
+            activation_token: activation_token
+                .ok_or_else(|| de::Error::missing_field("activation_token"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for GenerationSelectorResolvedActivePayloadOwned {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "GenerationSelectorResolvedActivePayload",
+            &["repo_id", "revision_id", "activation_token"],
+            GenerationSelectorResolvedActivePayloadVisitor,
+        )
+    }
+}
+
 struct GenerationSelectorVisitor;
 
 impl<'de> Visitor<'de> for GenerationSelectorVisitor {
@@ -280,6 +395,15 @@ impl<'de> Visitor<'de> for GenerationSelectorVisitor {
                                 revision_id: payload.revision_id,
                             }
                         }
+                        "ResolvedActive" => {
+                            let payload: GenerationSelectorResolvedActivePayloadOwned =
+                                map.next_value()?;
+                            GenerationSelector::ResolvedActive {
+                                repo_id: payload.repo_id,
+                                revision_id: payload.revision_id,
+                                activation_token: payload.activation_token,
+                            }
+                        }
                         "Pinned" => GenerationSelector::Pinned(map.next_value()?),
                         other => {
                             return Err(de::Error::unknown_variant(
@@ -306,5 +430,40 @@ impl<'de> Deserialize<'de> for GenerationSelector {
             GENERATION_SELECTOR_FIELDS,
             GenerationSelectorVisitor,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::num::NonZeroU64;
+    use serde_json::json;
+
+    #[test]
+    fn resolved_active_selector_round_trips_and_requires_a_valid_token() {
+        let selector = GenerationSelector::ResolvedActive {
+            repo_id: RepoId::new("repo").expect("fixture repo is valid"),
+            revision_id: RevisionId::new("revision").expect("fixture revision is valid"),
+            activation_token: SearchCorpusActivationTokenV1::new(
+                [7; 16],
+                NonZeroU64::new(3).expect("fixture sequence is positive"),
+            )
+            .expect("fixture incarnation is nonzero"),
+        };
+        let encoded = serde_json::to_value(&selector).expect("serialize resolved selector");
+        assert_eq!(
+            serde_json::from_value::<GenerationSelector>(encoded)
+                .expect("decode resolved selector"),
+            selector
+        );
+        for invalid in [
+            json!({"kind":"ResolvedActive","payload":{"repo_id":"repo","revision_id":"revision"}}),
+            json!({"kind":"ResolvedActive","payload":{"repo_id":"repo","revision_id":"revision","activation_token":{"root_incarnation":vec![7;16],"activation_sequence":0}}}),
+        ] {
+            assert!(
+                serde_json::from_value::<GenerationSelector>(invalid).is_err(),
+                "unbound or invalid resolved selector must be refused"
+            );
+        }
     }
 }

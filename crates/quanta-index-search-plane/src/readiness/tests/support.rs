@@ -15,7 +15,8 @@ use quanta_index_contract::lex::{
 };
 use quanta_index_contract::{
     BatchIngestMode, ChunkId, ChunkRecord, GenerationSnapshot, ManifestGeneration,
-    ReplaceLexicalScope, RepoId, RepoRelativePath, RevisionId, SearchCorpusGenerationIdentityV1,
+    ReplaceLexicalScope, RepoId, RepoRelativePath, RevisionId, SearchCorpusActiveHeadV1,
+    SearchCorpusGenerationIdentityV1,
     SearchCorpusReplaceScope, SearchPlaneTrackKind, SearchScopeKey, SearchScopeSurface,
     UpsertParseTree,
 };
@@ -277,6 +278,19 @@ pub(super) fn corpus_identity(
         semantic: generation.semantic().clone(),
         semantic_content: generation.semantic_content().clone(),
     }
+}
+
+pub(super) fn active_head(
+    catalog: &ActivationCatalog,
+    generation: &SearchCorpusGenerationV1,
+) -> Result<SearchCorpusActiveHeadV1, CoreError> {
+    let (observed, activation_token) = catalog
+        .active_search_corpus_with_token_v1(generation.repo_id(), generation.revision_id())?
+        .ok_or_else(|| CoreError::NotReady("test expected an active corpus head".to_string()))?;
+    Ok(SearchCorpusActiveHeadV1 {
+        generation: observed.to_contract_v1(),
+        activation_token,
+    })
 }
 
 pub(super) fn assert_active_composite_v1(

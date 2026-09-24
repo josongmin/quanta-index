@@ -2,10 +2,11 @@
 //! its persisted activation root shape.
 
 use std::fmt;
+use std::num::NonZeroU64;
 
 use quanta_index_contract::{
-    GenerationSnapshot, ManifestGeneration, RepoId, RevisionId, SearchCorpusGenerationIdentityV1,
-    SemanticContentRootsV1,
+    GenerationSnapshot, ManifestGeneration, RepoId, RevisionId, SearchCorpusActiveHeadV1,
+    SearchCorpusGenerationIdentityV1, SemanticContentRootsV1,
 };
 use quanta_index_core::CoreError;
 use serde::de::{MapAccess, Visitor};
@@ -27,6 +28,25 @@ pub struct SearchCorpusGenerationV1 {
 }
 
 impl SearchCorpusGenerationV1 {
+    pub fn from_contract_v1(
+        identity: &SearchCorpusGenerationIdentityV1,
+    ) -> Result<Self, CoreError> {
+        Self::new(
+            identity.lexical.clone(),
+            identity.semantic.clone(),
+            identity.semantic_content.clone(),
+        )
+    }
+
+    #[must_use]
+    pub fn to_contract_v1(&self) -> SearchCorpusGenerationIdentityV1 {
+        SearchCorpusGenerationIdentityV1 {
+            lexical: self.lexical.clone(),
+            semantic: self.semantic.clone(),
+            semantic_content: self.semantic_content.clone(),
+        }
+    }
+
     pub fn new(
         lexical: GenerationSnapshot,
         semantic: GenerationSnapshot,
@@ -91,17 +111,17 @@ impl SearchCorpusGenerationV1 {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreparedSearchCorpusGenerationV1 {
     candidate: SearchCorpusGenerationV1,
-    expected_active: Option<SearchCorpusGenerationV1>,
+    expected_active: Option<SearchCorpusActiveHeadV1>,
 }
 
 impl PreparedSearchCorpusGenerationV1 {
     pub fn new(
         candidate: SearchCorpusGenerationV1,
-        expected_active: Option<SearchCorpusGenerationV1>,
+        expected_active: Option<SearchCorpusActiveHeadV1>,
     ) -> Result<Self, CoreError> {
         if let Some(expected) = &expected_active
-            && (expected.repo_id() != candidate.repo_id()
-                || expected.revision_id() != candidate.revision_id())
+            && (expected.generation.lexical.repo_id != *candidate.repo_id()
+                || expected.generation.lexical.revision_id != *candidate.revision_id())
         {
             return Err(CoreError::InvalidContract(
                 "search-corpus activation: expected active identity must match candidate repo and revision"
@@ -120,7 +140,7 @@ impl PreparedSearchCorpusGenerationV1 {
     }
 
     #[must_use]
-    pub const fn expected_active(&self) -> Option<&SearchCorpusGenerationV1> {
+    pub const fn expected_active(&self) -> Option<&SearchCorpusActiveHeadV1> {
         self.expected_active.as_ref()
     }
 }
@@ -129,8 +149,8 @@ impl PreparedSearchCorpusGenerationV1 {
 /// for a future typed rollback contract; it is absent for first activation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SearchCorpusGenerationActivationV1 {
-    pub active: SearchCorpusGenerationV1,
-    pub previous_active: Option<SearchCorpusGenerationV1>,
+    pub active: SearchCorpusActiveHeadV1,
+    pub previous_active: Option<SearchCorpusActiveHeadV1>,
 }
 
 /// Private on-disk activation-root record.
@@ -142,28 +162,40 @@ pub(super) struct PersistedSearchCorpusGenerationRootV1 {
     lexical: GenerationSnapshot,
     semantic: GenerationSnapshot,
     semantic_content: SemanticContentRootsV1,
+    activation_sequence: NonZeroU64,
 }
 
-const PERSISTED_SEARCH_CORPUS_GENERATION_ROOT_V1_FIELDS: &[&str] =
-    &["lexical", "semantic", "semantic_content"];
+const PERSISTED_SEARCH_CORPUS_GENERATION_ROOT_V1_FIELDS: &[&str] = &[
+    "lexical",
+    "semantic",
+    "semantic_content",
+    "activation_sequence",
+];
 
 impl PersistedSearchCorpusGenerationRootV1 {
-    pub(super) fn from_generation(generation: &SearchCorpusGenerationV1) -> Self {
+    pub(super) fn from_generation(
+        generation: &SearchCorpusGenerationV1,
+        activation_sequence: NonZeroU64,
+    ) -> Self {
         Self {
             lexical: generation.lexical().clone(),
             semantic: generation.semantic().clone(),
             semantic_content: generation.semantic_content().clone(),
+            activation_sequence,
         }
     }
 
-    pub(super) fn into_generation(self) -> Result<SearchCorpusGenerationV1, CoreError> {
-        SearchCorpusGenerationV1::new(self.lexical, self.semantic, self.semantic_content).map_err(
-            |err| {
-                CoreError::Storage(format!(
-                    "search-plane activation catalog: invalid composite root: {err:?}"
-                ))
-            },
-        )
+    pub(super) fn into_generation(
+        self,
+    ) -> Result<(SearchCorpusGenerationV1, NonZeroU64), CoreError> {
+        let generation =
+            SearchCorpusGenerationV1::new(self.lexical, self.semantic, self.semantic_content)
+                .map_err(|err| {
+                    CoreError::Storage(format!(
+                        "search-plane activation catalog: invalid composite root: {err:?}"
+                    ))
+                })?;
+        Ok((generation, self.activation_sequence))
     }
 }
 
@@ -172,10 +204,11 @@ impl Serialize for PersistedSearchCorpusGenerationRootV1 {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("PersistedSearchCorpusGenerationRootV1", 3)?;
+        let mut state = serializer.serialize_struct("PersistedSearchCorpusGenerationRootV1", 4)?;
         state.serialize_field("lexical", &self.lexical)?;
         state.serialize_field("semantic", &self.semantic)?;
         state.serialize_field("semantic_content", &self.semantic_content)?;
+        state.serialize_field("activation_sequence", &self.activation_sequence.get())?;
         state.end()
     }
 }
@@ -196,6 +229,7 @@ impl<'de> Visitor<'de> for PersistedSearchCorpusGenerationRootV1Visitor {
         let mut lexical = None;
         let mut semantic = None;
         let mut semantic_content = None;
+        let mut activation_sequence = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "lexical" => {
@@ -216,6 +250,12 @@ impl<'de> Visitor<'de> for PersistedSearchCorpusGenerationRootV1Visitor {
                     }
                     semantic_content = Some(map.next_value()?);
                 }
+                "activation_sequence" => {
+                    if activation_sequence.is_some() {
+                        return Err(de::Error::duplicate_field("activation_sequence"));
+                    }
+                    activation_sequence = Some(map.next_value::<u64>()?);
+                }
                 other => {
                     return Err(de::Error::unknown_field(
                         other,
@@ -229,6 +269,11 @@ impl<'de> Visitor<'de> for PersistedSearchCorpusGenerationRootV1Visitor {
             semantic: semantic.ok_or_else(|| de::Error::missing_field("semantic"))?,
             semantic_content: semantic_content
                 .ok_or_else(|| de::Error::missing_field("semantic_content"))?,
+            activation_sequence: NonZeroU64::new(
+                activation_sequence
+                    .ok_or_else(|| de::Error::missing_field("activation_sequence"))?,
+            )
+            .ok_or_else(|| de::Error::custom("activation_sequence must be positive"))?,
         })
     }
 }
@@ -246,43 +291,23 @@ impl<'de> Deserialize<'de> for PersistedSearchCorpusGenerationRootV1 {
     }
 }
 
-pub(super) fn search_corpus_generation_from_validated_rollback_identity(
-    identity: &quanta_index_contract::SearchCorpusGenerationIdentityV1,
-) -> Result<SearchCorpusGenerationV1, CoreError> {
-    SearchCorpusGenerationV1::new(
-        identity.lexical.clone(),
-        identity.semantic.clone(),
-        identity.semantic_content.clone(),
-    )
-}
-
-pub(super) fn search_corpus_generation_into_contract(
-    identity: &SearchCorpusGenerationV1,
-) -> quanta_index_contract::SearchCorpusGenerationIdentityV1 {
-    quanta_index_contract::SearchCorpusGenerationIdentityV1 {
-        lexical: identity.lexical().clone(),
-        semantic: identity.semantic().clone(),
-        semantic_content: identity.semantic_content().clone(),
-    }
-}
-
 pub(super) fn validate_prepared_search_corpus_expectation(
     prepared: &PreparedSearchCorpusGenerationV1,
-    current: Option<&SearchCorpusGenerationV1>,
+    current: Option<&SearchCorpusActiveHeadV1>,
 ) -> Result<(), CoreError> {
     if prepared.expected_active() == current {
         return Ok(());
     }
-    let describe = |identity: Option<&SearchCorpusGenerationV1>| {
+    let describe = |identity: Option<&SearchCorpusActiveHeadV1>| {
         identity.map_or_else(
             || "absent".to_string(),
             |identity| {
                 format!(
                     "generation={} digest={} row_root={} membership_root={}",
-                    identity.manifest_generation().get(),
-                    identity.manifest_digest(),
-                    identity.semantic_content().row_root_digest,
-                    identity.semantic_content().membership_root_digest,
+                    identity.generation.lexical.manifest_generation.get(),
+                    identity.generation.lexical.manifest_digest,
+                    identity.generation.semantic_content.row_root_digest,
+                    identity.generation.semantic_content.membership_root_digest,
                 )
             },
         )

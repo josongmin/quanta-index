@@ -102,6 +102,9 @@ impl PlaneDispatch<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>
             }
             SearchPlaneControlIpcRequest::CurrentGeneration(_) => "control.current_generation",
             SearchPlaneControlIpcRequest::GenerationStatus(_) => "control.generation_status",
+            SearchPlaneControlIpcRequest::SearchCorpusActiveHead(_) => {
+                "control.search_corpus_active_head"
+            }
             SearchPlaneControlIpcRequest::MetricsSnapshot(_) => "control.metrics",
             SearchPlaneControlIpcRequest::QuarantineInventory(_) => "control.quarantine_inventory",
             SearchPlaneControlIpcRequest::QuarantineDiscard(_) => "control.quarantine_discard",
@@ -118,6 +121,7 @@ impl PlaneDispatch<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>
             | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)

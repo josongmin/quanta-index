@@ -42,17 +42,18 @@ pub use channel::{
 };
 pub use ipc::*;
 pub use quanta_index_contract_base::{
-    ApproximateMethodV2, ApproximateQualityContractV2, CURSOR_ENVELOPE_V2_VERSION,
-    CandidateCountV1, ContinuationTokenError, ContinuationTokenV2, CoverageV1,
-    CursorAuxEpochKindV2, CursorAuxEpochV2, CursorBindingV2, CursorEnvelopeError, CursorEnvelopeV2,
-    CursorKeyV2, CursorRouteV2, CursorTtlPolicyV2, EmptyProvenanceV2, ExaminedUniverseV1,
-    ExecutionOutcomeV2, ExhaustionProofV1, FileId, GenerationId, GenerationPin,
-    INTERNAL_FETCH_CEILING, INTERNAL_FETCH_OUT_OF_RANGE_CODE, IdentityValidationErrorV1,
-    InternalFetchOutOfRangeV1, InterruptedReasonV2, LaneTraceV1, LogicalGenerationIdentityV1,
-    ManifestDigest, ManifestGeneration, PUBLIC_TOP_K_MAX, PUBLIC_TOP_K_MIN, QueryResultWindowV1,
+    ACTIVATION_ROOT_INCARNATION_BYTES_V1, ActivationTokenValidationErrorV1, ApproximateMethodV2,
+    ApproximateQualityContractV2, CURSOR_ENVELOPE_V2_VERSION, CandidateCountV1,
+    ContinuationTokenError, ContinuationTokenV2, CoverageV1, CursorAuxEpochKindV2,
+    CursorAuxEpochV2, CursorBindingV2, CursorEnvelopeError, CursorEnvelopeV2, CursorKeyV2,
+    CursorRouteV2, CursorTtlPolicyV2, EmptyProvenanceV2, ExaminedUniverseV1, ExecutionOutcomeV2,
+    ExhaustionProofV1, FileId, GenerationId, GenerationPin, INTERNAL_FETCH_CEILING,
+    INTERNAL_FETCH_OUT_OF_RANGE_CODE, IdentityValidationErrorV1, InternalFetchOutOfRangeV1,
+    InterruptedReasonV2, LaneTraceV1, LogicalGenerationIdentityV1, ManifestDigest,
+    ManifestGeneration, PUBLIC_TOP_K_MAX, PUBLIC_TOP_K_MIN, QueryResultWindowV1,
     QueryResultWindowV2, RepoId, RepoRelativePath, RepositoryRevisionIdentityV1, RevisionId,
-    TOP_K_OUT_OF_RANGE_CODE, TopKOutOfRangeV1, continuation_fetch_size,
-    validate_internal_fetch_size, validate_public_top_k,
+    SearchCorpusActivationTokenV1, TOP_K_OUT_OF_RANGE_CODE, TopKOutOfRangeV1,
+    continuation_fetch_size, validate_internal_fetch_size, validate_public_top_k,
 };
 pub use query::*;
 pub use repomap::*;
