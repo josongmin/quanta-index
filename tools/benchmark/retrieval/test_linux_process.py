@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import signal
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -116,6 +119,215 @@ def test_escape_signal_uses_pidfd_and_group_signal(monkeypatch):
     assert calls == [("group", 41, signal.SIGKILL), ("pidfd", 143, signal.SIGKILL)]
 
 
+def test_cgroup_counters_reject_missing_duplicate_and_negative():
+    assert linux_process._keyed_counters("user_usec 1\nsystem_usec 2", {"user_usec"}) == {
+        "user_usec": 1,
+        "system_usec": 2,
+    }
+    for raw in ("user_usec 1\nuser_usec 2", "user_usec -1", "system_usec 2"):
+        with pytest.raises(linux_process.ProcessError):
+            linux_process._keyed_counters(raw, {"user_usec"})
+
+
+def test_cgroup_owner_only_kills_its_unique_child_and_rejects_replacement(tmp_path):
+    parent = tmp_path / "delegated"
+    parent.mkdir()
+    child = parent / "quanta-retrieval-test"
+    child.mkdir()
+    (parent / "cgroup.kill").write_text("parent untouched")
+    (child / "cgroup.kill").write_text("")
+    owner = linux_process._CgroupOwner(parent, child)
+    owner.kill()
+    assert (child / "cgroup.kill").read_text() == "1"
+    assert (parent / "cgroup.kill").read_text() == "parent untouched"
+    replacement = parent / "old-child"
+    child.rename(replacement)
+    child.mkdir()
+    (child / "cgroup.kill").write_text("replacement untouched")
+    with pytest.raises(linux_process.ProcessError, match="identity changed"):
+        owner.kill()
+    assert (child / "cgroup.kill").read_text() == "replacement untouched"
+
+
+def test_cgroup_owner_reads_accounting_and_refuses_populated_removal(tmp_path):
+    parent = tmp_path / "delegated"
+    parent.mkdir()
+    child = parent / "quanta-retrieval-test"
+    child.mkdir()
+    (child / "cgroup.events").write_text("populated 1\nfrozen 0\n")
+    (child / "cgroup.procs").write_text("41\n")
+    (child / "memory.peak").write_text("8192\n")
+    (child / "cpu.stat").write_text("usage_usec 12\nuser_usec 8\nsystem_usec 4\n")
+    owner = linux_process._CgroupOwner(parent, child)
+    assert owner.populated()
+    assert owner.members() == {41}
+    assert owner.accounting() == (8192, 8000, 4000, 12000)
+    with pytest.raises(linux_process.ProcessError, match="populated"):
+        owner.remove()
+    assert child.is_dir()
+
+
+def test_qualified_missing_delegation_fails_before_launch(tmp_path, monkeypatch):
+    parent = tmp_path / "ordinary-directory"
+    parent.mkdir()
+    monkeypatch.setattr(
+        linux_process.subprocess,
+        "Popen",
+        lambda *args, **kwargs: pytest.fail("workload launched without cgroup delegation"),
+    )
+    real_read_text = Path.read_text
+    monkeypatch.setattr(
+        Path,
+        "read_text",
+        lambda self: (
+            "1 1 0:1 / /sys/fs/cgroup rw - cgroup2 cgroup rw"
+            if self == Path("/proc/self/mountinfo")
+            else real_read_text(self)
+        ),
+    )
+    with pytest.raises(linux_process.ProcessError, match="explicit delegated cgroup parent"):
+        linux_process._CgroupOwner.create(None)
+    with pytest.raises(linux_process.ProcessError, match="not on a cgroup v2 mount"):
+        linux_process._CgroupOwner.create(str(parent))
+
+
+def test_cgroup_setup_failure_removes_only_new_subgroup(tmp_path, monkeypatch):
+    parent = tmp_path / "delegated"
+    parent.mkdir()
+    sibling = parent / "existing-sibling"
+    sibling.mkdir()
+    real_read_text = Path.read_text
+    monkeypatch.setattr(
+        Path,
+        "read_text",
+        lambda self: (
+            f"1 1 0:1 / {parent} rw - cgroup2 cgroup rw"
+            if self == Path("/proc/self/mountinfo")
+            else real_read_text(self)
+        ),
+    )
+    with pytest.raises(linux_process.ProcessError, match="cgroup setup failed"):
+        linux_process._CgroupOwner.create(str(parent))
+    assert list(parent.iterdir()) == [sibling]
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux qualification gate")
+def test_qualified_run_rejects_unavailable_delegation_before_workload(tmp_path):
+    parent = tmp_path / "ordinary-directory"
+    parent.mkdir()
+    marker = tmp_path / "workload-ran"
+    with pytest.raises(linux_process.ProcessError, match="not on a cgroup v2 mount"):
+        linux_process.run(
+            [sys.executable, "-c", f"from pathlib import Path; Path({str(marker)!r}).touch()"],
+            timeout_secs=1,
+            qualified=True,
+            cgroup_parent=str(parent),
+        )
+    assert not marker.exists()
+
+
+def test_child_shim_cannot_run_workload_before_parent_ack(tmp_path):
+    marker = tmp_path / "ran"
+    reader, writer = os.pipe()
+    try:
+        child = subprocess.Popen(
+            [
+                sys.executable,
+                "-I",
+                str(Path(linux_process.__file__).resolve()),
+                "--cgroup-child",
+                str(reader),
+                sys.executable,
+                "-c",
+                "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('ran')",
+                str(marker),
+            ],
+            pass_fds=(reader,),
+        )
+        os.close(reader)
+        reader = None
+        time.sleep(0.1)
+        assert not marker.exists()
+        os.write(writer, b"1")
+        assert child.wait(timeout=5) == 0
+        assert marker.read_text() == "ran"
+    finally:
+        if reader is not None:
+            os.close(reader)
+        os.close(writer)
+
+
+def test_cgroup_tracker_rejects_observed_migration(monkeypatch):
+    current = ["/owned"]
+    member_pids = [{41}, set()]
+    raw = stat(41)
+
+    class Owner:
+        def members(self):
+            return member_pids.pop(0)
+
+        def accounting(self):
+            return (4096, 1000, 0, 1000)
+
+    monkeypatch.setattr(Path, "read_text", lambda self: raw)
+    monkeypatch.setattr(linux_process, "_proc_cgroup_path", lambda pid: current[0])
+    monkeypatch.setattr(linux_process.os, "pidfd_open", lambda pid, flags: 141, raising=False)
+    monkeypatch.setattr(linux_process.os, "close", lambda fd: None)
+    tracker = linux_process._CgroupTracker(
+        linux_process.ProcessIdentity(41, 100), "/owned", 100, 4096
+    )
+    tracker.sample(Owner())
+    current[0] = "/outside"
+    with pytest.raises(linux_process.ProcessError, match="migrated outside"):
+        tracker.sample(Owner())
+    assert tracker.escaped == {linux_process.ProcessIdentity(41, 100)}
+    tracker.close()
+
+
+def test_cgroup_tracker_excludes_preexec_rss_and_cpu(monkeypatch):
+    raw = [stat(41, user=10, kernel=4, rss=4)]
+
+    class Owner:
+        def members(self):
+            return {41}
+
+        def accounting(self):
+            return (8192, 1000, 1000, 2000)
+
+    monkeypatch.setattr(Path, "read_text", lambda self: raw[0])
+    monkeypatch.setattr(linux_process, "_proc_cgroup_path", lambda pid: "/owned")
+    monkeypatch.setattr(linux_process.os, "pidfd_open", lambda pid, flags: 141, raising=False)
+    monkeypatch.setattr(linux_process.os, "close", lambda fd: None)
+    tracker = linux_process._CgroupTracker(
+        linux_process.ProcessIdentity(41, 100), "/owned", 100, 4096, (10, 4)
+    )
+    tracker.sample(Owner(), include_process_metrics=False)
+    assert tracker.peak_tree_rss_bytes is None
+    assert tracker.samples == 0
+    raw[0] = stat(41, user=20, kernel=6, rss=8)
+    tracker.sample(Owner())
+    assert tracker.peak_tree_rss_bytes == 8 * 4096
+    assert tracker.evidence()[0].user_cpu_ns == 100_000_000
+    assert tracker.evidence()[0].kernel_cpu_ns == 20_000_000
+    tracker.close()
+
+
+def test_cgroup_remove_stays_under_unique_child(tmp_path, monkeypatch):
+    parent = tmp_path / "delegated"
+    parent.mkdir()
+    sibling = parent / "sibling"
+    sibling.mkdir()
+    child = parent / "quanta-retrieval-test"
+    nested = child / "nested"
+    nested.mkdir(parents=True)
+    owner = linux_process._CgroupOwner(parent, child)
+    monkeypatch.setattr(owner, "populated", lambda: False)
+    owner.remove()
+    assert not child.exists()
+    assert parent.is_dir()
+    assert sibling.is_dir()
+
+
 @pytest.mark.skipif(sys.platform != "linux", reason="native Linux process test")
 def test_timeout_cleans_live_descendant_on_linux(tmp_path):
     script = "import subprocess,time; subprocess.Popen(['sleep','30']); time.sleep(30)"
@@ -132,6 +344,7 @@ def test_timeout_cleans_live_descendant_on_linux(tmp_path):
     assert result.samples > 0
     assert len(result.processes) >= 2
     assert result.root.start_ticks > 0
+    assert not result.ownership_complete
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="native Linux process test")

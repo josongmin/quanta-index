@@ -1,12 +1,18 @@
-"""Linux /proc sampler with process-group ownership for benchmark children.
+"""Linux benchmark process owners: qualified cgroup v2 or diagnostic group.
 
 The root is a new session leader and is not reaped until all observed members
 have exited or cleanup finishes. This keeps its PID/PGID reserved. A process
 that leaves the group while still visible as a descendant is detected, pinned
 with a pidfd, and killed during cleanup. A child that daemonizes and is
 reparented entirely between scans cannot be attributed by /proc. Callers must
-reject observed escapes and must not treat this fallback as cgroup containment
-or native-host qualification.
+reject observed escapes and must not treat this fallback as qualified ownership.
+Qualified runs require an explicitly delegated cgroup v2 parent and never fall
+back to process-group polling.
+
+The cgroup result proves the dedicated subtree is empty after cleanup. A
+workload with permission to migrate itself to a cgroup outside that subtree
+can escape before observation; deployment must prevent such migration or
+exclude the run from an unrestricted orphan=0 claim.
 """
 
 from __future__ import annotations
@@ -16,6 +22,7 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -56,7 +63,12 @@ class ProcessEvidence:
 
 @dataclass(frozen=True)
 class ProcessResult:
-    """Sampled CPU totals are lower bounds for processes missed between scans."""
+    """Cgroup CPU is kernel-accounted; cgroup memory peak is not RSS.
+
+    ``peak_tree_rss_bytes`` is the maximum sampled sum of process RSS and can
+    miss short-lived members. ``ownership_complete`` covers the dedicated
+    cgroup subtree, subject to the migration boundary described above.
+    """
 
     root: ProcessIdentity
     root_exit_code: int | None
@@ -64,7 +76,7 @@ class ProcessResult:
     elapsed_ms: float
     sample_interval_ms: int
     samples: int
-    peak_tree_rss_bytes: int
+    peak_tree_rss_bytes: int | None
     total_user_cpu_ns: int
     total_kernel_cpu_ns: int
     processes: tuple[ProcessEvidence, ...]
@@ -73,6 +85,10 @@ class ProcessResult:
     cleanup_complete: bool
     stdout_path: str | None
     stderr_path: str | None
+    backend: str = "process-group"
+    cgroup_path: str | None = None
+    peak_cgroup_memory_bytes: int | None = None
+    cgroup_cpu_usage_ns: int | None = None
 
     @property
     def total_cpu_ns(self) -> int:
@@ -80,8 +96,16 @@ class ProcessResult:
 
     @property
     def ownership_complete(self) -> bool:
-        """Whether all *observed* members were sampled and cleaned without escape."""
-        return self.sampling_complete and self.cleanup_complete and not self.escaped
+        """Require cgroup accounting and empty cleanup for observed ownership."""
+        return (
+            self.backend == "cgroup-v2"
+            and self.sampling_complete
+            and self.cleanup_complete
+            and not self.escaped
+            and self.peak_tree_rss_bytes is not None
+            and self.peak_cgroup_memory_bytes is not None
+            and self.cgroup_cpu_usage_ns is not None
+        )
 
 
 def parse_proc_stat(raw: str, *, expected_pid: int | None = None) -> ProcessStat:
@@ -247,6 +271,484 @@ def _cleanup(tracker: _Tracker, proc_root: Path, timeout_secs: float) -> bool:
         time.sleep(min(0.01, deadline - now))
 
 
+def _keyed_counters(raw: str, required: set[str]) -> dict[str, int]:
+    counters: dict[str, int] = {}
+    for line in raw.splitlines():
+        fields = line.split()
+        if len(fields) != 2 or fields[0] in counters:
+            raise ProcessError("malformed or duplicate cgroup counter")
+        try:
+            value = int(fields[1])
+        except ValueError as exc:
+            raise ProcessError("non-integer cgroup counter") from exc
+        if value < 0:
+            raise ProcessError("negative cgroup counter")
+        counters[fields[0]] = value
+    if not required <= counters.keys():
+        raise ProcessError(f"missing cgroup counters: {sorted(required - counters.keys())}")
+    return counters
+
+
+def _is_cgroup2_path(parent: Path, mountinfo: str) -> bool:
+    for line in mountinfo.splitlines():
+        if " - " not in line:
+            continue
+        before, after = line.split(" - ", 1)
+        fields, fs = before.split(), after.split()
+        if len(fields) < 5 or not fs or fs[0] != "cgroup2":
+            continue
+        mount = Path(fields[4].replace("\\040", " ").replace("\\011", "\t"))
+        if parent == mount or mount in parent.parents:
+            return True
+    return False
+
+
+class _CgroupOwner:
+    """Own exactly one freshly created child of an explicit delegated parent."""
+
+    def __init__(self, parent: Path, path: Path):
+        self.parent = parent
+        self.path = path
+        identity = path.stat()
+        self._dev_ino = (identity.st_dev, identity.st_ino)
+
+    @classmethod
+    def create(cls, parent_arg: str | None) -> _CgroupOwner:
+        if not parent_arg or not isinstance(parent_arg, str):
+            raise ProcessError("qualified run requires an explicit delegated cgroup parent")
+        parent = Path(parent_arg)
+        try:
+            canonical = parent.resolve(strict=True)
+        except OSError as exc:
+            raise ProcessError(f"cgroup parent unavailable: {exc}") from exc
+        if not parent.is_absolute() or canonical != parent:
+            raise ProcessError("cgroup parent must be an absolute, non-symlink path")
+        try:
+            mountinfo = Path("/proc/self/mountinfo").read_text()
+        except OSError as exc:
+            raise ProcessError(f"cannot inspect cgroup v2 mount: {exc}") from exc
+        if not _is_cgroup2_path(parent, mountinfo):
+            raise ProcessError("delegated parent is not on a cgroup v2 mount")
+        try:
+            path = Path(tempfile.mkdtemp(prefix="quanta-retrieval-", dir=parent))
+        except OSError as exc:
+            raise ProcessError(f"cgroup delegation unavailable at {parent}: {exc}") from exc
+        try:
+            owner = cls(parent, path)
+            if (path / "cgroup.type").read_text().strip() != "domain":
+                raise ProcessError("dedicated cgroup is not a domain cgroup")
+            for name in ("cgroup.procs", "cgroup.events", "cgroup.kill", "cpu.stat", "memory.peak"):
+                if not (path / name).is_file():
+                    raise ProcessError(f"required cgroup v2 file unavailable: {name}")
+            owner.accounting()
+            if owner.populated():
+                raise ProcessError("new cgroup unexpectedly populated")
+        except BaseException as exc:
+            try:
+                path.rmdir()
+            except OSError as cleanup_exc:
+                raise ProcessError(
+                    f"cgroup setup failed: {exc}; dedicated subgroup cleanup failed: {cleanup_exc}"
+                ) from exc
+            raise ProcessError(f"cgroup setup failed: {exc}") from exc
+        return owner
+
+    def _verify(self) -> None:
+        if self.path.parent != self.parent or not self.path.name.startswith("quanta-retrieval-"):
+            raise ProcessError("cgroup path escaped dedicated child")
+        current = self.path.lstat()
+        if (current.st_dev, current.st_ino) != self._dev_ino or not self.path.is_dir():
+            raise ProcessError("dedicated cgroup identity changed")
+
+    def assign(self, pid: int) -> None:
+        self._verify()
+        (self.path / "cgroup.procs").write_text(str(pid))
+        if pid not in self.members():
+            raise ProcessError("child not present in dedicated cgroup after assignment")
+
+    def populated(self) -> bool:
+        self._verify()
+        state = _keyed_counters((self.path / "cgroup.events").read_text(), {"populated"})
+        if state["populated"] not in (0, 1):
+            raise ProcessError("invalid cgroup populated state")
+        return bool(state["populated"])
+
+    def accounting(self) -> tuple[int, int, int, int]:
+        self._verify()
+        raw_peak = (self.path / "memory.peak").read_text().strip()
+        try:
+            peak = int(raw_peak)
+        except ValueError as exc:
+            raise ProcessError("invalid cgroup memory.peak") from exc
+        if peak < 0:
+            raise ProcessError("negative cgroup memory.peak")
+        cpu = _keyed_counters(
+            (self.path / "cpu.stat").read_text(), {"usage_usec", "user_usec", "system_usec"}
+        )
+        return peak, cpu["user_usec"] * 1000, cpu["system_usec"] * 1000, cpu["usage_usec"] * 1000
+
+    def members(self) -> set[int]:
+        self._verify()
+        members: set[int] = set()
+
+        def fail_walk(exc: OSError) -> None:
+            raise ProcessError(f"cannot enumerate dedicated cgroup: {exc}") from exc
+
+        for root, _dirs, _files in os.walk(self.path, onerror=fail_walk, followlinks=False):
+            for line in (Path(root) / "cgroup.procs").read_text().splitlines():
+                if not line.isdecimal() or int(line) <= 0:
+                    raise ProcessError("invalid cgroup.procs PID")
+                members.add(int(line))
+        return members
+
+    def kill(self) -> None:
+        self._verify()
+        (self.path / "cgroup.kill").write_text("1")
+
+    def wait_empty(self, timeout_secs: float) -> bool:
+        deadline = time.monotonic() + timeout_secs
+        while self.populated():
+            now = time.monotonic()
+            if now >= deadline:
+                return False
+            time.sleep(min(0.01, deadline - now))
+        return True
+
+    def remove(self) -> None:
+        self._verify()
+        if self.populated():
+            raise ProcessError("refusing to remove populated cgroup")
+
+        def fail_walk(exc: OSError) -> None:
+            raise ProcessError(f"cannot enumerate dedicated cgroup: {exc}") from exc
+
+        for root, _dirs, _files in os.walk(
+            self.path, topdown=False, onerror=fail_walk, followlinks=False
+        ):
+            candidate = Path(root)
+            if candidate != self.path and self.path not in candidate.parents:
+                raise ProcessError("refusing to remove outside dedicated cgroup")
+            candidate.rmdir()
+
+
+def _proc_cgroup_path(pid: int) -> str:
+    lines = Path(f"/proc/{pid}/cgroup").read_text().splitlines()
+    if len(lines) != 1 or not lines[0].startswith("0::"):
+        raise ProcessError(f"invalid unified cgroup membership for PID {pid}")
+    return lines[0][3:]
+
+
+def _child_shim(read_fd: int, command: list[str]) -> None:
+    """Wait for parent cgroup assignment before running the workload."""
+    try:
+        if os.read(read_fd, 1) != b"1":
+            os._exit(126)
+        os.close(read_fd)
+        os.execvp(command[0], command)
+    except OSError as exc:
+        os.write(2, f"cgroup child exec failed: {exc}\n".encode())
+        os._exit(127)
+
+
+class _CgroupTracker:
+    def __init__(
+        self,
+        root: ProcessIdentity,
+        membership_path: str,
+        clock_ticks: int,
+        page_bytes: int,
+        root_baseline_ticks: tuple[int, int] = (0, 0),
+    ):
+        self.root = root
+        self.membership_path = membership_path
+        self.clock_ticks = clock_ticks
+        self.page_bytes = page_bytes
+        self.root_baseline_ticks = root_baseline_ticks
+        self.pidfds: dict[ProcessIdentity, int] = {}
+        self.peaks: dict[ProcessIdentity, tuple[int, int, int]] = {}
+        self.escaped: set[ProcessIdentity] = set()
+        self.peak_tree_rss_bytes: int | None = None
+        self.peak_cgroup_memory_bytes = 0
+        self.user_cpu_ns = 0
+        self.kernel_cpu_ns = 0
+        self.cpu_usage_ns = 0
+        self.samples = 0
+
+    def _inside(self, path: str) -> bool:
+        return path == self.membership_path or path.startswith(self.membership_path + "/")
+
+    def sample(self, owner: _CgroupOwner, *, include_process_metrics: bool = True) -> None:
+        members = owner.members()
+        live_rss = 0
+        live_seen = False
+        for pid in members:
+            try:
+                row = parse_proc_stat(Path(f"/proc/{pid}/stat").read_text(), expected_pid=pid)
+            except FileNotFoundError:
+                continue
+            identity = row.identity
+            if not self._inside(_proc_cgroup_path(pid)):
+                self.escaped.add(identity)
+                raise ProcessError(f"PID {pid} migrated outside dedicated cgroup")
+            if identity not in self.pidfds:
+                fd = None
+                try:
+                    fd = os.pidfd_open(pid, 0)
+                    pinned = parse_proc_stat(
+                        Path(f"/proc/{pid}/stat").read_text(), expected_pid=pid
+                    )
+                    if pinned.identity != identity:
+                        raise ProcessError(f"PID {pid} changed start time while pinning")
+                except (OSError, ProcessError) as exc:
+                    if fd is not None:
+                        os.close(fd)
+                    raise ProcessError(f"cannot pin cgroup member PID {pid}: {exc}") from exc
+                self.pidfds[identity] = fd
+            if include_process_metrics:
+                rss = row.rss_pages * self.page_bytes
+                old = self.peaks.get(identity, (0, 0, 0))
+                self.peaks[identity] = (
+                    max(old[0], rss),
+                    max(old[1], row.user_ticks),
+                    max(old[2], row.kernel_ticks),
+                )
+                if row.live:
+                    live_rss += rss
+                    live_seen = True
+        # Membership is authoritative for current members. Recheck previously
+        # pinned identities for a migration out of this dedicated subtree.
+        for identity in self.pidfds:
+            if identity.pid in members:
+                continue
+            try:
+                row = parse_proc_stat(
+                    Path(f"/proc/{identity.pid}/stat").read_text(), expected_pid=identity.pid
+                )
+            except FileNotFoundError:
+                continue
+            if (
+                row.identity == identity
+                and row.live
+                and not self._inside(_proc_cgroup_path(identity.pid))
+            ):
+                self.escaped.add(identity)
+                raise ProcessError(f"PID {identity.pid} migrated outside dedicated cgroup")
+        if live_seen:
+            self.peak_tree_rss_bytes = max(self.peak_tree_rss_bytes or 0, live_rss)
+        peak, user, kernel, usage = owner.accounting()
+        if (
+            peak < self.peak_cgroup_memory_bytes
+            or user < self.user_cpu_ns
+            or kernel < self.kernel_cpu_ns
+            or usage < self.cpu_usage_ns
+        ):
+            raise ProcessError("cgroup accounting counter regressed")
+        self.peak_cgroup_memory_bytes = peak
+        self.user_cpu_ns = user
+        self.kernel_cpu_ns = kernel
+        self.cpu_usage_ns = usage
+        if include_process_metrics:
+            self.samples += 1
+
+    def kill_escapes(self) -> None:
+        for identity in self.escaped:
+            fd = self.pidfds.get(identity)
+            if fd is None:
+                raise ProcessError(f"escaped PID {identity.pid} has no stable pidfd")
+            try:
+                signal.pidfd_send_signal(fd, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+    def evidence(self) -> tuple[ProcessEvidence, ...]:
+        for identity, (_rss, user, kernel) in self.peaks.items():
+            if identity == self.root and (
+                user < self.root_baseline_ticks[0] or kernel < self.root_baseline_ticks[1]
+            ):
+                raise ProcessError("root CPU ticks regressed below pre-exec baseline")
+        return tuple(
+            ProcessEvidence(
+                identity,
+                rss,
+                (user - (self.root_baseline_ticks[0] if identity == self.root else 0))
+                * 1_000_000_000
+                // self.clock_ticks,
+                (kernel - (self.root_baseline_ticks[1] if identity == self.root else 0))
+                * 1_000_000_000
+                // self.clock_ticks,
+            )
+            for identity, (rss, user, kernel) in sorted(self.peaks.items())
+        )
+
+    def close(self) -> None:
+        for fd in self.pidfds.values():
+            os.close(fd)
+        self.pidfds.clear()
+
+
+def _run_cgroup(
+    command: list[str],
+    *,
+    timeout_secs: float,
+    sample_interval_ms: int,
+    cleanup_timeout_secs: float,
+    cwd: str | None,
+    env: dict[str, str] | None,
+    stdout_path: str | None,
+    stderr_path: str | None,
+    cgroup_parent: str | None,
+) -> ProcessResult:
+    if sys.platform != "linux":
+        raise ProcessError("native Linux host required for cgroup v2")
+    if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
+        raise ProcessError("Linux pidfd support required for cgroup member identity")
+    owner = _CgroupOwner.create(cgroup_parent)
+    output_files = []
+    process = None
+    tracker = None
+    read_fd = write_fd = None
+    removed = False
+    try:
+        for path in (stdout_path, stderr_path):
+            output_files.append(open(path, "xb") if path is not None else subprocess.DEVNULL)
+        read_fd, write_fd = os.pipe()
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-I",
+                str(Path(__file__).resolve()),
+                "--cgroup-child",
+                str(read_fd),
+                *command,
+            ],
+            cwd=cwd,
+            env=env,
+            start_new_session=True,
+            pass_fds=(read_fd,),
+            stdin=subprocess.DEVNULL,
+            stdout=output_files[0],
+            stderr=output_files[1],
+        )
+        os.close(read_fd)
+        read_fd = None
+        root_stat = parse_proc_stat(
+            Path(f"/proc/{process.pid}/stat").read_text(), expected_pid=process.pid
+        )
+        if root_stat.pgid != process.pid:
+            raise ProcessError("cgroup child was not started in a private process group")
+        owner.assign(process.pid)
+        membership_path = _proc_cgroup_path(process.pid)
+        if membership_path == "/":
+            raise ProcessError("dedicated cgroup path is not visible in /proc")
+        tracker = _CgroupTracker(
+            root_stat.identity,
+            membership_path,
+            os.sysconf("SC_CLK_TCK"),
+            os.sysconf("SC_PAGE_SIZE"),
+            (root_stat.user_ticks, root_stat.kernel_ticks),
+        )
+        tracker.sample(owner, include_process_metrics=False)
+        baseline_user = tracker.user_cpu_ns
+        baseline_kernel = tracker.kernel_cpu_ns
+        baseline_usage = tracker.cpu_usage_ns
+        os.write(write_fd, b"1")
+        os.close(write_fd)
+        write_fd = None
+        started = time.monotonic()
+        deadline = started + timeout_secs
+        timed_out = False
+        while True:
+            tracker.sample(owner)
+            if not owner.populated():
+                break
+            now = time.monotonic()
+            if now >= deadline:
+                timed_out = True
+                break
+            time.sleep(min(sample_interval_ms / 1000, deadline - now))
+        stopped = time.monotonic()
+        if timed_out:
+            owner.kill()
+            tracker.kill_escapes()
+        if not owner.wait_empty(cleanup_timeout_secs):
+            raise ProcessError(f"dedicated cgroup remained populated: {owner.path}")
+        tracker.sample(owner)
+        exit_code = process.wait(timeout=cleanup_timeout_secs)
+        evidence = tracker.evidence()
+        result = ProcessResult(
+            root=root_stat.identity,
+            root_exit_code=exit_code,
+            timed_out=timed_out,
+            elapsed_ms=(stopped - started) * 1000,
+            sample_interval_ms=sample_interval_ms,
+            samples=tracker.samples,
+            peak_tree_rss_bytes=tracker.peak_tree_rss_bytes,
+            total_user_cpu_ns=tracker.user_cpu_ns - baseline_user,
+            total_kernel_cpu_ns=tracker.kernel_cpu_ns - baseline_kernel,
+            processes=evidence,
+            escaped=tuple(sorted(tracker.escaped)),
+            sampling_complete=True,
+            cleanup_complete=True,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            backend="cgroup-v2",
+            cgroup_path=str(owner.path),
+            peak_cgroup_memory_bytes=tracker.peak_cgroup_memory_bytes,
+            cgroup_cpu_usage_ns=tracker.cpu_usage_ns - baseline_usage,
+        )
+        owner.remove()
+        removed = True
+        return result
+    except BaseException as exc:
+        cleanup_errors = []
+        if write_fd is not None:
+            os.close(write_fd)
+            write_fd = None
+        if process is not None:
+            try:
+                owner.kill()
+            except (OSError, ProcessError) as error:
+                cleanup_errors.append(f"cgroup.kill: {error}")
+            if tracker is not None:
+                try:
+                    tracker.kill_escapes()
+                except (OSError, ProcessError) as error:
+                    cleanup_errors.append(f"escaped member: {error}")
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except OSError as error:
+                cleanup_errors.append(f"shim group: {error}")
+            try:
+                process.wait(timeout=cleanup_timeout_secs)
+            except (OSError, subprocess.TimeoutExpired) as error:
+                cleanup_errors.append(f"root wait: {error}")
+        try:
+            if not owner.wait_empty(cleanup_timeout_secs):
+                cleanup_errors.append(f"dedicated cgroup remained populated: {owner.path}")
+            elif not removed:
+                owner.remove()
+                removed = True
+        except (OSError, ProcessError) as error:
+            cleanup_errors.append(f"dedicated cgroup cleanup: {error}")
+        if cleanup_errors:
+            raise ProcessError(
+                f"cgroup run failed: {exc}; cleanup failed: {'; '.join(cleanup_errors)}"
+            ) from exc
+        raise
+    finally:
+        if read_fd is not None:
+            os.close(read_fd)
+        if write_fd is not None:
+            os.close(write_fd)
+        if tracker is not None:
+            tracker.close()
+        for output in output_files:
+            if output != subprocess.DEVNULL:
+                output.close()
+
+
 def run(
     command: list[str],
     *,
@@ -257,18 +759,14 @@ def run(
     env: dict[str, str] | None = None,
     stdout_path: str | None = None,
     stderr_path: str | None = None,
+    qualified: bool = False,
+    cgroup_parent: str | None = None,
 ) -> ProcessResult:
-    """Run and sample a Linux process group; terminate observed survivors.
+    """Run a qualified cgroup owner or a diagnostic process-group fallback.
 
-    ``ownership_complete`` is false after any observed process-group escape.
-    Polling /proc cannot prove that no unobserved, already-reparented child
-    escaped between samples. Callers requiring that guarantee need a delegated
-    cgroup or another kernel ownership primitive.
+    Qualification never silently falls back when cgroup delegation is absent.
+    ``cgroup_parent`` must be an explicit writable cgroup v2 delegated path.
     """
-    if sys.platform != "linux":
-        raise ProcessError("native Linux host required")
-    if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
-        raise ProcessError("Linux pidfd_open and pidfd_send_signal required")
     if (
         not command
         or not isinstance(command[0], str)
@@ -285,6 +783,26 @@ def run(
         or sample_interval_ms <= 0
     ):
         raise ProcessError("invalid command or timeout/sample interval")
+    if type(qualified) is not bool:
+        raise ProcessError("qualified must be a boolean")
+    if qualified:
+        return _run_cgroup(
+            command,
+            timeout_secs=timeout_secs,
+            sample_interval_ms=sample_interval_ms,
+            cleanup_timeout_secs=cleanup_timeout_secs,
+            cwd=cwd,
+            env=env,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            cgroup_parent=cgroup_parent,
+        )
+    if cgroup_parent is not None:
+        raise ProcessError("cgroup_parent requires qualified=True")
+    if sys.platform != "linux":
+        raise ProcessError("native Linux host required")
+    if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
+        raise ProcessError("Linux pidfd_open and pidfd_send_signal required")
     output_files = []
     process = None
     tracker = None
@@ -365,3 +883,9 @@ def run(
         for output in output_files:
             if output != subprocess.DEVNULL:
                 output.close()
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 4 or sys.argv[1] != "--cgroup-child":
+        raise SystemExit("linux_process.py is an internal child shim")
+    _child_shim(int(sys.argv[2]), sys.argv[3:])
