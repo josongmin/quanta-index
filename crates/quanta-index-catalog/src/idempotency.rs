@@ -1089,7 +1089,7 @@ impl IdempotencyCatalogPort for SqliteCatalog {
                         let payload = payload_digest_of_parts(&[&stored.fence_token.to_le_bytes()]);
                         let _invalidated = append_sequence_event(
                             &transaction,
-                            SequenceEventKindV1::Invalidation,
+                            SequenceEventKindV1::OperationInvalidation,
                             &key.identity_digest(),
                             &payload,
                         )?;
@@ -1258,7 +1258,7 @@ impl IdempotencyCatalogPort for SqliteCatalog {
                         let payload = payload_digest_of_parts(&[&stored.fence_token.to_le_bytes()]);
                         let _invalidated = append_sequence_event(
                             &transaction,
-                            SequenceEventKindV1::Invalidation,
+                            SequenceEventKindV1::OperationInvalidation,
                             &key.identity_digest(),
                             &payload,
                         )?;
@@ -1738,7 +1738,7 @@ impl IdempotencyCatalogPort for SqliteCatalog {
             let payload = payload_digest_of_parts(&[key.batch_digest.as_bytes()]);
             let _invalidated = append_sequence_event(
                 &transaction,
-                SequenceEventKindV1::Invalidation,
+                SequenceEventKindV1::OperationInvalidation,
                 &key.identity_digest(),
                 &payload,
             )?;

@@ -9,3 +9,5 @@ state/
 .codex/
 Cargo.lock
 docs/
+# Current src/**/tests.rs modules are imported only under #[cfg(test)].
+**/src/**/tests.rs

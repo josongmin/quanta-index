@@ -49,6 +49,7 @@ impl SqliteCatalog {
         connection
             .execute_batch(crate::sequence::SCHEMA)
             .map_err(|error| engine_error("create sequence schema", &path, &error))?;
+        crate::sequence::verify_installed_schema(&connection, &path)?;
         connection
             .execute_batch(crate::auxiliary::SCHEMA)
             .map_err(|error| engine_error("create auxiliary schema", &path, &error))?;

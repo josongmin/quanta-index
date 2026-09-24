@@ -9,7 +9,7 @@
 //!                     row_sha256 BLOB CHECK(length(row_sha256)=32))
 //! catalog_sequence_event_v2(sequence INTEGER UNIQUE
 //!                     CHECK(sequence BETWEEN 1 AND 9223372036854775807),
-//!                     kind INTEGER CHECK(kind IN (1..=9)),
+//!                     kind INTEGER CHECK(kind IN (1..=10)),
 //!                     identity_digest BLOB CHECK(length=32),
 //!                     payload_digest BLOB CHECK(length=32),
 //!                     event_commitment BLOB CHECK(length=32),
@@ -57,7 +57,7 @@ pub(crate) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS catalog_sequence_v2 
          CREATE TABLE IF NOT EXISTS catalog_sequence_event_v2 (
              sequence INTEGER PRIMARY KEY
                  CHECK (sequence BETWEEN 1 AND 9223372036854775807),
-             kind INTEGER NOT NULL CHECK (kind IN (1, 2, 3, 4, 5, 6, 7, 8, 9)),
+             kind INTEGER NOT NULL CHECK (kind IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10)),
              identity_digest BLOB NOT NULL CHECK (length(identity_digest) = 32),
              payload_digest BLOB NOT NULL CHECK (length(payload_digest) = 32),
              event_commitment BLOB NOT NULL CHECK (length(event_commitment) = 32),
@@ -78,26 +78,28 @@ pub(crate) enum SequenceEventKindV1 {
     CandidateSeal = 4,
     Activation = 5,
     Rollback = 6,
-    Invalidation = 7,
+    OperationInvalidation = 7,
     QuarantineRecord = 8,
     QuarantineDiscard = 9,
+    RepoMapInvalidation = 10,
 }
 
 impl SequenceEventKindV1 {
-    pub(crate) const ALL: [Self; 9] = [
+    pub(crate) const ALL: [Self; 10] = [
         Self::OperationCommitted,
         Self::OperationRefused,
         Self::OperationAborted,
         Self::CandidateSeal,
         Self::Activation,
         Self::Rollback,
-        Self::Invalidation,
+        Self::OperationInvalidation,
         Self::QuarantineRecord,
         Self::QuarantineDiscard,
+        Self::RepoMapInvalidation,
     ];
 
     #[must_use]
-    /// The enum's discriminants are the closed 1..=9 `CHECK` set; the
+    /// The enum's discriminants are the closed 1..=10 `CHECK` set; the
     /// explicit match keeps the cast side-effect-free (no `as`).
     pub(crate) fn as_code(self) -> i64 {
         match self {
@@ -107,9 +109,10 @@ impl SequenceEventKindV1 {
             Self::CandidateSeal => 4,
             Self::Activation => 5,
             Self::Rollback => 6,
-            Self::Invalidation => 7,
+            Self::OperationInvalidation => 7,
             Self::QuarantineRecord => 8,
             Self::QuarantineDiscard => 9,
+            Self::RepoMapInvalidation => 10,
         }
     }
 
@@ -132,12 +135,42 @@ impl SequenceEventKindV1 {
             4 => Ok(Self::CandidateSeal),
             5 => Ok(Self::Activation),
             6 => Ok(Self::Rollback),
-            7 => Ok(Self::Invalidation),
+            7 => Ok(Self::OperationInvalidation),
             8 => Ok(Self::QuarantineRecord),
             9 => Ok(Self::QuarantineDiscard),
+            10 => Ok(Self::RepoMapInvalidation),
             other => Err(corrupt(&format!("event kind code {other} is not known"))),
         }
     }
+}
+
+/// Refuse incompatible event-kind schemas before recovery.
+///
+/// The filename and table name are not migration selectors; only the exact
+/// installed event-kind schema is current.
+pub(crate) fn verify_installed_schema(
+    connection: &Connection,
+    path: &std::path::Path,
+) -> Result<(), CoreError> {
+    let expected = format!("kind IN ({})", SequenceEventKindV1::check_set_sql());
+    if !SCHEMA.contains(&expected) {
+        return Err(corrupt("sequence schema and event-kind enum disagree"));
+    }
+    let installed: String = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'catalog_sequence_event_v2'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| engine_error("read installed sequence schema", path, &error))?;
+    let compact = |text: &str| text.split_whitespace().collect::<String>();
+    if !compact(&installed).contains(&compact(&expected)) {
+        return Err(CoreError::Storage(format!(
+            "catalog: {} has an unsupported event-kind schema; this build has no migration reader",
+            path.display()
+        )));
+    }
+    Ok(())
 }
 
 fn corrupt(message: &str) -> CoreError {
@@ -357,15 +390,6 @@ pub(crate) fn reconcile(
     connection: &mut Connection,
     path: &std::path::Path,
 ) -> Result<(), CoreError> {
-    // The closed kind set the schema's CHECK admits must be exactly the
-    // enum's; this cannot drift because the schema string is derived here
-    // against itself at every open.
-    let expected_check = format!("kind IN ({})", SequenceEventKindV1::check_set_sql());
-    if !SCHEMA.contains(&expected_check) {
-        return Err(corrupt(&format!(
-            "sequence schema's kind CHECK does not match the closed event-kind enum ({expected_check})"
-        )));
-    }
     let transaction = connection
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(|error| engine_error("begin sequence reconcile", path, &error))?;
@@ -472,7 +496,8 @@ pub(crate) fn verify_integrity(
                     | SequenceEventKindV1::CandidateSeal
                     | SequenceEventKindV1::Activation
                     | SequenceEventKindV1::Rollback
-                    | SequenceEventKindV1::Invalidation
+                    | SequenceEventKindV1::OperationInvalidation
+                    | SequenceEventKindV1::RepoMapInvalidation
                     | SequenceEventKindV1::QuarantineRecord
                     | SequenceEventKindV1::QuarantineDiscard => 6_i64,
                 };
@@ -506,11 +531,10 @@ pub(crate) fn verify_integrity(
             // `repomap_candidate_v1` / `repomap_activation_v1` (same
             // terminal sequence); every QuarantineRecord pairs the
             // incident's record sequence and QuarantineDiscard its
-            // discard sequence. An Invalidation pairs the repomap
-            // activation row when one names its sequence; invalidations
-            // the idempotency lane attributes (generation GC) keep the
-            // per-operation attribution consulted above and pair nothing
-            // here. Rollback is not emitted by any current owner; the
+            // discard sequence. RepoMapInvalidation pairs the inactive
+            // activation row exactly; OperationInvalidation is an
+            // idempotency-lane event and has no surviving row after GC.
+            // Rollback is not emitted by any current owner; the
             // ledger row and its digests are its record until one is.
             SequenceEventKindV1::CandidateSeal => {
                 pair_exists(
@@ -530,8 +554,11 @@ pub(crate) fn verify_integrity(
                     "activation",
                 )?;
             }
-            SequenceEventKindV1::Rollback => {}
-            SequenceEventKindV1::Invalidation => {
+            // OperationInvalidation is itself the idempotency lane's terminal
+            // record: GC removes its row, and an uncertain supersession may
+            // have no earlier terminal event. Rollback has no current owner.
+            SequenceEventKindV1::Rollback | SequenceEventKindV1::OperationInvalidation => {}
+            SequenceEventKindV1::RepoMapInvalidation => {
                 pair_exists(
                     connection,
                     path,
@@ -539,23 +566,7 @@ pub(crate) fn verify_integrity(
                      WHERE terminal_sequence = ?1 AND active = 0",
                     sequence,
                     "repomap activation invalidation",
-                )
-                .or_else(|invalidation_pair_error| {
-                    // Not a repomap invalidation: the idempotency lane's
-                    // attribution (checked per operation event above) owns
-                    // it, so the pairing requirement does not apply.
-                    if matches!(
-                        invalidation_pair_error,
-                        CoreError::Typed {
-                            code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
-                            ..
-                        }
-                    ) {
-                        Ok(())
-                    } else {
-                        Err(invalidation_pair_error)
-                    }
-                })?;
+                )?;
             }
             SequenceEventKindV1::QuarantineRecord => {
                 pair_exists(
@@ -597,7 +608,7 @@ pub(crate) fn is_invalidated_for_floor(
             "SELECT 1 FROM catalog_sequence_event_v2
              WHERE kind = ?1 AND identity_digest = ?2 AND payload_digest = ?3 LIMIT 1",
             params![
-                SequenceEventKindV1::Invalidation.as_code(),
+                SequenceEventKindV1::OperationInvalidation.as_code(),
                 identity_digest.as_slice(),
                 payload_digest.as_slice()
             ],
@@ -620,7 +631,7 @@ pub(crate) fn is_invalidated(
             "SELECT 1 FROM catalog_sequence_event_v2
              WHERE kind = ?1 AND identity_digest = ?2 LIMIT 1",
             params![
-                SequenceEventKindV1::Invalidation.as_code(),
+                SequenceEventKindV1::OperationInvalidation.as_code(),
                 identity_digest.as_slice()
             ],
             |row| row.get(0),
@@ -665,5 +676,85 @@ impl SqliteCatalog {
                 .map_err(|_error| corrupt("allocator next does not fit u64"))?,
             exhausted,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error;
+    use std::time::Duration;
+
+    use quanta_index_contract::SearchPlaneErrorCodeV2;
+
+    use super::{SequenceEventKindV1, append_sequence_event};
+    use crate::connection::{CATALOG_FILE_NAME, SqliteCatalog, catalog_dir};
+
+    type TestResult = Result<(), Box<dyn Error>>;
+
+    #[test]
+    fn orphan_repomap_invalidation_refuses_reopen() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let catalog = SqliteCatalog::open(root.path(), Duration::from_millis(100))?;
+        {
+            let mut connection = catalog.lock()?;
+            let transaction = connection.transaction()?;
+            let _event = append_sequence_event(
+                &transaction,
+                SequenceEventKindV1::RepoMapInvalidation,
+                &[1_u8; 32],
+                &[2_u8; 32],
+            )?;
+            transaction.commit()?;
+            drop(connection);
+        }
+        drop(catalog);
+        let reopened = SqliteCatalog::open(root.path(), Duration::from_millis(100));
+        if !matches!(
+            reopened,
+            Err(quanta_index_core::CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                ..
+            })
+        ) {
+            return Err("orphan RepoMap invalidation must refuse reopen".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn prior_event_kind_schema_refuses_open_before_allocator_seed() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let directory = catalog_dir(root.path());
+        std::fs::create_dir_all(&directory)?;
+        let path = directory.join(CATALOG_FILE_NAME);
+        let connection = rusqlite::Connection::open(&path)?;
+        connection.execute_batch(
+            "CREATE TABLE catalog_sequence_event_v2 (
+                 sequence INTEGER PRIMARY KEY CHECK (sequence BETWEEN 1 AND 9223372036854775807),
+                 kind INTEGER NOT NULL CHECK (kind IN (1, 2, 3, 4, 5, 6, 7, 8, 9)),
+                 identity_digest BLOB NOT NULL CHECK (length(identity_digest) = 32),
+                 payload_digest BLOB NOT NULL CHECK (length(payload_digest) = 32),
+                 event_commitment BLOB NOT NULL CHECK (length(event_commitment) = 32),
+                 row_sha256 BLOB NOT NULL CHECK (length(row_sha256) = 32)
+             ) WITHOUT ROWID;",
+        )?;
+        drop(connection);
+        let opened = SqliteCatalog::open(root.path(), Duration::from_millis(100));
+        if !matches!(
+            opened,
+            Err(quanta_index_core::CoreError::Storage(message))
+                if message.contains("unsupported event-kind schema")
+        ) {
+            return Err("prior event-kind schema must refuse open".into());
+        }
+        let connection = rusqlite::Connection::open(path)?;
+        let allocator_rows: i64 =
+            connection.query_row("SELECT COUNT(*) FROM catalog_sequence_v2", [], |row| {
+                row.get(0)
+            })?;
+        if allocator_rows != 0 {
+            return Err("schema refusal must precede allocator seed".into());
+        }
+        Ok(())
     }
 }

@@ -25,4 +25,4 @@ fi
 # largest production files (query_dispatcher.rs ~5.4k LOC, lexical/lib.rs ~3.4k LOC) are
 # fully scanned instead of being silently skipped on timeout, which would hide
 # silent-fallback findings in exactly the hottest files.
-exec semgrep --config "${CONFIG_PATH}" --error --strict --metrics off --timeout 300 "$@"
+exec semgrep --config "${CONFIG_PATH}" --error --strict --metrics off --disable-version-check --timeout 300 "$@"

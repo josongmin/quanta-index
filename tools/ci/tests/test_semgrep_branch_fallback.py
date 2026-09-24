@@ -43,6 +43,7 @@ fn inverted(result: Result<(), ()>) {
                     "--no-git-ignore",
                     "--metrics",
                     "off",
+                    "--disable-version-check",
                     str(source),
                 ],
                 cwd=root,
@@ -94,6 +95,7 @@ fn inverted(result: Result<(), ()>) {
                     "--no-git-ignore",
                     "--metrics",
                     "off",
+                    "--disable-version-check",
                     str(workflow),
                     str(workflow.with_suffix(".yaml")),
                 ],
@@ -124,10 +126,32 @@ fn inverted(result: Result<(), ()>) {
         with tempfile.TemporaryDirectory(prefix="qi-rust-guards-") as directory:
             root = Path(directory)
             subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            (root / ".semgrepignore").write_text(
+                (RULES.parents[3] / ".semgrepignore").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
             files = {
                 "crates/quanta-index-core/src/lib.rs": """fn bad(result: Result<(), ()>) {
     let _ = result.or_else(|_| Ok(()));
+    let _ = result.or_else(|err| { log(err); Ok(()) });
+    let _ = result.or_else(|_| { Ok(()) });
     if cfg!(debug_assertions) { fail_open(); }
+}
+""",
+                "crates/quanta-index-core/tests/silent.rs": """fn test_only(result: Result<(), ()>) {
+    let _ = result.or_else(|_| Ok(()));
+}
+""",
+                "crates/quanta-index-core/src/tests.rs": """fn test_only(result: Result<(), ()>) {
+    let _ = result.or_else(|_| Ok(()));
+}
+""",
+                "crates/quanta-index-core/fuzz/fuzz_targets/silent.rs": """fn fuzz_target(result: Result<(), ()>) {
+    let _ = result.or_else(|_| Ok(()));
+}
+""",
+                "benchmarks/retrieval/src/silent.rs": """fn benchmark(result: Result<(), ()>) {
+    let _ = result.or_else(|_| Ok(()));
 }
 """,
                 "crates/quanta-index-searchd/src/lib.rs": """fn bad() -> StructuralReadiness {
@@ -143,7 +167,7 @@ fn inverted(result: Result<(), ()>) {
             }
             for relative, contents in files.items():
                 path = root / relative
-                path.parent.mkdir(parents=True)
+                path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(contents, encoding="utf-8")
             result = subprocess.run(
                 [
@@ -155,7 +179,8 @@ fn inverted(result: Result<(), ()>) {
                     "--no-git-ignore",
                     "--metrics",
                     "off",
-                    "crates",
+                    "--disable-version-check",
+                    ".",
                 ],
                 cwd=root,
                 text=True,
@@ -173,6 +198,21 @@ fn inverted(result: Result<(), ()>) {
                     "rust-no-debug-assertions-divergence",
                     "rust-no-ready-on-failed-structural-precondition",
                     "rust-no-search-plane-direct-ciborium",
+                },
+            )
+            silent_findings = [
+                (item["path"], item["start"]["line"])
+                for item in json.loads(result.stdout)["results"]
+                if item["check_id"].split(".")[-1] == "rust-no-silent-or-else-ok"
+            ]
+            self.assertEqual(
+                set(silent_findings),
+                {
+                    ("crates/quanta-index-core/src/lib.rs", 2),
+                    ("crates/quanta-index-core/src/lib.rs", 3),
+                    ("crates/quanta-index-core/src/lib.rs", 4),
+                    ("crates/quanta-index-core/fuzz/fuzz_targets/silent.rs", 2),
+                    ("benchmarks/retrieval/src/silent.rs", 2),
                 },
             )
 

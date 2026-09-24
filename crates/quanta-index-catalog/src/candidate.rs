@@ -830,7 +830,7 @@ impl SqliteCatalog {
                 logical_key_digest(repo_id, revision_id, prior.manifest_generation);
             let invalidation_sequence = append_sequence_event(
                 &transaction,
-                SequenceEventKindV1::Invalidation,
+                SequenceEventKindV1::RepoMapInvalidation,
                 &prior_identity,
                 &prior.candidate_commitment,
             )?;
@@ -1001,7 +1001,7 @@ impl SqliteCatalog {
         let identity = logical_key_digest(repo_id, revision_id, manifest_generation);
         let sequence = append_sequence_event(
             &transaction,
-            SequenceEventKindV1::Invalidation,
+            SequenceEventKindV1::RepoMapInvalidation,
             &identity,
             &active_row.candidate_commitment,
         )?;
@@ -1287,7 +1287,7 @@ impl SqliteCatalog {
         let identity = logical_key_digest(repo_id, revision_id, manifest_generation);
         let sequence = append_sequence_event(
             &transaction,
-            SequenceEventKindV1::Invalidation,
+            SequenceEventKindV1::RepoMapInvalidation,
             &identity,
             &candidate.candidate_commitment,
         )?;

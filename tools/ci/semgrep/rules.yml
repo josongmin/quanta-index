@@ -30,10 +30,20 @@ rules:
       success. Propagate the failure or surface a typed domain error.
     languages: [rust]
     severity: ERROR
+    paths:
+      include:
+        - "/crates/*/src/**"
+        - "/crates/*/fuzz/fuzz_targets/**"
+        - "/benchmarks/*/src/**"
+      exclude:
+        - "**/tests/**"
+        - "**/benches/**"
     patterns:
       - pattern-either:
           - pattern: $E.or_else(|_| Ok($DEFAULT))
           - pattern: $E.or_else(|$_E| Ok($DEFAULT))
+          - pattern: $E.or_else(|_| { ...; Ok($DEFAULT) })
+          - pattern: $E.or_else(|$_E| { ...; Ok($DEFAULT) })
 
   - id: rust-no-debug-assertions-divergence
     message: |

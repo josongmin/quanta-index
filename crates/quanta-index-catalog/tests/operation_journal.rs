@@ -747,7 +747,7 @@ fn the_state_graph_and_event_kind_set_are_closed() -> TestResult {
     )?;
     let expected_check = format!(
         "kind IN ({})",
-        [1_i64, 2, 3, 4, 5, 6, 7, 8, 9]
+        [1_i64, 2, 3, 4, 5, 6, 7, 8, 9, 10]
             .iter()
             .map(std::string::ToString::to_string)
             .collect::<Vec<_>>()

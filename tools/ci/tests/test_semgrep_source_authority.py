@@ -59,6 +59,7 @@ fn bad() { let _ = Command::new("git").output(); }
                     "--no-git-ignore",
                     "--metrics",
                     "off",
+                    "--disable-version-check",
                     "crates/quanta-index-search-plane/src",
                 ],
                 cwd=root,
