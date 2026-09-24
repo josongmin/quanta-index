@@ -182,6 +182,7 @@ impl StateRootLease {
         state_root: &Path,
         access: StateRootAccessV1,
     ) -> Result<Self, CoreError> {
+        #[cfg(not(unix))]
         ensure_state_root_security_supported_v1(state_root)?;
         ensure_durable_state_root_v1(state_root)?;
         let state_root_identity_v1 = canonical_state_root_identity_v1(state_root)?;
@@ -229,11 +230,6 @@ impl StateRootLease {
     pub fn state_root_identity_v1(&self) -> &Path {
         &self.state_root_identity_v1
     }
-}
-
-#[cfg(unix)]
-fn ensure_state_root_security_supported_v1(_state_root: &Path) -> Result<(), CoreError> {
-    Ok(())
 }
 
 #[cfg(not(unix))]
