@@ -216,6 +216,7 @@ keys: `repo`, `manifest`, `suite`, `query_pack`, `top_k`, `output_root`,
 | `scope` | `exploratory` | `exploratory` or `qualified` |
 | `admission` | required for `qualified` | paths to the W0-B manifest, license receipt, two independent annotation receipts, and adjudication receipt |
 | `host_profile` | required for `pair` | path to a generated host-profile JSON; the file is frozen, digest-bound, and matched against both host probes |
+| `linux_cgroup_parent` | none | required for qualified native Linux: an explicitly delegated cgroup v2 parent, frozen by path/device/inode and rechecked with the resource owner |
 | `claims` | all `false` | `{quality,speed,same_model,incremental}` |
 | `receipts` | omitted | paths to contract/SDK summaries, receipts, raw JUnit/nextest JSONL, actual-runner record and Python/Rust/SDK collection inventories; all bytes are frozen and raw evidence is reparsed by the verdict |
 | `timeout_secs` | `1800` | per-capture timeout |
@@ -286,9 +287,14 @@ python3 tools/benchmark/retrieval/run.py host-profile \
   --out /absolute/host-profile.json
 ```
 
-Resource evidence is schema-closed: aggregate and per-process peak RSS/CPU,
-index/model/parser/embedding-cache bytes, discovered file count, indexed chunk
-count, disk-vs-memory ownership, and the measurement method are mandatory.
+Resource evidence is schema-closed: aggregate and per-process resident memory
+and CPU accounting, index/model/parser/embedding-cache bytes, discovered file
+count, indexed chunk count, disk-vs-memory ownership, and the measurement
+method are mandatory. Qualified Linux capture additionally requires a delegated
+cgroup v2 parent and a complete owned-tree cleanup record; cgroup memory peak
+is recorded separately from sampled RSS, and CPU time is recorded in ns rather
+than fabricated peak percentages. An exploratory process-group capture cannot
+be promoted to qualified ownership.
 Semble in-memory index bytes are a worker-observed peak-resident delta (Unix
 peak RSS; Windows peak working set), not an exact allocation count. They must
 be positive and byte-equal in native/resource evidence. The Windows path is
