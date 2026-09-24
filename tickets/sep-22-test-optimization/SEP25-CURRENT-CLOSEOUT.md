@@ -43,6 +43,42 @@ The `/tmp` outputs are local diagnostic artifacts, not durable release receipts.
 No current-source `CODE_QUALIFIED`, `PERF_EVIDENCE_CLEAN`, or
 `PRODUCT_QUALIFIED` verdict is issued.
 
+Local ignored copies of the cited logs and receipt were placed under
+`artifacts/qualification/topt-2026-09-25/` with unchanged SHA-256 digests.
+These are still local evidence, not published CI or release receipts.
+
+## Later exact-source Rust sweep — `37b9b4b7`
+
+Three further strict-Clippy failures were exposed by the full workspace gate
+and repaired at their owners:
+
+- `b90dcf3a`: removed a redundant SDK Unix-success transport wrapper. The
+  `quanta-index-ipc` crate already owns the non-Unix compile refusal. SDK
+  all-target strict Clippy and 108/108 SDK library tests passed after the fix.
+- `b0e7db0d`: removed the always-`Ok` Unix state-root security wrapper while
+  keeping its non-Unix typed refusal. Searchd all-target strict Clippy passed.
+- `37b9b4b7`: marked the public harness semantic-source fixture result
+  `#[must_use]`. Harness all-target strict Clippy and formatting passed.
+
+The clean isolated `37b9b4b770b70a6673b3ee77b42a8bad945d5aec` checkout
+then ran
+`CARGO_BUILD_JOBS=4 QUANTA_INDEX_SCCACHE=0 QUANTA_INDEX_BUILD_LOGGING=0 RUST_TEST_THREADS=1 just rust-profile verify-rust`.
+Its format, full-workspace strict Clippy, policy, cargo-deny, and cargo-machete
+stages completed successfully. The subsequent release-profile bench `--no-run`
+was still compiling DataFusion after roughly 14 minutes. Host load averages
+were about 52 and swap usage about 15/16 GiB, with multiple foreign Cargo
+builds active. This task's bench build was interrupted to avoid worsening host
+resource pressure. The full gate therefore exited 130, not 0. Raw partial log:
+`artifacts/qualification/topt-2026-09-25/verify-rust-37b.log`, SHA-256
+`58d7d35715682cce50dd0890e4fd66dc1ad07cf7036f3a3f18acfe852de89b9b42eb0`.
+
+Classification: `VERIFIED` for the completed static stages at `37b9b4b7`;
+`BLOCKED` for the full `verify-rust` gate; `NOT_RUN` for its workspace-test and
+rustdoc stages, the independent `test-daemon-all`, and the public API/fuzz
+escalations. Compilation progress is not a bench-build pass. The shared main
+advanced to `62836029` and retains unrelated dirty changes; neither source
+nor that overlay inherits the `37b9b4b7` partial result.
+
 ## Remaining work, in dependency order
 
 1. Finish or stop the foreign host builds through their owners; do not kill
