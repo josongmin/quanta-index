@@ -322,11 +322,7 @@ rust-verify-hellgate-broad:
     {{cargo}} --lane test-daemon-lane nextest run -p quanta-index-searchd-runtime --test runtime_fast_suite --test runtime_risk_suite --all-features --locked -E 'test(/^(dsl_scenarios|sdk_frontdoor|end_to_end|e2e_restart_replay_determinism|e2e_perf_chaos|explain|repo_map_end_to_end|e2e_full_corpus)::/)' --success-output final
 
 rust-verify-hellgate-cross-repo semantica_root="/Users/songmin/Documents/code-new/semantica-codegraph-v2":
-    bash -lc 'test -n "$QUANTA_INDEX_SEARCHD_BIN" && test -x "$QUANTA_INDEX_SEARCHD_BIN" || { echo "an executable QUANTA_INDEX_SEARCHD_BIN is required"; exit 1; }'
-    bash -lc 'set -e -o pipefail; cd "{{semantica_root}}"; CODEGRAPH_PERSONA=agent ./scripts/quanta-build-cli cargo --lane local -- test --manifest-path packages/analysis/quanta-v2/Cargo.toml -p quanta-runtime --no-default-features --features index-sdk-ingress --test index_sdk_ingress_publish_contract_test -- --list | rg "^index_sdk_ingress_live_repomap_roundtrip_survives_runtime_restart_v1: test$"'
-    env QUANTA_INDEX_SEARCHD_BIN="${QUANTA_INDEX_SEARCHD_BIN}" bash -lc 'cd "{{semantica_root}}" && CODEGRAPH_PERSONA=agent ./scripts/quanta-build-cli cargo --lane local -- test --manifest-path packages/analysis/quanta-v2/Cargo.toml -p quanta-runtime --no-default-features --features index-sdk-ingress --test index_sdk_ingress_publish_contract_test index_sdk_ingress_live_repomap_roundtrip_survives_runtime_restart_v1 -- --exact --nocapture'
-    bash -lc 'set -e -o pipefail; cd "{{semantica_root}}"; CODEGRAPH_PERSONA=agent ./scripts/quanta-build-cli cargo --lane local -- test --manifest-path packages/analysis/quanta-v2/Cargo.toml -p quanta-runtime-retrieval-kernel --no-default-features --features index-sdk-ingress-surface --lib -- --list | rg "^index_sdk_ingress::terminal_receipt_v1::tests::repomap_v2_receipts_require_exact_full_bundle_and_transition_v2: test$"'
-    bash -lc 'cd "{{semantica_root}}" && CODEGRAPH_PERSONA=agent ./scripts/quanta-build-cli cargo --lane local -- test --manifest-path packages/analysis/quanta-v2/Cargo.toml -p quanta-runtime-retrieval-kernel --no-default-features --features index-sdk-ingress-surface --lib index_sdk_ingress::terminal_receipt_v1::tests::repomap_v2_receipts_require_exact_full_bundle_and_transition_v2 -- --exact --nocapture'
+    ./scripts/verify-repomap-cross-repo.sh "{{semantica_root}}"
 
 rust-verify-hellgate-all samples="20":
     @just rust-verify-hellgate-fast
