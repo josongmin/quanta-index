@@ -3802,6 +3802,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                     raise RunError(f"contract {side} raw evidence refused: {exc}") from exc
                 if rebuilt != results:
                     raise RunError(f"contract {side} summary is not reproducible")
+                _verify_receipt_test_count(receipt, rebuilt, f"contract {side} receipt")
                 if receipt["revision"] != provenance_claims["quanta"]["source_sha"]:
                     raise RunError(f"contract {side} revision mismatch")
                 if (
@@ -3885,6 +3886,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 raise RunError(f"sdk raw evidence refused: {exc}") from exc
             if rebuilt_sdk != sdk_results:
                 raise RunError("sdk summary is not reproducible")
+            _verify_receipt_test_count(sdk_receipt, rebuilt_sdk, "sdk receipt")
             if sdk_receipt["revision"] != provenance_claims["quanta"]["source_sha"]:
                 raise RunError("sdk revision mismatch")
             if (
@@ -4983,6 +4985,11 @@ def _verify_receipt_inputs(receipt: dict, expected: dict[str, Path], where: str)
     wanted = {role: sha_file(path) for role, path in expected.items()}
     if observed != wanted:
         raise RunError(f"{where} raw input evidence mismatch")
+
+
+def _verify_receipt_test_count(receipt: dict, results: dict, where: str) -> None:
+    if receipt["test_event_count"] != results["executed"]:
+        raise RunError(f"{where} test_event_count differs from executed tests")
 
 
 def _verify_required_inventory(inventory: Path, role: str, receipt: dict) -> None:

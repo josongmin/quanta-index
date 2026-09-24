@@ -1891,7 +1891,7 @@ def _counts_results(command, selected=10, executed=10, passed=10, failed=0):
     }
 
 
-def _receipt(command, results_bytes, revision, rail, raw_inputs):
+def _receipt(command, results_bytes, revision, rail, raw_inputs, test_event_count=10):
     authority_path = (
         Path(__file__).resolve().parents[3] / "benchmarks/retrieval/proof-required-tests.json"
     )
@@ -1917,7 +1917,7 @@ def _receipt(command, results_bytes, revision, rail, raw_inputs):
         "command": command,
         "evidence_path": "results.json",
         "evidence_sha256": ev.digest(results_bytes),
-        "test_event_count": 10,
+        "test_event_count": test_event_count,
         "source_closure": closure,
         "input_evidence": sorted(
             ({"role": role, "sha256": ev.digest(content)} for role, content in raw_inputs.items()),
@@ -2084,6 +2084,7 @@ def _full_receipts(commit, binary_digest):
             commit,
             "retrieval-contract-python",
             {"pytest-junit": py_raw, "pytest-inventory": py_inventory},
+            py_count,
         ),
         "contract_rust_results": rs_bytes,
         "contract_rust_raw": rust_raw,
@@ -2094,6 +2095,7 @@ def _full_receipts(commit, binary_digest):
             commit,
             "retrieval-contract-rust",
             {"nextest-jsonl": rust_raw, "nextest-inventory": rust_inventory},
+            rs_count,
         ),
         "sdk_results": sdk_bytes,
         "sdk_nextest_raw": sdk_nextest,
@@ -2109,6 +2111,7 @@ def _full_receipts(commit, binary_digest):
                 "runner-record": sdk_record,
                 "nextest-inventory": sdk_inventory,
             },
+            sdk_count,
         ),
     }
 
@@ -2830,6 +2833,26 @@ def test_verdict_full_receipts_all_green(tmp_path):
     assert verdict["states"]["PAIR_VALID"] == "pass"
     assert verdict["failure_class"] == "none"
     assert verdict["missing_t_ids"] == []
+
+
+@pytest.mark.parametrize(
+    ("receipt_name", "state"),
+    [
+        ("contract_python_receipt", "CONTRACT_GREEN"),
+        ("contract_rust_receipt", "CONTRACT_GREEN"),
+        ("sdk_receipt", "SDK_PATH_GREEN"),
+    ],
+)
+def test_verdict_refuses_receipt_test_event_count_drift(tmp_path, receipt_name, state):
+    st = _pair_stage(tmp_path, receipts="full")
+    assert _stage_verdict(st)["states"][state] == "pass"
+    receipt_path = st["stage"] / "receipts" / f"{receipt_name}.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["test_event_count"] += 1
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    verdict = _stage_verdict(st)
+    assert verdict["states"][state] == "fail"
+    assert "test_event_count" in verdict["state_evidence"][state]["reason"]
 
 
 def test_verdict_lying_manifest_refused(tmp_path):
