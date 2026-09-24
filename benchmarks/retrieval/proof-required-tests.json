@@ -77,6 +77,7 @@
     "tools.ci.tests.test_retrieval_benchmark.test_isolation_proof_refuses_tampered_frozen_runner_tool",
     "tools.ci.tests.test_retrieval_benchmark.test_linux_host_profile_rejects_unbounded_policy",
     "tools.ci.tests.test_retrieval_benchmark.test_linux_speed_probe_requires_profile_bounds_and_complete_telemetry",
+    "tools.ci.tests.test_retrieval_benchmark.test_linux_sysfs_presence_alone_never_qualifies_speed",
     "tools.ci.tests.test_retrieval_benchmark.test_load_query_pack_refuses_duplicate_task_ids",
     "tools.ci.tests.test_retrieval_benchmark.test_load_query_pack_refuses_smuggled_labels",
     "tools.ci.tests.test_retrieval_benchmark.test_mapping_proof_clean_and_mismatch_detected",

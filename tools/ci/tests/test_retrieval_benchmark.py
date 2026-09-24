@@ -4430,6 +4430,45 @@ def test_linux_host_profile_rejects_unbounded_policy():
         pairrun.validate_host_profile({**base, "schema_version": 1})
 
 
+def test_linux_sysfs_presence_alone_never_qualifies_speed(tmp_path, monkeypatch):
+    cpu_root = tmp_path / "cpu"
+    thermal_root = tmp_path / "thermal"
+    thermal_zone = thermal_root / "thermal_zone0"
+    thermal_zone.mkdir(parents=True)
+    (thermal_zone / "temp").write_text("60000")
+    (thermal_zone / "type").write_text("x86_pkg_temp")
+    for cpu in ("cpu0",):
+        cpufreq = cpu_root / cpu / "cpufreq"
+        cpufreq.mkdir(parents=True)
+        (cpufreq / "scaling_governor").write_text("performance")
+        (cpufreq / "scaling_cur_freq").write_text("2800000")
+        (cpufreq / "cpuinfo_max_freq").write_text("3000000")
+
+    def fake_path(value):
+        if value == "/sys/devices/system/cpu":
+            return cpu_root
+        if value == "/sys/class/thermal":
+            return thermal_root
+        return Path(value)
+
+    monkeypatch.setattr(pairrun.sys, "platform", "linux")
+    monkeypatch.setattr(pairrun.os, "cpu_count", lambda: 2)
+    monkeypatch.setattr(pairrun, "Path", fake_path)
+    assert pairrun.read_power()["status"] == "unavailable"
+    assert pairrun.read_frequency()["status"] == "unavailable"
+    assert pairrun.read_thermal()["status"] == "observed"
+
+    cpufreq = cpu_root / "cpu1" / "cpufreq"
+    cpufreq.mkdir(parents=True)
+    (cpufreq / "scaling_governor").write_text("performance")
+    (cpufreq / "scaling_cur_freq").write_text("2800000")
+    (cpufreq / "cpuinfo_max_freq").write_text("3000000")
+    assert pairrun.read_power()["status"] == "bounded"
+    assert pairrun.read_frequency()["status"] == "observed"
+    (thermal_zone / "temp").write_text("not-a-temperature")
+    assert pairrun.read_thermal()["status"] == "unavailable"
+
+
 @pytest.mark.skipif(
     not pairrun.SANDBOX_EXEC.is_file(),
     reason="macOS Seatbelt backend is unavailable",
