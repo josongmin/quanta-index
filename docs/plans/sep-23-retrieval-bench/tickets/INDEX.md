@@ -1,21 +1,21 @@
 # SEP-23 Retrieval Benchmark — Ticket Index
 
-Status: `capture-paths-landed / qualification-gates-failed / pilot-blocked`. The shared cold/warm query protocol and capture preflight exist, but the replay, pin and proof gates have confirmed gaps below. No W0-B pilot freeze, paired pilot receipt, or qualified quality/performance verdict exists. This packet is not evidence that Quanta beats Semble.
+Status: `F1–F4-remediation-implemented / source-bound-proof-pending / pilot-blocked`. The shared cold/warm protocol, replay, pin and proof gates have focused regression coverage. No final source-bound contract/SDK receipt, W0-B pilot freeze, paired pilot receipt, or qualified quality/performance verdict exists. This packet is not evidence that Quanta beats Semble.
 
 Required verification contract: [TEST-PLAN.md](TEST-PLAN.md). Its T00–T17 matrix and qualification ladder are part of every ticket's acceptance, not optional follow-up work.
 
-## Latest adversarial audit (2026-09-24)
+## Adversarial audit and remediation (2026-09-24)
 
-At `20bd03fc98b86ee4bfb3a8a808e940ba6e090a09`, the retrieval implementation was byte-identical to the source probed at `93b736cd0f18ab698f5a12e23a2d09677a3d869d`. Existing focused tests passed (182 Python, 31 retrieval-library and 20 chunking-contract Rust), but generated adversarial fixtures reproduced four blocking verifier defects. The tests are diagnostic; they do not issue a current-source qualification receipt or a real pair. The latest source-closure check at `20bd03fc` accepted 784 files; this result becomes stale after any bound source or document edit.
+At `20bd03fc98b86ee4bfb3a8a808e940ba6e090a09`, the retrieval implementation was byte-identical to the source probed at `93b736cd0f18ab698f5a12e23a2d09677a3d869d`. Existing focused tests passed (182 Python, 31 retrieval-library and 20 chunking-contract Rust), but generated adversarial fixtures reproduced four verifier defects. Commits `688238a8` and `f42adc5f`, plus the subsequent pair-promotion regression, implement their remediation and add focused coverage. The pre-freeze 2026-09-24 working-tree required-test authority lists 172 Python contract, 51 Rust contract and 12 SDK identities; these are snapshot inventory counts, not executed proof counts or a frozen receipt. Earlier source closure and test results are historical and cannot qualify the final source.
 
-| Finding | Reproduced failure | Required closure |
+| Finding | Reproduced on audited baseline | Implemented remediation; final proof still required |
 | --- | --- | --- |
-| F1 / T12–T14 | Renaming a valid staged pair without changing any file bytes turns `PAIR_VALID=pass` into `fail` on replay. | Content-stable merged provenance and successful promotion followed by fresh-process verdict with identical report and record digests. |
-| F2 / T03/T11/T12/T17 | Seven mutations of recorded protocol pins, including `top_k`, repetition count, binary/model/host digests and an unknown field, retain `PAIR_VALID=pass`. | Closed protocol-lock schema and independent derivation of every retained pin from frozen inputs and captures. |
-| F3 / T00–T11 | One pass plus 159 skips, a nextest stream claiming 99 tests but running one, and duplicate JUnit cases can certify contract proof. | Bind the full required collected test identity set to raw terminal evidence; reject omissions, skips of mandatory tests and duplicates. |
-| F4 / T12–T13 | Two tasks repeated to 1,000 observations qualify speed; a raw latency longer than its enclosing phase is accepted. | Share entry/replay eligibility, enforce the independent 20-task floor and physically coherent phase/sample timing. |
+| F1 / T12–T14 | Renaming a valid staged pair without changing any file bytes turned `PAIR_VALID=pass` into `fail` on replay. | Relative capture provenance and successful-promotion fresh-process replay regression. |
+| F2 / T03/T11/T12/T17 | Seven mutations of recorded protocol pins retained `PAIR_VALID=pass`. | Closed 15-key protocol lock and independent frozen-input/capture binding; pin mutants now have rejection tests. |
+| F3 / T00–T11 | Partial/duplicate JUnit and incomplete nextest streams certified contract proof. | Complete Python/Rust/SDK identity inventories, terminal evidence checks and receipt-revision Git blob binding. |
+| F4 / T12–T13 | Two tasks repeated to 1,000 observations qualified speed; impossible raw duration was accepted. | Shared entry/replay eligibility and phase/sample containment regressions. |
 
-Fixes, normative documents and tests must be integrated before one source freeze and final receipts. The external W0-B authorities and admitted quiet-host pilot remain unsupplied. These findings are pending remediation and re-verification; a later implementation change does not itself close them.
+The remediation is implementation-level. Freeze the final code and normative documents, issue both source-bound receipts, and replay the promoted pair on admitted inputs before closing the workstream. The external W0-B authorities and admitted quiet-host pilot remain unsupplied.
 
 ## Earlier implementation audit (historical, 2026-09-24)
 
@@ -28,8 +28,8 @@ The 2026-09-24 re-audit at `f26796896e365a8eb66a516f959c460f792e7506` verified 1
 | RB-02 / W1B | Benchmark-only Rust runner uses the public SDK and a separate pinned searchd. A subprocess integration test executes the actual runner binary and binds its SHA, sealed receipt, activation ACK and v3 record. The harness writes daemon logs outside the state root. Live real-daemon negatives now cover missing pinned model, provider unavailable, stale activation CAS, readiness timeout and post-spawn termination; each fails typed without hits/record and uses bounded owned-process cleanup. The driver freezes `failure.json`, stderr/resource digests and record-presence state for failed capture processes and cleans the entire owned process group. `retrieval-sdk-proof <fresh-out>` emits machine-counted results plus a source-closure-bound receipt. | Final source-closure-bound SDK receipt remains absent; the live negatives are implementation evidence, not a pilot capture. |
 | RB-03 / W1C | Whole-file, strict/line-aligned windows and Rust syntax chunking plus independent span/coverage validation are implemented. The manifest decoders are manual/duplicate-rejecting, Semgrep is green, and the derive allowlist covers `crates/` and `benchmarks/`. | No real ablation artifact exists. |
 | RB-04 / W1D | Semble 0.6.0 adapter, lockfile/interpreter/model-asset checks, mapping proof and v3 normalization are implemented and fixture-tested. | No admitted real Semble environment/pilot capture has been recorded. |
-| RB-05 / W2 | Pair orchestration, immutable staging, admission/manifest/verdict validation and a shared cold-probe/warm-query protocol are present. Capture preflight requires one Quanta route, 20 tasks, five roots, warmup and 1,000 warm observations. Isolated capture uses a default-deny Seatbelt allowlist over an exact Git-free corpus. | F1/F2/F4 block deterministic promoted replay and qualified speed. No admitted pair has exercised the performance or isolation authority; no non-macOS isolation backend exists. |
-| RB-06 / W3 | Named proof/capture/verdict/host-profile commands and Rust integration targets exist. Receipt v2 binds retrieval source closure and raw JUnit/nextest/runner evidence. | F3 allows incomplete/duplicate test evidence to certify the contract. No final clean-source contract/SDK receipt or real paired verdict exists. |
+| RB-05 / W2 | Pair orchestration, immutable staging, admission/manifest/verdict validation and a shared cold-probe/warm-query protocol are present. F1/F2/F4 fixes now cover relocation, closed protocol pins and common speed eligibility. Isolated capture uses a default-deny Seatbelt allowlist over an exact Git-free corpus. | Final source-bound promoted-pair replay and admitted performance/isolation capture remain absent; no non-macOS isolation backend exists. |
+| RB-06 / W3 | Named proof/capture/verdict/host-profile commands and Rust integration targets exist. Receipt v2 binds retrieval source closure, raw JUnit/nextest/runner evidence and required test inventories. | F3 regression coverage is present, but no final clean-source contract/SDK receipt or real paired verdict exists. |
 
 Historical focused execution on the earlier dirty shared checkout:
 

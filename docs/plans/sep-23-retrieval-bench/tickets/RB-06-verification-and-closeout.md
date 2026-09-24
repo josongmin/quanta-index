@@ -1,6 +1,6 @@
 # RB-06 — Registered Entry Point and Source-Bound Closeout
 
-Status: `entry-points-landed / proof-inventory-gate-failed / closeout-blocked`
+Status: `proof-inventory-remediation-implemented / source-bound-receipts-pending / closeout-blocked`
 
 Depends on: RB-05
 
@@ -12,7 +12,7 @@ Named prep, SDK, Quanta-only, paired, verdict, host-probe and host-profile comma
 
 This ticket is not closed. The repository has no W0-B pilot, real paired manifest/verdict, final source-closure-bound contract/SDK receipt set or broader-suite run. The macOS isolated-quality path and the shared cold/warm query protocol are implemented and mutant-tested but have not been exercised on admitted pilot inputs. `retrieval-contract-proof <fresh-out>` derives summaries from raw JUnit and nextest JSONL; `retrieval-sdk-proof <fresh-out>` derives its summary from nextest JSONL plus the actual-runner v3 record. Receipt v2 binds those raw inputs by role/SHA as well as the transitive source closure, and the final verdict reparses the frozen raw evidence instead of trusting a summary JSON. An earlier dirty-checkout audit completed 160 Python contract tests, 31 retrieval-library tests, 20 chunking-contract Rust tests and 22 receipt/proof-helper tests. Those results are historical implementation evidence only: relevant source remained dirty and source closure refused it, so a fresh clean source closure, registered contract/SDK receipts, issued W0-B admission and real quiet-host paired run remain mandatory.
 
-The latest adversarial audit adds a blocking receipt defect: a correctly rebound raw JUnit file with one passed and 159 skipped cases still yields `CONTRACT_GREEN=pass`; an announced 99-test nextest suite with only one terminal test and a duplicated JUnit identity also pass. Rehashing internally consistent partial evidence does not establish required test coverage. The proof gate must freeze the exact collection identities for the selected command/source/target/features, bind the collection artifact to its receipt, and match each mandatory identity to one successful terminal result. Legitimate exclusions require an explicit frozen reason; skipped required tests, duplicate identities, missing terminal events and substituted unrelated passes fail. The SDK proof needs equivalent coverage for its required live positive and negative scenarios, alongside the separately pinned actual runner/daemon evidence.
+The adversarial baseline accepted a correctly rebound JUnit file with one pass and 159 skips, an announced 99-test nextest suite with one terminal test, and duplicate JUnit identities as contract proof. The remediation freezes exact Python/Rust/SDK required identities in `benchmarks/retrieval/proof-required-tests.json`, checks collection and terminal evidence, and re-reads that authority as a Git blob at the receipt revision. `pair-spec.schema.json` accepts the three collection inventories; `run-manifest.schema.json` binds their paths and digest claims. The verdict compares the blob SHA-256 with the source closure before accepting an inventory. The pre-freeze 2026-09-24 working-tree authority lists 172 Python contract, 51 Rust contract and 12 SDK identities; these are snapshot inventory counts, not executed proof results. Final clean-source contract/SDK receipts and a real paired verdict remain pending.
 
 ## Goal
 
@@ -41,7 +41,7 @@ Make the benchmark easy to run without turning a short fixture test into a searc
 
 - A documented command runs Quanta-only chunking A/B; another optional mode runs the same suite with Semble. Neither requires Semantica.
 - Focused Python/Rust tests and one real SDK roundtrip pass at the final source; production API/boundary edits trigger the repository's mandatory escalations.
-- Contract/SDK receipts bind exact collected mandatory identities and raw terminal evidence. Partial, skipped, duplicated, count-mismatched or wrong-binary evidence fails even when a summary and every SHA-256 are self-consistent.
+- Contract/SDK receipts bind exact collected mandatory identities and raw terminal evidence to the required-test authority committed at the receipt revision. Partial, skipped, duplicated, count-mismatched or wrong-binary evidence fails even when a summary and every SHA-256 are internally consistent. A final receipt must demonstrate this on the frozen source.
 - Pilot head-to-head reports query count, eligible/excluded corpus and reasons, paired quality, index phases, warm-query latency, resources, raw records and exact revisions.
 - No result is described as “Quanta > Semble” unless the same-host paired run and independent evaluator substantiate the scoped claim. An incomplete run is reported as incomplete.
 - Final handoff verifies `verdict.json` per [TEST-PLAN.md](TEST-PLAN.md) §8: `CONTRACT_GREEN`, `SDK_PATH_GREEN`, `PAIR_VALID`, `PERF_QUALIFIED` and `QUALITY_DELTA` independently, with `blinding`/`isolation_method`/`access_block_log`, missing/not-applicable T-IDs, failure class, provenance digests cross-checked against the run manifest, and selected/executed counts.

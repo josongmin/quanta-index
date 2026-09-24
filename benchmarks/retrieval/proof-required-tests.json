@@ -107,6 +107,7 @@
     "tools.ci.tests.test_retrieval_benchmark.test_retrieval_recipes_download_nothing",
     "tools.ci.tests.test_retrieval_benchmark.test_retrieval_source_closure_profile_covers_authority_surfaces",
     "tools.ci.tests.test_retrieval_benchmark.test_retrieval_verdict_recipe_matches_cli_parser",
+    "tools.ci.tests.test_retrieval_benchmark.test_run_pair_promotes_complete_stage_and_public_verdict_replays",
     "tools.ci.tests.test_retrieval_benchmark.test_run_pair_requires_lockfile_path",
     "tools.ci.tests.test_retrieval_benchmark.test_run_semble_capture_forwards_lockfile",
     "tools.ci.tests.test_retrieval_benchmark.test_runtime_manifest_requires_qualified_source_closure_artifact",

@@ -6,6 +6,7 @@ import hashlib
 import html
 import json
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -2104,6 +2105,7 @@ def _pair_stage(
     tmp_path,
     *,
     repetitions=1,
+    qualified_speed_sample=False,
     blinding="attested",
     scope="exploratory",
     claims=None,
@@ -2116,6 +2118,24 @@ def _pair_stage(
     """Build a complete valid pair stage through the real driver functions."""
     work = tmp_path / "work"
     repo, suite, run, _sp, _rp, files = fixture_v3(work / "src", answerable_only=True)
+    if qualified_speed_sample:
+        if repetitions != 5:
+            raise ValueError("qualified speed fixture requires five fresh roots")
+        original_tasks = list(suite["tasks"])
+        original_results = list(run["results"])
+        for index in range(3, 21):
+            source_task = original_tasks[(index - 3) % len(original_tasks)]
+            task = json.loads(json.dumps(source_task))
+            task["task_id"] = f"T{index}"
+            task["query"] = f"{source_task['query']} variant {index}"
+            task["query_sha256"] = ev.digest(task["query"].encode())
+            task["query_family_id"] = f"fam-speed-{index}"
+            suite["tasks"].append(task)
+            for source_row in original_results:
+                if source_row["task_id"] == source_task["task_id"]:
+                    row = json.loads(json.dumps(source_row))
+                    row["task_id"] = task["task_id"]
+                    run["results"].append(row)
     if not graded:
         for task in suite["tasks"]:
             for label in task["gold"]:
@@ -2252,6 +2272,8 @@ def _pair_stage(
         }
 
     rep_layouts = []
+    measurements = 10 if qualified_speed_sample else 1
+    warm_query_ms = len(pack["tasks"]) * measurements * 1.5 if qualified_speed_sample else 3.0
     for rep in range(repetitions):
         rep_dir = stage / f"rep-{rep:02d}"
         qdir = rep_dir / "quanta" / "strategy-00-whole_file"
@@ -2265,17 +2287,19 @@ def _pair_stage(
         qpath.write_text(json.dumps(qrec), encoding="utf-8")
         spath.write_text(json.dumps(srec), encoding="utf-8")
         task_ids = [task["task_id"] for task in pack["tasks"]]
-        protocol = pairrun.build_query_protocol(task_ids, rep, 1, 1)
+        protocol = pairrun.build_query_protocol(task_ids, rep, 1, measurements)
         protocol_path = rep_dir / "query-protocol.json"
         protocol_path.write_text(json.dumps(protocol), encoding="utf-8")
         q_warm = {
             "lexical": {
-                row["task_id"]: [row["timings"]["query_latency_ms"]] for row in qrec["results"]
+                row["task_id"]: [row["timings"]["query_latency_ms"]] * measurements
+                for row in qrec["results"]
             }
         }
         s_warm = {
             "hybrid": {
-                row["task_id"]: [row["timings"]["query_latency_ms"]] for row in srec["results"]
+                row["task_id"]: [row["timings"]["query_latency_ms"]] * measurements
+                for row in srec["results"]
             }
         }
         qphase = qdir / "phase-metrics.json"
@@ -2288,13 +2312,13 @@ def _pair_stage(
                     "strategy": "whole_file",
                     "record_sha256": ev.digest(qpath.read_bytes()),
                     "runner_binary_sha256": binary_digest,
-                    "task_count": 2,
+                    "task_count": len(pack["tasks"]),
                     "route_count": 1,
                     "file_count": 2,
                     "chunk_count": 2,
                     "query_schedule": [task["task_id"] for task in pack["tasks"]],
                     "warmup_passes": 1,
-                    "measurement_repetitions": 1,
+                    "measurement_repetitions": measurements,
                     "query_protocol": protocol,
                     "warm_latencies_ms": q_warm,
                     "cold_latencies_ms": {"lexical": 1.0},
@@ -2305,10 +2329,10 @@ def _pair_stage(
                         "embed_publish_seal_activate": 1.0,
                         "cold_query": 1.0,
                         "warmup": 1.0,
-                        "warm_query": 3.0,
+                        "warm_query": warm_query_ms,
                         "unattributed": 1.0,
                     },
-                    "total_ms": 10.0,
+                    "total_ms": 7.0 + warm_query_ms,
                 }
             ),
             encoding="utf-8",
@@ -2323,13 +2347,13 @@ def _pair_stage(
                     "strategy": "native",
                     "record_sha256": ev.digest(spath.read_bytes()),
                     "worker_sha256": _fake_sha("worker"),
-                    "task_count": 2,
+                    "task_count": len(pack["tasks"]),
                     "route_count": 1,
                     "file_count": 2,
                     "chunk_count": 2,
                     "query_schedule": [task["task_id"] for task in pack["tasks"]],
                     "warmup_passes": 1,
-                    "measurement_repetitions": 1,
+                    "measurement_repetitions": measurements,
                     "query_protocol": protocol,
                     "warm_latencies_ms": s_warm,
                     "cold_latencies_ms": {"hybrid": 1.0},
@@ -2339,7 +2363,7 @@ def _pair_stage(
                         "index": 1.0,
                         "warmup": 1.0,
                         "cold_query": 1.0,
-                        "warm_query": 3.0,
+                        "warm_query": warm_query_ms,
                         "unattributed": 1.0,
                     },
                     "phase_boundaries_ns": {
@@ -2353,10 +2377,10 @@ def _pair_stage(
                         "query_start": 5_000_000,
                         "first_query_start": 5_000_000,
                         "first_query_end": 6_500_000,
-                        "query_end": 8_000_000,
-                        "worker_end": 9_000_000,
+                        "query_end": 5_000_000 + int(warm_query_ms * 1_000_000),
+                        "worker_end": 6_000_000 + int(warm_query_ms * 1_000_000),
                     },
-                    "total_ms": 9.0,
+                    "total_ms": 6.0 + warm_query_ms,
                 }
             ),
             encoding="utf-8",
@@ -2369,7 +2393,7 @@ def _pair_stage(
             "root_pid": 100 + rep,
             "exit_code": 0,
             "timed_out": False,
-            "elapsed_ms": 5.0,
+            "elapsed_ms": 7.0 + warm_query_ms,
             "peak_rss_bytes": 4096,
             "peak_cpu_percent": 10.0,
             "processes": [
@@ -2680,7 +2704,7 @@ def _pair_stage(
                 "repetitions": repetitions,
                 "base_seed": 0,
                 "query_warmup_passes": 1,
-                "query_repetitions_per_root": 1,
+                "query_repetitions_per_root": measurements,
                 "query_protocol_sha256s": [
                     json.loads(Path(layout["query_protocol"]).read_text(encoding="utf-8"))["sha256"]
                     for layout in rep_layouts
@@ -3754,6 +3778,52 @@ def test_successful_promotion_replays_identically_in_new_process(tmp_path):
     after = json.loads(output.read_text(encoding="utf-8"))
     assert after["states"] == before["states"]
     assert after["state_evidence"]["PAIR_VALID"] == before["state_evidence"]["PAIR_VALID"]
+
+
+def test_run_pair_promotes_complete_stage_and_public_verdict_replays(tmp_path, monkeypatch, capsys):
+    st = _pair_stage(tmp_path / "fixture")
+    original = _stage_verdict(st)
+    output_root = tmp_path / "published"
+    monkeypatch.setattr(pairrun, "preflight_capture", lambda _spec: output_root)
+
+    def staged(_spec, stage):
+        shutil.copytree(st["stage"], stage, dirs_exist_ok=True)
+        return {"status": "staged"}
+
+    monkeypatch.setattr(pairrun, "_run_pair_staged", staged)
+    assert pairrun.run_pair(
+        {
+            "scope": "exploratory",
+            "semble_lockfile_sha256": _fake_sha("lock"),
+            "semble_python": "python3",
+            "semble_lockfile": "lockfile",
+            "host_profile": "host-profile",
+        }
+    ) == 0
+    assert json.loads(capsys.readouterr().out)["output_root"] == str(output_root)
+    assert not output_root.with_name(output_root.name + ".staging").exists()
+    public = subprocess.run(
+        [
+            sys.executable,
+            str(Path(pairrun.__file__)),
+            "verdict",
+            "--repo",
+            str(st["repo"]),
+            "--suite",
+            str(output_root / st["suite_path"].relative_to(st["stage"])),
+            "--run-manifest",
+            str(output_root / "run-manifest.json"),
+            "--out",
+            str(tmp_path / "replayed.json"),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert public.returncode == 0, public.stderr
+    replayed = json.loads((tmp_path / "replayed.json").read_text())
+    assert replayed["states"] == original["states"]
+    assert replayed["state_evidence"]["PAIR_VALID"] == original["state_evidence"]["PAIR_VALID"]
 
 
 def test_pair_staging_atomicity(tmp_path, monkeypatch):
