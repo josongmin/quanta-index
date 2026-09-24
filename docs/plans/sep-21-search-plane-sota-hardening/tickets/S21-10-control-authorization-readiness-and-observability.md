@@ -181,8 +181,12 @@ readiness and audit event를 공통 control boundary에서 소유한다.
   resolution already exposes the same token. Activation and rollback remain
   `Admin`; the capability matrix and dispatcher tests cover both boundaries.
 - The owner-local `ProvenActive::valid_for` regression rejects a changed
-  activation token or scrub epoch for the same generation. A live-daemon
-  A -> B -> A physical re-probe counterexample remains a separate proof gap.
+  activation token or scrub epoch for the same generation. The supervised
+  daemon `reactivated_generation_reproves_physical_authority_after_aba`
+  regression caches A, activates B without a readiness poll, rolls back to A,
+  corrupts A's sealed manifest, and requires readiness to fail before the
+  restored manifest can become ready again. This covers the A -> B -> A
+  physical re-probe counterexample on the local host.
 - Run `just proof-p09-control-readiness-owner` on the frozen clean source and
   inspect its raw test and fuzz results. A local owner run does not issue a
   registered proof manifest or establish the Linux process/release rail.
