@@ -9,7 +9,7 @@ use std::sync::Arc;
 use quanta_index_contract::{
     CurrentGenerationRequest, GenerationSnapshot, GenerationStatusReport, GenerationStatusRequest,
     MetricsSnapshotV1, RepoMapActivateGenerationRequestV2, RepoMapActiveHeadRequestV2,
-    RepoMapActiveHeadResponseV2, RepoMapTerminalReceiptV2, SearchCorpusGenerationIdentityV1,
+    RepoMapActiveHeadResponseV2, RepoMapTerminalReceiptV2,
     SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
     SearchPlaneControlIpcResponse, SearchPlaneIpcError,
     SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneSearchCorpusActivationCasAck,

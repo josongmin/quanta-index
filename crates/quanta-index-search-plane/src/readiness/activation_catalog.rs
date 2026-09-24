@@ -592,7 +592,7 @@ impl ActivationCatalog {
 
         Ok(SearchPlaneSearchCorpusRollbackCasAck {
             active: ActiveSearchCorpusHeadV1 {
-                generation: target.clone(),
+                generation: target,
                 activation_sequence,
             }
             .to_contract_v1(self.root_incarnation)?,

@@ -53,7 +53,7 @@ fn joint_active_selection_uses_one_composite_head_and_checks_explicit_pin() -> T
         ManifestGeneration::new(9),
         "joint-digest-9",
     )?;
-    let first_prepared = PreparedSearchCorpusGenerationV1::new(first.clone(), None)?;
+    let first_prepared = PreparedSearchCorpusGenerationV1::new(first, None)?;
     let first_activation =
         catalog.activate_prepared_search_corpus_generation_v1(&first_prepared)?;
     let selector = GenerationSelector::Active {
@@ -441,7 +441,7 @@ fn resolved_active_selector_rejects_a_to_b_to_a_aba() -> TestResult {
         .active_search_corpus_with_token_v1(&repo, &revision)?
         .ok_or("first activation must be visible")?;
     let second_activation = catalog.activate_prepared_search_corpus_generation_v1(
-        &PreparedSearchCorpusGenerationV1::new(second.clone(), Some(first_activation.active))?,
+        &PreparedSearchCorpusGenerationV1::new(second, Some(first_activation.active))?,
     )?;
     drop(
         catalog.rollback(&SearchPlaneRollbackSearchCorpusGenerationCasRequest {
@@ -452,15 +452,19 @@ fn resolved_active_selector_rejects_a_to_b_to_a_aba() -> TestResult {
     let (active, current_token) = catalog
         .active_search_corpus_with_token_v1(&repo, &revision)?
         .ok_or("rollback activation must be visible")?;
-    assert_eq!(active, first);
-    assert_ne!(current_token, original_token);
+    if active != first {
+        return Err("rollback did not restore the first generation".into());
+    }
+    if current_token == original_token {
+        return Err("rollback reused the stale activation token".into());
+    }
     let stale = GenerationSelector::ResolvedActive {
         repo_id: repo.clone(),
         revision_id: revision.clone(),
         activation_token: original_token,
     };
     let pin = GenerationPin::new(repo, revision, ManifestGeneration::new(9));
-    assert!(matches!(
+    if !matches!(
         resolve_optional_selection(
             &catalog,
             Some(pin.clone()),
@@ -469,7 +473,9 @@ fn resolved_active_selector_rejects_a_to_b_to_a_aba() -> TestResult {
             "text",
         ),
         Err(CoreError::NotReady(_))
-    ));
+    ) {
+        return Err("stale active selector must be rejected".into());
+    }
     let dispatcher = SearchPlaneDispatcher::new(
         Arc::new(RejectLexicalOpener),
         Arc::new(RejectSemanticOpener),
@@ -490,11 +496,13 @@ fn resolved_active_selector_rejects_a_to_b_to_a_aba() -> TestResult {
         }),
         &RequestBudgetV1::unbounded(),
     );
-    assert!(matches!(
+    if !matches!(
         response,
         SearchPlaneQueryIpcResponse::Error(ref error)
             if error.code == quanta_index_contract::SearchPlaneErrorCodeV2::NotReady
-    ));
+    ) {
+        return Err("stale active selector must return NotReady".into());
+    }
     Ok(())
 }
 

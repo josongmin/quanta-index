@@ -136,7 +136,7 @@ fn controlled_restore_rotates_activation_incarnation_without_rewriting_generatio
     let dir = tempdir()?;
     let catalog = ActivationCatalog::open(dir.path())?;
     let generation = corpus_generation(17, "digest-17")?;
-    let prepared = PreparedSearchCorpusGenerationV1::new(generation.clone(), None)?;
+    let prepared = PreparedSearchCorpusGenerationV1::new(generation, None)?;
     drop(catalog.activate_prepared_search_corpus_generation_v1(&prepared)?);
     let repo = RepoId::new("repo-corpus")?;
     let revision = RevisionId::new("rev-corpus")?;
@@ -183,7 +183,9 @@ fn active_root_reopen_rejects_missing_incarnation_and_zero_sequence_v1() -> Test
         ),
     );
     let mut root: serde_json::Value = serde_json::from_slice(&std::fs::read(&root_path)?)?;
-    root["activation_sequence"] = serde_json::json!(0);
+    root.as_object_mut()
+        .ok_or("activation root must be a JSON object")?
+        .insert("activation_sequence".to_string(), serde_json::json!(0));
     std::fs::write(&root_path, serde_json::to_vec(&root)?)?;
     let zero = ActivationCatalog::open(dir.path()).expect_err("zero sequence must be rejected");
     assert!(
@@ -269,7 +271,7 @@ fn prepared_search_corpus_activation_is_durable_before_reopen_and_rejects_stale_
     let first_receipt = catalog.activate_prepared_search_corpus_generation_v1(&first_prepared)?;
     assert_eq!(first_receipt.active.generation, first.to_contract_v1());
     assert_eq!(first_receipt.previous_active, None);
-    let first_head = first_receipt.active.clone();
+    let first_head = first_receipt.active;
 
     let root = dir.path().join(
         crate::readiness::activation_catalog::search_corpus_root_file_name(
@@ -332,7 +334,7 @@ fn activation_catalog_concurrent_cas_promotions_select_one_composite_winner() ->
     let catalog = Arc::new(ActivationCatalog::open(dir.path())?);
     let active = corpus_generation(17, "digest-17")?;
     let initial_activation = catalog.activate_prepared_search_corpus_generation_v1(
-        &PreparedSearchCorpusGenerationV1::new(active.clone(), None)?,
+        &PreparedSearchCorpusGenerationV1::new(active, None)?,
     )?;
     let initial_active = initial_activation.active;
 

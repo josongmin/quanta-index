@@ -35,6 +35,7 @@ impl<'a> RepoMapNamespace<'a> {
             SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(head) => Ok(head.active),
             other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
             | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
             | SearchPlaneControlIpcResponse::Error(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)

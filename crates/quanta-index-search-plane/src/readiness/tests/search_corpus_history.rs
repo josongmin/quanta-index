@@ -680,7 +680,7 @@ fn retention_preserves_rolled_back_active_generation_before_next_activation_v1()
         let guard = coordinator.lock_pair(&repo, &revision)?;
         let activation = catalog.activate_prepared_under_guard_v1(
             &guard,
-            &PreparedSearchCorpusGenerationV1::new(generation_two.clone(), None)?,
+            &PreparedSearchCorpusGenerationV1::new(generation_two, None)?,
         )?;
         drop(guard);
         let guard = coordinator.lock_pair(&repo, &revision)?;
