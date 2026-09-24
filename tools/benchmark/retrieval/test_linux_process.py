@@ -48,6 +48,28 @@ def test_stat_parser_preserves_pid_start_and_accounting_with_tricky_command():
         linux_process.parse_proc_stat("41 (worker) S 1")
 
 
+def test_exiting_stat_may_lose_process_group_but_live_stat_may_not():
+    for state in ("Z", "X", "x"):
+        exited = row(41, pgid=-1, state=state)
+        assert not exited.live
+        assert exited.pgid == -1
+    with pytest.raises(linux_process.ProcessError, match="invalid /proc stat"):
+        row(41, pgid=-1, state="S")
+
+
+def test_exiting_root_with_missing_group_retains_known_descendant():
+    root = row(41, pgid=-1, state="X")
+    child = row(42, ppid=41, pgid=41)
+    selected = linux_process._select_owned(
+        {41: root, 42: child}, root.identity, {root.identity, child.identity}
+    )
+    assert set(selected) == {root.identity, child.identity}
+    tracker = linux_process._Tracker(root.identity, clock_ticks=100, page_bytes=4096)
+    tracker.known.update(selected)
+    tracker.observe({41: root, 42: child})
+    assert not tracker.escaped
+
+
 def test_select_owned_finds_group_descendants_and_detects_escape():
     root = row(41)
     child = row(42, ppid=41, pgid=41)

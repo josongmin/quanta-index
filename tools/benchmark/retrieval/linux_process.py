@@ -148,7 +148,16 @@ def parse_proc_stat(raw: str, *, expected_pid: int | None = None) -> ProcessStat
         ppid, pgid = int(fields[1]), int(fields[2])
         user, kernel = int(fields[11]), int(fields[12])
         start, rss = int(fields[19]), int(fields[21])
-        if pid <= 0 or ppid < 0 or pgid <= 0 or start <= 0 or min(user, kernel, rss) < 0:
+        # Linux can report pgrp=-1 while an exited task is being torn down.
+        # It is not a valid group for a live process.
+        missing_dead_group = fields[0] in ("Z", "X", "x") and pgid == -1
+        if (
+            pid <= 0
+            or ppid < 0
+            or (pgid <= 0 and not missing_dead_group)
+            or start <= 0
+            or min(user, kernel, rss) < 0
+        ):
             raise ValueError("negative or invalid stat field")
     except (IndexError, TypeError, ValueError) as exc:
         raise ProcessError(f"invalid /proc stat for PID {expected_pid}: {exc}") from exc
@@ -182,7 +191,7 @@ def _select_owned(
     current_root = snapshot.get(root.pid)
     if current_root is None or current_root.identity != root:
         raise ProcessError("root PID/start-time identity disappeared before reap")
-    if current_root.pgid != root.pid:
+    if current_root.pgid != root.pid and (current_root.live or current_root.pgid != -1):
         raise ProcessError("root left its reserved process group")
     selected = {
         row.identity: row
@@ -233,7 +242,7 @@ class _Tracker:
                     raise ProcessError(f"cannot pin PID {identity.pid}: {exc}") from exc
                 self.pidfds[identity] = fd
                 self.known.add(identity)
-            if row.pgid != self.root.pid:
+            if row.pgid != self.root.pid and (row.live or row.pgid != -1):
                 self.escaped.add(identity)
             rss = row.rss_pages * self.page_bytes
             old = self.peaks.get(identity, (0, 0, 0))
