@@ -354,8 +354,9 @@ impl core::fmt::Display for SupervisionError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(
             f,
-            "supervised runtime did not stop cleanly: exit code {}",
-            self.outcome.exit_code()
+            "supervised runtime did not stop cleanly: exit code {}; outcome: {:?}",
+            self.outcome.exit_code(),
+            self.outcome
         )
     }
 }

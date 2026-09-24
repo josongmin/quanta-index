@@ -739,15 +739,28 @@ const OVER_MAXIMUM_ROWS: u32 = PUBLIC_TOP_K_MAX + 1;
 const OVER_MAXIMUM_ROWS_PER_FILE: usize = 910;
 
 /// A generation of [`OVER_MAXIMUM_ROWS`] chunks, each holding the needle
-/// once, in eleven files of one batch.
+/// once, in eleven files published through bounded multi-scope batches.
 ///
 /// Every row is a record the lexical and semantic tracks each index, and
-/// the seal trains the dense index over all of them, which in a debug
-/// build outlasts the client's default wait (the harness waits ten
-/// minutes) and the harness's retention byte cap (widened to 256 MiB).
+/// the seal trains the dense index over all of them. Each ingest request
+/// carries at most two files so its semantic derivation stays within the
+/// bounded IPC wait; the harness retention byte cap is widened to 256 MiB.
 fn over_maximum_runtime() -> Result<(E2eRuntime, GenerationPin), Box<dyn Error>> {
     let mut rt = E2eRuntime::boot_with_client_request_timeout(std::time::Duration::from_secs(600))?
         .with_history_max_bytes(256 * 1024 * 1024);
+    match populate_over_maximum_runtime(&mut rt) {
+        Ok(pin) => Ok((rt, pin)),
+        Err(fixture_error) => match rt.stop() {
+            Ok(()) => Err(fixture_error),
+            Err(teardown_error) => Err(format!(
+                "fixture failed: {fixture_error}; daemon teardown also failed: {teardown_error:#}"
+            )
+            .into()),
+        },
+    }
+}
+
+fn populate_over_maximum_runtime(rt: &mut E2eRuntime) -> Result<GenerationPin, Box<dyn Error>> {
     let contents: Vec<String> = (0..OVER_MAXIMUM_ROWS)
         .map(|index| format!("let row_{index} = {index}; // needle"))
         .collect();
@@ -773,16 +786,23 @@ fn over_maximum_runtime() -> Result<(E2eRuntime, GenerationPin), Box<dyn Error>>
         .zip(&specs)
         .map(|(path, chunks)| (path.as_str(), chunks.as_slice()))
         .collect();
-    let _ids = rt
-        .ingest_text_files_one_batch(&files)
-        .map_err(|error| format!("over-maximum fixture ingest: {error}"))?;
+    let mut ingested_rows = 0_usize;
+    for (batch_index, batch) in files.chunks(2).enumerate() {
+        let ids = rt
+            .ingest_text_files_one_batch(batch)
+            .map_err(|error| format!("over-maximum fixture ingest batch {batch_index}: {error}"))?;
+        ingested_rows += ids.len();
+    }
+    if ingested_rows != usize::try_from(OVER_MAXIMUM_ROWS)? {
+        return Err(format!("over-maximum fixture ingested {ingested_rows} rows").into());
+    }
     let generation = rt
         .seal()
         .map_err(|error| format!("over-maximum fixture seal: {error}"))?;
     rt.activate_last_sealed_generation()
         .map_err(|error| format!("over-maximum fixture activate: {error}"))?;
     let pin = GenerationPin::new(rt.repo(), rt.revision(), generation);
-    Ok((rt, pin))
+    Ok(pin)
 }
 
 /// At the public maximum over more rows than a page holds, the page says
@@ -798,13 +818,27 @@ fn over_maximum_runtime() -> Result<(E2eRuntime, GenerationPin), Box<dyn Error>>
 #[test]
 fn the_public_maximum_reports_the_continuation_over_ten_thousand_and_one_rows() -> TestResult {
     let (mut rt, pin) = over_maximum_runtime()?;
+    let scenario_result = check_public_maximum_continuation(&mut rt, pin);
+    let teardown_result = rt.stop();
+    match (scenario_result, teardown_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(scenario), Ok(())) => Err(scenario),
+        (Ok(()), Err(teardown)) => Err(format!("daemon teardown failed: {teardown:#}").into()),
+        (Err(scenario), Err(teardown)) => Err(format!(
+            "scenario failed: {scenario}; daemon teardown also failed: {teardown:#}"
+        )
+        .into()),
+    }
+}
+
+fn check_public_maximum_continuation(rt: &mut E2eRuntime, pin: GenerationPin) -> TestResult {
     let rows = usize::try_from(OVER_MAXIMUM_ROWS)?;
     let maximum = usize::try_from(PUBLIC_TOP_K_MAX)?;
     for route in ROUTES
         .iter()
         .filter(|route| matches!(route.name, "lexical" | "semantic"))
     {
-        let observed = probe(&mut rt, route, PUBLIC_TOP_K_MAX)?;
+        let observed = probe(rt, route, PUBLIC_TOP_K_MAX)?;
         if let Some(error) = observed.typed_error {
             return Err(format!("{} at the maximum did not serve: {error}", route.name).into());
         }
