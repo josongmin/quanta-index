@@ -41,7 +41,7 @@ use quanta_index_sdk::{
     RepoTopicBatch, SdkError, SearchCorpusBatch, SearchScopeKey, SearchScopeSurface,
     StructuralBatch,
 };
-use quanta_index_searchd_harness::E2eRuntime;
+use quanta_index_searchd_harness::{E2eRuntime, semantic_source_scopes_for_chunk_records};
 
 use crate::fail_closed_wait::{
     RealTicker, UnexpectedSuccess, WaitError, WaitTicker, wait_for, wait_for_terminal_error,
@@ -245,7 +245,7 @@ fn history_commit_only_batch() -> quanta_index_sdk::HistoryBatch {
 }
 
 fn lexical_batch() -> Result<SearchCorpusBatch, Box<dyn Error>> {
-    Ok(
+    let batch =
         SearchCorpusBatch::replace_generation(repo(), revision(), generation(), "manifest:lexical")
             .replace_scope(
                 SearchScopeKey {
@@ -304,8 +304,8 @@ fn lexical_batch() -> Result<SearchCorpusBatch, Box<dyn Error>> {
                     14,
                 )?],
                 Vec::new(),
-            ),
-    )
+            );
+    Ok(with_semantic_sources_from_chunks(batch))
 }
 
 fn lexical_frontdoor_matrix_batch() -> Result<SearchCorpusBatch, Box<dyn Error>> {
@@ -380,7 +380,7 @@ fn lexical_frontdoor_matrix_batch() -> Result<SearchCorpusBatch, Box<dyn Error>>
 }
 
 fn lexical_batch_two() -> Result<SearchCorpusBatch, Box<dyn Error>> {
-    Ok(SearchCorpusBatch::replace_generation(
+    let batch = SearchCorpusBatch::replace_generation(
         repo(),
         revision(),
         generation_two(),
@@ -427,7 +427,25 @@ fn lexical_batch_two() -> Result<SearchCorpusBatch, Box<dyn Error>> {
             14,
         )?],
         Vec::new(),
-    ))
+    );
+    Ok(with_semantic_sources_from_chunks(batch))
+}
+
+fn with_semantic_sources_from_chunks(mut batch: SearchCorpusBatch) -> SearchCorpusBatch {
+    let chunks: Vec<_> = batch
+        .replace_scopes()
+        .iter()
+        .flat_map(|scope| scope.chunks.iter().cloned())
+        .collect();
+    for scope in semantic_source_scopes_for_chunk_records(&chunks) {
+        batch = batch.replace_semantic_scope(
+            scope.scope,
+            scope.scope_digest,
+            scope.sources,
+            scope.cluster_memberships,
+        );
+    }
+    batch
 }
 
 fn lexical_chunk(
@@ -3742,6 +3760,25 @@ fn sdk_tombstone_only_generation_replaces_active_composite_and_removes_both_quer
     let first_generation = lexical_batch()?;
     let _first_active = publish_and_activate_sdk_search_corpus(client, &first_generation)?;
 
+    let _semantic_before_tombstone = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || {
+            client
+                .semantic()
+                .query()
+                .text("quartz")
+                .active(repo(), revision())
+                .top_k(3)
+                .execute()
+        },
+        |response| {
+            response.generation == pin()
+                && response
+                    .results
+                    .iter()
+                    .any(|candidate| candidate.candidate_id == "alpha")
+        },
+    )?;
     let removed_scope = SearchScopeKey {
         doc_surface: SearchScopeSurface::File,
         repo_relative_path: RepoRelativePath::new("src/alpha.rs"),
@@ -3753,7 +3790,16 @@ fn sdk_tombstone_only_generation_replaces_active_composite_and_removes_both_quer
         generation(),
         "manifest:lexical-tombstone-only",
     )
-    .tombstone_scope(removed_scope);
+    .tombstone_scope(removed_scope)
+    .tombstone_semantic_scope(
+        first_generation
+            .semantic_replace_scopes()
+            .iter()
+            .find(|scope| scope.scope.owner_id == "alpha")
+            .ok_or_else(|| "first generation missing alpha semantic source".to_string())?
+            .scope
+            .clone(),
+    );
 
     let expected_active = current_sdk_search_corpus_or_none(client, repo(), revision())?
         .ok_or_else(|| "first composite generation did not become active".to_string())?;
@@ -3765,6 +3811,7 @@ fn sdk_tombstone_only_generation_replaces_active_composite_and_removes_both_quer
         || receipt.manifest_digest.as_deref() != Some(tombstone_only.manifest_digest())
         || receipt.accepted_replace_scopes != 0
         || receipt.accepted_tombstone_scopes != 1
+        || receipt.accepted_semantic_tombstone_scopes != 1
         || activation.active.generation.lexical.manifest_generation != generation_two()
         || activation.active.generation.semantic.manifest_generation != generation_two()
         || activation.active.generation.lexical.manifest_digest != tombstone_only.manifest_digest()
