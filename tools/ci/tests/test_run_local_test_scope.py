@@ -342,6 +342,7 @@ def test_local_scope_flushes_selection_before_exec(tmp_path: Path, monkeypatch) 
     monkeypatch.setattr(MODULE, "ROOT", tmp_path)
     monkeypatch.setattr(MODULE, "load_catalog", lambda: _catalog(tmp_path))
     monkeypatch.setenv("QUANTA_INDEX_TEST_THREADS", "1")
+    monkeypatch.delenv(MODULE.PROOF_RAW_DIR, raising=False)
     monkeypatch.setattr(MODULE.os, "chdir", lambda _path: None)
 
     class ObservedStdout(io.StringIO):
