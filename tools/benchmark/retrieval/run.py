@@ -3960,14 +3960,6 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         )
         missing.append("T17")
         classes.append("admission")
-    elif qualification_dependency is not None:
-        set_state(
-            "PERF_QUALIFIED",
-            "fail",
-            f"qualification_dependency_unverified:{qualification_dependency}",
-            None,
-        )
-        classes.append("provenance")
     else:
         if evidence["perf"]["phase_boundaries"] is not True or not phase_ok:
             perf_fail: tuple[str, str] | None = (
@@ -4124,6 +4116,11 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 )
             except (RunError, TypeError, ValueError) as exc:
                 perf_fail = (f"measurement_protocol_ineligible: {exc}", "provenance")
+        if perf_fail is None and qualification_dependency is not None:
+            perf_fail = (
+                f"qualification_dependency_unverified:{qualification_dependency}",
+                "provenance",
+            )
         if perf_fail is None:
             set_state(
                 "PERF_QUALIFIED",
@@ -4208,14 +4205,6 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         )
         missing.append("T17")
         classes.append("admission")
-    elif qualification_dependency is not None:
-        set_state(
-            "QUALITY_DELTA",
-            "fail",
-            f"qualification_dependency_unverified:{qualification_dependency}",
-            None,
-        )
-        classes.append("provenance")
     elif provenance_claims["quanta"].get("embedder") != "potion-code":
         # T10: a quality claim over the hash-dev diagnostic control (or an
         # undeclared embedder) is not model-quality evidence.
@@ -4241,6 +4230,14 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     elif any(not _qualified_uncertainty(entry) for entry in matched):
         set_state("QUALITY_DELTA", "fail", "uncertainty_unqualified", None)
         classes.append("scoring")
+    elif qualification_dependency is not None:
+        set_state(
+            "QUALITY_DELTA",
+            "fail",
+            f"qualification_dependency_unverified:{qualification_dependency}",
+            None,
+        )
+        classes.append("provenance")
     else:
         set_state(
             "QUALITY_DELTA",
