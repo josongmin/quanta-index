@@ -6,7 +6,7 @@ use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::Read;
 use std::num::NonZeroU128;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Instant;
 use std::{
     fs,
@@ -1579,8 +1579,10 @@ impl SearchdRuntime {
             snapshots,
         });
         let process_status = Arc::new(SupervisorStatus::default());
+        let socket_probes = Arc::new(OnceLock::new());
         let readiness: Arc<dyn ProcessReadinessPort> = Arc::new(RuntimeReadiness {
             status: Arc::clone(&process_status),
+            socket_probes: Arc::clone(&socket_probes),
             maintenance: maintenance.tallies(),
             maintenance_cadence: config.maintenance_policy().tick(),
             activation_catalog: Arc::clone(&activation_catalog),
@@ -1684,6 +1686,15 @@ impl SearchdRuntime {
             ingest_counters,
         )
         .map_err(anyhow::Error::from)?;
+        socket_probes
+            .set([
+                query_server.bound_socket_path_probe(),
+                control_server.bound_socket_path_probe(),
+                ingest_server.bound_socket_path_probe(),
+            ])
+            .map_err(|_| {
+                anyhow::anyhow!("process readiness socket identities already installed")
+            })?;
 
         Ok(Self {
             config,

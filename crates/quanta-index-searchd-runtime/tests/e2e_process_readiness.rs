@@ -1,12 +1,14 @@
 //! P09: real supervised daemon and control UDS process-readiness proof.
 
 use std::error::Error;
+use std::os::unix::net::UnixListener;
 use std::time::Duration;
 
 use quanta_index_contract::{ProcessReadinessReasonV1, ProcessReadinessV1};
 use quanta_index_searchd_harness::E2eRuntime;
 
 use crate::fail_closed_wait::{RealTicker, WaitError, wait_for};
+use crate::searchd_binary_process::{SearchdBinaryProcess, daemon_socket_paths};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -76,5 +78,48 @@ fn active_repository_requires_physical_candidate_proof() -> TestResult {
         &false,
         "active integrity failure reason",
     )?;
+    Ok(())
+}
+
+#[test]
+fn surviving_control_socket_reports_lost_or_replaced_plane_path_not_ready() -> TestResult {
+    for (lost_plane, reason) in [
+        (0, ProcessReadinessReasonV1::QueryPlaneUnhealthy),
+        (2, ProcessReadinessReasonV1::IngestPlaneUnhealthy),
+    ] {
+        let parent = quanta_index_searchd_harness::private_tempdir()?;
+        let state_root = parent.path().join("state");
+        let process = SearchdBinaryProcess::start(&state_root)?;
+        let outcome = (|| -> TestResult {
+            let client = process.connect()?;
+            let ready = wait_for(
+                &RealTicker::new(),
+                Duration::from_secs(5),
+                Duration::from_millis(10),
+                "daemon binary ready before socket path loss",
+                || client.observability().process_readiness(),
+                |report| report.ready,
+                |_| true,
+            )?;
+            require_eq(&ready.ready, &true, "initial readiness")?;
+
+            let sockets = daemon_socket_paths(&state_root);
+            std::fs::remove_file(&sockets[lost_plane])?;
+            // Replacing query.sock with another valid socket must not pass
+            // an existence/type check; only the daemon's bound inode counts.
+            let replacement = (lost_plane == 0)
+                .then(|| UnixListener::bind(&sockets[lost_plane]))
+                .transpose()?;
+            let report = client.observability().process_readiness()?;
+            require_eq(&report.ready, &false, "readiness after socket path loss")?;
+            if !report.not_ready_reasons.contains(&reason) {
+                return Err(format!("lost plane {lost_plane} lacks {reason:?}: {report:?}").into());
+            }
+            drop(replacement);
+            Ok(())
+        })();
+        let stopped = process.stop();
+        outcome.and(stopped)?;
+    }
     Ok(())
 }

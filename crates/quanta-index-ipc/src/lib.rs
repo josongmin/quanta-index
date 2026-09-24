@@ -31,8 +31,9 @@ pub use quanta_index_core::{
     REQUEST_DEADLINE_EXCEEDED_CODE, RequestBudgetV1,
 };
 pub use server::{
-    ClientIoPolicy, DEFAULT_CLIENT_IO_TIMEOUT, DispatchContextV1, IpcDispatcher, IpcPlane,
-    RequestEnvelope, ResponseEnvelope, ShutdownHandle, UdsServer, send_request,
+    BoundSocketPathProbe, ClientIoPolicy, DEFAULT_CLIENT_IO_TIMEOUT, DispatchContextV1,
+    IpcDispatcher, IpcPlane, RequestEnvelope, ResponseEnvelope, ShutdownHandle, UdsServer,
+    send_request,
 };
 pub use socket_access::{
     GROUP_DIRECTORY_MODE, GROUP_SOCKET_MODE, PRIVATE_DIRECTORY_MODE, PRIVATE_SOCKET_MODE,

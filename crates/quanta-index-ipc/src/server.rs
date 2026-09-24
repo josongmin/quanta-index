@@ -527,6 +527,22 @@ struct SocketPathIdentity {
     inode: u64,
 }
 
+/// A read-only observation of the exact socket path bound by one server.
+/// Reusing the server's inode identity prevents readiness from treating an
+/// unlinked or replaced path as an accepting plane.
+#[derive(Clone, Debug)]
+pub struct BoundSocketPathProbe {
+    path: PathBuf,
+    identity: SocketPathIdentity,
+}
+
+impl BoundSocketPathProbe {
+    /// Whether the original bound socket is still published at its path.
+    pub fn is_current(&self) -> std::io::Result<bool> {
+        self.identity.still_owns(&self.path)
+    }
+}
+
 impl SocketPathIdentity {
     fn capture(path: &Path) -> std::io::Result<Self> {
         let metadata = std::fs::symlink_metadata(path)?;
@@ -1010,6 +1026,15 @@ impl UdsServer {
     #[must_use]
     pub fn socket_path(&self) -> &Path {
         &self.socket_path
+    }
+
+    /// Capture the server-owned socket identity for process readiness.
+    #[must_use]
+    pub fn bound_socket_path_probe(&self) -> BoundSocketPathProbe {
+        BoundSocketPathProbe {
+            path: self.socket_path.clone(),
+            identity: self.socket_path_identity,
+        }
     }
 
     /// Run the accept loop until `shutdown` is triggered.

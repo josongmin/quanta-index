@@ -17,8 +17,9 @@ use quanta_index_contract::{
     SearchPlaneQueryIpcResponseEnvelope,
 };
 use quanta_index_ipc::{
-    IpcDispatcher, IpcError, IpcPlane, IpcServerCounters, RequestEnvelope, ResponseEnvelope,
-    ServerAdmissionPolicy, ShutdownHandle as IpcShutdownHandle, SocketAccessPolicy, UdsServer,
+    BoundSocketPathProbe, IpcDispatcher, IpcError, IpcPlane, IpcServerCounters, RequestEnvelope,
+    ResponseEnvelope, ServerAdmissionPolicy, ShutdownHandle as IpcShutdownHandle,
+    SocketAccessPolicy, UdsServer,
 };
 
 /// Composed query server. Holds the bound [`UdsServer`] and a handle to the
@@ -101,6 +102,12 @@ where
     #[must_use]
     pub fn socket_path(&self) -> &Path {
         self.server.socket_path()
+    }
+
+    /// Observe the exact bound path, not merely the accept thread's liveness.
+    #[must_use]
+    pub fn bound_socket_path_probe(&self) -> BoundSocketPathProbe {
+        self.server.bound_socket_path_probe()
     }
 
     /// Acquire a shutdown handle without consuming the server.

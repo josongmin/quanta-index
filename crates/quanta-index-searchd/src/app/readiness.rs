@@ -1,6 +1,6 @@
 //! Process-owned readiness, separate from a repository's active generation.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use quanta_index_contract::{
@@ -9,6 +9,7 @@ use quanta_index_contract::{
     SearchCorpusActivationTokenV1,
 };
 use quanta_index_core::CoreError;
+use quanta_index_ipc::BoundSocketPathProbe;
 use quanta_index_search_plane::readiness::ActivationCatalog;
 use quanta_index_search_plane::{
     ActivationPromotionParts, ProcessReadinessPort, SearchCorpusGenerationV1,
@@ -21,6 +22,7 @@ use crate::app::supervisor::{SupervisorPhase, SupervisorStatus};
 
 pub(crate) struct RuntimeReadiness {
     pub status: Arc<SupervisorStatus>,
+    pub socket_probes: Arc<OnceLock<[BoundSocketPathProbe; 3]>>,
     pub maintenance: Arc<MaintenanceTallies>,
     pub maintenance_cadence: Duration,
     pub activation_catalog: Arc<ActivationCatalog>,
@@ -89,7 +91,17 @@ impl ProcessReadinessPort for RuntimeReadiness {
                 Some(valid)
             }
         };
-        let (query_plane, control_plane, ingest_plane) = self.status.required_planes();
+        let socket_probes = self.socket_probes.get().ok_or_else(|| {
+            CoreError::Storage("process readiness socket identities are not installed".to_owned())
+        })?;
+        let (query_running, control_running, ingest_running) = self.status.required_planes();
+        let path_current = |index: usize| {
+            socket_probes[index].is_current().map_err(|error| {
+                CoreError::Storage(format!(
+                    "process readiness socket identity observation failed: {error}"
+                ))
+            })
+        };
         let phase = match self.status.phase() {
             SupervisorPhase::Starting => ProcessReadinessPhaseV1::Starting,
             SupervisorPhase::Ready => ProcessReadinessPhaseV1::Ready,
@@ -98,9 +110,9 @@ impl ProcessReadinessPort for RuntimeReadiness {
             SupervisorPhase::Failed => ProcessReadinessPhaseV1::Failed,
         };
         let components = ProcessComponentsHealthV1 {
-            query_plane,
-            control_plane,
-            ingest_plane,
+            query_plane: query_running && path_current(0)?,
+            control_plane: control_running && path_current(1)?,
+            ingest_plane: ingest_running && path_current(2)?,
             maintenance_heartbeat: self.maintenance.heartbeat_fresh(self.maintenance_cadence)?,
             required_backend: true, // Successful runtime assembly opened and proved required adapters.
             provider: ProcessProviderReadinessV1 {
