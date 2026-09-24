@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-RUST_PROCESS = re.compile(r"(?:^|/)(?:cargo|cargo-nextest|rustc)(?:\s|$)")
+RUST_PROCESS = re.compile(r"(?:^|/)(?:cargo(?:-[A-Za-z0-9_-]+)?|rustc)(?:\s|$)")
 
 
 @dataclass(frozen=True)

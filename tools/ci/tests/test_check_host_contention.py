@@ -38,6 +38,22 @@ def test_foreign_rust_process_is_reported() -> None:
     assert [process.pid for process in foreign] == [20, 21]
 
 
+def test_foreign_cargo_subcommands_are_reported() -> None:
+    processes = MODULE.parse_processes(
+        """
+        10 1 /bin/zsh just rust-timings-daemon
+        11 10 python3 tools/ci/timing/check_host_contention.py
+        20 1 /Users/example/.cargo/bin/cargo-mutants --package quanta-index-core
+        21 1 cargo-fuzz run ipc_request_decode
+        22 1 /usr/bin/python3 cargo-mutants-report.py
+        """
+    )
+
+    foreign = MODULE.foreign_rust_processes(processes, 11)
+
+    assert [process.pid for process in foreign] == [20, 21]
+
+
 def test_ancestor_cargo_is_not_reported_as_foreign() -> None:
     processes = MODULE.parse_processes(
         """
