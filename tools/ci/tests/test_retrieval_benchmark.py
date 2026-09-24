@@ -1240,9 +1240,7 @@ def test_verify_lockfile_pins_external_file_not_freeze():
         semble_adapter.verify_lockfile(direct_reference, ev.digest(direct_reference), freeze)
     duplicate_project = b"semble==0.6.0\nNumPy==2.0.0\nnumpy==2.1.0\n"
     with pytest.raises(semble_adapter.AdapterError, match="more than once"):
-        semble_adapter.verify_lockfile(
-            duplicate_project, ev.digest(duplicate_project), freeze
-        )
+        semble_adapter.verify_lockfile(duplicate_project, ev.digest(duplicate_project), freeze)
     invalid_utf8 = b"semble==0.6.0\n\xff"
     with pytest.raises(semble_adapter.AdapterError, match="not UTF-8"):
         semble_adapter.verify_lockfile(invalid_utf8, ev.digest(invalid_utf8), freeze)

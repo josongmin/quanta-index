@@ -5661,7 +5661,9 @@ def run_pair(spec: dict) -> int:
     if not spec.get("semble_python"):
         raise RunError("pair requires spec.semble_python")
     if not spec.get("semble_lockfile"):
-        raise RunError("pair requires spec.semble_lockfile naming the digest-pinned environment freeze")
+        raise RunError(
+            "pair requires spec.semble_lockfile naming the digest-pinned environment freeze"
+        )
     if not spec.get("host_profile"):
         raise RunError("pair requires spec.host_profile naming the canonical host profile")
     if (

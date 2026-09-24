@@ -430,6 +430,7 @@ def verify_lockfile(lockfile_bytes: bytes, expected_sha256: str, freeze_text: st
     observed = hashlib.sha256(bytes(lockfile_bytes)).hexdigest()
     if observed != expected_sha256:
         raise AdapterError("external lockfile digest differs from the spec pin")
+
     def lines(raw: str, label: str) -> set[str]:
         entries = [line.strip() for line in raw.splitlines() if line.strip()]
         entries = [line for line in entries if not line.startswith("#")]
