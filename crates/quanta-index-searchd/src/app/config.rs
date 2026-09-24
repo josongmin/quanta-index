@@ -1873,7 +1873,7 @@ mod tests {
         for value in ["semantic_with_legacy_fallback", "semantic_only", ""] {
             let error = SearchdConfig::from_lookup(
                 Some(PathBuf::from("/tmp/quanta-index-retired-semantic-mode")),
-                &|name| Ok((name == RETIRED_ENV_KNOBS[0]).then(|| value.to_string())),
+                &|name| Ok(RETIRED_ENV_KNOBS.contains(&name).then(|| value.to_string())),
             )
             .expect_err("a retired semantic mode must not be silently ignored");
             assert!(error.to_string().contains("retired"), "{error}");

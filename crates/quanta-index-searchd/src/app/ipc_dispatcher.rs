@@ -295,7 +295,7 @@ mod tests {
             _budget: &RequestBudgetV1,
         ) -> u64 {
             assert_eq!(context.request_id.get(), 9);
-            request + 1
+            request.saturating_add(1)
         }
     }
 
@@ -319,15 +319,21 @@ mod tests {
         assert_eq!(IpcDispatcher::dispatch(&adapter, &context, 4, &budget), 5);
         let tail = counters.recent_request_events_v1().expect("event tail");
         assert_eq!(tail.len(), 3);
-        assert_eq!(tail[0].stage, RequestEventStageV1::BackendStarted);
         assert_eq!(
-            tail[1].stage,
+            tail.first().expect("three event fixture").stage,
+            RequestEventStageV1::BackendStarted
+        );
+        assert_eq!(
+            tail.get(1).expect("three event fixture").stage,
             RequestEventStageV1::BackendOutcome {
                 route: "test.echo",
                 error: None,
             }
         );
-        assert_eq!(tail[2].stage, RequestEventStageV1::BackendReturned);
+        assert_eq!(
+            tail.get(2).expect("three event fixture").stage,
+            RequestEventStageV1::BackendReturned
+        );
         assert!(
             tail.iter()
                 .all(|event| event.request_id.get() == 9 && event.connection_id == 17)
