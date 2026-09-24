@@ -846,6 +846,7 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::RepoDescriptionM
 pub struct quanta_index_sdk::RepoMapNamespace<'a>
 impl<'a> quanta_index_sdk::RepoMapNamespace<'a>
 pub fn quanta_index_sdk::RepoMapNamespace<'a>::activate(&self, request: quanta_index_contract::repomap::terminal_receipt_v2::RepoMapActivateGenerationRequestV2) -> core::result::Result<quanta_index_contract::repomap::terminal_receipt_v2::RepoMapTerminalReceiptV2, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::RepoMapNamespace<'a>::active_head(&self, repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId) -> core::result::Result<core::option::Option<quanta_index_contract::repomap::terminal_receipt_v2::RepoMapExpectedActiveV2>, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::RepoMapNamespace<'a>::publish(&self, request: &quanta_index_contract::repomap::terminal_receipt_v2::RepoMapPublishBundleRequestV2) -> core::result::Result<quanta_index_contract::repomap::terminal_receipt_v2::RepoMapTerminalReceiptV2, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::RepoMapNamespace<'a>::query(&self, request: quanta_index_contract::repomap::RepoMapQueryRequest) -> core::result::Result<quanta_index_contract::repomap::RepoMapQueryResponse, quanta_index_sdk::SdkError>
 impl<'a> core::marker::Freeze for quanta_index_sdk::RepoMapNamespace<'a>
