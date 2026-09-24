@@ -1,6 +1,6 @@
 # S21-06 — Query Completeness, Continuation, Ranking, and Provenance
 
-Status: `planned`
+Status: historical design record; current implementation and proof state must be read from source and `tools/ci/proof-authority.toml`.
 
 Depends on: S21-00, S21-05
 
@@ -9,7 +9,7 @@ Depends on: S21-00, S21-05
 query 결과의 pagination, completeness, ranking, explain, availability가 실제 실행과 동일한 의미를
 갖도록 공통 execution outcome contract를 만든다.
 
-## Root cause
+## Initial audit root cause
 
 - cursor가 full pin/canonical query에 결속되지 않음
 - nested cap과 outer cap의 중복 contract가 route별로 다르게 해석됨
@@ -31,7 +31,7 @@ query 결과의 pagination, completeness, ranking, explain, availability가 실�
 - `LaneTraceV1`: executed, contributed, filtered, candidate count, cost, model/profile
 - `ContributionTraceV1`: typed candidate identity + compact lane rank + score inputs
 
-## Work items
+## Original work items (recheck current source)
 
 1. cursor encoding/validation을 공통 owner로 통합
 2. client-editable seek boundary와 continuation을 API에서 분리

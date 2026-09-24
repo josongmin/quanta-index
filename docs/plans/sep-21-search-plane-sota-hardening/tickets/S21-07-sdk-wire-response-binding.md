@@ -1,6 +1,6 @@
 # S21-07 — SDK and Wire Response Binding
 
-Status: `planned`
+Status: historical design record; current implementation and proof state must be read from source and `tools/ci/proof-authority.toml`.
 
 Depends on: S21-00, S21-01, S21-02, S21-04, S21-06
 
@@ -9,7 +9,7 @@ Depends on: S21-00, S21-01, S21-02, S21-04, S21-06
 모든 public SDK query/mutation이 response variant뿐 아니라 원 요청과 semantic authority를 검증하도록
 shared validator layer를 도입한다.
 
-## Root cause
+## Initial audit root cause
 
 generic client는 request ID와 error envelope만 검증하고 route별 SDK는 대부분 enum variant만 match한다.
 contract decoder도 candidate/projection/pin/order/receipt invariant를 충분히 검증하지 않는다.

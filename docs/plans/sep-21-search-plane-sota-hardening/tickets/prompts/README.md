@@ -1,25 +1,22 @@
-# SEP-21 prompt archive and current entrypoints
+# SEP-21 current execution entrypoints
 
-The original P00-P12 lane prompts were written before several source changes.
-They are design history, not an instruction to replay every lane or issue
-backdated handoffs. Never paste an old prompt into a new task as current
-authority. Freeze source and inspect the registry and implementation first.
+The former P00-P09 copy/paste prompts and common lane contract are in Git
+history. They described the initial implementation wave and are not current
+execution instructions. Use the live code, `tools/ci/proof-authority.toml`,
+`Justfile`, and [execution evidence](../EXECUTION-PROGRESS.md) to determine
+the present gate and source identity.
 
-Current entrypoints:
-
-- [SEP-21 index](../INDEX.md): architecture and ticket links.
-- [Residual work](../FINAL-RESIDUAL-EXECUTION-PLAN.md): current action map.
-- [Execution evidence](../EXECUTION-PROGRESS.md): commands for live status.
+- [Residual work](../FINAL-RESIDUAL-EXECUTION-PLAN.md): remaining evidence
+  and source boundaries.
 - [P10 state custody](P10-state-migration.md): current-format operations and
-  legacy refusal; the old importer instruction is retired.
-- [P12A proof custody](P12A-final-proof-infrastructure.md): review and issue
-  proof for the existing aggregate/handoff infrastructure.
-- [P12Q final qualification](P12-final-qualification.md): terminal proof
-  after every registered dependency and operational receipt is available.
+  typed legacy refusal.
+- [P11 exact pair](P11-cross-repo-cutover.md): producer protocol and four
+  separate release/operational receipts.
+- [P12A infrastructure](P12A-final-proof-infrastructure.md): existing
+  aggregate and handoff code, then exact-pair owner receipt.
+- [P12Q qualification](P12-final-qualification.md): final-source dependency
+  graph, aggregate, and terminal manifest.
 
-The other lane prompts preserve historical design intent only. Their
-prerequisite SHAs, writer boundaries, test counts, and future-tense work
-claims require current-source review. `tools/ci/proof-authority.toml` and
-`Justfile` define executable proof identity and commands; a prompt cannot
-promote a staged node. Deploy, activate, rollback, external provider use, and
-real state-root cutover require their own operational authority and receipts.
+An implementation ticket, prompt, owner test, or historical handoff cannot
+promote a staged proof. Record code completion, owner tests, exact-pair
+release, deployment, activation, and rollback separately.

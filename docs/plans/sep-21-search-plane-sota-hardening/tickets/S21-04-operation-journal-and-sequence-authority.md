@@ -1,6 +1,6 @@
 # S21-04 — Operation Journal and Durable Sequence Authority
 
-Status: `planned`
+Status: historical design record; current implementation and proof state must be read from source and `tools/ci/proof-authority.toml`.
 
 Depends on: S21-00, S21-01 Phase A (P01A checkpoint); full S21-01 closure is not required
 
@@ -8,7 +8,7 @@ Depends on: S21-00, S21-01 Phase A (P01A checkpoint); full S21-01 closure is not
 
 모든 ingest/auxiliary mutation을 replay-first, terminally classified durable operation protocol로 통합한다.
 
-## Root cause
+## Initial audit root cause
 
 - finalized replay lookup 전에 mutable preflight를 수행
 - auxiliary semantic validation이 catalog claim 뒤에 있어 invalid intent가 남음
@@ -51,7 +51,7 @@ Depends on: S21-00, S21-01 Phase A (P01A checkpoint); full S21-01 closure is not
 - regression/duplicate/corruption은 startup refusal 또는 explicit repair mode
 - receipt pruning과 replay floor/expired semantics
 
-## Work items
+## Original work items (recheck current source)
 
 - ingest dispatcher의 preflight/replay/claim 순서 재구성
 - auxiliary route의 semantic validators를 preflight owner로 이동

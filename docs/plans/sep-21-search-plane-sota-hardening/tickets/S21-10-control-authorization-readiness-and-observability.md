@@ -1,6 +1,6 @@
 # S21-10 — Control Authorization, Readiness, and Observability
 
-Status: `planned`
+Status: historical design record; current implementation and proof state must be read from source and `tools/ci/proof-authority.toml`.
 
 Depends on: S21-00, S21-04, S21-09
 
@@ -9,7 +9,7 @@ Depends on: S21-00, S21-04, S21-09
 control socket의 principal capability를 operation 단위로 강제하고, surviving socket이 partial outage를
 healthy로 보이지 않도록 process-wide readiness와 request-correlated diagnostics를 만든다.
 
-## Root cause
+## Initial audit root cause
 
 - 하나의 control surface에 read-only metrics/status와 activate/rollback/discard mutation이 혼재
 - socket-level UID/GID admission 뒤 operation authorization이 없음
@@ -43,7 +43,7 @@ principal mapping은 configured UID/GID/service identity에 명시적으로 결�
 - cardinality-bounded labels; source/query payload와 credential은 기록하지 않음
 - panic/child-exit/startup rollback/hard-drain escalation counters
 
-## Work items
+## Original work items (recheck current source)
 
 1. control operation capability registry
 2. credential-to-principal resolver와 negative authorization

@@ -1,6 +1,6 @@
 # S21-09 — Supervised Runtime and Bounded Shutdown
 
-Status: `planned`
+Status: historical design record; current implementation and proof state must be read from source and `tools/ci/proof-authority.toml`.
 
 Depends on: S21-00, S21-04, S21-08
 
@@ -9,7 +9,7 @@ Depends on: S21-00, S21-04, S21-08
 release daemon의 plane, maintenance, connection, provider task를 하나의 supervised lifecycle로 소유하고
 startup/shutdown/panic을 bounded state transition으로 만든다.
 
-## Root cause
+## Initial audit root cause
 
 - release binary에 signal wiring이 없음
 - plane을 순차 spawn하지만 unexpected exit를 shutdown 전에 관측하지 않음
@@ -32,7 +32,7 @@ Starting -> Ready -> Draining -> Stopped
 - startup은 all-or-rollback
 - drain은 cooperative deadline과 hard deadline/escalation을 분리
 
-## Work items
+## Original work items (recheck current source)
 
 1. SIGINT/SIGTERM을 process cancellation root에 연결
 2. query/control/ingest/maintenance/provider executors를 supervised child로 등록

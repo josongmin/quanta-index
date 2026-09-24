@@ -1,6 +1,6 @@
 # S21-02 — Sealed Candidate, Activation Transaction, and Recovery
 
-Status: `planned`
+Status: historical design record; current implementation and proof state must be read from source and `tools/ci/proof-authority.toml`.
 
 Depends on: S21-00, S21-01 Phase A (P01A checkpoint), S21-03, S21-04; closes atomically with S21-01 Phase B in P03
 
@@ -9,7 +9,7 @@ Depends on: S21-00, S21-01 Phase A (P01A checkpoint), S21-03, S21-04; closes ato
 RepoMap의 publish/activate/recover를 content-bound durable state machine으로 교체한다. 동일 generation
 overwrite, digest-unbound activation, stale pointer resurrection을 한 owner에서 제거한다.
 
-## Root cause
+## Initial audit root cause
 
 - snapshot key가 repo/revision/generation뿐이라 content identity가 없음
 - materialized snapshot이 producer manifest commitment를 잃음
@@ -36,7 +36,7 @@ ActivationInvalidated --publish only--> SealedCandidate (never Activated)
 - terminal mutation receipt containing prior/new activation identity and durable sequence
 - durable invalidation/tombstone reason
 
-## Work items
+## Original work items (recheck current source)
 
 1. materializer output에 manifest/authority/content commitments를 보존
 2. same logical generation publish:

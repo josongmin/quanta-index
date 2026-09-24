@@ -1,16 +1,19 @@
 # S21-12 — Cross-Repo Terminal Receipt and Breaking Cutover
 
-Status: `planned`
+Status: exact-pair release qualification staged.
 
 2026-09-24 source update: the local RepoMap mutation surface now has only
 source-digest-bound V2 requests/receipts across SDK, IPC, core ports, and
 store. The V2 activation identity is flat; V1 opcodes/direct-store methods
 and weak persisted projection metadata are refused or removed. The
 2026-09-21 static delta below is historical, not a current API description.
-The current flat V2 request still lacks expected-current-active CAS; S21-02's
-catalog transaction and the Semantica durable intent must carry the same
-prior-head expectation before this paired cutover can be accepted. Target
-candidate content binding alone does not satisfy that CAS.
+The flat V2 request now carries `expected_active`; the catalog transaction
+checks that prior-head token before sequence allocation and checks the
+persisted prior expectation on replay. See
+`crates/quanta-index-contract/src/repomap/terminal_receipt_v2.rs` and
+`crates/quanta-index-catalog/src/candidate.rs`. The Semantica durable intent,
+exact source pair, and terminal receipt chain still require fresh paired
+verification. Quanta-local CAS code is not that proof.
 Cross-repo producer qualification, deployment, and activation remain separate
 unverified gates; this note does not close S21-12.
 
@@ -28,20 +31,12 @@ terminal receipt를 만들고, producer/SDK/daemon을 하나의 breaking cutover
 - producer source, linked contract/SDK tree, daemon binary가 하나의 receipt에 결속되지 않음
 - dirty/path dependency skew가 release compatibility와 분리됨
 
-## Drift-prone observed blocker snapshot — observed 2026-09-21
+## Source-pair entry condition
 
-- quanta-index clean HEAD `3ad279a08879de35fa96a5495a3382af28f095d0`의
-  `BatchPublishReceipt`에는 `accepted_replace_scopes`와 `accepted_tombstone_scopes`만 있고
-  semantic-specific receipt fields가 없다.
-- 현재 quanta-index dirty patch는 `accepted_semantic_replace_scopes`와
-  `accepted_semantic_tombstone_scopes`를 추가하지만 committed/frozen authority가 아니다.
-- 현재 관찰한 Semantica HEAD는 `61ad7aab23f719f9a184dc4d01dcfa29196d4549`이고 44개 dirty path가
-  있으며, runtime source는 semantic-specific fields를 소비한다.
-- 따라서 현재 exact pair는 compile/QBC closure가 아니라 `BLOCKED`다. 과거에 전달된 Semantica
-  SHA나 dirty field alignment를 current GREEN으로 승격하지 않는다.
-
-이 snapshot은 현재-source 주장에 재사용하지 않는다. 구현/검증 시작 시 양 repo HEAD, dirty digest, resolved
-dependency root를 다시 freeze한다.
+The 2026-09-21 dirty-checkout snapshot is retained in Git history. Before
+qualification, freeze both repositories' current HEAD, dirty digest,
+resolved dependency roots, public receipt fields, and the daemon binary.
+Do not infer pair compatibility from one repository's V2 API or an old build.
 
 해제 조건:
 

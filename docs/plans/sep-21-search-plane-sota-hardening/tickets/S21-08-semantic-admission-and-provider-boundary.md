@@ -1,6 +1,6 @@
 # S21-08 — Semantic Admission and Provider Boundary
 
-Status: `planned`
+Status: historical design record; current implementation and proof state must be read from source and `tools/ci/proof-authority.toml`.
 
 Depends on: S21-00, S21-04, S21-06, S21-07
 
@@ -9,7 +9,7 @@ Depends on: S21-00, S21-04, S21-06, S21-07
 provider 호출 전 결정 가능한 validation을 모두 수행하고, external egress/work/cost를 process-global로
 bounded하고 auditable하게 만든다.
 
-## Root cause
+## Initial audit root cause
 
 - retained generation model mismatch를 embedding 호출 뒤 검사
 - hash/provider profile이 empty/punctuation input에 다른 semantics를 가짐
@@ -29,7 +29,7 @@ bounded하고 auditable하게 만든다.
 
 Provider I/O 전에 1-4가 모두 성공해야 한다.
 
-## Work items
+## Original work items (recheck current source)
 
 - common semantic input policy를 core owner에 배치
 - known model mismatch를 lexical/dense/provider fanout 전에 거부

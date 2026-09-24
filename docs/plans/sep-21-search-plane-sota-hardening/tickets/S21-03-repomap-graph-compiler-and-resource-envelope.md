@@ -1,6 +1,6 @@
 # S21-03 — RepoMap Graph Compiler and Resource Envelope
 
-Status: `planned`
+Status: historical design record; current implementation and proof state must be read from source and `tools/ci/proof-authority.toml`.
 
 Depends on: S21-00, S21-01 Phase A (P01A checkpoint); full S21-01 closure is not required
 
@@ -8,7 +8,7 @@ Depends on: S21-00, S21-01 Phase A (P01A checkpoint); full S21-01 closure is not
 
 RepoMap materializer를 permissive transformer에서 validated, typed, bounded graph compiler로 교체한다.
 
-## Root cause
+## Initial audit root cause
 
 - duplicate nodes와 dangling edges를 ingest boundary에서 검증하지 않음
 - node-ref variant를 raw string으로 축약해 graph statistics가 교차 오염됨
@@ -30,7 +30,7 @@ Decoded bundle
 
 각 단계는 input/output byte and item budget을 차감하고 typed refusal을 반환한다.
 
-## Work items
+## Original work items (recheck current source)
 
 1. `TypedNodeIdentity = variant + domain ID`를 모든 map key에 사용
 2. node uniqueness와 edge endpoint existence/allowed variant matrix 검증

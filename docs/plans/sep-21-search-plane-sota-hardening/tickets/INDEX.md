@@ -22,7 +22,7 @@ Authority inputs:
 - [final plan audit](FINAL-AUDIT.md)
 - [file-level execution action list](ACTION-LIST.md)
 - [final current-source residual execution plan](FINAL-RESIDUAL-EXECUTION-PLAN.md)
-- [copy/paste lane prompt runbook](prompts/README.md)
+- [current execution entrypoints](prompts/README.md)
 - [execution progress ledger](EXECUTION-PROGRESS.md)
 
 The [residual plan](FINAL-RESIDUAL-EXECUTION-PLAN.md) replaces dated

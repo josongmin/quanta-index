@@ -1,6 +1,7 @@
 # S21-05 — QueryReadView V2 and Snapshot Lifetime
 
-Status: `planned`
+Status: owner implementation exists; release proof remains staged. This
+ticket records the initial design, not a current-source qualification.
 
 Depends on: S21-00, S21-02, S21-04
 
@@ -11,9 +12,12 @@ Depends on: S21-00, S21-02, S21-04
 
 ## Root cause
 
-현재 `QueryReadViewV1`은 lexical/semantic/auxiliary handle은 보유하지만 RepoMap handle이 없다.
-RepoMap route는 domain을 선언한 뒤 독립 port call을 하며, store는 activation check와 snapshot lookup
-사이 lock을 놓는다. read identity와 실제 resource lifetime이 분리돼 있다.
+Initial audit: `QueryReadViewV1` did not hold a RepoMap handle and the route
+looked up the store after declaring its domain. Current source has
+`QueryReadViewV2::repo_map()` and acquires a pinned RepoMap snapshot in the
+view; the route executes through that handle. See
+`query_dispatcher/read_view/view.rs` and `routes/repo_map.rs`. This source
+inspection does not establish the Linux release receipt.
 
 ## Target design
 
@@ -25,7 +29,7 @@ RepoMap route는 domain을 선언한 뒤 독립 port call을 하며, store는 ac
 - GC/retire/compaction은 handle reference와 attach fence를 존중
 - view drop이 reference를 반환하며 panic path도 RAII로 동일 처리
 
-## Work items
+## Original work items (verify against current source)
 
 1. `RepoMapSnapshotReadPort`를 snapshot acquisition과 execution으로 분리
 2. RepoMap `Arc<RepoMapIndexedSnapshot>`을 view에 저장

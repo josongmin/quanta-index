@@ -1,6 +1,6 @@
 # S21-01 — Canonical Identity and Durable Layout V3
 
-Status: `planned`
+Status: historical design record; current implementation and proof state must be read from source and `tools/ci/proof-authority.toml`.
 
 Depends on: S21-00
 
@@ -9,7 +9,7 @@ Depends on: S21-00
 문자열 join 기반 persistence identity를 제거하고 logical/content/physical identity가 분리된 collision-free
 layout을 도입한다.
 
-## Root cause
+## Initial audit root cause
 
 `encode(repo)--encode(revision)`이 product identity를 filesystem filename으로 직접 투영한다. separator
 escape와 tuple framing이 없어 다른 tuple이 같은 주소에 수렴한다. graph/cursor/receipt도 각자 identity를
@@ -35,7 +35,7 @@ S21-01 closes in two sequential phases; P01A does not close this ticket.
 - P03/S21-01B: live object layout and quarantine cutover together with S21-02. It consumes the P01A pure primitives
   and P02B global event authority. It owns filesystem mutation, catalog incidents and activation-path deletion.
 
-## Work items
+## Original work items (recheck current source)
 
 1. identity types와 fallible canonical digest owner를 contract-base/core에 추가
 2. P01A에서 candidate/quarantine pure codec/address를 만들고 P03에서 live layout을 한 번에 전환한다.
