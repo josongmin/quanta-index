@@ -72,7 +72,7 @@ def test_nextest_result_is_derived_from_complete_inventory(tmp_path: Path) -> No
     result, artifacts, _ = _nextest_fixture(tmp_path)
     assert derive_test_result(tmp_path, result, artifacts) == (
         {"selected": 1, "executed": 1, "passed": 1, "failed": 0, "ignored": 0},
-        {"quanta-index-core::journal_owner$passes"},
+        {("nextest-jsonl", "quanta-index-core::journal_owner$passes")},
     )
 
 

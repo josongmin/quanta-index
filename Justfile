@@ -817,24 +817,27 @@ proof-p02b-operation-journal:
 proof-p00-authority-freeze:
     python3 tools/ci/write-error-authority-inventory.py
     python3 tools/ci/lint/check-proof-authority.py
+    @if [ -n "${QUANTA_PROOF_RAW_DIR:-}" ]; then mkdir -p "$QUANTA_PROOF_RAW_DIR"; python3 tools/ci/proof_execution_result.py collect-pytest --output "$QUANTA_PROOF_RAW_DIR/p00-inventory.json" tools/ci/tests/test_write_error_authority_inventory.py tools/ci/tests/test_write_proof_aggregate.py tools/ci/tests/test_write_proof_manifest.py tools/ci/tests/test_proof_execution_result.py tools/ci/tests/test_run_local_test_scope.py tools/ci/tests/test_check_proof_authority.py tools/ci/tests/test_check_lane_handoff.py tools/ci/tests/test_handoff_validation.py; fi
     python3 -m pytest \
         tools/ci/tests/test_write_error_authority_inventory.py \
         tools/ci/tests/test_write_proof_aggregate.py \
         tools/ci/tests/test_write_proof_manifest.py \
         tools/ci/tests/test_proof_execution_result.py \
+        tools/ci/tests/test_run_local_test_scope.py \
         tools/ci/tests/test_check_proof_authority.py \
         tools/ci/tests/test_check_lane_handoff.py \
-        tools/ci/tests/test_handoff_validation.py \
-        -q
+        tools/ci/tests/test_handoff_validation.py -q
 
 # P12A is a Python owner proof. The exact-pair manifest is issued separately
 # only after its P11 dependency and paired checkout are source-bound.
 proof-p12a-proof-infrastructure:
     python3 tools/ci/lint/check-test-authority.py
     python3 tools/ci/lint/check-proof-authority.py
+    @if [ -n "${QUANTA_PROOF_RAW_DIR:-}" ]; then mkdir -p "$QUANTA_PROOF_RAW_DIR"; python3 tools/ci/proof_execution_result.py collect-pytest --output "$QUANTA_PROOF_RAW_DIR/p12a-inventory.json" tools/ci/tests/test_write_proof_manifest.py tools/ci/tests/test_proof_execution_result.py tools/ci/tests/test_run_local_test_scope.py tools/ci/tests/test_write_proof_aggregate.py tools/ci/tests/test_check_proof_authority.py tools/ci/tests/test_check_lane_handoff.py tools/ci/tests/test_handoff_validation.py; fi
     python3 -m pytest \
         tools/ci/tests/test_write_proof_manifest.py \
         tools/ci/tests/test_proof_execution_result.py \
+        tools/ci/tests/test_run_local_test_scope.py \
         tools/ci/tests/test_write_proof_aggregate.py \
         tools/ci/tests/test_check_proof_authority.py \
         tools/ci/tests/test_check_lane_handoff.py \

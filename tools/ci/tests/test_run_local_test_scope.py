@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -248,6 +250,70 @@ def test_local_thread_override_only_reduces_catalog_cap() -> None:
     for invalid in ("", "0", "5", "-1", "1.0", " 1", "1 ", "１"):
         with pytest.raises(ValueError, match="QUANTA_INDEX_TEST_THREADS"):
             MODULE.effective_test_threads(4, invalid)
+
+
+def test_proof_mode_collects_and_runs_the_same_target(tmp_path: Path, monkeypatch) -> None:
+    data = _catalog(tmp_path)
+    monkeypatch.setattr(MODULE, "ROOT", tmp_path)
+    lane, threads, include_lib, packages, targets = MODULE.resolve_targets(data, ["one"])
+    command = MODULE.build_command(lane, threads, include_lib, packages, targets)
+    calls = []
+    metadata = {"crate": "first", "test_binary": "alpha", "kind": "test"}
+    name = "first::alpha$passes"
+
+    def fake_run(args, *, cwd, stdout, stderr, env=None):
+        calls.append(args)
+        assert cwd == tmp_path
+        if args[args.index("nextest") + 1] == "list":
+            stdout.write(
+                json.dumps(
+                    {
+                        "test-count": 1,
+                        "rust-suites": {
+                            "first::alpha": {
+                                "package-name": "first",
+                                "binary-name": "alpha",
+                                "kind": "test",
+                                "status": "listed",
+                                "testcases": {
+                                    "passes": {
+                                        "ignored": False,
+                                        "filter-match": {"status": "matches"},
+                                    }
+                                },
+                            }
+                        },
+                    }
+                ).encode()
+            )
+        else:
+            assert env["NEXTEST_EXPERIMENTAL_LIBTEST_JSON"] == "1"
+            rows = [
+                {"type": "suite", "event": "started", "test_count": 1, "nextest": metadata},
+                {"type": "test", "event": "started", "name": name},
+                {"type": "test", "event": "ok", "name": name},
+                {
+                    "type": "suite",
+                    "event": "ok",
+                    "passed": 1,
+                    "failed": 0,
+                    "ignored": 0,
+                    "nextest": metadata,
+                },
+            ]
+            stdout.write("".join(json.dumps(row) + "\n" for row in rows).encode())
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(MODULE.subprocess, "run", fake_run)
+    raw = tmp_path / "proof-raw"
+    assert MODULE.run_with_proof_evidence(command, scopes=["one"], lane=lane, raw_dir=raw) == 0
+    assert calls[0][calls[0].index("nextest") + 1] == "list"
+    assert calls[1][calls[1].index("nextest") + 1] == "run"
+    assert "--message-format-version" in calls[1]
+    assert len(list(raw.glob("*-inventory.json"))) == 1
+    assert len(list(raw.glob("*-nextest.jsonl"))) == 1
+    with pytest.raises(ValueError, match="already exists"):
+        MODULE.run_with_proof_evidence(command, scopes=["one"], lane=lane, raw_dir=raw)
 
 
 def test_local_thread_override_reaches_dry_run(tmp_path: Path, monkeypatch, capsys) -> None:

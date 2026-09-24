@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import os
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
 ROOT = Path(__file__).resolve().parents[2]
 CATALOG = ROOT / "tools" / "ci" / "test-authority.toml"
 TEST_THREADS_OVERRIDE = "QUANTA_INDEX_TEST_THREADS"
+PROOF_RAW_DIR = "QUANTA_PROOF_RAW_DIR"
 
 
 def load_catalog(path: Path = CATALOG) -> dict[str, Any]:
@@ -205,6 +207,83 @@ def build_command(
     return command
 
 
+def build_inventory_command(run_command: list[str]) -> list[str]:
+    """Use the same package and target selectors for the collection oracle."""
+    nextest_index = run_command.index("nextest")
+    if run_command[nextest_index + 1] != "run":
+        raise ValueError("expected nextest run command")
+    runtime_index = run_command.index("--test-threads")
+    return [
+        *run_command[: nextest_index + 1],
+        "list",
+        *run_command[nextest_index + 2 : runtime_index],
+        "--message-format",
+        "json",
+    ]
+
+
+def run_with_proof_evidence(
+    command: list[str], *, scopes: list[str], lane: str, raw_dir: Path
+) -> int:
+    """Capture complete machine evidence when a proof owner explicitly opts in."""
+    try:
+        from tools.ci.nextest_events import (
+            NextestEvidenceError,
+            parse_nextest,
+            parse_nextest_inventory,
+        )
+    except ModuleNotFoundError:
+        sys.path.insert(0, str(ROOT))
+        from tools.ci.nextest_events import (
+            NextestEvidenceError,
+            parse_nextest,
+            parse_nextest_inventory,
+        )
+
+    label = "-".join((*scopes, lane))
+    if not label or any(
+        character not in "abcdefghijklmnopqrstuvwxyz0123456789-_" for character in label
+    ):
+        raise ValueError("proof scope/lane label is not filesystem-safe")
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    inventory = raw_dir / f"{label}-inventory.json"
+    events = raw_dir / f"{label}-nextest.jsonl"
+    list_stderr = raw_dir / f"{label}-list.stderr.log"
+    run_stderr = raw_dir / f"{label}-run.stderr.log"
+    paths = (inventory, events, list_stderr, run_stderr)
+    if any(path.exists() for path in paths):
+        raise ValueError(f"proof evidence already exists for {label}; choose a fresh output root")
+    list_command = build_inventory_command(command)
+    run_command = [
+        *command,
+        "--message-format",
+        "libtest-json-plus",
+        "--message-format-version",
+        "0.1",
+    ]
+    with inventory.open("xb") as output, list_stderr.open("xb") as errors:
+        listed = subprocess.run(list_command, cwd=ROOT, stdout=output, stderr=errors)
+    if listed.returncode != 0:
+        return listed.returncode
+    expected = parse_nextest_inventory(inventory)
+    env = os.environ.copy()
+    env["NEXTEST_EXPERIMENTAL_LIBTEST_JSON"] = "1"
+    with events.open("xb") as output, run_stderr.open("xb") as errors:
+        ran = subprocess.run(run_command, cwd=ROOT, env=env, stdout=output, stderr=errors)
+    if ran.returncode != 0:
+        return ran.returncode
+    try:
+        parsed = parse_nextest(events, expected)
+    except NextestEvidenceError as error:
+        raise ValueError(f"nextest machine result is not authoritative: {error}") from error
+    print(
+        f"proof runner evidence: scopes={','.join(scopes)}; selected={parsed.selected}; "
+        f"passed={parsed.passed}; inventory={inventory}; events={events}",
+        flush=True,
+    )
+    return 0
+
+
 def effective_test_threads(declared: int, override: str | None) -> int:
     """Allow an explicit local reduction without exceeding catalog authority."""
     if override is None:
@@ -259,6 +338,21 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         print(shlex.join(command))
         return 0
+    raw_dir = os.environ.get(PROOF_RAW_DIR)
+    if raw_dir:
+        if args.run_ignored != "default":
+            print("proof runner evidence for --run-ignored all is not supported", file=sys.stderr)
+            return 2
+        try:
+            return run_with_proof_evidence(
+                command,
+                scopes=args.scopes,
+                lane=args.lane or default_lane,
+                raw_dir=Path(raw_dir).expanduser(),
+            )
+        except (OSError, ValueError) as error:
+            print(f"proof runner evidence refused: {error}", file=sys.stderr)
+            return 2
     os.chdir(ROOT)
     os.execv(command[0], command)
     return 127  # pragma: no cover - os.execv does not return

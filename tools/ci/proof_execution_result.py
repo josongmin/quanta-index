@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import argparse
 import json
+import os
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -17,6 +19,44 @@ except ModuleNotFoundError:  # direct tool entrypoints place only their own dire
 
 class ExecutionResultError(ValueError):
     """The archived runner evidence does not establish the claimed outcome."""
+
+
+def pytest_junit_identity(nodeid: str) -> str:
+    """Map a collected pytest node ID to its JUnit classname and case name."""
+    parts = nodeid.split("::")
+    if len(parts) < 2 or not parts[0].endswith(".py") or any(not part for part in parts):
+        raise ExecutionResultError(f"invalid pytest node ID: {nodeid!r}")
+    module = parts[0][:-3].replace("/", ".")
+    return ".".join((module, *parts[1:]))
+
+
+def collect_pytest_inventory(selectors: list[str], output: Path) -> None:
+    """Use pytest's actual collector rather than a hand-maintained expected-case list."""
+    import pytest
+
+    class Collector:
+        nodeids: list[str] = []
+
+        def pytest_collection_finish(self, session: Any) -> None:
+            self.nodeids = [item.nodeid for item in session.items]
+
+    collector = Collector()
+    code = pytest.main(["--collect-only", "-q", *selectors], plugins=[collector])
+    if code != pytest.ExitCode.OK or not collector.nodeids:
+        raise ExecutionResultError(f"pytest collection failed or selected no tests: {code}")
+    identities = sorted(pytest_junit_identity(nodeid) for nodeid in collector.nodeids)
+    if len(identities) != len(set(identities)):
+        raise ExecutionResultError("pytest collection contains duplicate JUnit identities")
+    payload = {
+        "schema_version": 1,
+        "kind": "pytest",
+        "selector": " ".join(selectors),
+        "tests": identities,
+    }
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output.with_name(f".{output.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    os.replace(temporary, output)
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -107,7 +147,7 @@ def _pytest_result(events: Path, inventory: Path) -> tuple[dict[str, int], set[s
 
 def derive_test_result(
     root: Path, result: Any, artifacts: list[dict[str, str]]
-) -> tuple[dict[str, int], set[str]]:
+) -> tuple[dict[str, int], set[tuple[str, str]]]:
     if (
         not isinstance(result, dict)
         or set(result) != {"schema_version", "runs"}
@@ -121,7 +161,7 @@ def derive_test_result(
     if len(by_source) != len(artifacts):
         raise ExecutionResultError("duplicate archived artifact source")
     counts = {key: 0 for key in ("selected", "executed", "passed", "failed", "ignored")}
-    names: set[str] = set()
+    names: set[tuple[str, str]] = set()
     used_paths: set[str] = set()
     for run in result["runs"]:
         if not isinstance(run, dict) or set(run) != {"format", "events", "inventory"}:
@@ -151,11 +191,29 @@ def derive_test_result(
             current_names = set(parsed.passed_names)
         else:
             current, current_names = _pytest_result(event_path, inventory_path)
-        if names.intersection(current_names):
+        typed_names = {(run["format"], name) for name in current_names}
+        if names.intersection(typed_names):
             raise ExecutionResultError("duplicate selected test across execution runs")
-        names.update(current_names)
+        names.update(typed_names)
         for key in counts:
             counts[key] += current[key]
     if counts["ignored"] or counts["failed"] or not counts["passed"]:
         raise ExecutionResultError("passed proof contains skipped, failed or empty execution")
     return counts, names
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("operation", choices=["collect-pytest"])
+    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("selectors", nargs="+")
+    args = parser.parse_args(argv)
+    try:
+        collect_pytest_inventory(args.selectors, args.output)
+    except ExecutionResultError as error:
+        parser.error(str(error))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

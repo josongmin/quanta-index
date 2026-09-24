@@ -127,6 +127,7 @@ EXPECTED_P12A_TEST_TARGETS = [
     "proof-authority-python-owner",
     "proof-manifest-python-owner",
     "proof-execution-result-python-owner",
+    "proof-local-scope-runner-python-owner",
 ]
 STREAM_CHUNK_SIZE = 1024 * 1024
 
@@ -1592,7 +1593,7 @@ def check_manifest(
                     derive_test_result,
                 )
 
-                derived_counts, passed_names = derive_test_result(
+                derived_counts, passed_cases = derive_test_result(
                     root, execution_result, payload["artifacts"]
                 )
                 if derived_counts != payload["counts"]:
@@ -1612,12 +1613,14 @@ def check_manifest(
                     owner = target.get("owner")
                     if category == "integration_targets":
                         covered = any(
-                            name.startswith(f"{owner}::{binary}$") for name in passed_names
+                            runner == "nextest-jsonl" and name.startswith(f"{owner}::{binary}$")
+                            for runner, name in passed_cases
                         )
                     else:
                         covered = any(
-                            f".{binary}." in name or name.startswith(f"{binary}.")
-                            for name in passed_names
+                            runner == "pytest-junit"
+                            and (f".{binary}." in name or name.startswith(f"{binary}."))
+                            for runner, name in passed_cases
                         )
                     if not covered:
                         raise ExecutionResultError(

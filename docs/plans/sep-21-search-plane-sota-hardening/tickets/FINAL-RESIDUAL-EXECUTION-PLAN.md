@@ -74,9 +74,13 @@ owner-test counts from archived Nextest JSONL plus collection inventory or
 pytest JUnit plus collection inventory. It rejects missing, malformed, skipped,
 duplicate, partial and count-mismatched runner evidence. P00 passed counts are
 fixed to the single inventory invariant. This closes the arbitrary-log/count
-path for executable owner-test manifests. The canonical owner recipes do not
-yet emit these machine artifacts, so no new owner `passed` manifest should be
-issued from their human-readable logs. Trusted CI-run provenance, Linux host
+path for executable owner-test manifests. `QUANTA_PROOF_RAW_DIR` makes local
+Nextest scopes emit collection inventories and JSONL events; P00/P12A collect
+pytest inventories, with JUnit emitted when the caller supplies the matching
+`PYTEST_ADDOPTS=--junitxml=...`. Default recipe runs do not emit these artifacts,
+`--run-ignored all` scopes have no capture mode, and issuance does not bind
+every recipe subcommand to its exit result. No new owner `passed` manifest
+should be issued from human-readable logs. Trusted CI-run provenance, Linux host
 inventory, executable/command binding, operational pre/post result modes and
 the release recipe producers remain open R0 work. The parser is evidence
 interpretation, not runner attestation or release qualification.
