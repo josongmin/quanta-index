@@ -815,7 +815,7 @@ mod tests {
             Arc::clone(&activation_catalog),
             Arc::new(RwLock::new(Ledger::new())),
         );
-        let peer_access = ControlAccessV1::Peer {
+        let observer = ControlAccessV1::Peer {
             uid: 2000,
             owner_uid: 1000,
         };
@@ -857,7 +857,7 @@ mod tests {
         };
         assert!(absent.head().is_none());
 
-        let observer = ControlAccessV1::Peer {
+        let peer_access = ControlAccessV1::Peer {
             uid: 2000,
             owner_uid: 1000,
         };
