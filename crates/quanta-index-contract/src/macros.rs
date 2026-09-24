@@ -2,8 +2,8 @@
 //! newtype IDs in this crate.
 //!
 //! Why declarative macros, not the serde proc-macro derive attribute:
-//! the workspace bans serde proc-macro derives (semgrep rule
-//! `rust-no-serde-derive`) because derive expansion dominates cold-build time
+//! the workspace bans serde proc-macro derives (enforced by
+//! `check-rust-derive-allowlist.py`) because derive expansion dominates cold-build time
 //! and hides wire shape from review. These `macro_rules!` expansions stay
 //! crate-local, expand fast, and emit the same hand-written
 //! `serde::ser::Serializer` / `serde::de::Visitor` code we previously had

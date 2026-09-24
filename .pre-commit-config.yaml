@@ -209,6 +209,14 @@ repos:
         files: ^(Cargo\.toml|crates/.*\.rs|tools/ci/lint/check-digest-fallibility\.py|tools/ci/tests/test_check_digest_fallibility\.py)$
         stages: [pre-commit, pre-push]
 
+      - id: rust-semantic-outcomes
+        name: Rust semantic outcome honesty
+        entry: python3 tools/ci/lint/check-semantic-outcomes.py
+        language: system
+        pass_filenames: false
+        files: ^(crates/.*\.rs|benchmarks/.*\.rs|tools/ci/lint/(check-semantic-outcomes\.py|semantic-outcome-policy\.json)|tools/ci/tests/test_check_semantic_outcomes\.py)$
+        stages: [pre-push]
+
       - id: cargo-deny
         name: cargo deny
         entry: bash scripts/run-cargo-deny.sh

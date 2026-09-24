@@ -212,7 +212,7 @@ jobs:
           RUSTDOCFLAGS: "-Zsanitizer=thread"
         run: |
           source scripts/quanta-index-env.sh
-          cargo test \
+          ./scripts/cargow test \
             -Z build-std \
             --target x86_64-unknown-linux-gnu \
             --workspace \
@@ -243,7 +243,7 @@ jobs:
           RUSTDOCFLAGS: "-Zsanitizer=address"
         run: |
           source scripts/quanta-index-env.sh
-          cargo test \
+          ./scripts/cargow test \
             -Z build-std \
             --target x86_64-unknown-linux-gnu \
             --workspace \

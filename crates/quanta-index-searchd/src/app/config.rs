@@ -1521,20 +1521,18 @@ fn default_potion_code_model_dir(lookup: &EnvLookup<'_>) -> Result<PathBuf> {
         }
         #[cfg(not(target_os = "macos"))]
         {
-            let base = std::env::var("XDG_CACHE_HOME")
-                .ok()
-                .filter(|value| !value.is_empty())
-                .map(PathBuf::from)
-                .or_else(|| {
-                    std::env::var("HOME")
-                        .ok()
-                        .map(|home| PathBuf::from(home).join(".cache"))
-                })
-                .ok_or_else(|| {
+            let base = if let Some(root) =
+                optional_env("XDG_CACHE_HOME")?.filter(|value| !value.is_empty())
+            {
+                PathBuf::from(root)
+            } else {
+                let home = optional_env("HOME")?.ok_or_else(|| {
                     anyhow::anyhow!(
                         "HOME unset: set QUANTA_INDEX_CACHE_ROOT or QUANTA_INDEX_EMBED_MODEL_DIR"
                     )
                 })?;
+                PathBuf::from(home).join(".cache")
+            };
             base.join("quanta-index")
         }
     };

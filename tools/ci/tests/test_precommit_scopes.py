@@ -241,7 +241,7 @@ def test_ci_python_jobs_install_only_their_runtime_imports() -> None:
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     jobs = workflow["jobs"]
     expected = {
-        "rust-policy": "python -m pip install 'jsonschema>=4.23.0' 'pyyaml>=6.0.2'",
+        "rust-policy": "python -m pip install 'jsonschema>=4.23.0' 'pyyaml>=6.0.2' 'tree-sitter-language-pack==0.9.1'",
         "proof-authority-current-gate": "python -m pip install 'jsonschema>=4.23.0' 'pytest>=8.3.0'",
         "agent-output": "python -m pip install 'jsonschema>=4.23.0'",
     }

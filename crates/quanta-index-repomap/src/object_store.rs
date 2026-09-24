@@ -284,11 +284,17 @@ impl RepoMapObjectStore {
                 observed_byte_size: None,
             })?;
         let raw_bytes = raw.clone();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "usize-to-u64 cannot fail on supported targets; the Option marks the byte size as observed-or-not"
-        )]
-        let observed_byte_size = u64::try_from(raw.len()).ok();
+        let observed_byte_size =
+            Some(
+                u64::try_from(raw.len()).map_err(|error| ObjectVerificationFailureV1 {
+                    reason: QuarantineReasonCodeV1::SecureIoUnavailable,
+                    detail: format!(
+                        "candidate object byte length is not representable as u64: {error}"
+                    ),
+                    raw_bytes: None,
+                    observed_byte_size: None,
+                })?,
+            );
         if CandidateObjectDigestV1::for_canonical_envelope(&raw) != digest {
             return Err(ObjectVerificationFailureV1 {
                 reason: QuarantineReasonCodeV1::AddressDigestMismatch,

@@ -90,3 +90,22 @@ quanta-index-corpus-smoke = { version = "0.1.0", path = "../quanta-index-corpus-
         "quanta-index-core must not depend on quanta-index-lexical "
         "(allowed: ['quanta-index-contract'])"
     ]
+
+
+def test_core_vendor_alias_cannot_bypass_dependency_boundary(tmp_path: Path, monkeypatch) -> None:
+    lint = _load_lint()
+    core = tmp_path / "crates" / "quanta-index-core"
+    core.mkdir(parents=True)
+    (core / "Cargo.toml").write_text(
+        """
+[package]
+name = "quanta-index-core"
+
+[dependencies]
+storage = { package = "rusqlite", version = "0.40" }
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(lint, "CRATES", tmp_path / "crates")
+    messages = [violation.message for violation in lint.check_crate_dependency_matrix()]
+    assert messages == ["quanta-index-core must not depend on vendor crate 'rusqlite'"]

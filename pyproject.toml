@@ -17,6 +17,7 @@ dev = [
     "ruff==0.16.8",
     "pre-commit>=4.0.0",
     "semgrep>=1.76.0",
+    "tree-sitter-language-pack==0.9.1",
 ]
 
 [build-system]

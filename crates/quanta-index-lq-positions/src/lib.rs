@@ -41,7 +41,7 @@
 //!
 //! D18 — every serialized shape uses hand-rolled
 //! `impl serde::Serialize`/`Deserialize`. Proc-macro derives are banned
-//! workspace-wide (semgrep `rust-no-serde-derive`).
+//! workspace-wide (`check-rust-derive-allowlist.py`).
 //!
 //! ## Scope
 //!

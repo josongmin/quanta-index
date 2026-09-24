@@ -87,7 +87,7 @@ These checks apply **while you write**, not as a cleanup pass. Every diff should
 ### Build hygiene
 
 - no proc-macro derives for serialization: `#[derive(serde::Serialize)]`, `#[derive(serde::Deserialize)]`, `#[derive(Serialize)]`, `#[derive(Deserialize)]` are banned. Write manual `impl serde::Serialize` / `impl serde::Deserialize` instead. Reason: proc-macro expansion is the dominant build-time cost in serde-heavy crates; manual impls keep cold-build seconds bounded and make wire shape auditable.
-- the ban applies workspace-wide (contract, core, adapters, searchd, tests, benches). Enforced by semgrep rule `rust-no-serde-derive`.
+- the ban applies workspace-wide (contract, core, adapters, searchd, tests, benches). The derive allowlist below is its single enforcement owner.
 - derive allowlist (script `tools/ci/lint/check-rust-derive-allowlist.py`): every owned Rust source under `crates/` and `benchmarks/` is scanned; only `Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, Error` (thiserror) are permitted. Any other `#[derive(...)]` arrival — `strum::EnumIter`, `clap::Parser`, `Deserialize_repr`, future proc-macros — must measure cost (cargo llvm-lines / --timings) and extend the allowlist explicitly. Reason: flips the serde rule from denylist to allowlist so new proc-macro deps cannot silently bloat cold-build time.
 - monomorphization budget: `tools/ci/lint/check-llvm-lines.py` snapshots LLVM IR line counts for contract + core and fails PRs that exceed the baseline by >15% (and >5k absolute lines). Reason: derive allowlist enforces the rule; this guards the *outcome* — generic blowup or new proc-macros that slip past the allowlist still trip this gate.
 
@@ -114,14 +114,17 @@ These checks apply **while you write**, not as a cleanup pass. Every diff should
 - **Module-tree snapshot** — `tools/ci/lint/check-cargo-modules-snapshot.py` snapshots `cargo modules structure --no-fns` output for `quanta-index-contract` and `quanta-index-core` into `tools/ci/lint/baselines/cargo-modules/<crate>.txt`. Any module rename, deletion, or relocation must accompany a baseline update. Complements `check-public-api.py` (external shape) with internal-shape freeze. Heavy correctness rail.
 - **Wire-surface inventory** — `tools/ci/lint/check-wire-inventory.py` keeps `tools/ci/inventory/wire-surface.toml` exact against the code: every `SearchPlane{Query,Control,Ingest}Ipc{Request,Response}` variant in `crates/quanta-index-contract/src/ipc/{split,ingest}.rs` must be listed (both directions), and every on-disk format-version constant in workspace `src/` (`*FORMAT_VERSION`, `*_FORMAT`, `*SCHEMA_V<n>`, `*CONTRACT_VERSION`, the text normalizer stamp) must be named by exactly one `[[artifact]]` row with the value the code declares and a reproduction class (`producer-rebuild` / `current-format-backup` / `reject-only` / `cache` / `vendor-native`). Legacy roots and old receipts are refusal-only; backup/restore preserves current-format authority and is not an importer. Reason: plan §11 requires the consumer inventory before any state/wire cutover, and an opcode or format bump that lands without the inventory row is exactly the drift the cutover receipt cannot recover. Pre-push + CI gated.
 - **Digest fallibility** — `tools/ci/lint/check-digest-fallibility.py` enforces that every public function returning `[u8; N]` for `N ∈ {16, 20, 32, 48, 64}` either returns `Result<[u8; N], _>` OR carries a doc comment containing the literal phrase `infallible by construction`. Reason: a digest function with a non-Result return forces the implementer into `panic!()`/`unwrap()`/heuristic fallback when the internal codec step fails — exactly the pattern that landed in `lq-ranker::weights_hash` v0. Pre-push + CI gated.
+- **Semantic outcome honesty** — `tools/ci/lint/check-semantic-outcomes.py` uses the explicit `semantic-outcome-policy.json` enum inventory to reject negative-to-positive mapping, catch-all success (including an early `Ok` hidden before a terminal error), and the `StructuralReadiness` negative-to-empty/wrong-error projection or reason loss. An identity-preserving bound catch-all is allowed; `ExecutionOutcomeV2` negative-to-`None` remains valid when it means no exhaustion proof. Production `#[cfg(test)]` branches are excluded; parse errors overlapping governed syntax and any unclassified, missing, or renamed registered enum variant fail closed. This is a bounded syntax guard, not a substitute for owner tests or Rust type checking. Pre-push + CI gated.
 
 ### Silent-fallback guards (semgrep)
 
 - `rust-no-silent-or-else-ok` blocks `.or_else(|_| Ok(...))` shaped error-to-success conversions.
-- `rust-no-err-arm-default` blocks `Err(_) => Default::default()` / `Vec::new()` / `None` / etc. in production crate src/ trees.
+- Clippy's `match_wild_err_arm` owns wildcard `Err(_)` branches; the Semgrep duplicate was removed.
 - `rust-no-debug-assertions-divergence` blocks `cfg!(debug_assertions)` and `#[cfg(debug_assertions)]` in contract/core production paths so release behavior cannot silently diverge from debug.
-- `rust-no-result-to-option-discard` blocks `.err().is_some()` / `.err().is_none()` which throw away the error payload.
-- `rust-no-is-ok-as-branch` / `rust-no-is-err-as-branch` block `if x.is_ok() { ... } else { ... }` and `if x.is_err() { ... } else { ... }` two-branch patterns in production src/ trees. Reason: this shape splits execution on error and routes the err path to a non-error alternate (different algorithm, default value, no-op) — exactly the heuristic-fallback that landed in `weights_hash` v0. Single-branch `if x.is_err() { return Err(...); }` is permitted because it propagates explicitly. Use `?`, `match { Ok(v) => ..., Err(e) => return Err(...) }`, or change the function signature to return `Result` so the typed Err can propagate.
+- Clippy's `disallowed-methods` owns `Result::ok`; the Semgrep duplicate was removed. `.err().is_some()` / `.err().is_none()` remain ordinary presence predicates.
+- `rust-no-is-ok-as-branch` / `rust-no-is-err-as-branch` block general `if x.is_ok() { ... } else { ... }` and `if x.is_err() { ... } else { ... }` two-branch patterns in production src/ trees. A checked `u8`/`u16`/`u32::try_from(value).is_ok()` width predicate is excluded: canonical CBOR uses it for representability, and Clippy requires that spelling. Reason: a general two-branch Result inspection can route errors to an alternate algorithm, default or no-op. Single-branch `if x.is_err() { return Err(...); }` is permitted because it propagates explicitly. Use `?`, `match { Ok(v) => ..., Err(e) => return Err(...) }`, or change the function signature to return `Result` so the typed Err can propagate.
+- `search-plane-no-process-spawn` / `search-plane-no-producer-parser-import` block direct process execution and Git/parse-tree imports in search-plane production source. This mechanically protects one part of the producer-owned source-authority boundary; it does not prove that every file read is authority-safe.
+- Do not lint public `V<n>` type names as parallel IR by spelling alone: RepoMap layout/evidence types expose versioned artifact contracts. Enforce the single-IR rule against actual duplicate producer/consumer paths, not legitimate contract names.
 - *deliberately not enforced via semgrep:* `if let Ok(x) = ... { ... }` with no else. Semgrep's Rust grammar does not handle multi-statement block patterns reliably, and the idiom is too common in legitimate best-effort paths (metrics, logging) to lint without high false-positive rate. Manual code review covers it for now. Same for `Result::map_or(default, ...)` saturation idioms.
 
 ### Verification
@@ -157,16 +160,17 @@ These checks apply **while you write**, not as a cleanup pass. Every diff should
 - Rust format: `just fmt-check`
 - Rust lint: `just rust-clippy`
 - Rust tests: `just rust-test`
-- Rust policy: `just rust-workspace-lints`, `just rust-hexagonal`, `just rust-no-allow`, `just rust-derive-allowlist`, `just rust-cargo-toml-hygiene`, `just rust-module-discipline`, `just rust-module-cycles`, `just rust-error-shape`, `just rust-digest-fallibility`, `just rust-wire-inventory`, `just rust-deny`
+- Rust policy: `just rust-workspace-lints`, `just rust-hexagonal`, `just rust-no-allow`, `just rust-derive-allowlist`, `just rust-cargo-toml-hygiene`, `just rust-module-discipline`, `just rust-module-cycles`, `just rust-error-shape`, `just rust-digest-fallibility`, `just rust-semantic-outcomes`, `just rust-wire-inventory`, `just rust-deny`
 - Rust derive allowlist: `python3 tools/ci/lint/check-rust-derive-allowlist.py`
 - Rust Cargo.toml hygiene: `python3 tools/ci/lint/check-cargo-toml-hygiene.py`
 - Rust module discipline: `python3 tools/ci/lint/check-module-discipline.py`
 - Rust module cycles: `python3 tools/ci/lint/check-module-cycles.py`
 - Rust error shape: `python3 tools/ci/lint/check-error-shape.py`
 - Rust digest fallibility: `python3 tools/ci/lint/check-digest-fallibility.py`
+- Rust semantic outcomes: `python3 tools/ci/lint/check-semantic-outcomes.py`
 - Wire-surface inventory: `python3 tools/ci/lint/check-wire-inventory.py`
 - Rust supply chain: `bash scripts/run-cargo-deny.sh`
-- Semgrep: `just semgrep` (silent-fallback / serde-derive / unwrap / vendor-import rules)
+- Semgrep: `just semgrep` (nonduplicated fallback, workflow, and search-plane authority guards; derive/allow/vendor/port checks have dedicated owners)
 - Prompt drift: `python3 tools/prompt-manager/pm.py lint`
 - Tooling tests: `python3 -m pytest tools -q`
 - Agent output envelope and evidence binding (PR-changed only): `python3 tools/ci/agent/validate_agent_output.py <file>`

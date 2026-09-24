@@ -23,7 +23,7 @@
 //! Existing query / control envelopes in `split.rs` use adjacent tagging via
 //! `#[serde(tag = "kind", content = "payload")]`. They predate this module
 //! and live on a separate migration timeline (see workspace rule
-//! `rust-no-serde-derive`); the wire format difference between the two is
+//! `check-rust-derive-allowlist.py`); the wire format difference between the two is
 //! intentional for the new ingest surface.
 
 use core::fmt;

@@ -1,8 +1,8 @@
 //! `RepoMap` contract surface.
 //!
 //! Every DTO below has a hand-rolled `serde::Serialize` / `serde::Deserialize`
-//! impl. Proc-macro derive is banned workspace-wide (semgrep rule
-//! `rust-no-serde-derive`) because derive expansion dominates cold-build time
+//! impl. Proc-macro derive is banned workspace-wide (enforced by
+//! `check-rust-derive-allowlist.py`) because derive expansion dominates cold-build time
 //! and hides the wire shape from review. The manual impls mirror the pattern
 //! used by `crate::ipc::envelopes`: `serialize_struct` in field-declaration
 //! order, a `Visitor::visit_map` deserializer that rejects unknown fields and

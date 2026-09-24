@@ -198,7 +198,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install policy dependencies
-        run: python -m pip install 'jsonschema>=4.23.0' 'pyyaml>=6.0.2'
+        run: python -m pip install 'jsonschema>=4.23.0' 'pyyaml>=6.0.2' 'tree-sitter-language-pack==0.9.1'
 
       - name: Ensure all workspace crates inherit lints
         run: python3 scripts/check_workspace_lints.py
@@ -232,6 +232,9 @@ jobs:
 
       - name: Digest fallibility (pub fn -> [u8; N] must be Result or doc'd infallible)
         run: python3 tools/ci/lint/check-digest-fallibility.py
+
+      - name: Semantic outcome honesty (registered Rust enums)
+        run: python3 tools/ci/lint/check-semantic-outcomes.py
 
       - name: Test authority (every integration and fuzz target has an owner rail)
         run: python3 tools/ci/lint/check-test-authority.py
@@ -425,6 +428,12 @@ jobs:
       - name: Install semgrep
         run: python -m pip install 'semgrep>=1.76.0'
 
+      - name: Check source-authority rule counterexamples
+        run: python3 tools/ci/tests/test_semgrep_source_authority.py
+
+      - name: Check fallback-rule counterexamples
+        run: python3 tools/ci/tests/test_semgrep_branch_fallback.py
+
       - name: Run semgrep
         run: bash scripts/run-semgrep.sh
 
@@ -439,7 +448,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install prompt-manager deps
-        run: python -m pip install 'jinja2>=3.1.4' 'jsonschema>=4.23.0' 'pyyaml>=6.0.2' 'pytest>=8.3.0' 'ruff==0.16.8'
+        run: python -m pip install 'jinja2>=3.1.4' 'jsonschema>=4.23.0' 'pyyaml>=6.0.2' 'pytest>=8.3.0' 'ruff==0.16.8' 'tree-sitter-language-pack==0.9.1'
 
       - name: prompt-manager lint
         run: python tools/prompt-manager/pm.py lint

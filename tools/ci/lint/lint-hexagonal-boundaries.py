@@ -304,13 +304,16 @@ def check_crate_dependency_matrix() -> list[Violation]:
 
         all_deps = tomllib.loads(cargo_toml.read_text(encoding="utf-8")).get("dependencies", {})
         if name == "quanta-index-core" and isinstance(all_deps, dict):
-            for dep_key in all_deps:
-                base = dep_key.split("/")[0]
+            for dep_key, dep_value in all_deps.items():
+                package = (
+                    dep_value.get("package", dep_key) if isinstance(dep_value, dict) else dep_key
+                )
+                base = package.split("/")[0]
                 if base in FORBIDDEN_VENDOR_DEPS:
                     violations.append(
                         Violation(
                             cargo_toml,
-                            f"quanta-index-core must not depend on vendor crate {dep_key!r}",
+                            f"quanta-index-core must not depend on vendor crate {package!r}",
                         )
                     )
 

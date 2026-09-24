@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "enum_families": [
+    {
+      "type": "ExecutionOutcomeV2",
+      "negative_variants": ["LowerBound", "CappedUnknown", "InterruptedPartial", "Approximate"],
+      "positive_variants": ["ExactExhausted"],
+      "neutral_variants": []
+    },
+    {
+      "type": "StructuralReadiness",
+      "negative_variants": [
+        "ParseTreeProducerUnavailable",
+        "GenerationNotReady",
+        "ShardUnavailable",
+        "InvalidRequest",
+        "ProducerExecution"
+      ],
+      "positive_variants": ["Ready"],
+      "neutral_variants": [],
+      "error_projection": {
+        "ParseTreeProducerUnavailable": "StructuralError::ParseTreeProducerUnavailable",
+        "GenerationNotReady": "StructuralError::GenerationNotReady",
+        "ShardUnavailable": "StructuralError::ShardUnavailable",
+        "InvalidRequest": "StructuralError::InvalidRequest",
+        "ProducerExecution": "StructuralError::ProducerExecution"
+      },
+      "preserve_payload": ["InvalidRequest", "ProducerExecution"]
+    },
+    {
+      "type": "DenseAdmissionOutcomeV1",
+      "negative_variants": ["Capped", "Filled"],
+      "positive_variants": ["Exhausted"],
+      "neutral_variants": ["NotNeeded"]
+    }
+  ]
+}

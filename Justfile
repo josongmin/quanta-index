@@ -692,6 +692,9 @@ rust-error-shape:
 rust-digest-fallibility:
     python3 tools/ci/lint/check-digest-fallibility.py
 
+rust-semantic-outcomes:
+    python3 tools/ci/lint/check-semantic-outcomes.py
+
 rust-test-authority:
     python3 tools/ci/lint/check-test-authority.py
 
@@ -923,6 +926,7 @@ verify:
     @just actionlint
     @just shell-lint
     @just semgrep
+    @just rust-semantic-outcomes
     @just python-lint
     @just python-format-check
     @just python-test

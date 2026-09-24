@@ -28,7 +28,7 @@
 //!   returns a typed [`BridgeError`]. No `panic!`/`unwrap`/`expect`/
 //!   `todo!`/`unimplemented!` on production paths.
 //! * **D18 — hand-rolled serde**. No proc-macro derives anywhere in
-//!   this crate; semgrep `rust-no-serde-derive` covers enforcement.
+//!   this crate; `check-rust-derive-allowlist.py` covers enforcement.
 //! * **Translator version stamping** on every output, per BRIDGE-01
 //!   § 5.4 step 4.
 //! * **Version-pin gating** at the front door: malformed

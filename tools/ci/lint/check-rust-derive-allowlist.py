@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Allowlist-based guard for `#[derive(...)]` invocations.
 
-Existing semgrep rule `rust-no-serde-derive` only blocks the two known-bad
-derive names (Serialize, Deserialize). This script flips that to an explicit
-allowlist of *cheap* derives. Any future proc-macro derive (`strum::EnumIter`,
+This script is the sole derive policy: it rejects the known-bad serde derives
+and allows only *cheap* derives. Any future proc-macro derive (`strum::EnumIter`,
 `clap::Parser`, `Deserialize_repr`, `tokio::main`, ...) silently slipping into
 an owned Rust source file is treated as build-cost regression and fails the gate.
 
@@ -45,8 +44,7 @@ ALLOWED_DERIVES: frozenset[str] = frozenset(
 # whitespace. We capture the comma-separated identifier list inside the parens.
 DERIVE_RE = re.compile(r"#\[\s*derive\s*\(([^)]+)\)\s*\]", re.MULTILINE)
 
-# Banned outright. These exist in clippy/semgrep already, but reasserting here
-# means a single tool can audit the entire derive surface.
+# Banned outright within the single owned derive policy.
 EXPLICIT_BAN: dict[str, str] = {
     "Serialize": "manual `impl serde::Serialize` is required",
     "Deserialize": "manual `impl serde::Deserialize` is required",
