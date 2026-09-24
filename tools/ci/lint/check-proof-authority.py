@@ -59,6 +59,7 @@ TICKET_RE = re.compile(r"^S21-(?:0[0-9]|1[0-3])$")
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 PAIRED_REPOSITORY = "github:josongmin/semantica-codegraph-v2"
 PAIRED_DEPENDENCY_LOCK = "Cargo.lock"
+ERROR_INVENTORY_PATH = "artifacts/sep-21/p00/error-authority-inventory.json"
 SOURCE_BINDING_DOMAIN = "quanta-proof-source-binding-v1"
 PROOF_ARCHIVE_ROOT = PurePosixPath("artifacts/proof-authority/archive")
 EVIDENCE_ARCHIVE_ROOT = PurePosixPath("artifacts/proof-authority/evidence")
@@ -826,6 +827,34 @@ def _payload_json(root: Path, value: str, *, label: str) -> Any:
     return json.loads(_payload_bytes(root, value, label=label))
 
 
+def _check_p00_current_inventory(root: Path, artifacts: list[dict[str, Any]]) -> None:
+    """Recompute the P00 discovery inventory when its source is bound."""
+
+    matches = [item for item in artifacts if item["source_path"] == ERROR_INVENTORY_PATH]
+    if len(matches) != 1:
+        raise ValueError("P00 requires exactly one error-authority inventory artifact")
+    inventory = _payload_json(root, matches[0]["path"], label="P00 inventory archive")
+    schema = _payload_json(
+        root, "tools/ci/error-authority-inventory.schema.json", label="P00 inventory schema"
+    )
+    try:
+        jsonschema.Draft202012Validator(schema).validate(inventory)
+    except jsonschema.ValidationError as error:
+        raise ValueError(f"P00 inventory schema: {error.message}") from error
+    if inventory.get("closed") is not False:
+        raise ValueError("P00 discovery inventory cannot claim semantic closure")
+
+    writer_path = root / "tools/ci/write-error-authority-inventory.py"
+    spec = importlib.util.spec_from_file_location("quanta_p00_inventory_for_check", writer_path)
+    if spec is None or spec.loader is None:
+        raise ValueError(f"cannot load P00 inventory writer: {writer_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    if inventory != module.build_inventory(root):
+        raise ValueError("P00 inventory differs from current source-bound discovery")
+
+
 def _explicit_file_bytes(path: Path, *, label: str) -> bytes:
     """Read a caller-named diagnostic input without following path symlinks."""
 
@@ -1579,6 +1608,12 @@ def check_manifest(
                     findings.append(
                         Finding(manifest_path, f"proof artifact digest mismatch: {artifact_path}")
                     )
+
+    if proof["id"] == "p00-authority-freeze" and payload["status"] == "passed" and bind_source:
+        try:
+            _check_p00_current_inventory(root, payload["artifacts"])
+        except (OSError, RuntimeError, ValueError, TypeError, KeyError, AttributeError) as error:
+            findings.append(Finding(manifest_path, f"P00 current inventory: {error}"))
 
     execution_result = payload.get("execution_result")
     if proof.get("execution_mode") == "test-authority" and payload["status"] == "passed":

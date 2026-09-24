@@ -73,7 +73,8 @@ each commit invalidates earlier exact-source receipts.
 owner-test counts from archived Nextest JSONL plus collection inventory or
 pytest JUnit plus collection inventory. It rejects missing, malformed, skipped,
 duplicate, partial and count-mismatched runner evidence. P00 passed counts are
-fixed to the single inventory invariant. This closes the arbitrary-log/count
+fixed to the single inventory invariant, and a source-bound P00 validation
+recomputes the archived discovery inventory. This closes the arbitrary-log/count
 path for executable owner-test manifests. `QUANTA_PROOF_RAW_DIR` makes local
 Nextest scopes emit collection inventories and JSONL events; P00/P12A collect
 pytest inventories, with JUnit emitted when the caller supplies the matching

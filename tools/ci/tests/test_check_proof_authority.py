@@ -547,6 +547,36 @@ def test_linux_production_host_label_cannot_spoof_non_linux_os(tmp_path: Path) -
     assert "linux-production-like proof requires environment.os='linux'" in messages
 
 
+def test_p00_bound_inventory_rejects_forged_discovery(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    tools = tmp_path / "tools/ci"
+    tools.mkdir(parents=True)
+    writer_path = tools / "write-error-authority-inventory.py"
+    writer_path.write_bytes((REPO_ROOT / "tools/ci/write-error-authority-inventory.py").read_bytes())
+    (tools / "error-authority-inventory.schema.json").write_bytes(
+        (REPO_ROOT / "tools/ci/error-authority-inventory.schema.json").read_bytes()
+    )
+    spec = importlib.util.spec_from_file_location("p00_inventory_fixture", writer_path)
+    assert spec and spec.loader
+    writer = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = writer
+    spec.loader.exec_module(writer)
+    inventory = writer.build_inventory(tmp_path)
+    archive = tmp_path / "artifacts/inventory.json"
+    archive.parent.mkdir()
+    archive.write_text(json.dumps(inventory), encoding="utf-8")
+    artifacts = [{"source_path": MODULE.ERROR_INVENTORY_PATH, "path": "artifacts/inventory.json"}]
+
+    MODULE._check_p00_current_inventory(tmp_path, artifacts)
+
+    inventory["source_digest"] = "sha256:" + "0" * 64
+    archive.write_text(json.dumps(inventory), encoding="utf-8")
+    with pytest.raises(ValueError, match="differs from current source-bound discovery"):
+        MODULE._check_p00_current_inventory(tmp_path, artifacts)
+    with pytest.raises(ValueError, match="exactly one"):
+        MODULE._check_p00_current_inventory(tmp_path, artifacts * 2)
+
+
 def test_bind_source_refuses_stale_head_and_dirty_digest(tmp_path: Path) -> None:
     _init_repo(tmp_path)
     proof = _proof(tmp_path)

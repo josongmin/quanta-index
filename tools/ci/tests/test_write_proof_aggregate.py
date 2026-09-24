@@ -22,6 +22,7 @@ REGISTRY_PATH = REPO_ROOT / "tools/ci/proof-authority.toml"
 MANIFEST_SCHEMA_PATH = REPO_ROOT / "tools/ci/proof-manifest.schema.json"
 AGGREGATE_SCHEMA_PATH = REPO_ROOT / "tools/ci/proof-aggregate.schema.json"
 MANIFEST_WRITER_PATH = REPO_ROOT / "tools/ci/write-proof-manifest.py"
+INVENTORY_WRITER_PATH = REPO_ROOT / "tools/ci/write-error-authority-inventory.py"
 
 
 def _load_module(name: str, path: Path):
@@ -36,6 +37,7 @@ def _load_module(name: str, path: Path):
 WRITER = _load_module("write_proof_aggregate", WRITER_PATH)
 CHECKER = _load_module("write_proof_aggregate_checker", CHECKER_PATH)
 MANIFEST_WRITER = _load_module("aggregate_test_manifest_writer", MANIFEST_WRITER_PATH)
+INVENTORY_WRITER = _load_module("aggregate_test_inventory_writer", INVENTORY_WRITER_PATH)
 
 RELEASE_HOST_INPUT = {
     "profile": "linux-production-like",
@@ -152,6 +154,11 @@ def _build_fixture_root(tmp_path: Path, *, executable: bool) -> tuple[Path, dict
     registry_path.write_text(registry_text, encoding="utf-8")
     shutil.copyfile(MANIFEST_SCHEMA_PATH, root / "tools/ci/proof-manifest.schema.json")
     shutil.copyfile(AGGREGATE_SCHEMA_PATH, root / "tools/ci/proof-aggregate.schema.json")
+    shutil.copyfile(INVENTORY_WRITER_PATH, root / "tools/ci/write-error-authority-inventory.py")
+    shutil.copyfile(
+        REPO_ROOT / "tools/ci/error-authority-inventory.schema.json",
+        root / "tools/ci/error-authority-inventory.schema.json",
+    )
     registry = CHECKER._read_toml(registry_path)
     if executable:
         source_catalog = CHECKER._read_toml(REPO_ROOT / "tools/ci/test-authority.toml")
@@ -197,6 +204,7 @@ def _build_fixture_root(tmp_path: Path, *, executable: bool) -> tuple[Path, dict
     binary = root / "bin/searchd"
     binary.parent.mkdir()
     binary.write_bytes(b"release-daemon")
+    (root / ".gitignore").write_text("/artifacts/\n", encoding="utf-8")
     _run(root, "git", "init", "-q")
     _run(root, "git", "config", "user.name", "Aggregate Fixture")
     _run(root, "git", "config", "user.email", "aggregate@example.invalid")
@@ -345,6 +353,25 @@ def _write_dependency_manifests(
         result_artifacts = []
         execution_result = None
         result_count = 1
+        if proof_id == "p00-authority-freeze":
+            inventory_source = root / CHECKER.ERROR_INVENTORY_PATH
+            inventory_source.parent.mkdir(parents=True, exist_ok=True)
+            inventory_source.write_text(
+                json.dumps(INVENTORY_WRITER.build_inventory(root)), encoding="utf-8"
+            )
+            inventory_digest = _digest(inventory_source)
+            inventory_archive = root / CHECKER.content_archive_relative_path(
+                "evidence", inventory_digest
+            )
+            inventory_archive.parent.mkdir(parents=True, exist_ok=True)
+            inventory_archive.write_bytes(inventory_source.read_bytes())
+            result_artifacts.append(
+                {
+                    "source_path": CHECKER.ERROR_INVENTORY_PATH,
+                    "path": inventory_archive.relative_to(root).as_posix(),
+                    "sha256": inventory_digest,
+                }
+            )
         if proof["execution_mode"] == "test-authority":
             inventory_suites = {}
             events = []
