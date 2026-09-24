@@ -11,10 +11,20 @@ import sys
 from pathlib import Path
 
 try:
-    from tools.ci.nextest_events import NextestEvidenceError, parse_nextest
+    from tools.benchmark.retrieval.proof_inventory import verify_inventory_authority
+    from tools.ci.nextest_events import (
+        NextestEvidenceError,
+        parse_nextest,
+        parse_nextest_inventory,
+    )
 except ModuleNotFoundError:  # direct script invocation
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-    from tools.ci.nextest_events import NextestEvidenceError, parse_nextest
+    from tools.benchmark.retrieval.proof_inventory import verify_inventory_authority
+    from tools.ci.nextest_events import (
+        NextestEvidenceError,
+        parse_nextest,
+        parse_nextest_inventory,
+    )
 
 PROOF_TEST = "actual_runner_binary_emits_receipt_bound_v3_record"
 
@@ -29,9 +39,10 @@ def _hex64(value: object, label: str) -> str:
     return value
 
 
-def _nextest_counts(path: Path) -> tuple[int, int, int, int]:
+def _nextest_counts(path: Path, inventory: Path | None = None) -> tuple[int, int, int, int]:
     try:
-        evidence = parse_nextest(path)
+        expected = parse_nextest_inventory(inventory) if inventory is not None else None
+        evidence = parse_nextest(path, expected)
     except NextestEvidenceError as error:
         raise SystemExit(f"{error}: {path}") from error
     if not any(
@@ -42,7 +53,7 @@ def _nextest_counts(path: Path) -> tuple[int, int, int, int]:
 
 
 def build_summary_from_evidence(
-    record_path: Path, nextest_path: Path, runner_digest: str
+    record_path: Path, nextest_path: Path, runner_digest: str, inventory_path: Path | None = None
 ) -> dict[str, object]:
     try:
         record = json.loads(record_path.read_bytes())
@@ -78,7 +89,7 @@ def build_summary_from_evidence(
     for route, provenance in routes.items():
         if not isinstance(provenance, dict) or provenance.get("capture_id") not in captures:
             raise SystemExit(f"route {route} refers to an absent capture")
-    selected, executed, passed, failed = _nextest_counts(nextest_path)
+    selected, executed, passed, failed = _nextest_counts(nextest_path, inventory_path)
     return {
         "command": "just retrieval-sdk-proof",
         "separate_process": True,
@@ -94,19 +105,26 @@ def build_summary_from_evidence(
     }
 
 
-def build_summary(record_path: Path, nextest_path: Path, runner_path: Path) -> dict[str, object]:
+def build_summary(
+    record_path: Path, nextest_path: Path, runner_path: Path, inventory_path: Path | None = None
+) -> dict[str, object]:
     binary_digest = hashlib.sha256(runner_path.read_bytes()).hexdigest()
-    return build_summary_from_evidence(record_path, nextest_path, binary_digest)
+    return build_summary_from_evidence(record_path, nextest_path, binary_digest, inventory_path)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--record", required=True, type=Path)
     parser.add_argument("--nextest", required=True, type=Path)
+    parser.add_argument("--nextest-inventory", required=True, type=Path)
     parser.add_argument("--runner-bin", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args()
-    summary = build_summary(args.record, args.nextest, args.runner_bin)
+    try:
+        verify_inventory_authority(args.nextest_inventory, "sdk")
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
+    summary = build_summary(args.record, args.nextest, args.runner_bin, args.nextest_inventory)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     temporary = args.out.with_name(f".{args.out.name}.{os.getpid()}.tmp")
     temporary.write_text(json.dumps(summary, sort_keys=True, indent=2) + "\n", encoding="utf-8")

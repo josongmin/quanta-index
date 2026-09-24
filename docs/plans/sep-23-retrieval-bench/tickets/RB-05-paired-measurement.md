@@ -1,6 +1,6 @@
 # RB-05 — Paired Quality, Speed and Resource Measurement
 
-Status: `orchestration-and-qualified-speed-protocol-landed / measurement-blocked`
+Status: `orchestration-landed / replay-gates-failed / measurement-blocked`
 
 Depends on: RB-01, RB-02, RB-03, RB-04; requires RB-00 stage B measurement-entry gate
 
@@ -16,6 +16,8 @@ No real pair has run, so neither the performance authority nor the isolation aut
 
 Qualified capture now freezes clean retrieval source before staging, re-verifies it after capture, and cross-binds that closure to the contract/SDK receipts, protocol lock and run manifest. Isolated execution uses SHA-bound stage-local adapter/evaluator copies. `QUALITY_DELTA` refuses sub-floor samples and cross-checks paired count, win/loss/tie totals, bootstrap mean/bounds, category/language/repository stratum counts and weighted means, plus no-answer abstention evidence.
 
+The latest adversarial audit found three open RB-05 gates. First, merged record provenance includes absolute input paths, so moving a valid staged pair to the final output path changes its re-derived record/report identity and makes `PAIR_VALID` fail. Second, the verdict accepts individually mutated protocol-lock fields and unknown keys that the producer recorded but the consumer did not independently bind. Third, 1,000 repetitions of only two distinct tasks can pass speed replay even though capture preflight rejects fewer than 20 tasks; phase validation also accepts a raw call longer than its containing phase. These are confirmed fixture reproductions, not real-pair measurements. Pending fixes must retain the shared cold/warm protocol and fail closed on mismatched pins, partial rows and impossible timing.
+
 ## Goal
 
 Produce an auditable comparison that separates retrieval quality, chunking effects, index cost and warm-query latency instead of collapsing them into one “performance” score.
@@ -27,6 +29,8 @@ Produce an auditable comparison that separates retrieval quality, chunking effec
 3. Report paired per-query quality (including category/language and failure cases), Recall/MRR/NDCG/BCY, and p50/p95/p99 with sample sizes. Quality is compared at the same result/context budget; latency is compared only for like-for-like API layers. Provide both common-coverage and native-coverage reports. Keep `PAIR_VALID` (paired protocol/universe validity) separate from a blinded `QUALITY_DELTA`: the latter requires `blinding: isolated` with logged `isolation_method`/`access_block_log`, otherwise the quality claim is attested-only.
 4. Measure chunking ablations with the same Quanta model/query settings; distinguish producer effects from Quanta engine changes. An identical SDK transport alone is not proof of identical Semantica producer semantics.
 5. Write run manifest, raw records, path-mapping proof artifact (path map plus both-side path+SHA diff; any mismatch fails the common-universe pair), report, and the `verdict.json` artifact per [TEST-PLAN.md](TEST-PLAN.md) §8 (five states, `blinding`/`isolation_method`/`access_block_log`, missing T-IDs, failure class, provenance digests) under an explicit external output directory; bind exact HEAD, binary, corpus, suite, query-pack, model, Semble revision, config and host digests. Mandatory manifest fields include tokenizer/budget version, Semble dependency lockfile digest, and path+SHA diff digest. Do not commit mutable latest-result artifacts as baselines.
+6. Identify merged record members by stable capture identity and canonical content digest. Keep host-local paths out of digest-bound record/report bytes. Re-derive every retained protocol-lock pin from frozen authority, enforce a closed schema and reconcile the producer/consumer keys in one change. Entry and replay use one eligibility rule; raw sample sums must fit their monotonic phase windows within a declared tolerance.
+7. Validate the stage, promote it atomically, then run the public verdict from a new process at the final path. Require identical re-derived merged record and report digests before/after promotion and refusal after a one-byte raw-record mutation. A stage-only pass is not pair closeout.
 
 ## Owner / expected files
 
@@ -43,4 +47,6 @@ Produce an auditable comparison that separates retrieval quality, chunking effec
 - [TEST-PLAN.md](TEST-PLAN.md) T12–T13 and measurement sample floors are met before any speed delta is called qualified. T16 applies only to incremental claims.
 - One report shows individual query disagreements and chunk spans, not only aggregates; no post-hoc threshold or query cherry-picking.
 - Verify deterministic scoring/reporting from frozen records independently of rerunning expensive indexing.
+- A successful stage-to-final relocation leaves merged record, report and verdict identities stable; path aliases and raw-record input order do not change them. Any changed content or pin still fails.
+- Qualified-speed replay independently enforces the 20-task, one-route, five-root, warmup and 1,000-observation floors and rejects physically impossible raw/phase timing. Existing positive fixtures must use possible durations.
 - Every run emits `verdict.json` per [TEST-PLAN.md](TEST-PLAN.md) §8 with five independent states, missing/not-applicable T-IDs, failure class, and provenance digests matching the run manifest.

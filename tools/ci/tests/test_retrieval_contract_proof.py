@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
+from tools.benchmark.retrieval.proof_inventory import verify_inventory_authority
 from tools.ci import source_closure
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -264,3 +266,163 @@ def test_nextest_summary_rejects_false_green_events(
     evidence.write_text(events, encoding="utf-8")
     with pytest.raises(SystemExit, match=error):
         MODULE.nextest_summary(evidence)
+
+
+def _python_inventory(tmp_path: Path, names: list[str]) -> Path:
+    path = tmp_path / "python-inventory.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "kind": "pytest",
+                "selector": "tools/ci/tests/test_retrieval_benchmark.py",
+                "tests": sorted(names),
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_pytest_inventory_requires_every_collected_test_to_pass(tmp_path: Path) -> None:
+    required = [
+        "tools.ci.tests.test_retrieval_benchmark.test_one",
+        "tools.ci.tests.test_retrieval_benchmark.test_two",
+    ]
+    inventory = _python_inventory(tmp_path, required)
+    junit = tmp_path / "pytest.xml"
+    case = '<testcase classname="tools.ci.tests.test_retrieval_benchmark" name="test_one"/>'
+    junit.write_text(
+        '<testsuite tests="1" failures="0" errors="0" skipped="0">' + case + "</testsuite>",
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit, match="differs from collected"):
+        MODULE.pytest_summary(junit, inventory)
+    junit.write_text(
+        '<testsuite tests="2" failures="0" errors="0" skipped="0">'
+        + case
+        + '<testcase classname="tools.ci.tests.test_retrieval_benchmark" name="test_two"/>'
+        + "</testsuite>",
+        encoding="utf-8",
+    )
+    assert MODULE.pytest_summary(junit, inventory)["passed"] == 2
+    junit.write_text(
+        '<testsuite tests="2" failures="0" errors="0" skipped="1">'
+        + case
+        + '<testcase classname="tools.ci.tests.test_retrieval_benchmark" name="test_two"><skipped/></testcase>'
+        + "</testsuite>",
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit, match="differs from collected"):
+        MODULE.pytest_summary(junit, inventory)
+
+
+def test_pytest_duplicate_across_leaf_suites_is_rejected(tmp_path: Path) -> None:
+    junit = tmp_path / "pytest.xml"
+    suite = (
+        '<testsuite tests="1" failures="0" errors="0" skipped="0">'
+        '<testcase classname="a" name="same"/></testsuite>'
+    )
+    junit.write_text(f"<testsuites>{suite}{suite}</testsuites>", encoding="utf-8")
+    with pytest.raises(SystemExit, match="duplicate pytest JUnit testcase"):
+        MODULE.pytest_summary(junit)
+
+
+def _nextest_inventory(tmp_path: Path, names: list[str]) -> Path:
+    path = tmp_path / "nextest-inventory.json"
+    path.write_text(
+        json.dumps(
+            {
+                "test-count": len(names),
+                "rust-suites": {
+                    "quanta-index-retrieval-bench::chunking_contract": {
+                        "package-name": "quanta-index-retrieval-bench",
+                        "binary-name": "chunking_contract",
+                        "kind": "test",
+                        "status": "listed",
+                        "testcases": {
+                            name: {"ignored": False, "filter-match": {"status": "matches"}}
+                            for name in names
+                        },
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _events(names: list[str], announced: int) -> str:
+    meta = {
+        "crate": "quanta-index-retrieval-bench",
+        "test_binary": "chunking_contract",
+        "kind": "test",
+    }
+    rows = [{"type": "suite", "event": "started", "test_count": announced, "nextest": meta}]
+    for name in names:
+        full = f"quanta-index-retrieval-bench::chunking_contract${name}"
+        rows += [
+            {"type": "test", "event": "started", "name": full},
+            {"type": "test", "event": "ok", "name": full},
+        ]
+    rows.append(
+        {
+            "type": "suite",
+            "event": "ok",
+            "passed": len(names),
+            "failed": 0,
+            "ignored": 0,
+            "nextest": meta,
+        }
+    )
+    return "".join(json.dumps(row) + "\n" for row in rows)
+
+
+def test_nextest_inventory_requires_all_collected_tests_and_announced_count(tmp_path: Path) -> None:
+    inventory = _nextest_inventory(tmp_path, ["one", "two"])
+    events = tmp_path / "nextest.jsonl"
+    events.write_text(_events(["one"], 1), encoding="utf-8")
+    with pytest.raises(SystemExit, match="differs from collected"):
+        MODULE.nextest_summary(events, inventory)
+    events.write_text(_events(["one", "two"], 99), encoding="utf-8")
+    with pytest.raises(SystemExit, match="announced test count disagrees"):
+        MODULE.nextest_summary(events, inventory)
+    events.write_text(_events(["one", "two"], 2), encoding="utf-8")
+    assert MODULE.nextest_summary(events, inventory)["passed"] == 2
+    events.write_text(_events(["one", "other"], 2), encoding="utf-8")
+    with pytest.raises(SystemExit, match="unexpected nextest test"):
+        MODULE.nextest_summary(events, inventory)
+    wrong_binary = _events(["one", "two"], 2).replace(
+        '"test_binary": "chunking_contract"', '"test_binary": "other_binary"'
+    )
+    events.write_text(wrong_binary, encoding="utf-8")
+    with pytest.raises(SystemExit, match="binary identity mismatch"):
+        MODULE.nextest_summary(events, inventory)
+
+
+def test_source_controlled_inventory_refuses_coordinated_partial_proof(tmp_path: Path) -> None:
+    required = [
+        "tools.ci.tests.test_retrieval_benchmark.test_one",
+        "tools.ci.tests.test_retrieval_benchmark.test_two",
+    ]
+    authority = tmp_path / "required.json"
+    authority.write_text(
+        json.dumps({"schema_version": 1, "python": required, "rust": ["r"], "sdk": ["s"]}),
+        encoding="utf-8",
+    )
+    inventory = _python_inventory(tmp_path, required[:1])
+    junit = tmp_path / "pytest.xml"
+    junit.write_text(
+        '<testsuite tests="1" failures="0" errors="0" skipped="0">'
+        '<testcase classname="tools.ci.tests.test_retrieval_benchmark" name="test_one"/>'
+        "</testsuite>",
+        encoding="utf-8",
+    )
+    # Raw evidence and a forged smaller collection agree, but neither may replace
+    # the source-controlled authority for the rail.
+    assert MODULE.pytest_summary(junit, inventory)["passed"] == 1
+    with pytest.raises(ValueError, match="differs from source-controlled"):
+        verify_inventory_authority(inventory, "python", authority)
+    _python_inventory(tmp_path, required)
+    verify_inventory_authority(inventory, "python", authority)
