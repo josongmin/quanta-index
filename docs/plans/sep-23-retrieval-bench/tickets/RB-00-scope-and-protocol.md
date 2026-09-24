@@ -8,7 +8,7 @@ Owner: benchmark plan/protocol; no product runtime edits
 
 ## Current code status (2026-09-24)
 
-Stage A is implemented in the v3 suite/runner schemas, pair/run-manifest/verdict schemas, evaluator, mapping-proof contract and negative tests. Stage B's machine authority is implemented in `admission.schema.json`: qualified capture requires and re-verifies the exact source/corpus/suite/query pack, approved license, two distinct annotation receipts, adjudication, models, Semble lockfile, categorized eval strata, host/cache regime and contract/SDK receipts. Stage B has not externally exited: this repository contains no issued authority packet for an approved pilot. No quality or speed claim is authorized.
+Stage A's artifact and protocol shapes are implemented in the v3 suite/runner schemas, pair/run-manifest/verdict schemas, evaluator, mapping-proof contract and negative tests. Its size-aware graded-relevance rubric is still **not frozen**: the current whole-file NDCG counterexample violates the required context-quality distinction, and `QUALITY_DELTA` fails closed. Stage B's machine authority is implemented in `admission.schema.json`: qualified capture requires and re-verifies the exact source/corpus/suite/query pack, approved license, two distinct annotation receipts, adjudication, models, Semble lockfile, categorized eval strata, host/cache regime and contract/SDK receipts. Stage B has not externally exited: this repository contains no issued authority packet for an approved pilot. No quality or speed claim is authorized.
 
 ## Goal
 
