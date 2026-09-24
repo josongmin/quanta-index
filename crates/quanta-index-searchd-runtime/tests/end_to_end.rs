@@ -47,7 +47,7 @@ use quanta_index_contract::{
 use quanta_index_ipc::send_request;
 use quanta_index_searchd::app::SemanticEmbedderProfile;
 use quanta_index_searchd::app::config::OpenAiEmbedderTuning;
-use quanta_index_searchd_harness::E2eRuntime;
+use quanta_index_searchd_harness::{E2eRuntime, semantic_source_scopes_for_chunk_records};
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::frontdoor_scenarios::{
@@ -412,6 +412,7 @@ fn publish_search_corpus_chunks(
     chunks: Vec<ChunkRecord>,
     bundle_payload: Option<Vec<u8>>,
 ) -> TestResult {
+    let semantic_replace_scopes = semantic_source_scopes_for_chunk_records(&chunks);
     let mut chunks_by_path: BTreeMap<String, Vec<ChunkRecord>> = BTreeMap::new();
     for chunk in chunks {
         chunks_by_path
@@ -442,7 +443,7 @@ fn publish_search_corpus_chunks(
             clear_surfaces: Vec::new(),
             replace_scopes,
             tombstone_scopes: Vec::new(),
-            semantic_replace_scopes: Vec::new(),
+            semantic_replace_scopes,
             semantic_tombstone_scopes: Vec::new(),
             seal: false,
         }),

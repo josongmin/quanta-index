@@ -3723,7 +3723,9 @@ fn language_from_path(path: &str) -> &'static str {
     }
 }
 
-fn semantic_source_scopes_for_chunk_records(
+/// Build the typed semantic source scopes that accompany fixture chunks.
+/// Lexical chunks alone are not an implicit semantic ingest request.
+pub fn semantic_source_scopes_for_chunk_records(
     records: &[ChunkRecord],
 ) -> Vec<SemanticSourceReplaceScopeV1> {
     records
