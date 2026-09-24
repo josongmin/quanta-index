@@ -1,7 +1,9 @@
 """Windows Job ownership, capture, and accounting for benchmark sidecars.
 
 The child cannot run before Job assignment succeeds. Job peak memory is
-committed bytes, not RSS; callers must retain that distinction in evidence.
+committed bytes. The tree working-set peak is a sampled sum of process working
+sets, analogous to summed RSS; shared pages count once per process and peaks
+between samples are not observable. Keep these metrics distinct in evidence.
 """
 
 from __future__ import annotations
@@ -21,9 +23,14 @@ CREATE_UNICODE_ENVIRONMENT = 0x00000400
 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
 JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
 JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION = 1
+JOB_OBJECT_BASIC_PROCESS_ID_LIST = 3
+MAX_JOB_PROCESSES = 4096
+PROCESS_QUERY_LIMITED_INFORMATION = 0x00001000
+SYNCHRONIZE = 0x00100000
 EXTENDED_STARTUPINFO_PRESENT = 0x00080000
 STARTF_USESTDHANDLES = 0x00000100
 PROC_THREAD_ATTRIBUTE_HANDLE_LIST = 0x00020002
+DUPLICATE_SAME_ACCESS = 0x00000002
 GENERIC_READ = 0x80000000
 GENERIC_WRITE = 0x40000000
 FILE_SHARE_READ = 0x00000001
@@ -42,6 +49,21 @@ class JobError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class ProcessWorkingSet:
+    pid: int
+    creation_time_100ns: int
+    working_set_bytes: int
+
+
+@dataclass(frozen=True)
+class ProcessPeak:
+    pid: int
+    creation_time_100ns: int
+    peak_working_set_bytes: int
+    samples: int
+
+
+@dataclass(frozen=True)
 class JobSample:
     observed_monotonic_ns: int
     peak_job_commit_bytes: int
@@ -49,6 +71,8 @@ class JobSample:
     total_kernel_cpu_ns: int
     total_processes: int
     active_processes: int
+    tree_working_set_bytes: int = 0
+    processes: tuple[ProcessWorkingSet, ...] = ()
 
     @property
     def total_cpu_ns(self) -> int:
@@ -57,6 +81,8 @@ class JobSample:
 
 @dataclass(frozen=True)
 class JobRunResult:
+    """Successful snapshot series; sampling_complete does not mean continuous RSS coverage."""
+
     root_pid: int
     root_exit_code: int | None
     timed_out: bool
@@ -64,6 +90,9 @@ class JobRunResult:
     sample_interval_ms: int
     samples: int
     peak_job_commit_bytes: int
+    peak_tree_working_set_bytes: int
+    working_set_samples: int
+    process_peaks: tuple[ProcessPeak, ...]
     total_user_cpu_ns: int
     total_kernel_cpu_ns: int
     sampling_complete: bool
@@ -125,6 +154,38 @@ class _BasicAccountingInformation(ctypes.Structure):
         ("TotalProcesses", wintypes.DWORD),
         ("ActiveProcesses", wintypes.DWORD),
         ("TotalTerminatedProcesses", wintypes.DWORD),
+    ]
+
+
+class _ProcessIdList(ctypes.Structure):
+    _fields_ = [
+        ("NumberOfAssignedProcesses", wintypes.DWORD),
+        ("NumberOfProcessIdsInList", wintypes.DWORD),
+        ("ProcessIdList", ctypes.c_size_t * 1),
+    ]
+
+
+class _FileTime(ctypes.Structure):
+    _fields_ = [("dwLowDateTime", wintypes.DWORD), ("dwHighDateTime", wintypes.DWORD)]
+
+    @property
+    def ticks(self) -> int:
+        return (self.dwHighDateTime << 32) | self.dwLowDateTime
+
+
+class _ProcessMemoryCountersEx(ctypes.Structure):
+    _fields_ = [
+        ("cb", wintypes.DWORD),
+        ("PageFaultCount", wintypes.DWORD),
+        ("PeakWorkingSetSize", ctypes.c_size_t),
+        ("WorkingSetSize", ctypes.c_size_t),
+        ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+        ("QuotaPagedPoolUsage", ctypes.c_size_t),
+        ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+        ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+        ("PagefileUsage", ctypes.c_size_t),
+        ("PeakPagefileUsage", ctypes.c_size_t),
+        ("PrivateUsage", ctypes.c_size_t),
     ]
 
 
@@ -235,6 +296,39 @@ class _Win32Backend:
                 [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)],
                 wintypes.BOOL,
             ),
+            "OpenProcess": ([wintypes.DWORD, wintypes.BOOL, wintypes.DWORD], wintypes.HANDLE),
+            "GetCurrentProcess": ([], wintypes.HANDLE),
+            "DuplicateHandle": (
+                [
+                    wintypes.HANDLE,
+                    wintypes.HANDLE,
+                    wintypes.HANDLE,
+                    ctypes.POINTER(wintypes.HANDLE),
+                    wintypes.DWORD,
+                    wintypes.BOOL,
+                    wintypes.DWORD,
+                ],
+                wintypes.BOOL,
+            ),
+            "GetProcessId": ([wintypes.HANDLE], wintypes.DWORD),
+            "IsProcessInJob": (
+                [wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL)],
+                wintypes.BOOL,
+            ),
+            "GetProcessTimes": (
+                [
+                    wintypes.HANDLE,
+                    ctypes.POINTER(_FileTime),
+                    ctypes.POINTER(_FileTime),
+                    ctypes.POINTER(_FileTime),
+                    ctypes.POINTER(_FileTime),
+                ],
+                wintypes.BOOL,
+            ),
+            "K32GetProcessMemoryInfo": (
+                [wintypes.HANDLE, ctypes.POINTER(_ProcessMemoryCountersEx), wintypes.DWORD],
+                wintypes.BOOL,
+            ),
             "CloseHandle": ([wintypes.HANDLE], wintypes.BOOL),
             "CreateFileW": (
                 [
@@ -300,7 +394,7 @@ class _Win32Backend:
     def open_capture(self, stdout_path: str, stderr_path: str) -> tuple[int, int, int]:
         attributes = _SecurityAttributes()
         attributes.nLength = ctypes.sizeof(attributes)
-        attributes.bInheritHandle = True
+        attributes.bInheritHandle = False
         handles = []
         try:
             for path, access, share, creation in (
@@ -389,10 +483,29 @@ class _Win32Backend:
             environment = ctypes.create_unicode_buffer("\0".join(entries) + "\0\0")
             flags |= CREATE_UNICODE_ENVIRONMENT
         attribute_list = None
-        if capture is not None:
-            startup, attribute_list, _inherited = self._capture_startup(capture)
-            flags |= EXTENDED_STARTUPINFO_PRESENT
+        inheritable = []
+        created = False
+        failure = None
         try:
+            if capture is not None:
+                parent = self.kernel.GetCurrentProcess()
+                for handle in capture:
+                    duplicate = wintypes.HANDLE()
+                    self._check(
+                        self.kernel.DuplicateHandle(
+                            parent,
+                            handle,
+                            parent,
+                            ctypes.byref(duplicate),
+                            0,
+                            True,
+                            DUPLICATE_SAME_ACCESS,
+                        ),
+                        "DuplicateHandle capture",
+                    )
+                    inheritable.append(duplicate.value)
+                startup, attribute_list, _inherited = self._capture_startup(tuple(inheritable))
+                flags |= EXTENDED_STARTUPINFO_PRESENT
             self._check(
                 self.kernel.CreateProcessW(
                     command[0],
@@ -408,9 +521,31 @@ class _Win32Backend:
                 ),
                 "CreateProcessW",
             )
+            created = True
+        except Exception as exc:
+            failure = exc
         finally:
             if attribute_list is not None:
                 self.kernel.DeleteProcThreadAttributeList(attribute_list)
+            close_errors = _close_handles(self, inheritable)
+            if close_errors:
+                if created:
+                    child_errors = []
+                    try:
+                        self.terminate_process(info.hProcess)
+                        if not self.wait(info.hProcess, 5000):
+                            child_errors.append("suspended child survived")
+                    except Exception as exc:
+                        child_errors.append(str(exc))
+                    child_errors.extend(_close_handles(self, [info.hThread, info.hProcess]))
+                    created = False
+                else:
+                    child_errors = []
+                failure = JobError(
+                    f"capture handle cleanup failed: {close_errors}; child cleanup: {child_errors}"
+                )
+        if failure is not None:
+            raise failure
         return info.hProcess, info.hThread, info.dwProcessId
 
     def assign(self, job: int, process: int) -> None:
@@ -446,7 +581,105 @@ class _Win32Backend:
         )
         return accounting
 
+    def _process_ids(self, job: int, expected_active: int) -> tuple[int, ...]:
+        if expected_active < 0 or expected_active > MAX_JOB_PROCESSES:
+            raise JobError("Windows Job process count exceeds sampler bound")
+        capacity = max(expected_active, 1)
+        offset = _ProcessIdList.ProcessIdList.offset
+        size = offset + capacity * ctypes.sizeof(ctypes.c_size_t)
+        buffer = ctypes.create_string_buffer(size)
+        self._check(
+            self.kernel.QueryInformationJobObject(
+                job,
+                JOB_OBJECT_BASIC_PROCESS_ID_LIST,
+                buffer,
+                size,
+                None,
+            ),
+            "QueryInformationJobObject process IDs",
+        )
+        header = ctypes.cast(buffer, ctypes.POINTER(_ProcessIdList)).contents
+        assigned = header.NumberOfAssignedProcesses
+        returned = header.NumberOfProcessIdsInList
+        if assigned != expected_active or returned != assigned or returned > capacity:
+            raise JobError("Windows Job PID list is incomplete or changed during sampling")
+        ids = tuple(sorted((ctypes.c_size_t * returned).from_buffer(buffer, offset)))
+        if len(set(ids)) != len(ids) or any(pid <= 0 or pid > 0xFFFFFFFF for pid in ids):
+            raise JobError("Windows Job PID list contains invalid or duplicate identities")
+        return ids
+
+    def _working_set(self, job: int, process: int, pid: int) -> ProcessWorkingSet:
+        if self.wait(process, 0):
+            raise JobError(f"Windows Job process {pid} exited during sampling")
+        observed_pid = self.kernel.GetProcessId(process)
+        if observed_pid != pid:
+            raise JobError(f"Windows Job PID identity changed during sampling: {pid}")
+        in_job = wintypes.BOOL()
+        self._check(
+            self.kernel.IsProcessInJob(process, job, ctypes.byref(in_job)), "IsProcessInJob"
+        )
+        if not in_job.value:
+            raise JobError(f"Windows Job PID {pid} no longer belongs to this Job")
+        created = _FileTime()
+        exited = _FileTime()
+        kernel = _FileTime()
+        user = _FileTime()
+        self._check(
+            self.kernel.GetProcessTimes(
+                process,
+                ctypes.byref(created),
+                ctypes.byref(exited),
+                ctypes.byref(kernel),
+                ctypes.byref(user),
+            ),
+            "GetProcessTimes",
+        )
+        memory = _ProcessMemoryCountersEx()
+        memory.cb = ctypes.sizeof(memory)
+        self._check(
+            self.kernel.K32GetProcessMemoryInfo(process, ctypes.byref(memory), memory.cb),
+            "K32GetProcessMemoryInfo",
+        )
+        if self.wait(process, 0):
+            raise JobError(f"Windows Job process {pid} exited during sampling")
+        if created.ticks == 0:
+            raise JobError(f"Windows Job process {pid} has no creation identity")
+        return ProcessWorkingSet(pid, created.ticks, memory.WorkingSetSize)
+
     def sample(self, job: int) -> JobSample:
+        before = self._basic_accounting(job)
+        pids = self._process_ids(job, before.ActiveProcesses)
+        handles = []
+        processes = []
+        failure = None
+        after = None
+        try:
+            for pid in pids:
+                process = self.kernel.OpenProcess(
+                    PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, False, pid
+                )
+                self._check(process, f"OpenProcess {pid}")
+                handles.append(process)
+                processes.append(self._working_set(job, process, pid))
+            if self._process_ids(job, len(pids)) != pids:
+                raise JobError("Windows Job PID list changed during sampling")
+            after = self._basic_accounting(job)
+            if after.TotalProcesses != before.TotalProcesses or after.ActiveProcesses != len(pids):
+                raise JobError("Windows Job process population changed during sampling")
+            for process in handles:
+                if self.wait(process, 0):
+                    raise JobError("Windows Job process exited before sample completion")
+        except Exception as exc:
+            failure = exc
+        close_errors = _close_handles(self, handles)
+        if failure is not None:
+            if close_errors:
+                raise JobError(
+                    f"{failure}; process handle cleanup failed: {close_errors}"
+                ) from failure
+            raise failure
+        if close_errors:
+            raise JobError(f"process handle cleanup failed: {close_errors}")
         limits = _ExtendedLimitInformation()
         self._check(
             self.kernel.QueryInformationJobObject(
@@ -459,6 +692,11 @@ class _Win32Backend:
             "QueryInformationJobObject extended limits",
         )
         accounting = self._basic_accounting(job)
+        if (
+            accounting.TotalProcesses != after.TotalProcesses
+            or accounting.ActiveProcesses != after.ActiveProcesses
+        ):
+            raise JobError("Windows Job changed after working-set sampling")
         return JobSample(
             observed_monotonic_ns=time.monotonic_ns(),
             peak_job_commit_bytes=limits.PeakJobMemoryUsed,
@@ -466,6 +704,8 @@ class _Win32Backend:
             total_kernel_cpu_ns=accounting.TotalKernelTime * 100,
             total_processes=accounting.TotalProcesses,
             active_processes=accounting.ActiveProcesses,
+            tree_working_set_bytes=sum(row.working_set_bytes for row in processes),
+            processes=tuple(processes),
         )
 
     def wait(self, handle: int, timeout_ms: int) -> bool:
@@ -533,11 +773,32 @@ class OwnedWindowsProcess:
                 sample.total_kernel_cpu_ns,
                 sample.total_processes,
                 sample.active_processes,
+                sample.tree_working_set_bytes,
             )
         ):
             raise JobError("missing or malformed Windows Job resource sample")
         if sample.total_processes == 0 or sample.active_processes > sample.total_processes:
             raise JobError("inconsistent Windows Job process accounting")
+        if type(sample.processes) is not tuple or len(sample.processes) != sample.active_processes:
+            raise JobError("Windows Job working-set process list is incomplete")
+        pids = set()
+        total_working_set = 0
+        for row in sample.processes:
+            if (
+                not isinstance(row, ProcessWorkingSet)
+                or type(row.pid) is not int
+                or row.pid <= 0
+                or type(row.creation_time_100ns) is not int
+                or row.creation_time_100ns <= 0
+                or type(row.working_set_bytes) is not int
+                or row.working_set_bytes < 0
+                or row.pid in pids
+            ):
+                raise JobError("Windows Job working-set identity is missing or duplicated")
+            pids.add(row.pid)
+            total_working_set += row.working_set_bytes
+        if total_working_set != sample.tree_working_set_bytes:
+            raise JobError("Windows Job working-set sum differs from process rows")
         return sample
 
     def sample(self) -> JobSample:
@@ -586,8 +847,8 @@ class OwnedWindowsProcess:
         """Sample through root exit or timeout, then terminate and verify the Job.
 
         A result exists only when every sample and cleanup check succeeds and
-        at least one positive Job memory peak was observed. Timeout is reported
-        explicitly; callers must reject a timed-out result for scoring.
+        a positive tree working-set sample was observed. A timed-out result is
+        explicit and must be rejected by callers for scoring.
         """
         if self._closed:
             raise JobError("cannot monitor a closed Windows Job")
@@ -606,6 +867,9 @@ class OwnedWindowsProcess:
             raise JobError("monitor timeout and sample interval must be positive")
         started = time.monotonic()
         observations: list[JobSample] = []
+        peak_tree_working_set = 0
+        working_set_samples = 0
+        process_peaks: dict[tuple[int, int], tuple[int, int]] = {}
         exit_code = None
         timed_out = False
         sampling_error = None
@@ -624,6 +888,13 @@ class OwnedWindowsProcess:
                 ):
                     raise JobError("Windows Job accounting regressed between samples")
                 observations.append(current)
+                peak_tree_working_set = max(peak_tree_working_set, current.tree_working_set_bytes)
+                if current.active_processes:
+                    working_set_samples += 1
+                for row in current.processes:
+                    key = (row.pid, row.creation_time_100ns)
+                    prior_peak, prior_count = process_peaks.get(key, (0, 0))
+                    process_peaks[key] = (max(prior_peak, row.working_set_bytes), prior_count + 1)
                 exit_code = self.wait(0)
                 if exit_code is not None:
                     break
@@ -656,8 +927,13 @@ class OwnedWindowsProcess:
         ):
             raise JobError("final Windows Job accounting regressed")
         observations.append(final)
-        if len(observations) < 2 or final.peak_job_commit_bytes <= 0:
-            raise JobError("Windows Job resource evidence has no positive memory sample")
+        if (
+            len(observations) < 2
+            or final.peak_job_commit_bytes <= 0
+            or peak_tree_working_set <= 0
+            or working_set_samples == 0
+        ):
+            raise JobError("Windows Job resource evidence has no positive working-set sample")
         self.sampling_complete = True
         return JobRunResult(
             root_pid=self.pid,
@@ -667,6 +943,12 @@ class OwnedWindowsProcess:
             sample_interval_ms=sample_interval_ms,
             samples=len(observations),
             peak_job_commit_bytes=final.peak_job_commit_bytes,
+            peak_tree_working_set_bytes=peak_tree_working_set,
+            working_set_samples=working_set_samples,
+            process_peaks=tuple(
+                ProcessPeak(pid, created, peak, count)
+                for (pid, created), (peak, count) in sorted(process_peaks.items())
+            ),
             total_user_cpu_ns=final.total_user_cpu_ns,
             total_kernel_cpu_ns=final.total_kernel_cpu_ns,
             sampling_complete=True,
@@ -695,9 +977,9 @@ def launch(
 
     Supply both output paths to create exclusive stdout/stderr captures with
     an explicit Windows inherited-handle list. Without paths, no output capture
-    is provided. Use monitor() for resource evidence. Capture handles are briefly
-    inheritable in the parent; use a dedicated launcher if other threads may
-    concurrently create inheriting child processes.
+    is provided. Use monitor() for resource evidence. Temporary inheritable
+    duplicates exist only around CreateProcess, but a dedicated launcher is
+    still needed if other threads may concurrently create inheriting children.
     """
     if (
         not command
