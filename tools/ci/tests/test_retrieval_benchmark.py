@@ -6,6 +6,7 @@ import hashlib
 import html
 import json
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -171,6 +172,15 @@ def test_ndcg_credits_each_gold_span_once_even_when_chunks_overlap():
     ]
     assert ev.ndcg_at_k(candidates, [label], 10) == pytest.approx(1.0)
     assert ev.ndcg_at_k(list(reversed(candidates)), [label], 10) == pytest.approx(1.0)
+
+
+def test_zero_grade_cannot_be_gold_in_suite_schema_or_evaluator(tmp_path):
+    repo, suite, run, suite_path, runner_path, _files = fixture_v3(tmp_path)
+    suite["tasks"][0]["gold"][0]["grade"] = 0
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(suite, _load_schema("suite.schema.json"))
+    with pytest.raises(ev.EvidenceError, match="gold grade"):
+        record_v3(repo, suite, run, suite_path, runner_path)
 
 
 def test_current_bcy_budget_prefix_and_out_of_budget_not_credited(tmp_path):
@@ -823,6 +833,7 @@ def test_qualified_uncertainty_contract_rejects_incomplete_or_forged_strata(monk
             "file hash mismatch",
         ),
         (lambda s, r, f: s["tasks"][0]["gold"][0].update(grade=5), "grade"),
+        (lambda s, r, f: s["tasks"][0]["gold"][0].update(grade=0), "gold grade"),
         (lambda s, r, f: s["tasks"][0]["gold"][0].update(grade="high"), "grade"),
         (lambda s, r, f: s["file_universe"][0].update(file_sha256="0" * 64), "file universe"),
         (lambda s, r, f: s["tasks"][1].update(answerable=True), "answerable/gold mismatch"),
@@ -1351,6 +1362,8 @@ def test_run_semble_capture_forwards_lockfile(tmp_path, monkeypatch):
     command = seen["command"]
     assert command[command.index("--lockfile") + 1] == "/frozen/semble-lockfile.txt"
     assert command[command.index("--lockfile-sha256") + 1] == "c" * 64
+    assert command[command.index("--repetitions") + 1] == "1"
+    assert command[command.index("--warmup-passes") + 1] == "1"
 
 
 def test_freeze_inputs_freezes_lockfile(tmp_path):
@@ -2104,6 +2117,7 @@ def _pair_stage(
     tmp_path,
     *,
     repetitions=1,
+    qualified_speed_sample=False,
     blinding="attested",
     scope="exploratory",
     claims=None,
@@ -2116,6 +2130,24 @@ def _pair_stage(
     """Build a complete valid pair stage through the real driver functions."""
     work = tmp_path / "work"
     repo, suite, run, _sp, _rp, files = fixture_v3(work / "src", answerable_only=True)
+    if qualified_speed_sample:
+        if repetitions != 5:
+            raise ValueError("qualified speed fixture requires five fresh roots")
+        original_tasks = list(suite["tasks"])
+        original_results = list(run["results"])
+        for index in range(3, 21):
+            source_task = original_tasks[(index - 3) % len(original_tasks)]
+            task = json.loads(json.dumps(source_task))
+            task["task_id"] = f"T{index}"
+            task["query"] = f"locate fixture {ev.digest(f'qualified-speed-task-{index}'.encode())}"
+            task["query_sha256"] = ev.digest(task["query"].encode())
+            task["query_family_id"] = f"fam-speed-{index}"
+            suite["tasks"].append(task)
+            for source_row in original_results:
+                if source_row["task_id"] == source_task["task_id"]:
+                    row = json.loads(json.dumps(source_row))
+                    row["task_id"] = task["task_id"]
+                    run["results"].append(row)
     if not graded:
         for task in suite["tasks"]:
             for label in task["gold"]:
@@ -2252,6 +2284,8 @@ def _pair_stage(
         }
 
     rep_layouts = []
+    measurements = 10 if qualified_speed_sample else 1
+    warm_query_ms = len(pack["tasks"]) * measurements * 1.5 if qualified_speed_sample else 3.0
     for rep in range(repetitions):
         rep_dir = stage / f"rep-{rep:02d}"
         qdir = rep_dir / "quanta" / "strategy-00-whole_file"
@@ -2265,17 +2299,19 @@ def _pair_stage(
         qpath.write_text(json.dumps(qrec), encoding="utf-8")
         spath.write_text(json.dumps(srec), encoding="utf-8")
         task_ids = [task["task_id"] for task in pack["tasks"]]
-        protocol = pairrun.build_query_protocol(task_ids, rep, 1, 1)
+        protocol = pairrun.build_query_protocol(task_ids, rep, 1, measurements)
         protocol_path = rep_dir / "query-protocol.json"
         protocol_path.write_text(json.dumps(protocol), encoding="utf-8")
         q_warm = {
             "lexical": {
-                row["task_id"]: [row["timings"]["query_latency_ms"]] for row in qrec["results"]
+                row["task_id"]: [row["timings"]["query_latency_ms"]] * measurements
+                for row in qrec["results"]
             }
         }
         s_warm = {
             "hybrid": {
-                row["task_id"]: [row["timings"]["query_latency_ms"]] for row in srec["results"]
+                row["task_id"]: [row["timings"]["query_latency_ms"]] * measurements
+                for row in srec["results"]
             }
         }
         qphase = qdir / "phase-metrics.json"
@@ -2288,13 +2324,13 @@ def _pair_stage(
                     "strategy": "whole_file",
                     "record_sha256": ev.digest(qpath.read_bytes()),
                     "runner_binary_sha256": binary_digest,
-                    "task_count": 2,
+                    "task_count": len(pack["tasks"]),
                     "route_count": 1,
                     "file_count": 2,
                     "chunk_count": 2,
                     "query_schedule": [task["task_id"] for task in pack["tasks"]],
                     "warmup_passes": 1,
-                    "measurement_repetitions": 1,
+                    "measurement_repetitions": measurements,
                     "query_protocol": protocol,
                     "warm_latencies_ms": q_warm,
                     "cold_latencies_ms": {"lexical": 1.0},
@@ -2305,10 +2341,10 @@ def _pair_stage(
                         "embed_publish_seal_activate": 1.0,
                         "cold_query": 1.0,
                         "warmup": 1.0,
-                        "warm_query": 3.0,
+                        "warm_query": warm_query_ms,
                         "unattributed": 1.0,
                     },
-                    "total_ms": 10.0,
+                    "total_ms": 7.0 + warm_query_ms,
                 }
             ),
             encoding="utf-8",
@@ -2323,13 +2359,13 @@ def _pair_stage(
                     "strategy": "native",
                     "record_sha256": ev.digest(spath.read_bytes()),
                     "worker_sha256": _fake_sha("worker"),
-                    "task_count": 2,
+                    "task_count": len(pack["tasks"]),
                     "route_count": 1,
                     "file_count": 2,
                     "chunk_count": 2,
                     "query_schedule": [task["task_id"] for task in pack["tasks"]],
                     "warmup_passes": 1,
-                    "measurement_repetitions": 1,
+                    "measurement_repetitions": measurements,
                     "query_protocol": protocol,
                     "warm_latencies_ms": s_warm,
                     "cold_latencies_ms": {"hybrid": 1.0},
@@ -2339,7 +2375,7 @@ def _pair_stage(
                         "index": 1.0,
                         "warmup": 1.0,
                         "cold_query": 1.0,
-                        "warm_query": 3.0,
+                        "warm_query": warm_query_ms,
                         "unattributed": 1.0,
                     },
                     "phase_boundaries_ns": {
@@ -2353,10 +2389,10 @@ def _pair_stage(
                         "query_start": 5_000_000,
                         "first_query_start": 5_000_000,
                         "first_query_end": 6_500_000,
-                        "query_end": 8_000_000,
-                        "worker_end": 9_000_000,
+                        "query_end": 5_000_000 + int(warm_query_ms * 1_000_000),
+                        "worker_end": 6_000_000 + int(warm_query_ms * 1_000_000),
                     },
-                    "total_ms": 9.0,
+                    "total_ms": 6.0 + warm_query_ms,
                 }
             ),
             encoding="utf-8",
@@ -2369,7 +2405,7 @@ def _pair_stage(
             "root_pid": 100 + rep,
             "exit_code": 0,
             "timed_out": False,
-            "elapsed_ms": 5.0,
+            "elapsed_ms": 7.0 + warm_query_ms,
             "peak_rss_bytes": 4096,
             "peak_cpu_percent": 10.0,
             "processes": [
@@ -2680,7 +2716,7 @@ def _pair_stage(
                 "repetitions": repetitions,
                 "base_seed": 0,
                 "query_warmup_passes": 1,
-                "query_repetitions_per_root": 1,
+                "query_repetitions_per_root": measurements,
                 "query_protocol_sha256s": [
                     json.loads(Path(layout["query_protocol"]).read_text(encoding="utf-8"))["sha256"]
                     for layout in rep_layouts
@@ -2837,9 +2873,7 @@ def test_verdict_lying_manifest_refused(tmp_path):
     _rewrite_manifest(st, lambda m: m["evidence"]["perf"].update({"observations_floor": 9999}))
     verdict = _stage_verdict(st)
     assert verdict["states"]["PERF_QUALIFIED"] == "fail"
-    assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"].startswith(
-        "measurement_protocol_ineligible:"
-    )
+    assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == "perf_floor_mismatch"
     # A swapped binary pin fails the pair binding.
     st = _pair_stage(tmp_path / "binary")
     _rewrite_manifest(st, lambda m: m["provenance"]["quanta"].update({"binary_digest": "0" * 64}))
@@ -2903,6 +2937,53 @@ def test_verdict_garbage_test_artifact(tmp_path):
     verdict = _stage_verdict(st)
     assert verdict["states"]["CONTRACT_GREEN"] == "fail"
     assert "raw evidence refused" in verdict["state_evidence"]["CONTRACT_GREEN"]["reason"]
+
+
+def test_verdict_rejects_coordinated_partial_inventory_and_receipt_rebind(tmp_path):
+    st = _pair_stage(tmp_path, receipts="full")
+    assert _stage_verdict(st)["states"]["CONTRACT_GREEN"] == "pass"
+    manifest = json.loads(st["manifest_path"].read_text())
+    paths = {
+        key: st["stage"] / manifest["artifacts"][f"contract_python_{key}"]
+        for key in ("raw", "inventory", "results", "receipt")
+    }
+    inventory = json.loads(paths["inventory"].read_text())
+    inventory["tests"] = inventory["tests"][:1]
+    paths["inventory"].write_text(json.dumps(inventory), encoding="utf-8")
+    identity = inventory["tests"][0]
+    classname = "tools.ci.tests.test_retrieval_benchmark"
+    paths["raw"].write_text(
+        f'<testsuite tests="1" failures="0" errors="0" skipped="0">'
+        f'<testcase classname="{classname}" '
+        f'name="{html.escape(identity[len(classname) + 1 :], quote=True)}"/>'
+        "</testsuite>",
+        encoding="utf-8",
+    )
+    results = _counts_results(
+        "python3 -m pytest tools/ci/tests/test_retrieval_benchmark.py -q", 1, 1, 1, 0
+    )
+    paths["results"].write_text(json.dumps(results), encoding="utf-8")
+    receipt = json.loads(paths["receipt"].read_text())
+    receipt["evidence_sha256"] = pairrun.sha_file(paths["results"])
+    receipt["test_event_count"] = 1
+    for entry in receipt["input_evidence"]:
+        if entry["role"] == "pytest-junit":
+            entry["sha256"] = pairrun.sha_file(paths["raw"])
+        elif entry["role"] == "pytest-inventory":
+            entry["sha256"] = pairrun.sha_file(paths["inventory"])
+    paths["receipt"].write_text(json.dumps(receipt), encoding="utf-8")
+    manifest["evidence"]["contract_suites"]["python"].update(
+        test_result_digest=pairrun.sha_file(paths["results"]),
+        raw_evidence_digest=pairrun.sha_file(paths["raw"]),
+        inventory_digest=pairrun.sha_file(paths["inventory"]),
+    )
+    st["manifest_path"].write_text(json.dumps(manifest), encoding="utf-8")
+    verdict = _stage_verdict(st)
+    assert verdict["states"]["CONTRACT_GREEN"] == "fail"
+    assert (
+        "inventory differs from source authority"
+        in verdict["state_evidence"]["CONTRACT_GREEN"]["reason"]
+    )
 
 
 def test_verdict_mapping_lies(tmp_path):
@@ -2984,10 +3065,8 @@ def test_verdict_perf_frontier_and_gates(tmp_path, monkeypatch):
     monkeypatch.setattr(pairrun, "PILOT_OBSERVATIONS_FLOOR", 2)
     monkeypatch.setattr(pairrun, "FRESH_ROOTS_FLOOR", 1)
     verdict = _stage_verdict(st)
-    assert verdict["states"]["PERF_QUALIFIED"] == "pass"
-    assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == (
-        "phase_and_process_tree_resources_verified"
-    )
+    assert verdict["states"]["PERF_QUALIFIED"] == "fail"
+    assert "at least 20 frozen tasks" in verdict["state_evidence"]["PERF_QUALIFIED"]["reason"]
     # Null timings fail a speed claim once floors hold.
     st = _pair_stage(tmp_path / "nulls", scope="qualified", claims={"speed": True})
     record_path = st["stage"] / "rep-00" / "quanta" / "strategy-00-whole_file" / "record.json"
@@ -3050,6 +3129,29 @@ def test_verdict_perf_frontier_and_gates(tmp_path, monkeypatch):
     assert verdict["states"]["PERF_QUALIFIED"] == "fail"
     assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == "host_contended"
     assert verdict["failure_class"] == "host"
+
+
+def test_qualified_speed_verdict_accepts_full_observation_protocol(tmp_path):
+    st = _pair_stage(
+        tmp_path,
+        repetitions=5,
+        qualified_speed_sample=True,
+        scope="qualified",
+        claims={"speed": True},
+    )
+    matrix = pairrun.read_json(st["stage"] / "latency-matrix.json")
+    assert matrix["fresh_roots"] == 5
+    assert matrix["observations_floor"] == 1_000
+    verdict = _stage_verdict(st)
+    # Contract receipts bind to committed source; this fixture isolates the
+    # independent performance state even in a dirty edit loop.
+    assert verdict["states"]["PAIR_VALID"] == "pass"
+    assert verdict["states"]["PERF_QUALIFIED"] == "pass"
+    assert verdict["states"]["QUALITY_DELTA"] == "not_applicable"
+    assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == (
+        "phase_and_process_tree_resources_verified"
+    )
+    assert verdict["state_evidence"]["PERF_QUALIFIED"]["proof_digest"] is not None
 
 
 def test_verdict_host_profile_fingerprint_is_enforced(tmp_path, monkeypatch):
@@ -3639,6 +3741,24 @@ def test_qualified_verdict_refuses_receipt_capture_closure_mismatch(tmp_path, mo
     )
 
 
+def test_qualified_contract_refuses_coordinated_receipt_closure_rebind(tmp_path):
+    st = _pair_stage(tmp_path, scope="qualified")
+    assert _stage_verdict(st)["states"]["CONTRACT_GREEN"] == "pass"
+    for side in ("python", "rust"):
+        receipt_path = st["stage"] / "receipts" / f"contract_{side}_receipt.json"
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        receipt["source_closure"]["files"][0]["sha256"] = _fake_sha("other-source")
+        core = {
+            key: receipt["source_closure"][key]
+            for key in ("schema_version", "profile", "revision", "roots", "files")
+        }
+        receipt["source_closure"]["digest"] = ev.digest(ev.canonical(core))
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    verdict = _stage_verdict(st)
+    assert verdict["states"]["CONTRACT_GREEN"] == "fail"
+    assert "capture closure" in verdict["state_evidence"]["CONTRACT_GREEN"]["reason"]
+
+
 def test_isolation_proof_refuses_tampered_frozen_runner_tool(tmp_path, monkeypatch):
     monkeypatch.setattr(ev, "MIN_CI_SAMPLE", 2)
     st = _pair_stage(tmp_path, blinding="isolated", scope="qualified", claims={"quality": True})
@@ -3728,6 +3848,55 @@ def test_successful_promotion_replays_identically_in_new_process(tmp_path):
     after = json.loads(output.read_text(encoding="utf-8"))
     assert after["states"] == before["states"]
     assert after["state_evidence"]["PAIR_VALID"] == before["state_evidence"]["PAIR_VALID"]
+
+
+def test_run_pair_promotes_complete_stage_and_public_verdict_replays(tmp_path, monkeypatch, capsys):
+    st = _pair_stage(tmp_path / "fixture")
+    original = _stage_verdict(st)
+    output_root = tmp_path / "published"
+    monkeypatch.setattr(pairrun, "preflight_capture", lambda _spec: output_root)
+
+    def staged(_spec, stage):
+        shutil.copytree(st["stage"], stage, dirs_exist_ok=True)
+        return {"status": "staged"}
+
+    monkeypatch.setattr(pairrun, "_run_pair_staged", staged)
+    assert (
+        pairrun.run_pair(
+            {
+                "scope": "exploratory",
+                "semble_lockfile_sha256": _fake_sha("lock"),
+                "semble_python": "python3",
+                "semble_lockfile": "lockfile",
+                "host_profile": "host-profile",
+            }
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out)["output_root"] == str(output_root)
+    assert not output_root.with_name(output_root.name + ".staging").exists()
+    public = subprocess.run(
+        [
+            sys.executable,
+            str(Path(pairrun.__file__)),
+            "verdict",
+            "--repo",
+            str(st["repo"]),
+            "--suite",
+            str(output_root / st["suite_path"].relative_to(st["stage"])),
+            "--run-manifest",
+            str(output_root / "run-manifest.json"),
+            "--out",
+            str(tmp_path / "replayed.json"),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert public.returncode == 0, public.stderr
+    replayed = json.loads((tmp_path / "replayed.json").read_text())
+    assert replayed["states"] == original["states"]
+    assert replayed["state_evidence"]["PAIR_VALID"] == original["state_evidence"]["PAIR_VALID"]
 
 
 def test_pair_staging_atomicity(tmp_path, monkeypatch):
@@ -4538,6 +4707,8 @@ def test_v3_pair_spec_schema():
     invalid(lambda s: s.update(top_k=0))
     invalid(lambda s: s.update(semble_lockfile=""))
     invalid(lambda s: s.update(cache_regime="lukewarm"))
+    invalid(lambda s: s.update(semble_repetitions=2))
+    invalid(lambda s: s.update(semble_warmup_passes=0))
 
     qualified = _g0_spec()
     qualified["scope"] = "qualified"
@@ -4567,6 +4738,12 @@ def test_v3_spec_accepts_lockfile_path(tmp_path):
     spec_path.write_text(json.dumps(bad), encoding="utf-8")
     with pytest.raises(pairrun.RunError, match="spec.cache_regime must be"):
         pairrun.load_spec(spec_path)
+    for removed_key in ("semble_repetitions", "semble_warmup_passes"):
+        bad = _g0_spec()
+        bad[removed_key] = 2
+        spec_path.write_text(json.dumps(bad), encoding="utf-8")
+        with pytest.raises(pairrun.RunError, match="unknown keys"):
+            pairrun.load_spec(spec_path)
 
 
 def test_retrieval_recipes_download_nothing():

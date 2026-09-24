@@ -124,7 +124,7 @@ def positive_int(value: Any, where: str) -> int:
 
 
 def grade_value(value: Any, where: str) -> int:
-    require(type(value) is int and 0 <= value <= 3, f"{where} grade must be an integer 0-3")
+    require(type(value) is int and 1 <= value <= 3, f"{where} gold grade must be an integer 1-3")
     return value
 
 

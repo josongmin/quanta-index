@@ -87,6 +87,9 @@ converting them in the evaluator.
 
 The suite requires a `comparison_contract` with `top_k`, `tokenizer`,
 `tokenizer_budget_version`, `output_unit_policy`, and the byte-span unit.
+Gold spans may carry grades 1–3 only. A grade-0 (irrelevant) judgment is not
+a gold span: including it would mark a task answerable and award Recall/BCY
+credit despite zero NDCG gain. No-answer tasks have an empty `gold` list.
 The blind pack echoes this contract without train rows, labels, grades, or
 answerability bits. The runner record echoes the same contract, binds each
 route to a capture, and binds captures to binary, generation, receipt,
@@ -178,7 +181,6 @@ keys: `repo`, `manifest`, `suite`, `query_pack`, `top_k`, `output_root`,
 | `semble_lockfile_sha256` | required for `pair` | SHA-256 of the external lockfile; env must carry every locked line plus `semble==0.6.0` |
 | `semble_route` | `semble-hybrid` | Semble record route name |
 | `semble_cache_root` | `<out>/semble-cache` | Semble + HF caches (outside checkout) |
-| `semble_repetitions`/`semble_warmup_passes` | `1`/`0` | exploratory Semble-only compatibility knobs; never qualify speed |
 | `query_repetitions_per_root`/`query_warmup_passes` | `1`/`1` | one driver-generated, digest-bound randomized schedule consumed by both runners; qualified speed requires warmup >= 1 and at least 1,000 warm observations per route across roots |
 | `semble_model_revision` | observed | pinned HF revision (drift fails) |
 | `quanta_model_dir` | none | explicit local model directory; required for a `potion-code` speed claim and counted separately from index storage |
@@ -190,7 +192,7 @@ keys: `repo`, `manifest`, `suite`, `query_pack`, `top_k`, `output_root`,
 | `admission` | required for `qualified` | paths to the W0-B manifest, license receipt, two independent annotation receipts, and adjudication receipt |
 | `host_profile` | required for `pair` | path to a generated host-profile JSON; the file is frozen, digest-bound, and matched against both host probes |
 | `claims` | all `false` | `{quality,speed,same_model,incremental}` |
-| `receipts` | omitted | paths to contract/SDK summaries, receipts, raw JUnit/nextest JSONL and actual-runner record; all bytes are frozen and raw evidence is reparsed by the verdict |
+| `receipts` | omitted | paths to contract/SDK summaries, receipts, raw JUnit/nextest JSONL, actual-runner record and Python/Rust/SDK collection inventories; all bytes are frozen and raw evidence is reparsed by the verdict |
 | `timeout_secs` | `1800` | per-capture timeout |
 
 Before a paired run, author a hash-pinned external lockfile for the exact
@@ -254,13 +256,13 @@ The validator regenerates the complete protocol from the frozen seed, task order
 warmup count and measurement count. A different permutation with a recomputed,
 internally valid SHA-256 is still rejected.
 
-The cold/warm capture path above is present. The 2026-09-24 adversarial audit
-found qualified replay blocked at its audited source; closure requires the same
-independent 20-task, one-Quanta-route, five-root, warmup and 1,000-observation
-requirements as capture preflight; repetition cannot replace missing tasks.
-Raw serial call durations must fit their enclosing monotonic phase windows
-within a declared clock/serialization tolerance. The protocol lock must reject
-unknown keys and re-derive every retained pin. The lock's retained keys are
+The 2026-09-24 adversarial audit found qualified replay gaps in an earlier
+source. The current implementation enforces the same independent 20-task,
+one-Quanta-route, five-root, warmup and 1,000-observation requirements at
+capture and replay; repetition cannot replace missing tasks. Raw serial call
+durations must fit their enclosing monotonic phase windows within a declared
+clock/serialization tolerance. The protocol lock rejects unknown keys and
+re-derives every retained pin. The lock's retained keys are
 `suite_digest`, `query_pack_digest`, `corpus_manifest_digest`, `top_k`,
 `strategies`, `searchd_expected_sha256`, `semble_lockfile_sha256`,
 `host_profile_digest`, `admission_digest`, `driver_source_closure_digest`,
@@ -268,7 +270,8 @@ unknown keys and re-derive every retained pin. The lock's retained keys are
 `query_repetitions_per_root`, and ordered `query_protocol_sha256s`. Do not
 retain an unbound `spec_digest` without freezing its canonical source artifact.
 At the audited baseline, a two-task fixture passed speed replay and impossible
-raw durations passed phase validation; neither is qualified performance evidence.
+raw durations passed phase validation. Focused regressions now reject both;
+real qualified performance evidence remains pending.
 
 Notes: the first Semble index includes the model download (later runs reuse
 the cache; `index_stats` and `semble_index_ms` always record what ran).
@@ -278,11 +281,11 @@ The verdict resolves and revalidates record/report paths from the manifest;
 there are no separate records, route, or baseline CLI arguments.
 
 Successful atomic promotion must preserve canonical merged record, report and
-verdict identities. At the audited baseline, the merger included absolute
-input paths in digest-bound provenance: relocating otherwise unchanged stage
-files turned `PAIR_VALID=pass` into `fail`. Until corrected and regression-tested, a stage
-verdict is not final-path proof. Re-run the public verdict from a fresh process
-after promotion and require the same independently re-derived identities.
+verdict identities. At the audited baseline, absolute input paths in merged
+provenance made unchanged stage files fail after relocation. The merger now
+uses relative capture provenance, and a focused regression checks promoted
+replay in a fresh process. A final admitted pair still requires the public
+verdict at its promoted path with independently re-derived identities.
 
 ## T00–T17 evidence map
 
@@ -305,19 +308,25 @@ required rail has no current-source evidence; T15 and T16 are
 | T09 | same (oracle cases + fallback accounting) | `just retrieval-contract-proof <fresh-output-root>` |
 | T10 | per-strategy generation/capture/model binding plus deterministic replay | `just retrieval-sdk-proof <fresh-output-root>`; `just retrieval-contract-proof <fresh-output-root>`; real ablation evidence remains unrun |
 | T11 | `semble.py` mapping proof + adapter tests | `mapping-proof.json`; `just retrieval-contract-proof <fresh-output-root>` |
-| T12 | `run.py pair` (same universe/host, full lock and speed eligibility) + `host.json` | `just retrieval-pair <spec>`; real frozen pilot `NOT_RUN`; two-task and pin mutants currently expose verifier gaps |
-| T13 | `run.py verdict` (deterministic re-score and phase/sample consistency) | public verdict after atomic promotion in a fresh process; final-path identity and real-pair `verdict.json` pending |
-| T14 | registered commands and external artifact root | `just benchmark-prep-local`, `just retrieval-contract-local`, `just retrieval-contract-proof <fresh-output-root>` and `just retrieval-sdk-proof <fresh-output-root>`; no implicit model download; successful promotion/replay regression pending |
+| T12 | `run.py pair` (same universe/host, full lock and speed eligibility) + `host.json` | `just retrieval-pair <spec>`; two-task and pin refusal regressions implemented; real frozen pilot `NOT_RUN` |
+| T13 | `run.py verdict` (deterministic re-score and phase/sample consistency) | fresh-process promoted replay regression implemented; admitted final-path `verdict.json` pending |
+| T14 | registered commands and external artifact root | `just benchmark-prep-local`, `just retrieval-contract-local`, `just retrieval-contract-proof <fresh-output-root>` and `just retrieval-sdk-proof <fresh-output-root>`; no implicit model download; real-pair promotion/replay pending |
 | T15 | model parity (conditional on a same-model claim) | `NOT_APPLICABLE` without that claim; `NOT_RUN` only if claimed without proof |
 | T16 | incremental capture (conditional on an incremental claim) | `NOT_APPLICABLE` without that claim; `NOT_RUN` only if claimed without proof |
 | T17 | W0-B qualification admission | `admission.schema.json` plus license, two annotation, adjudication, model, host, lockfile and exact contract/SDK receipt digests; exploratory runs are never promoted |
 
-Current closeout blockers are explicit: full mandatory test identities must
-be bound to the raw contract/SDK receipts, including nextest announced vs
-terminal counts and globally unique JUnit cases. A fixture with one pass and
-159 skips certified contract proof at the audited baseline, so a receipt digest alone is
-insufficient. The contract/SDK receipt recipes must then be run and frozen
-from one v2 source closure after code, tests and normative documents are final;
+At `a634b90a`, clean-source proof executed all 173 Python contract,
+51 Rust contract and 12 SDK required identities without skips and issued
+three receipts against one source closure. Those receipts qualify only their
+recorded revision and bound inputs. `pair-spec.schema.json` names the
+three inventory inputs; `run-manifest.schema.json` binds their paths and
+SHA-256 claims. Contract/SDK collection inventories and raw terminal evidence
+must match the required identities; the verdict reads the authority Git blob
+at the receipt revision and compares its digest with the receipt's source
+closure. At the audited baseline, a fixture with one pass and 159 skips
+certified contract proof; focused regressions now reject that case. Any later
+bound code, test or normative-document edit requires new contract/SDK receipts
+from one v2 source closure;
 the generic workspace rail must record a post-change frozen-source result;
 and Seatbelt isolation and phase/process-tree RSS still need a real admitted
 quiet-host pair meeting their proof and sample floors. The commands above

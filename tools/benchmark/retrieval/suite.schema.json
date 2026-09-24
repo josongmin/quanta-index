@@ -78,7 +78,7 @@
         "end_line": {"type": "integer", "minimum": 1},
         "file_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "block_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "grade": {"type": "integer", "minimum": 0, "maximum": 3}
+        "grade": {"type": "integer", "minimum": 1, "maximum": 3, "description": "A gold span must be relevant; grade 0 judgments are excluded from gold."}
       }
     },
     "task": {

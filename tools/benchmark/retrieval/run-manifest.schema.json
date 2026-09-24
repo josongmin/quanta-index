@@ -31,15 +31,18 @@
           "type": "object", "additionalProperties": false,
           "required": ["python", "rust"],
           "properties": {
-            "python": {"$ref": "#/$defs/digest_claim"},
-            "rust": {"$ref": "#/$defs/digest_claim"}
+            "python": {"$ref": "#/$defs/contract_digest_claim"},
+            "rust": {"$ref": "#/$defs/contract_digest_claim"}
           }
         },
         "sdk_path": {
           "type": "object", "additionalProperties": false,
-          "required": ["test_result_digest", "separate_process", "sealed_receipt", "activation_ack", "empty_check"],
+          "required": ["test_result_digest", "nextest_digest", "runner_record_digest", "inventory_digest", "separate_process", "sealed_receipt", "activation_ack", "empty_check"],
           "properties": {
             "test_result_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "nextest_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "runner_record_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "inventory_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
             "separate_process": {"type": "boolean"},
             "sealed_receipt": {"type": "boolean"},
             "activation_ack": {"type": "boolean"},
@@ -263,6 +266,15 @@
     }
   ],
   "$defs": {
+    "contract_digest_claim": {
+      "type": "object", "additionalProperties": false,
+      "required": ["test_result_digest", "raw_evidence_digest", "inventory_digest"],
+      "properties": {
+        "test_result_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "raw_evidence_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "inventory_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
     "digest_claim": {
       "type": "object", "additionalProperties": false,
       "required": ["test_result_digest"],

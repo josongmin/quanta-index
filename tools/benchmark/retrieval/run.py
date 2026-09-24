@@ -4,7 +4,7 @@
 Subcommands:
   quanta    run the Rust SDK runner per strategy from a pinned spec
   pair      quanta + Semble sequential capture, merge, score, verdict
-  merge     deterministically merge per-system v2 records into one record
+  merge     deterministically merge per-system v3 records into one record
   verdict   re-score immutable records and emit the verdict artifact (T13)
   host-probe  emit the host check-record (identity, load, thermal/frequency)
 
@@ -1366,8 +1366,6 @@ SPEC_OPTIONAL = (
     "semble_cache_root",
     "semble_model_revision",
     "quanta_model_dir",
-    "semble_repetitions",
-    "semble_warmup_passes",
     "query_repetitions_per_root",
     "query_warmup_passes",
     "baseline_route",
@@ -1703,8 +1701,6 @@ def load_spec(path: Path) -> dict:
         ("seed", 0),
         ("timeout_secs", 1),
         ("repetitions", 1),
-        ("semble_repetitions", 1),
-        ("semble_warmup_passes", 0),
         ("query_repetitions_per_root", 1),
         ("query_warmup_passes", 1),
     ):
@@ -3096,6 +3092,13 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     evidence = manifest["evidence"]
     claims = manifest["claims"]
     provenance_claims = manifest["provenance"]
+    driver_closure = (
+        _validate_source_closure_shape(
+            read_json(resolved["driver_source_closure"]), "driver source closure"
+        )
+        if manifest["scope"] == "qualified"
+        else None
+    )
     host_profile = validate_host_profile(read_json(resolved["host_profile"]))
     if sha_file(resolved["host_profile"]) != provenance_claims["host"]["profile_digest"]:
         raise RunError("host profile artifact digest mismatch")
@@ -3227,14 +3230,11 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         ):
             pair_note("protocol_lock_admission_drift", ("T17",))
         if manifest["scope"] == "qualified":
-            closure = _validate_source_closure_shape(
-                read_json(resolved["driver_source_closure"]), "driver source closure"
-            )
-            if closure["revision"] != provenance_claims["quanta"]["source_sha"]:
+            if driver_closure["revision"] != provenance_claims["quanta"]["source_sha"]:
                 pair_note("driver_source_closure_revision_drift", ("T12", "T17"))
-            if closure["digest"] != provenance_claims["quanta"]["source_closure_digest"]:
+            if driver_closure["digest"] != provenance_claims["quanta"]["source_closure_digest"]:
                 pair_note("driver_source_closure_digest_drift", ("T12", "T17"))
-            if protocol_payload.get("driver_source_closure_digest") != closure["digest"]:
+            if protocol_payload.get("driver_source_closure_digest") != driver_closure["digest"]:
                 pair_note("protocol_lock_source_closure_drift", ("T12", "T17"))
         if protocol_payload["host_profile_digest"] != host_profile_digest:
             pair_note("protocol_lock_host_profile_drift", ("T12",))
@@ -3807,6 +3807,11 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                     raise RunError(f"contract {side} summary is not reproducible")
                 if receipt["revision"] != provenance_claims["quanta"]["source_sha"]:
                     raise RunError(f"contract {side} revision mismatch")
+                if (
+                    driver_closure is not None
+                    and receipt["source_closure"]["digest"] != driver_closure["digest"]
+                ):
+                    raise RunError(f"contract {side} source closure differs from capture closure")
                 if not (
                     results["failed"] == 0
                     and results["passed"] > 0
@@ -3885,6 +3890,11 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 raise RunError("sdk summary is not reproducible")
             if sdk_receipt["revision"] != provenance_claims["quanta"]["source_sha"]:
                 raise RunError("sdk revision mismatch")
+            if (
+                driver_closure is not None
+                and sdk_receipt["source_closure"]["digest"] != driver_closure["digest"]
+            ):
+                raise RunError("sdk source closure differs from capture closure")
             if verified_source_digests and sdk_receipt["source_closure"]["digest"] not in (
                 verified_source_digests
             ):
@@ -3943,33 +3953,6 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             perf_fail = ("unsupported_cache_protocol", "host")
         else:
             perf_fail = None
-        try:
-            quanta_routes_by_rep = []
-            for rep in sorted(rep_records, key=_rep_sort_key):
-                routes = {
-                    row["route"]
-                    for path in rep_records[rep]
-                    if validated[path]["system"] == "quanta"
-                    for row in validated[path]["run"]["results"]
-                }
-                quanta_routes_by_rep.append(routes)
-            if not quanta_routes_by_rep or any(
-                routes != quanta_routes_by_rep[0] for routes in quanta_routes_by_rep
-            ):
-                raise RunError("qualified speed requires identical Quanta routes in every root")
-            validate_qualified_speed_spec(
-                {
-                    "repetitions": len(rep_records),
-                    "query_warmup_passes": protocol_payload.get("query_warmup_passes"),
-                    "query_repetitions_per_root": protocol_payload.get(
-                        "query_repetitions_per_root"
-                    ),
-                    "routes": sorted(quanta_routes_by_rep[0]),
-                },
-                len(pack["tasks"]),
-            )
-        except (RunError, TypeError, ValueError) as exc:
-            perf_fail = (f"measurement_protocol_ineligible: {exc}", "provenance")
         try:
             cells = []
             shared_protocol_ok = True
@@ -4078,6 +4061,34 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 perf_fail = ("host_contended", "host")
             elif not shared_protocol_ok:
                 perf_fail = (protocol_failure_reason, "provenance")
+        if perf_fail is None:
+            try:
+                quanta_routes_by_rep = []
+                for rep in sorted(rep_records, key=_rep_sort_key):
+                    routes = {
+                        row["route"]
+                        for path in rep_records[rep]
+                        if validated[path]["system"] == "quanta"
+                        for row in validated[path]["run"]["results"]
+                    }
+                    quanta_routes_by_rep.append(routes)
+                if not quanta_routes_by_rep or any(
+                    routes != quanta_routes_by_rep[0] for routes in quanta_routes_by_rep
+                ):
+                    raise RunError("qualified speed requires identical Quanta routes in every root")
+                validate_qualified_speed_spec(
+                    {
+                        "repetitions": len(rep_records),
+                        "query_warmup_passes": protocol_payload.get("query_warmup_passes"),
+                        "query_repetitions_per_root": protocol_payload.get(
+                            "query_repetitions_per_root"
+                        ),
+                        "routes": sorted(quanta_routes_by_rep[0]),
+                    },
+                    len(pack["tasks"]),
+                )
+            except (RunError, TypeError, ValueError) as exc:
+                perf_fail = (f"measurement_protocol_ineligible: {exc}", "provenance")
         if perf_fail is None:
             set_state(
                 "PERF_QUALIFIED",
@@ -4444,11 +4455,11 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
             task_ids,
             _int(spec.get("seed", 0), "spec.seed") + rep,
             _int(
-                spec.get("query_warmup_passes", spec.get("semble_warmup_passes", 1)),
+                spec.get("query_warmup_passes", 1),
                 "spec.query_warmup_passes",
             ),
             _int(
-                spec.get("query_repetitions_per_root", spec.get("semble_repetitions", 1)),
+                spec.get("query_repetitions_per_root", 1),
                 "spec.query_repetitions_per_root",
             ),
         )
@@ -4563,11 +4574,11 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
         "repetitions": repetitions,
         "base_seed": _int(spec.get("seed", 0), "spec.seed"),
         "query_warmup_passes": _int(
-            spec.get("query_warmup_passes", spec.get("semble_warmup_passes", 1)),
+            spec.get("query_warmup_passes", 1),
             "spec.query_warmup_passes",
         ),
         "query_repetitions_per_root": _int(
-            spec.get("query_repetitions_per_root", spec.get("semble_repetitions", 1)),
+            spec.get("query_repetitions_per_root", 1),
             "spec.query_repetitions_per_root",
         ),
         "query_protocol_sha256s": [
@@ -5603,9 +5614,9 @@ def run_semble_capture(
         "--access-block-log",
         spec.get("access_block_log", "attested-only: no suite path is passed to the worker"),
         "--repetitions",
-        str(spec.get("query_repetitions_per_root", spec.get("semble_repetitions", 1))),
+        str(spec.get("query_repetitions_per_root", 1)),
         "--warmup-passes",
-        str(spec.get("query_warmup_passes", spec.get("semble_warmup_passes", 0))),
+        str(spec.get("query_warmup_passes", 1)),
     ]
     if "_query_protocol" in spec:
         command += ["--query-protocol", spec["_query_protocol"]]

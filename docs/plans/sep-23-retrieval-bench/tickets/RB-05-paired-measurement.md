@@ -1,6 +1,6 @@
 # RB-05 — Paired Quality, Speed and Resource Measurement
 
-Status: `orchestration-landed / replay-gates-failed / measurement-blocked`
+Status: `replay-remediation-implemented / final-pair-proof-pending / measurement-blocked`
 
 Depends on: RB-01, RB-02, RB-03, RB-04; requires RB-00 stage B measurement-entry gate
 
@@ -16,7 +16,7 @@ No real pair has run, so neither the performance authority nor the isolation aut
 
 Qualified capture now freezes clean retrieval source before staging, re-verifies it after capture, and cross-binds that closure to the contract/SDK receipts, protocol lock and run manifest. Isolated execution uses SHA-bound stage-local adapter/evaluator copies. `QUALITY_DELTA` refuses sub-floor samples and cross-checks paired count, win/loss/tie totals, bootstrap mean/bounds, category/language/repository stratum counts and weighted means, plus no-answer abstention evidence.
 
-The latest adversarial audit found three open RB-05 gates. First, merged record provenance includes absolute input paths, so moving a valid staged pair to the final output path changes its re-derived record/report identity and makes `PAIR_VALID` fail. Second, the verdict accepts individually mutated protocol-lock fields and unknown keys that the producer recorded but the consumer did not independently bind. Third, 1,000 repetitions of only two distinct tasks can pass speed replay even though capture preflight rejects fewer than 20 tasks; phase validation also accepts a raw call longer than its containing phase. These are confirmed fixture reproductions, not real-pair measurements. Pending fixes must retain the shared cold/warm protocol and fail closed on mismatched pins, partial rows and impossible timing.
+The adversarial baseline exposed three RB-05 gates: path-dependent merged provenance broke `PAIR_VALID` after promotion; omitted protocol-lock comparisons accepted mutated pins; and replay qualified two tasks repeated to 1,000 observations plus impossible phase/sample timings. Commits `688238a8` and `f42adc5f` implement relative capture provenance, a closed 15-key protocol lock, shared entry/replay eligibility and phase/sample containment, with focused regressions including fresh-process promoted replay. These are implementation results. No admitted real pair has yet proved the complete final-path, quiet-host and model authority.
 
 ## Goal
 
@@ -29,8 +29,8 @@ Produce an auditable comparison that separates retrieval quality, chunking effec
 3. Report paired per-query quality (including category/language and failure cases), Recall/MRR/NDCG/BCY, and p50/p95/p99 with sample sizes. Quality is compared at the same result/context budget; latency is compared only for like-for-like API layers. Provide both common-coverage and native-coverage reports. Keep `PAIR_VALID` (paired protocol/universe validity) separate from a blinded `QUALITY_DELTA`: the latter requires `blinding: isolated` with logged `isolation_method`/`access_block_log`, otherwise the quality claim is attested-only.
 4. Measure chunking ablations with the same Quanta model/query settings; distinguish producer effects from Quanta engine changes. An identical SDK transport alone is not proof of identical Semantica producer semantics.
 5. Write run manifest, raw records, path-mapping proof artifact (path map plus both-side path+SHA diff; any mismatch fails the common-universe pair), report, and the `verdict.json` artifact per [TEST-PLAN.md](TEST-PLAN.md) §8 (five states, `blinding`/`isolation_method`/`access_block_log`, missing T-IDs, failure class, provenance digests) under an explicit external output directory; bind exact HEAD, binary, corpus, suite, query-pack, model, Semble revision, config and host digests. Mandatory manifest fields include tokenizer/budget version, Semble dependency lockfile digest, and path+SHA diff digest. Do not commit mutable latest-result artifacts as baselines.
-6. Identify merged record members by stable capture identity and canonical content digest. Keep host-local paths out of digest-bound record/report bytes. Re-derive every retained protocol-lock pin from frozen authority, enforce a closed schema and reconcile the producer/consumer keys in one change. Entry and replay use one eligibility rule; raw sample sums must fit their monotonic phase windows within a declared tolerance.
-7. Validate the stage, promote it atomically, then run the public verdict from a new process at the final path. Require identical re-derived merged record and report digests before/after promotion and refusal after a one-byte raw-record mutation. A stage-only pass is not pair closeout.
+6. Maintain stable capture identities and relative locators in digest-bound record/report bytes. Re-derive every retained protocol-lock pin from frozen authority under the closed schema. Entry and replay share one eligibility rule; raw sample sums fit their monotonic phase windows within a declared tolerance. Keep the focused mutants as regressions when changing these surfaces.
+7. Validate the stage, promote it atomically, then run the public verdict from a new process at the final path. The synthetic promotion regression is implemented; final pair closeout still requires an admitted real capture with identical re-derived merged record and report digests before/after promotion.
 
 ## Owner / expected files
 
