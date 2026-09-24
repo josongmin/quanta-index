@@ -59,8 +59,8 @@ the local PotionCode model assets on boot; missing or changed assets fail the
 run. The CLI refuses dirty or wrong-HEAD repositories, untracked admitted
 files, empty query-pack universes, stale non-empty state roots and existing
 output files. A direct CLI invocation is normally `attested`. The paired
-driver can invoke the CLI as `isolated` only inside its verified macOS
-Seatbelt boundary; the record then carries the driver-generated proof digest.
+driver can invoke the CLI as `isolated` inside a verified macOS Seatbelt or
+Linux Landlock boundary; the record then carries the driver-generated proof digest.
 For that path, the driver first materializes a Git-free directory containing
 exactly the manifest-admitted files, denies the entire original checkout and
 both suite roots, and passes only the materialized corpus to both runners.
@@ -194,7 +194,7 @@ keys: `repo`, `manifest`, `suite`, `query_pack`, `top_k`, `output_root`,
 | `embedder` | `potion-code` | Rust runner embedder profile (`hash-dev` is an explicit diagnostic control) |
 | `repo_id`/`revision_id`/`generation` | `bench-repo`/`bench-rev`/`7` | batch identity |
 | `runner_name`/`run_id` | `quanta-sdk-runner`/`run` | runner identity; `runner_revision` is derived from the binary SHA-256 |
-| `blinding` | `attested` | `isolated` is supported by `pair` on macOS only, through the enforced Seatbelt path |
+| `blinding` | `attested` | `isolated` requires the enforced Seatbelt (macOS) or Landlock (Linux) path; unsupported or unavailable backends fail closed |
 | `suite_secret_root` | none | required for `isolated`; external evaluator-only root containing the suite and no runner-readable input |
 | `isolation_method`/`access_block_log` | `attested-only…` | supplied for attested runs; driver-generated and proof-bound for isolated runs |
 | `semble_python` | required for `pair` | pinned Semble venv interpreter |
@@ -234,10 +234,12 @@ weights Semble loaded. The adapter sets Semble's documented
 setting. It also requires an observed Hugging Face
 cache revision and rejects a supplied revision that disagrees with it.
 `same_model` remains an external claim needing its own evidence. An
-`attested` pair cannot qualify isolated-blind quality. The macOS paired
-driver can instead attempt `isolated` capture under its verified Seatbelt
-policy; the verdict still requires the frozen isolation proof. Neither mode
-alone qualifies speed.
+`attested` pair cannot qualify isolated-blind quality. The paired driver can
+attempt `isolated` capture under Seatbelt on macOS or Landlock on Linux; the
+verdict still requires the frozen tagged proof v2, re-probes the boundary after
+stage relocation, and checks Linux child attestation. Landlock availability
+must be probed on the actual host. This proves a filesystem-path read boundary,
+not IPC or mount topology isolation. Neither mode alone qualifies speed.
 
 Qualified capture runs the canonical retrieval source-closure check before staging;
 dirty relevant source is a hard refusal. The closure is frozen into the run,
@@ -376,7 +378,7 @@ certified contract proof; focused regressions now reject that case. Any later
 bound code, test or normative-document edit requires new contract/SDK receipts
 from one v2 source closure;
 the generic workspace rail must record a post-change frozen-source result;
-and Seatbelt isolation and phase/process-tree RSS still need a real admitted
+and OS-specific isolation and phase/process-tree RSS still need a real admitted
 quiet-host pair meeting their proof and sample floors. The commands above
 prove code paths, not W0-B, `PAIR_VALID`, `PERF_QUALIFIED` or `QUALITY_DELTA`. No tracked
 real-pair `run-manifest.json` or `verdict.json` is a benchmark result here;
