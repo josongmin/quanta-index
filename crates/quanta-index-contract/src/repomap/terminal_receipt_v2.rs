@@ -310,7 +310,7 @@ impl<'de> Deserialize<'de> for RepoMapExpectedActiveV2 {
     }
 }
 
-/// Read-only projection of the catalog's current RepoMap activation row.
+/// Read-only projection of the catalog's current `RepoMap` activation row.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RepoMapActiveHeadRequestV2 {
     pub repo_id: RepoId,
@@ -561,7 +561,7 @@ impl<'de> Deserialize<'de> for RepoMapActivateGenerationRequestV2 {
                         "repo_id" => read_once!(repo_id, "repo_id"),
                         "revision_id" => read_once!(revision_id, "revision_id"),
                         "manifest_generation" => {
-                            read_once!(manifest_generation, "manifest_generation")
+                            read_once!(manifest_generation, "manifest_generation");
                         }
                         "manifest_digest" => read_once!(manifest_digest, "manifest_digest"),
                         "snapshot_id" => read_once!(snapshot_id, "snapshot_id"),
