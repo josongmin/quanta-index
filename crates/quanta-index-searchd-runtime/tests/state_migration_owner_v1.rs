@@ -45,6 +45,7 @@ use quanta_index_searchd_runtime::state_migration::{
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 const BUSY: Duration = Duration::from_secs(2);
+const INCARNATION: &str = "activations/.activation-root-incarnation-v1";
 
 #[test]
 fn migrate_state_cli_is_rejected_before_opening_a_root() -> TestResult {
@@ -543,7 +544,6 @@ fn backup_then_restore_reseals_manifest_with_activation_incarnation() -> TestRes
     let _outcome = run_offline_state_command_with_v1(&restore, &NoStateMigrationFaultsV1)?;
 
     let restored_manifest = read_root_manifest_v1(&restored.join(STATE_ROOT_MANIFEST_FILE_NAME))?;
-    const INCARNATION: &str = "activations/.activation-root-incarnation-v1";
     assert!(
         backup_manifest
             .objects
@@ -587,7 +587,6 @@ fn restore_rotates_existing_activation_incarnation_and_reseals_manifest() -> Tes
     let backup_parent = private_root()?;
     let restore_parent = private_root()?;
     build_live_root(source.path())?;
-    const INCARNATION: &str = "activations/.activation-root-incarnation-v1";
     let original = [0x42_u8; 16];
     fs::write(source.path().join(INCARNATION), original)?;
     let backup = backup_parent.path().join("backup-root");
