@@ -2615,7 +2615,9 @@ mod tests {
         assert!(ciborium::de::from_reader::<SeedCandidate, _>(old_cbor.as_slice()).is_err());
 
         let mut null_digest = serde_json::to_value(&candidate).expect("seed candidate JSON");
-        null_digest["authority_digest"] = serde_json::Value::Null;
+        *null_digest
+            .get_mut("authority_digest")
+            .expect("seed candidate fixture contains authority digest") = serde_json::Value::Null;
         let decoded: SeedCandidate =
             serde_json::from_value(null_digest).expect("explicit null digest is valid");
         assert!(decoded.authority_digest.is_none());

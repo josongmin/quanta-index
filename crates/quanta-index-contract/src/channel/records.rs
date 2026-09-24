@@ -761,7 +761,7 @@ mod tests {
             };
             let before = entries.len();
             entries.retain(|(key, _)| key != &Value::Text((*field).to_owned()));
-            if entries.len() + 1 != before {
+            if before.checked_sub(entries.len()) != Some(1) {
                 return Err(format!("fixture does not carry exactly one {field}").into());
             }
             let mut old_bytes = Vec::new();

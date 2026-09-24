@@ -807,10 +807,16 @@ mod tests {
         assert_eq!(decoded, bound);
 
         let mut zero_epoch = encoded.clone();
-        zero_epoch["expected_active"]["epoch"] = serde_json::json!(0);
+        *zero_epoch
+            .get_mut("expected_active")
+            .and_then(|active| active.get_mut("epoch"))
+            .expect("bound request contains an expected-active epoch") = serde_json::json!(0);
         assert!(serde_json::from_value::<RepoMapActivateGenerationRequestV2>(zero_epoch).is_err());
         let mut bad_commitment = encoded;
-        bad_commitment["expected_active"]["candidate_commitment"] =
+        *bad_commitment
+            .get_mut("expected_active")
+            .and_then(|active| active.get_mut("candidate_commitment"))
+            .expect("bound request contains an expected-active commitment") =
             serde_json::json!("sha256:not-a-digest");
         assert!(
             serde_json::from_value::<RepoMapActivateGenerationRequestV2>(bad_commitment).is_err()

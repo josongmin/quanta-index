@@ -162,8 +162,9 @@ impl RequestCorrelationV1 {
     }
 }
 
-/// Provider boundary markers for diagnostics only. Query markers carry the
-/// provider ledger's ticket ID; ingest markers carry a checked, per-request
+/// Provider boundary markers for diagnostics only.
+///
+/// Query markers carry the provider ledger's ticket ID; ingest markers carry a checked, per-request
 /// window ordinal because ingest has no provider-ledger ticket. Neither
 /// marker owns reservation, settlement, usage or terminal outcome.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -5801,7 +5801,7 @@ mod tests {
     }
 
     #[test]
-    fn file_contributor_identity_manual_serde_enforces_wire_contract() -> TestRes {
+    fn file_contributor_identity_manual_serde_enforces_wire_contract() {
         let missing_optional =
             serde_json::from_str::<FileContributorIdentityEntry>(r#"{"canonical":"alice"}"#);
         assert!(matches!(
@@ -5832,7 +5832,6 @@ mod tests {
             unknown,
             Err(error) if error.to_string().contains("unknown field `unexpected`")
         ));
-        Ok(())
     }
 
     #[test]
