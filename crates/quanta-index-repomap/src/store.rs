@@ -1088,14 +1088,18 @@ fn receipt(
     terminal_sequence: i64,
     replayed: bool,
 ) -> Result<RepoMapMutationCommit, CoreError> {
-    let terminal_sequence = u64::try_from(terminal_sequence)
-        .ok()
-        .filter(|sequence| *sequence > 0)
+    let terminal_sequence = u64::try_from(terminal_sequence).map_err(|error| {
+        CoreError::Storage(format!(
+            "repomap terminal receipt: catalog sequence must be positive: {error}"
+        ))
+    })?;
+    let terminal_sequence = std::num::NonZeroU64::new(terminal_sequence)
         .ok_or_else(|| {
             CoreError::Storage(
                 "repomap terminal receipt: catalog sequence must be positive".to_string(),
             )
-        })?;
+        })?
+        .get();
     Ok(RepoMapMutationCommit {
         prior_candidate_commitment: prior.map(CandidateCommitmentV1::to_wire_string),
         new_candidate_commitment: new.to_wire_string(),
@@ -1103,22 +1107,6 @@ fn receipt(
         terminal_sequence,
         replayed,
     })
-}
-
-#[cfg(test)]
-mod receipt_tests {
-    use super::receipt;
-    use quanta_index_contract::CandidateCommitmentV1;
-
-    #[test]
-    fn terminal_receipt_rejects_nonpositive_catalog_sequence() {
-        let commitment = CandidateCommitmentV1::from_bytes([7; 32]);
-        for sequence in [-1, 0] {
-            assert!(receipt(None, commitment, 0, sequence, false).is_err());
-        }
-        let valid = receipt(None, commitment, 0, 1, false).expect("positive sequence");
-        assert_eq!(valid.terminal_sequence, 1);
-    }
 }
 
 fn mutation_ack_v1(
@@ -1269,5 +1257,21 @@ impl RepoMapGenerationActivatePort for RepoMapGenerationStore {
         request: &RepoMapActivateGenerationRequestV2,
     ) -> Result<RepoMapTerminalReceiptV2, CoreError> {
         Self::activate_generation_v2(self, request)
+    }
+}
+
+#[cfg(test)]
+mod receipt_tests {
+    use super::receipt;
+    use quanta_index_contract::CandidateCommitmentV1;
+
+    #[test]
+    fn terminal_receipt_rejects_nonpositive_catalog_sequence() {
+        let commitment = CandidateCommitmentV1::from_bytes([7; 32]);
+        for sequence in [-1, 0] {
+            assert!(receipt(None, commitment, 0, sequence, false).is_err());
+        }
+        let valid = receipt(None, commitment, 0, 1, false).expect("positive sequence");
+        assert_eq!(valid.terminal_sequence, 1);
     }
 }

@@ -2,6 +2,20 @@
 
 Status: infrastructure implemented; final qualification blocked.
 
+2026-09-24 adversarial plan correction: `write-proof-manifest.py` accepts
+terminal status/counts and host profile from the terminal input; the checker
+validates schema/arithmetic and archived file digests but does not derive
+the claimed test outcome from the archived runner result or independently
+attest host class. The release workflow also accepts a caller-supplied
+proof-bundle run ID without verifying trusted producer identity. Thus an
+issued `passed` manifest is not by itself a trustworthy execution receipt.
+Before final proof issuance, implement the common result/host/producer
+authority in [R0](FINAL-RESIDUAL-EXECUTION-PLAN.md#r0--establish-the-proof-result-authority-before-release-claims).
+Keep this as one proof-plane fix; do not implement bespoke parsers in every
+P03-P11 lane. Historical P00/P01/P02A/P02B/P02I/P11 handoffs are currently
+absent; recover authentic records or revise the acceptance contract, never
+reconstruct them from today's manifests.
+
 Phase A status: `done` for the M0 foundation gate. Registry-driven atomic manifest production, staged/unstaged/
 Git-visible-untracked source binding, conditional non-binary semantics, exact-pair binding, blocking P00 validation
 and the fail-closed aggregate release command are implemented. The P12A aggregate

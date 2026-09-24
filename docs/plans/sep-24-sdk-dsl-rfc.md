@@ -1,6 +1,6 @@
 # RFC: Quanta Index Rust SDK interface, scoped to current contracts
 
-- Status: **proposed; adversarial revision**. This document implements no SDK, wire, daemon, or producer change.
+- Status: **DRAFT — discussion only; not approved for implementation**. This document implements no SDK, wire, daemon, or producer change.
 - Source audited: the original SDK review used Quanta HEAD `1a1458f00652ab53d2bcc170304b4d26ba2556cb`. The external producer-input boundary in §8 was rechecked at `a0ac1853256d9b507ae8dc76f7437a4c7568434c` on 2026-09-24; the later `0743cda05fb07f38442eec3d0233daf9d3a5b3dd` commit changed only `Justfile` and a retrieval-proof test. The checkout has concurrent dirty work. Semantica `index_sdk_ingress` was read as a consumer, but its revision and dirty-state identity were not frozen. Re-freeze both before implementation or qualification.
 - Scope: Rust SDK over local query, ingest, and control UDS planes; not an in-process Tantivy/LanceDB handle.
 - Related: [search configuration RFC](sep-23-search-config-profiles/rfc.md), [earlier SDK target](sep-23-search-config-profiles/sdk-interface.md). This RFC supersedes the earlier target where its public-shape proposals conflict. Server profile/config policy stays with the configuration RFC.

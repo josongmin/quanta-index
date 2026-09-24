@@ -4,6 +4,13 @@ This file indexes live evidence. The former dated execution ledger is available
 in Git history; its dirty-checkout observations and test counts are not current
 qualification.
 
+2026-09-24 static audit at Quanta `28c20fabfdc9d57b0d7d94794d59bcf78ea7cd14`
+found proof-result/host trust, resolved cross-repo Cargo dependency-root,
+P09 backend-health/diagnostic, and P11 operational-action authority gaps.
+The [residual execution plan](FINAL-RESIDUAL-EXECUTION-PLAN.md) and
+[action list](ACTION-LIST.md) now sequence the repairs. This document update
+issued no proof manifest and did not run Rust or release qualification.
+
 ## Source of truth
 
 - [proof-authority.toml](../../../../tools/ci/proof-authority.toml) declares

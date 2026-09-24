@@ -4,7 +4,11 @@ use std::error::Error;
 use std::os::unix::net::UnixListener;
 use std::time::Duration;
 
-use quanta_index_contract::{ProcessReadinessReasonV1, ProcessReadinessV1};
+use quanta_index_contract::{
+    ProcessReadinessReasonV1, ProcessReadinessV1, SearchPlaneControlIpcResponse,
+    SearchPlaneRollbackSearchCorpusGenerationCasRequest,
+};
+use quanta_index_core::GenerationStorageKeyV1;
 use quanta_index_searchd_harness::E2eRuntime;
 
 use crate::fail_closed_wait::{RealTicker, WaitError, wait_for};
@@ -82,6 +86,91 @@ fn active_repository_requires_physical_candidate_proof() -> TestResult {
 }
 
 #[test]
+fn reactivated_generation_reproves_physical_authority_after_aba() -> TestResult {
+    let mut rt = E2eRuntime::boot()?;
+    rt.ingest_text("repo-readiness", "src/ready.rs", "fn first() {}")?;
+    let _sealed = rt.seal()?;
+    let first = rt
+        .last_sealed_search_corpus_identity()
+        .ok_or("first sealed generation has an identity")?;
+    rt.activate_last_sealed_generation()?;
+    let first_head = rt
+        .active_search_corpus_head()?
+        .ok_or("first generation is active")?;
+    require_eq(&wait_until_ready(&mut rt)?.ready, &true, "first readiness")?;
+
+    rt.ingest_text("repo-readiness", "src/ready.rs", "fn second() {}")?;
+    let _sealed = rt.seal()?;
+    rt.activate_last_sealed_generation()?;
+    let second_head = rt
+        .active_search_corpus_head()?
+        .ok_or("second generation is active")?;
+    if second_head.generation == first {
+        return Err("second activation did not change the generation".into());
+    }
+    // Do not poll readiness at B: the last cached physical proof must still
+    // be for A when the catalog returns to A.
+    let rollback =
+        rt.rollback_search_corpus_cas_raw(SearchPlaneRollbackSearchCorpusGenerationCasRequest {
+            expected_active: second_head,
+            target: first.clone(),
+        })?;
+    if !matches!(
+        rollback,
+        SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
+    ) {
+        return Err(format!("rollback to first generation failed: {rollback:?}").into());
+    }
+    let returned_head = rt
+        .active_search_corpus_head()?
+        .ok_or("first generation is active again")?;
+    require_eq(&returned_head.generation, &first, "returned generation")?;
+    if returned_head.activation_token == first_head.activation_token {
+        return Err("A -> B -> A must issue a new activation token".into());
+    }
+
+    let storage_key = GenerationStorageKeyV1::for_repo_revision(&rt.repo(), &rt.revision());
+    let manifest = std::fs::canonicalize(rt.state_root())?
+        .join("indexes/lexical")
+        .join(storage_key.as_str())
+        .join(format!("g{}", first.lexical.manifest_generation.get()))
+        .join("text-authority/manifest.cbor");
+    let original = std::fs::read(&manifest)?;
+    let mut corrupted = original.clone();
+    let last = corrupted.last_mut().ok_or("sealed manifest is empty")?;
+    *last ^= 0xff;
+    std::fs::write(&manifest, corrupted)?;
+    let damaged_result = (|| -> TestResult {
+        let report = rt.process_readiness()?;
+        require_eq(
+            &report.ready,
+            &false,
+            "damaged returned generation readiness",
+        )?;
+        require_eq(
+            &report.active_candidate_integrity,
+            &Some(false),
+            "damaged returned generation physical proof",
+        )?;
+        if !report
+            .not_ready_reasons
+            .contains(&ProcessReadinessReasonV1::ActiveCandidateIntegrityFailed)
+        {
+            return Err(format!("missing active integrity reason: {report:?}").into());
+        }
+        Ok(())
+    })();
+    std::fs::write(&manifest, original)?;
+    damaged_result?;
+    require_eq(
+        &wait_until_ready(&mut rt)?.ready,
+        &true,
+        "restored readiness",
+    )?;
+    Ok(())
+}
+
+#[test]
 fn surviving_control_socket_reports_lost_or_replaced_plane_path_not_ready() -> TestResult {
     for (lost_plane, reason) in [
         (0, ProcessReadinessReasonV1::QueryPlaneUnhealthy),
@@ -104,11 +193,14 @@ fn surviving_control_socket_reports_lost_or_replaced_plane_path_not_ready() -> T
             require_eq(&ready.ready, &true, "initial readiness")?;
 
             let sockets = daemon_socket_paths(&state_root);
-            std::fs::remove_file(&sockets[lost_plane])?;
+            let socket_path = sockets
+                .get(lost_plane)
+                .ok_or("lost plane index has no socket path")?;
+            std::fs::remove_file(socket_path)?;
             // Replacing query.sock with another valid socket must not pass
             // an existence/type check; only the daemon's bound inode counts.
             let replacement = (lost_plane == 0)
-                .then(|| UnixListener::bind(&sockets[lost_plane]))
+                .then(|| UnixListener::bind(socket_path))
                 .transpose()?;
             let report = client.observability().process_readiness()?;
             require_eq(&report.ready, &false, "readiness after socket path loss")?;
