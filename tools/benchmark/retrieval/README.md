@@ -260,7 +260,9 @@ python3 tools/benchmark/retrieval/run.py host-profile \
 On Linux, host-profile v2 requires an operator-selected CPU thermal zone and
 explicit limits; mere sensor presence is not speed evidence. The selected zone
 name and sensor type, per-CPU maximum frequencies, and the performance governor
-set are pinned. Both start/end probes must observe every CPU at or above the
+set are pinned. Per-CPU scaling min/max, driver, and an exposed disabled
+boost/turbo control are also pinned; hosts without these controls cannot qualify speed.
+Both start/end probes must observe every CPU at or above the
 configured percentage of its pinned maximum and the selected thermal zone at
 or below the configured ceiling. The ceiling cannot exceed 85,000 millidegrees
 and the frequency floor cannot be below 80 percent. Unsupported or partial

@@ -4333,7 +4333,14 @@ def test_darwin_thermal_limits_and_frequency_fail_closed(monkeypatch):
 
 def test_linux_speed_probe_requires_profile_bounds_and_complete_telemetry():
     governors = {"cpu0": "performance", "cpu1": "performance"}
-    power_digest = pairrun.digest(pairrun.canonical(governors))
+    settings = {
+        "governors": governors,
+        "minimum_khz": {"cpu0": 2_700_000, "cpu1": 2_700_000},
+        "maximum_khz": {"cpu0": 3_000_000, "cpu1": 3_000_000},
+        "drivers": {"cpu0": "intel_pstate", "cpu1": "intel_pstate"},
+        "boost": {"/sys/devices/system/cpu/intel_pstate/no_turbo": "1"},
+    }
+    power_digest = pairrun.digest(pairrun.canonical(settings))
     host = {
         "system": "Linux",
         "release": "test",
@@ -4355,7 +4362,12 @@ def test_linux_speed_probe_requires_profile_bounds_and_complete_telemetry():
                 "cpu1": {"current_khz": 2_800_000, "maximum_khz": 3_000_000},
             },
         },
-        "power": {"status": "bounded", "digest": power_digest, "governors": governors},
+        "power": {
+            "status": "bounded",
+            "digest": power_digest,
+            "governors": governors,
+            "settings": settings,
+        },
     }
     profile = pairrun.validate_host_profile(
         {
@@ -4443,12 +4455,21 @@ def test_linux_sysfs_presence_alone_never_qualifies_speed(tmp_path, monkeypatch)
         (cpufreq / "scaling_governor").write_text("performance")
         (cpufreq / "scaling_cur_freq").write_text("2800000")
         (cpufreq / "cpuinfo_max_freq").write_text("3000000")
+        (cpufreq / "scaling_min_freq").write_text("2700000")
+        (cpufreq / "scaling_max_freq").write_text("3000000")
+        (cpufreq / "scaling_driver").write_text("intel_pstate")
+    boost_node = tmp_path / "no_turbo"
+    boost_node.write_text("1")
 
     def fake_path(value):
         if value == "/sys/devices/system/cpu":
             return cpu_root
         if value == "/sys/class/thermal":
             return thermal_root
+        if value == "/sys/devices/system/cpu/intel_pstate/no_turbo":
+            return boost_node
+        if value == "/sys/devices/system/cpu/cpufreq/boost":
+            return tmp_path / "missing-boost"
         return Path(value)
 
     monkeypatch.setattr(pairrun.sys, "platform", "linux")
@@ -4463,8 +4484,15 @@ def test_linux_sysfs_presence_alone_never_qualifies_speed(tmp_path, monkeypatch)
     (cpufreq / "scaling_governor").write_text("performance")
     (cpufreq / "scaling_cur_freq").write_text("2800000")
     (cpufreq / "cpuinfo_max_freq").write_text("3000000")
+    (cpufreq / "scaling_min_freq").write_text("2700000")
+    (cpufreq / "scaling_max_freq").write_text("3000000")
+    (cpufreq / "scaling_driver").write_text("intel_pstate")
     assert pairrun.read_power()["status"] == "bounded"
     assert pairrun.read_frequency()["status"] == "observed"
+    boost_node.write_text("0")
+    assert pairrun.read_power()["status"] == "unavailable"
+    boost_node.unlink()
+    assert pairrun.read_power()["status"] == "unavailable"
     (thermal_zone / "temp").write_text("not-a-temperature")
     assert pairrun.read_thermal()["status"] == "unavailable"
 

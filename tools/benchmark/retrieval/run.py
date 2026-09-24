@@ -930,23 +930,59 @@ def read_power() -> dict:
         }
     if sys.platform.startswith("linux"):
         governors = {}
+        minimums = {}
+        maximums = {}
+        drivers = {}
         for node in sorted(
             Path("/sys/devices/system/cpu").glob("cpu[0-9]*/cpufreq/scaling_governor")
         ):
             try:
-                governors[node.parent.parent.name] = node.read_text().strip()
-            except OSError:
+                cpu = node.parent.parent.name
+                governors[cpu] = node.read_text().strip()
+                minimums[cpu] = int((node.parent / "scaling_min_freq").read_text().strip())
+                maximums[cpu] = int((node.parent / "scaling_max_freq").read_text().strip())
+                drivers[cpu] = (node.parent / "scaling_driver").read_text().strip()
+            except (OSError, ValueError):
                 return {"status": "unavailable", "digest": None}
-        rendered = canonical(governors)
+        boost = {}
+        for path in (
+            "/sys/devices/system/cpu/intel_pstate/no_turbo",
+            "/sys/devices/system/cpu/cpufreq/boost",
+        ):
+            node = Path(path)
+            if node.exists():
+                try:
+                    value = node.read_text().strip()
+                except OSError:
+                    return {"status": "unavailable", "digest": None}
+                if value not in {"0", "1"}:
+                    return {"status": "unavailable", "digest": None}
+                boost[path] = value
+        settings = {
+            "governors": governors,
+            "minimum_khz": minimums,
+            "maximum_khz": maximums,
+            "drivers": drivers,
+            "boost": boost,
+        }
         complete = (
             os.cpu_count() is not None
             and len(governors) == os.cpu_count()
             and all(value == "performance" for value in governors.values())
+            and all(drivers.values())
+            and all(0 < minimums[cpu] <= maximums[cpu] for cpu in governors)
+            and bool(boost)
+            and all(
+                (path.endswith("/no_turbo") and value == "1")
+                or (path.endswith("/boost") and value == "0")
+                for path, value in boost.items()
+            )
         )
         return {
             "status": "bounded" if complete else "unavailable",
-            "digest": digest(rendered) if complete else None,
+            "digest": digest(canonical(settings)) if complete else None,
             "governors": governors,
+            "settings": settings,
         }
     return {"status": "unavailable", "digest": None}
 
@@ -2492,16 +2528,37 @@ def _linux_probe_clean(probe: dict, profile: dict) -> bool:
     observed_zones = thermal.get("evidence")
     observed_cpus = frequency.get("evidence")
     governors = power.get("governors")
+    settings = power.get("settings")
     maximums = limits.get("cpu_max_khz")
     if not all(
-        isinstance(value, dict) for value in (observed_zones, observed_cpus, governors, maximums)
+        isinstance(value, dict)
+        for value in (observed_zones, observed_cpus, governors, settings, maximums)
     ):
         return False
     if set(observed_cpus) != set(maximums) or set(governors) != set(maximums):
         return False
     if any(value != "performance" for value in governors.values()):
         return False
-    if power.get("digest") != digest(canonical(governors)):
+    if set(settings) != {"governors", "minimum_khz", "maximum_khz", "drivers", "boost"}:
+        return False
+    if settings["governors"] != governors or not all(
+        isinstance(settings[key], dict)
+        for key in ("minimum_khz", "maximum_khz", "drivers", "boost")
+    ):
+        return False
+    if any(
+        set(settings[key]) != set(maximums) for key in ("minimum_khz", "maximum_khz", "drivers")
+    ):
+        return False
+    allowed_boost = {
+        "/sys/devices/system/cpu/intel_pstate/no_turbo": "1",
+        "/sys/devices/system/cpu/cpufreq/boost": "0",
+    }
+    if not settings["boost"] or any(
+        allowed_boost.get(path) != value for path, value in settings["boost"].items()
+    ):
+        return False
+    if power.get("digest") != digest(canonical(settings)):
         return False
     for name, sensor_type in limits["thermal_zones"].items():
         entry = observed_zones.get(name)
@@ -2519,6 +2576,16 @@ def _linux_probe_clean(probe: dict, profile: dict) -> bool:
             return False
         current = entry.get("current_khz")
         if type(current) is not int or not 0 < current <= maximum:
+            return False
+        minimum_setting = settings["minimum_khz"][name]
+        maximum_setting = settings["maximum_khz"][name]
+        if (
+            type(minimum_setting) is not int
+            or type(maximum_setting) is not int
+            or not 0 < minimum_setting <= current <= maximum_setting <= maximum
+            or not isinstance(settings["drivers"][name], str)
+            or not settings["drivers"][name]
+        ):
             return False
         if current * 100 < maximum * limits["min_frequency_percent"]:
             return False
