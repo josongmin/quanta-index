@@ -298,10 +298,12 @@ mod tests {
         assert!(serde_json::from_str::<QueryProtocol>(&duplicate).is_err());
 
         let mut unknown: Value = serde_json::from_str(&encoded).expect("parse fixture");
-        unknown
-            .as_object_mut()
-            .expect("protocol fixture is an object")
-            .insert("unexpected".to_string(), Value::Bool(true));
+        drop(
+            unknown
+                .as_object_mut()
+                .expect("protocol fixture is an object")
+                .insert("unexpected".to_string(), Value::Bool(true)),
+        );
         assert!(serde_json::from_value::<QueryProtocol>(unknown).is_err());
 
         let mut missing: Value = serde_json::from_str(&encoded).expect("parse fixture");
