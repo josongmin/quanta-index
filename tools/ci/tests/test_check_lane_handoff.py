@@ -14,6 +14,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 HANDOFF_CHECKER_PATH = REPO_ROOT / "tools/ci/lint/check-lane-handoff.py"
 PROOF_CHECKER_PATH = REPO_ROOT / "tools/ci/lint/check-proof-authority.py"
+INVENTORY_WRITER_PATH = REPO_ROOT / "tools/ci/write-error-authority-inventory.py"
 
 
 def _load(name: str, path: Path):
@@ -27,6 +28,7 @@ def _load(name: str, path: Path):
 
 HANDOFF = _load("check_lane_handoff", HANDOFF_CHECKER_PATH)
 PROOF = _load("check_lane_handoff_proof", PROOF_CHECKER_PATH)
+INVENTORY_WRITER = _load("check_lane_handoff_inventory", INVENTORY_WRITER_PATH)
 
 
 def _run(root: Path, *args: str) -> str:
@@ -46,6 +48,8 @@ def _fixture(tmp_path: Path) -> tuple[Path, dict, Path]:
         "tools/ci/proof-manifest.schema.json",
         "tools/ci/proof-aggregate.schema.json",
         "tools/ci/test-authority.toml",
+        "tools/ci/write-error-authority-inventory.py",
+        "tools/ci/error-authority-inventory.schema.json",
         "docs/plans/sep-21-search-plane-sota-hardening/tickets/handoffs/lane-handoff.schema.json",
     ):
         destination = root / relative
@@ -57,6 +61,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, dict, Path]:
         owner = root / proof["owner"]
         owner.parent.mkdir(parents=True, exist_ok=True)
         owner.touch(exist_ok=True)
+    (root / ".gitignore").write_text("/artifacts/\n", encoding="utf-8")
 
     _run(root, "git", "init", "-q")
     _run(root, "git", "config", "user.name", "Fixture")
@@ -77,6 +82,14 @@ def _fixture(tmp_path: Path) -> tuple[Path, dict, Path]:
     evidence_archive = root / PROOF.content_archive_relative_path("evidence", evidence_digest)
     evidence_archive.parent.mkdir(parents=True, exist_ok=True)
     evidence_archive.write_bytes(evidence.read_bytes())
+    inventory_source = root / PROOF.ERROR_INVENTORY_PATH
+    inventory_source.parent.mkdir(parents=True, exist_ok=True)
+    inventory_source.write_text(
+        json.dumps(INVENTORY_WRITER.build_inventory(root)), encoding="utf-8"
+    )
+    inventory_digest = hashlib.sha256(inventory_source.read_bytes()).hexdigest()
+    inventory_archive = root / PROOF.content_archive_relative_path("evidence", inventory_digest)
+    inventory_archive.write_bytes(inventory_source.read_bytes())
     proof = next(item for item in registry["proofs"] if item["id"] == "p00-authority-freeze")
     source = PROOF.proof_source_snapshot(
         root,
@@ -128,7 +141,12 @@ def _fixture(tmp_path: Path) -> tuple[Path, dict, Path]:
                 "source_path": "artifacts/raw/p00.log",
                 "path": evidence_archive.relative_to(root).as_posix(),
                 "sha256": evidence_digest,
-            }
+            },
+            {
+                "source_path": PROOF.ERROR_INVENTORY_PATH,
+                "path": inventory_archive.relative_to(root).as_posix(),
+                "sha256": inventory_digest,
+            },
         ],
     }
     manifest_bytes = (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode()
