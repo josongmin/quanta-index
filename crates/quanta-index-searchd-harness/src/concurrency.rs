@@ -744,12 +744,34 @@ mod tests {
         let revision_id = RevisionId::new("rev-concurrency").expect("canonical fixture revision");
         let generation = ManifestGeneration::new(1);
         let pin = GenerationPin::new(repo_id.clone(), revision_id.clone(), generation);
-        let active = GenerationSnapshot {
+        let lexical = GenerationSnapshot {
             repo_id,
             revision_id,
             track: SearchPlaneTrackKind::Lexical,
             manifest_generation: generation,
             manifest_digest: "fixture-digest".to_string(),
+        };
+        let semantic = GenerationSnapshot {
+            track: SearchPlaneTrackKind::Semantic,
+            ..lexical.clone()
+        };
+        let active = quanta_index_contract::ActiveGenerationResolutionV1 {
+            track: SearchPlaneTrackKind::Lexical,
+            head: quanta_index_contract::SearchCorpusActiveHeadV1 {
+                generation: quanta_index_contract::SearchCorpusGenerationIdentityV1 {
+                    lexical,
+                    semantic,
+                    semantic_content: quanta_index_contract::SemanticContentRootsV1 {
+                        row_root_digest: format!("sha256:{}", "a".repeat(64)),
+                        membership_root_digest: format!("sha256:{}", "b".repeat(64)),
+                    },
+                },
+                activation_token: quanta_index_contract::SearchCorpusActivationTokenV1::new(
+                    [1; 16],
+                    std::num::NonZeroU64::new(1).expect("positive fixture sequence"),
+                )
+                .expect("nonzero fixture incarnation"),
+            },
         };
         assert_eq!(
             result_count_of(&SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(
