@@ -551,7 +551,8 @@ mod tests {
         );
         for id in 1..=(REQUEST_EVENT_CAPACITY_V1 + 2) {
             counters.record_request_event_v1(RequestEventV1 {
-                request_id: NonZeroU64::new(id as u64).expect("nonzero fixture ID"),
+                request_id: NonZeroU64::new(u64::try_from(id).expect("fixture ID fits u64"))
+                    .expect("nonzero fixture ID"),
                 connection_id: 7,
                 stage: RequestEventStageV1::Validated,
                 elapsed_micros: 0,
@@ -559,7 +560,14 @@ mod tests {
         }
         let events = counters.recent_request_events_v1().expect("tail");
         assert_eq!(events.len(), REQUEST_EVENT_CAPACITY_V1);
-        assert_eq!(events[0].request_id.get(), 3);
+        assert_eq!(
+            events
+                .first()
+                .expect("first retained event")
+                .request_id
+                .get(),
+            3
+        );
         assert_eq!(events.last().expect("last event").request_id.get(), 1026);
         assert_eq!(counters.snapshot().request_events_dropped, 2);
         assert_eq!(counters.snapshot().requests_dispatched, 0);
@@ -581,7 +589,7 @@ mod tests {
             [(1025, 1025), (1026, 1026)]
         );
 
-        let _held = counters.request_events.lock().expect("ring lock");
+        let held = counters.request_events.lock().expect("ring lock");
         counters.record_request_event_v1(RequestEventV1 {
             request_id: NonZeroU64::new(1027).expect("nonzero fixture ID"),
             connection_id: 7,
@@ -589,13 +597,20 @@ mod tests {
             elapsed_micros: 1,
         });
         assert_eq!(counters.snapshot().request_events_dropped, 3);
-        drop(_held);
+        drop(held);
         let after_contention = counters
             .request_event_window_v1(1)
             .expect("tail after loss");
         assert_eq!(after_contention.next_sequence, 1027);
         assert_eq!(after_contention.dropped_before, 3);
-        assert_eq!(after_contention.events[0].sequence, 1026);
+        assert_eq!(
+            after_contention
+                .events
+                .first()
+                .expect("first window event")
+                .sequence,
+            1026
+        );
         let dropped_point = counters
             .scrape()
             .expect("scrape")

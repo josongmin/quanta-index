@@ -124,7 +124,12 @@ impl DispatchContextV1 {
 }
 
 fn elapsed_micros_v1(started: Instant) -> u64 {
-    u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX)
+    // The wire field is bounded; saturate only if the monotonic duration
+    // cannot be represented in that field.
+    match u64::try_from(started.elapsed().as_micros()) {
+        Ok(micros) => micros,
+        Err(_) => u64::MAX,
+    }
 }
 
 /// Emits one terminal event even when a dispatcher unwinds or a transport
@@ -1364,7 +1369,15 @@ where
                             ConnectionCloseReason::ResponseWriteFailed(_) => {
                                 RequestEventStageV1::ResponseWriteFailed
                             }
-                            _ => RequestEventStageV1::Aborted,
+                            ConnectionCloseReason::BlockingModeConfigFailed(_)
+                            | ConnectionCloseReason::TimeoutConfigFailed(_)
+                            | ConnectionCloseReason::PeerClosed
+                            | ConnectionCloseReason::RequestDecodeFailed(_)
+                            | ConnectionCloseReason::Overloaded { .. }
+                            | ConnectionCloseReason::ShuttingDown
+                            | ConnectionCloseReason::PeerWatchFailed(_) => {
+                                RequestEventStageV1::Aborted
+                            }
                         });
                         return reason;
                     }
@@ -1386,6 +1399,7 @@ where
         // S21-10: the transport builds the kernel-derived dispatch
         // context every dispatcher authorizes against. The principal is
         // the accept-time kernel report; the payload never asserts one.
+        let event_sink: Arc<dyn RequestEventSinkV1> = counters.clone();
         let context = DispatchContextV1 {
             request_id,
             plane,
@@ -1396,7 +1410,7 @@ where
                 .checked_add(policy.dispatch_budget())
                 .unwrap_or_else(std::time::Instant::now),
             cancellation: budget.cancel_handle(),
-            events: Arc::clone(counters) as Arc<dyn RequestEventSinkV1>,
+            events: event_sink,
             request_started: event_scope.started,
         };
         // The dispatch slot and the in-flight count are one RAII pair
@@ -3323,16 +3337,18 @@ mod tests {
         }
         let events = counters.recent_request_events_v1().expect("ring snapshot");
         assert_eq!(events.len(), 2);
-        assert_eq!(events[0].request_id.get(), 43);
-        assert_eq!(events[1].request_id.get(), 43);
-        assert_eq!(events[0].connection_id, 8);
-        assert_eq!(events[1].connection_id, 8);
+        let first = events.first().expect("first provider event");
+        let second = events.get(1).expect("second provider event");
+        assert_eq!(first.request_id.get(), 43);
+        assert_eq!(second.request_id.get(), 43);
+        assert_eq!(first.connection_id, 8);
+        assert_eq!(second.connection_id, 8);
         assert_eq!(
-            events[0].stage,
+            first.stage,
             RequestEventStageV1::IngestWindowStarted { window_ordinal: 1 }
         );
         assert_eq!(
-            events[1].stage,
+            second.stage,
             RequestEventStageV1::IngestWindowReturned { window_ordinal: 1 }
         );
     }
