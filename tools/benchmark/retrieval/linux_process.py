@@ -20,6 +20,7 @@ from __future__ import annotations
 import math
 import os
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -30,6 +31,29 @@ from pathlib import Path
 
 class ProcessError(RuntimeError):
     """Ownership, sampling, or cleanup evidence was incomplete."""
+
+
+def _validate_pass_fds(pass_fds: tuple[int, ...]) -> tuple[int, ...]:
+    """Accept at most one explicit attestation pipe write end."""
+    if type(pass_fds) is not tuple or len(pass_fds) > 1:
+        raise ProcessError("pass_fds must be a tuple with at most one attestation FD")
+    if not pass_fds:
+        return pass_fds
+    try:
+        import fcntl
+    except ImportError as exc:
+        raise ProcessError("attestation FD forwarding requires POSIX") from exc
+    for fd in pass_fds:
+        if type(fd) is not int or fd < 3:
+            raise ProcessError("attestation FD must be an integer outside stdio")
+        try:
+            mode = os.fstat(fd).st_mode
+            flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+        except OSError as exc:
+            raise ProcessError(f"attestation FD {fd} is not open: {exc}") from exc
+        if not stat.S_ISFIFO(mode) or flags & os.O_ACCMODE != os.O_WRONLY:
+            raise ProcessError("attestation FD must be a pipe write end")
+    return pass_fds
 
 
 @dataclass(frozen=True, order=True)
@@ -450,6 +474,37 @@ def _child_shim(read_fd: int, command: list[str]) -> None:
         os._exit(127)
 
 
+def _spawn_cgroup_shim(
+    command: list[str],
+    gate_read_fd: int,
+    pass_fds: tuple[int, ...],
+    *,
+    cwd: str | None,
+    env: dict[str, str] | None,
+    stdout: object,
+    stderr: object,
+) -> subprocess.Popen:
+    """Pass only the private gate and the validated caller attestation FD."""
+    return subprocess.Popen(
+        [
+            sys.executable,
+            "-I",
+            str(Path(__file__).resolve()),
+            "--cgroup-child",
+            str(gate_read_fd),
+            *command,
+        ],
+        cwd=cwd,
+        env=env,
+        start_new_session=True,
+        pass_fds=(gate_read_fd, *pass_fds),
+        close_fds=True,
+        stdin=subprocess.DEVNULL,
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+
 class _CgroupTracker:
     def __init__(
         self,
@@ -597,6 +652,7 @@ def _run_cgroup(
     stdout_path: str | None,
     stderr_path: str | None,
     cgroup_parent: str | None,
+    pass_fds: tuple[int, ...],
 ) -> ProcessResult:
     if sys.platform != "linux":
         raise ProcessError("native Linux host required for cgroup v2")
@@ -612,20 +668,12 @@ def _run_cgroup(
         for path in (stdout_path, stderr_path):
             output_files.append(open(path, "xb") if path is not None else subprocess.DEVNULL)
         read_fd, write_fd = os.pipe()
-        process = subprocess.Popen(
-            [
-                sys.executable,
-                "-I",
-                str(Path(__file__).resolve()),
-                "--cgroup-child",
-                str(read_fd),
-                *command,
-            ],
+        process = _spawn_cgroup_shim(
+            command,
+            read_fd,
+            pass_fds,
             cwd=cwd,
             env=env,
-            start_new_session=True,
-            pass_fds=(read_fd,),
-            stdin=subprocess.DEVNULL,
             stdout=output_files[0],
             stderr=output_files[1],
         )
@@ -761,11 +809,14 @@ def run(
     stderr_path: str | None = None,
     qualified: bool = False,
     cgroup_parent: str | None = None,
+    pass_fds: tuple[int, ...] = (),
 ) -> ProcessResult:
     """Run a qualified cgroup owner or a diagnostic process-group fallback.
 
     Qualification never silently falls back when cgroup delegation is absent.
     ``cgroup_parent`` must be an explicit writable cgroup v2 delegated path.
+    ``pass_fds`` may contain one caller-owned pipe write FD for attestation;
+    the caller retains ownership of that FD. All other non-stdio FDs close.
     """
     if (
         not command
@@ -785,6 +836,7 @@ def run(
         raise ProcessError("invalid command or timeout/sample interval")
     if type(qualified) is not bool:
         raise ProcessError("qualified must be a boolean")
+    pass_fds = _validate_pass_fds(pass_fds)
     if qualified:
         return _run_cgroup(
             command,
@@ -796,6 +848,7 @@ def run(
             stdout_path=stdout_path,
             stderr_path=stderr_path,
             cgroup_parent=cgroup_parent,
+            pass_fds=pass_fds,
         )
     if cgroup_parent is not None:
         raise ProcessError("cgroup_parent requires qualified=True")
@@ -814,6 +867,8 @@ def run(
             cwd=cwd,
             env=env,
             start_new_session=True,
+            pass_fds=pass_fds,
+            close_fds=True,
             stdin=subprocess.DEVNULL,
             stdout=output_files[0],
             stderr=output_files[1],

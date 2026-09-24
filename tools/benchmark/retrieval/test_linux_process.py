@@ -257,6 +257,111 @@ def test_child_shim_cannot_run_workload_before_parent_ack(tmp_path):
         os.close(writer)
 
 
+def test_cgroup_shim_forwards_only_explicit_attestation_fd_after_gate(tmp_path):
+    gate_read, gate_write = os.pipe()
+    attest_read, attest_write = os.pipe()
+    unrelated_read, unrelated_write = os.pipe()
+    os.set_inheritable(unrelated_write, True)
+    marker = tmp_path / "wrapper-ran"
+    script = """
+import os
+import sys
+from pathlib import Path
+
+def opened(fd):
+    try:
+        os.fstat(fd)
+        return True
+    except OSError:
+        return False
+
+attestation_fd = int(sys.argv[1])
+assert [fd for fd in range(3, 64) if opened(fd)] == [attestation_fd]
+Path(sys.argv[2]).write_text("ran")
+os.write(attestation_fd, b"nonce")
+"""
+    child = None
+    try:
+        child = linux_process._spawn_cgroup_shim(
+            [sys.executable, "-c", script, str(attest_write), str(marker)],
+            gate_read,
+            (attest_write,),
+            cwd=None,
+            env=None,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        os.close(gate_read)
+        gate_read = None
+        time.sleep(0.1)
+        assert child.poll() is None
+        assert not marker.exists()
+        os.write(gate_write, b"1")
+        stdout, stderr = child.communicate(timeout=5)
+        assert child.returncode == 0, stderr.decode()
+        assert stdout == b""
+        assert marker.read_text() == "ran"
+        os.close(attest_write)
+        attest_write = None
+        assert os.read(attest_read, 5) == b"nonce"
+    finally:
+        if child is not None and child.poll() is None:
+            child.kill()
+            child.wait(timeout=5)
+        if gate_read is not None:
+            os.close(gate_read)
+        for fd in (gate_write, attest_read, attest_write, unrelated_read, unrelated_write):
+            if fd is not None:
+                os.close(fd)
+
+
+def test_pass_fds_validation_rejects_unlisted_or_non_pipe_fds(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        linux_process.subprocess,
+        "Popen",
+        lambda *args, **kwargs: pytest.fail("invalid attestation FD reached spawn"),
+    )
+    read_fd, write_fd = os.pipe()
+    try:
+        with (tmp_path / "regular").open("wb") as regular:
+            invalid = (None, [], (1,), (read_fd,), (regular.fileno(),), (write_fd, write_fd))
+            for candidate in invalid:
+                with pytest.raises(linux_process.ProcessError, match="pass_fds|attestation FD"):
+                    linux_process.run(["worker"], timeout_secs=1, pass_fds=candidate)
+        os.close(write_fd)
+        with pytest.raises(linux_process.ProcessError, match="not open"):
+            linux_process.run(["worker"], timeout_secs=1, pass_fds=(write_fd,))
+    finally:
+        os.close(read_fd)
+
+
+def test_qualified_run_passes_only_validated_attestation_fd_to_owner(monkeypatch):
+    attest_read, attest_write = os.pipe()
+    captured = {}
+
+    def owner(command, **kwargs):
+        captured.update(kwargs)
+        return "owner-selected"
+
+    monkeypatch.setattr(linux_process, "_run_cgroup", owner)
+    try:
+        assert (
+            linux_process.run(
+                ["wrapper", "--", "worker"],
+                timeout_secs=1,
+                qualified=True,
+                cgroup_parent="/delegated",
+                pass_fds=(attest_write,),
+            )
+            == "owner-selected"
+        )
+        assert captured["pass_fds"] == (attest_write,)
+        assert captured["cgroup_parent"] == "/delegated"
+    finally:
+        os.close(attest_read)
+        os.close(attest_write)
+
+
 def test_cgroup_tracker_rejects_observed_migration(monkeypatch):
     current = ["/owned"]
     member_pids = [{41}, set()]
@@ -345,6 +450,45 @@ def test_timeout_cleans_live_descendant_on_linux(tmp_path):
     assert len(result.processes) >= 2
     assert result.root.start_ticks > 0
     assert not result.ownership_complete
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="native Linux process test")
+def test_diagnostic_run_forwards_only_attestation_fd(tmp_path):
+    attest_read, attest_write = os.pipe()
+    unrelated_read, unrelated_write = os.pipe()
+    os.set_inheritable(unrelated_write, True)
+    script = """
+import os
+import sys
+
+def opened(fd):
+    try:
+        os.fstat(fd)
+        return True
+    except OSError:
+        return False
+
+attestation_fd = int(sys.argv[1])
+assert [fd for fd in range(3, 64) if opened(fd)] == [attestation_fd]
+os.write(attestation_fd, b"nonce")
+"""
+    try:
+        result = linux_process.run(
+            [sys.executable, "-c", script, str(attest_write)],
+            timeout_secs=2,
+            sample_interval_ms=10,
+            pass_fds=(attest_write,),
+            stderr_path=str(tmp_path / "stderr"),
+        )
+        assert result.root_exit_code == 0, (tmp_path / "stderr").read_text()
+        os.close(attest_write)
+        attest_write = None
+        assert os.read(attest_read, 5) == b"nonce"
+        assert not result.ownership_complete
+    finally:
+        for fd in (attest_read, attest_write, unrelated_read, unrelated_write):
+            if fd is not None:
+                os.close(fd)
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="native Linux process test")
