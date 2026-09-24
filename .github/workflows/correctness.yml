@@ -4,7 +4,8 @@ name: correctness
 # changed-line coverage; exhaustive interpreter, sanitizer, mutation, unused-
 # dependency and fuzz exploration runs nightly or on explicit dispatch. These
 # are intentionally separate from `ci.yml` because they take significantly
-# longer than the regular test rail.
+# longer than the regular test rail. A proof bundle dispatch selects code
+# qualification or final production qualification; ordinary PRs run neither.
 
 on:
   pull_request:
@@ -16,6 +17,14 @@ on:
         description: "Run ID containing the exact-source proof-authority-release-bundle artifact"
         required: false
         type: string
+      proof_stage:
+        description: "Code qualification before deployment, or final production qualification"
+        required: false
+        type: choice
+        options:
+          - final
+          - code
+        default: final
       paired_repository_ref:
         description: "Exact 40-character semantica-codegraph-v2 commit for the proof source pair"
         required: false
@@ -29,8 +38,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  proof-authority-release-gate:
-    name: proof-authority-release-gate (all registered proofs)
+  proof-authority-bundle-gate:
+    name: proof-authority-bundle-gate (${{ inputs.proof_stage }})
     if: github.event_name == 'workflow_dispatch' && inputs.proof_bundle_run_id != ''
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -80,10 +89,17 @@ jobs:
           repository: ${{ github.repository }}
           run-id: ${{ inputs.proof_bundle_run_id }}
 
-      - name: Validate every registered proof and the P12 aggregate receipt
+      - name: Validate the selected qualification stage
         env:
           SEMANTICA_CHECKOUT: ${{ github.workspace }}/.proof-pairs/semantica-codegraph-v2
-        run: just proof-authority-release-gate
+          PROOF_STAGE: ${{ inputs.proof_stage }}
+        shell: bash
+        run: |
+          case "$PROOF_STAGE" in
+            code) just proof-authority-code-gate ;;
+            final) just proof-authority-release-gate ;;
+            *) echo "unsupported proof stage: $PROOF_STAGE" >&2; exit 2 ;;
+          esac
 
   rust-authority-nextest:
     name: rust-authority-nextest (nightly receipt)

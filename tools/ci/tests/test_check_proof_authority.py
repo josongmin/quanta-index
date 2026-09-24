@@ -552,7 +552,9 @@ def test_p00_bound_inventory_rejects_forged_discovery(tmp_path: Path) -> None:
     tools = tmp_path / "tools/ci"
     tools.mkdir(parents=True)
     writer_path = tools / "write-error-authority-inventory.py"
-    writer_path.write_bytes((REPO_ROOT / "tools/ci/write-error-authority-inventory.py").read_bytes())
+    writer_path.write_bytes(
+        (REPO_ROOT / "tools/ci/write-error-authority-inventory.py").read_bytes()
+    )
     (tools / "error-authority-inventory.schema.json").write_bytes(
         (REPO_ROOT / "tools/ci/error-authority-inventory.schema.json").read_bytes()
     )
@@ -1056,6 +1058,37 @@ def test_dependency_closure_is_registry_driven_and_excludes_target() -> None:
     assert "p11-activation" not in closure
     assert "p11-rollback" not in closure
     assert len(closure) == len(set(closure))
+
+
+def test_code_gate_selects_only_canonical_code_proofs_and_prerequisites() -> None:
+    registry = MODULE._read_toml(REGISTRY_PATH)
+    selected = MODULE.code_qualified_proof_ids(registry)
+
+    assert selected == MODULE.EXPECTED_VERDICT_PROOFS["CODE_QUALIFIED"]
+    assert len(selected) == 21
+    assert not {
+        "p11-deployment",
+        "p11-activation",
+        "p11-rollback",
+        "p12-final-qualification",
+    } & set(selected)
+
+    registry["aggregate"]["verdicts"]["CODE_QUALIFIED"].remove("p11-cross-repo-cutover")
+    with pytest.raises(ValueError, match="canonical authority"):
+        MODULE.code_qualified_proof_ids(registry)
+
+
+def test_code_gate_requires_source_binding_and_does_not_require_operations(capsys) -> None:
+    assert MODULE.main(["--require-code-qualified"]) == 1
+    assert "--require-code-qualified requires --bind-source" in capsys.readouterr().err
+
+    assert MODULE.main(["--require-code-qualified", "--bind-source"]) == 1
+    stderr = capsys.readouterr().err
+    assert "p11-cross-repo-cutover" in stderr
+    assert "p11-deployment" not in stderr
+    assert "p11-activation" not in stderr
+    assert "p11-rollback" not in stderr
+    assert "registered aggregate artifact is missing" not in stderr
 
 
 def test_registry_refuses_proof_set_or_edge_drift_from_canonical_graph() -> None:

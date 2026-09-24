@@ -27,9 +27,14 @@ been issued. See the P11/P12A tickets for precise source and exclusions.
 
 `just proof-authority-lint` checks registry structure only.
 `just proof-authority-current-gate` checks a fresh P00 receipt.
-`just proof-authority-release-gate` requires the complete current-source
-bundle. Keep code completion, owner tests, release qualification, deployment,
-activation, and rollback as separate states.
+`just proof-authority-code-gate` checks the fixed `CODE_QUALIFIED` closure
+against the current Quanta/Semantica source pair before deployment. It does
+not require deployment, activation, rollback, P12, or the final aggregate.
+`just proof-authority-release-gate` checks the complete current-source bundle
+after those operational actions. The manual `correctness` workflow selects
+`proof_stage=code` or `proof_stage=final` (the default). Neither gate runs on
+ordinary PRs. Keep code qualification, deployment, activation, and rollback
+as separate states; a code-gate pass is not production readiness.
 
 The R0 proof-boundary fix is prerequisite to *authoritative* receipts, not to
 parallel P09/source-plan development. A source edit invalidates existing

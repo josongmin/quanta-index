@@ -764,10 +764,11 @@ rust-policy:
     @just rust-bench-artifacts
     @just rust-deny
 
-# SEP-21 proof policy separates static lint, the P00 current gate, the P12
-# dependency aggregate producer, and the final release gate. Static lint never
-# treats absent future proof artifacts as success or failure. Only the final
-# release gate requires every registered receipt, including P12.
+# SEP-21 proof policy separates static lint, the P00 current gate, pre-deploy
+# code qualification, and final production qualification. Static lint never
+# treats absent future proof artifacts as success or failure. Code qualification
+# requires the fixed CODE_QUALIFIED proof closure; final qualification also
+# requires deployment, activation, rollback, P12, and the aggregate receipt.
 proof-authority-lint:
     python3 tools/ci/lint/check-proof-authority.py
 
@@ -856,6 +857,13 @@ proof-authority-final-qualification:
         --paired-checkout "${SEMANTICA_CHECKOUT}"
     python3 tools/ci/lint/check-proof-authority.py \
         --require-all \
+        --paired-checkout "github:josongmin/semantica-codegraph-v2=${SEMANTICA_CHECKOUT}" \
+        --bind-source
+
+proof-authority-code-gate:
+    @test -n "${SEMANTICA_CHECKOUT:-}" || { echo "SEMANTICA_CHECKOUT is required" >&2; exit 2; }
+    python3 tools/ci/lint/check-proof-authority.py \
+        --require-code-qualified \
         --paired-checkout "github:josongmin/semantica-codegraph-v2=${SEMANTICA_CHECKOUT}" \
         --bind-source
 

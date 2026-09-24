@@ -283,7 +283,7 @@ def test_ci_python_jobs_install_only_their_runtime_imports() -> None:
         assert all("-e ." not in install for install in installs), (job_id, installs)
 
     correctness = yaml.safe_load(CORRECTNESS_WORKFLOW.read_text(encoding="utf-8"))
-    release_steps = correctness["jobs"]["proof-authority-release-gate"]["steps"]
+    release_steps = correctness["jobs"]["proof-authority-bundle-gate"]["steps"]
     release_install = next(
         step["run"]
         for step in release_steps
@@ -317,7 +317,7 @@ def test_msrv_uses_one_all_target_compile_graph() -> None:
 
 
 def test_exhaustive_correctness_jobs_do_not_duplicate_every_pr_build() -> None:
-    workflow = yaml.safe_load(CORRECTNESS_WORKFLOW.read_text(encoding="utf-8"))
+    workflow = yaml.load(CORRECTNESS_WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
     jobs = workflow["jobs"]
     nightly_or_manual = (
         "github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && "
@@ -349,7 +349,59 @@ def test_exhaustive_correctness_jobs_do_not_duplicate_every_pr_build() -> None:
         assert jobs[job_id].get("if") == structural_condition, job_id
     assert jobs["rust-changed-line-coverage"].get("if") == "github.event_name == 'pull_request'"
 
-    assert jobs["proof-authority-release-gate"]["if"] == (
+    assert jobs["proof-authority-bundle-gate"]["if"] == (
         "github.event_name == 'workflow_dispatch' && inputs.proof_bundle_run_id != ''"
     )
+    proof_stage = workflow["on"]["workflow_dispatch"]["inputs"]["proof_stage"]
+    assert proof_stage["options"] == ["final", "code"]
+    assert proof_stage["default"] == "final"
+    bundle_steps = jobs["proof-authority-bundle-gate"]["steps"]
+    validation = next(
+        step["run"]
+        for step in bundle_steps
+        if step.get("name") == "Validate the selected qualification stage"
+    )
+    assert "code) just proof-authority-code-gate ;;" in validation
+    assert "final) just proof-authority-release-gate ;;" in validation
     assert jobs["dsl-bench-latency"]["if"] == nightly_or_manual
+
+
+def test_proof_bundle_dispatch_routes_only_the_selected_stage(tmp_path: Path) -> None:
+    workflow = yaml.load(CORRECTNESS_WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    steps = workflow["jobs"]["proof-authority-bundle-gate"]["steps"]
+    script = next(
+        step["run"]
+        for step in steps
+        if step.get("name") == "Validate the selected qualification stage"
+    )
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_just = fake_bin / "just"
+    fake_just.write_text('#!/bin/sh\nprintf "%s\\n" "$1"\n', encoding="utf-8")
+    fake_just.chmod(0o755)
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+
+    for stage, expected in (
+        ("code", "proof-authority-code-gate"),
+        ("final", "proof-authority-release-gate"),
+    ):
+        result = subprocess.run(
+            ["bash", "-c", script],
+            cwd=tmp_path,
+            env={**env, "PROOF_STAGE": stage},
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == expected
+
+    invalid = subprocess.run(
+        ["bash", "-c", script],
+        cwd=tmp_path,
+        env={**env, "PROOF_STAGE": "unknown"},
+        capture_output=True,
+        text=True,
+    )
+    assert invalid.returncode == 2
+    assert not invalid.stdout

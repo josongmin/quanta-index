@@ -1858,6 +1858,28 @@ def aggregate_proof_ids(registry: dict[str, Any]) -> list[str]:
     return [proof["id"] for proof in proof_list if proof.get("id") in required]
 
 
+def code_qualified_proof_ids(registry: dict[str, Any]) -> list[str]:
+    """Select the fixed code verdict and its prerequisites, excluding operations."""
+
+    proofs = registry.get("proofs", [])
+    proof_by_id = {
+        proof["id"]: proof
+        for proof in proofs
+        if isinstance(proof, dict) and isinstance(proof.get("id"), str)
+    }
+    aggregate = registry.get("aggregate")
+    verdicts = aggregate.get("verdicts") if isinstance(aggregate, dict) else None
+    code_proofs = verdicts.get("CODE_QUALIFIED") if isinstance(verdicts, dict) else None
+    if code_proofs != EXPECTED_VERDICT_PROOFS["CODE_QUALIFIED"]:
+        raise ValueError("CODE_QUALIFIED proof set differs from canonical authority")
+    required = set(code_proofs)
+    for proof_id in code_proofs:
+        if proof_id not in proof_by_id:
+            raise ValueError(f"CODE_QUALIFIED names unknown proof {proof_id!r}")
+        required.update(dependency_closure(proof_by_id, proof_id))
+    return [proof["id"] for proof in proofs if proof.get("id") in required]
+
+
 def check_aggregate(
     payload_by_id: dict[str, dict[str, Any]],
     *,
@@ -2306,6 +2328,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--manifest", action="append", type=Path, default=[])
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--require-all", action="store_true")
+    selection.add_argument("--require-code-qualified", action="store_true")
     selection.add_argument("--dependencies-of", metavar="PROOF_ID")
     parser.add_argument(
         "--paired-checkout",
@@ -2334,7 +2357,7 @@ def _main_locked(argv: list[str] | None = None) -> int:
         return 2
 
     findings = check_registry(registry, root=root, path=registry_path)
-    if args.require_all or args.dependencies_of is not None:
+    if args.require_all or args.require_code_qualified or args.dependencies_of is not None:
         for label, path in (("registry", registry_path), ("schema", schema_path)):
             try:
                 path.relative_to(root)
@@ -2392,6 +2415,18 @@ def _main_locked(argv: list[str] | None = None) -> int:
             findings.append(Finding(registry_path, "--require-all requires --bind-source"))
         for proof_id in proof_by_id:
             require_registered_manifest(proof_id)
+    if args.require_code_qualified:
+        if not args.bind_source:
+            findings.append(
+                Finding(registry_path, "--require-code-qualified requires --bind-source")
+            )
+        try:
+            code_ids = code_qualified_proof_ids(registry)
+        except ValueError as error:
+            findings.append(Finding(registry_path, str(error)))
+        else:
+            for proof_id in code_ids:
+                require_registered_manifest(proof_id)
     if args.dependencies_of is not None:
         if not args.bind_source:
             findings.append(Finding(registry_path, "--dependencies-of requires --bind-source"))
@@ -2449,7 +2484,7 @@ def _main_locked(argv: list[str] | None = None) -> int:
         if not manifest_findings:
             payload_by_id[proof_id] = payload
 
-    if args.require_all or args.dependencies_of is not None:
+    if args.require_all or args.require_code_qualified or args.dependencies_of is not None:
         findings.extend(
             check_aggregate(
                 payload_by_id,
