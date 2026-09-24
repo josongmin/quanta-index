@@ -89,9 +89,17 @@ interpretation, not runner attestation or release qualification.
 Historical P01 attempts exposed two source issues: the `quanta-index-contract`
 module baseline omitted public active-head control DTOs, and the runtime E2E
 fixture sent lexical chunks without the typed semantic sources required by its
-semantic query expectations. Both were corrected in source. Neither correction
-constitutes a current-source P01 pass; rerun the complete recipe after the
-source is frozen and retain its raw result.
+semantic query expectations. Both were corrected in source. On 2026-09-25,
+`just proof-p01-canonical-identity` completed on clean Quanta source
+`623e80cea2cc8e6a62c5c77304c7c0addebb7e90`. The local log is
+`/tmp/qi-p01-clean-623e80ce.log` (SHA-256
+`ca187d90e44d72bd4cdd10bc41c4d62948aeb80f208d84da79a17bb2b6e06a76`):
+canonical identity 15/15, shared surface 783/783, integration-fast 210/210,
+CLI smoke 25/25, and daemon 204/204 with one ignored real-provider test;
+structural, public API, wire, and fuzz rails also completed. This is a
+source-specific recipe result, not a P01 proof manifest or release qualification.
+The log lacks the archived machine-readable runner evidence required for an
+authoritative manifest, and later commits make it stale for the current HEAD.
 
 ### R1 — Close the P03-P08 release counterexample inventory, not the owners again
 
