@@ -27,7 +27,7 @@
     "blinding": {"enum": ["isolated", "attested"]},
     "suite_secret_root": {
       "type": "string", "minLength": 1,
-      "description": "Required when blinding=isolated. The suite must be a regular file below this external evaluator-only root; the root must contain no runner-readable input. The driver denies this root and its frozen evaluator-only suite copy with macOS Seatbelt."
+      "description": "Required when blinding=isolated. The suite must be a regular file below this external evaluator-only root; the root must contain no runner-readable input. The driver checks actual runner-child deny/allow access with the current tagged macOS Seatbelt or Linux Landlock backend."
     },
     "isolation_method": {"type": "string", "minLength": 1},
     "access_block_log": {"type": "string", "minLength": 1},
@@ -110,6 +110,13 @@
     }
   },
   "allOf": [
+    {
+      "if": {"properties": {"blinding": {"const": "isolated"}}, "required": ["blinding"]},
+      "then": {
+        "required": ["suite_secret_root"],
+        "not": {"anyOf": [{"required": ["isolation_method"]}, {"required": ["access_block_log"]}]}
+      }
+    },
     {
       "if": {"properties": {"scope": {"const": "qualified"}}, "required": ["scope"]},
       "then": {"required": ["admission"]}

@@ -23,6 +23,7 @@ import os
 import platform
 import random
 import re
+import secrets
 import shutil
 import signal
 import subprocess
@@ -32,6 +33,7 @@ import time
 from pathlib import Path
 
 try:
+    from tools.benchmark.retrieval import linux_isolation
     from tools.benchmark.retrieval.contract_proof import nextest_summary, pytest_summary
     from tools.benchmark.retrieval.evaluator import (
         CHUNK_STRATEGIES,
@@ -51,6 +53,7 @@ try:
     from tools.benchmark.retrieval.sdk_proof import build_summary_from_evidence
 except ImportError:  # direct script invocation: import the sibling module
     sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import linux_isolation  # noqa: E402
     from contract_proof import nextest_summary, pytest_summary  # noqa: E402
     from evaluator import (  # noqa: E402
         CHUNK_STRATEGIES,
@@ -77,7 +80,9 @@ FROZEN_TASKS_FLOOR = 20
 RUNNABLE_STRATEGIES = tuple(s for s in CHUNK_STRATEGIES if s != "semble_native")
 SEMBLE_PINNED_VERSION = "0.6.0"
 SANDBOX_EXEC = Path("/usr/bin/sandbox-exec")
-ISOLATION_BACKEND = "macos-seatbelt-v1"
+MACOS_ISOLATION_BACKEND = "macos-seatbelt-v1"
+LINUX_ISOLATION_BACKEND = linux_isolation.BACKEND
+ISOLATION_PROOF_VERSION = 2
 
 
 class RunError(ValueError):
@@ -298,6 +303,26 @@ def run_monitored_process(
         if path.exists():
             raise RunError(f"refusing existing process evidence: {path}")
         path.parent.mkdir(parents=True, exist_ok=True)
+    attestation_pipe = None
+    actual_command = command
+    if isolation is not None and isolation.get("backend") == LINUX_ISOLATION_BACKEND:
+        child_check = isolation.get("_child_check")
+        if not isinstance(child_check, dict) or set(child_check) != {"pack_sha256"}:
+            raise RunError("Linux capture lacks child check context")
+        if "--" not in command:
+            raise RunError("Linux capture wrapper lacks exec delimiter")
+        nonce = secrets.token_hex(32)
+        read_fd, write_fd = os.pipe()
+        attestation_pipe = (read_fd, write_fd, nonce)
+        split = command.index("--")
+        actual_command = [
+            *command[:split],
+            "--attest-fd",
+            str(write_fd),
+            "--nonce",
+            nonce,
+            *command[split:],
+        ]
     started = time.monotonic()
     peak_rss_bytes = 0
     peak_cpu_percent = 0.0
@@ -311,15 +336,22 @@ def run_monitored_process(
     ):
         try:
             process = subprocess.Popen(
-                command,
+                actual_command,
+                stdin=subprocess.DEVNULL,
                 stdout=stdout,
                 stderr=stderr,
                 text=True,
                 env=env,
                 start_new_session=True,
+                pass_fds=(attestation_pipe[1],) if attestation_pipe else (),
             )
         except OSError as error:
+            if attestation_pipe:
+                os.close(attestation_pipe[0])
+                os.close(attestation_pipe[1])
             raise RunError(f"cannot start monitored process: {error}") from error
+        if attestation_pipe:
+            os.close(attestation_pipe[1])
         while True:
             try:
                 sample = _process_tree_sample(process.pid)
@@ -365,6 +397,42 @@ def run_monitored_process(
             time.sleep(sample_interval_ms / 1000.0)
     elapsed_ms = (time.monotonic() - started) * 1000.0
     cleanup_complete, cleanup_escalated, cleanup_error = _cleanup_process_group(process.pid)
+    recorded_isolation = dict(isolation) if isolation is not None else None
+    if attestation_pipe:
+        read_fd, _write_fd, nonce = attestation_pipe
+        try:
+            raw_attestation = os.read(read_fd, 4097)
+        finally:
+            os.close(read_fd)
+        try:
+            attestation = json.loads(raw_attestation)
+        except (ValueError, UnicodeDecodeError):
+            attestation = None
+        expected_keys = {
+            "nonce",
+            "abi",
+            "exec_sha256",
+            "suite_read_denied",
+            "query_pack_read_allowed",
+            "proc_read_denied",
+        }
+        invalid_attestation = (
+            not isinstance(attestation, dict)
+            or set(attestation) != expected_keys
+            or attestation.get("nonce") != nonce
+            or attestation.get("exec_sha256") != digest(canonical(command[split + 1 :]))
+            or type(attestation.get("abi")) is not int
+            or attestation["abi"] < linux_isolation.MIN_ABI
+            or any(
+                attestation[key] is not True
+                for key in ("suite_read_denied", "query_pack_read_allowed", "proc_read_denied")
+            )
+            or len(raw_attestation) > 4096
+        )
+        if invalid_attestation and exit_code == 0:
+            raise RunError("Linux child did not attest deny/allow after Landlock enforcement")
+        recorded_isolation.pop("_child_check")
+        recorded_isolation["child_attestation"] = None if invalid_attestation else attestation
     subject_sha256 = None
     if subject_path is not None and subject_path.is_file():
         subject_sha256 = sha_file(subject_path)
@@ -372,7 +440,12 @@ def run_monitored_process(
         "schema_version": 1,
         "sampler": "ps-process-tree-rss-cpu-v2",
         "sample_interval_ms": sample_interval_ms,
-        "command_sha256": digest(canonical(command)),
+        "command_sha256": digest(canonical(actual_command)),
+        **(
+            {"exec_command_sha256": digest(canonical(command[split + 1 :]))}
+            if attestation_pipe
+            else {}
+        ),
         "subject_sha256": subject_sha256,
         "root_pid": process.pid,
         "exit_code": exit_code,
@@ -387,7 +460,7 @@ def run_monitored_process(
         "cleanup_complete": cleanup_complete,
         "cleanup_escalated": cleanup_escalated,
         "cleanup_error": cleanup_error,
-        "isolation": isolation,
+        "isolation": recorded_isolation,
     }
     resource_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return payload
@@ -630,12 +703,137 @@ def materialize_corpus_view(spec: dict, stage: Path, source_repo: Path) -> dict:
     return updated
 
 
+def _linux_policy(spec: dict, stage: Path, denied_roots: list[str]) -> dict:
+    """Grant only runner inputs and per-repetition output trees, never stage."""
+    runner_input = stage / "runner-input"
+    runner_input.mkdir()
+    cache = Path(spec.get("semble_cache_root", stage / "semble-cache")).resolve()
+    cache.mkdir(parents=True, exist_ok=True)
+    reps = [
+        stage / f"rep-{rep:02d}"
+        for rep in range(_int(spec.get("repetitions", 1), "spec.repetitions"))
+    ]
+    for rep in reps:
+        rep.mkdir()
+    runtime = [
+        "/lib",
+        "/lib64",
+        "/usr/lib",
+        "/usr/lib64",
+        "/usr/local/lib",
+        "/etc/ld.so.cache",
+        "/etc/ssl",
+        "/dev/urandom",
+    ]
+    read = [
+        stage / "runner-tools",
+        runner_input,
+        Path(spec["repo"]),
+        Path(spec["manifest"]),
+        Path(spec["query_pack"]),
+        Path(spec["runner_binary"]),
+        Path(spec["searchd_binary"]),
+        Path(spec["semble_lockfile"]),
+        Path(spec["semble_python"]).absolute().parent.parent,
+        Path(spec["semble_python"]).resolve().parent.parent,
+        Path(sys.executable).resolve().parent.parent,
+        Path("/bin/cat"),
+    ]
+    if "quanta_model_dir" in spec:
+        read.append(Path(spec["quanta_model_dir"]))
+    read.extend(Path(path) for path in runtime if Path(path).exists())
+    policy = {
+        "readonly": sorted({str(path.resolve()) for path in read}),
+        "writable": sorted({str(path.resolve()) for path in [*reps, cache, Path("/dev/null")]}),
+        "denied": denied_roots,
+    }
+    try:
+        linux_isolation.validate_policy(policy)
+    except (linux_isolation.IsolationError, OSError) as exc:
+        raise RunError(f"Linux isolation policy is invalid: {exc}") from exc
+    return policy
+
+
+def _probe_linux(policy: dict, module: Path, python: Path, suite: Path, pack: Path) -> dict:
+    """Observe deny/allow from fresh restricted children with this exact policy."""
+    state = linux_isolation.probe()
+    if state["state"] != "available":
+        raise RunError(f"Linux Landlock unavailable: {state}")
+    cat = str(Path("/bin/cat").resolve())
+    try:
+        control_suite = subprocess.run(
+            [cat, str(suite)], stdin=subprocess.DEVNULL, capture_output=True, timeout=15
+        )
+        control_proc = subprocess.run(
+            [cat, "/proc/self/environ"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RunError(f"Linux Landlock unrestricted control failed: {exc}") from exc
+    if (
+        control_suite.returncode != 0
+        or hashlib.sha256(control_suite.stdout).hexdigest() != sha_file(suite)
+        or control_proc.returncode != 0
+    ):
+        raise RunError("Linux Landlock unrestricted control cannot read suite and proc")
+    with tempfile.TemporaryDirectory(prefix="retrieval-landlock-probe-") as temp:
+        policy_path = Path(temp) / "policy.json"
+        policy_path.write_text(json.dumps(policy, sort_keys=True) + "\n", encoding="utf-8")
+
+        def read(path: Path) -> subprocess.CompletedProcess:
+            try:
+                return subprocess.run(
+                    [
+                        str(python),
+                        str(module),
+                        "--policy",
+                        str(policy_path),
+                        "--",
+                        cat,
+                        str(path),
+                    ],
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    timeout=15,
+                    env={**os.environ, "LC_ALL": "C"},
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise RunError(f"Linux Landlock child probe failed: {exc}") from exc
+
+        denied = read(suite)
+        allowed = read(pack)
+        proc = read(Path("/proc/self/environ"))
+    probes = {
+        "suite_read_denied": denied.returncode != 0
+        and not denied.stdout
+        and b"Permission denied" in denied.stderr,
+        "query_pack_read_allowed": allowed.returncode == 0
+        and hashlib.sha256(allowed.stdout).hexdigest() == sha_file(pack),
+        "proc_read_denied": proc.returncode != 0
+        and not proc.stdout
+        and b"Permission denied" in proc.stderr,
+    }
+    if not all(probes.values()):
+        raise RunError(f"Linux Landlock child deny/allow probe failed: {probes}")
+    return {"abi": state["abi"], "probes": probes}
+
+
 def prepare_isolation(spec: dict, stage: Path, original_suite: Path) -> dict:
     """Create and verify the evaluator-only denial boundary for paired capture."""
     if spec.get("blinding", "attested") != "isolated":
         return spec
-    if platform.system() != "Darwin" or not SANDBOX_EXEC.is_file():
-        raise RunError("isolated blinding requires the macos-seatbelt-v1 backend")
+    system = platform.system()
+    if system == "Darwin" and not SANDBOX_EXEC.is_file():
+        raise RunError("macOS Seatbelt executable is unavailable")
+    if system not in ("Darwin", "Linux"):
+        raise RunError("isolated blinding requires macOS Seatbelt or Linux Landlock")
+    if system == "Linux":
+        state = linux_isolation.probe()
+        if state["state"] != "available":
+            raise RunError(f"Linux Landlock unavailable: {state}")
     if "isolation_method" in spec or "access_block_log" in spec:
         raise RunError(
             "isolated blinding derives isolation_method/access_block_log; do not supply them"
@@ -711,18 +909,64 @@ def prepare_isolation(spec: dict, stage: Path, original_suite: Path) -> dict:
     for optional in ("quanta_model_dir",):
         if optional in spec:
             extra_read_roots.append(str(Path(spec[optional]).resolve()))
-    allowed_read_roots = sorted(set(extra_read_roots))
-    allowed_write_roots = sorted({str(stage.resolve()), str(Path(spec["output_root"]).resolve())})
-    profile = _seatbelt_profile(denied_roots, allowed_read_roots, allowed_write_roots)
-    probes = _probe_seatbelt(profile, suite_path, pack_path)
+    if system == "Darwin":
+        backend = MACOS_ISOLATION_BACKEND
+        allowed_read_roots = sorted(set(extra_read_roots))
+        allowed_write_roots = sorted(
+            {str(stage.resolve()), str(Path(spec["output_root"]).resolve())}
+        )
+        profile = _seatbelt_profile(denied_roots, allowed_read_roots, allowed_write_roots)
+        policy_sha256 = hashlib.sha256(profile.encode("utf-8")).hexdigest()
+        probes = _probe_seatbelt(profile, suite_path, pack_path)
+        backend_proof = {
+            "sandbox_exec": {"path": str(SANDBOX_EXEC), "sha256": sha_file(SANDBOX_EXEC)}
+        }
+        isolation = {"backend": backend, "profile": profile}
+    else:
+        backend = LINUX_ISOLATION_BACKEND
+        module = runner_tools / "linux_isolation.py"
+        shutil.copyfile(Path(linux_isolation.__file__), module)
+        policy = _linux_policy(spec, stage, denied_roots)
+        allowed_read_roots = policy["readonly"]
+        allowed_write_roots = policy["writable"]
+        policy_path = stage / "runner-input" / "landlock-policy.json"
+        policy_path.write_text(json.dumps(policy, sort_keys=True) + "\n", encoding="utf-8")
+        policy_sha256 = sha_file(policy_path)
+        python = Path(sys.executable).resolve()
+        observed = _probe_linux(policy, module, python, suite_path, pack_path)
+        probes = observed["probes"]
+        backend_proof = {
+            "landlock": {
+                "abi": observed["abi"],
+                "threat_model": "filesystem-path-read-v1",
+                "module": {
+                    "path": module.relative_to(stage).as_posix(),
+                    "sha256": sha_file(module),
+                },
+                "python": {"path": str(python), "sha256": sha_file(python)},
+                "policy": {
+                    "path": policy_path.relative_to(stage).as_posix(),
+                    "sha256": policy_sha256,
+                },
+            }
+        }
+        isolation = {
+            "backend": backend,
+            "module": str(module),
+            "python": str(python),
+            "module_sha256": sha_file(module),
+            "python_sha256": sha_file(python),
+            "policy_path": str(policy_path),
+            "suite_path": str(suite_path),
+            "pack_path": str(pack_path),
+            "suite_sha256": sha_file(suite_path),
+            "pack_sha256": sha_file(pack_path),
+        }
     proof = {
-        "schema_version": 1,
-        "backend": ISOLATION_BACKEND,
-        "sandbox_exec": {
-            "path": str(SANDBOX_EXEC),
-            "sha256": sha_file(SANDBOX_EXEC),
-        },
-        "profile_sha256": hashlib.sha256(profile.encode("utf-8")).hexdigest(),
+        "schema_version": ISOLATION_PROOF_VERSION,
+        "backend": backend,
+        **backend_proof,
+        "policy_sha256": policy_sha256,
         "denied_roots": denied_roots,
         "allowed_read_roots": allowed_read_roots,
         "allowed_write_roots": allowed_write_roots,
@@ -756,11 +1000,11 @@ def prepare_isolation(spec: dict, stage: Path, original_suite: Path) -> dict:
         handle.write(json.dumps(proof, indent=2, sort_keys=True) + "\n")
     proof_sha256 = sha_file(proof_path)
     updated = dict(spec)
-    updated["isolation_method"] = ISOLATION_BACKEND
+    updated["isolation_method"] = backend
     updated["access_block_log"] = f"sha256:{proof_sha256}"
     updated["_isolation"] = {
-        "profile": profile,
-        "profile_sha256": proof["profile_sha256"],
+        **isolation,
+        "policy_sha256": policy_sha256,
         "proof_sha256": proof_sha256,
     }
     updated["_semble_adapter"] = str(runner_tools / "semble.py")
@@ -771,24 +1015,70 @@ def sandbox_command(spec: dict, command: list[str]) -> tuple[list[str], dict | N
     if spec.get("blinding", "attested") != "isolated":
         return command, None
     isolation = spec.get("_isolation")
-    if not isinstance(isolation, dict) or set(isolation) != {
-        "profile",
-        "profile_sha256",
-        "proof_sha256",
-    }:
+    if not isinstance(isolation, dict):
         raise RunError("isolated capture lacks the verified driver isolation context")
-    profile = isolation["profile"]
-    if (
-        not isinstance(profile, str)
-        or hashlib.sha256(profile.encode()).hexdigest() != isolation["profile_sha256"]
-    ):
-        raise RunError("isolated capture profile digest mismatch")
+    backend = isolation.get("backend")
+    if backend == MACOS_ISOLATION_BACKEND:
+        if set(isolation) != {"backend", "profile", "policy_sha256", "proof_sha256"}:
+            raise RunError("isolated macOS context is malformed")
+        profile = isolation["profile"]
+        if (
+            not isinstance(profile, str)
+            or hashlib.sha256(profile.encode()).hexdigest() != isolation["policy_sha256"]
+        ):
+            raise RunError("isolated capture policy digest mismatch")
+        wrapped = [str(SANDBOX_EXEC), "-p", profile, *command]
+    elif backend == LINUX_ISOLATION_BACKEND:
+        if set(isolation) != {
+            "backend",
+            "module",
+            "module_sha256",
+            "python",
+            "python_sha256",
+            "policy_path",
+            "suite_path",
+            "suite_sha256",
+            "pack_path",
+            "pack_sha256",
+            "policy_sha256",
+            "proof_sha256",
+        }:
+            raise RunError("isolated Linux context is malformed")
+        policy_path = Path(isolation["policy_path"])
+        if sha_file(policy_path) != isolation["policy_sha256"]:
+            raise RunError("isolated Linux policy digest drifted")
+        for path_key, digest_key in (
+            ("module", "module_sha256"),
+            ("python", "python_sha256"),
+            ("suite_path", "suite_sha256"),
+            ("pack_path", "pack_sha256"),
+        ):
+            if sha_file(Path(isolation[path_key])) != isolation[digest_key]:
+                raise RunError(f"isolated Linux {path_key} digest drifted")
+        wrapped = [
+            isolation["python"],
+            isolation["module"],
+            "--policy",
+            str(policy_path),
+            "--suite",
+            isolation["suite_path"],
+            "--query-pack",
+            isolation["pack_path"],
+            "--query-pack-sha256",
+            isolation["pack_sha256"],
+            "--",
+            *command,
+        ]
+    else:
+        raise RunError("unknown isolated capture backend")
     evidence = {
-        "backend": ISOLATION_BACKEND,
-        "profile_sha256": isolation["profile_sha256"],
+        "backend": backend,
+        "policy_sha256": isolation["policy_sha256"],
         "proof_sha256": isolation["proof_sha256"],
     }
-    return [str(SANDBOX_EXEC), "-p", profile, *command], evidence
+    if backend == LINUX_ISOLATION_BACKEND:
+        evidence["_child_check"] = {"pack_sha256": isolation["pack_sha256"]}
+    return wrapped, evidence
 
 
 def tree_size(root: Path) -> int:
@@ -2234,6 +2524,11 @@ def _validate_manifest_shape(payload: object) -> dict:
     for key in ("isolation_method", "access_block_log"):
         if not isinstance(manifest[key], str) or not manifest[key]:
             raise RunError(f"run manifest {key} must be a nonempty string")
+    if manifest["blinding"] == "isolated" and (
+        manifest["isolation_method"] not in (MACOS_ISOLATION_BACKEND, LINUX_ISOLATION_BACKEND)
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", manifest["access_block_log"])
+    ):
+        raise RunError("isolated run manifest lacks the current tagged backend proof binding")
     if manifest["scope"] not in ("exploratory", "qualified"):
         raise RunError("run manifest scope must be exploratory or qualified")
     claims = _exact_keys(
@@ -2988,7 +3283,11 @@ def _validate_resource_metrics(payload: object, where: str) -> dict:
         "cleanup_escalated",
         "cleanup_error",
     }
-    if not isinstance(payload, dict) or set(payload) not in (keys, keys | {"isolation"}):
+    if not isinstance(payload, dict) or set(payload) not in (
+        keys,
+        keys | {"isolation"},
+        keys | {"isolation", "exec_command_sha256"},
+    ):
         raise RunError(f"{where} must hold the exact resource metric fields")
     metrics = payload
     if metrics["schema_version"] != 1 or metrics["sampler"] != "ps-process-tree-rss-cpu-v2":
@@ -3079,18 +3378,58 @@ def _validate_resource_metrics(payload: object, where: str) -> dict:
     ):
         raise RunError(f"{where} owned process cleanup is incomplete")
     isolation = metrics.get("isolation")
+    if "exec_command_sha256" in metrics and (
+        not isinstance(isolation, dict) or isolation.get("backend") != LINUX_ISOLATION_BACKEND
+    ):
+        raise RunError(f"{where}.exec_command_sha256 requires Linux isolation")
     if isolation is not None:
+        backend_name = isolation.get("backend") if isinstance(isolation, dict) else None
         proof = _exact_keys(
             isolation,
-            {"backend", "profile_sha256", "proof_sha256"},
+            {"backend", "policy_sha256", "proof_sha256"}
+            | ({"child_attestation"} if backend_name == LINUX_ISOLATION_BACKEND else set()),
             f"{where}.isolation",
         )
-        if proof["backend"] != ISOLATION_BACKEND:
+        if proof["backend"] not in (MACOS_ISOLATION_BACKEND, LINUX_ISOLATION_BACKEND):
             raise RunError(f"{where}.isolation backend mismatch")
-        for key in ("profile_sha256", "proof_sha256"):
+        for key in ("policy_sha256", "proof_sha256"):
             if not _is_hex(proof[key], 64):
                 raise RunError(f"{where}.isolation.{key} must be a lowercase sha256")
+        if backend_name == LINUX_ISOLATION_BACKEND:
+            if not _is_hex(metrics.get("exec_command_sha256"), 64):
+                raise RunError(f"{where}.exec_command_sha256 must be a lowercase sha256")
+            child = _exact_keys(
+                proof["child_attestation"],
+                {
+                    "nonce",
+                    "abi",
+                    "exec_sha256",
+                    "suite_read_denied",
+                    "query_pack_read_allowed",
+                    "proc_read_denied",
+                },
+                f"{where}.isolation.child_attestation",
+            )
+            if (
+                not _is_hex(child["nonce"], 64)
+                or not _is_hex(child["exec_sha256"], 64)
+                or child["exec_sha256"] != metrics["exec_command_sha256"]
+                or type(child["abi"]) is not int
+                or child["abi"] < linux_isolation.MIN_ABI
+                or any(
+                    child[key] is not True
+                    for key in ("suite_read_denied", "query_pack_read_allowed", "proc_read_denied")
+                )
+            ):
+                raise RunError(f"{where}.isolation child deny/allow proof is invalid")
     return metrics
+
+
+def _validate_unique_linux_attestations(entries: list[dict]) -> None:
+    nonces = [entry["child_attestation"]["nonce"] for entry in entries]
+    exec_digests = [entry["child_attestation"]["exec_sha256"] for entry in entries]
+    if len(set(nonces)) != len(nonces) or len(set(exec_digests)) != len(exec_digests):
+        raise RunError("Linux child attestations are reused across capture resources")
 
 
 def _validate_isolation_proof(
@@ -3103,13 +3442,18 @@ def _validate_isolation_proof(
     source_repo: Path,
     manifest_path: Path,
 ) -> dict:
+    if not isinstance(payload, dict):
+        raise RunError("isolation proof must be an object")
+    backend_name = payload.get("backend")
+    if backend_name not in (MACOS_ISOLATION_BACKEND, LINUX_ISOLATION_BACKEND):
+        raise RunError("isolation proof backend is unknown")
     proof = _exact_keys(
         payload,
         {
             "schema_version",
             "backend",
-            "sandbox_exec",
-            "profile_sha256",
+            "sandbox_exec" if backend_name == MACOS_ISOLATION_BACKEND else "landlock",
+            "policy_sha256",
             "denied_roots",
             "allowed_read_roots",
             "allowed_write_roots",
@@ -3121,13 +3465,48 @@ def _validate_isolation_proof(
         },
         "isolation proof",
     )
-    if proof["schema_version"] != 1 or proof["backend"] != ISOLATION_BACKEND:
+    if proof["schema_version"] != ISOLATION_PROOF_VERSION:
         raise RunError("isolation proof schema/backend mismatch")
-    backend = _exact_keys(proof["sandbox_exec"], {"path", "sha256"}, "isolation proof sandbox_exec")
-    if backend["path"] != str(SANDBOX_EXEC) or not _is_hex(backend["sha256"], 64):
-        raise RunError("isolation proof sandbox executable identity is malformed")
-    if not SANDBOX_EXEC.is_file() or sha_file(SANDBOX_EXEC) != backend["sha256"]:
-        raise RunError("isolation proof sandbox executable digest drifted")
+    if backend_name == MACOS_ISOLATION_BACKEND:
+        backend = _exact_keys(
+            proof["sandbox_exec"], {"path", "sha256"}, "isolation proof sandbox_exec"
+        )
+        if backend["path"] != str(SANDBOX_EXEC) or not _is_hex(backend["sha256"], 64):
+            raise RunError("isolation proof sandbox executable identity is malformed")
+        if not SANDBOX_EXEC.is_file() or sha_file(SANDBOX_EXEC) != backend["sha256"]:
+            raise RunError("isolation proof sandbox executable digest drifted")
+    else:
+        landlock = _exact_keys(
+            proof["landlock"],
+            {"abi", "threat_model", "module", "python", "policy"},
+            "isolation proof landlock",
+        )
+        if type(landlock["abi"]) is not int or landlock["abi"] < linux_isolation.MIN_ABI:
+            raise RunError("isolation proof Landlock ABI is unsupported")
+        if landlock["threat_model"] != "filesystem-path-read-v1":
+            raise RunError("isolation proof Landlock threat model is unsupported")
+        module_ref = _exact_keys(landlock["module"], {"path", "sha256"}, "isolation proof module")
+        module = _resolve_artifact(root, module_ref["path"], "isolation proof module")
+        if (
+            sha_file(module) != module_ref["sha256"]
+            or sha_file(Path(linux_isolation.__file__)) != module_ref["sha256"]
+        ):
+            raise RunError("isolation proof Landlock module digest drifted")
+        python_ref = _exact_keys(landlock["python"], {"path", "sha256"}, "isolation proof Python")
+        python = Path(python_ref["path"])
+        if (
+            not python.is_absolute()
+            or not python.is_file()
+            or sha_file(python) != python_ref["sha256"]
+        ):
+            raise RunError("isolation proof Python digest drifted")
+        policy_ref = _exact_keys(landlock["policy"], {"path", "sha256"}, "isolation proof policy")
+        policy_path = _resolve_artifact(root, policy_ref["path"], "isolation proof policy")
+        if (
+            sha_file(policy_path) != policy_ref["sha256"]
+            or policy_ref["sha256"] != proof["policy_sha256"]
+        ):
+            raise RunError("isolation proof policy digest drifted")
     roots = proof["denied_roots"]
     if (
         not isinstance(roots, list)
@@ -3149,10 +3528,18 @@ def _validate_isolation_proof(
 
     allowed_read_roots = absolute_roots("allowed_read_roots")
     allowed_write_roots = absolute_roots("allowed_write_roots")
-    profile = _seatbelt_profile(roots, allowed_read_roots, allowed_write_roots)
-    profile_sha = hashlib.sha256(profile.encode("utf-8")).hexdigest()
-    if proof["profile_sha256"] != profile_sha:
-        raise RunError("isolation proof profile digest mismatch")
+    if backend_name == MACOS_ISOLATION_BACKEND:
+        profile = _seatbelt_profile(roots, allowed_read_roots, allowed_write_roots)
+        policy_sha = hashlib.sha256(profile.encode("utf-8")).hexdigest()
+    else:
+        policy = {"readonly": allowed_read_roots, "writable": allowed_write_roots, "denied": roots}
+        if read_json(policy_path) != policy:
+            raise RunError("isolation proof Linux policy bytes differ from its roots")
+        policy_sha = hashlib.sha256(
+            (json.dumps(policy, sort_keys=True) + "\n").encode()
+        ).hexdigest()
+    if proof["policy_sha256"] != policy_sha:
+        raise RunError("isolation proof policy digest mismatch")
     if not any(_path_within(source_repo.resolve(), Path(boundary)) for boundary in roots):
         raise RunError("isolation proof does not deny the source checkout")
     capture_paths: dict[str, Path] = {}
@@ -3205,12 +3592,38 @@ def _validate_isolation_proof(
             raise RunError("isolation proof runner tool digest mismatch")
     probes = _exact_keys(
         proof["probes"],
-        {"suite_read_denied", "query_pack_read_allowed"},
+        {"suite_read_denied", "query_pack_read_allowed"}
+        | ({"proc_read_denied"} if backend_name == LINUX_ISOLATION_BACKEND else set()),
         "isolation proof probes",
     )
-    if probes != {"suite_read_denied": True, "query_pack_read_allowed": True}:
+    if any(value is not True for value in probes.values()):
         raise RunError("isolation proof probes did not pass")
-    if capture_paths["suite"].is_file() and capture_paths["query_pack"].is_file():
+    if backend_name == LINUX_ISOLATION_BACKEND:
+        captured_stage = capture_paths["suite"].parent.parent
+
+        def relocate(values: list[str]) -> list[str]:
+            relocated = []
+            for value in values:
+                path = Path(value)
+                if path == captured_stage or captured_stage in path.parents:
+                    path = root.resolve() / path.relative_to(captured_stage)
+                relocated.append(str(path))
+            return sorted(set(relocated))
+
+        relocated_policy = {
+            "readonly": relocate(allowed_read_roots),
+            "writable": relocate(allowed_write_roots),
+            "denied": relocate(roots),
+        }
+        try:
+            linux_isolation.validate_policy(relocated_policy)
+        except linux_isolation.IsolationError as exc:
+            raise RunError(f"isolation proof Linux policy is invalid: {exc}") from exc
+        observed_linux = _probe_linux(relocated_policy, module, python, suite_path, pack_path)
+        if observed_linux["abi"] < linux_isolation.MIN_ABI:
+            raise RunError("isolation proof Landlock ABI became unsupported")
+        observed = observed_linux["probes"]
+    elif capture_paths["suite"].is_file() and capture_paths["query_pack"].is_file():
         observed = _probe_seatbelt(profile, capture_paths["suite"], capture_paths["query_pack"])
     else:
         # Atomic promotion renames the staging tree. Re-probe the frozen final
@@ -3245,11 +3658,14 @@ def _validate_isolation_proof(
     if observed != probes:
         raise RunError("isolation proof could not be independently reproduced")
     proof_sha = sha_file(proof_path)
-    return {
-        "backend": ISOLATION_BACKEND,
-        "profile_sha256": profile_sha,
+    result = {
+        "backend": backend_name,
+        "policy_sha256": policy_sha,
         "proof_sha256": proof_sha,
     }
+    if backend_name == LINUX_ISOLATION_BACKEND:
+        result["abi"] = landlock["abi"]
+    return result
 
 
 def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
@@ -4401,14 +4817,28 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 source_repo=repo,
                 manifest_path=resolved["corpus_manifest"],
             )
-            if manifest["isolation_method"] != ISOLATION_BACKEND:
+            if manifest["isolation_method"] != isolation_evidence["backend"]:
                 raise RunError("manifest isolation method differs from the proof backend")
             if manifest["access_block_log"] != ("sha256:" + isolation_evidence["proof_sha256"]):
                 raise RunError("manifest access_block_log does not bind the isolation proof")
             if len(resource_isolation) != len(resolved["records"]) or any(
-                entry != isolation_evidence for entry in resource_isolation
+                not isinstance(entry, dict)
+                or any(
+                    entry.get(key) != isolation_evidence[key]
+                    for key in ("backend", "policy_sha256", "proof_sha256")
+                )
+                or (
+                    isolation_evidence["backend"] == LINUX_ISOLATION_BACKEND
+                    and (
+                        not isinstance(entry.get("child_attestation"), dict)
+                        or entry["child_attestation"].get("abi") != isolation_evidence["abi"]
+                    )
+                )
+                for entry in resource_isolation
             ):
                 raise RunError("capture resources do not all bind the isolation profile")
+            if isolation_evidence["backend"] == LINUX_ISOLATION_BACKEND:
+                _validate_unique_linux_attestations(resource_isolation)
         except (RunError, ValueError, OSError) as exc:
             isolation_error = str(exc)
     if not claims["quality"]:
@@ -4697,7 +5127,12 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
         Path(spec["query_pack"]),
         Path(spec["suite"]),
         semble_routes,
-        stage / "semble-pack.json",
+        stage
+        / (
+            "runner-input/semble-pack.json"
+            if spec.get("isolation_method") == LINUX_ISOLATION_BACKEND
+            else "semble-pack.json"
+        ),
     )
     rep_layouts: list[dict] = []
     semble_spec = dict(spec)
@@ -4707,7 +5142,9 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
     for rep in range(repetitions):
         rep_order = order if (rep % 2 == 0 or not alternate) else list(reversed(order))
         rep_dir = stage / f"rep-{rep:02d}"
-        rep_dir.mkdir(parents=True)
+        rep_dir.mkdir(
+            parents=True, exist_ok=spec.get("isolation_method") == LINUX_ISOLATION_BACKEND
+        )
         pack_payload = read_json(Path(spec["query_pack"]))
         tasks = pack_payload.get("tasks") if isinstance(pack_payload, dict) else None
         if not isinstance(tasks, list):

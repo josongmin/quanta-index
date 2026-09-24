@@ -134,7 +134,7 @@
         },
         "isolation_proof": {
           "type": "string", "minLength": 1,
-          "description": "Required by the verdict for isolated QUALITY_DELTA: versioned Seatbelt policy identity, denied roots, file bindings and deny/allow probes."
+          "description": "Required by the verdict for isolated QUALITY_DELTA: current tagged backend policy identity, denied roots, file bindings and actual runner-child deny/allow probes. Linux threat_model=filesystem-path-read-v1 assumes trusted stdio and mount topology; IPC and metadata are outside this proof."
         },
         "contract_python_receipt": {"type": "string", "minLength": 1},
         "contract_python_results": {"type": "string", "minLength": 1},
@@ -226,6 +226,16 @@
     }
   },
   "allOf": [
+    {
+      "if": {"properties": {"blinding": {"const": "isolated"}}, "required": ["blinding"]},
+      "then": {
+        "properties": {
+          "isolation_method": {"enum": ["macos-seatbelt-v1", "linux-landlock-fs-prototype-v1"]},
+          "access_block_log": {"pattern": "^sha256:[0-9a-f]{64}$"},
+          "artifacts": {"required": ["isolation_proof"]}
+        }
+      }
+    },
     {
       "if": {"properties": {"scope": {"const": "qualified"}}},
       "then": {
