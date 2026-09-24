@@ -1370,6 +1370,37 @@ def test_run_pair_requires_lockfile_path(tmp_path):
         pairrun.run_pair(dict(base, semble_lockfile=str(tmp_path / "lock.txt")))
 
 
+def _mock_unbound_resource_metrics():
+    return {
+        "schema_version": 1,
+        "sampler": "ps-process-tree-rss-cpu-v2",
+        "sample_interval_ms": 50,
+        "command_sha256": _fake_sha("mock-command"),
+        "subject_sha256": _fake_sha("mock-subject"),
+        "root_pid": 100,
+        "exit_code": 0,
+        "timed_out": False,
+        "elapsed_ms": 1.0,
+        "peak_rss_bytes": 4096,
+        "peak_cpu_percent": 0.0,
+        "processes": [
+            {
+                "pid": 100,
+                "command": "mock-runner",
+                "peak_rss_bytes": 4096,
+                "peak_cpu_percent": 0.0,
+                "samples": 1,
+            }
+        ],
+        "samples": 1,
+        "complete": True,
+        "error": None,
+        "cleanup_complete": True,
+        "cleanup_escalated": False,
+        "cleanup_error": None,
+    }
+
+
 def test_run_semble_capture_forwards_lockfile(tmp_path, monkeypatch):
     seen = {}
 
@@ -1391,7 +1422,9 @@ def test_run_semble_capture_forwards_lockfile(tmp_path, monkeypatch):
             ),
             encoding="utf-8",
         )
-        kwargs["resource_path"].write_text("{}", encoding="utf-8")
+        kwargs["resource_path"].write_text(
+            json.dumps(_mock_unbound_resource_metrics()), encoding="utf-8"
+        )
         return {"exit_code": 0, "timed_out": False}
 
     monkeypatch.setattr(pairrun, "run_monitored_process", fake_run)
@@ -1461,8 +1494,15 @@ def test_quanta_driver_defaults_to_potion_and_binary_digest(tmp_path, monkeypatc
         assert command[command.index("--searchd-bin") + 1] == "/unused/searchd"
         assert command[command.index("--searchd-expected-sha256") + 1] == "b" * 64
         Path(command[command.index("--out") + 1]).write_text("{}", encoding="utf-8")
-        Path(command[command.index("--metrics-out") + 1]).write_text("{}", encoding="utf-8")
-        kwargs["resource_path"].write_text("{}", encoding="utf-8")
+        Path(command[command.index("--metrics-out") + 1]).write_text(
+            json.dumps({"file_count": 1, "chunk_count": 1}), encoding="utf-8"
+        )
+        state_root = Path(command[command.index("--state-root") + 1])
+        state_root.mkdir(parents=True, exist_ok=True)
+        (state_root / "mock-index").write_bytes(b"index")
+        kwargs["resource_path"].write_text(
+            json.dumps(_mock_unbound_resource_metrics()), encoding="utf-8"
+        )
         return {"exit_code": 0, "timed_out": False, "elapsed_ms": 1.0}
 
     monkeypatch.setattr(pairrun, "run_monitored_process", fake_run)
@@ -3220,7 +3260,10 @@ def test_verdict_garbage_test_artifact(tmp_path):
     )
     verdict = _stage_verdict(st)
     assert verdict["states"]["CONTRACT_GREEN"] == "fail"
-    assert "raw evidence refused" in verdict["state_evidence"]["CONTRACT_GREEN"]["reason"]
+    assert (
+        "execution context raw evidence digest mismatch"
+        in verdict["state_evidence"]["CONTRACT_GREEN"]["reason"]
+    )
 
 
 def test_verdict_rejects_coordinated_partial_inventory_and_receipt_rebind(tmp_path):
@@ -5429,10 +5472,12 @@ def test_benchmark_prep_does_not_repeat_retrieval_contracts():
     local = recipe("retrieval-contract-local")
     assert "test_retrieval_benchmark.py -q" not in prep
     assert "test -p quanta-index-retrieval-bench" not in prep
-    assert "test_retrieval_benchmark.py -q" in proof
-    assert "--test chunking_contract" in proof
+    assert "portable_proof.py run --rail contract" in proof
     assert "test_retrieval_benchmark.py -q" in local
     assert "--test chunking_contract" in local
+    portable_source = (root / "tools/benchmark/retrieval/portable_proof.py").read_text()
+    assert "proof_inventory.PYTHON_SELECTOR" in portable_source
+    assert '"--test", "chunking_contract"' in portable_source
 
 
 def test_retrieval_verdict_recipe_matches_cli_parser():
@@ -5573,6 +5618,10 @@ def _g0_verdict() -> dict:
     states = ["CONTRACT_GREEN", "SDK_PATH_GREEN", "PAIR_VALID", "PERF_QUALIFIED", "QUALITY_DELTA"]
     return {
         "verdict_version": 2,
+        "os_portability": {
+            "qualified": False,
+            "reason": "execution_os_tool_identity_unverified",
+        },
         "states": {name: "not_run" for name in states},
         "state_evidence": {
             name: {"reason": "no_evidence", "proof_digest": None} for name in states
