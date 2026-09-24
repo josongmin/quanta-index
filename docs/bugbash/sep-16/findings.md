@@ -1,5 +1,10 @@
 # quanta-index 최종 bugbash findings — 2026-09-16 (4차 확정본)
 
+> Historical audit at the recorded source SHA. These findings are not a
+> current defect inventory. Recheck each case against current source and
+> [SEP-21 residual work](../../plans/sep-21-search-plane-sota-hardening/tickets/FINAL-RESIDUAL-EXECUTION-PLAN.md)
+> before opening or closing work.
+
 후속 실행 계획: [구조 개선 최종안](structural-remediation-plan.md). 32개 finding을 매핑하고 적대 검토에서 확인한 설계 누락·모순 12건을 반영했다. 공통 owner, 전환·삭제 순서, 반례 fixture와 검증 gate를 포함한다. 계획 보완은 제품 finding 해결 완료를 뜻하지 않는다.
 
 ## 1. 감사 경계
@@ -298,7 +303,7 @@
 - store가 snapshot을 read lock 아래 clone한다: [store.rs](../../../crates/quanta-index-repomap/src/store.rs):179-203.
 - query engine이 entries를 다시 clone하고 전체 scan/score/sort한 뒤 included=false인 row까지 전부 반환한다: [query.rs](../../../crates/quanta-index-repomap/src/query.rs):11-111.
 - `top_k=2`인데 5개 entry 전체를 응답하는 동작이 test에 고정돼 있다: [bootstrap_owner_flow.rs](../../../crates/quanta-index-repomap/tests/bootstrap_owner_flow.rs):279-318.
-- 시작 시 모든 JSON을 load하고 하나라도 decode 실패하면 전체 open이 실패한다. write는 temp/fsync/rename 없이 `fs::write`한다: [persistence.rs](../../../crates/quanta-index-repomap/src/persistence.rs):140-224.
+- 당시 시작 시 모든 JSON을 load하고 하나라도 decode 실패하면 전체 open이 실패했다. write는 temp/fsync/rename 없이 `fs::write`했다: 당시 `crates/quanta-index-repomap/src/persistence.rs:140-224` (현재 트리에서 제거됨; 감사 SHA의 Git 이력 참조).
 
 **도달 영향**
 
@@ -1008,7 +1013,7 @@ plan prose may still exist outside the touched files.
 
 ## 7. 권장 보완 순서
 
-아래 Wave A–E는 감사 당시의 결함 우선순위다. 실제 구조 변경의 작업 묶음·의존 순서·삭제 조건은 [구조 개선 계획](structural-remediation-plan.md#9-실행-묶음과-의존-순서)을 따른다.
+아래 Wave A–E는 감사 당시의 결함 우선순위다. 현재 작업 순서와 삭제 조건은 source와 SEP-21 residual plan에서 다시 확인한다.
 
 ### Wave A — 계약/자원 안전
 

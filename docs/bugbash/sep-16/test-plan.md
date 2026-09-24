@@ -1,9 +1,14 @@
 # 구조 개선 테스트 계획 — owner-local / integration
 
+> Historical test plan for the 2026-09-16 audit source. Select current tests
+> from `tools/ci/test-authority.toml` and `Justfile`; use the
+> [SEP-21 evidence index](../../plans/sep-21-search-plane-sota-hardening/tickets/EXECUTION-PROGRESS.md)
+> for live proof. Planned OL/IT IDs are not present-day results.
+
 ## 1. 범위와 판정 원칙
 
 - 상위 설계: [구조 개선 최종안](structural-remediation-plan.md). 대상 HEAD는 `4914156f4191daa3e12998bdb38f2b821a057fdd`이며 이 문서는 W0–W7의 검증 상세다.
-- 구현 handoff: [전체 구조 개선 실행 프롬프트](implementation-agent-prompt.md). 다른 에이전트에게 전달할 실행 범위·순서·종료 계약이다.
+- 당시 구현 handoff 프롬프트는 Git 이력에 보관한다. 현재 source와 authority를 다시 확인한다.
 - **아래 OL/IT ID는 추가·강화할 테스트 묶음의 계획 ID다. 실행된 test 수나 기존 Rust 함수 이름이 아니다.** 기존 파일은 재사용할 위치를 뜻하며 새 계약을 이미 검증한다는 뜻이 아니다.
 - 제품 finding 32건 모두에 owner-local 증거와 통합 증거를 배정한다. 문서/경계 항목은 정적 guard를 함께 사용하고 의미 없는 runtime test를 새로 만들지 않는다.
 - owner-local은 해당 owner의 public port/adapter를 직접 검증한다. 실제 backend의 commit/open/delete 의미는 fake adapter로 증명하지 않는다.

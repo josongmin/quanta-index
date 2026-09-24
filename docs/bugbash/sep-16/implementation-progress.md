@@ -1,5 +1,9 @@
 # 구조 개선 구현 ledger
 
+> Historical execution ledger for the frozen 2026-09-16 base. Counts, source
+> state, and status below are not current proof; use the
+> [SEP-21 evidence index](../../plans/sep-21-search-plane-sota-hardening/tickets/EXECUTION-PROGRESS.md).
+
 > 이 문서는 진행 증거다. green test 없이 finding을 `passed`로 올리지 않는다.
 > 상태 어휘: `planned | in_progress | implemented_not_run | passed | failed | blocked | not_applicable`
 

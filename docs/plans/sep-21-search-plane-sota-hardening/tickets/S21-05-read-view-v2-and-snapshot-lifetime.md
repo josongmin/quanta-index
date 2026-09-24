@@ -84,7 +84,7 @@ view에 올리고 GC/reference lifetime까지 같은 contract로 전환한다.
 | File / symbol | Change | DoD |
 |---|---|---|
 | `crates/quanta-index-core/src/domains/repomap/inbound.rs::RepoMapQueryPort` | ambient `query`를 `acquire` port와 pinned snapshot query interface로 분리 | core trait에 adapter concrete type 없음 |
-| `query_dispatcher/read_view/view.rs::{LedgerParts,QueryReadViewV1,acquire_read_view}` | RepoMap pinned handle와 `DomainReadEvidenceV2` 추가; V2로 version bump | 선언 domain별 evidence exact one |
+| `query_dispatcher/read_view/view.rs::{QueryReadViewV2,acquire_read_view}` | RepoMap pinned handle와 `DomainReadEvidenceV2`의 현재 구현 검토 | 선언 domain별 evidence exact one |
 | `query_dispatcher/read_view/identity.rs` | pin, candidate commitment, activation epoch, artifact identity, aux epoch의 domain evidence map | response/cursor가 실제 handle identity를 운반 |
 | `query_dispatcher/routes/repo_map.rs:28-39` | `self.repo_map_query.query(request)` 제거; `view.repo_map()?.query(...)`만 허용 | acquisition 뒤 ambient lookup 0 |
 | `crates/quanta-index-repomap/src/store.rs` | active catalog identity와 `Arc<RepoMapIndexedSnapshot>`을 한 critical section에서 획득 | activate/retire TOCTOU 0 |

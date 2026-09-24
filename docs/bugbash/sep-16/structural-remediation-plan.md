@@ -1,12 +1,17 @@
 # quanta-index 구조 개선 최종안 — 2026-09-16
 
+> Historical design at HEAD `4914156f4191daa3e12998bdb38f2b821a057fdd`.
+> It is not the current execution plan. Use the
+> [SEP-21 residual plan](../../plans/sep-21-search-plane-sota-hardening/tickets/FINAL-RESIDUAL-EXECUTION-PLAN.md)
+> and current proof registry for remaining work and evidence.
+
 ## 1. 결정 요약과 적용 경계
 
 **Tantivy와 LanceDB는 유지한다. generation의 권위·수명 관리, query 실행 계약, 자원 관리 구조를 교체한다.** 32개 finding을 개별 우회 코드로 해결하지 않고 아래 8개 작업 묶음으로 수렴시킨다.
 
 - 입력: [최종 findings](findings.md), P1 13 / P2 17 / P3 2. 이 문서의 coverage 표가 32개 모두를 추적한다.
 - 테스트 상세: [owner-local / integration 테스트 계획](test-plan.md). owner-local 14개 묶음, integration 16개 시나리오와 finding별 최소 증거를 정의한다. 이는 실행된 test 수가 아니다.
-- 실행 handoff: [전체 구조 개선 실행 프롬프트](implementation-agent-prompt.md). 다른 에이전트가 W0–W7/C1–C4 구현과 검증을 이어갈 때 사용한다.
+- 당시 실행 프롬프트는 Git 이력에 보관한다. 현재 작업 순서는 SEP-21 residual plan과 코드에서 확인한다.
 - 검토 HEAD: `4914156f4191daa3e12998bdb38f2b821a057fdd`. 검토 시 `main`, 제품 source/config 변경 없음, `docs/bugbash/`만 untracked. 원격 fetch는 하지 않았다.
 - 상태: **적대·객관 재검토를 반영한 최종 실행 설계**. 구조와 필수 계약은 이 문서로 고정하며 native backend 방식은 W0 증거 게이트를 통과해야 확정된다. 구현·벤치마크·장애 주입을 계획 작성에서 실행한 것으로 취급하지 않는다.
 - 전제: 현재의 단일 호스트 searchd, 로컬 state root, 여러 repo/revision, 외부 producer의 ingest. 다중 호스트 공유 파일시스템이나 분산 검색은 이 계획의 목표가 아니다.
