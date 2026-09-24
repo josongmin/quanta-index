@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import shlex
 import subprocess
@@ -1878,12 +1879,21 @@ def _counts_results(command, selected=10, executed=10, passed=10, failed=0):
 
 
 def _receipt(command, results_bytes, revision, rail, raw_inputs):
+    authority_path = (
+        Path(__file__).resolve().parents[3] / "benchmarks/retrieval/proof-required-tests.json"
+    )
     closure_core = {
         "schema_version": 1,
         "profile": "retrieval",
         "revision": revision,
         "roots": ["Cargo.toml"],
-        "files": [{"path": "Cargo.toml", "sha256": _fake_sha("source")}],
+        "files": [
+            {"path": "Cargo.toml", "sha256": _fake_sha("source")},
+            {
+                "path": "benchmarks/retrieval/proof-required-tests.json",
+                "sha256": pairrun.sha_file(authority_path),
+            },
+        ],
     }
     closure = {**closure_core, "digest": ev.digest(ev.canonical(closure_core))}
     return {
@@ -1925,7 +1935,7 @@ def test_driver_source_closure_shape_rejects_malformed_authority(mutation):
         pairrun._validate_source_closure_shape(closure, "driver source closure")
 
 
-def _sdk_results(command, binary_digest):
+def _sdk_results(command, binary_digest, selected=6):
     return {
         "command": command,
         "separate_process": True,
@@ -1934,25 +1944,53 @@ def _sdk_results(command, binary_digest):
         "empty_check": True,
         "binary_digest": binary_digest,
         "sdk_route": "lexical",
-        "selected": 6,
-        "executed": 6,
-        "passed": 6,
+        "selected": selected,
+        "executed": selected,
+        "passed": selected,
         "failed": 0,
     }
 
 
-def _nextest_raw(count, *, proof=False):
-    rows = [{"type": "suite", "event": "started"}]
-    for index in range(count):
-        name = (
-            "actual_runner_binary_emits_receipt_bound_v3_record"
-            if proof and index == 0
-            else f"test-{index}"
+def _nextest_evidence(identities):
+    by_binary = {}
+    for identity in identities:
+        binary_id, test_name = identity.split("$", 1)
+        by_binary.setdefault(binary_id, []).append(test_name)
+    suites = {}
+    rows = []
+    for binary_id, names in sorted(by_binary.items()):
+        package, binary = binary_id.split("::", 1)
+        kind = "lib" if binary == "quanta_index_retrieval_bench" else "test"
+        metadata = {"crate": package, "test_binary": binary, "kind": kind}
+        suites[binary_id] = {
+            "package-name": package,
+            "binary-name": binary,
+            "kind": kind,
+            "status": "listed",
+            "testcases": {
+                name: {"filter-match": {"status": "matches"}, "ignored": False} for name in names
+            },
+        }
+        rows.append(
+            {"type": "suite", "event": "started", "test_count": len(names), "nextest": metadata}
         )
-        rows.append({"type": "test", "event": "started", "name": name})
-        rows.append({"type": "test", "event": "ok", "name": name})
-    rows.append({"type": "suite", "event": "ok", "passed": count, "failed": 0, "ignored": 0})
-    return b"".join(json.dumps(row).encode() + b"\n" for row in rows)
+        for name in names:
+            event_name = f"{binary_id}${name}"
+            rows.append({"type": "test", "event": "started", "name": event_name})
+            rows.append({"type": "test", "event": "ok", "name": event_name})
+        rows.append(
+            {
+                "type": "suite",
+                "event": "ok",
+                "passed": len(names),
+                "failed": 0,
+                "ignored": 0,
+                "nextest": metadata,
+            }
+        )
+    inventory = json.dumps({"test-count": len(identities), "rust-suites": suites}).encode()
+    raw = b"".join(json.dumps(row).encode() + b"\n" for row in rows)
+    return inventory, raw
 
 
 def _sdk_raw_record(binary_digest):
@@ -1990,39 +2028,74 @@ def _full_receipts(commit, binary_digest):
         "--lib --test chunking_contract --all-features --locked"
     )
     sdk_cmd = "just retrieval-sdk-proof"
-    py_results = _counts_results(py_cmd, 105, 105, 105, 0)
-    rs_results = _counts_results(rs_cmd, 40, 40, 40, 0)
-    sdk_results = _sdk_results(sdk_cmd, binary_digest)
+    authority = json.loads(
+        (
+            Path(__file__).resolve().parents[3] / "benchmarks/retrieval/proof-required-tests.json"
+        ).read_text()
+    )
+    py_count = len(authority["python"])
+    rs_count = len(authority["rust"])
+    sdk_count = len(authority["sdk"])
+    py_results = _counts_results(py_cmd, py_count, py_count, py_count, 0)
+    rs_results = _counts_results(rs_cmd, rs_count, rs_count, rs_count, 0)
+    sdk_results = _sdk_results(sdk_cmd, binary_digest, sdk_count)
     py_bytes = json.dumps(py_results).encode()
     rs_bytes = json.dumps(rs_results).encode()
     sdk_bytes = json.dumps(sdk_results).encode()
-    py_cases = "".join(f'<testcase name="test_{index}"/>' for index in range(105))
+    classname = "tools.ci.tests.test_retrieval_benchmark"
+    py_cases = "".join(
+        f'<testcase classname="{classname}" name="{html.escape(identity[len(classname) + 1 :], quote=True)}"/>'
+        for identity in authority["python"]
+    )
     py_raw = (
-        f'<testsuite tests="105" failures="0" errors="0" skipped="0">{py_cases}</testsuite>\n'
+        f'<testsuite tests="{py_count}" failures="0" errors="0" skipped="0">{py_cases}</testsuite>\n'
     ).encode()
-    rust_raw = _nextest_raw(40)
-    sdk_nextest = _nextest_raw(6, proof=True)
+    rust_inventory, rust_raw = _nextest_evidence(authority["rust"])
+    sdk_inventory, sdk_nextest = _nextest_evidence(authority["sdk"])
     sdk_record = _sdk_raw_record(binary_digest)
+    py_inventory = json.dumps(
+        {
+            "schema_version": 1,
+            "kind": "pytest",
+            "selector": "tools/ci/tests/test_retrieval_benchmark.py",
+            "tests": authority["python"],
+        }
+    ).encode()
     return {
         "contract_python_results": py_bytes,
         "contract_python_raw": py_raw,
+        "contract_python_inventory": py_inventory,
         "contract_python_receipt": _receipt(
-            py_cmd, py_bytes, commit, "retrieval-contract-python", {"pytest-junit": py_raw}
+            py_cmd,
+            py_bytes,
+            commit,
+            "retrieval-contract-python",
+            {"pytest-junit": py_raw, "pytest-inventory": py_inventory},
         ),
         "contract_rust_results": rs_bytes,
         "contract_rust_raw": rust_raw,
+        "contract_rust_inventory": rust_inventory,
         "contract_rust_receipt": _receipt(
-            rs_cmd, rs_bytes, commit, "retrieval-contract-rust", {"nextest-jsonl": rust_raw}
+            rs_cmd,
+            rs_bytes,
+            commit,
+            "retrieval-contract-rust",
+            {"nextest-jsonl": rust_raw, "nextest-inventory": rust_inventory},
         ),
         "sdk_results": sdk_bytes,
         "sdk_nextest_raw": sdk_nextest,
         "sdk_record_raw": sdk_record,
+        "sdk_inventory": sdk_inventory,
         "sdk_receipt": _receipt(
             sdk_cmd,
             sdk_bytes,
             commit,
             "retrieval-sdk-proof",
-            {"nextest-jsonl": sdk_nextest, "runner-record": sdk_record},
+            {
+                "nextest-jsonl": sdk_nextest,
+                "runner-record": sdk_record,
+                "nextest-inventory": sdk_inventory,
+            },
         ),
     }
 
@@ -2224,7 +2297,7 @@ def _pair_stage(
                     "measurement_repetitions": 1,
                     "query_protocol": protocol,
                     "warm_latencies_ms": q_warm,
-                    "cold_latencies_ms": {"lexical": 9.0},
+                    "cold_latencies_ms": {"lexical": 1.0},
                     "phases_ms": {
                         "discovery": 1.0,
                         "chunk": 1.0,
@@ -2232,10 +2305,10 @@ def _pair_stage(
                         "embed_publish_seal_activate": 1.0,
                         "cold_query": 1.0,
                         "warmup": 1.0,
-                        "warm_query": 1.0,
+                        "warm_query": 3.0,
                         "unattributed": 1.0,
                     },
-                    "total_ms": 8.0,
+                    "total_ms": 10.0,
                 }
             ),
             encoding="utf-8",
@@ -2259,14 +2332,14 @@ def _pair_stage(
                     "measurement_repetitions": 1,
                     "query_protocol": protocol,
                     "warm_latencies_ms": s_warm,
-                    "cold_latencies_ms": {"hybrid": 9.0},
+                    "cold_latencies_ms": {"hybrid": 1.0},
                     "phases_ms": {
                         "discovery": 1.0,
                         "model_provider_prepare": 1.0,
                         "index": 1.0,
                         "warmup": 1.0,
                         "cold_query": 1.0,
-                        "warm_query": 2.0,
+                        "warm_query": 3.0,
                         "unattributed": 1.0,
                     },
                     "phase_boundaries_ns": {
@@ -2279,11 +2352,11 @@ def _pair_stage(
                         "warmup_end": 5_000_000,
                         "query_start": 5_000_000,
                         "first_query_start": 5_000_000,
-                        "first_query_end": 6_000_000,
-                        "query_end": 7_000_000,
-                        "worker_end": 8_000_000,
+                        "first_query_end": 6_500_000,
+                        "query_end": 8_000_000,
+                        "worker_end": 9_000_000,
                     },
-                    "total_ms": 8.0,
+                    "total_ms": 9.0,
                 }
             ),
             encoding="utf-8",
@@ -2593,7 +2666,6 @@ def _pair_stage(
                 "suite_digest": ev.digest(suite_path.read_bytes()),
                 "query_pack_digest": ev.digest(pack_path.read_bytes()),
                 "corpus_manifest_digest": ev.digest(corpus_path.read_bytes()),
-                "spec_digest": ev.digest(ev.canonical(spec)),
                 "top_k": 10,
                 "strategies": ["whole_file"],
                 "searchd_expected_sha256": _fake_sha("searchd"),
@@ -2735,10 +2807,12 @@ def test_verdict_lying_manifest_refused(tmp_path):
                     "python": {
                         "test_result_digest": "a" * 64,
                         "raw_evidence_digest": "c" * 64,
+                        "inventory_digest": "e" * 64,
                     },
                     "rust": {
                         "test_result_digest": "b" * 64,
                         "raw_evidence_digest": "d" * 64,
+                        "inventory_digest": "f" * 64,
                     },
                 }
             }
@@ -2752,7 +2826,9 @@ def test_verdict_lying_manifest_refused(tmp_path):
     _rewrite_manifest(st, lambda m: m["evidence"]["perf"].update({"observations_floor": 9999}))
     verdict = _stage_verdict(st)
     assert verdict["states"]["PERF_QUALIFIED"] == "fail"
-    assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == "perf_floor_mismatch"
+    assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"].startswith(
+        "measurement_protocol_ineligible:"
+    )
     # A swapped binary pin fails the pair binding.
     st = _pair_stage(tmp_path / "binary")
     _rewrite_manifest(st, lambda m: m["provenance"]["quanta"].update({"binary_digest": "0" * 64}))
@@ -2801,7 +2877,9 @@ def test_verdict_garbage_test_artifact(tmp_path):
     raw_digest = ev.digest(raw_path.read_bytes())
     receipt_path = st["stage"] / "receipts" / "contract_python_receipt.json"
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-    receipt["input_evidence"] = [{"role": "pytest-junit", "sha256": raw_digest}]
+    next(entry for entry in receipt["input_evidence"] if entry["role"] == "pytest-junit")[
+        "sha256"
+    ] = raw_digest
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
     _rewrite_manifest(
         st,
@@ -3225,23 +3303,113 @@ def test_protocol_phase_metrics_bind_raw_warm_counts_and_cold_separately():
         "measurement_repetitions": 2,
         "query_protocol": protocol,
         "warm_latencies_ms": {"hybrid": {"T1": [1.0, 1.1], "T2": [2.0, 2.1]}},
-        "cold_latencies_ms": {"hybrid": 9.0},
+        "cold_latencies_ms": {"hybrid": 3.0},
         "phases_ms": {
             "discovery": 1.0,
             "chunk": 1.0,
             "model_provider_prepare": 1.0,
             "embed_publish_seal_activate": 1.0,
-            "cold_query": 1.0,
+            "cold_query": 3.0,
             "warmup": 1.0,
-            "warm_query": 1.0,
+            "warm_query": 7.0,
             "unattributed": 1.0,
         },
-        "total_ms": 8.0,
+        "total_ms": 16.0,
     }
     assert pairrun._validate_phase_metrics(phase, "phase") == phase
     phase["warm_latencies_ms"]["hybrid"]["T1"].pop()
     with pytest.raises(pairrun.RunError, match="count differs"):
         pairrun._validate_phase_metrics(phase, "phase")
+
+
+def test_protocol_phase_metrics_reject_samples_longer_than_enclosing_phases(tmp_path):
+    st = _pair_stage(tmp_path)
+    qphase = json.loads(
+        Path(st["rep_layouts"][0]["quanta_phase_metrics"]["whole_file"]).read_text()
+    )
+    qphase["cold_latencies_ms"]["lexical"] = 1e12
+    with pytest.raises(pairrun.RunError, match="cold samples exceed"):
+        pairrun._validate_phase_metrics(qphase, "phase")
+    qphase["cold_latencies_ms"]["lexical"] = 1.0
+    qphase["warm_latencies_ms"]["lexical"][qphase["query_schedule"][0]][0] = 1e12
+    with pytest.raises(pairrun.RunError, match="warm samples exceed"):
+        pairrun._validate_phase_metrics(qphase, "phase")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("top_k", 999),
+        ("repetitions", 999),
+        ("strategies", ["not-executed"]),
+        ("searchd_expected_sha256", "0" * 64),
+        ("semble_lockfile_sha256", "0" * 64),
+        ("host_profile_digest", "0" * 64),
+        ("unknown_authority", True),
+    ],
+)
+def test_verdict_rejects_protocol_lock_pin_mutations(tmp_path, field, value):
+    st = _pair_stage(tmp_path)
+    baseline = _stage_verdict(st)
+    assert baseline["states"]["PAIR_VALID"] == "pass"
+    lock = st["stage"] / "protocol-lock.json"
+    payload = json.loads(lock.read_text())
+    payload[field] = value
+    lock.write_text(json.dumps(payload), encoding="utf-8")
+    verdict = _stage_verdict(st)
+    assert verdict["states"]["PAIR_VALID"] == "fail"
+    assert "protocol_lock" in verdict["state_evidence"]["PAIR_VALID"]["reason"]
+
+
+def test_qualified_replay_rejects_two_task_protocol_even_with_1000_samples(tmp_path):
+    st = _pair_stage(tmp_path, repetitions=5, scope="qualified", claims={"speed": True})
+    protocol_digests = []
+    for layout in st["rep_layouts"]:
+        protocol_path = Path(layout["query_protocol"])
+        previous = json.loads(protocol_path.read_text())
+        protocol = pairrun.build_query_protocol(previous["task_ids"], previous["seed"], 1, 100)
+        protocol_path.write_text(json.dumps(protocol), encoding="utf-8")
+        protocol_digests.append(protocol["sha256"])
+        for phase_path in (
+            Path(layout["quanta_phase_metrics"]["whole_file"]),
+            Path(layout["semble_phase_metrics"]),
+        ):
+            phase = json.loads(phase_path.read_text())
+            phase["query_protocol"] = protocol
+            phase["measurement_repetitions"] = 100
+            for by_task in phase["warm_latencies_ms"].values():
+                for task_id, values in by_task.items():
+                    by_task[task_id] = values * 100
+            phase["phases_ms"]["warm_query"] += 297.0
+            phase["total_ms"] += 297.0
+            if phase["system"] == "semble":
+                phase["phase_boundaries_ns"]["query_end"] += 297_000_000
+                phase["phase_boundaries_ns"]["worker_end"] += 297_000_000
+            phase_path.write_text(json.dumps(phase), encoding="utf-8")
+        quanta_manifest_path = Path(layout["quanta_manifest"])
+        quanta_manifest = json.loads(quanta_manifest_path.read_text())
+        quanta_manifest["runs"][0]["phase_metrics_digest"] = pairrun.sha_file(
+            Path(layout["quanta_phase_metrics"]["whole_file"])
+        )
+        quanta_manifest_path.write_text(json.dumps(quanta_manifest), encoding="utf-8")
+    lock_path = st["stage"] / "protocol-lock.json"
+    lock = json.loads(lock_path.read_text())
+    lock["query_repetitions_per_root"] = 100
+    lock["query_protocol_sha256s"] = protocol_digests
+    lock_path.write_text(json.dumps(lock), encoding="utf-8")
+    matrix = pairrun.build_latency_matrix(st["rep_layouts"])
+    assert matrix["observations_floor"] == 1000
+    (st["stage"] / "latency-matrix.json").write_text(json.dumps(matrix), encoding="utf-8")
+    _rewrite_manifest(
+        st,
+        lambda manifest: manifest["evidence"]["perf"].update(
+            observations_floor=matrix["observations_floor"], fresh_roots=matrix["fresh_roots"]
+        ),
+    )
+    verdict = _stage_verdict(st)
+    assert verdict["states"]["PAIR_VALID"] == "pass"
+    assert verdict["states"]["PERF_QUALIFIED"] == "fail"
+    assert "at least 20 frozen tasks" in verdict["state_evidence"]["PERF_QUALIFIED"]["reason"]
 
 
 def test_verdict_cannot_qualify_cold_only_latency_as_warm_performance(tmp_path, monkeypatch):
@@ -3509,6 +3677,38 @@ def test_verdict_cli_smoke(tmp_path):
     )
     assert completed.returncode == 0, completed.stderr
     assert json.loads(out.read_text(encoding="utf-8"))["states"] == _stage_verdict(st)["states"]
+
+
+def test_successful_promotion_replays_identically_in_new_process(tmp_path):
+    st = _pair_stage(tmp_path)
+    before = _stage_verdict(st)
+    assert before["states"]["PAIR_VALID"] == "pass"
+    old_stage = st["stage"]
+    promoted = old_stage.with_name("promoted")
+    old_stage.rename(promoted)
+    output = tmp_path / "promoted-verdict.json"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(Path(pairrun.__file__)),
+            "verdict",
+            "--repo",
+            str(st["repo"]),
+            "--suite",
+            str(promoted / st["suite_path"].relative_to(old_stage)),
+            "--run-manifest",
+            str(promoted / "run-manifest.json"),
+            "--out",
+            str(output),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert completed.returncode == 0, completed.stderr
+    after = json.loads(output.read_text(encoding="utf-8"))
+    assert after["states"] == before["states"]
+    assert after["state_evidence"]["PAIR_VALID"] == before["state_evidence"]["PAIR_VALID"]
 
 
 def test_pair_staging_atomicity(tmp_path, monkeypatch):

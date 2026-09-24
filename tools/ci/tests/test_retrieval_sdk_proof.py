@@ -101,3 +101,62 @@ def test_build_summary_rejects_proof_name_substring(tmp_path: Path) -> None:
     )
     with pytest.raises(SystemExit, match="lacks passing"):
         MODULE.build_summary(record, nextest, runner)
+
+
+def test_sdk_inventory_rejects_omitted_negative_test(tmp_path: Path) -> None:
+    record, nextest, runner = _fixture(tmp_path)
+    inventory = tmp_path / "nextest-inventory.json"
+    names = [MODULE.PROOF_TEST, "sdk_rejects_wrong_daemon_identity"]
+    inventory.write_text(
+        json.dumps(
+            {
+                "test-count": len(names),
+                "rust-suites": {
+                    "quanta-index-retrieval-bench::sdk_roundtrip": {
+                        "package-name": "quanta-index-retrieval-bench",
+                        "binary-name": "sdk_roundtrip",
+                        "kind": "test",
+                        "status": "listed",
+                        "testcases": {
+                            name: {"ignored": False, "filter-match": {"status": "matches"}}
+                            for name in names
+                        },
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    meta = {
+        "crate": "quanta-index-retrieval-bench",
+        "test_binary": "sdk_roundtrip",
+        "kind": "test",
+    }
+
+    def events(selected: list[str]) -> str:
+        rows = [{"type": "suite", "event": "started", "test_count": len(selected), "nextest": meta}]
+        for name in selected:
+            identity = f"quanta-index-retrieval-bench::sdk_roundtrip${name}"
+            rows.extend(
+                [
+                    {"type": "test", "event": "started", "name": identity},
+                    {"type": "test", "event": "ok", "name": identity},
+                ]
+            )
+        rows.append(
+            {
+                "type": "suite",
+                "event": "ok",
+                "passed": len(selected),
+                "failed": 0,
+                "ignored": 0,
+                "nextest": meta,
+            }
+        )
+        return "".join(json.dumps(row) + "\n" for row in rows)
+
+    nextest.write_text(events(names[:1]), encoding="utf-8")
+    with pytest.raises(SystemExit, match="differs from collected"):
+        MODULE.build_summary(record, nextest, runner, inventory)
+    nextest.write_text(events(names), encoding="utf-8")
+    assert MODULE.build_summary(record, nextest, runner, inventory)["passed"] == 2

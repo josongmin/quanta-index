@@ -22,6 +22,7 @@ PROFILES = {
             "Cargo.lock",
             "Cargo.toml",
             "Justfile",
+            "benchmarks/retrieval/proof-required-tests.json",
             "docs/plans/sep-23-retrieval-bench",
             "scripts/cargow",
             "scripts/quanta-index-env.sh",

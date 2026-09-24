@@ -27,6 +27,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -46,6 +47,7 @@ try:
     from tools.benchmark.retrieval.evaluator import (
         read_json as read_evidence_json,
     )
+    from tools.benchmark.retrieval.proof_inventory import verify_inventory_authority
     from tools.benchmark.retrieval.sdk_proof import build_summary_from_evidence
 except ImportError:  # direct script invocation: import the sibling module
     sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -64,6 +66,7 @@ except ImportError:  # direct script invocation: import the sibling module
     from evaluator import (
         read_json as read_evidence_json,
     )
+    from proof_inventory import verify_inventory_authority  # noqa: E402
     from sdk_proof import build_summary_from_evidence  # noqa: E402
 
 VERDICT_VERSION = 2
@@ -1140,7 +1143,13 @@ def merge_records(
             if key in results:
                 raise RunError(f"duplicate merged result: {key}")
             results[key] = row
-        runners.append({"path": str(path), "runner": run["runner"]})
+        runners.append(
+            {
+                "record_sha256": digest(canonical_bytes(run)),
+                "capture_ids": sorted(run["captures"]),
+                "runner": run["runner"],
+            }
+        )
     first, *rest = contracts
     for other in rest:
         if other != first:
@@ -1161,7 +1170,7 @@ def merge_records(
             f"merged routes {sorted(provenance)} != suite routes (missing={missing} extra={extra})"
         )
     ordered = [results[key] for key in sorted(results)]
-    runners.sort(key=lambda entry: entry["path"])
+    runners.sort(key=lambda entry: (entry["record_sha256"], entry["capture_ids"]))
     content_digests = sorted(digest(canonical_bytes(read_json(path))) for path in record_paths)
     merge_id = digest(canonical_bytes(content_digests))[:16]
     combined = {
@@ -1370,13 +1379,16 @@ RECEIPT_KEYS = (
     "contract_python_receipt",
     "contract_python_results",
     "contract_python_raw",
+    "contract_python_inventory",
     "contract_rust_receipt",
     "contract_rust_results",
     "contract_rust_raw",
+    "contract_rust_inventory",
     "sdk_receipt",
     "sdk_results",
     "sdk_nextest_raw",
     "sdk_record_raw",
+    "sdk_inventory",
     "model_parity_results",
     "incremental_results",
 )
@@ -1390,15 +1402,18 @@ CONTRACT_EVIDENCE_KEYS = (
     "contract_python_receipt",
     "contract_python_results",
     "contract_python_raw",
+    "contract_python_inventory",
     "contract_rust_receipt",
     "contract_rust_results",
     "contract_rust_raw",
+    "contract_rust_inventory",
 )
 SDK_EVIDENCE_KEYS = (
     "sdk_receipt",
     "sdk_results",
     "sdk_nextest_raw",
     "sdk_record_raw",
+    "sdk_inventory",
 )
 
 
@@ -2128,10 +2143,10 @@ def _validate_manifest_shape(payload: object) -> dict:
         for side in ("python", "rust"):
             claim = _exact_keys(
                 suites[side],
-                {"test_result_digest", "raw_evidence_digest"},
+                {"test_result_digest", "raw_evidence_digest", "inventory_digest"},
                 f"manifest {side} claim",
             )
-            for key in ("test_result_digest", "raw_evidence_digest"):
+            for key in ("test_result_digest", "raw_evidence_digest", "inventory_digest"):
                 if not _is_hex(claim[key], 64):
                     raise RunError(f"manifest {side} {key} must be a lowercase sha256")
     if "sdk_path" in evidence:
@@ -2145,10 +2160,16 @@ def _validate_manifest_shape(payload: object) -> dict:
                 "empty_check",
                 "nextest_digest",
                 "runner_record_digest",
+                "inventory_digest",
             },
             "manifest sdk evidence",
         )
-        for key in ("test_result_digest", "nextest_digest", "runner_record_digest"):
+        for key in (
+            "test_result_digest",
+            "nextest_digest",
+            "runner_record_digest",
+            "inventory_digest",
+        ):
             if not _is_hex(sdk[key], 64):
                 raise RunError(f"manifest sdk {key} must be a lowercase sha256")
         for key in ("separate_process", "sealed_receipt", "activation_ack", "empty_check"):
@@ -2617,6 +2638,15 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
         raise RunError(f"{where}.total_ms must be finite and positive")
     if not math.isclose(sum(phases.values()), total, rel_tol=1e-9, abs_tol=0.01):
         raise RunError(f"{where} phase sum differs from total")
+    if protocol_mode:
+        cold_duration = sum(cold.values())
+        warm_duration = sum(sum(values) for by_task in warm.values() for values in by_task.values())
+        # Calls are serial within these monotonic windows; overhead can only
+        # make the enclosing phase longer, allowing clock rounding at 0.01 ms.
+        if cold_duration > phases["cold_query"] + 0.01:
+            raise RunError(f"{where} cold samples exceed the cold query phase")
+        if warm_duration > phases["warm_query"] + 0.01:
+            raise RunError(f"{where} warm samples exceed the warm query phase")
     if system == "semble":
         boundary_keys = {
             "worker_start",
@@ -2702,6 +2732,16 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
         for key, value in derived.items():
             if value < 0 or not math.isclose(value, phases[key], rel_tol=1e-9, abs_tol=0.01):
                 raise RunError(f"{where} phase {key} is not derived from boundaries")
+        if protocol_mode:
+            first_task = protocol["measurement_schedules"][0][0]
+            first_duration = (boundaries["first_query_end"] - boundaries["first_query_start"]) / 1e6
+            for route, by_task in warm.items():
+                if not math.isclose(
+                    by_task[first_task][0], first_duration, rel_tol=1e-9, abs_tol=0.01
+                ):
+                    raise RunError(
+                        f"{where} first warm sample differs from first query boundaries: {route}"
+                    )
     return metrics
 
 
@@ -3095,6 +3135,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     pack_digest = sha_note(resolved["query_pack"], "pack_bytes", ("T01",))
     corpus_digest = sha_note(resolved["corpus_manifest"], "corpus_bytes", ("T00",))
     mapping_digest = sha_note(resolved["mapping_proof"], "mapping_bytes", ("T00", "T11"))
+    host_profile_digest = sha_note(resolved["host_profile"], "host_profile_bytes", ("T12",))
     if suite_digest != provenance_claims["suite"]["suite_digest"]:
         pair_note("suite_digest_mismatch", ("T01", "T12"))
     if pack_digest != provenance_claims["suite"]["query_pack_digest"]:
@@ -3104,7 +3145,73 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     if mapping_digest != evidence["pair"]["mapping_proof_digest"]:
         pair_note("mapping_proof_digest_mismatch", ("T00", "T11"))
     protocol_payload = read_note(resolved["protocol_lock"], "protocol_lock", ("T12",))
-    if isinstance(protocol_payload, dict):
+    protocol_keys = {
+        "suite_digest",
+        "query_pack_digest",
+        "corpus_manifest_digest",
+        "top_k",
+        "strategies",
+        "searchd_expected_sha256",
+        "semble_lockfile_sha256",
+        "host_profile_digest",
+        "admission_digest",
+        "driver_source_closure_digest",
+        "repetitions",
+        "base_seed",
+        "query_warmup_passes",
+        "query_repetitions_per_root",
+        "query_protocol_sha256s",
+    }
+    protocol_shape_valid = (
+        isinstance(protocol_payload, dict) and set(protocol_payload) == protocol_keys
+    )
+    if protocol_shape_valid:
+        strategies = protocol_payload["strategies"]
+        root_digests = protocol_payload["query_protocol_sha256s"]
+        protocol_shape_valid = (
+            all(
+                _is_hex(protocol_payload[key], 64)
+                for key in (
+                    "suite_digest",
+                    "query_pack_digest",
+                    "corpus_manifest_digest",
+                    "searchd_expected_sha256",
+                    "semble_lockfile_sha256",
+                    "host_profile_digest",
+                )
+            )
+            and type(protocol_payload["top_k"]) is int
+            and protocol_payload["top_k"] > 0
+            and type(protocol_payload["repetitions"]) is int
+            and protocol_payload["repetitions"] > 0
+            and type(protocol_payload["base_seed"]) is int
+            and protocol_payload["base_seed"] >= 0
+            and type(protocol_payload["query_warmup_passes"]) is int
+            and protocol_payload["query_warmup_passes"] >= 0
+            and type(protocol_payload["query_repetitions_per_root"]) is int
+            and protocol_payload["query_repetitions_per_root"] > 0
+            and isinstance(strategies, list)
+            and bool(strategies)
+            and all(isinstance(strategy, str) and strategy for strategy in strategies)
+            and len(strategies) == len(set(strategies))
+            and isinstance(root_digests, list)
+            and len(root_digests) == protocol_payload["repetitions"]
+            and all(_is_hex(value, 64) for value in root_digests)
+        )
+        authority_digests = (
+            protocol_payload["admission_digest"],
+            protocol_payload["driver_source_closure_digest"],
+        )
+        if manifest["scope"] == "qualified":
+            protocol_shape_valid = protocol_shape_valid and all(
+                _is_hex(value, 64) for value in authority_digests
+            )
+        else:
+            protocol_shape_valid = protocol_shape_valid and authority_digests == (None, None)
+    if not protocol_shape_valid:
+        pair_note("protocol_lock_malformed", ("T12",))
+        protocol_payload = {}
+    else:
         if protocol_payload.get("suite_digest") != suite_digest:
             pair_note("protocol_lock_suite_drift", ("T12",))
         if protocol_payload.get("query_pack_digest") != pack_digest:
@@ -3126,6 +3233,12 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 pair_note("driver_source_closure_digest_drift", ("T12", "T17"))
             if protocol_payload.get("driver_source_closure_digest") != closure["digest"]:
                 pair_note("protocol_lock_source_closure_drift", ("T12", "T17"))
+        if protocol_payload["host_profile_digest"] != host_profile_digest:
+            pair_note("protocol_lock_host_profile_drift", ("T12",))
+        if protocol_payload["top_k"] != pack["comparison_contract"]["top_k"]:
+            pair_note("protocol_lock_top_k_drift", ("T12",))
+        if protocol_payload["repetitions"] != manifest["repetitions"]:
+            pair_note("protocol_lock_repetitions_drift", ("T12",))
     if isinstance(corpus_payload, dict) and isinstance(mapping_payload, dict):
         if not mapping_matches_manifest(mapping_payload, corpus_payload):
             pair_note("mapping_proof_not_clean", ("T00", "T11", "T12"), "corpus_mismatch")
@@ -3194,6 +3307,9 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             pair_note(f"rep_semble_count:{rep}", ("T12",))
         if systems.count("quanta") < 1:
             pair_note(f"rep_quanta_missing:{rep}", ("T12",))
+        strategies = [validated[p]["strategy"] for p in paths if validated[p]["system"] == "quanta"]
+        if sorted(strategies) != sorted(protocol_payload.get("strategies", [])):
+            pair_note(f"protocol_lock_strategies_drift:{rep}", ("T12",))
     for rep, paths in native_reps.items():
         if len(paths) != 1:
             pair_note(f"rep_native_count:{rep}", ("T12",))
@@ -3322,6 +3438,27 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         record_digests
     ):
         phase_ok = False
+    protocol_root_drifts: list[str] = []
+    for index, rep in enumerate(sorted(rep_records, key=_rep_sort_key)):
+        protocols = []
+        for path in rep_records[rep]:
+            phase = phase_by_record.get(sha_file(Path(path)))
+            if not isinstance(phase, dict) or "query_protocol" not in phase:
+                protocols = []
+                break
+            protocols.append(phase["query_protocol"])
+        expected_digests = protocol_payload.get("query_protocol_sha256s", [])
+        if (
+            not protocols
+            or any(protocol != protocols[0] for protocol in protocols[1:])
+            or index >= len(expected_digests)
+            or protocols[0]["sha256"] != expected_digests[index]
+            or protocols[0]["seed"] != protocol_payload.get("base_seed", -1) + index
+            or len(protocols[0]["warmup_schedules"]) != protocol_payload.get("query_warmup_passes")
+            or len(protocols[0]["measurement_schedules"])
+            != protocol_payload.get("query_repetitions_per_root")
+        ):
+            protocol_root_drifts.append(rep)
 
     resource_ok = len(resolved["resource_metrics"]) == len(resolved["records"])
     resource_subject_digests: list[str] = []
@@ -3440,6 +3577,8 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
 
     adapter = read_note(resolved["semble_adapter_manifest"], "adapter_manifest", ("T11",))
     lockfile_digest = sha_note(resolved["semble_lockfile"], "lockfile_bytes", ("T11",))
+    if protocol_payload.get("semble_lockfile_sha256") != lockfile_digest:
+        pair_note("protocol_lock_semble_pin_drift", ("T11", "T12"))
     if isinstance(adapter, dict):
         if adapter.get("semble_version") != SEMBLE_PINNED_VERSION:
             pair_note("semble_version_drift", ("T11",))
@@ -3470,15 +3609,21 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             pair_note("semble_receipt_anchor_drift", ("T11", "T12"))
 
     quanta_binaries = set()
+    quanta_searchd_binaries = set()
     for _path, entry in validated.items():
         if entry["system"] == "quanta":
             _cid, capture = next(iter(entry["run"]["captures"].items()))
             quanta_binaries.add(capture.get("runner_binary", {}).get("digest"))
+            quanta_searchd_binaries.add(capture.get("searchd_binary", {}).get("binary_digest"))
     binary_digest = sorted(quanta_binaries)[0] if quanta_binaries else "0" * 64
     if len(quanta_binaries) != 1:
         pair_note("runner_binary_divergence", ("T12",))
     elif binary_digest != provenance_claims["quanta"]["binary_digest"]:
         pair_note("binary_digest_mismatch", ("T12",))
+    if len(quanta_searchd_binaries) != 1:
+        pair_note("searchd_binary_divergence", ("T12",))
+    elif next(iter(quanta_searchd_binaries)) != protocol_payload.get("searchd_expected_sha256"):
+        pair_note("protocol_lock_searchd_pin_drift", ("T12",))
 
     admission_evidence = None
     admission_error = None
@@ -3550,6 +3695,8 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 f":{entry['strategy']}:{','.join(bad)}",
                 ("T12",),
             )
+    for rep in protocol_root_drifts:
+        pair_note(f"protocol_lock_root_drift:{rep}", ("T12",))
 
     pair_t_ids: list[str] = []
     for _reason, t_ids, _class in pair_notes:
@@ -3609,7 +3756,11 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 receipt_ref = f"contract_{side}_receipt"
                 results_ref = f"contract_{side}_results"
                 raw_ref = f"contract_{side}_raw"
-                if any(ref not in resolved for ref in (receipt_ref, results_ref, raw_ref)):
+                inventory_ref = f"contract_{side}_inventory"
+                if any(
+                    ref not in resolved
+                    for ref in (receipt_ref, results_ref, raw_ref, inventory_ref)
+                ):
                     raise RunError(f"contract {side} artifacts missing")
                 receipt = _validate_receipt_shape(
                     read_json(resolved[receipt_ref]), f"contract {side} receipt"
@@ -3625,15 +3776,28 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 raw_actual = sha_file(resolved[raw_ref])
                 if raw_actual != evidence["contract_suites"][side]["raw_evidence_digest"]:
                     raise RunError(f"contract {side} raw manifest digest mismatch")
+                if (
+                    sha_file(resolved[inventory_ref])
+                    != evidence["contract_suites"][side]["inventory_digest"]
+                ):
+                    raise RunError(f"contract {side} inventory manifest digest mismatch")
                 if receipt["rail"] != rail or receipt["command"] != command:
                     raise RunError(f"contract {side} receipt authority mismatch")
                 if results["command"] != command:
                     raise RunError(f"contract {side} command mismatch")
                 _verify_receipt_inputs(
-                    receipt, {role: resolved[raw_ref]}, f"contract {side} receipt"
+                    receipt,
+                    {
+                        role: resolved[raw_ref],
+                        ("pytest-inventory" if side == "python" else "nextest-inventory"): resolved[
+                            inventory_ref
+                        ],
+                    },
+                    f"contract {side} receipt",
                 )
+                _verify_required_inventory(resolved[inventory_ref], side, receipt)
                 try:
-                    rebuilt = producer(resolved[raw_ref])
+                    rebuilt = producer(resolved[raw_ref], resolved[inventory_ref])
                 except SystemExit as exc:
                     raise RunError(f"contract {side} raw evidence refused: {exc}") from exc
                 if rebuilt != results:
@@ -3684,25 +3848,33 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 raise RunError("sdk receipt authority mismatch")
             if sdk_results["command"] != sdk_command:
                 raise RunError("sdk results command mismatch")
-            if "sdk_nextest_raw" not in resolved or "sdk_record_raw" not in resolved:
+            if any(
+                ref not in resolved
+                for ref in ("sdk_nextest_raw", "sdk_record_raw", "sdk_inventory")
+            ):
                 raise RunError("sdk raw artifacts missing")
             if sha_file(resolved["sdk_nextest_raw"]) != evidence["sdk_path"]["nextest_digest"]:
                 raise RunError("sdk nextest manifest digest mismatch")
             if sha_file(resolved["sdk_record_raw"]) != evidence["sdk_path"]["runner_record_digest"]:
                 raise RunError("sdk record manifest digest mismatch")
+            if sha_file(resolved["sdk_inventory"]) != evidence["sdk_path"]["inventory_digest"]:
+                raise RunError("sdk inventory manifest digest mismatch")
             _verify_receipt_inputs(
                 sdk_receipt,
                 {
                     "nextest-jsonl": resolved["sdk_nextest_raw"],
                     "runner-record": resolved["sdk_record_raw"],
+                    "nextest-inventory": resolved["sdk_inventory"],
                 },
                 "sdk receipt",
             )
+            _verify_required_inventory(resolved["sdk_inventory"], "sdk", sdk_receipt)
             try:
                 rebuilt_sdk = build_summary_from_evidence(
                     resolved["sdk_record_raw"],
                     resolved["sdk_nextest_raw"],
                     binary_digest,
+                    resolved["sdk_inventory"],
                 )
             except SystemExit as exc:
                 raise RunError(f"sdk raw evidence refused: {exc}") from exc
@@ -3768,6 +3940,33 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             perf_fail = ("unsupported_cache_protocol", "host")
         else:
             perf_fail = None
+        try:
+            quanta_routes_by_rep = []
+            for rep in sorted(rep_records, key=_rep_sort_key):
+                routes = {
+                    row["route"]
+                    for path in rep_records[rep]
+                    if validated[path]["system"] == "quanta"
+                    for row in validated[path]["run"]["results"]
+                }
+                quanta_routes_by_rep.append(routes)
+            if not quanta_routes_by_rep or any(
+                routes != quanta_routes_by_rep[0] for routes in quanta_routes_by_rep
+            ):
+                raise RunError("qualified speed requires identical Quanta routes in every root")
+            validate_qualified_speed_spec(
+                {
+                    "repetitions": len(rep_records),
+                    "query_warmup_passes": protocol_payload.get("query_warmup_passes"),
+                    "query_repetitions_per_root": protocol_payload.get(
+                        "query_repetitions_per_root"
+                    ),
+                    "routes": sorted(quanta_routes_by_rep[0]),
+                },
+                len(pack["tasks"]),
+            )
+        except (RunError, TypeError, ValueError) as exc:
+            perf_fail = (f"measurement_protocol_ineligible: {exc}", "provenance")
         try:
             cells = []
             shared_protocol_ok = True
@@ -4349,7 +4548,6 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
         "suite_digest": sha_file(Path(spec["suite"])),
         "query_pack_digest": sha_file(stage / "query-pack.json"),
         "corpus_manifest_digest": sha_file(stage / "corpus-manifest.json"),
-        "spec_digest": digest(canonical_bytes(spec)),
         "top_k": spec["top_k"],
         "strategies": [entry["name"] for entry in spec["strategies"]],
         "searchd_expected_sha256": spec["searchd_expected_sha256"],
@@ -4784,6 +4982,35 @@ def _verify_receipt_inputs(receipt: dict, expected: dict[str, Path], where: str)
         raise RunError(f"{where} raw input evidence mismatch")
 
 
+def _verify_required_inventory(inventory: Path, role: str, receipt: dict) -> None:
+    """Compare collection with the authority committed at the receipt revision."""
+    authority_ref = "benchmarks/retrieval/proof-required-tests.json"
+    closure = receipt["source_closure"]
+    matching = [row["sha256"] for row in closure["files"] if row["path"] == authority_ref]
+    if len(matching) != 1:
+        raise RunError(f"{role} receipt source closure lacks required test authority")
+    source_root = Path(__file__).resolve().parents[3]
+    try:
+        committed = subprocess.check_output(
+            ["git", "show", f"{closure['revision']}:{authority_ref}"],
+            cwd=source_root,
+            stderr=subprocess.PIPE,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise RunError(
+            f"{role} required test authority is unavailable at receipt revision"
+        ) from exc
+    if hashlib.sha256(committed).hexdigest() != matching[0]:
+        raise RunError(f"{role} required test authority differs from receipt source closure")
+    with tempfile.TemporaryDirectory(prefix="qi-required-tests-") as directory:
+        committed_path = Path(directory) / "proof-required-tests.json"
+        committed_path.write_bytes(committed)
+        try:
+            verify_inventory_authority(inventory, role, committed_path)
+        except ValueError as exc:
+            raise RunError(f"{role} inventory differs from source authority: {exc}") from exc
+
+
 def _validate_counts_shape(payload: object, where: str) -> dict:
     results = _exact_keys(payload, {"command", "selected", "executed", "passed", "failed"}, where)
     if not isinstance(results["command"], str) or not results["command"]:
@@ -5122,12 +5349,18 @@ def build_run_manifest(
             role = "pytest-junit" if side == "python" else "nextest-jsonl"
             _verify_receipt_inputs(
                 receipt,
-                {role: Path(frozen[f"contract_{side}_raw"])},
+                {
+                    role: Path(frozen[f"contract_{side}_raw"]),
+                    ("pytest-inventory" if side == "python" else "nextest-inventory"): Path(
+                        frozen[f"contract_{side}_inventory"]
+                    ),
+                },
                 f"contract {side} receipt",
             )
             evidence.setdefault("contract_suites", {})[side] = {
                 "test_result_digest": sha_file(Path(frozen[f"contract_{side}_results"])),
                 "raw_evidence_digest": sha_file(Path(frozen[f"contract_{side}_raw"])),
+                "inventory_digest": sha_file(Path(frozen[f"contract_{side}_inventory"])),
             }
     if any(key in frozen for key in SDK_EVIDENCE_KEYS):
         if not all(key in frozen for key in SDK_EVIDENCE_KEYS):
@@ -5141,6 +5374,7 @@ def build_run_manifest(
             {
                 "nextest-jsonl": Path(frozen["sdk_nextest_raw"]),
                 "runner-record": Path(frozen["sdk_record_raw"]),
+                "nextest-inventory": Path(frozen["sdk_inventory"]),
             },
             "sdk receipt",
         )
@@ -5148,6 +5382,7 @@ def build_run_manifest(
             "test_result_digest": sha_file(Path(frozen["sdk_results"])),
             "nextest_digest": sha_file(Path(frozen["sdk_nextest_raw"])),
             "runner_record_digest": sha_file(Path(frozen["sdk_record_raw"])),
+            "inventory_digest": sha_file(Path(frozen["sdk_inventory"])),
             "separate_process": sdk_results["separate_process"],
             "sealed_receipt": True,
             "activation_ack": True,

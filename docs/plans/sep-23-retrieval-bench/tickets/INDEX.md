@@ -1,10 +1,23 @@
 # SEP-23 Retrieval Benchmark — Ticket Index
 
-Status: `contract-and-capture-paths-landed / qualified-speed-protocol-landed / qualification-blocked`. The shared cold/warm query protocol, raw-sample matrix reconstruction and qualified-speed floors are implemented and mutant-tested. No W0-B pilot freeze, paired pilot receipt, or qualified quality/performance verdict exists. This packet is not evidence that Quanta beats Semble.
+Status: `capture-paths-landed / qualification-gates-failed / pilot-blocked`. The shared cold/warm query protocol and capture preflight exist, but the replay, pin and proof gates have confirmed gaps below. No W0-B pilot freeze, paired pilot receipt, or qualified quality/performance verdict exists. This packet is not evidence that Quanta beats Semble.
 
 Required verification contract: [TEST-PLAN.md](TEST-PLAN.md). Its T00–T17 matrix and qualification ladder are part of every ticket's acceptance, not optional follow-up work.
 
-## Current code audit (2026-09-24)
+## Latest adversarial audit (2026-09-24)
+
+At `20bd03fc98b86ee4bfb3a8a808e940ba6e090a09`, the retrieval implementation was byte-identical to the source probed at `93b736cd0f18ab698f5a12e23a2d09677a3d869d`. Existing focused tests passed (182 Python, 31 retrieval-library and 20 chunking-contract Rust), but generated adversarial fixtures reproduced four blocking verifier defects. The tests are diagnostic; they do not issue a current-source qualification receipt or a real pair. The latest source-closure check at `20bd03fc` accepted 784 files; this result becomes stale after any bound source or document edit.
+
+| Finding | Reproduced failure | Required closure |
+| --- | --- | --- |
+| F1 / T12–T14 | Renaming a valid staged pair without changing any file bytes turns `PAIR_VALID=pass` into `fail` on replay. | Content-stable merged provenance and successful promotion followed by fresh-process verdict with identical report and record digests. |
+| F2 / T03/T11/T12/T17 | Seven mutations of recorded protocol pins, including `top_k`, repetition count, binary/model/host digests and an unknown field, retain `PAIR_VALID=pass`. | Closed protocol-lock schema and independent derivation of every retained pin from frozen inputs and captures. |
+| F3 / T00–T11 | One pass plus 159 skips, a nextest stream claiming 99 tests but running one, and duplicate JUnit cases can certify contract proof. | Bind the full required collected test identity set to raw terminal evidence; reject omissions, skips of mandatory tests and duplicates. |
+| F4 / T12–T13 | Two tasks repeated to 1,000 observations qualify speed; a raw latency longer than its enclosing phase is accepted. | Share entry/replay eligibility, enforce the independent 20-task floor and physically coherent phase/sample timing. |
+
+Fixes, normative documents and tests must be integrated before one source freeze and final receipts. The external W0-B authorities and admitted quiet-host pilot remain unsupplied. These findings are pending remediation and re-verification; a later implementation change does not itself close them.
+
+## Earlier implementation audit (historical, 2026-09-24)
 
 The 2026-09-24 re-audit at `f26796896e365a8eb66a516f959c460f792e7506` verified 160 Python contract tests, 31 retrieval-library tests, 20 chunking-contract tests and 22 receipt/proof-helper tests on the observed dirty checkout. It also added deterministic seed-schedule reconstruction so a self-consistent forged query protocol is rejected. `python3 tools/ci/source_closure.py check --profile retrieval` correctly refused the concurrently modified relevant source, so these are implementation results, not a source-bound receipt. The earlier clean `fa17e0f14672548bf7116074b7064c7c5e455d03` admission and older dirty-checkout results remain historical only. Retrieval receipts bind a v2 source closure: the transitive local Cargo package set plus retrieval proof tools/schemas, exact file list, per-file SHA-256 and full Git revision. Unrelated dirty paths are allowed; a relevant dirty/add/remove/HEAD change refuses capture or receipt issuance.
 
@@ -15,8 +28,8 @@ The 2026-09-24 re-audit at `f26796896e365a8eb66a516f959c460f792e7506` verified 1
 | RB-02 / W1B | Benchmark-only Rust runner uses the public SDK and a separate pinned searchd. A subprocess integration test executes the actual runner binary and binds its SHA, sealed receipt, activation ACK and v3 record. The harness writes daemon logs outside the state root. Live real-daemon negatives now cover missing pinned model, provider unavailable, stale activation CAS, readiness timeout and post-spawn termination; each fails typed without hits/record and uses bounded owned-process cleanup. The driver freezes `failure.json`, stderr/resource digests and record-presence state for failed capture processes and cleans the entire owned process group. `retrieval-sdk-proof <fresh-out>` emits machine-counted results plus a source-closure-bound receipt. | Final source-closure-bound SDK receipt remains absent; the live negatives are implementation evidence, not a pilot capture. |
 | RB-03 / W1C | Whole-file, strict/line-aligned windows and Rust syntax chunking plus independent span/coverage validation are implemented. The manifest decoders are manual/duplicate-rejecting, Semgrep is green, and the derive allowlist covers `crates/` and `benchmarks/`. | No real ablation artifact exists. |
 | RB-04 / W1D | Semble 0.6.0 adapter, lockfile/interpreter/model-asset checks, mapping proof and v3 normalization are implemented and fixture-tested. | No admitted real Semble environment/pilot capture has been recorded. |
-| RB-05 / W2 | Pair orchestration, immutable staging, admission/manifest/verdict validation, deterministic re-score and conditional T15/T16 handling are implemented. Exploratory scope cannot emit qualified quality/performance. Qualified cold speed binds one shared query order, zero one-sided warmups, monotonic phase boundaries, typed positive index bytes and fail-closed host telemetry. Isolated capture uses a default-deny Seatbelt allowlist over an exact Git-free corpus. | No admitted paired pilot has exercised the performance or isolation authority. Symmetric warm-cache qualification and non-macOS isolation backends are not implemented. |
-| RB-06 / W3 | Named proof/capture/verdict/host-profile commands and Rust integration targets exist. Receipt v2 binds the retrieval source closure plus role-tagged raw JUnit/nextest/runner evidence, which the verdict reparses. | No final clean-source contract/SDK receipt or real paired verdict exists; pilot/broader qualification remain unrun. |
+| RB-05 / W2 | Pair orchestration, immutable staging, admission/manifest/verdict validation and a shared cold-probe/warm-query protocol are present. Capture preflight requires one Quanta route, 20 tasks, five roots, warmup and 1,000 warm observations. Isolated capture uses a default-deny Seatbelt allowlist over an exact Git-free corpus. | F1/F2/F4 block deterministic promoted replay and qualified speed. No admitted pair has exercised the performance or isolation authority; no non-macOS isolation backend exists. |
+| RB-06 / W3 | Named proof/capture/verdict/host-profile commands and Rust integration targets exist. Receipt v2 binds retrieval source closure and raw JUnit/nextest/runner evidence. | F3 allows incomplete/duplicate test evidence to certify the contract. No final clean-source contract/SDK receipt or real paired verdict exists. |
 
 Historical focused execution on the earlier dirty shared checkout:
 
@@ -35,12 +48,12 @@ Static policy contradiction is resolved: both Semgrep and the widened derive inv
 
 ### Required closeout order
 
-1. Commit/freeze the retrieval implementation, then run the registered workspace rail on that exact source; require the live SDK test to pass with the `cargow`-injected explicit daemon pin.
-2. Run `retrieval-contract-proof` and `retrieval-sdk-proof` on one frozen clean source and freeze their emitted summaries/receipts into the W0-B stage. Keep `sdk_results.json` bound to the actual runner record/binary; never hand-author verdict inputs.
+1. Integrate implementation, adversarial regressions and this packet's normative documents; resolve protocol-lock producer/consumer keys together. Then commit/freeze one retrieval source closure and run the registered workspace rail on that exact source, including the live SDK test with the `cargow`-injected daemon pin.
+2. Run `retrieval-contract-proof` and `retrieval-sdk-proof` on that frozen clean source only after the full required test inventory, raw terminal evidence and duplicate/skip refusals pass. Freeze their summaries/receipts into the W0-B stage. Keep `sdk_results.json` bound to the actual runner record/binary; never hand-author verdict inputs.
 3. Freeze W0-B inputs outside the checkout: pilot commit and admitted manifest, reviewed license/attribution, two-person adjudicated gold, model assets/revision, Semble lockfile/interpreter, tokenizer/budget version and quiet-host/cache profile.
 4. Exercise the verified phase/RSS artifacts on the admitted pair before enabling `claims.speed`. For `claims.quality`, use `blinding=isolated` with an external `suite_secret_root`; the macOS Seatbelt proof must survive verdict re-verification.
 5. Retain the live missing-model/provider/CAS/timeout/termination negatives in the frozen SDK receipt; do not replace them with classification-only tests.
-6. Run the exploratory pair first, issue `run-manifest.json` and `verdict.json`, inspect every exclusion/failure, then run broader qualification. Re-freeze HEAD and source digests after every code or document change that affects the protocol.
+6. Run the exploratory pair first, issue `run-manifest.json` and `verdict.json`, atomically promote the output and rerun the public verdict from a fresh process against the final path. Require stable canonical record/report digests and inspect every exclusion/failure before broader qualification. Re-freeze HEAD and source digests after every bound code or document change; reissue stale receipts.
 
 ## Objective and ownership
 
