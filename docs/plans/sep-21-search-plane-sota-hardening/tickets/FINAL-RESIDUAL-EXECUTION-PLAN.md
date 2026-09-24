@@ -85,12 +85,12 @@ inventory, executable/command binding, operational pre/post result modes and
 the release recipe producers remain open R0 work. The parser is evidence
 interpretation, not runner attestation or release qualification.
 
-The clean `12617e79531091b45a9e748488a0977500f3ebc4` P01 recipe failed
-at `rust-cargo-modules`: `quanta-index-contract` baseline omitted the public
-active-head control DTOs introduced by `237452da3`. The baseline update is
-limited to those symbols. The subsequent `rust-cargo-modules` check passed on
-the implementation worktree; P01 as a whole has not been rerun at its final
-source revision.
+Historical P01 attempts exposed two source issues: the `quanta-index-contract`
+module baseline omitted public active-head control DTOs, and the runtime E2E
+fixture sent lexical chunks without the typed semantic sources required by its
+semantic query expectations. Both were corrected in source. Neither correction
+constitutes a current-source P01 pass; rerun the complete recipe after the
+source is frozen and retain its raw result.
 
 ### R1 — Close the P03-P08 release counterexample inventory, not the owners again
 
