@@ -9,9 +9,9 @@ use std::sync::Arc;
 use quanta_index_contract::{
     CurrentGenerationRequest, GenerationSnapshot, GenerationStatusReport, GenerationStatusRequest,
     MetricsSnapshotV1, RepoMapActivateGenerationRequestV2, RepoMapActiveHeadRequestV2,
-    RepoMapActiveHeadResponseV2, RepoMapTerminalReceiptV2,
-    SearchCorpusGenerationIdentityV1, SearchPlaneActivateSearchCorpusGenerationCasRequest,
-    SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse, SearchPlaneIpcError,
+    RepoMapActiveHeadResponseV2, RepoMapTerminalReceiptV2, SearchCorpusGenerationIdentityV1,
+    SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
+    SearchPlaneControlIpcResponse, SearchPlaneIpcError,
     SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneSearchCorpusActivationCasAck,
     SearchPlaneSearchCorpusRollbackCasAck, TrackReadinessRecord,
 };
@@ -483,11 +483,11 @@ mod tests {
     use quanta_index_contract::{
         GenerationSnapshot, ManifestGeneration, MetricsSnapshotRequest, MetricsSnapshotV1,
         QuarantineDiscardOutcomeDtoV1, QuarantineDiscardRequest, QuarantineInventoryRequest,
-        QuarantineTargetV1, RepoId, RepoMapActivateGenerationRequestV2,
-        RepoMapActiveHeadRequestV2, RepoMapActiveHeadResponseV2, RepoMapMutationAck,
-        RepoMapMutationPhaseV2, RepoMapTerminalReceiptV2, RevisionId,
-        SearchCorpusGenerationIdentityV1, SearchPlaneActivateSearchCorpusGenerationCasRequest,
-        SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse, SearchPlaneIpcError,
+        QuarantineTargetV1, RepoId, RepoMapActivateGenerationRequestV2, RepoMapActiveHeadRequestV2,
+        RepoMapActiveHeadResponseV2, RepoMapMutationAck, RepoMapMutationPhaseV2,
+        RepoMapTerminalReceiptV2, RevisionId, SearchCorpusGenerationIdentityV1,
+        SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
+        SearchPlaneControlIpcResponse, SearchPlaneIpcError,
         SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneTrackKind,
     };
     use quanta_index_core::{

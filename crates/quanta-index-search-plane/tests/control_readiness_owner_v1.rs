@@ -18,10 +18,10 @@ use quanta_index_contract::{
     MetricsSnapshotRequest, ProcessReadinessRequest, QuarantineDiscardRequest,
     QuarantineInventoryRequest, QuarantineTargetV1, QuarantinedRepoMapFileEntryV1, RepoId,
     RepoMapActivateGenerationRequestV2, RepoMapActiveHeadRequestV2, RevisionId,
-    SearchCorpusGenerationIdentityV1,
-    SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
-    SearchPlaneErrorCodeV2, SearchPlaneRollbackSearchCorpusGenerationCasRequest,
-    SearchPlaneTrackKind, SemanticContentRootsV1,
+    SearchCorpusGenerationIdentityV1, SearchPlaneActivateSearchCorpusGenerationCasRequest,
+    SearchPlaneControlIpcRequest, SearchPlaneErrorCodeV2,
+    SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneTrackKind,
+    SemanticContentRootsV1,
 };
 
 fn fixture_repo() -> RepoId {

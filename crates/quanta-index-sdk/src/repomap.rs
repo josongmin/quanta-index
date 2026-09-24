@@ -1,11 +1,9 @@
 use quanta_index_contract::{
-    RepoMapActivateGenerationRequestV2, RepoMapActiveHeadRequestV2, RepoMapExpectedActiveV2,
-    RepoMapPublishBundleRequestV2, RepoMapQueryRequest,
-    RepoMapQueryResponse,
-    RepoMapTerminalReceiptV2, RepoId, RevisionId, SearchPlaneControlIpcRequest,
-    SearchPlaneControlIpcResponse,
-    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse, SearchPlaneQueryIpcRequest,
-    SearchPlaneQueryIpcResponse,
+    RepoId, RepoMapActivateGenerationRequestV2, RepoMapActiveHeadRequestV2,
+    RepoMapExpectedActiveV2, RepoMapPublishBundleRequestV2, RepoMapQueryRequest,
+    RepoMapQueryResponse, RepoMapTerminalReceiptV2, RevisionId, SearchPlaneControlIpcRequest,
+    SearchPlaneControlIpcResponse, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse,
+    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
 };
 
 use crate::{QuantaIndex, SdkError};
@@ -25,12 +23,14 @@ impl<'a> RepoMapNamespace<'a> {
         repo_id: RepoId,
         revision_id: RevisionId,
     ) -> Result<Option<RepoMapExpectedActiveV2>, SdkError> {
-        let response = self.client.dispatch_control(
-            SearchPlaneControlIpcRequest::RepoMapActiveHeadV2(RepoMapActiveHeadRequestV2 {
-                repo_id,
-                revision_id,
-            }),
-        )?;
+        let response =
+            self.client
+                .dispatch_control(SearchPlaneControlIpcRequest::RepoMapActiveHeadV2(
+                    RepoMapActiveHeadRequestV2 {
+                        repo_id,
+                        revision_id,
+                    },
+                ))?;
         match response {
             SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(head) => Ok(head.active),
             other => Err(SdkError::unexpected_response(

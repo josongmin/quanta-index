@@ -292,14 +292,13 @@ impl<'de> Deserialize<'de> for RepoMapExpectedActiveV2 {
                         }
                     }
                 }
-                let epoch = NonZeroU64::new(
-                    epoch.ok_or_else(|| de::Error::missing_field("epoch"))?,
-                )
-                .ok_or_else(|| de::Error::custom("activation epoch must be positive"))?;
+                let epoch =
+                    NonZeroU64::new(epoch.ok_or_else(|| de::Error::missing_field("epoch"))?)
+                        .ok_or_else(|| de::Error::custom("activation epoch must be positive"))?;
                 let commitment = candidate_commitment
                     .ok_or_else(|| de::Error::missing_field("candidate_commitment"))?;
-                let candidate_commitment = CandidateCommitmentV1::from_wire_str(&commitment)
-                    .map_err(de::Error::custom)?;
+                let candidate_commitment =
+                    CandidateCommitmentV1::from_wire_str(&commitment).map_err(de::Error::custom)?;
                 Ok(RepoMapExpectedActiveV2::new(epoch, candidate_commitment))
             }
         }
@@ -358,7 +357,10 @@ impl<'de> Deserialize<'de> for RepoMapActiveHeadRequestV2 {
                         }
                         "revision_id" => return Err(de::Error::duplicate_field("revision_id")),
                         other => {
-                            return Err(de::Error::unknown_field(other, ACTIVE_HEAD_REQUEST_V2_FIELDS));
+                            return Err(de::Error::unknown_field(
+                                other,
+                                ACTIVE_HEAD_REQUEST_V2_FIELDS,
+                            ));
                         }
                     }
                 }
@@ -428,7 +430,10 @@ impl<'de> Deserialize<'de> for RepoMapActiveHeadResponseV2 {
                         "active" if active.is_none() => active = Some(map.next_value()?),
                         "active" => return Err(de::Error::duplicate_field("active")),
                         other => {
-                            return Err(de::Error::unknown_field(other, ACTIVE_HEAD_RESPONSE_V2_FIELDS));
+                            return Err(de::Error::unknown_field(
+                                other,
+                                ACTIVE_HEAD_RESPONSE_V2_FIELDS,
+                            ));
                         }
                     }
                 }
@@ -779,8 +784,8 @@ mod tests {
     #[test]
     fn activation_expected_head_is_required_and_strictly_typed() {
         let source = bundle_fixture_v2();
-        let request = RepoMapActivateGenerationRequestV2::for_bundle(&source)
-            .expect("source bundle digest");
+        let request =
+            RepoMapActivateGenerationRequestV2::for_bundle(&source).expect("source bundle digest");
         let mut missing = serde_json::to_value(&request).expect("request serializes");
         let _removed = missing
             .as_object_mut()

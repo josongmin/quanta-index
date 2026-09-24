@@ -1,6 +1,6 @@
 use quanta_index_contract::{
-    RepoMapActivateGenerationRequestV2, RepoMapActiveHeadRequestV2,
-    RepoMapActiveHeadResponseV2, RepoMapPublishBundleRequestV2, RepoMapTerminalReceiptV2,
+    RepoMapActivateGenerationRequestV2, RepoMapActiveHeadRequestV2, RepoMapActiveHeadResponseV2,
+    RepoMapPublishBundleRequestV2, RepoMapTerminalReceiptV2,
 };
 
 use crate::CoreError;

@@ -746,13 +746,11 @@ impl SqliteCatalog {
         }
         let existing = read_activation_row(&transaction, repo_id, revision_id)?;
         if candidate.state == RepoMapCandidateStateV1::Activated
-            && existing
-                .as_ref()
-                .is_some_and(|row| {
-                    row.active
-                        && row.manifest_generation == manifest_generation
-                        && row.candidate_commitment == *expected_commitment
-                })
+            && existing.as_ref().is_some_and(|row| {
+                row.active
+                    && row.manifest_generation == manifest_generation
+                    && row.candidate_commitment == *expected_commitment
+            })
         {
             let Some(active) = existing else {
                 return Err(corrupt("replay check found no activation row"));
@@ -789,14 +787,18 @@ impl SqliteCatalog {
                 replayed: true,
             });
         }
-        let actual_active = existing.as_ref().filter(|row| row.active).map(|row| {
-            let epoch = NonZeroU64::new(row.epoch)
-                .ok_or_else(|| corrupt("active activation epoch is zero"))?;
-            Ok::<_, CoreError>(RepoMapExpectedActiveV2::new(
-                epoch,
-                CandidateCommitmentV1::from_bytes(row.candidate_commitment),
-            ))
-        }).transpose()?;
+        let actual_active = existing
+            .as_ref()
+            .filter(|row| row.active)
+            .map(|row| {
+                let epoch = NonZeroU64::new(row.epoch)
+                    .ok_or_else(|| corrupt("active activation epoch is zero"))?;
+                Ok::<_, CoreError>(RepoMapExpectedActiveV2::new(
+                    epoch,
+                    CandidateCommitmentV1::from_bytes(row.candidate_commitment),
+                ))
+            })
+            .transpose()?;
         if expected_active != actual_active.as_ref() {
             return Err(typed(
                 quanta_index_contract::SearchPlaneErrorCodeV2::ActivationCasConflict,

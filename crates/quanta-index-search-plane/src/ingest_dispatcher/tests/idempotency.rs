@@ -23,10 +23,9 @@ use quanta_index_contract::{
 use quanta_index_core::{
     BATCH_DIGEST_MISMATCH_CODE, CoreError, FileContributorIngestPort, FileOwnershipIngestPort,
     IdempotencyKeyV1, IngestBatchBodyV1 as _, IngestResourcePolicy, RepoCommitRecencyIngestPort,
-    RepoDescriptionIngestPort, RepoMapBundleIngestPort,
-    RepoMetaIngestPort, RepoTopicIngestPort, RequestBudgetV1, RequestProviderStageV1,
-    RequestStageDiagnosticPortV1, SearchCorpusIngestPort, SemanticIngestPort,
-    SemanticStreamWindowPolicy, TextEmbeddingProvider,
+    RepoDescriptionIngestPort, RepoMapBundleIngestPort, RepoMetaIngestPort, RepoTopicIngestPort,
+    RequestBudgetV1, RequestProviderStageV1, RequestStageDiagnosticPortV1, SearchCorpusIngestPort,
+    SemanticIngestPort, SemanticStreamWindowPolicy, TextEmbeddingProvider,
 };
 use quanta_index_ipc::{canonical_batch_digest_v1, stamp_batch_digest_v1};
 

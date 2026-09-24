@@ -97,7 +97,9 @@ impl PlaneDispatch<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>
                 "control.rollback_corpus"
             }
             SearchPlaneControlIpcRequest::RepoMapActivateV2(_) => "control.activate_repo_map_v2",
-            SearchPlaneControlIpcRequest::RepoMapActiveHeadV2(_) => "control.repo_map_active_head_v2",
+            SearchPlaneControlIpcRequest::RepoMapActiveHeadV2(_) => {
+                "control.repo_map_active_head_v2"
+            }
             SearchPlaneControlIpcRequest::CurrentGeneration(_) => "control.current_generation",
             SearchPlaneControlIpcRequest::GenerationStatus(_) => "control.generation_status",
             SearchPlaneControlIpcRequest::MetricsSnapshot(_) => "control.metrics",

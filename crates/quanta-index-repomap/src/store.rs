@@ -25,8 +25,8 @@ use quanta_index_contract::{
     RepositoryRevisionIdentityV1, RevisionId,
 };
 use quanta_index_contract::{
-    RepoMapActivateGenerationRequestV2, RepoMapActiveHeadRequestV2,
-    RepoMapActiveHeadResponseV2, RepoMapExpectedActiveV2, RepoMapMutationAck, RepoMapMutationPhaseV2,
+    RepoMapActivateGenerationRequestV2, RepoMapActiveHeadRequestV2, RepoMapActiveHeadResponseV2,
+    RepoMapExpectedActiveV2, RepoMapMutationAck, RepoMapMutationPhaseV2,
     RepoMapPublishBundleRequestV2, RepoMapSourceBundle, RepoMapTerminalReceiptV2,
     canonical_repo_map_source_bundle_digest_v2,
 };

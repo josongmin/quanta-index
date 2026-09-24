@@ -34,6 +34,6 @@ pub use diff::DiffHunkRecord;
 pub use dirty::DirtyRecord;
 pub use error_code::LexicalErrorCode;
 pub use history::{CommitRecord, CommitSha, CommitShaParseError};
-pub use quanta_index_contract_base::LanguageCode;
 pub use parse_tree::{ParseNode, ParseRoleTag, ParseTreeRecord, compute_parse_tree_source_hash};
+pub use quanta_index_contract_base::LanguageCode;
 pub use symbol::{SymbolKindCode, SymbolKindFamily, SymbolRecord, SymbolRelationship, SymbolSpan};

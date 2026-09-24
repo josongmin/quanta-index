@@ -33,9 +33,8 @@ use std::time::Duration;
 use quanta_index_catalog::SqliteCatalog;
 use quanta_index_contract::{
     CandidateCommitmentV1, FileId, ManifestGeneration, RepoId, RepoMapActivateGenerationRequestV2,
-    RepoMapExpectedActiveV2,
-    RepoMapExactnessSummary, RepoMapFileNode, RepoMapGraphCoverage, RepoMapGraphCoverageClass,
-    RepoMapItemIndexAvailability, RepoMapMutationPhaseV2, RepoMapNode,
+    RepoMapExactnessSummary, RepoMapExpectedActiveV2, RepoMapFileNode, RepoMapGraphCoverage,
+    RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapMutationPhaseV2, RepoMapNode,
     RepoMapPublishBundleRequestV2, RepoMapQueryRequest, RepoMapRedactionState, RepoMapSourceBundle,
     RepoRelativePath, RevisionId,
 };
@@ -492,18 +491,24 @@ fn stale_prepared_activation_cannot_replace_newer_catalog_head() -> TestResult {
     let _current_publish = fixture
         .store
         .ingest_bundle_v2(&RepoMapPublishBundleRequestV2::new(current_source.clone())?)?;
-    let current = fixture.store.activate_generation_v2(
-        &RepoMapActivateGenerationRequestV2::for_bundle(&current_source)?,
-    )?;
+    let current =
+        fixture
+            .store
+            .activate_generation_v2(&RepoMapActivateGenerationRequestV2::for_bundle(
+                &current_source,
+            )?)?;
     let before = fixture
         .catalog
         .repomap_activation_row(repo().as_str(), revision().as_str())?
         .ok_or_else(|| std::io::Error::other("active catalog row missing"))?;
     let sequence_before = fixture.catalog.sequence_allocator()?;
 
-    let stale = fixture.store.activate_generation_v2(
-        &RepoMapActivateGenerationRequestV2::for_bundle(&stale_source)?,
-    );
+    let stale =
+        fixture
+            .store
+            .activate_generation_v2(&RepoMapActivateGenerationRequestV2::for_bundle(
+                &stale_source,
+            )?);
     let stale = stale.expect_err("stale activation must not supersede catalog head");
     assert_typed(
         &stale,
@@ -535,8 +540,12 @@ fn activation_replay_refuses_a_changed_prior_head_expectation() -> TestResult {
         .repomap_activation_row(repo().as_str(), revision().as_str())?
         .ok_or_else(|| std::io::Error::other("active catalog row missing"))?;
     let sequence_before = fixture.catalog.sequence_allocator()?;
-    let changed = original.with_expected_active(fixture.store.active_head_token(&repo(), &revision())?
-        .ok_or_else(|| std::io::Error::other("active token missing"))?);
+    let changed = original.with_expected_active(
+        fixture
+            .store
+            .active_head_token(&repo(), &revision())?
+            .ok_or_else(|| std::io::Error::other("active token missing"))?,
+    );
     let error = fixture
         .store
         .activate_generation_v2(&changed)
@@ -552,9 +561,14 @@ fn activation_replay_refuses_a_changed_prior_head_expectation() -> TestResult {
         Some(row_before),
     );
     assert_eq!(fixture.catalog.sequence_allocator()?, sequence_before);
-    let replay = fixture.store.activate_generation_v2(&RepoMapActivateGenerationRequestV2::for_bundle(&source)?)?;
+    let replay = fixture
+        .store
+        .activate_generation_v2(&RepoMapActivateGenerationRequestV2::for_bundle(&source)?)?;
     assert!(replay.mutation.replayed);
-    assert_eq!(replay.mutation.terminal_sequence, committed.mutation.terminal_sequence);
+    assert_eq!(
+        replay.mutation.terminal_sequence,
+        committed.mutation.terminal_sequence
+    );
     Ok(())
 }
 
