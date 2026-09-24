@@ -3763,6 +3763,8 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         try:
             cells = []
             shared_protocol_ok = True
+            protocol_failure_reason = "shared_warm_query_protocol_unimplemented"
+            rep_protocol_evidence: list[dict] = []
             for rep in sorted(rep_records, key=_rep_sort_key):
                 rep_protocols = []
                 quanta_paths = sorted(
@@ -3806,6 +3808,36 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                     protocol != rep_protocols[0] for protocol in rep_protocols[1:]
                 ):
                     shared_protocol_ok = False
+                else:
+                    rep_protocol_evidence.append(rep_protocols[0])
+            if shared_protocol_ok:
+                if not isinstance(protocol_payload, dict):
+                    raise RunError("protocol lock is not an object")
+                base_seed = protocol_payload.get("base_seed")
+                warmup_passes = protocol_payload.get("query_warmup_passes")
+                measurement_repetitions = protocol_payload.get("query_repetitions_per_root")
+                locked_digests = protocol_payload.get("query_protocol_sha256s")
+                if (
+                    type(base_seed) is not int
+                    or type(warmup_passes) is not int
+                    or type(measurement_repetitions) is not int
+                    or not isinstance(locked_digests, list)
+                    or len(rep_protocol_evidence) != len(rep_records)
+                    or len(locked_digests) != len(rep_records)
+                ):
+                    shared_protocol_ok = False
+                    protocol_failure_reason = "query_protocol_root_sequence_unverified"
+                else:
+                    for index, protocol in enumerate(rep_protocol_evidence):
+                        if (
+                            protocol["seed"] != base_seed + index
+                            or len(protocol["warmup_schedules"]) != warmup_passes
+                            or len(protocol["measurement_schedules"]) != measurement_repetitions
+                            or protocol["sha256"] != locked_digests[index]
+                        ):
+                            shared_protocol_ok = False
+                            protocol_failure_reason = "query_protocol_root_sequence_unverified"
+                            break
             rebuilt = aggregate_matrix(cells, len(rep_records))
             matrix_content = read_json(resolved["latency_matrix"])
         except (RunError, ValueError, OSError) as exc:
@@ -3835,7 +3867,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             ):
                 perf_fail = ("host_contended", "host")
             elif not shared_protocol_ok:
-                perf_fail = ("shared_warm_query_protocol_unimplemented", "provenance")
+                perf_fail = (protocol_failure_reason, "provenance")
         if perf_fail is None:
             set_state(
                 "PERF_QUALIFIED",
@@ -4320,6 +4352,23 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
         ),
         "driver_source_closure_digest": driver_closure_digest,
         "repetitions": repetitions,
+        "base_seed": _int(spec.get("seed", 0), "spec.seed"),
+        "query_warmup_passes": _int(
+            spec.get("query_warmup_passes", spec.get("semble_warmup_passes", 1)),
+            "spec.query_warmup_passes",
+        ),
+        "query_repetitions_per_root": _int(
+            spec.get("query_repetitions_per_root", spec.get("semble_repetitions", 1)),
+            "spec.query_repetitions_per_root",
+        ),
+        "query_protocol_sha256s": [
+            validate_query_protocol(
+                read_json(Path(layout["query_protocol"])),
+                [task["task_id"] for task in read_json(Path(spec["query_pack"]))["tasks"]],
+                f"rep {layout['rep']} query protocol",
+            )["sha256"]
+            for layout in rep_layouts
+        ],
     }
     (stage / "protocol-lock.json").write_text(
         json.dumps(protocol_lock, indent=2, sort_keys=True) + "\n", encoding="utf-8"
