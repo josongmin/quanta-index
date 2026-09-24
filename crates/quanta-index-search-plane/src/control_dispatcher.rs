@@ -815,7 +815,7 @@ mod tests {
             Arc::clone(&activation_catalog),
             Arc::new(RwLock::new(Ledger::new())),
         );
-        let observer = ControlAccessV1::Peer {
+        let peer_access = ControlAccessV1::Peer {
             uid: 2000,
             owner_uid: 1000,
         };
@@ -862,7 +862,7 @@ mod tests {
             owner_uid: 1000,
         };
         let SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(peer_absent) =
-            dispatcher.dispatch_as(observer, request(), &RequestBudgetV1::unbounded())
+            dispatcher.dispatch_as(peer_access, request(), &RequestBudgetV1::unbounded())
         else {
             return Err("observer must read the absent head without mutation privilege".into());
         };
@@ -880,7 +880,7 @@ mod tests {
         };
         assert_eq!(observed.head(), Some(&ack.active));
         let SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(peer_observed) =
-            dispatcher.dispatch_as(observer, request(), &RequestBudgetV1::unbounded())
+            dispatcher.dispatch_as(peer_access, request(), &RequestBudgetV1::unbounded())
         else {
             return Err("observer must read the active head without mutation privilege".into());
         };

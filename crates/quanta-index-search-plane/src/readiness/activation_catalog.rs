@@ -220,6 +220,7 @@ impl ActivationCatalog {
                 ))
             })
             .collect::<Result<Vec<_>, CoreError>>()?;
+        drop(entries);
         Ok((inventory, repositories))
     }
 

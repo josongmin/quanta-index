@@ -353,8 +353,10 @@ fn reactivated_generation_rejects_stale_activation_and_rollback_cas_tokens() -> 
     let third_inventory = catalog.active_inventory_v1()?;
     assert_eq!(first_inventory.0.len(), 1);
     assert_eq!(third_inventory.0.len(), 1);
-    assert_eq!(first_inventory.0[0].0, third_inventory.0[0].0);
-    assert_ne!(first_inventory.0[0].1, third_inventory.0[0].1);
+    let first_head = first_inventory.0.first().expect("one active head");
+    let third_head = third_inventory.0.first().expect("one active head");
+    assert_eq!(first_head.0, third_head.0);
+    assert_ne!(first_head.1, third_head.1);
 
     let activation = catalog.activate_prepared_search_corpus_generation_v1(
         &PreparedSearchCorpusGenerationV1::new(
