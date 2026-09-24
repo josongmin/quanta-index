@@ -4193,6 +4193,9 @@ def test_pair_staging_atomicity(tmp_path, monkeypatch):
     def explode(_spec, _spec_dir):
         raise pairrun.RunError("boom")
 
+    # This test owns atomic stage promotion, not Unix socket path admission.
+    # Its pytest-generated output path is deliberately long on macOS.
+    monkeypatch.setattr(pairrun, "preflight_daemon_socket_paths", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(pairrun, "run_quanta", explode)
     with pytest.raises(pairrun.RunError, match="boom"):
         pairrun.run_pair(spec)
