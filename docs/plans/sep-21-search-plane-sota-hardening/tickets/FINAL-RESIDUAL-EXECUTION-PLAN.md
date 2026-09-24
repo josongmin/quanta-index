@@ -69,6 +69,25 @@ R0 is a release-evidence prerequisite, not a reason to stop independent P09
 code development. Do not reissue owner receipts while source is still moving;
 each commit invalidates earlier exact-source receipts.
 
+2026-09-24 implementation note: the manifest checker now recomputes passed
+owner-test counts from archived Nextest JSONL plus collection inventory or
+pytest JUnit plus collection inventory. It rejects missing, malformed, skipped,
+duplicate, partial and count-mismatched runner evidence. P00 passed counts are
+fixed to the single inventory invariant. This closes the arbitrary-log/count
+path for executable owner-test manifests. The canonical owner recipes do not
+yet emit these machine artifacts, so no new owner `passed` manifest should be
+issued from their human-readable logs. Trusted CI-run provenance, Linux host
+inventory, executable/command binding, operational pre/post result modes and
+the release recipe producers remain open R0 work. The parser is evidence
+interpretation, not runner attestation or release qualification.
+
+The clean `12617e79531091b45a9e748488a0977500f3ebc4` P01 recipe failed
+at `rust-cargo-modules`: `quanta-index-contract` baseline omitted the public
+active-head control DTOs introduced by `237452da3`. The baseline update is
+limited to those symbols. The subsequent `rust-cargo-modules` check passed on
+the implementation worktree; P01 as a whole has not been rerun at its final
+source revision.
+
 ### R1 — Close the P03-P08 release counterexample inventory, not the owners again
 
 Use `tools/ci/proof-authority.toml` and `tools/ci/test-authority.toml` as the

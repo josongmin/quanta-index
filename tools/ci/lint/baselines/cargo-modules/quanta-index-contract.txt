@@ -40,6 +40,9 @@ crate quanta_index_contract
 │   ├── mod batch_body: pub(self)
 │   │   └── enum IngestOperationKindV1: pub
 │   ├── mod control: pub(self)
+│   │   ├── struct ActiveGenerationResolutionV1: pub
+│   │   ├── struct ActiveGenerationResolutionV1Visitor: pub(self)
+│   │   │   └── type Value: pub(self)
 │   │   ├── struct CurrentGenerationRequest: pub
 │   │   ├── struct CurrentGenerationRequestVisitor: pub(self)
 │   │   │   └── type Value: pub(self)
@@ -74,6 +77,12 @@ crate quanta_index_contract
 │   │   ├── struct ProcessReadinessV1Visitor: pub(self)
 │   │   │   └── type Value: pub(self)
 │   │   ├── enum SearchCorpusActivationValidationErrorV1: pub
+│   │   ├── struct SearchCorpusActiveHeadObservationV1: pub
+│   │   ├── struct SearchCorpusActiveHeadObservationV1Visitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct SearchCorpusActiveHeadV1: pub
+│   │   ├── struct SearchCorpusActiveHeadV1Visitor: pub(self)
+│   │   │   └── type Value: pub(self)
 │   │   ├── struct SearchCorpusGenerationIdentityV1: pub
 │   │   ├── struct SearchCorpusGenerationIdentityV1Visitor: pub(self)
 │   │   │   └── type Value: pub(self)

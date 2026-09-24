@@ -325,6 +325,7 @@ targets = [
   "proof-handoff-chain-python-owner",
   "proof-authority-python-owner",
   "proof-manifest-python-owner",
+  "proof-execution-result-python-owner",
 ]
 
 [[python_targets]]
@@ -355,6 +356,12 @@ rail = "pr-proof-authority-python"
 id = "proof-manifest-python-owner"
 path = "tools/ci/tests/test_write_proof_manifest.py"
 owner = "tools/ci/write-proof-manifest.py"
+rail = "pr-proof-authority-python"
+
+[[python_targets]]
+id = "proof-execution-result-python-owner"
+path = "tools/ci/tests/test_proof_execution_result.py"
+owner = "tools/ci/proof_execution_result.py"
 rail = "pr-proof-authority-python"
 
 [[integration_targets]]

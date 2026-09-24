@@ -821,6 +821,7 @@ proof-p00-authority-freeze:
         tools/ci/tests/test_write_error_authority_inventory.py \
         tools/ci/tests/test_write_proof_aggregate.py \
         tools/ci/tests/test_write_proof_manifest.py \
+        tools/ci/tests/test_proof_execution_result.py \
         tools/ci/tests/test_check_proof_authority.py \
         tools/ci/tests/test_check_lane_handoff.py \
         tools/ci/tests/test_handoff_validation.py \
@@ -833,6 +834,7 @@ proof-p12a-proof-infrastructure:
     python3 tools/ci/lint/check-proof-authority.py
     python3 -m pytest \
         tools/ci/tests/test_write_proof_manifest.py \
+        tools/ci/tests/test_proof_execution_result.py \
         tools/ci/tests/test_write_proof_aggregate.py \
         tools/ci/tests/test_check_proof_authority.py \
         tools/ci/tests/test_check_lane_handoff.py \

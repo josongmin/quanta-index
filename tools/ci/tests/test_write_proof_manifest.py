@@ -48,7 +48,7 @@ def test_cross_repo_hellgate_selects_live_repomap_terminal_target() -> None:
         capture_output=True,
         text=True,
     ).stderr
-    assert './scripts/verify-repomap-cross-repo.sh' in command
+    assert "./scripts/verify-repomap-cross-repo.sh" in command
     script = REPO_ROOT / "scripts/verify-repomap-cross-repo.sh"
     subprocess.run(["bash", "-n", str(script)], check=True, capture_output=True, text=True)
     source = script.read_text()
@@ -153,6 +153,60 @@ def _terminal(root: Path) -> tuple[Path, dict]:
     terminal_path = proof_dir / "terminal.json"
     terminal_path.write_text(json.dumps(terminal), encoding="utf-8")
     return terminal_path, terminal
+
+
+def _add_nextest_run(root: Path, terminal: dict, *, package: str, binary: str) -> None:
+    raw = root / "artifacts/proof-authority/raw"
+    events = raw / "nextest.jsonl"
+    inventory = raw / "nextest-inventory.json"
+    name = f"{package}::{binary}$passes"
+    metadata = {"crate": package, "test_binary": binary, "kind": "test"}
+    rows = [
+        {"type": "suite", "event": "started", "test_count": 1, "nextest": metadata},
+        {"type": "test", "event": "started", "name": name},
+        {"type": "test", "event": "ok", "name": name},
+        {
+            "type": "suite",
+            "event": "ok",
+            "passed": 1,
+            "failed": 0,
+            "ignored": 0,
+            "nextest": metadata,
+        },
+    ]
+    events.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    inventory.write_text(
+        json.dumps(
+            {
+                "test-count": 1,
+                "rust-suites": {
+                    f"{package}::{binary}": {
+                        "package-name": package,
+                        "binary-name": binary,
+                        "kind": "test",
+                        "status": "listed",
+                        "testcases": {
+                            "passes": {"ignored": False, "filter-match": {"status": "matches"}}
+                        },
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    event_relative = events.relative_to(root).as_posix()
+    inventory_relative = inventory.relative_to(root).as_posix()
+    terminal["artifacts"].extend([event_relative, inventory_relative])
+    terminal["execution_result"] = {
+        "schema_version": 1,
+        "runs": [
+            {
+                "format": "nextest-jsonl",
+                "events": event_relative,
+                "inventory": inventory_relative,
+            }
+        ],
+    }
 
 
 def _publish(root: Path, terminal_path: Path) -> tuple[Path, str, str]:
@@ -792,6 +846,7 @@ def test_exact_pair_manifest_is_live_bound_through_atomic_writer(
     terminal["environment"]["host"]["profile"] = "linux-production-like"
     terminal["environment"]["os"] = "linux"
     terminal["daemon_binary"] = "bin/searchd"
+    _add_nextest_run(root, terminal, package="quanta-index-catalog", binary="idempotency")
     terminal_path.write_text(json.dumps(terminal), encoding="utf-8")
     monkeypatch.setattr(WRITER.platform, "system", lambda: "Linux")
 
@@ -835,6 +890,35 @@ def test_exact_pair_manifest_is_live_bound_through_atomic_writer(
         )
         == []
     )
+    forged = dict(payload)
+    forged["counts"] = {"selected": 2, "executed": 2, "passed": 2, "failed": 0, "ignored": 0}
+    findings = CHECKER.check_manifest(
+        forged,
+        manifest_path=output,
+        proof=proof,
+        schema=schema,
+        root=root,
+        bind_source=True,
+        paired_checkouts={proof["paired_repository"]: checkout},
+    )
+    assert any("manifest counts differ from raw execution" in item.message for item in findings)
+    event_artifact = next(
+        item
+        for item in payload["artifacts"]
+        if item["source_path"] == "artifacts/proof-authority/raw/nextest.jsonl"
+    )
+    (root / event_artifact["path"]).write_text("proof passed\n", encoding="utf-8")
+    findings = CHECKER.check_manifest(
+        payload,
+        manifest_path=output,
+        proof=proof,
+        schema=schema,
+        root=root,
+        bind_source=True,
+        paired_checkouts={proof["paired_repository"]: checkout},
+    )
+    assert any("proof artifact digest mismatch" in item.message for item in findings)
+    assert any("execution result is not authoritative" in item.message for item in findings)
 
 
 def test_exact_binding_refuses_a_free_paired_checkout(tmp_path: Path) -> None:

@@ -126,6 +126,7 @@ EXPECTED_P12A_TEST_TARGETS = [
     "proof-handoff-chain-python-owner",
     "proof-authority-python-owner",
     "proof-manifest-python-owner",
+    "proof-execution-result-python-owner",
 ]
 STREAM_CHUNK_SIZE = 1024 * 1024
 
@@ -1489,6 +1490,11 @@ def check_manifest(
         )
 
     counts = payload["counts"]
+    if proof.get("execution_mode") == "non-test-assertion" and payload["status"] == "passed":
+        if counts != {"selected": 1, "executed": 1, "passed": 1, "failed": 0, "ignored": 0}:
+            findings.append(
+                Finding(manifest_path, "P00 invariant result requires derived counts 1/1/1/0/0")
+            )
     if counts["selected"] != counts["executed"] + counts["ignored"]:
         findings.append(Finding(manifest_path, "selected must equal executed + ignored"))
     if counts["executed"] != counts["passed"] + counts["failed"]:
@@ -1573,6 +1579,58 @@ def check_manifest(
                         Finding(manifest_path, f"proof artifact digest mismatch: {artifact_path}")
                     )
 
+    execution_result = payload.get("execution_result")
+    if proof.get("execution_mode") == "test-authority" and payload["status"] == "passed":
+        if execution_result is None:
+            findings.append(Finding(manifest_path, "passed test proof lacks raw execution result"))
+        else:
+            try:
+                if str(ROOT) not in sys.path:
+                    sys.path.insert(0, str(ROOT))
+                from tools.ci.proof_execution_result import (
+                    ExecutionResultError,
+                    derive_test_result,
+                )
+
+                derived_counts, passed_names = derive_test_result(
+                    root, execution_result, payload["artifacts"]
+                )
+                if derived_counts != payload["counts"]:
+                    raise ExecutionResultError("manifest counts differ from raw execution")
+                authority = _read_toml(root / "tools/ci/test-authority.toml")
+                targets = {
+                    item["id"]: (category, item)
+                    for category in ("integration_targets", "python_targets")
+                    for item in authority.get(category, [])
+                }
+                for target_id in proof.get("test_authority_targets", []):
+                    target_entry = targets.get(target_id)
+                    if target_entry is None:
+                        raise ExecutionResultError(f"unknown test authority target {target_id}")
+                    category, target = target_entry
+                    binary = target.get("target", Path(target["path"]).stem)
+                    owner = target.get("owner")
+                    if category == "integration_targets":
+                        covered = any(
+                            name.startswith(f"{owner}::{binary}$") for name in passed_names
+                        )
+                    else:
+                        covered = any(
+                            f".{binary}." in name or name.startswith(f"{binary}.")
+                            for name in passed_names
+                        )
+                    if not covered:
+                        raise ExecutionResultError(
+                            f"registered test target has no passing runner case: {target_id}"
+                        )
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                findings.append(
+                    Finding(manifest_path, f"execution result is not authoritative: {error}")
+                )
+    elif execution_result is not None:
+        findings.append(
+            Finding(manifest_path, "execution result is only valid for passed test proofs")
+        )
     dependencies = payload["dependency_receipts"]
     archive_stack = (_archive_stack or frozenset()) | {payload["proof_id"]}
     if [item["proof_id"] for item in dependencies] != proof["dependencies"]:

@@ -374,21 +374,23 @@ def build_manifest(
     checker: ModuleType,
     paired_checkout: Path | None,
 ) -> tuple[dict[str, Any], Path]:
-    _require_exact_keys(
-        terminal,
-        {
-            "status",
-            "counts",
-            "environment",
-            "daemon_binary",
-            "state_root_format",
-            "inputs",
-            "started_at",
-            "ended_at",
-            "artifacts",
-        },
-        label="terminal input",
-    )
+    required_terminal_keys = {
+        "status",
+        "counts",
+        "environment",
+        "daemon_binary",
+        "state_root_format",
+        "inputs",
+        "started_at",
+        "ended_at",
+        "artifacts",
+    }
+    missing = required_terminal_keys - set(terminal)
+    extra = set(terminal) - required_terminal_keys - {"execution_result"}
+    if missing or extra:
+        raise ManifestRefused(
+            f"terminal input keys differ: missing={sorted(missing)} extra={sorted(extra)}"
+        )
     status = terminal["status"]
     counts = terminal["counts"]
     if not isinstance(status, str) or status not in {"passed", "failed", "blocked", "not_run"}:
@@ -468,6 +470,8 @@ def build_manifest(
         "dependency_receipts": _resolve_dependencies(root, proof, proof_by_id, checker),
         "artifacts": resolved_artifacts,
     }
+    if "execution_result" in terminal:
+        payload["execution_result"] = terminal["execution_result"]
     return payload, output_path
 
 

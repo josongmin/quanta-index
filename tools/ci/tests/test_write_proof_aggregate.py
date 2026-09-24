@@ -154,13 +154,25 @@ def _build_fixture_root(tmp_path: Path, *, executable: bool) -> tuple[Path, dict
     shutil.copyfile(AGGREGATE_SCHEMA_PATH, root / "tools/ci/proof-aggregate.schema.json")
     registry = CHECKER._read_toml(registry_path)
     if executable:
+        source_catalog = CHECKER._read_toml(REPO_ROOT / "tools/ci/test-authority.toml")
+        source_targets = {
+            row["id"]: row
+            for category in ("integration_targets", "python_targets")
+            for row in source_catalog.get(category, [])
+        }
         target_ids = sorted(
             {target for proof in registry["proofs"] for target in proof["test_authority_targets"]}
         )
         (root / "tools/ci/test-authority.toml").write_text(
             "[local_scopes.fixture-all]\n"
             f"targets = {json.dumps(target_ids)}\n"
-            + "".join(f'[[integration_targets]]\nid = "{target}"\n' for target in target_ids),
+            + "".join(
+                "[[integration_targets]]\n"
+                f'id = "{target}"\n'
+                f'path = "{source_targets[target]["path"]}"\n'
+                f'owner = "{source_targets[target]["owner"]}"\n'
+                for target in target_ids
+            ),
             encoding="utf-8",
         )
         proof_recipes = []
@@ -265,6 +277,8 @@ def _write_dependency_manifests(
 ) -> None:
     release_host_digest_overrides = release_host_digest_overrides or {}
     proof_by_id = {proof["id"]: proof for proof in registry["proofs"]}
+    target_catalog = CHECKER._read_toml(root / "tools/ci/test-authority.toml")
+    target_by_id = {row["id"]: row for row in target_catalog.get("integration_targets", [])}
     source_snapshots: dict[tuple[Path, tuple[Path, ...], Path | None], dict] = {}
     paired_snapshots: dict[tuple[str, str], dict] = {}
     for proof_id in CHECKER.aggregate_proof_ids(registry):
@@ -328,6 +342,77 @@ def _write_dependency_manifests(
         evidence_archive = root / CHECKER.content_archive_relative_path("evidence", evidence_digest)
         evidence_archive.parent.mkdir(parents=True, exist_ok=True)
         evidence_archive.write_bytes(evidence.read_bytes())
+        result_artifacts = []
+        execution_result = None
+        result_count = 1
+        if proof["execution_mode"] == "test-authority":
+            inventory_suites = {}
+            events = []
+            targets = [target_by_id[target_id] for target_id in proof["test_authority_targets"]]
+            result_count = len(targets)
+            for target in targets:
+                package = target["owner"]
+                binary = Path(target["path"]).stem
+                metadata = {"crate": package, "test_binary": binary, "kind": "test"}
+                name = f"{package}::{binary}$passes"
+                inventory_suites[f"{package}::{binary}"] = {
+                    "package-name": package,
+                    "binary-name": binary,
+                    "kind": "test",
+                    "status": "listed",
+                    "testcases": {
+                        "passes": {"ignored": False, "filter-match": {"status": "matches"}}
+                    },
+                }
+                events.extend(
+                    [
+                        {"type": "suite", "event": "started", "test_count": 1, "nextest": metadata},
+                        {"type": "test", "event": "started", "name": name},
+                        {"type": "test", "event": "ok", "name": name},
+                        {
+                            "type": "suite",
+                            "event": "ok",
+                            "passed": 1,
+                            "failed": 0,
+                            "ignored": 0,
+                            "nextest": metadata,
+                        },
+                    ]
+                )
+            raw_root = evidence.parent
+            sources = {
+                "events": raw_root / f"{proof_id}.jsonl",
+                "inventory": raw_root / f"{proof_id}-inventory.json",
+            }
+            sources["events"].write_text(
+                "".join(json.dumps(event) + "\n" for event in events), encoding="utf-8"
+            )
+            sources["inventory"].write_text(
+                json.dumps({"test-count": result_count, "rust-suites": inventory_suites}),
+                encoding="utf-8",
+            )
+            for source in sources.values():
+                digest = _digest(source)
+                archive = root / CHECKER.content_archive_relative_path("evidence", digest)
+                archive.parent.mkdir(parents=True, exist_ok=True)
+                archive.write_bytes(source.read_bytes())
+                result_artifacts.append(
+                    {
+                        "source_path": source.relative_to(root).as_posix(),
+                        "path": archive.relative_to(root).as_posix(),
+                        "sha256": digest,
+                    }
+                )
+            execution_result = {
+                "schema_version": 1,
+                "runs": [
+                    {
+                        "format": "nextest-jsonl",
+                        "events": sources["events"].relative_to(root).as_posix(),
+                        "inventory": sources["inventory"].relative_to(root).as_posix(),
+                    }
+                ],
+            }
         payload = {
             "schema_version": 1,
             "proof_id": proof_id,
@@ -341,7 +426,13 @@ def _write_dependency_manifests(
                 "target": proof["target"],
                 "filter": proof["filter"],
             },
-            "counts": {"selected": 1, "executed": 1, "passed": 1, "failed": 0, "ignored": 0},
+            "counts": {
+                "selected": result_count,
+                "executed": result_count,
+                "passed": result_count,
+                "failed": 0,
+                "ignored": 0,
+            },
             "environment": {
                 "toolchain": "fixture",
                 "features": [],
@@ -378,8 +469,11 @@ def _write_dependency_manifests(
                     "path": evidence_archive.relative_to(root).as_posix(),
                     "sha256": evidence_digest,
                 }
-            ],
+            ]
+            + result_artifacts,
         }
+        if execution_result is not None:
+            payload["execution_result"] = execution_result
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
         manifest_bytes = (json.dumps(payload, sort_keys=True) + "\n").encode()
         manifest_path.write_bytes(manifest_bytes)
