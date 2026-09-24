@@ -3163,6 +3163,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         "admission_digest",
         "driver_source_closure_digest",
         "repetitions",
+        "system_orders",
         "base_seed",
         "query_warmup_passes",
         "query_repetitions_per_root",
@@ -3173,6 +3174,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     )
     if protocol_shape_valid:
         strategies = protocol_payload["strategies"]
+        system_orders = protocol_payload["system_orders"]
         root_digests = protocol_payload["query_protocol_sha256s"]
         protocol_shape_valid = (
             all(
@@ -3190,6 +3192,11 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             and protocol_payload["top_k"] > 0
             and type(protocol_payload["repetitions"]) is int
             and protocol_payload["repetitions"] > 0
+            and isinstance(system_orders, list)
+            and len(system_orders) == protocol_payload["repetitions"]
+            and all(
+                order in (["quanta", "semble"], ["semble", "quanta"]) for order in system_orders
+            )
             and type(protocol_payload["base_seed"]) is int
             and protocol_payload["base_seed"] >= 0
             and type(protocol_payload["query_warmup_passes"]) is int
@@ -3805,6 +3812,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                     raise RunError(f"contract {side} raw evidence refused: {exc}") from exc
                 if rebuilt != results:
                     raise RunError(f"contract {side} summary is not reproducible")
+                _verify_receipt_test_count(receipt, rebuilt, f"contract {side} receipt")
                 if receipt["revision"] != provenance_claims["quanta"]["source_sha"]:
                     raise RunError(f"contract {side} revision mismatch")
                 if (
@@ -3888,6 +3896,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 raise RunError(f"sdk raw evidence refused: {exc}") from exc
             if rebuilt_sdk != sdk_results:
                 raise RunError("sdk summary is not reproducible")
+            _verify_receipt_test_count(sdk_receipt, rebuilt_sdk, "sdk receipt")
             if sdk_receipt["revision"] != provenance_claims["quanta"]["source_sha"]:
                 raise RunError("sdk revision mismatch")
             if (
@@ -4061,6 +4070,16 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 perf_fail = ("host_contended", "host")
             elif not shared_protocol_ok:
                 perf_fail = (protocol_failure_reason, "provenance")
+            elif any(
+                order
+                != (
+                    protocol_payload["system_orders"][0]
+                    if index % 2 == 0
+                    else list(reversed(protocol_payload["system_orders"][0]))
+                )
+                for index, order in enumerate(protocol_payload["system_orders"])
+            ):
+                perf_fail = ("measurement_order_unverified", "provenance")
         if perf_fail is None:
             try:
                 quanta_routes_by_rep = []
@@ -4350,6 +4369,8 @@ def run_pair(spec: dict) -> int:
     if scope != "qualified" and "admission" in spec:
         raise RunError("spec.admission is valid only for a qualified capture")
     if scope == "qualified" and spec.get("claims", {}).get("speed") is True:
+        if spec.get("alternate_order", True) is not True:
+            raise RunError("qualified speed requires alternating system order")
         pack_payload = read_json(Path(spec["query_pack"]))
         tasks = pack_payload.get("tasks") if isinstance(pack_payload, dict) else None
         if not isinstance(tasks, list):
@@ -4564,6 +4585,7 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
         ),
         "driver_source_closure_digest": driver_closure_digest,
         "repetitions": repetitions,
+        "system_orders": [layout["order"] for layout in rep_layouts],
         "base_seed": _int(spec.get("seed", 0), "spec.seed"),
         "query_warmup_passes": _int(
             spec.get("query_warmup_passes", 1),
@@ -4986,6 +5008,11 @@ def _verify_receipt_inputs(receipt: dict, expected: dict[str, Path], where: str)
     wanted = {role: sha_file(path) for role, path in expected.items()}
     if observed != wanted:
         raise RunError(f"{where} raw input evidence mismatch")
+
+
+def _verify_receipt_test_count(receipt: dict, results: dict, where: str) -> None:
+    if receipt["test_event_count"] != results["executed"]:
+        raise RunError(f"{where} test_event_count differs from executed tests")
 
 
 def _verify_required_inventory(inventory: Path, role: str, receipt: dict) -> None:

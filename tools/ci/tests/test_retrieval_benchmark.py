@@ -1891,7 +1891,7 @@ def _counts_results(command, selected=10, executed=10, passed=10, failed=0):
     }
 
 
-def _receipt(command, results_bytes, revision, rail, raw_inputs):
+def _receipt(command, results_bytes, revision, rail, raw_inputs, test_event_count=10):
     authority_path = (
         Path(__file__).resolve().parents[3] / "benchmarks/retrieval/proof-required-tests.json"
     )
@@ -1917,7 +1917,7 @@ def _receipt(command, results_bytes, revision, rail, raw_inputs):
         "command": command,
         "evidence_path": "results.json",
         "evidence_sha256": ev.digest(results_bytes),
-        "test_event_count": 10,
+        "test_event_count": test_event_count,
         "source_closure": closure,
         "input_evidence": sorted(
             ({"role": role, "sha256": ev.digest(content)} for role, content in raw_inputs.items()),
@@ -2084,6 +2084,7 @@ def _full_receipts(commit, binary_digest):
             commit,
             "retrieval-contract-python",
             {"pytest-junit": py_raw, "pytest-inventory": py_inventory},
+            py_count,
         ),
         "contract_rust_results": rs_bytes,
         "contract_rust_raw": rust_raw,
@@ -2094,6 +2095,7 @@ def _full_receipts(commit, binary_digest):
             commit,
             "retrieval-contract-rust",
             {"nextest-jsonl": rust_raw, "nextest-inventory": rust_inventory},
+            rs_count,
         ),
         "sdk_results": sdk_bytes,
         "sdk_nextest_raw": sdk_nextest,
@@ -2109,6 +2111,7 @@ def _full_receipts(commit, binary_digest):
                 "runner-record": sdk_record,
                 "nextest-inventory": sdk_inventory,
             },
+            sdk_count,
         ),
     }
 
@@ -2126,6 +2129,7 @@ def _pair_stage(
     graded=True,
     embedder="potion-code",
     cache_regime="true_process_cold",
+    alternate_system_order=True,
 ):
     """Build a complete valid pair stage through the real driver functions."""
     work = tmp_path / "work"
@@ -2530,7 +2534,11 @@ def _pair_stage(
         rep_layouts.append(
             {
                 "rep": rep,
-                "order": ["quanta", "semble"],
+                "order": (
+                    ["quanta", "semble"]
+                    if rep % 2 == 0 or not alternate_system_order
+                    else ["semble", "quanta"]
+                ),
                 "query_protocol": str(protocol_path),
                 "quanta": {"whole_file": str(qpath)},
                 "quanta_phase_metrics": {"whole_file": str(qphase)},
@@ -2714,6 +2722,7 @@ def _pair_stage(
                 ),
                 "driver_source_closure_digest": driver_source_closure_digest,
                 "repetitions": repetitions,
+                "system_orders": [layout["order"] for layout in rep_layouts],
                 "base_seed": 0,
                 "query_warmup_passes": 1,
                 "query_repetitions_per_root": measurements,
@@ -2841,6 +2850,26 @@ def test_verdict_full_receipts_all_green(tmp_path):
     assert verdict["states"]["PAIR_VALID"] == "pass"
     assert verdict["failure_class"] == "none"
     assert verdict["missing_t_ids"] == []
+
+
+@pytest.mark.parametrize(
+    ("receipt_name", "state"),
+    [
+        ("contract_python_receipt", "CONTRACT_GREEN"),
+        ("contract_rust_receipt", "CONTRACT_GREEN"),
+        ("sdk_receipt", "SDK_PATH_GREEN"),
+    ],
+)
+def test_verdict_refuses_receipt_test_event_count_drift(tmp_path, receipt_name, state):
+    st = _pair_stage(tmp_path, receipts="full")
+    assert _stage_verdict(st)["states"][state] == "pass"
+    receipt_path = st["stage"] / "receipts" / f"{receipt_name}.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["test_event_count"] += 1
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    verdict = _stage_verdict(st)
+    assert verdict["states"][state] == "fail"
+    assert "test_event_count" in verdict["state_evidence"][state]["reason"]
 
 
 def test_verdict_lying_manifest_refused(tmp_path):
@@ -3149,6 +3178,33 @@ def test_qualified_speed_verdict_accepts_full_observation_protocol(tmp_path):
         "phase_and_process_tree_resources_verified"
     )
     assert verdict["state_evidence"]["PERF_QUALIFIED"]["proof_digest"] is not None
+
+
+def test_qualified_speed_replay_rejects_unalternated_system_order(tmp_path):
+    st = _pair_stage(
+        tmp_path,
+        repetitions=5,
+        qualified_speed_sample=True,
+        scope="qualified",
+        claims={"speed": True},
+        alternate_system_order=False,
+    )
+    assert all(layout["order"] == ["quanta", "semble"] for layout in st["rep_layouts"])
+    verdict = _stage_verdict(st)
+    assert verdict["states"]["PERF_QUALIFIED"] == "fail"
+    assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == ("measurement_order_unverified")
+
+
+def test_qualified_speed_entry_rejects_disabled_order_alternation():
+    with pytest.raises(pairrun.RunError, match="alternating system order"):
+        pairrun.run_pair(
+            {
+                "scope": "qualified",
+                "admission": {},
+                "claims": {"speed": True},
+                "alternate_order": False,
+            }
+        )
 
 
 def test_verdict_host_profile_fingerprint_is_enforced(tmp_path, monkeypatch):
@@ -3475,6 +3531,7 @@ def test_protocol_phase_metrics_reject_samples_longer_than_enclosing_phases(tmp_
     [
         ("top_k", 999),
         ("repetitions", 999),
+        ("system_orders", [[1, "quanta"]]),
         ("strategies", ["not-executed"]),
         ("searchd_expected_sha256", "0" * 64),
         ("semble_lockfile_sha256", "0" * 64),

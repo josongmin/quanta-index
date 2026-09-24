@@ -11,7 +11,7 @@ At `20bd03fc98b86ee4bfb3a8a808e940ba6e090a09`, the retrieval implementation was 
 | Finding | Reproduced on audited baseline | Implemented remediation; final proof still required |
 | --- | --- | --- |
 | F1 / T12–T14 | Renaming a valid staged pair without changing any file bytes turned `PAIR_VALID=pass` into `fail` on replay. | Relative capture provenance and successful-promotion fresh-process replay regression. |
-| F2 / T03/T11/T12/T17 | Seven mutations of recorded protocol pins retained `PAIR_VALID=pass`. | Closed 15-key protocol lock and independent frozen-input/capture binding; pin mutants now have rejection tests. |
+| F2 / T03/T11/T12/T17 | Seven mutations of recorded protocol pins retained `PAIR_VALID=pass`. | Closed 16-key protocol lock and independent frozen-input/capture binding; pin mutants now have rejection tests. |
 | F3 / T00–T11 | Partial/duplicate JUnit and incomplete nextest streams certified contract proof. | Complete Python/Rust/SDK identity inventories, terminal evidence checks and receipt-revision Git blob binding. |
 | F4 / T12–T13 | Two tasks repeated to 1,000 observations qualified speed; impossible raw duration was accepted. | Shared entry/replay eligibility and phase/sample containment regressions. |
 

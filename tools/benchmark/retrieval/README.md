@@ -192,7 +192,7 @@ keys: `repo`, `manifest`, `suite`, `query_pack`, `top_k`, `output_root`,
 | `semble_model_revision` | observed | pinned HF revision (drift fails) |
 | `quanta_model_dir` | none | explicit local model directory; required for a `potion-code` speed claim and counted separately from index storage |
 | `repetitions` | `1` | external reps on fresh state; qualified speed requires at least 5 |
-| `alternate_order` | `true` | alternate system order per rep |
+| `alternate_order` | `true` | alternate system order per rep; qualified speed rejects `false` |
 | `order` | `["quanta","semble"]` | base system order |
 | `baseline_route` | Semble route | report baseline |
 | `scope` | `exploratory` | `exploratory` or `qualified` |
@@ -273,9 +273,11 @@ re-derives every retained pin. The lock's retained keys are
 `suite_digest`, `query_pack_digest`, `corpus_manifest_digest`, `top_k`,
 `strategies`, `searchd_expected_sha256`, `semble_lockfile_sha256`,
 `host_profile_digest`, `admission_digest`, `driver_source_closure_digest`,
-`repetitions`, `base_seed`, `query_warmup_passes`,
+`repetitions`, ordered `system_orders`, `base_seed`, `query_warmup_passes`,
 `query_repetitions_per_root`, and ordered `query_protocol_sha256s`. Do not
 retain an unbound `spec_digest` without freezing its canonical source artifact.
+Qualified speed replay checks the recorded order alternates across roots; this
+is a driver-attested ordering claim, not an independent wall-clock chronology.
 At the audited baseline, a two-task fixture passed speed replay and impossible
 raw durations passed phase validation. Focused regressions now reject both;
 real qualified performance evidence remains pending.
