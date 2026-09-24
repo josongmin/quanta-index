@@ -311,7 +311,9 @@ impl SearchCorpusActiveHeadObservationV1 {
         head: Option<SearchCorpusActiveHeadV1>,
     ) -> Result<Self, &'static str> {
         if let Some(value) = &head {
-            value.validate_v1().map_err(|_| "invalid active head")?;
+            value
+                .validate_v1()
+                .map_err(|_validation_error| "invalid active head")?;
             if value.generation.lexical.repo_id != repo_id
                 || value.generation.lexical.revision_id != revision_id
             {
@@ -2588,7 +2590,7 @@ mod qi_act_01_tests {
         assert_eq!(candidate.validate_v1(), Ok(()));
 
         let request = SearchPlaneActivateSearchCorpusGenerationCasRequest {
-            candidate: candidate.clone(),
+            candidate,
             expected_active: Some(previous.clone()),
         };
         assert_eq!(request.validate_v1(), Ok(()));
@@ -2763,7 +2765,7 @@ mod qi_act_01_tests {
         let target = corpus_identity(10, "digest-10");
         let request = SearchPlaneRollbackSearchCorpusGenerationCasRequest {
             expected_active: expected_active.clone(),
-            target: target.clone(),
+            target,
         };
         assert_eq!(request.validate_v1(), Ok(()));
         let Ok(bytes) = encode(&request) else {

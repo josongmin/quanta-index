@@ -1732,7 +1732,7 @@ mod tests {
             request_id: 13,
             payload: SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(
                 SearchPlaneActivateSearchCorpusGenerationCasRequest {
-                    candidate: candidate.clone(),
+                    candidate,
                     expected_active: Some(previous.clone()),
                 },
             ),
@@ -1909,7 +1909,7 @@ mod tests {
             payload: SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(
                 SearchPlaneRollbackSearchCorpusGenerationCasRequest {
                     expected_active: expected_active.clone(),
-                    target: target.clone(),
+                    target,
                 },
             ),
         };
