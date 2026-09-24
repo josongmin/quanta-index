@@ -3050,7 +3050,6 @@ def test_verdict_matrix_tamper_and_native_disagreement(tmp_path, monkeypatch):
 
 
 def test_verdict_perf_frontier_and_gates(tmp_path, monkeypatch):
-    _allow_minimal_speed_fixture(monkeypatch, observations=None)
     st = _pair_stage(tmp_path, claims={"speed": True})
     verdict = _stage_verdict(st)
     assert verdict["states"]["PERF_QUALIFIED"] == "not_applicable"
@@ -3058,15 +3057,13 @@ def test_verdict_perf_frontier_and_gates(tmp_path, monkeypatch):
     st = _pair_stage(tmp_path / "qualified", scope="qualified", claims={"speed": True})
     verdict = _stage_verdict(st)
     assert verdict["states"]["PERF_QUALIFIED"] == "fail"
-    assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == (
-        "measurement_protocol_ineligible: "
-        "qualified speed requires at least 1000 warm observations per route"
-    )
+    assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == "observations_floor_unmet"
     monkeypatch.setattr(pairrun, "PILOT_OBSERVATIONS_FLOOR", 2)
     monkeypatch.setattr(pairrun, "FRESH_ROOTS_FLOOR", 1)
     verdict = _stage_verdict(st)
     assert verdict["states"]["PERF_QUALIFIED"] == "fail"
     assert "at least 20 frozen tasks" in verdict["state_evidence"]["PERF_QUALIFIED"]["reason"]
+    _allow_minimal_speed_fixture(monkeypatch)
     # Null timings fail a speed claim once floors hold.
     st = _pair_stage(tmp_path / "nulls", scope="qualified", claims={"speed": True})
     record_path = st["stage"] / "rep-00" / "quanta" / "strategy-00-whole_file" / "record.json"
