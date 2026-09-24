@@ -2,6 +2,17 @@
 
 Status: exact-pair release qualification staged.
 
+2026-09-24 local follow-up at Quanta `7dec5965` plus uncommitted
+`crates/quanta-index-repomap/src/store.rs`: the private terminal receipt
+constructor now rejects a nonpositive catalog sequence instead of emitting a
+successful receipt with sequence `0`. The exact unit test passed 1/1 and
+`./scripts/cargow test -p quanta-index-repomap --test candidate_activation_owner_v1`
+passed 19/19. `just fmt-check` passed. This closes only the local fail-closed
+conversion defect; it does not create a P11 cross-repo, deployment, activation,
+or rollback proof manifest. The `.ken` snapshot files became dirty during
+local verification and are excluded from this source claim pending ownership
+review.
+
 2026-09-24 source update: the local RepoMap mutation surface now has only
 source-digest-bound V2 requests/receipts across SDK, IPC, core ports, and
 store. The V2 activation identity is flat; V1 opcodes/direct-store methods

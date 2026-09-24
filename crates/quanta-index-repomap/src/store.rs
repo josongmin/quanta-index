@@ -10,8 +10,8 @@
 //! commit. A legacy V1 layout root (`activations/`/`snapshots/`
 //! directories) is never mutated here: every mutation is refused typed
 //! with `STATE_ROOT_FORMAT_UNSUPPORTED` before anything changes, and the
-//! legacy bytes/inodes/mtimes stay untouched for the P10 offline
-//! importer.
+//! legacy bytes/inodes/mtimes stay untouched for an explicit producer rebuild
+//! and data-retention decision.
 
 use std::{
     collections::BTreeMap,
@@ -524,7 +524,7 @@ impl RepoMapGenerationStore {
         let activation = self
             .catalog
             .repomap_activation_row(bundle.repo_id.as_str(), bundle.revision_id.as_str())?;
-        Ok(receipt(
+        receipt(
             activation
                 .as_ref()
                 .filter(|row| row.active)
@@ -533,7 +533,7 @@ impl RepoMapGenerationStore {
             activation.as_ref().map_or(0, |row| row.epoch),
             outcome.terminal_sequence,
             outcome.replayed,
-        ))
+        )
     }
 
     pub fn ingest_bundle_v2(
@@ -609,7 +609,7 @@ impl RepoMapGenerationStore {
                 0,
                 existing.terminal_sequence,
                 true,
-            );
+            )?;
             return Ok(terminal_publish_receipt_v2(
                 &request.bundle,
                 request.source_bundle_digest.clone(),
@@ -781,7 +781,7 @@ impl RepoMapGenerationStore {
                 },
             );
         }
-        Ok(receipt(
+        receipt(
             outcome
                 .prior_candidate_commitment
                 .map(CandidateCommitmentV1::from_bytes),
@@ -789,7 +789,7 @@ impl RepoMapGenerationStore {
             outcome.epoch,
             outcome.terminal_sequence,
             outcome.replayed,
-        ))
+        )
     }
 
     pub fn activate_generation_v2(
@@ -1087,13 +1087,37 @@ fn receipt(
     epoch: u64,
     terminal_sequence: i64,
     replayed: bool,
-) -> RepoMapMutationCommit {
-    RepoMapMutationCommit {
+) -> Result<RepoMapMutationCommit, CoreError> {
+    let terminal_sequence = u64::try_from(terminal_sequence)
+        .ok()
+        .filter(|sequence| *sequence > 0)
+        .ok_or_else(|| {
+            CoreError::Storage(
+                "repomap terminal receipt: catalog sequence must be positive".to_string(),
+            )
+        })?;
+    Ok(RepoMapMutationCommit {
         prior_candidate_commitment: prior.map(CandidateCommitmentV1::to_wire_string),
         new_candidate_commitment: new.to_wire_string(),
         activation_epoch: epoch,
-        terminal_sequence: u64::try_from(terminal_sequence).map_or(0, |sequence| sequence),
+        terminal_sequence,
         replayed,
+    })
+}
+
+#[cfg(test)]
+mod receipt_tests {
+    use super::receipt;
+    use quanta_index_contract::CandidateCommitmentV1;
+
+    #[test]
+    fn terminal_receipt_rejects_nonpositive_catalog_sequence() {
+        let commitment = CandidateCommitmentV1::from_bytes([7; 32]);
+        for sequence in [-1, 0] {
+            assert!(receipt(None, commitment, 0, sequence, false).is_err());
+        }
+        let valid = receipt(None, commitment, 0, 1, false).expect("positive sequence");
+        assert_eq!(valid.terminal_sequence, 1);
     }
 }
 

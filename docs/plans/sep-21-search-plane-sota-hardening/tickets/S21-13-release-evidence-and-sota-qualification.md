@@ -10,6 +10,15 @@ in source. P12A's exact-pair receipt and the P12Q release receipt are absent;
 P12Q remains staged in the registry. Code presence does not qualify the product
 or the release.
 
+2026-09-24 clean-source local checkpoint at Quanta
+`7dec59654564412d2265e5ee46339ae3218c756b`, before the later RepoMap
+store edit: `just proof-p12a-proof-infrastructure` exited 0, with
+test-authority lint OK, registry-only proof-authority lint reporting 26
+registered proofs and **zero validated manifests**, and 121/121 Python owner
+tests passing. This is a clean-Quanta-source infrastructure check only. It
+does not bind the Semantica source, a release daemon binary, or P11's handoff
+dependencies and therefore is not a P12A or P12Q release receipt.
+
 2026-09-24 dirty-source checkpoint at Quanta `563da185`: `just
 proof-p12a-proof-infrastructure` passed test-authority lint, registry-only
 proof-authority lint, and 121/121 Python owner tests. The registry lint
