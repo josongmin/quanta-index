@@ -241,12 +241,28 @@ repos:
         files: ^(Cargo\.toml|Cargo\.lock|crates/.*/(src|benches)/.*\.rs|crates/.*/Cargo\.toml)$
         stages: [pre-push]
 
-      - id: prompt-manager-tests
-        name: tooling tests
-        entry: bash -lc 'source scripts/quanta-index-env.sh && python3 -m pytest tools -q -o cache_dir="$PYTEST_CACHE_DIR"'
+      - id: precommit-scope-tests
+        name: pre-commit scope tests
+        entry: bash -lc 'source scripts/quanta-index-env.sh && python3 -m pytest tools/ci/tests/test_precommit_scopes.py -q -o cache_dir="$PYTEST_CACHE_DIR"'
         language: system
         pass_filenames: false
-        files: ^(pyproject\.toml|tools/.*|scripts/check_workspace_lints\.py)$
+        files: ^(\.pre-commit-config\.yaml|\.github/workflows/ci\.yml|Justfile|tools/ci/tests/test_precommit_scopes\.py)$
+        stages: [pre-push]
+
+      - id: prompt-manager-tests
+        name: tooling tests
+        entry: bash scripts/run-tooling-tests.sh
+        language: system
+        pass_filenames: false
+        files: ^(pyproject\.toml|tools/(?!ci/(?:semgrep/|tests/(?:test_semgrep_|test_precommit_scopes\.py$))).*|scripts/(?:check_workspace_lints\.py|run-tooling-tests\.sh))$
+        stages: [pre-push]
+
+      - id: semgrep-rule-tests
+        name: Semgrep rule counterexamples
+        entry: bash scripts/check-semgrep-rules.sh
+        language: system
+        pass_filenames: false
+        files: ^(tools/ci/semgrep/.*|tools/ci/tests/test_semgrep_.*\.py|scripts/check-semgrep-rules\.sh)$
         stages: [pre-push]
 
       - id: semgrep
@@ -254,5 +270,5 @@ repos:
         entry: bash scripts/run-semgrep.sh
         language: system
         pass_filenames: true
-        files: ^(crates/.*|scripts/.*|tools/.*|\.github/workflows/.*|pyproject\.toml|\.pre-commit-config\.yaml|\.semgrepignore)$
+        files: ^(crates/[^/]+/(?:src/.*|fuzz/fuzz_targets/.*)\.rs|benchmarks/[^/]+/src/.*\.rs|\.github/workflows/[^/]+\.ya?ml|tools/ci/semgrep/.*|scripts/run-semgrep\.sh|\.semgrepignore)$
         stages: [pre-push]

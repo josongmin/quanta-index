@@ -103,8 +103,23 @@ def test_scoped_repository_lints_skip_unrelated_docs_and_cover_their_inputs() ->
         ),
         "semgrep": (
             "crates/quanta-index-core/src/lib.rs",
+            "crates/quanta-index-core/fuzz/fuzz_targets/silent.rs",
+            "benchmarks/retrieval/src/lib.rs",
+            ".github/workflows/ci.yml",
+            "tools/ci/semgrep/rules.yml",
             "scripts/run-semgrep.sh",
             ".semgrepignore",
+        ),
+        "semgrep-rule-tests": (
+            "tools/ci/semgrep/rules.yml",
+            "tools/ci/tests/test_semgrep_policy.py",
+            "scripts/check-semgrep-rules.sh",
+        ),
+        "precommit-scope-tests": (
+            ".pre-commit-config.yaml",
+            ".github/workflows/ci.yml",
+            "Justfile",
+            "tools/ci/tests/test_precommit_scopes.py",
         ),
     }
 
@@ -116,6 +131,49 @@ def test_scoped_repository_lints_skip_unrelated_docs_and_cover_their_inputs() ->
         for path in positive_paths:
             assert pattern.search(path), (hook_id, path)
         assert not pattern.search("docs/analysis/unrelated.md"), hook_id
+
+
+def test_semgrep_counterexamples_have_one_test_owner() -> None:
+    config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    hooks = {
+        hook["id"]: hook
+        for repo in config["repos"]
+        if repo["repo"] == "local"
+        for hook in repo["hooks"]
+    }
+    generic = re.compile(hooks["prompt-manager-tests"]["files"])
+    dedicated = re.compile(hooks["semgrep-rule-tests"]["files"])
+    for path in (
+        "tools/ci/semgrep/rules.yml",
+        "tools/ci/tests/test_semgrep_policy.py",
+    ):
+        assert not generic.search(path), path
+        assert dedicated.search(path), path
+    assert generic.search("scripts/run-tooling-tests.sh")
+    assert not generic.search("tools/ci/tests/test_precommit_scopes.py")
+    assert not generic.search(".pre-commit-config.yaml")
+    scoped = re.compile(hooks["precommit-scope-tests"]["files"])
+    assert scoped.search("tools/ci/tests/test_precommit_scopes.py")
+    assert scoped.search(".pre-commit-config.yaml")
+    assert "tools/ci/tests/test_precommit_scopes.py" in hooks["precommit-scope-tests"]["entry"]
+    scanner = re.compile(hooks["semgrep"]["files"])
+    for irrelevant in (
+        "scripts/check-semgrep-rules.sh",
+        "crates/quanta-index-core/tests/operation_journal.rs",
+        "benchmarks/retrieval/tests/fixture.rs",
+        "tools/ci/tests/test_semgrep_policy.py",
+        "tools/ci/tests/test_precommit_scopes.py",
+        "pyproject.toml",
+        ".pre-commit-config.yaml",
+    ):
+        assert not scanner.search(irrelevant), irrelevant
+    assert hooks["semgrep-rule-tests"]["entry"] == "bash scripts/check-semgrep-rules.sh"
+    runner = (ROOT / "scripts/run-tooling-tests.sh").read_text(encoding="utf-8")
+    assert "--ignore=tools/ci/tests/test_semgrep_policy.py" in runner
+    justfile = (ROOT / "Justfile").read_text(encoding="utf-8")
+    verify = justfile.split("verify:\n", 1)[1].split("\n\n", 1)[0]
+    assert verify.count("@just semgrep-rule-tests") == 1
+    assert verify.count("@just semgrep\n") == 1
 
 
 def test_wire_inventory_scope_includes_tool_format_dependencies() -> None:
@@ -180,13 +238,15 @@ def test_semgrep_keeps_code_scope_but_expands_policy_changes(tmp_path: Path) -> 
     assert scan_targets(*code_paths) == code_paths
     assert scan_targets() == ["."]
     for policy_path in (
-        ".pre-commit-config.yaml",
         ".semgrepignore",
-        "pyproject.toml",
         "scripts/run-semgrep.sh",
         "tools/ci/semgrep/rules.yml",
     ):
         assert scan_targets(*code_paths, policy_path) == ["."]
+        assert scan_targets(*code_paths, f"./{policy_path}") == ["."]
+        assert scan_targets(*code_paths, str(ROOT / policy_path)) == ["."]
+    for unrelated in (".pre-commit-config.yaml", "pyproject.toml"):
+        assert scan_targets(*code_paths, unrelated) == [*code_paths, unrelated]
 
 
 def test_ci_precommit_skips_only_hooks_owned_by_dedicated_full_jobs() -> None:
@@ -262,7 +322,10 @@ def test_proof_authority_ci_has_one_static_owner_and_one_test_owner() -> None:
     prompt_commands = "\n".join(
         str(step.get("run", "")) for step in jobs["prompt-manager"]["steps"]
     )
-    assert "python -m pytest tools" in prompt_commands
+    assert "bash scripts/run-tooling-tests.sh" in prompt_commands
+    semgrep_commands = "\n".join(str(step.get("run", "")) for step in jobs["semgrep"]["steps"])
+    assert semgrep_commands.count("bash scripts/check-semgrep-rules.sh") == 1
+    assert "bash scripts/run-semgrep.sh" in semgrep_commands
 
 
 def test_ci_python_jobs_install_only_their_runtime_imports() -> None:

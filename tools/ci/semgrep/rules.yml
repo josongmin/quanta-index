@@ -39,10 +39,11 @@ rules:
         - "**/tests/**"
         - "**/benches/**"
     patterns:
+      # Cheap lexical prerequisite for every AST alternative below. It keeps
+      # the expensive Rust matcher away from files without an or_else call.
+      - pattern-regex: '\bor_else\b'
       - pattern-either:
-          - pattern: $E.or_else(|_| Ok($DEFAULT))
           - pattern: $E.or_else(|$_E| Ok($DEFAULT))
-          - pattern: $E.or_else(|_| { ...; Ok($DEFAULT) })
           - pattern: $E.or_else(|$_E| { ...; Ok($DEFAULT) })
 
   - id: rust-no-debug-assertions-divergence
@@ -132,6 +133,8 @@ rules:
           }
 
   - id: rust-no-ready-on-failed-structural-precondition
+    # The semantic-outcome AST lint owns enum match-arm projections, not this
+    # let-else early-return shape.
     message: |
       Do not advertise `StructuralReadiness::Ready` when a prerequisite
       `Result` failed. Return a fail-closed readiness state such as
@@ -149,6 +152,8 @@ rules:
   # lq-ranker path. Guard actual IR duplication at its producer/consumer boundary.
 
   - id: rust-no-search-plane-direct-ciborium
+    # The hexagonal dependency lint does not restrict external dependencies
+    # of search-plane; this source-level codec boundary remains independent.
     message: |
       `quanta-index-search-plane` must not name `ciborium` directly on
       production paths. Route CBOR encode/decode through `quanta-index-ipc`.

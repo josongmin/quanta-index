@@ -899,6 +899,9 @@ verify-rust-heavy:
 semgrep:
     bash scripts/run-semgrep.sh
 
+semgrep-rule-tests:
+    bash scripts/check-semgrep-rules.sh
+
 actionlint:
     bash scripts/run-actionlint.sh
 
@@ -912,7 +915,7 @@ python-format-check:
     source scripts/quanta-index-env.sh && python3 -m ruff format --check .
 
 python-test:
-    source scripts/quanta-index-env.sh && python3 -m pytest tools -q -o cache_dir="$PYTEST_CACHE_DIR"
+    bash scripts/run-tooling-tests.sh
 
 agent-output-validate output:
     source scripts/quanta-index-env.sh && python3 tools/ci/agent/validate_agent_output.py {{output}}
@@ -933,6 +936,7 @@ verify:
     @just verify-rust
     @just actionlint
     @just shell-lint
+    @just semgrep-rule-tests
     @just semgrep
     @just rust-semantic-outcomes
     @just python-lint
