@@ -4,7 +4,7 @@
 Subcommands:
   quanta    run the Rust SDK runner per strategy from a pinned spec
   pair      quanta + Semble sequential capture, merge, score, verdict
-  merge     deterministically merge per-system v2 records into one record
+  merge     deterministically merge per-system v3 records into one record
   verdict   re-score immutable records and emit the verdict artifact (T13)
   host-probe  emit the host check-record (identity, load, thermal/frequency)
 

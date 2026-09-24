@@ -174,6 +174,15 @@ def test_ndcg_credits_each_gold_span_once_even_when_chunks_overlap():
     assert ev.ndcg_at_k(list(reversed(candidates)), [label], 10) == pytest.approx(1.0)
 
 
+def test_zero_grade_cannot_be_gold_in_suite_schema_or_evaluator(tmp_path):
+    repo, suite, run, suite_path, runner_path, _files = fixture_v3(tmp_path)
+    suite["tasks"][0]["gold"][0]["grade"] = 0
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(suite, _load_schema("suite.schema.json"))
+    with pytest.raises(ev.EvidenceError, match="gold grade"):
+        record_v3(repo, suite, run, suite_path, runner_path)
+
+
 def test_current_bcy_budget_prefix_and_out_of_budget_not_credited(tmp_path):
     repo = tmp_path / "source"
     repo.mkdir()
@@ -824,6 +833,7 @@ def test_qualified_uncertainty_contract_rejects_incomplete_or_forged_strata(monk
             "file hash mismatch",
         ),
         (lambda s, r, f: s["tasks"][0]["gold"][0].update(grade=5), "grade"),
+        (lambda s, r, f: s["tasks"][0]["gold"][0].update(grade=0), "gold grade"),
         (lambda s, r, f: s["tasks"][0]["gold"][0].update(grade="high"), "grade"),
         (lambda s, r, f: s["file_universe"][0].update(file_sha256="0" * 64), "file universe"),
         (lambda s, r, f: s["tasks"][1].update(answerable=True), "answerable/gold mismatch"),

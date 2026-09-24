@@ -87,6 +87,9 @@ converting them in the evaluator.
 
 The suite requires a `comparison_contract` with `top_k`, `tokenizer`,
 `tokenizer_budget_version`, `output_unit_policy`, and the byte-span unit.
+Gold spans may carry grades 1–3 only. A grade-0 (irrelevant) judgment is not
+a gold span: including it would mark a task answerable and award Recall/BCY
+credit despite zero NDCG gain. No-answer tasks have an empty `gold` list.
 The blind pack echoes this contract without train rows, labels, grades, or
 answerability bits. The runner record echoes the same contract, binds each
 route to a capture, and binds captures to binary, generation, receipt,
