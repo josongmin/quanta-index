@@ -1,5 +1,7 @@
 # Copy/paste prompt — P01A Canonical Identity, Codec and Error Authority
 
+> Historical lane prompt. Recheck current source, registry, and [residual plan](../FINAL-RESIDUAL-EXECUTION-PLAN.md) before use. Do not treat this text as a current execution order or proof receipt.
+
 당신은 S21-01 phase A owner다. 먼저 repo root 기준
 `docs/plans/sep-21-search-plane-sota-hardening/tickets/prompts/COMMON-EXECUTION-CONTRACT.md`와 같은 디렉터리의
 `README.md`를 읽고 그대로 적용한다. corrected P00 checkpoint, handoff, `p00-authority-freeze` manifest가 모두 current
@@ -41,9 +43,9 @@ lane은 live persistence를 바꾸지 않으며 S21-01 전체 closure가 아니�
 1. `RepoId`/`RevisionId`의 public unchecked construction과 serde bypass를 제거한다. 하나의 validator를
    constructor/TryFrom/FromStr/serde가 공유하고 decode 후 normalize하지 않는다.
 2. `RepositoryRevisionIdentityV1`, `LogicalGenerationIdentityV1`, `ArtifactIdentityV1`를 amended ADR의 exact distinct
-   domain framing으로 구현한다. 기존 `GenerationStorageKeyV1`는 현재 live lexical/semantic layout의 legacy key이므로
-   P01A에서 digest/path semantics를 바꾸거나 제거하지 않는다. P03 live cutover 후 P10 importer 외 runtime consumer를
-   제거한다. 새 canonical identity가 기존 key로 delegate하는 역방향 권한도 금지한다.
+   domain framing으로 구현한다. 기존 `GenerationStorageKeyV1`는 historical lexical/semantic layout의 legacy key이므로
+   P01A에서 digest/path semantics를 바꾸거나 제거하지 않는다. P03 live cutover 후 runtime consumer를
+   제거하고 old roots를 typed refusal한다. 새 canonical identity가 기존 key로 delegate하는 역방향 권한도 금지한다.
 3. `CandidateCommitmentV1`, `CandidateObjectDigestV1`, `CandidateObjectAddressV1`, canonical candidate envelope와 fixed
    fanout grammar를 pure type/codec/path function으로 구현한다. human identity는 path component가 아니다.
 4. `QuarantineIncidentV1` codec/address 함수를 구현한다. caller-supplied positive state-root-global sequence가

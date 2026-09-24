@@ -154,7 +154,7 @@ Required structural correction:
 | release qualification is one boolean | code/deploy/activate/rollback verdicts are independent |
 | P01 owns live layout and quarantine | P01A owns pure codec/error/security only; P03 owns S21-01B live cutover |
 | quarantine can mint a local incident ID | P02B global event sequence plus P03 catalog-first crash protocol |
-| runtime removes legacy activation bytes | P03 refuses without mutation; P10 offline importer alone transforms/deletes |
+| runtime removes legacy activation bytes | P03 refuses without mutation; current policy also refuses old roots rather than importing them |
 | every lane validates all old handoffs | immediate predecessor only; P02I validates fork; P12A builds and P12Q validates transitive DAG |
 | dependency validation is P12 evidence | P12A aggregate writer/verdict producer must emit receipt; P12Q issues the P12 manifest |
 

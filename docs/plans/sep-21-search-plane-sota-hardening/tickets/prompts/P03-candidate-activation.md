@@ -1,5 +1,7 @@
 # Copy/paste prompt — P03 Live Layout, Quarantine, Candidate and Activation Cutover
 
+> Historical lane prompt. Recheck current source, registry, and [residual plan](../FINAL-RESIDUAL-EXECUTION-PLAN.md) before use. Do not treat this text as a current execution order or proof receipt.
+
 당신은 S21-01B/S21-02 owner다. repo root 기준 prompts의 `COMMON-EXECUTION-CONTRACT.md`와 `README.md`를 먼저
 읽고 적용한다. P02I integration commit/handoff와 같은 clean HEAD에서 생성한 P02A/P02B proofs가 모두 일치할 때만
 시작한다. 하나라도 없으면 shim을 만들지 말고 `BLOCKED`다.
@@ -40,7 +42,7 @@ SQLite catalog를 visibility와 incident-event의 sole authority로 만들고 fi
    `nlink == 1` 검증을 사용한다.
 4. runtime `RepoMapActivationRecordV1`, `activations` field/directory creation, scan/codec/persist/reconciliation을 삭제한다.
    기존 legacy directory를 runtime에서 변환·삭제하지 않는다. V1 root는 mutation 전에
-   `SearchPlaneErrorCodeV2::StateRootFormatUnsupported`; P10 offline importer만 legacy artifact를 처리한다.
+   `SearchPlaneErrorCodeV2::StateRootFormatUnsupported`; legacy artifact는 변환하지 않는다.
 5. catalog commit 뒤에만 memory registry를 publish한다. registry는 cache다.
 6. same logical generation/same commitment는 original receipt replay, different commitment는
    `SearchPlaneErrorCodeV2::CandidateCommitmentConflict`다.
@@ -65,7 +67,7 @@ SQLite catalog를 visibility와 incident-event의 sole authority로 만들고 fi
 - file/catalog dual authority, open-time winner selection, publish implicit activation, repair implicit reactivation
 - optional digest ACK, partial materializer input, raw candidate bundle reinterpretation
 - basename quarantine, `.reason` sidecar, incident overwrite, retry 시 sequence/time 재생성
-- runtime legacy directory cleanup/migration 또는 P10 importer 선점
+- runtime legacy directory cleanup/migration 또는 old-root mutation
 
 ## DoD/proof
 

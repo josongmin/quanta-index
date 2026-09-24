@@ -1,5 +1,7 @@
 # Copy/paste prompt — P09 Control Authorization, Readiness and Observability
 
+> Historical lane prompt. Recheck current source, registry, and [residual plan](../FINAL-RESIDUAL-EXECUTION-PLAN.md) before use. Do not treat this text as a current execution order or proof receipt.
+
 당신은 S21-10 owner다. 먼저 repo root 기준 `docs/plans/sep-21-search-plane-sota-hardening/tickets/prompts/`
 아래 `COMMON-EXECUTION-CONTRACT.md`와 `README.md`를 읽고 그대로 적용한다. immediate P08 supervisor handoff가 start
 HEAD와 exact match하고 P02B operation-status contract/schema가 current tracked source에 보존될 때만 시작한다.

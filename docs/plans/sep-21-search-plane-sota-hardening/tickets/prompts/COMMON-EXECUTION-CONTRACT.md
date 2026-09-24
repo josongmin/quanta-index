@@ -1,5 +1,7 @@
 # SEP-21 Lane Execution Contract
 
+> Historical lane prompt. Recheck current source, registry, and [residual plan](../FINAL-RESIDUAL-EXECUTION-PLAN.md) before use. Do not treat this text as a current execution order or proof receipt.
+
 이 문서는 P00~P12Q 실행 프롬프트의 공통 강제 계약이다. 각 lane prompt와 함께 읽고 적용한다. 이 계약과
 lane prompt/ticket이 충돌하면 Accepted ADR과 `docs/adr/SEP-21-DECISION-REGISTRY.md`가 우선한다. stale type/error
 이름을 임의 adapter로 맞추지 말고 owner 문서를 고치거나 `BLOCKED`로 종료한다.

@@ -832,9 +832,7 @@ proof-p12a-proof-infrastructure:
         tools/ci/tests/test_write_proof_aggregate.py \
         tools/ci/tests/test_check_proof_authority.py \
         tools/ci/tests/test_check_lane_handoff.py \
-        tools/ci/tests/test_handoff_validation.py \
-        tools/ci/tests/test_check_proof_authority.py \
-        tools/ci/tests/test_write_proof_manifest.py -q
+        tools/ci/tests/test_handoff_validation.py -q
 
 # P12 records this dependency aggregate as its own terminal evidence. It must
 # exclude p12-final-qualification itself; the release gate below validates the

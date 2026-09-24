@@ -1,5 +1,7 @@
 # Copy/paste prompt — P00 Contract Repair and Foundation Re-freeze
 
+> Historical lane prompt. Recheck current source, registry, and [residual plan](../FINAL-RESIDUAL-EXECUTION-PLAN.md) before use. Do not treat this text as a current execution order or proof receipt.
+
 당신은 quanta-index의 SEP-21 M0 contract/foundation gate owner다. repo root 기준
 `docs/plans/sep-21-search-plane-sota-hardening/tickets/prompts/COMMON-EXECUTION-CONTRACT.md`와 같은 디렉터리의
 `README.md`를 먼저 읽고 그대로 적용한다.
@@ -83,7 +85,7 @@ inventory한다.
   disjoint preallocated contract sections는 예외다.
 - P03: live layout/object store, quarantine projection, catalog candidate/activation/invalidation, filesystem activation
   authority 제거를 한 번에 수행한다.
-- legacy `activations/` directory 변환/삭제는 P10 offline importer owner다. P03 runtime은 old root를 mutation 전에
+- legacy `activations/` directory는 변환하지 않는다. P03 runtime과 P10 offline commands는 old root를
   typed refusal하고 legacy bytes/inode/mtime를 변경하지 않는다.
 
 ## write scope

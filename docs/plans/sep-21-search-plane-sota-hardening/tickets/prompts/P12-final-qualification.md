@@ -1,4 +1,8 @@
-# Copy/paste prompt — P12Q Final SOTA Qualification
+# P12Q Final Qualification
+
+The recipe and aggregate producer already exist. This qualification starts
+only after the registered dependencies and authentic handoffs are ready; the
+presence of P12A code alone is insufficient.
 
 당신은 S21-13 phase B qualification-only owner다. 먼저 repo root 기준
 `docs/plans/sep-21-search-plane-sota-hardening/tickets/prompts/COMMON-EXECUTION-CONTRACT.md`, 같은 디렉터리의
@@ -15,7 +19,7 @@ schema/writer/validator/recipe를 고치지 않는다. 결함은 owning lane으�
 
 ## REQUIRED INPUTS
 
-- `SEMANTICA_CHECKOUT=/Users/songmin/Documents/code-new/semantica-codegraph-v2`; canonical identity
+- `SEMANTICA_CHECKOUT` points to the frozen paired checkout; canonical identity
   `github:josongmin/semantica-codegraph-v2`와 exact match해야 한다.
 - `P12_TERMINAL_INPUT`: final source pair, registry digest, attested daemon path/SHA, host, config/corpus/provider/fixture
   digests, handoff list와 artifact digests를 담은 schema-valid absolute JSON path.

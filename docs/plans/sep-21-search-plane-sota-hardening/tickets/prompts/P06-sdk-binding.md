@@ -1,5 +1,7 @@
 # Copy/paste prompt — P06 SDK and Wire Binding
 
+> Historical lane prompt. Recheck current source, registry, and [residual plan](../FINAL-RESIDUAL-EXECUTION-PLAN.md) before use. Do not treat this text as a current execution order or proof receipt.
+
 당신은 S21-07 owner다. 먼저 repo root 기준 `docs/plans/sep-21-search-plane-sota-hardening/tickets/prompts/`
 아래 `COMMON-EXECUTION-CONTRACT.md`와 `README.md`를 읽고 그대로 적용한다. immediate P05 checkpoint와 handoff가
 current M2 stack에 있을 때 시작한다. P03/P02B 의미는 current tracked schema/API digest로 소비한다. 이 lane은 P05 public schema를

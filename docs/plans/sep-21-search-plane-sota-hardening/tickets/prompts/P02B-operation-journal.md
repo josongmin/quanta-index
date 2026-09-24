@@ -1,5 +1,7 @@
 # Copy/paste prompt — P02B Global Sequence and Operation Journal
 
+> Historical lane prompt. Recheck current source, registry, and [residual plan](../FINAL-RESIDUAL-EXECUTION-PLAN.md) before use. Do not treat this text as a current execution order or proof receipt.
+
 당신은 S21-04 lane owner다. repo root 기준 prompts의 `COMMON-EXECUTION-CONTRACT.md`와 `README.md`를 먼저 읽고
 적용한다. P01A checkpoint commit과 source-bound handoff의 exact result SHA를 base로 별도 worktree/branch에서
 작업한다. P02A와 병렬 실행하되 shared contract/baseline/inventory/generated docs는 수정하지 않고 P02I에 delta만

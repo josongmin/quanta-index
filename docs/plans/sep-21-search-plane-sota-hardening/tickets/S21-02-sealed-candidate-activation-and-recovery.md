@@ -95,36 +95,19 @@ candidate commitment, pointer envelope, state machine, recovery oracle을 한 me
 
 ## Final authority boundary
 
-The P10 importer reference below is historical; the current prerelease policy
-is typed legacy-root refusal plus rebuild, as recorded in the residual plan.
-
-2026-09-24 static residual: the current flat
-`RepoMapActivateGenerationRequestV2` binds target candidate axes but has no
-expected-current-active identity; `SqliteCatalog::activate_repomap_candidate`
-compares target commitment and then supersedes the current head in its
-transaction. The phrase "content-bound CAS" in the catalog method describes
-target binding, **not** the expected-active CAS required above. Add one typed
-prior-head token to the existing V2 request and compare it against the
-catalog row before sequence allocation in that same transaction. Preserve
-exact-active ACK-loss replay. A stale request for an older still-sealed
-candidate must leave head, epoch, sequence and query unchanged; a deliberate
-rollback with the correct prior token may activate an older candidate. Do not
-enforce numeric generation monotonicity or add a second activation authority.
-The current `activated_generation_for` memory projection is not a full
-expected-active token. If callers can race, expose one read-only catalog-row
-projection through the existing control/SDK route and persist the acquired
-expectation with the producer's durable intent; replay must retain the original
-expectation rather than refresh it after a conflict.
-An exact-active replay must also match the **persisted original prior-head
-expectation** (or canonical request digest), not only the current target
-commitment. Version/self-digest the changed activation row and refuse old
-live format; a mismatched replay allocates no sequence and mutates no row.
+The current V2 activation request carries `expected_active`; the catalog
+compares it with the active row before sequence allocation and checks the
+persisted prior expectation on exact-active replay. See
+`crates/quanta-index-contract/src/repomap/terminal_receipt_v2.rs` and
+`crates/quanta-index-catalog/src/candidate.rs`. This code is not a paired
+producer or release receipt. P10 no longer imports old roots; it provides
+current-format backup/restore and typed legacy refusal.
 
 - SQLite catalog의 `repomap_candidate_v1`과 `repomap_activation_v1`만 candidate/activation visibility를
   판정한다. `persistence.rs`는 immutable candidate object bytes만 저장한다.
 - runtime의 `activations/` file read/write와 boot-time file scan authority를 삭제한다. 두 durable authority를
   reconcile하는 코드는 만들지 않는다. P03는 V1 root를 mutation 전에 refuse하며 legacy directory의
-  bytes/inode/mtime를 바꾸지 않는다. legacy parsing/transformation/deletion은 P10 offline importer만 소유한다.
+  bytes/inode/mtime를 바꾸지 않는다. Old roots remain unsupported and require an explicit producer rebuild decision.
 - `repomap_candidate_v1`은 logical key `UNIQUE`, candidate commitment, object address, schema/profile,
   terminal sequence, row digest를 가진다.
 - `repomap_activation_v1`은 exact candidate commitment, monotonic activation epoch, expected-active CAS,

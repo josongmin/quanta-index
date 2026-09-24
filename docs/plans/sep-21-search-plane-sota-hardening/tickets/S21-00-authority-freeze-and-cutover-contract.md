@@ -37,7 +37,7 @@ Depends on: none
 - ADR: read-view and continuation semantics
 - ADR: process supervision and shutdown semantics
 - wire/persisted consumer inventory update proposal
-- legacy state inventory with importer/rebuild/discard class
+- legacy state inventory with retained-data and producer-rebuild decisions
 - source-bound free-form error inventory와 closed-table migration contract. Final exact accepted-code table은 P01A가
   free-form production path를 0으로 만든 뒤 생성하며 P00이 존재하지 않는 table을 허위로 동결하지 않음
 - finding-to-ticket-to-proof ledger
@@ -115,7 +115,7 @@ ADR와 breaking cutover contract가 frozen된 뒤 owner implementation을 시작
 | terminal sequence scope | one positive state-root-global transactional `catalog_sequence_v2` stream | S21-02, S21-04, S21-11 |
 | generic event authority | allocator + `catalog_sequence_event_v2` + domain row가 one transaction; restore는 모든 event/domain high-water를 reconcile | S21-02, S21-04, S21-11 |
 | quarantine crash protocol | P03 catalog-first exact-envelope commit → immutable projections/fsync → unlink/source-dir fsync; retry는 time/sequence 재사용 | S21-01B, S21-02 |
-| lane split | P01A pure identity/codec/error/security; P03 live layout/quarantine/activation; P10 legacy-only importer | S21-01, S21-02, S21-11 |
+| lane split | P01A pure identity/codec/error/security; P03 live layout/quarantine/activation; P10 current-format backup/restore and typed old-root refusal | S21-01, S21-02, S21-11 |
 | handoff validation | canonical lane/ticket/proof/status, exact Git write set, immutable manifest archive와 current-clean source/result ancestry를 semantic validator가 검사; immediate predecessor만 매 lane validate; P02I는 P02A/P02B 둘; P12A가 complete transitive validator를 만들고 P12Q가 실행 | P01-P12Q |
 | historical proof archive | domain-versioned `{source,source_pair}` digest와 manifest-byte digest로 indexed create-new leaf 발급; evidence/binary도 content-addressed archive를 사용하고 dependency edge는 exact archive path/digest만 사용 | P01-P12Q |
 | aggregate receipt | P12A schema/writer/verdict producer/final recipe가 aggregate artifact를 발행하고 P12Q가 terminal manifest를 발급; dependency checker alone 불충분 | S21-13B |

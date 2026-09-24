@@ -1,11 +1,14 @@
 # S21-13 — Release Evidence and SOTA Qualification
 
-Status: `planned`
+Status: infrastructure implemented; final qualification blocked.
 
 Phase A status: `done` for the M0 foundation gate. Registry-driven atomic manifest production, staged/unstaged/
 Git-visible-untracked source binding, conditional non-binary semantics, exact-pair binding, blocking P00 validation
-and the fail-closed aggregate release command are implemented. Phase B remains `planned` and depends on S21-01
-through S21-12; no product/runtime/release qualification is implied by Phase A.
+and the fail-closed aggregate release command are implemented. The P12A aggregate
+schema, writer, validator, handoff-DAG checks, and final recipe are also present
+in source. P12A's exact-pair receipt and the P12Q release receipt are absent;
+P12Q remains staged in the registry. Code presence does not qualify the product
+or the release.
 
 Depends on: phase A depends on S21-00; phase B depends on S21-01 through S21-12
 
@@ -98,8 +101,10 @@ target before claiming its proof. Empty future target lists are not evidence and
 
 ### Phase B — final aggregate
 
-Phase B는 `P12A → P12Q` 두 직렬 lane이다. P12A가 아래 aggregate infrastructure를 구현하고 checkpoint를 만든다.
-P12Q는 그 clean result에서 source 수정 없이 전체 proof를 실행·수집하고 terminal verdict/manifest를 발급한다.
+Phase B는 `P12A → P12Q` 두 직렬 proof lane이다. P12A infrastructure는 구현돼 있지만
+현재 exact-pair manifest가 없다. P11 source-pair dependency와 P12A handoff를
+검증한 뒤에만 P12A receipt를 발급한다. P12Q는 전체 final-source proof를
+실행·수집하고 terminal verdict/manifest를 발급한다.
 
 - final clean source에서 동일 release daemon binary를 모든 process/cross-repo proof에 사용한다.
 - mandatory family 전부와 deployment/activation/rollback evidence를 aggregate하고 누락/실패/skipped/stale를

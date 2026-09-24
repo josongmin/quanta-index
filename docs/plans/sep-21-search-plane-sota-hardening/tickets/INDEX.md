@@ -1,10 +1,9 @@
 # SEP-21 Search Plane SOTA Hardening — Ticket Index
 
-Status: implementation and qualification remain open. Historical owner proofs
-do not establish current-source or release closure. See the
-[execution progress ledger](EXECUTION-PROGRESS.md) for the inspected state and
-remaining owner work. Tracked docs do not embed a result SHA; validated
-handoffs own it.
+Status: implementation and qualification remain separate. Historical owner
+proofs do not establish current-source or release closure. Use the
+[execution evidence index](EXECUTION-PROGRESS.md) to inspect the live result.
+Tracked docs do not embed a result SHA; validated receipts own it.
 
 P10 update (2026-09-24): the prerelease breaking decision retires
 `migrate-state` and any old-root success path. Historical migration tickets
@@ -26,23 +25,12 @@ Authority inputs:
 - [copy/paste lane prompt runbook](prompts/README.md)
 - [execution progress ledger](EXECUTION-PROGRESS.md)
 
-The residual plan's **Final current-code SSOT and duplication audit** is the
-operative file-level next-edit plan. Its lower dated overlays are historical
-snapshots; in particular, their instruction to add RepoMap prior-head CAS or
-active-head read a second time is stale. The final audit supersedes the old
-conditional P10 importer sequence and older P09/P10/P11 status sentences.
-The P10
-`migrate-state` policy is no-importer/typed-refusal, not completed target
-rebuild or qualified restore. The final audit records a separate RepoMap
-prior-active CAS **candidate** at the V2 activation/catalog boundary; the
-remaining producer outbox token-custody gap must close without a second
-catalog head. The aggregate Required-member path also needs the same bound
-request semantics; its common dispatcher currently reconstructs a `None`
-expectation. Do not confuse that RepoMap head with P06's search-corpus head;
-reuse root-incarnation custody only when the two routes resolve to the same
-physical root.
-Its dirty-source observations are not owner proof or a release verdict;
-follow its single-owner seams and P12A review gate.
+The [residual plan](FINAL-RESIDUAL-EXECUTION-PLAN.md) replaces dated
+dirty-checkout overlays. P10's current contract is no-importer/typed-refusal,
+not completed target rebuild or qualified restore. For RepoMap prior-head
+CAS and producer token custody, inspect the current Quanta and Semantica
+source pair before changing either side. A dated local observation is not
+owner proof or a release verdict.
 
 이 packet은 2026-09-21 정적 감사에서 확인된 목적 적합성 결함을 구조적으로 제거하기 위한
 실행 계획이다. 구현 완료나 테스트 통과를 주장하지 않는다.
@@ -110,7 +98,7 @@ SOTA는 추상화 수나 새 crate 수로 판정하지 않는다. 아래 조건�
 
 - operation journal과 candidate/activation ledger를 단일 transaction protocol로 만든다.
 - backend bytes는 immutable object이고 durable catalog만 visibility와 lifecycle을 결정한다.
-- legacy layout은 dual-read가 아니라 offline importer로 한 번만 전환한다.
+- legacy layout은 live dual-read나 importer로 전환하지 않는다. old root를 typed refusal하고 producer input에서 rebuild한다.
 
 ### RC-C — read view가 dependency 선언이지 실제 resource lease가 아님
 
@@ -259,7 +247,7 @@ Authority rules:
 | [S21-08](S21-08-semantic-admission-and-provider-boundary.md) | pre-I/O model/input gate, bounded provider work, egress policy | 00, 04, 06, 07 |
 | [S21-09](S21-09-supervised-runtime-and-bounded-shutdown.md) | signal-aware supervisor, runtime-guard ownership, rollback, RAII, hard drain | 00, 04; provider enrollment closes atomically with 08 |
 | [S21-10](S21-10-control-authorization-readiness-and-observability.md) | capability control plane and all-plane health truth | 00, 04, 09 |
-| [S21-11](S21-11-state-migration-backup-and-restore.md) | offline migration and executable state lifecycle | 01, 02, 04, 09, 10 |
+| [S21-11](S21-11-state-migration-backup-and-restore.md) | current-format backup/restore/verify and typed legacy refusal | 01, 02, 04, 09, 10 |
 | [S21-12](S21-12-cross-repo-terminal-receipt-cutover.md) | exact Semantica/SDK/daemon terminal receipt and breaking cutover | 02, 04, 07, 11 |
 | [S21-13](S21-13-release-evidence-and-sota-qualification.md) | early proof infrastructure plus final source-bound closeout | phase A: 00; phase B: all |
 

@@ -43,7 +43,7 @@ S21-01 closes in two sequential phases; P01A does not close this ticket.
 4. P03가 P02B sequence와 exact incident envelope를 catalog에 먼저 commit해 반복 격리가 evidence를 덮지 않게 함
    - observed-at, original path, size, payload digest, reason, incident sequence를 보존
 5. path length와 directory fanout 정책 고정
-6. P03가 old layout runtime reader를 제거한다. legacy parsing/transform/delete는 P10 offline importer만 소유한다.
+6. P03가 old layout runtime reader를 제거한다. P10은 current-format state custody와 typed legacy refusal만 소유한다.
 7. wire/persisted inventory와 format version 갱신
 
 ## Negative cases
@@ -75,7 +75,7 @@ S21-01 closes in two sequential phases; P01A does not close this ticket.
 
 - product identity를 separator string으로 조합하는 production code 0
 - arbitrary valid tuple pair가 같은 storage address에 alias되지 않음
-- legacy collision은 importer가 deterministic conflict로 거부
+- legacy root와 ambiguous old layout은 typed refusal; current-format collision은 deterministic conflict로 거부
 - runtime dual-read/dual-write 0
 - all persisted addresses are payload-verifiable
 - quarantine evidence is append-only and a repeated basename cannot overwrite an earlier incident

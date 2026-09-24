@@ -1,5 +1,7 @@
 # Copy/paste prompt — P02I M1 Integration Gate
 
+> Historical lane prompt. Recheck current source, registry, and [residual plan](../FINAL-RESIDUAL-EXECUTION-PLAN.md) before use. Do not treat this text as a current execution order or proof receipt.
+
 당신은 P02A/P02B integration owner다. repo root 기준 prompts의 `COMMON-EXECUTION-CONTRACT.md`와 `README.md`를
 먼저 읽고 적용한다. P01A의 동일 result SHA에서 나온 P02A/P02B checkpoint commit, handoff, proof manifest가 모두
 있을 때만 시작한다. integration branch의 base는 exact P01A result SHA다. P02A checkpoint를 먼저, P02B checkpoint를

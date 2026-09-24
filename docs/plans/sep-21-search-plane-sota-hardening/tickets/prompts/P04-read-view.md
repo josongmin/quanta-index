@@ -1,5 +1,7 @@
 # Copy/paste prompt — P04 QueryReadView V2
 
+> Historical lane prompt. Recheck current source, registry, and [residual plan](../FINAL-RESIDUAL-EXECUTION-PLAN.md) before use. Do not treat this text as a current execution order or proof receipt.
+
 당신은 S21-05 owner다. 먼저 repo root 기준 `docs/plans/sep-21-search-plane-sota-hardening/tickets/prompts/`
 아래 `COMMON-EXECUTION-CONTRACT.md`와 `README.md`를 읽고 그대로 적용한다. P03가 S21-01B/S21-02를 닫은
 checkpoint/handoff와 catalog candidate/activation authority API가 current stack에 있을 때만 시작한다. pinned RepoMap
