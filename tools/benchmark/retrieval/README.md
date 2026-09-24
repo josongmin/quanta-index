@@ -252,6 +252,13 @@ reverified after capture, cross-bound to all contract/SDK receipt closures, and
 bound by both the protocol lock and run manifest. Isolated capture executes stage-local,
 SHA-bound copies of the Semble adapter/evaluator rather than reading the checkout.
 Qualified quality also requires an estimable paired category-stratified bootstrap CI.
+`just retrieval-contract-proof <fresh-output-root>` and
+`just retrieval-sdk-proof <fresh-output-root>` are the public proof producers.
+They freeze an execution context, command transcripts, raw test evidence and
+context-bound receipts. The verdict rejects missing or changed bindings. Tool
+and OS identity in that context is not independently attested, so the separate
+`os_portability.qualified` verdict field remains false; it is not a native-OS
+support certificate. The internal SDK raw recipe is not a proof artifact.
 
 Generate the host profile on the measurement host before authoring the pair
 spec. `PERF_QUALIFIED` requires the frozen fingerprint, normalized active-source

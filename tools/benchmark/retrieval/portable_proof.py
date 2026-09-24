@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Produce pre-receipt execution context and context-bound retrieval receipts.
+"""Produce execution context and context-bound retrieval receipts.
 
-The verdict does not yet consume the execution context or its receipt input role.
-Windows production remains blocked by Bash-only source_closure and cargow.
+The paired verdict verifies frozen context, command logs, raw evidence and
+receipt input roles. OS/tool provenance is not independently attested.
+Windows production remains blocked by Bash-only cargow and Just recipes.
 """
 
 from __future__ import annotations
