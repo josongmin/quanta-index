@@ -987,7 +987,7 @@ mod tests {
         let original = semantic_source_embedding_input_digest(&model, &view, &source);
         let mut changed_text = source.clone();
         changed_text.text.push_str(" changed");
-        let mut changed_authority = source.clone();
+        let mut changed_authority = source;
         changed_authority.authority_digest.push_str(":changed");
         if original == semantic_source_embedding_input_digest(&model, &view, &changed_text)
             || original == semantic_source_embedding_input_digest(&model, &view, &changed_authority)
@@ -1040,7 +1040,10 @@ mod tests {
             || batch.tombstone_scopes.len() != 1
             || derived.tombstone_scopes.len() != 1
             || batch.semantic_tombstone_scopes.first()
-                != Some(&derived.tombstone_scopes[0].semantic_scope)
+                != derived
+                    .tombstone_scopes
+                    .first()
+                    .map(|scope| &scope.semantic_scope)
             || derived.corpus_policy_digest.as_deref() != Some(SEMANTIC_SOURCE_POLICY_DIGEST)
             || derived.model_contract.view_policy_digest.as_deref()
                 != Some(SEMANTIC_SOURCE_VIEW_POLICY_DIGEST)
@@ -1462,6 +1465,7 @@ mod tests {
         if observed_stages.as_slice() != expected_stages {
             return Err(format!("ingest window stage order differs: {observed_stages:?}").into());
         }
+        drop(observed_stages);
         let tally = derived.source.tally();
         if tally.windows != 3 || tally.replace_scopes != 5 || tally.rows != 5 {
             return Err(format!("tally counts windows, scopes and rows: {tally:?}").into());
@@ -1515,6 +1519,7 @@ mod tests {
         {
             return Err(format!("failed provider stage pair differs: {recorded:?}").into());
         }
+        drop(recorded);
         Ok(())
     }
 

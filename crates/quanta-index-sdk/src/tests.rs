@@ -3530,7 +3530,7 @@ fn repomap_publish_routes_through_ingest_transport() {
         manifest_digest: bundle.manifest_digest.clone(),
         snapshot_id: bundle.snapshot_id.clone(),
         projection_version: bundle.projection_version,
-        authority_digest: bundle.authority_digest.clone(),
+        authority_digest: bundle.authority_digest,
         source_bundle_digest: request.source_bundle_digest.clone(),
     };
     let ingest = Arc::new(StubIngestTransport::new(

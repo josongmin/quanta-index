@@ -33,10 +33,21 @@ impl<'a> RepoMapNamespace<'a> {
                 ))?;
         match response {
             SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(head) => Ok(head.active),
-            other => Err(SdkError::unexpected_response(
-                "repomap active head v2",
-                QuantaIndex::control_response_kind(&other),
-            )),
+            other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
+            | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
+            | SearchPlaneControlIpcResponse::Error(_)
+            | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
+            | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
+            | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
+            | SearchPlaneControlIpcResponse::QuarantineInventory(_)
+            | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
+            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)) => {
+                Err(SdkError::unexpected_response(
+                    "repomap active head v2",
+                    QuantaIndex::control_response_kind(&other),
+                ))
+            }
         }
     }
 
@@ -67,7 +78,7 @@ impl<'a> RepoMapNamespace<'a> {
         }
     }
 
-    /// Publish through the sole content-bound RepoMap ingest contract.
+    /// Publish through the sole content-bound `RepoMap` ingest contract.
     pub fn publish(
         &self,
         request: &RepoMapPublishBundleRequestV2,
