@@ -10,6 +10,12 @@ Owner: Quanta repository's optional competitor adapter
 
 `semble.py` pins Semble 0.6.0, checks the external interpreter/lockfile and observed model cache revision, consumes the admitted manifest and blind v3 pack, emits the path+SHA mapping proof, and normalizes native spans into the common v3 record. Contract tests cover missing or drifting inputs and partial/invalid rows. No real admitted Semble environment, license decision, W0-B corpus, or one-repo pilot artifact has been recorded, so T11/T12 are not closed by fixture tests.
 
+Normalization refuses native task rows and latency keys outside the frozen blind pack, and each native row must explicitly contain both `task_id` and `results` with no extra fields. An extra worker query is an ineligible protocol violation; it cannot be silently dropped while producing an otherwise complete-looking v3 record. A missing `results` field cannot become a false abstention. Missing native task rows remain explicit typed errors, not fabricated abstentions.
+
+The mapping proof rejects duplicate, unsafe, or symlinked worker-observed paths before reading them. The admitted path+SHA universe cannot be made to appear complete by deduplicating observed names or following a worker-controlled path outside the isolated corpus.
+
+Worker phase timings must be finite, nonnegative, and consistent with the finite total before the adapter writes a normalized record. JSON exponent overflow (for example `1e309`) is a typed refusal, not a successful capture with invalid timing JSON. Interpreter probes and environment freezes also convert subprocess timeouts into adapter errors.
+
 ## Goal
 
 Run a pinned Semble release/commit locally against the exact same admitted repository bytes and blind query pack, then normalize its actual results for the single Quanta-owned evaluator.
