@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import html
 import json
+import math
 import shlex
 import shutil
 import subprocess
@@ -125,7 +126,7 @@ def test_current_hand_calculated_rank_metrics(tmp_path):
     loaded = record_v3(repo, suite, run, suite_path, runner_path)
     report = ev.evaluate(*loaded, "lexical", "hybrid")
     assert report["schema_version"] == ev.SCHEMA_VERSION
-    assert report["rank_metric_version"] == "rb-rank-v2-first-coverage"
+    assert report["rank_metric_version"] == "rb-rank-context-density-first-coverage"
     assert report["graded"] is True
     assert report["primary_metric"] == "ndcg_at_10"
     routes = report["rank_metrics"]["routes"]
@@ -170,8 +171,11 @@ def test_ndcg_credits_each_gold_span_once_even_when_chunks_overlap():
         {"path": "src/lib.rs", "start_byte": 0, "end_byte": 30},
         {"path": "src/lib.rs", "start_byte": 10, "end_byte": 40},
     ]
-    assert ev.ndcg_at_k(candidates, [label], 10) == pytest.approx(1.0)
-    assert ev.ndcg_at_k(list(reversed(candidates)), [label], 10) == pytest.approx(1.0)
+    # Ten newly useful bytes in a 30-byte candidate earn one-third gain;
+    # the overlapping second chunk cannot credit that gold span again.
+    assert ev.ndcg_at_k(candidates[:1], [label], 10) == pytest.approx(1 / 3)
+    assert ev.ndcg_at_k(candidates, [label], 10) == pytest.approx(1 / 3)
+    assert ev.ndcg_at_k(list(reversed(candidates)), [label], 10) == pytest.approx(1 / 3)
 
 
 def test_zero_grade_cannot_be_gold_in_suite_schema_or_evaluator(tmp_path):
@@ -3303,10 +3307,11 @@ def test_verdict_quality_gates(tmp_path, monkeypatch):
         tmp_path / "iso", blinding="isolated", scope="qualified", claims={"quality": True}
     )
     verdict = _stage_verdict(st)
-    assert verdict["states"]["QUALITY_DELTA"] == "fail"
-    assert verdict["state_evidence"]["QUALITY_DELTA"]["reason"] == ("relevance_rubric_unfrozen")
-    assert "T04" in verdict["missing_t_ids"]
-    assert verdict["failure_class"] == "scoring"
+    assert verdict["states"]["QUALITY_DELTA"] == "pass"
+    assert verdict["state_evidence"]["QUALITY_DELTA"]["reason"] == (
+        "blinded_graded_context_density_delta"
+    )
+    assert verdict["failure_class"] == "none"
     proof_path = st["stage"] / "isolation-proof.json"
     proof = json.loads(proof_path.read_text(encoding="utf-8"))
     proof["profile_sha256"] = _fake_sha("forged-profile")
@@ -3352,18 +3357,102 @@ def test_verdict_quality_gates(tmp_path, monkeypatch):
     assert verdict["provenance"]["quanta"]["embedder"] == "hash-dev"
 
 
-def test_qualified_quality_refuses_unfrozen_large_context_rubric(tmp_path, monkeypatch):
+def test_context_density_rubric_independent_oracles(tmp_path, monkeypatch):
     gold = [{"path": "a.txt", "start_byte": 100, "end_byte": 110, "grade": 3}]
     exact = [{"path": "a.txt", "start_byte": 100, "end_byte": 110}]
     whole_file = [{"path": "a.txt", "start_byte": 0, "end_byte": 1_000_000}]
-    assert ev.ndcg_at_k(exact, gold, 10) == ev.ndcg_at_k(whole_file, gold, 10) == 1.0
+    partial = [{"path": "a.txt", "start_byte": 100, "end_byte": 105}]
+    assert ev.ndcg_at_k(exact, gold, 10) == 1.0
+    assert ev.ndcg_at_k(whole_file, gold, 10) == pytest.approx(10 / 1_000_000)
+    assert ev.ndcg_at_k(partial, gold, 10) == 0.0
+    assert ev.ndcg_at_k(exact + whole_file, gold, 10) == 1.0
+
+    two_gold = gold + [{"path": "a.txt", "start_byte": 120, "end_byte": 130, "grade": 2}]
+    one_candidate = [{"path": "a.txt", "start_byte": 100, "end_byte": 130}]
+    ideal = 7 + 3 / math.log2(3)
+    assert ev.ndcg_at_k(one_candidate, two_gold, 10) == pytest.approx((7 * 20 / 30) / ideal)
+
+    overlapping_gold = gold + [{"path": "a.txt", "start_byte": 105, "end_byte": 115, "grade": 2}]
+    overlap_candidate = [{"path": "a.txt", "start_byte": 100, "end_byte": 115}]
+    assert ev.ndcg_at_k(overlap_candidate, overlapping_gold, 10) == pytest.approx(7 / ideal)
 
     monkeypatch.setattr(ev, "MIN_CI_SAMPLE", 2)
     st = _pair_stage(tmp_path, blinding="isolated", scope="qualified", claims={"quality": True})
     verdict = _stage_verdict(st)
-    assert verdict["states"]["QUALITY_DELTA"] == "fail"
-    assert verdict["state_evidence"]["QUALITY_DELTA"]["reason"] == ("relevance_rubric_unfrozen")
-    assert verdict["failure_class"] == "scoring"
+    assert verdict["states"]["QUALITY_DELTA"] == "pass"
+    assert verdict["state_evidence"]["QUALITY_DELTA"]["reason"] == (
+        "blinded_graded_context_density_delta"
+    )
+    assert verdict["failure_class"] == "none"
+
+
+@pytest.mark.parametrize("claim", ["quality", "speed"])
+def test_qualified_claims_require_pair_contract_and_sdk_states(tmp_path, monkeypatch, claim):
+    monkeypatch.setattr(ev, "MIN_CI_SAMPLE", 2)
+    kwargs = (
+        {"blinding": "isolated"}
+        if claim == "quality"
+        else {"repetitions": 5, "qualified_speed_sample": True}
+    )
+    st = _pair_stage(tmp_path, scope="qualified", claims={claim: True}, **kwargs)
+    target = "QUALITY_DELTA" if claim == "quality" else "PERF_QUALIFIED"
+    baseline = _stage_verdict(st)
+    assert baseline["states"]["PAIR_VALID"] == "pass"
+    assert baseline["states"]["CONTRACT_GREEN"] == "pass"
+    assert baseline["states"]["SDK_PATH_GREEN"] == "pass"
+    assert baseline["states"][target] == "pass", baseline["state_evidence"][target]
+
+    manifest = st["manifest"]
+    mutations = (
+        (st["stage"] / "protocol-lock.json", "PAIR_VALID"),
+        (
+            st["stage"] / manifest["artifacts"]["contract_python_raw"],
+            "CONTRACT_GREEN",
+        ),
+        (st["stage"] / manifest["artifacts"]["sdk_nextest_raw"], "SDK_PATH_GREEN"),
+    )
+    for path, failed_state in mutations:
+        original = path.read_bytes()
+        try:
+            if failed_state == "PAIR_VALID":
+                lock = json.loads(original)
+                lock["top_k"] += 1
+                path.write_text(json.dumps(lock), encoding="utf-8")
+            else:
+                path.write_bytes(b"invalid terminal evidence")
+            verdict = _stage_verdict(st)
+            assert verdict["states"][failed_state] == "fail"
+            assert verdict["states"][target] == "fail"
+        finally:
+            path.write_bytes(original)
+
+
+def test_validated_report_penalizes_whole_file_containing_exact_gold(tmp_path):
+    repo, suite, run, suite_path, runner_path, files = fixture_v3(tmp_path)
+    exact_report = ev.evaluate(
+        *record_v3(repo, suite, run, suite_path, runner_path), "lexical", "hybrid"
+    )
+    file_bytes = files["a.txt"]
+    file_sha, block_sha, tokens = _span_meta(file_bytes, 1, 4)
+    start_byte, end_byte = _byte_span(file_bytes, 1, 4)
+    run["results"][1]["candidates"][0] = {
+        "path": "a.txt",
+        "start_byte": start_byte,
+        "end_byte": end_byte,
+        "start_line": 1,
+        "end_line": 4,
+        "file_sha256": file_sha,
+        "block_sha256": block_sha,
+        "tokens": tokens,
+        "rank": 1,
+    }
+    whole_report = ev.evaluate(
+        *record_v3(repo, suite, run, suite_path, runner_path), "lexical", "hybrid"
+    )
+    exact = exact_report["rank_metrics"]["routes"]["hybrid"]["chunk"]["ndcg_at_10"]
+    whole = whole_report["rank_metrics"]["routes"]["hybrid"]["chunk"]["ndcg_at_10"]
+    assert whole < exact
+    assert whole_report["rank_metric_version"] == "rb-rank-context-density-first-coverage"
 
 
 def test_qualified_admission_is_reverified_after_capture(tmp_path):

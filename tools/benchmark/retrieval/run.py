@@ -3936,6 +3936,14 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     if pair_state == "fail":
         missing.extend(pair_t_ids)
         classes.append(pair_class)
+    qualification_dependency = next(
+        (
+            name
+            for name in ("PAIR_VALID", "CONTRACT_GREEN", "SDK_PATH_GREEN")
+            if states[name] != "pass"
+        ),
+        None,
+    )
 
     # PERF_QUALIFIED: matrix re-derivation + floors + host, only on speed claims.
     if not claims["speed"]:
@@ -3952,6 +3960,14 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         )
         missing.append("T17")
         classes.append("admission")
+    elif qualification_dependency is not None:
+        set_state(
+            "PERF_QUALIFIED",
+            "fail",
+            f"qualification_dependency_unverified:{qualification_dependency}",
+            None,
+        )
+        classes.append("provenance")
     else:
         if evidence["perf"]["phase_boundaries"] is not True or not phase_ok:
             perf_fail: tuple[str, str] | None = (
@@ -4192,6 +4208,14 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         )
         missing.append("T17")
         classes.append("admission")
+    elif qualification_dependency is not None:
+        set_state(
+            "QUALITY_DELTA",
+            "fail",
+            f"qualification_dependency_unverified:{qualification_dependency}",
+            None,
+        )
+        classes.append("provenance")
     elif provenance_claims["quanta"].get("embedder") != "potion-code":
         # T10: a quality claim over the hash-dev diagnostic control (or an
         # undeclared embedder) is not model-quality evidence.
@@ -4218,12 +4242,20 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         set_state("QUALITY_DELTA", "fail", "uncertainty_unqualified", None)
         classes.append("scoring")
     else:
-        # W0-A has not frozen a size-aware relevance rubric. Current NDCG
-        # gives a whole-file hit full credit for merely containing a short
-        # gold span, so even otherwise valid evidence cannot qualify quality.
-        set_state("QUALITY_DELTA", "fail", "relevance_rubric_unfrozen", None)
-        missing.append("T04")
-        classes.append("scoring")
+        set_state(
+            "QUALITY_DELTA",
+            "pass",
+            "blinded_graded_context_density_delta",
+            digest(
+                canonical(
+                    {
+                        "admission": admission_evidence,
+                        "reports": sorted(entry["report_sha"] for entry in matched),
+                        "isolation": isolation_evidence,
+                    }
+                )
+            ),
+        )
 
     for key, claim_key, tid, fail_class in (
         ("model_parity", "same_model", "T15", "model"),

@@ -124,7 +124,7 @@ file-only recall as a secondary view, and both chunk-level and deterministic
 same-file-collapsed rankings (best chunk per file). NDCG credits each gold span
 only on its first covering candidate: overlapping chunks cannot earn the same
 gain twice or inflate NDCG above 1. The report labels this scoring contract
-`rb-rank-v2-first-coverage`; reports with a different scoring identity are
+`rb-rank-context-density-first-coverage`; reports with a different scoring identity are
 not comparable on overlapping-chunk suites. Duplicate candidate byte spans are
 rejected. Distinct overlapping chunks consume rank and context budget but
 earn no second relevance gain. Primary metric is
@@ -135,12 +135,26 @@ explicit insufficient-sample marker. Re-scoring immutable records is
 deterministic under row order; scores depend only on recorded spans and
 statuses, never on runner identity strings.
 
-This NDCG is diagnostic, not yet a qualified quality authority: a rank-1
-whole-file candidate containing a short gold span currently earns the same
-gain as the exact span. W0-A has not frozen the required size-aware relevance
-rubric or matching scorer identity. `QUALITY_DELTA` therefore fails closed as
-`relevance_rubric_unfrozen` even when grading, blinding, admission and
-uncertainty checks pass; do not interpret the report as quality superiority.
+W0-A relevance rubric: a grade-3 gold span is independently judged sufficient
+answer evidence; grade 2 is substantial but incomplete evidence; grade 1 is
+weak supporting evidence. Grade 0 is excluded from `gold`. Only full byte-span
+containment earns rank gain; partial overlap earns zero. Each gold span is
+credited on its first covering candidate, and a candidate uses the highest
+newly covered grade. Its gain is `(2**grade - 1) * U/C`, where `U` is the union
+byte length of newly covered gold spans and `C` is the candidate byte length.
+The ideal ranking is one exact candidate per gold span in descending grade
+order. Thus an exact span gets full credit, while a whole-file hit containing
+10 relevant bytes in 1 MB gets only 10/1,000,000 of that gain. Rank ties are
+resolved by the recorded unique rank; the report publishes both raw chunks
+and deterministic best-chunk-per-file collapse. Token-budget BCY remains a
+separate, primary context-coverage diagnostic. Byte density is an explicit
+precision policy, not a claim that shorter context is always semantically
+better; report language/category strata and BCY alongside NDCG.
+
+The formula alone does not qualify a quality claim. `QUALITY_DELTA` still
+requires W0-B's independently adjudicated graded gold, verified isolation,
+model/source/receipt admission and paired uncertainty. No real admitted pair
+has supplied that evidence yet.
 
 The report is evidence only for the supplied frozen suite, pinned repository
 and runner record. No arbitrary pass threshold or claim of production retrieval
