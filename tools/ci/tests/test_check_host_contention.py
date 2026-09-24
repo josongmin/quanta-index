@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT_PATH = REPO_ROOT / "tools" / "ci" / "timing" / "check_host_contention.py"
@@ -75,6 +78,28 @@ def test_non_rust_processes_are_ignored() -> None:
     )
 
     assert MODULE.foreign_rust_processes(processes, 11) == []
+
+
+@pytest.mark.parametrize(
+    "output",
+    ["", "20 1", "not-a-pid 1 cargo test", "20 1 cargo test\n20 1 rustc test"],
+)
+def test_invalid_process_snapshot_fails_closed(output: str) -> None:
+    with pytest.raises(ValueError):
+        MODULE.parse_processes(output)
+
+
+def test_process_snapshot_missing_self_fails_closed(monkeypatch, tmp_path: Path, capsys) -> None:
+    monkeypatch.setattr(
+        MODULE.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "20 1 /bin/zsh\n", ""),
+    )
+    receipt = tmp_path / "preflight.json"
+
+    assert MODULE.main(["--receipt", str(receipt)]) == 2
+    assert json.loads(receipt.read_text(encoding="utf-8"))["status"] == "error"
+    assert "invalid_process_snapshot" in capsys.readouterr().err
 
 
 def test_preflight_receipt_marks_override_as_non_clean() -> None:

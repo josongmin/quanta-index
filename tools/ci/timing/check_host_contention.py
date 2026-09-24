@@ -28,16 +28,24 @@ class Process:
 
 def parse_processes(output: str) -> list[Process]:
     processes: list[Process] = []
+    seen_pids: set[int] = set()
     for line in output.splitlines():
+        if not line.strip():
+            continue
         fields = line.strip().split(maxsplit=2)
         if len(fields) != 3:
-            continue
+            raise ValueError("process row has no command")
         try:
             pid = int(fields[0])
             ppid = int(fields[1])
-        except ValueError:
-            continue
+        except ValueError as exc:
+            raise ValueError("process row has a non-numeric pid") from exc
+        if pid <= 0 or ppid < 0 or pid in seen_pids:
+            raise ValueError("process row has an invalid or duplicate pid")
+        seen_pids.add(pid)
         processes.append(Process(pid=pid, ppid=ppid, command=fields[2]))
+    if not processes:
+        raise ValueError("process snapshot is empty")
     return processes
 
 
@@ -194,7 +202,34 @@ def main(argv: list[str] | None = None) -> int:
             )
         print("TIMING_PREFLIGHT_ERROR reason=ps_failed", file=sys.stderr)
         return 2
-    processes = parse_processes(completed.stdout)
+    try:
+        processes = parse_processes(completed.stdout)
+        if os.getpid() not in {process.pid for process in processes}:
+            raise ValueError("current process is absent from snapshot")
+    except ValueError as exc:
+        if args.receipt is not None:
+            try:
+                write_receipt(
+                    args.receipt,
+                    preflight_receipt(
+                        run_id=args.run_id,
+                        processes=[],
+                        foreign=[],
+                        override=False,
+                        ps_ok=False,
+                        expected_os=args.expected_os,
+                    ),
+                )
+            except OSError as write_exc:
+                print(
+                    f"TIMING_PREFLIGHT_ERROR reason=receipt_write_failed detail={write_exc}",
+                    file=sys.stderr,
+                )
+                return 2
+        print(
+            f"TIMING_PREFLIGHT_ERROR reason=invalid_process_snapshot detail={exc}", file=sys.stderr
+        )
+        return 2
     foreign = foreign_rust_processes(processes, os.getpid())
     override = args.allow_contended or os.environ.get("QUANTA_INDEX_ALLOW_CONTENDED_TIMINGS") == "1"
     if args.receipt is not None:
