@@ -283,8 +283,10 @@ python3 tools/benchmark/retrieval/run.py host-profile \
 Resource evidence is schema-closed: aggregate and per-process peak RSS/CPU,
 index/model/parser/embedding-cache bytes, discovered file count, indexed chunk
 count, disk-vs-memory ownership, and the measurement method are mandatory.
-Semble in-memory index bytes are a worker-observed peak-RSS delta and must be
-positive and byte-equal in native/resource evidence. For each fresh root the
+Semble in-memory index bytes are a worker-observed peak-resident delta (Unix
+peak RSS; Windows peak working set), not an exact allocation count. They must
+be positive and byte-equal in native/resource evidence. The Windows path is
+implemented but not native-host qualified. For each fresh root the
 driver emits one SHA-256-bound query protocol containing a cold probe, randomized
 warmup permutation(s), and randomized measurement permutations. Quanta and
 Semble must echo that exact protocol and raw per-route/per-task warm latency

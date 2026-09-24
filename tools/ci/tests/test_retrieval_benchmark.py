@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import html
 import json
@@ -4495,6 +4496,36 @@ def test_linux_sysfs_presence_alone_never_qualifies_speed(tmp_path, monkeypatch)
     assert pairrun.read_power()["status"] == "unavailable"
     (thermal_zone / "temp").write_text("not-a-temperature")
     assert pairrun.read_thermal()["status"] == "unavailable"
+
+
+def test_semble_worker_resident_probe_has_native_windows_path(monkeypatch):
+    namespace = {"__name__": "worker_template_test"}
+    exec(compile(semble_adapter.WORKER_TEMPLATE, "worker.py", "exec"), namespace)
+    assert namespace["peak_resident_bytes"]() > 0
+
+    class FakeFunction:
+        def __init__(self, callback):
+            self.callback = callback
+
+        def __call__(self, *args):
+            return self.callback(*args)
+
+    def read_memory(_handle, pointer, _size):
+        ctypes.cast(pointer, ctypes.POINTER(ctypes.c_size_t))[1] = 123_456
+        return 1
+
+    class FakeDll:
+        def __init__(self, name):
+            if name == "kernel32":
+                self.GetCurrentProcess = FakeFunction(lambda: 42)
+            elif name == "psapi":
+                self.GetProcessMemoryInfo = FakeFunction(read_memory)
+            else:
+                raise AssertionError(name)
+
+    monkeypatch.setattr(semble_adapter.sys, "platform", "win32")
+    monkeypatch.setattr(ctypes, "WinDLL", lambda name, **_kwargs: FakeDll(name), raising=False)
+    assert namespace["peak_resident_bytes"]() == 123_456
 
 
 @pytest.mark.skipif(

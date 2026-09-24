@@ -127,6 +127,7 @@
     "tools.ci.tests.test_retrieval_benchmark.test_semble_env_reports_lockfile_digest_and_pair_requires_pin",
     "tools.ci.tests.test_retrieval_benchmark.test_semble_inputs_refuse_duplicate_keys_and_unsafe_paths",
     "tools.ci.tests.test_retrieval_benchmark.test_semble_model_revision_requires_observed_pinned_cache",
+    "tools.ci.tests.test_retrieval_benchmark.test_semble_worker_resident_probe_has_native_windows_path",
     "tools.ci.tests.test_retrieval_benchmark.test_shared_query_protocol_is_deterministic_digest_bound_and_permuted",
     "tools.ci.tests.test_retrieval_benchmark.test_source_closure_driver_fails_closed_on_tool_refusal",
     "tools.ci.tests.test_retrieval_benchmark.test_source_closure_driver_uses_canonical_capture_and_verify_commands",
