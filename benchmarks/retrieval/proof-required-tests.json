@@ -90,6 +90,7 @@
     "tools.ci.tests.test_retrieval_benchmark.test_protocol_phase_metrics_reject_samples_longer_than_enclosing_phases",
     "tools.ci.tests.test_retrieval_benchmark.test_qualified_admission_is_reverified_after_capture",
     "tools.ci.tests.test_retrieval_benchmark.test_qualified_contract_refuses_coordinated_receipt_closure_rebind",
+    "tools.ci.tests.test_retrieval_benchmark.test_qualified_quality_refuses_unfrozen_large_context_rubric",
     "tools.ci.tests.test_retrieval_benchmark.test_qualified_quality_requires_estimable_uncertainty",
     "tools.ci.tests.test_retrieval_benchmark.test_qualified_replay_rejects_two_task_protocol_even_with_1000_samples",
     "tools.ci.tests.test_retrieval_benchmark.test_qualified_speed_spec_accepts_1000_warm_observations_per_route",
