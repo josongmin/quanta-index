@@ -27,10 +27,11 @@ use quanta_index_contract::{
     RepoMapPublishBundleRequestV2, RepoMapQueryRequest, RepoMapRedactionState, RepoMapSourceBundle,
     RepoMapSymbolNode, RevisionId, RuntimeCatalogIngestBatch, RuntimeChangedRecord,
     RuntimeDocFacetRecord, RuntimeEdgeAuthorityRecord, RuntimeMetadataQueryRequest,
-    RuntimeSnapshotRecord, SearchCorpusGenerationIdentityV1, SearchPlaneErrorCodeV2,
-    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
-    SearchPlaneIngestIpcResponseEnvelope, SearchPlaneTrackKind, SemanticQueryRequest,
-    StructuralQueryRequest, SymbolId, SymbolQueryRequest, TextQueryRequest, TextQuerySyntax,
+    RuntimeSnapshotRecord, SearchCorpusActiveHeadV1, SearchCorpusGenerationIdentityV1,
+    SearchPlaneErrorCodeV2, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope,
+    SearchPlaneIngestIpcResponse, SearchPlaneIngestIpcResponseEnvelope, SearchPlaneTrackKind,
+    SemanticQueryRequest, StructuralQueryRequest, SymbolId, SymbolQueryRequest, TextQueryRequest,
+    TextQuerySyntax,
 };
 use quanta_index_ipc::send_request;
 use quanta_index_sdk::{
@@ -1105,66 +1106,8 @@ fn current_sdk_search_corpus_or_none(
     client: &QuantaIndex,
     repo_id: RepoId,
     revision_id: RevisionId,
-) -> Result<Option<SearchCorpusGenerationIdentityV1>, SdkError> {
-    let lexical = client.generations().current(
-        repo_id.clone(),
-        revision_id.clone(),
-        SearchPlaneTrackKind::Lexical,
-    );
-    let semantic = client.generations().current(
-        repo_id.clone(),
-        revision_id.clone(),
-        SearchPlaneTrackKind::Semantic,
-    );
-    match (lexical, semantic) {
-        (Ok(lexical), Ok(semantic)) => {
-            // The roots the active pair was activated under (QI-BB-028),
-            // from the status report.
-            let semantic_content = client
-                .generations()
-                .status(repo_id, revision_id)?
-                .semantic_content
-                .ok_or_else(|| {
-                    SdkError::Protocol(
-                        "an active search corpus reports no semantic content roots".to_string(),
-                    )
-                })?;
-            let identity = SearchCorpusGenerationIdentityV1 {
-                lexical,
-                semantic,
-                semantic_content,
-            };
-            identity.validate_v1().map_err(|error| {
-                SdkError::Protocol(format!(
-                    "current search corpus identity is invalid: {error}"
-                ))
-            })?;
-            Ok(Some(identity))
-        }
-        (
-            Err(SdkError::Remote {
-                code: lexical_code, ..
-            }),
-            Err(SdkError::Remote {
-                code: semantic_code,
-                ..
-            }),
-        ) if lexical_code.as_wire_str() == "NOT_READY"
-            && semantic_code.as_wire_str() == "NOT_READY" =>
-        {
-            Ok(None)
-        }
-        (Ok(_), Err(SdkError::Remote { code, .. }))
-        | (Err(SdkError::Remote { code, .. }), Ok(_))
-            if code.as_wire_str() == "NOT_READY" =>
-        {
-            Err(SdkError::Protocol(
-                "search corpus active state is split across lexical and semantic tracks"
-                    .to_string(),
-            ))
-        }
-        (Err(error), _) | (_, Err(error)) => Err(error),
-    }
+) -> Result<Option<SearchCorpusActiveHeadV1>, SdkError> {
+    client.generations().active_head(repo_id, revision_id)
 }
 
 /// Publishes once and promotes one complete corpus identity.
@@ -1184,7 +1127,7 @@ fn publish_and_activate_sdk_search_corpus(
     let ack = client
         .search_corpus()
         .publish_and_activate(batch, expected_active)?;
-    Ok(ack.1.active)
+    Ok(ack.1.active.generation)
 }
 
 fn publish_sdk_search_corpus_ready(client: &QuantaIndex) -> TestResult {
@@ -3822,10 +3765,10 @@ fn sdk_tombstone_only_generation_replaces_active_composite_and_removes_both_quer
         || receipt.manifest_digest.as_deref() != Some(tombstone_only.manifest_digest())
         || receipt.accepted_replace_scopes != 0
         || receipt.accepted_tombstone_scopes != 1
-        || activation.active.lexical.manifest_generation != generation_two()
-        || activation.active.semantic.manifest_generation != generation_two()
-        || activation.active.lexical.manifest_digest != tombstone_only.manifest_digest()
-        || activation.active.semantic.manifest_digest != tombstone_only.manifest_digest()
+        || activation.active.generation.lexical.manifest_generation != generation_two()
+        || activation.active.generation.semantic.manifest_generation != generation_two()
+        || activation.active.generation.lexical.manifest_digest != tombstone_only.manifest_digest()
+        || activation.active.generation.semantic.manifest_digest != tombstone_only.manifest_digest()
     {
         return Err(format!(
             "unexpected tombstone-only sealed composite promotion: receipt={receipt:?} activation={activation:?}"

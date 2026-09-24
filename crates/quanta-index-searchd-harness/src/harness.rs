@@ -1111,6 +1111,14 @@ impl E2eRuntime {
         }
     }
 
+    /// Observe the harness pair's exact catalog head through the public
+    /// control socket; absence and remote failure remain distinct.
+    pub fn active_search_corpus_head(&mut self) -> AnyResult<Option<SearchCorpusActiveHeadV1>> {
+        let repo_id = self.repo();
+        let revision_id = self.revision();
+        self.current_search_corpus_head_from_control_v1(&repo_id, &revision_id)
+    }
+
     /// Ingest one chunk through the typed ingest front door.
     ///
     /// `repo` is informational metadata only — the publish itself goes

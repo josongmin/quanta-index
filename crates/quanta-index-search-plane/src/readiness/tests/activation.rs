@@ -331,6 +331,60 @@ fn prepared_search_corpus_activation_is_durable_before_reopen_and_rejects_stale_
 }
 
 #[test]
+fn reactivated_generation_rejects_stale_activation_and_rollback_cas_tokens() -> TestResult {
+    let dir = tempdir()?;
+    let catalog = ActivationCatalog::open(dir.path())?;
+    let a = corpus_generation(17, "digest-17")?;
+    let b = corpus_generation(18, "digest-18")?;
+    let first = catalog.activate_prepared_search_corpus_generation_v1(
+        &PreparedSearchCorpusGenerationV1::new(a.clone(), None)?,
+    )?;
+    let stale_a = first.active;
+    let first_inventory = catalog.active_inventory_v1()?;
+    let second = catalog.activate_prepared_search_corpus_generation_v1(
+        &PreparedSearchCorpusGenerationV1::new(b, Some(stale_a.clone()))?,
+    )?;
+    let third = catalog.rollback(&SearchPlaneRollbackSearchCorpusGenerationCasRequest {
+        expected_active: second.active,
+        target: a.to_contract_v1(),
+    })?;
+    assert_eq!(third.active.generation, stale_a.generation);
+    assert_ne!(third.active.activation_token, stale_a.activation_token);
+    let third_inventory = catalog.active_inventory_v1()?;
+    assert_eq!(first_inventory.0.len(), 1);
+    assert_eq!(third_inventory.0.len(), 1);
+    assert_eq!(first_inventory.0[0].0, third_inventory.0[0].0);
+    assert_ne!(first_inventory.0[0].1, third_inventory.0[0].1);
+
+    let activation = catalog.activate_prepared_search_corpus_generation_v1(
+        &PreparedSearchCorpusGenerationV1::new(
+            corpus_generation(19, "digest-19")?,
+            Some(stale_a.clone()),
+        )?,
+    );
+    assert!(matches!(
+        activation,
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::CompositeActivationCasConflict,
+            ..
+        })
+    ));
+
+    let rollback = catalog.rollback(&SearchPlaneRollbackSearchCorpusGenerationCasRequest {
+        expected_active: stale_a,
+        target: corpus_generation(16, "digest-16")?.to_contract_v1(),
+    });
+    assert!(matches!(
+        rollback,
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::RollbackCasConflict,
+            ..
+        })
+    ));
+    assert_active_composite_v1(&catalog, &a)
+}
+
+#[test]
 fn activation_catalog_concurrent_cas_promotions_select_one_composite_winner() -> TestResult {
     let dir = tempdir()?;
     let catalog = Arc::new(ActivationCatalog::open(dir.path())?);

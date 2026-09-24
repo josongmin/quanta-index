@@ -82,12 +82,12 @@ impl ControlCapabilityV1 {
         match request {
             SearchPlaneControlIpcRequest::CurrentGeneration(_)
             | SearchPlaneControlIpcRequest::GenerationStatus(_)
+            | SearchPlaneControlIpcRequest::SearchCorpusActiveHead(_)
             | SearchPlaneControlIpcRequest::MetricsSnapshot(_)
             | SearchPlaneControlIpcRequest::QuarantineInventory(_)
             | SearchPlaneControlIpcRequest::ProcessReadiness(_) => Self::Observe,
             SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(_)
             | SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(_)
-            | SearchPlaneControlIpcRequest::SearchCorpusActiveHead(_)
             | SearchPlaneControlIpcRequest::RepoMapActivateV2(_)
             | SearchPlaneControlIpcRequest::RepoMapActiveHeadV2(_)
             | SearchPlaneControlIpcRequest::QuarantineDiscard(_) => Self::Admin,
@@ -834,6 +834,58 @@ mod tests {
             )
             .expect("read active state");
         assert!(active.is_none(), "a denied mutation must commit nothing");
+    }
+
+    #[test]
+    fn active_head_route_reports_absence_then_exact_catalog_head_to_observers() -> TestResult {
+        let dir = tempdir()?;
+        let catalog = Arc::new(ActivationCatalog::open(dir.path())?);
+        let dispatcher = control_dispatcher(Arc::clone(&catalog), sealed_ledger(&[11]));
+        let request = || {
+            SearchPlaneControlIpcRequest::SearchCorpusActiveHead(
+                quanta_index_contract::GenerationStatusRequest {
+                    repo_id: RepoId::new("repo-map-ipc").expect("fixture repo"),
+                    revision_id: RevisionId::new("rev-map-ipc").expect("fixture revision"),
+                },
+            )
+        };
+
+        let SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(absent) =
+            dispatcher.dispatch(request(), &RequestBudgetV1::unbounded())
+        else {
+            return Err("catalog absence must be an explicit active-head observation".into());
+        };
+        assert!(absent.head().is_none());
+
+        let observer = ControlAccessV1::Peer {
+            uid: 2000,
+            owner_uid: 1000,
+        };
+        let SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(peer_absent) =
+            dispatcher.dispatch_as(observer, request(), &RequestBudgetV1::unbounded())
+        else {
+            return Err("observer must read the absent head without mutation privilege".into());
+        };
+        assert!(peer_absent.head().is_none());
+
+        let SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(ack) =
+            dispatcher.dispatch(activate_request(11), &RequestBudgetV1::unbounded())
+        else {
+            return Err("fixture activation must succeed".into());
+        };
+        let SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(observed) =
+            dispatcher.dispatch(request(), &RequestBudgetV1::unbounded())
+        else {
+            return Err("activated head must be observed".into());
+        };
+        assert_eq!(observed.head(), Some(&ack.active));
+        let SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(peer_observed) =
+            dispatcher.dispatch_as(observer, request(), &RequestBudgetV1::unbounded())
+        else {
+            return Err("observer must read the active head without mutation privilege".into());
+        };
+        assert_eq!(peer_observed.head(), Some(&ack.active));
+        Ok(())
     }
 
     #[test]
