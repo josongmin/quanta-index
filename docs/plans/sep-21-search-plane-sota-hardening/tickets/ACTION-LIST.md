@@ -10,6 +10,7 @@ qualification.
 | --- | --- | --- |
 | P00-P10 owners | Run the registered owner recipe at a frozen source and issue an exact-source receipt. | `tools/ci/proof-authority.toml`, `Justfile` |
 | P03-P10 release | Implement any missing registered release authority and execute it on the required Linux host and binary. | `authority_state`, `required_host`, and test targets in the registry |
+| P09 readiness | Retain the bound-socket identity/path-loss process regression; add actual supervised-child, maintenance/backend-loss, and bounded request-diagnostic process targets before enabling the Linux release node. | [S21-10](S21-10-control-authorization-readiness-and-observability.md) |
 | P10 state | Prove current-format backup/restore/verify and typed legacy refusal; inventory real target data before cutover. | [operator runbook](../../../operator/state-cutover-runbook.md) |
 | P11 | Prove the exact Quanta/Semantica pair and issue distinct deployment, activation, and rollback receipts. | [S21-12](S21-12-cross-repo-terminal-receipt-cutover.md) |
 | P12A | Validate existing aggregate/handoff custody and issue the exact-pair infrastructure receipt after P11. | `tools/ci/write-proof-aggregate.py`, `tools/ci/lint/handoff_validation.py` |

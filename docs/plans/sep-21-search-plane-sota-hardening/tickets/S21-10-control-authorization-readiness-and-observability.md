@@ -2,6 +2,25 @@
 
 Status: historical design record; current implementation and proof state must be read from source and `tools/ci/proof-authority.toml`.
 
+2026-09-24 local P09 hardening committed as `fb3e0e89`: readiness
+previously equated a live accept thread with an available plane. An unlinked
+query or ingest socket path, or a replacement socket at the same path, left
+the supervisor bit set while fresh clients could not reach the original
+listener. `UdsServer` now lends its existing bound device/inode identity to
+`RuntimeReadiness`; the latter requires both the supervisor bit and the
+original published socket for each plane. A real daemon-binary test removes
+the ingest path and replaces the query path while control survives, then
+requires `ready=false` with the correct reason. The P09 owner integration
+scope passed 43/43 and library scope 624/624 on the local patched tree;
+format, hexagonal, wire-inventory, public-API, and four 60-second fuzz smoke
+checks passed. These are
+not registered exact-source manifests: `main` moved from `8c137cfd` to
+`a76dd6fa` during the run, and the tests use a test-profile daemon binary
+on macOS. Actual supervised child exit, maintenance/backend loss, bounded
+request-diagnostics operator/process behavior, and Linux release-daemon
+qualification remain separate gaps. Do not promote this path-loss regression
+to the full P09 release target.
+
 Depends on: S21-00, S21-04, S21-09
 
 ## Goal
