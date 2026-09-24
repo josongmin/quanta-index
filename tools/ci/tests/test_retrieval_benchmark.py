@@ -3722,6 +3722,24 @@ def test_qualified_verdict_refuses_receipt_capture_closure_mismatch(tmp_path, mo
     )
 
 
+def test_qualified_contract_refuses_coordinated_receipt_closure_rebind(tmp_path):
+    st = _pair_stage(tmp_path, scope="qualified")
+    assert _stage_verdict(st)["states"]["CONTRACT_GREEN"] == "pass"
+    for side in ("python", "rust"):
+        receipt_path = st["stage"] / "receipts" / f"contract_{side}_receipt.json"
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        receipt["source_closure"]["files"][0]["sha256"] = _fake_sha("other-source")
+        core = {
+            key: receipt["source_closure"][key]
+            for key in ("schema_version", "profile", "revision", "roots", "files")
+        }
+        receipt["source_closure"]["digest"] = ev.digest(ev.canonical(core))
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    verdict = _stage_verdict(st)
+    assert verdict["states"]["CONTRACT_GREEN"] == "fail"
+    assert "capture closure" in verdict["state_evidence"]["CONTRACT_GREEN"]["reason"]
+
+
 def test_isolation_proof_refuses_tampered_frozen_runner_tool(tmp_path, monkeypatch):
     monkeypatch.setattr(ev, "MIN_CI_SAMPLE", 2)
     st = _pair_stage(tmp_path, blinding="isolated", scope="qualified", claims={"quality": True})
@@ -3824,15 +3842,18 @@ def test_run_pair_promotes_complete_stage_and_public_verdict_replays(tmp_path, m
         return {"status": "staged"}
 
     monkeypatch.setattr(pairrun, "_run_pair_staged", staged)
-    assert pairrun.run_pair(
-        {
-            "scope": "exploratory",
-            "semble_lockfile_sha256": _fake_sha("lock"),
-            "semble_python": "python3",
-            "semble_lockfile": "lockfile",
-            "host_profile": "host-profile",
-        }
-    ) == 0
+    assert (
+        pairrun.run_pair(
+            {
+                "scope": "exploratory",
+                "semble_lockfile_sha256": _fake_sha("lock"),
+                "semble_python": "python3",
+                "semble_lockfile": "lockfile",
+                "host_profile": "host-profile",
+            }
+        )
+        == 0
+    )
     assert json.loads(capsys.readouterr().out)["output_root"] == str(output_root)
     assert not output_root.with_name(output_root.name + ".staging").exists()
     public = subprocess.run(

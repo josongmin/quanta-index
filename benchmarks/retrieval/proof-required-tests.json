@@ -19,6 +19,7 @@
     "tools.ci.tests.test_retrieval_benchmark.test_current_fails_closed_on_invalid_evidence[<lambda>-file hash mismatch0]",
     "tools.ci.tests.test_retrieval_benchmark.test_current_fails_closed_on_invalid_evidence[<lambda>-file hash mismatch1]",
     "tools.ci.tests.test_retrieval_benchmark.test_current_fails_closed_on_invalid_evidence[<lambda>-file universe]",
+    "tools.ci.tests.test_retrieval_benchmark.test_current_fails_closed_on_invalid_evidence[<lambda>-gold grade]",
     "tools.ci.tests.test_retrieval_benchmark.test_current_fails_closed_on_invalid_evidence[<lambda>-grade0]",
     "tools.ci.tests.test_retrieval_benchmark.test_current_fails_closed_on_invalid_evidence[<lambda>-grade1]",
     "tools.ci.tests.test_retrieval_benchmark.test_current_fails_closed_on_invalid_evidence[<lambda>-missing task route evidence]",
@@ -88,6 +89,7 @@
     "tools.ci.tests.test_retrieval_benchmark.test_protocol_phase_metrics_bind_raw_warm_counts_and_cold_separately",
     "tools.ci.tests.test_retrieval_benchmark.test_protocol_phase_metrics_reject_samples_longer_than_enclosing_phases",
     "tools.ci.tests.test_retrieval_benchmark.test_qualified_admission_is_reverified_after_capture",
+    "tools.ci.tests.test_retrieval_benchmark.test_qualified_contract_refuses_coordinated_receipt_closure_rebind",
     "tools.ci.tests.test_retrieval_benchmark.test_qualified_quality_requires_estimable_uncertainty",
     "tools.ci.tests.test_retrieval_benchmark.test_qualified_replay_rejects_two_task_protocol_even_with_1000_samples",
     "tools.ci.tests.test_retrieval_benchmark.test_qualified_speed_spec_accepts_1000_warm_observations_per_route",
@@ -172,7 +174,8 @@
     "tools.ci.tests.test_retrieval_benchmark.test_verdict_stale_and_swapped_receipts",
     "tools.ci.tests.test_retrieval_benchmark.test_verdict_t15_t16_conditionals",
     "tools.ci.tests.test_retrieval_benchmark.test_verify_lockfile_pins_external_file_not_freeze",
-    "tools.ci.tests.test_retrieval_benchmark.test_worker_template_runs_against_stub_semble"
+    "tools.ci.tests.test_retrieval_benchmark.test_worker_template_runs_against_stub_semble",
+    "tools.ci.tests.test_retrieval_benchmark.test_zero_grade_cannot_be_gold_in_suite_schema_or_evaluator"
   ],
   "rust": [
     "quanta-index-retrieval-bench::chunking_contract$bom_flows_through_as_plain_utf8_bytes",

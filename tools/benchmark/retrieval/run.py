@@ -3089,6 +3089,13 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     evidence = manifest["evidence"]
     claims = manifest["claims"]
     provenance_claims = manifest["provenance"]
+    driver_closure = (
+        _validate_source_closure_shape(
+            read_json(resolved["driver_source_closure"]), "driver source closure"
+        )
+        if manifest["scope"] == "qualified"
+        else None
+    )
     host_profile = validate_host_profile(read_json(resolved["host_profile"]))
     if sha_file(resolved["host_profile"]) != provenance_claims["host"]["profile_digest"]:
         raise RunError("host profile artifact digest mismatch")
@@ -3220,14 +3227,11 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         ):
             pair_note("protocol_lock_admission_drift", ("T17",))
         if manifest["scope"] == "qualified":
-            closure = _validate_source_closure_shape(
-                read_json(resolved["driver_source_closure"]), "driver source closure"
-            )
-            if closure["revision"] != provenance_claims["quanta"]["source_sha"]:
+            if driver_closure["revision"] != provenance_claims["quanta"]["source_sha"]:
                 pair_note("driver_source_closure_revision_drift", ("T12", "T17"))
-            if closure["digest"] != provenance_claims["quanta"]["source_closure_digest"]:
+            if driver_closure["digest"] != provenance_claims["quanta"]["source_closure_digest"]:
                 pair_note("driver_source_closure_digest_drift", ("T12", "T17"))
-            if protocol_payload.get("driver_source_closure_digest") != closure["digest"]:
+            if protocol_payload.get("driver_source_closure_digest") != driver_closure["digest"]:
                 pair_note("protocol_lock_source_closure_drift", ("T12", "T17"))
         if protocol_payload["host_profile_digest"] != host_profile_digest:
             pair_note("protocol_lock_host_profile_drift", ("T12",))
@@ -3800,6 +3804,11 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                     raise RunError(f"contract {side} summary is not reproducible")
                 if receipt["revision"] != provenance_claims["quanta"]["source_sha"]:
                     raise RunError(f"contract {side} revision mismatch")
+                if (
+                    driver_closure is not None
+                    and receipt["source_closure"]["digest"] != driver_closure["digest"]
+                ):
+                    raise RunError(f"contract {side} source closure differs from capture closure")
                 if not (
                     results["failed"] == 0
                     and results["passed"] > 0
@@ -3878,6 +3887,11 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 raise RunError("sdk summary is not reproducible")
             if sdk_receipt["revision"] != provenance_claims["quanta"]["source_sha"]:
                 raise RunError("sdk revision mismatch")
+            if (
+                driver_closure is not None
+                and sdk_receipt["source_closure"]["digest"] != driver_closure["digest"]
+            ):
+                raise RunError("sdk source closure differs from capture closure")
             if verified_source_digests and sdk_receipt["source_closure"]["digest"] not in (
                 verified_source_digests
             ):
