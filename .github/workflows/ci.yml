@@ -426,7 +426,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install semgrep
-        run: python -m pip install 'semgrep>=1.76.0'
+        run: python -m pip install 'semgrep==1.177.0'
 
       - name: Check source-authority rule counterexamples
         run: python3 tools/ci/tests/test_semgrep_source_authority.py

@@ -81,6 +81,9 @@ fn inverted(result: Result<(), ()>) {
 """,
                 encoding="utf-8",
             )
+            workflow.with_suffix(".yaml").write_text(
+                workflow.read_text(encoding="utf-8"), encoding="utf-8"
+            )
             result = subprocess.run(
                 [
                     "semgrep",
@@ -92,6 +95,7 @@ fn inverted(result: Result<(), ()>) {
                     "--metrics",
                     "off",
                     str(workflow),
+                    str(workflow.with_suffix(".yaml")),
                 ],
                 cwd=root,
                 text=True,
@@ -100,15 +104,19 @@ fn inverted(result: Result<(), ()>) {
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             findings = [
-                (item["check_id"].split(".")[-1], item["start"]["line"])
+                (Path(item["path"]).suffix, item["check_id"].split(".")[-1], item["start"]["line"])
                 for item in json.loads(result.stdout)["results"]
             ]
             self.assertEqual(
                 set(findings),
                 {
-                    ("workflow-use-cargow", 4),
-                    ("workflow-use-cargow", 10),
-                    ("workflow-no-continue-on-error", 11),
+                    (suffix, rule, line)
+                    for suffix in (".yml", ".yaml")
+                    for rule, line in (
+                        ("workflow-use-cargow", 4),
+                        ("workflow-use-cargow", 10),
+                        ("workflow-no-continue-on-error", 11),
+                    )
                 },
             )
 

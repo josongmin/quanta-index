@@ -136,14 +136,17 @@ def test_semgrep_keeps_code_scope_but_expands_policy_changes(tmp_path: Path) -> 
             text=True,
         )
         arguments = result.stdout.splitlines()
-        assert arguments[:4] == [
+        assert arguments[:7] == [
             "--config",
             str(ROOT / "tools/ci/semgrep/rules.yml"),
             "--error",
+            "--strict",
+            "--metrics",
+            "off",
             "--timeout",
         ]
-        assert arguments[4] == "300"
-        return arguments[5:]
+        assert arguments[7] == "300"
+        return arguments[8:]
 
     code_paths = [
         "crates/quanta-index-core/src/lib.rs",

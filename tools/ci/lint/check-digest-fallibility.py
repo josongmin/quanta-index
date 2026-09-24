@@ -10,8 +10,9 @@ step the function depends on (ciborium encode, sha2 update, …) fails, the
 implementer is forced into one of:
 
   * `panic!()` / `unwrap()` — banned by repo policy.
-  * Heuristic fallback (e.g. zero-pad on encode failure) — banned by the
-    semgrep `rust-no-is-ok-as-branch` / `rust-no-err-arm-default` rules.
+  * Heuristic fallback (e.g. zero-pad on encode failure) — not reliably
+    covered by a general Semgrep pattern; this signature guard prevents the
+    fallible codec path from requiring that shape.
   * Silent-default fallback — same prohibition family.
 
 The fix is to lift the return type to `Result<[u8; N], _>` so the typed Err
