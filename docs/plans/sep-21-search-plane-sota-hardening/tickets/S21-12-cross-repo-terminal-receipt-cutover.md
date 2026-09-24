@@ -8,15 +8,17 @@ file-contributor roundtrip despite declaring a RepoMap terminal-receipt
 target. It now requires both the live RepoMap V2
 publish/activate/restart/query test and the producer-owned negative
 full-bundle/transition receipt validator to exist, then runs those exact
-tests through Semantica's QBC front door. A Python regression checks the
-recipe's exact target selection with `just --dry-run`. These are selection
-checks, not executions of either Rust target. The recipe still accepts an
-arbitrary executable via `QUANTA_INDEX_SEARCHD_BIN`; the proof writer archives
-its bytes and digest but does not independently attest that a clean, frozen
-Quanta release build produced those bytes. Do not claim binary/source
-provenance from the path or digest alone. A source-frozen build attestation,
-exact source pair, P10 dependency, Linux execution, deployment, activation,
-and rollback receipts remain unverified; the registry node stays `staged`.
+tests through Semantica's QBC front door. The recipe now delegates to one
+script that refuses dirty or moving source, performs a fresh Quanta release
+daemon build, requires `QUANTA_INDEX_SEARCHD_BIN` to be byte-identical to
+that output, runs both targets, and rechecks source and binary at exit. A
+Python regression checks target selection and shell syntax. These are static
+selection checks, not execution of the fresh build or either Rust target.
+The proof writer still archives daemon bytes/digest without independently
+validating this build step or its raw result; a manifest alone is not a build
+attestation. The exact source pair, P10 dependency, Linux execution,
+deployment, activation, and rollback receipts remain unverified; the registry
+node stays `staged`.
 
 2026-09-24 local follow-up, tested at Quanta `7dec5965` plus the store patch
 and committed as `3b1d7b19`: the private terminal receipt

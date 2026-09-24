@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import subprocess
 import sys
@@ -428,7 +429,7 @@ def check_semble_env(python: Path) -> dict:
             text=True,
             timeout=120,
         )
-    except (OSError, subprocess.CalledProcessError) as exc:
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         raise AdapterError(f"Semble env probe failed: {exc}") from exc
     try:
         report = json.loads(completed.stdout)
@@ -465,13 +466,16 @@ def check_semble_env(python: Path) -> dict:
     ):
         raise AdapterError("installed Semble holds a malformed direct_url digest")
     report["installed_distribution"] = installed
-    freeze = subprocess.run(
-        [str(python), "-m", "pip", "freeze"],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
+    try:
+        freeze = subprocess.run(
+            [str(python), "-m", "pip", "freeze"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise AdapterError(f"Semble environment pip freeze failed: {exc}") from exc
     if freeze.returncode != 0 or not freeze.stdout.strip():
         raise AdapterError("Semble environment pip freeze failed or is empty")
     # Freeze is the env observation, never the authoritative pin: the external
@@ -554,6 +558,27 @@ def mapping_proof(
     corpus_dir: Path,
 ) -> tuple[dict, str]:
     """Path map + both-side path+SHA diff. Returns (proof, diff_digest)."""
+    if not isinstance(observed, list) or any(not isinstance(name, str) for name in observed):
+        raise AdapterError("Semble observed files must be a path list")
+    if len(observed) != len(set(observed)):
+        raise AdapterError("Semble observed files contain a duplicate path")
+    corpus_root = corpus_dir.resolve()
+    for name in observed:
+        if (
+            not name
+            or name.startswith("/")
+            or "\\" in name
+            or any(part in ("", ".", "..") for part in name.split("/"))
+        ):
+            raise AdapterError(f"unsafe Semble observed path: {name!r}")
+        target = corpus_dir / name
+        if corpus_root not in target.resolve().parents:
+            raise AdapterError(f"Semble observed path escapes the corpus: {name!r}")
+        current = corpus_dir
+        for part in name.split("/"):
+            current = current / part
+            if current.is_symlink():
+                raise AdapterError(f"Semble observed path uses a symlink: {name!r}")
     admitted_names = [name for name, _ in admitted]
     admitted_set = set(admitted_names)
     observed_set = set(observed)
@@ -662,14 +687,23 @@ def normalize_record(
             or any(c not in "0123456789abcdef" for c in value)
         ):
             raise AdapterError(f"{label} must be a lowercase sha256")
+    if not isinstance(native, list):
+        raise AdapterError("Semble native rows must be a list")
     by_task: dict[str, object] = {}
+    expected_task_ids = {task["task_id"] for task in pack["tasks"]}
     for row in native:
-        task_key = row.get("task_id") if isinstance(row, dict) else None
+        if not isinstance(row, dict) or set(row) != {"task_id", "results"}:
+            raise AdapterError("Semble native row must hold exactly task_id and results")
+        task_key = row["task_id"]
         if not isinstance(task_key, str) or not task_key:
             raise AdapterError("Semble native row lacks a task_id")
+        if task_key not in expected_task_ids:
+            raise AdapterError(f"Semble emitted an unexpected native task: {task_key}")
         if task_key in by_task:
             raise AdapterError(f"Semble emitted a duplicate native row: {task_key}")
-        by_task[task_key] = row.get("results", [])
+        by_task[task_key] = row["results"]
+    if not isinstance(latencies, dict) or any(task_id not in expected_task_ids for task_id in latencies):
+        raise AdapterError("Semble latencies contain an unexpected task or invalid mapping")
     results = []
     for task in pack["tasks"]:
         task_id = task["task_id"]
@@ -846,6 +880,39 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 2
 
 
+def validate_worker_phase_timings(
+    native_payload: dict, *, protocol: bool
+) -> tuple[dict[str, int | float], int | float]:
+    """Reject non-finite worker timings before emitting any normalized artifact."""
+    phases = {
+        "discovery": native_payload.get("discovery_ms"),
+        "model_provider_prepare": native_payload.get("model_provider_prepare_ms"),
+        "index": native_payload.get("semble_index_ms"),
+        "warmup": native_payload.get("warmup_ms"),
+    }
+    if protocol:
+        phases["cold_query"] = native_payload.get("cold_query_ms")
+        phases["warm_query"] = native_payload.get("protocol_warm_query_ms")
+    else:
+        phases["first_query"] = native_payload.get("first_query_ms")
+        phases["warm_query"] = native_payload.get("warm_query_ms")
+
+    def finite_nonnegative(value: object) -> bool:
+        try:
+            return type(value) in (int, float) and value >= 0 and math.isfinite(value)
+        except OverflowError:
+            return False
+
+    if any(not finite_nonnegative(value) for value in phases.values()):
+        raise AdapterError("Semble worker omitted finite nonnegative phase timings")
+    phase_sum = sum(phases.values())
+    total = native_payload.get("worker_total_ms")
+    if not finite_nonnegative(phase_sum) or not finite_nonnegative(total) or total < phase_sum:
+        raise AdapterError("Semble worker total timing is inconsistent with phases")
+    phases["unattributed"] = total - phase_sum
+    return phases, total
+
+
 def run_adapter(args: argparse.Namespace) -> int:
     repo = Path(args.repo)
     out_root = Path(args.output_root)
@@ -1012,29 +1079,14 @@ def run_adapter(args: argparse.Namespace) -> int:
         diff_digest,
         worker_digest,
     )
-    record_path = out_root / "record.json"
-    record_path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    phase_values = {
-        "discovery": native_payload.get("discovery_ms"),
-        "model_provider_prepare": native_payload.get("model_provider_prepare_ms"),
-        "index": native_payload.get("semble_index_ms"),
-        "warmup": native_payload.get("warmup_ms"),
-    }
-    if query_protocol is None:
-        phase_values["first_query"] = native_payload.get("first_query_ms")
-        phase_values["warm_query"] = native_payload.get("warm_query_ms")
-    else:
-        phase_values["cold_query"] = native_payload.get("cold_query_ms")
-        phase_values["warm_query"] = native_payload.get("protocol_warm_query_ms")
-    if any(type(value) not in (int, float) or value < 0 for value in phase_values.values()):
-        raise AdapterError("Semble worker omitted nonnegative phase timings")
-    worker_total_ms = native_payload.get("worker_total_ms")
-    if type(worker_total_ms) not in (int, float) or worker_total_ms < sum(phase_values.values()):
-        raise AdapterError("Semble worker total timing is inconsistent with phases")
-    phase_values["unattributed"] = worker_total_ms - sum(phase_values.values())
+    phase_values, worker_total_ms = validate_worker_phase_timings(
+        native_payload, protocol=query_protocol is not None
+    )
     phase_boundaries_ns = native_payload.get("phase_boundaries_ns")
     if not isinstance(phase_boundaries_ns, dict):
         raise AdapterError("Semble worker omitted monotonic phase boundaries")
+    record_path = out_root / "record.json"
+    record_path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     phase_metrics = {
         "schema_version": 1,
         "system": "semble",

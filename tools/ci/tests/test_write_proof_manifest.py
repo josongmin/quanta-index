@@ -48,16 +48,24 @@ def test_cross_repo_hellgate_selects_live_repomap_terminal_target() -> None:
         capture_output=True,
         text=True,
     ).stderr
+    assert './scripts/verify-repomap-cross-repo.sh' in command
+    script = REPO_ROOT / "scripts/verify-repomap-cross-repo.sh"
+    subprocess.run(["bash", "-n", str(script)], check=True, capture_output=True, text=True)
+    source = script.read_text()
     target = "index_sdk_ingress_live_repomap_roundtrip_survives_runtime_restart_v1"
-    assert command.count(target) == 2, "the inventory guard and exact run must agree"
+    assert source.count(target) == 2, "the inventory guard and exact run must agree"
     receipt_target = (
         "index_sdk_ingress::terminal_receipt_v1::tests::"
         "repomap_v2_receipts_require_exact_full_bundle_and_transition_v2"
     )
-    assert command.count(receipt_target) == 2
-    assert "index_sdk_ingress_live_file_contributor_publish_and_query_roundtrip_v1" not in command
-    assert command.count("./scripts/quanta-build-cli cargo") == 4
-    assert "-- --exact --nocapture" in command
+    assert source.count(receipt_target) == 2
+    assert "index_sdk_ingress_live_file_contributor_publish_and_query_roundtrip_v1" not in source
+    assert source.count("./scripts/quanta-build-cli cargo") == 4
+    assert source.count("-- --exact --nocapture") == 2
+    build = source.index("just rust-build-release-daemon-fresh")
+    compare = source.index('cmp -s -- "$built_binary" "$provided_binary"')
+    assert source.index('require_frozen_source "$quanta_root"') < build
+    assert build < compare < source.index(target)
 
 
 @dataclass(frozen=True)

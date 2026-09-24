@@ -994,6 +994,15 @@ def test_mapping_proof_clean_and_mismatch_detected(tmp_path):
     assert len(diff) == 64
     assert all(row["status"] == "indexed" for row in proof["per_file"])
 
+    with pytest.raises(semble_adapter.AdapterError, match="duplicate path"):
+        semble_adapter.mapping_proof(admitted, ["a.txt", "a.txt", "b.txt"], corpus)
+    with pytest.raises(semble_adapter.AdapterError, match="unsafe Semble observed path"):
+        semble_adapter.mapping_proof(admitted, ["../outside.txt"], corpus)
+    (corpus / "linked.txt").symlink_to(corpus / "a.txt")
+    with pytest.raises(semble_adapter.AdapterError, match="uses a symlink"):
+        semble_adapter.mapping_proof(admitted, ["a.txt", "b.txt", "linked.txt"], corpus)
+    (corpus / "linked.txt").unlink()
+
     skipped, _ = semble_adapter.mapping_proof(admitted, ["a.txt"], corpus)
     assert skipped["skipped"] == ["b.txt"]
     extra, _ = semble_adapter.mapping_proof(admitted, ["a.txt", "b.txt", "zzz.txt"], corpus)
@@ -1118,6 +1127,22 @@ def test_semble_env_refuses_missing_lockfile(tmp_path, monkeypatch):
         return subprocess.CompletedProcess(command, 1, "", "pip failed")
 
     monkeypatch.setattr(semble_adapter.subprocess, "run", fake_run)
+    with pytest.raises(semble_adapter.AdapterError, match="pip freeze failed"):
+        semble_adapter.check_semble_env(interpreter)
+
+    def timed_out_probe(command, **_kwargs):
+        raise subprocess.TimeoutExpired(command, 120)
+
+    monkeypatch.setattr(semble_adapter.subprocess, "run", timed_out_probe)
+    with pytest.raises(semble_adapter.AdapterError, match="env probe failed"):
+        semble_adapter.check_semble_env(interpreter)
+
+    def timed_out_freeze(command, **_kwargs):
+        if "-c" in command:
+            return fake_run(command)
+        raise subprocess.TimeoutExpired(command, 120)
+
+    monkeypatch.setattr(semble_adapter.subprocess, "run", timed_out_freeze)
     with pytest.raises(semble_adapter.AdapterError, match="pip freeze failed"):
         semble_adapter.check_semble_env(interpreter)
 
@@ -1309,6 +1334,18 @@ def test_worker_template_runs_against_stub_semble(tmp_path, monkeypatch):
     assert payload["cold_latency_ms"] >= 0
     assert payload["native"][0]["results"][0]["file_path"] == "a.txt"
     assert payload["observed_files"] == ["a.txt"]
+    phases, total = semble_adapter.validate_worker_phase_timings(payload, protocol=True)
+    assert total == payload["worker_total_ms"]
+    assert phases["unattributed"] >= 0
+    for key in ("discovery_ms", "worker_total_ms"):
+        with pytest.raises(semble_adapter.AdapterError, match="finite|inconsistent"):
+            semble_adapter.validate_worker_phase_timings(
+                dict(payload, **{key: json.loads("1e309")}), protocol=True
+            )
+    with pytest.raises(semble_adapter.AdapterError, match="inconsistent"):
+        semble_adapter.validate_worker_phase_timings(
+            dict(payload, worker_total_ms=0), protocol=True
+        )
 
     spec["tasks"].append({"task_id": "T1", "query": "q2"})
     spec_path.write_text(json.dumps(spec), encoding="utf-8")
@@ -1692,6 +1729,18 @@ def test_normalize_record_proves_spans_and_order(tmp_path):
 
     with pytest.raises(semble_adapter.AdapterError, match="duplicate native row"):
         build(native + [dict(native[0])], {"T1": [1.0], "T2": [1.0]})
+
+    with pytest.raises(semble_adapter.AdapterError, match="unexpected native task"):
+        build(native + [{"task_id": "EXTRA", "results": []}], {"T1": [1.0], "T2": [1.0]})
+
+    with pytest.raises(semble_adapter.AdapterError, match="exactly task_id and results"):
+        build([{"task_id": "T1"}, native[1]], {"T1": [1.0], "T2": [1.0]})
+
+    with pytest.raises(semble_adapter.AdapterError, match="exactly task_id and results"):
+        build([dict(native[0], injected=True), native[1]], {"T1": [1.0], "T2": [1.0]})
+
+    with pytest.raises(semble_adapter.AdapterError, match="unexpected task or invalid mapping"):
+        build(native, {"T1": [1.0], "T2": [1.0], "EXTRA": [1.0]})
 
     over = [
         {
