@@ -2712,6 +2712,17 @@ def _stage_verdict(st):
     return pairrun.build_verdict(st["repo"], st["suite_path"], st["manifest_path"])
 
 
+def _allow_minimal_speed_fixture(monkeypatch, *, observations=2):
+    """Exercise downstream verdict checks with the two-task synthetic fixture.
+
+    Production thresholds are covered by the speed-spec boundary tests.
+    """
+    monkeypatch.setattr(pairrun, "FROZEN_TASKS_FLOOR", 2)
+    monkeypatch.setattr(pairrun, "FRESH_ROOTS_FLOOR", 1)
+    if observations is not None:
+        monkeypatch.setattr(pairrun, "PILOT_OBSERVATIONS_FLOOR", observations)
+
+
 def _rewrite_manifest(st, mutator):
     manifest = json.loads(st["manifest_path"].read_text(encoding="utf-8"))
     mutator(manifest)
@@ -2925,7 +2936,8 @@ def test_verdict_report_tamper(tmp_path):
     assert "T13" in verdict["missing_t_ids"]
 
 
-def test_verdict_matrix_tamper_and_native_disagreement(tmp_path):
+def test_verdict_matrix_tamper_and_native_disagreement(tmp_path, monkeypatch):
+    _allow_minimal_speed_fixture(monkeypatch)
     st = _pair_stage(tmp_path)
     matrix_path = st["stage"] / "latency-matrix.json"
     matrix = json.loads(matrix_path.read_text(encoding="utf-8"))
@@ -2951,10 +2963,13 @@ def test_verdict_matrix_tamper_and_native_disagreement(tmp_path):
     phase_path.write_text(json.dumps(phase), encoding="utf-8")
     verdict = _stage_verdict(st)
     assert verdict["states"]["PERF_QUALIFIED"] == "fail"
-    assert "matrix_rebuild_failed" in verdict["state_evidence"]["PERF_QUALIFIED"]["reason"]
+    assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == (
+        "phase_boundaries_incomplete"
+    )
 
 
 def test_verdict_perf_frontier_and_gates(tmp_path, monkeypatch):
+    _allow_minimal_speed_fixture(monkeypatch, observations=None)
     st = _pair_stage(tmp_path, claims={"speed": True})
     verdict = _stage_verdict(st)
     assert verdict["states"]["PERF_QUALIFIED"] == "not_applicable"
@@ -2962,7 +2977,10 @@ def test_verdict_perf_frontier_and_gates(tmp_path, monkeypatch):
     st = _pair_stage(tmp_path / "qualified", scope="qualified", claims={"speed": True})
     verdict = _stage_verdict(st)
     assert verdict["states"]["PERF_QUALIFIED"] == "fail"
-    assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == "observations_floor_unmet"
+    assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == (
+        "measurement_protocol_ineligible: "
+        "qualified speed requires at least 1000 warm observations per route"
+    )
     monkeypatch.setattr(pairrun, "PILOT_OBSERVATIONS_FLOOR", 2)
     monkeypatch.setattr(pairrun, "FRESH_ROOTS_FLOOR", 1)
     verdict = _stage_verdict(st)
@@ -3035,8 +3053,7 @@ def test_verdict_perf_frontier_and_gates(tmp_path, monkeypatch):
 
 
 def test_verdict_host_profile_fingerprint_is_enforced(tmp_path, monkeypatch):
-    monkeypatch.setattr(pairrun, "PILOT_OBSERVATIONS_FLOOR", 2)
-    monkeypatch.setattr(pairrun, "FRESH_ROOTS_FLOOR", 1)
+    _allow_minimal_speed_fixture(monkeypatch)
     st = _pair_stage(tmp_path, scope="qualified", claims={"speed": True})
     profile_path = st["stage"] / "host-profile.json"
     profile = json.loads(profile_path.read_text(encoding="utf-8"))
@@ -3051,12 +3068,15 @@ def test_verdict_host_profile_fingerprint_is_enforced(tmp_path, monkeypatch):
     verdict = _stage_verdict(st)
     assert verdict["states"]["PERF_QUALIFIED"] == "fail"
     assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"].startswith("admission_unverified:")
-    assert verdict["failure_class"] == "admission"
+    assert verdict["states"]["PAIR_VALID"] == "fail"
+    assert verdict["state_evidence"]["PAIR_VALID"]["reason"] == (
+        "protocol_lock_host_profile_drift"
+    )
+    assert verdict["failure_class"] == "provenance"
 
 
 def test_verdict_rejects_forged_phase_and_process_tree_resources(tmp_path, monkeypatch):
-    monkeypatch.setattr(pairrun, "PILOT_OBSERVATIONS_FLOOR", 2)
-    monkeypatch.setattr(pairrun, "FRESH_ROOTS_FLOOR", 1)
+    _allow_minimal_speed_fixture(monkeypatch)
 
     resource_stage = _pair_stage(tmp_path / "resource", scope="qualified", claims={"speed": True})
     resource_path = resource_stage["stage"] / "rep-00" / "semble-resource-metrics.json"
@@ -3413,8 +3433,7 @@ def test_qualified_replay_rejects_two_task_protocol_even_with_1000_samples(tmp_p
 
 
 def test_verdict_cannot_qualify_cold_only_latency_as_warm_performance(tmp_path, monkeypatch):
-    monkeypatch.setattr(pairrun, "PILOT_OBSERVATIONS_FLOOR", 2)
-    monkeypatch.setattr(pairrun, "FRESH_ROOTS_FLOOR", 1)
+    _allow_minimal_speed_fixture(monkeypatch)
     st = _pair_stage(tmp_path, scope="qualified", claims={"speed": True})
     layout = st["rep_layouts"][0]
     qphase_path = Path(layout["quanta_phase_metrics"]["whole_file"])
@@ -3467,13 +3486,12 @@ def test_verdict_cannot_qualify_cold_only_latency_as_warm_performance(tmp_path, 
     verdict = _stage_verdict(st)
     assert verdict["states"]["PERF_QUALIFIED"] == "fail"
     assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == (
-        "shared_warm_query_protocol_unimplemented"
+        "phase_boundaries_incomplete"
     )
 
 
 def test_verdict_rejects_nonconsecutive_or_unbound_root_protocols(tmp_path, monkeypatch):
-    monkeypatch.setattr(pairrun, "PILOT_OBSERVATIONS_FLOOR", 2)
-    monkeypatch.setattr(pairrun, "FRESH_ROOTS_FLOOR", 1)
+    _allow_minimal_speed_fixture(monkeypatch)
     st = _pair_stage(tmp_path, repetitions=2, scope="qualified", claims={"speed": True})
     protocol_path = st["stage"] / "protocol-lock.json"
     protocol = json.loads(protocol_path.read_text(encoding="utf-8"))
@@ -3542,7 +3560,8 @@ def test_source_closure_driver_fails_closed_on_tool_refusal(tmp_path, monkeypatc
         pairrun._source_closure(tmp_path, "check", None)
 
 
-def test_verdict_cannot_upgrade_qualified_warm_cache(tmp_path):
+def test_verdict_cannot_upgrade_qualified_warm_cache(tmp_path, monkeypatch):
+    _allow_minimal_speed_fixture(monkeypatch)
     st = _pair_stage(tmp_path, scope="qualified", claims={"speed": True}, cache_regime="warm_cache")
     verdict = _stage_verdict(st)
     assert verdict["states"]["PERF_QUALIFIED"] == "fail"

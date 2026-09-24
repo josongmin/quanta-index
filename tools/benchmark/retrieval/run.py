@@ -73,6 +73,7 @@ VERDICT_VERSION = 2
 MANIFEST_VERSION = 1
 PILOT_OBSERVATIONS_FLOOR = 1000
 FRESH_ROOTS_FLOOR = 5
+FROZEN_TASKS_FLOOR = 20
 RUNNABLE_STRATEGIES = tuple(s for s in CHUNK_STRATEGIES if s != "semble_native")
 SEMBLE_PINNED_VERSION = "0.6.0"
 SANDBOX_EXEC = Path("/usr/bin/sandbox-exec")
@@ -183,8 +184,10 @@ def validate_qualified_speed_spec(spec: dict, task_count: int) -> None:
     routes = spec.get("routes", ["lexical", "semantic", "hybrid"])
     if roots < FRESH_ROOTS_FLOOR:
         raise RunError(f"qualified speed requires at least {FRESH_ROOTS_FLOOR} fresh roots")
-    if task_count < 20:
-        raise RunError("qualified speed requires at least 20 frozen tasks")
+    if task_count < FROZEN_TASKS_FLOOR:
+        raise RunError(
+            f"qualified speed requires at least {FROZEN_TASKS_FLOOR} frozen tasks"
+        )
     if warmups < 1:
         raise RunError("qualified speed requires at least one shared warmup pass")
     if task_count * measurements * roots < PILOT_OBSERVATIONS_FLOOR:

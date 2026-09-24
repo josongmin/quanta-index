@@ -136,13 +136,16 @@
         "contract_python_receipt": {"type": "string", "minLength": 1},
         "contract_python_results": {"type": "string", "minLength": 1},
         "contract_python_raw": {"type": "string", "minLength": 1},
+        "contract_python_inventory": {"type": "string", "minLength": 1},
         "contract_rust_receipt": {"type": "string", "minLength": 1},
         "contract_rust_results": {"type": "string", "minLength": 1},
         "contract_rust_raw": {"type": "string", "minLength": 1},
+        "contract_rust_inventory": {"type": "string", "minLength": 1},
         "sdk_receipt": {"type": "string", "minLength": 1},
         "sdk_results": {"type": "string", "minLength": 1},
         "sdk_nextest_raw": {"type": "string", "minLength": 1},
         "sdk_record_raw": {"type": "string", "minLength": 1},
+        "sdk_inventory": {"type": "string", "minLength": 1},
         "model_parity_results": {"type": "string", "minLength": 1},
         "incremental_results": {"type": "string", "minLength": 1}
       }
