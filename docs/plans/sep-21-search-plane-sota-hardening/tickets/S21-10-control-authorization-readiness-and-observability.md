@@ -2,6 +2,18 @@
 
 Status: historical design record; current implementation and proof state must be read from source and `tools/ci/proof-authority.toml`.
 
+2026-09-24 adversarial plan correction: the current exhaustive dispatcher
+capability enum is only `Observe`/`Admin`; `Admin` is restricted to the owner
+UID/root peer. The older `Operate`/`MutateGeneration` proposal below is not
+an instruction to add more roles. Use the existing `Admin` boundary for
+request diagnostics unless a distinct credential policy is independently
+specified and tested. `RuntimeReadiness` currently sets
+`required_backend: true` after successful assembly; this is boot evidence,
+not a live backend observation. Replace that constant with an owned,
+bounded, invalidation-aware live signal, and prove backend loss separately
+from socket path loss. The exact file ownership and DoD are in
+[R2](FINAL-RESIDUAL-EXECUTION-PLAN.md#r2--p09-process-truth-and-one-operator-diagnostic-path).
+
 2026-09-24 local P09 hardening committed as `fb3e0e89`: readiness
 previously equated a live accept thread with an available plane. An unlinked
 query or ingest socket path, or a replacement socket at the same path, left
@@ -53,7 +65,7 @@ healthy로 보이지 않도록 process-wide readiness와 request-correlated diag
 - readiness가 socket connect 가능성과 required plane/backend health를 구분하지 않음
 - `engines_touched`를 실제 fanout metric으로 사용해 zero-hit 실행을 누락
 
-## Capability model
+## Historical capability proposal (superseded by current `Observe`/`Admin`)
 
 - `Observe`: health, readiness, metrics, status
 - `Operate`: bounded maintenance and diagnostics

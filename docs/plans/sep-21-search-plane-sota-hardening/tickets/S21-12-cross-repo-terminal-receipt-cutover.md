@@ -2,6 +2,21 @@
 
 Status: exact-pair release qualification staged.
 
+2026-09-24 adversarial plan correction: the current pair snapshot binds
+Semantica Git state and `Cargo.lock`, but does not prove the resolved
+`quanta-index-{contract,ipc,sdk}` Cargo path packages point into the frozen
+Quanta checkout. Before the fresh build, resolve those packages from the
+actual Semantica build graph, compare canonical roots with the expected
+Quanta package roots, and bind the mapping in the paired receipt. A clean
+Semantica checkout pointing to another clean Quanta tree must fail. The
+current manifest writer archives binary bytes and a raw file but does not
+derive build/test outcome from that raw file; use the common R0 result
+authority, not a P11-specific `passed` assertion. The deployment,
+activation, and rollback registry nodes currently name absent `Justfile`
+recipes and have empty test target lists under `test-authority`; convert
+them to typed operational-action evidence only after target host/root
+authority is fixed. See [R0/R5/R6](FINAL-RESIDUAL-EXECUTION-PLAN.md).
+
 2026-09-24 P11 proof-command correction (local source, not execution proof):
 `Justfile::rust-verify-hellgate-cross-repo` had selected Semantica's
 file-contributor roundtrip despite declaring a RepoMap terminal-receipt
