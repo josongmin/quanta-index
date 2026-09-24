@@ -2129,6 +2129,7 @@ def _pair_stage(
     graded=True,
     embedder="potion-code",
     cache_regime="true_process_cold",
+    alternate_system_order=True,
 ):
     """Build a complete valid pair stage through the real driver functions."""
     work = tmp_path / "work"
@@ -2533,7 +2534,11 @@ def _pair_stage(
         rep_layouts.append(
             {
                 "rep": rep,
-                "order": ["quanta", "semble"],
+                "order": (
+                    ["quanta", "semble"]
+                    if rep % 2 == 0 or not alternate_system_order
+                    else ["semble", "quanta"]
+                ),
                 "query_protocol": str(protocol_path),
                 "quanta": {"whole_file": str(qpath)},
                 "quanta_phase_metrics": {"whole_file": str(qphase)},
@@ -2717,6 +2722,7 @@ def _pair_stage(
                 ),
                 "driver_source_closure_digest": driver_source_closure_digest,
                 "repetitions": repetitions,
+                "system_orders": [layout["order"] for layout in rep_layouts],
                 "base_seed": 0,
                 "query_warmup_passes": 1,
                 "query_repetitions_per_root": measurements,
@@ -3159,6 +3165,33 @@ def test_qualified_speed_verdict_accepts_full_observation_protocol(tmp_path):
     assert verdict["state_evidence"]["PERF_QUALIFIED"]["proof_digest"] is not None
 
 
+def test_qualified_speed_replay_rejects_unalternated_system_order(tmp_path):
+    st = _pair_stage(
+        tmp_path,
+        repetitions=5,
+        qualified_speed_sample=True,
+        scope="qualified",
+        claims={"speed": True},
+        alternate_system_order=False,
+    )
+    assert all(layout["order"] == ["quanta", "semble"] for layout in st["rep_layouts"])
+    verdict = _stage_verdict(st)
+    assert verdict["states"]["PERF_QUALIFIED"] == "fail"
+    assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == ("measurement_order_unverified")
+
+
+def test_qualified_speed_entry_rejects_disabled_order_alternation():
+    with pytest.raises(pairrun.RunError, match="alternating system order"):
+        pairrun.run_pair(
+            {
+                "scope": "qualified",
+                "admission": {},
+                "claims": {"speed": True},
+                "alternate_order": False,
+            }
+        )
+
+
 def test_verdict_host_profile_fingerprint_is_enforced(tmp_path, monkeypatch):
     monkeypatch.setattr(pairrun, "PILOT_OBSERVATIONS_FLOOR", 2)
     monkeypatch.setattr(pairrun, "FRESH_ROOTS_FLOOR", 1)
@@ -3483,6 +3516,7 @@ def test_protocol_phase_metrics_reject_samples_longer_than_enclosing_phases(tmp_
     [
         ("top_k", 999),
         ("repetitions", 999),
+        ("system_orders", [[1, "quanta"]]),
         ("strategies", ["not-executed"]),
         ("searchd_expected_sha256", "0" * 64),
         ("semble_lockfile_sha256", "0" * 64),
