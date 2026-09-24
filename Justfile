@@ -261,7 +261,7 @@ rust-test-control-readiness-owner lane="test-control-readiness-owner-lane":
     python3 tools/ci/run-local-test-scope.py control-readiness-owner --lane {{lane}}
 
 rust-test-control-readiness-owner-lib lane="test-control-readiness-owner-lane":
-    python3 tools/ci/run-local-test-scope.py control-readiness-owner-lib --lane {{lane}}
+    QUANTA_INDEX_TEST_POTION_CODE_MODEL_DIR="${QUANTA_INDEX_TEST_POTION_CODE_MODEL_DIR:-$(./scripts/quanta-index-env.sh)/models/potion-code-16M-v2-e9d2a44}" python3 tools/ci/run-local-test-scope.py control-readiness-owner-lib --lane {{lane}} --run-ignored all
 
 rust-test-state-migration-owner lane="test-state-migration-owner-lane":
     python3 tools/ci/run-local-test-scope.py state-migration-owner --lane {{lane}}
