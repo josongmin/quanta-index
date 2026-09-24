@@ -2127,7 +2127,7 @@ def _pair_stage(
             source_task = original_tasks[(index - 3) % len(original_tasks)]
             task = json.loads(json.dumps(source_task))
             task["task_id"] = f"T{index}"
-            task["query"] = f"{source_task['query']} variant {index}"
+            task["query"] = f"locate fixture {ev.digest(f'qualified-speed-task-{index}'.encode())}"
             task["query_sha256"] = ev.digest(task["query"].encode())
             task["query_family_id"] = f"fam-speed-{index}"
             suite["tasks"].append(task)
@@ -2850,9 +2850,7 @@ def test_verdict_lying_manifest_refused(tmp_path):
     _rewrite_manifest(st, lambda m: m["evidence"]["perf"].update({"observations_floor": 9999}))
     verdict = _stage_verdict(st)
     assert verdict["states"]["PERF_QUALIFIED"] == "fail"
-    assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"].startswith(
-        "measurement_protocol_ineligible:"
-    )
+    assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == "perf_floor_mismatch"
     # A swapped binary pin fails the pair binding.
     st = _pair_stage(tmp_path / "binary")
     _rewrite_manifest(st, lambda m: m["provenance"]["quanta"].update({"binary_digest": "0" * 64}))
@@ -3101,6 +3099,29 @@ def test_verdict_perf_frontier_and_gates(tmp_path, monkeypatch):
     assert verdict["states"]["PERF_QUALIFIED"] == "fail"
     assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == "host_contended"
     assert verdict["failure_class"] == "host"
+
+
+def test_qualified_speed_verdict_accepts_full_observation_protocol(tmp_path):
+    st = _pair_stage(
+        tmp_path,
+        repetitions=5,
+        qualified_speed_sample=True,
+        scope="qualified",
+        claims={"speed": True},
+    )
+    matrix = pairrun.read_json(st["stage"] / "latency-matrix.json")
+    assert matrix["fresh_roots"] == 5
+    assert matrix["observations_floor"] == 1_000
+    verdict = _stage_verdict(st)
+    # Contract receipts bind to committed source; this fixture isolates the
+    # independent performance state even in a dirty edit loop.
+    assert verdict["states"]["PAIR_VALID"] == "pass"
+    assert verdict["states"]["PERF_QUALIFIED"] == "pass"
+    assert verdict["states"]["QUALITY_DELTA"] == "not_applicable"
+    assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == (
+        "phase_and_process_tree_resources_verified"
+    )
+    assert verdict["state_evidence"]["PERF_QUALIFIED"]["proof_digest"] is not None
 
 
 def test_verdict_host_profile_fingerprint_is_enforced(tmp_path, monkeypatch):

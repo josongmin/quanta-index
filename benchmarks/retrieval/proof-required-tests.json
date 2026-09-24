@@ -96,6 +96,7 @@
     "tools.ci.tests.test_retrieval_benchmark.test_qualified_speed_spec_rejects_underpowered_or_biased_protocol[spec2-20-warmup pass]",
     "tools.ci.tests.test_retrieval_benchmark.test_qualified_speed_spec_rejects_underpowered_or_biased_protocol[spec3-20-warm observations]",
     "tools.ci.tests.test_retrieval_benchmark.test_qualified_speed_spec_rejects_underpowered_or_biased_protocol[spec4-20-exactly one Quanta route]",
+    "tools.ci.tests.test_retrieval_benchmark.test_qualified_speed_verdict_accepts_full_observation_protocol",
     "tools.ci.tests.test_retrieval_benchmark.test_qualified_uncertainty_contract_rejects_incomplete_or_forged_strata",
     "tools.ci.tests.test_retrieval_benchmark.test_qualified_verdict_refuses_receipt_capture_closure_mismatch",
     "tools.ci.tests.test_retrieval_benchmark.test_qualified_verdict_refuses_tampered_driver_source_closure",
