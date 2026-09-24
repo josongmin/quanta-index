@@ -257,6 +257,27 @@ python3 tools/benchmark/retrieval/run.py host-profile \
   --profile-id macbook-m4-ac-power --out /absolute/host-profile.json
 ```
 
+On Linux, host-profile v2 requires an operator-selected CPU thermal zone and
+explicit limits; mere sensor presence is not speed evidence. The selected zone
+name and sensor type, per-CPU maximum frequencies, and the performance governor
+set are pinned. Both start/end probes must observe every CPU at or above the
+configured percentage of its pinned maximum and the selected thermal zone at
+or below the configured ceiling. The ceiling cannot exceed 85,000 millidegrees
+and the frequency floor cannot be below 80 percent. Unsupported or partial
+telemetry makes speed unavailable; the operator must establish that the selected
+zone actually represents CPU/package temperature. These endpoint checks do not
+prove absence of transient throttling during the run.
+
+```sh
+python3 tools/benchmark/retrieval/run.py host-probe
+python3 tools/benchmark/retrieval/run.py host-profile \
+  --profile-id linux-perf-host \
+  --linux-thermal-zone thermal_zone0 \
+  --linux-max-thermal-millidegrees 80000 \
+  --linux-min-frequency-percent 90 \
+  --out /absolute/host-profile.json
+```
+
 Resource evidence is schema-closed: aggregate and per-process peak RSS/CPU,
 index/model/parser/embedding-cache bytes, discovered file count, indexed chunk
 count, disk-vs-memory ownership, and the measurement method are mandatory.

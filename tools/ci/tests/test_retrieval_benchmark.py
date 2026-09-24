@@ -1379,7 +1379,7 @@ def test_freeze_inputs_freezes_lockfile(tmp_path):
     (src / "host-profile.json").write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "profile_id": "test",
                 "fingerprint": {
                     "system": "Darwin",
@@ -2587,7 +2587,7 @@ def _pair_stage(
     host_profile.write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "profile_id": "test-host",
                 "fingerprint": pairrun._host_fingerprint(host),
             }
@@ -3077,9 +3077,7 @@ def test_verdict_matrix_tamper_and_native_disagreement(tmp_path, monkeypatch):
     phase_path.write_text(json.dumps(phase), encoding="utf-8")
     verdict = _stage_verdict(st)
     assert verdict["states"]["PERF_QUALIFIED"] == "fail"
-    assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == (
-        "phase_boundaries_incomplete"
-    )
+    assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == ("phase_boundaries_incomplete")
 
 
 def test_verdict_perf_frontier_and_gates(tmp_path, monkeypatch):
@@ -3228,9 +3226,7 @@ def test_verdict_host_profile_fingerprint_is_enforced(tmp_path, monkeypatch):
     assert verdict["states"]["PERF_QUALIFIED"] == "fail"
     assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"].startswith("admission_unverified:")
     assert verdict["states"]["PAIR_VALID"] == "fail"
-    assert verdict["state_evidence"]["PAIR_VALID"]["reason"] == (
-        "protocol_lock_host_profile_drift"
-    )
+    assert verdict["state_evidence"]["PAIR_VALID"]["reason"] == ("protocol_lock_host_profile_drift")
     assert verdict["failure_class"] == "provenance"
 
 
@@ -3745,9 +3741,7 @@ def test_verdict_cannot_qualify_cold_only_latency_as_warm_performance(tmp_path, 
     )
     verdict = _stage_verdict(st)
     assert verdict["states"]["PERF_QUALIFIED"] == "fail"
-    assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == (
-        "phase_boundaries_incomplete"
-    )
+    assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == ("phase_boundaries_incomplete")
 
 
 def test_verdict_rejects_nonconsecutive_or_unbound_root_protocols(tmp_path, monkeypatch):
@@ -4076,7 +4070,7 @@ def test_pair_staging_atomicity(tmp_path, monkeypatch):
     host_profile.write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "profile_id": "test-host",
                 "fingerprint": {
                     "system": "Darwin",
@@ -4286,6 +4280,105 @@ def test_darwin_thermal_limits_and_frequency_fail_closed(monkeypatch):
         lambda _keys: {"hw.cpufrequency": "2400000000", "hw.cpufrequency_max": "3200000000"},
     )
     assert pairrun.read_frequency()["status"] == "bounded"
+
+
+def test_linux_speed_probe_requires_profile_bounds_and_complete_telemetry():
+    governors = {"cpu0": "performance", "cpu1": "performance"}
+    power_digest = pairrun.digest(pairrun.canonical(governors))
+    host = {
+        "system": "Linux",
+        "release": "test",
+        "machine": "x86_64",
+        "processor": "test",
+        "cpu_count": 2,
+        "rustc": "rustc test",
+        "concurrent_processes": {"none": []},
+        "thermal": {
+            "status": "observed",
+            "evidence": {
+                "thermal_zone0": {"type": "x86_pkg_temp", "temp_millidegrees": 60_000},
+            },
+        },
+        "frequency": {
+            "status": "observed",
+            "evidence": {
+                "cpu0": {"current_khz": 2_800_000, "maximum_khz": 3_000_000},
+                "cpu1": {"current_khz": 2_800_000, "maximum_khz": 3_000_000},
+            },
+        },
+        "power": {"status": "bounded", "digest": power_digest, "governors": governors},
+    }
+    profile = pairrun.validate_host_profile(
+        {
+            "schema_version": 2,
+            "profile_id": "linux-test",
+            "fingerprint": pairrun._host_fingerprint(host),
+            "linux_limits": {
+                "max_thermal_millidegrees": 80_000,
+                "min_frequency_percent": 90,
+                "thermal_zones": {"thermal_zone0": "x86_pkg_temp"},
+                "cpu_max_khz": {"cpu0": 3_000_000, "cpu1": 3_000_000},
+            },
+        }
+    )
+    assert pairrun._probe_clean(host, profile)
+    for key, value in (
+        (
+            "thermal",
+            {
+                "status": "observed",
+                "evidence": {
+                    "thermal_zone0": {"type": "x86_pkg_temp", "temp_millidegrees": 85_000}
+                },
+            },
+        ),
+        (
+            "frequency",
+            {
+                "status": "observed",
+                "evidence": {
+                    "cpu0": {"current_khz": 2_000_000, "maximum_khz": 3_000_000},
+                    "cpu1": {"current_khz": 2_800_000, "maximum_khz": 3_000_000},
+                },
+            },
+        ),
+        (
+            "power",
+            {
+                "status": "bounded",
+                "digest": _fake_sha("power"),
+                "governors": {"cpu0": "performance"},
+            },
+        ),
+    ):
+        assert not pairrun._probe_clean({**host, key: value}, profile)
+    assert not pairrun._probe_clean(host, {**profile, "linux_limits": {}})
+
+
+def test_linux_host_profile_rejects_unbounded_policy():
+    base = {
+        "schema_version": 2,
+        "profile_id": "linux-test",
+        "fingerprint": {
+            "system": "Linux",
+            "release": "test",
+            "machine": "x86_64",
+            "processor": "test",
+            "cpu_count": 1,
+            "rustc": "rustc test",
+            "power_digest": _fake_sha("power"),
+        },
+        "linux_limits": {
+            "max_thermal_millidegrees": 85_001,
+            "min_frequency_percent": 80,
+            "thermal_zones": {"thermal_zone0": "cpu_thermal"},
+            "cpu_max_khz": {"cpu0": 3_000_000},
+        },
+    }
+    with pytest.raises(pairrun.RunError, match="thermal limit"):
+        pairrun.validate_host_profile(base)
+    with pytest.raises(pairrun.RunError, match="schema version"):
+        pairrun.validate_host_profile({**base, "schema_version": 1})
 
 
 @pytest.mark.skipif(

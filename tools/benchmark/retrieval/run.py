@@ -185,9 +185,7 @@ def validate_qualified_speed_spec(spec: dict, task_count: int) -> None:
     if roots < FRESH_ROOTS_FLOOR:
         raise RunError(f"qualified speed requires at least {FRESH_ROOTS_FLOOR} fresh roots")
     if task_count < FROZEN_TASKS_FLOOR:
-        raise RunError(
-            f"qualified speed requires at least {FROZEN_TASKS_FLOOR} frozen tasks"
-        )
+        raise RunError(f"qualified speed requires at least {FROZEN_TASKS_FLOOR} frozen tasks")
     if warmups < 1:
         raise RunError("qualified speed requires at least one shared warmup pass")
     if task_count * measurements * roots < PILOT_OBSERVATIONS_FLOOR:
@@ -938,11 +936,17 @@ def read_power() -> dict:
             try:
                 governors[node.parent.parent.name] = node.read_text().strip()
             except OSError:
-                continue
+                return {"status": "unavailable", "digest": None}
         rendered = canonical(governors)
+        complete = (
+            os.cpu_count() is not None
+            and len(governors) == os.cpu_count()
+            and all(value == "performance" for value in governors.values())
+        )
         return {
-            "status": "bounded" if governors else "unavailable",
-            "digest": digest(rendered) if governors else None,
+            "status": "bounded" if complete else "unavailable",
+            "digest": digest(rendered) if complete else None,
+            "governors": governors,
         }
     return {"status": "unavailable", "digest": None}
 
@@ -1024,10 +1028,17 @@ def read_thermal() -> dict:
         out: dict = {}
         for zone in sorted(Path("/sys/class/thermal").glob("thermal_zone*/temp")):
             try:
-                out[zone.parent.name] = zone.read_text().strip()
-            except OSError:
-                continue
-        return {"status": "clean" if out else "unavailable", "evidence": out}
+                temperature = int(zone.read_text().strip())
+                sensor_type = (zone.parent / "type").read_text().strip()
+            except (OSError, ValueError):
+                return {"status": "unavailable", "evidence": out}
+            if not sensor_type or not 0 <= temperature <= 150_000:
+                return {"status": "unavailable", "evidence": out}
+            out[zone.parent.name] = {
+                "type": sensor_type,
+                "temp_millidegrees": temperature,
+            }
+        return {"status": "observed" if out else "unavailable", "evidence": out}
     return {"status": "unavailable", "evidence": {}}
 
 
@@ -1049,10 +1060,15 @@ def read_frequency(power: dict | None = None) -> dict:
             Path("/sys/devices/system/cpu").glob("cpu[0-9]*/cpufreq/scaling_cur_freq")
         ):
             try:
-                out[node.parent.parent.name] = node.read_text().strip()
-            except OSError:
-                continue
-        return {"status": "stable" if out else "unavailable", "evidence": out}
+                current = int(node.read_text().strip())
+                maximum = int((node.parent / "cpuinfo_max_freq").read_text().strip())
+            except (OSError, ValueError):
+                return {"status": "unavailable", "evidence": out}
+            if not 0 < current <= maximum:
+                return {"status": "unavailable", "evidence": out}
+            out[node.parent.parent.name] = {"current_khz": current, "maximum_khz": maximum}
+        complete = os.cpu_count() is not None and len(out) == os.cpu_count()
+        return {"status": "observed" if complete else "unavailable", "evidence": out}
     return {"status": "unavailable", "evidence": {}}
 
 
@@ -1293,8 +1309,15 @@ def _host_fingerprint(probe: dict) -> dict:
 
 
 def validate_host_profile(payload: object) -> dict:
-    profile = _exact_keys(payload, {"schema_version", "profile_id", "fingerprint"}, "host profile")
-    if profile["schema_version"] != 1:
+    if not isinstance(payload, dict):
+        raise RunError("host profile must be an object")
+    fingerprint_input = payload.get("fingerprint")
+    linux = isinstance(fingerprint_input, dict) and fingerprint_input.get("system") == "Linux"
+    keys = {"schema_version", "profile_id", "fingerprint"}
+    if linux:
+        keys.add("linux_limits")
+    profile = _exact_keys(payload, keys, "host profile")
+    if profile["schema_version"] != 2:
         raise RunError("host profile schema version mismatch")
     if not isinstance(profile["profile_id"], str) or not profile["profile_id"]:
         raise RunError("host profile id must be nonempty")
@@ -1310,18 +1333,94 @@ def validate_host_profile(payload: object) -> dict:
         raise RunError("host profile fingerprint.cpu_count must be positive")
     if not _is_hex(fingerprint["power_digest"], 64):
         raise RunError("host profile requires a measured power configuration digest")
+    if linux:
+        limits = _exact_keys(
+            profile["linux_limits"],
+            {"max_thermal_millidegrees", "min_frequency_percent", "thermal_zones", "cpu_max_khz"},
+            "host profile linux_limits",
+        )
+        if (
+            type(limits["max_thermal_millidegrees"]) is not int
+            or not 1 <= limits["max_thermal_millidegrees"] <= 85_000
+        ):
+            raise RunError("Linux thermal limit must be at most 85000 millidegrees")
+        if (
+            type(limits["min_frequency_percent"]) is not int
+            or not 80 <= limits["min_frequency_percent"] <= 100
+        ):
+            raise RunError("Linux frequency floor must be 80..100 percent")
+        zones = limits["thermal_zones"]
+        if (
+            not isinstance(zones, dict)
+            or not zones
+            or any(
+                not isinstance(name, str)
+                or not re.fullmatch(r"thermal_zone[0-9]+", name)
+                or not isinstance(sensor_type, str)
+                or not sensor_type
+                for name, sensor_type in zones.items()
+            )
+        ):
+            raise RunError("Linux thermal zones must name measured sensor types")
+        maximums = limits["cpu_max_khz"]
+        if (
+            not isinstance(maximums, dict)
+            or len(maximums) != fingerprint["cpu_count"]
+            or any(
+                not isinstance(name, str)
+                or not re.fullmatch(r"cpu[0-9]+", name)
+                or type(value) is not int
+                or value <= 0
+                for name, value in maximums.items()
+            )
+        ):
+            raise RunError("Linux maximum frequencies must cover every CPU")
     return profile
 
 
 def cmd_host_profile(args: argparse.Namespace) -> int:
     probe = host_probe()
-    profile = validate_host_profile(
-        {
-            "schema_version": 1,
-            "profile_id": args.profile_id,
-            "fingerprint": _host_fingerprint(probe),
+    linux = probe["system"] == "Linux"
+    zones = args.linux_thermal_zone or []
+    limits = None
+    if linux:
+        if (
+            args.linux_max_thermal_millidegrees is None
+            or args.linux_min_frequency_percent is None
+            or not zones
+        ):
+            raise RunError(
+                "Linux host profile requires thermal zones, temperature ceiling, and frequency floor"
+            )
+        thermal = probe["thermal"]
+        frequency = probe["frequency"]
+        if thermal.get("status") != "observed" or frequency.get("status") != "observed":
+            raise RunError("Linux thermal/frequency telemetry is unavailable")
+        observed_zones = thermal["evidence"]
+        if len(set(zones)) != len(zones) or any(zone not in observed_zones for zone in zones):
+            raise RunError("Linux thermal zones must exist uniquely in the host probe")
+        limits = {
+            "max_thermal_millidegrees": args.linux_max_thermal_millidegrees,
+            "min_frequency_percent": args.linux_min_frequency_percent,
+            "thermal_zones": {zone: observed_zones[zone]["type"] for zone in zones},
+            "cpu_max_khz": {
+                cpu: entry["maximum_khz"] for cpu, entry in frequency["evidence"].items()
+            },
         }
-    )
+    elif (
+        zones
+        or args.linux_max_thermal_millidegrees is not None
+        or args.linux_min_frequency_percent is not None
+    ):
+        raise RunError("Linux host profile limits cannot be set on another OS")
+    payload = {
+        "schema_version": 2,
+        "profile_id": args.profile_id,
+        "fingerprint": _host_fingerprint(probe),
+    }
+    if linux:
+        payload["linux_limits"] = limits
+    profile = validate_host_profile(payload)
     Path(args.out).write_text(
         json.dumps(profile, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
@@ -2356,10 +2455,12 @@ def _record_identity(payload: dict, where: str) -> tuple[str, str]:
 
 
 def _probe_clean(probe: object, profile: dict) -> bool:
+    if not isinstance(probe, dict) or _host_fingerprint(probe) != profile["fingerprint"]:
+        return False
+    if probe.get("system") == "Linux":
+        return _linux_probe_clean(probe, profile)
     return (
-        isinstance(probe, dict)
-        and _host_fingerprint(probe) == profile["fingerprint"]
-        and probe.get("concurrent_processes", {}) in ({}, {"none": []})
+        probe.get("concurrent_processes", {}) in ({}, {"none": []})
         and probe.get("contention_override") is not True
         and isinstance(probe.get("thermal"), dict)
         and probe["thermal"].get("status") == "clean"
@@ -2368,6 +2469,60 @@ def _probe_clean(probe: object, profile: dict) -> bool:
         and isinstance(probe.get("power"), dict)
         and probe["power"].get("status") == "bounded"
     )
+
+
+def _linux_probe_clean(probe: dict, profile: dict) -> bool:
+    limits = profile.get("linux_limits")
+    if not isinstance(limits, dict):
+        return False
+    thermal = probe.get("thermal")
+    frequency = probe.get("frequency")
+    power = probe.get("power")
+    if not (
+        probe.get("concurrent_processes") in ({}, {"none": []})
+        and probe.get("contention_override") is not True
+        and isinstance(thermal, dict)
+        and thermal.get("status") == "observed"
+        and isinstance(frequency, dict)
+        and frequency.get("status") == "observed"
+        and isinstance(power, dict)
+        and power.get("status") == "bounded"
+    ):
+        return False
+    observed_zones = thermal.get("evidence")
+    observed_cpus = frequency.get("evidence")
+    governors = power.get("governors")
+    maximums = limits.get("cpu_max_khz")
+    if not all(
+        isinstance(value, dict) for value in (observed_zones, observed_cpus, governors, maximums)
+    ):
+        return False
+    if set(observed_cpus) != set(maximums) or set(governors) != set(maximums):
+        return False
+    if any(value != "performance" for value in governors.values()):
+        return False
+    if power.get("digest") != digest(canonical(governors)):
+        return False
+    for name, sensor_type in limits["thermal_zones"].items():
+        entry = observed_zones.get(name)
+        if not isinstance(entry, dict) or entry.get("type") != sensor_type:
+            return False
+        temperature = entry.get("temp_millidegrees")
+        if (
+            type(temperature) is not int
+            or not 0 <= temperature <= limits["max_thermal_millidegrees"]
+        ):
+            return False
+    for name, maximum in maximums.items():
+        entry = observed_cpus[name]
+        if not isinstance(entry, dict) or entry.get("maximum_khz") != maximum:
+            return False
+        current = entry.get("current_khz")
+        if type(current) is not int or not 0 < current <= maximum:
+            return False
+        if current * 100 < maximum * limits["min_frequency_percent"]:
+            return False
+    return True
 
 
 def _valid_bootstrap_ci(ci: object, sample_count: int, *, estimable: bool) -> bool:
@@ -5764,6 +5919,9 @@ def build_parser() -> argparse.ArgumentParser:
     profile = sub.add_parser("host-profile", help="freeze a canonical host profile")
     profile.add_argument("--profile-id", required=True)
     profile.add_argument("--out", required=True)
+    profile.add_argument("--linux-thermal-zone", action="append")
+    profile.add_argument("--linux-max-thermal-millidegrees", type=int)
+    profile.add_argument("--linux-min-frequency-percent", type=int)
     return parser
 
 
