@@ -4,7 +4,7 @@ Status: `F1–F4-remediation-implemented / qualification-open`. T00–T14 have i
 
 ## 0. Current execution boundary (2026-09-24)
 
-The adversarial source at `93b736cd0f18ab698f5a12e23a2d09677a3d869d` reproduced F1–F4: path relocation changed `PAIR_VALID`, recorded pins could be forged, partial/duplicate test evidence could certify the contract, and underpowered or physically impossible timing could qualify speed. Commits `688238a8` and `f42adc5f`, plus a subsequent successful-promotion regression, implement the corresponding validation and tests. The pre-freeze 2026-09-24 working-tree `benchmarks/retrieval/proof-required-tests.json` lists 172 Python contract, 51 Rust contract and 12 SDK required identities. These are snapshot inventory counts, not proof execution results. Final source-bound contract/SDK receipts and admitted paired evidence remain pending; see [INDEX.md](INDEX.md).
+The adversarial source at `93b736cd0f18ab698f5a12e23a2d09677a3d869d` reproduced F1–F4: path relocation changed `PAIR_VALID`, recorded pins could be forged, partial/duplicate test evidence could certify the contract, and underpowered or physically impossible timing could qualify speed. Commits `688238a8`, `f42adc5f`, and `64938975` implement the corresponding validation, promotion replay, and a positive five-root/20-task/1,000-observation verdict test. At `64938975`, `benchmarks/retrieval/proof-required-tests.json` lists 173 Python contract, 51 Rust contract, and 12 SDK required identities. These are inventory counts, not proof execution results. Final source-bound contract/SDK receipts and admitted paired evidence remain pending; see [INDEX.md](INDEX.md).
 
 The following paragraph and table record an earlier implementation audit, not current qualification evidence:
 

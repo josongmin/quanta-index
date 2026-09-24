@@ -313,9 +313,9 @@ required rail has no current-source evidence; T15 and T16 are
 | T16 | incremental capture (conditional on an incremental claim) | `NOT_APPLICABLE` without that claim; `NOT_RUN` only if claimed without proof |
 | T17 | W0-B qualification admission | `admission.schema.json` plus license, two annotation, adjudication, model, host, lockfile and exact contract/SDK receipt digests; exploratory runs are never promoted |
 
-The pre-freeze 2026-09-24 working-tree required-test authority lists 172
-Python contract, 51 Rust contract and 12 SDK identities. These are snapshot
-inventory counts, not executed proof counts. `pair-spec.schema.json` names the
+At `64938975`, the required-test authority lists 173 Python contract,
+51 Rust contract and 12 SDK identities. These are inventory counts, not
+executed proof counts. `pair-spec.schema.json` names the
 three inventory inputs; `run-manifest.schema.json` binds their paths and
 SHA-256 claims. Contract/SDK collection inventories and raw terminal evidence
 must match the required identities; the verdict reads the authority Git blob
