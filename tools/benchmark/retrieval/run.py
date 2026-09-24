@@ -3941,33 +3941,6 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         else:
             perf_fail = None
         try:
-            quanta_routes_by_rep = []
-            for rep in sorted(rep_records, key=_rep_sort_key):
-                routes = {
-                    row["route"]
-                    for path in rep_records[rep]
-                    if validated[path]["system"] == "quanta"
-                    for row in validated[path]["run"]["results"]
-                }
-                quanta_routes_by_rep.append(routes)
-            if not quanta_routes_by_rep or any(
-                routes != quanta_routes_by_rep[0] for routes in quanta_routes_by_rep
-            ):
-                raise RunError("qualified speed requires identical Quanta routes in every root")
-            validate_qualified_speed_spec(
-                {
-                    "repetitions": len(rep_records),
-                    "query_warmup_passes": protocol_payload.get("query_warmup_passes"),
-                    "query_repetitions_per_root": protocol_payload.get(
-                        "query_repetitions_per_root"
-                    ),
-                    "routes": sorted(quanta_routes_by_rep[0]),
-                },
-                len(pack["tasks"]),
-            )
-        except (RunError, TypeError, ValueError) as exc:
-            perf_fail = (f"measurement_protocol_ineligible: {exc}", "provenance")
-        try:
             cells = []
             shared_protocol_ok = True
             protocol_failure_reason = "shared_warm_query_protocol_unimplemented"
@@ -4075,6 +4048,34 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 perf_fail = ("host_contended", "host")
             elif not shared_protocol_ok:
                 perf_fail = (protocol_failure_reason, "provenance")
+        if perf_fail is None:
+            try:
+                quanta_routes_by_rep = []
+                for rep in sorted(rep_records, key=_rep_sort_key):
+                    routes = {
+                        row["route"]
+                        for path in rep_records[rep]
+                        if validated[path]["system"] == "quanta"
+                        for row in validated[path]["run"]["results"]
+                    }
+                    quanta_routes_by_rep.append(routes)
+                if not quanta_routes_by_rep or any(
+                    routes != quanta_routes_by_rep[0] for routes in quanta_routes_by_rep
+                ):
+                    raise RunError("qualified speed requires identical Quanta routes in every root")
+                validate_qualified_speed_spec(
+                    {
+                        "repetitions": len(rep_records),
+                        "query_warmup_passes": protocol_payload.get("query_warmup_passes"),
+                        "query_repetitions_per_root": protocol_payload.get(
+                            "query_repetitions_per_root"
+                        ),
+                        "routes": sorted(quanta_routes_by_rep[0]),
+                    },
+                    len(pack["tasks"]),
+                )
+            except (RunError, TypeError, ValueError) as exc:
+                perf_fail = (f"measurement_protocol_ineligible: {exc}", "provenance")
         if perf_fail is None:
             set_state(
                 "PERF_QUALIFIED",

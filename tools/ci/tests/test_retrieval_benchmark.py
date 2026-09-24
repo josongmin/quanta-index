@@ -2894,6 +2894,53 @@ def test_verdict_garbage_test_artifact(tmp_path):
     assert "raw evidence refused" in verdict["state_evidence"]["CONTRACT_GREEN"]["reason"]
 
 
+def test_verdict_rejects_coordinated_partial_inventory_and_receipt_rebind(tmp_path):
+    st = _pair_stage(tmp_path, receipts="full")
+    assert _stage_verdict(st)["states"]["CONTRACT_GREEN"] == "pass"
+    manifest = json.loads(st["manifest_path"].read_text())
+    paths = {
+        key: st["stage"] / manifest["artifacts"][f"contract_python_{key}"]
+        for key in ("raw", "inventory", "results", "receipt")
+    }
+    inventory = json.loads(paths["inventory"].read_text())
+    inventory["tests"] = inventory["tests"][:1]
+    paths["inventory"].write_text(json.dumps(inventory), encoding="utf-8")
+    identity = inventory["tests"][0]
+    classname = "tools.ci.tests.test_retrieval_benchmark"
+    paths["raw"].write_text(
+        f'<testsuite tests="1" failures="0" errors="0" skipped="0">'
+        f'<testcase classname="{classname}" '
+        f'name="{html.escape(identity[len(classname) + 1 :], quote=True)}"/>'
+        "</testsuite>",
+        encoding="utf-8",
+    )
+    results = _counts_results(
+        "python3 -m pytest tools/ci/tests/test_retrieval_benchmark.py -q", 1, 1, 1, 0
+    )
+    paths["results"].write_text(json.dumps(results), encoding="utf-8")
+    receipt = json.loads(paths["receipt"].read_text())
+    receipt["evidence_sha256"] = pairrun.sha_file(paths["results"])
+    receipt["test_event_count"] = 1
+    for entry in receipt["input_evidence"]:
+        if entry["role"] == "pytest-junit":
+            entry["sha256"] = pairrun.sha_file(paths["raw"])
+        elif entry["role"] == "pytest-inventory":
+            entry["sha256"] = pairrun.sha_file(paths["inventory"])
+    paths["receipt"].write_text(json.dumps(receipt), encoding="utf-8")
+    manifest["evidence"]["contract_suites"]["python"].update(
+        test_result_digest=pairrun.sha_file(paths["results"]),
+        raw_evidence_digest=pairrun.sha_file(paths["raw"]),
+        inventory_digest=pairrun.sha_file(paths["inventory"]),
+    )
+    st["manifest_path"].write_text(json.dumps(manifest), encoding="utf-8")
+    verdict = _stage_verdict(st)
+    assert verdict["states"]["CONTRACT_GREEN"] == "fail"
+    assert (
+        "inventory differs from source authority"
+        in verdict["state_evidence"]["CONTRACT_GREEN"]["reason"]
+    )
+
+
 def test_verdict_mapping_lies(tmp_path):
     st = _pair_stage(tmp_path)
     mapping_path = st["stage"] / "rep-00" / "semble" / "mapping-proof.json"
@@ -2951,7 +2998,7 @@ def test_verdict_matrix_tamper_and_native_disagreement(tmp_path):
     phase_path.write_text(json.dumps(phase), encoding="utf-8")
     verdict = _stage_verdict(st)
     assert verdict["states"]["PERF_QUALIFIED"] == "fail"
-    assert "matrix_rebuild_failed" in verdict["state_evidence"]["PERF_QUALIFIED"]["reason"]
+    assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == "phase_boundaries_incomplete"
 
 
 def test_verdict_perf_frontier_and_gates(tmp_path, monkeypatch):
@@ -2966,10 +3013,8 @@ def test_verdict_perf_frontier_and_gates(tmp_path, monkeypatch):
     monkeypatch.setattr(pairrun, "PILOT_OBSERVATIONS_FLOOR", 2)
     monkeypatch.setattr(pairrun, "FRESH_ROOTS_FLOOR", 1)
     verdict = _stage_verdict(st)
-    assert verdict["states"]["PERF_QUALIFIED"] == "pass"
-    assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == (
-        "phase_and_process_tree_resources_verified"
-    )
+    assert verdict["states"]["PERF_QUALIFIED"] == "fail"
+    assert "at least 20 frozen tasks" in verdict["state_evidence"]["PERF_QUALIFIED"]["reason"]
     # Null timings fail a speed claim once floors hold.
     st = _pair_stage(tmp_path / "nulls", scope="qualified", claims={"speed": True})
     record_path = st["stage"] / "rep-00" / "quanta" / "strategy-00-whole_file" / "record.json"
@@ -3051,7 +3096,9 @@ def test_verdict_host_profile_fingerprint_is_enforced(tmp_path, monkeypatch):
     verdict = _stage_verdict(st)
     assert verdict["states"]["PERF_QUALIFIED"] == "fail"
     assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"].startswith("admission_unverified:")
-    assert verdict["failure_class"] == "admission"
+    assert verdict["states"]["PAIR_VALID"] == "fail"
+    assert verdict["state_evidence"]["PAIR_VALID"]["reason"] == "protocol_lock_host_profile_drift"
+    assert verdict["failure_class"] == "provenance"
 
 
 def test_verdict_rejects_forged_phase_and_process_tree_resources(tmp_path, monkeypatch):
@@ -3466,9 +3513,7 @@ def test_verdict_cannot_qualify_cold_only_latency_as_warm_performance(tmp_path, 
     )
     verdict = _stage_verdict(st)
     assert verdict["states"]["PERF_QUALIFIED"] == "fail"
-    assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == (
-        "shared_warm_query_protocol_unimplemented"
-    )
+    assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == "phase_boundaries_incomplete"
 
 
 def test_verdict_rejects_nonconsecutive_or_unbound_root_protocols(tmp_path, monkeypatch):

@@ -156,6 +156,7 @@
     "tools.ci.tests.test_retrieval_benchmark.test_verdict_perf_frontier_and_gates",
     "tools.ci.tests.test_retrieval_benchmark.test_verdict_quality_gates",
     "tools.ci.tests.test_retrieval_benchmark.test_verdict_refusals",
+    "tools.ci.tests.test_retrieval_benchmark.test_verdict_rejects_coordinated_partial_inventory_and_receipt_rebind",
     "tools.ci.tests.test_retrieval_benchmark.test_verdict_rejects_forged_phase_and_process_tree_resources",
     "tools.ci.tests.test_retrieval_benchmark.test_verdict_rejects_nonconsecutive_or_unbound_root_protocols",
     "tools.ci.tests.test_retrieval_benchmark.test_verdict_rejects_protocol_lock_pin_mutations[host_profile_digest-0000000000000000000000000000000000000000000000000000000000000000]",
