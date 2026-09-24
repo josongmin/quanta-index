@@ -1594,7 +1594,7 @@ def test_isolation_boundary_denies_suite_and_allows_blind_pack(tmp_path):
         "suite_secret_root": str(secret_root),
     }
     prepared = pairrun.prepare_isolation(spec, stage, original_suite)
-    assert prepared["isolation_method"] == pairrun.ISOLATION_BACKEND
+    assert prepared["isolation_method"] == pairrun.MACOS_ISOLATION_BACKEND
     proof_path = stage / "isolation-proof.json"
     assert prepared["access_block_log"] == f"sha256:{pairrun.sha_file(proof_path)}"
     denied_command, evidence = pairrun.sandbox_command(prepared, ["/bin/cat", str(original_suite)])
@@ -2253,13 +2253,13 @@ def _pair_stage(
             (runner_tools / name).write_text(name, encoding="utf-8")
         profile = pairrun._seatbelt_profile(denied_roots, allowed_read_roots, allowed_write_roots)
         proof = {
-            "schema_version": 1,
-            "backend": pairrun.ISOLATION_BACKEND,
+            "schema_version": pairrun.ISOLATION_PROOF_VERSION,
+            "backend": pairrun.MACOS_ISOLATION_BACKEND,
             "sandbox_exec": {
                 "path": str(pairrun.SANDBOX_EXEC),
                 "sha256": pairrun.sha_file(pairrun.SANDBOX_EXEC),
             },
-            "profile_sha256": hashlib.sha256(profile.encode()).hexdigest(),
+            "policy_sha256": hashlib.sha256(profile.encode()).hexdigest(),
             "denied_roots": denied_roots,
             "allowed_read_roots": allowed_read_roots,
             "allowed_write_roots": allowed_write_roots,
@@ -2291,11 +2291,11 @@ def _pair_stage(
         proof_path = stage / "isolation-proof.json"
         proof_path.write_text(json.dumps(proof), encoding="utf-8")
         proof_sha = pairrun.sha_file(proof_path)
-        isolation_method = pairrun.ISOLATION_BACKEND
+        isolation_method = pairrun.MACOS_ISOLATION_BACKEND
         access_block_log = f"sha256:{proof_sha}"
         resource_isolation = {
-            "backend": pairrun.ISOLATION_BACKEND,
-            "profile_sha256": proof["profile_sha256"],
+            "backend": pairrun.MACOS_ISOLATION_BACKEND,
+            "policy_sha256": proof["policy_sha256"],
             "proof_sha256": proof_sha,
         }
     corpus_dir = work / "corpus"
@@ -3360,7 +3360,7 @@ def test_verdict_quality_gates(tmp_path, monkeypatch):
     assert verdict["failure_class"] == "none"
     proof_path = st["stage"] / "isolation-proof.json"
     proof = json.loads(proof_path.read_text(encoding="utf-8"))
-    proof["profile_sha256"] = _fake_sha("forged-profile")
+    proof["policy_sha256"] = _fake_sha("forged-profile")
     proof_path.write_text(json.dumps(proof), encoding="utf-8")
     verdict = _stage_verdict(st)
     assert verdict["states"]["QUALITY_DELTA"] == "fail"
@@ -3382,10 +3382,8 @@ def test_verdict_quality_gates(tmp_path, monkeypatch):
     # A manifest cannot upgrade attested records to isolated quality proof.
     st = _pair_stage(tmp_path / "spoof", scope="qualified", claims={"quality": True})
     _rewrite_manifest(st, lambda m: m.update(blinding="isolated"))
-    verdict = _stage_verdict(st)
-    assert verdict["states"]["QUALITY_DELTA"] == "fail"
-    assert verdict["state_evidence"]["QUALITY_DELTA"]["reason"] == ("isolation_record_mismatch")
-    assert verdict["blinding"] == "attested"
+    with pytest.raises(pairrun.RunError, match="current tagged backend proof binding"):
+        _stage_verdict(st)
     # T10: a quality claim over the hash-dev diagnostic control fails even
     # when every other quality gate would pass.
     st = _pair_stage(
