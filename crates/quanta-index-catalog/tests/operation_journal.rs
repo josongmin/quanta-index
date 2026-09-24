@@ -109,7 +109,9 @@ fn opens_only_current_journal_and_sequence_tables() -> TestResult {
     let names: Vec<String> = statement
         .query_map([], |row| row.get(0))?
         .collect::<Result<_, _>>()?;
-    assert_eq!(names, ["catalog_sequence_v2", "idempotency_v2"]);
+    if names != ["catalog_sequence_v2", "idempotency_v2"] {
+        return Err(std::io::Error::other(format!("unexpected catalog tables: {names:?}")).into());
+    }
     Ok(())
 }
 
@@ -124,17 +126,25 @@ fn legacy_catalog_table_refuses_open_before_current_schema_creation() -> TestRes
         ))?;
         drop(connection);
         let opened = SqliteCatalog::open(temp.path(), Duration::from_millis(200));
-        assert!(
-            matches!(&opened, Err(CoreError::Storage(message)) if message.contains("unsupported legacy catalog tables")),
-            "{legacy_table} must refuse open"
-        );
+        if !matches!(&opened, Err(CoreError::Storage(message)) if message.contains("unsupported legacy catalog tables"))
+        {
+            return Err(std::io::Error::other(format!(
+                "{legacy_table} must refuse open: {opened:?}"
+            ))
+            .into());
+        }
         let connection = raw(&temp)?;
         let current_tables: i64 = connection.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'idempotency_v2'",
             [],
             |row| row.get(0),
         )?;
-        assert_eq!(current_tables, 0);
+        if current_tables != 0 {
+            return Err(std::io::Error::other(format!(
+                "{legacy_table} created {current_tables} current tables"
+            ))
+            .into());
+        }
     }
     Ok(())
 }

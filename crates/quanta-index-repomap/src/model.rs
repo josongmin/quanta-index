@@ -305,8 +305,8 @@ impl<'de> Visitor<'de> for RepoMapEntryVisitor {
                     }
                     source_import_outgoing_edges = Some(map.next_value()?);
                 }
-                _other => {
-                    return Err(de::Error::unknown_field(_other, REPOMAP_ENTRY_FIELDS));
+                other => {
+                    return Err(de::Error::unknown_field(other, REPOMAP_ENTRY_FIELDS));
                 }
             }
         }
@@ -535,8 +535,8 @@ impl<'de> Visitor<'de> for RepoMapSnapshotVisitor {
                     }
                     entries = Some(map.next_value()?);
                 }
-                _other => {
-                    return Err(de::Error::unknown_field(_other, REPOMAP_SNAPSHOT_FIELDS));
+                other => {
+                    return Err(de::Error::unknown_field(other, REPOMAP_SNAPSHOT_FIELDS));
                 }
             }
         }

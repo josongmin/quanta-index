@@ -1029,7 +1029,7 @@ impl RepoMapGenerationStore {
         Ok(guard.get(&key).map(|head| head.manifest_generation))
     }
 
-    /// Resolve the exact durable RepoMap head for an explicit activation CAS.
+    /// Resolve the exact durable `RepoMap` head for an explicit activation CAS.
     /// The in-process `activated` map is a query projection, not this oracle.
     pub fn active_head_token(
         &self,
