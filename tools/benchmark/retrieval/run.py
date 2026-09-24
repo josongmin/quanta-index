@@ -282,6 +282,16 @@ def _cleanup_process_group(pgid: int, timeout_secs: float = 5.0) -> tuple[bool, 
     return False, True, "owned process group survived SIGKILL"
 
 
+def _require_supported_resource_schema(system: str) -> None:
+    """Do not encode Linux owner evidence as the legacy ps resource schema."""
+    if system == "Linux":
+        raise RunError(
+            "Linux resource schema v1 cannot encode cgroup-v2 owner evidence: "
+            "peak CPU percent and per-process CPU percent are unavailable; "
+            "a delegated cgroup v2 owner and revised resource schema are required"
+        )
+
+
 def run_monitored_process(
     command: list[str],
     *,
@@ -294,7 +304,8 @@ def run_monitored_process(
     sample_interval_ms: int = 50,
     isolation: dict | None = None,
 ) -> dict:
-    """Run one owned process group and persist process-tree peak RSS evidence."""
+    """Run a supported process sampler; refuse unrepresentable Linux evidence."""
+    _require_supported_resource_schema(platform.system())
     if timeout_secs <= 0:
         raise RunError("monitored process timeout must be positive")
     if sample_interval_ms <= 0:
@@ -3422,6 +3433,8 @@ def _validate_resource_metrics(payload: object, where: str) -> dict:
                 )
             ):
                 raise RunError(f"{where}.isolation child deny/allow proof is invalid")
+    if isinstance(isolation, dict) and isolation.get("backend") == LINUX_ISOLATION_BACKEND:
+        _require_supported_resource_schema("Linux")
     return metrics
 
 
@@ -3740,6 +3753,8 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     host_profile = validate_host_profile(read_json(resolved["host_profile"]))
     if sha_file(resolved["host_profile"]) != provenance_claims["host"]["profile_digest"]:
         raise RunError("host profile artifact digest mismatch")
+    if manifest["scope"] == "qualified":
+        _require_supported_resource_schema(host_profile["fingerprint"]["system"])
     pair_notes: list[tuple[str, list[str], str]] = []
 
     def pair_note(reason: str, t_ids: tuple[str, ...] = (), fail_class: str = "provenance") -> None:
@@ -5045,6 +5060,7 @@ def run_pair(spec: dict) -> int:
     root. Partial output is never resumed: rerun from a fresh root.
     """
     scope = spec.get("scope", "exploratory")
+    _require_supported_resource_schema(platform.system())
     if scope == "qualified" and not isinstance(spec.get("admission"), dict):
         raise RunError("qualified pair capture requires spec.admission")
     if scope != "qualified" and "admission" in spec:

@@ -1515,6 +1515,7 @@ def test_quanta_driver_freezes_typed_failure_without_record(tmp_path, monkeypatc
     assert failure["record_emitted"] is False
 
 
+@pytest.mark.skipif(sys.platform == "linux", reason="legacy ps sampler is not Linux owner evidence")
 def test_process_tree_resource_sampler_counts_children_and_kills_timeout(tmp_path):
     child_code = (
         "import subprocess,sys,time; "

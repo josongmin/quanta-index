@@ -132,7 +132,9 @@ def test_linux_capture_context_binds_policy_bytes(tmp_path):
         pairrun.sandbox_command(spec, ["/bin/true"])
 
 
-def test_monitored_capture_rejects_missing_child_attestation(tmp_path):
+def test_monitored_capture_rejects_missing_child_attestation(tmp_path, monkeypatch):
+    # Exercise the legacy attestation parser independently of the Linux schema gate.
+    monkeypatch.setattr(pairrun.platform, "system", lambda: "Darwin")
     command = [str(Path(sys.executable).resolve()), "-c", "pass", "--"]
     with pytest.raises(pairrun.RunError, match="did not attest deny/allow"):
         pairrun.run_monitored_process(
@@ -151,6 +153,8 @@ def test_monitored_capture_rejects_missing_child_attestation(tmp_path):
 
 
 def test_monitored_capture_binds_child_pipe_attestation(tmp_path, monkeypatch):
+    # This v1 resource shape is not admissible as Linux cgroup ownership evidence.
+    monkeypatch.setattr(pairrun.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(
         pairrun,
         "_process_tree_sample",
@@ -198,7 +202,8 @@ def test_monitored_capture_binds_child_pipe_attestation(tmp_path, monkeypatch):
         "index_storage": "disk",
         "index_measurement": "filesystem_tree_v1",
     }
-    pairrun._validate_resource_metrics(resource, "child")
+    with pytest.raises(pairrun.RunError, match="Linux resource schema v1"):
+        pairrun._validate_resource_metrics(resource, "child")
     copied = json.loads(json.dumps(resource))
     copied["isolation"]["child_attestation"]["exec_sha256"] = "0" * 64
     with pytest.raises(pairrun.RunError, match="child deny/allow proof"):
@@ -214,6 +219,31 @@ def test_monitored_capture_binds_child_pipe_attestation(tmp_path, monkeypatch):
     resource["isolation"]["child_attestation"]["suite_read_denied"] = False
     with pytest.raises(pairrun.RunError, match="child deny/allow proof"):
         pairrun._validate_resource_metrics(resource, "child")
+
+
+@pytest.mark.parametrize("scope", ["exploratory", "qualified"])
+def test_linux_monitor_refuses_before_creating_evidence_or_launching(
+    tmp_path, monkeypatch, scope
+):
+    monkeypatch.setattr(pairrun.platform, "system", lambda: "Linux")
+
+    def unexpected(*_args, **_kwargs):
+        pytest.fail("legacy process launch must not run on Linux")
+
+    monkeypatch.setattr(pairrun.subprocess, "Popen", unexpected)
+    output = tmp_path / "evidence"
+    with pytest.raises(pairrun.RunError, match="delegated cgroup v2 owner"):
+        pairrun.run_monitored_process(
+            ["/bin/true"],
+            stdout_path=output / "stdout.log",
+            stderr_path=output / "stderr.log",
+            resource_path=output / "resource.json",
+            timeout_secs=5,
+        )
+    assert not output.exists()
+    with pytest.raises(pairrun.RunError, match="Linux resource schema v1"):
+        pairrun.run_pair({"scope": scope})
+    assert not output.exists()
 
 
 def test_linux_policy_never_grants_stage_or_denied_source(tmp_path):
