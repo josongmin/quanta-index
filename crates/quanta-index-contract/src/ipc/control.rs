@@ -6,6 +6,7 @@ use serde::{
     ser::SerializeStruct,
 };
 
+use quanta_index_contract_base::SearchCorpusActivationTokenV1;
 use quanta_index_contract_base::ids::{ManifestGeneration, RepoId, RevisionId};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -280,6 +281,327 @@ impl SearchCorpusGenerationIdentityV1 {
     }
 }
 
+/// The catalog-owned activation identity returned by query-plane resolution.
+/// A generation identity alone does not distinguish A -> B -> A or restore.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SearchCorpusActiveHeadV1 {
+    pub generation: SearchCorpusGenerationIdentityV1,
+    pub activation_token: SearchCorpusActivationTokenV1,
+}
+
+impl SearchCorpusActiveHeadV1 {
+    pub fn validate_v1(&self) -> Result<(), SearchCorpusGenerationIdentityValidationErrorV1> {
+        self.generation.validate_v1()
+    }
+}
+
+/// One catalog snapshot for a requested pair. `None` is an observed absent
+/// head, not a fallback for a catalog read error or uncertain durability.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SearchCorpusActiveHeadObservationV1 {
+    repo_id: RepoId,
+    revision_id: RevisionId,
+    head: Option<SearchCorpusActiveHeadV1>,
+}
+
+impl SearchCorpusActiveHeadObservationV1 {
+    pub fn new(
+        repo_id: RepoId,
+        revision_id: RevisionId,
+        head: Option<SearchCorpusActiveHeadV1>,
+    ) -> Result<Self, &'static str> {
+        if let Some(value) = &head {
+            value.validate_v1().map_err(|_| "invalid active head")?;
+            if value.generation.lexical.repo_id != repo_id
+                || value.generation.lexical.revision_id != revision_id
+            {
+                return Err("active head belongs to another repository or revision");
+            }
+        }
+        Ok(Self {
+            repo_id,
+            revision_id,
+            head,
+        })
+    }
+
+    #[must_use]
+    pub const fn repo_id(&self) -> &RepoId {
+        &self.repo_id
+    }
+
+    #[must_use]
+    pub const fn revision_id(&self) -> &RevisionId {
+        &self.revision_id
+    }
+
+    #[must_use]
+    pub const fn head(&self) -> Option<&SearchCorpusActiveHeadV1> {
+        self.head.as_ref()
+    }
+
+    #[must_use]
+    pub fn into_head(self) -> Option<SearchCorpusActiveHeadV1> {
+        self.head
+    }
+}
+
+const SEARCH_CORPUS_ACTIVE_HEAD_OBSERVATION_V1_FIELDS: &[&str] =
+    &["repo_id", "revision_id", "head"];
+
+impl Serialize for SearchCorpusActiveHeadObservationV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("SearchCorpusActiveHeadObservationV1", 3)?;
+        state.serialize_field("repo_id", &self.repo_id)?;
+        state.serialize_field("revision_id", &self.revision_id)?;
+        state.serialize_field("head", &self.head)?;
+        state.end()
+    }
+}
+
+struct SearchCorpusActiveHeadObservationV1Visitor;
+
+impl<'de> Visitor<'de> for SearchCorpusActiveHeadObservationV1Visitor {
+    type Value = SearchCorpusActiveHeadObservationV1;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a SearchCorpusActiveHeadObservationV1 map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut repo_id = None;
+        let mut revision_id = None;
+        let mut head: Option<Option<SearchCorpusActiveHeadV1>> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "repo_id" => {
+                    if repo_id.is_some() {
+                        return Err(de::Error::duplicate_field("repo_id"));
+                    }
+                    repo_id = Some(map.next_value()?);
+                }
+                "revision_id" => {
+                    if revision_id.is_some() {
+                        return Err(de::Error::duplicate_field("revision_id"));
+                    }
+                    revision_id = Some(map.next_value()?);
+                }
+                "head" => {
+                    if head.is_some() {
+                        return Err(de::Error::duplicate_field("head"));
+                    }
+                    head = Some(map.next_value()?);
+                }
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        SEARCH_CORPUS_ACTIVE_HEAD_OBSERVATION_V1_FIELDS,
+                    ));
+                }
+            }
+        }
+        SearchCorpusActiveHeadObservationV1::new(
+            repo_id.ok_or_else(|| de::Error::missing_field("repo_id"))?,
+            revision_id.ok_or_else(|| de::Error::missing_field("revision_id"))?,
+            head.ok_or_else(|| de::Error::missing_field("head"))?,
+        )
+        .map_err(de::Error::custom)
+    }
+}
+
+impl<'de> Deserialize<'de> for SearchCorpusActiveHeadObservationV1 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "SearchCorpusActiveHeadObservationV1",
+            SEARCH_CORPUS_ACTIVE_HEAD_OBSERVATION_V1_FIELDS,
+            SearchCorpusActiveHeadObservationV1Visitor,
+        )
+    }
+}
+
+/// One track's resolution from a single composite catalog head.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ActiveGenerationResolutionV1 {
+    pub track: SearchPlaneTrackKind,
+    pub head: SearchCorpusActiveHeadV1,
+}
+
+impl ActiveGenerationResolutionV1 {
+    #[must_use]
+    pub fn snapshot_v1(&self) -> Option<&GenerationSnapshot> {
+        match self.track {
+            SearchPlaneTrackKind::Lexical => Some(&self.head.generation.lexical),
+            SearchPlaneTrackKind::Semantic => Some(&self.head.generation.semantic),
+            SearchPlaneTrackKind::Structural => None,
+        }
+    }
+
+    pub fn validate_v1(&self) -> Result<(), String> {
+        self.head.validate_v1().map_err(|error| {
+            format!("active resolution carries an invalid composite identity: {error}")
+        })?;
+        if self.snapshot_v1().is_none() {
+            return Err("structural track has no composite active resolution".to_string());
+        }
+        Ok(())
+    }
+}
+
+const SEARCH_CORPUS_ACTIVE_HEAD_V1_FIELDS: &[&str] = &["generation", "activation_token"];
+const ACTIVE_GENERATION_RESOLUTION_V1_FIELDS: &[&str] = &["track", "head"];
+
+impl Serialize for SearchCorpusActiveHeadV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("SearchCorpusActiveHeadV1", 2)?;
+        state.serialize_field("generation", &self.generation)?;
+        state.serialize_field("activation_token", &self.activation_token)?;
+        state.end()
+    }
+}
+
+struct SearchCorpusActiveHeadV1Visitor;
+
+impl<'de> Visitor<'de> for SearchCorpusActiveHeadV1Visitor {
+    type Value = SearchCorpusActiveHeadV1;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a SearchCorpusActiveHeadV1 map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut generation = None;
+        let mut activation_token = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "generation" => {
+                    if generation.is_some() {
+                        return Err(de::Error::duplicate_field("generation"));
+                    }
+                    generation = Some(map.next_value()?);
+                }
+                "activation_token" => {
+                    if activation_token.is_some() {
+                        return Err(de::Error::duplicate_field("activation_token"));
+                    }
+                    activation_token = Some(map.next_value()?);
+                }
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        SEARCH_CORPUS_ACTIVE_HEAD_V1_FIELDS,
+                    ));
+                }
+            }
+        }
+        let value = SearchCorpusActiveHeadV1 {
+            generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
+            activation_token: activation_token
+                .ok_or_else(|| de::Error::missing_field("activation_token"))?,
+        };
+        value.validate_v1().map_err(de::Error::custom)?;
+        Ok(value)
+    }
+}
+
+impl<'de> Deserialize<'de> for SearchCorpusActiveHeadV1 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "SearchCorpusActiveHeadV1",
+            SEARCH_CORPUS_ACTIVE_HEAD_V1_FIELDS,
+            SearchCorpusActiveHeadV1Visitor,
+        )
+    }
+}
+
+impl Serialize for ActiveGenerationResolutionV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("ActiveGenerationResolutionV1", 2)?;
+        state.serialize_field("track", &self.track)?;
+        state.serialize_field("head", &self.head)?;
+        state.end()
+    }
+}
+
+struct ActiveGenerationResolutionV1Visitor;
+
+impl<'de> Visitor<'de> for ActiveGenerationResolutionV1Visitor {
+    type Value = ActiveGenerationResolutionV1;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an ActiveGenerationResolutionV1 map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut track = None;
+        let mut head = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "track" => {
+                    if track.is_some() {
+                        return Err(de::Error::duplicate_field("track"));
+                    }
+                    track = Some(map.next_value()?);
+                }
+                "head" => {
+                    if head.is_some() {
+                        return Err(de::Error::duplicate_field("head"));
+                    }
+                    head = Some(map.next_value()?);
+                }
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        ACTIVE_GENERATION_RESOLUTION_V1_FIELDS,
+                    ));
+                }
+            }
+        }
+        let value = ActiveGenerationResolutionV1 {
+            track: track.ok_or_else(|| de::Error::missing_field("track"))?,
+            head: head.ok_or_else(|| de::Error::missing_field("head"))?,
+        };
+        value.validate_v1().map_err(de::Error::custom)?;
+        Ok(value)
+    }
+}
+
+impl<'de> Deserialize<'de> for ActiveGenerationResolutionV1 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "ActiveGenerationResolutionV1",
+            ACTIVE_GENERATION_RESOLUTION_V1_FIELDS,
+            ActiveGenerationResolutionV1Visitor,
+        )
+    }
+}
+
 /// Atomic activation request for one complete search-corpus generation.
 ///
 /// `expected_active` is required on the wire. `null` explicitly denotes a
@@ -287,7 +609,7 @@ impl SearchCorpusGenerationIdentityV1 {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SearchPlaneActivateSearchCorpusGenerationCasRequest {
     pub candidate: SearchCorpusGenerationIdentityV1,
-    pub expected_active: Option<SearchCorpusGenerationIdentityV1>,
+    pub expected_active: Option<SearchCorpusActiveHeadV1>,
 }
 
 /// Validation failure for a composite search-corpus activation request.
@@ -353,7 +675,7 @@ impl SearchPlaneActivateSearchCorpusGenerationCasRequest {
     /// content roots exist.
     pub fn validate_expected_active_v1(
         candidate_scope: &GenerationSnapshot,
-        expected_active: Option<&SearchCorpusGenerationIdentityV1>,
+        expected_active: Option<&SearchCorpusActiveHeadV1>,
     ) -> Result<(), SearchCorpusActivationValidationErrorV1> {
         let Some(expected_active) = expected_active else {
             return Ok(());
@@ -361,14 +683,14 @@ impl SearchPlaneActivateSearchCorpusGenerationCasRequest {
         expected_active
             .validate_v1()
             .map_err(SearchCorpusActivationValidationErrorV1::ExpectedActiveIdentity)?;
-        if candidate_scope.repo_id != expected_active.lexical.repo_id {
+        if candidate_scope.repo_id != expected_active.generation.lexical.repo_id {
             return Err(SearchCorpusActivationValidationErrorV1::RepoMismatch);
         }
-        if candidate_scope.revision_id != expected_active.lexical.revision_id {
+        if candidate_scope.revision_id != expected_active.generation.lexical.revision_id {
             return Err(SearchCorpusActivationValidationErrorV1::RevisionMismatch);
         }
         if candidate_scope.manifest_generation.get()
-            <= expected_active.lexical.manifest_generation.get()
+            <= expected_active.generation.lexical.manifest_generation.get()
         {
             return Err(
                 SearchCorpusActivationValidationErrorV1::CandidateGenerationMustAdvanceExpectedActive,
@@ -381,8 +703,8 @@ impl SearchPlaneActivateSearchCorpusGenerationCasRequest {
 /// Receipt of one successful composite search-corpus activation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SearchPlaneSearchCorpusActivationCasAck {
-    pub active: SearchCorpusGenerationIdentityV1,
-    pub previous_sealed_active: Option<SearchCorpusGenerationIdentityV1>,
+    pub active: SearchCorpusActiveHeadV1,
+    pub previous_sealed_active: Option<SearchCorpusActiveHeadV1>,
 }
 
 const SEARCH_CORPUS_GENERATION_IDENTITY_V1_FIELDS: &[&str] =
@@ -498,7 +820,7 @@ impl<'de> Visitor<'de> for SearchPlaneActivateSearchCorpusGenerationCasRequestVi
         A: MapAccess<'de>,
     {
         let mut candidate: Option<SearchCorpusGenerationIdentityV1> = None;
-        let mut expected_active: Option<Option<SearchCorpusGenerationIdentityV1>> = None;
+        let mut expected_active: Option<Option<SearchCorpusActiveHeadV1>> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "candidate" => {
@@ -568,8 +890,8 @@ impl<'de> Visitor<'de> for SearchPlaneSearchCorpusActivationCasAckVisitor {
     where
         A: MapAccess<'de>,
     {
-        let mut active: Option<SearchCorpusGenerationIdentityV1> = None;
-        let mut previous_sealed_active: Option<Option<SearchCorpusGenerationIdentityV1>> = None;
+        let mut active: Option<SearchCorpusActiveHeadV1> = None;
+        let mut previous_sealed_active: Option<Option<SearchCorpusActiveHeadV1>> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "active" => {
@@ -620,7 +942,7 @@ impl<'de> Deserialize<'de> for SearchPlaneSearchCorpusActivationCasAck {
 /// wire, and a stale operator cannot overwrite a concurrent activation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SearchPlaneRollbackSearchCorpusGenerationCasRequest {
-    pub expected_active: SearchCorpusGenerationIdentityV1,
+    pub expected_active: SearchCorpusActiveHeadV1,
     pub target: SearchCorpusGenerationIdentityV1,
 }
 
@@ -674,14 +996,19 @@ impl SearchPlaneRollbackSearchCorpusGenerationCasRequest {
         self.target
             .validate_v1()
             .map_err(SearchCorpusRollbackValidationErrorV1::TargetIdentity)?;
-        if self.expected_active.lexical.repo_id != self.target.lexical.repo_id {
+        if self.expected_active.generation.lexical.repo_id != self.target.lexical.repo_id {
             return Err(SearchCorpusRollbackValidationErrorV1::RepoMismatch);
         }
-        if self.expected_active.lexical.revision_id != self.target.lexical.revision_id {
+        if self.expected_active.generation.lexical.revision_id != self.target.lexical.revision_id {
             return Err(SearchCorpusRollbackValidationErrorV1::RevisionMismatch);
         }
         if self.target.lexical.manifest_generation.get()
-            >= self.expected_active.lexical.manifest_generation.get()
+            >= self
+                .expected_active
+                .generation
+                .lexical
+                .manifest_generation
+                .get()
         {
             return Err(
                 SearchCorpusRollbackValidationErrorV1::TargetGenerationMustPrecedeExpectedActive,
@@ -694,8 +1021,8 @@ impl SearchPlaneRollbackSearchCorpusGenerationCasRequest {
 /// Receipt of one successful composite search-corpus rollback CAS.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SearchPlaneSearchCorpusRollbackCasAck {
-    pub active: SearchCorpusGenerationIdentityV1,
-    pub previous_sealed_active: SearchCorpusGenerationIdentityV1,
+    pub active: SearchCorpusActiveHeadV1,
+    pub previous_sealed_active: SearchCorpusActiveHeadV1,
 }
 
 const SEARCH_PLANE_ROLLBACK_SEARCH_CORPUS_GENERATION_CAS_REQUEST_FIELDS: &[&str] =
@@ -2196,6 +2523,17 @@ mod qi_act_01_tests {
         }
     }
 
+    fn corpus_head(generation: u64, digest: &str, sequence: u64) -> SearchCorpusActiveHeadV1 {
+        SearchCorpusActiveHeadV1 {
+            generation: corpus_identity(generation, digest),
+            activation_token: SearchCorpusActivationTokenV1::new(
+                [7; quanta_index_contract_base::ACTIVATION_ROOT_INCARNATION_BYTES_V1],
+                std::num::NonZeroU64::new(sequence).expect("fixture sequence is positive"),
+            )
+            .expect("fixture incarnation is nonzero"),
+        }
+    }
+
     /// The semantic content roots are part of the identity (QI-BB-028).
     ///
     /// They round-trip, an identity naming a non-canonical root is
@@ -2245,7 +2583,7 @@ mod qi_act_01_tests {
 
     #[test]
     fn search_corpus_activation_round_trips_only_composite_identity_v1() {
-        let previous = corpus_identity(10, "digest-10");
+        let previous = corpus_head(10, "digest-10", 1);
         let candidate = corpus_identity(11, "digest-11");
         assert_eq!(candidate.validate_v1(), Ok(()));
 
@@ -2262,7 +2600,7 @@ mod qi_act_01_tests {
         );
 
         let ack = SearchPlaneSearchCorpusActivationCasAck {
-            active: candidate,
+            active: corpus_head(11, "digest-11", 2),
             previous_sealed_active: Some(previous),
         };
         let bytes = encode(&ack).expect("encode composite activation ack");
@@ -2271,6 +2609,50 @@ mod qi_act_01_tests {
                 .expect("decode composite activation ack"),
             ack
         );
+    }
+
+    #[test]
+    fn active_head_observation_binds_domain_and_distinguishes_absence_from_invalid_wire() {
+        let head = corpus_head(11, "digest-11", 2);
+        let observed = SearchCorpusActiveHeadObservationV1::new(
+            fixture_repo(),
+            fixture_rev(),
+            Some(head.clone()),
+        )
+        .expect("matching head");
+        let bytes = encode(&observed).expect("encode observation");
+        assert_eq!(
+            decode::<SearchCorpusActiveHeadObservationV1>(&bytes).expect("decode observation"),
+            observed
+        );
+        let absent = SearchCorpusActiveHeadObservationV1::new(
+            fixture_repo(),
+            fixture_rev(),
+            None,
+        )
+        .expect("explicit absence");
+        assert_eq!(absent.head(), None);
+        assert_eq!(
+            decode::<SearchCorpusActiveHeadObservationV1>(
+                &encode(&absent).expect("encode absent observation")
+            )
+            .expect("decode absent observation"),
+            absent
+        );
+        let other_repo = RepoId::new("other-repo").expect("canonical fixture");
+        assert!(
+            SearchCorpusActiveHeadObservationV1::new(other_repo, fixture_rev(), Some(head))
+                .is_err()
+        );
+        for malformed in [
+            serde_json::json!({"repo_id": "repo", "revision_id": "rev"}),
+            serde_json::json!({"repo_id": "repo", "revision_id": "rev", "head": null, "extra": 1}),
+        ] {
+            assert!(
+                SearchCorpusActiveHeadObservationV1::deserialize(malformed).is_err(),
+                "malformed observation must not decode"
+            );
+        }
     }
 
     #[test]
@@ -2298,7 +2680,7 @@ mod qi_act_01_tests {
 
     #[test]
     fn search_corpus_activation_validation_rejects_invalid_relation_v1() {
-        let expected_active = corpus_identity(10, "digest-10");
+        let expected_active = corpus_head(10, "digest-10", 1);
 
         let mut malformed_candidate = corpus_identity(11, "digest-11");
         malformed_candidate.semantic.track = SearchPlaneTrackKind::Lexical;
@@ -2314,7 +2696,7 @@ mod qi_act_01_tests {
         );
 
         let mut malformed_expected = expected_active.clone();
-        malformed_expected.semantic.track = SearchPlaneTrackKind::Lexical;
+        malformed_expected.generation.semantic.track = SearchPlaneTrackKind::Lexical;
         assert_eq!(
             SearchPlaneActivateSearchCorpusGenerationCasRequest {
                 candidate: corpus_identity(11, "digest-11"),
@@ -2381,7 +2763,7 @@ mod qi_act_01_tests {
 
     #[test]
     fn search_corpus_rollback_request_and_ack_round_trip() {
-        let expected_active = corpus_identity(11, "digest-11");
+        let expected_active = corpus_head(11, "digest-11", 2);
         let target = corpus_identity(10, "digest-10");
         let request = SearchPlaneRollbackSearchCorpusGenerationCasRequest {
             expected_active: expected_active.clone(),
@@ -2406,7 +2788,7 @@ mod qi_act_01_tests {
         assert_eq!(decoded, request);
 
         let ack = SearchPlaneSearchCorpusRollbackCasAck {
-            active: target,
+            active: corpus_head(10, "digest-10", 3),
             previous_sealed_active: expected_active,
         };
         let Ok(bytes) = encode(&ack) else {
@@ -2428,7 +2810,7 @@ mod qi_act_01_tests {
 
     #[test]
     fn search_corpus_rollback_validation_rejects_invalid_relation_v1() {
-        let expected_active = corpus_identity(11, "digest-11");
+        let expected_active = corpus_head(11, "digest-11", 2);
 
         let mut cross_repo = corpus_identity(10, "digest-10");
         cross_repo.lexical.repo_id =
@@ -2484,7 +2866,7 @@ mod qi_act_01_tests {
     #[test]
     fn search_corpus_rollback_request_rejects_unknown_and_missing_fields() {
         let unknown = serde_json::json!({
-            "expected_active": serde_json::to_value(corpus_identity(11, "digest-11"))
+            "expected_active": serde_json::to_value(corpus_head(11, "digest-11", 2))
                 .expect("encode expected active fixture"),
             "target": serde_json::to_value(corpus_identity(10, "digest-10"))
                 .expect("encode target fixture"),
@@ -2493,7 +2875,7 @@ mod qi_act_01_tests {
         assert!(SearchPlaneRollbackSearchCorpusGenerationCasRequest::deserialize(unknown).is_err());
 
         let missing = serde_json::json!({
-            "expected_active": serde_json::to_value(corpus_identity(11, "digest-11"))
+            "expected_active": serde_json::to_value(corpus_head(11, "digest-11", 2))
                 .expect("encode expected active fixture"),
         });
         let Err(err) = SearchPlaneRollbackSearchCorpusGenerationCasRequest::deserialize(missing)

@@ -27,14 +27,15 @@ use quanta_index_contract::lex::{
 };
 use quanta_index_contract::{
     AuxEpochV1, BatchIngestMode, BatchPublishReceipt, CapabilityStatusV1, ChunkId, ChunkRecord,
-    ContinuationTokenV2, CurrentGenerationRequest, EngineTouched, ExplainCandidateV1,
+    ContinuationTokenV2, EngineTouched, ExplainCandidateV1,
     FileOwnerProjectionRow, GenerationPin, GenerationSnapshot, GenerationStatusReport,
     GenerationStatusRequest, HistoryOrderV1, HistoryQueryRequest, HistoryScoreV1,
     HybridCandidateV1, HybridQueryRequest, LexicalCandidate, ManifestGeneration,
     MetricsSnapshotRequest, MetricsSnapshotV1, OwnerDocKind, ProcessReadinessRequest,
     ProcessReadinessV1, QuarantineDiscardAck, QuarantineDiscardRequest, QuarantineInventoryRequest,
     QuarantineInventoryV1, QuarantineTargetV1, QueryResultWindowV2, RawFallbackReasonV1, RepoId,
-    RepoRelativePath, RevisionId, RuntimeMetadataQueryRequest, SearchCorpusGenerationIdentityV1,
+    RepoRelativePath, RevisionId, RuntimeMetadataQueryRequest, SearchCorpusActiveHeadV1,
+    SearchCorpusGenerationIdentityV1,
     SearchCorpusIngestBatch, SearchCorpusReplaceScope, SearchCorpusTombstoneScope,
     SearchExplanation, SearchPlaneActivateSearchCorpusGenerationCasRequest,
     SearchPlaneControlIpcRequest, SearchPlaneControlIpcRequestEnvelope,
@@ -45,7 +46,7 @@ use quanta_index_contract::{
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope, SearchPlaneRollbackSearchCorpusGenerationCasRequest,
     SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneStructuralQueryResponse,
-    SearchPlaneTrackKind, SemanticContentRootsV1, SemanticCorpusKindV1, SemanticQueryRequest,
+    SearchPlaneTrackKind, SemanticCorpusKindV1, SemanticQueryRequest,
     SemanticSourceRecordV1, SemanticSourceReplaceScopeV1, SemanticSourceScopeKeyV1, SourceRoleV1,
     StructuralCandidate, StructuralIngestBatch, StructuralQueryRequest, StructuralReplaceScope,
     StructuralTreeRecord, SymbolId, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
@@ -943,6 +944,7 @@ impl E2eRuntime {
             | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
             | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)) => Err(anyhow::anyhow!(
@@ -992,7 +994,7 @@ impl E2eRuntime {
             .ok_or_else(|| {
                 anyhow::anyhow!("e2e-harness: cannot activate before a sealed receipt is validated")
             })?;
-        let expected_active = self.current_search_corpus_identity_from_control_v1(
+        let expected_active = self.current_search_corpus_head_from_control_v1(
             &candidate.lexical.repo_id,
             &candidate.lexical.revision_id,
         )?;
@@ -1009,7 +1011,7 @@ impl E2eRuntime {
                 "e2e-harness: composite activation returned an unexpected control response"
             ));
         };
-        if ack.active != candidate {
+        if ack.active.generation != candidate {
             return Err(anyhow::anyhow!(
                 "e2e-harness: composite activation ack active identity differs from the sealed candidate"
             ));
@@ -1071,130 +1073,33 @@ impl E2eRuntime {
         )
     }
 
-    fn current_search_corpus_identity_from_control_v1(
+    fn current_search_corpus_head_from_control_v1(
         &mut self,
         repo_id: &RepoId,
         revision_id: &RevisionId,
-    ) -> AnyResult<Option<SearchCorpusGenerationIdentityV1>> {
-        let mut read_track =
-            |track: SearchPlaneTrackKind| -> AnyResult<Option<GenerationSnapshot>> {
-                let response = self.dispatch_control_response_v1(
-                    SearchPlaneControlIpcRequest::CurrentGeneration(CurrentGenerationRequest {
-                        repo_id: repo_id.clone(),
-                        revision_id: revision_id.clone(),
-                        track,
-                    }),
-                )?;
-                match response {
-                    SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(snapshot) => {
-                        if snapshot.repo_id != *repo_id
-                            || snapshot.revision_id != *revision_id
-                            || snapshot.track != track
-                        {
-                            return Err(anyhow::anyhow!(
-                                "e2e-harness: current generation response does not match requested authority"
-                            ));
-                        }
-                        Ok(Some(snapshot))
-                    }
-                    SearchPlaneControlIpcResponse::Error(error)
-                        if error.code == SearchPlaneErrorCodeV2::NotReady =>
-                    {
-                        Ok(None)
-                    }
-                    SearchPlaneControlIpcResponse::Error(error) => Err(anyhow::anyhow!(
-                        "e2e-harness current generation failed code={} message={}",
-                        error.code,
-                        error.message
-                    )),
-                    other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
-                    | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
-                    | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
-                    | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
-                    | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
-                    | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
-                    | SearchPlaneControlIpcResponse::QuarantineInventory(_)
-                    | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
-                    | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)) => {
-                        Err(anyhow::anyhow!(
-                            "e2e-harness: current generation returned an unexpected control response: {other:?}"
-                        ))
-                    }
-                }
-            };
-
-        let lexical = read_track(SearchPlaneTrackKind::Lexical)?;
-        let semantic = read_track(SearchPlaneTrackKind::Semantic)?;
-        match (lexical, semantic) {
-            (None, None) => Ok(None),
-            (Some(lexical), Some(semantic)) => {
-                // The semantic content roots the active pair was activated
-                // under (QI-BB-028), read from the status report: the CAS
-                // expectation must name them exactly.
-                let semantic_content = self
-                    .active_semantic_content_from_control_v1(repo_id, revision_id)?
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "e2e-harness: the daemon reports an active pair without semantic content roots"
-                        )
-                    })?;
-                let identity = SearchCorpusGenerationIdentityV1 {
-                    lexical,
-                    semantic,
-                    semantic_content,
-                };
-                identity.validate_v1().map_err(|error| {
-                    anyhow::anyhow!(
-                        "e2e-harness: daemon current search corpus identity is invalid: {error}"
-                    )
-                })?;
-                Ok(Some(identity))
-            }
-            (lexical, semantic) => Err(anyhow::anyhow!(
-                "e2e-harness: daemon current search corpus authority is split: lexical_present={} semantic_present={}",
-                lexical.is_some(),
-                semantic.is_some()
-            )),
-        }
-    }
-
-    /// The active composite root's semantic content roots, as the status
-    /// report names them; `None` when the pair has no active root.
-    fn active_semantic_content_from_control_v1(
-        &mut self,
-        repo_id: &RepoId,
-        revision_id: &RevisionId,
-    ) -> AnyResult<Option<SemanticContentRootsV1>> {
+    ) -> AnyResult<Option<SearchCorpusActiveHeadV1>> {
         let response = self.dispatch_control_response_v1(
-            SearchPlaneControlIpcRequest::GenerationStatus(GenerationStatusRequest {
+            SearchPlaneControlIpcRequest::SearchCorpusActiveHead(GenerationStatusRequest {
                 repo_id: repo_id.clone(),
                 revision_id: revision_id.clone(),
             }),
         )?;
         match response {
-            SearchPlaneControlIpcResponse::GenerationStatusReport(report) => {
-                if report.repo_id != *repo_id || report.revision_id != *revision_id {
+            SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(observation) => {
+                if observation.repo_id() != repo_id || observation.revision_id() != revision_id {
                     return Err(anyhow::anyhow!(
-                        "e2e-harness: generation status response does not match requested authority"
+                        "e2e-harness: active-head response does not match requested authority"
                     ));
                 }
-                Ok(report.semantic_content)
+                Ok(observation.into_head())
             }
             SearchPlaneControlIpcResponse::Error(error) => Err(anyhow::anyhow!(
-                "e2e-harness generation status failed code={} message={}",
+                "e2e-harness active-head read failed code={} message={}",
                 error.code,
                 error.message
             )),
-            other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
-            | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
-            | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
-            | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
-            | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
-            | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
-            | SearchPlaneControlIpcResponse::QuarantineInventory(_)
-            | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
-            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)) => Err(anyhow::anyhow!(
-                "e2e-harness: generation status returned an unexpected control response: {other:?}"
+            other => Err(anyhow::anyhow!(
+                "e2e-harness: active-head read returned an unexpected control response: {other:?}"
             )),
         }
     }

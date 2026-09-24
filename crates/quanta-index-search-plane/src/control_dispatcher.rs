@@ -10,8 +10,8 @@ use quanta_index_contract::{
     CurrentGenerationRequest, GenerationSnapshot, GenerationStatusReport, GenerationStatusRequest,
     MetricsSnapshotV1, RepoMapActivateGenerationRequestV2, RepoMapActiveHeadRequestV2,
     RepoMapActiveHeadResponseV2, RepoMapTerminalReceiptV2,
-    SearchCorpusGenerationIdentityV1, SearchPlaneActivateSearchCorpusGenerationCasRequest,
-    SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse, SearchPlaneIpcError,
+    SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
+    SearchPlaneControlIpcResponse, SearchPlaneIpcError,
     SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneSearchCorpusActivationCasAck,
     SearchPlaneSearchCorpusRollbackCasAck, TrackReadinessRecord,
 };
@@ -87,6 +87,7 @@ impl ControlCapabilityV1 {
             | SearchPlaneControlIpcRequest::ProcessReadiness(_) => Self::Observe,
             SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(_)
             | SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(_)
+            | SearchPlaneControlIpcRequest::SearchCorpusActiveHead(_)
             | SearchPlaneControlIpcRequest::RepoMapActivateV2(_)
             | SearchPlaneControlIpcRequest::RepoMapActiveHeadV2(_)
             | SearchPlaneControlIpcRequest::QuarantineDiscard(_) => Self::Admin,
@@ -222,19 +223,13 @@ impl SearchPlaneControlDispatcher {
                 error.code_v1()
             ))
         })?;
-        let candidate = search_corpus_generation_from_validated_contract(&request.candidate)?;
-        let expected_active = request
-            .expected_active
-            .as_ref()
-            .map(search_corpus_generation_from_validated_contract)
-            .transpose()?;
-        let prepared = PreparedSearchCorpusGenerationV1::new(candidate, expected_active)?;
+        let candidate = crate::SearchCorpusGenerationV1::from_contract_v1(&request.candidate)?;
+        let prepared =
+            PreparedSearchCorpusGenerationV1::new(candidate, request.expected_active.clone())?;
         let activation = self.activate_prepared_search_corpus_generation_v1(&prepared)?;
         Ok(SearchPlaneSearchCorpusActivationCasAck {
-            active: search_corpus_generation_into_contract(&activation.active),
-            previous_sealed_active: activation
-                .previous_active
-                .map(|identity| search_corpus_generation_into_contract(&identity)),
+            active: activation.active,
+            previous_sealed_active: activation.previous_active,
         })
     }
 
@@ -248,7 +243,7 @@ impl SearchPlaneControlDispatcher {
                 error.code_v1()
             ))
         })?;
-        let target = search_corpus_generation_from_validated_contract(&request.target)?;
+        let target = crate::SearchCorpusGenerationV1::from_contract_v1(&request.target)?;
         self.search_corpus_lifecycle.rollback_v1(request, &target)
     }
 
@@ -280,29 +275,52 @@ impl SearchPlaneControlDispatcher {
         &self,
         request: GenerationStatusRequest,
     ) -> Result<GenerationStatusReport, CoreError> {
-        let records = self
+        let active = self
             .activation_catalog
-            .entries_for(&request.repo_id, &request.revision_id)?;
-        let tracks = records
-            .into_iter()
-            .map(|record| TrackReadinessRecord {
-                track: record.track,
-                manifest_generation: record.manifest_generation,
-                manifest_digest: record.manifest_digest,
-            })
-            .collect();
-        // The active composite root's semantic content roots (QI-BB-028),
-        // so an activator can name the head it expects.
-        let semantic_content = self
-            .activation_catalog
-            .active_search_corpus_v1(&request.repo_id, &request.revision_id)?
-            .map(|active| active.semantic_content().clone());
+            .active_search_corpus_with_token_v1(&request.repo_id, &request.revision_id)?;
+        let tracks = active
+            .as_ref()
+            .map_or_else(Vec::new, |(generation, _token)| {
+                [generation.lexical(), generation.semantic()]
+                    .into_iter()
+                    .map(|snapshot| TrackReadinessRecord {
+                        track: snapshot.track,
+                        manifest_generation: snapshot.manifest_generation,
+                        manifest_digest: snapshot.manifest_digest.clone(),
+                    })
+                    .collect()
+            });
+        let semantic_content =
+            active.map(|(generation, _token)| generation.semantic_content().clone());
         Ok(GenerationStatusReport {
             repo_id: request.repo_id,
             revision_id: request.revision_id,
             tracks,
             semantic_content,
         })
+    }
+
+    /// Return the optional active head from one catalog read. An I/O or
+    /// uncertain-durability failure remains an error, never an absent head.
+    fn search_corpus_active_head(
+        &self,
+        request: GenerationStatusRequest,
+    ) -> Result<quanta_index_contract::SearchCorpusActiveHeadObservationV1, CoreError> {
+        let head = self
+            .activation_catalog
+            .active_search_corpus_with_token_v1(&request.repo_id, &request.revision_id)?
+            .map(|(generation, activation_token)| {
+                quanta_index_contract::SearchCorpusActiveHeadV1 {
+                    generation: generation.to_contract_v1(),
+                    activation_token,
+                }
+            });
+        quanta_index_contract::SearchCorpusActiveHeadObservationV1::new(
+            request.repo_id,
+            request.revision_id,
+            head,
+        )
+        .map_err(|error| CoreError::Storage(format!("invalid catalog active head: {error}")))
     }
 
     /// QI-BB-015: every metric the daemon aggregates, in one snapshot.
@@ -412,6 +430,16 @@ impl SearchPlaneControlDispatcher {
                     Err(err) => SearchPlaneControlIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
+            SearchPlaneControlIpcRequest::SearchCorpusActiveHead(request) => {
+                match self.search_corpus_active_head(request) {
+                    Ok(observation) => {
+                        SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(
+                            observation,
+                        )
+                    }
+                    Err(err) => SearchPlaneControlIpcResponse::Error(core_error_to_ipc(err)),
+                }
+            }
             SearchPlaneControlIpcRequest::MetricsSnapshot(_request) => {
                 match self.metrics_snapshot() {
                     Ok(snapshot) => SearchPlaneControlIpcResponse::MetricsSnapshot(snapshot),
@@ -451,26 +479,6 @@ fn core_error_to_ipc(err: CoreError) -> SearchPlaneIpcError {
     }
 }
 
-fn search_corpus_generation_from_validated_contract(
-    identity: &SearchCorpusGenerationIdentityV1,
-) -> Result<crate::SearchCorpusGenerationV1, CoreError> {
-    crate::SearchCorpusGenerationV1::new(
-        identity.lexical.clone(),
-        identity.semantic.clone(),
-        identity.semantic_content.clone(),
-    )
-}
-
-fn search_corpus_generation_into_contract(
-    identity: &crate::SearchCorpusGenerationV1,
-) -> SearchCorpusGenerationIdentityV1 {
-    SearchCorpusGenerationIdentityV1 {
-        lexical: identity.lexical().clone(),
-        semantic: identity.semantic().clone(),
-        semantic_content: identity.semantic_content().clone(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     #![expect(
@@ -483,11 +491,11 @@ mod tests {
     use quanta_index_contract::{
         GenerationSnapshot, ManifestGeneration, MetricsSnapshotRequest, MetricsSnapshotV1,
         QuarantineDiscardOutcomeDtoV1, QuarantineDiscardRequest, QuarantineInventoryRequest,
-        QuarantineTargetV1, RepoId, RepoMapActivateGenerationRequestV2,
-        RepoMapActiveHeadRequestV2, RepoMapActiveHeadResponseV2, RepoMapMutationAck,
-        RepoMapMutationPhaseV2, RepoMapTerminalReceiptV2, RevisionId,
-        SearchCorpusGenerationIdentityV1, SearchPlaneActivateSearchCorpusGenerationCasRequest,
-        SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse, SearchPlaneIpcError,
+        QuarantineTargetV1, RepoId, RepoMapActivateGenerationRequestV2, RepoMapActiveHeadRequestV2,
+        RepoMapActiveHeadResponseV2, RepoMapMutationAck, RepoMapMutationPhaseV2,
+        RepoMapTerminalReceiptV2, RevisionId, SearchCorpusGenerationIdentityV1,
+        SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
+        SearchPlaneControlIpcResponse, SearchPlaneIpcError,
         SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneTrackKind,
     };
     use quanta_index_core::{
@@ -767,6 +775,7 @@ mod tests {
             | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
@@ -788,6 +797,7 @@ mod tests {
             | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
@@ -920,6 +930,7 @@ mod tests {
             | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
@@ -940,6 +951,7 @@ mod tests {
             | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
@@ -1007,6 +1019,7 @@ mod tests {
             | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
             | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)) => {
@@ -1220,6 +1233,7 @@ mod tests {
             | SearchPlaneControlIpcResponse::Error(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
             | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
@@ -1240,6 +1254,7 @@ mod tests {
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
@@ -1354,10 +1369,10 @@ mod tests {
         else {
             return Err("expected composite activation acknowledgment".into());
         };
-        if activation.active.lexical.manifest_generation.get() != 11 {
+        if activation.active.generation.lexical.manifest_generation.get() != 11 {
             return Err(format!(
                 "unexpected activation manifest generation: {}",
-                activation.active.lexical.manifest_generation.get()
+                activation.active.generation.lexical.manifest_generation.get()
             )
             .into());
         }
@@ -1489,7 +1504,7 @@ mod tests {
         let prepared = PreparedSearchCorpusGenerationV1::new(active, None)?;
         let activation =
             activation_catalog.activate_prepared_search_corpus_generation_v1(&prepared)?;
-        if activation.active.manifest_generation() != ManifestGeneration::new(11) {
+        if activation.active.generation.lexical.manifest_generation != ManifestGeneration::new(11) {
             return Err("expected initial composite activation at generation 11".into());
         }
         let dispatcher = control_dispatcher(Arc::clone(&activation_catalog), ledger);
@@ -1497,12 +1512,7 @@ mod tests {
         let response = dispatcher.dispatch(
             SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(
                 SearchPlaneRollbackSearchCorpusGenerationCasRequest {
-                    expected_active: composite_identity(
-                        "repo-rollback",
-                        "rev-rollback",
-                        11,
-                        "manifest-digest-11",
-                    )?,
+                    expected_active: activation.active.clone(),
                     target: composite_identity(
                         "repo-rollback",
                         "rev-rollback",
@@ -1516,9 +1526,10 @@ mod tests {
         let SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(ack) = response else {
             return Err("expected rollback ack".into());
         };
-        if ack.previous_sealed_active.lexical.manifest_generation != ManifestGeneration::new(11)
-            || ack.active.lexical.manifest_generation != ManifestGeneration::new(10)
-            || ack.active.lexical.manifest_digest != "manifest-digest-10"
+        if ack.previous_sealed_active.generation.lexical.manifest_generation
+            != ManifestGeneration::new(11)
+            || ack.active.generation.lexical.manifest_generation != ManifestGeneration::new(10)
+            || ack.active.generation.lexical.manifest_digest != "manifest-digest-10"
         {
             return Err(format!("unexpected rollback ack: {ack:?}").into());
         }
@@ -1564,12 +1575,7 @@ mod tests {
         let stale = dispatcher.dispatch(
             SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(
                 SearchPlaneRollbackSearchCorpusGenerationCasRequest {
-                    expected_active: composite_identity(
-                        "repo-rollback",
-                        "rev-rollback",
-                        11,
-                        "manifest-digest-11",
-                    )?,
+                    expected_active: activation.active,
                     target: composite_identity(
                         "repo-rollback",
                         "rev-rollback",
@@ -1590,12 +1596,7 @@ mod tests {
         let unsealed_target = dispatcher.dispatch(
             SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(
                 SearchPlaneRollbackSearchCorpusGenerationCasRequest {
-                    expected_active: composite_identity(
-                        "repo-rollback",
-                        "rev-rollback",
-                        10,
-                        "manifest-digest-10",
-                    )?,
+                    expected_active: ack.active,
                     target: composite_identity(
                         "repo-rollback",
                         "rev-rollback",
@@ -1781,7 +1782,7 @@ mod tests {
             return Err("activation must succeed with the proof outside the guard".into());
         };
         assert_eq!(
-            ack.active.lexical.manifest_generation,
+            ack.active.generation.lexical.manifest_generation,
             ManifestGeneration::new(11)
         );
 

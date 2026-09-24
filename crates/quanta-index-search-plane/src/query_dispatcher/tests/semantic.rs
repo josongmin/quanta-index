@@ -3,8 +3,8 @@ use std::sync::{Arc, Mutex, RwLock};
 use quanta_index_contract::{
     CurrentGenerationRequest, GenerationPin, GenerationSelector, HybridQueryRequest,
     ManifestGeneration, RepoId, RevisionId, SearchPlaneQueryIpcRequest,
-    SearchPlaneQueryIpcResponse, SearchPlaneTrackKind, SemanticQueryRequest, TextQueryRequest,
-    TextQuerySyntax,
+    SearchPlaneQueryIpcResponse, SearchPlaneRollbackSearchCorpusGenerationCasRequest,
+    SearchPlaneTrackKind, SemanticQueryRequest, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_core::{CoreError, RequestBudgetV1};
 use tempfile::tempdir;
@@ -54,7 +54,7 @@ fn joint_active_selection_uses_one_composite_head_and_checks_explicit_pin() -> T
         "joint-digest-9",
     )?;
     let first_prepared = PreparedSearchCorpusGenerationV1::new(first.clone(), None)?;
-    let _first_activation =
+    let first_activation =
         catalog.activate_prepared_search_corpus_generation_v1(&first_prepared)?;
     let selector = GenerationSelector::Active {
         repo_id: repo.clone(),
@@ -86,7 +86,7 @@ fn joint_active_selection_uses_one_composite_head_and_checks_explicit_pin() -> T
         "joint-digest-10",
     )?;
     let _second_activation = catalog.activate_prepared_search_corpus_generation_v1(
-        &PreparedSearchCorpusGenerationV1::new(second, Some(first))?,
+        &PreparedSearchCorpusGenerationV1::new(second, Some(first_activation.active))?,
     )?;
     let latest =
         resolve_joint_active_selection(&catalog, Some(&selector), Some(&selector), None, "hybrid")?
@@ -417,6 +417,88 @@ fn joint_active_selection_uses_one_composite_head_and_checks_explicit_pin() -> T
 }
 
 #[test]
+fn resolved_active_selector_rejects_a_to_b_to_a_aba() -> TestResult {
+    let dir = tempdir()?;
+    let catalog = Arc::new(ActivationCatalog::open(dir.path())?);
+    let repo = RepoId::new("active-aba-repo")?;
+    let revision = RevisionId::new("active-aba-revision")?;
+    let first = corpus_generation(
+        repo.clone(),
+        revision.clone(),
+        ManifestGeneration::new(9),
+        "active-aba-digest-9",
+    )?;
+    let second = corpus_generation(
+        repo.clone(),
+        revision.clone(),
+        ManifestGeneration::new(10),
+        "active-aba-digest-10",
+    )?;
+    let first_activation = catalog.activate_prepared_search_corpus_generation_v1(
+        &PreparedSearchCorpusGenerationV1::new(first.clone(), None)?,
+    )?;
+    let (_, original_token) = catalog
+        .active_search_corpus_with_token_v1(&repo, &revision)?
+        .ok_or("first activation must be visible")?;
+    let second_activation = catalog.activate_prepared_search_corpus_generation_v1(
+        &PreparedSearchCorpusGenerationV1::new(second.clone(), Some(first_activation.active))?,
+    )?;
+    drop(
+        catalog.rollback(&SearchPlaneRollbackSearchCorpusGenerationCasRequest {
+            expected_active: second_activation.active,
+            target: first.to_contract_v1(),
+        })?,
+    );
+    let (active, current_token) = catalog
+        .active_search_corpus_with_token_v1(&repo, &revision)?
+        .ok_or("rollback activation must be visible")?;
+    assert_eq!(active, first);
+    assert_ne!(current_token, original_token);
+    let stale = GenerationSelector::ResolvedActive {
+        repo_id: repo.clone(),
+        revision_id: revision.clone(),
+        activation_token: original_token,
+    };
+    let pin = GenerationPin::new(repo, revision, ManifestGeneration::new(9));
+    assert!(matches!(
+        resolve_optional_selection(
+            &catalog,
+            Some(pin.clone()),
+            Some(&stale),
+            SearchPlaneTrackKind::Lexical,
+            "text",
+        ),
+        Err(CoreError::NotReady(_))
+    ));
+    let dispatcher = SearchPlaneDispatcher::new(
+        Arc::new(RejectLexicalOpener),
+        Arc::new(RejectSemanticOpener),
+        Arc::new(StubRepoMapSnapshotPort::default()),
+        Arc::new(FailClosedStructuralProducer),
+        ready_ledger(),
+        Arc::clone(&catalog),
+    );
+    let response = dispatcher.dispatch(
+        SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+            syntax: TextQuerySyntax::Native,
+            query_text: "needle".to_string(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+            generation: Some(pin),
+            generation_selector: Some(stale),
+            top_k: 5,
+            cursor: None,
+        }),
+        &RequestBudgetV1::unbounded(),
+    );
+    assert!(matches!(
+        response,
+        SearchPlaneQueryIpcResponse::Error(ref error)
+            if error.code == quanta_index_contract::SearchPlaneErrorCodeV2::NotReady
+    ));
+    Ok(())
+}
+
+#[test]
 fn query_plane_resolves_only_catalog_active_generation() -> TestResult {
     let dir = tempdir()?;
     let activation_catalog = Arc::new(ActivationCatalog::open(dir.keep())?);
@@ -429,7 +511,7 @@ fn query_plane_resolves_only_catalog_active_generation() -> TestResult {
         "activation-digest-9",
     )?;
     let prepared = PreparedSearchCorpusGenerationV1::new(active, None)?;
-    let _activation =
+    let activation =
         activation_catalog.activate_prepared_search_corpus_generation_v1(&prepared)?;
     let dispatcher = SearchPlaneDispatcher::new(
         Arc::new(RejectLexicalOpener),
@@ -447,9 +529,12 @@ fn query_plane_resolves_only_catalog_active_generation() -> TestResult {
         }),
         &RequestBudgetV1::unbounded(),
     );
-    let SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(snapshot) = response else {
+    let SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(resolution) = response else {
         return Err(format!("expected catalog snapshot, got {response:?}").into());
     };
+    let snapshot = resolution
+        .snapshot_v1()
+        .ok_or("missing lexical active snapshot")?;
     if snapshot.repo_id != repo_id
         || snapshot.revision_id != revision_id
         || snapshot.track != SearchPlaneTrackKind::Lexical
@@ -485,8 +570,7 @@ fn query_plane_resolves_only_catalog_active_generation() -> TestResult {
         ManifestGeneration::new(10),
         "activation-digest-10",
     )?;
-    let next_prepared =
-        PreparedSearchCorpusGenerationV1::new(next, Some(prepared.candidate().clone()))?;
+    let next_prepared = PreparedSearchCorpusGenerationV1::new(next, Some(activation.active))?;
     let _next_activation =
         activation_catalog.activate_prepared_search_corpus_generation_v1(&next_prepared)?;
     let stale = dispatcher.dispatch(
@@ -778,7 +862,7 @@ fn semantic_dispatch_rejects_active_digest_mismatch_with_exact_code() -> TestRes
     )?;
     let prepared = PreparedSearchCorpusGenerationV1::new(active, None)?;
     let activation = activation_catalog.activate_prepared_search_corpus_generation_v1(&prepared)?;
-    if activation.active.manifest_generation() != ManifestGeneration::new(9) {
+    if activation.active.generation.lexical.manifest_generation != ManifestGeneration::new(9) {
         return Err("expected active composite generation 9".into());
     }
     let mut ledger = Ledger::default();

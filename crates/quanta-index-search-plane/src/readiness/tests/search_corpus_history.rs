@@ -678,17 +678,16 @@ fn retention_preserves_rolled_back_active_generation_before_next_activation_v1()
     let coordinator = owner.coordinator();
     {
         let guard = coordinator.lock_pair(&repo, &revision)?;
-        let _activation = catalog.activate_prepared_under_guard_v1(
+        let activation = catalog.activate_prepared_under_guard_v1(
             &guard,
             &PreparedSearchCorpusGenerationV1::new(generation_two.clone(), None)?,
         )?;
-    }
-    {
+        drop(guard);
         let guard = coordinator.lock_pair(&repo, &revision)?;
         let _rollback = catalog.rollback_under_guard_v1(
             &guard,
             &SearchPlaneRollbackSearchCorpusGenerationCasRequest {
-                expected_active: corpus_identity(&generation_two),
+                expected_active: activation.active,
                 target: corpus_identity(&generation_one),
             },
         )?;

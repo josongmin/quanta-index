@@ -40,6 +40,7 @@ use std::path::{Path, PathBuf};
 
 use quanta_index_contract::SearchPlaneErrorCodeV2;
 use quanta_index_core::CoreError;
+use quanta_index_search_plane::readiness::ActivationCatalog;
 
 use super::runtime::StateRootLease;
 use super::state_format::{
@@ -1004,6 +1005,7 @@ pub fn run_offline_restore_v1(
     let directories = inventory_state_directories_v1(source, &PRODUCED_ROOT_EXCLUSIONS)?;
     let staging = prepare_staging_v1(&destination)?;
     copy_data_objects_v1(source, &staging, &directories, &objects)?;
+    ActivationCatalog::rotate_root_incarnation_for_restore_v1(&staging.join("activations"))?;
     let staged_catalog = staging
         .join(STATE_CATALOG_DIRECTORY)
         .join(STATE_BACKUP_CATALOG_FILE_NAME);

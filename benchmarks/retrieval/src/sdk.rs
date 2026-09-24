@@ -15,7 +15,8 @@ use std::time::{Duration, Instant};
 use quanta_index_contract::ipc::GenerationStatusReport;
 use quanta_index_contract::{
     ExecutionOutcomeV2, GenerationPin, HybridCandidateV1, LexicalCandidate, ManifestGeneration,
-    RepoId, RevisionId, SearchPlaneErrorCodeV2, SearchPlaneSearchCorpusActivationCasAck,
+    RepoId, RevisionId, SearchCorpusActiveHeadV1, SearchPlaneErrorCodeV2,
+    SearchPlaneSearchCorpusActivationCasAck,
 };
 use quanta_index_sdk::{BatchReceipt, ConnectOptions, QuantaIndex, SdkError, SearchCorpusBatch};
 
@@ -635,12 +636,26 @@ mod empty_status_tests {
         }
     }
 
+    fn forged_head(identity: &BatchIdentity, sequence: u64) -> SearchCorpusActiveHeadV1 {
+        SearchCorpusActiveHeadV1 {
+            generation: forged_active(identity),
+            activation_token: quanta_index_contract::SearchCorpusActivationTokenV1::new(
+                [7; quanta_index_contract::ACTIVATION_ROOT_INCARNATION_BYTES_V1],
+                std::num::NonZeroU64::new(sequence).expect("fixture sequence is positive"),
+            )
+            .expect("fixture incarnation is nonzero"),
+        }
+    }
+
     fn forged_ack(
         identity: &BatchIdentity,
-        previous: Option<quanta_index_contract::SearchCorpusGenerationIdentityV1>,
+        previous: Option<SearchCorpusActiveHeadV1>,
     ) -> SearchPlaneSearchCorpusActivationCasAck {
+        let next_sequence = previous
+            .as_ref()
+            .map_or(1, |head| head.activation_token.activation_sequence().get() + 1);
         SearchPlaneSearchCorpusActivationCasAck {
-            active: forged_active(identity),
+            active: forged_head(identity, next_sequence),
             previous_sealed_active: previous,
         }
     }
@@ -674,27 +689,28 @@ mod empty_status_tests {
         let good = forged_ack(&identity, None);
         assert!(verify_activation_ack(&good, &identity, None).is_ok());
         // A stale predecessor on a fresh daemon refuses.
-        let stale = forged_ack(&identity, Some(forged_active(&identity)));
+        let stale = forged_ack(&identity, Some(forged_head(&identity, 1)));
         assert!(verify_activation_ack(&stale, &identity, None).is_err());
         // The CAS expectation must equal the predecessor exactly.
         let other_identity =
             BatchIdentity::new("bench-repo", "bench-rev", 6, "manifest:old".to_string())
                 .expect("identity");
-        let previous = forged_active(&other_identity);
+        let previous = forged_head(&other_identity, 1);
         let advanced = forged_ack(&identity, Some(previous.clone()));
         assert!(verify_activation_ack(&advanced, &identity, Some(&previous)).is_ok());
         assert!(verify_activation_ack(&advanced, &identity, None).is_err());
         // Wrong generation on one track refuses.
-        let mut wrong_gen = forged_active(&identity);
-        wrong_gen.semantic.manifest_generation = quanta_index_contract::ManifestGeneration::new(8);
+        let mut wrong_gen = forged_head(&identity, 1);
+        wrong_gen.generation.semantic.manifest_generation =
+            quanta_index_contract::ManifestGeneration::new(8);
         let ack = SearchPlaneSearchCorpusActivationCasAck {
             active: wrong_gen,
             previous_sealed_active: None,
         };
         assert!(verify_activation_ack(&ack, &identity, None).is_err());
         // An invalid identity (swapped tracks) refuses.
-        let mut swapped = forged_active(&identity);
-        swapped.semantic.track = quanta_index_contract::SearchPlaneTrackKind::Lexical;
+        let mut swapped = forged_head(&identity, 1);
+        swapped.generation.semantic.track = quanta_index_contract::SearchPlaneTrackKind::Lexical;
         let ack = SearchPlaneSearchCorpusActivationCasAck {
             active: swapped,
             previous_sealed_active: None,
@@ -738,7 +754,7 @@ pub fn publish_and_activate(
     session: &DaemonSession,
     batch: &SearchCorpusBatch,
     expected: &BatchIdentity,
-    expected_active: Option<&quanta_index_contract::SearchCorpusGenerationIdentityV1>,
+    expected_active: Option<&SearchCorpusActiveHeadV1>,
 ) -> BenchResult<(BatchReceipt, SearchPlaneSearchCorpusActivationCasAck)> {
     let digest = batch
         .batch_digest()
@@ -750,7 +766,7 @@ pub fn publish_and_activate(
         .map_err(|err| BenchError::Sdk(format!("publish_and_activate failed: {err}")))?;
     verify_sealed_receipt(&receipt, &digest, expected)?;
     verify_activation_ack(&ack, expected, expected_active)?;
-    if receipt.semantic_content.as_ref() != Some(&ack.active.semantic_content) {
+    if receipt.semantic_content.as_ref() != Some(&ack.active.generation.semantic_content) {
         return Err(BenchError::Protocol(
             "sealed receipt roots differ from the activated roots".to_string(),
         ));
@@ -802,14 +818,14 @@ pub(crate) fn verify_sealed_receipt(
 pub(crate) fn verify_activation_ack(
     ack: &SearchPlaneSearchCorpusActivationCasAck,
     expected: &BatchIdentity,
-    expected_active: Option<&quanta_index_contract::SearchCorpusGenerationIdentityV1>,
+    expected_active: Option<&SearchCorpusActiveHeadV1>,
 ) -> BenchResult<()> {
     ack.active.validate_v1().map_err(|err| {
         BenchError::Protocol(format!("activation ACK identity is invalid: {err}"))
     })?;
     for (track, snapshot) in [
-        ("lexical", &ack.active.lexical),
-        ("semantic", &ack.active.semantic),
+        ("lexical", &ack.active.generation.lexical),
+        ("semantic", &ack.active.generation.semantic),
     ] {
         if snapshot.repo_id != expected.repo_id || snapshot.revision_id != expected.revision_id {
             return Err(BenchError::Protocol(format!(
@@ -827,6 +843,19 @@ pub(crate) fn verify_activation_ack(
     if ack.previous_sealed_active.as_ref() != expected_active {
         return Err(BenchError::Protocol(
             "activation ACK predecessor differs from the CAS expectation".to_string(),
+        ));
+    }
+    let expected_sequence = expected_active.map_or(Some(1), |head| {
+        head.activation_token.activation_sequence().get().checked_add(1)
+    });
+    if expected_sequence != Some(ack.active.activation_token.activation_sequence().get())
+        || expected_active.is_some_and(|head| {
+            head.activation_token.root_incarnation()
+                != ack.active.activation_token.root_incarnation()
+        })
+    {
+        return Err(BenchError::Protocol(
+            "activation ACK token does not advance the expected catalog head".to_string(),
         ));
     }
     Ok(())

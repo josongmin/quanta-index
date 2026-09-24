@@ -86,7 +86,7 @@ pub(crate) fn activation_catalog_with_generations(
     for generation in generations {
         let prepared = PreparedSearchCorpusGenerationV1::new(generation.clone(), None)?;
         let activation = catalog.activate_prepared_search_corpus_generation_v1(&prepared)?;
-        if activation.active != *generation {
+        if activation.active.generation != generation.to_contract_v1() {
             return Err(
                 "activation receipt did not preserve the prepared composite generation".into(),
             );

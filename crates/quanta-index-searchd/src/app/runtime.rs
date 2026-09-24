@@ -991,9 +991,11 @@ fn resolve_structural_pin(
 ) -> Result<GenerationPin, StructuralError> {
     match &request.generation {
         GenerationSelector::Pinned(pin) => Ok(pin.clone()),
-        GenerationSelector::Active { .. } => Err(StructuralError::InvalidRequest(
-            "search-plane structural producer requires a pinned generation".to_string(),
-        )),
+        GenerationSelector::Active { .. } | GenerationSelector::ResolvedActive { .. } => {
+            Err(StructuralError::InvalidRequest(
+                "search-plane structural producer requires a pinned generation".to_string(),
+            ))
+        }
     }
 }
 

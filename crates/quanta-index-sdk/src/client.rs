@@ -214,13 +214,13 @@ impl QuantaIndex {
     fn pin_active_selector(
         &self,
         generation: &mut Option<GenerationPin>,
-        selector: Option<&GenerationSelector>,
+        selector: &mut Option<GenerationSelector>,
         track: SearchPlaneTrackKind,
     ) -> Result<(), SdkError> {
         let Some(GenerationSelector::Active {
             repo_id,
             revision_id,
-        }) = selector
+        }) = selector.as_ref()
         else {
             return Ok(());
         };
@@ -231,14 +231,18 @@ impl QuantaIndex {
         };
         let response =
             self.dispatch_query(SearchPlaneQueryIpcRequest::ResolveActiveGeneration(request))?;
-        let SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(snapshot) = response else {
+        let SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(resolution) = response else {
             return Err(SdkError::Protocol(
                 "active resolution did not return a generation snapshot".to_string(),
             ));
         };
+        let snapshot = resolution.snapshot_v1().ok_or_else(|| {
+            SdkError::Protocol("active resolution returned an unsupported track".to_string())
+        })?;
+        let activation_token = resolution.head.activation_token;
         let resolved = GenerationPin::new(
-            snapshot.repo_id,
-            snapshot.revision_id,
+            snapshot.repo_id.clone(),
+            snapshot.revision_id.clone(),
             snapshot.manifest_generation,
         );
         if generation.as_ref().is_some_and(|pin| pin != &resolved) {
@@ -247,6 +251,11 @@ impl QuantaIndex {
             ));
         }
         *generation = Some(resolved);
+        *selector = Some(GenerationSelector::ResolvedActive {
+            repo_id: repo_id.clone(),
+            revision_id: revision_id.clone(),
+            activation_token,
+        });
         Ok(())
     }
 
@@ -254,24 +263,24 @@ impl QuantaIndex {
         match request {
             SearchPlaneQueryIpcRequest::Text(query) => self.pin_active_selector(
                 &mut query.generation,
-                query.generation_selector.as_ref(),
+                &mut query.generation_selector,
                 SearchPlaneTrackKind::Lexical,
             ),
             SearchPlaneQueryIpcRequest::Symbol(query) => self.pin_active_selector(
                 &mut query.generation,
-                query.generation_selector.as_ref(),
+                &mut query.generation_selector,
                 SearchPlaneTrackKind::Lexical,
             ),
             SearchPlaneQueryIpcRequest::Semantic(query) => {
                 self.pin_active_selector(
                     &mut query.generation,
-                    query.generation_selector.as_ref(),
+                    &mut query.generation_selector,
                     SearchPlaneTrackKind::Semantic,
                 )?;
                 if let Some(scope) = &mut query.lexical_scope {
                     self.pin_active_selector(
                         &mut scope.generation,
-                        scope.generation_selector.as_ref(),
+                        &mut scope.generation_selector,
                         SearchPlaneTrackKind::Lexical,
                     )?;
                 }
@@ -280,41 +289,44 @@ impl QuantaIndex {
             SearchPlaneQueryIpcRequest::Hybrid(query) => {
                 self.pin_active_selector(
                     &mut query.text_query.generation,
-                    query.text_query.generation_selector.as_ref(),
+                    &mut query.text_query.generation_selector,
                     SearchPlaneTrackKind::Lexical,
                 )?;
                 self.pin_active_selector(
                     &mut query.generation,
-                    query.generation_selector.as_ref(),
+                    &mut query.generation_selector,
                     SearchPlaneTrackKind::Semantic,
                 )
             }
             SearchPlaneQueryIpcRequest::HybridSeed(query) => {
                 self.pin_active_selector(
                     &mut query.text_query.generation,
-                    query.text_query.generation_selector.as_ref(),
+                    &mut query.text_query.generation_selector,
                     SearchPlaneTrackKind::Lexical,
                 )?;
                 self.pin_active_selector(
                     &mut query.generation,
-                    query.generation_selector.as_ref(),
+                    &mut query.generation_selector,
                     SearchPlaneTrackKind::Semantic,
                 )
             }
             SearchPlaneQueryIpcRequest::History(query) => self.pin_active_selector(
                 &mut query.text_query.generation,
-                query.text_query.generation_selector.as_ref(),
+                &mut query.text_query.generation_selector,
                 SearchPlaneTrackKind::Lexical,
             ),
             SearchPlaneQueryIpcRequest::RuntimeMetadata(query) => self.pin_active_selector(
                 &mut query.text_query.generation,
-                query.text_query.generation_selector.as_ref(),
+                &mut query.text_query.generation_selector,
                 SearchPlaneTrackKind::Lexical,
             ),
             SearchPlaneQueryIpcRequest::Structural(query) => {
                 if matches!(
                     query.text_query.generation_selector,
-                    Some(GenerationSelector::Active { .. })
+                    Some(
+                        GenerationSelector::Active { .. }
+                            | GenerationSelector::ResolvedActive { .. }
+                    )
                 ) {
                     return Err(SdkError::Protocol(
                         "structural active generation is unsupported".to_string(),
@@ -365,6 +377,7 @@ impl QuantaIndex {
             | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
@@ -430,7 +443,8 @@ impl QuantaIndex {
     ) -> (Option<GenerationPin>, Option<GenerationSelector>) {
         match selection {
             GenerationSelector::Pinned(pin) => (Some(pin), None),
-            active @ GenerationSelector::Active { .. } => (None, Some(active)),
+            active @ (GenerationSelector::Active { .. }
+            | GenerationSelector::ResolvedActive { .. }) => (None, Some(active)),
         }
     }
 
@@ -479,6 +493,9 @@ impl QuantaIndex {
                 "current_generation_snapshot"
             }
             SearchPlaneControlIpcResponse::GenerationStatusReport(_) => "generation_status_report",
+            SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_) => {
+                "search_corpus_active_head_observation"
+            }
             SearchPlaneControlIpcResponse::MetricsSnapshot(_) => "metrics_snapshot",
             SearchPlaneControlIpcResponse::QuarantineInventory(_) => "quarantine_inventory",
             SearchPlaneControlIpcResponse::QuarantineDiscardAck(_) => "quarantine_discard_ack",
@@ -709,7 +726,7 @@ impl<'a> ProducerClient<'a> {
     pub fn publish_search_corpus_and_activate(
         &self,
         batch: &crate::SearchCorpusBatch,
-        expected_active: Option<quanta_index_contract::SearchCorpusGenerationIdentityV1>,
+        expected_active: Option<quanta_index_contract::SearchCorpusActiveHeadV1>,
     ) -> Result<
         (
             crate::BatchReceipt,

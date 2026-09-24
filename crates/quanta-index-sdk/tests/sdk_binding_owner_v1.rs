@@ -17,16 +17,18 @@
 )]
 
 use std::io::{Read, Write};
+use std::num::NonZeroU64;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
 use quanta_index_contract::{
-    GenerationPin, GenerationSelector, GenerationSnapshot, ManifestGeneration,
-    QueryConstraintSetV1, RepoId, RepoRelativePath, RevisionId, SearchPlaneQueryIpcRequest,
-    SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
-    SearchPlaneQueryIpcResponseEnvelope, SearchPlaneTrackKind, SymbolQueryRequest,
-    TextQueryRequest, TextQuerySyntax,
+    ActiveGenerationResolutionV1, GenerationPin, GenerationSelector, GenerationSnapshot,
+    ManifestGeneration, QueryConstraintSetV1, RepoId, RepoRelativePath, RevisionId,
+    SearchCorpusActivationTokenV1, SearchCorpusActiveHeadV1, SearchCorpusGenerationIdentityV1,
+    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
+    SearchPlaneQueryIpcResponseEnvelope, SearchPlaneTrackKind, SemanticContentRootsV1,
+    SymbolQueryRequest, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_ipc::{decode_request, encode_response};
 use quanta_index_sdk::{
@@ -90,13 +92,34 @@ fn text_response(generation: GenerationPin) -> SearchPlaneQueryIpcResponse {
 }
 
 fn active_snapshot(repo_id: RepoId) -> SearchPlaneQueryIpcResponse {
-    SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(GenerationSnapshot {
+    let lexical = GenerationSnapshot {
         repo_id,
         revision_id: revision_id(),
         track: SearchPlaneTrackKind::Lexical,
         manifest_generation: ManifestGeneration::new(7),
         manifest_digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             .to_string(),
+    };
+    SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(ActiveGenerationResolutionV1 {
+        track: SearchPlaneTrackKind::Lexical,
+        head: SearchCorpusActiveHeadV1 {
+            generation: SearchCorpusGenerationIdentityV1 {
+                semantic: GenerationSnapshot {
+                    track: SearchPlaneTrackKind::Semantic,
+                    ..lexical.clone()
+                },
+                lexical,
+                semantic_content: SemanticContentRootsV1 {
+                    row_root_digest: format!("sha256:{}", "a".repeat(64)),
+                    membership_root_digest: format!("sha256:{}", "b".repeat(64)),
+                },
+            },
+            activation_token: SearchCorpusActivationTokenV1::new(
+                [7; 16],
+                NonZeroU64::new(1).expect("fixture sequence is positive"),
+            )
+            .expect("fixture incarnation is nonzero"),
+        },
     })
 }
 
@@ -303,7 +326,7 @@ fn active_selector_rejects_wrong_same_domain_generation_over_uds() {
         rx.recv().expect("pinned query request"),
         SearchPlaneQueryIpcRequest::Text(request)
             if request.generation == Some(pin(repo_id()))
-                && matches!(request.generation_selector, Some(GenerationSelector::Active { .. }))
+                && matches!(request.generation_selector, Some(GenerationSelector::ResolvedActive { .. }))
     ));
 }
 
@@ -538,7 +561,7 @@ fn query_only_profile_needs_no_control_or_ingest_sockets() {
         rx.recv().expect("pinned query request"),
         SearchPlaneQueryIpcRequest::Text(request)
             if request.generation == Some(pin(repo_id()))
-                && matches!(request.generation_selector, Some(GenerationSelector::Active { .. }))
+                && matches!(request.generation_selector, Some(GenerationSelector::ResolvedActive { .. }))
     ));
 
     // The full profile with the same options still refuses: least
@@ -615,6 +638,7 @@ fn coverage_table_exact_matches_sdk_surface() {
     let expected_control = [
         "search_corpus_activation_cas_ack",
         "search_corpus_rollback_cas_ack",
+        "search_corpus_active_head_observation",
         "repomap_mutation_ack",
         "repomap_terminal_receipt_v2",
         "current_generation_snapshot",

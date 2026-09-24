@@ -528,8 +528,14 @@ fn real_daemon_roundtrip_publishes_and_queries() {
     }
 
     assert!(receipt.semantic_content.is_some());
-    assert_eq!(ack.active.lexical.manifest_generation, identity.generation);
-    assert_eq!(ack.active.semantic.manifest_generation, identity.generation);
+    assert_eq!(
+        ack.active.generation.lexical.manifest_generation,
+        identity.generation
+    );
+    assert_eq!(
+        ack.active.generation.semantic.manifest_generation,
+        identity.generation
+    );
 
     // The live session assembles a schema-valid v3 record: contract echo,
     // per-route captures bound to the real receipt, ACK, daemon binary

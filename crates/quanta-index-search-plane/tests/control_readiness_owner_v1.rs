@@ -18,7 +18,7 @@ use quanta_index_contract::{
     MetricsSnapshotRequest, ProcessReadinessRequest, QuarantineDiscardRequest,
     QuarantineInventoryRequest, QuarantineTargetV1, QuarantinedRepoMapFileEntryV1, RepoId,
     RepoMapActivateGenerationRequestV2, RepoMapActiveHeadRequestV2, RevisionId,
-    SearchCorpusGenerationIdentityV1,
+    SearchCorpusActiveHeadV1, SearchCorpusGenerationIdentityV1,
     SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
     SearchPlaneErrorCodeV2, SearchPlaneRollbackSearchCorpusGenerationCasRequest,
     SearchPlaneTrackKind, SemanticContentRootsV1,
@@ -52,6 +52,17 @@ fn identity() -> SearchCorpusGenerationIdentityV1 {
         },
     }
 }
+
+fn head() -> SearchCorpusActiveHeadV1 {
+    SearchCorpusActiveHeadV1 {
+        generation: identity(),
+        activation_token: quanta_index_contract::SearchCorpusActivationTokenV1::new(
+            [7; quanta_index_contract::ACTIVATION_ROOT_INCARNATION_BYTES_V1],
+            std::num::NonZeroU64::new(1).expect("fixture sequence is positive"),
+        )
+        .expect("fixture incarnation is nonzero"),
+    }
+}
 use quanta_index_search_plane::{ControlAccessV1, ControlCapabilityV1};
 
 fn observe_requests() -> Vec<SearchPlaneControlIpcRequest> {
@@ -82,9 +93,13 @@ fn admin_requests() -> Vec<SearchPlaneControlIpcRequest> {
         SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(
             SearchPlaneRollbackSearchCorpusGenerationCasRequest {
                 target: identity(),
-                expected_active: identity(),
+                expected_active: head(),
             },
         ),
+        SearchPlaneControlIpcRequest::SearchCorpusActiveHead(GenerationStatusRequest {
+            repo_id: fixture_repo(),
+            revision_id: fixture_revision(),
+        }),
         SearchPlaneControlIpcRequest::RepoMapActivateV2(RepoMapActivateGenerationRequestV2 {
             repo_id: RepoId::new("r").expect("static fixture ID"),
             revision_id: RevisionId::new("v").expect("static fixture ID"),

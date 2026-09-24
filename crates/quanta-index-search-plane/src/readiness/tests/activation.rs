@@ -3,6 +3,7 @@
     reason = "Result-returning durability and CAS tests use assertions as test-failure reporting"
 )]
 
+use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
 use std::thread;
@@ -21,7 +22,7 @@ use crate::readiness::search_corpus_generation::{
 };
 use crate::readiness::tests::support::{
     AlwaysFailParentSync, FailAtParentSync, TestResult, ToggleParentSyncFailure,
-    assert_active_composite_v1, corpus_generation, corpus_identity, corpus_snapshot,
+    active_head, assert_active_composite_v1, corpus_generation, corpus_identity, corpus_snapshot,
     search_corpus_retention,
 };
 use crate::search_corpus_lifecycle::SearchCorpusPairMutationCoordinator;
@@ -38,9 +39,16 @@ fn activation_catalog_persists_composite_root_and_rolls_back_both_tracks_v1() ->
     let prepared = PreparedSearchCorpusGenerationV1::new(active, None)?;
     let activation = catalog.activate_prepared_search_corpus_generation_v1(&prepared)?;
     assert_eq!(
-        activation.active.manifest_generation(),
+        activation.active.generation.lexical.manifest_generation,
         ManifestGeneration::new(17)
     );
+    let repo = RepoId::new("repo-corpus")?;
+    let revision = RevisionId::new("rev-corpus")?;
+    let (_, first_token) = catalog
+        .active_search_corpus_with_token_v1(&repo, &revision)?
+        .expect("activated head");
+    assert_eq!(first_token.activation_sequence().get(), 1);
+    assert_ne!(first_token.root_incarnation(), [0; 16]);
 
     let pin = catalog.resolve(
         &RepoId::new("repo-corpus").expect("static fixture ID satisfies canonical policy"),
@@ -50,6 +58,10 @@ fn activation_catalog_persists_composite_root_and_rolls_back_both_tracks_v1() ->
     assert_eq!(pin.manifest_generation, ManifestGeneration::new(17));
 
     let reopened = ActivationCatalog::open(dir.path())?;
+    let (_, reopened_token) = reopened
+        .active_search_corpus_with_token_v1(&repo, &revision)?
+        .expect("reopened head");
+    assert_eq!(reopened_token, first_token);
     let reopened_pin = reopened.resolve(
         &RepoId::new("repo-corpus").expect("static fixture ID satisfies canonical policy"),
         &RevisionId::new("rev-corpus").expect("static fixture ID satisfies canonical policy"),
@@ -71,23 +83,26 @@ fn activation_catalog_persists_composite_root_and_rolls_back_both_tracks_v1() ->
     );
 
     let rollback = catalog.rollback(&SearchPlaneRollbackSearchCorpusGenerationCasRequest {
-        expected_active:
-            crate::readiness::search_corpus_generation::search_corpus_generation_into_contract(
-                &corpus_generation(17, "digest-17")?,
-            ),
-        target: crate::readiness::search_corpus_generation::search_corpus_generation_into_contract(
-            &corpus_generation(16, "digest-16")?,
-        ),
+        expected_active: active_head(&catalog, prepared.candidate())?,
+        target: corpus_generation(16, "digest-16")?.to_contract_v1(),
     })?;
     assert_eq!(
-        rollback.previous_sealed_active.lexical.manifest_generation,
+        rollback.previous_sealed_active.generation.lexical.manifest_generation,
         ManifestGeneration::new(17)
     );
     assert_eq!(
-        rollback.active.lexical.manifest_generation,
+        rollback.active.generation.lexical.manifest_generation,
         ManifestGeneration::new(16)
     );
     let reopened = ActivationCatalog::open(dir.path())?;
+    let (_, after_rollback_token) = reopened
+        .active_search_corpus_with_token_v1(&repo, &revision)?
+        .expect("reopened rollback head");
+    assert_eq!(
+        after_rollback_token.root_incarnation(),
+        first_token.root_incarnation()
+    );
+    assert_eq!(after_rollback_token.activation_sequence().get(), 2);
     let lexical_after = reopened.resolve_record(
         &RepoId::new("repo-corpus").expect("static fixture ID satisfies canonical policy"),
         &RevisionId::new("rev-corpus").expect("static fixture ID satisfies canonical policy"),
@@ -108,6 +123,69 @@ fn activation_catalog_persists_composite_root_and_rolls_back_both_tracks_v1() ->
     );
     assert_eq!(lexical_after.manifest_digest, "digest-16");
     assert_eq!(semantic_after.manifest_digest, "digest-16");
+    Ok(())
+}
+
+#[test]
+fn controlled_restore_rotates_activation_incarnation_without_rewriting_generation_v1() -> TestResult
+{
+    let dir = tempdir()?;
+    let catalog = ActivationCatalog::open(dir.path())?;
+    let generation = corpus_generation(17, "digest-17")?;
+    let prepared = PreparedSearchCorpusGenerationV1::new(generation.clone(), None)?;
+    drop(catalog.activate_prepared_search_corpus_generation_v1(&prepared)?);
+    let repo = RepoId::new("repo-corpus")?;
+    let revision = RevisionId::new("rev-corpus")?;
+    let before = catalog
+        .active_search_corpus_with_token_v1(&repo, &revision)?
+        .expect("active head before restore");
+    drop(catalog);
+
+    ActivationCatalog::rotate_root_incarnation_for_restore_v1(dir.path())?;
+    let reopened = ActivationCatalog::open(dir.path())?;
+    let after = reopened
+        .active_search_corpus_with_token_v1(&repo, &revision)?
+        .expect("active head after restore");
+    assert_eq!(after.0, before.0);
+    assert_eq!(
+        after.1.activation_sequence(),
+        before.1.activation_sequence()
+    );
+    assert_ne!(after.1.root_incarnation(), before.1.root_incarnation());
+    Ok(())
+}
+
+#[test]
+fn active_root_reopen_rejects_missing_incarnation_and_zero_sequence_v1() -> TestResult {
+    let dir = tempdir()?;
+    let catalog = ActivationCatalog::open(dir.path())?;
+    let generation = corpus_generation(17, "digest-17")?;
+    drop(catalog.activate_prepared_search_corpus_generation_v1(
+        &PreparedSearchCorpusGenerationV1::new(generation.clone(), None)?,
+    )?);
+    drop(catalog);
+
+    let incarnation_path = dir.path().join(".activation-root-incarnation-v1");
+    let incarnation = std::fs::read(&incarnation_path)?;
+    std::fs::remove_file(&incarnation_path)?;
+    let missing = ActivationCatalog::open(dir.path()).expect_err("active root needs incarnation");
+    assert!(missing.to_string().contains("lack root incarnation"));
+    std::fs::write(&incarnation_path, incarnation)?;
+
+    let root_path = dir.path().join(
+        crate::readiness::activation_catalog::search_corpus_root_file_name(
+            generation.repo_id(),
+            generation.revision_id(),
+        ),
+    );
+    let mut root: serde_json::Value = serde_json::from_slice(&std::fs::read(&root_path)?)?;
+    root["activation_sequence"] = serde_json::json!(0);
+    std::fs::write(&root_path, serde_json::to_vec(&root)?)?;
+    let zero = ActivationCatalog::open(dir.path()).expect_err("zero sequence must be rejected");
+    assert!(
+        zero.to_string()
+            .contains("activation_sequence must be positive")
+    );
     Ok(())
 }
 
@@ -162,7 +240,13 @@ fn prepared_search_corpus_generation_rejects_single_track_and_mixed_identity() -
     )?;
     let mismatched_expected = PreparedSearchCorpusGenerationV1::new(
         corpus_generation(17, "digest-17")?,
-        Some(foreign_expected),
+        Some(quanta_index_contract::SearchCorpusActiveHeadV1 {
+            generation: foreign_expected.to_contract_v1(),
+            activation_token: quanta_index_contract::SearchCorpusActivationTokenV1::new(
+                [7; 16],
+                NonZeroU64::new(1).expect("fixture sequence is positive"),
+            )?,
+        }),
     );
     let Err(CoreError::InvalidContract(expected_message)) = mismatched_expected else {
         return Err("foreign expected active unexpectedly constructed".into());
@@ -179,8 +263,9 @@ fn prepared_search_corpus_activation_is_durable_before_reopen_and_rejects_stale_
     let first = corpus_generation(17, "digest-17")?;
     let first_prepared = PreparedSearchCorpusGenerationV1::new(first.clone(), None)?;
     let first_receipt = catalog.activate_prepared_search_corpus_generation_v1(&first_prepared)?;
-    assert_eq!(first_receipt.active, first);
+    assert_eq!(first_receipt.active.generation, first.to_contract_v1());
     assert_eq!(first_receipt.previous_active, None);
+    let first_head = first_receipt.active.clone();
 
     let root = dir.path().join(
         crate::readiness::activation_catalog::search_corpus_root_file_name(
@@ -202,13 +287,13 @@ fn prepared_search_corpus_activation_is_durable_before_reopen_and_rejects_stale_
 
     let second = corpus_generation(18, "digest-18")?;
     let promoted_prepared =
-        PreparedSearchCorpusGenerationV1::new(second.clone(), Some(first.clone()))?;
+        PreparedSearchCorpusGenerationV1::new(second.clone(), Some(first_head.clone()))?;
     let promoted = catalog.activate_prepared_search_corpus_generation_v1(&promoted_prepared)?;
-    assert_eq!(promoted.active, second);
-    assert_eq!(promoted.previous_active, Some(first.clone()));
+    assert_eq!(promoted.active.generation, second.to_contract_v1());
+    assert_eq!(promoted.previous_active, Some(first_head.clone()));
 
     let stale_prepared =
-        PreparedSearchCorpusGenerationV1::new(corpus_generation(19, "digest-19")?, Some(first))?;
+        PreparedSearchCorpusGenerationV1::new(corpus_generation(19, "digest-19")?, Some(first_head))?;
     let stale = catalog.activate_prepared_search_corpus_generation_v1(&stale_prepared);
     let Err(CoreError::Typed { code, .. }) = stale else {
         return Err("stale composite expectation unexpectedly succeeded".into());
@@ -240,17 +325,19 @@ fn activation_catalog_concurrent_cas_promotions_select_one_composite_winner() ->
     let dir = tempdir()?;
     let catalog = Arc::new(ActivationCatalog::open(dir.path())?);
     let active = corpus_generation(17, "digest-17")?;
-    let initial_active = active.clone();
-    let _initial_activation = catalog.activate_prepared_search_corpus_generation_v1(
+    let initial_activation = catalog.activate_prepared_search_corpus_generation_v1(
         &PreparedSearchCorpusGenerationV1::new(active.clone(), None)?,
     )?;
+    let initial_active = initial_activation.active;
 
     let first_candidate = corpus_generation(18, "digest-18")?;
     let second_candidate = corpus_generation(19, "digest-19")?;
-    let first_prepared =
-        PreparedSearchCorpusGenerationV1::new(first_candidate.clone(), Some(active.clone()))?;
+    let first_prepared = PreparedSearchCorpusGenerationV1::new(
+        first_candidate.clone(),
+        Some(initial_active.clone()),
+    )?;
     let second_prepared =
-        PreparedSearchCorpusGenerationV1::new(second_candidate.clone(), Some(active))?;
+        PreparedSearchCorpusGenerationV1::new(second_candidate.clone(), Some(initial_active.clone()))?;
 
     // Both contenders are fully prepared before either can enter the
     // catalog. The barrier releases their CAS calls together; winner
@@ -301,22 +388,25 @@ fn activation_catalog_concurrent_cas_promotions_select_one_composite_winner() ->
         }
     }
     let winner = winner.ok_or("concurrent activation CAS produced no winner")?;
-    assert!(winner == first_candidate || winner == second_candidate);
+    assert!(
+        winner.generation == first_candidate.to_contract_v1()
+            || winner.generation == second_candidate.to_contract_v1()
+    );
 
     let lexical = catalog.resolve_record(
-        winner.repo_id(),
-        winner.revision_id(),
+        &winner.generation.lexical.repo_id,
+        &winner.generation.lexical.revision_id,
         SearchPlaneTrackKind::Lexical,
     )?;
     let semantic = catalog.resolve_record(
-        winner.repo_id(),
-        winner.revision_id(),
+        &winner.generation.lexical.repo_id,
+        &winner.generation.lexical.revision_id,
         SearchPlaneTrackKind::Semantic,
     )?;
-    assert_eq!(lexical.manifest_generation, winner.manifest_generation());
-    assert_eq!(semantic.manifest_generation, winner.manifest_generation());
-    assert_eq!(lexical.manifest_digest, winner.manifest_digest());
-    assert_eq!(semantic.manifest_digest, winner.manifest_digest());
+    assert_eq!(lexical.manifest_generation, winner.generation.lexical.manifest_generation);
+    assert_eq!(semantic.manifest_generation, winner.generation.lexical.manifest_generation);
+    assert_eq!(lexical.manifest_digest, winner.generation.lexical.manifest_digest);
+    assert_eq!(semantic.manifest_digest, winner.generation.semantic.manifest_digest);
     Ok(())
 }
 
@@ -328,7 +418,7 @@ fn activation_catalog_fails_closed_after_durability_becomes_uncertain() -> TestR
     let activation = catalog.activate_prepared_search_corpus_generation_v1(
         &PreparedSearchCorpusGenerationV1::new(first.clone(), None)?,
     )?;
-    assert_eq!(activation.active, first);
+    assert_eq!(activation.active.generation, first.to_contract_v1());
 
     // This is the post-rename / parent-fsync-failure state. The next
     // process reconstructs from the durable root; this one must never
@@ -347,7 +437,7 @@ fn activation_catalog_fails_closed_after_durability_becomes_uncertain() -> TestR
 
     let second = corpus_generation(18, "digest-18")?;
     let mutate = catalog.activate_prepared_search_corpus_generation_v1(
-        &PreparedSearchCorpusGenerationV1::new(second, Some(first))?,
+        &PreparedSearchCorpusGenerationV1::new(second, Some(activation.active))?,
     );
     let Err(CoreError::NotReady(mutate_message)) = mutate else {
         return Err("durability-uncertain catalog unexpectedly accepted a mutation".into());
@@ -364,10 +454,10 @@ fn activation_catalog_fences_real_post_rename_parent_sync_failure() -> TestResul
         SearchCorpusPairMutationCoordinator::shared(),
         Arc::new(FailAtParentSync {
             calls: AtomicUsize::new(0),
-            // Existing-root durability revalidation is call zero and the
-            // staging-directory creation fence is call one; the
-            // activation-file target-parent sync after rename is call two.
-            fail_at: 2,
+            // Existing-root revalidation is call zero, staging creation is
+            // call one, and root-incarnation persistence is call two. The
+            // activation-file target-parent sync after rename is call three.
+            fail_at: 3,
         }),
     )?;
     let candidate = corpus_generation(17, "digest-17")?;
@@ -411,7 +501,7 @@ fn activation_staging_write_failure_preserves_complete_active_pointer_v1() -> Te
     let dir = tempdir()?;
     let catalog = ActivationCatalog::open(dir.path())?;
     let active = corpus_generation(17, "digest-17")?;
-    let _activation = catalog.activate_prepared_search_corpus_generation_v1(
+    let activation = catalog.activate_prepared_search_corpus_generation_v1(
         &PreparedSearchCorpusGenerationV1::new(active.clone(), None)?,
     )?;
     let staging = dir.path().join(".staging");
@@ -420,7 +510,7 @@ fn activation_staging_write_failure_preserves_complete_active_pointer_v1() -> Te
 
     let candidate = corpus_generation(18, "digest-18")?;
     let rejected = catalog.activate_prepared_search_corpus_generation_v1(
-        &PreparedSearchCorpusGenerationV1::new(candidate, Some(active.clone()))?,
+        &PreparedSearchCorpusGenerationV1::new(candidate, Some(activation.active))?,
     );
     let Err(CoreError::Storage(message)) = rejected else {
         return Err("activation staging write failure unexpectedly advanced the head".into());
@@ -439,19 +529,19 @@ fn rollback_staging_write_failure_preserves_complete_active_pointer_v1() -> Test
     let dir = tempdir()?;
     let catalog = ActivationCatalog::open(dir.path())?;
     let rollback_target = corpus_generation(17, "digest-17")?;
-    let _first = catalog.activate_prepared_search_corpus_generation_v1(
+    let first = catalog.activate_prepared_search_corpus_generation_v1(
         &PreparedSearchCorpusGenerationV1::new(rollback_target.clone(), None)?,
     )?;
     let active = corpus_generation(18, "digest-18")?;
-    let _second = catalog.activate_prepared_search_corpus_generation_v1(
-        &PreparedSearchCorpusGenerationV1::new(active.clone(), Some(rollback_target.clone()))?,
+    let second = catalog.activate_prepared_search_corpus_generation_v1(
+        &PreparedSearchCorpusGenerationV1::new(active.clone(), Some(first.active))?,
     )?;
     let staging = dir.path().join(".staging");
     std::fs::remove_dir(&staging)?;
     std::fs::write(&staging, b"injected non-directory staging path")?;
 
     let rejected = catalog.rollback(&SearchPlaneRollbackSearchCorpusGenerationCasRequest {
-        expected_active: corpus_identity(&active),
+        expected_active: second.active,
         target: corpus_identity(&rollback_target),
     });
     let Err(CoreError::Storage(message)) = rejected else {
@@ -478,17 +568,17 @@ fn rollback_parent_sync_failure_fences_serving_and_rehydrates_one_composite_v1()
         sync.clone(),
     )?;
     let rollback_target = corpus_generation(17, "digest-17")?;
-    let _first = catalog.activate_prepared_search_corpus_generation_v1(
+    let first = catalog.activate_prepared_search_corpus_generation_v1(
         &PreparedSearchCorpusGenerationV1::new(rollback_target.clone(), None)?,
     )?;
     let active = corpus_generation(18, "digest-18")?;
-    let _second = catalog.activate_prepared_search_corpus_generation_v1(
-        &PreparedSearchCorpusGenerationV1::new(active.clone(), Some(rollback_target.clone()))?,
+    let second = catalog.activate_prepared_search_corpus_generation_v1(
+        &PreparedSearchCorpusGenerationV1::new(active.clone(), Some(first.active))?,
     )?;
 
     sync.fail.store(true, Ordering::SeqCst);
     let rejected = catalog.rollback(&SearchPlaneRollbackSearchCorpusGenerationCasRequest {
-        expected_active: corpus_identity(&active),
+        expected_active: second.active,
         target: corpus_identity(&rollback_target),
     });
     assert!(matches!(rejected, Err(CoreError::Storage(_))));
@@ -555,7 +645,7 @@ fn activation_catalog_rejects_legacy_per_track_root_before_decode() -> TestResul
 fn activation_catalog_rejects_filename_payload_identity_mismatch() -> TestResult {
     let dir = tempdir()?;
     let generation = corpus_generation(17, "digest-17")?;
-    let persisted = crate::readiness::search_corpus_generation::PersistedSearchCorpusGenerationRootV1::from_generation(&generation);
+    let persisted = crate::readiness::search_corpus_generation::PersistedSearchCorpusGenerationRootV1::from_generation(&generation, NonZeroU64::new(1).expect("positive sequence"));
     let alias = dir.path().join("alias--alias--corpus.json");
     std::fs::write(&alias, serde_json::to_vec_pretty(&persisted)?)?;
     let result = ActivationCatalog::open(dir.path());
@@ -574,7 +664,7 @@ fn activation_catalog_refuses_symlink_composite_root_v1() -> TestResult {
     let dir = tempdir()?;
     let attacker_dir = tempdir()?;
     let generation = corpus_generation(17, "digest-17")?;
-    let persisted = crate::readiness::search_corpus_generation::PersistedSearchCorpusGenerationRootV1::from_generation(&generation);
+    let persisted = crate::readiness::search_corpus_generation::PersistedSearchCorpusGenerationRootV1::from_generation(&generation, NonZeroU64::new(1).expect("positive sequence"));
     let attacker_target = attacker_dir.path().join("attacker-controlled.json");
     std::fs::write(&attacker_target, serde_json::to_vec_pretty(&persisted)?)?;
     let activation_path = dir.path().join(
