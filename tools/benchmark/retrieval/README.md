@@ -68,6 +68,10 @@ The verdict re-enumerates every materialized path/SHA and refuses extra files,
 symlinks, Git metadata, or a corpus-proof mismatch.
 The record label alone is never authority: `verdict` requires the frozen
 policy/probe artifact and matching process-resource bindings.
+Native Windows paired capture remains unsupported while the product IPC port,
+peer admission, and sandboxed process owner are incomplete. The Semble worker's
+Windows resident-memory probe does not enable a Windows SDK roundtrip. WSL is
+classified as Linux, never as native Windows evidence.
 
 The runner computes `query_pack_sha256` as SHA-256 of UTF-8 JSON serialized
 with sorted keys, no whitespace, and `ensure_ascii=False`. A producer can use
