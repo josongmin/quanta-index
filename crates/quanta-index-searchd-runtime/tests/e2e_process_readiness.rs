@@ -104,11 +104,14 @@ fn surviving_control_socket_reports_lost_or_replaced_plane_path_not_ready() -> T
             require_eq(&ready.ready, &true, "initial readiness")?;
 
             let sockets = daemon_socket_paths(&state_root);
-            std::fs::remove_file(&sockets[lost_plane])?;
+            let socket_path = sockets
+                .get(lost_plane)
+                .ok_or("lost plane index has no socket path")?;
+            std::fs::remove_file(socket_path)?;
             // Replacing query.sock with another valid socket must not pass
             // an existence/type check; only the daemon's bound inode counts.
             let replacement = (lost_plane == 0)
-                .then(|| UnixListener::bind(&sockets[lost_plane]))
+                .then(|| UnixListener::bind(socket_path))
                 .transpose()?;
             let report = client.observability().process_readiness()?;
             require_eq(&report.ready, &false, "readiness after socket path loss")?;

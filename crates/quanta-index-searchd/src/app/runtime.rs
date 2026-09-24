@@ -1692,8 +1692,8 @@ impl SearchdRuntime {
                 control_server.bound_socket_path_probe(),
                 ingest_server.bound_socket_path_probe(),
             ])
-            .map_err(|_| {
-                anyhow::anyhow!("process readiness socket identities already installed")
+            .map_err(|probes| {
+                anyhow::anyhow!("process readiness socket identities already installed: {probes:?}")
             })?;
 
         Ok(Self {

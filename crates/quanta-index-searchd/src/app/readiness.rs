@@ -96,7 +96,12 @@ impl ProcessReadinessPort for RuntimeReadiness {
         })?;
         let (query_running, control_running, ingest_running) = self.status.required_planes();
         let path_current = |index: usize| {
-            socket_probes[index].is_current().map_err(|error| {
+            let probe = socket_probes.get(index).ok_or_else(|| {
+                CoreError::Storage(format!(
+                    "process readiness socket probe index {index} is not installed"
+                ))
+            })?;
+            probe.is_current().map_err(|error| {
                 CoreError::Storage(format!(
                     "process readiness socket identity observation failed: {error}"
                 ))
