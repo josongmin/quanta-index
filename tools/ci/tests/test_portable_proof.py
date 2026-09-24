@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from tools.benchmark.retrieval import portable_proof
+from tools.benchmark.retrieval import run as pairrun
 
 
 def test_collected_pytest_identity_normalizes_windows_separator() -> None:
@@ -55,23 +58,125 @@ def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     runner = target / "debug" / "quanta-index-retrieval-bench"
     searchd = target / "debug" / "quanta-index-searchd"
     tools = {
-        name: {"path": f"/fake/{name}", "sha256": "a" * 64, "version": "fixture"}
-        for name in ("python", "cargo", "cargo-nextest", "rustc", "git")
+        name: {
+            "path": f"/fake/{name}",
+            "realpath": f"/fake/{name}",
+            "sha256": "a" * 64,
+            "version": "fixture",
+        }
+        for name in ("python", "cargo", "cargo-nextest", "rustc", "git", "bash", "just", "cargow")
     }
     monkeypatch.setattr(portable_proof, "_source_revision", lambda: "b" * 40)
     monkeypatch.setattr(portable_proof, "_tools", lambda: tools)
-    monkeypatch.setattr(portable_proof, "_os_identity", lambda: {"system": "fixture"})
+    monkeypatch.setattr(
+        portable_proof,
+        "_os_identity",
+        lambda: {
+            "system": "fixture",
+            "release": "1",
+            "machine": "fixture",
+            "python_version": "3.9",
+        },
+    )
     monkeypatch.setattr(
         portable_proof.proof_inventory, "verify_inventory_authority", lambda *_: None
     )
     calls = []
+
+    def write_closure() -> None:
+        closure = {
+            "schema_version": 1,
+            "profile": "retrieval",
+            "revision": "b" * 40,
+            "roots": ["tools/benchmark/retrieval"],
+            "files": [{"path": "tools/benchmark/retrieval/portable_proof.py", "sha256": "a" * 64}],
+        }
+        closure["digest"] = portable_proof.source_closure._digest(closure)
+        (out / "source-closure.json").write_text(json.dumps(closure), encoding="utf-8")
+
+    def write_receipt(argv: list[str]) -> None:
+        def option(name: str) -> str:
+            return argv[argv.index(name) + 1]
+
+        values = [
+            argv[index + 1] for index, value in enumerate(argv) if value == "--input-evidence"
+        ]
+        inputs = []
+        for value in values:
+            role, path = value.split("=", 1)
+            inputs.append({"role": role, "sha256": portable_proof._sha(Path(path))})
+        summary = Path(option("--evidence"))
+        payload = json.loads(summary.read_text(encoding="utf-8"))
+        canonical = {
+            "schema_version": 2,
+            "revision": "b" * 40,
+            "rail": option("--rail"),
+            "tier": "correctness",
+            "command": option("--command"),
+            "evidence_path": str(summary),
+            "evidence_sha256": portable_proof._sha(summary),
+            "test_event_count": payload["executed"],
+            "source_closure": json.loads((out / "source-closure.json").read_text(encoding="utf-8")),
+            "input_evidence": sorted(inputs, key=lambda row: row["role"]),
+        }
+        Path(option("--out")).write_text(json.dumps(canonical), encoding="utf-8")
 
     def run(argv, **kwargs):
         assert kwargs["cwd"] == portable_proof.ROOT
         assert kwargs["capture_output"] is True
         assert kwargs["check"] is False
         calls.append((argv, kwargs["env"]))
-        if "proof_inventory.py" in argv[1]:
+        if argv[1] == str(portable_proof.SOURCE_CLOSURE_SCRIPT):
+            write_closure()
+            raw = b""
+        elif argv[1] == str(portable_proof.RECEIPT_WRITER):
+            write_receipt(argv)
+            raw = b""
+        elif argv[1] == "retrieval-sdk-proof":
+            out.mkdir()
+            write_closure()
+            runner.parent.mkdir(parents=True, exist_ok=True)
+            runner.write_bytes(b"runner")
+            searchd.write_bytes(b"searchd")
+            (out / "nextest-inventory.json").write_bytes(
+                _rust_inventory("sdk_roundtrip", portable_proof.sdk_proof.PROOF_TEST)
+            )
+            (out / "nextest.jsonl").write_bytes(
+                _events("sdk_roundtrip", portable_proof.sdk_proof.PROOF_TEST)
+            )
+            digest = hashlib.sha256(runner.read_bytes()).hexdigest()
+            (out / "actual-runner-record.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 3,
+                        "captures": {
+                            "run": {
+                                "runner_binary": {"name": "runner", "digest": digest},
+                                "searchd_binary": {
+                                    "binary_digest": hashlib.sha256(
+                                        searchd.read_bytes()
+                                    ).hexdigest()
+                                },
+                                "receipt_digest": "c" * 64,
+                                "activation_digest": "d" * 64,
+                            }
+                        },
+                        "route_provenance": {"lexical": {"capture_id": "run"}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            summary = portable_proof.sdk_proof.build_summary(
+                out / "actual-runner-record.json",
+                out / "nextest.jsonl",
+                runner,
+                out / "nextest-inventory.json",
+                searchd_path=searchd,
+            )
+            (out / "sdk_results.json").write_text(json.dumps(summary), encoding="utf-8")
+            write_receipt(portable_proof._receipt_argv("sdk", out, tools["python"]["path"]))
+            raw = b""
+        elif "proof_inventory.py" in argv[1]:
             (out / "python-inventory.json").write_text(
                 json.dumps(
                     {
@@ -84,11 +189,11 @@ def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
                 encoding="utf-8",
             )
             raw = b""
-        elif argv[1:3] == ["nextest", "list"]:
+        elif argv[3:5] == ["nextest", "list"]:
             binary = "sdk_roundtrip" if "sdk_roundtrip" in argv else "chunking_contract"
             test = portable_proof.sdk_proof.PROOF_TEST if binary == "sdk_roundtrip" else "one"
             raw = _rust_inventory(binary, test)
-        elif argv[1:3] == ["nextest", "run"]:
+        elif argv[3:5] == ["nextest", "run"]:
             binary = "sdk_roundtrip" if "sdk_roundtrip" in argv else "chunking_contract"
             test = portable_proof.sdk_proof.PROOF_TEST if binary == "sdk_roundtrip" else "one"
             raw = _events(binary, test)
@@ -123,12 +228,12 @@ def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
                 encoding="utf-8",
             )
             raw = b""
-        elif argv[1] == "build":
+        elif argv[3] == "build":
             runner.parent.mkdir(parents=True, exist_ok=True)
             runner.write_bytes(b"runner")
             searchd.write_bytes(b"searchd")
             raw = b""
-        elif argv[1] == "metadata":
+        elif argv[3] == "metadata":
             raw = json.dumps({"target_directory": str(target)}).encode()
         else:
             raise AssertionError(argv)
@@ -143,8 +248,11 @@ def test_producer_and_validator_bind_execution_and_inputs(fake_execution, rail: 
     out, runner, calls = fake_execution
     receipt = portable_proof.produce(rail, out)
     assert portable_proof.validate(receipt)["rail"] == rail
-    assert len(calls) == (4 if rail == "contract" else 5)
+    assert len(calls) == (7 if rail == "contract" else 2)
     assert all(isinstance(argv, list) for argv, _ in calls)
+    canonical = out / ("sdk_receipt.json" if rail == "sdk" else "contract_rust_receipt.json")
+    assert json.loads(canonical.read_text(encoding="utf-8"))["schema_version"] == 2
+    pairrun._validate_receipt_shape(json.loads(canonical.read_text(encoding="utf-8")), "proof")
     if rail == "sdk":
         runner.write_bytes(b"changed")
         with pytest.raises(ValueError, match="binary identity changed"):
@@ -159,11 +267,11 @@ def test_validator_rejects_rewritten_command_and_missing_evidence(fake_execution
     out, _, _ = fake_execution
     receipt = portable_proof.produce("contract", out)
     data = json.loads(receipt.read_text(encoding="utf-8"))
-    data["commands"][3]["argv"][2] = "list"
+    data["commands"][4]["argv"][4] = "list"
     receipt.write_text(json.dumps(data), encoding="utf-8")
     with pytest.raises(ValueError, match="prescribed rail"):
         portable_proof.validate(receipt)
-    data["commands"][3]["argv"][2] = "run"
+    data["commands"][4]["argv"][4] = "run"
     data["evidence"].pop("python-junit.xml")
     receipt.write_text(json.dumps(data), encoding="utf-8")
     with pytest.raises(ValueError, match="evidence set"):
@@ -174,14 +282,12 @@ def test_validator_rejects_environment_and_sdk_record_substitution(fake_executio
     out, _, _ = fake_execution
     receipt = portable_proof.produce("sdk", out)
     data = json.loads(receipt.read_text(encoding="utf-8"))
-    data["commands"][4]["environment"]["QUANTA_INDEX_SEARCHD_BIN"] = "/other/searchd"
+    data["commands"][0]["argv"][1] = "other-recipe"
     receipt.write_text(json.dumps(data), encoding="utf-8")
     with pytest.raises(ValueError, match="prescribed rail"):
         portable_proof.validate(receipt)
 
-    data["commands"][4]["environment"]["QUANTA_INDEX_SEARCHD_BIN"] = data["binaries"]["searchd"][
-        "path"
-    ]
+    data["commands"][0]["argv"][1] = "retrieval-sdk-proof"
     receipt.write_text(json.dumps(data), encoding="utf-8")
     record = out / "actual-runner-record.json"
     payload = json.loads(record.read_text(encoding="utf-8"))
@@ -191,6 +297,114 @@ def test_validator_rejects_environment_and_sdk_record_substitution(fake_executio
     receipt.write_text(json.dumps(data), encoding="utf-8")
     with pytest.raises(SystemExit, match="searchd binary digest differs"):
         portable_proof.validate(receipt)
+
+
+def test_validation_uses_recorded_environment_across_processes(
+    fake_execution, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out, _, _ = fake_execution
+    monkeypatch.setenv("RUSTFLAGS", "-Copt-level=1")
+    receipt = portable_proof.produce("contract", out)
+    monkeypatch.setenv("RUSTFLAGS", "-Copt-level=2")
+    assert portable_proof.validate(receipt)["rail"] == "contract"
+    data = json.loads(receipt.read_text(encoding="utf-8"))
+    data["commands"][4]["inherited_environment"]["RUSTFLAGS"] = "-Copt-level=3"
+    receipt.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(ValueError, match="environment identity changed"):
+        portable_proof.validate(receipt)
+
+
+def test_canonical_receipt_rejects_command_and_raw_digest_tampering(fake_execution) -> None:
+    out, _, _ = fake_execution
+    context = portable_proof.produce("contract", out)
+    canonical = out / "contract_rust_receipt.json"
+    payload = json.loads(canonical.read_text(encoding="utf-8"))
+    payload["command"] = "cargo nextest run --lib"
+    canonical.write_text(json.dumps(payload), encoding="utf-8")
+    context_payload = json.loads(context.read_text(encoding="utf-8"))
+    context_payload["evidence"][canonical.name] = portable_proof._sha(canonical)
+    context.write_text(json.dumps(context_payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="canonical receipt differs"):
+        portable_proof.validate(context)
+    payload["command"] = portable_proof.RUST_COMMAND
+    payload["input_evidence"][0]["sha256"] = "f" * 64
+    canonical.write_text(json.dumps(payload), encoding="utf-8")
+    context_payload["evidence"][canonical.name] = portable_proof._sha(canonical)
+    context.write_text(json.dumps(context_payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="canonical receipt differs"):
+        portable_proof.validate(context)
+
+
+def test_existing_writer_emits_verdict_consumable_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = tmp_path / "proof"
+    out.mkdir()
+    closure = {
+        "schema_version": 1,
+        "profile": "retrieval",
+        "revision": "b" * 40,
+        "roots": ["tools/benchmark/retrieval"],
+        "files": [{"path": "tools/benchmark/retrieval/portable_proof.py", "sha256": "a" * 64}],
+    }
+    closure["digest"] = portable_proof.source_closure._digest(closure)
+    (out / "source-closure.json").write_text(json.dumps(closure), encoding="utf-8")
+    (out / "python-junit.xml").write_bytes(b"raw junit")
+    (out / "python-inventory.json").write_bytes(b"raw inventory")
+    (out / "contract_python_results.json").write_text(
+        json.dumps(
+            {
+                "command": portable_proof.PYTHON_COMMAND,
+                "selected": 1,
+                "executed": 1,
+                "passed": 1,
+                "failed": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(portable_proof.RECEIPT_WRITER.parent))
+    spec = importlib.util.spec_from_file_location(
+        "retrieval_receipt_writer", portable_proof.RECEIPT_WRITER
+    )
+    assert spec is not None and spec.loader is not None
+    writer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(writer)
+    monkeypatch.setattr(writer, "load_and_verify", lambda _: closure)
+    argv = portable_proof._receipt_argv("python", out, sys.executable)
+    monkeypatch.setattr(sys, "argv", argv[1:])
+    assert writer.main() == 0
+    receipt = json.loads((out / "contract_python_receipt.json").read_text(encoding="utf-8"))
+    pairrun._validate_receipt_shape(receipt, "contract python receipt")
+    pairrun._verify_receipt_inputs(
+        receipt,
+        {
+            "pytest-junit": out / "python-junit.xml",
+            "pytest-inventory": out / "python-inventory.json",
+        },
+        "contract python receipt",
+    )
+    portable_proof._canonical_receipt(
+        out / "contract_python_receipt.json",
+        rail="retrieval-contract-python",
+        command=portable_proof.PYTHON_COMMAND,
+        summary=out / "contract_python_results.json",
+        inputs={
+            "pytest-junit": out / "python-junit.xml",
+            "pytest-inventory": out / "python-inventory.json",
+        },
+        closure=closure,
+    )
+    (out / "python-junit.xml").write_bytes(b"tampered")
+    with pytest.raises(pairrun.RunError, match="raw input evidence mismatch"):
+        pairrun._verify_receipt_inputs(
+            receipt,
+            {
+                "pytest-junit": out / "python-junit.xml",
+                "pytest-inventory": out / "python-inventory.json",
+            },
+            "contract python receipt",
+        )
 
 
 def test_sdk_record_rejects_duplicate_json_key(fake_execution) -> None:
@@ -220,4 +434,4 @@ def test_failed_command_cannot_emit_receipt(
     monkeypatch.setattr(portable_proof.subprocess, "run", fail)
     with pytest.raises(ValueError, match="exit 1"):
         portable_proof.produce("contract", out)
-    assert not (out / "portable-proof-receipt.json").exists()
+    assert not (out / "execution-context.json").exists()

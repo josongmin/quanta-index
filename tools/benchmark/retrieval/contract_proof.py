@@ -72,9 +72,7 @@ def _count(value: str | None, label: str) -> int:
     return parsed
 
 
-def pytest_summary(
-    path: Path, inventory: Path | None = None, *, command: str | None = None
-) -> dict[str, object]:
+def pytest_summary(path: Path, inventory: Path | None = None) -> dict[str, object]:
     try:
         root = ET.parse(path).getroot()
     except (OSError, ET.ParseError) as error:
@@ -140,7 +138,7 @@ def pytest_summary(
         if passed_cases != expected or tests != len(expected):
             raise SystemExit("pytest execution differs from collected required tests")
     return {
-        "command": command or "python3 -m pytest tools/ci/tests/test_retrieval_benchmark.py -q",
+        "command": "python3 -m pytest tools/ci/tests/test_retrieval_benchmark.py -q",
         "selected": tests,
         "executed": executed,
         "passed": passed,
@@ -148,17 +146,14 @@ def pytest_summary(
     }
 
 
-def nextest_summary(
-    path: Path, inventory: Path | None = None, *, command: str | None = None
-) -> dict[str, object]:
+def nextest_summary(path: Path, inventory: Path | None = None) -> dict[str, object]:
     try:
         expected = parse_nextest_inventory(inventory) if inventory is not None else None
         evidence = parse_nextest(path, expected)
     except NextestEvidenceError as error:
         raise SystemExit(f"{error}: {path}") from error
     return {
-        "command": command
-        or (
+        "command": (
             "./scripts/cargow nextest run -p quanta-index-retrieval-bench "
             "--lib --test chunking_contract --all-features --locked"
         ),

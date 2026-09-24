@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Run retrieval proof prerequisites without a shell; emit a separate portable receipt.
+"""Produce canonical retrieval proof artifacts on supported hosts.
 
-This is not a canonical verification receipt or a retrieval qualification rail.
-The existing Just/receipt consumer remains authoritative until it accepts this format.
+Execution context is diagnostic: the verdict currently checks canonical schema-v2
+receipts and exact summary commands, but cannot bind this separate context.
+Windows production fails closed until source_closure and cargow have an owned
+portable front door and the verdict binds execution identity.
 """
 
 from __future__ import annotations
@@ -19,14 +21,25 @@ from pathlib import Path
 
 try:
     from tools.benchmark.retrieval import contract_proof, proof_inventory, sdk_proof
+    from tools.ci import source_closure
 except ModuleNotFoundError:  # direct script invocation
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
     from tools.benchmark.retrieval import contract_proof, proof_inventory, sdk_proof
+    from tools.ci import source_closure
 
 ROOT = Path(__file__).resolve().parents[3]
 PACKAGE = "quanta-index-retrieval-bench"
 FLAGS = ["--all-features", "--locked"]
 FORMAT = ["--message-format", "libtest-json-plus", "--message-format-version", "0.1"]
+SOURCE_CLOSURE_SCRIPT = ROOT / "tools/ci/source_closure.py"
+RECEIPT_WRITER = ROOT / "tools/ci/write-verification-receipt.py"
+WRAPPER = ROOT / "scripts/cargow"
+PYTHON_COMMAND = "python3 -m pytest tools/ci/tests/test_retrieval_benchmark.py -q"
+RUST_COMMAND = (
+    "./scripts/cargow nextest run -p quanta-index-retrieval-bench "
+    "--lib --test chunking_contract --all-features --locked"
+)
+SDK_COMMAND = "just retrieval-sdk-proof"
 
 
 def _sha(path: Path) -> str:
@@ -80,28 +93,37 @@ def _source_revision() -> str:
 
 
 def _tools() -> dict[str, dict[str, str]]:
+    if os.name == "nt":
+        raise ValueError(
+            "Windows canonical proof is blocked: scripts/cargow and source_closure use Bash; "
+            "the verdict also lacks execution-context binding"
+        )
     paths = {"python": Path(sys.executable)}
-    for name in ("cargo", "cargo-nextest", "rustc", "git"):
+    for name in ("cargo", "cargo-nextest", "rustc", "git", "bash", "just"):
         found = shutil.which(name)
         if found is None:
             raise ValueError(f"required executable unavailable: {name}")
         paths[name] = Path(found)
+    paths["cargow"] = WRAPPER
     result = {}
     for name, path in paths.items():
         invocation = path.absolute()
         resolved = path.resolve(strict=True)
         if not resolved.is_file():
             raise ValueError(f"required executable is not a file: {resolved}")
-        completed = subprocess.run(
-            [str(invocation), "-Vv" if name == "rustc" else "--version"],
-            cwd=ROOT,
-            capture_output=True,
-            check=True,
-            text=True,
-        )
-        version = completed.stdout.strip()
-        if not version:
-            raise ValueError(f"required executable has no version identity: {name}")
+        if name == "cargow":
+            version = "source-controlled wrapper"
+        else:
+            completed = subprocess.run(
+                [str(invocation), "-Vv" if name == "rustc" else "--version"],
+                cwd=ROOT,
+                capture_output=True,
+                check=True,
+                text=True,
+            )
+            version = completed.stdout.strip()
+            if not version:
+                raise ValueError(f"required executable has no version identity: {name}")
         result[name] = {
             "path": str(invocation),
             "realpath": str(resolved),
@@ -120,14 +142,38 @@ def _os_identity() -> dict[str, str]:
     }
 
 
-def _command(argv: list[str]) -> str:
-    return json.dumps(argv, ensure_ascii=False, separators=(",", ":"))
-
-
 def _environment_digest(environment: dict[str, str]) -> str:
     return hashlib.sha256(
         json.dumps(environment, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
+
+
+RELEVANT_ENV = frozenset(
+    {
+        "CARGO_HOME",
+        "CARGO_TARGET_DIR",
+        "RUSTUP_TOOLCHAIN",
+        "RUSTFLAGS",
+        "CARGO_ENCODED_RUSTFLAGS",
+        "RUSTC_WRAPPER",
+        "CARGO_BUILD_TARGET",
+        "PYTHONPATH",
+        "PYTEST_ADDOPTS",
+        "QUANTA_INDEX_CACHE_ROOT",
+        "QUANTA_INDEX_PRESERVE_CARGO_TARGET_DIR",
+        "QUANTA_INDEX_SCCACHE",
+        "CI",
+        "GITHUB_SHA",
+        "NEXTEST_EXPERIMENTAL_LIBTEST_JSON",
+        "QUANTA_BENCH_SDK_EVIDENCE_DIR",
+        "QUANTA_INDEX_SEARCHD_BIN",
+        "CARGO_NET_OFFLINE",
+    }
+)
+
+
+def _relevant_environment(environment: dict[str, str]) -> dict[str, str]:
+    return {key: environment[key] for key in sorted(RELEVANT_ENV & environment.keys())}
 
 
 def _run(
@@ -163,7 +209,8 @@ def _run(
             "argv": argv,
             "cwd": str(ROOT),
             "environment": overrides,
-            "environment_sha256": _environment_digest(environment),
+            "inherited_environment": _relevant_environment(dict(os.environ)),
+            "environment_sha256": _environment_digest(_relevant_environment(environment)),
             "exit_code": completed.returncode,
             "stdout": stdout,
             "stdout_sha256": _sha(out / stdout),
@@ -174,10 +221,45 @@ def _run(
     return completed.stdout
 
 
-def _target_dir(cargo: str, out: Path, commands: list[dict[str, object]]) -> Path:
+def _run_fresh_recipe(argv: list[str], out: Path, commands: list[dict[str, object]]) -> None:
+    if out.exists():
+        raise ValueError(f"refusing non-fresh proof root: {out}")
+    overrides = {"CARGO_NET_OFFLINE": "true"}
+    environment = {**os.environ, **overrides}
+    completed = subprocess.run(argv, cwd=ROOT, env=environment, capture_output=True, check=False)
+    if completed.returncode != 0:
+        raise ValueError(
+            f"sdk-recipe failed with exit {completed.returncode}: {completed.stderr[-2000:]!r}"
+        )
+    if not out.is_dir():
+        raise ValueError("SDK recipe returned success without a proof root")
+    _write(out / "sdk-recipe.stdout", completed.stdout)
+    _write(out / "sdk-recipe.stderr", completed.stderr)
+    commands.append(
+        {
+            "name": "sdk-recipe",
+            "argv": argv,
+            "cwd": str(ROOT),
+            "environment": overrides,
+            "inherited_environment": _relevant_environment(dict(os.environ)),
+            "environment_sha256": _environment_digest(_relevant_environment(environment)),
+            "exit_code": completed.returncode,
+            "stdout": "sdk-recipe.stdout",
+            "stdout_sha256": _sha(out / "sdk-recipe.stdout"),
+            "stderr": "sdk-recipe.stderr",
+            "stderr_sha256": _sha(out / "sdk-recipe.stderr"),
+        }
+    )
+
+
+def _cargo(wrapper: str, *args: str) -> list[str]:
+    return [wrapper, "--lane", "test-daemon-lane", *args]
+
+
+def _target_dir(wrapper: str, out: Path, commands: list[dict[str, object]]) -> Path:
     raw = _run(
         "metadata",
-        [cargo, "metadata", "--format-version", "1", "--no-deps", "--locked"],
+        _cargo(wrapper, "metadata", "--format-version", "1", "--no-deps", "--locked"),
         out,
         commands,
     )
@@ -196,16 +278,94 @@ def _artifact(out: Path, name: str, evidence: dict[str, str]) -> Path:
     return path
 
 
+def _receipt_argv(side: str, out: Path, python: str) -> list[str]:
+    common = [
+        python,
+        str(RECEIPT_WRITER),
+        "--tier",
+        "correctness",
+        "--evidence-format",
+        "summary-json",
+        "--source-closure",
+        str(out / "source-closure.json"),
+    ]
+    if side == "python":
+        return [
+            *common,
+            "--rail",
+            "retrieval-contract-python",
+            "--command",
+            PYTHON_COMMAND,
+            "--evidence",
+            str(out / "contract_python_results.json"),
+            "--input-evidence",
+            f"pytest-junit={out / 'python-junit.xml'}",
+            "--input-evidence",
+            f"pytest-inventory={out / 'python-inventory.json'}",
+            "--out",
+            str(out / "contract_python_receipt.json"),
+        ]
+    if side == "rust":
+        return [
+            *common,
+            "--rail",
+            "retrieval-contract-rust",
+            "--command",
+            RUST_COMMAND,
+            "--evidence",
+            str(out / "contract_rust_results.json"),
+            "--input-evidence",
+            f"nextest-jsonl={out / 'rust-nextest.jsonl'}",
+            "--input-evidence",
+            f"nextest-inventory={out / 'rust-inventory.json'}",
+            "--out",
+            str(out / "contract_rust_receipt.json"),
+        ]
+    if side == "sdk":
+        return [
+            *common,
+            "--rail",
+            "retrieval-sdk-proof",
+            "--command",
+            SDK_COMMAND,
+            "--evidence",
+            str(out / "sdk_results.json"),
+            "--input-evidence",
+            f"nextest-jsonl={out / 'nextest.jsonl'}",
+            "--input-evidence",
+            f"nextest-inventory={out / 'nextest-inventory.json'}",
+            "--input-evidence",
+            f"runner-record={out / 'actual-runner-record.json'}",
+            "--out",
+            str(out / "sdk_receipt.json"),
+        ]
+    raise ValueError(f"unknown receipt side: {side}")
+
+
 def _expected_commands(
     rail: str, out: Path, tools: dict[str, dict[str, str]], binaries: dict[str, dict[str, str]]
 ) -> list[tuple[str, list[str], dict[str, str]]]:
     python = tools["python"]["path"]
-    cargo = tools["cargo"]["path"]
+    wrapper = tools["cargow"]["path"]
     base = {"CARGO_NET_OFFLINE": "true"}
     test_env = {**base, "NEXTEST_EXPERIMENTAL_LIBTEST_JSON": "1"}
+    source = (
+        "source-closure",
+        [
+            python,
+            str(SOURCE_CLOSURE_SCRIPT),
+            "capture",
+            "--profile",
+            "retrieval",
+            "--out",
+            str(out / "source-closure.json"),
+        ],
+        base,
+    )
     if rail == "contract":
         selector = ["-p", PACKAGE, "--lib", "--test", "chunking_contract", *FLAGS]
         return [
+            source,
             (
                 "python-collection",
                 [
@@ -218,7 +378,7 @@ def _expected_commands(
             ),
             (
                 "rust-collection",
-                [cargo, "nextest", "list", *selector, "--message-format", "json"],
+                _cargo(wrapper, "nextest", "list", *selector, "--message-format", "json"),
                 base,
             ),
             (
@@ -233,34 +393,16 @@ def _expected_commands(
                 ],
                 base,
             ),
-            ("rust-test", [cargo, "nextest", "run", *selector, *FORMAT], test_env),
+            ("rust-test", _cargo(wrapper, "nextest", "run", *selector, *FORMAT), test_env),
+            ("python-receipt", _receipt_argv("python", out, python), base),
+            ("rust-receipt", _receipt_argv("rust", out, python), base),
         ]
-    selector = ["-p", PACKAGE, "--test", "sdk_roundtrip", *FLAGS]
     return [
+        ("sdk-recipe", [tools["just"]["path"], "retrieval-sdk-proof", str(out)], base),
         (
-            "searchd-build",
-            [
-                cargo,
-                "build",
-                "-p",
-                "quanta-index-searchd-runtime",
-                "--bin",
-                "quanta-index-searchd",
-                "--locked",
-            ],
+            "metadata",
+            _cargo(wrapper, "metadata", "--format-version", "1", "--no-deps", "--locked"),
             base,
-        ),
-        ("runner-build", [cargo, "build", "-p", PACKAGE, "--bin", PACKAGE, "--locked"], base),
-        ("metadata", [cargo, "metadata", "--format-version", "1", "--no-deps", "--locked"], base),
-        ("sdk-collection", [cargo, "nextest", "list", *selector, "--message-format", "json"], base),
-        (
-            "sdk-test",
-            [cargo, "nextest", "run", *selector, *FORMAT],
-            {
-                **test_env,
-                "QUANTA_BENCH_SDK_EVIDENCE_DIR": str(out),
-                "QUANTA_INDEX_SEARCHD_BIN": binaries["searchd"]["path"],
-            },
         ),
     ]
 
@@ -271,15 +413,32 @@ def produce(rail: str, out: Path) -> Path:
     out = out.absolute()
     if out == ROOT or ROOT in out.parents:
         raise ValueError("portable proof output must be outside the source worktree")
+    if os.name == "nt":
+        raise ValueError("Windows canonical proof is blocked by Bash-only cargow/source_closure")
     revision = _source_revision()
     tools = _tools()
-    out.mkdir(parents=True, exist_ok=False)
     commands: list[dict[str, object]] = []
     evidence: dict[str, str] = {}
     python = tools["python"]["path"]
-    cargo = tools["cargo"]["path"]
+    wrapper = tools["cargow"]["path"]
     environment = {"NEXTEST_EXPERIMENTAL_LIBTEST_JSON": "1"}
     if rail == "contract":
+        out.mkdir(parents=True, exist_ok=False)
+        _run(
+            "source-closure",
+            [
+                python,
+                str(SOURCE_CLOSURE_SCRIPT),
+                "capture",
+                "--profile",
+                "retrieval",
+                "--out",
+                str(out / "source-closure.json"),
+            ],
+            out,
+            commands,
+        )
+        _artifact(out, "source-closure.json", evidence)
         _run(
             "python-collection",
             [
@@ -296,7 +455,7 @@ def produce(rail: str, out: Path) -> Path:
         selector = ["-p", PACKAGE, "--lib", "--test", "chunking_contract", *FLAGS]
         _run(
             "rust-collection",
-            [cargo, "nextest", "list", *selector, "--message-format", "json"],
+            _cargo(wrapper, "nextest", "list", *selector, "--message-format", "json"),
             out,
             commands,
         )
@@ -314,42 +473,25 @@ def produce(rail: str, out: Path) -> Path:
         ]
         _run("python-test", pytest_argv, out, commands)
         junit = _artifact(out, "python-junit.xml", evidence)
-        nextest_argv = [cargo, "nextest", "run", *selector, *FORMAT]
+        nextest_argv = _cargo(wrapper, "nextest", "run", *selector, *FORMAT)
         _run("rust-test", nextest_argv, out, commands, env_overrides=environment)
         rust_events = out / "rust-test.stdout"
-        python_summary = contract_proof.pytest_summary(
-            junit, python_inventory, command=_command(pytest_argv)
-        )
-        rust_summary = contract_proof.nextest_summary(
-            rust_events, rust_inventory, command=_command(nextest_argv)
-        )
+        _write(out / "rust-nextest.jsonl", rust_events.read_bytes())
+        _artifact(out, "rust-nextest.jsonl", evidence)
+        python_summary = contract_proof.pytest_summary(junit, python_inventory)
+        rust_summary = contract_proof.nextest_summary(rust_events, rust_inventory)
         _write_json(out / "contract_python_results.json", python_summary)
         _write_json(out / "contract_rust_results.json", rust_summary)
         _artifact(out, "contract_python_results.json", evidence)
         _artifact(out, "contract_rust_results.json", evidence)
+        for side in ("python", "rust"):
+            _run(f"{side}-receipt", _receipt_argv(side, out, python), out, commands)
+            _artifact(out, f"contract_{side}_receipt.json", evidence)
         binaries: dict[str, dict[str, str]] = {}
     else:
-        _run(
-            "searchd-build",
-            [
-                cargo,
-                "build",
-                "-p",
-                "quanta-index-searchd-runtime",
-                "--bin",
-                "quanta-index-searchd",
-                "--locked",
-            ],
-            out,
-            commands,
-        )
-        _run(
-            "runner-build",
-            [cargo, "build", "-p", PACKAGE, "--bin", PACKAGE, "--locked"],
-            out,
-            commands,
-        )
-        target = _target_dir(cargo, out, commands)
+        _run_fresh_recipe([tools["just"]["path"], "retrieval-sdk-proof", str(out)], out, commands)
+        _artifact(out, "source-closure.json", evidence)
+        target = _target_dir(wrapper, out, commands)
         suffix = ".exe" if os.name == "nt" else ""
         searchd = target / "debug" / f"quanta-index-searchd{suffix}"
         runner = target / "debug" / f"{PACKAGE}{suffix}"
@@ -358,40 +500,16 @@ def produce(rail: str, out: Path) -> Path:
             if not path.is_file():
                 raise ValueError(f"missing built binary: {path}")
             binaries[name] = {"path": str(path), "sha256": _sha(path)}
-        selector = ["-p", PACKAGE, "--test", "sdk_roundtrip", *FLAGS]
-        _run(
-            "sdk-collection",
-            [cargo, "nextest", "list", *selector, "--message-format", "json"],
-            out,
-            commands,
-        )
         inventory = out / "nextest-inventory.json"
-        _write(inventory, (out / "sdk-collection.stdout").read_bytes())
         _artifact(out, "nextest-inventory.json", evidence)
         proof_inventory.verify_inventory_authority(inventory, "sdk")
-        nextest_argv = [cargo, "nextest", "run", *selector, *FORMAT]
-        _run(
-            "sdk-test",
-            nextest_argv,
-            out,
-            commands,
-            env_overrides={
-                **environment,
-                "QUANTA_BENCH_SDK_EVIDENCE_DIR": str(out),
-                "QUANTA_INDEX_SEARCHD_BIN": str(searchd),
-            },
-        )
+        _artifact(out, "nextest.jsonl", evidence)
         record = _artifact(out, "actual-runner-record.json", evidence)
-        summary = sdk_proof.build_summary(
-            record,
-            out / "sdk-test.stdout",
-            runner,
-            inventory,
-            command=_command(nextest_argv),
-            searchd_path=searchd,
+        sdk_proof.build_summary(
+            record, out / "nextest.jsonl", runner, inventory, searchd_path=searchd
         )
-        _write_json(out / "sdk_results.json", summary)
         _artifact(out, "sdk_results.json", evidence)
+        _artifact(out, "sdk_receipt.json", evidence)
     receipt = {
         "schema_version": 1,
         "rail": rail,
@@ -402,7 +520,7 @@ def produce(rail: str, out: Path) -> Path:
         "commands": commands,
         "evidence": evidence,
     }
-    path = out / "portable-proof-receipt.json"
+    path = out / "execution-context.json"
     _write_json(path, receipt)
     validate(path)
     return path
@@ -417,6 +535,53 @@ def _inside(out: Path, value: str) -> Path:
     return path
 
 
+def _canonical_receipt(
+    path: Path,
+    *,
+    rail: str,
+    command: str,
+    summary: Path,
+    inputs: dict[str, Path],
+    closure: dict[str, object],
+) -> None:
+    receipt = _json(path)
+    if not isinstance(receipt, dict) or set(receipt) != {
+        "schema_version",
+        "revision",
+        "rail",
+        "tier",
+        "command",
+        "evidence_path",
+        "evidence_sha256",
+        "test_event_count",
+        "source_closure",
+        "input_evidence",
+    }:
+        raise ValueError(f"invalid canonical receipt shape: {path}")
+    result = _json(summary)
+    if not isinstance(result, dict) or result.get("command") != command:
+        raise ValueError(f"canonical summary command mismatch: {summary}")
+    wanted_inputs = sorted(
+        ({"role": role, "sha256": _sha(raw)} for role, raw in inputs.items()),
+        key=lambda item: item["role"],
+    )
+    if (
+        type(receipt["schema_version"]) is not int
+        or receipt["schema_version"] != 2
+        or receipt["revision"] != closure["revision"]
+        or receipt["rail"] != rail
+        or receipt["tier"] != "correctness"
+        or receipt["command"] != command
+        or receipt["evidence_path"] != str(summary)
+        or receipt["evidence_sha256"] != _sha(summary)
+        or type(receipt["test_event_count"]) is not int
+        or receipt["test_event_count"] != result.get("executed")
+        or receipt["source_closure"] != closure
+        or receipt["input_evidence"] != wanted_inputs
+    ):
+        raise ValueError(f"canonical receipt differs from source and machine evidence: {path}")
+
+
 def validate(receipt_path: Path) -> dict[str, object]:
     out = receipt_path.parent.resolve()
     receipt = _json(receipt_path)
@@ -429,10 +594,37 @@ def validate(receipt_path: Path) -> dict[str, object]:
         or receipt["rail"] not in {"contract", "sdk"}
     ):
         raise ValueError("invalid portable proof receipt shape")
-    if receipt["revision"] != _source_revision() or receipt["os"] != _os_identity():
-        raise ValueError("portable proof source or OS identity changed")
-    if receipt["tools"] != _tools():
-        raise ValueError("portable proof tool binary identity changed")
+    closure = source_closure.validate_manifest_shape(_json(out / "source-closure.json"))
+    if (
+        receipt["revision"] != closure["revision"]
+        or not isinstance(receipt["os"], dict)
+        or set(receipt["os"]) != {"system", "release", "machine", "python_version"}
+        or not all(isinstance(value, str) and value for value in receipt["os"].values())
+    ):
+        raise ValueError("invalid portable proof source or OS identity")
+    tools = receipt["tools"]
+    if not isinstance(tools, dict) or set(tools) != {
+        "python",
+        "cargo",
+        "cargo-nextest",
+        "rustc",
+        "git",
+        "bash",
+        "just",
+        "cargow",
+    }:
+        raise ValueError("invalid proof tool identities")
+    for tool in tools.values():
+        if (
+            not isinstance(tool, dict)
+            or set(tool) != {"path", "realpath", "sha256", "version"}
+            or not all(
+                isinstance(tool[key], str) and tool[key] for key in ("path", "realpath", "version")
+            )
+            or not isinstance(tool["sha256"], str)
+            or len(tool["sha256"]) != 64
+        ):
+            raise ValueError("invalid proof tool identity")
     binaries = receipt["binaries"]
     if not isinstance(binaries, dict) or set(binaries) != (
         {"runner", "searchd"} if receipt["rail"] == "sdk" else set()
@@ -460,6 +652,7 @@ def validate(receipt_path: Path) -> dict[str, object]:
             "argv",
             "cwd",
             "environment",
+            "inherited_environment",
             "environment_sha256",
             "exit_code",
             "stdout",
@@ -482,7 +675,14 @@ def validate(receipt_path: Path) -> dict[str, object]:
             raise ValueError("invalid proof command identity")
         if argv != expected_argv or row["environment"] != expected_env:
             raise ValueError("proof command or environment differs from prescribed rail")
-        if row["environment_sha256"] != _environment_digest({**os.environ, **expected_env}):
+        inherited = row["inherited_environment"]
+        if (
+            not isinstance(inherited, dict)
+            or not all(
+                key in RELEVANT_ENV and isinstance(value, str) for key, value in inherited.items()
+            )
+            or row["environment_sha256"] != _environment_digest({**inherited, **expected_env})
+        ):
             raise ValueError("proof command environment identity changed")
         for role in ("stdout", "stderr"):
             if (
@@ -493,14 +693,25 @@ def validate(receipt_path: Path) -> dict[str, object]:
     evidence = receipt["evidence"]
     expected_evidence = (
         {
+            "source-closure.json",
             "python-inventory.json",
             "rust-inventory.json",
             "python-junit.xml",
+            "rust-nextest.jsonl",
             "contract_python_results.json",
             "contract_rust_results.json",
+            "contract_python_receipt.json",
+            "contract_rust_receipt.json",
         }
         if receipt["rail"] == "contract"
-        else {"nextest-inventory.json", "actual-runner-record.json", "sdk_results.json"}
+        else {
+            "source-closure.json",
+            "nextest-inventory.json",
+            "nextest.jsonl",
+            "actual-runner-record.json",
+            "sdk_results.json",
+            "sdk_receipt.json",
+        }
     )
     if not isinstance(evidence, dict) or set(evidence) != expected_evidence:
         raise ValueError("invalid portable proof evidence set")
@@ -514,24 +725,41 @@ def validate(receipt_path: Path) -> dict[str, object]:
             out / "rust-collection.stdout"
         ).read_bytes():
             raise ValueError("rust collection output differs from inventory")
-        python_argv = commands[2]["argv"]
-        rust_argv = commands[3]["argv"]
+        if (out / "rust-nextest.jsonl").read_bytes() != (out / "rust-test.stdout").read_bytes():
+            raise ValueError("rust nextest output differs from raw evidence")
         expected = {
             "contract_python_results.json": contract_proof.pytest_summary(
                 out / "python-junit.xml",
                 out / "python-inventory.json",
-                command=_command(python_argv),
             ),
             "contract_rust_results.json": contract_proof.nextest_summary(
-                out / "rust-test.stdout", out / "rust-inventory.json", command=_command(rust_argv)
+                out / "rust-nextest.jsonl", out / "rust-inventory.json"
             ),
         }
+        _canonical_receipt(
+            out / "contract_python_receipt.json",
+            rail="retrieval-contract-python",
+            command=PYTHON_COMMAND,
+            summary=out / "contract_python_results.json",
+            inputs={
+                "pytest-junit": out / "python-junit.xml",
+                "pytest-inventory": out / "python-inventory.json",
+            },
+            closure=closure,
+        )
+        _canonical_receipt(
+            out / "contract_rust_receipt.json",
+            rail="retrieval-contract-rust",
+            command=RUST_COMMAND,
+            summary=out / "contract_rust_results.json",
+            inputs={
+                "nextest-jsonl": out / "rust-nextest.jsonl",
+                "nextest-inventory": out / "rust-inventory.json",
+            },
+            closure=closure,
+        )
     else:
         proof_inventory.verify_inventory_authority(out / "nextest-inventory.json", "sdk")
-        if (out / "nextest-inventory.json").read_bytes() != (
-            out / "sdk-collection.stdout"
-        ).read_bytes():
-            raise ValueError("SDK collection output differs from inventory")
         metadata = _json(out / "metadata.stdout")
         target = metadata.get("target_directory") if isinstance(metadata, dict) else None
         suffix = ".exe" if os.name == "nt" else ""
@@ -546,21 +774,27 @@ def validate(receipt_path: Path) -> dict[str, object]:
             )
         ):
             raise ValueError("SDK binary paths differ from cargo metadata")
-        if (
-            commands[4]["environment"].get("QUANTA_INDEX_SEARCHD_BIN")
-            != binaries["searchd"]["path"]
-        ):
-            raise ValueError("SDK daemon pin differs from binary identity")
         expected = {
             "sdk_results.json": sdk_proof.build_summary(
                 out / "actual-runner-record.json",
-                out / "sdk-test.stdout",
+                out / "nextest.jsonl",
                 Path(binaries["runner"]["path"]),
                 out / "nextest-inventory.json",
-                command=_command(commands[4]["argv"]),
                 searchd_path=Path(binaries["searchd"]["path"]),
             )
         }
+        _canonical_receipt(
+            out / "sdk_receipt.json",
+            rail="retrieval-sdk-proof",
+            command=SDK_COMMAND,
+            summary=out / "sdk_results.json",
+            inputs={
+                "nextest-jsonl": out / "nextest.jsonl",
+                "nextest-inventory": out / "nextest-inventory.json",
+                "runner-record": out / "actual-runner-record.json",
+            },
+            closure=closure,
+        )
     for name, summary in expected.items():
         if _json(out / name) != summary:
             raise ValueError(f"proof summary differs from machine evidence: {name}")

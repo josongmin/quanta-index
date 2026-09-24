@@ -71,7 +71,6 @@ def build_summary_from_evidence(
     runner_digest: str,
     inventory_path: Path | None = None,
     *,
-    command: str | None = None,
     searchd_digest: str | None = None,
 ) -> dict[str, object]:
     try:
@@ -130,7 +129,7 @@ def build_summary_from_evidence(
             raise SystemExit(f"route {route} refers to an absent capture")
     selected, executed, passed, failed = _nextest_counts(nextest_path, inventory_path)
     return {
-        "command": command or "just retrieval-sdk-proof",
+        "command": "just retrieval-sdk-proof",
         "separate_process": True,
         "sealed_receipt_digest": next(iter(receipt_digests)),
         "activation_ack_digest": next(iter(activation_digests)),
@@ -150,7 +149,6 @@ def build_summary(
     runner_path: Path,
     inventory_path: Path | None = None,
     *,
-    command: str | None = None,
     searchd_path: Path | None = None,
 ) -> dict[str, object]:
     binary_digest = hashlib.sha256(runner_path.read_bytes()).hexdigest()
@@ -159,7 +157,6 @@ def build_summary(
         nextest_path,
         binary_digest,
         inventory_path,
-        command=command,
         searchd_digest=hashlib.sha256(searchd_path.read_bytes()).hexdigest()
         if searchd_path is not None
         else None,
