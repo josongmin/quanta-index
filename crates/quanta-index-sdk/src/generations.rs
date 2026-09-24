@@ -145,10 +145,22 @@ impl<'a> GenerationNamespace<'a> {
             SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(observation) => {
                 Ok(observation.into_head())
             }
-            other => Err(SdkError::Protocol(format!(
-                "expected search-corpus active-head observation, got {}",
-                QuantaIndex::control_response_kind(&other)
-            ))),
+            other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
+            | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
+            | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
+            | SearchPlaneControlIpcResponse::Error(_)
+            | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
+            | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
+            | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
+            | SearchPlaneControlIpcResponse::QuarantineInventory(_)
+            | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
+            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)) => {
+                Err(SdkError::Protocol(format!(
+                    "expected search-corpus active-head observation, got {}",
+                    QuantaIndex::control_response_kind(&other)
+                )))
+            }
         }
     }
 }

@@ -183,9 +183,11 @@ fn active_root_reopen_rejects_missing_incarnation_and_zero_sequence_v1() -> Test
         ),
     );
     let mut root: serde_json::Value = serde_json::from_slice(&std::fs::read(&root_path)?)?;
-    root.as_object_mut()
-        .ok_or("activation root must be a JSON object")?
-        .insert("activation_sequence".to_string(), serde_json::json!(0));
+    drop(
+        root.as_object_mut()
+            .ok_or("activation root must be a JSON object")?
+            .insert("activation_sequence".to_string(), serde_json::json!(0)),
+    );
     std::fs::write(&root_path, serde_json::to_vec(&root)?)?;
     let zero = ActivationCatalog::open(dir.path()).expect_err("zero sequence must be rejected");
     assert!(
