@@ -1325,7 +1325,7 @@ def test_cli_refuses_unregistered_proof_id(tmp_path: Path) -> None:
     )
 
 
-def test_require_all_refuses_absent_manifests(tmp_path: Path) -> None:
+def test_require_all_refuses_absent_manifests(tmp_path: Path, capsys) -> None:
     registry = tmp_path / "proof-authority.toml"
     registry.write_bytes(REGISTRY_PATH.read_bytes())
     schema = tmp_path / "proof-manifest.schema.json"
@@ -1344,3 +1344,8 @@ def test_require_all_refuses_absent_manifests(tmp_path: Path) -> None:
         )
         == 1
     )
+    stderr = capsys.readouterr().err
+    assert "required proof 'p12a-proof-infrastructure'" not in stderr
+    assert "p12a-proof-infrastructure.json: required proof manifest is missing" in stderr
+    assert "required proof 'p03-candidate-activation' is staged" in stderr
+    assert "p03-candidate-activation.json: required proof manifest is missing" not in stderr

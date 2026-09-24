@@ -2268,6 +2268,17 @@ def _main_locked(argv: list[str] | None = None) -> int:
 
     def require_registered_manifest(proof_id: str) -> None:
         proof = proof_by_id[proof_id]
+        if proof.get("authority_state") != "executable":
+            reason = proof.get("staged_reason")
+            detail = f": {reason}" if isinstance(reason, str) else ""
+            findings.append(
+                Finding(
+                    registry_path,
+                    f"required proof {proof_id!r} is staged and cannot issue an "
+                    f"authoritative manifest{detail}",
+                )
+            )
+            return
         manifest_path, path_error = _payload_repo_file(
             root,
             proof["artifact"],
