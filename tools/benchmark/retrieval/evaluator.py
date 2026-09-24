@@ -873,15 +873,31 @@ def mrr_at_k(candidates: list[dict[str, Any]], labels: list[dict[str, Any]], k: 
 
 
 def ndcg_at_k(candidates: list[dict[str, Any]], labels: list[dict[str, Any]], k: int) -> float:
+    """First-coverage graded NDCG, discounted by relevant byte density.
+
+    A candidate earns only the highest newly covered grade. The union of its
+    newly covered gold spans determines the useful fraction of its context.
+    This makes an exact span ideal and prevents a whole-file chunk from
+    receiving full relevance credit for a tiny embedded answer.
+    """
     gains = []
     credited_labels: set[int] = set()
     for item in candidates[:k]:
         rel = 0
+        new_spans: list[tuple[int, int]] = []
         for index, label in enumerate(labels):
             if index not in credited_labels and covers(item, label):
                 rel = max(rel, int(label.get("grade", 1)))
                 credited_labels.add(index)
-        gains.append(2**rel - 1)
+                new_spans.append((int(label["start_byte"]), int(label["end_byte"])))
+        span_bytes = int(item["end_byte"]) - int(item["start_byte"])
+        require(span_bytes > 0, "rank candidate has an empty byte span")
+        useful_bytes = 0
+        cursor = int(item["start_byte"])
+        for start, end in sorted(new_spans):
+            useful_bytes += max(0, end - max(start, cursor))
+            cursor = max(cursor, end)
+        gains.append((2**rel - 1) * useful_bytes / span_bytes)
     dcg = sum(g / math.log2(i + 2) for i, g in enumerate(gains))
     ideal = sorted((int(label.get("grade", 1)) for label in labels), reverse=True)[:k]
     idcg = sum((2**g - 1) / math.log2(i + 2) for i, g in enumerate(ideal))
@@ -1089,7 +1105,7 @@ def evaluate(
         "sample_count": len(task_ids),
         "budgets": {},
     }
-    output["rank_metric_version"] = "rb-rank-v2-first-coverage"
+    output["rank_metric_version"] = "rb-rank-context-density-first-coverage"
     output["route_provenance"] = run["route_provenance"]
     output["blinding"] = run["runner"]["blinding"]
     output["comparison_contract"] = run["comparison_contract"]

@@ -4215,12 +4215,20 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         set_state("QUALITY_DELTA", "fail", "uncertainty_unqualified", None)
         classes.append("scoring")
     else:
-        # W0-A has not frozen a size-aware relevance rubric. Current NDCG
-        # gives a whole-file hit full credit for merely containing a short
-        # gold span, so even otherwise valid evidence cannot qualify quality.
-        set_state("QUALITY_DELTA", "fail", "relevance_rubric_unfrozen", None)
-        missing.append("T04")
-        classes.append("scoring")
+        set_state(
+            "QUALITY_DELTA",
+            "pass",
+            "blinded_graded_context_density_delta",
+            digest(
+                canonical(
+                    {
+                        "admission": admission_evidence,
+                        "reports": sorted(entry["report_sha"] for entry in matched),
+                        "isolation": isolation_evidence,
+                    }
+                )
+            ),
+        )
 
     for key, claim_key, tid, fail_class in (
         ("model_parity", "same_model", "T15", "model"),

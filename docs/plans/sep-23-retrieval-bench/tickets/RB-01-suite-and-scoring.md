@@ -1,6 +1,6 @@
 # RB-01 — Frozen Suite and Single Scoring Authority
 
-Status: `diagnostic-scoring-landed / qualified-rubric-blocked / real-pair-evidence-pending`
+Status: `size-aware-scoring-implemented / source-proof-and-real-pair-pending`
 
 Depends on: RB-00 stage A
 
@@ -8,7 +8,7 @@ Owner: retrieval evaluator and suite schema
 
 ## Current code status (2026-09-24)
 
-The single evaluator now accepts only the current v3 artifact shape and rejects v1/v2 or unknown stamps. It implements blind freeze, exact comparison-contract binding, file-universe/path+SHA checks, byte-span verification, graded and ungraded diagnostic metrics, deterministic same-file collapse, split-leakage checks, capture provenance and deterministic re-score. Focused Python mutants exercise these paths. A current-source counterexample scores a rank-1 exact 10-byte gold span and a rank-1 1 MB whole-file candidate identically at NDCG@10 = 1.0. This violates [TEST-PLAN.md](TEST-PLAN.md) §2.6's large-context rule. W0-A has not frozen a size-aware relevance rubric or scorer identity, so the verdict now refuses `QUALITY_DELTA` with `relevance_rubric_unfrozen` after otherwise passing quality gates. An approved rubric, matching scorer/oracles and real admitted pair are still required; diagnostic NDCG is not a qualified quality claim.
+The single evaluator accepts only the current v3 artifact shape and rejects v1/v2 or unknown stamps. It implements blind freeze, comparison-contract binding, file-universe/path+SHA checks, byte-span verification, graded and ungraded metrics, deterministic same-file collapse, split-leakage checks, capture provenance and deterministic re-score. W0-A now fixes the size-aware formula in [TEST-PLAN.md](TEST-PLAN.md) §2.6 and the scorer identity `rb-rank-context-density-first-coverage`. Hand-calculated exact-span, whole-file, partial, multi-span, overlap and repeat-coverage oracles exercise it. A 10-byte rank-1 gold span scores 1.0 when returned exactly but 0.00001 when returned inside a 1 MB candidate. No real W0-B adjudicated suite or paired quality artifact exists; fixture verdict pass is implementation evidence only.
 
 ## Goal
 
