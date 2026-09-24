@@ -61,3 +61,14 @@ This covers disposable-root backup, restore, verification, interruption,
 corruption, lease/path ownership, and typed legacy refusal. It does not prove
 any real target-root inventory, retained-data decision, Linux release binary,
 or registered P10 owner/release manifest.
+
+`just proof-p10-state-migration-owner` later exited 0: the disposable-root
+integration profile executed 36/36 and the library profile 87/87; hexagonal,
+wire-inventory, and public-API checks passed. This is a local command result,
+not an exact-source owner receipt. The shared `main` advanced from the
+observed pre-run `e8a034296a75972b268c7cc70ac5dacf4262a090` to
+`9ed8e761397b3d3173a0276bf6591f89ce2ee44f` during the run, including
+a test-fixture constant hoist in `state_migration_owner_v1.rs`. Re-run from a
+frozen source before issuing an authoritative manifest. The real-root
+inventory, retained-data decision, Linux release rail, and exact-pair proof
+remain absent.
