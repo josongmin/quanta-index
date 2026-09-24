@@ -91,6 +91,14 @@ def _build_fixture_root(tmp_path: Path) -> tuple[Path, dict]:
     shutil.copyfile(REGISTRY_PATH, registry_path)
     shutil.copyfile(SCHEMA_PATH, root / "tools/ci/proof-manifest.schema.json")
     shutil.copyfile(AGGREGATE_SCHEMA_PATH, root / "tools/ci/proof-aggregate.schema.json")
+    shutil.copyfile(
+        ERROR_INVENTORY_WRITER_PATH, root / "tools/ci/write-error-authority-inventory.py"
+    )
+    shutil.copyfile(
+        REPO_ROOT / "tools/ci/error-authority-inventory.schema.json",
+        root / "tools/ci/error-authority-inventory.schema.json",
+    )
+    (root / ".gitignore").write_text("/artifacts/\n", encoding="utf-8")
 
     test_authority = root / "tools/ci/test-authority.toml"
     shutil.copyfile(REPO_ROOT / "tools/ci/test-authority.toml", test_authority)
