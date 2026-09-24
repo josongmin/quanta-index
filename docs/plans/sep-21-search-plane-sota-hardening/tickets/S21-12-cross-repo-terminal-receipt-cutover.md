@@ -5,13 +5,18 @@ Status: exact-pair release qualification staged.
 2026-09-24 P11 proof-command correction (local source, not execution proof):
 `Justfile::rust-verify-hellgate-cross-repo` had selected Semantica's
 file-contributor roundtrip despite declaring a RepoMap terminal-receipt
-target. It now requires the live RepoMap V2 publish/activate/restart/query
-test to exist, runs that exact test through Semantica's QBC front door, and
-requires an executable daemon binary. `just --dry-run
-rust-verify-hellgate-cross-repo` confirms the selected command. This fixes
-test selection only: the exact source pair, binary binding, adversarial
-receipt cases, P10 dependency, and Linux release receipt remain unverified;
-the registry node stays `staged`.
+target. It now requires both the live RepoMap V2
+publish/activate/restart/query test and the producer-owned negative
+full-bundle/transition receipt validator to exist, then runs those exact
+tests through Semantica's QBC front door. A Python regression checks the
+recipe's exact target selection with `just --dry-run`. These are selection
+checks, not executions of either Rust target. The recipe still accepts an
+arbitrary executable via `QUANTA_INDEX_SEARCHD_BIN`; the proof writer archives
+its bytes and digest but does not independently attest that a clean, frozen
+Quanta release build produced those bytes. Do not claim binary/source
+provenance from the path or digest alone. A source-frozen build attestation,
+exact source pair, P10 dependency, Linux execution, deployment, activation,
+and rollback receipts remain unverified; the registry node stays `staged`.
 
 2026-09-24 local follow-up, tested at Quanta `7dec5965` plus the store patch
 and committed as `3b1d7b19`: the private terminal receipt

@@ -40,6 +40,26 @@ ERROR_INVENTORY_WRITER = _load_module(
 )
 
 
+def test_cross_repo_hellgate_selects_live_repomap_terminal_target() -> None:
+    command = subprocess.run(
+        ["just", "--dry-run", "rust-verify-hellgate-cross-repo"],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stderr
+    target = "index_sdk_ingress_live_repomap_roundtrip_survives_runtime_restart_v1"
+    assert command.count(target) == 2, "the inventory guard and exact run must agree"
+    receipt_target = (
+        "index_sdk_ingress::terminal_receipt_v1::tests::"
+        "repomap_v2_receipts_require_exact_full_bundle_and_transition_v2"
+    )
+    assert command.count(receipt_target) == 2
+    assert "index_sdk_ingress_live_file_contributor_publish_and_query_roundtrip_v1" not in command
+    assert command.count("./scripts/quanta-build-cli cargo") == 4
+    assert "-- --exact --nocapture" in command
+
+
 @dataclass(frozen=True)
 class ManifestTemplates:
     root: Path

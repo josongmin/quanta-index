@@ -12,7 +12,7 @@ qualification.
 | P03-P10 release | Implement any missing registered release authority and execute it on the required Linux host and binary. | `authority_state`, `required_host`, and test targets in the registry |
 | P09 readiness | Retain the bound-socket identity/path-loss process regression; add actual supervised-child, maintenance/backend-loss, and bounded request-diagnostic process targets before enabling the Linux release node. | [S21-10](S21-10-control-authorization-readiness-and-observability.md) |
 | P10 state | Prove current-format backup/restore/verify and typed legacy refusal; inventory real target data before cutover. | [operator runbook](../../../operator/state-cutover-runbook.md) |
-| P11 | Prove the exact Quanta/Semantica pair and issue distinct deployment, activation, and rollback receipts. | [S21-12](S21-12-cross-repo-terminal-receipt-cutover.md) |
+| P11 | Bind the daemon bytes to a clean, frozen release build (the current executable-path check and content archive do not prove provenance); execute both selected Semantica RepoMap tests on the exact Quanta/Semantica pair; issue distinct deployment, activation, and rollback receipts. | [S21-12](S21-12-cross-repo-terminal-receipt-cutover.md) |
 | P12A | Validate existing aggregate/handoff custody and issue the exact-pair infrastructure receipt after P11. | `tools/ci/write-proof-aggregate.py`, `tools/ci/lint/handoff_validation.py` |
 | P12Q | Reissue all final-source dependencies, create the aggregate, then issue and validate the P12 manifest. | `just proof-authority-final-qualification` |
 

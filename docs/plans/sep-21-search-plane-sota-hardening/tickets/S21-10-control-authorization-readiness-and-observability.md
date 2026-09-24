@@ -21,6 +21,23 @@ request-diagnostics operator/process behavior, and Linux release-daemon
 qualification remain separate gaps. Do not promote this path-loss regression
 to the full P09 release target.
 
+2026-09-24 residual RCA (current source):
+`crates/quanta-index-ipc/src/counters.rs::request_event_window_v1` owns a
+fixed 1024-event, process-instance-scoped transport ring with sequence and
+drop metadata. Server/backend/provider stages write to that ring, but no
+control IPC opcode, authorized dispatcher port, SDK method, or searchctl
+command reads it. The ring is therefore test-visible only, not an operator
+diagnostic. Exposing it through metrics would conflate aggregate telemetry
+with request records and bypass the intended capability boundary. Finish one
+bounded control DTO and endpoint backed by this existing ring (no second
+buffer): define an explicit max-events and encoded-byte limit, make operator
+authorization exhaustive before dispatch, bind the response to plane and
+process instance, surface sequence gaps/drops, and reject malformed limits.
+Then prove observer denial, operator success, ring wrap/loss, and a real
+daemon-process request-to-terminal correlation. Do not enable the P09 Linux
+release node until supervised-child, maintenance, and backend loss have
+separate process counterexamples too.
+
 Depends on: S21-00, S21-04, S21-09
 
 ## Goal
