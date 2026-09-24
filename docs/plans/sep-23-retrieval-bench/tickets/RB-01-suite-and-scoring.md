@@ -1,6 +1,6 @@
 # RB-01 — Frozen Suite and Single Scoring Authority
 
-Status: `implementation-landed / real-pair-evidence-pending`
+Status: `diagnostic-scoring-landed / qualified-rubric-blocked / real-pair-evidence-pending`
 
 Depends on: RB-00 stage A
 
@@ -8,7 +8,7 @@ Owner: retrieval evaluator and suite schema
 
 ## Current code status (2026-09-24)
 
-The single evaluator now accepts only the current v3 artifact shape and rejects v1/v2 or unknown stamps. It implements blind freeze, exact comparison-contract binding, file-universe/path+SHA checks, byte-span verification, graded and ungraded metrics, deterministic same-file collapse, split-leakage checks, capture provenance and deterministic re-score. Focused Python mutants exercise these paths. Remaining work is evidence, not another scorer: no admitted real suite or paired report exists.
+The single evaluator now accepts only the current v3 artifact shape and rejects v1/v2 or unknown stamps. It implements blind freeze, exact comparison-contract binding, file-universe/path+SHA checks, byte-span verification, graded and ungraded diagnostic metrics, deterministic same-file collapse, split-leakage checks, capture provenance and deterministic re-score. Focused Python mutants exercise these paths. A current-source counterexample scores a rank-1 exact 10-byte gold span and a rank-1 1 MB whole-file candidate identically at NDCG@10 = 1.0. This violates [TEST-PLAN.md](TEST-PLAN.md) §2.6's large-context rule. W0-A has not frozen a size-aware relevance rubric or scorer identity, so the verdict now refuses `QUALITY_DELTA` with `relevance_rubric_unfrozen` after otherwise passing quality gates. An approved rubric, matching scorer/oracles and real admitted pair are still required; diagnostic NDCG is not a qualified quality claim.
 
 ## Goal
 

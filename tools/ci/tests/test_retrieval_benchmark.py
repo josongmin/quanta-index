@@ -3232,9 +3232,10 @@ def test_verdict_quality_gates(tmp_path, monkeypatch):
         tmp_path / "iso", blinding="isolated", scope="qualified", claims={"quality": True}
     )
     verdict = _stage_verdict(st)
-    assert verdict["states"]["QUALITY_DELTA"] == "pass"
-    assert verdict["state_evidence"]["QUALITY_DELTA"]["reason"] == ("blinded_graded_delta")
-    assert verdict["failure_class"] == "none"
+    assert verdict["states"]["QUALITY_DELTA"] == "fail"
+    assert verdict["state_evidence"]["QUALITY_DELTA"]["reason"] == ("relevance_rubric_unfrozen")
+    assert "T04" in verdict["missing_t_ids"]
+    assert verdict["failure_class"] == "scoring"
     proof_path = st["stage"] / "isolation-proof.json"
     proof = json.loads(proof_path.read_text(encoding="utf-8"))
     proof["profile_sha256"] = _fake_sha("forged-profile")
@@ -3278,6 +3279,20 @@ def test_verdict_quality_gates(tmp_path, monkeypatch):
     assert verdict["state_evidence"]["QUALITY_DELTA"]["reason"] == "model_quality_embedder"
     assert verdict["failure_class"] == "model"
     assert verdict["provenance"]["quanta"]["embedder"] == "hash-dev"
+
+
+def test_qualified_quality_refuses_unfrozen_large_context_rubric(tmp_path, monkeypatch):
+    gold = [{"path": "a.txt", "start_byte": 100, "end_byte": 110, "grade": 3}]
+    exact = [{"path": "a.txt", "start_byte": 100, "end_byte": 110}]
+    whole_file = [{"path": "a.txt", "start_byte": 0, "end_byte": 1_000_000}]
+    assert ev.ndcg_at_k(exact, gold, 10) == ev.ndcg_at_k(whole_file, gold, 10) == 1.0
+
+    monkeypatch.setattr(ev, "MIN_CI_SAMPLE", 2)
+    st = _pair_stage(tmp_path, blinding="isolated", scope="qualified", claims={"quality": True})
+    verdict = _stage_verdict(st)
+    assert verdict["states"]["QUALITY_DELTA"] == "fail"
+    assert verdict["state_evidence"]["QUALITY_DELTA"]["reason"] == ("relevance_rubric_unfrozen")
+    assert verdict["failure_class"] == "scoring"
 
 
 def test_qualified_admission_is_reverified_after_capture(tmp_path):

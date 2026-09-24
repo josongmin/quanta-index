@@ -135,6 +135,13 @@ explicit insufficient-sample marker. Re-scoring immutable records is
 deterministic under row order; scores depend only on recorded spans and
 statuses, never on runner identity strings.
 
+This NDCG is diagnostic, not yet a qualified quality authority: a rank-1
+whole-file candidate containing a short gold span currently earns the same
+gain as the exact span. W0-A has not frozen the required size-aware relevance
+rubric or matching scorer identity. `QUALITY_DELTA` therefore fails closed as
+`relevance_rubric_unfrozen` even when grading, blinding, admission and
+uncertainty checks pass; do not interpret the report as quality superiority.
+
 The report is evidence only for the supplied frozen suite, pinned repository
 and runner record. No arbitrary pass threshold or claim of production retrieval
 quality is inferred.
