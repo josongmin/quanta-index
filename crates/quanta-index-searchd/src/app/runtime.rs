@@ -4,6 +4,8 @@ use std::collections::BTreeSet;
 use std::fs::File;
 #[cfg(not(unix))]
 use std::fs::OpenOptions;
+use std::io::Read;
+use std::num::NonZeroU128;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 use std::{
@@ -1287,10 +1289,7 @@ impl SearchdRuntime {
             .require_state_root_v1(config.state_root())
             .map_err(anyhow::Error::from)?;
         let leased_state_root = state_root_lease.state_root_identity_v1().to_path_buf();
-        // Offline-only migration (SEP-21 P10 / S21-11): a legacy layout is
-        // refused typed here, before any adapter opens it. The boot path
-        // carries no legacy decoder and no migrator; the operator runs the
-        // offline `migrate-state` command and boots the produced root.
+        // Refuse a legacy layout before any adapter opens it.
         crate::app::state_format::refuse_legacy_state_root_v1(&leased_state_root)
             .map_err(anyhow::Error::from)?;
         let activation_catalog = search_corpus_lifecycle.activation_catalog();
@@ -1336,11 +1335,6 @@ impl SearchdRuntime {
         )
         .map_err(anyhow::Error::from)?;
         let boot_report = semantic_boot::SemanticBootReport {
-            // Boot never migrates (SEP-21 P10): a legacy journal would have
-            // been refused above, so by construction there is none here.
-            // The offline `migrate-state` command is the only migrator.
-            migration: semantic_boot::SemanticMigrationOutcome::NoLegacyJournal,
-            migration_micros: 0,
             seed: semantic_boot::SemanticSeedReport::from_track_report(&semantic_inventory),
             seed_micros: seed_start.elapsed().as_micros(),
         };
@@ -1447,7 +1441,7 @@ impl SearchdRuntime {
         let authority_inspect_port: Arc<dyn SearchCorpusAuthorityInspectPort + Send + Sync> =
             aux_authority_store;
         let search_corpus_materializer: Arc<DirectSearchCorpusMaterializer> = Arc::new(
-            DirectSearchCorpusMaterializer::new_with_search_owned_semantics_from_env(
+            DirectSearchCorpusMaterializer::new_with_search_owned_semantics(
                 SearchCorpusMaterializerParts {
                     builder: Arc::clone(&search_corpus_build_port),
                     ledger: Arc::clone(&ledger),
@@ -1470,7 +1464,6 @@ impl SearchdRuntime {
                     auxiliary_coordinator: Arc::clone(&auxiliary_parts.coordinator),
                 },
             )
-            .map_err(anyhow::Error::from)?
             .with_history_text(history_text.clone()),
         );
         let direct_search_corpus_ingest_port: Arc<dyn SearchCorpusIngestPort + Send + Sync> =
@@ -1496,9 +1489,7 @@ impl SearchdRuntime {
         // before any socket exists, so a scrape never sees a partial set.
         // The socket counters are created ahead of their servers for the
         // same reason.
-        let query_counters = Arc::new(IpcServerCounters::for_plane("query"));
-        let control_counters = Arc::new(IpcServerCounters::for_plane("control"));
-        let ingest_counters = Arc::new(IpcServerCounters::for_plane("ingest"));
+        let (query_counters, control_counters, ingest_counters) = ipc_plane_counters_v1()?;
         let mut metric_sources: Vec<Arc<dyn MetricSourcePort>> = adapter_metric_sources;
         metric_sources.extend(embedder_metric_sources);
         for counters in [&query_counters, &control_counters, &ingest_counters] {
@@ -1748,6 +1739,31 @@ impl SearchdRuntime {
     }
 }
 
+fn ipc_plane_counters_v1() -> Result<(
+    Arc<IpcServerCounters>,
+    Arc<IpcServerCounters>,
+    Arc<IpcServerCounters>,
+)> {
+    let mut process_instance_bytes = [0_u8; 16];
+    File::open("/dev/urandom")?.read_exact(&mut process_instance_bytes)?;
+    let process_instance = NonZeroU128::new(u128::from_ne_bytes(process_instance_bytes))
+        .ok_or_else(|| anyhow::anyhow!("zero process-instance entropy"))?;
+    Ok((
+        Arc::new(IpcServerCounters::for_plane_with_instance(
+            "query",
+            process_instance,
+        )),
+        Arc::new(IpcServerCounters::for_plane_with_instance(
+            "control",
+            process_instance,
+        )),
+        Arc::new(IpcServerCounters::for_plane_with_instance(
+            "ingest",
+            process_instance,
+        )),
+    ))
+}
+
 #[cfg(test)]
 #[expect(
     clippy::panic_in_result_fn,
@@ -1757,12 +1773,32 @@ mod tests {
     use super::{
         DomainStructuralQueryRequest, GenerationPin, GenerationSelector, Ledger,
         LedgerStructuralProducer, LqStructuralBlock, RequestBudgetV1, StructuralProducerPort,
-        StructuralReadiness, ensure_durable_state_root_with_v1,
+        StructuralReadiness, ensure_durable_state_root_with_v1, ipc_plane_counters_v1,
     };
     use quanta_index_contract::{LqOptions, RepoId, RevisionId};
     use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::sync::{Arc, Mutex, RwLock};
     type TestRes = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn one_runtime_instance_binds_all_three_plane_windows() -> TestRes {
+        let (query, control, ingest) = ipc_plane_counters_v1()?;
+        let query_window = query.request_event_window_v1(1)?;
+        let control_window = control.request_event_window_v1(1)?;
+        let ingest_window = ingest.request_event_window_v1(1)?;
+        assert_eq!(query_window.plane, "query");
+        assert_eq!(control_window.plane, "control");
+        assert_eq!(ingest_window.plane, "ingest");
+        assert_eq!(
+            query_window.process_instance,
+            control_window.process_instance
+        );
+        assert_eq!(
+            query_window.process_instance,
+            ingest_window.process_instance
+        );
+        Ok(())
+    }
 
     fn request_with_generation(generation: GenerationSelector) -> DomainStructuralQueryRequest {
         DomainStructuralQueryRequest {

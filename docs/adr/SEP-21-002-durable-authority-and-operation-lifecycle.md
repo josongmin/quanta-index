@@ -6,14 +6,19 @@ Decided: 2026-09-21
 
 Amended: 2026-09-21 — generic global-event and quarantine crash ownership were made explicit before product cutover.
 
+Amended: 2026-09-24 — prerelease breaking cutover removes the P10 legacy
+importer. Old roots are refused; current-format backup/restore is not a format
+converter.
+
 Gate owner: S21-00; blocks S21-02, S21-03, S21-04, S21-05 and S21-11
 
 ## Durable ownership
 
 - SQLite `repomap_candidate_v1` and `repomap_activation_v1` are the only RepoMap lifecycle and visibility authority.
 - The object store owns immutable bytes only. Runtime `activations/` files are deleted.
-- P03 deletes activation-file code paths, not legacy bytes: a V1 root is refused before mutation. Only the P10
-  offline importer may read, transform or remove a legacy `activations/` tree.
+- P03 deletes activation-file code paths, not legacy bytes: a V1 root is
+  refused before mutation. No importer reads or transforms a legacy
+  `activations/` tree.
 - Memory registries are catalog-derived caches and never win recovery disagreement.
 - The state root has one process lease and one global `MutationCoordinatorV1`. Ingest, control and background durable
   mutations all pass through it. Per-socket serialization is not authority.

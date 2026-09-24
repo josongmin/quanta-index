@@ -40,8 +40,7 @@ use crate::lex::{
 };
 use crate::{
     ChunkId, ChunkRecord, EmbeddingRecord, ManifestGeneration, OwnerDocKind, RepoId,
-    RepoMapMutationAck, RepoMapPublishBundleRequestV2, RepoMapSourceBundle,
-    RepoMapTerminalReceiptV2, RepoRelativePath, RevisionId,
+    RepoMapPublishBundleRequestV2, RepoMapTerminalReceiptV2, RepoRelativePath, RevisionId,
 };
 
 use super::{
@@ -699,17 +698,18 @@ impl<'de> Visitor<'de> for SearchCorpusIngestBatchVisitor {
                 .ok_or_else(|| de::Error::missing_field("manifest_digest"))?,
             batch_digest: batch_digest.ok_or_else(|| de::Error::missing_field("batch_digest"))?,
             mode: mode.ok_or_else(|| de::Error::missing_field("mode"))?,
-            bundle_payload: bundle_payload.unwrap_or(None),
-            // Bounded legacy migration: pre-clear persisted batches did not
-            // carry this field and therefore decode as the empty clear set.
-            // New serializers always emit it explicitly.
-            clear_surfaces: clear_surfaces.unwrap_or_default(),
+            bundle_payload: bundle_payload
+                .ok_or_else(|| de::Error::missing_field("bundle_payload"))?,
+            clear_surfaces: clear_surfaces
+                .ok_or_else(|| de::Error::missing_field("clear_surfaces"))?,
             replace_scopes: replace_scopes
                 .ok_or_else(|| de::Error::missing_field("replace_scopes"))?,
             tombstone_scopes: tombstone_scopes
                 .ok_or_else(|| de::Error::missing_field("tombstone_scopes"))?,
-            semantic_replace_scopes: semantic_replace_scopes.unwrap_or_default(),
-            semantic_tombstone_scopes: semantic_tombstone_scopes.unwrap_or_default(),
+            semantic_replace_scopes: semantic_replace_scopes
+                .ok_or_else(|| de::Error::missing_field("semantic_replace_scopes"))?,
+            semantic_tombstone_scopes: semantic_tombstone_scopes
+                .ok_or_else(|| de::Error::missing_field("semantic_tombstone_scopes"))?,
             seal: seal.ok_or_else(|| de::Error::missing_field("seal"))?,
         })
     }
@@ -1323,7 +1323,8 @@ impl<'de> Visitor<'de> for SemanticReplaceScopeVisitor {
             scope: scope.ok_or_else(|| de::Error::missing_field("scope"))?,
             scope_digest: scope_digest.ok_or_else(|| de::Error::missing_field("scope_digest"))?,
             embeddings: embeddings.ok_or_else(|| de::Error::missing_field("embeddings"))?,
-            cluster_memberships: cluster_memberships.unwrap_or_default(),
+            cluster_memberships: cluster_memberships
+                .ok_or_else(|| de::Error::missing_field("cluster_memberships"))?,
         })
     }
 }
@@ -1343,24 +1344,17 @@ impl<'de> Deserialize<'de> for SemanticReplaceScope {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SemanticTombstoneScope {
-    /// Legacy path-scoped deletion authority. New semantic-source producers
-    /// leave this unset and address deletion through `semantic_scope`.
-    pub scope: Option<SearchScopeKey>,
-    pub semantic_scope: Option<SemanticSourceScopeKeyV1>,
+    pub semantic_scope: SemanticSourceScopeKeyV1,
 }
 
-const SEMANTIC_TOMBSTONE_SCOPE_FIELDS: &[&str] = &["scope", "semantic_scope"];
+const SEMANTIC_TOMBSTONE_SCOPE_FIELDS: &[&str] = &["semantic_scope"];
 
 impl Serialize for SemanticTombstoneScope {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let field_count = if self.scope.is_some() { 2 } else { 1 };
-        let mut state = serializer.serialize_struct("SemanticTombstoneScope", field_count)?;
-        if let Some(scope) = &self.scope {
-            state.serialize_field("scope", scope)?;
-        }
+        let mut state = serializer.serialize_struct("SemanticTombstoneScope", 1)?;
         state.serialize_field("semantic_scope", &self.semantic_scope)?;
         state.end()
     }
@@ -1379,18 +1373,9 @@ impl<'de> Visitor<'de> for SemanticTombstoneScopeVisitor {
     where
         A: MapAccess<'de>,
     {
-        let mut scope: Option<SearchScopeKey> = None;
-        let mut scope_seen = false;
-        let mut semantic_scope: Option<Option<SemanticSourceScopeKeyV1>> = None;
+        let mut semantic_scope: Option<SemanticSourceScopeKeyV1> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
-                "scope" => {
-                    if scope_seen {
-                        return Err(de::Error::duplicate_field("scope"));
-                    }
-                    scope_seen = true;
-                    scope = Some(map.next_value()?);
-                }
                 "semantic_scope" => {
                     if semantic_scope.is_some() {
                         return Err(de::Error::duplicate_field("semantic_scope"));
@@ -1405,16 +1390,14 @@ impl<'de> Visitor<'de> for SemanticTombstoneScopeVisitor {
                 }
             }
         }
-        let semantic_scope = semantic_scope.unwrap_or(None);
-        if scope.is_none() && semantic_scope.is_none() {
+        let semantic_scope =
+            semantic_scope.ok_or_else(|| de::Error::missing_field("semantic_scope"))?;
+        if semantic_scope.owner_id.is_empty() {
             return Err(de::Error::custom(
-                "semantic tombstone requires scope or semantic_scope",
+                "semantic tombstone owner_id must not be empty",
             ));
         }
-        Ok(SemanticTombstoneScope {
-            scope,
-            semantic_scope,
-        })
+        Ok(SemanticTombstoneScope { semantic_scope })
     }
 }
 
@@ -1623,11 +1606,12 @@ impl<'de> Visitor<'de> for SemanticIngestBatchVisitor {
             mode: mode.ok_or_else(|| de::Error::missing_field("mode"))?,
             model_contract: model_contract
                 .ok_or_else(|| de::Error::missing_field("model_contract"))?,
-            required_corpora: required_corpora.unwrap_or_default(),
-            corpus_policy_digest: corpus_policy_digest.unwrap_or(None),
-            // Bounded legacy migration for semantic batches persisted before
-            // whole-surface clear was part of the wire contract.
-            clear_surfaces: clear_surfaces.unwrap_or_default(),
+            required_corpora: required_corpora
+                .ok_or_else(|| de::Error::missing_field("required_corpora"))?,
+            corpus_policy_digest: corpus_policy_digest
+                .ok_or_else(|| de::Error::missing_field("corpus_policy_digest"))?,
+            clear_surfaces: clear_surfaces
+                .ok_or_else(|| de::Error::missing_field("clear_surfaces"))?,
             replace_scopes: replace_scopes
                 .ok_or_else(|| de::Error::missing_field("replace_scopes"))?,
             tombstone_scopes: tombstone_scopes
@@ -2948,8 +2932,8 @@ impl<'de> Visitor<'de> for FileContributorIdentityEntryVisitor {
         }
         Ok(FileContributorIdentityEntry {
             canonical: canonical.ok_or_else(|| de::Error::missing_field("canonical"))?,
-            name: name.unwrap_or(None),
-            email: email.unwrap_or(None),
+            name: name.ok_or_else(|| de::Error::missing_field("name"))?,
+            email: email.ok_or_else(|| de::Error::missing_field("email"))?,
         })
     }
 }
@@ -4523,7 +4507,6 @@ pub enum SearchPlaneIngestIpcRequest {
     PublishDirtyBatch(DirtyIngestBatch),
     PublishRuntimeCatalogBatch(RuntimeCatalogIngestBatch),
     PublishStructuralBatch(StructuralIngestBatch),
-    PublishRepoMapBundle(RepoMapSourceBundle),
     PublishRepoMapBundleV2(RepoMapPublishBundleRequestV2),
     PublishRepoMetaBatch(RepoMetaIngestBatch),
     PublishRepoDescriptionBatch(RepoDescriptionIngestBatch),
@@ -4539,7 +4522,6 @@ const SEARCH_PLANE_INGEST_REQUEST_VARIANTS: &[&str] = &[
     "PublishDirtyBatch",
     "PublishRuntimeCatalogBatch",
     "PublishStructuralBatch",
-    "PublishRepoMapBundle",
     "PublishRepoMapBundleV2",
     "PublishRepoMetaBatch",
     "PublishRepoDescriptionBatch",
@@ -4603,12 +4585,6 @@ impl Serialize for SearchPlaneIngestIpcRequest {
                 "SearchPlaneIngestIpcRequest",
                 8,
                 "PublishStructuralBatch",
-                payload,
-            ),
-            Self::PublishRepoMapBundle(payload) => serializer.serialize_newtype_variant(
-                "SearchPlaneIngestIpcRequest",
-                9,
-                "PublishRepoMapBundle",
                 payload,
             ),
             Self::PublishRepoMapBundleV2(payload) => serializer.serialize_newtype_variant(
@@ -4679,9 +4655,6 @@ impl<'de> Visitor<'de> for SearchPlaneIngestIpcRequestVisitor {
             "PublishStructuralBatch" => Ok(SearchPlaneIngestIpcRequest::PublishStructuralBatch(
                 variant.newtype_variant()?,
             )),
-            "PublishRepoMapBundle" => Ok(SearchPlaneIngestIpcRequest::PublishRepoMapBundle(
-                variant.newtype_variant()?,
-            )),
             "PublishRepoMapBundleV2" => Ok(SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(
                 variant.newtype_variant()?,
             )),
@@ -4726,7 +4699,6 @@ pub enum SearchPlaneIngestIpcResponse {
     DirtyReceipt(BatchPublishReceipt),
     RuntimeCatalogReceipt(BatchPublishReceipt),
     StructuralReceipt(BatchPublishReceipt),
-    RepoMapReceipt(RepoMapMutationAck),
     RepoMapTerminalReceiptV2(RepoMapTerminalReceiptV2),
     RepoMetaReceipt(BatchPublishReceipt),
     RepoDescriptionReceipt(BatchPublishReceipt),
@@ -4743,7 +4715,6 @@ const SEARCH_PLANE_INGEST_RESPONSE_VARIANTS: &[&str] = &[
     "DirtyReceipt",
     "RuntimeCatalogReceipt",
     "StructuralReceipt",
-    "RepoMapReceipt",
     "RepoMapTerminalReceiptV2",
     "RepoMetaReceipt",
     "RepoDescriptionReceipt",
@@ -4808,12 +4779,6 @@ impl Serialize for SearchPlaneIngestIpcResponse {
                 "SearchPlaneIngestIpcResponse",
                 8,
                 "StructuralReceipt",
-                payload,
-            ),
-            Self::RepoMapReceipt(payload) => serializer.serialize_newtype_variant(
-                "SearchPlaneIngestIpcResponse",
-                9,
-                "RepoMapReceipt",
                 payload,
             ),
             Self::RepoMapTerminalReceiptV2(payload) => serializer.serialize_newtype_variant(
@@ -4884,9 +4849,6 @@ impl<'de> Visitor<'de> for SearchPlaneIngestIpcResponseVisitor {
                 variant.newtype_variant()?,
             )),
             "StructuralReceipt" => Ok(SearchPlaneIngestIpcResponse::StructuralReceipt(
-                variant.newtype_variant()?,
-            )),
-            "RepoMapReceipt" => Ok(SearchPlaneIngestIpcResponse::RepoMapReceipt(
                 variant.newtype_variant()?,
             )),
             "RepoMapTerminalReceiptV2" => Ok(
@@ -5119,6 +5081,24 @@ mod tests {
         Ok(ciborium::from_reader(bytes)?)
     }
 
+    #[test]
+    fn legacy_repo_map_publish_and_receipt_tags_are_refused() -> TestRes {
+        let old_request = serde_json::json!({"PublishRepoMapBundle": {}});
+        let old_request_cbor = encode(&old_request)?;
+        let error = serde_json::from_value::<SearchPlaneIngestIpcRequest>(old_request)
+            .expect_err("removed publish opcode must refuse");
+        assert!(error.to_string().contains("unknown variant"), "{error}");
+        assert!(decode::<SearchPlaneIngestIpcRequest>(&old_request_cbor).is_err());
+
+        let old_response = serde_json::json!({"RepoMapReceipt": {}});
+        let old_response_cbor = encode(&old_response)?;
+        let error = serde_json::from_value::<SearchPlaneIngestIpcResponse>(old_response)
+            .expect_err("removed receipt opcode must refuse");
+        assert!(error.to_string().contains("unknown variant"), "{error}");
+        assert!(decode::<SearchPlaneIngestIpcResponse>(&old_response_cbor).is_err());
+        Ok(())
+    }
+
     fn fixture_repo_id() -> RepoId {
         RepoId::new("repo").expect("static fixture ID satisfies canonical policy")
     }
@@ -5329,11 +5309,11 @@ mod tests {
                 cluster_memberships: Vec::new(),
             }],
             tombstone_scopes: vec![SemanticTombstoneScope {
-                scope: Some(SearchScopeKey {
-                    doc_surface: SearchScopeSurface::Chunk,
-                    repo_relative_path: RepoRelativePath::new("src/old.rs"),
-                }),
-                semantic_scope: None,
+                semantic_scope: SemanticSourceScopeKeyV1 {
+                    corpus_kind: SemanticCorpusKindV1::RawCodeFallback,
+                    owner_kind: OwnerDocKind::Chunk,
+                    owner_id: "owner-old".to_string(),
+                },
             }],
             seal: false,
         }
@@ -5565,22 +5545,123 @@ mod tests {
     }
 
     #[test]
-    fn legacy_clearless_batches_decode_as_zero_clear_and_receipts_do_not_v1() -> TestRes {
-        let mut search_value = serde_json::to_value(fixture_search_corpus_batch())?;
-        let _removed_clear_surfaces = search_value
-            .as_object_mut()
-            .ok_or("search batch fixture must encode as a map")?
-            .remove("clear_surfaces");
-        let search_batch: SearchCorpusIngestBatch = serde_json::from_value(search_value)?;
-        assert!(search_batch.clear_surfaces.is_empty());
+    fn old_incomplete_batches_and_receipts_are_refused_v1() -> TestRes {
+        for field in [
+            "bundle_payload",
+            "clear_surfaces",
+            "semantic_replace_scopes",
+            "semantic_tombstone_scopes",
+        ] {
+            let mut search_value = serde_json::to_value(fixture_search_corpus_batch())?;
+            let removed = search_value
+                .as_object_mut()
+                .ok_or("search batch fixture must encode as a map")?
+                .remove(field);
+            assert!(removed.is_some(), "fixture missing {field}");
+            let error = serde_json::from_value::<SearchCorpusIngestBatch>(search_value)
+                .expect_err("missing search batch field must refuse");
+            assert!(error.to_string().contains(field), "{error}");
+        }
 
-        let mut semantic_value = serde_json::to_value(fixture_semantic_batch())?;
-        let _removed_clear_surfaces = semantic_value
+        for field in ["required_corpora", "corpus_policy_digest", "clear_surfaces"] {
+            let mut semantic_value = serde_json::to_value(fixture_semantic_batch())?;
+            let removed = semantic_value
+                .as_object_mut()
+                .ok_or("semantic batch fixture must encode as a map")?
+                .remove(field);
+            assert!(removed.is_some(), "fixture missing {field}");
+            let error = serde_json::from_value::<SemanticIngestBatch>(semantic_value)
+                .expect_err("missing semantic batch field must refuse");
+            assert!(error.to_string().contains(field), "{error}");
+        }
+
+        let semantic_fixture = fixture_semantic_batch();
+        let replace = semantic_fixture
+            .replace_scopes
+            .first()
+            .ok_or("semantic replace fixture is empty")?;
+        let mut old_replace = serde_json::to_value(replace)?;
+        let removed = old_replace
             .as_object_mut()
-            .ok_or("semantic batch fixture must encode as a map")?
-            .remove("clear_surfaces");
-        let semantic_batch: SemanticIngestBatch = serde_json::from_value(semantic_value)?;
-        assert!(semantic_batch.clear_surfaces.is_empty());
+            .ok_or("semantic replace fixture must encode as a map")?
+            .remove("cluster_memberships");
+        assert!(removed.is_some());
+        let error = serde_json::from_value::<SemanticReplaceScope>(old_replace)
+            .expect_err("missing cluster memberships must refuse");
+        assert!(error.to_string().contains("cluster_memberships"), "{error}");
+
+        let tombstone = semantic_fixture
+            .tombstone_scopes
+            .first()
+            .ok_or("semantic tombstone fixture is empty")?;
+        let mut old_tombstone = serde_json::to_value(tombstone)?;
+        let removed = old_tombstone
+            .as_object_mut()
+            .ok_or("semantic tombstone fixture must encode as a map")?
+            .remove("semantic_scope");
+        assert!(removed.is_some());
+        let error = serde_json::from_value::<SemanticTombstoneScope>(old_tombstone)
+            .expect_err("missing semantic scope field must refuse");
+        assert!(error.to_string().contains("semantic_scope"), "{error}");
+
+        let old_path = SearchScopeKey {
+            doc_surface: SearchScopeSurface::Chunk,
+            repo_relative_path: RepoRelativePath::new("src/old.rs"),
+        };
+        let legacy_only = serde_json::json!({"scope": old_path});
+        let legacy_only_cbor = encode(&legacy_only)?;
+        let error = serde_json::from_value::<SemanticTombstoneScope>(legacy_only)
+            .expect_err("legacy path-only tombstone must refuse");
+        assert!(error.to_string().contains("scope"), "{error}");
+        assert!(decode::<SemanticTombstoneScope>(&legacy_only_cbor).is_err());
+
+        let mut mixed = serde_json::to_value(tombstone)?;
+        let replaced = mixed
+            .as_object_mut()
+            .ok_or("semantic tombstone fixture must encode as a map")?
+            .insert("scope".to_string(), serde_json::to_value(old_path)?);
+        assert!(replaced.is_none());
+        let mixed_cbor = encode(&mixed)?;
+        let error = serde_json::from_value::<SemanticTombstoneScope>(mixed)
+            .expect_err("legacy scope field must refuse even with typed authority");
+        assert!(error.to_string().contains("scope"), "{error}");
+        assert!(decode::<SemanticTombstoneScope>(&mixed_cbor).is_err());
+
+        let mut null_scope = serde_json::to_value(tombstone)?;
+        let replaced = null_scope
+            .as_object_mut()
+            .ok_or("semantic tombstone fixture must encode as a map")?
+            .insert("semantic_scope".to_string(), serde_json::Value::Null);
+        assert!(replaced.is_some());
+        assert!(serde_json::from_value::<SemanticTombstoneScope>(null_scope).is_err());
+
+        let mut empty_owner = serde_json::to_value(tombstone)?;
+        let semantic_scope = empty_owner
+            .get_mut("semantic_scope")
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or("semantic tombstone fixture must contain a typed scope")?;
+        let replaced = semantic_scope.insert("owner_id".to_string(), serde_json::json!(""));
+        assert!(replaced.is_some());
+        let error = serde_json::from_value::<SemanticTombstoneScope>(empty_owner)
+            .expect_err("empty semantic owner must refuse");
+        assert!(error.to_string().contains("owner_id"), "{error}");
+
+        let contributor = FileContributorIdentityEntry {
+            canonical: "person:alice".to_string(),
+            name: None,
+            email: None,
+        };
+        for field in ["name", "email"] {
+            let mut old_contributor = serde_json::to_value(&contributor)?;
+            let removed = old_contributor
+                .as_object_mut()
+                .ok_or("contributor fixture must encode as a map")?
+                .remove(field);
+            assert!(removed.is_some());
+            let error = serde_json::from_value::<FileContributorIdentityEntry>(old_contributor)
+                .expect_err("missing contributor field must refuse");
+            assert!(error.to_string().contains(field), "{error}");
+        }
 
         // Receipts are produced only by the search plane and every field is
         // required (QI-BB-032): a receipt without its clear-surface count
@@ -5721,16 +5802,12 @@ mod tests {
 
     #[test]
     fn file_contributor_identity_manual_serde_enforces_wire_contract() -> TestRes {
-        let missing_optional: FileContributorIdentityEntry =
-            serde_json::from_str(r#"{"canonical":"alice"}"#)?;
-        assert_eq!(
+        let missing_optional =
+            serde_json::from_str::<FileContributorIdentityEntry>(r#"{"canonical":"alice"}"#);
+        assert!(matches!(
             missing_optional,
-            FileContributorIdentityEntry {
-                canonical: "alice".to_string(),
-                name: None,
-                email: None,
-            }
-        );
+            Err(error) if error.to_string().contains("missing field `name`")
+        ));
 
         let duplicate = serde_json::from_str::<FileContributorIdentityEntry>(
             r#"{"canonical":"alice","canonical":"bob"}"#,

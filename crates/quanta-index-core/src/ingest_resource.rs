@@ -91,11 +91,10 @@ impl IngestResourcePolicy {
 
     /// Measure `batch` under `dimension` and admit it, or refuse it typed.
     ///
-    /// The footprint mirrors the derivation the plane will run: typed
-    /// semantic sources are embedded when the batch carries any, and the
-    /// legacy chunk texts are embedded only when it carries none, so the
-    /// embedded set is exactly one of the two. The records ceiling counts
-    /// both, because both become rows the plane holds. A `dimension`
+    /// The footprint mirrors the single typed-source derivation. An empty
+    /// semantic source list is a semantic no-op, even when lexical chunks
+    /// are replaced. The records ceiling counts both lexical and semantic
+    /// rows the plane holds. A `dimension`
     /// outside `1..=MAX_EMBEDDING_DIMENSION` is a composition defect and is
     /// refused as an invalid contract rather than charged to the batch.
     pub fn admit_search_corpus_batch(
@@ -170,27 +169,13 @@ impl IngestBatchFootprint {
         let carried_records = chunk_records
             .checked_add(source_records)
             .ok_or_else(|| refusal("batch record count overflows"))?;
-        let (embedded_records, text_bytes) = if source_records > 0 {
-            (
-                source_records,
-                sum_text_bytes(
-                    batch
-                        .semantic_replace_scopes
-                        .iter()
-                        .flat_map(|scope| scope.sources.iter().map(|record| record.text.len())),
-                )?,
-            )
-        } else {
-            (
-                chunk_records,
-                sum_text_bytes(
-                    batch
-                        .replace_scopes
-                        .iter()
-                        .flat_map(|scope| scope.chunks.iter().map(|chunk| chunk.text.len())),
-                )?,
-            )
-        };
+        let embedded_records = source_records;
+        let text_bytes = sum_text_bytes(
+            batch
+                .semantic_replace_scopes
+                .iter()
+                .flat_map(|scope| scope.sources.iter().map(|record| record.text.len())),
+        )?;
         let (Ok(records), Ok(components)) =
             (u64::try_from(embedded_records), u64::try_from(dimension))
         else {

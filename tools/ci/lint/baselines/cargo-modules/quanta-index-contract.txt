@@ -366,7 +366,6 @@ crate quanta_index_contract
 │   │   ├── struct CommitShaVisitor: pub(self)
 │   │   │   └── type Value: pub(self)
 │   │   └── struct TagsSer: pub(self)
-│   ├── mod lang: pub
 │   ├── mod parse_tree: pub
 │   │   ├── struct ParseNode: pub
 │   │   ├── struct ParseNodeVisitor: pub(self)
@@ -464,9 +463,6 @@ crate quanta_index_contract
 │       └── struct StructuralCursorV1Visitor: pub(self)
 │           └── type Value: pub(self)
 ├── mod repomap: pub
-│   ├── struct RepoMapActivateGenerationRequest: pub
-│   ├── struct RepoMapActivateGenerationRequestV1Visitor: pub(self)
-│   │   └── type Value: pub(self)
 │   ├── struct RepoMapCallEdge: pub
 │   ├── struct RepoMapCallEdgeVisitor: pub(self)
 │   │   └── type Value: pub(self)
@@ -572,6 +568,9 @@ crate quanta_index_contract
 │   │       └── type Value: pub(self)
 │   └── mod terminal_receipt_v2: pub(self)
 │       ├── struct RepoMapActivateGenerationRequestV2: pub
+│       ├── struct RepoMapActiveHeadRequestV2: pub
+│       ├── struct RepoMapActiveHeadResponseV2: pub
+│       ├── struct RepoMapExpectedActiveV2: pub
 │       ├── enum RepoMapMutationPhaseV2: pub
 │       ├── struct RepoMapPublishBundleRequestV2: pub
 │       ├── struct RepoMapSourceBundleDigestErrorV2: pub
@@ -593,10 +592,7 @@ crate quanta_index_contract
 │   │   ├── struct ClusterMembershipReadRejectionV1Visitor: pub(self)
 │   │   │   └── type Value: pub(self)
 │   │   ├── struct ClusterMembershipSnapshotV1: pub
-│   │   ├── struct ClusterMembershipSnapshotV1Visitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct ClusterMembershipUnavailableV1: pub
-│   │   └── struct ClusterMembershipUnavailableV1Visitor: pub(self)
+│   │   └── struct ClusterMembershipSnapshotV1Visitor: pub(self)
 │   │       └── type Value: pub(self)
 │   ├── mod commit_candidate: pub(self)
 │   │   ├── struct CommitCandidate: pub

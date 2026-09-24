@@ -19,10 +19,10 @@ use std::time::Duration;
 
 use quanta_index_catalog::SqliteCatalog;
 use quanta_index_contract::{
-    FileId, ManifestGeneration, RepoId, RepoMapActivateGenerationRequest, RepoMapExactnessSummary,
-    RepoMapFileNode, RepoMapGraphCoverage, RepoMapGraphCoverageClass, RepoMapItemIndexAvailability,
-    RepoMapNode, RepoMapQueryRequest, RepoMapRedactionState, RepoMapSourceBundle, RepoRelativePath,
-    RevisionId,
+    FileId, ManifestGeneration, RepoId, RepoMapActivateGenerationRequestV2,
+    RepoMapExactnessSummary, RepoMapFileNode, RepoMapGraphCoverage, RepoMapGraphCoverageClass,
+    RepoMapItemIndexAvailability, RepoMapNode, RepoMapPublishBundleRequestV2, RepoMapQueryRequest,
+    RepoMapRedactionState, RepoMapSourceBundle, RepoRelativePath, RevisionId,
 };
 use quanta_index_core::CoreError;
 use quanta_index_repomap::{OpenedRepoMapStore, RepoMapGenerationStore};
@@ -100,15 +100,6 @@ fn bundle(repo_id: &RepoId, generation: u64, marker: &str) -> RepoMapSourceBundl
     }))
 }
 
-fn activate_request(repo_id: &RepoId, generation: u64) -> RepoMapActivateGenerationRequest {
-    RepoMapActivateGenerationRequest {
-        repo_id: repo_id.clone(),
-        revision_id: revision(),
-        manifest_generation: ManifestGeneration::new(generation),
-        manifest_digest: producer_hex(&format!("g{generation}")),
-    }
-}
-
 fn query_request(repo_id: &RepoId, generation: u64) -> RepoMapQueryRequest {
     RepoMapQueryRequest {
         repo_id: repo_id.clone(),
@@ -150,9 +141,11 @@ fn a_published_generation_is_visible_only_after_activation() -> TestResult {
     let root = dir.path().to_path_buf();
     let (_catalog, opened) = open(&root)?;
     let store = &opened.store;
-    let _receipt = store.ingest_bundle(&bundle(&repo(), 1, "g1"))?;
+    let source = bundle(&repo(), 1, "g1");
+    let _receipt = store.ingest_bundle_v2(&RepoMapPublishBundleRequestV2::new(source.clone())?)?;
     assert!(read_query_snapshot(store, &query_request(&repo(), 1)).is_err());
-    let _activation = store.activate_generation(&activate_request(&repo(), 1))?;
+    let _activation =
+        store.activate_generation_v2(&RepoMapActivateGenerationRequestV2::for_bundle(&source)?)?;
     assert!(read_query_snapshot(store, &query_request(&repo(), 1)).is_ok());
 
     // After a restart, the same rules hold from the catalog alone.
@@ -163,7 +156,11 @@ fn a_published_generation_is_visible_only_after_activation() -> TestResult {
     assert!(read_query_snapshot(store, &query_request(&repo(), 1)).is_ok());
 
     // A sealed-but-not-activated second generation stays invisible.
-    let _receipt = store.ingest_bundle(&bundle(&repo(), 2, "g2"))?;
+    let _receipt = store.ingest_bundle_v2(&RepoMapPublishBundleRequestV2::new(bundle(
+        &repo(),
+        2,
+        "g2",
+    ))?)?;
     let (_catalog, opened) = open(&root)?;
     assert_eq!(opened.report.snapshots_loaded, 2);
     assert_eq!(opened.report.activations_loaded, 1);
@@ -177,9 +174,17 @@ fn repo_revisions_are_isolated_activation_keys() -> TestResult {
     let root = dir.path().to_path_buf();
     let (_catalog, opened) = open(&root)?;
     let store = &opened.store;
-    let _first = store.ingest_bundle(&bundle(&repo(), 1, "a1"))?;
-    let _second = store.ingest_bundle(&bundle(&other_repo(), 5, "b5"))?;
-    let _activated = store.activate_generation(&activate_request(&other_repo(), 5))?;
+    let _first = store.ingest_bundle_v2(&RepoMapPublishBundleRequestV2::new(bundle(
+        &repo(),
+        1,
+        "a1",
+    ))?)?;
+    let second_source = bundle(&other_repo(), 5, "b5");
+    let _second =
+        store.ingest_bundle_v2(&RepoMapPublishBundleRequestV2::new(second_source.clone())?)?;
+    let _activated = store.activate_generation_v2(
+        &RepoMapActivateGenerationRequestV2::for_bundle(&second_source)?,
+    )?;
     // Only the other repo's generation is active.
     assert!(read_query_snapshot(store, &query_request(&repo(), 1)).is_err());
     assert!(read_query_snapshot(store, &query_request(&other_repo(), 5)).is_ok());
@@ -198,8 +203,11 @@ fn an_activation_for_a_missing_candidate_object_reports_and_fail_closes() -> Tes
     {
         let (_catalog, opened) = open(&root)?;
         let store = &opened.store;
-        let _sealed = store.ingest_bundle(&bundle(&repo(), 1, "g1"))?;
-        let _activated = store.activate_generation(&activate_request(&repo(), 1))?;
+        let source = bundle(&repo(), 1, "g1");
+        let _sealed =
+            store.ingest_bundle_v2(&RepoMapPublishBundleRequestV2::new(source.clone())?)?;
+        let _activated = store
+            .activate_generation_v2(&RepoMapActivateGenerationRequestV2::for_bundle(&source)?)?;
     }
     // The object disappears without the catalog knowing.
     let object_root = root.join("repo-map").join("objects");

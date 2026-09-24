@@ -113,8 +113,13 @@ def test_capture_rejects_dirty_source_before_creating_output(
 
 def test_pytest_summary_uses_junit_counts(tmp_path: Path) -> None:
     junit = tmp_path / "pytest.xml"
+    cases = "".join(f'<testcase name="test_{index}" />' for index in range(130))
+    cases += '<testcase name="skip_1"><skipped /></testcase>'
+    cases += '<testcase name="skip_2"><skipped /></testcase>'
     junit.write_text(
-        '<testsuites tests="132" failures="0" errors="0" skipped="2" time="1.0"></testsuites>',
+        '<testsuites tests="132" failures="0" errors="0" skipped="2" time="1.0">'
+        f'<testsuite tests="132" failures="0" errors="0" skipped="2">{cases}</testsuite>'
+        "</testsuites>",
         encoding="utf-8",
     )
     assert MODULE.pytest_summary(junit) == {
@@ -129,7 +134,10 @@ def test_pytest_summary_uses_junit_counts(tmp_path: Path) -> None:
 def test_pytest_summary_accepts_pytest_nested_testsuite(tmp_path: Path) -> None:
     junit = tmp_path / "pytest.xml"
     junit.write_text(
-        '<testsuites><testsuite name="pytest" tests="3" failures="0" errors="0" skipped="1" /></testsuites>',
+        '<testsuites><testsuite name="pytest" tests="3" failures="0" errors="0" skipped="1">'
+        '<testcase name="one"/><testcase name="two"/>'
+        '<testcase name="three"><skipped/></testcase>'
+        "</testsuite></testsuites>",
         encoding="utf-8",
     )
     summary = MODULE.pytest_summary(junit)
@@ -141,10 +149,48 @@ def test_pytest_summary_accepts_pytest_nested_testsuite(tmp_path: Path) -> None:
 def test_pytest_summary_rejects_failed_evidence(tmp_path: Path) -> None:
     junit = tmp_path / "pytest.xml"
     junit.write_text(
-        '<testsuites tests="2" failures="1" errors="0" skipped="0"></testsuites>',
+        '<testsuites><testsuite tests="2" failures="1" errors="0" skipped="0">'
+        '<testcase name="one"/><testcase name="two"><failure/></testcase>'
+        "</testsuite></testsuites>",
         encoding="utf-8",
     )
     with pytest.raises(SystemExit, match="reports failures"):
+        MODULE.pytest_summary(junit)
+
+
+@pytest.mark.parametrize(
+    ("xml", "error"),
+    [
+        ('<testsuite tests="1" failures="0" errors="0" skipped="0"/>', "count disagrees"),
+        (
+            '<testsuites tests="2" failures="0" errors="0" skipped="0">'
+            '<testsuite tests="1" failures="0" errors="0" skipped="0">'
+            '<testcase name="one"/></testsuite></testsuites>',
+            "root tests count disagrees",
+        ),
+        (
+            '<testsuite tests="1" failures="0" errors="0" skipped="0">'
+            '<testcase name="one"><failure/></testcase></testsuite>',
+            "failures count disagrees",
+        ),
+        (
+            '<testsuite tests="2" failures="0" errors="0" skipped="0">'
+            '<testcase name="one"/><testcase name="one"/></testsuite>',
+            "duplicate pytest JUnit testcase",
+        ),
+        (
+            '<testsuite tests="1" failures="0" errors="0" skipped="0">'
+            '<testcase name="hidden"/>'
+            '<testsuite tests="1" failures="0" errors="0" skipped="0">'
+            '<testcase name="visible"/></testsuite></testsuite>',
+            "nested suite hides direct testcases",
+        ),
+    ],
+)
+def test_pytest_summary_rejects_false_green_xml(tmp_path: Path, xml: str, error: str) -> None:
+    junit = tmp_path / "pytest.xml"
+    junit.write_text(xml, encoding="utf-8")
+    with pytest.raises(SystemExit, match=error):
         MODULE.pytest_summary(junit)
 
 
@@ -174,4 +220,47 @@ def test_nextest_summary_rejects_count_divergence(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     with pytest.raises(SystemExit, match="pass counts disagree"):
+        MODULE.nextest_summary(evidence)
+
+
+@pytest.mark.parametrize(
+    ("events", "error"),
+    [
+        (
+            '{"type":"suite","event":"started"}\n'
+            '{"type":"test","event":"ok","name":"one"}\n'
+            '{"type":"suite","event":"ok","passed":1,"failed":0,"ignored":0}\n',
+            "lacks a start event",
+        ),
+        (
+            '{"type":"suite","event":"started"}\n'
+            '{"type":"test","event":"started","name":"one"}\n'
+            '{"type":"test","event":"ok","name":"one"}\n'
+            '{"type":"test","event":"ok","name":"one"}\n'
+            '{"type":"suite","event":"ok","passed":2,"failed":0,"ignored":0}\n',
+            "duplicate nextest test outcome",
+        ),
+        (
+            '{"type":"suite","event":"started"}\n'
+            '{"type":"test","event":"started","name":"one"}\n'
+            '{"type":"test","event":"ok","name":"one","name":"two"}\n'
+            '{"type":"suite","event":"ok","passed":1,"failed":0,"ignored":0}\n',
+            "duplicate nextest JSON key",
+        ),
+        (
+            '{"type":"suite","event":"started"}\n'
+            '{"type":"test","event":"started","name":"one"}\n'
+            '{"type":"test","event":"started","name":"two"}\n'
+            '{"type":"test","event":"ok","name":"one"}\n'
+            '{"type":"suite","event":"ok","passed":1,"failed":0,"ignored":0}\n',
+            "incomplete test events",
+        ),
+    ],
+)
+def test_nextest_summary_rejects_false_green_events(
+    tmp_path: Path, events: str, error: str
+) -> None:
+    evidence = tmp_path / "nextest.jsonl"
+    evidence.write_text(events, encoding="utf-8")
+    with pytest.raises(SystemExit, match=error):
         MODULE.nextest_summary(evidence)

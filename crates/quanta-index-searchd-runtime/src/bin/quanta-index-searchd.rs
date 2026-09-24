@@ -7,7 +7,7 @@
 //! and exit `70` too.
 //!
 //! The same process entry carries the offline state commands (SEP-21 P10 /
-//! S21-11): `migrate-state`, `backup-state`, `restore-state` and
+//! S21-11): `backup-state`, `restore-state` and
 //! `verify-state` run the composition root's offline workflow and exit `0`
 //! or `70`. An offline invocation never falls through to `serve`.
 

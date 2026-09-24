@@ -373,7 +373,24 @@ fn commit_record_cbor_roundtrip() -> TestRes {
         is_merge: false,
         tags: vec![Box::from("v0.1.0")],
     };
-    roundtrip_eq(&record)
+    roundtrip_eq(&record)?;
+    let original: ciborium::Value = decode(&encode(&record)?)?;
+    for field in [
+        "author_name",
+        "author_email",
+        "committer_name",
+        "committer_email",
+    ] {
+        let mut old = original.clone();
+        let ciborium::Value::Map(entries) = &mut old else {
+            return Err("commit record must encode as a map".into());
+        };
+        entries.retain(|(key, _)| key != &ciborium::Value::Text(field.to_owned()));
+        if decode::<CommitRecord>(&encode(&old)?).is_ok() {
+            return Err(format!("missing {field} was accepted").into());
+        }
+    }
+    Ok(())
 }
 
 #[test]

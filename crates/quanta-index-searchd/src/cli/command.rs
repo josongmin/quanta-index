@@ -6,7 +6,7 @@ use crate::app::config::SearchdConfig;
 use crate::app::state_migration::{OfflineStateCommandV1, OfflineStateOperationV1};
 
 /// CLI subcommand surface: `serve [--state-root PATH]` plus the offline
-/// state commands `migrate-state`, `backup-state`, `restore-state` and
+/// state commands `backup-state`, `restore-state` and
 /// `verify-state` (SEP-21 P10 / S21-11).
 ///
 /// `--state-root` replaces only how the state root is resolved; every
@@ -35,7 +35,6 @@ impl SearchdCommand {
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "serve" => {}
-                "migrate-state" => operation = Some(OfflineStateOperationV1::Migrate),
                 "backup-state" => operation = Some(OfflineStateOperationV1::Backup),
                 "restore-state" => operation = Some(OfflineStateOperationV1::Restore),
                 "verify-state" => operation = Some(OfflineStateOperationV1::Verify),
@@ -64,7 +63,7 @@ impl SearchdCommand {
             None => {
                 if source_root.is_some() || destination_root.is_some() {
                     return Err(anyhow::anyhow!(
-                        "--source/--destination require one of: migrate-state, backup-state, restore-state, verify-state"
+                        "--source/--destination require one of: backup-state, restore-state, verify-state"
                     ));
                 }
                 None

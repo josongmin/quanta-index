@@ -806,8 +806,8 @@ pub struct ValidatedPersistedSemanticGenerationV2 {
     row_count: u64,
 }
 
-/// Prove one inventoried generation's durable content and mint the witness
-/// the legacy migration records.
+/// Prove one inventoried current-format generation's durable content and
+/// mint the witness used by boot and explicit validation.
 ///
 /// This is the deep step the inventory deliberately does not take: it opens
 /// the generation, which verifies the schema, the row count, the row root

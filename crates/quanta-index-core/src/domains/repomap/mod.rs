@@ -9,7 +9,7 @@ pub use inbound::{
 };
 pub use outbound::{
     QuarantinedRepoMapFileV1, RepoMapBundleIngestPort, RepoMapGenerationActivatePort,
-    RepoMapMutationReceiptV1, RepoMapOpenReportV1, RepoMapQuarantinePort,
+    RepoMapMutationCommit, RepoMapOpenReportV1, RepoMapQuarantinePort,
 };
 pub use policy::RepoMapPolicy;
 pub use service::RepoMapService;

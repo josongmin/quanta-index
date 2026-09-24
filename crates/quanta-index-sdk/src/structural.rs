@@ -251,7 +251,6 @@ fn publish_structural_batch<const SEALED: bool>(
         | SearchPlaneIngestIpcResponse::FileContributorReceipt(_)
         | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
         | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
         | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)

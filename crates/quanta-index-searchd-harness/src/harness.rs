@@ -939,8 +939,8 @@ impl E2eRuntime {
             SearchPlaneControlIpcResponse::Error(error) => Ok(Err(error)),
             other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
-            | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
             | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
+            | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
@@ -1109,8 +1109,8 @@ impl E2eRuntime {
                     )),
                     other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
                     | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
-                    | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
                     | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
+                    | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
                     | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
                     | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
                     | SearchPlaneControlIpcResponse::QuarantineInventory(_)
@@ -1187,8 +1187,8 @@ impl E2eRuntime {
             )),
             other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
-            | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
             | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
+            | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
@@ -3911,7 +3911,6 @@ pub fn stamped_ingest_request(
         SearchPlaneIngestIpcRequest::PublishStructuralBatch(batch) => {
             SearchPlaneIngestIpcRequest::PublishStructuralBatch(stamped(batch)?)
         }
-        bundle @ SearchPlaneIngestIpcRequest::PublishRepoMapBundle(_) => bundle,
         request @ SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(_) => request,
     })
 }

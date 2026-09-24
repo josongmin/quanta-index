@@ -605,9 +605,9 @@ struct ResidentOwnerGroup {
 ///
 /// A batch that is already resident gains no residency bound from this:
 /// its vectors stay resident until it is dropped, and each window is one
-/// more copy of its share. It exists for the legacy journal migration,
-/// whose batches arrive decoded, and for fixtures; every other producer of
-/// scopes streams them un-embedded through the search plane. Within a scope
+/// more copy of its share. It supports resident batch APIs and fixtures;
+/// the search-corpus producer path streams scopes through the search plane.
+/// Within a scope
 /// the embeddings are grouped by owner in first-seen order, so an owner
 /// whose rows the producer interleaved still travels in one window.
 pub struct ResidentScopeSource<'a> {

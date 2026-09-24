@@ -8,8 +8,7 @@
 //!   optionally carrying a root manifest, or nothing at all. Production boot
 //!   refuses a legacy directory typed
 //!   ([`SearchPlaneErrorCodeV2::StateRootFormatUnsupported`]) instead of
-//!   migrating it: migration is an explicit offline operation, so the hot
-//!   path never carries a legacy decoder.
+//!   migrating it. The hot path carries no legacy decoder.
 //! * **The root manifest.** A canonical, self-digesting text manifest that
 //!   enumerates every data object of a root by relative path, byte size and
 //!   SHA-256, plus the catalog's content digest and row count. It is written
@@ -33,18 +32,11 @@ use sha2::{Digest as _, Sha256};
 /// top of a `state-backup` root).
 pub const STATE_ROOT_MANIFEST_FORMAT_VERSION: u32 = 1;
 
-/// Version of the migration receipt an offline `migrate-state` leaves in the
-/// produced root.
-pub const STATE_MIGRATION_RECEIPT_FORMAT_VERSION: u32 = 1;
-
 /// The root manifest's file name, at the top of a current state root.
 pub const STATE_ROOT_MANIFEST_FILE_NAME: &str = "state-root-manifest-v1.txt";
 
 /// The backup manifest's file name, at the top of a `backup-state` root.
 pub const STATE_BACKUP_MANIFEST_FILE_NAME: &str = "state-backup-manifest-v1.txt";
-
-/// The migration receipt's file name, at the top of a migrated root.
-pub const STATE_MIGRATION_RECEIPT_FILE_NAME: &str = "state-migration-receipt-v1.txt";
 
 /// The catalog directory and file under a state root.
 pub const STATE_CATALOG_DIRECTORY: &str = "catalog";
@@ -60,12 +52,10 @@ pub const STATE_ROOT_LEASE_FILE_NAME: &str = ".searchd-state-root.lock";
 /// destination root while it prepares the switch.
 pub const STAGING_DIRECTORY_SUFFIX: &str = ".p10-staging";
 
-/// Legacy semantic journal, relative to a state root: migration input only.
+/// Legacy semantic journal marker, retained for typed root rejection.
 pub const LEGACY_SEMANTIC_JOURNAL_RELATIVE: &str = "semantic/journal.cbor";
 
-/// Pre-catalog auxiliary snapshots are legacy input, never a boot-time
-/// migration source. The offline importer must account for each one before
-/// publishing a current root.
+/// Pre-catalog auxiliary snapshot markers, retained for typed root rejection.
 pub const LEGACY_AUXILIARY_SNAPSHOT_RELATIVES: [&str; 3] = [
     "authorities/history/state.cbor",
     "authorities/runtime/state.cbor",
@@ -85,7 +75,7 @@ pub enum StateRootFormatV1 {
     Absent,
     /// A current-format root. `manifest` says whether it advertises one.
     CurrentV1 { manifest: bool },
-    /// A legacy layout. Offline `migrate-state` owns it; boot refuses it.
+    /// A legacy layout that this build refuses.
     LegacyV1,
 }
 
@@ -114,11 +104,15 @@ fn storage(action: &str, path: &Path, error: &dyn std::fmt::Display) -> CoreErro
 #[must_use]
 pub fn legacy_state_root_markers_v1(root: &Path) -> Vec<String> {
     let mut markers = Vec::new();
-    let journal = root.join(LEGACY_SEMANTIC_JOURNAL_RELATIVE);
-    if journal.exists() {
-        markers.push(LEGACY_SEMANTIC_JOURNAL_RELATIVE.to_string());
-    }
-    for relative in LEGACY_AUXILIARY_SNAPSHOT_RELATIVES {
+    for relative in [
+        LEGACY_SEMANTIC_JOURNAL_RELATIVE,
+        "semantic/MIGRATED",
+        "semantic/MIGRATED.lock",
+        "state-migration-receipt-v1.txt",
+    ]
+    .into_iter()
+    .chain(LEGACY_AUXILIARY_SNAPSHOT_RELATIVES)
+    {
         // Include dangling symlinks: they are not an absent snapshot and
         // must not let a mixed-format root be classified as current. An
         // unreadable path is also not evidence that the snapshot is absent.
@@ -131,7 +125,10 @@ pub fn legacy_state_root_markers_v1(root: &Path) -> Vec<String> {
     }
     let repomap_root = root.join(REPOMAP_DIRECTORY);
     for name in LEGACY_REPOMAP_DIRECTORY_NAMES {
-        if repomap_root.join(name).is_dir() {
+        if !matches!(
+            fs::symlink_metadata(repomap_root.join(name)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound
+        ) {
             markers.push(format!("{REPOMAP_DIRECTORY}/{name}"));
         }
     }
@@ -145,8 +142,8 @@ pub fn legacy_state_root_markers_v1(root: &Path) -> Vec<String> {
 /// the manifest is produced by the offline operations, so a root the daemon
 /// built itself is a legitimate current root. A root carrying a *legacy*
 /// marker is `LegacyV1` regardless of what else it holds — the presence of
-/// one legacy artifact means a legacy binary wrote it, and a mixture must be
-/// imported, never opened.
+/// one legacy artifact means a legacy binary wrote it, and a mixture must
+/// never be opened.
 pub fn detect_state_root_format_v1(root: &Path) -> Result<StateRootFormatV1, CoreError> {
     if !root.exists() {
         return Ok(StateRootFormatV1::Absent);
@@ -184,8 +181,7 @@ pub fn detect_state_root_format_v1(root: &Path) -> Result<StateRootFormatV1, Cor
 /// Refuse a legacy state root typed, before anything opens it.
 ///
 /// The daemon's boot path calls this; there is deliberately no migration
-/// branch here. An operator with a legacy root runs the offline
-/// `migrate-state` command against it and boots the produced root.
+/// branch here.
 pub fn refuse_legacy_state_root_v1(root: &Path) -> Result<(), CoreError> {
     let format = detect_state_root_format_v1(root)?;
     if format != StateRootFormatV1::LegacyV1 {
@@ -194,8 +190,7 @@ pub fn refuse_legacy_state_root_v1(root: &Path) -> Result<(), CoreError> {
     Err(typed(
         SearchPlaneErrorCodeV2::StateRootFormatUnsupported,
         format!(
-            "state root {} carries a legacy layout ({}); this build does not migrate at boot. \
-             Run the offline `migrate-state` command and boot the produced root",
+            "state root {} carries a legacy layout ({}); this build does not support legacy state roots",
             root.display(),
             legacy_state_root_markers_v1(root).join(", ")
         ),
@@ -337,8 +332,6 @@ impl StateRootManifestV1 {
             } else if let Some(rest) = line.strip_prefix("root-format ") {
                 root_format = Some(match rest {
                     "current-v1" => StateRootFormatV1::CurrentV1 { manifest: true },
-                    "legacy-v1" => StateRootFormatV1::LegacyV1,
-                    "absent" => StateRootFormatV1::Absent,
                     other => return Err(refuse(format!("unknown root-format {other}"))),
                 });
             } else if let Some(rest) = line.strip_prefix("catalog-digest ") {
@@ -1014,6 +1007,15 @@ pub fn write_root_manifest_last_v1(
     manifest: &StateRootManifestV1,
     fault: &dyn StateMigrationFaultPort,
 ) -> Result<PathBuf, CoreError> {
+    if manifest.root_format != (StateRootFormatV1::CurrentV1 { manifest: true }) {
+        return Err(typed(
+            SearchPlaneErrorCodeV2::StateRootFormatUnsupported,
+            format!(
+                "state-root manifest for {} must describe a current root",
+                root.display()
+            ),
+        ));
+    }
     let path = root.join(file_name);
     if path.exists() {
         return Err(refuse(

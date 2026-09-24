@@ -360,22 +360,6 @@ where
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ClusterMembershipUnavailableV1 {
-    pub cluster_record_id: String,
-    pub generation: GenerationPin,
-    pub expected_authority_digest: String,
-}
-
-impl ClusterMembershipUnavailableV1 {
-    pub fn validate_v1(&self) -> Result<(), ClusterMembershipReadFailureV1> {
-        validate_cluster_membership_terminal_authority_v1(
-            self.cluster_record_id.as_str(),
-            self.expected_authority_digest.as_str(),
-        )
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClusterMembershipReadRejectionV1 {
     pub cluster_record_id: String,
     pub generation: GenerationPin,
@@ -419,20 +403,25 @@ fn validate_cluster_membership_authority_fields_v1(
 }
 
 macro_rules! impl_cluster_membership_authority_payload_serde {
-    ($ty:ident, $visitor:ident, $fields:ident $(, $failure:ident)?) => {
+    ($ty:ident, $visitor:ident, $fields:ident, $failure:ident) => {
         impl Serialize for $ty {
             fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-            where S: Serializer {
+            where
+                S: Serializer,
+            {
                 validate_cluster_membership_authority_fields_v1(
                     self.cluster_record_id.as_str(),
                     self.expected_authority_digest.as_str(),
                 )
                 .map_err(serde::ser::Error::custom)?;
-                let mut state = serializer.serialize_struct(stringify!($ty), count_fields_v1!($($failure)?))?;
+                let mut state = serializer.serialize_struct(stringify!($ty), 4)?;
                 state.serialize_field("cluster_record_id", &self.cluster_record_id)?;
                 state.serialize_field("generation", &self.generation)?;
-                state.serialize_field("expected_authority_digest", &self.expected_authority_digest)?;
-                $(state.serialize_field("failure", &self.$failure)?;)?
+                state.serialize_field(
+                    "expected_authority_digest",
+                    &self.expected_authority_digest,
+                )?;
+                state.serialize_field("failure", &self.$failure)?;
                 state.end()
             }
         }
@@ -444,22 +433,32 @@ macro_rules! impl_cluster_membership_authority_payload_serde {
                 formatter.write_str(concat!("a ", stringify!($ty), " map"))
             }
             fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-            where A: MapAccess<'de> {
+            where
+                A: MapAccess<'de>,
+            {
                 let mut cluster_record_id = None;
                 let mut generation = None;
                 let mut expected_authority_digest = None;
-                $(let mut $failure = None;)?
+                let mut $failure = None;
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
-                        "cluster_record_id" => set_once_v1(&mut cluster_record_id, "cluster_record_id", &mut map)?,
+                        "cluster_record_id" => {
+                            set_once_v1(&mut cluster_record_id, "cluster_record_id", &mut map)?
+                        }
                         "generation" => set_once_v1(&mut generation, "generation", &mut map)?,
-                        "expected_authority_digest" => set_once_v1(&mut expected_authority_digest, "expected_authority_digest", &mut map)?,
-                        $("failure" => set_once_v1(&mut $failure, "failure", &mut map)?,)?
+                        "expected_authority_digest" => set_once_v1(
+                            &mut expected_authority_digest,
+                            "expected_authority_digest",
+                            &mut map,
+                        )?,
+                        "failure" => set_once_v1(&mut $failure, "failure", &mut map)?,
                         other => return Err(de::Error::unknown_field(other, $fields)),
                     }
                 }
-                let cluster_record_id: String = cluster_record_id.ok_or_else(|| de::Error::missing_field("cluster_record_id"))?;
-                let expected_authority_digest: String = expected_authority_digest.ok_or_else(|| de::Error::missing_field("expected_authority_digest"))?;
+                let cluster_record_id: String = cluster_record_id
+                    .ok_or_else(|| de::Error::missing_field("cluster_record_id"))?;
+                let expected_authority_digest: String = expected_authority_digest
+                    .ok_or_else(|| de::Error::missing_field("expected_authority_digest"))?;
                 validate_cluster_membership_authority_fields_v1(
                     cluster_record_id.as_str(),
                     expected_authority_digest.as_str(),
@@ -469,45 +468,28 @@ macro_rules! impl_cluster_membership_authority_payload_serde {
                     cluster_record_id,
                     generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
                     expected_authority_digest,
-                    $($failure: $failure.ok_or_else(|| de::Error::missing_field("failure"))?,)?
+                    $failure: $failure.ok_or_else(|| de::Error::missing_field("failure"))?,
                 })
             }
         }
 
         impl<'de> Deserialize<'de> for $ty {
             fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-            where D: Deserializer<'de> {
+            where
+                D: Deserializer<'de>,
+            {
                 deserializer.deserialize_struct(stringify!($ty), $fields, $visitor)
             }
         }
     };
 }
 
-macro_rules! count_fields_v1 {
-    () => {
-        3usize
-    };
-    ($failure:ident) => {
-        4usize
-    };
-}
-
-const CLUSTER_MEMBERSHIP_UNAVAILABLE_V1_FIELDS: &[&str] = &[
-    "cluster_record_id",
-    "generation",
-    "expected_authority_digest",
-];
 const CLUSTER_MEMBERSHIP_READ_REJECTION_V1_FIELDS: &[&str] = &[
     "cluster_record_id",
     "generation",
     "expected_authority_digest",
     "failure",
 ];
-impl_cluster_membership_authority_payload_serde!(
-    ClusterMembershipUnavailableV1,
-    ClusterMembershipUnavailableV1Visitor,
-    CLUSTER_MEMBERSHIP_UNAVAILABLE_V1_FIELDS
-);
 impl_cluster_membership_authority_payload_serde!(
     ClusterMembershipReadRejectionV1,
     ClusterMembershipReadRejectionV1Visitor,
@@ -517,13 +499,10 @@ impl_cluster_membership_authority_payload_serde!(
 
 /// Typed result of a membership read.
 ///
-/// `Unavailable` is reserved for a sealed legacy generation that did not
-/// advertise structured-membership capability. Current-format missing, stale,
-/// or invalid data is always `Rejected`.
+/// Current-format missing, stale, or invalid data is always `Rejected`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ClusterMembershipReadOutcomeV1 {
     Available(ClusterMembershipSnapshotV1),
-    Unavailable(ClusterMembershipUnavailableV1),
     Rejected(ClusterMembershipReadRejectionV1),
 }
 
@@ -531,7 +510,6 @@ impl ClusterMembershipReadOutcomeV1 {
     pub fn validate_v1(&self) -> Result<(), ClusterMembershipReadFailureV1> {
         match self {
             Self::Available(snapshot) => snapshot.validate_v1(),
-            Self::Unavailable(unavailable) => unavailable.validate_v1(),
             Self::Rejected(rejection) => rejection.validate_v1(),
         }
     }
@@ -542,15 +520,6 @@ impl ClusterMembershipReadOutcomeV1 {
     ) -> Result<(), ClusterMembershipReadFailureV1> {
         match self {
             Self::Available(snapshot) => snapshot.validate_against_v1(request),
-            Self::Unavailable(unavailable) => {
-                unavailable.validate_v1()?;
-                validate_outcome_authority_v1(
-                    unavailable.cluster_record_id.as_str(),
-                    &unavailable.generation,
-                    unavailable.expected_authority_digest.as_str(),
-                    request,
-                )
-            }
             Self::Rejected(rejection) => {
                 rejection.validate_v1()?;
                 validate_outcome_authority_v1(
@@ -691,8 +660,7 @@ fn validate_outcome_authority_v1(
 }
 
 const CLUSTER_MEMBERSHIP_READ_OUTCOME_V1_FIELDS: &[&str] = &["kind", "payload"];
-const CLUSTER_MEMBERSHIP_READ_OUTCOME_V1_VARIANTS: &[&str] =
-    &["Available", "Unavailable", "Rejected"];
+const CLUSTER_MEMBERSHIP_READ_OUTCOME_V1_VARIANTS: &[&str] = &["Available", "Rejected"];
 
 impl Serialize for ClusterMembershipReadOutcomeV1 {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -703,10 +671,6 @@ impl Serialize for ClusterMembershipReadOutcomeV1 {
         match self {
             Self::Available(payload) => {
                 state.serialize_field("kind", "Available")?;
-                state.serialize_field("payload", payload)?;
-            }
-            Self::Unavailable(payload) => {
-                state.serialize_field("kind", "Unavailable")?;
                 state.serialize_field("payload", payload)?;
             }
             Self::Rejected(payload) => {
@@ -866,32 +830,6 @@ impl<'de> Visitor<'de> for ClusterMembershipReadOutcomeV1Visitor {
                 snapshot.validate_v1().map_err(de::Error::custom)?;
                 Ok(ClusterMembershipReadOutcomeV1::Available(snapshot))
             }
-            "Unavailable" => {
-                if payload.authority_digest.is_some()
-                    || payload.members.is_some()
-                    || payload.completeness.is_some()
-                    || payload.failure.is_some()
-                {
-                    return Err(de::Error::custom(
-                        "Unavailable cluster membership payload contains incompatible fields",
-                    ));
-                }
-                let expected_authority_digest = payload
-                    .expected_authority_digest
-                    .ok_or_else(|| de::Error::missing_field("expected_authority_digest"))?;
-                validate_cluster_membership_authority_fields_v1(
-                    cluster_record_id.as_str(),
-                    expected_authority_digest.as_str(),
-                )
-                .map_err(de::Error::custom)?;
-                Ok(ClusterMembershipReadOutcomeV1::Unavailable(
-                    ClusterMembershipUnavailableV1 {
-                        cluster_record_id,
-                        generation,
-                        expected_authority_digest,
-                    },
-                ))
-            }
             "Rejected" => {
                 if payload.authority_digest.is_some()
                     || payload.members.is_some()
@@ -975,12 +913,13 @@ mod tests {
     fn cluster_membership_outcome_roundtrip_preserves_generation_authority_and_completeness_v1() {
         let available =
             ClusterMembershipReadOutcomeV1::Available(sample_cluster_membership_snapshot());
-        let legacy = ClusterMembershipReadOutcomeV1::Unavailable(ClusterMembershipUnavailableV1 {
-            cluster_record_id: "cluster-card:legacy".to_string(),
+        let rejected = ClusterMembershipReadOutcomeV1::Rejected(ClusterMembershipReadRejectionV1 {
+            cluster_record_id: "cluster-card:missing".to_string(),
             generation: sample_generation_pin(),
-            expected_authority_digest: "legacy-authority-digest".to_string(),
+            expected_authority_digest: "missing-authority-digest".to_string(),
+            failure: ClusterMembershipReadFailureV1::CurrentGenerationMissing,
         });
-        for outcome in [available, legacy] {
+        for outcome in [available, rejected] {
             let json = serde_json::to_value(&outcome).expect("outcome JSON encode");
             let decoded_json: ClusterMembershipReadOutcomeV1 =
                 serde_json::from_value(json).expect("outcome JSON decode");
@@ -992,6 +931,25 @@ mod tests {
                 ciborium::de::from_reader(cbor.as_slice()).expect("outcome CBOR decode");
             assert_eq!(decoded_cbor, outcome);
         }
+    }
+
+    #[test]
+    fn cluster_membership_legacy_unavailable_outcome_is_refused() {
+        let old = serde_json::json!({
+            "kind": "Unavailable",
+            "payload": {
+                "cluster_record_id": "cluster-card:legacy",
+                "generation": sample_generation_pin(),
+                "expected_authority_digest": "legacy-authority-digest"
+            }
+        });
+        assert!(serde_json::from_value::<ClusterMembershipReadOutcomeV1>(old.clone()).is_err());
+        let mut cbor = Vec::new();
+        ciborium::ser::into_writer(&old, &mut cbor).expect("old CBOR fixture encodes");
+        assert!(
+            ciborium::de::from_reader::<ClusterMembershipReadOutcomeV1, _>(cbor.as_slice())
+                .is_err()
+        );
     }
 
     #[test]
@@ -1057,14 +1015,15 @@ mod tests {
             expected_authority_digest: "cluster-authority-digest".to_string(),
             limit: 2,
         };
-        let forged_unavailable =
-            ClusterMembershipReadOutcomeV1::Unavailable(ClusterMembershipUnavailableV1 {
+        let forged_identity =
+            ClusterMembershipReadOutcomeV1::Rejected(ClusterMembershipReadRejectionV1 {
                 cluster_record_id: "cluster-card:forged".to_string(),
                 generation: request.generation.clone(),
                 expected_authority_digest: request.expected_authority_digest.clone(),
+                failure: ClusterMembershipReadFailureV1::ClusterIdentityMismatch,
             });
         assert_eq!(
-            forged_unavailable.validate_against_v1(&request),
+            forged_identity.validate_against_v1(&request),
             Err(ClusterMembershipReadFailureV1::ClusterIdentityMismatch)
         );
         let forged_rejection =
@@ -1084,14 +1043,15 @@ mod tests {
             Err(ClusterMembershipReadFailureV1::GenerationMismatch)
         );
 
-        let malformed_unavailable =
-            ClusterMembershipReadOutcomeV1::Unavailable(ClusterMembershipUnavailableV1 {
+        let malformed_identity =
+            ClusterMembershipReadOutcomeV1::Rejected(ClusterMembershipReadRejectionV1 {
                 cluster_record_id: String::new(),
                 generation: request.generation.clone(),
                 expected_authority_digest: request.expected_authority_digest.clone(),
+                failure: ClusterMembershipReadFailureV1::ClusterIdentityMismatch,
             });
         assert_eq!(
-            malformed_unavailable.validate_against_v1(&request),
+            malformed_identity.validate_against_v1(&request),
             Err(ClusterMembershipReadFailureV1::ClusterIdentityMismatch)
         );
 

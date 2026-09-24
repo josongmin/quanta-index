@@ -17,7 +17,8 @@ use quanta_index_contract::{
     CurrentGenerationRequest, GenerationSnapshot, GenerationStatusRequest, ManifestGeneration,
     MetricsSnapshotRequest, ProcessReadinessRequest, QuarantineDiscardRequest,
     QuarantineInventoryRequest, QuarantineTargetV1, QuarantinedRepoMapFileEntryV1, RepoId,
-    RepoMapActivateGenerationRequest, RevisionId, SearchCorpusGenerationIdentityV1,
+    RepoMapActivateGenerationRequestV2, RepoMapActiveHeadRequestV2, RevisionId,
+    SearchCorpusGenerationIdentityV1,
     SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
     SearchPlaneErrorCodeV2, SearchPlaneRollbackSearchCorpusGenerationCasRequest,
     SearchPlaneTrackKind, SemanticContentRootsV1,
@@ -84,11 +85,20 @@ fn admin_requests() -> Vec<SearchPlaneControlIpcRequest> {
                 expected_active: identity(),
             },
         ),
-        SearchPlaneControlIpcRequest::RepoMapActivate(RepoMapActivateGenerationRequest {
+        SearchPlaneControlIpcRequest::RepoMapActivateV2(RepoMapActivateGenerationRequestV2 {
             repo_id: RepoId::new("r").expect("static fixture ID"),
             revision_id: RevisionId::new("v").expect("static fixture ID"),
             manifest_generation: quanta_index_contract::ManifestGeneration::new(1),
             manifest_digest: "a".repeat(64),
+            snapshot_id: "snapshot-1".to_string(),
+            projection_version: 1,
+            authority_digest: "sha256:".to_string() + &"b".repeat(64),
+            source_bundle_digest: "sha256:".to_string() + &"c".repeat(64),
+            expected_active: None,
+        }),
+        SearchPlaneControlIpcRequest::RepoMapActiveHeadV2(RepoMapActiveHeadRequestV2 {
+            repo_id: fixture_repo(),
+            revision_id: fixture_revision(),
         }),
         SearchPlaneControlIpcRequest::QuarantineDiscard(QuarantineDiscardRequest {
             target: QuarantineTargetV1::RepoMapFile(QuarantinedRepoMapFileEntryV1 {
@@ -101,8 +111,8 @@ fn admin_requests() -> Vec<SearchPlaneControlIpcRequest> {
 
 #[test]
 fn every_opcode_maps_to_exactly_one_capability() {
-    // Exhaustive: the observe set is exactly the read-only opcodes and the
-    // admin set is exactly the mutating ones. A new opcode that forgets its
+    // Exhaustive: observe excludes sensitive head tokens; admin includes
+    // mutations and the CAS-token read. A new opcode that forgets its
     // capability cannot compile, and a mis-classified one fails here.
     for request in observe_requests() {
         assert_eq!(

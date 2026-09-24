@@ -29,6 +29,20 @@ impl SqliteCatalog {
         clock: Arc<dyn CatalogClockPort>,
     ) -> Result<Self, CoreError> {
         let (connection, path) = open_connection(state_root, busy_timeout)?;
+        let legacy_tables: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN
+                 ('idempotency_v1', 'catalog_sequence_v1')",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| engine_error("inspect legacy catalog tables", &path, &error))?;
+        if legacy_tables != 0 {
+            return Err(CoreError::Storage(format!(
+                "catalog: {} contains unsupported legacy catalog tables; this build has no migration reader",
+                path.display()
+            )));
+        }
         connection
             .execute_batch(crate::idempotency::SCHEMA)
             .map_err(|error| engine_error("create idempotency schema", &path, &error))?;

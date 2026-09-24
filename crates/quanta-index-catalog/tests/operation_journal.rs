@@ -96,6 +96,49 @@ fn raw(temp: &tempfile::TempDir) -> Result<rusqlite::Connection, Box<dyn Error>>
     Ok(rusqlite::Connection::open(db_path(temp))?)
 }
 
+#[test]
+fn opens_only_current_journal_and_sequence_tables() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let _catalog = SqliteCatalog::open(temp.path(), Duration::from_millis(200))?;
+    let connection = raw(&temp)?;
+    let mut statement = connection.prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN
+         ('idempotency_v1', 'idempotency_v2', 'catalog_sequence_v1', 'catalog_sequence_v2')
+         ORDER BY name",
+    )?;
+    let names: Vec<String> = statement
+        .query_map([], |row| row.get(0))?
+        .collect::<Result<_, _>>()?;
+    assert_eq!(names, ["catalog_sequence_v2", "idempotency_v2"]);
+    Ok(())
+}
+
+#[test]
+fn legacy_catalog_table_refuses_open_before_current_schema_creation() -> TestResult {
+    for legacy_table in ["idempotency_v1", "catalog_sequence_v1"] {
+        let temp = tempfile::tempdir()?;
+        std::fs::create_dir_all(catalog_dir(temp.path()))?;
+        let connection = raw(&temp)?;
+        connection.execute_batch(&format!(
+            "CREATE TABLE {legacy_table} (marker INTEGER NOT NULL)"
+        ))?;
+        drop(connection);
+        let opened = SqliteCatalog::open(temp.path(), Duration::from_millis(200));
+        assert!(
+            matches!(&opened, Err(CoreError::Storage(message)) if message.contains("unsupported legacy catalog tables")),
+            "{legacy_table} must refuse open"
+        );
+        let connection = raw(&temp)?;
+        let current_tables: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'idempotency_v2'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(current_tables, 0);
+    }
+    Ok(())
+}
+
 fn allocator_next(temp: &tempfile::TempDir) -> Result<Option<i64>, Box<dyn Error>> {
     let connection = raw(temp)?;
     let next: Option<i64> = connection.query_row(

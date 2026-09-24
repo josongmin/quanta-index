@@ -1,23 +1,13 @@
-use std::fs;
-use std::path::Path;
-
 use quanta_index_contract::{
     ChunkId, RuntimeCatalogIngestBatch, RuntimeChangedRecord, RuntimeDocFacetRecord,
     RuntimeEdgeAuthorityRecord, RuntimeSnapshotRecord, SearchPlaneTrackKind,
 };
-use quanta_index_ipc::encode_cbor_payload;
-use tempfile::tempdir;
 
 use crate::auxiliary_authority;
-use crate::readiness::auxiliary_store::{
-    import_legacy_auxiliary_snapshots_readonly, restore_auxiliary_rows_into,
-};
-use crate::readiness::history_state::{
-    HistoryAuthoritySnapshot, HistoryAuthorityState, HistoryStateMeta,
-};
+use crate::readiness::auxiliary_store::restore_auxiliary_rows_into;
+use crate::readiness::history_state::{HistoryAuthorityState, HistoryStateMeta};
 use crate::readiness::ledger::Ledger;
-use crate::readiness::runtime_state::{RuntimeAuthoritySnapshot, RuntimeMetadataState};
-use crate::readiness::structural_state::StructuralAuthoritySnapshot;
+use crate::readiness::runtime_state::RuntimeMetadataState;
 use crate::readiness::tests::support::{
     TestResult, generation, install_chunk, install_chunk_with_id, persist_whole_ledger, repo_id,
     revision_id,
@@ -232,129 +222,6 @@ fn auxiliary_authorities_roundtrip_through_catalog_rows() -> TestResult {
         != Some(generation())
     {
         return Err("structural track seal did not restore".into());
-    }
-    Ok(())
-}
-
-/// Offline import converts every pre-catalog family into rows without
-/// mutating its source. A retry upserts identical rows into staging.
-#[test]
-fn legacy_auxiliary_snapshots_import_readonly_into_staging_catalog() -> TestResult {
-    let dir = tempdir()?;
-    let history_path = dir.path().join("history/state.cbor");
-    let runtime_path = dir.path().join("runtime/state.cbor");
-    let structural_path = dir.path().join("structural/state.cbor");
-    for path in [&history_path, &runtime_path, &structural_path] {
-        fs::create_dir_all(path.parent().ok_or("snapshot has no parent")?)?;
-    }
-    let mut ledger = Ledger::default();
-    ledger
-        .aux_restore_mut::<HistoryAuthorityState>(&repo_id(), &revision_id(), generation())
-        .restore_meta(HistoryStateMeta {
-            commits_materialized: true,
-            ..HistoryStateMeta::default()
-        });
-    ledger
-        .aux_restore_mut::<RuntimeMetadataState>(&repo_id(), &revision_id(), generation())
-        .restore_dirty_doc(
-            ChunkId::new("dirty-legacy"),
-            crate::readiness::runtime_state::DirtyDocState {
-                applied_at_ms: 7,
-                payload_hash: [3_u8; 32],
-            },
-        );
-    install_chunk(&mut ledger, "src/legacy.rs", "fn legacy() {}")?;
-    ledger.request_structural_seal(
-        &repo_id(),
-        &revision_id(),
-        generation(),
-        std::time::Instant::now(),
-    )?;
-    ledger.record_track_seal_with_digest(
-        &repo_id(),
-        &revision_id(),
-        SearchPlaneTrackKind::Structural,
-        generation(),
-        "digest-legacy",
-    );
-    // Write the three snapshot files exactly as the pre-catalog store did.
-    let legacy = |path: &Path, bytes: Vec<u8>| -> TestResult {
-        fs::write(path, bytes)?;
-        Ok(())
-    };
-    legacy(
-        &history_path,
-        encode_cbor_payload(&HistoryAuthoritySnapshot {
-            entries: ledger
-                .history
-                .iter()
-                .map(|(key, registry)| (key.clone(), registry.current().clone()))
-                .collect(),
-        })?,
-    )?;
-    legacy(
-        &runtime_path,
-        encode_cbor_payload(&RuntimeAuthoritySnapshot {
-            entries: ledger
-                .runtime_metadata
-                .iter()
-                .map(|(key, registry)| (key.clone(), registry.current().clone()))
-                .collect(),
-        })?,
-    )?;
-    legacy(
-        &structural_path,
-        encode_cbor_payload(&StructuralAuthoritySnapshot {
-            entries: ledger
-                .structural
-                .iter()
-                .map(|(key, registry)| (key.clone(), registry.current().clone()))
-                .collect(),
-            tracks: ledger.search_tracks.clone(),
-        })?,
-    )?;
-
-    let catalog = auxiliary_authority::testing::MemoryAuxiliaryCatalog::default();
-    let receipt = import_legacy_auxiliary_snapshots_readonly(dir.path(), &catalog)?
-        .ok_or("legacy files present, migration must run")?;
-    if receipt.generations != 1 || receipt.rows_written == 0 {
-        return Err(format!("migration receipt drifted: {receipt:?}").into());
-    }
-    for path in [&history_path, &runtime_path, &structural_path] {
-        if !path.exists() {
-            return Err(format!("legacy source {} must remain", path.display()).into());
-        }
-    }
-    if import_legacy_auxiliary_snapshots_readonly(dir.path(), &catalog)? != Some(receipt) {
-        return Err("a retry must converge on the same catalog rows".into());
-    }
-    let mut restored = Ledger::default();
-    let _rows = restore_auxiliary_rows_into(&mut restored, &catalog)?;
-    if !restored
-        .history_state(&repo_id(), &revision_id(), generation())
-        .is_some_and(crate::readiness::history_state::HistoryAuthorityState::commits_materialized)
-    {
-        return Err("migrated history flags did not restore".into());
-    }
-    if restored
-        .runtime_state(&repo_id(), &revision_id(), generation())
-        .and_then(|state| state.dirty_docs().get(&ChunkId::new("dirty-legacy")))
-        .map(crate::readiness::runtime_state::DirtyDocState::applied_at_ms)
-        != Some(7)
-    {
-        return Err("migrated dirty doc did not restore".into());
-    }
-    if restored
-        .structural_state(&repo_id(), &revision_id(), generation())
-        .map(|state| state.chunks().len())
-        != Some(1)
-    {
-        return Err("migrated chunk universe did not restore".into());
-    }
-    if restored.track_sealed(&repo_id(), &revision_id(), SearchPlaneTrackKind::Structural)
-        != Some(generation())
-    {
-        return Err("migrated structural track seal did not restore".into());
     }
     Ok(())
 }

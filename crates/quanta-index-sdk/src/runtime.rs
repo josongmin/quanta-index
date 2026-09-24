@@ -135,7 +135,6 @@ impl crate::NamespaceIngest for RuntimeNs {
             | SearchPlaneIngestIpcResponse::FileContributorReceipt(_)
             | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-            | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
             | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)

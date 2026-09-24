@@ -7,7 +7,14 @@ import argparse
 import hashlib
 import json
 import os
+import sys
 from pathlib import Path
+
+try:
+    from tools.ci.nextest_events import NextestEvidenceError, parse_nextest
+except ModuleNotFoundError:  # direct script invocation
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    from tools.ci.nextest_events import NextestEvidenceError, parse_nextest
 
 PROOF_TEST = "actual_runner_binary_emits_receipt_bound_v3_record"
 
@@ -23,46 +30,15 @@ def _hex64(value: object, label: str) -> str:
 
 
 def _nextest_counts(path: Path) -> tuple[int, int, int, int]:
-    counts = {"ok": 0, "failed": 0, "ignored": 0, "timeout": 0}
-    suites_started = 0
-    suites_finished = 0
-    proof_passed = False
-    with path.open("rb") as stream:
-        for line in stream:
-            try:
-                event = json.loads(line)
-            except (UnicodeDecodeError, json.JSONDecodeError) as error:
-                raise SystemExit(f"invalid nextest JSON evidence {path}: {error}") from error
-            if not isinstance(event, dict) or event.get("type") not in {"suite", "test"}:
-                raise SystemExit(f"invalid nextest event in {path}")
-            if event["type"] == "suite":
-                outcome = event.get("event")
-                if outcome == "started":
-                    suites_started += 1
-                elif outcome == "ok":
-                    suites_finished += 1
-                elif outcome == "failed":
-                    raise SystemExit(f"nextest suite failed: {path}")
-                else:
-                    raise SystemExit(f"unknown nextest suite outcome: {outcome!r}")
-                continue
-            outcome = event.get("event")
-            if outcome == "started":
-                continue
-            if outcome not in counts:
-                raise SystemExit(f"unknown nextest test outcome: {outcome!r}")
-            counts[outcome] += 1
-            if outcome == "ok" and PROOF_TEST in str(event.get("name", "")):
-                proof_passed = True
-    if suites_started < 1 or suites_started != suites_finished:
-        raise SystemExit("nextest evidence has incomplete suite events")
-    if counts["failed"] or counts["timeout"]:
-        raise SystemExit("nextest evidence contains failed or timed-out tests")
-    if not proof_passed:
+    try:
+        evidence = parse_nextest(path)
+    except NextestEvidenceError as error:
+        raise SystemExit(f"{error}: {path}") from error
+    if not any(
+        name == PROOF_TEST or name.endswith(f"${PROOF_TEST}") for name in evidence.passed_names
+    ):
         raise SystemExit(f"nextest evidence lacks passing {PROOF_TEST}")
-    selected = sum(counts.values())
-    executed = counts["ok"] + counts["failed"] + counts["timeout"]
-    return selected, executed, counts["ok"], counts["failed"] + counts["timeout"]
+    return evidence.selected, evidence.executed, evidence.passed, evidence.failed
 
 
 def build_summary_from_evidence(

@@ -73,6 +73,10 @@ def _run(root: Path, *args: str) -> None:
     subprocess.run([*args], cwd=root, check=True, capture_output=True, text=True)
 
 
+def _digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def _make_all_proofs_executable(text: str) -> str:
     text = re.sub(
         r'authority_state = "staged"\nexecution_mode = "test-authority"\n'
@@ -296,7 +300,7 @@ def _write_dependency_manifests(
             )
         daemon_binary = None
         if proof["binary_binding"] == "release-daemon":
-            binary_digest = WRITER._sha256(root / "bin/searchd")
+            binary_digest = _digest(root / "bin/searchd")
             binary_archive = root / CHECKER.content_archive_relative_path("binary", binary_digest)
             binary_archive.parent.mkdir(parents=True, exist_ok=True)
             binary_archive.write_bytes((root / "bin/searchd").read_bytes())
@@ -309,7 +313,7 @@ def _write_dependency_manifests(
         for dependency_id in proof["dependencies"]:
             dependency_path = root / proof_by_id[dependency_id]["artifact"]
             dependency_payload = json.loads(dependency_path.read_text(encoding="utf-8"))
-            dependency_digest = WRITER._sha256(dependency_path)
+            dependency_digest = _digest(dependency_path)
             dependencies.append(
                 {
                     "proof_id": dependency_id,
@@ -320,7 +324,7 @@ def _write_dependency_manifests(
                     "sha256": dependency_digest,
                 }
             )
-        evidence_digest = WRITER._sha256(evidence)
+        evidence_digest = _digest(evidence)
         evidence_archive = root / CHECKER.content_archive_relative_path("evidence", evidence_digest)
         evidence_archive.parent.mkdir(parents=True, exist_ok=True)
         evidence_archive.write_bytes(evidence.read_bytes())
@@ -471,7 +475,7 @@ def test_writer_publishes_truthful_not_ready_diagnostic_for_staged_graph(
     assert statuses["p01-canonical-identity"] == "NOT_RUN"
     assert statuses["p12a-proof-infrastructure"] == "NOT_RUN"
     assert payload["verdicts"]["DEPLOYED"]["status"] == "BLOCKED"
-    assert payload["registry_sha256"] == WRITER._sha256(root / "tools/ci/proof-authority.toml")
+    assert payload["registry_sha256"] == _digest(root / "tools/ci/proof-authority.toml")
     assert registry["aggregate"]["artifact"] == output.relative_to(root).as_posix()
 
 
@@ -542,13 +546,111 @@ def test_writer_derives_ready_receipt_from_verified_handoff_input(
     assert all(item["status"] == "PASSED" for item in payload["dependency_receipts"])
     assert all(verdict["status"] == "PASSED" for verdict in payload["verdicts"].values())
     assert payload["daemon_binary"] == {
-        "path": CHECKER.content_archive_relative_path(
-            "binary", WRITER._sha256(root / "bin/searchd")
-        ),
-        "sha256": WRITER._sha256(root / "bin/searchd"),
+        "path": CHECKER.content_archive_relative_path("binary", _digest(root / "bin/searchd")),
+        "sha256": _digest(root / "bin/searchd"),
     }
     assert payload["release_host"]["profile"] == "linux-production-like"
     assert payload["state_root_format"] == "v2"
+
+
+def test_writer_never_promotes_symlinked_registered_manifest(
+    tmp_path: Path,
+    aggregate_templates: AggregateTemplates,
+) -> None:
+    root, registry = _fixture_root(tmp_path, executable=True, templates=aggregate_templates)
+    paired = _paired_checkout(tmp_path, aggregate_templates)
+    _write_dependency_manifests(root, registry, paired)
+    proof = next(item for item in registry["proofs"] if item["id"] == "p00-authority-freeze")
+    archive = root / proof["artifact"]
+    mutable_copy = root / "artifacts/raw/mutable-p00-manifest.json"
+    mutable_copy.parent.mkdir(parents=True, exist_ok=True)
+    mutable_copy.write_bytes(archive.read_bytes())
+    archive.unlink()
+    archive.symlink_to(mutable_copy)
+
+    output, _, ready = WRITER.publish_aggregate(
+        root=root,
+        registry_path=root / "tools/ci/proof-authority.toml",
+        paired_checkout=paired,
+    )
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert not ready
+    assert payload["production_ready"] is False
+    status = next(
+        item["status"]
+        for item in payload["dependency_receipts"]
+        if item["proof_id"] == "p00-authority-freeze"
+    )
+    assert status == "FAILED"
+
+
+def test_writer_classifies_broken_manifest_symlink_as_failed(
+    tmp_path: Path,
+    aggregate_templates: AggregateTemplates,
+) -> None:
+    root, registry = _fixture_root(tmp_path, executable=True, templates=aggregate_templates)
+    paired = _paired_checkout(tmp_path, aggregate_templates)
+    _write_dependency_manifests(root, registry, paired)
+    proof = next(item for item in registry["proofs"] if item["id"] == "p00-authority-freeze")
+    alias = root / proof["artifact"]
+    alias.unlink()
+    alias.symlink_to("missing-manifest.json")
+
+    output, _, ready = WRITER.publish_aggregate(
+        root=root,
+        registry_path=root / "tools/ci/proof-authority.toml",
+        paired_checkout=paired,
+    )
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert not ready
+    status = next(
+        item["status"]
+        for item in payload["dependency_receipts"]
+        if item["proof_id"] == "p00-authority-freeze"
+    )
+    assert status == "FAILED"
+
+
+def test_writer_refuses_symlinked_aggregate_parent_without_writing(
+    tmp_path: Path,
+    aggregate_templates: AggregateTemplates,
+) -> None:
+    root, registry = _fixture_root(tmp_path, executable=False, templates=aggregate_templates)
+    paired = _paired_checkout(tmp_path, aggregate_templates)
+    output = root / registry["aggregate"]["artifact"]
+    redirected = root / "artifacts/mutable-output"
+    redirected.mkdir(parents=True)
+    output.parent.symlink_to(redirected, target_is_directory=True)
+
+    with pytest.raises(WRITER.AggregateRefused, match="aggregate output parent is unsafe"):
+        WRITER.publish_aggregate(
+            root=root,
+            registry_path=root / "tools/ci/proof-authority.toml",
+            paired_checkout=paired,
+        )
+    assert not (redirected / output.name).exists()
+
+
+def test_writer_refuses_symlinked_existing_aggregate_without_replacing(
+    tmp_path: Path,
+    aggregate_templates: AggregateTemplates,
+) -> None:
+    root, registry = _fixture_root(tmp_path, executable=False, templates=aggregate_templates)
+    paired = _paired_checkout(tmp_path, aggregate_templates)
+    output = root / registry["aggregate"]["artifact"]
+    output.parent.mkdir(parents=True)
+    redirected = root / "artifacts/mutable-aggregate.json"
+    redirected.write_bytes(b"prior external bytes\n")
+    output.symlink_to(redirected)
+
+    with pytest.raises(WRITER.AggregateRefused, match="existing aggregate output is unsafe"):
+        WRITER.publish_aggregate(
+            root=root,
+            registry_path=root / "tools/ci/proof-authority.toml",
+            paired_checkout=paired,
+        )
+    assert output.is_symlink()
+    assert redirected.read_bytes() == b"prior external bytes\n"
 
 
 def test_full_proof_closure_without_historical_handoffs_is_not_ready(
@@ -771,10 +873,8 @@ def test_ready_aggregate_is_mandatory_and_sufficient_for_p12_issuance(
     assert payload["artifacts"] == [
         {
             "source_path": registry["aggregate"]["artifact"],
-            "path": CHECKER.content_archive_relative_path(
-                "evidence", WRITER._sha256(aggregate_path)
-            ),
-            "sha256": WRITER._sha256(aggregate_path),
+            "path": CHECKER.content_archive_relative_path("evidence", _digest(aggregate_path)),
+            "sha256": _digest(aggregate_path),
         }
     ]
 

@@ -265,7 +265,7 @@ pub struct BootInventoryReportV1 {
     pub active_pairs_validated: usize,
     /// Auxiliary authority rows restored from the catalog at boot.
     pub auxiliary_rows_restored: u64,
-    /// What the `RepoMap` store found on disk: loaded, migrated, swept and
+    /// What the `RepoMap` store found on disk: loaded, swept and
     /// quarantined files (QI-BB-008).
     pub repo_map: RepoMapOpenReportV1,
     /// The effective access policy each socket was bound under
@@ -389,10 +389,6 @@ impl MetricSourcePort for BootInventoryReportV1 {
         points.push(MetricPointV1::gauge_count(
             "boot_repomap_snapshots_loaded",
             self.repo_map.snapshots_loaded,
-        ));
-        points.push(MetricPointV1::gauge_count(
-            "boot_repomap_snapshots_migrated",
-            self.repo_map.snapshots_migrated,
         ));
         points.push(MetricPointV1::gauge_count(
             "boot_repomap_activations_loaded",

@@ -345,6 +345,15 @@ def test_an_unknown_reproduction_class_fails(tmp_path: Path):
     assert any("`reproduction` must be one of" in m for m in found)
 
 
+def test_retired_importer_reproduction_classes_fail(tmp_path: Path):
+    root = make_workspace(tmp_path)
+    for retired in ("offline-importer", "migration-input-only"):
+        inventory = load(INVENTORY_OK)
+        inventory["artifact"][0]["reproduction"] = retired
+        found = messages(MODULE.check(inventory, root))
+        assert any("`reproduction` must be one of" in m for m in found), retired
+
+
 def test_an_unknown_owner_crate_fails(tmp_path: Path):
     root = make_workspace(tmp_path)
     inventory = load(INVENTORY_OK)

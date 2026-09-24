@@ -110,8 +110,8 @@ flowchart LR
 ### 2.4 semantic 물질화
 
 - batch 전체를 첫 provider call 전에 검증한다.
-- typed semantic source를 우선 사용하고, 설정된 migration mode에 따라 legacy chunk text를
-  fallback으로 사용할 수 있다.
+- typed semantic source만 live derivation 입력으로 받는 것이 cutover 목표다.
+  producer-authored `RawCodeFallback`은 typed source이며 legacy chunk text 자동 파생이 아니다.
 - owner scope를 bounded window로 잘라 한 window의 text를 한 provider batch로 embedding한다.
 - model id, model revision, dimension, L2 normalization, cosine metric, render/view policy digest를
   generation contract에 고정한다.
@@ -783,12 +783,15 @@ metrics snapshot과 Prometheus textfile rendering은 있으나 daemon 자체의 
 또한 socket plane/maintenance thread의 liveness를 하나의 readiness verdict로 감독하는 구조가
 13.3의 supervision 공백과 연결되어 있다.
 
-### 13.10 semantic migration fallback — 낮음~중간
+### 13.10 typed-only semantic cutover — 검증 대기
 
-기본 derivation mode는 typed semantic source를 우선하되 비어 있으면 legacy chunk text를 사용할 수
-있다. migration 중 availability에는 유리하지만 semantic-source-only completeness를 요구하는 배포에서는
-`semantic_only`와 별도 activation card가 필요하다. fallback 사용 여부를 release/receipt에서 분명히
-구분해야 한다.
+목표 live 경로에는 derive-mode 환경변수와 legacy chunk-text fallback이 없다. producer가
+typed semantic source 또는 의도된 빈 semantic delta를 제공해야 한다. 현재 wire에는
+빈 목록의 coverage를 독립적으로 증명하는 필드가 없으므로 producer 테스트와 짝맞춘
+검증이 필요하다. chunk-only 배치는 dense vector 없이 처리되며 기존 fallback
+generation은 자동 승격하지 않는다. 구형 artifact는 별도 offline
+migration/rebuild 또는 typed refusal 대상이다. 이 문서 수정만으로 source-matched runtime,
+producer handoff, cross-repo qualification이 완료되지는 않는다.
 
 ## 14. 구현 상태 요약
 
@@ -796,7 +799,7 @@ metrics snapshot과 Prometheus textfile rendering은 있으나 daemon 자체의 
 |---|---|---|
 | lexical generation build/open/query | 구현 | storage/perf 실측은 별도 rail 필요 |
 | persisted semantic generation | 구현 | OpenAI live-network proof는 별도 |
-| search-owned semantic derivation | 구현 | 기본 migration fallback 존재 |
+| search-owned semantic derivation | typed-only cutover 진행 중 | 정확한 source/binary 및 producer 검증 별도 |
 | lexical+semantic composite activation | 구현 | RepoMap은 별도 약한 authority |
 | history/runtime/structural auxiliary authority | 구현 | structural matcher는 subset |
 | hybrid/hybrid-seed/explain | 구현 | learned fusion은 없음 |

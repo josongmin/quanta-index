@@ -4,7 +4,6 @@ pub mod boot_inventory;
 pub mod config;
 pub mod integrity_scrub;
 mod ipc_dispatcher;
-mod legacy_semantic_migration;
 pub mod maintenance;
 pub mod process_memory;
 mod readiness;
@@ -27,7 +26,6 @@ pub use config::{
     SemanticEmbedderProfile,
 };
 pub use integrity_scrub::{PacedIntegrityScrubV1, ScrubSchedulerV1, ScrubTalliesV1, ScrubTickV1};
-pub use legacy_semantic_migration::LegacySemanticJournalReaderV1;
 pub use process_memory::KernelResidentMemoryProbe;
 pub use runtime::{RuntimeGuards, RuntimeServers};
 pub use runtime::{SearchdRuntime, StateRootAccessV1};

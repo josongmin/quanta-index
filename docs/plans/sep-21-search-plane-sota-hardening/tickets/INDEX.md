@@ -6,6 +6,12 @@ do not establish current-source or release closure. See the
 remaining owner work. Tracked docs do not embed a result SHA; validated
 handoffs own it.
 
+P10 update (2026-09-24): the prerelease breaking decision retires
+`migrate-state` and any old-root success path. Historical migration tickets
+and prompts below are not executable current instructions. Current-format
+backup/restore/verify and typed legacy refusal remain; see the operator
+state-cutover runbook. This does not close qualification.
+
 Authority inputs:
 
 - `docs/analysis/quanta-index-purpose-validation-checklist.md`
@@ -19,6 +25,24 @@ Authority inputs:
 - [final current-source residual execution plan](FINAL-RESIDUAL-EXECUTION-PLAN.md)
 - [copy/paste lane prompt runbook](prompts/README.md)
 - [execution progress ledger](EXECUTION-PROGRESS.md)
+
+The residual plan's **Final current-code SSOT and duplication audit** is the
+operative file-level next-edit plan. Its lower dated overlays are historical
+snapshots; in particular, their instruction to add RepoMap prior-head CAS or
+active-head read a second time is stale. The final audit supersedes the old
+conditional P10 importer sequence and older P09/P10/P11 status sentences.
+The P10
+`migrate-state` policy is no-importer/typed-refusal, not completed target
+rebuild or qualified restore. The final audit records a separate RepoMap
+prior-active CAS **candidate** at the V2 activation/catalog boundary; the
+remaining producer outbox token-custody gap must close without a second
+catalog head. The aggregate Required-member path also needs the same bound
+request semantics; its common dispatcher currently reconstructs a `None`
+expectation. Do not confuse that RepoMap head with P06's search-corpus head;
+reuse root-incarnation custody only when the two routes resolve to the same
+physical root.
+Its dirty-source observations are not owner proof or a release verdict;
+follow its single-owner seams and P12A review gate.
 
 이 packet은 2026-09-21 정적 감사에서 확인된 목적 적합성 결함을 구조적으로 제거하기 위한
 실행 계획이다. 구현 완료나 테스트 통과를 주장하지 않는다.

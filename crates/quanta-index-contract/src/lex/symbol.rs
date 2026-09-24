@@ -11,7 +11,7 @@ use serde::{
     ser::SerializeStruct,
 };
 
-use super::lang::LanguageCode;
+use super::LanguageCode;
 use crate::query::LqVisibility;
 use crate::{RepoRelativePath, SymbolId};
 

@@ -34,10 +34,11 @@ use quanta_index_contract::{
     BatchIngestMode, FileId, GenerationPin, ManifestGeneration, QuarantineDiscardOutcomeDtoV1,
     QuarantineTargetV1, QuarantinedGenerationEntryV1, RepoMapExactnessSummary, RepoMapFileNode,
     RepoMapGraphCoverage, RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapNode,
-    RepoMapRedactionState, RepoMapSourceBundle, RepoRelativePath, SearchCorpusGenerationIdentityV1,
-    SearchCorpusIngestBatch, SearchPlaneControlIpcResponse, SearchPlaneQueryIpcRequest,
-    SearchPlaneQueryIpcResponse, SearchPlaneRollbackSearchCorpusGenerationCasRequest,
-    SearchPlaneTrackKind, SemanticQueryRequest, TextQueryRequest, TextQuerySyntax,
+    RepoMapPublishBundleRequestV2, RepoMapRedactionState, RepoMapSourceBundle, RepoRelativePath,
+    SearchCorpusGenerationIdentityV1, SearchCorpusIngestBatch, SearchPlaneControlIpcResponse,
+    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
+    SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneTrackKind,
+    SemanticQueryRequest, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_core::{
     GenerationQuarantineReasonV1, GenerationStorageKeyV1, QuarantinedGenerationV1,
@@ -388,7 +389,7 @@ fn quarantine_is_listed_discarded_as_named_and_gone_after_a_reboot() -> TestResu
         repo_relative_path: RepoRelativePath::new("src/quarantine.rs"),
         line_count: 1,
     }));
-    let _receipt = store.ingest_bundle(&bundle)?;
+    let _receipt = store.ingest_bundle_v2(&RepoMapPublishBundleRequestV2::new(bundle)?)?;
     let object_root = repo_map_root.join("objects/sha256");
     let mut objects = Vec::new();
     for first in std::fs::read_dir(&object_root)? {
@@ -614,8 +615,8 @@ fn control_refusal(response: &SearchPlaneControlIpcResponse) -> Option<(&'static
         }
         SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
         | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
-        | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
         | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
+        | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
         | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
         | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
         | SearchPlaneControlIpcResponse::MetricsSnapshot(_)

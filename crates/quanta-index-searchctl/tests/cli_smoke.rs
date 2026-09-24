@@ -655,7 +655,6 @@ impl IpcDispatcher<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>
             SearchPlaneControlIpcRequest::QuarantineDiscard(request) => quarantine_discard(request),
             other @ (SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(_)
             | SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(_)
-            | SearchPlaneControlIpcRequest::RepoMapActivate(_)
             | SearchPlaneControlIpcRequest::RepoMapActivateV2(_)
             | SearchPlaneControlIpcRequest::ProcessReadiness(_)) => control_error_response(
                 SearchPlaneErrorCodeV2::Internal,

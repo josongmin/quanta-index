@@ -636,72 +636,15 @@ fn wire_map_keys(wire: &ciborium::Value) -> Result<Vec<&str>, Box<dyn std::error
 }
 
 #[test]
-fn search_explanation_current_reader_defaults_v0_payload() -> TestRes {
-    // V0 with `early_stop_reason`: exactly the 7 V0 keys, and the
-    // current reader yields `[]` / `0` for the two absent S21-10 fields
-    // while every carried field survives verbatim.
+fn search_explanation_current_reader_refuses_v0_payload() -> TestRes {
     let full = sample_explanation_full();
-    let v0 = strip_explanation_fields(&full, &["engines_executed", "request_id"])?;
-    let keys = wire_map_keys(&v0)?;
-    let expected = [
-        "contributions",
-        "early_stop_reason",
-        "engines_touched",
-        "planner_trace",
-        "ranker_weights_hash",
-        "strategy",
-        "summary",
-    ];
-    if keys.as_slice() != expected {
-        return Err(format!("V0 key set drifted: {keys:?}").into());
-    }
-    let decoded: SearchExplanation = decode(&encode(&v0)?)?;
-    if !decoded.engines_executed.is_empty() {
-        return Err(format!(
-            "V0 engines_executed must default to [], got {:?}",
-            decoded.engines_executed
-        )
-        .into());
-    }
-    if decoded.request_id != 0 {
-        return Err(format!(
-            "V0 request_id must default to 0, got {}",
-            decoded.request_id
-        )
-        .into());
-    }
-    if decoded.engines_touched != vec![EngineTouched::Lexical, EngineTouched::Semantic]
-        || decoded.early_stop_reason != Some(EarlyStopReason::CountReached)
-        || decoded.strategy != "hybrid-v1"
-        || decoded.summary != "regex narrowed by repo filter"
-    {
-        return Err(format!("V0 carried fields must survive verbatim: {decoded:?}").into());
-    }
-
-    // V0 without `early_stop_reason`: 6 keys, `None` stays `None`.
-    let bare = SearchExplanation {
-        early_stop_reason: None,
-        ..full
-    };
-    let v0 = strip_explanation_fields(&bare, &["engines_executed", "request_id"])?;
-    let keys = wire_map_keys(&v0)?;
-    let expected = [
-        "contributions",
-        "engines_touched",
-        "planner_trace",
-        "ranker_weights_hash",
-        "strategy",
-        "summary",
-    ];
-    if keys.as_slice() != expected {
-        return Err(format!("V0 key set drifted: {keys:?}").into());
-    }
-    let decoded: SearchExplanation = decode(&encode(&v0)?)?;
-    if !decoded.engines_executed.is_empty() || decoded.request_id != 0 {
-        return Err(format!("V0 new fields must default to [] / 0: {decoded:?}").into());
-    }
-    if decoded.early_stop_reason.is_some() {
-        return Err("V0 without early_stop_reason must stay None".into());
+    for field in ["engines_executed", "request_id"] {
+        let old = strip_explanation_fields(&full, &[field])?;
+        let error = decode::<SearchExplanation>(&encode(&old)?)
+            .expect_err("old explanation missing current field must refuse");
+        if !error.to_string().contains(field) {
+            return Err(format!("wrong refusal for {field}: {error}").into());
+        }
     }
     Ok(())
 }
@@ -805,9 +748,7 @@ fn search_explanation_rejects_duplicate_request_id() -> TestRes {
 }
 
 #[test]
-fn search_explanation_early_stop_reason_presence_controls_field_count() -> TestRes {
-    // The optional field is the only structural difference: 9 entries
-    // with it, 8 without, every other key identical.
+fn search_explanation_early_stop_reason_is_explicit_even_when_null() -> TestRes {
     let present = sample_explanation_full();
     let absent = SearchExplanation {
         early_stop_reason: None,
@@ -820,14 +761,32 @@ fn search_explanation_early_stop_reason_presence_controls_field_count() -> TestR
     if present_keys.len() != 9 {
         return Err(format!("present map must hold 9 fields: {present_keys:?}").into());
     }
-    if absent_keys.len() != 8 {
-        return Err(format!("absent map must hold 8 fields: {absent_keys:?}").into());
+    if absent_keys.len() != 9 {
+        return Err(format!("null map must hold 9 fields: {absent_keys:?}").into());
     }
     if !present_keys.contains(&"early_stop_reason") {
         return Err(format!("present map must carry early_stop_reason: {present_keys:?}").into());
     }
-    if absent_keys.contains(&"early_stop_reason") {
-        return Err(format!("absent map must omit early_stop_reason: {absent_keys:?}").into());
+    if !absent_keys.contains(&"early_stop_reason") {
+        return Err(format!("null map must carry early_stop_reason: {absent_keys:?}").into());
+    }
+    let ciborium::Value::Map(fields) = absent_wire else {
+        return Err("explanation must encode as a map".into());
+    };
+    if !fields.iter().any(|(key, value)| {
+        key == &ciborium::Value::Text("early_stop_reason".to_owned())
+            && value == &ciborium::Value::Null
+    }) {
+        return Err("empty early_stop_reason must encode as null".into());
+    }
+    let old_wire = ciborium::Value::Map(
+        fields
+            .into_iter()
+            .filter(|(key, _)| key != &ciborium::Value::Text("early_stop_reason".to_owned()))
+            .collect(),
+    );
+    if decode::<SearchExplanation>(&encode(&old_wire)?).is_ok() {
+        return Err("missing early_stop_reason must be refused".into());
     }
     Ok(())
 }

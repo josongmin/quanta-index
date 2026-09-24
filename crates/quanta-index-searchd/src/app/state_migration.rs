@@ -1,5 +1,4 @@
-//! Offline `migrate-state`, `backup-state`, `restore-state` and
-//! `verify-state` (SEP-21 P10 / S21-11).
+//! Offline `backup-state`, `restore-state` and `verify-state`.
 //!
 //! Every operation here is offline and runs under an
 //! [`OfflineSourceSessionV1`]: the session pins the source's canonical
@@ -19,8 +18,7 @@
 //! holds it proves exclusive ownership, and a live owner fails that handover
 //! with the existing `STATE_ROOT_IN_USE` before the session opens. There is
 //! no live fallback and no boot-time branch — the daemon refuses a legacy
-//! root typed (see [`super::state_format::refuse_legacy_state_root_v1`]) and
-//! the operator runs `migrate-state` explicitly.
+//! root typed (see [`super::state_format::refuse_legacy_state_root_v1`]).
 //!
 //! The ordering rules are the whole point, so they are structural rather
 //! than documented-only:
@@ -35,8 +33,7 @@
 //!   "interrupted before the manifest" leaves.
 //!
 //! Concrete adapters are named by the composition root only: this module
-//! talks to [`CatalogSnapshotPort`], [`LegacyStateImportPort`] and
-//! [`StateRootDeepOpenPort`].
+//! talks to [`CatalogSnapshotPort`] and [`StateRootDeepOpenPort`].
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -47,16 +44,14 @@ use quanta_index_core::CoreError;
 use super::runtime::StateRootLease;
 use super::state_format::{
     OfflineRootRoleV1, STAGING_DIRECTORY_SUFFIX, STATE_BACKUP_CATALOG_FILE_NAME,
-    STATE_BACKUP_MANIFEST_FILE_NAME, STATE_CATALOG_DIRECTORY, STATE_MIGRATION_RECEIPT_FILE_NAME,
-    STATE_MIGRATION_RECEIPT_FORMAT_VERSION, STATE_ROOT_MANIFEST_FILE_NAME,
+    STATE_BACKUP_MANIFEST_FILE_NAME, STATE_CATALOG_DIRECTORY, STATE_ROOT_MANIFEST_FILE_NAME,
     STATE_ROOT_MANIFEST_FORMAT_VERSION, StateMigrationFaultPointV1, StateMigrationFaultPort,
     StateObjectEntryV1, StateRootFormatV1, StateRootManifestV1, atomic_cutover_v1,
     detect_state_root_format_v1, fsync_directory_v1, fsync_file_v1, inventory_state_directories_v1,
     inventory_state_root_v1, is_canonical_relative_path, is_sqlite_sidecar_v1,
-    legacy_state_root_markers_v1, read_root_manifest_v1, refuse_broad_offline_target_v1,
-    refuse_legacy_state_root_v1, refuse_non_empty_destination_v1,
-    refuse_non_private_source_root_v1, sha256_file_hex, sha256_hex, staging_directory_for_v1,
-    verify_root_against_manifest_v1, write_root_manifest_last_v1,
+    read_root_manifest_v1, refuse_broad_offline_target_v1, refuse_legacy_state_root_v1,
+    refuse_non_empty_destination_v1, refuse_non_private_source_root_v1, sha256_file_hex,
+    staging_directory_for_v1, verify_root_against_manifest_v1, write_root_manifest_last_v1,
 };
 
 /// The daemon's state-root lock file: never part of an inventory.
@@ -158,28 +153,6 @@ pub trait CatalogSnapshotPort: Send + Sync {
     fn verify_snapshot_at(&self, snapshot_file: &Path) -> Result<CatalogSnapshotV1, CoreError>;
 }
 
-/// What an offline legacy import moved into a staging root.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct LegacyImportOutcomeV1 {
-    pub imported_records: u64,
-    /// The legacy markers the import consumed, for the receipt.
-    pub consumed_markers: Vec<String>,
-}
-
-/// The offline-only legacy importer.
-///
-/// This is the only surface that links a legacy parser: it is handed a
-/// legacy root and a staging root and must fill the staging root with
-/// current-format durable state, refusing ambiguity or corruption rather
-/// than choosing a winner.
-pub trait LegacyStateImportPort: Send + Sync {
-    fn import_legacy_into(
-        &self,
-        source_root: &Path,
-        staging_root: &Path,
-    ) -> Result<LegacyImportOutcomeV1, CoreError>;
-}
-
 /// What a deep open proved about a produced root.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct StateRootDeepOpenReceiptV1 {
@@ -203,7 +176,6 @@ pub trait StateRootDeepOpenPort: Send + Sync {
 /// Which offline operation a request describes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OfflineStateOperationV1 {
-    Migrate,
     Backup,
     Restore,
     Verify,
@@ -214,7 +186,6 @@ impl OfflineStateOperationV1 {
     #[must_use]
     pub const fn command_name(self) -> &'static str {
         match self {
-            Self::Migrate => "migrate-state",
             Self::Backup => "backup-state",
             Self::Restore => "restore-state",
             Self::Verify => "verify-state",
@@ -225,7 +196,7 @@ impl OfflineStateOperationV1 {
 /// One parsed offline command, as the CLI hands it to the composition root.
 ///
 /// `verify-state` names one root only, so `destination_root` is `None` for
-/// it; the three producing operations require it and refuse the command
+/// it; the two producing operations require it and refuse the command
 /// before touching anything when it is missing.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OfflineStateCommandV1 {
@@ -278,8 +249,8 @@ pub struct SourceFreezeReceiptV1 {
 /// Read-only custody of a source root: the canonical identity plus the root
 /// directory's filesystem identity, pinned at open with read-only stats.
 ///
-/// No file is created, no lock is taken, no mode is changed. Legacy and
-/// backup roots are never live daemon roots, so identity plus the frozen
+/// No file is created, no lock is taken, no mode is changed. Backup roots
+/// are never live daemon roots, so identity plus the frozen
 /// inventory and the pre-publish drift recheck is the whole custody.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReadOnlyRootLeaseV1 {
@@ -304,8 +275,6 @@ pub enum OfflineSourceCustodyV1 {
     /// A current root: the daemon's own lease, handed in by the caller.
     /// Whoever holds it proves exclusive ownership.
     Current(StateRootLease),
-    /// A legacy root: read-only custody, which creates nothing inside it.
-    LegacyReadOnly(ReadOnlyRootLeaseV1),
     /// A produced backup root: read-only custody, which creates nothing
     /// inside it.
     ProducedBackup(ReadOnlyRootLeaseV1),
@@ -343,21 +312,6 @@ impl OfflineSourceSessionV1 {
         })
     }
 
-    /// Pin a legacy root under read-only custody and freeze it. Creates
-    /// nothing inside the source: no lock file, no marker, no receipt, no
-    /// chmod.
-    pub fn open_legacy_read_only(root: &Path) -> Result<Self, CoreError> {
-        let lease = pin_read_only_source_v1(root)?;
-        let canonical_root = lease.canonical_root().to_path_buf();
-        require_format_v1(&canonical_root, StateRootFormatV1::LegacyV1)?;
-        let before = freeze_source_root_v1(&canonical_root, &NO_SOURCE_EXCLUSIONS)?;
-        Ok(Self {
-            canonical_root,
-            custody: OfflineSourceCustodyV1::LegacyReadOnly(lease),
-            before,
-        })
-    }
-
     /// Pin a produced backup root under read-only custody and freeze it. The
     /// backup manifest must advertise first: anything else is not restorable.
     pub fn open_produced_backup(root: &Path) -> Result<Self, CoreError> {
@@ -365,6 +319,7 @@ impl OfflineSourceSessionV1 {
         let canonical_root = lease.canonical_root().to_path_buf();
         let _manifest =
             read_root_manifest_v1(&canonical_root.join(STATE_BACKUP_MANIFEST_FILE_NAME))?;
+        refuse_legacy_state_root_v1(&canonical_root)?;
         let before = freeze_source_root_v1(&canonical_root, &PRODUCED_ROOT_EXCLUSIONS)?;
         Ok(Self {
             canonical_root,
@@ -399,34 +354,13 @@ impl OfflineSourceSessionV1 {
     ) -> Result<&StateRootLease, CoreError> {
         match &self.custody {
             OfflineSourceCustodyV1::Current(lease) => Ok(lease),
-            OfflineSourceCustodyV1::LegacyReadOnly(_)
-            | OfflineSourceCustodyV1::ProducedBackup(_) => Err(typed(
+            OfflineSourceCustodyV1::ProducedBackup(_) => Err(typed(
                 SearchPlaneErrorCodeV2::InvalidRequest,
                 format!(
                     "offline {} requires a current-root session holding the daemon lease",
                     operation.command_name(),
                 ),
             )),
-        }
-    }
-
-    /// The read-only lease a legacy migration holds, or a typed refusal when
-    /// the session carries any other custody.
-    pub fn require_legacy_lease(
-        &self,
-        operation: OfflineStateOperationV1,
-    ) -> Result<&ReadOnlyRootLeaseV1, CoreError> {
-        match &self.custody {
-            OfflineSourceCustodyV1::LegacyReadOnly(lease) => Ok(lease),
-            OfflineSourceCustodyV1::Current(_) | OfflineSourceCustodyV1::ProducedBackup(_) => {
-                Err(typed(
-                    SearchPlaneErrorCodeV2::InvalidRequest,
-                    format!(
-                        "offline {} requires a legacy-root read-only session",
-                        operation.command_name(),
-                    ),
-                ))
-            }
         }
     }
 
@@ -438,28 +372,22 @@ impl OfflineSourceSessionV1 {
     ) -> Result<&ReadOnlyRootLeaseV1, CoreError> {
         match &self.custody {
             OfflineSourceCustodyV1::ProducedBackup(lease) => Ok(lease),
-            OfflineSourceCustodyV1::Current(_) | OfflineSourceCustodyV1::LegacyReadOnly(_) => {
-                Err(typed(
-                    SearchPlaneErrorCodeV2::InvalidRequest,
-                    format!(
-                        "offline {} requires a produced-backup read-only session",
-                        operation.command_name(),
-                    ),
-                ))
-            }
+            OfflineSourceCustodyV1::Current(_) => Err(typed(
+                SearchPlaneErrorCodeV2::InvalidRequest,
+                format!(
+                    "offline {} requires a produced-backup read-only session",
+                    operation.command_name(),
+                ),
+            )),
         }
     }
 }
-
-/// No exclusions: a legacy freeze covers the whole source tree.
-const NO_SOURCE_EXCLUSIONS: [&str; 0] = [];
 
 /// The exclusions the drift recheck replays for a session: exactly the set
 /// the freeze used, so the comparison is exact by construction.
 fn session_exclusions_v1(session: &OfflineSourceSessionV1) -> &[&str] {
     match &session.custody {
         OfflineSourceCustodyV1::Current(_) => &LIVE_ROOT_EXCLUSIONS,
-        OfflineSourceCustodyV1::LegacyReadOnly(_) => &NO_SOURCE_EXCLUSIONS,
         OfflineSourceCustodyV1::ProducedBackup(_) => &PRODUCED_ROOT_EXCLUSIONS,
     }
 }
@@ -469,7 +397,6 @@ fn manifest_exclusions_v1(session: &OfflineSourceSessionV1) -> &[&str] {
     match &session.custody {
         OfflineSourceCustodyV1::Current(_) => &LEASED_PRODUCED_ROOT_EXCLUSIONS,
         OfflineSourceCustodyV1::ProducedBackup(_) => &PRODUCED_ROOT_EXCLUSIONS,
-        OfflineSourceCustodyV1::LegacyReadOnly(_) => &NO_SOURCE_EXCLUSIONS,
     }
 }
 
@@ -693,7 +620,6 @@ pub struct OfflineStateOutcomeV1 {
     pub objects: u64,
     pub catalog_digest_hex: String,
     pub catalog_rows: u64,
-    pub imported_legacy_records: u64,
     pub deep_open: StateRootDeepOpenReceiptV1,
 }
 
@@ -809,17 +735,15 @@ fn refuse_source_drift_v1(
     }
 }
 
-/// Refuse a source that is not a legacy root, and vice versa.
+/// Require the current root format for backup custody.
 fn require_format_v1(source: &Path, expected: StateRootFormatV1) -> Result<(), CoreError> {
     let observed = detect_state_root_format_v1(source)?;
     let matches = matches!(
         (observed, expected),
-        (StateRootFormatV1::LegacyV1, StateRootFormatV1::LegacyV1)
-            | (
-                StateRootFormatV1::CurrentV1 { .. },
-                StateRootFormatV1::CurrentV1 { .. }
-            )
-            | (StateRootFormatV1::Absent, StateRootFormatV1::Absent)
+        (
+            StateRootFormatV1::CurrentV1 { .. },
+            StateRootFormatV1::CurrentV1 { .. }
+        ) | (StateRootFormatV1::Absent, StateRootFormatV1::Absent)
     );
     if matches {
         return Ok(());
@@ -973,7 +897,6 @@ fn finish_offline_operation_v1(
     staging: &Path,
     destination: &Path,
     manifest_file_name: &str,
-    imported_legacy_records: u64,
     deep_open: StateRootDeepOpenReceiptV1,
     fault: &dyn StateMigrationFaultPort,
 ) -> Result<OfflineStateOutcomeV1, CoreError> {
@@ -993,7 +916,6 @@ fn finish_offline_operation_v1(
         objects: u64::try_from(published.objects.len()).map_or(u64::MAX, |count| count),
         catalog_digest_hex: published.catalog_digest_hex.clone(),
         catalog_rows: published.catalog_rows,
-        imported_legacy_records,
         deep_open,
     })
 }
@@ -1039,7 +961,7 @@ pub fn run_offline_backup_v1(
     }
     fsync_directory_v1(&catalog_dir)?;
     // A backup root must be a root the daemon could open, so its staged copy
-    // is deep-opened exactly as a migrated or restored one is: the freeze
+    // is deep-opened exactly as a restored one is: the freeze
     // boundary then covers a reconciled root, and a later restore of it is
     // a pure byte-for-byte reproduction. The catalog receipt is taken again
     // afterwards, because reconciliation is a real mutation and the manifest
@@ -1054,7 +976,6 @@ pub fn run_offline_backup_v1(
         &staging,
         &destination,
         STATE_BACKUP_MANIFEST_FILE_NAME,
-        0,
         deep,
         fault,
     )
@@ -1107,106 +1028,9 @@ pub fn run_offline_restore_v1(
         &staging,
         &destination,
         STATE_ROOT_MANIFEST_FILE_NAME,
-        0,
         deep,
         fault,
     )
-}
-
-/// `migrate-state`: import a legacy root held in `session` into a fresh
-/// current root.
-///
-/// The session must carry [`OfflineSourceCustodyV1::LegacyReadOnly`]:
-/// read-only custody that creates nothing inside the legacy source. The
-/// legacy parser is reached only through [`LegacyStateImportPort`], and the
-/// produced root carries a migration receipt naming the source format
-/// markers before the manifest is written.
-pub fn run_offline_migrate_v1(
-    session: &OfflineSourceSessionV1,
-    destination_root: &Path,
-    importer: &dyn LegacyStateImportPort,
-    catalog: &dyn CatalogSnapshotPort,
-    deep_open: &dyn StateRootDeepOpenPort,
-    fault: &dyn StateMigrationFaultPort,
-) -> Result<OfflineStateOutcomeV1, CoreError> {
-    const OPERATION: OfflineStateOperationV1 = OfflineStateOperationV1::Migrate;
-    let _lease = session.require_legacy_lease(OPERATION)?;
-    let source = session.canonical_root();
-    let destination = plan_offline_destination_v1(session, OPERATION, destination_root)?;
-    require_format_v1(source, StateRootFormatV1::LegacyV1)?;
-    let markers = legacy_state_root_markers_v1(source);
-    let staging = prepare_staging_v1(&destination)?;
-    let outcome = importer.import_legacy_into(source, &staging)?;
-    let receipt = render_migration_receipt_v1(source, &markers, &outcome);
-    let receipt_path = staging.join(STATE_MIGRATION_RECEIPT_FILE_NAME);
-    fs::write(&receipt_path, receipt)
-        .map_err(|error| storage("write migration receipt", &receipt_path, &error))?;
-    fsync_file_v1(&receipt_path)?;
-    // A migrated root that still carries a legacy artifact would be refused
-    // by the very boot it exists to satisfy, so the import is proven
-    // complete before anything else is written.
-    assert_no_legacy_markers_v1(&staging)?;
-    let deep = deep_open.deep_open(&staging)?;
-    // The migrated root's catalog digest is read back from the staged
-    // catalog the importer produced: nothing else may claim it.
-    let staged_catalog = staging
-        .join(STATE_CATALOG_DIRECTORY)
-        .join(STATE_BACKUP_CATALOG_FILE_NAME);
-    let catalog_receipt = catalog.verify_snapshot_at(&staged_catalog)?;
-    let _manifest = publish_staging_manifest_v1(
-        &staging,
-        STATE_ROOT_MANIFEST_FILE_NAME,
-        &catalog_receipt,
-        fault,
-    )?;
-    refuse_source_drift_v1(session, OPERATION, &staging)?;
-    finish_offline_operation_v1(
-        OPERATION,
-        &staging,
-        &destination,
-        STATE_ROOT_MANIFEST_FILE_NAME,
-        outcome.imported_records,
-        deep,
-        fault,
-    )
-}
-
-/// The canonical migration receipt: source format markers, target format and
-/// the receipt's own version, written before the root manifest.
-#[must_use]
-pub fn render_migration_receipt_v1(
-    source_root: &Path,
-    markers: &[String],
-    outcome: &LegacyImportOutcomeV1,
-) -> String {
-    let mut lines: Vec<String> = vec![
-        "quanta-index-state-migration-receipt".to_string(),
-        format!("format-version {STATE_MIGRATION_RECEIPT_FORMAT_VERSION}"),
-        "source-format legacy-v1".to_string(),
-        "target-format current-v1".to_string(),
-        format!(
-            "source-root-digest {}",
-            sha256_hex(source_root.to_string_lossy().as_bytes())
-        ),
-        format!("imported-records {}", outcome.imported_records),
-    ];
-    let mut markers = markers.to_vec();
-    markers.sort();
-    for marker in markers {
-        lines.push(format!("source-marker {marker}"));
-    }
-    let mut consumed = outcome.consumed_markers.clone();
-    consumed.sort();
-    for marker in consumed {
-        lines.push(format!("consumed-marker {marker}"));
-    }
-    let mut body = lines.join("\n");
-    body.push('\n');
-    body.push_str("receipt-digest ");
-    // The digest covers the body exactly as the manifest's covers its own.
-    body.push_str(&sha256_hex(body.as_bytes()));
-    body.push('\n');
-    body
 }
 
 /// Which manifest a `verify-state` target advertises, peeked read-only
@@ -1253,24 +1077,11 @@ pub fn peek_verify_manifest_v1(root: &Path) -> Result<VerifyManifestKindV1, Core
 /// The session must carry current or backup custody: a current root's
 /// verification requires the daemon lease (a live owner fails that handover
 /// with the existing `STATE_ROOT_IN_USE`), a backup root verifies under
-/// read-only custody. A legacy session is refused: a legacy root carries no
-/// manifest to re-prove.
+/// read-only custody.
 pub fn run_offline_verify_v1(
     session: &OfflineSourceSessionV1,
     catalog: &dyn CatalogSnapshotPort,
 ) -> Result<OfflineStateVerificationV1, CoreError> {
-    match &session.custody {
-        OfflineSourceCustodyV1::Current(_) | OfflineSourceCustodyV1::ProducedBackup(_) => {}
-        OfflineSourceCustodyV1::LegacyReadOnly(_) => {
-            return Err(typed(
-                SearchPlaneErrorCodeV2::InvalidRequest,
-                format!(
-                    "verify-state requires a produced root; {} is held as a legacy source",
-                    session.canonical_root().display()
-                ),
-            ));
-        }
-    }
     let root = session.canonical_root().to_path_buf();
     // Two artifact kinds carry a manifest — a produced state root and a
     // backup root — and a root that advertises both is ambiguous, so it is
@@ -1344,22 +1155,4 @@ pub fn run_offline_verify_v1(
 #[must_use]
 pub const fn staging_suffix_v1() -> &'static str {
     STAGING_DIRECTORY_SUFFIX
-}
-
-/// Every legacy marker a staging root must no longer carry once an import
-/// succeeded: a migrated root that still advertises a legacy artifact would
-/// be refused by the very boot it is meant to satisfy.
-pub fn assert_no_legacy_markers_v1(staging: &Path) -> Result<(), CoreError> {
-    let markers = legacy_state_root_markers_v1(staging);
-    if markers.is_empty() {
-        return Ok(());
-    }
-    Err(typed(
-        SearchPlaneErrorCodeV2::StateRootFormatUnsupported,
-        format!(
-            "imported staging root {} still carries the legacy markers {}",
-            staging.display(),
-            markers.join(", ")
-        ),
-    ))
 }

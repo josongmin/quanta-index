@@ -43,8 +43,8 @@ impl<'a> GenerationNamespace<'a> {
                 Ok(ack)
             }
             other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
-            | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
             | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
+            | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
             | SearchPlaneControlIpcResponse::Error(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
@@ -80,8 +80,8 @@ impl<'a> GenerationNamespace<'a> {
             SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(snapshot) => Ok(snapshot),
             other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
-            | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
             | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
+            | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::Error(_)
@@ -114,8 +114,8 @@ impl<'a> GenerationNamespace<'a> {
             SearchPlaneControlIpcResponse::GenerationStatusReport(report) => Ok(report),
             other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
-            | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
             | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
+            | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::Error(_)

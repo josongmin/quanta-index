@@ -6,6 +6,192 @@ to validated lane handoffs and immutable proof manifests, not this document.
 
 ## Current checkpoint (2026-09-24)
 
+- P11 Semantica producer dispatch follow-up, starting from Quanta dirty `main`
+  HEAD `98d2a7bb431d357d66ffdbf6a7c23a6e23780e85` and Semantica dirty `main`
+  HEAD `f5aabb37deb0a79dc492c31e904ee6ee1f9e8a58`: the common RepoMap
+  handoff dispatcher now validates the bundle-derived activation target before
+  connecting, returns the supplied V2 request with its prior-head CAS
+  expectation unchanged, and sends that request through the existing SDK
+  ingress. Semantica's existing ingress facade now exposes the Quanta SDK's
+  catalog-owned RepoMap active-head read; it does not maintain a producer head
+  cache. The registered `incremental-repomap-ack-replay-owner` selector was
+  updated from two to three tests for the frozen-expectation/foreign-target
+  negative. `python3.12 tools/testing/run_suite_v1.py
+  incremental-repomap-ack-replay-owner --resolve-only` exited 0 and selected
+  the canonical QBC group lane with three expected tests. Scoped `rustfmt
+  --check` and `git diff --check` exited 0. The required QBC compile command
+  `scripts/quanta-build-cli profile run quanta-runtime.search-plane.check`
+  exited 1 before compilation: free space at the configured target cache was
+  54.8 GiB (2.9%), below the 4.75% admission threshold. No owner test executed
+  for this Semantica edit. The ordinary outbox and aggregate Required-member
+  custody still reconstruct `for_bundle(None)` rather than durably freezing
+  the observed head before first dispatch. Root-incarnation binding, exact
+  pair proof, release, deployment and activation remain `NOT_RUN`; this
+  dispatch patch alone does not close P11. Quanta's shared `main` advanced to
+  `e110d9da8b93ec18ccebdde7b39b221b045e7854` during this turn; no
+  paired-source proof was attempted after that drift.
+
+- P11 activation replay projection on dirty Quanta `main` HEAD
+  `98d2a7bb431d357d66ffdbf6a7c23a6e23780e85`: a new owner test modeled
+  the gap after the catalog activation commit and before the store's in-memory
+  `activated` projection update. Before the fix, V2 replay returned a success
+  ACK but the same process's pinned query returned `NotFound` (behavioral RED,
+  one relevant test executed). The final oracle checks both the active-head
+  projection reader and the pinned query reader. `RepoMapGenerationStore::commit_activation`
+  now refreshes the same catalog-derived in-memory projection for both fresh
+  and replayed outcomes before returning the receipt. A store-local activation
+  commit gate also serializes catalog commit through projection publish so an
+  older concurrent writer cannot overwrite a newer committed head; it is a
+  coordination lock, not a second head authority. A concurrent two-activation
+  oracle compares the final projection with the independently read catalog
+  head and checks the pinned query. It passed, but it was not a deterministic
+  pre-fix RED; the stale-writer race is source-traced. The fix does not append
+  a sequence, introduce a second durable head, or recompile on replay. The identical
+  focused command `./scripts/cargow test -p quanta-index-repomap --test
+  candidate_activation_owner_v1
+  v2_activation_replay_repairs_missing_in_process_projection -- --exact`
+  then passed 1/1; the whole owner target passed 17/17 with subprocess
+  crash/replay cases. `./scripts/cargow fmt -p quanta-index-repomap -- --check`
+  and scoped `git diff --check` exited 0 after formatting correction. The
+  two-file scoped diff digest at this checkpoint is
+  `c3d2346cbd6aa543df65c3fcb0871b99f15c4772b6d5a28213949cb2b39c7971`.
+  The registered `candidate-activation-owner` local scope also ran via
+  `just rust-profile test-candidate-activation-owner` and exited 0:
+  nextest run `76569fee-0241-4a9c-98d4-8c575ce44121`, 28/28 tests across
+  four binaries, zero skipped. The full `proof-p03-candidate-activation-owner`
+  recipe and clean-source proof manifest were not issued.
+  This is dirty local P11 owner behavior, not a clean paired-source P11 proof,
+  deploy/activation/rollback receipt, or P0/P1-clear verdict.
+
+- P12A manifest-producer sibling on dirty Quanta `main` HEAD
+  `98d2a7bb431d357d66ffdbf6a7c23a6e23780e85` (`Darwin arm64`):
+  same-byte in-repo symlink dependency alias, digest input and current alias
+  were behaviorally RED before this edit. `write-proof-manifest.py` now reuses
+  the handoff leaf's no-follow regular-file reader for repo inputs, evidence,
+  binary, dependency alias/archive, registry/schema and published alias;
+  digest and JSON parsing use the same bytes. Explicit external terminal input
+  is also read no-follow. Manifest content archives, immutable leaf/index and
+  current alias publish through pinned no-follow parent descriptors; the
+  aggregate writer now reuses the same output-custody primitives instead of
+  maintaining a second implementation. A broken registered-manifest symlink
+  now classifies `FAILED`, not `NOT_RUN`, in both writer and independent
+  checker. Added same-byte input/evidence/alias/index/leaf and
+  archive/current-alias parent-swap negatives, and registered the manifest
+  writer tests in the P12A owner recipe. `just proof-p12a-proof-infrastructure`
+  exited 0: test authority OK, 26 registered proofs, **zero manifests
+  validated**, 118/118 owner tests passed. Scoped Ruff check/format and
+  `git diff --check` exited 0. The scoped P12A code/recipe diff digest was
+  `9cf7ad8c11fba28d603e4a183d7c1577312732dda23e0801fc62504bbd1a94b3`.
+  This supersedes the preceding checkpoint's statement that the producer
+  sibling has no candidate. It does **not** establish a clean exact-pair
+  P12A manifest, authentic historical handoff chain, release qualification,
+  deployment, activation or rollback. Status: dirty local owner behavior;
+  final qualification `NOT_RUN`.
+
+- P12A proof-file custody on dirty `main` HEAD
+  `98d2a7bb431d357d66ffdbf6a7c23a6e23780e85`: a same-byte in-repo
+  symlink proof archive was accepted by the handoff leaf (behavioral RED),
+  and a symlinked aggregate output parent reached the writer's redirected
+  path (behavioral RED). The current candidate makes one no-follow,
+  repo-relative regular-file reader bind digest and JSON parsing to the same
+  bytes. The handoff CLI/ledger, proof checker manifest/dependency/evidence/
+  binary readers, and aggregate writer reuse that custody rule. The writer
+  now uses a no-follow output-parent directory descriptor for temporary
+  creation, replace, rollback and parent fsync. Same-byte final/parent
+  symlinks, CLI handoff symlink, checker sibling archives and writer output
+  symlinks have negative tests. The registered local command
+  `just proof-p12a-proof-infrastructure` exited 0 with 86/86 tests; its
+  registry check reported 26 registered proofs and **zero validated
+  manifests**. The adjacent `test_write_proof_manifest.py` suite also
+  executed 23/23. Scoped Ruff check/format and `git diff --check` passed. The
+  broad `just python-lint` still exits 1 on nine errors in other dirty
+  benchmark/timing/test files; none is in the P12A touched files. The
+  P12A code/recipe diff digest at this checkpoint was
+  `0e6a21a90524842d7a017bf8b9e54a7b5ccfb67e4c7156fcbebdda5416174dd1`.
+  The same-boundary producer in `tools/ci/write-proof-manifest.py` still
+  resolves dependency aliases and performs separate path-based hash/parse/
+  archive reads; its no-follow publication/custody audit is open. Thus this
+  is **not** a P12A P0/P1-clear claim.
+  No authentic historical handoff chain, clean exact-pair P12A manifest,
+  Linux release proof, deployment, activation or rollback receipt was
+  issued. Status: local owner behavior only; final qualification `NOT_RUN`.
+
+- P09 process-instance follow-up on dirty `main` HEAD
+  `98d2a7bb431d357d66ffdbf6a7c23a6e23780e85`: the daemon composition
+  now reads 128 bits from OS entropy once and injects the same nonzero value
+  into query/control/ingest `IpcServerCounters`. A bounded ring window refuses
+  an unbound/test counter instead of emitting an anonymous process identity;
+  each plane still owns its separate insertion sequence. This is diagnostic
+  identity, not a request-ID allocator, catalog epoch, or durable authority.
+  `./scripts/cargow test -p quanta-index-ipc --lib --locked` exited 0 with
+  55/55 tests after the final IPC edit; `just rust-hexagonal` and `just
+  rust-test-authority` exited 0. After the concurrent P11 caller edits became
+  visible, `./scripts/cargow --lane fast-lane check -p quanta-index-searchd
+  --lib --tests --locked` exited 0 (compilation only). A production-shared
+  `ipc_plane_counters_v1` helper is now called by runtime composition; its
+  focused OS-entropy/three-plane test,
+  `./scripts/cargow test -p quanta-index-searchd --lib
+  one_runtime_instance_binds_all_three_plane_windows --locked`, exited 0 with
+  1/1 executed after a 3m 07s dependency build. The operator
+  principal policy, control wire projection, encoded-byte cap and real-UDS
+  process correlation remain open.
+
+- P09 ingest-provider and transport-window follow-up on shared `main` HEAD
+  `98d2a7bb431d357d66ffdbf6a7c23a6e23780e85`, dirty source. The
+  existing request budget now carries the IPC diagnostic bridge through the
+  search-corpus ingest port into `semantic_derive::embed_window`; actual
+  provider calls emit checked per-request window ordinals without creating a
+  provider-ledger ticket or changing durable-operation cancellation. Earlier
+  focused tests on the dirty pre-P11-wire-removal source covered multiple
+  windows, provider error, pre-I/O refusal, and journal-replay no-call behavior;
+  they are not a current integrated receipt. The same IPC ring now offers a bounded
+  insertion-sequenced window with oldest-retained, next-sequence, loss-before/
+  after and limit-omission metadata; this is **not** an operator wire path or
+  an authorization check. `./scripts/cargow test -p quanta-index-ipc --lib
+  --locked` exited 0 with 53/53 tests. `./scripts/cargow test -p
+  quanta-index-search-plane --lib --locked` exited 101 before test execution:
+  concurrent P11 wire removals left `control_dispatcher.rs` and ingest tests
+  referring to removed `RepoMapActivate`/`PublishRepoMapBundle` variants.
+  `./scripts/cargow test -p quanta-index-ipc --test admission --locked` also
+  exited 101 before execution because its response match still includes the
+  removed `RepoMapMutationAck` variant. These are shared-source integration
+  failures from that earlier shared-source snapshot, not P09 behavior verdicts.
+  After the P11 caller update, the **same** search-plane library command
+  exited 0 with 405/405 tests and the same IPC admission command exited 0
+  with 3/3 tests, still on dirty and concurrently changing source. `just
+  rust-hexagonal`, `just rust-test-authority` and
+  scoped `git diff --check` exited 0; the two-file IPC source diff digest was
+  `56e65abc32dce9394e8666deb5c90625991252d82b045e37739a3d52f48580e4`.
+  P09 real-UDS ingest correlation, operator authorization,
+  process-instance binding, serialized response cap, readiness horizon, and
+  clean-source owner/release proof remain `NOT_RUN`.
+
+- P09 query-provider correlation follow-up on `main` HEAD
+  `98d2a7bb431d357d66ffdbf6a7c23a6e23780e85` with dirty P09 code and
+  unrelated concurrent retrieval/SDK work: `RequestBudgetV1` now carries an
+  optional diagnostic port from IPC admission to the existing transport ring.
+  `ProviderBoundaryQueryEmbedder` records start/return with the real
+  `ProviderBudgetLedger` ticket, while the ledger remains the sole
+  reservation/settlement/usage authority. A real `handle_connection` test
+  proved the admitted envelope and connection IDs on both provider stages;
+  provider-boundary owner tests proved ticket/correlation agreement, zero
+  markers before local refusal, and return markers on a failed provider call.
+  `./scripts/cargow --lane fast-lane check -p quanta-index-core -p
+  quanta-index-ipc -p quanta-index-search-plane --locked` exited 0;
+  `./scripts/cargow test -p quanta-index-ipc --lib --locked` passed 51/51;
+  `./scripts/cargow test -p quanta-index-ipc --test admission --locked`
+  passed 3/3 real-UDS admission tests;
+  `./scripts/cargow test -p quanta-index-search-plane --test
+  provider_boundary_owner_v1 --locked` passed 22/22. `just
+  rust-test-authority`, `just rust-public-api` and `just rust-hexagonal`
+  exited 0. The P09 test-authority selector now includes the provider owner
+  integration target and core library. `just rust-cargo-modules` first exited
+  1 for the intentional new core enum/trait snapshot; its exact baseline was
+  updated, and the same command then exited 0. These focused
+  dirty-source results do **not** prove ingest provider stages, operator
+  readout authorization, readiness freshness, the registered P09 owner rail,
+  a Linux release process rail, or clean-source qualification.
+
 - P09 request-event follow-up on moving shared `main`: the code was absorbed
   by local `a0ac1853256d9b507ae8dc76f7437a4c7568434c` together with
   unrelated changes. Tests below ran on its dirty predecessor bytes, not an
@@ -26,9 +212,20 @@ to validated lane handoffs and immutable proof manifests, not this document.
   rust-public-api` passed; `just rust-cargo-modules` was interrupted after
   90 seconds waiting on its tool subprocess (exit 130), with no verdict.
   A real-handler panic terminal/RAII regression test was added after the
-  49/49 library run; its focused run was interrupted while waiting for the
-  shared Cargo cache lock (exit 130), before execution. Its assertion and
-  the updated library test count are therefore `NOT_RUN`.
+  49/49 library run. Its first focused run was interrupted while waiting for
+  the shared Cargo cache lock (exit 130), before execution. After commit at
+  clean `98d2a7bb431d357d66ffdbf6a7c23a6e23780e85`, the same focused
+  command executed 1/1 and passed; the dispatcher panic was deliberately
+  caught and one terminal event plus slot release were asserted. The updated
+  `./scripts/cargow test -p quanta-index-ipc --lib --locked` suite subsequently
+  passed 50/50 on the same HEAD with concurrent dirty documentation; this
+  broader run is not a clean-source qualification receipt.
+  RR proof-selection audit found that the registered P09 owner scopes omitted
+  the new IPC and searchd adapter behavior. `tools/ci/test-authority.toml`
+  now selects `ipc-admission` in the P09 integration scope and adds
+  `quanta-index-ipc` plus `quanta-index-searchd` to its library scope;
+  `just rust-test-authority` passed. The enlarged registered P09 owner rail
+  itself remains `NOT_RUN` and will carry the searchd test-build cost.
   Query/ingest still discard `DispatchContextV1`; provider-stage linkage,
   an operator-readable bounded event path, observed backend liveness and an
   explicit readiness proof-age horizon remain open. The P09 owner/release

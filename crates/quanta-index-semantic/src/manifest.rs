@@ -50,7 +50,9 @@ fn is_canonical_sha256_v1(value: &str) -> bool {
 /// the graph parameters every segment was actually built with, read back
 /// from the library, so an appended segment is never claimed to carry the
 /// trained recipe.
-pub(crate) const FORMAT_VERSION: u32 = 10;
+/// `11` = typed-source-only semantic derivation. Format 10 may contain
+/// chunk-text fallback rows and is not admitted as a new-generation base.
+pub(crate) const FORMAT_VERSION: u32 = 11;
 
 /// The dense lane's index contract, sealed with the generation (QI-BB-027).
 ///
@@ -931,7 +933,7 @@ mod tests {
             Err(CoreError::Typed { code, message }) => Some((code, message)),
             _ => None,
         };
-        for foreign in [1_u32, 2, 3, 7, 8, 9, FORMAT_VERSION.saturating_add(1)] {
+        for foreign in [1_u32, 2, 3, 7, 8, 9, 10, FORMAT_VERSION.saturating_add(1)] {
             // A map that only names the format: what an older or newer
             // writer's shape has in common with this one.
             let mut bytes = Vec::new();

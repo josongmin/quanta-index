@@ -1943,22 +1943,11 @@ impl Serialize for SeedContribution {
     where
         S: Serializer,
     {
-        let mut field_count = 2usize;
-        if self.raw_score.is_some() {
-            field_count = field_count.saturating_add(1);
-        }
-        if self.corpus_kind.is_some() {
-            field_count = field_count.saturating_add(1);
-        }
-        let mut state = serializer.serialize_struct("SeedContribution", field_count)?;
+        let mut state = serializer.serialize_struct("SeedContribution", 4)?;
         state.serialize_field("lane", &self.lane)?;
         state.serialize_field("rank", &self.rank)?;
-        if let Some(raw_score) = &self.raw_score {
-            state.serialize_field("raw_score", raw_score)?;
-        }
-        if let Some(corpus_kind) = &self.corpus_kind {
-            state.serialize_field("corpus_kind", corpus_kind)?;
-        }
+        state.serialize_field("raw_score", &self.raw_score)?;
+        state.serialize_field("corpus_kind", &self.corpus_kind)?;
         state.end()
     }
 }
@@ -1978,8 +1967,7 @@ impl<'de> Visitor<'de> for SeedContributionVisitor {
     {
         let mut lane: Option<SeedLane> = None;
         let mut rank: Option<u32> = None;
-        let mut raw_score: Option<f32> = None;
-        let mut raw_score_seen = false;
+        let mut raw_score: Option<Option<f32>> = None;
         let mut corpus_kind: Option<Option<SemanticCorpusKindV1>> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
@@ -1996,10 +1984,9 @@ impl<'de> Visitor<'de> for SeedContributionVisitor {
                     rank = Some(map.next_value()?);
                 }
                 "raw_score" => {
-                    if raw_score_seen {
+                    if raw_score.is_some() {
                         return Err(de::Error::duplicate_field("raw_score"));
                     }
-                    raw_score_seen = true;
                     raw_score = Some(map.next_value()?);
                 }
                 "corpus_kind" => {
@@ -2016,8 +2003,8 @@ impl<'de> Visitor<'de> for SeedContributionVisitor {
         Ok(SeedContribution {
             lane: lane.ok_or_else(|| de::Error::missing_field("lane"))?,
             rank: rank.ok_or_else(|| de::Error::missing_field("rank"))?,
-            raw_score,
-            corpus_kind: corpus_kind.unwrap_or(None),
+            raw_score: raw_score.ok_or_else(|| de::Error::missing_field("raw_score"))?,
+            corpus_kind: corpus_kind.ok_or_else(|| de::Error::missing_field("corpus_kind"))?,
         })
     }
 }
@@ -2040,18 +2027,12 @@ impl Serialize for SeedCandidate {
     where
         S: Serializer,
     {
-        let mut field_count = 9usize;
-        if self.authority_digest.is_some() {
-            field_count = field_count.saturating_add(1);
-        }
-        let mut state = serializer.serialize_struct("SeedCandidate", field_count)?;
+        let mut state = serializer.serialize_struct("SeedCandidate", 10)?;
         state.serialize_field("record_id", &self.record_id)?;
         state.serialize_field("entity_id", &self.entity_id)?;
         state.serialize_field("owner_kind", &self.owner_kind)?;
         state.serialize_field("corpus_kind", &self.corpus_kind)?;
-        if let Some(authority_digest) = &self.authority_digest {
-            state.serialize_field("authority_digest", authority_digest)?;
-        }
+        state.serialize_field("authority_digest", &self.authority_digest)?;
         state.serialize_field("repo_relative_path", &self.repo_relative_path)?;
         state.serialize_field("snippet", &self.snippet)?;
         state.serialize_field("seed_rank", &self.seed_rank)?;
@@ -2155,8 +2136,9 @@ impl<'de> Visitor<'de> for SeedCandidateVisitor {
             record_id: record_id.ok_or_else(|| de::Error::missing_field("record_id"))?,
             entity_id: entity_id.ok_or_else(|| de::Error::missing_field("entity_id"))?,
             owner_kind: owner_kind.ok_or_else(|| de::Error::missing_field("owner_kind"))?,
-            corpus_kind: corpus_kind.unwrap_or(None),
-            authority_digest: authority_digest.unwrap_or(None),
+            corpus_kind: corpus_kind.ok_or_else(|| de::Error::missing_field("corpus_kind"))?,
+            authority_digest: authority_digest
+                .ok_or_else(|| de::Error::missing_field("authority_digest"))?,
             repo_relative_path: repo_relative_path
                 .ok_or_else(|| de::Error::missing_field("repo_relative_path"))?,
             snippet: snippet.ok_or_else(|| de::Error::missing_field("snippet"))?,
@@ -2612,7 +2594,7 @@ mod tests {
     }
 
     #[test]
-    fn seed_candidate_authority_digest_is_optional_but_round_trips_when_present() {
+    fn seed_candidate_optional_values_are_explicit_on_wire() {
         let candidate = sample_seed_candidate();
         let mut encoded = serde_json::to_value(&candidate).expect("seed candidate JSON");
         assert_eq!(
@@ -2627,9 +2609,62 @@ mod tests {
             .expect("seed candidate object")
             .remove("authority_digest");
         assert!(removed.is_some());
-        let decoded: SeedCandidate = serde_json::from_value(encoded)
-            .expect("legacy candidate without digest remains readable");
+        assert!(serde_json::from_value::<SeedCandidate>(encoded.clone()).is_err());
+        let mut old_cbor = Vec::new();
+        ciborium::ser::into_writer(&encoded, &mut old_cbor).expect("old seed candidate CBOR");
+        assert!(ciborium::de::from_reader::<SeedCandidate, _>(old_cbor.as_slice()).is_err());
+
+        let mut null_digest = serde_json::to_value(&candidate).expect("seed candidate JSON");
+        null_digest["authority_digest"] = serde_json::Value::Null;
+        let decoded: SeedCandidate =
+            serde_json::from_value(null_digest).expect("explicit null digest is valid");
         assert!(decoded.authority_digest.is_none());
+
+        let mut missing_corpus = serde_json::to_value(&candidate).expect("seed candidate JSON");
+        let _removed = missing_corpus
+            .as_object_mut()
+            .expect("seed candidate object")
+            .remove("corpus_kind");
+        assert!(serde_json::from_value::<SeedCandidate>(missing_corpus).is_err());
+    }
+
+    #[test]
+    fn seed_contribution_optional_values_are_explicit_on_wire() {
+        let contribution = SeedContribution {
+            lane: SeedLane::Bm25,
+            rank: 1,
+            raw_score: None,
+            corpus_kind: None,
+        };
+        let encoded = serde_json::to_value(&contribution).expect("seed contribution JSON");
+        assert!(
+            encoded
+                .get("raw_score")
+                .is_some_and(serde_json::Value::is_null)
+        );
+        assert!(
+            encoded
+                .get("corpus_kind")
+                .is_some_and(serde_json::Value::is_null)
+        );
+        for field in ["raw_score", "corpus_kind"] {
+            let mut missing = encoded.clone();
+            let _removed = missing
+                .as_object_mut()
+                .expect("seed contribution object")
+                .remove(field);
+            assert!(
+                serde_json::from_value::<SeedContribution>(missing.clone()).is_err(),
+                "missing {field} must be refused"
+            );
+            let mut old_cbor = Vec::new();
+            ciborium::ser::into_writer(&missing, &mut old_cbor)
+                .expect("old seed contribution CBOR");
+            assert!(
+                ciborium::de::from_reader::<SeedContribution, _>(old_cbor.as_slice()).is_err(),
+                "missing {field} CBOR must be refused"
+            );
+        }
     }
 
     fn projection_fixture_row(candidate_id: &str, score: f32) -> LexicalCandidate {

@@ -110,48 +110,71 @@ fn fixture_search_corpus_batch() -> SearchCorpusIngestBatch {
 }
 
 #[test]
-fn old_batch_json_and_cbor_without_semantic_fields_still_decode() -> TestRes {
+fn old_batch_json_and_cbor_without_semantic_fields_are_refused() -> TestRes {
     let batch = fixture_search_corpus_batch();
+    for field in ["semantic_replace_scopes", "semantic_tombstone_scopes"] {
+        let mut json_value = serde_json::to_value(&batch)?;
+        let removed = json_value
+            .as_object_mut()
+            .ok_or_else(|| "expected JSON object".to_string())?
+            .remove(field);
+        if removed.is_none() {
+            return Err(format!("field `{field}` missing from JSON fixture").into());
+        }
+        let json_error = serde_json::from_value::<SearchCorpusIngestBatch>(json_value)
+            .expect_err("missing semantic field must refuse JSON");
+        if !json_error.to_string().contains(field) {
+            return Err(format!("wrong JSON refusal for `{field}`: {json_error}").into());
+        }
 
-    let mut json_value = serde_json::to_value(&batch)?;
-    let json_fields = json_value
+        let mut cbor_value: ciborium::Value = decode(&encode(&batch)?)?;
+        remove_cbor_text_field(cbor_map_fields_mut(&mut cbor_value)?, field)?;
+        let cbor_error = decode::<SearchCorpusIngestBatch>(&encode(&cbor_value)?)
+            .expect_err("missing semantic field must refuse CBOR");
+        if !cbor_error.to_string().contains(field) {
+            return Err(format!("wrong CBOR refusal for `{field}`: {cbor_error}").into());
+        }
+    }
+
+    let current_scope = batch
+        .semantic_replace_scopes
+        .first()
+        .ok_or("semantic scope fixture is empty")?;
+    let mut old_scope = serde_json::to_value(current_scope)?;
+    let removed = old_scope
         .as_object_mut()
-        .ok_or_else(|| "expected JSON object".to_string())?;
-    let json_replace = json_fields.remove("semantic_replace_scopes");
-    let json_tombstone = json_fields.remove("semantic_tombstone_scopes");
-    if json_replace.is_none() || json_tombstone.is_none() {
-        return Err("semantic fields missing from JSON fixture".into());
+        .ok_or_else(|| "expected semantic scope object".to_string())?
+        .remove("cluster_memberships");
+    if removed.is_none() {
+        return Err("cluster_memberships missing from fixture".into());
     }
-    let decoded_json: SearchCorpusIngestBatch = serde_json::from_value(json_value)?;
-    if !decoded_json.semantic_replace_scopes.is_empty()
-        || !decoded_json.semantic_tombstone_scopes.is_empty()
-    {
-        return Err("JSON decode must default missing semantic fields to empty vecs".into());
-    }
-    if decoded_json.repo_id != batch.repo_id
-        || decoded_json.revision_id != batch.revision_id
-        || decoded_json.generation != batch.generation
-        || decoded_json.manifest_digest != batch.manifest_digest
-    {
-        return Err("JSON decode must preserve non-semantic batch fields".into());
+    let scope_error = serde_json::from_value::<SemanticSourceReplaceScopeV1>(old_scope)
+        .expect_err("missing membership authority must refuse");
+    if !scope_error.to_string().contains("cluster_memberships") {
+        return Err(format!("wrong membership refusal: {scope_error}").into());
     }
 
-    let mut cbor_value: ciborium::Value = decode(&encode(&batch)?)?;
-    let cbor_fields = cbor_map_fields_mut(&mut cbor_value)?;
-    remove_cbor_text_field(cbor_fields, "semantic_replace_scopes")?;
-    remove_cbor_text_field(cbor_fields, "semantic_tombstone_scopes")?;
-    let decoded_cbor: SearchCorpusIngestBatch = decode(&encode(&cbor_value)?)?;
-    if !decoded_cbor.semantic_replace_scopes.is_empty()
-        || !decoded_cbor.semantic_tombstone_scopes.is_empty()
-    {
-        return Err("CBOR decode must default missing semantic fields to empty vecs".into());
-    }
-    if decoded_cbor.repo_id != batch.repo_id
-        || decoded_cbor.revision_id != batch.revision_id
-        || decoded_cbor.generation != batch.generation
-        || decoded_cbor.manifest_digest != batch.manifest_digest
-    {
-        return Err("CBOR decode must preserve non-semantic batch fields".into());
+    for field in [
+        "parent_owner_id",
+        "language",
+        "package",
+        "symbol_kind",
+        "visibility",
+        "raw_fallback_reason",
+    ] {
+        let mut old_record = serde_json::to_value(fixture_semantic_source_record())?;
+        let removed = old_record
+            .as_object_mut()
+            .ok_or("expected source record object")?
+            .remove(field);
+        if removed.is_none() {
+            return Err(format!("source record fixture missing {field}").into());
+        }
+        let error = serde_json::from_value::<SemanticSourceRecordV1>(old_record)
+            .expect_err("missing optional-value field must refuse");
+        if !error.to_string().contains(field) {
+            return Err(format!("wrong source record refusal for {field}: {error}").into());
+        }
     }
 
     Ok(())

@@ -1,5 +1,4 @@
-//! P10 state migration owner target (SEP-21 S21-11): the offline
-//! `migrate-state` / `backup-state` / `restore-state` / `verify-state`
+//! Offline `backup-state` / `restore-state` / `verify-state`
 //! workflow over disposable state roots.
 //!
 //! One test per frozen fixture: a legacy root refused at boot, a backup-API
@@ -17,6 +16,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Duration;
 
 use quanta_index_catalog::{SqliteCatalog, live_catalog_receipt, verify_snapshot};
@@ -25,17 +25,17 @@ use quanta_index_core::CoreError;
 use quanta_index_searchd::app::runtime::StateRootLease;
 use quanta_index_searchd::app::state_format::{
     LEGACY_AUXILIARY_SNAPSHOT_RELATIVES, NoStateMigrationFaultsV1, OfflineRootRoleV1,
-    STATE_MIGRATION_RECEIPT_FILE_NAME, STATE_ROOT_MANIFEST_FILE_NAME, StateMigrationFaultPointV1,
-    StateMigrationFaultPort, StateRootFormatV1, atomic_cutover_v1, detect_state_root_format_v1,
-    read_root_manifest_v1, refuse_broad_offline_target_v1, refuse_legacy_state_root_v1,
-    refuse_non_empty_destination_v1, staging_directory_for_v1,
+    STATE_ROOT_MANIFEST_FILE_NAME, StateMigrationFaultPointV1, StateMigrationFaultPort,
+    StateRootFormatV1, StateRootManifestV1, atomic_cutover_v1, detect_state_root_format_v1,
+    inventory_state_root_v1, read_root_manifest_v1, refuse_broad_offline_target_v1,
+    refuse_legacy_state_root_v1, refuse_non_empty_destination_v1, staging_directory_for_v1,
+    write_root_manifest_last_v1,
 };
 use quanta_index_searchd::app::state_migration::{
-    CatalogFreezeV1, CatalogSnapshotPort, CatalogSnapshotV1, LegacyImportOutcomeV1,
-    LegacyStateImportPort, OfflineSourceSessionV1, OfflineStateCommandV1, OfflineStateOperationV1,
-    OfflineStateVerificationV1, SourceFreezeReceiptV1, StateRootDeepOpenPort,
-    StateRootDeepOpenReceiptV1, run_offline_backup_v1, run_offline_migrate_v1,
-    run_offline_verify_v1,
+    CatalogFreezeV1, CatalogSnapshotPort, CatalogSnapshotV1, OfflineSourceSessionV1,
+    OfflineStateCommandV1, OfflineStateOperationV1, OfflineStateVerificationV1,
+    SourceFreezeReceiptV1, StateRootDeepOpenPort, StateRootDeepOpenReceiptV1,
+    run_offline_backup_v1, run_offline_verify_v1,
 };
 use quanta_index_searchd_harness::E2eRuntime;
 use quanta_index_searchd_runtime::state_migration::{
@@ -45,6 +45,56 @@ use quanta_index_searchd_runtime::state_migration::{
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 const BUSY: Duration = Duration::from_secs(2);
+
+#[test]
+fn migrate_state_cli_is_rejected_before_opening_a_root() -> TestResult {
+    let source = private_root()?;
+    let parent = private_root()?;
+    let destination = parent.path().join("destination");
+    let output = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchd"))
+        .arg("migrate-state")
+        .arg("--source")
+        .arg(source.path())
+        .arg("--destination")
+        .arg(&destination)
+        .output()?;
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unknown argument: migrate-state"));
+    assert!(!destination.exists());
+    Ok(())
+}
+
+#[test]
+fn legacy_root_format_manifest_is_rejected() -> TestResult {
+    let manifest = StateRootManifestV1 {
+        format_version: 1,
+        root_format: StateRootFormatV1::LegacyV1,
+        catalog_digest_hex: "0".repeat(64),
+        catalog_rows: 0,
+        objects: Vec::new(),
+        directories: Vec::new(),
+    };
+    let error = StateRootManifestV1::decode(&manifest.encode())
+        .expect_err("a legacy manifest cannot become verification authority");
+    assert_eq!(
+        typed_code(&error),
+        Some(SearchPlaneErrorCodeV2::StateRootFormatUnsupported)
+    );
+    let root = private_root()?;
+    let error = write_root_manifest_last_v1(
+        root.path(),
+        STATE_ROOT_MANIFEST_FILE_NAME,
+        &manifest,
+        &NoStateMigrationFaultsV1,
+    )
+    .expect_err("an old-format manifest must not be written");
+    assert_eq!(
+        typed_code(&error),
+        Some(SearchPlaneErrorCodeV2::StateRootFormatUnsupported)
+    );
+    assert!(!root.path().join(STATE_ROOT_MANIFEST_FILE_NAME).exists());
+    Ok(())
+}
 
 /// A fault port that fails exactly one boundary, the way a full disk or a
 /// torn write would.
@@ -193,12 +243,6 @@ fn build_legacy_root(root: &Path) -> TestResult {
     Ok(())
 }
 
-fn build_empty_legacy_repomap_root(root: &Path) -> TestResult {
-    fs::create_dir_all(root.join("repo-map/activations"))?;
-    fs::create_dir_all(root.join("repo-map/snapshots"))?;
-    Ok(())
-}
-
 fn backup_command(source: &Path, destination: &Path) -> OfflineStateCommandV1 {
     OfflineStateCommandV1 {
         operation: OfflineStateOperationV1::Backup,
@@ -223,11 +267,6 @@ fn current_session(root: &Path) -> Result<OfflineSourceSessionV1, Box<dyn std::e
     Ok(OfflineSourceSessionV1::open_current(lease)?)
 }
 
-/// Custody for a legacy root: read-only, creating nothing.
-fn legacy_session(root: &Path) -> Result<OfflineSourceSessionV1, Box<dyn std::error::Error>> {
-    Ok(OfflineSourceSessionV1::open_legacy_read_only(root)?)
-}
-
 /// Custody for a produced backup root: read-only, creating nothing.
 fn backup_session(root: &Path) -> Result<OfflineSourceSessionV1, Box<dyn std::error::Error>> {
     Ok(OfflineSourceSessionV1::open_produced_backup(root)?)
@@ -236,11 +275,6 @@ fn backup_session(root: &Path) -> Result<OfflineSourceSessionV1, Box<dyn std::er
 /// The frozen inventory of a current root, as the drift gate compares it.
 fn freeze_current(root: &Path) -> Result<SourceFreezeReceiptV1, Box<dyn std::error::Error>> {
     Ok(current_session(root)?.before().clone())
-}
-
-/// The frozen inventory of a legacy root: the whole tree, no exclusions.
-fn freeze_legacy(root: &Path) -> Result<SourceFreezeReceiptV1, Box<dyn std::error::Error>> {
-    Ok(legacy_session(root)?.before().clone())
 }
 
 /// The frozen inventory of a produced backup root.
@@ -313,7 +347,7 @@ fn assert_no_source_markers(root: &Path) -> TestResult {
                     && !name.starts_with("MIGRATED.")
                     && !name.starts_with(".MIGRATED.")
                     && name != STATE_ROOT_MANIFEST_FILE_NAME
-                    && name != STATE_MIGRATION_RECEIPT_FILE_NAME,
+                    && name != "state-migration-receipt-v1.txt",
                 "source root {} holds the authority file {}",
                 root.display(),
                 path.display()
@@ -351,9 +385,56 @@ fn legacy_root_is_detected_and_refused_typed() -> TestResult {
         Some(SearchPlaneErrorCodeV2::StateRootFormatUnsupported)
     );
     assert!(
-        format!("{error}").contains("migrate-state"),
-        "the refusal must point at the offline command: {error}"
+        format!("{error}").contains("does not support legacy state roots"),
+        "the refusal must state the unsupported format: {error}"
     );
+    Ok(())
+}
+
+#[test]
+fn backup_refuses_legacy_source_without_publishing() -> TestResult {
+    let source = private_root()?;
+    let parent = private_root()?;
+    build_legacy_root(source.path())?;
+    let before = inventory_state_root_v1(source.path(), &[])?;
+    let destination = parent.path().join("backup");
+    let error = run_offline_state_command_with_v1(
+        &backup_command(source.path(), &destination),
+        &NoStateMigrationFaultsV1,
+    )
+    .expect_err("backup requires a current root");
+    assert_eq!(
+        command_code(&error),
+        Some(SearchPlaneErrorCodeV2::StateRootFormatUnsupported)
+    );
+    assert!(!destination.exists());
+    assert_eq!(inventory_state_root_v1(source.path(), &[])?, before);
+    Ok(())
+}
+
+#[test]
+fn old_migration_receipts_and_dangling_journals_refuse_mixed_roots() -> TestResult {
+    let root = private_root()?;
+    fs::create_dir_all(root.path().join("catalog"))?;
+    fs::write(root.path().join("state-migration-receipt-v1.txt"), b"old")?;
+    assert_eq!(
+        detect_state_root_format_v1(root.path())?,
+        StateRootFormatV1::LegacyV1
+    );
+    assert_eq!(
+        typed_code(&refuse_legacy_state_root_v1(root.path()).expect_err("old receipt must refuse")),
+        Some(SearchPlaneErrorCodeV2::StateRootFormatUnsupported)
+    );
+    fs::remove_file(root.path().join("state-migration-receipt-v1.txt"))?;
+    #[cfg(unix)]
+    {
+        fs::create_dir_all(root.path().join("semantic"))?;
+        std::os::unix::fs::symlink("absent", root.path().join("semantic/journal.cbor"))?;
+        assert_eq!(
+            detect_state_root_format_v1(root.path())?,
+            StateRootFormatV1::LegacyV1
+        );
+    }
     Ok(())
 }
 
@@ -390,7 +471,7 @@ fn production_boot_refuses_a_legacy_root_instead_of_migrating() -> TestResult {
     // migrate; it must now be a typed refusal before any adapter opens.
     fs::create_dir_all(root.path().join("semantic"))?;
     fs::write(root.path().join("semantic/journal.cbor"), b"legacy-journal")?;
-    let before = freeze_legacy(root.path())?;
+    let before = inventory_state_root_v1(root.path(), &[])?;
 
     // The boot refusal runs through the harness-owned runtime (TOPT-03):
     // sockets and retention come from the harness builder, and `start`
@@ -407,7 +488,7 @@ fn production_boot_refuses_a_legacy_root_instead_of_migrating() -> TestResult {
         Some(SearchPlaneErrorCodeV2::StateRootFormatUnsupported),
         "boot must refuse typed: {error}"
     );
-    assert_eq!(freeze_legacy(root.path())?, before);
+    assert_eq!(inventory_state_root_v1(root.path(), &[])?, before);
     Ok(())
 }
 
@@ -420,16 +501,16 @@ fn production_boot_refuses_auxiliary_snapshot_before_creating_catalog_or_lease()
         &snapshot,
         quanta_index_ipc::encode_cbor_payload(&serde_json::json!({"entries": {}}))?,
     )?;
-    let before = freeze_legacy(root.path())?;
+    let before = inventory_state_root_v1(root.path(), &[])?;
     let mut runtime = E2eRuntime::boot_in(root.path())?;
     let error = runtime
         .start()
-        .expect_err("boot must leave pre-catalog snapshots to offline migration");
+        .expect_err("boot must refuse pre-catalog snapshots");
     assert_eq!(
         command_code(&error),
         Some(SearchPlaneErrorCodeV2::StateRootFormatUnsupported)
     );
-    assert_eq!(freeze_legacy(root.path())?, before);
+    assert_eq!(inventory_state_root_v1(root.path(), &[])?, before);
     assert!(!root.path().join("catalog").exists());
     assert!(!root.path().join(".searchd-state-root.lock").exists());
     Ok(())
@@ -962,82 +1043,6 @@ fn a_non_empty_destination_and_a_self_destination_are_refused() -> TestResult {
 }
 
 #[test]
-fn a_legacy_source_is_refused_by_backup_and_required_by_migrate() -> TestResult {
-    let legacy = private_root()?;
-    let current = private_root()?;
-    let parent = private_root()?;
-    build_legacy_root(legacy.path())?;
-    build_live_root(current.path())?;
-
-    let error = run_offline_state_command_with_v1(
-        &backup_command(legacy.path(), &parent.path().join("frozen")),
-        &NoStateMigrationFaultsV1,
-    )
-    .expect_err("backup-state refuses a legacy root");
-    assert_eq!(
-        command_code(&error),
-        Some(SearchPlaneErrorCodeV2::StateRootFormatUnsupported)
-    );
-
-    let migrate = OfflineStateCommandV1 {
-        operation: OfflineStateOperationV1::Migrate,
-        source_root: current.path().to_path_buf(),
-        destination_root: Some(parent.path().join("migrated")),
-    };
-    let error = run_offline_state_command_with_v1(&migrate, &NoStateMigrationFaultsV1)
-        .expect_err("migrate-state requires a legacy root");
-    assert_eq!(
-        command_code(&error),
-        Some(SearchPlaneErrorCodeV2::StateRootFormatUnsupported)
-    );
-    Ok(())
-}
-
-#[test]
-fn migrate_state_refuses_to_overwrite_its_own_source() -> TestResult {
-    let legacy = private_root()?;
-    build_legacy_root(legacy.path())?;
-    let migrate = OfflineStateCommandV1 {
-        operation: OfflineStateOperationV1::Migrate,
-        source_root: legacy.path().to_path_buf(),
-        destination_root: Some(legacy.path().to_path_buf()),
-    };
-    let error = run_offline_state_command_with_v1(&migrate, &NoStateMigrationFaultsV1)
-        .expect_err("a destructive self-target must be refused");
-    assert_eq!(
-        command_code(&error),
-        Some(SearchPlaneErrorCodeV2::InvalidRequest)
-    );
-    assert_eq!(
-        detect_state_root_format_v1(legacy.path())?,
-        StateRootFormatV1::LegacyV1
-    );
-    Ok(())
-}
-
-#[test]
-fn migrate_state_refuses_a_missing_destination() -> TestResult {
-    let legacy = private_root()?;
-    build_legacy_root(legacy.path())?;
-    let migrate = OfflineStateCommandV1 {
-        operation: OfflineStateOperationV1::Migrate,
-        source_root: legacy.path().to_path_buf(),
-        destination_root: None,
-    };
-    let error = run_offline_state_command_with_v1(&migrate, &NoStateMigrationFaultsV1)
-        .expect_err("a producing operation without a destination must be refused");
-    assert_eq!(
-        command_code(&error),
-        Some(SearchPlaneErrorCodeV2::InvalidRequest)
-    );
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Verification matrix
-// ---------------------------------------------------------------------------
-
-#[test]
 fn verify_state_refuses_a_missing_unadvertised_and_tampered_object() -> TestResult {
     let source = private_root()?;
     let parent = private_root()?;
@@ -1210,183 +1215,6 @@ fn the_backup_root_carries_the_backup_manifest_name_only() -> TestResult {
 }
 
 // ---------------------------------------------------------------------------
-// Offline migration of a legacy root
-// ---------------------------------------------------------------------------
-
-#[test]
-fn migrate_state_imports_only_convertible_legacy_authority() -> TestResult {
-    let legacy = private_root()?;
-    let parent = private_root()?;
-    build_empty_legacy_repomap_root(legacy.path())?;
-    let migrated = parent.path().join("migrated");
-
-    let migrate = OfflineStateCommandV1 {
-        operation: OfflineStateOperationV1::Migrate,
-        source_root: legacy.path().to_path_buf(),
-        destination_root: Some(migrated.clone()),
-    };
-    let outcome = run_offline_state_command_with_v1(&migrate, &NoStateMigrationFaultsV1)?;
-    let rendered = render_offline_outcome_v1(&migrate, &outcome);
-    assert!(rendered.contains("migrate-state"), "{rendered}");
-
-    assert_eq!(
-        detect_state_root_format_v1(&migrated)?,
-        StateRootFormatV1::CurrentV1 { manifest: true }
-    );
-    assert!(!migrated.join("legacy-import").exists());
-    // The receipt names source and target format, and the manifest covers it.
-    let receipt = fs::read_to_string(migrated.join(STATE_MIGRATION_RECEIPT_FILE_NAME))?;
-    assert!(receipt.contains("format-version 1"), "{receipt}");
-    assert!(receipt.contains("source-format legacy-v1"), "{receipt}");
-    assert!(receipt.contains("target-format current-v1"), "{receipt}");
-    assert!(
-        receipt.contains("source-marker repo-map/activations"),
-        "{receipt}"
-    );
-    assert!(!receipt.contains("consumed-marker repo-map/"), "{receipt}");
-    let manifest = read_root_manifest_v1(&migrated.join(STATE_ROOT_MANIFEST_FILE_NAME))?;
-    assert!(manifest.objects.iter().any(|object| {
-        object
-            .relative_path
-            .ends_with(STATE_MIGRATION_RECEIPT_FILE_NAME)
-    }));
-    let _verified = verify_current(&migrated)?;
-    // The legacy source is untouched: it still detects as legacy.
-    assert_eq!(
-        detect_state_root_format_v1(legacy.path())?,
-        StateRootFormatV1::LegacyV1
-    );
-    Ok(())
-}
-
-#[test]
-fn migrate_refuses_materialized_legacy_repomap_without_publishing_an_empty_authority() -> TestResult
-{
-    let legacy = private_root()?;
-    let parent = private_root()?;
-    build_legacy_root(legacy.path())?;
-    let before = freeze_legacy(legacy.path())?;
-    let migrated = parent.path().join("migrated");
-    let migrate = OfflineStateCommandV1 {
-        operation: OfflineStateOperationV1::Migrate,
-        source_root: legacy.path().to_path_buf(),
-        destination_root: Some(migrated.clone()),
-    };
-
-    let error = run_offline_state_command_with_v1(&migrate, &NoStateMigrationFaultsV1)
-        .expect_err("a materialized V1 RepoMap cannot become an empty current authority");
-    assert_eq!(
-        command_code(&error),
-        Some(SearchPlaneErrorCodeV2::StateRootFormatUnsupported)
-    );
-    assert!(!migrated.exists(), "failed conversion must publish no root");
-    assert_eq!(freeze_legacy(legacy.path())?, before);
-    assert_no_source_markers(legacy.path())?;
-    Ok(())
-}
-
-#[test]
-fn pre_catalog_auxiliary_snapshots_import_offline_without_touching_source() -> TestResult {
-    for relative in LEGACY_AUXILIARY_SNAPSHOT_RELATIVES {
-        let legacy = private_root()?;
-        let parent = private_root()?;
-        let snapshot = legacy.path().join(relative);
-        fs::create_dir_all(snapshot.parent().ok_or("snapshot has no parent")?)?;
-        let empty_snapshot = if relative.contains("structural/") {
-            serde_json::json!({"entries": {}, "tracks": {}})
-        } else {
-            serde_json::json!({"entries": {}})
-        };
-        fs::write(
-            &snapshot,
-            quanta_index_ipc::encode_cbor_payload(&empty_snapshot)?,
-        )?;
-        let before = freeze_legacy(legacy.path())?;
-        assert_eq!(
-            detect_state_root_format_v1(legacy.path())?,
-            StateRootFormatV1::LegacyV1,
-            "{relative} must be classified as legacy"
-        );
-        assert_eq!(
-            typed_code(&refuse_legacy_state_root_v1(legacy.path()).expect_err("boot must refuse")),
-            Some(SearchPlaneErrorCodeV2::StateRootFormatUnsupported)
-        );
-
-        let destination = parent.path().join("migrated");
-        let command = OfflineStateCommandV1 {
-            operation: OfflineStateOperationV1::Migrate,
-            source_root: legacy.path().to_path_buf(),
-            destination_root: Some(destination.clone()),
-        };
-        let _outcome = run_offline_state_command_with_v1(&command, &NoStateMigrationFaultsV1)?;
-        let receipt = fs::read_to_string(destination.join(STATE_MIGRATION_RECEIPT_FILE_NAME))?;
-        assert!(
-            receipt.contains(&format!("consumed-marker {relative}")),
-            "{relative} must be accounted for in the migration receipt"
-        );
-        let _verified = verify_current(&destination)?;
-        assert_eq!(
-            freeze_legacy(legacy.path())?,
-            before,
-            "{relative} source changed"
-        );
-    }
-    Ok(())
-}
-
-#[test]
-fn corrupt_pre_catalog_auxiliary_snapshot_publishes_no_destination() -> TestResult {
-    let legacy = private_root()?;
-    let parent = private_root()?;
-    let snapshot = legacy.path().join(LEGACY_AUXILIARY_SNAPSHOT_RELATIVES[0]);
-    fs::create_dir_all(snapshot.parent().ok_or("snapshot has no parent")?)?;
-    fs::write(&snapshot, b"not CBOR")?;
-    let before = freeze_legacy(legacy.path())?;
-    let destination = parent.path().join("migrated");
-    let command = OfflineStateCommandV1 {
-        operation: OfflineStateOperationV1::Migrate,
-        source_root: legacy.path().to_path_buf(),
-        destination_root: Some(destination.clone()),
-    };
-    let _error = run_offline_state_command_with_v1(&command, &NoStateMigrationFaultsV1)
-        .expect_err("corrupt legacy authority must be refused");
-    assert!(!destination.exists());
-    assert_eq!(freeze_legacy(legacy.path())?, before);
-    Ok(())
-}
-
-#[test]
-fn mixed_legacy_marker_and_unconverted_authority_publishes_no_destination() -> TestResult {
-    let legacy = private_root()?;
-    let parent = private_root()?;
-    let snapshot = legacy.path().join(LEGACY_AUXILIARY_SNAPSHOT_RELATIVES[0]);
-    fs::create_dir_all(snapshot.parent().ok_or("snapshot has no parent")?)?;
-    fs::write(
-        &snapshot,
-        quanta_index_ipc::encode_cbor_payload(&serde_json::json!({"entries": {}}))?,
-    )?;
-    let unconverted = legacy.path().join("indexes/lexical/manifest.cbor");
-    fs::create_dir_all(unconverted.parent().ok_or("index has no parent")?)?;
-    fs::write(&unconverted, b"sealed lexical authority")?;
-    let before = freeze_legacy(legacy.path())?;
-    let destination = parent.path().join("migrated");
-    let command = OfflineStateCommandV1 {
-        operation: OfflineStateOperationV1::Migrate,
-        source_root: legacy.path().to_path_buf(),
-        destination_root: Some(destination.clone()),
-    };
-    let error = run_offline_state_command_with_v1(&command, &NoStateMigrationFaultsV1)
-        .expect_err("mixed authority cannot be omitted from the produced root");
-    assert_eq!(
-        command_code(&error),
-        Some(SearchPlaneErrorCodeV2::StateRootFormatUnsupported)
-    );
-    assert!(!destination.exists());
-    assert_eq!(freeze_legacy(legacy.path())?, before);
-    Ok(())
-}
-
-#[cfg(unix)]
 #[test]
 fn dangling_legacy_auxiliary_snapshot_is_not_classified_as_current() -> TestResult {
     let root = private_root()?;
@@ -1405,57 +1233,7 @@ fn dangling_legacy_auxiliary_snapshot_is_not_classified_as_current() -> TestResu
 }
 
 #[test]
-fn an_interrupted_migration_leaves_no_new_root_and_keeps_the_legacy_source() -> TestResult {
-    let legacy = private_root()?;
-    let parent = private_root()?;
-    build_empty_legacy_repomap_root(legacy.path())?;
-    let migrated = parent.path().join("migrated");
-    let migrate = OfflineStateCommandV1 {
-        operation: OfflineStateOperationV1::Migrate,
-        source_root: legacy.path().to_path_buf(),
-        destination_root: Some(migrated.clone()),
-    };
-    let fault = ScriptedFaultV1 {
-        point: StateMigrationFaultPointV1::AfterDataSync,
-    };
-    let _error = run_offline_state_command_with_v1(&migrate, &fault)
-        .expect_err("the scripted post-data failure must surface");
-    assert!(!migrated.exists(), "no cutover may have happened");
-    assert_eq!(
-        detect_state_root_format_v1(legacy.path())?,
-        StateRootFormatV1::LegacyV1,
-        "the legacy source is never mutated"
-    );
-    // The retry converges on the same destination.
-    let _outcome = run_offline_state_command_with_v1(&migrate, &NoStateMigrationFaultsV1)?;
-    assert!(migrated.join(STATE_ROOT_MANIFEST_FILE_NAME).is_file());
-    let _verified = verify_current(&migrated)?;
-    Ok(())
-}
-
-#[test]
 fn the_engine_refuses_a_self_target_before_any_lease() -> TestResult {
-    // Migrated to the session contract (W10 R3): the request struct is gone;
-    // the engine takes the session plus a destination. A legacy session used
-    // as its own backup destination is refused before any staging: wrong
-    // custody first, then the self-target planning refusal with a matching
-    // current session below.
-    let legacy = private_root()?;
-    build_legacy_root(legacy.path())?;
-    let session = legacy_session(legacy.path())?;
-    let error = quanta_index_searchd::app::state_migration::run_offline_backup_v1(
-        &session,
-        legacy.path(),
-        &CatalogVerifierV1,
-        &UnreachedDeepOpenV1,
-        &NoStateMigrationFaultsV1,
-    )
-    .expect_err("a legacy session is not backup custody");
-    assert_eq!(
-        typed_code(&error),
-        Some(SearchPlaneErrorCodeV2::InvalidRequest)
-    );
-
     let current = private_root()?;
     build_live_root(current.path())?;
     let setup = StateRootLease::acquire(current.path())?;
@@ -1524,25 +1302,6 @@ struct StubDeepOpenV1;
 impl StateRootDeepOpenPort for StubDeepOpenV1 {
     fn deep_open(&self, _root: &Path) -> Result<StateRootDeepOpenReceiptV1, CoreError> {
         Ok(StateRootDeepOpenReceiptV1::default())
-    }
-}
-
-/// Stub legacy importer for the engine-level migrate drift test: carries one
-/// marker file into staging and nothing else.
-struct StubImporterV1;
-
-impl LegacyStateImportPort for StubImporterV1 {
-    fn import_legacy_into(
-        &self,
-        _source_root: &Path,
-        staging_root: &Path,
-    ) -> Result<LegacyImportOutcomeV1, CoreError> {
-        fs::write(staging_root.join("imported.bin"), b"stub-import")
-            .map_err(|error| CoreError::Storage(format!("stub import write: {error}")))?;
-        Ok(LegacyImportOutcomeV1 {
-            imported_records: 1,
-            consumed_markers: Vec::new(),
-        })
     }
 }
 
@@ -1634,101 +1393,6 @@ fn backup_failure_and_interruption_keep_the_source_identical() -> TestResult {
     Ok(())
 }
 
-/// A legacy root's full-tree fingerprint is identical before and after a
-/// successful migration — legacy custody has no exclusions — and the source
-/// carries no receipt, lock, or manifest afterwards.
-#[test]
-fn migrate_keeps_the_legacy_source_bit_identical() -> TestResult {
-    let legacy = private_root()?;
-    let parent = private_root()?;
-    build_empty_legacy_repomap_root(legacy.path())?;
-    let before = freeze_legacy(legacy.path())?;
-    assert!(
-        !before.entries.is_empty(),
-        "the fixture must freeze a non-empty legacy tree"
-    );
-    let names_before = tree_names_outside_catalog(legacy.path())?;
-
-    let migrated = parent.path().join("migrated");
-    let migrate = OfflineStateCommandV1 {
-        operation: OfflineStateOperationV1::Migrate,
-        source_root: legacy.path().to_path_buf(),
-        destination_root: Some(migrated.clone()),
-    };
-    let _outcome = run_offline_state_command_with_v1(&migrate, &NoStateMigrationFaultsV1)?;
-
-    assert_eq!(
-        freeze_legacy(legacy.path())?,
-        before,
-        "the legacy tree must be byte-identical after migration"
-    );
-    assert_eq!(
-        tree_names_outside_catalog(legacy.path())?,
-        names_before,
-        "zero new files may appear inside the legacy source"
-    );
-    assert_no_source_markers(legacy.path())?;
-    assert!(
-        !legacy.path().join("semantic").exists()
-            || !legacy.path().join("semantic/MIGRATED").exists(),
-        "no source-side migration receipt may exist"
-    );
-    assert!(
-        migrated.join(STATE_MIGRATION_RECEIPT_FILE_NAME).is_file(),
-        "the receipt authority lives in the produced root only"
-    );
-    Ok(())
-}
-
-/// An interrupted migration retries by converging staging only: the legacy
-/// source stays identical, the destination stays absent until the retry
-/// publishes it, and no staging residue survives the cutover.
-#[test]
-fn interrupted_migration_retry_cleans_staging_only() -> TestResult {
-    let legacy = private_root()?;
-    let parent = private_root()?;
-    build_empty_legacy_repomap_root(legacy.path())?;
-    let before = freeze_legacy(legacy.path())?;
-    let migrated = parent.path().join("migrated");
-    let staging = staging_directory_for_v1(&migrated);
-    let migrate = OfflineStateCommandV1 {
-        operation: OfflineStateOperationV1::Migrate,
-        source_root: legacy.path().to_path_buf(),
-        destination_root: Some(migrated.clone()),
-    };
-
-    let fault = ScriptedFaultV1 {
-        point: StateMigrationFaultPointV1::AfterDataSync,
-    };
-    let _error = run_offline_state_command_with_v1(&migrate, &fault)
-        .expect_err("the scripted post-data failure must surface");
-    assert!(!migrated.exists(), "no cutover may have happened");
-    assert!(staging.is_dir(), "the interrupted staging is still there");
-    assert_eq!(
-        freeze_legacy(legacy.path())?,
-        before,
-        "the legacy source must be identical after the interruption"
-    );
-
-    let _outcome = run_offline_state_command_with_v1(&migrate, &NoStateMigrationFaultsV1)?;
-    assert!(migrated.join(STATE_ROOT_MANIFEST_FILE_NAME).is_file());
-    assert!(
-        !staging.exists(),
-        "the staging directory is consumed by the cutover"
-    );
-    assert_eq!(
-        freeze_legacy(legacy.path())?,
-        before,
-        "the legacy source must be identical after the retry"
-    );
-    assert_no_source_markers(legacy.path())?;
-    let _verified = verify_current(&migrated)?;
-    Ok(())
-}
-
-/// A backup source is read-only for restore: the full-tree freeze is
-/// identical before and after, modulo the manifest bytes the test itself
-/// does not touch.
 #[test]
 fn restore_keeps_the_backup_source_bit_identical() -> TestResult {
     let source = private_root()?;
@@ -1806,13 +1470,13 @@ fn verify_state_with_a_live_lease_refuses_state_root_in_use() -> TestResult {
     Ok(())
 }
 
-/// A mid-migration source byte change publishes no destination: the drift
+/// A mid-backup source byte change publishes no destination: the drift
 /// gate recomputes the inventory immediately before the cutover and refuses.
 ///
 /// It removes the staging it prepared. Same-length mutation proves the digest
 /// (not just the size) is compared.
 #[test]
-fn mid_migration_source_byte_change_publishes_no_destination() -> TestResult {
+fn mid_backup_source_byte_change_publishes_no_destination() -> TestResult {
     let source = private_root()?;
     let destination_parent = private_root()?;
     build_live_root(source.path())?;
@@ -1848,129 +1512,6 @@ fn mid_migration_source_byte_change_publishes_no_destination() -> TestResult {
     assert!(!destination.exists(), "zero destination publish on drift");
     assert!(!staging.exists(), "the drift refusal removes its staging");
     fs::write(&victim, &original)?;
-    Ok(())
-}
-
-/// The same drift gate on the migrate path: a changed legacy byte refuses
-/// the publish with no destination and no staging residue.
-#[test]
-fn mid_migration_legacy_byte_change_publishes_no_destination() -> TestResult {
-    let legacy = private_root()?;
-    let destination_parent = private_root()?;
-    build_legacy_root(legacy.path())?;
-    let session = legacy_session(legacy.path())?;
-
-    let victim = legacy
-        .path()
-        .join("repo-map/activations/repo-a--rev-a.json");
-    let original = fs::read(&victim)?;
-    let mut drifted = original.clone();
-    if let Some(head) = drifted.first_mut() {
-        *head ^= 0xFF;
-    }
-    assert_eq!(drifted.len(), original.len());
-    fs::write(&victim, &drifted)?;
-
-    let destination = destination_parent.path().join("migrated");
-    let staging = staging_directory_for_v1(&destination);
-    let error = run_offline_migrate_v1(
-        &session,
-        &destination,
-        &StubImporterV1,
-        &StubCatalogV1,
-        &StubDeepOpenV1,
-        &NoStateMigrationFaultsV1,
-    )
-    .expect_err("legacy drift must refuse the publish");
-    assert_eq!(
-        typed_code(&error),
-        Some(SearchPlaneErrorCodeV2::StateRootInsecure)
-    );
-    assert!(!destination.exists(), "zero destination publish on drift");
-    assert!(!staging.exists(), "the drift refusal removes its staging");
-    fs::write(&victim, &original)?;
-    Ok(())
-}
-
-/// A corrupt and a truncated legacy journal both fail closed: no
-/// destination, and the source tree is byte-identical afterwards.
-#[test]
-fn corrupt_and_truncated_legacy_journal_fail_closed() -> TestResult {
-    for (label, bytes) in [
-        ("corrupt", b"not a journal at all".to_vec()),
-        ("truncated", b"\x9f\x84ao".to_vec()),
-    ] {
-        let legacy = private_root()?;
-        let parent = private_root()?;
-        build_empty_legacy_repomap_root(legacy.path())?;
-        fs::create_dir_all(legacy.path().join("semantic"))?;
-        fs::write(legacy.path().join("semantic/journal.cbor"), &bytes)?;
-        let before = freeze_legacy(legacy.path())?;
-
-        let migrated = parent.path().join("migrated");
-        let migrate = OfflineStateCommandV1 {
-            operation: OfflineStateOperationV1::Migrate,
-            source_root: legacy.path().to_path_buf(),
-            destination_root: Some(migrated.clone()),
-        };
-        let error = run_offline_state_command_with_v1(&migrate, &NoStateMigrationFaultsV1)
-            .expect_err(&format!("a {label} journal must fail"));
-        assert_eq!(
-            command_code(&error),
-            Some(SearchPlaneErrorCodeV2::LegacySemanticJournalCorrupt),
-            "{label} journal must fail with the journal-corrupt authority: {error:?}"
-        );
-        assert!(
-            !migrated.exists(),
-            "a {label} journal must publish no destination"
-        );
-        assert_eq!(
-            freeze_legacy(legacy.path())?,
-            before,
-            "a {label} journal must leave the source identical"
-        );
-        assert_no_source_markers(legacy.path())?;
-    }
-    Ok(())
-}
-
-/// New binary, old root: a source-side `MIGRATED` receipt is old-binary
-/// authority and refuses the journal immutable, with no destination.
-///
-/// Old-binary residue of the other kind — a stale `MIGRATED.lock` — is
-/// inert and does not block the migration.
-#[test]
-fn new_binary_refuses_an_old_root_with_a_source_side_receipt() -> TestResult {
-    let legacy = private_root()?;
-    let parent = private_root()?;
-    build_empty_legacy_repomap_root(legacy.path())?;
-    fs::create_dir_all(legacy.path().join("semantic"))?;
-    let journal = quanta_index_ipc::encode_cbor_payload(&(Vec::<
-        quanta_index_contract::SemanticIngestBatch,
-    >::new(),))?;
-    fs::write(legacy.path().join("semantic/journal.cbor"), journal)?;
-    fs::write(legacy.path().join("semantic/MIGRATED"), b"migrated")?;
-
-    let migrated = parent.path().join("migrated");
-    let migrate = OfflineStateCommandV1 {
-        operation: OfflineStateOperationV1::Migrate,
-        source_root: legacy.path().to_path_buf(),
-        destination_root: Some(migrated.clone()),
-    };
-    let error = run_offline_state_command_with_v1(&migrate, &NoStateMigrationFaultsV1)
-        .expect_err("an old-root source receipt must be refused");
-    assert_eq!(
-        command_code(&error),
-        Some(SearchPlaneErrorCodeV2::LegacySemanticJournalImmutableAfterMigration)
-    );
-    assert!(!migrated.exists());
-
-    // The lock residue alone is inert: remove the receipt, keep the lock,
-    // and the migration proceeds without adopting the lock.
-    fs::remove_file(legacy.path().join("semantic/MIGRATED"))?;
-    fs::write(legacy.path().join("semantic/MIGRATED.lock"), b"stale")?;
-    let _outcome = run_offline_state_command_with_v1(&migrate, &NoStateMigrationFaultsV1)?;
-    assert!(migrated.join(STATE_ROOT_MANIFEST_FILE_NAME).is_file());
     Ok(())
 }
 
@@ -2028,27 +1569,6 @@ fn alias_symlink_and_hardlink_sources_are_refused() -> TestResult {
         );
     }
 
-    // A symlinked source root never becomes custody.
-    #[cfg(unix)]
-    {
-        let target = private_root()?;
-        build_legacy_root(target.path())?;
-        let alias_parent = private_root()?;
-        let alias = alias_parent.path().join("alias");
-        std::os::unix::fs::symlink(target.path(), &alias)?;
-        let migrate = OfflineStateCommandV1 {
-            operation: OfflineStateOperationV1::Migrate,
-            source_root: alias,
-            destination_root: Some(alias_parent.path().join("migrated")),
-        };
-        let error = run_offline_state_command_with_v1(&migrate, &NoStateMigrationFaultsV1)
-            .expect_err("a symlinked source must be refused");
-        assert_eq!(
-            command_code(&error),
-            Some(SearchPlaneErrorCodeV2::StateRootInsecure)
-        );
-    }
-
     // A hard-linked object inside the source is refused: a byte copy would
     // silently un-share its links.
     #[cfg(unix)]
@@ -2071,62 +1591,5 @@ fn alias_symlink_and_hardlink_sources_are_refused() -> TestResult {
         );
         assert!(!hard_parent.path().join("frozen").exists());
     }
-    Ok(())
-}
-
-/// Wrong-custody sessions never reach the engine: backup needs the daemon
-/// lease, migrate needs a legacy session, restore needs a backup session.
-///
-/// Verify refuses a legacy session. No destination is published.
-#[test]
-fn wrong_custody_sessions_never_reach_the_engine() -> TestResult {
-    let legacy = private_root()?;
-    let current = private_root()?;
-    let exile = private_root()?;
-    build_legacy_root(legacy.path())?;
-    build_live_root(current.path())?;
-    let setup = StateRootLease::acquire(current.path())?;
-    drop(setup);
-
-    let legacy_held = legacy_session(legacy.path())?;
-    let current_held = current_session(current.path())?;
-
-    for (label, error) in [
-        (
-            "backup with a legacy session",
-            run_offline_backup_v1(
-                &legacy_held,
-                &exile.path().join("backup-out"),
-                &StubCatalogV1,
-                &StubDeepOpenV1,
-                &NoStateMigrationFaultsV1,
-            )
-            .expect_err("backup requires current custody"),
-        ),
-        (
-            "migrate with a current session",
-            run_offline_migrate_v1(
-                &current_held,
-                &exile.path().join("migrate-out"),
-                &StubImporterV1,
-                &StubCatalogV1,
-                &StubDeepOpenV1,
-                &NoStateMigrationFaultsV1,
-            )
-            .expect_err("migrate requires legacy custody"),
-        ),
-        (
-            "verify with a legacy session",
-            run_offline_verify_v1(&legacy_held, &CatalogVerifierV1)
-                .expect_err("verify refuses a legacy session"),
-        ),
-    ] {
-        assert_eq!(
-            typed_code(&error),
-            Some(SearchPlaneErrorCodeV2::InvalidRequest),
-            "{label}"
-        );
-    }
-    assert!(exile.path().read_dir()?.next().is_none());
     Ok(())
 }

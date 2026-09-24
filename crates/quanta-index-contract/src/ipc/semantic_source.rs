@@ -438,18 +438,20 @@ impl<'de> Visitor<'de> for SemanticSourceRecordV1Visitor {
             owner_id: owner_id.ok_or_else(|| de::Error::missing_field("owner_id"))?,
             source_doc_id: source_doc_id
                 .ok_or_else(|| de::Error::missing_field("source_doc_id"))?,
-            parent_owner_id: parent_owner_id.unwrap_or(None),
+            parent_owner_id: parent_owner_id
+                .ok_or_else(|| de::Error::missing_field("parent_owner_id"))?,
             repo_relative_path: repo_relative_path
                 .ok_or_else(|| de::Error::missing_field("repo_relative_path"))?,
-            language: language.unwrap_or(None),
-            package: package.unwrap_or(None),
-            symbol_kind: symbol_kind.unwrap_or(None),
-            visibility: visibility.unwrap_or(None),
+            language: language.ok_or_else(|| de::Error::missing_field("language"))?,
+            package: package.ok_or_else(|| de::Error::missing_field("package"))?,
+            symbol_kind: symbol_kind.ok_or_else(|| de::Error::missing_field("symbol_kind"))?,
+            visibility: visibility.ok_or_else(|| de::Error::missing_field("visibility"))?,
             source_role: source_role.ok_or_else(|| de::Error::missing_field("source_role"))?,
             generated: generated.ok_or_else(|| de::Error::missing_field("generated"))?,
             capability_status: capability_status
                 .ok_or_else(|| de::Error::missing_field("capability_status"))?,
-            raw_fallback_reason: raw_fallback_reason.unwrap_or(None),
+            raw_fallback_reason: raw_fallback_reason
+                .ok_or_else(|| de::Error::missing_field("raw_fallback_reason"))?,
             authority_digest: authority_digest
                 .ok_or_else(|| de::Error::missing_field("authority_digest"))?,
             render_policy_digest: render_policy_digest
@@ -708,10 +710,8 @@ impl<'de> Visitor<'de> for SemanticSourceReplaceScopeV1Visitor {
             scope: scope.ok_or_else(|| de::Error::missing_field("scope"))?,
             scope_digest: scope_digest.ok_or_else(|| de::Error::missing_field("scope_digest"))?,
             sources: sources.ok_or_else(|| de::Error::missing_field("sources"))?,
-            // Bounded legacy wire compatibility: prior semantic-source batches
-            // did not carry structured membership. Current-format builders
-            // still reject a ClusterCard replacement without this authority.
-            cluster_memberships: cluster_memberships.unwrap_or_default(),
+            cluster_memberships: cluster_memberships
+                .ok_or_else(|| de::Error::missing_field("cluster_memberships"))?,
         })
     }
 }

@@ -28,8 +28,8 @@ impl<'a> QuarantineNamespace<'a> {
             SearchPlaneControlIpcResponse::QuarantineInventory(inventory) => Ok(inventory),
             other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
-            | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
             | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
+            | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
@@ -65,8 +65,8 @@ impl<'a> QuarantineNamespace<'a> {
             }
             other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
-            | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
             | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
+            | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)

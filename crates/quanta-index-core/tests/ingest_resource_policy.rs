@@ -2,7 +2,7 @@
 //! derivation will embed it, and refuses typed before anything is held.
 //!
 //! The oracle is arithmetic the test does itself: records and text bytes
-//! counted from the batch it built, vector bytes as `records × dimension ×
+//! counted from the typed semantic sources it built, vector bytes as `sources × dimension ×
 //! 4`. The footprint must match exactly, and every ceiling must refuse
 //! under `INGEST_RESOURCE_BUDGET_EXCEEDED` at one over and admit at the
 //! bound.
@@ -45,8 +45,8 @@ fn source(index: usize, text: &str) -> SemanticSourceRecordV1 {
     let owner_id = format!("source-{index}");
     SemanticSourceRecordV1 {
         record_id: owner_id.clone(),
-        corpus_kind: SemanticCorpusKindV1::RawCodeFallback,
-        owner_kind: OwnerDocKind::Chunk,
+        corpus_kind: SemanticCorpusKindV1::SymbolCard,
+        owner_kind: OwnerDocKind::Symbol,
         owner_id: owner_id.clone(),
         source_doc_id: owner_id,
         parent_owner_id: None,
@@ -55,9 +55,9 @@ fn source(index: usize, text: &str) -> SemanticSourceRecordV1 {
         package: None,
         symbol_kind: None,
         visibility: None,
-        source_role: SourceRoleV1::RawFallbackText,
+        source_role: SourceRoleV1::CardText,
         generated: false,
-        capability_status: CapabilityStatusV1::Degraded,
+        capability_status: CapabilityStatusV1::Full,
         raw_fallback_reason: None,
         authority_digest: "test:authority".to_string(),
         render_policy_digest: "test:render".to_string(),
@@ -66,7 +66,7 @@ fn source(index: usize, text: &str) -> SemanticSourceRecordV1 {
     }
 }
 
-/// A batch of `chunk_texts` legacy chunks and `source_texts` typed sources.
+/// A batch of lexical chunks and typed semantic sources.
 #[expect(
     clippy::expect_used,
     reason = "static fixture IDs provably satisfy the canonical ID policy"
@@ -98,8 +98,8 @@ fn batch(
         .enumerate()
         .map(|(index, text)| SemanticSourceReplaceScopeV1 {
             scope: SemanticSourceScopeKeyV1 {
-                corpus_kind: SemanticCorpusKindV1::RawCodeFallback,
-                owner_kind: OwnerDocKind::Chunk,
+                corpus_kind: SemanticCorpusKindV1::SymbolCard,
+                owner_kind: OwnerDocKind::Symbol,
                 owner_id: format!("source-{index}"),
             },
             scope_digest: format!("scope:source-{index}"),
@@ -137,25 +137,22 @@ fn expect_refusal(outcome: Result<impl std::fmt::Debug, CoreError>, what: &str) 
     }
 }
 
-/// Legacy chunks are what the derivation embeds when a batch carries no
-/// typed sources; the footprint counts exactly them.
+/// A lexical-only replacement is an explicit semantic no-op.
 #[test]
-fn chunk_only_batches_are_measured_by_their_chunks() -> TestResult {
+fn chunk_only_batches_do_not_request_embedding() -> TestResult {
     let batch = batch(&["alpha", "beta-beta", "γ"], &[])?;
     let footprint = IngestResourcePolicy::DEFAULT.admit_search_corpus_batch(&batch, DIMENSION)?;
-    let text_bytes = u64::try_from("alpha".len() + "beta-beta".len() + "γ".len())?;
     if footprint.carried_records != 3
-        || footprint.embedded_records != 3
-        || footprint.text_bytes != text_bytes
-        || footprint.vector_bytes != 3 * u64::try_from(DIMENSION)? * 4
+        || footprint.embedded_records != 0
+        || footprint.text_bytes != 0
+        || footprint.vector_bytes != 0
     {
         return Err(format!("chunk footprint drifted: {footprint:?}").into());
     }
     Ok(())
 }
 
-/// Typed sources win: when a batch carries any, they are the embedded set
-/// and the chunks only count as carried rows.
+/// Only typed sources are embedded; chunks count as carried lexical rows.
 #[test]
 fn typed_sources_are_the_embedded_set_when_present() -> TestResult {
     let batch = batch(&["chunk text that is long"], &["s1", "s2"])?;
@@ -173,7 +170,7 @@ fn typed_sources_are_the_embedded_set_when_present() -> TestResult {
 /// Each ceiling admits at the bound and refuses one past it, typed.
 #[test]
 fn every_ceiling_admits_at_the_bound_and_refuses_one_over() -> TestResult {
-    let batch = batch(&["ab", "cd", "ef"], &[])?;
+    let batch = batch(&[], &["ab", "cd", "ef"])?;
     let vector_bytes = 3 * u64::try_from(DIMENSION)? * 4;
 
     let at_records = IngestResourcePolicy::new(3, u64::MAX, u64::MAX)?;
@@ -206,7 +203,7 @@ fn every_ceiling_admits_at_the_bound_and_refuses_one_over() -> TestResult {
 /// at one dimension is refused at a wider one.
 #[test]
 fn a_wider_dimension_multiplies_the_vector_footprint() -> TestResult {
-    let batch = batch(&["ab", "cd"], &[])?;
+    let batch = batch(&[], &["ab", "cd"])?;
     let policy = IngestResourcePolicy::new(usize::MAX, u64::MAX, 2 * 8 * 4)?;
     let _admitted = policy.admit_search_corpus_batch(&batch, 8)?;
     expect_refusal(policy.admit_search_corpus_batch(&batch, 9), "dimension 9")
@@ -216,7 +213,7 @@ fn a_wider_dimension_multiplies_the_vector_footprint() -> TestResult {
 /// batch refusal.
 #[test]
 fn an_out_of_range_dimension_is_an_invalid_contract() -> TestResult {
-    let batch = batch(&["ab"], &[])?;
+    let batch = batch(&[], &["ab"])?;
     let policy = IngestResourcePolicy::DEFAULT;
     let _admitted = policy.admit_search_corpus_batch(&batch, MAX_EMBEDDING_DIMENSION)?;
     for dimension in [0, MAX_EMBEDDING_DIMENSION + 1] {

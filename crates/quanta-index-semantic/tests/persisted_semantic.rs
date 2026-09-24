@@ -11,7 +11,7 @@ use quanta_index_contract::{
     BatchIngestMode, EmbeddingDistanceMetric, EmbeddingModelContract, EmbeddingNormalization,
     EmbeddingRecord, ExactRepoRelativePathV1, ManifestGeneration, OwnerDocKind,
     QueryConstraintSetV1, RepoId, RevisionId, SearchScopeKey, SemanticCorpusKindV1,
-    SemanticIngestBatch, SemanticReplaceScope,
+    SemanticIngestBatch, SemanticReplaceScope, SemanticSourceScopeKeyV1,
 };
 use quanta_index_core::{
     CoreError, GenerationQuarantineReasonV1, GenerationStorageKeyV1, L2_UNIT_NORM_TOLERANCE,
@@ -590,7 +590,7 @@ fn tombstone_scope_removes_existing_entries() -> TestResult {
             3,
         ),
     )?;
-    // Delta to a NEW generation cloning the sealed base, then tombstone the path.
+    // Delta to a new generation, deleting the exact inherited semantic owner.
     build_resident_batch_v1(
         &adapter,
         &SemanticIngestBatch {
@@ -606,7 +606,11 @@ fn tombstone_scope_removes_existing_entries() -> TestResult {
             corpus_policy_digest: None,
             clear_surfaces: Vec::new(),
             replace_scopes: Vec::new(),
-            tombstone_scopes: vec![tombstone_scope_v1("src/main.rs")],
+            tombstone_scopes: vec![tombstone_scope_v1(SemanticSourceScopeKeyV1 {
+                corpus_kind: SemanticCorpusKindV1::RawCodeFallback,
+                owner_kind: OwnerDocKind::Chunk,
+                owner_id: "owner-emb-1".to_string(),
+            })],
             seal: true,
         },
     )?;

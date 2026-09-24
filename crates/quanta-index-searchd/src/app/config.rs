@@ -443,6 +443,9 @@ pub(crate) struct EnvPolicyFamily {
 /// An env lookup, injected so the chain is provable without process env.
 pub(crate) type EnvLookup<'a> = dyn Fn(&str) -> Result<Option<String>> + 'a;
 
+/// Removed switches are recognized only to reject stale deployment config.
+const RETIRED_ENV_KNOBS: &[&str] = &["QUANTA_INDEX_SEMANTIC_DERIVE_MODE"];
+
 /// Every env policy family, in the order both entry points apply them.
 pub(crate) const ENV_POLICY_FAMILIES: &[EnvPolicyFamily] = &[
     EnvPolicyFamily {
@@ -690,6 +693,11 @@ impl SearchdConfig {
     /// lookup), then [`ENV_POLICY_FAMILIES`] in order, then the required
     /// policies checked. Both public entry points are this function.
     pub(crate) fn from_lookup(state_root: Option<PathBuf>, lookup: &EnvLookup<'_>) -> Result<Self> {
+        for knob in RETIRED_ENV_KNOBS {
+            if lookup(knob)?.is_some() {
+                anyhow::bail!("{knob} is retired; semantic derivation is typed-source only");
+            }
+        }
         let state_root = match state_root {
             Some(state_root) => state_root,
             None => Self::resolve_state_root_from_lookup(lookup)?,
@@ -1861,6 +1869,18 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     #[test]
+    fn retired_semantic_derivation_switch_is_rejected_before_policy_resolution() {
+        for value in ["semantic_with_legacy_fallback", "semantic_only", ""] {
+            let error = SearchdConfig::from_lookup(
+                Some(PathBuf::from("/tmp/quanta-index-retired-semantic-mode")),
+                &|name| Ok((name == RETIRED_ENV_KNOBS[0]).then(|| value.to_string())),
+            )
+            .expect_err("a retired semantic mode must not be silently ignored");
+            assert!(error.to_string().contains("retired"), "{error}");
+        }
+    }
+
+    #[test]
     fn in_process_builder_uses_explicit_hash_dev_at_search_owned_dimension() {
         let config =
             SearchdConfig::from_test_state_root(PathBuf::from("/tmp/quanta-index-cfg-test"));
@@ -2018,6 +2038,9 @@ mod tests {
         }
         for var in STATE_ROOT_ENV_VARS {
             assert!(declared.insert(var, "state root").is_none());
+        }
+        for var in RETIRED_ENV_KNOBS {
+            assert!(declared.insert(var, "retired (reject-only)").is_none());
         }
         for literal in env_literals_in_sources() {
             assert!(

@@ -160,6 +160,14 @@ def validate_query_protocol(payload: object, task_ids: list[str], where: str) ->
     core = {key: value for key, value in protocol.items() if key != "sha256"}
     if not _is_hex(protocol["sha256"], 64) or protocol["sha256"] != _protocol_digest(core):
         raise RunError(f"{where}.sha256 mismatch")
+    expected_protocol = build_query_protocol(
+        task_ids,
+        protocol["seed"],
+        len(protocol["warmup_schedules"]),
+        len(protocol["measurement_schedules"]),
+    )
+    if protocol != expected_protocol:
+        raise RunError(f"{where} differs from the deterministic seeded schedule")
     return protocol
 
 

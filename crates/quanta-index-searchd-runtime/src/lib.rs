@@ -44,7 +44,7 @@ use quanta_index_semantic::SemanticAdapter;
 /// SIGINT/SIGTERM are latched into [`quanta_index_searchd::CancelRoot`].
 pub mod signal;
 
-/// Offline `migrate-state` / `backup-state` / `restore-state` /
+/// Offline `backup-state` / `restore-state` /
 /// `verify-state` composition (SEP-21 P10 / S21-11).
 ///
 /// The only surface that links the legacy parsers.

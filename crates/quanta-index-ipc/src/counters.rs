@@ -6,7 +6,7 @@
 //! metrics scrape before any connection exists.
 
 use std::collections::VecDeque;
-use std::num::NonZeroU64;
+use std::num::{NonZeroU64, NonZeroU128};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, TryLockError};
 
@@ -34,6 +34,18 @@ pub enum RequestEventStageV1 {
         route: &'static str,
         error: Option<SearchPlaneErrorCodeV2>,
     },
+    ProviderStarted {
+        ticket_id: u64,
+    },
+    ProviderReturned {
+        ticket_id: u64,
+    },
+    IngestWindowStarted {
+        window_ordinal: u64,
+    },
+    IngestWindowReturned {
+        window_ordinal: u64,
+    },
     DispatchReturned,
     PeerWatchFailed,
     PeerCancelled,
@@ -53,6 +65,36 @@ pub struct RequestEventV1 {
     pub elapsed_micros: u64,
 }
 
+/// An event's insertion order within one plane's process-local ring. This is
+/// diagnostic order, not a durable request sequence or journal position.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SequencedRequestEventV1 {
+    pub sequence: u64,
+    pub event: RequestEventV1,
+}
+
+/// One bounded read of the existing transport ring. Loss can happen while a
+/// reader holds its lock, so both observed drop totals are returned.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RequestEventWindowV1 {
+    pub process_instance: NonZeroU128,
+    pub plane: &'static str,
+    pub events: Vec<SequencedRequestEventV1>,
+    pub oldest_retained_sequence: Option<u64>,
+    pub next_sequence: u64,
+    pub dropped_before: u64,
+    pub dropped_after: u64,
+    pub omitted_before_window: bool,
+    pub sequence_exhausted: bool,
+}
+
+#[derive(Debug)]
+struct RequestEventRingV1 {
+    events: VecDeque<SequencedRequestEventV1>,
+    next_sequence: u64,
+    sequence_exhausted: bool,
+}
+
 /// The transport-owned diagnostic sink passed to admitted backend contexts.
 pub trait RequestEventSinkV1: std::fmt::Debug + Send + Sync {
     fn record_request_event_v1(&self, event: RequestEventV1);
@@ -65,6 +107,7 @@ pub struct IpcServerCounters {
     /// The metric-name segment for this server (`query`, `control`,
     /// `ingest`).
     plane: &'static str,
+    process_instance: Option<NonZeroU128>,
     connections_accepted: AtomicU64,
     /// Connections closed at accept because the policy's cap was reached.
     connections_refused: AtomicU64,
@@ -105,7 +148,7 @@ pub struct IpcServerCounters {
     peer_hangup_detected: AtomicU64,
     /// A fixed-capacity diagnostic tail. Counter totals above remain the
     /// accounting authority and are never reconstructed from this ring.
-    request_events: Mutex<VecDeque<RequestEventV1>>,
+    request_events: Mutex<RequestEventRingV1>,
     request_events_dropped: AtomicU64,
 }
 
@@ -141,6 +184,7 @@ impl IpcServerCounters {
     pub const fn for_plane(plane: &'static str) -> Self {
         Self {
             plane,
+            process_instance: None,
             connections_accepted: AtomicU64::new(0),
             connections_refused: AtomicU64::new(0),
             peers_refused: AtomicU64::new(0),
@@ -156,9 +200,25 @@ impl IpcServerCounters {
             requests_dispatched: AtomicU64::new(0),
             peer_hangups: AtomicU64::new(0),
             peer_hangup_detected: AtomicU64::new(0),
-            request_events: Mutex::new(VecDeque::new()),
+            request_events: Mutex::new(RequestEventRingV1 {
+                events: VecDeque::new(),
+                next_sequence: 1,
+                sequence_exhausted: false,
+            }),
             request_events_dropped: AtomicU64::new(0),
         }
+    }
+
+    /// Bind one daemon-boot identity to a plane's diagnostic ring. The
+    /// composition root passes the same value to query, control and ingest.
+    #[must_use]
+    pub const fn for_plane_with_instance(
+        plane: &'static str,
+        process_instance: NonZeroU128,
+    ) -> Self {
+        let mut counters = Self::for_plane(plane);
+        counters.process_instance = Some(process_instance);
+        counters
     }
 
     #[must_use]
@@ -274,7 +334,44 @@ impl IpcServerCounters {
         let events = self.request_events.lock().map_err(|error| {
             CoreError::Storage(format!("IPC request event ring poisoned: {error}"))
         })?;
-        Ok(events.iter().copied().collect())
+        Ok(events.events.iter().map(|item| item.event).collect())
+    }
+
+    /// Return at most `max_events` from the tail, in ring insertion order.
+    /// The response contract must additionally cap encoded bytes before wire
+    /// publication; this read alone is not an operator authorization check.
+    pub fn request_event_window_v1(
+        &self,
+        max_events: usize,
+    ) -> Result<RequestEventWindowV1, CoreError> {
+        if max_events == 0 || max_events > REQUEST_EVENT_CAPACITY_V1 {
+            return Err(CoreError::InvalidContract(format!(
+                "IPC request event window limit must be 1..={REQUEST_EVENT_CAPACITY_V1}"
+            )));
+        }
+        let process_instance = self.process_instance.ok_or_else(|| {
+            CoreError::InvalidContract(
+                "IPC request event window has no process-instance identity".to_string(),
+            )
+        })?;
+        let ring = self.request_events.lock().map_err(|error| {
+            CoreError::Storage(format!("IPC request event ring poisoned: {error}"))
+        })?;
+        let dropped_before = self.request_events_dropped.load(Ordering::Acquire);
+        let skipped = ring.events.len().saturating_sub(max_events);
+        let events = ring.events.iter().skip(skipped).copied().collect();
+        let dropped_after = self.request_events_dropped.load(Ordering::Acquire);
+        Ok(RequestEventWindowV1 {
+            process_instance,
+            plane: self.plane,
+            events,
+            oldest_retained_sequence: ring.events.front().map(|item| item.sequence),
+            next_sequence: ring.next_sequence,
+            dropped_before,
+            dropped_after,
+            omitted_before_window: skipped != 0,
+            sequence_exhausted: ring.sequence_exhausted,
+        })
     }
 
     fn metric_name(&self, suffix: &str) -> String {
@@ -363,11 +460,24 @@ impl RequestEventSinkV1 for IpcServerCounters {
                 return;
             }
         };
-        if events.len() == REQUEST_EVENT_CAPACITY_V1 {
-            let _oldest = events.pop_front();
+        if events.sequence_exhausted {
+            let _prior = self.request_events_dropped.fetch_add(1, Ordering::AcqRel);
+            return;
+        }
+        let Some(next_sequence) = events.next_sequence.checked_add(1) else {
+            events.sequence_exhausted = true;
+            let _prior = self.request_events_dropped.fetch_add(1, Ordering::AcqRel);
+            return;
+        };
+        if events.events.len() == REQUEST_EVENT_CAPACITY_V1 {
+            let _oldest = events.events.pop_front();
             let _prior = self.request_events_dropped.fetch_add(1, Ordering::AcqRel);
         }
-        events.push_back(event);
+        let sequence = events.next_sequence;
+        events.next_sequence = next_sequence;
+        events
+            .events
+            .push_back(SequencedRequestEventV1 { sequence, event });
     }
 }
 
@@ -429,13 +539,16 @@ mod tests {
         RequestEventSinkV1, RequestEventStageV1, RequestEventV1,
     };
     use quanta_index_core::{MetricPointV1, MetricSourcePort};
-    use std::num::NonZeroU64;
+    use std::num::{NonZeroU64, NonZeroU128};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     #[test]
     fn request_event_tail_is_bounded_and_reports_loss_without_changing_totals() {
-        let counters = IpcServerCounters::for_plane("test");
+        let counters = IpcServerCounters::for_plane_with_instance(
+            "test",
+            NonZeroU128::new(41).expect("nonzero fixture ID"),
+        );
         for id in 1..=(REQUEST_EVENT_CAPACITY_V1 + 2) {
             counters.record_request_event_v1(RequestEventV1 {
                 request_id: NonZeroU64::new(id as u64).expect("nonzero fixture ID"),
@@ -450,6 +563,23 @@ mod tests {
         assert_eq!(events.last().expect("last event").request_id.get(), 1026);
         assert_eq!(counters.snapshot().request_events_dropped, 2);
         assert_eq!(counters.snapshot().requests_dispatched, 0);
+        let window = counters.request_event_window_v1(2).expect("bounded tail");
+        assert_eq!(window.process_instance.get(), 41);
+        assert_eq!(window.plane, "test");
+        assert_eq!(window.oldest_retained_sequence, Some(3));
+        assert_eq!(window.next_sequence, 1027);
+        assert_eq!(window.dropped_before, 2);
+        assert_eq!(window.dropped_after, 2);
+        assert!(window.omitted_before_window);
+        assert!(!window.sequence_exhausted);
+        assert_eq!(
+            window
+                .events
+                .iter()
+                .map(|item| (item.sequence, item.event.request_id.get()))
+                .collect::<Vec<_>>(),
+            [(1025, 1025), (1026, 1026)]
+        );
 
         let _held = counters.request_events.lock().expect("ring lock");
         counters.record_request_event_v1(RequestEventV1 {
@@ -460,6 +590,12 @@ mod tests {
         });
         assert_eq!(counters.snapshot().request_events_dropped, 3);
         drop(_held);
+        let after_contention = counters
+            .request_event_window_v1(1)
+            .expect("tail after loss");
+        assert_eq!(after_contention.next_sequence, 1027);
+        assert_eq!(after_contention.dropped_before, 3);
+        assert_eq!(after_contention.events[0].sequence, 1026);
         let dropped_point = counters
             .scrape()
             .expect("scrape")
@@ -472,6 +608,65 @@ mod tests {
                 3,
             ))
         );
+    }
+
+    #[test]
+    fn request_event_window_rejects_invalid_limit_and_sequence_exhaustion() {
+        let counters = IpcServerCounters::for_plane_with_instance(
+            "test",
+            NonZeroU128::new(41).expect("nonzero fixture ID"),
+        );
+        assert!(counters.request_event_window_v1(0).is_err());
+        assert!(
+            counters
+                .request_event_window_v1(REQUEST_EVENT_CAPACITY_V1 + 1)
+                .is_err()
+        );
+        {
+            let mut ring = counters.request_events.lock().expect("ring lock");
+            ring.next_sequence = u64::MAX;
+        }
+        counters.record_request_event_v1(RequestEventV1 {
+            request_id: NonZeroU64::new(1).expect("nonzero fixture ID"),
+            connection_id: 1,
+            stage: RequestEventStageV1::Validated,
+            elapsed_micros: 0,
+        });
+        let window = counters.request_event_window_v1(1).expect("exhausted tail");
+        assert!(window.events.is_empty());
+        assert_eq!(window.next_sequence, u64::MAX);
+        assert_eq!(window.dropped_before, 1);
+        assert!(window.sequence_exhausted);
+    }
+
+    #[test]
+    fn one_bound_process_instance_is_shared_without_sharing_plane_sequence() {
+        let process_instance = NonZeroU128::new(41).expect("nonzero fixture ID");
+        let query = IpcServerCounters::for_plane_with_instance("query", process_instance);
+        let control = IpcServerCounters::for_plane_with_instance("control", process_instance);
+        let ingest = IpcServerCounters::for_plane_with_instance("ingest", process_instance);
+        query.record_request_event_v1(RequestEventV1 {
+            request_id: NonZeroU64::new(7).expect("nonzero fixture ID"),
+            connection_id: 1,
+            stage: RequestEventStageV1::Validated,
+            elapsed_micros: 0,
+        });
+        for (plane, counters) in [
+            ("query", &query),
+            ("control", &control),
+            ("ingest", &ingest),
+        ] {
+            let window = counters.request_event_window_v1(1).expect("bound window");
+            assert_eq!(window.process_instance, process_instance);
+            assert_eq!(window.plane, plane);
+            assert_eq!(window.next_sequence, if plane == "query" { 2 } else { 1 });
+        }
+    }
+
+    #[test]
+    fn an_unbound_counter_cannot_issue_an_operator_window() {
+        let counters = IpcServerCounters::for_plane("test");
+        assert!(counters.request_event_window_v1(1).is_err());
     }
 
     /// The RAII permits reconcile on a panic unwind: both gauges return

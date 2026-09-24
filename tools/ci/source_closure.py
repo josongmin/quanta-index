@@ -29,6 +29,7 @@ PROFILES = {
             "tools/benchmark/retrieval",
             "tools/ci/lint/check-rust-derive-allowlist.py",
             "tools/ci/lint/check-test-authority.py",
+            "tools/ci/nextest_events.py",
             "tools/ci/source_closure.py",
             "tools/ci/timing/rust_profile_history.py",
             "tools/ci/tests/test_retrieval_benchmark.py",

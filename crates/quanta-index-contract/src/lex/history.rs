@@ -437,11 +437,19 @@ impl<'de> Visitor<'de> for CommitRecordVisitor {
             committer_time_ms,
             applied_at_ms,
             author: author.into_boxed_str(),
-            author_name: author_name.unwrap_or(None).map(String::into_boxed_str),
-            author_email: author_email.unwrap_or(None).map(String::into_boxed_str),
+            author_name: author_name
+                .ok_or_else(|| de::Error::missing_field("author_name"))?
+                .map(String::into_boxed_str),
+            author_email: author_email
+                .ok_or_else(|| de::Error::missing_field("author_email"))?
+                .map(String::into_boxed_str),
             committer: committer.into_boxed_str(),
-            committer_name: committer_name.unwrap_or(None).map(String::into_boxed_str),
-            committer_email: committer_email.unwrap_or(None).map(String::into_boxed_str),
+            committer_name: committer_name
+                .ok_or_else(|| de::Error::missing_field("committer_name"))?
+                .map(String::into_boxed_str),
+            committer_email: committer_email
+                .ok_or_else(|| de::Error::missing_field("committer_email"))?
+                .map(String::into_boxed_str),
             message: message.into_boxed_str(),
             is_merge,
             tags: tags.into_iter().map(String::into_boxed_str).collect(),

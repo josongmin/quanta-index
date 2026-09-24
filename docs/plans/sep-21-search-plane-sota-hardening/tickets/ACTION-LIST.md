@@ -2,15 +2,38 @@
 
 Status: implementation checklist; no item is complete from this document alone.
 
+P10 importer actions below are historical and superseded by the 2026-09-24
+prerelease breaking cutover. Do not run the migration prompt: legacy roots
+are refused, and current-format backup/restore/verify are the only offline
+state operations.
+
 For residual work after the historical P03–P10 handoffs, use the
-[final current-source execution plan](FINAL-RESIDUAL-EXECUTION-PLAN.md).
+[final current-code SSOT/duplication audit and F0–F5 file units](FINAL-RESIDUAL-EXECUTION-PLAN.md#final-current-code-ssot-and-duplication-audit-2026-09-24-static-only).
 The wave checklist below records the original execution decomposition; it is
 not a current-source completion or release verdict.
+In particular, use that plan's final audit for
+the P06 head-event/readiness coupling, existing P09 ring/process-instance
+candidate, P10 `migrate-state` removal decision, P11 V2/private-commit and
+projection-replay review, and P12A no-follow proof custody. The
+`write-proof-manifest.py` producer has a dirty no-follow candidate sharing
+that custody primitive; review and prove it rather than reimplementing it.
+The current dirty V2 RepoMap activation request and catalog already contain
+prior-head CAS and a catalog-backed active-head read. Review that candidate
+and freeze the expected token in the existing Semantica outbox before first
+dispatch. Do the same in aggregate Required-member custody, and stop the
+common dispatcher from regenerating `for_bundle(None)` before sending. These
+are two existing operation modes, not two active-head authorities. Do not
+implement another CAS/head map or retry-time token refresh.
+The current constructor's implicit `None` is a caller-safety gap. Root-restore
+ABA remains until the shared state-root incarnation contract is bound.
+Do not add parallel owners here.
 
 Copy/paste execution prompts: [prompt runbook](prompts/README.md)
 
-Execution rule: `P00 → P01A → (P02A ∥ P02B) → P02I → P03 → P04 → … → P11 → P12A → P12Q`. Only P02A/P02B may run in
-parallel. A checked item requires code plus the listed DoD evidence.
+Historical wave rule (not the residual order): `P00 → P01A → (P02A ∥ P02B) → P02I → P03 → P04 → … → P11 → P12A → P12Q`.
+Use the residual plan's F0–F5 units for current sequencing and writer
+boundaries; its lower dated overlays and section 7 are historical.
+A checked item requires code plus the listed DoD evidence.
 
 ## W0 — authority and proof freeze
 

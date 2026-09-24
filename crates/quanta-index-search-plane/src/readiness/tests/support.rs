@@ -313,8 +313,7 @@ pub(super) fn search_corpus_history_file_names_v1(
         .map_err(Into::into)
 }
 
-/// Encode every auxiliary authority of `ledger` as rows — the whole-state
-/// encoding the legacy migration uses — into `catalog`.
+/// Encode every auxiliary authority of `ledger` as rows into a test catalog.
 pub(super) fn persist_whole_ledger(
     catalog: &dyn AuxiliaryAuthorityCatalogPort,
     ledger: &Ledger,

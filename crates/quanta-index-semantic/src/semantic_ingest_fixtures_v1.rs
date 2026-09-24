@@ -117,28 +117,21 @@ pub fn search_scope_v1(path: &str) -> SearchScopeKey {
 }
 
 #[must_use]
-pub fn tombstone_scope_v1(path: &str) -> SemanticTombstoneScope {
-    SemanticTombstoneScope {
-        scope: Some(search_scope_v1(path)),
-        semantic_scope: None,
-    }
+pub fn tombstone_scope_v1(semantic_scope: SemanticSourceScopeKeyV1) -> SemanticTombstoneScope {
+    SemanticTombstoneScope { semantic_scope }
 }
 
 #[must_use]
 pub fn tombstone_scope_with_semantic_owner_v1(
-    path: &str,
     corpus_kind: SemanticCorpusKindV1,
     owner_kind: OwnerDocKind,
     owner_id: &str,
 ) -> SemanticTombstoneScope {
-    SemanticTombstoneScope {
-        scope: Some(search_scope_v1(path)),
-        semantic_scope: Some(SemanticSourceScopeKeyV1 {
-            corpus_kind,
-            owner_kind,
-            owner_id: owner_id.to_string(),
-        }),
-    }
+    tombstone_scope_v1(SemanticSourceScopeKeyV1 {
+        corpus_kind,
+        owner_kind,
+        owner_id: owner_id.to_string(),
+    })
 }
 
 #[must_use]

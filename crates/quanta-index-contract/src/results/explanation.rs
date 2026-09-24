@@ -623,18 +623,12 @@ impl Serialize for SearchExplanation {
     where
         S: Serializer,
     {
-        let mut field_count: usize = 8;
-        if self.early_stop_reason.is_some() {
-            field_count = field_count.saturating_add(1);
-        }
-        let mut state = serializer.serialize_struct("SearchExplanation", field_count)?;
+        let mut state = serializer.serialize_struct("SearchExplanation", 9)?;
         state.serialize_field("planner_trace", &self.planner_trace)?;
         state.serialize_field("engines_touched", &self.engines_touched)?;
         state.serialize_field("engines_executed", &self.engines_executed)?;
         state.serialize_field("request_id", &self.request_id)?;
-        if let Some(early_stop_reason) = &self.early_stop_reason {
-            state.serialize_field("early_stop_reason", early_stop_reason)?;
-        }
+        state.serialize_field("early_stop_reason", &self.early_stop_reason)?;
         state.serialize_field("contributions", &self.contributions)?;
         state.serialize_field("ranker_weights_hash", &self.ranker_weights_hash)?;
         state.serialize_field("strategy", &self.strategy)?;
@@ -695,7 +689,7 @@ impl<'de> Visitor<'de> for SearchExplanationVisitor {
                     if early_stop_reason.is_some() {
                         return Err(de::Error::duplicate_field("early_stop_reason"));
                     }
-                    early_stop_reason = Some(Some(map.next_value()?));
+                    early_stop_reason = Some(map.next_value()?);
                 }
                 "contributions" => {
                     if contributions.is_some() {
@@ -729,10 +723,11 @@ impl<'de> Visitor<'de> for SearchExplanationVisitor {
                 .ok_or_else(|| de::Error::missing_field("planner_trace"))?,
             engines_touched: engines_touched
                 .ok_or_else(|| de::Error::missing_field("engines_touched"))?,
-            // New in S21-10: pre-change payloads stay readable.
-            engines_executed: engines_executed.unwrap_or_default(),
-            request_id: request_id.unwrap_or_default(),
-            early_stop_reason: early_stop_reason.unwrap_or(None),
+            engines_executed: engines_executed
+                .ok_or_else(|| de::Error::missing_field("engines_executed"))?,
+            request_id: request_id.ok_or_else(|| de::Error::missing_field("request_id"))?,
+            early_stop_reason: early_stop_reason
+                .ok_or_else(|| de::Error::missing_field("early_stop_reason"))?,
             contributions: contributions
                 .ok_or_else(|| de::Error::missing_field("contributions"))?,
             ranker_weights_hash: ranker_weights_hash

@@ -33,6 +33,30 @@ repomap_string_enum! {
     }
 }
 
+#[cfg(test)]
+mod current_wire_tests {
+    use super::{RepoMapCompileRefusalCodeV1, RepoMapCompileRefusalV1, RepoMapCompileStageV1};
+
+    #[test]
+    fn compile_refusal_requires_explicit_optional_limit() {
+        let refusal = RepoMapCompileRefusalV1::new(
+            RepoMapCompileStageV1::BundleValidation,
+            RepoMapCompileRefusalCodeV1::EmptyBundle,
+            None,
+            0,
+        );
+        let mut wire = serde_json::to_value(&refusal).expect("serialize refusal");
+        assert!(wire.get("limit").is_some_and(serde_json::Value::is_null));
+        let _removed = wire.as_object_mut().expect("refusal map").remove("limit");
+        assert!(serde_json::from_value::<RepoMapCompileRefusalV1>(wire.clone()).is_err());
+        let mut old_cbor = Vec::new();
+        ciborium::ser::into_writer(&wire, &mut old_cbor).expect("serialize old refusal");
+        assert!(
+            ciborium::de::from_reader::<RepoMapCompileRefusalV1, _>(old_cbor.as_slice()).is_err()
+        );
+    }
+}
+
 repomap_string_enum! {
     pub enum RepoMapCompileRefusalCodeV1 {
         EmptyBundle => "EmptyBundle",
@@ -194,7 +218,7 @@ impl<'de> Visitor<'de> for RepoMapCompileRefusalVisitor {
         Ok(RepoMapCompileRefusalV1 {
             stage: stage.ok_or_else(|| de::Error::missing_field("stage"))?,
             code: code.ok_or_else(|| de::Error::missing_field("code"))?,
-            limit: limit.unwrap_or_default(),
+            limit: limit.ok_or_else(|| de::Error::missing_field("limit"))?,
             observed: observed.ok_or_else(|| de::Error::missing_field("observed"))?,
         })
     }

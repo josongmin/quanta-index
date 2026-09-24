@@ -542,6 +542,28 @@ fn semantic_scope_authority_allows_distinct_owners_on_same_path() -> TestResult 
 }
 
 #[test]
+fn semantic_scope_authority_rejects_empty_tombstone_owner() -> TestResult {
+    let mut batch = batch(
+        ManifestGeneration::new(45),
+        "src/shared.rs",
+        "symbol-a",
+        vec![1.0, 0.0, 0.0],
+        false,
+    )?;
+    batch.replace_scopes.clear();
+    batch.tombstone_scopes = vec![SemanticTombstoneScope {
+        semantic_scope: semantic_scope(SemanticCorpusKindV1::SymbolCard, OwnerDocKind::Symbol, ""),
+    }];
+    let error = admit_scope_authority(&batch)
+        .expect_err("empty tombstone owner must refuse before deletion");
+    assert!(matches!(
+        error,
+        CoreError::InvalidContract(message) if message.contains("tombstone owner_id")
+    ));
+    Ok(())
+}
+
+#[test]
 fn generation_contract_accumulates_corpora_across_mutation_and_seal_batches() -> TestResult {
     let temp = tempdir()?;
     let generation_dir = temp.path().join("generation");
@@ -1023,12 +1045,11 @@ fn scv2_02_same_path_delete_one_owner_keeps_other() -> TestResult {
         clear_surfaces: Vec::new(),
         replace_scopes: Vec::new(),
         tombstone_scopes: vec![SemanticTombstoneScope {
-            scope: None,
-            semantic_scope: Some(semantic_scope(
+            semantic_scope: semantic_scope(
                 SemanticCorpusKindV1::SymbolCard,
                 OwnerDocKind::Symbol,
                 "symbol-a",
-            )),
+            ),
         }],
         seal: true,
     };
@@ -1500,8 +1521,7 @@ fn cluster_membership_same_seal_replace_base_clone_and_tombstone_v1() -> TestRes
             clear_surfaces: Vec::new(),
             replace_scopes: Vec::new(),
             tombstone_scopes: vec![SemanticTombstoneScope {
-                scope: None,
-                semantic_scope: Some(cluster_scope),
+                semantic_scope: cluster_scope,
             }],
             seal: true,
         },
@@ -1636,7 +1656,7 @@ fn sealed_manifest_rejects_same_row_count_content_mutation() -> TestResult {
 }
 // ---- QI-BB-021 follow-up #2: scope-streamed build ----
 
-/// `count` legacy path scopes of `chunks_per_scope` chunk owners each,
+/// `count` replacement scopes grouped by path, with `chunks_per_scope` chunk owners each,
 /// every row a distinct unit direction in the fixture's 3-space.
 fn streamed_scopes(
     count: usize,

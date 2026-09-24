@@ -33,8 +33,8 @@ rust-profile-list:
         'test-query-truth-owner P05 query outcome/cursor/oracle owner proof' \
         'test-control-readiness-owner P09 control authorization/readiness owner proof' \
         'test-control-readiness-owner-lib P09 control authorization/readiness lib suites' \
-        'test-state-migration-owner P10 offline state migration/backup/restore owner proof' \
-        'test-state-migration-owner-lib P10 offline state migration lib suites' \
+        'test-state-migration-owner P10 current-format backup/restore/verify and old-root refusal owner proof' \
+        'test-state-migration-owner-lib P10 current-format offline state lib suites' \
         'test-query-truth-owner-lib P05 outcome/cursor/oracle lib suites' \
         'test-sdk-binding-owner P06 SDK contextual binding negative-matrix owner proof' \
         'test-sdk-binding-owner-lib P06 SDK lib suites' \
@@ -828,7 +828,9 @@ proof-p12a-proof-infrastructure:
     python3 tools/ci/lint/check-test-authority.py
     python3 tools/ci/lint/check-proof-authority.py
     python3 -m pytest \
+        tools/ci/tests/test_write_proof_manifest.py \
         tools/ci/tests/test_write_proof_aggregate.py \
+        tools/ci/tests/test_check_proof_authority.py \
         tools/ci/tests/test_check_lane_handoff.py \
         tools/ci/tests/test_handoff_validation.py \
         tools/ci/tests/test_check_proof_authority.py \

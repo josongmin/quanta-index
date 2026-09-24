@@ -231,6 +231,64 @@ def test_handoff_refuses_archive_tampering(tmp_path: Path) -> None:
     assert any("manifest digest mismatch" in error for error in errors)
 
 
+def test_handoff_refuses_symlinked_proof_archive_with_matching_bytes(
+    tmp_path: Path,
+) -> None:
+    root, handoff, manifest_path = _fixture(tmp_path)
+    mutable_copy = root / "artifacts/raw/mutable-manifest.json"
+    mutable_copy.parent.mkdir(parents=True, exist_ok=True)
+    mutable_copy.write_bytes(manifest_path.read_bytes())
+    manifest_path.unlink()
+    manifest_path.symlink_to(mutable_copy)
+
+    errors = HANDOFF.validate_handoff(
+        handoff,
+        handoff_path=root / "P00.json",
+        root=root,
+    )
+    assert any(
+        "proof manifest is not a regular non-symlink archive" in error for error in errors
+    ), errors
+
+
+def test_handoff_refuses_symlinked_archive_parent_with_matching_bytes(
+    tmp_path: Path,
+) -> None:
+    root, handoff, manifest_path = _fixture(tmp_path)
+    archive_dir = manifest_path.parent
+    moved_dir = root / "artifacts/raw/mutable-archive"
+    archive_dir.rename(moved_dir)
+    archive_dir.symlink_to(moved_dir, target_is_directory=True)
+
+    errors = HANDOFF.validate_handoff(
+        handoff,
+        handoff_path=root / "P00.json",
+        root=root,
+    )
+    assert any(
+        "proof manifest is not a regular non-symlink archive" in error for error in errors
+    ), errors
+
+
+def test_handoff_cli_refuses_symlinked_handoff_with_matching_bytes(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    root, handoff, _ = _fixture(tmp_path)
+    mutable_copy = root / "mutable-handoff.json"
+    mutable_copy.write_text(json.dumps(handoff), encoding="utf-8")
+    handoff_path = root / "P00.json"
+    handoff_path.symlink_to(mutable_copy)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [str(HANDOFF_CHECKER_PATH), str(handoff_path), "--root", str(root)],
+    )
+
+    assert HANDOFF.main() == 2
+    stderr = capsys.readouterr().err
+    assert "ERROR:" in stderr and "P00.json" in stderr
+
+
 def test_handoff_refuses_lane_ticket_and_required_proof_relabel(tmp_path: Path) -> None:
     root, handoff, _ = _fixture(tmp_path)
     handoff["lane"] = "P01"

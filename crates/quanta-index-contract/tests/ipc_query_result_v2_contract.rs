@@ -528,7 +528,7 @@ fn hybrid_seed_corpus_budgets_round_trip_losslessly() -> TestRes {
 }
 
 #[test]
-fn hybrid_seed_legacy_wire_defaults_missing_corpus_budgets_to_global_lane() -> TestRes {
+fn hybrid_seed_legacy_wire_without_corpus_budgets_is_refused() -> TestRes {
     let request = hybrid_seed_request_with_corpus_budgets();
     let mut value = serde_json::to_value(request)?;
     let fields = value
@@ -537,9 +537,10 @@ fn hybrid_seed_legacy_wire_defaults_missing_corpus_budgets_to_global_lane() -> T
     if fields.remove("dense_corpora").is_none() {
         return Err("dense_corpora field missing from new wire".into());
     }
-    let decoded: HybridSeedQueryRequest = serde_json::from_value(value)?;
-    if !decoded.dense_corpora.is_empty() {
-        return Err("legacy wire must decode to the migration global dense lane".into());
+    let error = serde_json::from_value::<HybridSeedQueryRequest>(value)
+        .expect_err("legacy wire missing dense_corpora must refuse");
+    if !error.to_string().contains("dense_corpora") {
+        return Err(format!("wrong refusal for missing dense_corpora: {error}").into());
     }
     Ok(())
 }

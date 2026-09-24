@@ -9,12 +9,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import secrets
 import stat
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, BinaryIO, TypeVar
 
 import jsonschema
 
@@ -148,48 +149,198 @@ def validate_product_handoff_chain(handoffs: Sequence[dict[str, Any]]) -> list[s
     return errors
 
 
-def _read_json(path: Path) -> Any:
-    return json.loads(path.read_text(encoding="utf-8"))
+_ReadResult = TypeVar("_ReadResult")
 
 
-def _read_regular_bytes_nofollow(path: Path) -> bytes:
-    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), "rb") as handle:
+def _consume_repo_regular_file(
+    root: Path,
+    value: str,
+    *,
+    label: str,
+    consume: Callable[[BinaryIO], _ReadResult],
+) -> _ReadResult:
+    """Consume one complete repo-relative file from a no-follow descriptor walk."""
+
+    path = _repo_path(root, value, label=label)
+    parts = Path(value).parts
+    directory_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for part in parts[:-1]:
+            next_fd = os.open(
+                part,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=directory_fd,
+            )
+            os.close(directory_fd)
+            directory_fd = next_fd
+        file_fd = os.open(
+            parts[-1],
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+            dir_fd=directory_fd,
+        )
+        with os.fdopen(file_fd, "rb") as handle:
+            before = os.fstat(handle.fileno())
+            if not stat.S_ISREG(before.st_mode):
+                raise ValueError(f"{label} is not a regular non-symlink file: {path}")
+            result = consume(handle)
+            after = os.fstat(handle.fileno())
+            if (
+                handle.tell() != before.st_size
+                or after.st_size != before.st_size
+                or after.st_mtime_ns != before.st_mtime_ns
+                or after.st_ctime_ns != before.st_ctime_ns
+            ):
+                raise ValueError(f"{label} changed while being read: {path}")
+            return result
+    finally:
+        os.close(directory_fd)
+
+
+def _read_repo_regular_bytes(root: Path, value: str, *, label: str) -> bytes:
+    return _consume_repo_regular_file(
+        root, value, label=label, consume=lambda handle: handle.read()
+    )
+
+
+def _repo_entry_present_no_follow(root: Path, value: str, *, label: str) -> bool:
+    """Distinguish an absent repo entry from an unsafe symlink or ancestor."""
+
+    _repo_path(root, value, label=label)
+    parts = Path(value).parts
+    directory_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for part in parts[:-1]:
+            try:
+                next_fd = os.open(
+                    part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory_fd
+                )
+            except FileNotFoundError:
+                return False
+            os.close(directory_fd)
+            directory_fd = next_fd
+        try:
+            os.stat(parts[-1], dir_fd=directory_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return False
+        return True
+    finally:
+        os.close(directory_fd)
+
+
+def _sha256_repo_regular_file(root: Path, value: str, *, label: str) -> str:
+    def digest_file(handle: BinaryIO) -> str:
+        digest = hashlib.sha256()
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+        return digest.hexdigest()
+
+    return _consume_repo_regular_file(root, value, label=label, consume=digest_file)
+
+
+def _open_repo_output_parent(root: Path, relative: str, *, create: bool = True) -> int:
+    """Create/open a repo output parent with each ancestor pinned and no-follow."""
+
+    _repo_path(root, relative, label="output")
+    directory_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for part in Path(relative).parts[:-1]:
+            if create:
+                try:
+                    os.mkdir(part, mode=0o700, dir_fd=directory_fd)
+                except FileExistsError:
+                    pass
+            next_fd = os.open(
+                part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory_fd
+            )
+            os.close(directory_fd)
+            directory_fd = next_fd
+        return directory_fd
+    except BaseException:
+        os.close(directory_fd)
+        raise
+
+
+def _write_output_temporary(parent_fd: int, name: str, content: bytes) -> str:
+    temporary_name = f".{name}.{secrets.token_hex(16)}.tmp"
+    descriptor = os.open(
+        temporary_name,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+        0o600,
+        dir_fd=parent_fd,
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        os.unlink(temporary_name, dir_fd=parent_fd)
+        raise
+    return temporary_name
+
+
+def _read_output_regular_bytes(parent_fd: int, name: str) -> bytes | None:
+    try:
+        descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent_fd)
+    except FileNotFoundError:
+        return None
+    with os.fdopen(descriptor, "rb") as handle:
         before = os.fstat(handle.fileno())
         if not stat.S_ISREG(before.st_mode):
-            raise ValueError(f"not a regular handoff file: {path}")
+            raise ValueError(f"output is not a regular non-symlink file: {name}")
         content = handle.read()
         after = os.fstat(handle.fileno())
         if (
             len(content) != before.st_size
             or after.st_size != before.st_size
             or after.st_mtime_ns != before.st_mtime_ns
+            or after.st_ctime_ns != before.st_ctime_ns
         ):
-            raise ValueError(f"handoff changed while being read: {path}")
+            raise ValueError(f"output changed while being read: {name}")
         return content
 
 
-def _read_toml(path: Path) -> dict[str, Any]:
-    with path.open("rb") as handle:
-        value = tomllib.load(handle)
-    if not isinstance(value, dict):
-        raise ValueError(f"TOML root is not an object: {path}")
-    return value
+def _restore_prior_output(parent_fd: int, name: str, prior_bytes: bytes | None) -> None:
+    if prior_bytes is None:
+        try:
+            os.unlink(name, dir_fd=parent_fd)
+        except FileNotFoundError:
+            pass
+    else:
+        temporary_name = _write_output_temporary(parent_fd, name, prior_bytes)
+        try:
+            os.replace(temporary_name, name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        except BaseException:
+            os.unlink(temporary_name, dir_fd=parent_fd)
+            raise
+    os.fsync(parent_fd)
 
 
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+def _require_output_parent_identity(root: Path, relative: str, parent_fd: int) -> None:
+    """Refuse a parent that was renamed or replaced after its descriptor was opened."""
+
+    observed_fd = _open_repo_output_parent(root, relative, create=False)
+    try:
+        original = os.fstat(parent_fd)
+        observed = os.fstat(observed_fd)
+        if (original.st_dev, original.st_ino) != (observed.st_dev, observed.st_ino):
+            raise ValueError(f"output parent changed during publication: {relative}")
+    finally:
+        os.close(observed_fd)
 
 
 def _repo_path(root: Path, value: str, *, label: str) -> Path:
     candidate = Path(value)
-    if candidate.is_absolute() or ".." in candidate.parts or candidate.as_posix() != value:
+    if (
+        not value
+        or "\\" in value
+        or candidate.is_absolute()
+        or ".." in candidate.parts
+        or candidate.as_posix() != value
+        or candidate == Path(".")
+    ):
         raise ValueError(f"{label} must be canonical repo-relative: {value!r}")
-    resolved = (root / candidate).resolve()
-    try:
-        resolved.relative_to(root)
-    except ValueError as error:
-        raise ValueError(f"{label} escapes repository root: {value!r}") from error
-    return resolved
+    return root / candidate
 
 
 def _git(root: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -304,10 +455,12 @@ def validate_handoff(
     require_result_head: bool = False,
 ) -> list[str]:
     errors: list[str] = []
-    schema_path = root / SCHEMA_PATH.relative_to(ROOT)
-    proof_schema_path = root / PROOF_SCHEMA_PATH.relative_to(ROOT)
     proof_registry_path = root / PROOF_REGISTRY_PATH.relative_to(ROOT)
-    schema = _read_json(schema_path)
+    schema = json.loads(
+        _read_repo_regular_bytes(
+            root, SCHEMA_PATH.relative_to(ROOT).as_posix(), label="handoff schema"
+        )
+    )
     validator = jsonschema.Draft202012Validator(schema)
     for error in sorted(validator.iter_errors(payload), key=lambda item: list(item.path)):
         location = ".".join(str(part) for part in error.path) or "root"
@@ -315,8 +468,16 @@ def validate_handoff(
     if not isinstance(payload, dict) or errors:
         return errors
 
-    proof_schema = _read_json(proof_schema_path)
-    registry = _read_toml(proof_registry_path)
+    proof_schema = json.loads(
+        _read_repo_regular_bytes(
+            root, PROOF_SCHEMA_PATH.relative_to(ROOT).as_posix(), label="proof schema"
+        )
+    )
+    registry = tomllib.loads(
+        _read_repo_regular_bytes(
+            root, PROOF_REGISTRY_PATH.relative_to(ROOT).as_posix(), label="proof registry"
+        ).decode("utf-8")
+    )
     registry_findings = proof_checker.check_registry(registry, root=root, path=proof_registry_path)
     if registry_findings:
         return [f"proof registry is invalid: {finding.message}" for finding in registry_findings]
@@ -394,14 +555,22 @@ def validate_handoff(
         except ValueError as error:
             errors.append(str(error))
             continue
-        if not manifest_path.is_file():
-            errors.append(f"proof manifest is missing: {item['manifest']}")
+        try:
+            manifest_bytes = _read_repo_regular_bytes(
+                root, item["manifest"], label="proof manifest archive"
+            )
+        except (OSError, ValueError) as error:
+            errors.append(f"proof manifest is not a regular non-symlink archive: {error}")
             continue
-        manifest_digest = _sha256(manifest_path)
+        manifest_digest = hashlib.sha256(manifest_bytes).hexdigest()
         if manifest_digest != item["manifest_sha256"]:
             errors.append(f"proof {item['id']} manifest digest mismatch")
             continue
-        manifest = _read_json(manifest_path)
+        try:
+            manifest = json.loads(manifest_bytes)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            errors.append(f"proof {item['id']} manifest is unreadable: {error}")
+            continue
         if not isinstance(manifest, dict):
             errors.append(f"proof {item['id']} manifest root is not an object")
             continue
@@ -505,11 +674,13 @@ def validate_handoff(
                     errors.append(
                         f"paired repository {repository['identity']} dirty digest is not current"
                     )
-                lock_path = checkout / "Cargo.lock"
-                if (
-                    not lock_path.is_file()
-                    or _sha256(lock_path) != repository["dependency_root_digest"]
-                ):
+                try:
+                    lock_digest = _sha256_repo_regular_file(
+                        checkout, "Cargo.lock", label="paired dependency lock"
+                    )
+                except (OSError, ValueError):
+                    lock_digest = None
+                if lock_digest != repository["dependency_root_digest"]:
                     errors.append(
                         f"paired repository {repository['identity']} dependency root is not current"
                     )
@@ -565,11 +736,11 @@ def inspect_handoff_ledger(
             findings.append(f"{relative}: handoff is missing")
             return reference
         reference["status"] = "FAILED"
-        if path.is_symlink() or not path.is_file():
+        if path.is_symlink():
             findings.append(f"{relative}: handoff is not a regular non-symlink file")
             return reference
         try:
-            content = _read_regular_bytes_nofollow(path)
+            content = _read_repo_regular_bytes(root, relative, label="handoff")
             reference["sha256"] = hashlib.sha256(content).hexdigest()
             payload = json.loads(content)
             errors = validate_handoff(

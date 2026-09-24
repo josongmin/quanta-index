@@ -45,7 +45,9 @@
 
 use rusqlite::{Connection, OptionalExtension as _, Transaction, params};
 use sha2::{Digest, Sha256};
+use std::num::NonZeroU64;
 
+use quanta_index_contract::{CandidateCommitmentV1, RepoMapExpectedActiveV2};
 use quanta_index_core::CoreError;
 
 use crate::connection::{SqliteCatalog, blob32, engine_error};
@@ -680,12 +682,14 @@ impl SqliteCatalog {
         })
     }
 
-    /// Activate a sealed candidate under a content-bound CAS.
+    /// Activate a sealed candidate under target binding and prior-head CAS.
     ///
     /// `expected_commitment` is the exact candidate commitment the caller
     /// derived from the sealed object; a mismatch is
     /// `ACTIVATION_CAS_CONFLICT`. A target that is not sealed (absent,
     /// invalidated, quarantined) is `ACTIVATION_TARGET_NOT_SEALED`.
+    /// `expected_active` must match the current catalog row exactly before
+    /// sequence allocation. An absent expectation only matches no active row.
     /// Re-activating the exact active candidate replays the original
     /// receipt without a new sequence. Superseding an active activation
     /// invalidates the superseded candidate durably in the same
@@ -700,6 +704,7 @@ impl SqliteCatalog {
         revision_id: &str,
         manifest_generation: u64,
         expected_commitment: &[u8; 32],
+        expected_active: Option<&RepoMapExpectedActiveV2>,
     ) -> Result<ActivationOutcomeV1, CoreError> {
         let mut connection = self.lock()?;
         let path = std::path::Path::new(":catalog:");
@@ -743,22 +748,60 @@ impl SqliteCatalog {
         if candidate.state == RepoMapCandidateStateV1::Activated
             && existing
                 .as_ref()
-                .is_some_and(|row| row.active && row.candidate_commitment == *expected_commitment)
+                .is_some_and(|row| {
+                    row.active
+                        && row.manifest_generation == manifest_generation
+                        && row.candidate_commitment == *expected_commitment
+                })
         {
             let Some(active) = existing else {
                 return Err(corrupt("replay check found no activation row"));
             };
+            let replayed_prior = read_replayed_prior_activation_commitment(
+                &transaction,
+                repo_id,
+                revision_id,
+                active.epoch,
+            )?;
+            let replayed_expected = replayed_prior
+                .map(|commitment| {
+                    let epoch = active
+                        .epoch
+                        .checked_sub(1)
+                        .and_then(NonZeroU64::new)
+                        .ok_or_else(|| corrupt("replayed prior activation epoch is absent"))?;
+                    Ok::<_, CoreError>(RepoMapExpectedActiveV2::new(
+                        epoch,
+                        CandidateCommitmentV1::from_bytes(commitment),
+                    ))
+                })
+                .transpose()?;
+            if expected_active != replayed_expected.as_ref() {
+                return Err(typed(
+                    quanta_index_contract::SearchPlaneErrorCodeV2::ActivationCasConflict,
+                    "catalog: replay expectation differs from the committed prior head".to_string(),
+                ));
+            }
             return Ok(ActivationOutcomeV1 {
                 terminal_sequence: active.terminal_sequence,
                 epoch: active.epoch,
-                prior_candidate_commitment: read_replayed_prior_activation_commitment(
-                    &transaction,
-                    repo_id,
-                    revision_id,
-                    active.epoch,
-                )?,
+                prior_candidate_commitment: replayed_prior,
                 replayed: true,
             });
+        }
+        let actual_active = existing.as_ref().filter(|row| row.active).map(|row| {
+            let epoch = NonZeroU64::new(row.epoch)
+                .ok_or_else(|| corrupt("active activation epoch is zero"))?;
+            Ok::<_, CoreError>(RepoMapExpectedActiveV2::new(
+                epoch,
+                CandidateCommitmentV1::from_bytes(row.candidate_commitment),
+            ))
+        }).transpose()?;
+        if expected_active != actual_active.as_ref() {
+            return Err(typed(
+                quanta_index_contract::SearchPlaneErrorCodeV2::ActivationCasConflict,
+                "catalog: expected active head differs from the current head".to_string(),
+            ));
         }
         let prior_commitment = existing
             .as_ref()

@@ -1,6 +1,7 @@
 //! Exact `RepoMap` V2 publish/activate request and terminal receipt contracts.
 
 use core::fmt;
+use std::num::NonZeroU64;
 
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
@@ -9,7 +10,10 @@ use serde::{
 };
 use sha2::{Digest as _, Sha256};
 
-use super::{RepoMapActivateGenerationRequest, RepoMapMutationAck, RepoMapSourceBundle};
+use super::{
+    CandidateCommitmentV1, ManifestGeneration, RepoId, RepoMapMutationAck, RepoMapSourceBundle,
+    RevisionId,
+};
 
 const SOURCE_BUNDLE_DIGEST_DOMAIN_V2: &[u8] = b"quanta-index/repomap-source-bundle/v2\0";
 
@@ -212,12 +216,250 @@ impl<'de> Deserialize<'de> for RepoMapPublishBundleRequestV2 {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RepoMapExpectedActiveV2 {
+    epoch: NonZeroU64,
+    candidate_commitment: CandidateCommitmentV1,
+}
+
+impl RepoMapExpectedActiveV2 {
+    #[must_use]
+    pub const fn new(epoch: NonZeroU64, candidate_commitment: CandidateCommitmentV1) -> Self {
+        Self {
+            epoch,
+            candidate_commitment,
+        }
+    }
+
+    #[must_use]
+    pub const fn epoch(&self) -> NonZeroU64 {
+        self.epoch
+    }
+
+    #[must_use]
+    pub const fn candidate_commitment(&self) -> CandidateCommitmentV1 {
+        self.candidate_commitment
+    }
+}
+
+const EXPECTED_ACTIVE_V2_FIELDS: &[&str] = &["epoch", "candidate_commitment"];
+
+impl Serialize for RepoMapExpectedActiveV2 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("RepoMapExpectedActiveV2", 2)?;
+        state.serialize_field("epoch", &self.epoch.get())?;
+        state.serialize_field(
+            "candidate_commitment",
+            &self.candidate_commitment.to_wire_string(),
+        )?;
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for RepoMapExpectedActiveV2 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct ExpectedActiveVisitor;
+        impl<'de> Visitor<'de> for ExpectedActiveVisitor {
+            type Value = RepoMapExpectedActiveV2;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a RepoMapExpectedActiveV2 map")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut epoch = None;
+                let mut candidate_commitment = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "epoch" if epoch.is_none() => epoch = Some(map.next_value::<u64>()?),
+                        "epoch" => return Err(de::Error::duplicate_field("epoch")),
+                        "candidate_commitment" if candidate_commitment.is_none() => {
+                            candidate_commitment = Some(map.next_value::<String>()?);
+                        }
+                        "candidate_commitment" => {
+                            return Err(de::Error::duplicate_field("candidate_commitment"));
+                        }
+                        other => {
+                            return Err(de::Error::unknown_field(other, EXPECTED_ACTIVE_V2_FIELDS));
+                        }
+                    }
+                }
+                let epoch = NonZeroU64::new(
+                    epoch.ok_or_else(|| de::Error::missing_field("epoch"))?,
+                )
+                .ok_or_else(|| de::Error::custom("activation epoch must be positive"))?;
+                let commitment = candidate_commitment
+                    .ok_or_else(|| de::Error::missing_field("candidate_commitment"))?;
+                let candidate_commitment = CandidateCommitmentV1::from_wire_str(&commitment)
+                    .map_err(de::Error::custom)?;
+                Ok(RepoMapExpectedActiveV2::new(epoch, candidate_commitment))
+            }
+        }
+        deserializer.deserialize_struct(
+            "RepoMapExpectedActiveV2",
+            EXPECTED_ACTIVE_V2_FIELDS,
+            ExpectedActiveVisitor,
+        )
+    }
+}
+
+/// Read-only projection of the catalog's current RepoMap activation row.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RepoMapActiveHeadRequestV2 {
+    pub repo_id: RepoId,
+    pub revision_id: RevisionId,
+}
+
+const ACTIVE_HEAD_REQUEST_V2_FIELDS: &[&str] = &["repo_id", "revision_id"];
+
+impl Serialize for RepoMapActiveHeadRequestV2 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("RepoMapActiveHeadRequestV2", 2)?;
+        state.serialize_field("repo_id", &self.repo_id)?;
+        state.serialize_field("revision_id", &self.revision_id)?;
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for RepoMapActiveHeadRequestV2 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct RequestVisitor;
+        impl<'de> Visitor<'de> for RequestVisitor {
+            type Value = RepoMapActiveHeadRequestV2;
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a RepoMapActiveHeadRequestV2 map")
+            }
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut repo_id = None;
+                let mut revision_id = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "repo_id" if repo_id.is_none() => repo_id = Some(map.next_value()?),
+                        "repo_id" => return Err(de::Error::duplicate_field("repo_id")),
+                        "revision_id" if revision_id.is_none() => {
+                            revision_id = Some(map.next_value()?);
+                        }
+                        "revision_id" => return Err(de::Error::duplicate_field("revision_id")),
+                        other => {
+                            return Err(de::Error::unknown_field(other, ACTIVE_HEAD_REQUEST_V2_FIELDS));
+                        }
+                    }
+                }
+                Ok(RepoMapActiveHeadRequestV2 {
+                    repo_id: repo_id.ok_or_else(|| de::Error::missing_field("repo_id"))?,
+                    revision_id: revision_id
+                        .ok_or_else(|| de::Error::missing_field("revision_id"))?,
+                })
+            }
+        }
+        deserializer.deserialize_struct(
+            "RepoMapActiveHeadRequestV2",
+            ACTIVE_HEAD_REQUEST_V2_FIELDS,
+            RequestVisitor,
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RepoMapActiveHeadResponseV2 {
+    pub repo_id: RepoId,
+    pub revision_id: RevisionId,
+    pub active: Option<RepoMapExpectedActiveV2>,
+}
+
+const ACTIVE_HEAD_RESPONSE_V2_FIELDS: &[&str] = &["repo_id", "revision_id", "active"];
+
+impl Serialize for RepoMapActiveHeadResponseV2 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("RepoMapActiveHeadResponseV2", 3)?;
+        state.serialize_field("repo_id", &self.repo_id)?;
+        state.serialize_field("revision_id", &self.revision_id)?;
+        state.serialize_field("active", &self.active)?;
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for RepoMapActiveHeadResponseV2 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct ResponseVisitor;
+        impl<'de> Visitor<'de> for ResponseVisitor {
+            type Value = RepoMapActiveHeadResponseV2;
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a RepoMapActiveHeadResponseV2 map")
+            }
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut repo_id = None;
+                let mut revision_id = None;
+                let mut active = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "repo_id" if repo_id.is_none() => repo_id = Some(map.next_value()?),
+                        "repo_id" => return Err(de::Error::duplicate_field("repo_id")),
+                        "revision_id" if revision_id.is_none() => {
+                            revision_id = Some(map.next_value()?);
+                        }
+                        "revision_id" => return Err(de::Error::duplicate_field("revision_id")),
+                        "active" if active.is_none() => active = Some(map.next_value()?),
+                        "active" => return Err(de::Error::duplicate_field("active")),
+                        other => {
+                            return Err(de::Error::unknown_field(other, ACTIVE_HEAD_RESPONSE_V2_FIELDS));
+                        }
+                    }
+                }
+                Ok(RepoMapActiveHeadResponseV2 {
+                    repo_id: repo_id.ok_or_else(|| de::Error::missing_field("repo_id"))?,
+                    revision_id: revision_id
+                        .ok_or_else(|| de::Error::missing_field("revision_id"))?,
+                    active: active.ok_or_else(|| de::Error::missing_field("active"))?,
+                })
+            }
+        }
+        deserializer.deserialize_struct(
+            "RepoMapActiveHeadResponseV2",
+            ACTIVE_HEAD_RESPONSE_V2_FIELDS,
+            ResponseVisitor,
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RepoMapActivateGenerationRequestV2 {
-    pub request_v1: RepoMapActivateGenerationRequest,
+    pub repo_id: RepoId,
+    pub revision_id: RevisionId,
+    pub manifest_generation: ManifestGeneration,
+    pub manifest_digest: String,
     pub snapshot_id: String,
     pub projection_version: u32,
     pub authority_digest: String,
     pub source_bundle_digest: String,
+    /// Mandatory CAS expectation. `None` means no active head was observed.
+    pub expected_active: Option<RepoMapExpectedActiveV2>,
 }
 
 impl RepoMapActivateGenerationRequestV2 {
@@ -225,26 +467,35 @@ impl RepoMapActivateGenerationRequestV2 {
         bundle: &RepoMapSourceBundle,
     ) -> Result<Self, RepoMapSourceBundleDigestErrorV2> {
         Ok(Self {
-            request_v1: RepoMapActivateGenerationRequest {
-                repo_id: bundle.repo_id.clone(),
-                revision_id: bundle.revision_id.clone(),
-                manifest_generation: bundle.manifest_generation,
-                manifest_digest: bundle.manifest_digest.clone(),
-            },
+            repo_id: bundle.repo_id.clone(),
+            revision_id: bundle.revision_id.clone(),
+            manifest_generation: bundle.manifest_generation,
+            manifest_digest: bundle.manifest_digest.clone(),
             snapshot_id: bundle.snapshot_id.clone(),
             projection_version: bundle.projection_version,
             authority_digest: bundle.authority_digest.clone(),
             source_bundle_digest: canonical_repo_map_source_bundle_digest_v2(bundle)?,
+            expected_active: None,
         })
+    }
+
+    #[must_use]
+    pub fn with_expected_active(mut self, expected_active: RepoMapExpectedActiveV2) -> Self {
+        self.expected_active = Some(expected_active);
+        self
     }
 }
 
 const ACTIVATE_REQUEST_V2_FIELDS: &[&str] = &[
-    "request_v1",
+    "repo_id",
+    "revision_id",
+    "manifest_generation",
+    "manifest_digest",
     "snapshot_id",
     "projection_version",
     "authority_digest",
     "source_bundle_digest",
+    "expected_active",
 ];
 
 impl Serialize for RepoMapActivateGenerationRequestV2 {
@@ -252,12 +503,16 @@ impl Serialize for RepoMapActivateGenerationRequestV2 {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("RepoMapActivateGenerationRequestV2", 5)?;
-        state.serialize_field("request_v1", &self.request_v1)?;
+        let mut state = serializer.serialize_struct("RepoMapActivateGenerationRequestV2", 9)?;
+        state.serialize_field("repo_id", &self.repo_id)?;
+        state.serialize_field("revision_id", &self.revision_id)?;
+        state.serialize_field("manifest_generation", &self.manifest_generation)?;
+        state.serialize_field("manifest_digest", &self.manifest_digest)?;
         state.serialize_field("snapshot_id", &self.snapshot_id)?;
         state.serialize_field("projection_version", &self.projection_version)?;
         state.serialize_field("authority_digest", &self.authority_digest)?;
         state.serialize_field("source_bundle_digest", &self.source_bundle_digest)?;
+        state.serialize_field("expected_active", &self.expected_active)?;
         state.end()
     }
 }
@@ -278,12 +533,16 @@ impl<'de> Deserialize<'de> for RepoMapActivateGenerationRequestV2 {
                 A: MapAccess<'de>,
             {
                 let (
-                    mut request_v1,
+                    mut repo_id,
+                    mut revision_id,
+                    mut manifest_generation,
+                    mut manifest_digest,
                     mut snapshot_id,
                     mut projection_version,
                     mut authority_digest,
                     mut source_bundle_digest,
-                ) = (None, None, None, None, None);
+                    mut expected_active,
+                ) = (None, None, None, None, None, None, None, None, None);
                 while let Some(key) = map.next_key::<String>()? {
                     macro_rules! read_once {
                         ($slot:ident, $field:literal) => {{
@@ -294,7 +553,12 @@ impl<'de> Deserialize<'de> for RepoMapActivateGenerationRequestV2 {
                         }};
                     }
                     match key.as_str() {
-                        "request_v1" => read_once!(request_v1, "request_v1"),
+                        "repo_id" => read_once!(repo_id, "repo_id"),
+                        "revision_id" => read_once!(revision_id, "revision_id"),
+                        "manifest_generation" => {
+                            read_once!(manifest_generation, "manifest_generation")
+                        }
+                        "manifest_digest" => read_once!(manifest_digest, "manifest_digest"),
                         "snapshot_id" => read_once!(snapshot_id, "snapshot_id"),
                         "projection_version" => {
                             read_once!(projection_version, "projection_version");
@@ -303,6 +567,7 @@ impl<'de> Deserialize<'de> for RepoMapActivateGenerationRequestV2 {
                         "source_bundle_digest" => {
                             read_once!(source_bundle_digest, "source_bundle_digest");
                         }
+                        "expected_active" => read_once!(expected_active, "expected_active"),
                         other => {
                             return Err(de::Error::unknown_field(
                                 other,
@@ -312,7 +577,13 @@ impl<'de> Deserialize<'de> for RepoMapActivateGenerationRequestV2 {
                     }
                 }
                 Ok(RepoMapActivateGenerationRequestV2 {
-                    request_v1: request_v1.ok_or_else(|| de::Error::missing_field("request_v1"))?,
+                    repo_id: repo_id.ok_or_else(|| de::Error::missing_field("repo_id"))?,
+                    revision_id: revision_id
+                        .ok_or_else(|| de::Error::missing_field("revision_id"))?,
+                    manifest_generation: manifest_generation
+                        .ok_or_else(|| de::Error::missing_field("manifest_generation"))?,
+                    manifest_digest: manifest_digest
+                        .ok_or_else(|| de::Error::missing_field("manifest_digest"))?,
                     snapshot_id: snapshot_id
                         .ok_or_else(|| de::Error::missing_field("snapshot_id"))?,
                     projection_version: projection_version
@@ -321,6 +592,8 @@ impl<'de> Deserialize<'de> for RepoMapActivateGenerationRequestV2 {
                         .ok_or_else(|| de::Error::missing_field("authority_digest"))?,
                     source_bundle_digest: source_bundle_digest
                         .ok_or_else(|| de::Error::missing_field("source_bundle_digest"))?,
+                    expected_active: expected_active
+                        .ok_or_else(|| de::Error::missing_field("expected_active"))?,
                 })
             }
         }
@@ -477,6 +750,66 @@ mod tests {
             repo_relative_path: RepoRelativePath::new("src/lib.rs"),
             line_count: 17,
         }))
+    }
+
+    #[test]
+    fn nested_legacy_activation_request_is_refused() {
+        let current = RepoMapActivateGenerationRequestV2::for_bundle(&bundle_fixture_v2())
+            .expect("canonical source bundle digest");
+        let mut wire = serde_json::to_value(&current).expect("current request serializes");
+        let fields = wire.as_object_mut().expect("request map");
+        let old_identity = serde_json::json!({
+            "repo_id": fields.remove("repo_id").expect("repo id"),
+            "revision_id": fields.remove("revision_id").expect("revision id"),
+            "manifest_generation": fields.remove("manifest_generation").expect("generation"),
+            "manifest_digest": fields.remove("manifest_digest").expect("manifest digest"),
+        });
+        let _prior = fields.insert("request_v1".to_string(), old_identity);
+        let mut old_cbor = Vec::new();
+        ciborium::ser::into_writer(&wire, &mut old_cbor).expect("legacy fixture encodes");
+        let error = serde_json::from_value::<RepoMapActivateGenerationRequestV2>(wire)
+            .expect_err("nested legacy identity must refuse");
+        assert!(error.to_string().contains("request_v1"), "{error}");
+        let error =
+            ciborium::de::from_reader::<RepoMapActivateGenerationRequestV2, _>(old_cbor.as_slice())
+                .expect_err("nested legacy identity must refuse on CBOR too");
+        assert!(error.to_string().contains("request_v1"), "{error}");
+    }
+
+    #[test]
+    fn activation_expected_head_is_required_and_strictly_typed() {
+        let source = bundle_fixture_v2();
+        let request = RepoMapActivateGenerationRequestV2::for_bundle(&source)
+            .expect("source bundle digest");
+        let mut missing = serde_json::to_value(&request).expect("request serializes");
+        let _removed = missing
+            .as_object_mut()
+            .expect("request map")
+            .remove("expected_active");
+        assert!(
+            serde_json::from_value::<RepoMapActivateGenerationRequestV2>(missing).is_err(),
+            "absence must not mean an expected-empty head",
+        );
+
+        let expected = RepoMapExpectedActiveV2::new(
+            NonZeroU64::new(7).expect("positive fixture epoch"),
+            CandidateCommitmentV1::from_bytes([0xab; 32]),
+        );
+        let bound = request.with_expected_active(expected);
+        let encoded = serde_json::to_value(&bound).expect("bound request serializes");
+        let decoded: RepoMapActivateGenerationRequestV2 =
+            serde_json::from_value(encoded.clone()).expect("bound request decodes");
+        assert_eq!(decoded, bound);
+
+        let mut zero_epoch = encoded.clone();
+        zero_epoch["expected_active"]["epoch"] = serde_json::json!(0);
+        assert!(serde_json::from_value::<RepoMapActivateGenerationRequestV2>(zero_epoch).is_err());
+        let mut bad_commitment = encoded;
+        bad_commitment["expected_active"]["candidate_commitment"] =
+            serde_json::json!("sha256:not-a-digest");
+        assert!(
+            serde_json::from_value::<RepoMapActivateGenerationRequestV2>(bad_commitment).is_err()
+        );
     }
 
     #[test]

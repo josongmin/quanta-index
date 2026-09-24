@@ -21,11 +21,12 @@
 #                        rebuilt at a new state root by replaying them to the
 #                        same durable high-water (cost noted per row: embedding
 #                        calls, wall time, extra disk);
-#   offline-importer     the artifact holds state producers cannot re-send
-#                        (activation choice, operation dedup, sealed lineage,
-#                        runtime overlays); an explicit importer must carry it;
-#   migration-input-only the file is read once by a boot-time migration and
-#                        deleted; it must not exist at a new root;
+#   current-format-backup
+#                        the artifact holds current state producers cannot
+#                        re-send (activation choice, dedup, lineage, overlays);
+#                        backup/restore preserves it within this format only;
+#   reject-only         old-format artifact recognized for typed refusal;
+#                        no importer or live decoder opens it;
 #   cache                regenerable on demand; may be dropped at cutover at
 #                        the cost of provider calls;
 #   vendor-native        bytes owned by a vendor library and reproduced by the
@@ -170,8 +171,8 @@ direction = "request"
 variants = [
   "ActivateSearchCorpusGenerationCas",
   "RollbackSearchCorpusGenerationCas",
-  "RepoMapActivate",
   "RepoMapActivateV2",
+  "RepoMapActiveHeadV2",
   "CurrentGeneration",
   "GenerationStatus",
   "MetricsSnapshot",
@@ -188,8 +189,8 @@ direction = "response"
 variants = [
   "SearchCorpusActivationCasAck",
   "SearchCorpusRollbackCasAck",
-  "RepoMapMutationAck",
   "RepoMapTerminalReceiptV2",
+  "RepoMapActiveHeadV2",
   "Error",
   "CurrentGenerationSnapshot",
   "GenerationStatusReport",
@@ -214,7 +215,6 @@ variants = [
   "PublishDirtyBatch",
   "PublishRuntimeCatalogBatch",
   "PublishStructuralBatch",
-  "PublishRepoMapBundle",
   "PublishRepoMapBundleV2",
   "PublishRepoMetaBatch",
   "PublishRepoDescriptionBatch",
@@ -236,7 +236,6 @@ variants = [
   "RuntimeCatalogReceipt",
   "StructuralReceipt",
   "RepoMapTerminalReceiptV2",
-  "RepoMapReceipt",
   "RepoMetaReceipt",
   "RepoDescriptionReceipt",
   "Error",
@@ -335,22 +334,22 @@ id = "semantic-manifest"
 owner = "quanta-index-semantic"
 path = "state_root/indexes/semantic/generation-v1-<sha256(repo,revision)>/g<N>/semantic-manifest.cbor"
 reproduction = "producer-rebuild"
-notes = "Rebuild cost includes one embedding call per semantic source record (provider-priced) plus ANN training time. Exactly one format is served: every earlier format (2..=9) is refused typed as GENERATION_MANIFEST_FORMAT_UNSUPPORTED at decode/open/validate and quarantined by the boot inventory as GENERATION_QUARANTINE_FORMAT_UNSUPPORTED; the legacy decoders were deleted (QI-BB-027, breaking-first). Format 10 records every ANN segment's build parameters as the library reports them."
+notes = "Rebuild cost includes one embedding call per typed semantic source record (provider-priced) plus ANN training time. Exactly one format is served: every earlier format (including 10, which may contain chunk-text fallback rows) is refused typed at decode/open/validate and quarantined by the boot inventory; old decoders remain removed. Format 11 preserves the ANN per-segment build record and marks the typed-source-only cutover."
 [[artifact.version_constants]]
 file = "crates/quanta-index-semantic/src/manifest.rs"
 name = "FORMAT_VERSION"
-value = 10
+value = 11
 
 [[artifact]]
 id = "semantic-build-contract"
 owner = "quanta-index-semantic"
 path = "state_root/indexes/semantic/generation-v1-<sha256(repo,revision)>/g<N>/semantic-build-contract.cbor"
 reproduction = "producer-rebuild"
-notes = "Model id / revision / dimension / normalization / corpus policy the generation was built under. Exactly one format is served; format 1 (no corpus policy) is refused typed as GENERATION_MANIFEST_FORMAT_UNSUPPORTED (the legacy decoder was deleted)."
+notes = "Model id / revision / dimension / normalization / corpus policy the generation was built under. Exactly one format is served; formats 1 and 2 are refused typed. Version 3 prevents a pre-cutover unfinished generation from resuming under the typed-only writer."
 [[artifact.version_constants]]
 file = "crates/quanta-index-semantic/src/generation_contract.rs"
 name = "GENERATION_CONTRACT_VERSION"
-value = 2
+value = 3
 
 [[artifact]]
 id = "semantic-sealed-manifest"
@@ -404,14 +403,14 @@ value = 1
 id = "activation-catalog"
 owner = "quanta-index-search-plane"
 path = "state_root/activations/<pair-digest>--corpus.json"
-reproduction = "offline-importer"
+reproduction = "current-format-backup"
 notes = "Query-time serve-head authority (`ActivationCatalog`): the active composite (lexical, semantic) generation pair per repo/revision. Persisted as `PersistedSearchCorpusGenerationRootV1` JSON; no in-file version field. The operator's activation choice is not derivable from producer input."
 
 [[artifact]]
 id = "search-corpus-rollback-history"
 owner = "quanta-index-search-plane"
 path = "state_root/authorities/search-corpus/<sha256(repo,revision)>/g<N>.cbor"
-reproduction = "offline-importer"
+reproduction = "current-format-backup"
 notes = "Retention-bounded record of every sealed search-corpus generation (`SealedSearchCorpusAuthorityStateV1`), the rollback lineage and delta-base preflight source. Sealed identities are not re-derivable from a replayed producer stream."
 [[artifact.version_constants]]
 file = "crates/quanta-index-search-plane/src/readiness/search_corpus_history.rs"
@@ -422,36 +421,36 @@ value = 1
 id = "catalog-sqlite"
 owner = "quanta-index-catalog"
 path = "state_root/catalog/catalog-v1.sqlite (WAL, synchronous=FULL)"
-reproduction = "offline-importer"
-notes = "Tables `idempotency_v1` + `catalog_sequence_v1` (batch-digest dedup receipts and the global durable sequence; not reproducible) and `auxiliary_rows_v1` + `auxiliary_tracks_v1` (history / runtime / structural authority rows across the 14 `AuxiliaryRowFamilyV1` families Commit, Ref, Tag, DiffHunk, DirtyDoc, ChangedDoc, DocFacet, Snapshot, AffectedDocs, InvalidatedByDocs, Chunk, ParseTree, StateMeta, Epoch). Runtime dirty overlays and the Epoch family are not reproducible; history/structural rows could be replayed from producer batches but plan §11 item 3 keeps them under the importer with the dedup state. Schema is versioned by table-name suffix; no `user_version` pragma."
+reproduction = "current-format-backup"
+notes = "Current tables `idempotency_v2`, `catalog_sequence_v2`, and `catalog_sequence_event_v2` hold batch-digest dedup receipts and the global durable sequence. Open refuses an existing `idempotency_v1` or `catalog_sequence_v1` table before creating current tables; an old root needs explicit replacement, not silent replay or implicit migration. `auxiliary_rows_v1` + `auxiliary_tracks_v1` hold history / runtime / structural authority rows across the 14 `AuxiliaryRowFamilyV1` families Commit, Ref, Tag, DiffHunk, DirtyDoc, ChangedDoc, DocFacet, Snapshot, AffectedDocs, InvalidatedByDocs, Chunk, ParseTree, StateMeta, Epoch. Runtime dirty overlays and the Epoch family are not reproducible. The catalog filename remains `catalog-v1.sqlite` as a persisted artifact identity, not a compatibility selector."
 
 [[artifact]]
 id = "catalog-repomap-candidate-activation"
 owner = "quanta-index-catalog"
 path = "state_root/catalog/catalog-v1.sqlite (repomap_candidate_v1, repomap_activation_v1, repomap_quarantine_event_v1)"
-reproduction = "offline-importer"
-notes = "P03 sealed-candidate/activation/quarantine authority: logical-key-UNIQUE candidate rows (commitment, object address, content digest, projection meta, closed state 1..=4, terminal sequence), one activation row per repo/revision (epoch CAS, stable activation_sequence + latest terminal_sequence, invalidation reason) and quarantine incident rows (evidence digest PK, exact envelope bytes, payload/envelope digests, record + discard sequences, tombstone). Not reproducible; every mutation allocates through the P02B global sequence ledger in one transaction."
+reproduction = "current-format-backup"
+notes = "P03 sealed-candidate/activation/quarantine authority: logical-key-UNIQUE candidate rows (commitment, object address, content digest, projection meta, closed state 1..=4, terminal sequence), one activation row per repo/revision (epoch CAS, stable activation_sequence + latest terminal_sequence, invalidation reason) and quarantine incident rows (evidence digest PK, exact envelope bytes, payload/envelope digests, record + discard sequences, tombstone). Projection metadata requires manifest and source-bundle custody digests; weak old rows are refused at decode/open. Not reproducible; every mutation allocates through the P02B global sequence ledger in one transaction."
 
 [[artifact]]
 id = "repo-map-legacy-snapshots"
 owner = "quanta-index-repomap"
 path = "state_root/repo-map/snapshots/<identity>.json"
-reproduction = "producer-rebuild"
-notes = "Legacy live V2 layout until P03. The P03 cutover deleted the runtime writer; the files themselves are untouched and P10 owns offline import."
+reproduction = "reject-only"
+notes = "Retired file layout. No runtime writer or importer; roots carrying it are refused and must be rebuilt from producer authority."
 
 [[artifact]]
 id = "repo-map-legacy-activations"
 owner = "quanta-index-repomap"
 path = "state_root/repo-map/activations/<identity>.json"
-reproduction = "offline-importer"
-notes = "Legacy operator activation choices are not rebuildable from snapshots. P03 rejects old roots without mutation; P10 owns offline import and cutover."
+reproduction = "reject-only"
+notes = "Retired operator activation layout. Old choices are not recreated implicitly; roots carrying it are refused."
 
 [[artifact]]
 id = "repo-map-legacy-quarantine"
 owner = "quanta-index-repomap"
 path = "state_root/repo-map/quarantine/<name>{,.reason}"
-reproduction = "offline-importer"
-notes = "Legacy observed corruption and reason sidecars are evidence, not derivable from a producer rebuild. P03 does not mutate them; P10 owns offline import or explicit refusal."
+reproduction = "reject-only"
+notes = "Retired corruption-evidence layout. Current boot refuses roots carrying it; no importer or live decoder exists."
 
 [[artifact]]
 id = "repo-map-candidate-object-v1"
@@ -464,22 +463,22 @@ notes = "P03 cutover live: the immutable sealed-candidate object store (strict c
 id = "repo-map-quarantine-incident-v1"
 owner = "quanta-index-contract"
 path = "state_root/repo-map/quarantine/incidents/sha256/<hex[0:2]>/<hex[2:4]>/<hex[4:64]>.cbor"
-reproduction = "offline-importer"
+reproduction = "current-format-backup"
 notes = "P03 cutover live: canonical incident envelope bytes projected create-new with exact-byte replay after the catalog incident row commits; timestamp and global sequence come from the catalog and are reused on retry; not reproducible from the raw payload alone."
 
 [[artifact]]
 id = "repo-map-quarantine-payload-v1"
 owner = "quanta-index-repomap"
 path = "state_root/repo-map/quarantine/payloads/sha256/<hex[0:2]>/<hex[2:4]>/<hex[4:64]>.bin"
-reproduction = "offline-importer"
+reproduction = "current-format-backup"
 notes = "P03 cutover live: readable raw bytes of a failed candidate object, projected after the catalog incident commits; reclaimed only by the journaled tombstone discard; a corrupted payload cannot be assumed rebuildable."
 
 [[artifact]]
 id = "operation-journal-receipt"
 owner = "quanta-index-catalog"
 path = "state_root/catalog/catalog-v1.sqlite (idempotency_v2.receipt_cbor)"
-reproduction = "offline-importer"
-notes = "P02B operation journal: persisted BatchPublishReceipt bytes (batch routes) and RepoMapTerminalReceiptV2 bytes (repomap-bundle keys) are canonical CBOR behind an explicit format tag each (SEP-21-002). A runtime that finds another version refuses typed before any mutation; receipts of another version are offline-migration input only (no boot-time dual decoder, no live migration). The journal's dedup state cannot be re-derived from producers, so a new state root needs an explicit importer."
+reproduction = "current-format-backup"
+notes = "P02B operation journal: persisted BatchPublishReceipt bytes (batch routes) and RepoMapTerminalReceiptV2 bytes (repomap-bundle keys) are canonical CBOR behind an explicit format tag each (SEP-21-002). A runtime that finds another version refuses typed before any mutation; there is no old-receipt decoder or importer. Backup/restore preserves current-format dedup state; rebuilding an old root cannot recreate the original dedup and sequence authority."
 [[artifact.version_constants]]
 file = "crates/quanta-index-contract/src/ipc/ingest.rs"
 name = "BATCH_PUBLISH_RECEIPT_FORMAT_VERSION"
@@ -493,38 +492,23 @@ value = 1
 id = "legacy-semantic-journal"
 owner = "quanta-index-searchd"
 path = "state_root/semantic/{journal.cbor,MIGRATED,MIGRATED.lock}"
-reproduction = "migration-input-only"
-notes = "Pre-generation semantic batch journal read once by `migrate_legacy_semantic_journal` (`LegacySemanticJournalStore`); the MIGRATED receipt records the outcome."
-[[artifact.version_constants]]
-file = "crates/quanta-index-searchd/src/app/legacy_semantic_migration.rs"
-name = "RECEIPT_FORMAT"
-value = 2
+reproduction = "reject-only"
+notes = "Pre-generation semantic batch journal marker. Current boot refuses roots carrying it; no importer or migration receipt is produced."
 
 [[artifact]]
 id = "legacy-auxiliary-snapshots"
 owner = "quanta-index-search-plane"
 path = "state_root/authorities/{history,runtime,structural}/state.cbor"
-reproduction = "migration-input-only"
-notes = "Pre-catalog whole-map CBOR snapshots read once by `AuxiliaryAuthorityStore::migrate_legacy_auxiliary_snapshots` into `auxiliary_rows_v1`, then deleted. No version field."
+reproduction = "reject-only"
+notes = "Pre-catalog whole-map CBOR snapshot markers. Current boot refuses roots carrying them; no importer decodes them. No version field."
 
 [[artifact]]
 id = "state-root-manifest"
 owner = "quanta-index-searchd"
 path = "state_root/{state-root-manifest-v1.txt,state-backup-manifest-v1.txt}"
-reproduction = "offline-importer"
-notes = "P10 (S21-11) whole-root freeze boundary, written by the offline `backup-state`/`restore-state`/`migrate-state` commands and by nothing on the daemon path. A backup root carries `state-backup-manifest-v1.txt`; a produced state root carries `state-root-manifest-v1.txt`; a root advertising both is refused as ambiguous. The body enumerates every data object by canonical relative path, byte size and SHA-256, every directory (an empty directory is state a restore must reproduce), and the catalog's canonical logical content digest plus its row count — the restored active identities, terminal receipts, replay floor and sequence high-water all live in those rows. It is written last: after every data object is fsynced and the staging root has been deep-opened, so a crash can never advertise a manifest whose data is missing. No reader falls back to another version or to a manifest-less root; a legacy root is refused typed STATE_ROOT_FORMAT_UNSUPPORTED at boot and migrated only by the explicit offline command."
+reproduction = "current-format-backup"
+notes = "P10 (S21-11) whole-root freeze boundary, written by the offline `backup-state`/`restore-state` commands and by nothing on the daemon path. A backup root carries `state-backup-manifest-v1.txt`; a produced state root carries `state-root-manifest-v1.txt`; a root advertising both is refused as ambiguous. The body enumerates every data object by canonical relative path, byte size and SHA-256, every directory (an empty directory is state a restore must reproduce), and the catalog's canonical logical content digest plus its row count — the restored active identities, terminal receipts, replay floor and sequence high-water all live in those rows. It is written last: after every data object is fsynced and the staging root has been deep-opened, so a crash can never advertise a manifest whose data is missing. A daemon-created current root may be manifest-less and can be backed up; `verify-state` requires a manifest-bearing backup/restored root. No reader falls back to another manifest version; a legacy root is refused typed STATE_ROOT_FORMAT_UNSUPPORTED at boot and has no importer."
 [[artifact.version_constants]]
 file = "crates/quanta-index-searchd/src/app/state_format.rs"
 name = "STATE_ROOT_MANIFEST_FORMAT_VERSION"
-value = 1
-
-[[artifact]]
-id = "state-migration-receipt"
-owner = "quanta-index-searchd"
-path = "state_root/state-migration-receipt-v1.txt"
-reproduction = "offline-importer"
-notes = "P10 (S21-11) receipt the offline `migrate-state` command leaves in the produced root: the source root's legacy format markers, the target format, the source root digest, the imported record count, and the marker list the importer consumed. Written before the root manifest, which covers it as an object of the produced root. Migration is offline-only; the receipt is not a live-compatibility surface and nothing on the daemon path reads it."
-[[artifact.version_constants]]
-file = "crates/quanta-index-searchd/src/app/state_format.rs"
-name = "STATE_MIGRATION_RECEIPT_FORMAT_VERSION"
 value = 1

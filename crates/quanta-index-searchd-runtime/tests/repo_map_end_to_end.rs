@@ -338,12 +338,13 @@ fn repo_map_request() -> SearchPlaneQueryIpcRequestEnvelope {
     }
 }
 
-// QI-INT-01: RepoMap bundle ingest now flows over the ingest IPC, not the
-// control IPC. Old envelope shape preserved as a helper for the ingest test.
+// RepoMap bundle ingest flows over the ingest IPC, not the control IPC.
 fn repo_map_ingest_envelope() -> Result<SearchPlaneIngestIpcRequestEnvelope, Box<dyn Error>> {
     Ok(SearchPlaneIngestIpcRequestEnvelope {
         request_id: 75,
-        payload: SearchPlaneIngestIpcRequest::PublishRepoMapBundle(repo_map_bundle()?),
+        payload: SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(
+            RepoMapPublishBundleRequestV2::new(repo_map_bundle()?)?,
+        ),
     })
 }
 

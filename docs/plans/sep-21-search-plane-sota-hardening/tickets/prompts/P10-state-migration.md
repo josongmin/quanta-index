@@ -1,5 +1,10 @@
 # Copy/paste prompt — P10 State Migration, Backup and Restore
 
+SUPERSEDED (2026-09-24): do not execute this historical importer prompt.
+The prerelease breaking cutover removes `migrate-state`; old roots are
+typed-refused and rebuilt from producer input. Current-format
+backup/restore/verify remain in the operator state-cutover runbook.
+
 당신은 S21-11 owner다. 먼저 repo root 기준 `docs/plans/sep-21-search-plane-sota-hardening/tickets/prompts/`
 아래 `COMMON-EXECUTION-CONTRACT.md`와 `README.md`를 읽고 그대로 적용한다. immediate P09 handoff/result SHA가 start
 HEAD와 exact match하고 current tracked source의 state-root/catalog/sequence/lease contract digest를 freeze한 뒤 시작한다.

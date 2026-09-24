@@ -12,7 +12,8 @@ use quanta_index_contract::{
     IngestOperationKindV1, ManifestGeneration, OwnerDocKind, RepoId, RepoMapTerminalReceiptV2,
     RepoRelativePath, RevisionId, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
     SearchPlaneErrorCodeV2, SearchPlaneTrackKind, SearchScopeKey, SearchScopeSurface,
-    SemanticCorpusKindV1, SemanticIngestBatch, SemanticReplaceScope, SourceRoleV1,
+    SemanticCorpusKindV1, SemanticIngestBatch, SemanticReplaceScope, SemanticSourceRecordV1,
+    SemanticSourceReplaceScopeV1, SemanticSourceScopeKeyV1, SourceRoleV1,
 };
 use quanta_index_core::{
     ClaimOutcomeV1, CoreError, FinishedReclaims, GenerationIdentityValidatePort,
@@ -1662,6 +1663,39 @@ pub(super) fn fixture_chunk_record() -> Result<ChunkRecord, Box<dyn std::error::
     })
 }
 
+fn typed_symbol_source_scope(id: &str, path: &str, text: &str) -> SemanticSourceReplaceScopeV1 {
+    SemanticSourceReplaceScopeV1 {
+        scope: SemanticSourceScopeKeyV1 {
+            corpus_kind: SemanticCorpusKindV1::SymbolCard,
+            owner_kind: OwnerDocKind::Symbol,
+            owner_id: id.to_string(),
+        },
+        scope_digest: format!("scope:semantic:{id}"),
+        sources: vec![SemanticSourceRecordV1 {
+            record_id: id.to_string(),
+            corpus_kind: SemanticCorpusKindV1::SymbolCard,
+            owner_kind: OwnerDocKind::Symbol,
+            owner_id: id.to_string(),
+            source_doc_id: format!("doc:{path}"),
+            parent_owner_id: None,
+            repo_relative_path: RepoRelativePath::new(path),
+            language: Some("rust".to_string()),
+            package: Some("crate".to_string()),
+            symbol_kind: Some("function".to_string()),
+            visibility: Some("pub".to_string()),
+            source_role: SourceRoleV1::CardText,
+            generated: false,
+            capability_status: CapabilityStatusV1::Full,
+            raw_fallback_reason: None,
+            authority_digest: format!("auth:{id}"),
+            render_policy_digest: "render:typed-test".to_string(),
+            card_schema_version: 1,
+            text: text.to_string(),
+        }],
+        cluster_memberships: Vec::new(),
+    }
+}
+
 /// A sealed single-scope search-corpus batch carrying its canonical
 /// digest.
 ///
@@ -1686,7 +1720,11 @@ pub(super) fn fixture_search_corpus_batch()
             symbols: Vec::new(),
         }],
         tombstone_scopes: Vec::new(),
-        semantic_replace_scopes: Vec::new(),
+        semantic_replace_scopes: vec![typed_symbol_source_scope(
+            "symbol-1",
+            "src/main.rs",
+            "typed semantic parser",
+        )],
         semantic_tombstone_scopes: Vec::new(),
         seal: true,
     };
@@ -1838,7 +1876,7 @@ pub(super) fn scope_with_chunks(
     }
 }
 
-// A batch spanning 3 scopes with 2 / 1 / 2 chunks = 5 chunk texts in total.
+// Three lexical scopes and five typed semantic owners over the same paths.
 pub(super) fn multi_scope_corpus_batch()
 -> Result<SearchCorpusIngestBatch, Box<dyn std::error::Error>> {
     let mut batch = SearchCorpusIngestBatch {
@@ -1875,7 +1913,13 @@ pub(super) fn multi_scope_corpus_batch()
             ),
         ],
         tombstone_scopes: Vec::new(),
-        semantic_replace_scopes: Vec::new(),
+        semantic_replace_scopes: vec![
+            typed_symbol_source_scope("a-1", "a.rs", "alpha one"),
+            typed_symbol_source_scope("a-2", "a.rs", "alpha two"),
+            typed_symbol_source_scope("b-1", "b.rs", "beta one"),
+            typed_symbol_source_scope("c-1", "c.rs", "gamma one"),
+            typed_symbol_source_scope("c-2", "c.rs", "gamma two"),
+        ],
         semantic_tombstone_scopes: Vec::new(),
         seal: true,
     };

@@ -601,7 +601,6 @@ impl<'a> HistoryNamespace<'a> {
             | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
             | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-            | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
             | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
@@ -627,7 +626,6 @@ impl<'a> HistoryNamespace<'a> {
             | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
             | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-            | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
             | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
@@ -653,7 +651,6 @@ impl<'a> HistoryNamespace<'a> {
             | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
             | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-            | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
             | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
@@ -683,7 +680,6 @@ impl<'a> HistoryNamespace<'a> {
             | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
             | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-            | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "repo description receipt",
@@ -711,7 +707,6 @@ impl<'a> HistoryNamespace<'a> {
             | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
             | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-            | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
             | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
@@ -740,7 +735,6 @@ impl<'a> HistoryNamespace<'a> {
             | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
             | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-            | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
             | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
@@ -781,7 +775,6 @@ impl crate::NamespaceIngest for HistoryNs {
             | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
             | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-            | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
             | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(

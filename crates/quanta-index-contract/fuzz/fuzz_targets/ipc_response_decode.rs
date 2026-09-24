@@ -3,8 +3,8 @@
 
 //! Same shape as `ipc_request_decode.rs`, applied to the response side.
 //!
-//! Coverage expanded for the post-cutover response surfaces:
-//! the new ingest receipts (`BatchPublishReceipt`, `RepoMapMutationAck`)
+//! Coverage expanded for the current response surfaces:
+//! the ingest receipts (`BatchPublishReceipt`, `RepoMapTerminalReceiptV2`)
 //! and generation admin responses (`GenerationSnapshot`,
 //! `GenerationStatusReport`) all flow through here so fail-closed
 //! deserialization is exercised before the daemon ever sees a real
@@ -14,7 +14,7 @@ use libfuzzer_sys::fuzz_target;
 
 use quanta_index_contract::{
     BatchPublishReceipt, GenerationSnapshot, GenerationStatusReport, HybridQueryResponse,
-    HybridSeedQueryResponse, RepoMapMutationAck, RepoMapQueryResponse,
+    HybridSeedQueryResponse, RepoMapQueryResponse, RepoMapTerminalReceiptV2,
     SearchPlaneControlIpcResponse, SearchPlaneControlIpcResponseEnvelope,
     SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneIpcError, SearchPlaneQueryIpcResponse,
@@ -51,7 +51,7 @@ fuzz_target!(|data: &[u8]| {
         let _active_validation = ack.active.validate_v1();
         let _previous_validation = ack.previous_sealed_active.validate_v1();
     }
-    let _ = ciborium::de::from_reader::<RepoMapMutationAck, _>(data);
+    let _ = ciborium::de::from_reader::<RepoMapTerminalReceiptV2, _>(data);
     let _ = ciborium::de::from_reader::<GenerationSnapshot, _>(data);
     let _ = ciborium::de::from_reader::<GenerationStatusReport, _>(data);
     let _ = ciborium::de::from_reader::<SearchPlaneControlIpcResponse, _>(data);

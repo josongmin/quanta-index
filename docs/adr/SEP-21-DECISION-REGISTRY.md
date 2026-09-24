@@ -119,10 +119,10 @@ Mandatory reserved/new codes include:
 |---|---|---|
 | old producer / V2 daemon | `PROTOCOL_VERSION_UNSUPPORTED` before body decode | 0 |
 | V2 producer / old daemon | producer handshake refusal | 0 |
-| V2 daemon / V1 root | `STATE_ROOT_FORMAT_UNSUPPORTED`; offline importer required | 0 |
+| V2 daemon / V1 root | `STATE_ROOT_FORMAT_UNSUPPORTED`; rebuild from current typed producer input | 0 |
 | old daemon / V2 root | deployment fence; pair must never be started | 0 |
 | unsigned/V1 cursor / V2 daemon | `CURSOR_INVALID` | 0 |
-| persisted receipt v1 / V2 runtime | runtime refusal; offline migration input only | 0 |
+| persisted receipt v1 / V2 runtime | runtime refusal; no old-receipt importer | 0 |
 | same operation/body after terminal result | exact persisted result replay | 0 additional |
 | same operation key / different body | conflict | 0 |
 

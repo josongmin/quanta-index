@@ -748,37 +748,6 @@ fn encode_compiled_payload(
     writer.into_bytes()
 }
 
-/// Legacy store-boundary adapter. Runs the full compiler validation and
-/// refuses typed; P03 replaces this consumer with the sealed candidate path.
-pub struct RepoMapMaterializer;
-
-impl RepoMapMaterializer {
-    pub fn materialize(
-        bundle: &RepoMapSourceBundle,
-    ) -> Result<RepoMapSnapshot, RepoMapCompileRefusalV1> {
-        compile_snapshot(bundle)
-    }
-}
-
-/// Legacy snapshot materialization entry retained for the store boundary.
-///
-/// It runs the full compiler validation first and refuses typed instead of
-/// producing a partial snapshot. P03 replaces this consumer with the sealed
-/// candidate path.
-pub fn compile_snapshot(
-    bundle: &RepoMapSourceBundle,
-) -> Result<RepoMapSnapshot, RepoMapCompileRefusalV1> {
-    let compiler = RepoMapGraphCompiler::with_default_budget();
-    let candidate = compiler.compile(bundle)?;
-    Ok(snapshot_from_projection(
-        &bundle.repo_id,
-        &bundle.revision_id,
-        bundle.manifest_generation,
-        &CandidateProjectionMetaV1::from_bundle(bundle),
-        candidate.projection(),
-    ))
-}
-
 /// The bundle-declared projection metadata a sealed candidate's query
 /// projection is rebuilt from.
 ///
@@ -786,29 +755,31 @@ pub fn compile_snapshot(
 /// row) so the boot-rebuilt snapshot is byte-identical to the publish-time
 /// one.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CandidateProjectionMetaV1 {
+pub struct CandidateProjectionMeta {
     pub snapshot_id: String,
     pub projection_version: u32,
     pub authority_digest: String,
-    /// Present for candidates sealed by the current store owner. Legacy
-    /// catalog rows remain readable but cannot satisfy V2 activation.
-    pub manifest_digest: Option<String>,
-    pub source_bundle_digest: Option<String>,
+    /// Current persisted candidates require both custody digests.
+    pub manifest_digest: String,
+    pub source_bundle_digest: String,
     pub item_index_availability: RepoMapItemIndexAvailability,
     pub graph_coverage_class: RepoMapGraphCoverageClass,
     pub exactness_summary: RepoMapExactnessSummary,
     pub redaction_state: RepoMapRedactionState,
 }
 
-impl CandidateProjectionMetaV1 {
+impl CandidateProjectionMeta {
     #[must_use]
-    pub fn from_bundle(bundle: &RepoMapSourceBundle) -> Self {
+    pub fn from_bundle_with_source_digest(
+        bundle: &RepoMapSourceBundle,
+        source_bundle_digest: String,
+    ) -> Self {
         Self {
             snapshot_id: bundle.snapshot_id.clone(),
             projection_version: bundle.projection_version,
             authority_digest: bundle.authority_digest.clone(),
-            manifest_digest: None,
-            source_bundle_digest: None,
+            manifest_digest: bundle.manifest_digest.clone(),
+            source_bundle_digest,
             item_index_availability: bundle.graph_coverage.item_index_availability,
             graph_coverage_class: bundle.graph_coverage.graph_coverage_class,
             exactness_summary: bundle.exactness_summary,
@@ -816,47 +787,19 @@ impl CandidateProjectionMetaV1 {
         }
     }
 
-    #[must_use]
-    pub fn from_bundle_with_source_digest_v2(
-        bundle: &RepoMapSourceBundle,
-        source_bundle_digest: String,
-    ) -> Self {
-        let mut meta = Self::from_bundle(bundle);
-        meta.manifest_digest = Some(bundle.manifest_digest.clone());
-        meta.source_bundle_digest = Some(source_bundle_digest);
-        meta
-    }
-
     /// Canonical JSON column form. Enum fields use their wire strings.
     pub fn to_json(&self) -> Result<String, quanta_index_core::CoreError> {
-        let value = match (&self.manifest_digest, &self.source_bundle_digest) {
-            (None, None) => serde_json::json!({
-                "snapshot_id": self.snapshot_id,
-                "projection_version": self.projection_version,
-                "authority_digest": self.authority_digest,
-                "item_index_availability": self.item_index_availability.as_code_str(),
-                "graph_coverage_class": self.graph_coverage_class.as_code_str(),
-                "exactness_summary": self.exactness_summary.as_code_str(),
-                "redaction_state": self.redaction_state.as_code_str(),
-            }),
-            (Some(manifest_digest), Some(source_bundle_digest)) => serde_json::json!({
-                "snapshot_id": self.snapshot_id,
-                "projection_version": self.projection_version,
-                "authority_digest": self.authority_digest,
-                "manifest_digest": manifest_digest,
-                "source_bundle_digest": source_bundle_digest,
-                "item_index_availability": self.item_index_availability.as_code_str(),
-                "graph_coverage_class": self.graph_coverage_class.as_code_str(),
-                "exactness_summary": self.exactness_summary.as_code_str(),
-                "redaction_state": self.redaction_state.as_code_str(),
-            }),
-            _ => {
-                return Err(quanta_index_core::CoreError::Storage(
-                    "repomap projection meta strong custody fields must be both present or both absent"
-                        .to_string(),
-                ));
-            }
-        };
+        let value = serde_json::json!({
+            "snapshot_id": self.snapshot_id,
+            "projection_version": self.projection_version,
+            "authority_digest": self.authority_digest,
+            "manifest_digest": self.manifest_digest,
+            "source_bundle_digest": self.source_bundle_digest,
+            "item_index_availability": self.item_index_availability.as_code_str(),
+            "graph_coverage_class": self.graph_coverage_class.as_code_str(),
+            "exactness_summary": self.exactness_summary.as_code_str(),
+            "redaction_state": self.redaction_state.as_code_str(),
+        });
         serde_json::to_string(&value).map_err(|err| {
             quanta_index_core::CoreError::Storage(format!(
                 "repomap projection meta encode failed: {err}"
@@ -895,23 +838,6 @@ impl CandidateProjectionMetaV1 {
                     message: format!("repomap projection meta is missing string `{field}`"),
                 })
         }
-        fn optional_plain_str(
-            value: &serde_json::Value,
-            field: &str,
-        ) -> Result<Option<String>, quanta_index_core::CoreError> {
-            let Some(field_value) = value.get(field) else {
-                return Ok(None);
-            };
-            field_value
-                .as_str()
-                .map(|text| Some(text.to_owned()))
-                .ok_or_else(|| quanta_index_core::CoreError::Typed {
-                    code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
-                    message: format!(
-                        "repomap projection meta field `{field}` is present but not a string"
-                    ),
-                })
-        }
         let value: serde_json::Value =
             serde_json::from_str(value).map_err(|err| quanta_index_core::CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
@@ -927,44 +853,33 @@ impl CandidateProjectionMetaV1 {
                 message: "repomap projection meta is missing `projection_version`".to_string(),
             });
         };
-        let manifest_digest = optional_plain_str(&value, "manifest_digest")?;
-        let source_bundle_digest = optional_plain_str(&value, "source_bundle_digest")?;
-        if manifest_digest.is_some() != source_bundle_digest.is_some() {
+        let manifest_digest = plain_str(&value, "manifest_digest")?;
+        let source_bundle_digest = plain_str(&value, "source_bundle_digest")?;
+        let _validated_manifest_digest = producer_digest(&manifest_digest).map_err(|err| {
+            quanta_index_core::CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                message: format!(
+                    "repomap projection meta has an invalid V2 manifest custody digest: {err}"
+                ),
+            }
+        })?;
+        let source_hex = source_bundle_digest
+            .strip_prefix("sha256:")
+            .ok_or_else(|| quanta_index_core::CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                message: "repomap projection meta has a non-canonical V2 source-bundle digest"
+                    .to_string(),
+            })?;
+        if source_hex.len() != 64
+            || !source_hex
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
             return Err(quanta_index_core::CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
-                message: "repomap projection meta has a partial V2 strong-custody binding"
+                message: "repomap projection meta has a non-canonical V2 source-bundle digest"
                     .to_string(),
             });
-        }
-        if let (Some(manifest_digest), Some(source_bundle_digest)) =
-            (&manifest_digest, &source_bundle_digest)
-        {
-            let _validated_manifest_digest = producer_digest(manifest_digest).map_err(|err| {
-                quanta_index_core::CoreError::Typed {
-                    code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
-                    message: format!(
-                        "repomap projection meta has an invalid V2 manifest custody digest: {err}"
-                    ),
-                }
-            })?;
-            let source_hex = source_bundle_digest
-                .strip_prefix("sha256:")
-                .ok_or_else(|| quanta_index_core::CoreError::Typed {
-                    code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
-                    message: "repomap projection meta has a non-canonical V2 source-bundle digest"
-                        .to_string(),
-                })?;
-            if source_hex.len() != 64
-                || !source_hex
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-            {
-                return Err(quanta_index_core::CoreError::Typed {
-                    code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
-                    message: "repomap projection meta has a non-canonical V2 source-bundle digest"
-                        .to_string(),
-                });
-            }
         }
         Ok(Self {
             snapshot_id: plain_str(&value, "snapshot_id")?,
@@ -988,7 +903,7 @@ pub fn snapshot_from_projection(
     repo_id: &RepoId,
     revision_id: &RevisionId,
     manifest_generation: ManifestGeneration,
-    meta: &CandidateProjectionMetaV1,
+    meta: &CandidateProjectionMeta,
     projection: &[CompiledRepoMapProjectionEntryV1],
 ) -> RepoMapSnapshot {
     let snapshot_meta = RepoMapSnapshotMeta {
@@ -1301,7 +1216,7 @@ impl<'a> CompileCborReader<'a> {
 }
 
 fn projection_entry_to_model_entry(
-    meta: &CandidateProjectionMetaV1,
+    meta: &CandidateProjectionMeta,
     entry: &CompiledRepoMapProjectionEntryV1,
 ) -> RepoMapEntry {
     let final_score_millis = u32::try_from(entry.final_score_millis.clamp(0, 1_000))
@@ -1345,7 +1260,7 @@ fn projection_entry_to_model_entry(
     }
 }
 
-fn freshness_score(meta: &CandidateProjectionMetaV1) -> u32 {
+fn freshness_score(meta: &CandidateProjectionMeta) -> u32 {
     if matches!(
         meta.item_index_availability,
         RepoMapItemIndexAvailability::Available | RepoMapItemIndexAvailability::Full
@@ -1358,7 +1273,7 @@ fn freshness_score(meta: &CandidateProjectionMetaV1) -> u32 {
     500
 }
 
-fn projection_status(meta: &CandidateProjectionMetaV1) -> String {
+fn projection_status(meta: &CandidateProjectionMeta) -> String {
     if matches!(
         meta.item_index_availability,
         RepoMapItemIndexAvailability::Available | RepoMapItemIndexAvailability::Full

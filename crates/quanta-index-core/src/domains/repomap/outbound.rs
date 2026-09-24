@@ -1,6 +1,6 @@
 use quanta_index_contract::{
-    RepoMapActivateGenerationRequest, RepoMapActivateGenerationRequestV2,
-    RepoMapPublishBundleRequestV2, RepoMapSourceBundle, RepoMapTerminalReceiptV2,
+    RepoMapActivateGenerationRequestV2, RepoMapActiveHeadRequestV2,
+    RepoMapActiveHeadResponseV2, RepoMapPublishBundleRequestV2, RepoMapTerminalReceiptV2,
 };
 
 use crate::CoreError;
@@ -12,7 +12,7 @@ use crate::CoreError;
 /// [`quanta_index_contract::RepoMapMutationAck`] verbatim; the store is
 /// their authority.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RepoMapMutationReceiptV1 {
+pub struct RepoMapMutationCommit {
     /// Wire hex of the prior activation's candidate commitment; `None`
     /// when no activation existed.
     pub prior_candidate_commitment: Option<String>,
@@ -43,17 +43,8 @@ pub struct RepoMapMutationReceiptV1 {
 pub trait RepoMapBundleIngestPort: Send + Sync {
     fn ingest_bundle(
         &self,
-        bundle: &RepoMapSourceBundle,
-    ) -> Result<RepoMapMutationReceiptV1, CoreError>;
-
-    fn ingest_bundle_v2(
-        &self,
-        _request: &RepoMapPublishBundleRequestV2,
-    ) -> Result<RepoMapTerminalReceiptV2, CoreError> {
-        Err(CoreError::InvalidContract(
-            "repomap V2 publish is unsupported by this ingest owner".to_string(),
-        ))
-    }
+        request: &RepoMapPublishBundleRequestV2,
+    ) -> Result<RepoMapTerminalReceiptV2, CoreError>;
 }
 
 /// The `RepoMap` store's quarantine, listed and discarded one file at a
@@ -75,19 +66,15 @@ pub trait RepoMapQuarantinePort: Send + Sync {
 }
 
 pub trait RepoMapGenerationActivatePort: Send + Sync {
+    fn active_head(
+        &self,
+        request: &RepoMapActiveHeadRequestV2,
+    ) -> Result<RepoMapActiveHeadResponseV2, CoreError>;
+
     fn activate_generation(
         &self,
-        request: &RepoMapActivateGenerationRequest,
-    ) -> Result<RepoMapMutationReceiptV1, CoreError>;
-
-    fn activate_generation_v2(
-        &self,
-        _request: &RepoMapActivateGenerationRequestV2,
-    ) -> Result<RepoMapTerminalReceiptV2, CoreError> {
-        Err(CoreError::InvalidContract(
-            "repomap V2 activation is unsupported by this activation owner".to_string(),
-        ))
-    }
+        request: &RepoMapActivateGenerationRequestV2,
+    ) -> Result<RepoMapTerminalReceiptV2, CoreError>;
 }
 
 /// What a `RepoMap` store found on disk when it opened (QI-BB-008).
@@ -98,8 +85,6 @@ pub trait RepoMapGenerationActivatePort: Send + Sync {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RepoMapOpenReportV1 {
     pub snapshots_loaded: u64,
-    /// Snapshot files from before the digest envelope, rewritten under it.
-    pub snapshots_migrated: u64,
     pub activations_loaded: u64,
     /// Temporaries a crashed write left behind, removed at open.
     pub stale_temporaries_removed: u64,

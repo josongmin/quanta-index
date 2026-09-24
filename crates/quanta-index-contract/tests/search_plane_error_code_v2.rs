@@ -36,6 +36,8 @@ fn unknown_retired_and_non_exact_codes_fail_closed() {
     for refused in [
         "BAD_REQUEST",
         "UNKNOWN",
+        "LEGACY_SEMANTIC_JOURNAL_CORRUPT",
+        "LEGACY_SEMANTIC_MIGRATION_RECEIPT_CORRUPT",
         "not_ready",
         "NOT_READY ",
         " NotReady",
@@ -60,7 +62,7 @@ fn ipc_error_decode_rejects_unknown_and_bad_request_codes() {
     }
 
     let accepted: SearchPlaneIpcError =
-        serde_json::from_str(r#"{"code":"NOT_READY","message":"warming"}"#)
+        serde_json::from_str(r#"{"code":"NOT_READY","message":"warming","repair":null}"#)
             .expect("accepted closed code");
     assert_eq!(accepted.code, SearchPlaneErrorCodeV2::NotReady);
 }

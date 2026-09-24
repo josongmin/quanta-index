@@ -10,9 +10,7 @@
 //! not durable, a receipt never precedes durability, and what is encoded
 //! and written is proportional to the batch, never to the generation.
 //!
-//! The same row encoding restores a ledger from the catalog at boot, and
-//! encodes a whole state for the one-shot migration of the pre-catalog
-//! snapshot files.
+//! The same row encoding restores a ledger from the catalog at boot.
 //!
 //! Every delta is stamped with the epoch its snapshot will have
 //! (QI-BB-020 W2): the transition takes the next epoch of the generation
@@ -807,10 +805,11 @@ pub(crate) fn structural_chunks_delta_rows(
 }
 
 // ---------------------------------------------------------------------------
-// Rows for whole states (migration) and restore
+// Rows for whole states in test fixtures
 // ---------------------------------------------------------------------------
 
 /// Every row one history state amounts to, stamped `epoch`.
+#[cfg(test)]
 pub(crate) fn history_state_rows(
     generation: &AuxiliaryGenerationKeyV1,
     epoch: AuxEpochV1,
@@ -862,6 +861,7 @@ pub(crate) fn history_state_rows(
 }
 
 /// Every row one runtime state amounts to, stamped `epoch`.
+#[cfg(test)]
 pub(crate) fn runtime_state_rows(
     generation: &AuxiliaryGenerationKeyV1,
     epoch: AuxEpochV1,
@@ -926,6 +926,7 @@ pub(crate) fn runtime_state_rows(
 }
 
 /// Every row one structural state amounts to, stamped `epoch`.
+#[cfg(test)]
 pub(crate) fn structural_state_rows(
     generation: &AuxiliaryGenerationKeyV1,
     epoch: AuxEpochV1,
@@ -965,6 +966,7 @@ pub(crate) fn structural_state_rows(
 }
 
 /// The structural track row for one pair.
+#[cfg(test)]
 pub(crate) fn structural_track_row(
     repo_id: &RepoId,
     revision_id: &RevisionId,

@@ -21,10 +21,10 @@ use std::time::Duration;
 
 use quanta_index_catalog::SqliteCatalog;
 use quanta_index_contract::{
-    FileId, ManifestGeneration, RepoId, RepoMapActivateGenerationRequest, RepoMapExactnessSummary,
-    RepoMapFileNode, RepoMapGraphCoverage, RepoMapGraphCoverageClass, RepoMapItemIndexAvailability,
-    RepoMapNode, RepoMapQueryRequest, RepoMapRedactionState, RepoMapSourceBundle, RepoRelativePath,
-    RevisionId,
+    FileId, ManifestGeneration, RepoId, RepoMapActivateGenerationRequestV2,
+    RepoMapExactnessSummary, RepoMapFileNode, RepoMapGraphCoverage, RepoMapGraphCoverageClass,
+    RepoMapItemIndexAvailability, RepoMapNode, RepoMapPublishBundleRequestV2, RepoMapQueryRequest,
+    RepoMapRedactionState, RepoMapSourceBundle, RepoRelativePath, RevisionId,
 };
 use quanta_index_core::{
     CoreError, QuarantineDiscardOutcomeV1, QuarantinedRepoMapFileV1, RepoMapBundleIngestPort,
@@ -79,15 +79,6 @@ fn bundle(generation: u64, marker: &str) -> RepoMapSourceBundle {
         repo_relative_path: RepoRelativePath::new("src/lib.rs"),
         line_count: 64,
     }))
-}
-
-fn activate_request(generation: u64) -> RepoMapActivateGenerationRequest {
-    RepoMapActivateGenerationRequest {
-        repo_id: repo(),
-        revision_id: revision(),
-        manifest_generation: ManifestGeneration::new(generation),
-        manifest_digest: producer_hex(&format!("g{generation}")),
-    }
 }
 
 fn acquire_request(generation: u64) -> quanta_index_core::RepoMapSnapshotAcquireV1 {
@@ -154,13 +145,20 @@ fn the_four_ports_drive_one_store_end_to_end() -> TestResult {
     let dir = tempfile::tempdir()?;
     let root = dir.path().to_path_buf();
     let (_catalog, ingest, activate, query, quarantine) = ports(&root)?;
-    let receipt = ingest.ingest_bundle(&bundle(1, "g1"))?;
-    assert!(receipt.new_candidate_commitment.starts_with("sha256:"));
+    let source = bundle(1, "g1");
+    let receipt = ingest.ingest_bundle(&RepoMapPublishBundleRequestV2::new(source.clone())?)?;
+    assert!(
+        receipt
+            .mutation
+            .new_candidate_commitment
+            .starts_with("sha256:")
+    );
     // A sealed-but-not-activated generation has no serving head: acquire
     // refuses typed (fail-closed) instead of pinning an unservable view.
     assert!(query.acquire(acquire_request(1)).is_err());
-    let activation = activate.activate_generation(&activate_request(1))?;
-    assert_eq!(activation.activation_epoch, 1);
+    let activation =
+        activate.activate_generation(&RepoMapActivateGenerationRequestV2::for_bundle(&source)?)?;
+    assert_eq!(activation.mutation.activation_epoch, 1);
     let response = query.acquire(acquire_request(1))?.query(query_request(1))?;
     assert!(!response.entries.is_empty());
     assert!(quarantine.quarantined_files()?.is_empty());
@@ -172,8 +170,10 @@ fn quarantine_is_listed_from_durable_incidents_and_discarded_only_as_listed() ->
     let dir = tempfile::tempdir()?;
     let root = dir.path().to_path_buf();
     let (catalog, ingest, activate, _query, quarantine) = ports(&root)?;
-    let _sealed = ingest.ingest_bundle(&bundle(1, "g1"))?;
-    let _activated = activate.activate_generation(&activate_request(1))?;
+    let source = bundle(1, "g1");
+    let _sealed = ingest.ingest_bundle(&RepoMapPublishBundleRequestV2::new(source.clone())?)?;
+    let _activated =
+        activate.activate_generation(&RepoMapActivateGenerationRequestV2::for_bundle(&source)?)?;
     // Lose the object: the next open records a durable incident.
     let mut removed = 0_usize;
     remove_files(&root.join("repo-map").join("objects"), &mut removed)?;
@@ -232,7 +232,7 @@ fn a_nodeless_bundle_is_refused_before_any_mutation() -> TestResult {
     let (_catalog, ingest, _activate, _query, _quarantine) = ports(&root)?;
     let mut nodeless = bundle(1, "g1");
     nodeless.nodes.clear();
-    match ingest.ingest_bundle(&nodeless) {
+    match ingest.ingest_bundle(&RepoMapPublishBundleRequestV2::new(nodeless)?) {
         Err(CoreError::InvalidContract(_)) => {}
         other => unreachable!("a nodeless bundle is refused, got {other:?}"),
     }

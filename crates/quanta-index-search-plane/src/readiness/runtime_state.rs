@@ -5,7 +5,7 @@
 //! retain superseded epoch snapshots at the cost of the deltas alone
 //! (QI-BB-020 W2); see `history_state`.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fmt;
 
 use imbl::OrdMap;
@@ -20,7 +20,6 @@ use crate::readiness::errors::{
     ERR_RUNTIME_CATALOG_CONFLICTING_BATCH, ERR_RUNTIME_CATALOG_STALE_BATCH,
     ERR_RUNTIME_CATALOG_UNKNOWN_DOC_ID,
 };
-use crate::readiness::keys::AuthorityKey;
 use crate::readiness::serde_support::impl_struct_serde;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -360,10 +359,6 @@ pub(crate) fn validate_runtime_catalog_doc_ids(
     Ok(())
 }
 
-#[derive(Clone, Debug, Default)]
-pub(super) struct RuntimeAuthoritySnapshot {
-    pub(super) entries: BTreeMap<AuthorityKey, RuntimeMetadataState>,
-}
 impl_struct_serde!(RuntimeStateMeta {
     catalog_overlay_epoch_ms: Option<u64>,
     catalog_batch_digest: Option<Box<str>>,
@@ -401,10 +396,6 @@ impl_struct_serde!(RuntimeMetadataState {
     producer_head_applied_at_ms: Option<u64>,
     generation_materialized_at_ms: Option<u64>,
     catalog_materialized: bool,
-});
-
-impl_struct_serde!(RuntimeAuthoritySnapshot {
-    entries: BTreeMap<AuthorityKey, RuntimeMetadataState>,
 });
 
 /// What one dirty-overlay batch changes.

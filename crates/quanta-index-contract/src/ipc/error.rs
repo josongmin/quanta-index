@@ -146,20 +146,6 @@ define_search_plane_error_codes! {
         IngestResourceBudgetExceeded => "INGEST_RESOURCE_BUDGET_EXCEEDED",
         Internal => "INTERNAL",
         InvalidRequest => "INVALID_REQUEST",
-        LegacySemanticJournalChangedDuringMigration => "LEGACY_SEMANTIC_JOURNAL_CHANGED_DURING_MIGRATION",
-        LegacySemanticJournalCorrupt => "LEGACY_SEMANTIC_JOURNAL_CORRUPT",
-        LegacySemanticJournalGenerationConflict => "LEGACY_SEMANTIC_JOURNAL_GENERATION_CONFLICT",
-        LegacySemanticJournalImmutableAfterMigration => "LEGACY_SEMANTIC_JOURNAL_IMMUTABLE_AFTER_MIGRATION",
-        LegacySemanticJournalManifestDigestMissing => "LEGACY_SEMANTIC_JOURNAL_MANIFEST_DIGEST_MISSING",
-        LegacySemanticJournalMissing => "LEGACY_SEMANTIC_JOURNAL_MISSING",
-        LegacySemanticMigrationCustodyInvalid => "LEGACY_SEMANTIC_MIGRATION_CUSTODY_INVALID",
-        LegacySemanticMigrationDigestConflict => "LEGACY_SEMANTIC_MIGRATION_DIGEST_CONFLICT",
-        LegacySemanticMigrationDurableGenerationDuplicate => "LEGACY_SEMANTIC_MIGRATION_DURABLE_GENERATION_DUPLICATE",
-        LegacySemanticMigrationDurableRootMissing => "LEGACY_SEMANTIC_MIGRATION_DURABLE_ROOT_MISSING",
-        LegacySemanticMigrationInputTooLarge => "LEGACY_SEMANTIC_MIGRATION_INPUT_TOO_LARGE",
-        LegacySemanticMigrationReceiptConflict => "LEGACY_SEMANTIC_MIGRATION_RECEIPT_CONFLICT",
-        LegacySemanticMigrationReceiptCorrupt => "LEGACY_SEMANTIC_MIGRATION_RECEIPT_CORRUPT",
-        LegacySemanticMigrationReceiptUnsupported => "LEGACY_SEMANTIC_MIGRATION_RECEIPT_UNSUPPORTED",
         LexFilterArchivedUnavailable => "LEX_FILTER_ARCHIVED_UNAVAILABLE",
         LexFilterAuthorUnavailable => "LEX_FILTER_AUTHOR_UNAVAILABLE",
         LexFilterCommitterUnavailable => "LEX_FILTER_COMMITTER_UNAVAILABLE",
@@ -521,9 +507,9 @@ pub const ERR_SERVER_OVERLOADED: SearchPlaneErrorCodeV2 = SearchPlaneErrorCodeV2
 /// Wire-level typed error carried in every search-plane IPC response.
 ///
 /// `code` + `message` are the load-bearing fail-closed fields; `repair` is
-/// optional, additive typed guidance (J7Q-06). Old peers that never wrote
-/// `repair` still decode (the field reads as `None`); unknown fields remain
-/// rejected so the decoder stays fail-closed.
+/// optional typed guidance (J7Q-06). Every current-format error writes
+/// `repair` explicitly, including `None`.
+/// Missing or unknown fields are rejected.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SearchPlaneIpcError {
     pub code: SearchPlaneErrorCodeV2,
@@ -568,16 +554,10 @@ impl Serialize for SearchPlaneIpcError {
     where
         S: Serializer,
     {
-        let mut field_count = 2usize;
-        if self.repair.is_some() {
-            field_count = field_count.saturating_add(1);
-        }
-        let mut state = serializer.serialize_struct("SearchPlaneIpcError", field_count)?;
+        let mut state = serializer.serialize_struct("SearchPlaneIpcError", 3)?;
         state.serialize_field("code", &self.code)?;
         state.serialize_field("message", &self.message)?;
-        if let Some(repair) = &self.repair {
-            state.serialize_field("repair", repair)?;
-        }
+        state.serialize_field("repair", &self.repair)?;
         state.end()
     }
 }
@@ -631,7 +611,11 @@ impl<'de> Visitor<'de> for SearchPlaneIpcErrorVisitor {
         Ok(SearchPlaneIpcError {
             code: code.ok_or_else(|| de::Error::missing_field("code"))?,
             message: message.ok_or_else(|| de::Error::missing_field("message"))?,
-            repair,
+            repair: if repair_seen {
+                repair
+            } else {
+                return Err(de::Error::missing_field("repair"));
+            },
         })
     }
 }
@@ -713,10 +697,9 @@ mod tests {
     }
 
     #[test]
-    fn legacy_two_field_wire_decodes_with_none_repair() {
-        // A peer that predates J7Q-06 writes only {code, message}; it must still
-        // decode, with `repair` reading as None (back-compat, fail-closed). We
-        // hand-roll the two-field CBOR map via a BTreeMap to mimic the old wire.
+    fn legacy_two_field_wire_is_refused() {
+        // A peer that predates J7Q-06 writes only {code, message}; this
+        // current-format decoder requires an explicit repair field.
         let map: std::collections::BTreeMap<String, String> = [
             ("code".to_string(), "NOT_READY".to_string()),
             ("message".to_string(), "warming".to_string()),
@@ -725,10 +708,8 @@ mod tests {
         .collect();
         let mut buf: Vec<u8> = Vec::new();
         ciborium::ser::into_writer(&map, &mut buf).expect("serialize legacy");
-        let decoded: SearchPlaneIpcError =
-            ciborium::de::from_reader(buf.as_slice()).expect("decode legacy");
-        assert_eq!(decoded.code, SearchPlaneErrorCodeV2::NotReady);
-        assert_eq!(decoded.message, "warming");
-        assert_eq!(decoded.repair, None);
+        let error = ciborium::de::from_reader::<SearchPlaneIpcError, _>(buf.as_slice())
+            .expect_err("old error wire must refuse");
+        assert!(error.to_string().contains("repair"), "{error}");
     }
 }

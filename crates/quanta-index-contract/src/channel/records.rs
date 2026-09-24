@@ -315,7 +315,8 @@ impl<'de> Visitor<'de> for ChunkRecordVisitor {
             structural: structural.ok_or_else(|| de::Error::missing_field("structural"))?,
             parent_chunk_id: parent_chunk_id
                 .ok_or_else(|| de::Error::missing_field("parent_chunk_id"))?,
-            source_repo_id: source_repo_id.unwrap_or(None),
+            source_repo_id: source_repo_id
+                .ok_or_else(|| de::Error::missing_field("source_repo_id"))?,
         })
     }
 }
@@ -666,16 +667,22 @@ impl<'de> Visitor<'de> for EmbeddingRecordVisitor {
                 .ok_or_else(|| de::Error::missing_field("owner_id"))?
                 .into_boxed_str(),
             corpus_kind: corpus_kind.ok_or_else(|| de::Error::missing_field("corpus_kind"))?,
-            parent_owner_id: parent_owner_id.unwrap_or(None).map(String::into_boxed_str),
+            parent_owner_id: parent_owner_id
+                .ok_or_else(|| de::Error::missing_field("parent_owner_id"))?
+                .map(String::into_boxed_str),
             source_doc_id: source_doc_id
                 .ok_or_else(|| de::Error::missing_field("source_doc_id"))?
                 .into_boxed_str(),
             repo_relative_path: repo_relative_path
                 .ok_or_else(|| de::Error::missing_field("repo_relative_path"))?,
             language: language.ok_or_else(|| de::Error::missing_field("language"))?,
-            package: package.unwrap_or(None).map(String::into_boxed_str),
+            package: package
+                .ok_or_else(|| de::Error::missing_field("package"))?
+                .map(String::into_boxed_str),
             symbol_kind: symbol_kind.ok_or_else(|| de::Error::missing_field("symbol_kind"))?,
-            visibility: visibility.unwrap_or(None).map(String::into_boxed_str),
+            visibility: visibility
+                .ok_or_else(|| de::Error::missing_field("visibility"))?
+                .map(String::into_boxed_str),
             source_role: source_role.ok_or_else(|| de::Error::missing_field("source_role"))?,
             generated: generated.ok_or_else(|| de::Error::missing_field("generated"))?,
             capability_status: capability_status
@@ -725,6 +732,7 @@ impl<'de> Deserialize<'de> for EmbeddingRecord {
 #[cfg(test)]
 mod tests {
     use ciborium::Value;
+    use serde::de::DeserializeOwned;
 
     use super::{ChunkRecord, ChunkStructuralMetadata, EmbeddingRecord};
     use crate::lex::LanguageCode;
@@ -739,6 +747,30 @@ mod tests {
     fn rust_language() -> Result<LanguageCode, Box<dyn std::error::Error>> {
         LanguageCode::new("rust")
             .map_err(|err| -> Box<dyn std::error::Error> { err.to_string().into() })
+    }
+
+    fn missing_cbor_fields_are_refused<T: DeserializeOwned>(
+        bytes: &[u8],
+        fields: &[&str],
+    ) -> TestRes {
+        let original: Value = ciborium::from_reader(bytes)?;
+        for field in fields {
+            let mut wire = original.clone();
+            let Value::Map(entries) = &mut wire else {
+                return Err("record wire shape must be a map".into());
+            };
+            let before = entries.len();
+            entries.retain(|(key, _)| key != &Value::Text((*field).to_owned()));
+            if entries.len() + 1 != before {
+                return Err(format!("fixture does not carry exactly one {field}").into());
+            }
+            let mut old_bytes = Vec::new();
+            ciborium::into_writer(&wire, &mut old_bytes)?;
+            if ciborium::from_reader::<T, _>(old_bytes.as_slice()).is_ok() {
+                return Err(format!("missing {field} was accepted").into());
+            }
+        }
+        Ok(())
     }
 
     #[test]
@@ -769,6 +801,7 @@ mod tests {
         if decoded != record {
             return Err(format!("decoded chunk record mismatch: {decoded:?} != {record:?}").into());
         }
+        missing_cbor_fields_are_refused::<ChunkRecord>(&bytes, &["source_repo_id"])?;
         Ok(())
     }
 
@@ -895,6 +928,10 @@ mod tests {
                 format!("decoded embedding record mismatch: {decoded:?} != {record:?}").into(),
             );
         }
+        missing_cbor_fields_are_refused::<EmbeddingRecord>(
+            &bytes,
+            &["parent_owner_id", "package", "visibility"],
+        )?;
         Ok(())
     }
 }

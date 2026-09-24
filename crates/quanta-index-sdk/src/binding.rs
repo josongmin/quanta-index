@@ -24,8 +24,8 @@ use quanta_index_contract::{
     BatchPublishReceipt, ClusterMembershipBatchReadRequestV1, CurrentGenerationRequest,
     FileOwnerProjectionErrorV1, FileOwnerProjectionRow, GenerationPin, GenerationSelector,
     HistoryQueryRequest, HybridCandidatePolicyErrorV1, HybridQueryRequest, HybridSeedQueryRequest,
-    LexicalCandidate, ManifestGeneration, RepoId, RepoMapActivateGenerationRequest,
-    RepoMapActivateGenerationRequestV2, RepoMapMutationAck, RepoMapMutationPhaseV2,
+    LexicalCandidate, ManifestGeneration, RepoId, RepoMapActivateGenerationRequestV2,
+    RepoMapActiveHeadRequestV2, RepoMapMutationAck, RepoMapMutationPhaseV2,
     RepoMapPublishBundleRequestV2, RepoMapQueryRequest, RepoMapQueryResponse,
     RepoMapTerminalReceiptV2, RevisionId, RuntimeMetadataQueryRequest,
     SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
@@ -85,8 +85,8 @@ impl ExpectedQueryResponseV1 {
 pub(crate) enum ExpectedControlResponseV1 {
     SearchCorpusActivationCasAck,
     SearchCorpusRollbackCasAck,
-    RepoMapMutationAck,
     RepoMapTerminalReceiptV2,
+    RepoMapActiveHeadV2,
     CurrentGenerationSnapshot,
     GenerationStatusReport,
     MetricsSnapshot,
@@ -101,8 +101,8 @@ impl ExpectedControlResponseV1 {
         match self {
             Self::SearchCorpusActivationCasAck => "search_corpus_activation_cas_ack",
             Self::SearchCorpusRollbackCasAck => "search_corpus_rollback_cas_ack",
-            Self::RepoMapMutationAck => "repomap_mutation_ack",
             Self::RepoMapTerminalReceiptV2 => "repomap_terminal_receipt_v2",
+            Self::RepoMapActiveHeadV2 => "repomap_active_head_v2",
             Self::CurrentGenerationSnapshot => "current_generation_snapshot",
             Self::GenerationStatusReport => "generation_status_report",
             Self::MetricsSnapshot => "metrics_snapshot",
@@ -117,7 +117,6 @@ impl ExpectedControlResponseV1 {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ExpectedIngestResponseV1 {
     SearchCorpusReceipt,
-    RepoMapReceipt,
     RepoMapTerminalReceiptV2,
     HistoryReceipt,
     RepoCommitRecencyReceipt,
@@ -136,7 +135,6 @@ impl ExpectedIngestResponseV1 {
     pub(crate) const fn kind(self) -> &'static str {
         match self {
             Self::SearchCorpusReceipt => "search_corpus_receipt",
-            Self::RepoMapReceipt => "repomap_receipt",
             Self::RepoMapTerminalReceiptV2 => "repomap_terminal_receipt_v2",
             Self::HistoryReceipt => "history_receipt",
             Self::RepoCommitRecencyReceipt => "repo_commit_recency_receipt",
@@ -842,8 +840,8 @@ enum ControlCall {
     Intrinsic,
     Activate(SearchPlaneActivateSearchCorpusGenerationCasRequest),
     Rollback(SearchPlaneRollbackSearchCorpusGenerationCasRequest),
-    ActivateRepoMap(RepoMapActivateGenerationRequest),
     ActivateRepoMapV2(RepoMapActivateGenerationRequestV2),
+    RepoMapActiveHeadV2(RepoMapActiveHeadRequestV2),
     CurrentGeneration {
         repo_id: RepoId,
         revision_id: RevisionId,
@@ -864,13 +862,13 @@ impl ControlCallBinding {
                 expected: ExpectedControlResponseV1::SearchCorpusRollbackCasAck,
                 inner: ControlCall::Rollback(payload.clone()),
             },
-            SearchPlaneControlIpcRequest::RepoMapActivate(payload) => Self {
-                expected: ExpectedControlResponseV1::RepoMapMutationAck,
-                inner: ControlCall::ActivateRepoMap(payload.clone()),
-            },
             SearchPlaneControlIpcRequest::RepoMapActivateV2(payload) => Self {
                 expected: ExpectedControlResponseV1::RepoMapTerminalReceiptV2,
                 inner: ControlCall::ActivateRepoMapV2(payload.clone()),
+            },
+            SearchPlaneControlIpcRequest::RepoMapActiveHeadV2(payload) => Self {
+                expected: ExpectedControlResponseV1::RepoMapActiveHeadV2,
+                inner: ControlCall::RepoMapActiveHeadV2(payload.clone()),
             },
             SearchPlaneControlIpcRequest::CurrentGeneration(
                 quanta_index_contract::CurrentGenerationRequest {
@@ -907,24 +905,6 @@ impl ControlCallBinding {
             },
         }
     }
-}
-
-fn check_repomap_ack(
-    ack: &RepoMapMutationAck,
-    request: &RepoMapActivateGenerationRequest,
-) -> Result<(), SdkError> {
-    let foreign = ack.repo_id != request.repo_id
-        || ack.revision_id != request.revision_id
-        || ack.manifest_generation != request.manifest_generation;
-    if foreign {
-        return Err(binding_error(
-            "repomap_mutation_ack",
-            ResponseBindingAxis::TargetIdentity,
-            "the requested repo/revision/manifest",
-            "a different identity",
-        ));
-    }
-    Ok(())
 }
 
 fn check_sequence(ack: &RepoMapMutationAck) -> Result<(), SdkError> {
@@ -969,10 +949,10 @@ fn check_repo_map_v2_receipt(
             RepoMapV2RequestRef::Activate(request) => (
                 RepoMapMutationPhaseV2::Activate,
                 (
-                    &request.request_v1.repo_id,
-                    &request.request_v1.revision_id,
-                    request.request_v1.manifest_generation,
-                    &request.request_v1.manifest_digest,
+                    &request.repo_id,
+                    &request.revision_id,
+                    request.manifest_generation,
+                    &request.manifest_digest,
                 ),
                 request.snapshot_id.as_str(),
                 request.projection_version,
@@ -997,7 +977,34 @@ fn check_repo_map_v2_receipt(
             "a different terminal receipt",
         ));
     }
-    check_sequence(&receipt.mutation)
+    check_sequence(&receipt.mutation)?;
+    if let RepoMapV2RequestRef::Activate(request) = request {
+        let expected_prior = request
+            .expected_active
+            .as_ref()
+            .map(|head| head.candidate_commitment().to_wire_string());
+        let expected_epoch = request.expected_active.as_ref().map_or(Ok(1), |head| {
+            head.epoch().get().checked_add(1).ok_or_else(|| {
+                binding_error(
+                    "repomap_terminal_receipt_v2",
+                    ResponseBindingAxis::CasExpectation,
+                    "a non-overflowing prior activation epoch",
+                    "an exhausted prior activation epoch",
+                )
+            })
+        })?;
+        if receipt.mutation.prior_candidate_commitment != expected_prior
+            || receipt.mutation.activation_epoch != expected_epoch
+        {
+            return Err(binding_error(
+                "repomap_terminal_receipt_v2",
+                ResponseBindingAxis::CasExpectation,
+                "the exact requested prior active head",
+                "a different prior commitment or epoch",
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Bind a control response against its call. Exhaustive over the closed
@@ -1064,21 +1071,28 @@ pub(crate) fn bind_control_response(
             }
             Ok(())
         }
-        SearchPlaneControlIpcResponse::RepoMapMutationAck(ack) => {
-            if binding.expected != ExpectedControlResponseV1::RepoMapMutationAck {
-                return Err(variant("repomap_mutation_ack"));
-            }
-            if let ControlCall::ActivateRepoMap(request) = &binding.inner {
-                check_repomap_ack(ack, request)?;
-            }
-            check_sequence(ack)
-        }
         SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(receipt) => {
             if binding.expected != ExpectedControlResponseV1::RepoMapTerminalReceiptV2 {
                 return Err(variant("repomap_terminal_receipt_v2"));
             }
             if let ControlCall::ActivateRepoMapV2(request) = &binding.inner {
                 check_repo_map_v2_receipt(receipt, &RepoMapV2RequestRef::Activate(request))?;
+            }
+            Ok(())
+        }
+        SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(head) => {
+            if binding.expected != ExpectedControlResponseV1::RepoMapActiveHeadV2 {
+                return Err(variant("repomap_active_head_v2"));
+            }
+            if let ControlCall::RepoMapActiveHeadV2(request) = &binding.inner
+                && (head.repo_id != request.repo_id || head.revision_id != request.revision_id)
+            {
+                return Err(binding_error(
+                    route,
+                    ResponseBindingAxis::TargetIdentity,
+                    "the requested repo/revision",
+                    "a different RepoMap active-head domain",
+                ));
             }
             Ok(())
         }
@@ -1206,10 +1220,6 @@ impl IngestCallBinding {
                 ExpectedIngestResponseV1::StructuralReceipt,
                 Some((batch.generation, batch.batch_digest.clone())),
             ),
-            SearchPlaneIngestIpcRequest::PublishRepoMapBundle(bundle) => (
-                ExpectedIngestResponseV1::RepoMapReceipt,
-                Some((bundle.manifest_generation, bundle.manifest_digest.clone())),
-            ),
             SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(_) => {
                 (ExpectedIngestResponseV1::RepoMapTerminalReceiptV2, None)
             }
@@ -1225,7 +1235,6 @@ impl IngestCallBinding {
             | SearchPlaneIngestIpcRequest::PublishDirtyBatch(_)
             | SearchPlaneIngestIpcRequest::PublishRuntimeCatalogBatch(_)
             | SearchPlaneIngestIpcRequest::PublishStructuralBatch(_)
-            | SearchPlaneIngestIpcRequest::PublishRepoMapBundle(_)
             | SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(_)
             | SearchPlaneIngestIpcRequest::PublishRepoDescriptionBatch(_) => None,
         };
@@ -1249,7 +1258,6 @@ pub(crate) fn bind_ingest_response(
         SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt) => {
             ("search_corpus_receipt", Some(receipt))
         }
-        SearchPlaneIngestIpcResponse::RepoMapReceipt(_) => ("repomap_receipt", None),
         SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(receipt) => {
             ("repomap_terminal_receipt_v2", {
                 if let Some(request) = &binding.repo_map_v2 {
@@ -1749,12 +1757,12 @@ mod repo_map_v2_binding_tests {
     };
     use crate::{ResponseBindingAxis, SdkError};
     use quanta_index_contract::{
-        ManifestGeneration, RepoId, RepoMapActivateGenerationRequestV2, RepoMapExactnessSummary,
-        RepoMapGraphCoverage, RepoMapGraphCoverageClass, RepoMapItemIndexAvailability,
-        RepoMapMutationAck, RepoMapMutationPhaseV2, RepoMapPublishBundleRequestV2,
-        RepoMapRedactionState, RepoMapSourceBundle, RepoMapTerminalReceiptV2, RevisionId,
-        SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse, SearchPlaneIngestIpcRequest,
-        SearchPlaneIngestIpcResponse,
+        CandidateCommitmentV1, ManifestGeneration, RepoId, RepoMapActivateGenerationRequestV2,
+        RepoMapExactnessSummary, RepoMapExpectedActiveV2, RepoMapGraphCoverage,
+        RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapMutationAck,
+        RepoMapMutationPhaseV2, RepoMapPublishBundleRequestV2, RepoMapRedactionState,
+        RepoMapSourceBundle, RepoMapTerminalReceiptV2, RevisionId, SearchPlaneControlIpcRequest,
+        SearchPlaneControlIpcResponse, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse,
     };
 
     fn publish_request() -> RepoMapPublishBundleRequestV2 {
@@ -1880,6 +1888,59 @@ mod repo_map_v2_binding_tests {
             ),
             Err(SdkError::Binding {
                 axis: ResponseBindingAxis::TargetIdentity,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn activate_receipt_binds_the_exact_prior_head() {
+        let publish = publish_request();
+        let prior = RepoMapExpectedActiveV2::new(
+            std::num::NonZeroU64::new(7).expect("positive epoch"),
+            CandidateCommitmentV1::from_bytes([0xcd; 32]),
+        );
+        let request = RepoMapActivateGenerationRequestV2::for_bundle(&publish.bundle)
+            .expect("canonical fixture bundle")
+            .with_expected_active(prior.clone());
+        let binding = ControlCallBinding::from_request(
+            &SearchPlaneControlIpcRequest::RepoMapActivateV2(request),
+        );
+        let mut valid = receipt(&publish, RepoMapMutationPhaseV2::Activate);
+        valid.mutation.prior_candidate_commitment =
+            Some(prior.candidate_commitment().to_wire_string());
+        valid.mutation.activation_epoch = 8;
+        assert!(
+            bind_control_response(
+                &binding,
+                &SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(valid.clone()),
+            )
+            .is_ok()
+        );
+
+        let mut wrong_commitment = valid.clone();
+        wrong_commitment.mutation.prior_candidate_commitment =
+            Some(CandidateCommitmentV1::from_bytes([0xef; 32]).to_wire_string());
+        assert!(matches!(
+            bind_control_response(
+                &binding,
+                &SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(wrong_commitment)
+            ),
+            Err(SdkError::Binding {
+                axis: ResponseBindingAxis::CasExpectation,
+                ..
+            })
+        ));
+
+        let mut wrong_epoch = valid;
+        wrong_epoch.mutation.activation_epoch = 9;
+        assert!(matches!(
+            bind_control_response(
+                &binding,
+                &SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(wrong_epoch)
+            ),
+            Err(SdkError::Binding {
+                axis: ResponseBindingAxis::CasExpectation,
                 ..
             })
         ));

@@ -142,6 +142,8 @@ test_threads = 4
 targets = [
   "control-readiness-owner-v1",
   "process-readiness-owner-v1",
+  "ipc-admission",
+  "provider-boundary-owner-v1",
 ]
 
 [local_scopes.control-readiness-owner-lib]
@@ -149,7 +151,10 @@ lane = "test-control-readiness-owner-lane"
 test_threads = 4
 lib = true
 packages = [
+  "quanta-index-core",
+  "quanta-index-ipc",
   "quanta-index-search-plane",
+  "quanta-index-searchd",
 ]
 
 [local_scopes.state-migration-owner]

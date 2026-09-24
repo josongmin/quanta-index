@@ -11,6 +11,8 @@ use serde::{
     ser::SerializeStruct,
 };
 
+/// Current projection shape. Deserialization does not fill missing source
+/// signals from legacy snapshots or ignore retired query-time fields.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RepoMapEntry {
     pub subject_identity: String,
@@ -148,20 +150,13 @@ impl<'de> Visitor<'de> for RepoMapEntryVisitor {
         let mut projection_authority_digest: Option<String> = None;
         let mut projection_status: Option<String> = None;
         let mut redaction_state: Option<RepoMapRedactionState> = None;
-        let mut search_text = String::new();
-        let mut search_text_seen = false;
-        let mut source_symbol_count = 0u32;
-        let mut source_symbol_count_seen = false;
-        let mut source_chunk_token_total = 0u32;
-        let mut source_chunk_token_total_seen = false;
-        let mut source_call_incoming_edges = 0u32;
-        let mut source_call_incoming_edges_seen = false;
-        let mut source_call_outgoing_edges = 0u32;
-        let mut source_call_outgoing_edges_seen = false;
-        let mut source_import_incoming_edges = 0u32;
-        let mut source_import_incoming_edges_seen = false;
-        let mut source_import_outgoing_edges = 0u32;
-        let mut source_import_outgoing_edges_seen = false;
+        let mut search_text: Option<String> = None;
+        let mut source_symbol_count: Option<u32> = None;
+        let mut source_chunk_token_total: Option<u32> = None;
+        let mut source_call_incoming_edges: Option<u32> = None;
+        let mut source_call_outgoing_edges: Option<u32> = None;
+        let mut source_import_incoming_edges: Option<u32> = None;
+        let mut source_import_outgoing_edges: Option<u32> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "subject_identity" => {
@@ -269,56 +264,49 @@ impl<'de> Visitor<'de> for RepoMapEntryVisitor {
                     redaction_state = Some(map.next_value()?);
                 }
                 "search_text" => {
-                    if search_text_seen {
+                    if search_text.is_some() {
                         return Err(de::Error::duplicate_field("search_text"));
                     }
-                    search_text_seen = true;
-                    search_text = map.next_value()?;
+                    search_text = Some(map.next_value()?);
                 }
                 "source_symbol_count" => {
-                    if source_symbol_count_seen {
+                    if source_symbol_count.is_some() {
                         return Err(de::Error::duplicate_field("source_symbol_count"));
                     }
-                    source_symbol_count_seen = true;
-                    source_symbol_count = map.next_value()?;
+                    source_symbol_count = Some(map.next_value()?);
                 }
                 "source_chunk_token_total" => {
-                    if source_chunk_token_total_seen {
+                    if source_chunk_token_total.is_some() {
                         return Err(de::Error::duplicate_field("source_chunk_token_total"));
                     }
-                    source_chunk_token_total_seen = true;
-                    source_chunk_token_total = map.next_value()?;
+                    source_chunk_token_total = Some(map.next_value()?);
                 }
                 "source_call_incoming_edges" => {
-                    if source_call_incoming_edges_seen {
+                    if source_call_incoming_edges.is_some() {
                         return Err(de::Error::duplicate_field("source_call_incoming_edges"));
                     }
-                    source_call_incoming_edges_seen = true;
-                    source_call_incoming_edges = map.next_value()?;
+                    source_call_incoming_edges = Some(map.next_value()?);
                 }
                 "source_call_outgoing_edges" => {
-                    if source_call_outgoing_edges_seen {
+                    if source_call_outgoing_edges.is_some() {
                         return Err(de::Error::duplicate_field("source_call_outgoing_edges"));
                     }
-                    source_call_outgoing_edges_seen = true;
-                    source_call_outgoing_edges = map.next_value()?;
+                    source_call_outgoing_edges = Some(map.next_value()?);
                 }
                 "source_import_incoming_edges" => {
-                    if source_import_incoming_edges_seen {
+                    if source_import_incoming_edges.is_some() {
                         return Err(de::Error::duplicate_field("source_import_incoming_edges"));
                     }
-                    source_import_incoming_edges_seen = true;
-                    source_import_incoming_edges = map.next_value()?;
+                    source_import_incoming_edges = Some(map.next_value()?);
                 }
                 "source_import_outgoing_edges" => {
-                    if source_import_outgoing_edges_seen {
+                    if source_import_outgoing_edges.is_some() {
                         return Err(de::Error::duplicate_field("source_import_outgoing_edges"));
                     }
-                    source_import_outgoing_edges_seen = true;
-                    source_import_outgoing_edges = map.next_value()?;
+                    source_import_outgoing_edges = Some(map.next_value()?);
                 }
                 _other => {
-                    let _: de::IgnoredAny = map.next_value()?;
+                    return Err(de::Error::unknown_field(_other, REPOMAP_ENTRY_FIELDS));
                 }
             }
         }
@@ -354,13 +342,19 @@ impl<'de> Visitor<'de> for RepoMapEntryVisitor {
                 .ok_or_else(|| de::Error::missing_field("projection_status"))?,
             redaction_state: redaction_state
                 .ok_or_else(|| de::Error::missing_field("redaction_state"))?,
-            search_text,
-            source_symbol_count,
-            source_chunk_token_total,
-            source_call_incoming_edges,
-            source_call_outgoing_edges,
-            source_import_incoming_edges,
-            source_import_outgoing_edges,
+            search_text: search_text.ok_or_else(|| de::Error::missing_field("search_text"))?,
+            source_symbol_count: source_symbol_count
+                .ok_or_else(|| de::Error::missing_field("source_symbol_count"))?,
+            source_chunk_token_total: source_chunk_token_total
+                .ok_or_else(|| de::Error::missing_field("source_chunk_token_total"))?,
+            source_call_incoming_edges: source_call_incoming_edges
+                .ok_or_else(|| de::Error::missing_field("source_call_incoming_edges"))?,
+            source_call_outgoing_edges: source_call_outgoing_edges
+                .ok_or_else(|| de::Error::missing_field("source_call_outgoing_edges"))?,
+            source_import_incoming_edges: source_import_incoming_edges
+                .ok_or_else(|| de::Error::missing_field("source_import_incoming_edges"))?,
+            source_import_outgoing_edges: source_import_outgoing_edges
+                .ok_or_else(|| de::Error::missing_field("source_import_outgoing_edges"))?,
         })
     }
 }
@@ -542,7 +536,7 @@ impl<'de> Visitor<'de> for RepoMapSnapshotVisitor {
                     entries = Some(map.next_value()?);
                 }
                 _other => {
-                    let _: de::IgnoredAny = map.next_value()?;
+                    return Err(de::Error::unknown_field(_other, REPOMAP_SNAPSHOT_FIELDS));
                 }
             }
         }
@@ -645,47 +639,34 @@ mod tests {
         assert_eq!(decoded, entry);
     }
 
-    // A pre-QI-BB-008 file carried the query-time `included`/`rank` on
-    // every entry; they are ignored, not refused, so those files still load.
     #[test]
-    fn repomap_entry_defaults_missing_search_and_source_fields() {
-        let value = json!({
-            "subject_identity": "subject://main",
-            "subject_doc_type": "File",
-            "subject_kind": "File",
-            "owner_path": "src/main.rs",
-            "score": 0.75,
-            "final_score_millis": 750,
-            "included": true,
-            "rank": 1,
-            "importance_score_millis": 800,
-            "utility_score_millis": 700,
-            "freshness_score_millis": 650,
-            "evidence_priority_millis": 600,
-            "token_budget_hint": 512,
-            "contributing_signals": {
-                "files": 3
-            },
-            "projection_evidence_kind": "bundle",
-            "projection_authority_artifact_id": "artifact-1",
-            "projection_authority_digest": "digest-1",
-            "projection_status": "fresh",
-            "redaction_state": "Unredacted"
-        });
-        let decoded: RepoMapEntry = match serde_json::from_value(value) {
-            Ok(value) => value,
-            Err(err) => {
-                assert!(false, "failed to decode RepoMapEntry with defaults: {err}");
-                return;
-            }
-        };
-        assert_eq!(decoded.search_text, "");
-        assert_eq!(decoded.source_symbol_count, 0);
-        assert_eq!(decoded.source_chunk_token_total, 0);
-        assert_eq!(decoded.source_call_incoming_edges, 0);
-        assert_eq!(decoded.source_call_outgoing_edges, 0);
-        assert_eq!(decoded.source_import_incoming_edges, 0);
-        assert_eq!(decoded.source_import_outgoing_edges, 0);
+    fn repomap_entry_refuses_missing_current_fields_and_obsolete_fields() {
+        let current = serde_json::to_value(fixture_entry()).expect("serialize current entry");
+        for field in [
+            "search_text",
+            "source_symbol_count",
+            "source_chunk_token_total",
+            "source_call_incoming_edges",
+            "source_call_outgoing_edges",
+            "source_import_incoming_edges",
+            "source_import_outgoing_edges",
+        ] {
+            let mut old = current.clone();
+            let _removed = old.as_object_mut().expect("entry object").remove(field);
+            let error = serde_json::from_value::<RepoMapEntry>(old)
+                .expect_err("missing current field must refuse");
+            assert!(error.to_string().contains(field), "{error}");
+        }
+        for field in ["included", "rank"] {
+            let mut old = current.clone();
+            let _replaced = old
+                .as_object_mut()
+                .expect("entry object")
+                .insert(field.to_string(), json!(1));
+            let error = serde_json::from_value::<RepoMapEntry>(old)
+                .expect_err("obsolete field must refuse");
+            assert!(error.to_string().contains(field), "{error}");
+        }
     }
 
     #[test]
@@ -706,5 +687,17 @@ mod tests {
             }
         };
         assert_eq!(decoded, snapshot);
+    }
+
+    #[test]
+    fn repomap_snapshot_refuses_unknown_fields() {
+        let mut snapshot = serde_json::to_value(fixture_snapshot()).expect("serialize snapshot");
+        let _replaced = snapshot
+            .as_object_mut()
+            .expect("snapshot object")
+            .insert("legacy_entries".to_string(), json!([]));
+        let error = serde_json::from_value::<RepoMapSnapshot>(snapshot)
+            .expect_err("unknown snapshot field must refuse");
+        assert!(error.to_string().contains("legacy_entries"), "{error}");
     }
 }

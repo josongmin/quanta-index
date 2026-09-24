@@ -85,9 +85,14 @@ pub trait SearchCorpusIngestPort: Send + Sync {
     /// record, the locked check protects the mutation.
     fn preflight_batch(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError>;
 
+    /// `budget` carries admitted-request diagnostics into the semantic
+    /// provider windows. The dispatcher checks cancellation before durable
+    /// intent; implementations must not turn this parameter into a new
+    /// mid-commit cancellation point without a replay/uncertainty contract.
     fn publish_batch(
         &self,
         batch: &SearchCorpusIngestBatch,
+        budget: &RequestBudgetV1,
     ) -> Result<BatchPublishReceipt, CoreError>;
 }
 

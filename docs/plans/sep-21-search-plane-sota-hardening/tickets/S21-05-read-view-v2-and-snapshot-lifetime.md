@@ -84,7 +84,7 @@ view에 올리고 GC/reference lifetime까지 같은 contract로 전환한다.
 | `query_dispatcher/read_view/identity.rs` | pin, candidate commitment, activation epoch, artifact identity, aux epoch의 domain evidence map | response/cursor가 실제 handle identity를 운반 |
 | `query_dispatcher/routes/repo_map.rs:28-39` | `self.repo_map_query.query(request)` 제거; `view.repo_map()?.query(...)`만 허용 | acquisition 뒤 ambient lookup 0 |
 | `crates/quanta-index-repomap/src/store.rs` | active catalog identity와 `Arc<RepoMapIndexedSnapshot>`을 한 critical section에서 획득 | activate/retire TOCTOU 0 |
-| `crates/quanta-index-repomap/src/reader.rs` | pinned snapshot executor 구현; store 재조회 금지 | query lifetime 동안 동일 artifact |
+| `crates/quanta-index-repomap/src/pinned.rs` | pinned snapshot executor 구현; store 재조회 금지 (`reader.rs` 호환 재수출은 제거됨) | query lifetime 동안 동일 artifact |
 
 ### Proof additions
 

@@ -162,12 +162,31 @@ impl RequestCorrelationV1 {
     }
 }
 
+/// Provider boundary markers for diagnostics only. Query markers carry the
+/// provider ledger's ticket ID; ingest markers carry a checked, per-request
+/// window ordinal because ingest has no provider-ledger ticket. Neither
+/// marker owns reservation, settlement, usage or terminal outcome.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RequestProviderStageV1 {
+    Started { ticket_id: u64 },
+    Returned { ticket_id: u64 },
+    IngestWindowStarted { window_ordinal: u64 },
+    IngestWindowReturned { window_ordinal: u64 },
+}
+
+/// A per-request bridge to the transport's existing bounded event sink.
+/// This port does not allocate an ID, settle usage or own another ring.
+pub trait RequestStageDiagnosticPortV1: std::fmt::Debug + Send + Sync {
+    fn record_provider_stage_v1(&self, stage: RequestProviderStageV1);
+}
+
 /// One request's deadline and cancellation state.
 #[derive(Clone, Debug)]
 pub struct RequestBudgetV1 {
     deadline: Instant,
     shared: Arc<CancelSharedV1>,
     correlation: Option<RequestCorrelationV1>,
+    diagnostics: Option<Arc<dyn RequestStageDiagnosticPortV1>>,
 }
 
 impl RequestBudgetV1 {
@@ -181,6 +200,7 @@ impl RequestBudgetV1 {
                 waiters: std::sync::Mutex::new(CancelWaiterSetV1::default()),
             }),
             correlation: None,
+            diagnostics: None,
         }
     }
 
@@ -197,6 +217,23 @@ impl RequestBudgetV1 {
     #[must_use]
     pub fn correlation(&self) -> Option<RequestCorrelationV1> {
         self.correlation
+    }
+
+    /// Attach the transport-owned diagnostic bridge to an admitted request.
+    /// Off-transport budgets intentionally have no diagnostic sink.
+    #[must_use]
+    pub fn with_diagnostics(mut self, diagnostics: Arc<dyn RequestStageDiagnosticPortV1>) -> Self {
+        self.diagnostics = Some(diagnostics);
+        self
+    }
+
+    /// Record a provider boundary marker when this budget came from IPC.
+    /// Diagnostic loss is accounted by the transport sink and never changes
+    /// the provider's usage/settlement result.
+    pub fn record_provider_stage_v1(&self, stage: RequestProviderStageV1) {
+        if let Some(diagnostics) = &self.diagnostics {
+            diagnostics.record_provider_stage_v1(stage);
+        }
     }
 
     /// The `request_id` typed responses and audit events must carry: the

@@ -23,7 +23,7 @@ pub use codec::{
 };
 pub use counters::{
     IpcServerCounters, IpcServerCountersSnapshot, RequestEventSinkV1, RequestEventStageV1,
-    RequestEventV1,
+    RequestEventV1, RequestEventWindowV1, SequencedRequestEventV1,
 };
 pub use peer_credentials::{KernelPeerCredentials, PeerCredentialsSource};
 pub use quanta_index_core::{

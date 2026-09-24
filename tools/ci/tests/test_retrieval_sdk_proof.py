@@ -78,8 +78,25 @@ def test_build_summary_rejects_missing_proof_test(tmp_path: Path) -> None:
     record, nextest, runner = _fixture(tmp_path)
     nextest.write_text(
         '{"type":"suite","event":"started"}\n'
+        '{"type":"test","event":"started","name":"different_test"}\n'
         '{"type":"test","event":"ok","name":"different_test"}\n'
         '{"type":"suite","event":"ok","passed":1,"failed":0,"ignored":0}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit, match="lacks passing"):
+        MODULE.build_summary(record, nextest, runner)
+
+
+def test_build_summary_rejects_proof_name_substring(tmp_path: Path) -> None:
+    record, nextest, runner = _fixture(tmp_path)
+    spoof = f"not_{MODULE.PROOF_TEST}_other"
+    nextest.write_text(
+        '{"type":"suite","event":"started"}\n'
+        + json.dumps({"type": "test", "event": "started", "name": spoof})
+        + "\n"
+        + json.dumps({"type": "test", "event": "ok", "name": spoof})
+        + "\n"
+        + '{"type":"suite","event":"ok","passed":1,"failed":0,"ignored":0}\n',
         encoding="utf-8",
     )
     with pytest.raises(SystemExit, match="lacks passing"):

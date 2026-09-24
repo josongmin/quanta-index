@@ -16,9 +16,8 @@
 //!                     row_sha256 BLOB CHECK(length=32))
 //! ```
 //!
-//! This supersedes `catalog_sequence_v1` (which stays readable as
-//! migration input only): v1 lacked the exhausted flag, the closed event
-//! ledger and the allocator self-digest that SEP-21-002 requires.
+//! Only the current allocator and event ledger are read. Their exhausted
+//! flag and self-digests are mandatory; no legacy allocator is accepted.
 //!
 //! The only allocation path is [`append_sequence_event`]: it reads the
 //! allocator row (verifying its self-digest), refuses

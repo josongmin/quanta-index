@@ -233,8 +233,7 @@ fn verified_request_digest(
         SearchPlaneIngestIpcRequest::PublishDirtyBatch(batch) => verify(batch),
         SearchPlaneIngestIpcRequest::PublishRuntimeCatalogBatch(batch) => verify(batch),
         SearchPlaneIngestIpcRequest::PublishStructuralBatch(batch) => verify(batch),
-        SearchPlaneIngestIpcRequest::PublishRepoMapBundle(_)
-        | SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(_) => Ok(None),
+        SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(_) => Ok(None),
     }
 }
 
@@ -254,8 +253,7 @@ fn name_receipt_digest(payload: &mut SearchPlaneIngestIpcResponse, digest: &str)
         | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(receipt) => {
             receipt.batch_digest = digest.to_string();
         }
-        SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
+        SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
         | SearchPlaneIngestIpcResponse::Error(_) => {}
     }
 }
@@ -1198,39 +1196,28 @@ fn cluster_membership_read_routes_exact_request_and_validates_available_authorit
 }
 
 #[test]
-fn cluster_membership_read_preserves_matching_typed_absence_and_rejection_v1() {
+fn cluster_membership_read_preserves_matching_typed_rejection_v1() {
     let request = sample_cluster_membership_request();
-    let outcomes = [
-        quanta_index_contract::ClusterMembershipReadOutcomeV1::Unavailable(
-            quanta_index_contract::ClusterMembershipUnavailableV1 {
-                cluster_record_id: request.cluster_record_id.clone(),
-                generation: request.generation.clone(),
-                expected_authority_digest: request.expected_authority_digest.clone(),
-            },
-        ),
-        quanta_index_contract::ClusterMembershipReadOutcomeV1::Rejected(
-            quanta_index_contract::ClusterMembershipReadRejectionV1 {
-                cluster_record_id: request.cluster_record_id.clone(),
-                generation: request.generation.clone(),
-                expected_authority_digest: request.expected_authority_digest.clone(),
-                failure:
-                    quanta_index_contract::ClusterMembershipReadFailureV1::CurrentGenerationMissing,
-            },
-        ),
-    ];
+    let expected = quanta_index_contract::ClusterMembershipReadOutcomeV1::Rejected(
+        quanta_index_contract::ClusterMembershipReadRejectionV1 {
+            cluster_record_id: request.cluster_record_id.clone(),
+            generation: request.generation.clone(),
+            expected_authority_digest: request.expected_authority_digest.clone(),
+            failure:
+                quanta_index_contract::ClusterMembershipReadFailureV1::CurrentGenerationMissing,
+        },
+    );
 
-    for expected in outcomes {
-        let query = Arc::new(StubQueryTransport::new(
-            SearchPlaneQueryIpcResponse::ClusterMembershipRead(
-                quanta_index_contract::ClusterMembershipBatchReadResponseV1 {
-                    outcomes: vec![expected.clone()],
-                },
-            ),
-        ));
-        let client = QuantaIndex::from_transports(query, unused_control(), unused_ingest());
-        let observed = ok_or_fail!(client.search().cluster_membership_read_v1(request.clone()));
-        assert_eq!(observed, expected);
-    }
+    let query = Arc::new(StubQueryTransport::new(
+        SearchPlaneQueryIpcResponse::ClusterMembershipRead(
+            quanta_index_contract::ClusterMembershipBatchReadResponseV1 {
+                outcomes: vec![expected.clone()],
+            },
+        ),
+    ));
+    let client = QuantaIndex::from_transports(query, unused_control(), unused_ingest());
+    let observed = ok_or_fail!(client.search().cluster_membership_read_v1(request));
+    assert_eq!(observed, expected);
 }
 
 #[test]
@@ -1267,14 +1254,16 @@ fn cluster_membership_read_rejects_stale_response_authority_v1() {
 }
 
 #[test]
-fn cluster_membership_read_rejects_mismatched_absence_and_rejection_authority_v1() {
+fn cluster_membership_read_rejects_mismatched_rejection_authority_v1() {
     let request = sample_cluster_membership_request();
     let mismatched_outcomes = [
-        quanta_index_contract::ClusterMembershipReadOutcomeV1::Unavailable(
-            quanta_index_contract::ClusterMembershipUnavailableV1 {
+        quanta_index_contract::ClusterMembershipReadOutcomeV1::Rejected(
+            quanta_index_contract::ClusterMembershipReadRejectionV1 {
                 cluster_record_id: "cluster-card:other".to_string(),
                 generation: request.generation.clone(),
                 expected_authority_digest: request.expected_authority_digest.clone(),
+                failure:
+                    quanta_index_contract::ClusterMembershipReadFailureV1::ClusterIdentityMismatch,
             },
         ),
         quanta_index_contract::ClusterMembershipReadOutcomeV1::Rejected(
@@ -2157,11 +2146,13 @@ fn search_corpus_builder_preserves_semantic_lifecycle_in_canonical_wire_order() 
         scope_b.clone(),
         "scope:b",
         vec![sample_semantic_source("symbol-b")],
+        Vec::new(),
     )
     .replace_semantic_scope(
         scope_a.clone(),
         "scope:a",
         vec![sample_semantic_source("symbol-a")],
+        Vec::new(),
     )
     .tombstone_semantic_scope(tombstone_d.clone())
     .tombstone_semantic_scope(tombstone_c.clone());
@@ -2229,7 +2220,7 @@ fn search_corpus_builder_preserves_typed_cluster_membership_without_text_inferen
         ManifestGeneration::new(1),
         "manifest:cluster",
     )
-    .replace_semantic_scope_with_cluster_memberships_v1(
+    .replace_semantic_scope(
         sample_cluster_semantic_scope("auth-service"),
         "scope:cluster",
         vec![source_b, source_a],
@@ -2274,6 +2265,7 @@ fn search_corpus_builder_rejects_missing_mismatched_or_misplaced_cluster_members
         sample_cluster_semantic_scope("auth-service"),
         "scope:cluster-missing",
         vec![cluster_source.clone()],
+        Vec::new(),
     );
     let error = client
         .search_corpus()
@@ -2289,7 +2281,7 @@ fn search_corpus_builder_rejects_missing_mismatched_or_misplaced_cluster_members
         ManifestGeneration::new(1),
         "manifest:cluster-mismatch",
     )
-    .replace_semantic_scope_with_cluster_memberships_v1(
+    .replace_semantic_scope(
         sample_cluster_semantic_scope("auth-service"),
         "scope:cluster-mismatch",
         vec![cluster_source],
@@ -2308,7 +2300,7 @@ fn search_corpus_builder_rejects_missing_mismatched_or_misplaced_cluster_members
         ManifestGeneration::new(1),
         "manifest:membership-misplaced",
     )
-    .replace_semantic_scope_with_cluster_memberships_v1(
+    .replace_semantic_scope(
         sample_semantic_scope("symbol-a"),
         "scope:membership-misplaced",
         vec![symbol_source.clone()],
@@ -2347,6 +2339,7 @@ fn search_corpus_semantic_surface_conflict_fails_before_transport_io() {
         sample_semantic_scope("symbol-conflict"),
         "scope:conflict",
         vec![sample_semantic_source("symbol-conflict")],
+        Vec::new(),
     );
 
     let error = client
@@ -2381,6 +2374,7 @@ fn search_corpus_semantic_scope_conflicts_fail_before_transport_io() {
         scope.clone(),
         "scope:conflict",
         vec![sample_semantic_source("symbol-conflict")],
+        Vec::new(),
     )
     .tombstone_semantic_scope(scope.clone());
 
@@ -2404,11 +2398,13 @@ fn search_corpus_semantic_scope_conflicts_fail_before_transport_io() {
         scope.clone(),
         "scope:first",
         vec![sample_semantic_source("symbol-conflict")],
+        Vec::new(),
     )
     .replace_semantic_scope(
         scope,
         "scope:second",
         vec![sample_semantic_source("symbol-conflict")],
+        Vec::new(),
     );
     let error = client
         .search_corpus()
@@ -3464,10 +3460,6 @@ fn repomap_publish_routes_through_ingest_transport() {
         revision_id: revision_id(),
         manifest_generation: ManifestGeneration::new(1),
     };
-    let ingest = Arc::new(StubIngestTransport::new(
-        SearchPlaneIngestIpcResponse::RepoMapReceipt(ack.clone()),
-    ));
-    let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
     let bundle = quanta_index_contract::RepoMapSourceBundle::new(
         repo_id(),
         revision_id(),
@@ -3529,12 +3521,28 @@ fn repomap_publish_routes_through_ingest_transport() {
             chunk: quanta_index_contract::RepoMapNodeRef::Chunk(ChunkId::new("chunk://repomap")),
         },
     ));
-    let observed = ok_or_fail!(client.repomap().publish(&bundle));
-    assert_eq!(observed.manifest_generation, ack.manifest_generation);
+    let request = ok_or_fail!(quanta_index_contract::RepoMapPublishBundleRequestV2::new(
+        bundle.clone()
+    ));
+    let receipt = quanta_index_contract::RepoMapTerminalReceiptV2 {
+        phase: quanta_index_contract::RepoMapMutationPhaseV2::Publish,
+        mutation: ack,
+        manifest_digest: bundle.manifest_digest.clone(),
+        snapshot_id: bundle.snapshot_id.clone(),
+        projection_version: bundle.projection_version,
+        authority_digest: bundle.authority_digest.clone(),
+        source_bundle_digest: request.source_bundle_digest.clone(),
+    };
+    let ingest = Arc::new(StubIngestTransport::new(
+        SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(receipt.clone()),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
+    let observed = ok_or_fail!(client.repomap().publish(&request));
+    assert_eq!(observed, receipt);
     let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
     assert!(matches!(
         captured.payload,
-        SearchPlaneIngestIpcRequest::PublishRepoMapBundle(_)
+        SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(_)
     ));
 }
 
@@ -3579,36 +3587,92 @@ fn repomap_activate_routes_through_control_transport() {
         revision_id: revision_id(),
         manifest_generation: ManifestGeneration::new(9),
     };
-    let control = Arc::new(StubControlTransport::new(
-        quanta_index_contract::SearchPlaneControlIpcResponse::RepoMapMutationAck(ack.clone()),
-    ));
-    let client = QuantaIndex::from_transports(unused_query(), control.clone(), unused_ingest());
-    let request = quanta_index_contract::RepoMapActivateGenerationRequest {
+    let request = quanta_index_contract::RepoMapActivateGenerationRequestV2 {
         repo_id: repo_id(),
         revision_id: revision_id(),
         manifest_generation: ManifestGeneration::new(9),
         manifest_digest: "digest:repomap-9".to_string(),
+        snapshot_id: "snap-9".to_string(),
+        projection_version: 1,
+        authority_digest: "authority-9".to_string(),
+        source_bundle_digest: format!("sha256:{}", "cd".repeat(32)),
+        expected_active: None,
     };
+    let receipt = quanta_index_contract::RepoMapTerminalReceiptV2 {
+        phase: quanta_index_contract::RepoMapMutationPhaseV2::Activate,
+        mutation: ack,
+        manifest_digest: request.manifest_digest.clone(),
+        snapshot_id: request.snapshot_id.clone(),
+        projection_version: request.projection_version,
+        authority_digest: request.authority_digest.clone(),
+        source_bundle_digest: request.source_bundle_digest.clone(),
+    };
+    let control = Arc::new(StubControlTransport::new(
+        quanta_index_contract::SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(
+            receipt.clone(),
+        ),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), control.clone(), unused_ingest());
     let observed = ok_or_fail!(client.repomap().activate(request.clone()));
-    assert_eq!(observed, ack);
+    assert_eq!(observed, receipt);
     let captured = ok_or_fail!(only_control_request(control.as_ref()));
     assert!(
         matches!(
             &captured.payload,
-            quanta_index_contract::SearchPlaneControlIpcRequest::RepoMapActivate(_)
+            quanta_index_contract::SearchPlaneControlIpcRequest::RepoMapActivateV2(_)
         ),
-        "expected RepoMapActivate request, got {:?}",
+        "expected RepoMapActivateV2 request, got {:?}",
         captured.payload
     );
-    let quanta_index_contract::SearchPlaneControlIpcRequest::RepoMapActivate(wire) =
+    let quanta_index_contract::SearchPlaneControlIpcRequest::RepoMapActivateV2(wire) =
         &captured.payload
     else {
         return;
     };
-    assert_eq!(wire.repo_id, request.repo_id);
-    assert_eq!(wire.revision_id, request.revision_id);
-    assert_eq!(wire.manifest_generation, request.manifest_generation);
-    assert_eq!(wire.manifest_digest, request.manifest_digest);
+    assert_eq!(wire, &request);
+}
+
+#[test]
+fn repomap_active_head_reads_control_and_rejects_a_foreign_pair() {
+    let expected = quanta_index_contract::RepoMapExpectedActiveV2::new(
+        std::num::NonZeroU64::new(7).expect("positive epoch"),
+        quanta_index_contract::CandidateCommitmentV1::from_bytes([0xab; 32]),
+    );
+    let response = quanta_index_contract::RepoMapActiveHeadResponseV2 {
+        repo_id: repo_id(),
+        revision_id: revision_id(),
+        active: Some(expected.clone()),
+    };
+    let control = Arc::new(StubControlTransport::new(
+        quanta_index_contract::SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(response.clone()),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), control.clone(), unused_ingest());
+    assert_eq!(
+        ok_or_fail!(client.repomap().active_head(repo_id(), revision_id())),
+        Some(expected)
+    );
+    let captured = ok_or_fail!(only_control_request(control.as_ref()));
+    assert!(matches!(
+        captured.payload,
+        quanta_index_contract::SearchPlaneControlIpcRequest::RepoMapActiveHeadV2(ref request)
+            if request.repo_id == repo_id() && request.revision_id == revision_id()
+    ));
+
+    let foreign = quanta_index_contract::RepoMapActiveHeadResponseV2 {
+        revision_id: RevisionId::new("foreign").expect("canonical revision"),
+        ..response
+    };
+    let control = Arc::new(StubControlTransport::new(
+        quanta_index_contract::SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(foreign),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), control, unused_ingest());
+    assert!(matches!(
+        client.repomap().active_head(repo_id(), revision_id()),
+        Err(crate::SdkError::Binding {
+            axis: crate::ResponseBindingAxis::TargetIdentity,
+            ..
+        })
+    ));
 }
 
 #[test]

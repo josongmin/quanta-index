@@ -83,8 +83,8 @@ CFG_TEST_RE = re.compile(r"^\s*#\[cfg\(test\)\]\s*$")
 REPRODUCTION_CLASSES: frozenset[str] = frozenset(
     {
         "producer-rebuild",
-        "offline-importer",
-        "migration-input-only",
+        "current-format-backup",
+        "reject-only",
         "cache",
         "vendor-native",
     }

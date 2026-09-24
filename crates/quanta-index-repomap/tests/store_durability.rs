@@ -20,10 +20,10 @@ use std::time::Duration;
 
 use quanta_index_catalog::SqliteCatalog;
 use quanta_index_contract::{
-    FileId, ManifestGeneration, RepoId, RepoMapActivateGenerationRequest, RepoMapExactnessSummary,
-    RepoMapFileNode, RepoMapGraphCoverage, RepoMapGraphCoverageClass, RepoMapItemIndexAvailability,
-    RepoMapNode, RepoMapQueryRequest, RepoMapRedactionState, RepoMapSourceBundle, RepoRelativePath,
-    RevisionId,
+    FileId, ManifestGeneration, RepoId, RepoMapActivateGenerationRequestV2,
+    RepoMapExactnessSummary, RepoMapFileNode, RepoMapGraphCoverage, RepoMapGraphCoverageClass,
+    RepoMapItemIndexAvailability, RepoMapNode, RepoMapPublishBundleRequestV2, RepoMapQueryRequest,
+    RepoMapRedactionState, RepoMapSourceBundle, RepoRelativePath, RevisionId,
 };
 use quanta_index_core::CoreError;
 use quanta_index_repomap::RepoMapGenerationStore;
@@ -94,15 +94,6 @@ fn bundle(generation: u64, marker: &str) -> RepoMapSourceBundle {
     }))
 }
 
-fn activate_request(generation: u64) -> RepoMapActivateGenerationRequest {
-    RepoMapActivateGenerationRequest {
-        repo_id: repo(),
-        revision_id: revision(),
-        manifest_generation: ManifestGeneration::new(generation),
-        manifest_digest: producer_hex(&format!("g{generation}")),
-    }
-}
-
 fn query_request(generation: u64) -> RepoMapQueryRequest {
     RepoMapQueryRequest {
         repo_id: repo(),
@@ -123,13 +114,12 @@ fn open(
     Ok((catalog, Arc::new(opened.store)))
 }
 
-fn publish_activate(
-    store: &RepoMapGenerationStore,
-    generation: u64,
-    marker: &str,
-) -> Result<(), CoreError> {
-    let _sealed = store.ingest_bundle(&bundle(generation, marker))?;
-    let _activated = store.activate_generation(&activate_request(generation))?;
+fn publish_activate(store: &RepoMapGenerationStore, generation: u64, marker: &str) -> TestResult {
+    let source = bundle(generation, marker);
+    let _sealed = store.ingest_bundle_v2(&RepoMapPublishBundleRequestV2::new(source.clone())?)?;
+    let mut request = RepoMapActivateGenerationRequestV2::for_bundle(&source)?;
+    request.expected_active = store.active_head_token(&repo(), &revision())?;
+    let _activated = store.activate_generation_v2(&request)?;
     Ok(())
 }
 
@@ -251,10 +241,20 @@ fn publish_refuses_malformed_bundles_with_zero_mutation() -> TestResult {
     let (catalog, store) = open(&root)?;
     let mut empty_digest = bundle(1, "g1");
     empty_digest.manifest_digest = String::new();
-    assert!(store.as_ref().ingest_bundle(&empty_digest).is_err());
+    assert!(
+        store
+            .as_ref()
+            .ingest_bundle_v2(&RepoMapPublishBundleRequestV2::new(empty_digest)?)
+            .is_err()
+    );
     let mut no_nodes = bundle(1, "g1");
     no_nodes.nodes.clear();
-    assert!(store.as_ref().ingest_bundle(&no_nodes).is_err());
+    assert!(
+        store
+            .as_ref()
+            .ingest_bundle_v2(&RepoMapPublishBundleRequestV2::new(no_nodes)?)
+            .is_err()
+    );
     assert!(
         find_objects(&root)?.is_empty(),
         "a refused publish mutates nothing on disk"

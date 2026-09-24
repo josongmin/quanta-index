@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use quanta_index_contract::{
-    BatchPublishReceipt, IngestOperationKindV1, RepoMapMutationAck, RepoMapPublishBundleRequestV2,
+    BatchPublishReceipt, IngestOperationKindV1, RepoMapPublishBundleRequestV2,
     RepoMapTerminalReceiptV2, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse,
     canonical_repo_map_source_bundle_digest_v2,
 };
@@ -295,7 +295,7 @@ impl SearchPlaneIngestDispatcher {
         };
         // Stage 6 — apply under the fence: the store's domain mutation.
         self.idempotency.mark_applying(&claim)?;
-        match self.repomap.ingest_bundle_v2(request) {
+        match self.repomap.ingest_bundle(request) {
             // Stage 7 — terminal.
             Ok(receipt) => match self.idempotency.commit_repomap(&claim, &receipt) {
                 Ok(_durable_sequence) => Ok(receipt),
@@ -338,7 +338,7 @@ impl SearchPlaneIngestDispatcher {
                 match self.publish_idempotent(
                     &mut batch,
                     |batch| self.lexical.preflight_batch(batch),
-                    |batch| self.lexical.publish_batch(batch),
+                    |batch| self.lexical.publish_batch(batch, budget),
                 ) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
@@ -421,23 +421,6 @@ impl SearchPlaneIngestDispatcher {
                     self.structural.publish_batch(batch)
                 }) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::StructuralReceipt(receipt),
-                    Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
-                }
-            }
-            SearchPlaneIngestIpcRequest::PublishRepoMapBundle(bundle) => {
-                match self.repomap.ingest_bundle(&bundle) {
-                    Ok(receipt) => {
-                        SearchPlaneIngestIpcResponse::RepoMapReceipt(RepoMapMutationAck {
-                            repo_id: bundle.repo_id,
-                            revision_id: bundle.revision_id,
-                            manifest_generation: bundle.manifest_generation,
-                            prior_candidate_commitment: receipt.prior_candidate_commitment,
-                            new_candidate_commitment: receipt.new_candidate_commitment,
-                            activation_epoch: receipt.activation_epoch,
-                            terminal_sequence: receipt.terminal_sequence,
-                            replayed: receipt.replayed,
-                        })
-                    }
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }

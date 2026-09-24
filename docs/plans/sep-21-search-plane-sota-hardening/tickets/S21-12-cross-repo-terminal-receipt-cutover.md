@@ -2,6 +2,18 @@
 
 Status: `planned`
 
+2026-09-24 source update: the local RepoMap mutation surface now has only
+source-digest-bound V2 requests/receipts across SDK, IPC, core ports, and
+store. The V2 activation identity is flat; V1 opcodes/direct-store methods
+and weak persisted projection metadata are refused or removed. The
+2026-09-21 static delta below is historical, not a current API description.
+The current flat V2 request still lacks expected-current-active CAS; S21-02's
+catalog transaction and the Semantica durable intent must carry the same
+prior-head expectation before this paired cutover can be accepted. Target
+candidate content binding alone does not satisfy that CAS.
+Cross-repo producer qualification, deployment, and activation remain separate
+unverified gates; this note does not close S21-12.
+
 Depends on: S21-02, S21-04, S21-07, S21-11
 
 ## Goal

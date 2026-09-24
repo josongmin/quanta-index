@@ -7,6 +7,9 @@ Decided: 2026-09-21
 Amended: 2026-09-21 — exact framing, canonical schemas and split ownership were added before any V1 product writer
 was released. No earlier or alternative V1 byte form is accepted.
 
+Amended: 2026-09-24 — the prerelease cutover removes the old-root importer;
+legacy markers remain solely for typed refusal.
+
 Gate owner: S21-00; blocks S21-01, S21-02, S21-06, S21-07 and S21-12
 
 ## Context
@@ -226,7 +229,7 @@ incident creation, immutable projection, crash replay and source unlink. P01A pe
 
 ## Compatibility
 
-- legacy filename and `activations/` parsing exists only in the P10 offline importer;
+- legacy filename and `activations/` markers are recognized only for typed refusal;
 - P03 live runtime refuses a V1 root before mutation and never deletes, renames or rewrites legacy bytes;
 - product runtime has no old/new dual reader or dual writer;
 - old producer/new daemon and new producer/old daemon are refused before mutation by protocol version/contract digest.

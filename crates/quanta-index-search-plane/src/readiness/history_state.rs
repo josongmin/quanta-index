@@ -5,7 +5,6 @@
 //! what lets the ledger retain superseded epoch snapshots beside the
 //! current one at the cost of the deltas alone (QI-BB-020 W2).
 
-use std::collections::BTreeMap;
 use std::fmt;
 
 use imbl::OrdMap;
@@ -16,7 +15,6 @@ use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
-use crate::readiness::keys::AuthorityKey;
 use crate::readiness::serde_support::impl_struct_serde;
 
 fn history_ref_not_found(message: String) -> CoreError {
@@ -241,11 +239,6 @@ pub(crate) fn history_diff_search_text(key: &HistoryDiffKey, record: &DiffHunkRe
     )
 }
 
-#[derive(Clone, Debug, Default)]
-pub(super) struct HistoryAuthoritySnapshot {
-    pub(super) entries: BTreeMap<AuthorityKey, HistoryAuthorityState>,
-}
-
 impl_struct_serde!(HistoryStateMeta {
     commits_materialized: bool,
     refs_materialized: bool,
@@ -266,10 +259,6 @@ impl_struct_serde!(HistoryAuthorityState {
 impl_struct_serde!(HistoryDiffKey {
     commit_sha: CommitSha,
     file_path: Box<str>,
-});
-
-impl_struct_serde!(HistoryAuthoritySnapshot {
-    entries: BTreeMap<AuthorityKey, HistoryAuthorityState>,
 });
 
 /// One ref or tag change.

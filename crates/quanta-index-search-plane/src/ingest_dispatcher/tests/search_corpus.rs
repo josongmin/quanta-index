@@ -78,7 +78,10 @@ fn malformed_or_baseless_batches_change_zero_bytes() -> TestRes {
 
     let mut malformed = fixture_search_corpus_batch()?;
     malformed.base_generation = Some(ManifestGeneration::new(3));
-    match probe.materializer.publish_batch(&malformed) {
+    match probe
+        .materializer
+        .publish_batch(&malformed, &RequestBudgetV1::unbounded())
+    {
         Err(CoreError::Typed {
             code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusBatchShapeInvalid,
             ..
@@ -89,7 +92,10 @@ fn malformed_or_baseless_batches_change_zero_bytes() -> TestRes {
 
     let mut empty_digest = fixture_search_corpus_batch()?;
     empty_digest.manifest_digest = String::new();
-    match probe.materializer.publish_batch(&empty_digest) {
+    match probe
+        .materializer
+        .publish_batch(&empty_digest, &RequestBudgetV1::unbounded())
+    {
         Err(CoreError::Typed {
             code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusBatchShapeInvalid,
             ..
@@ -101,7 +107,10 @@ fn malformed_or_baseless_batches_change_zero_bytes() -> TestRes {
     let mut unsealed_base = fixture_search_corpus_batch()?;
     unsealed_base.mode = BatchIngestMode::Delta;
     unsealed_base.base_generation = Some(ManifestGeneration::new(3));
-    match probe.materializer.publish_batch(&unsealed_base) {
+    match probe
+        .materializer
+        .publish_batch(&unsealed_base, &RequestBudgetV1::unbounded())
+    {
         Err(CoreError::Typed {
             code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusDeltaBaseNotSealed,
             ..
@@ -124,7 +133,10 @@ fn malformed_or_baseless_batches_change_zero_bytes() -> TestRes {
             ManifestGeneration::new(3),
             "manifest:base",
         );
-    match mismatched.materializer.publish_batch(&unsealed_base) {
+    match mismatched
+        .materializer
+        .publish_batch(&unsealed_base, &RequestBudgetV1::unbounded())
+    {
         Err(CoreError::Typed {
             code:
                 quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationRepairRequired,
@@ -141,11 +153,21 @@ fn malformed_or_baseless_batches_change_zero_bytes() -> TestRes {
 #[test]
 fn a_batch_outside_the_resource_envelope_changes_zero_bytes() -> TestRes {
     let batch = multi_scope_corpus_batch()?;
-    let embedded_records: usize = batch.replace_scopes.iter().map(|s| s.chunks.len()).sum();
-    let text_bytes: u64 = batch
-        .replace_scopes
+    let embedded_records: usize = batch
+        .semantic_replace_scopes
         .iter()
-        .flat_map(|scope| scope.chunks.iter().map(|chunk| chunk.text.len()))
+        .map(|scope| scope.sources.len())
+        .sum();
+    let carried_records = embedded_records
+        + batch
+            .replace_scopes
+            .iter()
+            .map(|scope| scope.chunks.len())
+            .sum::<usize>();
+    let text_bytes: u64 = batch
+        .semantic_replace_scopes
+        .iter()
+        .flat_map(|scope| scope.sources.iter().map(|source| source.text.len()))
         .map(u64::try_from)
         .sum::<Result<u64, _>>()?;
     let vector_bytes = u64::try_from(embedded_records * SEARCH_OWNED_SEMANTIC_DIMENSION * 4)?;
@@ -161,7 +183,10 @@ fn a_batch_outside_the_resource_envelope_changes_zero_bytes() -> TestRes {
             if code == quanta_index_core::INGEST_RESOURCE_BUDGET_EXCEEDED_CODE => {}
         other => return Err(format!("oversized batch preflight answered {other:?}").into()),
     }
-    match tight.materializer.publish_batch(&batch) {
+    match tight
+        .materializer
+        .publish_batch(&batch, &RequestBudgetV1::unbounded())
+    {
         Err(CoreError::Typed { code, .. })
             if code == quanta_index_core::INGEST_RESOURCE_BUDGET_EXCEEDED_CODE => {}
         other => return Err(format!("oversized batch answered {other:?}").into()),
@@ -179,10 +204,12 @@ fn a_batch_outside_the_resource_envelope_changes_zero_bytes() -> TestRes {
 
     let fits = ZeroMutationProbe::with_resource_policy(
         always_valid_generation(),
-        IngestResourcePolicy::new(embedded_records, text_bytes, vector_bytes)?,
+        IngestResourcePolicy::new(carried_records, text_bytes, vector_bytes)?,
     );
     fits.materializer.preflight_batch(&batch)?;
-    let _receipt = fits.materializer.publish_batch(&batch)?;
+    let _receipt = fits
+        .materializer
+        .publish_batch(&batch, &RequestBudgetV1::unbounded())?;
     let stats = fits.materializer.resource_stats()?;
     let expected = IngestResourceStats {
         admitted: 1,
@@ -783,7 +810,7 @@ fn a_sealed_but_corrupt_track_is_rebuilt_by_a_replace_seal_and_refused_for_a_del
             ManifestGeneration::new(6),
             "manifest:base",
         );
-    match materializer.publish_batch(&delta) {
+    match materializer.publish_batch(&delta, &RequestBudgetV1::unbounded()) {
         Err(CoreError::Typed { code, message })
             if code == quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationRepairRequired
                 && message.contains("publish a ReplaceGeneration seal batch") => {}
@@ -801,7 +828,7 @@ fn a_sealed_but_corrupt_track_is_rebuilt_by_a_replace_seal_and_refused_for_a_del
     }
 
     // The replace seal batch rebuilds exactly the damaged track.
-    let receipt = materializer.publish_batch(&batch)?;
+    let receipt = materializer.publish_batch(&batch, &RequestBudgetV1::unbounded())?;
     if !receipt.sealed {
         return Err(format!("the repair must seal: {receipt:?}").into());
     }
@@ -850,7 +877,10 @@ fn a_delta_over_a_corrupt_base_is_refused_with_the_repair() -> TestRes {
         ("preflight", probe.materializer.preflight_batch(&delta)),
         (
             "publish",
-            probe.materializer.publish_batch(&delta).map(|_receipt| ()),
+            probe
+                .materializer
+                .publish_batch(&delta, &RequestBudgetV1::unbounded())
+                .map(|_receipt| ()),
         ),
     ] {
         match outcome {
@@ -885,8 +915,8 @@ fn search_corpus_materializer_derives_search_owned_semantic_batch() -> TestRes {
         test_incomplete_generation_discard(),
     );
     let mut batch = fixture_search_corpus_batch()?;
-    batch.clear_surfaces = vec![SearchScopeSurface::Symbol];
-    let receipt = materializer.publish_batch(&batch)?;
+    batch.clear_surfaces = vec![SearchScopeSurface::Module];
+    let receipt = materializer.publish_batch(&batch, &RequestBudgetV1::unbounded())?;
     if !receipt.sealed || receipt.accepted_clear_surfaces != 1 {
         return Err("derived semantic search-corpus receipt must preserve seal".into());
     }
@@ -897,25 +927,27 @@ fn search_corpus_materializer_derives_search_owned_semantic_batch() -> TestRes {
     if derived.generation != batch.generation || !derived.seal {
         return Err("derived semantic batch lost generation/seal truth".into());
     }
-    if derived.clear_surfaces != [SearchScopeSurface::Symbol] {
+    if derived.clear_surfaces != [SearchScopeSurface::Module] {
         return Err("derived semantic batch lost clear-surface truth".into());
     }
     if derived.replace_scopes.len() != 1 {
-        return Err("derived semantic batch did not mirror search-corpus scope/chunk count".into());
+        return Err("derived semantic batch did not retain its typed source scope".into());
     }
     let scope = derived
         .replace_scopes
         .first()
         .ok_or_else(|| "derived semantic batch missing replace scope".to_string())?;
     if scope.embeddings.len() != 1 {
-        return Err("derived semantic batch did not mirror lexical scope/chunk count".into());
+        return Err("derived semantic batch did not retain its typed source row".into());
     }
     let embedding = scope
         .embeddings
         .first()
         .ok_or_else(|| "derived semantic batch missing embedding".to_string())?;
-    if embedding.embedding_id.as_str() != "chunk-1" {
-        return Err("derived semantic embedding_id must equal chunk_id".into());
+    if embedding.embedding_id.as_str() != "symbol-1"
+        || embedding.view_kind.as_ref() != "symbol.card"
+    {
+        return Err("derived semantic embedding must preserve typed source identity".into());
     }
     if !embedding
         .embedding_input_digest
@@ -1022,7 +1054,7 @@ fn sealed_exact_retry_repairs_authority_without_rebuilding_tracks() -> TestRes {
         test_incomplete_generation_discard(),
     );
     let batch = fixture_search_corpus_batch()?;
-    let receipt = materializer.publish_batch(&batch)?;
+    let receipt = materializer.publish_batch(&batch, &RequestBudgetV1::unbounded())?;
     assert!(receipt.sealed);
     assert!(
         lexical_builder
@@ -1080,7 +1112,7 @@ fn durable_retention_error_fences_same_process_rollback_authority() -> TestRes {
         test_incomplete_generation_discard(),
     );
     assert!(matches!(
-        materializer.publish_batch(&batch),
+        materializer.publish_batch(&batch, &RequestBudgetV1::unbounded()),
         Err(CoreError::Storage(_))
     ));
     let rollback = ledger
@@ -1115,7 +1147,7 @@ fn non_seal_batch_cannot_mutate_an_already_sealed_generation() -> TestRes {
     );
     let mut batch = fixture_search_corpus_batch()?;
     batch.seal = false;
-    let result = materializer.publish_batch(&batch);
+    let result = materializer.publish_batch(&batch, &RequestBudgetV1::unbounded());
     let Err(CoreError::Typed { code, .. }) = result else {
         return Err("non-seal mutation of sealed generation unexpectedly succeeded".into());
     };
@@ -1158,7 +1190,7 @@ fn exact_lexical_missing_semantic_retry_builds_only_missing_track() -> TestRes {
         test_incomplete_generation_discard(),
     );
     let batch = fixture_search_corpus_batch()?;
-    let receipt = materializer.publish_batch(&batch)?;
+    let receipt = materializer.publish_batch(&batch, &RequestBudgetV1::unbounded())?;
     assert!(receipt.sealed);
     assert!(
         lexical_builder
@@ -1199,7 +1231,7 @@ fn incomplete_lexical_exact_semantic_retry_discards_and_rebuilds_only_lexical() 
     );
 
     let batch = fixture_search_corpus_batch()?;
-    let receipt = materializer.publish_batch(&batch)?;
+    let receipt = materializer.publish_batch(&batch, &RequestBudgetV1::unbounded())?;
     assert!(receipt.sealed);
     assert_eq!(lexical_discard.calls.load(Ordering::SeqCst), 1);
     assert_eq!(
@@ -1236,7 +1268,10 @@ fn jointly_incomplete_tracks_keep_staged_data_for_normal_seal() -> TestRes {
         semantic_discard.clone(),
     );
 
-    let receipt = materializer.publish_batch(&fixture_search_corpus_batch()?)?;
+    let receipt = materializer.publish_batch(
+        &fixture_search_corpus_batch()?,
+        &RequestBudgetV1::unbounded(),
+    )?;
 
     assert!(receipt.sealed);
     assert_eq!(lexical_discard.calls.load(Ordering::SeqCst), 0);
@@ -1272,7 +1307,7 @@ fn search_corpus_materializer_rejects_mismatched_semantic_receipt_before_authori
         test_incomplete_generation_discard(),
     );
     let batch = fixture_search_corpus_batch()?;
-    let result = materializer.publish_batch(&batch);
+    let result = materializer.publish_batch(&batch, &RequestBudgetV1::unbounded());
     assert!(matches!(result, Err(CoreError::InvalidContract(_))));
     assert!(
         authority

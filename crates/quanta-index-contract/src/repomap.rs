@@ -2024,114 +2024,6 @@ impl<'de> Deserialize<'de> for RepoMapSourceBundle {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RepoMapActivateGenerationRequest {
-    pub repo_id: RepoId,
-    pub revision_id: RevisionId,
-    pub manifest_generation: ManifestGeneration,
-    pub manifest_digest: String,
-}
-
-const REPOMAP_ACTIVATE_GENERATION_REQUEST_V1_FIELDS: &[&str] = &[
-    "repo_id",
-    "revision_id",
-    "manifest_generation",
-    "manifest_digest",
-];
-
-impl Serialize for RepoMapActivateGenerationRequest {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut state = serializer.serialize_struct("RepoMapActivateGenerationRequest", 4)?;
-        state.serialize_field("repo_id", &self.repo_id)?;
-        state.serialize_field("revision_id", &self.revision_id)?;
-        state.serialize_field("manifest_generation", &self.manifest_generation)?;
-        state.serialize_field("manifest_digest", &self.manifest_digest)?;
-        state.end()
-    }
-}
-
-struct RepoMapActivateGenerationRequestV1Visitor;
-
-impl<'de> Visitor<'de> for RepoMapActivateGenerationRequestV1Visitor {
-    type Value = RepoMapActivateGenerationRequest;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a RepoMapActivateGenerationRequest map")
-    }
-
-    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        let mut repo_id: Option<RepoId> = None;
-        let mut revision_id: Option<RevisionId> = None;
-        let mut manifest_generation: Option<ManifestGeneration> = None;
-        let mut manifest_digest: Option<String> = None;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
-                "repo_id" => {
-                    if repo_id.is_some() {
-                        return Err(de::Error::duplicate_field("repo_id"));
-                    }
-                    repo_id = Some(map.next_value()?);
-                }
-                "revision_id" => {
-                    if revision_id.is_some() {
-                        return Err(de::Error::duplicate_field("revision_id"));
-                    }
-                    revision_id = Some(map.next_value()?);
-                }
-                "manifest_generation" => {
-                    if manifest_generation.is_some() {
-                        return Err(de::Error::duplicate_field("manifest_generation"));
-                    }
-                    manifest_generation = Some(map.next_value()?);
-                }
-                "manifest_digest" => {
-                    if manifest_digest.is_some() {
-                        return Err(de::Error::duplicate_field("manifest_digest"));
-                    }
-                    manifest_digest = Some(map.next_value()?);
-                }
-                other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        REPOMAP_ACTIVATE_GENERATION_REQUEST_V1_FIELDS,
-                    ));
-                }
-            }
-        }
-        let repo_id = repo_id.ok_or_else(|| de::Error::missing_field("repo_id"))?;
-        let revision_id = revision_id.ok_or_else(|| de::Error::missing_field("revision_id"))?;
-        let manifest_generation =
-            manifest_generation.ok_or_else(|| de::Error::missing_field("manifest_generation"))?;
-        let manifest_digest =
-            manifest_digest.ok_or_else(|| de::Error::missing_field("manifest_digest"))?;
-        Ok(RepoMapActivateGenerationRequest {
-            repo_id,
-            revision_id,
-            manifest_generation,
-            manifest_digest,
-        })
-    }
-}
-
-impl<'de> Deserialize<'de> for RepoMapActivateGenerationRequest {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_struct(
-            "RepoMapActivateGenerationRequest",
-            REPOMAP_ACTIVATE_GENERATION_REQUEST_V1_FIELDS,
-            RepoMapActivateGenerationRequestV1Visitor,
-        )
-    }
-}
-
 /// Identity/content-bound mutation receipt (S21-02).
 ///
 /// Every publish, activate and rollback ACK names the commitment it
@@ -2286,7 +2178,8 @@ impl<'de> Visitor<'de> for RepoMapMutationAckV1Visitor {
             repo_id,
             revision_id,
             manifest_generation,
-            prior_candidate_commitment: prior_candidate_commitment.unwrap_or_default(),
+            prior_candidate_commitment: prior_candidate_commitment
+                .ok_or_else(|| de::Error::missing_field("prior_candidate_commitment"))?,
             new_candidate_commitment,
             activation_epoch,
             terminal_sequence,
@@ -3182,9 +3075,9 @@ mod tests {
 
     use super::{
         ChunkId, FileId, LanguageCode, ManifestGeneration, RepoId,
-        RepoMapActivateGenerationRequest, RepoMapCallEdge, RepoMapChunkExactness, RepoMapChunkNode,
-        RepoMapChunkRecordDto, RepoMapContainsEdge, RepoMapDependsOnEdge, RepoMapDocType,
-        RepoMapEdge, RepoMapEdgeKind, RepoMapEntryDto, RepoMapExactnessSummary,
+        RepoMapActivateGenerationRequestV2, RepoMapCallEdge, RepoMapChunkExactness,
+        RepoMapChunkNode, RepoMapChunkRecordDto, RepoMapContainsEdge, RepoMapDependsOnEdge,
+        RepoMapDocType, RepoMapEdge, RepoMapEdgeKind, RepoMapEntryDto, RepoMapExactnessSummary,
         RepoMapFileIndexRecord, RepoMapFileNode, RepoMapFocusSubjectDto, RepoMapGraphCoverage,
         RepoMapGraphCoverageClass, RepoMapGraphEdgeDto, RepoMapImportEdge,
         RepoMapItemIndexAvailability, RepoMapModuleId, RepoMapModuleNode, RepoMapMutationAck,
@@ -3455,13 +3348,9 @@ mod tests {
         }))
     }
 
-    fn sample_activate_request() -> RepoMapActivateGenerationRequest {
-        RepoMapActivateGenerationRequest {
-            repo_id: sample_repo_id(),
-            revision_id: sample_revision_id(),
-            manifest_generation: sample_manifest_generation(),
-            manifest_digest: "blake3:1234".into(),
-        }
+    fn sample_activate_request() -> RepoMapActivateGenerationRequestV2 {
+        RepoMapActivateGenerationRequestV2::for_bundle(&sample_source_bundle())
+            .expect("sample source bundle has a canonical digest")
     }
 
     fn sample_mutation_ack() -> RepoMapMutationAck {
@@ -3573,7 +3462,19 @@ mod tests {
 
     #[test]
     fn cbor_roundtrip_mutation_ack() -> TestRes {
-        roundtrip_eq(&sample_mutation_ack())
+        let ack = sample_mutation_ack();
+        roundtrip_eq(&ack)?;
+        let mut old: ciborium::Value = decode(&encode(&ack)?)?;
+        let ciborium::Value::Map(fields) = &mut old else {
+            return Err("mutation ack must encode as a map".into());
+        };
+        fields.retain(|(key, _)| {
+            key != &ciborium::Value::Text("prior_candidate_commitment".to_owned())
+        });
+        if decode::<RepoMapMutationAck>(&encode(&old)?).is_ok() {
+            return Err("missing prior_candidate_commitment was accepted".into());
+        }
+        Ok(())
     }
 
     #[test]

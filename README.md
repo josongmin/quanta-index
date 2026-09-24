@@ -4,12 +4,24 @@ External search-plane for Semantica/Quanta indexing and serving.
 
 > Current owner model (SPA-00 freeze plus Semantic Corpus V2): the producer
 > (`semantica-codegraph-v2`) mints search truth — `ChunkRecord`, `SymbolRecord`,
-> structural, dirty/runtime, and repo-map records — and may publish typed
-> semantic-source replace/tombstone scopes. `quanta-index` validates those
+> structural, dirty/runtime, and repo-map records — and, in the typed-only
+> cutover, must publish typed semantic-source replace/tombstone scopes or
+> intentionally empty semantic deltas. `quanta-index` validates those
 > sources, derives semantic vectors, and owns generation/readiness, fusion, and
-> lexical/semantic/hybrid serving. Default semantic derivation is
-> `SemanticSourcesWithLegacyFallback`; override with
-> `QUANTA_INDEX_SEMANTIC_DERIVE_MODE=legacy_all_chunk|semantic_with_legacy_fallback|semantic_only`.
+> lexical/semantic/hybrid serving. Typed semantic sources are the intended
+> sole live derivation input. The cutover removes
+> `QUANTA_INDEX_SEMANTIC_DERIVE_MODE` and chunk-text derivation fallback;
+> producers must supply typed semantic replacements/tombstones or an intentional
+> no-op. The current wire does not independently attest semantic coverage for
+> an empty list; producer and cross-repo proofs remain required.
+> `RawCodeFallback` is a producer-authored typed source, not permission to
+> derive vectors from legacy chunks. This dirty-tree cutover
+> is not yet a qualified runtime or cross-repo producer claim.
+> Semantic manifest format 11 and pre-seal contract format 3 reject
+> pre-cutover generations; they require a typed-source rebuild.
+> The retired `migrate-state` importer is unavailable. Serving boot refuses
+> legacy roots; recreate them from typed producer input. `backup-state`,
+> `restore-state`, and `verify-state` operate on current-format roots only.
 > The cross-repo boundary is typed contract DTOs plus the
 > `quanta-index-sdk` ingress facade over UDS transport.
 
@@ -17,7 +29,23 @@ Current status (lexical + semantic/hybrid serving live on the current tree;
 live-network semantic proof and production ops hardening remain separate gates):
 
 - shared contract crate with bundle/control/query DTOs (manual `Serialize` /
-  `Deserialize` impls, no proc-macro derives per workspace rule D18)
+  `Deserialize` impls, no proc-macro derives per workspace rule D18). Current
+  ingest batches require explicitly encoded clear/semantic fields, semantic
+  sources require explicit membership and optional-value fields, IPC errors
+  require `repair` (which may be null), and explanations require execution and
+  request identity. Hybrid seed candidates/contributions likewise encode
+  optional provenance and scores explicitly (including `null`); missing older
+  shapes are refused, not default-filled.
+- RepoMap publish/activate uses only source-digest-bound V2 mutation requests
+  and terminal receipts across SDK, IPC, ports, and store. Legacy opcodes,
+  nested V1 activation identity, and weak catalog projection metadata are
+  refused; old roots require producer-authoritative rebuild.
+- The SDK's semantic-source builder uses one `replace_semantic_scope` form
+  with an explicit cluster-membership vector (empty for non-cluster scopes);
+  the former three-argument compatibility overload is removed.
+- Semantic tombstones use typed semantic-owner scope only; path-scoped
+  tombstones are rejected. Cluster-membership reads return `Available` or
+  typed `Rejected`; the legacy-only `Unavailable` response is refused.
 - hexagonal core crate with port traits and validation services
 - search-plane authority/runtime path with manifest catalog, activation,
   generation pin, readiness, delta-apply governance, and typed ingest/query
@@ -29,7 +57,7 @@ live-network semantic proof and production ops hardening remain separate gates):
 - `quanta-index-semantic` persisted, generation-scoped semantic adapter:
   durable LanceDB build + direct open from sealed generations, with a bounded
   open cache (`OPEN_CACHE_CAPACITY=8`) and no boot-time journal replay.
-  Legacy `state_root/semantic/journal.cbor` is one-shot migration input only.
+  Legacy `state_root/semantic/journal.cbor` is a refusal marker, not migration input.
   Logical corpus predicates are pushed into the storage query instead of
   applied after an unfiltered ANN read.
 - `quanta-index-ipc` CBOR wire codec (16 MiB frame cap)
@@ -38,7 +66,8 @@ live-network semantic proof and production ops hardening remain separate gates):
   repomap serving, SIGINT/SIGTERM draining shutdown. Tokio exists inside the
   semantic LanceDB adapter seam, not as the UDS listener runtime.
 
-Semantic Corpus V2 current state (code-truth snapshot, HEAD `526349b`, 2026-09-16):
+Semantic Corpus V2 historical snapshot (HEAD `526349b`, 2026-09-16; not
+current-source qualification):
 
 - typed semantic-source wire covers symbol/module/cluster/document/test/raw-fallback corpora;
 - semantic storage v4 preserves owner/corpus/provenance metadata and exact owner-scoped replacement;
@@ -51,7 +80,8 @@ Semantic Corpus V2 current state (code-truth snapshot, HEAD `526349b`, 2026-09-1
 - owner-local unit coverage is broad across contract/core/SDK/search-plane/
   semantic crates; exact counts drift — use `just rust-profile test-fast` rather
   than frozen README numbers;
-- semantic-source-only cutover and live card-required activation are not complete;
+- this historical snapshot does not establish current typed-only runtime or
+  live card-required activation qualification;
 - Semantica remains responsible for graph facts, Stage3 graph expansion, and source hydration.
 
 Current verification posture (2026-09-16):
@@ -161,6 +191,14 @@ Implementation packet (search-plane SSOT for this repo):
 
 Producer integration points in `semantica-codegraph-v2`:
 
+The current aggregate producer path prepares typed SearchPlane members before
+visibility and dispatches through aggregate custody. Ordinary late SearchPlane
+handoff and persisted V3 lexical replay are retired. Delta semantic publication
+still needs a product-authoritative prior semantic-state binding: the aggregate
+path does not write the V4 lexical outbox that the current prior-state resolver
+reads, so a delta requiring that state fails closed. Do not treat the cross-repo
+delta cutover as qualified until that binding and a paired restart test exist.
+
 - prepare-side bundle registration:
   - `packages/analysis/quanta-v2/crates/quanta-runtime/src/retrieval/port_impls/index_projection_writer/mod.rs`
   - `commit_internal()` / `commit_internal_with_source_bound_dense_carry_forward_v1()`
@@ -182,8 +220,8 @@ Non-goals in this Phase 1–3 cut:
 - no raw HIR/source ingestion (producer responsibility)
 - no HTTP transport (UDS only)
 - no producer-authored public vector publish path; semantic corpus is derived
-  inside `quanta-index` from typed semantic sources, with legacy chunk-text
-  derivation retained as the current migration default
+  inside `quanta-index` from producer-authored typed semantic sources; the
+  chunk-text derivation path is removed in the typed-only cutover
 - no `materialized` / `failed` catalog-state transitions yet (only `prepared`
   and `active` are written; SSOT lifecycle is a Phase 3.5 follow-up)
 - no production observability exporter (tracing/metrics shipping) — Phase 4;

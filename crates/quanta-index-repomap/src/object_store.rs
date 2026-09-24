@@ -46,8 +46,8 @@ use crate::layout_v3::{
 const ROOT_UUID_FILE_NAME: &str = "root-uuid.bin";
 const ROOT_UUID_BYTES: usize = 16;
 
-/// Names of the legacy V1 layout this owner refuses to mutate (P10 owns
-/// the offline importer for them).
+/// Names of the legacy V1 layout this owner refuses to mutate. There is no
+/// offline importer; these markers are retained solely for typed refusal.
 pub(crate) const LEGACY_V1_DIR_NAMES: [&str; 2] = ["activations", "snapshots"];
 
 pub(crate) const CRASH_BOUNDARY_ENV: &str = "QUANTA_INDEX_REPOMAP_CRASH_BOUNDARY";

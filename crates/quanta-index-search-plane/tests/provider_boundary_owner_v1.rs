@@ -28,7 +28,8 @@ use std::sync::{Arc, Mutex};
 use quanta_index_core::{
     CoreError, ProviderBudgetLedger, ProviderSettlementKindV1, ProviderSettlementUsageV1,
     ProviderWorkBudgetV1, ProviderWorkEstimateV1, RequestBudgetV1, RequestCorrelationV1,
-    SemanticAdmissionEngine, SemanticEgressGrantV1, SemanticEgressPolicyV1, SemanticInputClass,
+    RequestProviderStageV1, RequestStageDiagnosticPortV1, SemanticAdmissionEngine,
+    SemanticEgressGrantV1, SemanticEgressPolicyV1, SemanticInputClass,
 };
 use quanta_index_search_plane::{
     ProviderBoundaryQueryEmbedder, QueryTextEmbedderPort, SEARCH_OWNED_SEMANTIC_DIMENSION,
@@ -128,6 +129,18 @@ fn default_budget() -> ProviderWorkBudgetV1 {
 
 fn request_budget() -> RequestBudgetV1 {
     RequestBudgetV1::unbounded()
+}
+
+#[derive(Debug, Default)]
+struct RecordingProviderStages(Mutex<Vec<RequestProviderStageV1>>);
+
+impl RequestStageDiagnosticPortV1 for RecordingProviderStages {
+    fn record_provider_stage_v1(&self, stage: RequestProviderStageV1) {
+        self.0
+            .lock()
+            .expect("diagnostic recorder mutex")
+            .push(stage);
+    }
 }
 
 fn refused_code(err: &CoreError) -> &str {
@@ -499,6 +512,91 @@ fn audit_event_carries_the_settling_budgets_correlation() {
     assert_eq!(first.correlation, Some(correlation));
     assert_eq!(first.correlation.map(RequestCorrelationV1::get), Some(77));
     assert_eq!(second.correlation, None);
+}
+
+#[test]
+fn provider_markers_reference_the_settled_ticket_without_becoming_usage_authority() {
+    let spy = Arc::new(SpyEmbedder::unit());
+    let ledger = open_ledger();
+    let boundary = loopback_boundary(Arc::clone(&spy), Arc::clone(&ledger));
+    let stages = Arc::new(RecordingProviderStages::default());
+    let correlation = RequestCorrelationV1::from_raw(77).expect("valid request id");
+    let budget = request_budget()
+        .with_correlation(correlation)
+        .with_diagnostics(stages.clone());
+
+    let _result = boundary
+        .embed_query_admitted("valid query text", &budget)
+        .expect("provider call settles");
+    let audit = ledger.audit_tail(1).expect("provider audit");
+    let [event] = audit.as_slice() else {
+        panic!("expected one audit event, got {}", audit.len());
+    };
+    assert_eq!(event.correlation, Some(correlation));
+    assert_eq!(event.kind, ProviderSettlementKindV1::Success);
+    assert_eq!(
+        stages
+            .0
+            .lock()
+            .expect("diagnostic recorder mutex")
+            .as_slice(),
+        [
+            RequestProviderStageV1::Started {
+                ticket_id: event.ticket_id,
+            },
+            RequestProviderStageV1::Returned {
+                ticket_id: event.ticket_id,
+            },
+        ]
+    );
+    assert_eq!(spy.calls(), 1);
+    assert_eq!(ledger.snapshot().expect("ledger snapshot").live_tickets, 0);
+
+    let refusal = boundary
+        .embed_query_admitted("!!!", &budget)
+        .expect_err("invalid input is refused before provider reserve");
+    assert_eq!(refused_code(&refusal), "EMPTY_QUERY");
+    assert_eq!(spy.calls(), 1);
+    assert_eq!(ledger.audit_tail(2).expect("audit tail").len(), 1);
+    assert_eq!(stages.0.lock().expect("recorder mutex").len(), 2);
+}
+
+#[test]
+fn failed_provider_call_has_return_marker_and_failed_ledger_settlement() {
+    let spy = Arc::new(SpyEmbedder::failing(CoreError::Storage(
+        "scripted provider failure".to_string(),
+    )));
+    let ledger = open_ledger();
+    let boundary = loopback_boundary(Arc::clone(&spy), Arc::clone(&ledger));
+    let stages = Arc::new(RecordingProviderStages::default());
+    let budget = request_budget().with_diagnostics(stages.clone());
+
+    let error = boundary
+        .embed_query_admitted("valid query text", &budget)
+        .expect_err("provider failure propagates");
+    assert!(matches!(error, CoreError::Storage(_)));
+    let audit = ledger.audit_tail(1).expect("provider audit");
+    let [event] = audit.as_slice() else {
+        panic!("expected one audit event, got {}", audit.len());
+    };
+    assert_eq!(event.kind, ProviderSettlementKindV1::Failed);
+    assert_eq!(
+        stages
+            .0
+            .lock()
+            .expect("diagnostic recorder mutex")
+            .as_slice(),
+        [
+            RequestProviderStageV1::Started {
+                ticket_id: event.ticket_id,
+            },
+            RequestProviderStageV1::Returned {
+                ticket_id: event.ticket_id,
+            },
+        ]
+    );
+    assert_eq!(spy.calls(), 1);
+    assert_eq!(ledger.snapshot().expect("ledger snapshot").live_tickets, 0);
 }
 
 /// Declared vs observed: a provider answering with an unexpected model,

@@ -10,11 +10,8 @@ import importlib.util
 import json
 import os
 import platform
-import shutil
-import stat
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -61,19 +58,24 @@ def _load_module(name: str, path: Path) -> ModuleType:
     return module
 
 
-def _read_toml(path: Path) -> dict[str, Any]:
-    with path.open("rb") as handle:
-        value = tomllib.load(handle)
-    if not isinstance(value, dict):
-        raise ManifestRefused("proof registry root must be a table")
-    return value
-
-
-def _read_json_object(path: Path, *, label: str) -> dict[str, Any]:
-    value = json.loads(path.read_text(encoding="utf-8"))
+def _json_object_bytes(content: bytes, *, label: str) -> dict[str, Any]:
+    try:
+        value = json.loads(content)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ManifestRefused(f"{label} is not valid JSON: {error}") from error
     if not isinstance(value, dict):
         raise ManifestRefused(f"{label} root must be an object")
     return value
+
+
+def _external_regular_bytes(path: Path, *, label: str, checker: ModuleType) -> bytes:
+    absolute = Path(os.path.abspath(path))
+    try:
+        return checker.HANDOFF_VALIDATION._read_repo_regular_bytes(
+            Path("/"), absolute.relative_to(Path("/")).as_posix(), label=label
+        )
+    except (OSError, ValueError) as error:
+        raise ManifestRefused(f"{label} must be a regular non-symlink file: {error}") from error
 
 
 def _require_exact_keys(value: dict[str, Any], expected: set[str], *, label: str) -> None:
@@ -84,38 +86,34 @@ def _require_exact_keys(value: dict[str, Any], expected: set[str], *, label: str
         raise ManifestRefused(f"{label} keys differ: missing={missing} extra={extra}")
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _repo_file(root: Path, value: Any, *, label: str) -> tuple[str, Path]:
+def _repo_bytes(root: Path, value: Any, *, label: str, checker: ModuleType) -> tuple[str, bytes]:
     if not isinstance(value, str) or not value:
         raise ManifestRefused(f"{label} must be a non-empty repo-relative path")
-    relative = Path(value)
-    if relative.is_absolute() or ".." in relative.parts:
-        raise ManifestRefused(f"{label} must be a repo-relative path: {value!r}")
-    path = (root / relative).resolve()
     try:
-        canonical = path.relative_to(root).as_posix()
-    except ValueError as error:
-        raise ManifestRefused(f"{label} escapes repository root: {value!r}") from error
-    if not path.is_file():
-        raise ManifestRefused(f"{label} is missing: {canonical}")
-    return canonical, path
+        checker.HANDOFF_VALIDATION._repo_path(root, value, label=label)
+        content = checker.HANDOFF_VALIDATION._read_repo_regular_bytes(root, value, label=label)
+    except (OSError, ValueError) as error:
+        raise ManifestRefused(
+            f"{label} must be a regular non-symlink repo file: {error}"
+        ) from error
+    return value, content
 
 
-def _digest_input(root: Path, value: Any, *, label: str) -> str | None:
+def _digest_input(
+    root: Path, value: Any, *, label: str, checker: ModuleType | None = None
+) -> str | None:
     if value is None:
         return None
     if not isinstance(value, dict):
         raise ManifestRefused(f"{label} must be null, {{path}}, or {{value}}")
     if set(value) == {"path"}:
-        _, path = _repo_file(root, value["path"], label=f"{label}.path")
-        return f"sha256:{_sha256(path)}"
+        _, content = _repo_bytes(
+            root,
+            value["path"],
+            label=f"{label}.path",
+            checker=checker if checker is not None else _load_checker(),
+        )
+        return f"sha256:{hashlib.sha256(content).hexdigest()}"
     if set(value) == {"value"} and isinstance(value["value"], str) and value["value"]:
         digest = hashlib.sha256(value["value"].encode()).hexdigest()
         return f"sha256:{digest}"
@@ -195,71 +193,44 @@ def _host_environment(value: Any) -> dict[str, Any]:
     }
 
 
-def _ensure_safe_directory(root: Path, relative: Path) -> Path:
-    """Create a repo-contained directory tree without traversing symlinks."""
-
-    if relative.is_absolute() or ".." in relative.parts:
-        raise ManifestRefused(f"archive directory must be repo-relative: {relative}")
-    current = root.resolve()
-    for part in relative.parts:
-        current = current / part
-        try:
-            metadata = current.lstat()
-        except FileNotFoundError:
-            current.mkdir()
-            metadata = current.lstat()
-        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
-            raise ManifestRefused(f"archive directory is not a real directory: {current}")
-    try:
-        current.resolve().relative_to(root.resolve())
-    except ValueError as error:
-        raise ManifestRefused(f"archive directory escapes repository root: {relative}") from error
-    return current
-
-
 def _publish_content_archive(
-    *, root: Path, checker: ModuleType, kind: str, source: Path, digest: str
+    *, root: Path, checker: ModuleType, kind: str, content: bytes, digest: str
 ) -> str:
     relative = checker.content_archive_relative_path(kind, digest)
-    destination = root / relative
-    _ensure_safe_directory(root, destination.parent.relative_to(root))
-    if destination.exists() or destination.is_symlink():
-        metadata = destination.lstat()
-        if not stat.S_ISREG(metadata.st_mode) or _sha256(destination) != digest:
-            raise ManifestRefused(f"immutable {kind} archive collision: {relative}")
-        return relative
-    temporary_path: Path | None = None
+    parent_fd = _open_output_parent(root, relative, checker=checker)
+    name = Path(relative).name
+    temporary_name: str | None = None
     try:
-        with tempfile.NamedTemporaryFile(
-            dir=destination.parent,
-            prefix=f".{destination.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            with source.open("rb") as source_handle:
-                shutil.copyfileobj(source_handle, handle)
-            handle.flush()
-            os.fsync(handle.fileno())
-            temporary_path = Path(handle.name)
-        if _sha256(temporary_path) != digest:
+        existing = _read_output(parent_fd, name, checker=checker)
+        if existing is not None:
+            if hashlib.sha256(existing).hexdigest() != digest:
+                raise ManifestRefused(f"immutable {kind} archive collision: {relative}")
+            _require_parent_identity(root, relative, parent_fd, checker=checker)
+            return relative
+        if hashlib.sha256(content).hexdigest() != digest:
             raise ManifestRefused(f"{kind} source changed during archival")
+        temporary_name = checker.HANDOFF_VALIDATION._write_output_temporary(
+            parent_fd, name, content
+        )
+        _require_parent_identity(root, relative, parent_fd, checker=checker)
         try:
-            os.link(temporary_path, destination)
+            os.link(
+                temporary_name,
+                name,
+                src_dir_fd=parent_fd,
+                dst_dir_fd=parent_fd,
+                follow_symlinks=False,
+            )
         except FileExistsError as error:
-            if (
-                destination.is_symlink()
-                or not destination.is_file()
-                or _sha256(destination) != digest
-            ):
+            existing = _read_output(parent_fd, name, checker=checker)
+            if existing is None or hashlib.sha256(existing).hexdigest() != digest:
                 raise ManifestRefused(f"immutable {kind} archive collision: {relative}") from error
-        directory_fd = os.open(destination.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+        os.fsync(parent_fd)
+        _require_parent_identity(root, relative, parent_fd, checker=checker)
     finally:
-        if temporary_path is not None:
-            temporary_path.unlink(missing_ok=True)
+        if temporary_name is not None:
+            os.unlink(temporary_name, dir_fd=parent_fd)
+        os.close(parent_fd)
     return relative
 
 
@@ -273,12 +244,12 @@ def _resolve_binary(
         return None
     if binding != "release-daemon":
         raise ManifestRefused(f"unknown binary binding: {binding!r}")
-    canonical, path = _repo_file(root, value, label="terminal.daemon_binary")
-    digest = _sha256(path)
+    canonical, content = _repo_bytes(root, value, label="terminal.daemon_binary", checker=checker)
+    digest = hashlib.sha256(content).hexdigest()
     return {
         "source_path": canonical,
         "path": _publish_content_archive(
-            root=root, checker=checker, kind="binary", source=path, digest=digest
+            root=root, checker=checker, kind="binary", content=content, digest=digest
         ),
         "sha256": digest,
     }
@@ -328,13 +299,15 @@ def _resolve_artifacts(
     artifacts: list[dict[str, str]] = []
     seen: set[str] = set()
     for index, item in enumerate(value):
-        canonical, path = _repo_file(root, item, label=f"terminal.artifacts[{index}]")
-        if path == output_path:
+        canonical, content = _repo_bytes(
+            root, item, label=f"terminal.artifacts[{index}]", checker=checker
+        )
+        if root / canonical == output_path:
             raise ManifestRefused("proof manifest cannot attest its own digest")
         if canonical in seen:
             raise ManifestRefused(f"duplicate terminal artifact: {canonical}")
         seen.add(canonical)
-        digest = _sha256(path)
+        digest = hashlib.sha256(content).hexdigest()
         artifacts.append(
             {
                 "source_path": canonical,
@@ -342,7 +315,7 @@ def _resolve_artifacts(
                     root=root,
                     checker=checker,
                     kind="evidence",
-                    source=path,
+                    content=content,
                     digest=digest,
                 ),
                 "sha256": digest,
@@ -362,27 +335,29 @@ def _resolve_dependencies(
         dependency = proof_by_id.get(proof_id)
         if dependency is None:
             raise ManifestRefused(f"unknown dependency proof: {proof_id}")
-        _, path = _repo_file(
+        _, content = _repo_bytes(
             root,
             dependency["artifact"],
             label=f"dependency {proof_id}",
+            checker=checker,
         )
-        payload = _read_json_object(path, label=f"dependency {proof_id}")
+        payload = _json_object_bytes(content, label=f"dependency {proof_id}")
         if payload.get("proof_id") != proof_id:
             raise ManifestRefused(f"dependency {proof_id} current alias has the wrong proof_id")
-        manifest_digest = _sha256(path)
+        manifest_digest = hashlib.sha256(content).hexdigest()
         try:
             archive_relative = checker.proof_archive_relative_path(payload, manifest_digest)
         except (KeyError, TypeError, ValueError) as error:
             raise ManifestRefused(
                 f"dependency {proof_id} archive identity is invalid: {error}"
             ) from error
-        archive_path = root / archive_relative
-        if not archive_path.is_file():
-            raise ManifestRefused(
-                f"dependency {proof_id} immutable archive is missing: {archive_relative}"
-            )
-        if archive_path.read_bytes() != path.read_bytes():
+        _, archive_content = _repo_bytes(
+            root,
+            archive_relative,
+            label=f"dependency {proof_id} immutable archive",
+            checker=checker,
+        )
+        if archive_content != content:
             raise ManifestRefused(
                 f"dependency {proof_id} current alias differs from its immutable archive"
             )
@@ -427,14 +402,12 @@ def build_manifest(
         raise ManifestRefused("terminal status 'failed' requires counts.failed > 0")
     if status in {"blocked", "not_run"} and any(value != 0 for value in counts.values()):
         raise ManifestRefused(f"terminal status {status!r} requires zero execution counts")
-    output_relative = Path(proof["artifact"])
-    if output_relative.is_absolute() or ".." in output_relative.parts:
-        raise ManifestRefused("registry artifact must be repo-relative")
-    output_path = (root / output_relative).resolve()
     try:
-        output_path.relative_to(root)
+        output_path = checker.HANDOFF_VALIDATION._repo_path(
+            root, proof["artifact"], label="registered proof artifact"
+        )
     except ValueError as error:
-        raise ManifestRefused("registry artifact escapes repository root") from error
+        raise ManifestRefused(f"registered proof artifact is invalid: {error}") from error
     inputs = terminal["inputs"]
     if not isinstance(inputs, dict):
         raise ManifestRefused("terminal.inputs must be an object")
@@ -485,7 +458,9 @@ def build_manifest(
         "daemon_binary": resolved_binary,
         "state_root_format": terminal["state_root_format"],
         "inputs": {
-            name: _digest_input(root, inputs[name], label=f"terminal.inputs.{name}")
+            name: _digest_input(
+                root, inputs[name], label=f"terminal.inputs.{name}", checker=checker
+            )
             for name in sorted(INPUT_NAMES)
         },
         "started_at": terminal["started_at"],
@@ -533,11 +508,14 @@ def _validate_aggregate_issuance(
     if not isinstance(aggregate_path, str):
         raise ManifestRefused("registered aggregate artifact path is invalid")
     aggregate_file = root / aggregate_path
-    try:
-        aggregate_payload = _read_json_object(aggregate_file, label="aggregate receipt")
-        aggregate_schema = _read_json_object(root / aggregate["schema"], label="aggregate schema")
-    except (OSError, json.JSONDecodeError) as error:
-        raise ManifestRefused(f"cannot load registered aggregate receipt: {error}") from error
+    _, aggregate_bytes = _repo_bytes(
+        root, aggregate_path, label="aggregate receipt", checker=checker
+    )
+    aggregate_payload = _json_object_bytes(aggregate_bytes, label="aggregate receipt")
+    _, aggregate_schema_bytes = _repo_bytes(
+        root, aggregate["schema"], label="aggregate schema", checker=checker
+    )
+    aggregate_schema = _json_object_bytes(aggregate_schema_bytes, label="aggregate schema")
     paired_checkouts = None
     if paired_checkout is not None:
         paired_checkouts = {proof["paired_repository"]: paired_checkout}
@@ -555,7 +533,7 @@ def _validate_aggregate_issuance(
     if findings:
         rendered = "; ".join(finding.render() for finding in findings)
         raise ManifestRefused(f"aggregate receipt is not authoritative: {rendered}")
-    if aggregate_artifact["sha256"] != _sha256(aggregate_file):
+    if aggregate_artifact["sha256"] != hashlib.sha256(aggregate_bytes).hexdigest():
         raise ManifestRefused("aggregate artifact changed during P12 issuance")
     if payload["source"] != aggregate_payload["source"]:
         raise ManifestRefused("P12 source differs from aggregate source")
@@ -585,6 +563,7 @@ def _validate_p00_issuance(
     root: Path,
     proof: dict[str, Any],
     payload: dict[str, Any],
+    checker: ModuleType,
 ) -> None:
     if proof.get("id") != "p00-authority-freeze":
         return
@@ -594,9 +573,14 @@ def _validate_p00_issuance(
     )
     if inventory_artifact is None:
         raise ManifestRefused("P00 proof must attest the registered error-authority inventory")
-    inventory_path = root / ERROR_INVENTORY_PATH
-    inventory = _read_json_object(inventory_path, label="error-authority inventory")
-    schema = _read_json_object(ERROR_INVENTORY_SCHEMA, label="error-authority schema")
+    _, inventory_bytes = _repo_bytes(
+        root, ERROR_INVENTORY_PATH, label="error-authority inventory", checker=checker
+    )
+    inventory = _json_object_bytes(inventory_bytes, label="error-authority inventory")
+    schema_bytes = _external_regular_bytes(
+        ERROR_INVENTORY_SCHEMA, label="error-authority schema", checker=checker
+    )
+    schema = _json_object_bytes(schema_bytes, label="error-authority schema")
     try:
         jsonschema.Draft202012Validator(schema).validate(inventory)
     except jsonschema.ValidationError as error:
@@ -608,7 +592,7 @@ def _validate_p00_issuance(
         )
     if inventory.get("closed") is not False:
         raise ManifestRefused("P00 discovery inventory cannot claim semantic closure")
-    if inventory_artifact["sha256"] != _sha256(inventory_path):
+    if inventory_artifact["sha256"] != hashlib.sha256(inventory_bytes).hexdigest():
         raise ManifestRefused("error-authority inventory changed during P00 issuance")
 
 
@@ -623,32 +607,27 @@ def _proof_lock_path(root: Path) -> Path:
     return path if path.is_absolute() else root / path
 
 
-def _restore_prior_manifest(output_path: Path, prior_bytes: bytes | None) -> None:
-    if prior_bytes is None:
-        output_path.unlink(missing_ok=True)
-    else:
-        restore_path: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                dir=output_path.parent,
-                prefix=f".{output_path.name}.",
-                suffix=".restore",
-                delete=False,
-            ) as handle:
-                restore_path = Path(handle.name)
-                handle.write(prior_bytes)
-                handle.flush()
-                os.fsync(handle.fileno())
-        except BaseException:
-            if restore_path is not None:
-                restore_path.unlink(missing_ok=True)
-            raise
-        os.replace(restore_path, output_path)
-    directory_fd = os.open(output_path.parent, os.O_RDONLY)
+def _open_output_parent(root: Path, relative: str, *, checker: ModuleType) -> int:
     try:
-        os.fsync(directory_fd)
-    finally:
-        os.close(directory_fd)
+        return checker.HANDOFF_VALIDATION._open_repo_output_parent(root, relative)
+    except (OSError, ValueError) as error:
+        raise ManifestRefused(f"proof output parent is unsafe: {error}") from error
+
+
+def _read_output(parent_fd: int, name: str, *, checker: ModuleType) -> bytes | None:
+    try:
+        return checker.HANDOFF_VALIDATION._read_output_regular_bytes(parent_fd, name)
+    except (OSError, ValueError) as error:
+        raise ManifestRefused(f"existing proof output is unsafe: {error}") from error
+
+
+def _require_parent_identity(
+    root: Path, relative: str, parent_fd: int, *, checker: ModuleType
+) -> None:
+    try:
+        checker.HANDOFF_VALIDATION._require_output_parent_identity(root, relative, parent_fd)
+    except (OSError, ValueError) as error:
+        raise ManifestRefused(f"proof output parent changed or is unsafe: {error}") from error
 
 
 def _publish_immutable_archive(
@@ -664,119 +643,115 @@ def _publish_immutable_archive(
     except (KeyError, TypeError, ValueError) as error:
         raise ManifestRefused(f"cannot derive immutable archive path: {error}") from error
     archive_path = root / relative
-    archive_parent = _ensure_safe_directory(root, archive_path.parent.relative_to(root))
-    index_path = archive_parent / "index.json"
-    source_binding = archive_parent.name
-    index_payload: dict[str, Any]
-    if index_path.exists() or index_path.is_symlink():
-        metadata = index_path.lstat()
-        if not stat.S_ISREG(metadata.st_mode):
-            raise ManifestRefused(
-                f"immutable proof archive index is not a regular file: {index_path}"
-            )
-        try:
-            index_payload = _read_json_object(index_path, label="proof archive index")
-        except (OSError, json.JSONDecodeError) as error:
-            raise ManifestRefused(f"immutable proof archive index is invalid: {error}") from error
-        expected_index_keys = {
-            "schema_version",
-            "proof_id",
-            "source_binding_digest",
-            "manifest_digests",
-        }
-        _require_exact_keys(index_payload, expected_index_keys, label="proof archive index")
-        if (
-            index_payload["schema_version"] != 1
-            or index_payload["proof_id"] != payload["proof_id"]
-            or index_payload["source_binding_digest"] != source_binding
-            or not isinstance(index_payload["manifest_digests"], list)
-            or any(
-                not isinstance(item, str) or len(item) != 64
-                for item in index_payload["manifest_digests"]
-            )
-            or len(index_payload["manifest_digests"]) != len(set(index_payload["manifest_digests"]))
-        ):
-            raise ManifestRefused("immutable proof archive index authority is invalid")
-    else:
-        index_payload = {
-            "schema_version": 1,
-            "proof_id": payload["proof_id"],
-            "source_binding_digest": source_binding,
-            "manifest_digests": [],
-        }
-
-    indexed_digests = index_payload["manifest_digests"]
-    for indexed_digest in indexed_digests:
-        indexed_path = archive_parent / f"{indexed_digest}.json"
-        if indexed_path.is_symlink() or not indexed_path.is_file():
-            raise ManifestRefused(
-                f"immutable proof archive leaf was deleted: {indexed_path.relative_to(root)}"
-            )
-        if _sha256(indexed_path) != indexed_digest:
-            raise ManifestRefused(
-                f"immutable proof archive leaf was modified: {indexed_path.relative_to(root)}"
-            )
-
-    archive_exists = archive_path.exists() or archive_path.is_symlink()
-    if archive_exists:
-        metadata = archive_path.lstat()
-        if not stat.S_ISREG(metadata.st_mode) or archive_path.read_bytes() != serialized:
-            raise ManifestRefused(
-                f"immutable proof archive collision or overwrite attempt: {relative}"
-            )
-        if manifest_digest not in indexed_digests:
-            raise ManifestRefused(f"immutable proof archive leaf is not indexed: {relative}")
-        return archive_path, manifest_digest
-    if manifest_digest in indexed_digests:
-        raise ManifestRefused(f"immutable proof archive leaf was deleted: {relative}")
-
-    temporary_path: Path | None = None
+    parent_fd = _open_output_parent(root, relative, checker=checker)
+    leaf_name = archive_path.name
     try:
-        with tempfile.NamedTemporaryFile(
-            dir=archive_path.parent,
-            prefix=f".{archive_path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            handle.write(serialized)
-            handle.flush()
-            os.fsync(handle.fileno())
-            temporary_path = Path(handle.name)
+        index_bytes = _read_output(parent_fd, "index.json", checker=checker)
+        source_binding = archive_path.parent.name
+        if index_bytes is None:
+            index_payload = {
+                "schema_version": 1,
+                "proof_id": payload["proof_id"],
+                "source_binding_digest": source_binding,
+                "manifest_digests": [],
+            }
+        else:
+            index_payload = _json_object_bytes(index_bytes, label="proof archive index")
+            expected_index_keys = {
+                "schema_version",
+                "proof_id",
+                "source_binding_digest",
+                "manifest_digests",
+            }
+            _require_exact_keys(index_payload, expected_index_keys, label="proof archive index")
+            if (
+                index_payload["schema_version"] != 1
+                or index_payload["proof_id"] != payload["proof_id"]
+                or index_payload["source_binding_digest"] != source_binding
+                or not isinstance(index_payload["manifest_digests"], list)
+                or any(
+                    not isinstance(item, str) or len(item) != 64
+                    for item in index_payload["manifest_digests"]
+                )
+                or len(index_payload["manifest_digests"])
+                != len(set(index_payload["manifest_digests"]))
+            ):
+                raise ManifestRefused("immutable proof archive index authority is invalid")
+
+        indexed_digests = index_payload["manifest_digests"]
+        for indexed_digest in indexed_digests:
+            indexed_name = f"{indexed_digest}.json"
+            indexed_bytes = _read_output(parent_fd, indexed_name, checker=checker)
+            if indexed_bytes is None:
+                raise ManifestRefused(
+                    f"immutable proof archive leaf was deleted: {archive_path.parent / indexed_name}"
+                )
+            if hashlib.sha256(indexed_bytes).hexdigest() != indexed_digest:
+                raise ManifestRefused(
+                    f"immutable proof archive leaf was modified: {archive_path.parent / indexed_name}"
+                )
+
+        existing = _read_output(parent_fd, leaf_name, checker=checker)
+        if existing is not None:
+            if existing != serialized:
+                raise ManifestRefused(
+                    f"immutable proof archive collision or overwrite attempt: {relative}"
+                )
+            if manifest_digest not in indexed_digests:
+                raise ManifestRefused(f"immutable proof archive leaf is not indexed: {relative}")
+            _require_parent_identity(root, relative, parent_fd, checker=checker)
+            return archive_path, manifest_digest
+        if manifest_digest in indexed_digests:
+            raise ManifestRefused(f"immutable proof archive leaf was deleted: {relative}")
+
+        temporary_name = checker.HANDOFF_VALIDATION._write_output_temporary(
+            parent_fd, leaf_name, serialized
+        )
+        linked = False
+        index_published = False
         try:
-            os.link(temporary_path, archive_path)
-        except FileExistsError as error:
-            if not archive_path.is_file() or archive_path.read_bytes() != serialized:
+            _require_parent_identity(root, relative, parent_fd, checker=checker)
+            try:
+                os.link(
+                    temporary_name,
+                    leaf_name,
+                    src_dir_fd=parent_fd,
+                    dst_dir_fd=parent_fd,
+                    follow_symlinks=False,
+                )
+            except FileExistsError as error:
                 raise ManifestRefused(
                     f"immutable proof archive collision or overwrite attempt: {relative}"
                 ) from error
-        next_index = dict(index_payload)
-        next_index["manifest_digests"] = [*indexed_digests, manifest_digest]
-        serialized_index = (json.dumps(next_index, sort_keys=True, indent=2) + "\n").encode()
-        index_temporary: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                dir=archive_parent,
-                prefix=".index.json.",
-                suffix=".tmp",
-                delete=False,
-            ) as handle:
-                handle.write(serialized_index)
-                handle.flush()
-                os.fsync(handle.fileno())
-                index_temporary = Path(handle.name)
-            os.replace(index_temporary, index_path)
-            index_temporary = None
+            linked = True
+            next_index = dict(index_payload)
+            next_index["manifest_digests"] = [*indexed_digests, manifest_digest]
+            serialized_index = (json.dumps(next_index, sort_keys=True, indent=2) + "\n").encode()
+            index_temporary = checker.HANDOFF_VALIDATION._write_output_temporary(
+                parent_fd, "index.json", serialized_index
+            )
+            try:
+                os.replace(
+                    index_temporary,
+                    "index.json",
+                    src_dir_fd=parent_fd,
+                    dst_dir_fd=parent_fd,
+                )
+                index_published = True
+            finally:
+                if not index_published:
+                    os.unlink(index_temporary, dir_fd=parent_fd)
+            os.fsync(parent_fd)
+            _require_parent_identity(root, relative, parent_fd, checker=checker)
+        except BaseException:
+            if linked and not index_published:
+                os.unlink(leaf_name, dir_fd=parent_fd)
+                os.fsync(parent_fd)
+            raise
         finally:
-            if index_temporary is not None:
-                index_temporary.unlink(missing_ok=True)
-        directory_fd = os.open(archive_parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+            os.unlink(temporary_name, dir_fd=parent_fd)
     finally:
-        if temporary_path is not None:
-            temporary_path.unlink(missing_ok=True)
+        os.close(parent_fd)
     return archive_path, manifest_digest
 
 
@@ -790,13 +765,16 @@ def _publish_manifest_locked(
     paired_checkout: Path | None = None,
 ) -> tuple[Path, str, str]:
     root = root.resolve()
-    registry_path = registry_path.resolve()
-    schema_path = schema_path.resolve()
-    expected_registry_path = (root / "tools/ci/proof-authority.toml").resolve()
+    registry_path = Path(os.path.abspath(registry_path))
+    schema_path = Path(os.path.abspath(schema_path))
+    expected_registry_path = root / "tools/ci/proof-authority.toml"
     if registry_path != expected_registry_path:
         raise ManifestRefused(f"registry override is forbidden: expected {expected_registry_path}")
     checker = _load_checker()
-    registry = _read_toml(registry_path)
+    _, registry_bytes = _repo_bytes(
+        root, "tools/ci/proof-authority.toml", label="proof registry", checker=checker
+    )
+    registry = tomllib.loads(registry_bytes.decode("utf-8"))
     registry_findings = checker.check_registry(registry, root=root, path=registry_path)
     if registry_findings:
         rendered = "; ".join(finding.render() for finding in registry_findings)
@@ -813,11 +791,17 @@ def _publish_manifest_locked(
         raise ManifestRefused(
             f"proof_id {proof_id!r} is staged and cannot issue an authoritative manifest"
         )
-    expected_schema_path = (root / proof["artifact_schema"]).resolve()
+    expected_schema_path = root / proof["artifact_schema"]
     if schema_path != expected_schema_path:
         raise ManifestRefused(f"schema override is forbidden: expected {expected_schema_path}")
-    schema = _read_json_object(schema_path, label="manifest schema")
-    terminal = _read_json_object(terminal_input_path.resolve(), label="terminal input")
+    _, schema_bytes = _repo_bytes(
+        root, proof["artifact_schema"], label="manifest schema", checker=checker
+    )
+    schema = _json_object_bytes(schema_bytes, label="manifest schema")
+    terminal = _json_object_bytes(
+        _external_regular_bytes(terminal_input_path, label="terminal input", checker=checker),
+        label="terminal input",
+    )
     payload, output_path = build_manifest(
         root=root,
         proof=proof,
@@ -826,20 +810,16 @@ def _publish_manifest_locked(
         checker=checker,
         paired_checkout=paired_checkout,
     )
-    output_path.parent.mkdir(parents=True, exist_ok=True)
     serialized = (json.dumps(payload, sort_keys=True, indent=2) + "\n").encode()
-    temporary_path: Path | None = None
+    output_relative = output_path.relative_to(root).as_posix()
+    parent_fd = _open_output_parent(root, output_relative, checker=checker)
+    temporary_name: str | None = None
     try:
-        with tempfile.NamedTemporaryFile(
-            dir=output_path.parent,
-            prefix=f".{output_path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            handle.write(serialized)
-            handle.flush()
-            os.fsync(handle.fileno())
-            temporary_path = Path(handle.name)
+        prior_bytes = _read_output(parent_fd, output_path.name, checker=checker)
+        temporary_name = checker.HANDOFF_VALIDATION._write_output_temporary(
+            parent_fd, output_path.name, serialized
+        )
+        temporary_path = output_path.parent / temporary_name
         _validate_aggregate_issuance(
             root=root,
             registry=registry,
@@ -849,7 +829,7 @@ def _publish_manifest_locked(
             checker=checker,
             paired_checkout=paired_checkout,
         )
-        _validate_p00_issuance(root=root, proof=proof, payload=payload)
+        _validate_p00_issuance(root=root, proof=proof, payload=payload, checker=checker)
         findings = checker.check_manifest(
             payload,
             manifest_path=temporary_path,
@@ -868,22 +848,54 @@ def _publish_manifest_locked(
         if findings:
             rendered = "; ".join(finding.render() for finding in findings)
             raise ManifestRefused(f"semantic manifest validation failed: {rendered}")
+        _require_parent_identity(root, output_relative, parent_fd, checker=checker)
+        if _read_output(parent_fd, temporary_name, checker=checker) != serialized:
+            raise ManifestRefused("validated proof manifest temporary changed")
         archive_path, manifest_digest = _publish_immutable_archive(
             root=root,
             payload=payload,
             serialized=serialized,
             checker=checker,
         )
-        prior_bytes = output_path.read_bytes() if output_path.exists() else None
-        os.replace(temporary_path, output_path)
-        temporary_path = None
+        if _read_output(parent_fd, output_path.name, checker=checker) != prior_bytes:
+            raise ManifestRefused("proof current alias changed before publication")
+        _require_parent_identity(root, output_relative, parent_fd, checker=checker)
+        os.replace(
+            temporary_name,
+            output_path.name,
+            src_dir_fd=parent_fd,
+            dst_dir_fd=parent_fd,
+        )
+        temporary_name = None
         try:
-            installed_payload = _read_json_object(output_path, label="published proof manifest")
+            installed_bytes = _read_output(parent_fd, output_path.name, checker=checker)
+            if installed_bytes != serialized:
+                raise ManifestRefused(
+                    "published proof manifest bytes differ from validated payload"
+                )
+            if (
+                _repo_bytes(
+                    root, output_relative, label="published proof manifest", checker=checker
+                )[1]
+                != serialized
+            ):
+                raise ManifestRefused("published proof manifest path changed")
+            installed_payload = _json_object_bytes(
+                installed_bytes, label="published proof manifest"
+            )
             if installed_payload != payload:
                 raise ManifestRefused(
                     "published proof manifest bytes differ from validated payload"
                 )
-            if output_path.read_bytes() != archive_path.read_bytes():
+            if (
+                installed_bytes
+                != _repo_bytes(
+                    root,
+                    archive_path.relative_to(root).as_posix(),
+                    label="immutable proof archive",
+                    checker=checker,
+                )[1]
+            ):
                 raise ManifestRefused("published current alias differs from immutable archive")
             published_findings = checker.check_manifest(
                 installed_payload,
@@ -903,17 +915,17 @@ def _publish_manifest_locked(
             if published_findings:
                 rendered = "; ".join(finding.render() for finding in published_findings)
                 raise ManifestRefused(f"proof inputs changed at publication: {rendered}")
+            _require_parent_identity(root, output_relative, parent_fd, checker=checker)
         except BaseException:
-            _restore_prior_manifest(output_path, prior_bytes)
+            checker.HANDOFF_VALIDATION._restore_prior_output(
+                parent_fd, output_path.name, prior_bytes
+            )
             raise
-        directory_fd = os.open(output_path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+        os.fsync(parent_fd)
     finally:
-        if temporary_path is not None:
-            temporary_path.unlink(missing_ok=True)
+        if temporary_name is not None:
+            os.unlink(temporary_name, dir_fd=parent_fd)
+        os.close(parent_fd)
     return archive_path, manifest_digest, payload["status"]
 
 

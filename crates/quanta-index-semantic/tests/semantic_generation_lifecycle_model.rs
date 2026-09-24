@@ -64,7 +64,6 @@ struct RecordSpec {
 #[derive(Clone, Debug)]
 struct TombstoneSpec {
     owner: &'static str,
-    path: &'static str,
 }
 
 impl RecordSpec {
@@ -230,7 +229,6 @@ impl LifecycleModel {
                     .iter()
                     .map(|tombstone| {
                         tombstone_scope_with_semantic_owner_v1(
-                            tombstone.path,
                             SemanticCorpusKindV1::SymbolCard,
                             OwnerDocKind::Symbol,
                             tombstone.owner,
@@ -399,7 +397,6 @@ fn deterministic_generation_lifecycle_matches_reference_model() -> TestResult {
             }],
             tombstones: vec![TombstoneSpec {
                 owner: "symbol:Session::gamma",
-                path: "src/other.rs",
             }],
             seal: true,
         },
@@ -565,11 +562,6 @@ fn generated_lifecycle_trace(seed: u64, base: u64) -> Vec<LifecycleCommand> {
         replacements: vec![gamma],
         tombstones: vec![TombstoneSpec {
             owner: "symbol:Generated::beta",
-            path: if seed & 1 == 0 {
-                "src/generated_even.rs"
-            } else {
-                "src/generated_odd.rs"
-            },
         }],
         seal: true,
     });

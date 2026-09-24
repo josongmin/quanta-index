@@ -233,7 +233,6 @@ fn scv2_s02_owner_tombstone_removes_only_target_owner() -> TestResult {
             "batch:s02:tombstone-commit",
             Vec::new(),
             vec![tombstone_scope_with_semantic_owner_v1(
-                "src/session.rs",
                 SemanticCorpusKindV1::SymbolCard,
                 OwnerDocKind::Symbol,
                 "symbol:RuntimeSession::commit",

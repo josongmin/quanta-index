@@ -20,17 +20,17 @@ use quanta_index_contract::lex::{
 use quanta_index_contract::{
     ChunkId, ChunkRecord, FileContributorIdentityEntry, GenerationPin, GenerationSelector,
     HistoryOrderV1, HistoryQueryRequest, HybridSeedQueryRequest, ManifestGeneration, RepoId,
-    RepoMapActivateGenerationRequest, RepoMapChunkExactness, RepoMapChunkNode, RepoMapContainsEdge,
-    RepoMapDocType, RepoMapEdge, RepoMapExactnessSummary, RepoMapFileNode, RepoMapFocusSubjectDto,
-    RepoMapGraphCoverage, RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapNode,
-    RepoMapNodeRef, RepoMapOwnsChunkEdge, RepoMapQueryRequest, RepoMapRedactionState,
-    RepoMapSourceBundle, RepoMapSymbolNode, RevisionId, RuntimeCatalogIngestBatch,
-    RuntimeChangedRecord, RuntimeDocFacetRecord, RuntimeEdgeAuthorityRecord,
-    RuntimeMetadataQueryRequest, RuntimeSnapshotRecord, SearchCorpusGenerationIdentityV1,
-    SearchPlaneErrorCodeV2, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope,
-    SearchPlaneIngestIpcResponse, SearchPlaneIngestIpcResponseEnvelope, SearchPlaneTrackKind,
-    SemanticQueryRequest, StructuralQueryRequest, SymbolId, SymbolQueryRequest, TextQueryRequest,
-    TextQuerySyntax,
+    RepoMapActivateGenerationRequestV2, RepoMapChunkExactness, RepoMapChunkNode,
+    RepoMapContainsEdge, RepoMapDocType, RepoMapEdge, RepoMapExactnessSummary, RepoMapFileNode,
+    RepoMapFocusSubjectDto, RepoMapGraphCoverage, RepoMapGraphCoverageClass,
+    RepoMapItemIndexAvailability, RepoMapNode, RepoMapNodeRef, RepoMapOwnsChunkEdge,
+    RepoMapPublishBundleRequestV2, RepoMapQueryRequest, RepoMapRedactionState, RepoMapSourceBundle,
+    RepoMapSymbolNode, RevisionId, RuntimeCatalogIngestBatch, RuntimeChangedRecord,
+    RuntimeDocFacetRecord, RuntimeEdgeAuthorityRecord, RuntimeMetadataQueryRequest,
+    RuntimeSnapshotRecord, SearchCorpusGenerationIdentityV1, SearchPlaneErrorCodeV2,
+    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
+    SearchPlaneIngestIpcResponseEnvelope, SearchPlaneTrackKind, SemanticQueryRequest,
+    StructuralQueryRequest, SymbolId, SymbolQueryRequest, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_ipc::send_request;
 use quanta_index_sdk::{
@@ -177,7 +177,6 @@ fn dispatch_ingest(socket: &Path, payload: SearchPlaneIngestIpcRequest) -> TestR
         | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
         | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
         | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
         | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_) => Ok(()),
@@ -892,13 +891,10 @@ fn repo_map_bundle() -> Result<RepoMapSourceBundle, Box<dyn Error>> {
     })))
 }
 
-fn repo_map_activate_request() -> RepoMapActivateGenerationRequest {
-    RepoMapActivateGenerationRequest {
-        repo_id: repo(),
-        revision_id: revision(),
-        manifest_generation: generation(),
-        manifest_digest: "2".repeat(64),
-    }
+fn repo_map_activate_request() -> Result<RepoMapActivateGenerationRequestV2, Box<dyn Error>> {
+    Ok(RepoMapActivateGenerationRequestV2::for_bundle(
+        &repo_map_bundle()?,
+    )?)
 }
 
 fn repo_map_query_request() -> RepoMapQueryRequest {
@@ -1461,7 +1457,9 @@ fn sdk_publish_frontdoor_routes_ingest_batches() -> TestResult {
     let history_receipt = client.history().publish(&history_batch())?;
     let dirty_receipt = client.runtime().publish_dirty(&dirty_batch())?;
     let structural_receipt = client.structural().publish(&structural_batch()?)?;
-    let repo_map_receipt = client.repomap().publish(&repo_map_bundle()?)?;
+    let repo_map_receipt = client
+        .repomap()
+        .publish(&RepoMapPublishBundleRequestV2::new(repo_map_bundle()?)?)?;
 
     if lexical_receipt.generation != generation()
         || lexical_receipt.accepted_replace_scopes != 3
@@ -1487,11 +1485,41 @@ fn sdk_publish_frontdoor_routes_ingest_batches() -> TestResult {
     {
         return Err(format!("unexpected structural receipt: {structural_receipt:?}").into());
     }
-    if repo_map_receipt.repo_id != repo()
-        || repo_map_receipt.revision_id != revision()
-        || repo_map_receipt.manifest_generation != generation()
+    if repo_map_receipt.mutation.repo_id != repo()
+        || repo_map_receipt.mutation.revision_id != revision()
+        || repo_map_receipt.mutation.manifest_generation != generation()
     {
         return Err(format!("unexpected repo-map receipt: {repo_map_receipt:?}").into());
+    }
+
+    fixture.stop()
+}
+
+#[test]
+fn sdk_repomap_active_head_tracks_only_catalog_activation() -> TestResult {
+    let fixture = SdkFrontdoorRuntime::start()?;
+    let client = &fixture.client;
+
+    if client.repomap().active_head(repo(), revision())?.is_some() {
+        return Err("fresh RepoMap catalog unexpectedly has an active head".into());
+    }
+    let publish = client
+        .repomap()
+        .publish(&RepoMapPublishBundleRequestV2::new(repo_map_bundle()?)?)?;
+    if client.repomap().active_head(repo(), revision())?.is_some() {
+        return Err("RepoMap publish changed the active head".into());
+    }
+    let activation = client.repomap().activate(repo_map_activate_request()?)?;
+    let head = client
+        .repomap()
+        .active_head(repo(), revision())?
+        .ok_or("RepoMap activation has no catalog head")?;
+    if head.epoch().get() != activation.mutation.activation_epoch
+        || head.candidate_commitment().to_wire_string()
+            != activation.mutation.new_candidate_commitment
+        || activation.mutation.new_candidate_commitment != publish.mutation.new_candidate_commitment
+    {
+        return Err(format!("RepoMap catalog head diverges from receipts: {head:?}").into());
     }
 
     fixture.stop()
@@ -1504,14 +1532,33 @@ fn sdk_search_frontdoor_routes_lexical_semantic_hybrid_explain_and_repomap_truth
 
     let corpus_batch = lexical_batch()?;
     let _corpus_active = publish_and_activate_sdk_search_corpus(client, &corpus_batch)?;
-    let repo_map_receipt = client.repomap().publish(&repo_map_bundle()?)?;
-    if repo_map_receipt.manifest_generation != generation() {
+    let repo_map_receipt = client
+        .repomap()
+        .publish(&RepoMapPublishBundleRequestV2::new(repo_map_bundle()?)?)?;
+    if repo_map_receipt.mutation.manifest_generation != generation() {
         return Err(format!("unexpected repo-map publish ack: {repo_map_receipt:?}").into());
     }
 
-    let repo_map_activation = client.repomap().activate(repo_map_activate_request())?;
-    if repo_map_activation.manifest_generation != generation() {
+    if client.repomap().active_head(repo(), revision())?.is_some() {
+        return Err("RepoMap publish activated a head without an activation request".into());
+    }
+
+    let repo_map_activation = client.repomap().activate(repo_map_activate_request()?)?;
+    if repo_map_activation.mutation.manifest_generation != generation() {
         return Err(format!("unexpected repo-map activate ack: {repo_map_activation:?}").into());
+    }
+    let active = client
+        .repomap()
+        .active_head(repo(), revision())?
+        .ok_or("RepoMap activation did not expose a catalog head")?;
+    if active.epoch().get() != repo_map_activation.mutation.activation_epoch
+        || active.candidate_commitment().to_wire_string()
+            != repo_map_activation.mutation.new_candidate_commitment
+    {
+        return Err(format!(
+            "RepoMap active head does not match the activation receipt: {active:?}"
+        )
+        .into());
     }
 
     let lexical = wait_for_sdk_observation(

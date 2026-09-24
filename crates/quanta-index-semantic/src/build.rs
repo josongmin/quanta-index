@@ -56,8 +56,7 @@ use crate::layout::{
     COLUMN_MEMBERSHIP_CONTENT_DIGEST, COLUMN_MEMBERSHIP_MEMBER_COUNT,
     COLUMN_MEMBERSHIP_MEMBER_SYMBOL_ID, COLUMN_MEMBERSHIP_ORDINAL, COLUMN_MEMBERSHIP_OWNER_ID,
     COLUMN_MEMBERSHIP_OWNER_KIND, COLUMN_OWNER_ID, COLUMN_OWNER_KIND, COLUMN_RENDER_POLICY_DIGEST,
-    COLUMN_REPO_RELATIVE_PATH, COLUMN_VECTOR, TABLE_NAME, cluster_membership_schema,
-    dimension_to_i32, semantic_schema,
+    COLUMN_VECTOR, TABLE_NAME, cluster_membership_schema, dimension_to_i32, semantic_schema,
 };
 use crate::manifest::{
     ClusterMembershipSealV1, SemanticCorpusCoverageV1, SemanticManifest, SemanticRowSealV1,
@@ -470,14 +469,6 @@ fn semantic_scope_key_v1(corpus_kind: &str, owner_kind: &str, owner_id: &str) ->
     format!("{corpus_kind}\u{1f}{owner_kind}\u{1f}{owner_id}")
 }
 
-fn path_scope_key_v1(scope: &quanta_index_contract::SearchScopeKey) -> String {
-    format!(
-        "{:?}\u{1f}{}",
-        scope.doc_surface,
-        scope.repo_relative_path.as_str()
-    )
-}
-
 /// The scope authority of one streamed batch, checked window by window.
 ///
 /// The header's clear surfaces and tombstones are known before the first
@@ -486,11 +477,10 @@ fn path_scope_key_v1(scope: &quanta_index_contract::SearchScopeKey) -> String {
 /// scope before it, so a conflict is refused at the window that carries
 /// it. The rules are the ones the all-at-once validation applied: a
 /// surface is not cleared and replaced or tombstoned in one batch, an owner
-/// scope or path scope is not replaced and tombstoned in one batch, and no
+/// scope is not replaced and tombstoned in one batch, and no
 /// record id or owner scope is replaced twice.
 struct StreamScopeAuthorityV1 {
     clear_surfaces: BTreeSet<SearchScopeSurface>,
-    tombstone_path_keys: BTreeSet<String>,
     tombstone_semantic_keys: BTreeSet<String>,
     replace_semantic_keys: BTreeSet<String>,
     record_ids: BTreeSet<String>,
@@ -513,53 +503,35 @@ impl StreamScopeAuthorityV1 {
                 "semantic: clear surfaces must use canonical ascending order".to_string(),
             ));
         }
-        let mut tombstone_path_keys = BTreeSet::new();
         let mut tombstone_semantic_keys = BTreeSet::new();
         for tombstone in &header.mutations.tombstone_scopes {
-            if tombstone.scope.is_none() && tombstone.semantic_scope.is_none() {
+            let scope = &tombstone.semantic_scope;
+            if scope.owner_id.is_empty() {
                 return Err(CoreError::InvalidContract(
-                    "semantic: tombstone requires legacy path scope or semantic owner scope"
-                        .to_string(),
+                    "semantic: tombstone owner_id must not be empty".to_string(),
                 ));
             }
-            if let Some(scope) = tombstone.scope.as_ref() {
-                if clear_surfaces.contains(&scope.doc_surface) {
-                    return Err(CoreError::InvalidContract(format!(
-                        "semantic: surface {:?} cannot be cleared and tombstoned in one batch",
-                        scope.doc_surface
-                    )));
-                }
-                if !tombstone_path_keys.insert(path_scope_key_v1(scope)) {
-                    return Err(CoreError::InvalidContract(format!(
-                        "semantic: duplicate tombstone path scope {:?}",
-                        scope.repo_relative_path.as_str()
-                    )));
-                }
+            let surface =
+                SearchScopeSurface::for_semantic_owner_v1(scope.owner_kind, scope.corpus_kind);
+            if clear_surfaces.contains(&surface) {
+                return Err(CoreError::InvalidContract(format!(
+                    "semantic: surface {surface:?} cannot be cleared and tombstoned in one batch"
+                )));
             }
-            if let Some(scope) = tombstone.semantic_scope.as_ref() {
-                let surface =
-                    SearchScopeSurface::for_semantic_owner_v1(scope.owner_kind, scope.corpus_kind);
-                if clear_surfaces.contains(&surface) {
-                    return Err(CoreError::InvalidContract(format!(
-                        "semantic: surface {surface:?} cannot be cleared and tombstoned in one batch"
-                    )));
-                }
-                let key = semantic_scope_key_v1(
-                    scope.corpus_kind.as_code_str(),
-                    scope.owner_kind.as_code_str(),
-                    scope.owner_id.as_str(),
-                );
-                if !tombstone_semantic_keys.insert(key) {
-                    return Err(CoreError::InvalidContract(format!(
-                        "semantic: duplicate tombstone owner scope {:?}",
-                        scope.owner_id
-                    )));
-                }
+            let key = semantic_scope_key_v1(
+                scope.corpus_kind.as_code_str(),
+                scope.owner_kind.as_code_str(),
+                scope.owner_id.as_str(),
+            );
+            if !tombstone_semantic_keys.insert(key) {
+                return Err(CoreError::InvalidContract(format!(
+                    "semantic: duplicate tombstone owner scope {:?}",
+                    scope.owner_id
+                )));
             }
         }
         Ok(Self {
             clear_surfaces,
-            tombstone_path_keys,
             tombstone_semantic_keys,
             replace_semantic_keys: BTreeSet::new(),
             record_ids: BTreeSet::new(),
@@ -572,15 +544,6 @@ impl StreamScopeAuthorityV1 {
             return Err(CoreError::InvalidContract(format!(
                 "semantic: surface {:?} cannot be cleared and replaced in one batch",
                 scope.scope.doc_surface
-            )));
-        }
-        if self
-            .tombstone_path_keys
-            .contains(&path_scope_key_v1(&scope.scope))
-        {
-            return Err(CoreError::InvalidContract(format!(
-                "semantic: path scope {:?} cannot be replaced and tombstoned in one batch",
-                scope.scope.repo_relative_path.as_str()
             )));
         }
         let mut scope_semantic_keys = BTreeSet::new();
@@ -1006,18 +969,6 @@ fn semantic_scopes_for_replace_scope(
         .collect()
 }
 
-async fn delete_by_path(table: &lancedb::Table, path: &str) -> Result<(), CoreError> {
-    let predicate = format!(
-        "{COLUMN_REPO_RELATIVE_PATH} = {}",
-        crate::sql::quote_sql_string(path)
-    );
-    let _result = table
-        .delete(predicate.as_str())
-        .await
-        .map_err(|err| lancedb_err(&format!("delete predicate `{predicate}`"), err))?;
-    Ok(())
-}
-
 async fn delete_by_semantic_scope(
     table: &lancedb::Table,
     corpus_kind: &str,
@@ -1150,23 +1101,14 @@ async fn delete_tombstone_scope_rows(
     table: &lancedb::Table,
     scope: &SemanticTombstoneScope,
 ) -> Result<(), CoreError> {
-    if let Some(semantic_scope) = scope.semantic_scope.as_ref() {
-        return delete_by_semantic_scope(
-            table,
-            semantic_scope.corpus_kind.as_code_str(),
-            semantic_scope.owner_kind.as_code_str(),
-            semantic_scope.owner_id.as_str(),
-        )
-        .await;
-    }
-    // LEGACY-MIGRATION-ONLY: path tombstones remain openable while producers cut over
-    // to semantic owner/corpus-scoped deletes.
-    let legacy_scope = scope.scope.as_ref().ok_or_else(|| {
-        CoreError::InvalidContract(
-            "semantic: tombstone requires legacy path scope or semantic owner scope".to_string(),
-        )
-    })?;
-    delete_by_path(table, legacy_scope.repo_relative_path.as_str()).await
+    let semantic_scope = &scope.semantic_scope;
+    delete_by_semantic_scope(
+        table,
+        semantic_scope.corpus_kind.as_code_str(),
+        semantic_scope.owner_kind.as_code_str(),
+        semantic_scope.owner_id.as_str(),
+    )
+    .await
 }
 
 async fn delete_replace_scope_memberships(
@@ -1192,9 +1134,7 @@ async fn delete_tombstone_memberships(
     table: &lancedb::Table,
     scope: &SemanticTombstoneScope,
 ) -> Result<(), CoreError> {
-    let Some(semantic_scope) = scope.semantic_scope.as_ref() else {
-        return Ok(());
-    };
+    let semantic_scope = &scope.semantic_scope;
     if semantic_scope.corpus_kind != SemanticCorpusKindV1::ClusterCard {
         return Ok(());
     }

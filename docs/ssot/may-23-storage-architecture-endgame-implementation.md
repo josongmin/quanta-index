@@ -8,9 +8,10 @@ Status: `Canonical implementation plan for this repo (partially superseded — s
 > workspace** — generation/activation/readiness/delta-apply authority now lives
 > in the search plane's persisted authority stores
 > (`crates/quanta-index-search-plane/src/{ingest_dispatcher,readiness}.rs`);
-> (2) semantic derivation modes live in
-> `crates/quanta-index-search-plane/src/semantic_derive.rs`; default is
-> `SemanticSourcesWithLegacyFallback`, not legacy-only chunk text. Read the
+> (2) the typed-only semantic-source cutover targets one live derivation path,
+> with no derive-mode environment setting or chunk-text fallback. The prior
+> `SemanticSourcesWithLegacyFallback` description is historical; current dirty
+> source and producer qualification must be checked separately. Read the
 > `quanta-index-control` table rows below as historical plan context, not as
 > current live crates.
 

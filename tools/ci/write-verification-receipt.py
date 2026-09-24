@@ -10,6 +10,7 @@ import os
 import subprocess
 from pathlib import Path
 
+from nextest_events import NextestEvidenceError, parse_nextest
 from source_closure import ClosureError, load_and_verify
 
 
@@ -26,79 +27,19 @@ def _revision() -> str:
     if dirty:
         sample = ", ".join(dirty[:5])
         raise SystemExit(f"refusing verification receipt from dirty source: {sample}")
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     value = os.environ.get("GITHUB_SHA", "").strip()
-    if value:
-        return value
-    return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    if value and value != head:
+        raise SystemExit(f"GITHUB_SHA differs from checked-out HEAD: {value} != {head}")
+    return head
 
 
 def _nextest_evidence_summary(evidence: Path) -> tuple[str, int]:
-    digest = hashlib.sha256()
-    counts = {"ok": 0, "failed": 0, "ignored": 0, "timeout": 0}
-    suites_started = 0
-    suites_finished = 0
-    suites_passed = 0
-    with evidence.open("rb") as stream:
-        for line in stream:
-            digest.update(line)
-            try:
-                event = json.loads(line)
-            except (UnicodeDecodeError, json.JSONDecodeError) as error:
-                raise SystemExit(f"invalid nextest JSON evidence {evidence}: {error}") from error
-            if not isinstance(event, dict):
-                raise SystemExit(f"invalid nextest JSON event in {evidence}: expected an object")
-            if event.get("type") not in {"suite", "test"}:
-                raise SystemExit(f"unknown nextest event type in {evidence}: {event.get('type')!r}")
-            if event.get("type") == "suite":
-                outcome = event.get("event")
-                if outcome == "started":
-                    suites_started += 1
-                elif outcome == "ok":
-                    suites_finished += 1
-                    passed = event.get("passed")
-                    failed = event.get("failed")
-                    if (
-                        not isinstance(passed, int)
-                        or isinstance(passed, bool)
-                        or passed < 0
-                        or not isinstance(failed, int)
-                        or isinstance(failed, bool)
-                        or failed < 0
-                    ):
-                        raise SystemExit(f"nextest suite has invalid counts: {evidence}")
-                    if failed:
-                        raise SystemExit(f"nextest suite reports failures: {evidence}")
-                    suites_passed += passed
-                elif outcome == "failed":
-                    raise SystemExit(f"nextest suite failed: {evidence}")
-                else:
-                    raise SystemExit(f"unknown nextest suite outcome in {evidence}: {outcome!r}")
-            # Nextest emits a `started` and a terminal event for each test.
-            # Count only terminal outcomes, not both records for one test.
-            if event.get("type") == "test":
-                outcome = event.get("event")
-                if isinstance(outcome, str) and outcome in counts:
-                    counts[outcome] += 1
-                elif outcome != "started":
-                    raise SystemExit(f"unknown nextest test outcome in {evidence}: {outcome!r}")
-    if counts["failed"] or counts["timeout"]:
-        raise SystemExit(
-            f"nextest evidence contains failed or timed-out tests: {evidence} "
-            f"(failed={counts['failed']}, timeout={counts['timeout']})"
-        )
-    if suites_started == 0 or suites_finished != suites_started:
-        raise SystemExit(
-            f"nextest evidence has incomplete suite events: {evidence} "
-            f"(started={suites_started}, finished={suites_finished})"
-        )
-    if suites_passed != counts["ok"]:
-        raise SystemExit(
-            f"nextest suite/test pass counts disagree: {evidence} "
-            f"(suite={suites_passed}, test={counts['ok']})"
-        )
-    if not counts["ok"]:
-        raise SystemExit(f"nextest evidence has no passing tests: {evidence}")
-    return digest.hexdigest(), sum(counts.values())
+    try:
+        parsed = parse_nextest(evidence)
+    except NextestEvidenceError as error:
+        raise SystemExit(f"{error}: {evidence}") from error
+    return parsed.sha256, parsed.selected
 
 
 def _summary_json_evidence_summary(evidence: Path) -> tuple[str, int]:

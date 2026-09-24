@@ -75,7 +75,7 @@ pub use quanta_index_contract::{
     MetricGaugeV1, MetricHistogramV1, MetricsDiagnosticsV1, MetricsSnapshotV1, OwnerDocKind,
     QuarantineDiscardAck, QuarantineDiscardOutcomeDtoV1, QuarantineInventoryV1, QuarantineTargetV1,
     QuarantinedGenerationEntryV1, QuarantinedRepoMapFileEntryV1, RepoId,
-    RepoMapActivateGenerationRequest, RepoMapCallEdge, RepoMapChunkNode, RepoMapContainsEdge,
+    RepoMapCallEdge, RepoMapChunkNode, RepoMapContainsEdge,
     RepoMapDependsOnEdge, RepoMapEdge, RepoMapFileNode, RepoMapGraphCoverage, RepoMapImportEdge,
     RepoMapModuleId, RepoMapModuleNode, RepoMapMutationAck, RepoMapNode, RepoMapNodeRef,
     RepoMapOwnsChunkEdge, RepoMapQueryRequest, RepoMapQueryResponse, RepoMapSourceBundle,

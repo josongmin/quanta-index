@@ -17,8 +17,9 @@ use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 
 use quanta_index_contract::{
-    BatchIngestMode, EmbeddingRecord, GenerationSnapshot, ManifestGeneration, RepoId, RevisionId,
-    SearchPlaneTrackKind, SemanticReplaceScope,
+    BatchIngestMode, EmbeddingRecord, GenerationSnapshot, ManifestGeneration, OwnerDocKind, RepoId,
+    RevisionId, SearchPlaneTrackKind, SemanticCorpusKindV1, SemanticReplaceScope,
+    SemanticSourceScopeKeyV1, SemanticTombstoneScope,
 };
 use quanta_index_core::{
     CoreError, DenseIndexBuildV1, DenseIndexEffortV1, DenseIndexSegmentBuildV1,
@@ -109,7 +110,7 @@ fn seal_with_scopes(
     generation: ManifestGeneration,
     base: Option<ManifestGeneration>,
     scopes: Vec<SemanticReplaceScope>,
-    tombstoned_paths: &[&str],
+    tombstones: &[SemanticTombstoneScope],
 ) -> TestResult {
     let mut batch = sealed_replace_batch_v1(
         repo(),
@@ -120,10 +121,7 @@ fn seal_with_scopes(
         dimension_u32()?,
     );
     batch.replace_scopes = scopes;
-    batch.tombstone_scopes = tombstoned_paths
-        .iter()
-        .map(|path| tombstone_scope_v1(path))
-        .collect();
+    batch.tombstone_scopes = tombstones.to_vec();
     if let Some(base) = base {
         batch.base_generation = Some(base);
         batch.mode = BatchIngestMode::Delta;
@@ -391,8 +389,17 @@ fn a_delta_that_shrinks_below_the_floor_drops_the_inherited_index() -> TestResul
         ],
         &[],
     )?;
-    // 300 rows sealed an index; the delta tombstones one path and holds 200.
-    seal_with_scopes(&adapter, delta, Some(base), Vec::new(), &["src/drop.rs"])?;
+    // 300 rows sealed an index; the delta deletes the 100 drop owners and holds 200.
+    let tombstones = (200..300)
+        .map(|seed| {
+            tombstone_scope_v1(SemanticSourceScopeKeyV1 {
+                corpus_kind: SemanticCorpusKindV1::RawCodeFallback,
+                owner_kind: OwnerDocKind::Chunk,
+                owner_id: format!("owner-drop-{seed}"),
+            })
+        })
+        .collect::<Vec<_>>();
+    seal_with_scopes(&adapter, delta, Some(base), Vec::new(), &tombstones)?;
 
     let delta_lane = adapter.open(&repo(), &revision(), delta)?.dense_lane();
     if delta_lane != sealed_exact_lane() {

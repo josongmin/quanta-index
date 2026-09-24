@@ -17,7 +17,7 @@ use std::{
     collections::BTreeMap,
     fmt::Write as _,
     path::{Path, PathBuf},
-    sync::{Arc, RwLock},
+    sync::{Arc, Mutex, RwLock},
 };
 
 use quanta_index_contract::{
@@ -25,13 +25,14 @@ use quanta_index_contract::{
     RepositoryRevisionIdentityV1, RevisionId,
 };
 use quanta_index_contract::{
-    RepoMapActivateGenerationRequest, RepoMapActivateGenerationRequestV2, RepoMapMutationAck,
-    RepoMapMutationPhaseV2, RepoMapPublishBundleRequestV2, RepoMapSourceBundle,
-    RepoMapTerminalReceiptV2, canonical_repo_map_source_bundle_digest_v2,
+    RepoMapActivateGenerationRequestV2, RepoMapActiveHeadRequestV2,
+    RepoMapActiveHeadResponseV2, RepoMapExpectedActiveV2, RepoMapMutationAck, RepoMapMutationPhaseV2,
+    RepoMapPublishBundleRequestV2, RepoMapSourceBundle, RepoMapTerminalReceiptV2,
+    canonical_repo_map_source_bundle_digest_v2,
 };
 use quanta_index_core::{
     CoreError, QuarantineDiscardOutcomeV1, QuarantinedRepoMapFileV1, RepoMapBundleIngestPort,
-    RepoMapGenerationActivatePort, RepoMapMutationReceiptV1, RepoMapOpenReportV1,
+    RepoMapGenerationActivatePort, RepoMapMutationCommit, RepoMapOpenReportV1,
     RepoMapQuarantinePort,
 };
 use quanta_index_core::{
@@ -42,10 +43,10 @@ use quanta_index_core::{
 use quanta_index_catalog::SqliteCatalog;
 
 use crate::materializer::{
-    CandidateProjectionMetaV1, RepoMapGraphCompiler, decode_compiled_payload,
+    CandidateProjectionMeta, RepoMapGraphCompiler, decode_compiled_payload,
     snapshot_from_projection,
 };
-use crate::model::{RepoMapIndexedSnapshot, RepoMapSnapshot};
+use crate::model::RepoMapIndexedSnapshot;
 use crate::object_store::{
     AFTER_CATALOG_COMMIT, LEGACY_V1_DIR_NAMES, RepoMapObjectStore, exit_at_crash_boundary,
 };
@@ -58,6 +59,10 @@ pub struct RepoMapGenerationStore {
     objects: Option<RepoMapObjectStore>,
     snapshots: RwLock<BTreeMap<RepoMapStoreKeyV1, Arc<RepoMapIndexedSnapshot>>>,
     activated: RwLock<BTreeMap<(String, String), ActivatedHeadV1>>,
+    /// Serializes catalog activation and its in-process projection. The
+    /// catalog remains durable authority; this gate only prevents an older
+    /// completed writer from projecting over a newer catalog transaction.
+    activation_commit_gate: Mutex<()>,
     /// The pin table: how many pinned read views hold each logical
     /// generation (S21-05). Physical GC and republish defer to it.
     pins: Arc<RwLock<BTreeMap<RepoMapStoreKeyV1, u64>>>,
@@ -100,7 +105,7 @@ fn legacy_root_refusal(root: &Path) -> CoreError {
         code: quanta_index_contract::SearchPlaneErrorCodeV2::StateRootFormatUnsupported,
         message: format!(
             "repomap store refuses to mutate legacy layout root {} ({} directories present); \
-             the P10 offline importer owns legacy artifacts",
+             no legacy importer is available; rebuild from producer authority",
             root.display(),
             LEGACY_V1_DIR_NAMES.join("/")
         ),
@@ -148,6 +153,7 @@ impl RepoMapGenerationStore {
                     objects: None,
                     snapshots: RwLock::new(BTreeMap::new()),
                     activated: RwLock::new(BTreeMap::new()),
+                    activation_commit_gate: Mutex::new(()),
                     pins: Arc::new(RwLock::new(BTreeMap::new())),
                 },
                 report,
@@ -160,6 +166,7 @@ impl RepoMapGenerationStore {
             objects: Some(objects),
             snapshots: RwLock::new(BTreeMap::new()),
             activated: RwLock::new(BTreeMap::new()),
+            activation_commit_gate: Mutex::new(()),
             pins: Arc::new(RwLock::new(BTreeMap::new())),
         };
         store.reconcile(&mut report)?;
@@ -203,7 +210,7 @@ impl RepoMapGenerationStore {
             match objects.verify(digest, &candidate.candidate_commitment) {
                 Ok(envelope) => {
                     let meta =
-                        CandidateProjectionMetaV1::from_json(candidate.projection_meta.as_str())?;
+                        CandidateProjectionMeta::from_json(candidate.projection_meta.as_str())?;
                     let (_graph, projection) =
                         decode_compiled_payload(envelope.compiled_payload())?;
                     let snapshot = snapshot_from_projection(
@@ -410,18 +417,11 @@ impl RepoMapGenerationStore {
         Ok(())
     }
 
-    pub fn ingest_bundle(
+    fn commit_bundle(
         &self,
         bundle: &RepoMapSourceBundle,
-    ) -> Result<RepoMapMutationReceiptV1, CoreError> {
-        self.ingest_bundle_with_meta_v2(bundle, &CandidateProjectionMetaV1::from_bundle(bundle))
-    }
-
-    fn ingest_bundle_with_meta_v2(
-        &self,
-        bundle: &RepoMapSourceBundle,
-        meta: &CandidateProjectionMetaV1,
-    ) -> Result<RepoMapMutationReceiptV1, CoreError> {
+        meta: &CandidateProjectionMeta,
+    ) -> Result<RepoMapMutationCommit, CoreError> {
         if bundle.manifest_digest.trim().is_empty() {
             return Err(CoreError::InvalidContract(
                 "repomap ingest: manifest_digest must not be empty".to_string(),
@@ -549,7 +549,7 @@ impl RepoMapGenerationStore {
             )));
         }
         let meta =
-            CandidateProjectionMetaV1::from_bundle_with_source_digest_v2(&request.bundle, computed);
+            CandidateProjectionMeta::from_bundle_with_source_digest(&request.bundle, computed);
         let objects = self
             .objects
             .as_ref()
@@ -562,7 +562,7 @@ impl RepoMapGenerationStore {
             // A terminal ACK may be lost after the catalog commit. Resolve an
             // exact replay from durable custody before compilation or sealing;
             // a different request for this logical key must not do work first.
-            if CandidateProjectionMetaV1::from_json(&existing.projection_meta)? != meta
+            if CandidateProjectionMeta::from_json(&existing.projection_meta)? != meta
                 || existing.projection_meta != meta.to_json()?
             {
                 return Err(CoreError::Typed {
@@ -616,7 +616,7 @@ impl RepoMapGenerationStore {
                 replay,
             ));
         }
-        let receipt = self.ingest_bundle_with_meta_v2(&request.bundle, &meta)?;
+        let receipt = self.commit_bundle(&request.bundle, &meta)?;
         self.validate_published_candidate_custody_v2(
             &request.bundle,
             request.source_bundle_digest.as_str(),
@@ -652,12 +652,12 @@ impl RepoMapGenerationStore {
                     "repomap V2 ingest: candidate disappeared after durable seal".to_string(),
                 )
             })?;
-        let meta = CandidateProjectionMetaV1::from_json(candidate.projection_meta.as_str())?;
-        if meta.manifest_digest.as_deref() != Some(bundle.manifest_digest.as_str())
+        let meta = CandidateProjectionMeta::from_json(candidate.projection_meta.as_str())?;
+        if meta.manifest_digest != bundle.manifest_digest
             || meta.snapshot_id != bundle.snapshot_id
             || meta.projection_version != bundle.projection_version
             || meta.authority_digest != bundle.authority_digest
-            || meta.source_bundle_digest.as_deref() != Some(source_bundle_digest)
+            || meta.source_bundle_digest != source_bundle_digest
         {
             return Err(CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::CandidateCommitmentConflict,
@@ -672,26 +672,17 @@ impl RepoMapGenerationStore {
         Ok(())
     }
 
-    /// Insert a snapshot without a sealed candidate.
-    ///
-    /// Memory-only and refused on persisted stores: without a sealed
-    /// candidate there is no catalog row to publish under, and the
-    /// registry is a cache of durable rows, never an authority.
-    pub fn insert_snapshot(&self, _snapshot: RepoMapSnapshot) -> Result<(), CoreError> {
-        Err(CoreError::InvalidContract(
-            "repomap store: insert_snapshot is gone; publish seals a candidate through the \
-             catalog instead"
-                .to_string(),
-        ))
-    }
-
     /// Activate one generation for its repo and revision under a
     /// content-bound CAS: the sealed object at the catalog row's address
     /// must verify and its exact commitment becomes the CAS token.
-    pub fn activate_generation(
+    fn commit_activation(
         &self,
-        request: &RepoMapActivateGenerationRequest,
-    ) -> Result<RepoMapMutationReceiptV1, CoreError> {
+        request: &RepoMapActivateGenerationRequestV2,
+    ) -> Result<RepoMapMutationCommit, CoreError> {
+        let _commit_guard = self
+            .activation_commit_gate
+            .lock()
+            .map_err(|err| storage_poisoned("activation commit gate", &err))?;
         if request.manifest_digest.trim().is_empty() {
             return Err(CoreError::InvalidContract(
                 "repomap activate: manifest_digest must not be empty".to_string(),
@@ -741,6 +732,7 @@ impl RepoMapGenerationStore {
             request.revision_id.as_str(),
             request.manifest_generation.get(),
             commitment.as_bytes(),
+            request.expected_active.as_ref(),
         )?;
         // Registry publish after the commit; rebuild from the object when
         // the snapshot is not resident yet (e.g. restart then activate a
@@ -757,7 +749,7 @@ impl RepoMapGenerationStore {
                 .map_err(|err| storage_poisoned("registry", &err))?;
             if let std::collections::btree_map::Entry::Vacant(entry) = guard.entry(key) {
                 let meta =
-                    CandidateProjectionMetaV1::from_json(candidate_row.projection_meta.as_str())?;
+                    CandidateProjectionMeta::from_json(candidate_row.projection_meta.as_str())?;
                 let (_graph, projection) = decode_compiled_payload(envelope.compiled_payload())?;
                 let snapshot = snapshot_from_projection(
                     &request.repo_id,
@@ -769,17 +761,9 @@ impl RepoMapGenerationStore {
                 let _prior = entry.insert(Arc::new(RepoMapIndexedSnapshot::new(snapshot)));
             }
         }
-        if outcome.replayed {
-            return Ok(receipt(
-                outcome
-                    .prior_candidate_commitment
-                    .map(CandidateCommitmentV1::from_bytes),
-                commitment,
-                outcome.epoch,
-                outcome.terminal_sequence,
-                true,
-            ));
-        }
+        // A replay may follow a catalog commit whose in-process projection
+        // was not installed yet. Both fresh and replayed outcomes must
+        // project the same durable head before a successful ACK is returned.
         {
             let mut activated = self
                 .activated
@@ -804,7 +788,7 @@ impl RepoMapGenerationStore {
             commitment,
             outcome.epoch,
             outcome.terminal_sequence,
-            false,
+            outcome.replayed,
         ))
     }
 
@@ -812,7 +796,11 @@ impl RepoMapGenerationStore {
         &self,
         request: &RepoMapActivateGenerationRequestV2,
     ) -> Result<RepoMapTerminalReceiptV2, CoreError> {
-        let identity = &request.request_v1;
+        let _objects = self
+            .objects
+            .as_ref()
+            .ok_or_else(|| legacy_root_refusal(&self.root))?;
+        let identity = request;
         let candidate = self
             .catalog
             .repomap_candidate_row(
@@ -828,17 +816,9 @@ impl RepoMapGenerationStore {
                     identity.manifest_generation.get()
                 ))
             })?;
-        let meta = CandidateProjectionMetaV1::from_json(candidate.projection_meta.as_str())?;
-        let durable_manifest_digest = meta.manifest_digest.clone().ok_or_else(|| {
-            CoreError::InvalidContract(
-                "repomap V2 activate: candidate predates strong manifest custody".to_string(),
-            )
-        })?;
-        let durable_source_digest = meta.source_bundle_digest.clone().ok_or_else(|| {
-            CoreError::InvalidContract(
-                "repomap V2 activate: candidate predates strong source-bundle custody".to_string(),
-            )
-        })?;
+        let meta = CandidateProjectionMeta::from_json(candidate.projection_meta.as_str())?;
+        let durable_manifest_digest = meta.manifest_digest.clone();
+        let durable_source_digest = meta.source_bundle_digest.clone();
         if durable_manifest_digest != identity.manifest_digest
             || meta.snapshot_id != request.snapshot_id
             || meta.projection_version != request.projection_version
@@ -849,7 +829,7 @@ impl RepoMapGenerationStore {
                 "repomap V2 activate: request axes differ from the sealed candidate".to_string(),
             ));
         }
-        let receipt = self.activate_generation(identity)?;
+        let receipt = self.commit_activation(identity)?;
         Ok(RepoMapTerminalReceiptV2 {
             phase: RepoMapMutationPhaseV2::Activate,
             mutation: mutation_ack_v1(identity, receipt),
@@ -1049,6 +1029,29 @@ impl RepoMapGenerationStore {
         Ok(guard.get(&key).map(|head| head.manifest_generation))
     }
 
+    /// Resolve the exact durable RepoMap head for an explicit activation CAS.
+    /// The in-process `activated` map is a query projection, not this oracle.
+    pub fn active_head_token(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+    ) -> Result<Option<RepoMapExpectedActiveV2>, CoreError> {
+        let row = self
+            .catalog
+            .repomap_activation_row(repo_id.as_str(), revision_id.as_str())?;
+        row.filter(|head| head.active)
+            .map(|head| {
+                let epoch = std::num::NonZeroU64::new(head.epoch).ok_or_else(|| {
+                    CoreError::Storage("repomap active catalog row has zero epoch".to_string())
+                })?;
+                Ok(RepoMapExpectedActiveV2::new(
+                    epoch,
+                    CandidateCommitmentV1::from_bytes(head.candidate_commitment),
+                ))
+            })
+            .transpose()
+    }
+
     /// The generations the registry holds for `repo`/`revision`, ascending.
     pub fn resident_generations_for(
         &self,
@@ -1084,8 +1087,8 @@ fn receipt(
     epoch: u64,
     terminal_sequence: i64,
     replayed: bool,
-) -> RepoMapMutationReceiptV1 {
-    RepoMapMutationReceiptV1 {
+) -> RepoMapMutationCommit {
+    RepoMapMutationCommit {
         prior_candidate_commitment: prior.map(CandidateCommitmentV1::to_wire_string),
         new_candidate_commitment: new.to_wire_string(),
         activation_epoch: epoch,
@@ -1095,8 +1098,8 @@ fn receipt(
 }
 
 fn mutation_ack_v1(
-    identity: &RepoMapActivateGenerationRequest,
-    receipt: RepoMapMutationReceiptV1,
+    identity: &RepoMapActivateGenerationRequestV2,
+    receipt: RepoMapMutationCommit,
 ) -> RepoMapMutationAck {
     RepoMapMutationAck {
         repo_id: identity.repo_id.clone(),
@@ -1113,7 +1116,7 @@ fn mutation_ack_v1(
 fn terminal_publish_receipt_v2(
     bundle: &RepoMapSourceBundle,
     source_bundle_digest: String,
-    receipt: RepoMapMutationReceiptV1,
+    receipt: RepoMapMutationCommit,
 ) -> RepoMapTerminalReceiptV2 {
     RepoMapTerminalReceiptV2 {
         phase: RepoMapMutationPhaseV2::Publish,
@@ -1140,13 +1143,6 @@ fn terminal_publish_receipt_v2(
 
 impl RepoMapBundleIngestPort for RepoMapGenerationStore {
     fn ingest_bundle(
-        &self,
-        bundle: &RepoMapSourceBundle,
-    ) -> Result<RepoMapMutationReceiptV1, CoreError> {
-        Self::ingest_bundle(self, bundle)
-    }
-
-    fn ingest_bundle_v2(
         &self,
         request: &RepoMapPublishBundleRequestV2,
     ) -> Result<RepoMapTerminalReceiptV2, CoreError> {
@@ -1233,14 +1229,18 @@ impl RepoMapQuarantinePort for RepoMapGenerationStore {
 }
 
 impl RepoMapGenerationActivatePort for RepoMapGenerationStore {
-    fn activate_generation(
+    fn active_head(
         &self,
-        request: &RepoMapActivateGenerationRequest,
-    ) -> Result<RepoMapMutationReceiptV1, CoreError> {
-        Self::activate_generation(self, request)
+        request: &RepoMapActiveHeadRequestV2,
+    ) -> Result<RepoMapActiveHeadResponseV2, CoreError> {
+        Ok(RepoMapActiveHeadResponseV2 {
+            repo_id: request.repo_id.clone(),
+            revision_id: request.revision_id.clone(),
+            active: self.active_head_token(&request.repo_id, &request.revision_id)?,
+        })
     }
 
-    fn activate_generation_v2(
+    fn activate_generation(
         &self,
         request: &RepoMapActivateGenerationRequestV2,
     ) -> Result<RepoMapTerminalReceiptV2, CoreError> {

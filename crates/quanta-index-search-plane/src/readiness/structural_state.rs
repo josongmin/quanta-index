@@ -4,7 +4,7 @@
 //! retain superseded epoch snapshots at the cost of the deltas alone
 //! (QI-BB-020 W2); see `history_state`.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fmt;
 
 use imbl::OrdMap;
@@ -16,7 +16,6 @@ use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
-use crate::readiness::keys::{AuthorityKey, TrackAuthorityKey};
 use crate::readiness::serde_support::impl_struct_serde;
 use crate::readiness::track_state::TrackAuthorityState;
 
@@ -213,11 +212,6 @@ impl StructuralAuthorityState {
     }
 }
 
-#[derive(Clone, Debug, Default)]
-pub(super) struct StructuralAuthoritySnapshot {
-    pub(super) entries: BTreeMap<AuthorityKey, StructuralAuthorityState>,
-    pub(super) tracks: BTreeMap<TrackAuthorityKey, TrackAuthorityState>,
-}
 impl_struct_serde!(StructuralStateMeta {
     seal_requested: bool,
 });
@@ -226,11 +220,6 @@ impl_struct_serde!(StructuralAuthorityState {
     chunks: OrdMap<ChunkId, ChunkRecord>,
     parse_trees: OrdMap<ChunkId, ParseTreeRecord>,
     seal_requested: bool,
-});
-
-impl_struct_serde!(StructuralAuthoritySnapshot {
-    entries: BTreeMap<AuthorityKey, StructuralAuthorityState>,
-    tracks: BTreeMap<TrackAuthorityKey, TrackAuthorityState>,
 });
 
 /// What one structural batch changes: parse trees removed and written,

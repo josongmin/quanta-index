@@ -1,6 +1,10 @@
 # May 28 LanceDB Adoption Plan
 
 Status: `closed` (lancedb rewrite + R1–R3 hardening landed, 2026-05-31)
+Historical packet: its legacy-journal importer instructions were superseded by
+the 2026-09-24 prerelease breaking cutover. Current boot refuses old journals;
+there is no `migrate-state` success path. See
+[the operator runbook](../../operator/state-cutover-runbook.md).
 Date: `2026-05-28`
 Scope: replace the current semantic `journal.cbor` plus boot-time full replay
 path with a persisted Lance-family semantic backend while preserving

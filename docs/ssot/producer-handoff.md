@@ -17,8 +17,9 @@ Current-tree note (2026-05-27):
 - semantic query/public SDK truth has also changed: public semantic publish is
   removed, semantic query/hybrid are live query surfaces, and semantic corpus
   derivation happens inside `searchd` from typed semantic sources; default
-  derivation is `SemanticSourcesWithLegacyFallback` with env override via
-  `QUANTA_INDEX_SEMANTIC_DERIVE_MODE`
+  the intended cutover requires producer-authored typed semantic sources and
+  removes the derive-mode environment setting and chunk-text fallback;
+  this archive does not establish current runtime or cross-repo qualification
 
 This is a historical archive of the old producer/search channel contract that
 was used to reason about [LEX-07](../plans/may-24-lexical-indexing-sourcegraph/tickets/LEX-07.md), [RT-01](../plans/may-24-lexical-indexing-sourcegraph/tickets/RT-01.md), and [STR-01](../plans/may-24-lexical-indexing-sourcegraph/tickets/STR-01.md). It captures the prior 9-op channel framing and the 11 AMB-PROD-* ambiguity resolutions that predated the typed-batch UDS cutover.
@@ -67,13 +68,15 @@ PublishStructuralBatch}` plus the persisted authority stores in
 
 The following rule, locked in [channel-architecture.md §3.1](channel-architecture.md), governs every op below.
 
-> **Authorship rule (current tree):** the producer in `semantica-codegraph-v2`
+> **Authorship rule (typed-only cutover target):** the producer in `semantica-codegraph-v2`
 > authors chunk/symbol/commit/parse-tree/structural/history/dirty handoff
-> payloads and may publish typed semantic-source replace/tombstone scopes. The
+> payloads and, under the typed-only cutover, publishes typed semantic-source
+> replace/tombstone scopes or intentional empty semantic deltas. The wire
+> does not independently attest empty-list coverage; producer proof is required. The
 > search plane validates those sources and derives embeddings from their
-> rendered text via `semantic_derive`. Default derivation is
-> `SemanticSourcesWithLegacyFallback`; `legacy_all_chunk` remains an explicit
-> migration mode via `QUANTA_INDEX_SEMANTIC_DERIVE_MODE`. Producer-authored `EmbeddingRecord`/`UpsertEmbedding`
+> rendered text via `semantic_derive`. The target live path has no derive-mode
+> environment setting or legacy chunk-text fallback. Producer-authored
+> `RawCodeFallback` is a typed source. `EmbeddingRecord`/`UpsertEmbedding`
 > language is historical archive material only; it is not the current serving
 > contract.
 
@@ -84,7 +87,7 @@ The following rule, locked in [channel-architecture.md §3.1](channel-architectu
 | Search plane reads `*.rs` / `*.py` source bytes | any adapter crate | violates [channel-architecture.md §0](channel-architecture.md) out-of-scope; collapses producer/search split. |
 | Search plane shells out to `git log`, `git rev-parse`, `git diff` | history adapter | violates authorship rule; producer is git authority. |
 | Search plane runs `tree-sitter` against source | structural / symbol adapters | violates authorship rule; producer ships parse trees. |
-| Producer ships ready-made semantic vectors for serving | semantic adapter | violates the current dense-owner rule; live semantic vectors are derived by the search plane from typed semantic sources (or the explicit legacy chunk fallback). |
+| Producer ships ready-made semantic vectors for serving | semantic adapter | violates the dense-owner rule; live semantic vectors are derived by the search plane from typed semantic sources. |
 | Heuristic best-effort "fill-in" when the producer record is absent | any adapter | violates [../../CLAUDE.md](../../CLAUDE.md) "no heuristic authority when the real authority is absent"; must surface typed `NotReady` instead. |
 | A second producer→search ingress channel (e.g. an `apply_changes` UDS IPC) | any | violates [channel-architecture.md §11 rule 6](channel-architecture.md) — `BundleChannelPublisher::publish` is the only ingress. |
 

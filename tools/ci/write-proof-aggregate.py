@@ -11,7 +11,6 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType
@@ -42,26 +41,6 @@ def _load_checker(path: Path = CHECKER_PATH) -> ModuleType:
     return module
 
 
-def _read_toml(path: Path) -> dict[str, Any]:
-    with path.open("rb") as handle:
-        value = tomllib.load(handle)
-    if not isinstance(value, dict):
-        raise AggregateRefused("proof registry root must be a table")
-    return value
-
-
-def _read_json(path: Path) -> Any:
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _manifest_status(
     *,
     root: Path,
@@ -75,14 +54,21 @@ def _manifest_status(
     if proof.get("authority_state") != "executable":
         return "BLOCKED", None, None
     manifest_path = root / proof["artifact"]
-    if not manifest_path.is_file():
-        return "NOT_RUN", None, None
-    digest = _sha256(manifest_path)
     try:
-        payload = _read_json(manifest_path)
-        schema = _read_json(root / proof["artifact_schema"])
-    except (OSError, json.JSONDecodeError):
-        return "FAILED", digest, None
+        present = checker.HANDOFF_VALIDATION._repo_entry_present_no_follow(
+            root, proof["artifact"], label="proof manifest"
+        )
+    except (OSError, ValueError):
+        return "FAILED", None, None
+    if not present:
+        return "NOT_RUN", None, None
+    try:
+        manifest_bytes = checker._payload_bytes(root, proof["artifact"], label="proof manifest")
+        digest = hashlib.sha256(manifest_bytes).hexdigest()
+        payload = json.loads(manifest_bytes)
+        schema = checker._payload_json(root, proof["artifact_schema"], label="proof schema")
+    except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        return "FAILED", None, None
     repository = proof.get("paired_repository")
     paired_checkout = paired_checkouts.get(repository) if isinstance(repository, str) else None
     bound_source = checker._cached_proof_source_snapshot(
@@ -156,11 +142,11 @@ def build_aggregate(
     paired_checkouts = {repository: paired_checkout.resolve()}
     source_cache: dict[tuple[Path, Path | None, tuple[Path, ...]], dict[str, Any]] = {}
     pair_cache: dict[tuple[Path, str, Path], dict[str, Any]] = {}
-    output_path = (root / aggregate["artifact"]).resolve()
-    try:
-        output_path.relative_to(root)
-    except ValueError as error:
-        raise AggregateRefused("registered aggregate artifact escapes repository root") from error
+    output_path, path_error = checker._payload_repo_file(
+        root, aggregate["artifact"], label="registered aggregate artifact"
+    )
+    if path_error is not None or output_path is None:
+        raise AggregateRefused(path_error or "registered aggregate artifact is invalid")
 
     source = checker._cached_proof_source_snapshot(
         source_cache,
@@ -271,7 +257,9 @@ def build_aggregate(
             "schema_version": 1,
             "aggregate_id": aggregate["id"],
             "target_proof_id": target["id"],
-            "registry_sha256": _sha256(registry_path),
+            "registry_sha256": checker._payload_sha256(
+                root, registry_path.relative_to(root).as_posix(), label="proof registry"
+            ),
             "source": source,
             "source_pair": source_pair,
             "daemon_binary": daemon_binary,
@@ -298,33 +286,20 @@ def _proof_lock_path(root: Path) -> Path:
     return path if path.is_absolute() else root / path
 
 
-def _restore_prior_aggregate(output_path: Path, prior_bytes: bytes | None) -> None:
-    if prior_bytes is None:
-        output_path.unlink(missing_ok=True)
-    else:
-        restore_path: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                dir=output_path.parent,
-                prefix=f".{output_path.name}.",
-                suffix=".restore",
-                delete=False,
-            ) as handle:
-                restore_path = Path(handle.name)
-                handle.write(prior_bytes)
-                handle.flush()
-                os.fsync(handle.fileno())
-        except BaseException:
-            if restore_path is not None:
-                restore_path.unlink(missing_ok=True)
-            raise
-        # Keep the complete backup on disk if replacement itself fails.
-        os.replace(restore_path, output_path)
-    directory_fd = os.open(output_path.parent, os.O_RDONLY)
+def _open_output_parent(root: Path, relative: str, *, checker: ModuleType) -> int:
     try:
-        os.fsync(directory_fd)
-    finally:
-        os.close(directory_fd)
+        return checker.HANDOFF_VALIDATION._open_repo_output_parent(root, relative)
+    except (OSError, ValueError) as error:
+        raise AggregateRefused(f"aggregate output parent is unsafe: {error}") from error
+
+
+def _require_parent_identity(
+    root: Path, relative: str, parent_fd: int, *, checker: ModuleType
+) -> None:
+    try:
+        checker.HANDOFF_VALIDATION._require_output_parent_identity(root, relative, parent_fd)
+    except (OSError, ValueError) as error:
+        raise AggregateRefused(f"aggregate output parent changed or is unsafe: {error}") from error
 
 
 def _publish_aggregate_locked(
@@ -334,62 +309,56 @@ def _publish_aggregate_locked(
     paired_checkout: Path,
 ) -> tuple[Path, str, bool]:
     root = root.resolve()
-    registry_path = registry_path.resolve()
-    expected_registry = (root / "tools/ci/proof-authority.toml").resolve()
+    registry_path = registry_path if registry_path.is_absolute() else Path.cwd() / registry_path
+    expected_registry = root / "tools/ci/proof-authority.toml"
     if registry_path != expected_registry:
         raise AggregateRefused(f"registry override is forbidden: expected {expected_registry}")
     checker = _load_checker()
-    registry = _read_toml(registry_path)
+    try:
+        registry = tomllib.loads(
+            checker._payload_bytes(
+                root, registry_path.relative_to(root).as_posix(), label="proof registry"
+            ).decode("utf-8")
+        )
+    except (OSError, ValueError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise AggregateRefused(f"registered proof registry is unreadable: {error}") from error
     registry_findings = checker.check_registry(registry, root=root, path=registry_path)
     if registry_findings:
         rendered = "; ".join(finding.render() for finding in registry_findings)
         raise AggregateRefused(f"proof registry is invalid: {rendered}")
-    payload, output_path = build_aggregate(
-        root=root,
-        registry=registry,
-        registry_path=registry_path,
-        checker=checker,
-        paired_checkout=paired_checkout.resolve(),
+    output_relative = registry["aggregate"]["artifact"]
+    output_path, path_error = checker._payload_repo_file(
+        root, output_relative, label="registered aggregate artifact"
     )
-    schema = _read_json(root / registry["aggregate"]["schema"])
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    serialized = (json.dumps(payload, sort_keys=True, indent=2) + "\n").encode()
-    temporary_path: Path | None = None
+    if path_error is not None or output_path is None:
+        raise AggregateRefused(path_error or "registered aggregate artifact is invalid")
+    parent_fd = _open_output_parent(root, output_relative, checker=checker)
     try:
-        with tempfile.NamedTemporaryFile(
-            dir=output_path.parent,
-            prefix=f".{output_path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            handle.write(serialized)
-            handle.flush()
-            os.fsync(handle.fileno())
-            temporary_path = Path(handle.name)
-        proof_by_id = {proof["id"]: proof for proof in registry["proofs"]}
-        target = proof_by_id[registry["aggregate"]["target_proof"]]
-        findings = checker.check_aggregate_receipt(
-            payload,
-            receipt_path=output_path,
+        payload, observed_output_path = build_aggregate(
+            root=root,
             registry=registry,
             registry_path=registry_path,
-            schema=schema,
-            root=root,
-            bind_source=True,
-            paired_checkouts={target["paired_repository"]: paired_checkout},
+            checker=checker,
+            paired_checkout=paired_checkout.resolve(),
         )
-        if findings:
-            rendered = "; ".join(finding.render() for finding in findings)
-            raise AggregateRefused(f"semantic aggregate validation failed: {rendered}")
-        prior_bytes = output_path.read_bytes() if output_path.exists() else None
-        os.replace(temporary_path, output_path)
-        temporary_path = None
+        if observed_output_path != output_path:
+            raise AggregateRefused("registered aggregate output identity changed")
         try:
-            installed_payload = _read_json(output_path)
-            if installed_payload != payload:
-                raise AggregateRefused("published aggregate bytes differ from validated payload")
-            published_findings = checker.check_aggregate_receipt(
-                installed_payload,
+            schema = checker._payload_json(
+                root, registry["aggregate"]["schema"], label="aggregate schema"
+            )
+        except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise AggregateRefused(f"registered aggregate schema is unreadable: {error}") from error
+        serialized = (json.dumps(payload, sort_keys=True, indent=2) + "\n").encode()
+        temporary_name: str | None = None
+        try:
+            temporary_name = checker.HANDOFF_VALIDATION._write_output_temporary(
+                parent_fd, output_path.name, serialized
+            )
+            proof_by_id = {proof["id"]: proof for proof in registry["proofs"]}
+            target = proof_by_id[registry["aggregate"]["target_proof"]]
+            findings = checker.check_aggregate_receipt(
+                payload,
                 receipt_path=output_path,
                 registry=registry,
                 registry_path=registry_path,
@@ -398,21 +367,61 @@ def _publish_aggregate_locked(
                 bind_source=True,
                 paired_checkouts={target["paired_repository"]: paired_checkout},
             )
-            if published_findings:
-                rendered = "; ".join(finding.render() for finding in published_findings)
-                raise AggregateRefused(f"proof inputs changed at aggregate publication: {rendered}")
-        except BaseException:
-            _restore_prior_aggregate(output_path, prior_bytes)
-            raise
-        directory_fd = os.open(output_path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
+            if findings:
+                rendered = "; ".join(finding.render() for finding in findings)
+                raise AggregateRefused(f"semantic aggregate validation failed: {rendered}")
+            try:
+                prior_bytes = checker.HANDOFF_VALIDATION._read_output_regular_bytes(
+                    parent_fd, output_path.name
+                )
+            except (OSError, ValueError) as error:
+                raise AggregateRefused(f"existing aggregate output is unsafe: {error}") from error
+            _require_parent_identity(root, output_relative, parent_fd, checker=checker)
+            os.replace(
+                temporary_name,
+                output_path.name,
+                src_dir_fd=parent_fd,
+                dst_dir_fd=parent_fd,
+            )
+            temporary_name = None
+            try:
+                installed_bytes = checker._payload_bytes(
+                    root, output_relative, label="published aggregate"
+                )
+                if installed_bytes != serialized:
+                    raise AggregateRefused(
+                        "published aggregate bytes differ from validated payload"
+                    )
+                _require_parent_identity(root, output_relative, parent_fd, checker=checker)
+                installed_payload = json.loads(installed_bytes)
+                published_findings = checker.check_aggregate_receipt(
+                    installed_payload,
+                    receipt_path=output_path,
+                    registry=registry,
+                    registry_path=registry_path,
+                    schema=schema,
+                    root=root,
+                    bind_source=True,
+                    paired_checkouts={target["paired_repository"]: paired_checkout},
+                )
+                if published_findings:
+                    rendered = "; ".join(finding.render() for finding in published_findings)
+                    raise AggregateRefused(
+                        f"proof inputs changed at aggregate publication: {rendered}"
+                    )
+                os.fsync(parent_fd)
+                _require_parent_identity(root, output_relative, parent_fd, checker=checker)
+            except BaseException:
+                checker.HANDOFF_VALIDATION._restore_prior_output(
+                    parent_fd, output_path.name, prior_bytes
+                )
+                raise
         finally:
-            os.close(directory_fd)
+            if temporary_name is not None:
+                os.unlink(temporary_name, dir_fd=parent_fd)
     finally:
-        if temporary_path is not None:
-            temporary_path.unlink(missing_ok=True)
-    return output_path, _sha256(output_path), bool(payload["production_ready"])
+        os.close(parent_fd)
+    return output_path, hashlib.sha256(serialized).hexdigest(), bool(payload["production_ready"])
 
 
 def publish_aggregate(

@@ -252,7 +252,6 @@ fn expect_snapshot(response: SearchPlaneControlIpcResponse, repo: &str) -> TestR
         }
         other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
         | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
-        | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
         | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
         | SearchPlaneControlIpcResponse::Error(_)
         | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
@@ -272,7 +271,6 @@ fn expect_error(
         SearchPlaneControlIpcResponse::Error(error) => Ok(error),
         other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
         | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
-        | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
         | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
         | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
         | SearchPlaneControlIpcResponse::GenerationStatusReport(_)

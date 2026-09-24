@@ -28,7 +28,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use quanta_index_core::{RequestBudgetV1, RequestCorrelationV1};
+use quanta_index_core::{
+    RequestBudgetV1, RequestCorrelationV1, RequestProviderStageV1, RequestStageDiagnosticPortV1,
+};
 
 use crate::admission::{DispatchSlots, ServerAdmissionPolicy, SlotRefusal};
 use crate::peer_credentials::{KernelPeerCredentials, PeerCredentialsSource};
@@ -172,6 +174,42 @@ impl Drop for RequestEventScope<'_> {
                 RequestEventStageV1::Aborted
             });
         }
+    }
+}
+
+/// Per-request identity bridge into the same IPC ring. The provider boundary
+/// receives this through its existing budget; it cannot allocate another ID
+/// or write a second diagnostic/usage ledger.
+#[derive(Debug)]
+struct ProviderEventBridgeV1 {
+    sink: Arc<IpcServerCounters>,
+    request_id: NonZeroU64,
+    connection_id: u64,
+    started: Instant,
+}
+
+impl RequestStageDiagnosticPortV1 for ProviderEventBridgeV1 {
+    fn record_provider_stage_v1(&self, stage: RequestProviderStageV1) {
+        let stage = match stage {
+            RequestProviderStageV1::Started { ticket_id } => {
+                RequestEventStageV1::ProviderStarted { ticket_id }
+            }
+            RequestProviderStageV1::Returned { ticket_id } => {
+                RequestEventStageV1::ProviderReturned { ticket_id }
+            }
+            RequestProviderStageV1::IngestWindowStarted { window_ordinal } => {
+                RequestEventStageV1::IngestWindowStarted { window_ordinal }
+            }
+            RequestProviderStageV1::IngestWindowReturned { window_ordinal } => {
+                RequestEventStageV1::IngestWindowReturned { window_ordinal }
+            }
+        };
+        self.sink.record_request_event_v1(RequestEventV1 {
+            request_id: self.request_id,
+            connection_id: self.connection_id,
+            stage,
+            elapsed_micros: elapsed_micros_v1(self.started),
+        });
     }
 }
 
@@ -1336,8 +1374,15 @@ where
         event_scope.emit(RequestEventStageV1::QueueAdmitted);
         // W10-R2: the admitted id rides the budget so routes, typed
         // responses and provider audit correlate without an envelope.
+        let diagnostics: Arc<dyn RequestStageDiagnosticPortV1> = Arc::new(ProviderEventBridgeV1 {
+            sink: Arc::clone(counters),
+            request_id,
+            connection_id,
+            started: event_scope.started,
+        });
         let budget = RequestBudgetV1::for_duration(policy.dispatch_budget())
-            .with_correlation(RequestCorrelationV1::from_admitted(request_id));
+            .with_correlation(RequestCorrelationV1::from_admitted(request_id))
+            .with_diagnostics(diagnostics);
         // S21-10: the transport builds the kernel-derived dispatch
         // context every dispatcher authorizes against. The principal is
         // the accept-time kernel report; the payload never asserts one.
@@ -2028,7 +2073,7 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    use quanta_index_core::RequestBudgetV1;
+    use quanta_index_core::{RequestBudgetV1, RequestProviderStageV1};
     use serde::de::{self, MapAccess, Visitor};
     use serde::ser::SerializeStruct;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -2523,6 +2568,21 @@ mod tests {
             request: u64,
             _budget: &RequestBudgetV1,
         ) -> u64 {
+            request.saturating_add(1)
+        }
+    }
+
+    struct ProviderStageDispatcher;
+
+    impl IpcDispatcher<u64, u64> for ProviderStageDispatcher {
+        fn dispatch(
+            &self,
+            _context: &super::DispatchContextV1,
+            request: u64,
+            budget: &RequestBudgetV1,
+        ) -> u64 {
+            budget.record_provider_stage_v1(RequestProviderStageV1::Started { ticket_id: 91 });
+            budget.record_provider_stage_v1(RequestProviderStageV1::Returned { ticket_id: 91 });
             request.saturating_add(1)
         }
     }
@@ -3161,6 +3221,120 @@ mod tests {
             Ok(())
         })();
         assert_test_ok(&result);
+    }
+
+    #[test]
+    fn provider_stages_keep_the_admitted_envelope_and_connection_identity() {
+        let result = (|| -> TestRes {
+            let (mut client, server) = UnixStream::pair().map_err(|err| err.to_string())?;
+            client
+                .write_all(&encode_test_frame(42, 8)?)
+                .map_err(|err| err.to_string())?;
+            client
+                .shutdown(Shutdown::Write)
+                .map_err(|err| err.to_string())?;
+
+            let counters = test_counters();
+            let worker_counters = Arc::clone(&counters);
+            let handle = thread::spawn(move || {
+                handle_connection::<
+                    TestRequestEnvelope,
+                    u64,
+                    TestResponseEnvelope,
+                    u64,
+                    ProviderStageDispatcher,
+                >(
+                    server,
+                    &ProviderStageDispatcher,
+                    &test_slots(),
+                    test_policy(),
+                    IpcPlane::Query,
+                    PeerCredentials {
+                        uid: 0,
+                        gid: 0,
+                        pid: None,
+                    },
+                    0,
+                    7,
+                    &AtomicBool::new(false),
+                    &worker_counters,
+                )
+            });
+            let response = decode_response::<TestResponseEnvelope, _>(&mut client)
+                .map_err(|err| format!("provider-stage response: {err}"))?;
+            if response
+                != (TestResponseEnvelope {
+                    request_id: 42,
+                    payload: 9,
+                })
+            {
+                return Err(format!("provider-stage response differs: {response:?}"));
+            }
+            let reason = handle
+                .join()
+                .map_err(|error| format!("provider-stage worker panicked: {error:?}"))?;
+            if !matches!(reason, ConnectionCloseReason::PeerClosed) {
+                return Err(format!("provider-stage close reason differs: {reason:?}"));
+            }
+            let events = counters
+                .recent_request_events_v1()
+                .map_err(|error| error.to_string())?;
+            let stages = events.iter().map(|event| event.stage).collect::<Vec<_>>();
+            if stages
+                != [
+                    RequestEventStageV1::Validated,
+                    RequestEventStageV1::QueueAdmitted,
+                    RequestEventStageV1::DispatchStarted,
+                    RequestEventStageV1::ProviderStarted { ticket_id: 91 },
+                    RequestEventStageV1::ProviderReturned { ticket_id: 91 },
+                    RequestEventStageV1::DispatchReturned,
+                    RequestEventStageV1::ResponseWritten,
+                ]
+            {
+                return Err(format!("provider-stage sequence differs: {stages:?}"));
+            }
+            if events
+                .iter()
+                .any(|event| event.request_id.get() != 42 || event.connection_id != 7)
+            {
+                return Err(format!("provider-stage event identity differs: {events:?}"));
+            }
+            Ok(())
+        })();
+        assert_test_ok(&result);
+    }
+
+    #[test]
+    fn ingest_window_markers_project_into_the_same_transport_ring() {
+        let counters = test_counters();
+        let bridge = super::ProviderEventBridgeV1 {
+            sink: Arc::clone(&counters),
+            request_id: std::num::NonZeroU64::new(43).expect("fixed nonzero fixture"),
+            connection_id: 8,
+            started: Instant::now(),
+        };
+        for stage in [
+            RequestProviderStageV1::IngestWindowStarted { window_ordinal: 1 },
+            RequestProviderStageV1::IngestWindowReturned { window_ordinal: 1 },
+        ] {
+            quanta_index_core::RequestStageDiagnosticPortV1::record_provider_stage_v1(
+                &bridge, stage,
+            );
+        }
+        let events = counters.recent_request_events_v1().expect("ring snapshot");
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].request_id.get(), 43);
+        assert_eq!(events[1].request_id.get(), 43);
+        assert_eq!(events[0].connection_id, 8);
+        assert_eq!(events[1].connection_id, 8);
+        assert_eq!(
+            events[0].stage,
+            RequestEventStageV1::IngestWindowStarted { window_ordinal: 1 }
+        );
+        assert_eq!(
+            events[1].stage,
+            RequestEventStageV1::IngestWindowReturned { window_ordinal: 1 }
+        );
     }
 
     #[test]

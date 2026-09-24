@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import platform
@@ -47,6 +48,10 @@ class ManifestTemplates:
 
 def _run(root: Path, *args: str) -> None:
     subprocess.run([*args], cwd=root, check=True, capture_output=True, text=True)
+
+
+def _digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _build_fixture_root(tmp_path: Path) -> tuple[Path, dict]:
@@ -194,7 +199,7 @@ def test_writer_resolves_registry_source_and_null_binary_then_semantically_valid
     assert payload["source"]["upstream"] is None
     assert payload["source"]["merge_base"] is None
     assert payload["daemon_binary"] is None
-    assert digest == WRITER._sha256(output)
+    assert digest == _digest(output)
     assert (
         output.relative_to(root)
         .as_posix()
@@ -270,9 +275,169 @@ def test_archive_publish_refuses_a_symlinked_archive_parent(
     archive_root = root / "artifacts/proof-authority/archive"
     archive_root.symlink_to(outside, target_is_directory=True)
 
-    with pytest.raises(WRITER.ManifestRefused, match="archive directory is not a real directory"):
+    with pytest.raises(WRITER.ManifestRefused, match="proof output parent is unsafe"):
         _publish(root, terminal_path)
 
+    assert list(outside.iterdir()) == []
+
+
+def test_dependency_alias_refuses_same_byte_in_repo_symlink(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    payload = {
+        "proof_id": "upstream",
+        "source": {"head": "a" * 40},
+        "source_pair": None,
+    }
+    content = (json.dumps(payload, sort_keys=True) + "\n").encode()
+    target = root / "real.json"
+    target.write_bytes(content)
+    alias = root / "upstream.json"
+    alias.symlink_to(target.name)
+    digest = _digest(target)
+    archive_relative = CHECKER.proof_archive_relative_path(payload, digest)
+    archive = root / archive_relative
+    archive.parent.mkdir(parents=True)
+    archive.write_bytes(content)
+
+    with pytest.raises(WRITER.ManifestRefused, match="non-symlink|regular"):
+        WRITER._resolve_dependencies(
+            root,
+            {"dependencies": ["upstream"]},
+            {"upstream": {"artifact": alias.name}},
+            CHECKER,
+        )
+
+
+def test_digest_input_refuses_same_byte_in_repo_symlink(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    target = root / "real.txt"
+    target.write_text("same bytes", encoding="utf-8")
+    (root / "alias.txt").symlink_to(target.name)
+
+    with pytest.raises(WRITER.ManifestRefused, match="non-symlink|regular"):
+        WRITER._digest_input(root, {"path": "alias.txt"}, label="fixture")
+
+
+def test_current_alias_refuses_in_repo_symlink_before_publication(
+    tmp_path: Path, manifest_templates: ManifestTemplates
+) -> None:
+    root, _ = _fixture_root(tmp_path, manifest_templates)
+    terminal_path, _ = _terminal(root)
+    alias = root / "artifacts/proof-authority/p00-authority-freeze.json"
+    redirect = alias.with_name("redirect.json")
+    redirect.write_bytes(b"do not overwrite\n")
+    alias.symlink_to(redirect.name)
+
+    with pytest.raises(WRITER.ManifestRefused, match="non-symlink|unsafe"):
+        _publish(root, terminal_path)
+
+    assert redirect.read_bytes() == b"do not overwrite\n"
+
+
+def test_evidence_source_refuses_same_byte_in_repo_symlink(
+    tmp_path: Path, manifest_templates: ManifestTemplates
+) -> None:
+    root, _ = _fixture_root(tmp_path, manifest_templates)
+    terminal_path, _ = _terminal(root)
+    evidence = root / "artifacts/proof-authority/raw/p00.log"
+    target = evidence.with_name("same.log")
+    target.write_bytes(evidence.read_bytes())
+    evidence.unlink()
+    evidence.symlink_to(target.name)
+
+    with pytest.raises(WRITER.ManifestRefused, match="regular non-symlink repo file"):
+        _publish(root, terminal_path)
+
+
+def test_archive_index_refuses_same_byte_in_repo_symlink(
+    tmp_path: Path, manifest_templates: ManifestTemplates
+) -> None:
+    root, _ = _fixture_root(tmp_path, manifest_templates)
+    terminal_path, _ = _terminal(root)
+    archive_path, _, _ = _publish(root, terminal_path)
+    index = archive_path.parent / "index.json"
+    target = index.with_name("index-copy.json")
+    target.write_bytes(index.read_bytes())
+    index.unlink()
+    index.symlink_to(target.name)
+
+    with pytest.raises(WRITER.ManifestRefused, match="existing proof output is unsafe"):
+        _publish(root, terminal_path)
+
+
+def test_archive_leaf_refuses_same_byte_in_repo_symlink(
+    tmp_path: Path, manifest_templates: ManifestTemplates
+) -> None:
+    root, _ = _fixture_root(tmp_path, manifest_templates)
+    terminal_path, _ = _terminal(root)
+    archive_path, _, _ = _publish(root, terminal_path)
+    target = archive_path.with_name("copy.json")
+    target.write_bytes(archive_path.read_bytes())
+    archive_path.unlink()
+    archive_path.symlink_to(target.name)
+
+    with pytest.raises(WRITER.ManifestRefused, match="existing proof output is unsafe"):
+        _publish(root, terminal_path)
+
+
+def test_archive_parent_swap_cannot_redirect_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    manifest_templates: ManifestTemplates,
+) -> None:
+    root, _ = _fixture_root(tmp_path, manifest_templates)
+    terminal_path, _ = _terminal(root)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    original = WRITER._require_parent_identity
+    swapped = False
+
+    def swap_before_archive_link(root_arg, relative, parent_fd, *, checker):
+        nonlocal swapped
+        if not swapped and "/proof-authority/evidence/" in relative:
+            parent = root_arg / relative
+            detached = tmp_path / "detached-archive-parent"
+            parent.parent.rename(detached)
+            parent.parent.symlink_to(outside, target_is_directory=True)
+            swapped = True
+        return original(root_arg, relative, parent_fd, checker=checker)
+
+    monkeypatch.setattr(WRITER, "_require_parent_identity", swap_before_archive_link)
+    with pytest.raises(WRITER.ManifestRefused, match="parent changed or is unsafe"):
+        _publish(root, terminal_path)
+
+    assert swapped
+    assert list(outside.iterdir()) == []
+
+
+def test_current_alias_parent_swap_cannot_redirect_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    manifest_templates: ManifestTemplates,
+) -> None:
+    root, _ = _fixture_root(tmp_path, manifest_templates)
+    terminal_path, _ = _terminal(root)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    original = WRITER._require_parent_identity
+    swapped = False
+
+    def swap_before_alias_replace(root_arg, relative, parent_fd, *, checker):
+        nonlocal swapped
+        if not swapped and relative == "artifacts/proof-authority/p00-authority-freeze.json":
+            parent = (root_arg / relative).parent
+            parent.rename(tmp_path / "detached-alias-parent")
+            parent.symlink_to(outside, target_is_directory=True)
+            swapped = True
+        return original(root_arg, relative, parent_fd, checker=checker)
+
+    monkeypatch.setattr(WRITER, "_require_parent_identity", swap_before_alias_replace)
+    with pytest.raises(WRITER.ManifestRefused, match="parent changed or is unsafe"):
+        _publish(root, terminal_path)
+
+    assert swapped
     assert list(outside.iterdir()) == []
 
 
@@ -469,7 +634,7 @@ def test_binary_binding_is_derived_and_none_rejects_a_daemon_path(
 
     with pytest.raises(WRITER.ManifestRefused, match="requires terminal.daemon_binary=null"):
         WRITER._resolve_binary(root, proof_none, "bin/searchd", checker=CHECKER)
-    binary_digest = WRITER._sha256(daemon)
+    binary_digest = _digest(daemon)
     assert WRITER._resolve_binary(root, proof_release, "bin/searchd", checker=CHECKER) == {
         "source_path": "bin/searchd",
         "path": CHECKER.content_archive_relative_path("binary", binary_digest),
@@ -500,7 +665,7 @@ def test_exact_pair_is_derived_from_live_external_checkout_without_persisting_pa
     )
     assert source_pair["dependency_lock"] == {
         "path": "Cargo.lock",
-        "sha256": WRITER._sha256(checkout / "Cargo.lock"),
+        "sha256": _digest(checkout / "Cargo.lock"),
     }
     assert str(checkout) not in json.dumps(source_pair, sort_keys=True)
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
@@ -588,7 +753,7 @@ def test_exact_pair_manifest_is_live_bound_through_atomic_writer(
             json.dumps(dependency_payload, sort_keys=True, indent=2) + "\n"
         ).encode()
         dependency_path.write_bytes(dependency_bytes)
-        dependency_digest = WRITER._sha256(dependency_path)
+        dependency_digest = _digest(dependency_path)
         archive_relative = CHECKER.proof_archive_relative_path(
             dependency_payload,
             dependency_digest,
@@ -680,7 +845,7 @@ def test_input_digests_are_computed_from_file_or_literal_identity(tmp_path: Path
     fixture.write_bytes(b'{"fixture":true}\n')
 
     assert WRITER._digest_input(root, {"path": "fixture.json"}, label="fixture") == (
-        f"sha256:{WRITER._sha256(fixture)}"
+        f"sha256:{_digest(fixture)}"
     )
     assert WRITER._digest_input(root, {"value": "model-v1"}, label="model") == (
         "sha256:1a1f4502024df8a68d12e64bb2364ad6308d04ed0a7d5e8300a676ec70867140"

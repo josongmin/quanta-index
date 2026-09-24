@@ -1,8 +1,7 @@
 //! LDB-E2E-01 observability: the assembled runtime exposes a populated,
 //!
-//! payload-free `SemanticBootReport` (migration outcome + seeded sealed-
-//! generation count + cold-boot seed timing). This proves the boot path
-//! surfaces direct-open vs migration, not just that the helpers compute it.
+//! payload-free `SemanticBootReport` (seeded sealed-generation count and
+//! cold-boot seed timing).
 
 #![forbid(unsafe_code)]
 #![expect(
@@ -21,7 +20,6 @@ use quanta_index_contract::{
 };
 use quanta_index_core::GenerationStorageKeyV1;
 use quanta_index_core::domains::generation::GenerationQuarantineReasonV1;
-use quanta_index_searchd::app::semantic_boot::SemanticMigrationOutcome;
 use quanta_index_searchd_harness::E2eRuntime;
 use quanta_index_semantic::{SemanticAdapter, build_resident_batch_v1};
 
@@ -42,9 +40,7 @@ fn fresh_runtime_exposes_empty_semantic_boot_report() -> TestResult {
         .semantic_boot_report()
         .ok_or("a started daemon reports its semantic boot")?;
 
-    // No legacy journal and no durable generations on a fresh state root, so the
-    // boot path reports a direct (no-migration) open with zero seeded generations.
-    assert_eq!(report.migration, SemanticMigrationOutcome::NoLegacyJournal);
+    // A fresh state root has no durable generations.
     assert_eq!(report.seed.sealed_generations, 0);
     runtime.stop()?;
     Ok(())

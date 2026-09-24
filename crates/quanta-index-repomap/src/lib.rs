@@ -10,7 +10,6 @@ pub mod model;
 mod object_store;
 mod pinned;
 pub mod query;
-pub mod reader;
 pub mod store;
 
 pub use delta::RepoMapDeltaApplier;
@@ -20,7 +19,7 @@ pub use layout_v3::{
     StateRootSecurityVerificationErrorV1,
 };
 pub use materializer::{
-    CandidateProjectionMetaV1, RepoMapGraphCompiler, RepoMapMaterializer, decode_compiled_payload,
+    CandidateProjectionMeta, RepoMapGraphCompiler, decode_compiled_payload,
     snapshot_from_projection,
 };
 pub use model::{RepoMapEntry, RepoMapIndexedSnapshot, RepoMapSnapshot, RepoMapSnapshotIndex};

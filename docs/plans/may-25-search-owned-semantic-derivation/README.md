@@ -5,18 +5,18 @@ Date: `2026-05-27`
 Scope: target-state semantic ownership inversion for `quanta-index` after the
 current public-surface closure packet
 
-This document is not shipped source truth for the current tree. It records the
-target design for the later `SEM-OWN` wave.
+This document is historical design, not shipped source truth. The 2026-09-24
+typed-only cutover removes the live derive-mode selector and chunk-text
+fallback. Producer-authored typed sources, including bounded `RawCodeFallback`,
+are the sole dense input; the consumer treats an empty semantic source list as
+no-op, and paired producer coverage proof is still required.
 
 ---
 
 ## 1. Current tree truth (2026-09-16)
 
-- the current tree has **partial** search-owned semantic derivation on the live
-  path: typed `SemanticSourceRecordV1` scopes, SCV2 wire validation, and three
-  derivation modes in `search-plane/src/semantic_derive.rs`
-- default derivation is `SemanticSourcesWithLegacyFallback`; legacy-only mode
-  remains available through `QUANTA_INDEX_SEMANTIC_DERIVE_MODE=legacy_all_chunk`
+- the 2026-09-16 snapshot had partial search-owned derivation with multiple
+  modes; that mode split is superseded by the typed-only cutover.
 - the full `SEM-OWN` worker / manifest / seal-proof packet has **not** landed;
   this README still records the target-state design for that later wave
 - public semantic/hybrid query contracts are text-only; removed vector/handle

@@ -35,8 +35,12 @@ def _load_module(name: str, path: Path) -> ModuleType:
 CHAIN_VALIDATOR = _load_module("quanta_handoff_validation", CHAIN_VALIDATOR_PATH)
 
 
-def _read_json(path: Path) -> Any:
-    return CHAIN_VALIDATOR._read_json(path)
+def _read_handoff_json(path: Path, *, root: Path) -> Any:
+    try:
+        relative = path.relative_to(root).as_posix()
+    except ValueError as error:
+        raise ValueError(f"handoff must be inside repository root: {path}") from error
+    return json.loads(CHAIN_VALIDATOR._read_repo_regular_bytes(root, relative, label="handoff"))
 
 
 def validate_handoff(
@@ -66,7 +70,7 @@ def validate_product_handoff_directory(*, directory: Path, root: Path) -> list[s
     for lane in CHAIN_VALIDATOR.PRODUCT_LANES:
         path = directory / f"{lane}.json"
         try:
-            payload = _read_json(path)
+            payload = _read_handoff_json(path, root=root)
         except (OSError, ValueError, json.JSONDecodeError) as error:
             errors.append(f"{path}: unreadable handoff: {error}")
             continue
@@ -100,7 +104,7 @@ def main() -> int:
                 raise ValueError("--product-chain is historical and cannot require result HEAD")
             errors = validate_product_handoff_directory(directory=handoff_path, root=root)
         else:
-            payload = _read_json(handoff_path)
+            payload = _read_handoff_json(handoff_path, root=root)
             errors = validate_handoff(
                 payload,
                 handoff_path=handoff_path,

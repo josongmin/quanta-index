@@ -1,6 +1,13 @@
 # S21-11 — State Migration, Backup, Restore, and Rollback
 
-Status: `planned`
+Status: `superseded for legacy migration` (2026-09-24 prerelease breaking cutover)
+
+The legacy `migrate-state` importer and its successful old-root conversion
+contract are retired. This ticket's importer design and migration acceptance
+criteria below are historical, not current commands. Current-format
+`backup-state`, `restore-state`, `verify-state`, and typed old-root refusal
+remain; use [the operator runbook](../../../operator/state-cutover-runbook.md)
+for the supported workflow.
 
 ## 2026-09-23 source-bound RCA and execution boundary
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import shlex
 import subprocess
 import sys
@@ -19,196 +18,15 @@ from tools.benchmark.retrieval import semble as semble_adapter
 from tools.ci import source_closure
 
 
-def fixture(tmp_path: Path):
-    repo = tmp_path / "source"
-    repo.mkdir()
-    source = ("token " * 3000 + "\n").encode()
-    (repo / "target.txt").write_bytes(source)
-    subprocess.run(["git", "init", "-q", str(repo)], check=True)
-    subprocess.run(["git", "-C", str(repo), "add", "target.txt"], check=True)
-    subprocess.run(
-        [
-            "git",
-            "-C",
-            str(repo),
-            "-c",
-            "user.name=Test",
-            "-c",
-            "user.email=test@example.invalid",
-            "-c",
-            "commit.gpgsign=false",
-            "commit",
-            "-qm",
-            "frozen",
-        ],
-        check=True,
-    )
-    commit = ev.git(repo, "rev-parse", "HEAD")
-    label = {
-        "path": "target.txt",
-        "start_line": 1,
-        "end_line": 1,
-        "file_sha256": ev.digest(source),
-        "block_sha256": ev.digest(source),
-    }
-    query = "Find the source block implementing token handling"
-    empty_query = "Find the nonexistent adapter"
-    suite = {
-        "schema_version": 1,
-        "suite_id": "fixture-1",
-        "repository_commit": commit,
-        "routes": ["lexical", "hybrid"],
-        "tasks": [
-            {
-                "task_id": "T1",
-                "split": "eval",
-                "query": query,
-                "query_sha256": ev.digest(query.encode()),
-                "answerable": True,
-                "gold": [label],
-            },
-            {
-                "task_id": "T2",
-                "split": "eval",
-                "query": empty_query,
-                "query_sha256": ev.digest(empty_query.encode()),
-                "answerable": False,
-                "gold": [],
-            },
-        ],
-    }
-    _, pack, _ = ev.validate_suite(repo, suite)
-    candidate = dict(label, tokens=3000)
-    run = {
-        "schema_version": 1,
-        "query_pack_sha256": ev.digest(ev.canonical(pack)),
-        "runner": {
-            "name": "recorded-search-runner",
-            "revision": "runner@abc",
-            "run_id": "run-1",
-            "tokenizer": ev.TOKENIZER,
-            "gold_access": False,
-        },
-        "results": [
-            {"task_id": "T1", "route": "lexical", "abstain": True, "candidates": []},
-            {"task_id": "T1", "route": "hybrid", "abstain": False, "candidates": [candidate]},
-            {"task_id": "T2", "route": "lexical", "abstain": False, "candidates": [candidate]},
-            {"task_id": "T2", "route": "hybrid", "abstain": True, "candidates": []},
-        ],
-    }
-    suite_path = tmp_path / "suite.json"
-    runner_path = tmp_path / "run.json"
-    return repo, suite, run, suite_path, runner_path
-
-
-def record(repo, suite, run, suite_path, runner_path):
-    suite_path.write_text(json.dumps(suite), encoding="utf-8")
-    runner_path.write_text(json.dumps(run), encoding="utf-8")
-    return ev.load_evidence(repo, suite_path, runner_path)
-
-
-def test_budgeted_bcy_abstention_and_paired_ablation(tmp_path):
-    repo, suite, run, suite_path, runner_path = fixture(tmp_path)
-    loaded = record(repo, suite, run, suite_path, runner_path)
-    report = ev.evaluate(*loaded, "lexical", "hybrid")
-    small = report["budgets"]["2000"]
-    large = report["budgets"]["4000"]
-    assert small["routes"]["hybrid"]["bcy"] == 0
-    assert small["routes"]["hybrid"]["no_gold_abstention"] == 1
-    assert large["routes"]["hybrid"]["bcy"] == 1
-    assert large["routes"]["lexical"]["bcy"] == 0
-    assert large["comparison"]["paired_wins"] == 2
-    assert large["comparison"]["paired_losses"] == 0
-    no_answer = report["rank_metrics"]["comparison"]["no_answer_abstention_delta"]
-    assert no_answer["sample_count"] == 1
-    assert no_answer["mean_delta"] == pytest.approx(1.0)
-    assert no_answer["strata"]["category"]["uncategorized"]["sample_count"] == 1
-    assert no_answer["strata"]["language"]["not_applicable:no_gold"]["sample_count"] == 1
-    assert set(report["budgets"]) == {"2000", "4000", "8000", "16000"}
-    assert "gold" not in json.dumps(loaded[1])
-
-
-@pytest.mark.parametrize(
-    "mutation,match",
-    [
-        (lambda s, r: s["tasks"][0].update(query_sha256="0" * 64), "query hash mismatch"),
-        (
-            lambda s, r: s["tasks"][0]["gold"][0].update(block_sha256="0" * 64),
-            "block hash mismatch",
-        ),
-        (lambda s, r: s["tasks"][0]["gold"][0].update(start_line=2), "inverted line span"),
-        (lambda s, r: s["tasks"][1].update(answerable=True), "answerable/gold mismatch"),
-        (
-            lambda s, r: s["tasks"][1].update(
-                query=s["tasks"][0]["query"], query_sha256=s["tasks"][0]["query_sha256"]
-            ),
-            "query leakage",
-        ),
-        (lambda s, r: r["runner"].update(gold_access=True), "gold access"),
-        (lambda s, r: r["results"][1]["candidates"][0].update(tokens=1), "token count mismatch"),
-        (
-            lambda s, r: r["results"][1]["candidates"][0].update(file_sha256="0" * 64),
-            "file hash mismatch",
-        ),
-        (
-            lambda s, r: r["results"][1]["candidates"][0].update(path="../target.txt"),
-            "unsafe repository path",
-        ),
-        (lambda s, r: r["results"][1]["candidates"][0].update(gold=True), "unknown fields"),
-        (lambda s, r: r["results"].pop(), "missing task route evidence"),
-        (lambda s, r: r.update(query_pack_sha256="0" * 64), "query pack hash mismatch"),
-        (lambda s, r: s.update(suite_id="changed"), "query pack hash mismatch"),
-        (lambda s, r: s.update(repository_commit="0" * 40), "checkout HEAD differs"),
-    ],
-)
-def test_fails_closed_on_invalid_evidence(tmp_path, mutation, match):
-    repo, suite, run, suite_path, runner_path = fixture(tmp_path)
-    mutation(suite, run)
-    with pytest.raises(ev.EvidenceError, match=match):
-        record(repo, suite, run, suite_path, runner_path)
-
-
-def test_dirty_checkout_refused(tmp_path):
-    repo, suite, run, suite_path, runner_path = fixture(tmp_path)
-    (repo / "untracked.txt").write_text("new", encoding="utf-8")
-    with pytest.raises(ev.EvidenceError, match="untracked changes"):
-        record(repo, suite, run, suite_path, runner_path)
-
-
-def test_gold_block_reused_across_splits_refused(tmp_path):
-    repo, suite, run, suite_path, runner_path = fixture(tmp_path)
-    train = dict(suite["tasks"][0], task_id="TRAIN", split="train", query="training lookup")
-    train["query_sha256"] = ev.digest(train["query"].encode())
-    suite["tasks"].append(train)
-    with pytest.raises(ev.EvidenceError, match="gold label leakage"):
-        record(repo, suite, run, suite_path, runner_path)
-
-
-def test_label_must_be_tracked_source(tmp_path):
-    repo, suite, run, suite_path, runner_path = fixture(tmp_path)
-    (repo / "ignored.txt").write_text("ignored\n", encoding="utf-8")
-    (repo / ".git" / "info" / "exclude").write_text("ignored.txt\n", encoding="utf-8")
-    source = b"ignored\n"
-    suite["tasks"][0]["gold"][0] = {
-        "path": "ignored.txt",
-        "start_line": 1,
-        "end_line": 1,
-        "file_sha256": ev.digest(source),
-        "block_sha256": ev.digest(source),
-    }
-    with pytest.raises(ev.EvidenceError, match="not tracked"):
-        record(repo, suite, run, suite_path, runner_path)
-
-
 def test_duplicate_json_keys_refused(tmp_path):
     path = tmp_path / "duplicate.json"
-    path.write_text('{"schema_version":1,"schema_version":1}', encoding="utf-8")
+    path.write_text('{"schema_version":3,"schema_version":3}', encoding="utf-8")
     with pytest.raises(ev.EvidenceError, match="duplicate JSON key"):
         ev.read_json(path)
 
 
-def test_cli_requires_recorded_runner(tmp_path, capsys):
-    repo, suite, run, suite_path, runner_path = fixture(tmp_path)
+def test_current_cli_requires_recorded_runner(tmp_path, capsys):
+    repo, suite, _run, suite_path, runner_path, _files = fixture_v3(tmp_path)
     suite_path.write_text(json.dumps(suite), encoding="utf-8")
     assert ev.main(["freeze", "--repo", str(repo), "--suite", str(suite_path)]) == 0
     pack = json.loads(capsys.readouterr().out)
@@ -235,44 +53,6 @@ def test_cli_requires_recorded_runner(tmp_path, capsys):
     assert "cannot read JSON" in capsys.readouterr().err
 
 
-def test_cli_writes_verifiable_pack_and_report(tmp_path, capsys):
-    repo, suite, run, suite_path, runner_path = fixture(tmp_path)
-    suite_path.write_text(json.dumps(suite), encoding="utf-8")
-    pack_path = tmp_path / "pack.json"
-    report_path = tmp_path / "report.json"
-    assert (
-        ev.main(
-            ["freeze", "--repo", str(repo), "--suite", str(suite_path), "--output", str(pack_path)]
-        )
-        == 0
-    )
-    assert capsys.readouterr().out.strip() == run["query_pack_sha256"]
-    assert "gold" not in pack_path.read_text(encoding="utf-8")
-    runner_path.write_text(json.dumps(run), encoding="utf-8")
-    assert (
-        ev.main(
-            [
-                "evaluate",
-                "--repo",
-                str(repo),
-                "--suite",
-                str(suite_path),
-                "--runner",
-                str(runner_path),
-                "--baseline-route",
-                "lexical",
-                "--candidate-route",
-                "hybrid",
-                "--output",
-                str(report_path),
-            ]
-        )
-        == 0
-    )
-    report = json.loads(report_path.read_text(encoding="utf-8"))
-    assert report["budgets"]["4000"]["comparison"]["paired_wins"] == 2
-
-
 def test_rank_prefix_does_not_skip_oversize_candidate():
     rows = [{"tokens": 3000}, {"tokens": 10}]
     assert ev.selected(rows, 2000) == ([], 0)
@@ -282,11 +62,11 @@ def test_token_unit_uses_explicit_ascii_ranges():
     assert ev.TOKEN_RE.findall("alpha_1 한글 !") == ["alpha_1", "한", "글", "!"]
 
 
-# --- RB-01 v2 suite and scoring ---
+# --- RB-01 current suite and scoring ---
 
 
 def _write_repo(tmp_path: Path, files: dict[str, bytes]) -> tuple[Path, str]:
-    repo = tmp_path / "source_v2"
+    repo = tmp_path / "source"
     repo.mkdir(parents=True, exist_ok=True)
     for name, data in files.items():
         (repo / name).write_bytes(data)
@@ -325,176 +105,24 @@ def _byte_span(data: bytes, start: int, end: int) -> tuple[int, int]:
     return first, first + sum(len(line) for line in lines[start - 1 : end])
 
 
-def fixture_v2(tmp_path: Path, *, answerable_only: bool = False, blinding: str = "isolated"):
-    files = {
-        "a.txt": b"alpha one\nalpha two\nalpha three\nalpha four\n",
-        "b.txt": b"beta one\nbeta two\n",
-        "excluded.txt": b"excluded one\n",
-    }
-    repo, commit = _write_repo(tmp_path, files)
-
-    def gold(path: str, start: int, end: int, grade: int | None = None):
-        file_sha, block_sha, _ = _span_meta(files[path], start, end)
-        label: dict = {
-            "path": path,
-            "start_line": start,
-            "end_line": end,
-            "file_sha256": file_sha,
-            "block_sha256": block_sha,
-        }
-        if grade is not None:
-            label["grade"] = grade
-        return label
-
-    def cand(path: str, start: int, end: int, rank: int):
-        file_sha, block_sha, tokens = _span_meta(files[path], start, end)
-        return {
-            "path": path,
-            "start_line": start,
-            "end_line": end,
-            "file_sha256": file_sha,
-            "block_sha256": block_sha,
-            "tokens": tokens,
-            "rank": rank,
-        }
-
-    q1 = "find alpha two and beta one"
-    if answerable_only:
-        q2 = "find alpha three"
-        tasks = [
-            {
-                "task_id": "T1",
-                "split": "eval",
-                "query": q1,
-                "query_sha256": ev.digest(q1.encode()),
-                "answerable": True,
-                "category": "symbol",
-                "gold": [gold("a.txt", 2, 2, 3), gold("b.txt", 1, 1, 1)],
-            },
-            {
-                "task_id": "T2",
-                "split": "eval",
-                "query": q2,
-                "query_sha256": ev.digest(q2.encode()),
-                "answerable": True,
-                "category": "semantic",
-                "gold": [gold("a.txt", 3, 3, 2)],
-            },
-        ]
-    else:
-        q2 = "find the nonexistent adapter"
-        tasks = [
-            {
-                "task_id": "T1",
-                "split": "eval",
-                "query": q1,
-                "query_sha256": ev.digest(q1.encode()),
-                "answerable": True,
-                "category": "symbol",
-                "gold": [gold("a.txt", 2, 2, 3), gold("b.txt", 1, 1, 1)],
-            },
-            {
-                "task_id": "T2",
-                "split": "eval",
-                "query": q2,
-                "query_sha256": ev.digest(q2.encode()),
-                "answerable": False,
-                "gold": [],
-            },
-        ]
-    suite = {
-        "schema_version": 2,
-        "suite_id": "fixture-v2",
-        "repository_commit": commit,
-        "routes": ["lexical", "hybrid"],
-        "file_universe": [
-            {"path": "a.txt", "file_sha256": ev.digest(files["a.txt"])},
-            {"path": "b.txt", "file_sha256": ev.digest(files["b.txt"])},
-        ],
-        "tasks": tasks,
-    }
-    _, pack, _ = ev.validate_suite(repo, suite)
-
-    def result(
-        task_id: str,
-        route: str,
-        status: str,
-        spans: list[tuple[str, int, int]],
-        latency: float = 1.5,
-        error=None,
-    ):
-        return {
-            "task_id": task_id,
-            "route": route,
-            "status": status,
-            "candidates": [cand(p, s, e, i + 1) for i, (p, s, e) in enumerate(spans)],
-            "timings": {"query_latency_ms": latency},
-            "error": error,
-        }
-
-    if answerable_only:
-        results = [
-            result("T1", "lexical", "success", [("a.txt", 3, 3), ("b.txt", 1, 1)]),
-            result("T1", "hybrid", "success", [("a.txt", 2, 2), ("a.txt", 3, 3), ("b.txt", 1, 1)]),
-            result("T2", "lexical", "success", [("a.txt", 3, 3)]),
-            result("T2", "hybrid", "success", [("a.txt", 4, 4), ("a.txt", 3, 3)]),
-        ]
-    else:
-        results = [
-            result("T1", "lexical", "success", [("a.txt", 3, 3), ("b.txt", 1, 1)]),
-            result("T1", "hybrid", "success", [("a.txt", 2, 2), ("a.txt", 3, 3), ("b.txt", 1, 1)]),
-            result("T2", "lexical", "success", [("a.txt", 1, 1)]),
-            result("T2", "hybrid", "abstained", []),
-        ]
-    run = {
-        "schema_version": 2,
-        "query_pack_sha256": ev.digest(ev.canonical(pack)),
-        "runner": {
-            "name": "recorded-search-runner",
-            "revision": "runner@abc",
-            "run_id": "run-v2-1",
-            "tokenizer": ev.TOKENIZER,
-            "tokenizer_budget_version": ev.TOKENIZER_BUDGET_VERSION,
-            "gold_access": False,
-            "blinding": blinding,
-            "isolation_method": "separate suite access; runner cannot read suite path",
-            "access_block_log": "verified EACCES on suite path for runner uid",
-        },
-        "route_provenance": {
-            "lexical": {"system": "quanta", "model": "lex", "model_revision": "r1"},
-            "hybrid": {"system": "quanta", "model": "hybrid", "model_revision": "r1"},
-        },
-        "results": results,
-    }
-    suite_path = tmp_path / "suite_v2.json"
-    runner_path = tmp_path / "run_v2.json"
-    return repo, suite, run, suite_path, runner_path, files
-
-
-def record_v2(repo, suite, run, suite_path, runner_path):
-    suite_path.write_text(json.dumps(suite), encoding="utf-8")
-    runner_path.write_text(json.dumps(run), encoding="utf-8")
-    return ev.load_evidence(repo, suite_path, runner_path)
-
-
-def test_v2_freeze_pack_is_blind(tmp_path):
-    repo, suite, run, suite_path, runner_path, _ = fixture_v2(tmp_path)
+def test_current_freeze_pack_is_blind(tmp_path):
+    repo, suite, run, suite_path, runner_path, _ = fixture_v3(tmp_path)
     _, pack, _ = ev.validate_suite(repo, suite)
     text = json.dumps(pack)
     assert "gold" not in text
     assert "grade" not in text
     assert "answerable" not in text
-    assert pack["schema_version"] == 2
+    assert pack["schema_version"] == ev.SCHEMA_VERSION
     assert pack["tokenizer_budget_version"] == ev.TOKENIZER_BUDGET_VERSION
     assert pack["file_universe"] == suite["file_universe"]
     assert all(set(t) == {"task_id", "query", "query_sha256"} for t in pack["tasks"])
 
 
-def test_v2_hand_calculated_rank_metrics(tmp_path):
-    repo, suite, run, suite_path, runner_path, _ = fixture_v2(tmp_path)
-    loaded = record_v2(repo, suite, run, suite_path, runner_path)
+def test_current_hand_calculated_rank_metrics(tmp_path):
+    repo, suite, run, suite_path, runner_path, _ = fixture_v3(tmp_path)
+    loaded = record_v3(repo, suite, run, suite_path, runner_path)
     report = ev.evaluate(*loaded, "lexical", "hybrid")
-    assert report["schema_version"] == 2
+    assert report["schema_version"] == ev.SCHEMA_VERSION
     assert report["rank_metric_version"] == "rb-rank-v2-first-coverage"
     assert report["graded"] is True
     assert report["primary_metric"] == "ndcg_at_10"
@@ -535,16 +163,16 @@ def test_v2_hand_calculated_rank_metrics(tmp_path):
 
 
 def test_ndcg_credits_each_gold_span_once_even_when_chunks_overlap():
-    label = {"path": "src/lib.rs", "start_line": 3, "end_line": 3, "grade": 3}
+    label = {"path": "src/lib.rs", "start_byte": 20, "end_byte": 30, "grade": 3}
     candidates = [
-        {"path": "src/lib.rs", "start_line": 1, "end_line": 3},
-        {"path": "src/lib.rs", "start_line": 2, "end_line": 4},
+        {"path": "src/lib.rs", "start_byte": 0, "end_byte": 30},
+        {"path": "src/lib.rs", "start_byte": 10, "end_byte": 40},
     ]
     assert ev.ndcg_at_k(candidates, [label], 10) == pytest.approx(1.0)
     assert ev.ndcg_at_k(list(reversed(candidates)), [label], 10) == pytest.approx(1.0)
 
 
-def test_v2_bcy_budget_prefix_and_out_of_budget_not_credited(tmp_path):
+def test_current_bcy_budget_prefix_and_out_of_budget_not_credited(tmp_path):
     repo = tmp_path / "source"
     repo.mkdir()
     source = ("token " * 3000 + "\n").encode()
@@ -571,6 +199,8 @@ def test_v2_bcy_budget_prefix_and_out_of_budget_not_credited(tmp_path):
     commit = ev.git(repo, "rev-parse", "HEAD")
     label = {
         "path": "target.txt",
+        "start_byte": 0,
+        "end_byte": len(source),
         "start_line": 1,
         "end_line": 1,
         "file_sha256": ev.digest(source),
@@ -580,17 +210,22 @@ def test_v2_bcy_budget_prefix_and_out_of_budget_not_credited(tmp_path):
     q1 = "find token handling"
     q2 = "find nonexistent"
     suite = {
-        "schema_version": 2,
-        "suite_id": "budget-v2",
+        "schema_version": ev.SCHEMA_VERSION,
+        "suite_id": "budget-current",
         "repository_commit": commit,
+        "comparison_contract": _v3_contract(),
         "routes": ["lexical", "hybrid"],
         "file_universe": [{"path": "target.txt", "file_sha256": ev.digest(source)}],
+        "file_universe_digest": ev.universe_digest(
+            [{"path": "target.txt", "file_sha256": ev.digest(source)}]
+        ),
         "tasks": [
             {
                 "task_id": "T1",
                 "split": "eval",
                 "query": q1,
                 "query_sha256": ev.digest(q1.encode()),
+                "query_family_id": "budget-answerable",
                 "answerable": True,
                 "gold": [label],
             },
@@ -599,6 +234,7 @@ def test_v2_bcy_budget_prefix_and_out_of_budget_not_credited(tmp_path):
                 "split": "eval",
                 "query": q2,
                 "query_sha256": ev.digest(q2.encode()),
+                "query_family_id": "budget-no-answer",
                 "answerable": False,
                 "gold": [],
             },
@@ -607,8 +243,9 @@ def test_v2_bcy_budget_prefix_and_out_of_budget_not_credited(tmp_path):
     _, pack, _ = ev.validate_suite(repo, suite)
     cand = dict({k: v for k, v in label.items() if k != "grade"}, tokens=3000, rank=1)
     run = {
-        "schema_version": 2,
+        "schema_version": ev.SCHEMA_VERSION,
         "query_pack_sha256": ev.digest(ev.canonical(pack)),
+        "comparison_contract": _v3_contract(),
         "runner": {
             "name": "r",
             "revision": "r@1",
@@ -620,9 +257,10 @@ def test_v2_bcy_budget_prefix_and_out_of_budget_not_credited(tmp_path):
             "isolation_method": "separate suite access",
             "access_block_log": "EACCES verified",
         },
+        "captures": {"q0": _v3_capture("quanta")},
         "route_provenance": {
-            "lexical": {"system": "quanta", "model": "m", "model_revision": "r"},
-            "hybrid": {"system": "quanta", "model": "m", "model_revision": "r"},
+            "lexical": {"capture_id": "q0"},
+            "hybrid": {"capture_id": "q0"},
         },
         "results": [
             {
@@ -671,9 +309,9 @@ def test_v2_bcy_budget_prefix_and_out_of_budget_not_credited(tmp_path):
     assert report["rank_metrics"]["routes"]["hybrid"]["chunk"]["recall_at_1"] == pytest.approx(1.0)
 
 
-def test_v2_all_answerable_external_suite_passes_without_invented_no_answer(tmp_path):
-    repo, suite, run, suite_path, runner_path, _ = fixture_v2(tmp_path, answerable_only=True)
-    loaded = record_v2(repo, suite, run, suite_path, runner_path)
+def test_current_all_answerable_external_suite_passes_without_invented_no_answer(tmp_path):
+    repo, suite, run, suite_path, runner_path, _ = fixture_v3(tmp_path, answerable_only=True)
+    loaded = record_v3(repo, suite, run, suite_path, runner_path)
     report = ev.evaluate(*loaded, "lexical", "hybrid")
     assert report["answerable_tasks"] == 2
     assert report["no_gold_tasks"] == 0
@@ -684,12 +322,12 @@ def test_v2_all_answerable_external_suite_passes_without_invented_no_answer(tmp_
     assert report["rank_metrics"]["routes"]["hybrid"]["chunk"]["recall_at_5"] == pytest.approx(1.0)
 
 
-def test_v2_same_candidates_identical_scores_regardless_of_runner(tmp_path):
-    repo, suite, run, suite_path, runner_path, _ = fixture_v2(tmp_path)
-    first = ev.evaluate(*record_v2(repo, suite, run, suite_path, runner_path), "lexical", "hybrid")
+def test_current_same_candidates_identical_scores_regardless_of_runner(tmp_path):
+    repo, suite, run, suite_path, runner_path, _ = fixture_v3(tmp_path)
+    first = ev.evaluate(*record_v3(repo, suite, run, suite_path, runner_path), "lexical", "hybrid")
     run["runner"]["name"] = "other-runner"
     run["runner"]["run_id"] = "run-other"
-    run["route_provenance"]["hybrid"]["model"] = "other-model"
+    run["captures"]["q0"]["model"] = "other-model"
     runner_path2 = tmp_path / "run2.json"
     suite_path.write_text(json.dumps(suite), encoding="utf-8")
     runner_path2.write_text(json.dumps(run), encoding="utf-8")
@@ -698,9 +336,9 @@ def test_v2_same_candidates_identical_scores_regardless_of_runner(tmp_path):
     assert ev.canonical(first["rank_metrics"]) == ev.canonical(second["rank_metrics"])
 
 
-def test_v2_rescore_is_deterministic_under_row_order(tmp_path):
-    repo, suite, run, suite_path, runner_path, _ = fixture_v2(tmp_path)
-    first = ev.evaluate(*record_v2(repo, suite, run, suite_path, runner_path), "lexical", "hybrid")
+def test_current_rescore_is_deterministic_under_row_order(tmp_path):
+    repo, suite, run, suite_path, runner_path, _ = fixture_v3(tmp_path)
+    first = ev.evaluate(*record_v3(repo, suite, run, suite_path, runner_path), "lexical", "hybrid")
     run["results"] = list(reversed(run["results"]))
     runner_path.write_text(json.dumps(run), encoding="utf-8")
     suite_path.write_text(json.dumps(suite), encoding="utf-8")
@@ -710,7 +348,7 @@ def test_v2_rescore_is_deterministic_under_row_order(tmp_path):
     assert ev.canonical(first["per_query"]) == ev.canonical(second["per_query"])
 
 
-def test_v2_partial_span_earns_no_full_cover_credit(tmp_path):
+def test_current_partial_span_earns_no_full_cover_credit(tmp_path):
     files = {"a.txt": b"line one\nline two\nline three\n"}
     repo, commit = _write_repo(tmp_path, files)
     file_sha = ev.digest(files["a.txt"])
@@ -718,21 +356,26 @@ def test_v2_partial_span_earns_no_full_cover_credit(tmp_path):
     part_sel = b"line one\n"
     q = "find first two lines"
     suite = {
-        "schema_version": 2,
-        "suite_id": "partial-v2",
+        "schema_version": ev.SCHEMA_VERSION,
+        "suite_id": "partial-current",
         "repository_commit": commit,
+        "comparison_contract": _v3_contract(),
         "routes": ["lexical", "hybrid"],
         "file_universe": [{"path": "a.txt", "file_sha256": file_sha}],
+        "file_universe_digest": ev.universe_digest([{"path": "a.txt", "file_sha256": file_sha}]),
         "tasks": [
             {
                 "task_id": "T1",
                 "split": "eval",
                 "query": q,
                 "query_sha256": ev.digest(q.encode()),
+                "query_family_id": "partial-answerable",
                 "answerable": True,
                 "gold": [
                     {
                         "path": "a.txt",
+                        "start_byte": 0,
+                        "end_byte": len(gold_sel),
                         "start_line": 1,
                         "end_line": 2,
                         "file_sha256": file_sha,
@@ -746,6 +389,7 @@ def test_v2_partial_span_earns_no_full_cover_credit(tmp_path):
                 "split": "eval",
                 "query": "find nothing here",
                 "query_sha256": ev.digest(b"find nothing here"),
+                "query_family_id": "partial-no-answer",
                 "answerable": False,
                 "gold": [],
             },
@@ -756,6 +400,8 @@ def test_v2_partial_span_earns_no_full_cover_credit(tmp_path):
     full_tokens = len(ev.TOKEN_RE.findall(gold_sel.decode()))
     part = {
         "path": "a.txt",
+        "start_byte": 0,
+        "end_byte": len(part_sel),
         "start_line": 1,
         "end_line": 1,
         "file_sha256": file_sha,
@@ -765,6 +411,8 @@ def test_v2_partial_span_earns_no_full_cover_credit(tmp_path):
     }
     full = {
         "path": "a.txt",
+        "start_byte": 0,
+        "end_byte": len(gold_sel),
         "start_line": 1,
         "end_line": 2,
         "file_sha256": file_sha,
@@ -773,8 +421,9 @@ def test_v2_partial_span_earns_no_full_cover_credit(tmp_path):
         "rank": 1,
     }
     run = {
-        "schema_version": 2,
+        "schema_version": ev.SCHEMA_VERSION,
         "query_pack_sha256": ev.digest(ev.canonical(pack)),
+        "comparison_contract": _v3_contract(),
         "runner": {
             "name": "r",
             "revision": "r@1",
@@ -786,9 +435,10 @@ def test_v2_partial_span_earns_no_full_cover_credit(tmp_path):
             "isolation_method": "attestation only",
             "access_block_log": "no separate suite access; attested-only",
         },
+        "captures": {"q0": _v3_capture("quanta")},
         "route_provenance": {
-            "lexical": {"system": "s", "model": "m", "model_revision": "r"},
-            "hybrid": {"system": "s", "model": "m", "model_revision": "r"},
+            "lexical": {"capture_id": "q0"},
+            "hybrid": {"capture_id": "q0"},
         },
         "results": [
             {
@@ -839,8 +489,8 @@ def test_v2_partial_span_earns_no_full_cover_credit(tmp_path):
     assert report["budgets"]["4000"]["routes"]["hybrid"]["bcy"] == 1
 
 
-def test_v2_typed_failures_score_zero_and_are_counted(tmp_path):
-    repo, suite, run, suite_path, runner_path, _ = fixture_v2(tmp_path)
+def test_current_typed_failures_score_zero_and_are_counted(tmp_path):
+    repo, suite, run, suite_path, runner_path, _ = fixture_v3(tmp_path)
     run["results"][1] = {
         "task_id": "T1",
         "route": "hybrid",
@@ -849,7 +499,7 @@ def test_v2_typed_failures_score_zero_and_are_counted(tmp_path):
         "timings": {"query_latency_ms": 5.0},
         "error": {"code": "TIMEOUT", "message": "deadline"},
     }
-    report = ev.evaluate(*record_v2(repo, suite, run, suite_path, runner_path), "lexical", "hybrid")
+    report = ev.evaluate(*record_v3(repo, suite, run, suite_path, runner_path), "lexical", "hybrid")
     hyb = report["rank_metrics"]["routes"]["hybrid"]
     assert hyb["chunk"]["recall_at_10"] == pytest.approx(0.0)
     assert hyb["status_counts"].get("timeout") == 1
@@ -859,45 +509,48 @@ def test_v2_typed_failures_score_zero_and_are_counted(tmp_path):
     assert rows[0]["query_latency_ms"] == pytest.approx(5.0)
 
 
-def test_v2_capped_result_is_scored_but_flagged(tmp_path):
-    repo, suite, run, suite_path, runner_path, _ = fixture_v2(tmp_path)
+def test_current_capped_result_is_scored_but_flagged(tmp_path):
+    repo, suite, run, suite_path, runner_path, _ = fixture_v3(tmp_path)
     run["results"][1]["status"] = "capped"
-    report = ev.evaluate(*record_v2(repo, suite, run, suite_path, runner_path), "lexical", "hybrid")
+    report = ev.evaluate(*record_v3(repo, suite, run, suite_path, runner_path), "lexical", "hybrid")
     assert report["rank_metrics"]["routes"]["hybrid"]["chunk"]["recall_at_5"] == pytest.approx(1.0)
     rows = [r for r in report["per_query"] if r["task_id"] == "T1" and r["route"] == "hybrid"]
     assert rows[0]["status"] == "capped"
 
 
-def test_v2_blinding_values_preserved(tmp_path):
+def test_current_blinding_values_preserved(tmp_path):
     for blinding in ("isolated", "attested"):
-        repo, suite, run, suite_path, runner_path, _ = fixture_v2(
+        repo, suite, run, suite_path, runner_path, _ = fixture_v3(
             tmp_path / blinding, blinding=blinding
         )
         report = ev.evaluate(
-            *record_v2(repo, suite, run, suite_path, runner_path), "lexical", "hybrid"
+            *record_v3(repo, suite, run, suite_path, runner_path), "lexical", "hybrid"
         )
         assert report["blinding"] == blinding
         assert report["runner"]["blinding"] == blinding
 
 
-def test_v2_confidence_interval_available_on_sufficient_sample(tmp_path):
+def test_current_confidence_interval_available_on_sufficient_sample(tmp_path):
     files = {"a.txt": b"alpha one\nalpha two\n"}
     repo, commit = _write_repo(tmp_path, files)
     file_sha = ev.digest(files["a.txt"])
     line1 = b"alpha one\n"
     tasks = []
     for i in range(20):
-        q = f"query number {i} alpha one"
+        q = "locate " + ev.digest(str(i).encode())
         tasks.append(
             {
                 "task_id": f"T{i:02d}",
                 "split": "eval",
                 "query": q,
                 "query_sha256": ev.digest(q.encode()),
+                "query_family_id": f"ci-{i}",
                 "answerable": True,
                 "gold": [
                     {
                         "path": "a.txt",
+                        "start_byte": 0,
+                        "end_byte": len(line1),
                         "start_line": 1,
                         "end_line": 1,
                         "file_sha256": file_sha,
@@ -908,11 +561,13 @@ def test_v2_confidence_interval_available_on_sufficient_sample(tmp_path):
             }
         )
     suite = {
-        "schema_version": 2,
-        "suite_id": "ci-v2",
+        "schema_version": ev.SCHEMA_VERSION,
+        "suite_id": "ci-current",
         "repository_commit": commit,
+        "comparison_contract": _v3_contract(),
         "routes": ["lexical", "hybrid"],
         "file_universe": [{"path": "a.txt", "file_sha256": file_sha}],
+        "file_universe_digest": ev.universe_digest([{"path": "a.txt", "file_sha256": file_sha}]),
         "tasks": tasks,
     }
     _, pack, _ = ev.validate_suite(repo, suite)
@@ -923,6 +578,8 @@ def test_v2_confidence_interval_available_on_sufficient_sample(tmp_path):
     def hit(rank):
         return {
             "path": "a.txt",
+            "start_byte": 0,
+            "end_byte": len(line1),
             "start_line": 1,
             "end_line": 1,
             "file_sha256": file_sha,
@@ -934,6 +591,8 @@ def test_v2_confidence_interval_available_on_sufficient_sample(tmp_path):
     def miss(rank):
         return {
             "path": "a.txt",
+            "start_byte": len(line1),
+            "end_byte": len(files["a.txt"]),
             "start_line": 2,
             "end_line": 2,
             "file_sha256": file_sha,
@@ -979,8 +638,9 @@ def test_v2_confidence_interval_available_on_sufficient_sample(tmp_path):
                 }
             )
     run = {
-        "schema_version": 2,
+        "schema_version": ev.SCHEMA_VERSION,
         "query_pack_sha256": ev.digest(ev.canonical(pack)),
+        "comparison_contract": _v3_contract(),
         "runner": {
             "name": "r",
             "revision": "r@1",
@@ -992,9 +652,10 @@ def test_v2_confidence_interval_available_on_sufficient_sample(tmp_path):
             "isolation_method": "separate suite access",
             "access_block_log": "verified",
         },
+        "captures": {"q0": _v3_capture("quanta")},
         "route_provenance": {
-            "lexical": {"system": "s", "model": "m", "model_revision": "r"},
-            "hybrid": {"system": "s", "model": "m", "model_revision": "r"},
+            "lexical": {"capture_id": "q0"},
+            "hybrid": {"capture_id": "q0"},
         },
         "results": results,
     }
@@ -1192,21 +853,23 @@ def test_qualified_uncertainty_contract_rejects_incomplete_or_forged_strata(monk
         (lambda s, r, f: r["results"][1]["timings"].update(query_latency_ms="fast"), "timing"),
         (lambda s, r, f: r.update(query_pack_sha256="0" * 64), "query pack hash mismatch"),
         (lambda s, r, f: s.update(suite_id="changed"), "query pack hash mismatch"),
-        (lambda s, r, f: r.__setitem__("schema_version", 1), "schema version mismatch"),
+        (lambda s, r, f: r.__setitem__("schema_version", 1), "unsupported runner schema"),
     ],
 )
-def test_v2_fails_closed_on_invalid_evidence(tmp_path, mutation, match):
-    repo, suite, run, suite_path, runner_path, files = fixture_v2(tmp_path)
+def test_current_fails_closed_on_invalid_evidence(tmp_path, mutation, match):
+    repo, suite, run, suite_path, runner_path, files = fixture_v3(tmp_path)
     mutation(suite, run, files)
     with pytest.raises(ev.EvidenceError, match=match):
-        record_v2(repo, suite, run, suite_path, runner_path)
+        record_v3(repo, suite, run, suite_path, runner_path)
 
 
-def test_v2_excluded_but_tracked_candidate_rejected(tmp_path):
-    repo, suite, run, suite_path, runner_path, files = fixture_v2(tmp_path)
+def test_current_excluded_but_tracked_candidate_rejected(tmp_path):
+    repo, suite, run, suite_path, runner_path, files = fixture_v3(tmp_path)
     file_sha, block_sha, tokens = _span_meta(files["excluded.txt"], 1, 1)
     run["results"][1]["candidates"][0] = {
         "path": "excluded.txt",
+        "start_byte": 0,
+        "end_byte": len(files["excluded.txt"]),
         "start_line": 1,
         "end_line": 1,
         "file_sha256": file_sha,
@@ -1218,14 +881,16 @@ def test_v2_excluded_but_tracked_candidate_rejected(tmp_path):
     for i, cand in enumerate(run["results"][1]["candidates"], start=1):
         cand["rank"] = i
     with pytest.raises(ev.EvidenceError, match="excluded from file universe"):
-        record_v2(repo, suite, run, suite_path, runner_path)
+        record_v3(repo, suite, run, suite_path, runner_path)
 
 
-def test_v2_gold_in_excluded_file_rejected(tmp_path):
-    repo, suite, run, suite_path, runner_path, files = fixture_v2(tmp_path)
+def test_current_gold_in_excluded_file_rejected(tmp_path):
+    repo, suite, run, suite_path, runner_path, files = fixture_v3(tmp_path)
     file_sha, block_sha, _ = _span_meta(files["excluded.txt"], 1, 1)
     suite["tasks"][0]["gold"][0] = {
         "path": "excluded.txt",
+        "start_byte": 0,
+        "end_byte": len(files["excluded.txt"]),
         "start_line": 1,
         "end_line": 1,
         "file_sha256": file_sha,
@@ -1233,43 +898,26 @@ def test_v2_gold_in_excluded_file_rejected(tmp_path):
         "grade": 2,
     }
     with pytest.raises(ev.EvidenceError, match="excluded from file universe"):
-        record_v2(repo, suite, run, suite_path, runner_path)
+        record_v3(repo, suite, run, suite_path, runner_path)
 
 
-def test_v2_unsafe_candidate_path_rejected(tmp_path):
-    repo, suite, run, suite_path, runner_path, files = fixture_v2(tmp_path)
+def test_current_unsafe_candidate_path_rejected(tmp_path):
+    repo, suite, run, suite_path, runner_path, files = fixture_v3(tmp_path)
     run["results"][1]["candidates"][0]["path"] = "../a.txt"
     with pytest.raises(ev.EvidenceError, match="unsafe repository path"):
-        record_v2(repo, suite, run, suite_path, runner_path)
+        record_v3(repo, suite, run, suite_path, runner_path)
 
 
-def test_v2_duplicate_line_spans_are_retained_and_credited_once(tmp_path):
-    repo, suite, run, suite_path, runner_path, files = fixture_v2(tmp_path)
-    dup = dict(run["results"][1]["candidates"][0])
-    dup["rank"] = 2
-    run["results"][1]["candidates"][1] = dup
-    run["results"][1]["candidates"][2]["rank"] = 3
-    loaded = record_v2(repo, suite, run, suite_path, runner_path)
-    report = ev.evaluate(*loaded, "lexical", "hybrid")
-    row = next(
-        row for row in report["per_query"] if row["task_id"] == "T1" and row["route"] == "hybrid"
-    )
-    assert row["candidates"] == 3
-    assert row["ndcg_at_10"] == pytest.approx(
-        (7.0 + 1.0 / math.log2(4)) / (7.0 + 1.0 / math.log2(3))
-    )
-
-
-def test_v2_error_result_with_candidates_rejected(tmp_path):
-    repo, suite, run, suite_path, runner_path, files = fixture_v2(tmp_path)
+def test_current_error_result_with_candidates_rejected(tmp_path):
+    repo, suite, run, suite_path, runner_path, files = fixture_v3(tmp_path)
     run["results"][1]["status"] = "error"
     run["results"][1]["error"] = {"code": "E", "message": "m"}
     with pytest.raises(ev.EvidenceError, match="cannot contain candidates"):
-        record_v2(repo, suite, run, suite_path, runner_path)
+        record_v3(repo, suite, run, suite_path, runner_path)
 
 
-def test_v2_cli_freeze_evaluate_roundtrip(tmp_path, capsys):
-    repo, suite, run, suite_path, runner_path, _ = fixture_v2(tmp_path)
+def test_current_cli_freeze_evaluate_roundtrip(tmp_path, capsys):
+    repo, suite, run, suite_path, runner_path, _ = fixture_v3(tmp_path)
     suite_path.write_text(json.dumps(suite), encoding="utf-8")
     pack_path = tmp_path / "pack.json"
     report_path = tmp_path / "report.json"
@@ -1305,7 +953,7 @@ def test_v2_cli_freeze_evaluate_roundtrip(tmp_path, capsys):
         == 0
     )
     report = json.loads(report_path.read_text(encoding="utf-8"))
-    assert report["schema_version"] == 2
+    assert report["schema_version"] == ev.SCHEMA_VERSION
     assert report["rank_metrics"]["comparison"]["sample_count"] == 1
 
 
@@ -1317,7 +965,7 @@ def _admitted_rows(files: dict[str, bytes]) -> list[tuple[str, str]]:
 
 
 def test_mapping_proof_clean_and_mismatch_detected(tmp_path):
-    _repo, _suite, _run, _sp, _rp, files = fixture_v2(tmp_path)
+    _repo, _suite, _run, _sp, _rp, files = fixture_v3(tmp_path)
     corpus = tmp_path / "corpus"
     corpus.mkdir()
     for name, data in files.items():
@@ -2199,10 +1847,11 @@ def test_v3_rescore_is_deterministic_under_row_order(tmp_path):
     with pytest.raises(pairrun.RunError, match="projected pack"):
         pairrun.merge_records(repo, suite_path, [tampered_path, sem_path])
 
-    # V2 records are refused, not mistaken for v3.
-    _repo2, _suite2, run2, _sp2, _rp2, _files2 = fixture_v2(tmp_path / "era2")
-    run2_path = tmp_path / "run_v2.json"
-    run2_path.write_text(json.dumps(run2), encoding="utf-8")
+    # Old artifact stamps are refused before merge.
+    old_run = json.loads(lex_path.read_text(encoding="utf-8"))
+    old_run["schema_version"] = 2
+    run2_path = tmp_path / "old-run.json"
+    run2_path.write_text(json.dumps(old_run), encoding="utf-8")
     with pytest.raises(pairrun.RunError, match="v3 record required"):
         pairrun.merge_records(repo, suite_path, [run2_path, sem_path])
 
@@ -2300,6 +1949,7 @@ def _nextest_raw(count, *, proof=False):
             if proof and index == 0
             else f"test-{index}"
         )
+        rows.append({"type": "test", "event": "started", "name": name})
         rows.append({"type": "test", "event": "ok", "name": name})
     rows.append({"type": "suite", "event": "ok", "passed": count, "failed": 0, "ignored": 0})
     return b"".join(json.dumps(row).encode() + b"\n" for row in rows)
@@ -2346,7 +1996,10 @@ def _full_receipts(commit, binary_digest):
     py_bytes = json.dumps(py_results).encode()
     rs_bytes = json.dumps(rs_results).encode()
     sdk_bytes = json.dumps(sdk_results).encode()
-    py_raw = b'<testsuite tests="105" failures="0" errors="0" skipped="0" />\n'
+    py_cases = "".join(f'<testcase name="test_{index}"/>' for index in range(105))
+    py_raw = (
+        f'<testsuite tests="105" failures="0" errors="0" skipped="0">{py_cases}</testsuite>\n'
+    ).encode()
     rust_raw = _nextest_raw(40)
     sdk_nextest = _nextest_raw(6, proof=True)
     sdk_record = _sdk_raw_record(binary_digest)
@@ -2953,6 +2606,13 @@ def _pair_stage(
                 ),
                 "driver_source_closure_digest": driver_source_closure_digest,
                 "repetitions": repetitions,
+                "base_seed": 0,
+                "query_warmup_passes": 1,
+                "query_repetitions_per_root": 1,
+                "query_protocol_sha256s": [
+                    json.loads(Path(layout["query_protocol"]).read_text(encoding="utf-8"))["sha256"]
+                    for layout in rep_layouts
+                ],
             }
         ),
         encoding="utf-8",
@@ -3461,6 +3121,13 @@ def test_shared_query_protocol_is_deterministic_digest_bound_and_permuted():
     with pytest.raises(pairrun.RunError, match="sha256 mismatch"):
         pairrun.validate_query_protocol(mutated, task_ids, "protocol")
 
+    self_consistent_forgery = json.loads(json.dumps(first))
+    self_consistent_forgery["measurement_schedules"][0].reverse()
+    core = {key: value for key, value in self_consistent_forgery.items() if key != "sha256"}
+    self_consistent_forgery["sha256"] = pairrun._protocol_digest(core)
+    with pytest.raises(pairrun.RunError, match="deterministic seeded schedule"):
+        pairrun.validate_query_protocol(self_consistent_forgery, task_ids, "protocol")
+
     malformed = json.loads(json.dumps(first))
     malformed["measurement_schedules"][0][0] = 7
     with pytest.raises(pairrun.RunError, match="exact task permutation"):
@@ -3636,6 +3303,21 @@ def test_verdict_cannot_qualify_cold_only_latency_as_warm_performance(tmp_path, 
     )
 
 
+def test_verdict_rejects_nonconsecutive_or_unbound_root_protocols(tmp_path, monkeypatch):
+    monkeypatch.setattr(pairrun, "PILOT_OBSERVATIONS_FLOOR", 2)
+    monkeypatch.setattr(pairrun, "FRESH_ROOTS_FLOOR", 1)
+    st = _pair_stage(tmp_path, repetitions=2, scope="qualified", claims={"speed": True})
+    protocol_path = st["stage"] / "protocol-lock.json"
+    protocol = json.loads(protocol_path.read_text(encoding="utf-8"))
+    protocol["base_seed"] += 1
+    protocol_path.write_text(json.dumps(protocol), encoding="utf-8")
+    verdict = _stage_verdict(st)
+    assert verdict["states"]["PERF_QUALIFIED"] == "fail"
+    assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == (
+        "query_protocol_root_sequence_unverified"
+    )
+
+
 def test_source_closure_driver_uses_canonical_capture_and_verify_commands(tmp_path, monkeypatch):
     observed = []
 
@@ -3667,6 +3349,7 @@ def test_retrieval_source_closure_profile_covers_authority_surfaces():
         "Justfile",
         "docs/plans/sep-23-retrieval-bench",
         "tools/benchmark/retrieval",
+        "tools/ci/nextest_events.py",
         "tools/ci/source_closure.py",
         "tools/ci/tests/test_retrieval_benchmark.py",
         "tools/ci/tests/test_retrieval_contract_proof.py",
@@ -4383,28 +4066,45 @@ def test_v3_load_evaluate_roundtrip_and_schema_conformance(tmp_path):
     assert report["sample_count"] == 2
 
 
-def test_v3_refuses_v2_artifacts_as_v3(tmp_path):
-    repo, suite2, run2, _sp, _rp, _files = fixture_v2(tmp_path / "era2")
-    # Exact version dispatch: v2 loads as v2, never as v3.
-    loaded, _, _ = ev.validate_suite(repo, suite2)
-    assert loaded["schema_version"] == 2
-    with pytest.raises(ev.EvidenceError, match="comparison_contract"):
-        ev._validate_suite_v3(repo, suite2)
-    repo3, suite3, run3, suite_path3, runner_path3, _ = fixture_v3(tmp_path / "era3")
-    suite2_path = tmp_path / "suite_v2.json"
-    run2_path = tmp_path / "run_v2.json"
-    suite2_path.write_text(json.dumps(suite2), encoding="utf-8")
-    run2_path.write_text(json.dumps(run2), encoding="utf-8")
-    suite_path3.write_text(json.dumps(suite3), encoding="utf-8")
-    runner_path3.write_text(json.dumps(run3), encoding="utf-8")
-    with pytest.raises(ev.EvidenceError, match="schema version mismatch"):
-        ev.load_evidence(repo, suite2_path, runner_path3)
-    with pytest.raises(ev.EvidenceError, match="schema version mismatch"):
-        ev.load_evidence(repo3, suite_path3, run2_path)
+@pytest.mark.parametrize("old_version", [1, 2, 4])
+def test_current_refuses_old_or_unknown_artifact_stamps(tmp_path, old_version):
+    repo, suite, run, suite_path, runner_path, _ = fixture_v3(tmp_path)
+    old_suite = dict(suite, schema_version=old_version)
+    with pytest.raises(ev.EvidenceError, match="unsupported suite schema"):
+        ev.validate_suite(repo, old_suite)
     with pytest.raises(jsonschema.ValidationError):
-        jsonschema.validate(run2, _load_schema("runner.schema.json"))
+        jsonschema.validate(old_suite, _load_schema("suite.schema.json"))
+
+    suite_path.write_text(json.dumps(suite), encoding="utf-8")
+    old_run = dict(run, schema_version=old_version)
+    runner_path.write_text(json.dumps(old_run), encoding="utf-8")
+    with pytest.raises(ev.EvidenceError, match="unsupported runner schema"):
+        ev.load_evidence(repo, suite_path, runner_path)
     with pytest.raises(jsonschema.ValidationError):
-        jsonschema.validate(suite2, _load_schema("suite.schema.json"))
+        jsonschema.validate(old_run, _load_schema("runner.schema.json"))
+
+
+def test_current_refuses_legacy_shape_even_with_current_stamp(tmp_path):
+    repo, suite, run, suite_path, runner_path, _ = fixture_v3(tmp_path)
+    old_suite = {
+        "schema_version": ev.SCHEMA_VERSION,
+        "suite_id": suite["suite_id"],
+        "repository_commit": suite["repository_commit"],
+        "routes": suite["routes"],
+        "tasks": suite["tasks"],
+    }
+    with pytest.raises(ev.EvidenceError, match="missing fields"):
+        ev.validate_suite(repo, old_suite)
+    suite_path.write_text(json.dumps(suite), encoding="utf-8")
+    old_run = {
+        "schema_version": ev.SCHEMA_VERSION,
+        "query_pack_sha256": run["query_pack_sha256"],
+        "runner": run["runner"],
+        "results": run["results"],
+    }
+    runner_path.write_text(json.dumps(old_run), encoding="utf-8")
+    with pytest.raises(ev.EvidenceError, match="missing/unknown fields"):
+        ev.load_evidence(repo, suite_path, runner_path)
 
 
 def test_v3_refuses_unknown_fields(tmp_path):
@@ -4980,11 +4680,12 @@ def test_v3_byte_span_verification(tmp_path):
         "file_sha256": ev.digest("aé\nb\n".encode()),
         "block_sha256": "0" * 64,
         "tokens": 1,
+        "rank": 1,
     }
     with pytest.raises(ev.EvidenceError, match="cuts a UTF-8 boundary"):
-        ev.block(source, bad, "probe", candidate=True, byte_spans=True)
+        ev.block(source, bad, "probe", candidate=True)
     good = dict(bad, end_byte=4, block_sha256=ev.digest("aé\n".encode()), tokens=2)
-    assert ev.block(source, good, "probe", candidate=True, byte_spans=True)["tokens"] == 2
+    assert ev.block(source, good, "probe", candidate=True)["tokens"] == 2
 
 
 def test_v3_byte_coverage_decides_credit():
@@ -4998,10 +4699,6 @@ def test_v3_byte_coverage_decides_credit():
     shifted = dict(gold, start_byte=15, end_byte=25)
     assert ev.covers(shifted, gold) is False
     assert ev.covers(dict(gold, path="b"), gold) is False
-    # Line-only blocks (v1/v2 shape) keep line containment.
-    old_gold = {"path": "a", "start_line": 2, "end_line": 3}
-    assert ev.covers({"path": "a", "start_line": 2, "end_line": 3}, old_gold) is True
-    assert ev.covers({"path": "a", "start_line": 2, "end_line": 2}, old_gold) is False
 
 
 def test_v3_partial_bytes_earn_no_credit(tmp_path):
@@ -5183,10 +4880,9 @@ def test_fixture_span_vectors(tmp_path):
             "file_sha256": ev.digest(raw),
             "block_sha256": vector["block_sha256"],
             "tokens": vector["tokens"],
+            "rank": 1,
         }
-        checked = ev.block(
-            source, item, "fixture " + vector["name"], candidate=True, byte_spans=True
-        )
+        checked = ev.block(source, item, "fixture " + vector["name"], candidate=True)
         assert checked["tokens"] == vector["tokens"]
         if item["end_byte"] < len(raw):
             mutated = dict(
@@ -5199,7 +4895,7 @@ def test_fixture_span_vectors(tmp_path):
             mutated = dict(item, end_byte=item["end_byte"] + 1)
             match = "byte span runs past EOF"
         with pytest.raises(ev.EvidenceError, match=match):
-            ev.block(source, mutated, "fixture " + vector["name"], candidate=True, byte_spans=True)
+            ev.block(source, mutated, "fixture " + vector["name"], candidate=True)
 
 
 def test_fixture_split_leakage_mutants():

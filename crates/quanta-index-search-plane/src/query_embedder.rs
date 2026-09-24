@@ -5,8 +5,8 @@ use quanta_index_contract::lex::LexicalErrorCode;
 use quanta_index_core::{
     CoreError, EMBED_CHECKPOINT, ProviderAuditEventV1, ProviderBudgetLedger,
     ProviderSettlementKindV1, ProviderSettlementReceiptV1, ProviderSettlementUsageV1,
-    ProviderWorkEstimateV1, RequestBudgetV1, SemanticAdmissionEngine, SemanticEgressPolicyV1,
-    SemanticInputClass, SemanticPolicy, TextEmbeddingProvider,
+    ProviderWorkEstimateV1, RequestBudgetV1, RequestProviderStageV1, SemanticAdmissionEngine,
+    SemanticEgressPolicyV1, SemanticInputClass, SemanticPolicy, TextEmbeddingProvider,
 };
 
 /// Output dimension of the search-owned hash embedder.
@@ -272,12 +272,18 @@ impl ProviderBoundaryQueryEmbedder {
             &self.supervisor_id,
             budget.correlation(),
         )?;
+        budget.record_provider_stage_v1(RequestProviderStageV1::Started {
+            ticket_id: ticket.ticket_id,
+        });
         // A synchronous native provider can finish after the peer cancelled.
         // Reject its late vector before a Success receipt is committed.
         let embedded = self
             .inner
             .embed_query(query_text, budget)
             .and_then(|vector| budget.checkpoint(EMBED_CHECKPOINT).map(|()| vector));
+        budget.record_provider_stage_v1(RequestProviderStageV1::Returned {
+            ticket_id: ticket.ticket_id,
+        });
         match embedded {
             Ok(vector) => {
                 let outcome = quanta_index_core::EmbeddingOutcomeV1::from_local_vector(

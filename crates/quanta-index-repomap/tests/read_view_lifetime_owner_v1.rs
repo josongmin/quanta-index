@@ -31,10 +31,10 @@ use std::time::Duration;
 
 use quanta_index_catalog::SqliteCatalog;
 use quanta_index_contract::{
-    FileId, ManifestGeneration, RepoId, RepoMapActivateGenerationRequest, RepoMapExactnessSummary,
-    RepoMapFileNode, RepoMapGraphCoverage, RepoMapGraphCoverageClass, RepoMapItemIndexAvailability,
-    RepoMapNode, RepoMapQueryRequest, RepoMapRedactionState, RepoMapSourceBundle, RepoRelativePath,
-    RevisionId,
+    FileId, ManifestGeneration, RepoId, RepoMapActivateGenerationRequestV2,
+    RepoMapExactnessSummary, RepoMapFileNode, RepoMapGraphCoverage, RepoMapGraphCoverageClass,
+    RepoMapItemIndexAvailability, RepoMapMutationAck, RepoMapNode, RepoMapPublishBundleRequestV2,
+    RepoMapQueryRequest, RepoMapRedactionState, RepoMapSourceBundle, RepoRelativePath, RevisionId,
 };
 use quanta_index_core::{CoreError, PinnedRepoMapSnapshot, RepoMapSnapshotAcquireV1};
 use quanta_index_repomap::{RepoMapGcOutcomeV1, RepoMapGenerationStore};
@@ -92,15 +92,6 @@ fn bundle(repo_id: RepoId, generation: u64, marker: &str) -> RepoMapSourceBundle
     }))
 }
 
-fn activate_request(generation: u64) -> RepoMapActivateGenerationRequest {
-    RepoMapActivateGenerationRequest {
-        repo_id: repo(),
-        revision_id: revision(),
-        manifest_generation: ManifestGeneration::new(generation),
-        manifest_digest: producer_hex(&format!("g{generation}")),
-    }
-}
-
 fn acquire_request(repo_id: &RepoId, generation: u64) -> RepoMapSnapshotAcquireV1 {
     RepoMapSnapshotAcquireV1 {
         repo_id: repo_id.clone(),
@@ -150,9 +141,14 @@ fn fixture() -> Result<Fixture, Box<dyn Error>> {
 fn activate(
     store: &RepoMapGenerationStore,
     generation: u64,
-) -> Result<quanta_index_core::RepoMapMutationReceiptV1, CoreError> {
-    let _receipt = store.ingest_bundle(&bundle(repo(), generation, &format!("g{generation}")))?;
-    store.activate_generation(&activate_request(generation))
+) -> Result<RepoMapMutationAck, CoreError> {
+    let source = bundle(repo(), generation, &format!("g{generation}"));
+    let publish = RepoMapPublishBundleRequestV2::new(source.clone())
+        .map_err(|error| CoreError::InvalidContract(error.to_string()))?;
+    let _receipt = store.ingest_bundle_v2(&publish)?;
+    let request = RepoMapActivateGenerationRequestV2::for_bundle(&source)
+        .map_err(|error| CoreError::InvalidContract(error.to_string()))?;
+    Ok(store.activate_generation_v2(&request)?.mutation)
 }
 
 fn object_files(root: &Path) -> Vec<std::path::PathBuf> {
@@ -328,20 +324,27 @@ fn a_pinned_generation_cannot_be_republished_underneath_a_view() -> TestResult {
     let store = fixture.store.as_ref();
     let _first = activate(store, 1)?;
     let view = store.acquire_pinned(&acquire_request(&repo(), 1))?;
-    // Same logical identity, different bytes: the attach fence refuses.
+    // Same logical identity, different bytes: immutable candidate custody
+    // refuses before the attach fence; the pinned view stays unchanged.
     let err = store
-        .ingest_bundle(&bundle(repo(), 1, "g1-replacement"))
+        .ingest_bundle_v2(&RepoMapPublishBundleRequestV2::new(bundle(
+            repo(),
+            1,
+            "g1-replacement",
+        ))?)
         .unwrap_err();
     match err {
-        CoreError::InvalidContract(message) => {
-            assert!(message.contains("pinned by an in-flight read"), "{message}");
-        }
-        CoreError::Typed { .. }
+        CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::CandidateCommitmentConflict,
+            ..
+        } => {}
+        CoreError::InvalidContract(_)
+        | CoreError::Typed { .. }
         | CoreError::NotReady(_)
         | CoreError::NotImplemented(_)
         | CoreError::NotFound(_)
         | CoreError::Storage(_) => {
-            unreachable!("a republish under a pin is a typed refusal")
+            unreachable!("a different request for one immutable candidate must conflict")
         }
     }
     // The view still serves the artifact it pinned.
@@ -349,7 +352,11 @@ fn a_pinned_generation_cannot_be_republished_underneath_a_view() -> TestResult {
     drop(view);
     // After release the pin gate no longer refuses; the catalog's own
     // content-bound CAS is then the authority over the republish.
-    let post_release = store.ingest_bundle(&bundle(repo(), 1, "g1-replacement"));
+    let post_release = store.ingest_bundle_v2(&RepoMapPublishBundleRequestV2::new(bundle(
+        repo(),
+        1,
+        "g1-replacement",
+    ))?);
     assert!(
         post_release.is_err(),
         "the catalog CAS still owns the conflict"
@@ -364,7 +371,11 @@ fn gc_leaves_the_active_head_and_sealed_future_generations_alone() -> TestResult
     let _first = activate(store, 1)?;
     let _second = activate(store, 2)?;
     // A sealed-but-not-activated future generation must survive GC.
-    let _g3 = store.ingest_bundle(&bundle(repo(), 3, "g3"))?;
+    let _g3 = store.ingest_bundle_v2(&RepoMapPublishBundleRequestV2::new(bundle(
+        repo(),
+        3,
+        "g3",
+    ))?)?;
     let before = object_files(&fixture.root).len();
     assert_eq!(before, 3);
     let outcome = store.gc_retired_objects()?;
@@ -372,8 +383,16 @@ fn gc_leaves_the_active_head_and_sealed_future_generations_alone() -> TestResult
     assert_eq!(outcome.reclaimed, 1);
     assert_eq!(object_files(&fixture.root).len(), 2);
     // Churn in repo A never touches repo B's objects.
-    let _b7 = store.ingest_bundle(&bundle(other_repo(), 7, "b7"))?;
-    let _b8 = store.ingest_bundle(&bundle(other_repo(), 8, "b8"))?;
+    let _b7 = store.ingest_bundle_v2(&RepoMapPublishBundleRequestV2::new(bundle(
+        other_repo(),
+        7,
+        "b7",
+    ))?)?;
+    let _b8 = store.ingest_bundle_v2(&RepoMapPublishBundleRequestV2::new(bundle(
+        other_repo(),
+        8,
+        "b8",
+    ))?)?;
     let _view = store.acquire_pinned(&acquire_request(&repo(), 2))?;
     let outcome = store.gc_retired_objects()?;
     assert_eq!(outcome.reclaimed, 0);

@@ -26,7 +26,7 @@ use serde::{
 };
 use sha2::{Digest, Sha256};
 
-use super::lang::LanguageCode;
+use super::LanguageCode;
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ParseRoleTag {

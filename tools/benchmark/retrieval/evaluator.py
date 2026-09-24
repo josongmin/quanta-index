@@ -5,16 +5,7 @@ The runner consumes only the output of ``freeze``. Gold labels are read only by
 ``evaluate``. Hashes and a clean, pinned Git checkout bind every scored block
 to the repository contents; the evaluator never generates candidate results.
 
-Schema v2 (current) adds: optional graded relevance (0-3) and category per
-task, an optional canonical path+SHA file-universe allowlist, per-route
-provenance, runner blinding (isolated|attested) with isolation method and
-access-block log, typed non-success result statuses, measured timings with
-finite checks, and tokenizer/budget version binding. Schema v1 suites and
-runner records remain readable for migration; v1 requires both answerable and
-no-gold eval tasks while v2 permits an all-answerable external suite (the
-absent stratum reports ``not_applicable`` instead of invented tasks).
-
-Schema v3 (W0-A comparison-contract cutover) adds: a required comparison
+The sole accepted artifact shape is schema v3. It requires a comparison
 contract (top_k, tokenizer, budget version, output-unit policy) on the
 suite, the blinded query pack and every record, with byte-equality
 required between all three; per-capture provenance (chunk strategy and
@@ -24,14 +15,13 @@ each route referencing one ``capture_id``; and nullable timings where
 unknown latency is null and 0 asserts an actually measured zero. V3
 spans are byte spans with a consistency-checked line projection:
 coverage is byte containment, and a byte span that disagrees with its
-line bytes is refused. V3 suites require the file universe with a
+line bytes is refused. Suites require the file universe with a
 recomputed digest, per-task query families that must not span splits,
 normalized/shingle near-duplicate query refusal, and an explicit
 rationale-backed allowlist for any cross-split span overlap. Executed
 timeouts must carry their measured duration, and duplicate candidate
-byte spans are refused. V1/v2 artifacts still load for migration but
-are never valid v3: version dispatch is exact, so a v2 artifact is
-validated as v2 and refused wherever v3 is required.
+byte spans are refused. Older or unknown artifact stamps are rejected;
+there is no migration reader or alternate scoring path.
 
 Freeze output never contains gold spans, grades, answerability bits, or train
 tasks. Score computation depends only on recorded candidates and statuses,
@@ -53,8 +43,6 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 SCHEMA_VERSION = 3
-SUITE_VERSIONS = (1, 2, 3)
-RUNNER_VERSIONS = (1, 2, 3)
 BUDGETS = (2000, 4000, 8000, 16000)
 TOKENIZER = "qi-regex-v1"
 TOKENIZER_BUDGET_VERSION = "qb-v1"
@@ -161,7 +149,7 @@ def strict_bool(value: Any, where: str) -> bool:
 
 
 def nullable_timing(value: Any, where: str) -> float | None:
-    """V3 timing: null means unknown, 0 asserts an actually measured zero."""
+    """Null means unknown; 0 asserts an actually measured zero."""
     if value is None:
         return None
     return finite_timing(value, where)
@@ -351,7 +339,6 @@ class SourceSnapshot:
             raise EvidenceError(f"tracked source inventory unavailable: {exc}") from exc
         self.tracked = set(listing.rstrip("\0").split("\0"))
         self.files: dict[str, tuple[bytes, list[bytes], str]] = {}
-        self.blocks: dict[tuple[str, int, int], tuple[str, int]] = {}
 
     def file(self, name: str) -> tuple[bytes, list[bytes], str]:
         if name not in self.files:
@@ -359,23 +346,6 @@ class SourceSnapshot:
             raw = absolute.read_bytes()
             self.files[name] = (raw, raw.splitlines(keepends=True), digest(raw))
         return self.files[name]
-
-    def block_data(self, name: str, start: int, end: int) -> tuple[str, int]:
-        key = (name, start, end)
-        if key not in self.blocks:
-            _, lines, _ = self.file(name)
-            require(end <= len(lines), f"block spans beyond EOF: {name}:{start}-{end}")
-            selected = b"".join(lines[start - 1 : end])
-            try:
-                text = selected.decode("utf-8")
-            except UnicodeDecodeError as exc:
-                raise EvidenceError(
-                    f"block is not UTF-8 source text: {name}:{start}-{end}"
-                ) from exc
-            count = len(TOKEN_RE.findall(text))
-            require(count > 0, f"block contains no retrievable tokens: {name}:{start}-{end}")
-            self.blocks[key] = (digest(selected), count)
-        return self.blocks[key]
 
 
 def safe_path(source: SourceSnapshot, raw: Any) -> Path:
@@ -404,16 +374,18 @@ def block(
     candidate: bool,
     universe: set[str] | None = None,
     allow_grade: bool = False,
-    require_rank: bool = False,
-    byte_spans: bool = False,
 ) -> dict[str, Any]:
-    required = ["path", "start_line", "end_line", "file_sha256", "block_sha256"]
-    if byte_spans:
-        required.extend(["start_byte", "end_byte"])
+    required = [
+        "path",
+        "start_line",
+        "end_line",
+        "start_byte",
+        "end_byte",
+        "file_sha256",
+        "block_sha256",
+    ]
     if candidate:
-        required.append("tokens")
-    if require_rank:
-        required.append("rank")
+        required.extend(["tokens", "rank"])
     optional = ["grade"] if (allow_grade and not candidate) else []
     if optional:
         item = object_keys_optional(value, required, optional, where)
@@ -431,26 +403,23 @@ def block(
     )
     if universe is not None:
         require(path in universe, where + f" file excluded from file universe: {path}")
-    if byte_spans:
-        start_byte = nonnegative_int(item["start_byte"], where + ".start_byte")
-        end_byte = positive_int(item["end_byte"], where + ".end_byte")
-        require(end_byte > start_byte, where + " has an empty byte span")
-        require(end_byte <= len(raw), where + " byte span runs past EOF")
-        selected = raw[start_byte:end_byte]
-        try:
-            text = selected.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise EvidenceError(f"block byte span cuts a UTF-8 boundary: {where}") from exc
-        projected = b"".join(lines[start - 1 : end])
-        require(
-            selected == projected,
-            where + " byte span disagrees with its line projection",
-        )
-        block_digest = digest(selected)
-        count = len(TOKEN_RE.findall(text))
-        require(count > 0, where + " block contains no retrievable tokens")
-    else:
-        block_digest, count = source.block_data(path, start, end)
+    start_byte = nonnegative_int(item["start_byte"], where + ".start_byte")
+    end_byte = positive_int(item["end_byte"], where + ".end_byte")
+    require(end_byte > start_byte, where + " has an empty byte span")
+    require(end_byte <= len(raw), where + " byte span runs past EOF")
+    selected = raw[start_byte:end_byte]
+    try:
+        text = selected.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise EvidenceError(f"block byte span cuts a UTF-8 boundary: {where}") from exc
+    projected = b"".join(lines[start - 1 : end])
+    require(
+        selected == projected,
+        where + " byte span disagrees with its line projection",
+    )
+    block_digest = digest(selected)
+    count = len(TOKEN_RE.findall(text))
+    require(count > 0, where + " block contains no retrievable tokens")
     require(
         sha(item["block_sha256"], where + ".block_sha256") == block_digest,
         where + " block hash mismatch",
@@ -460,7 +429,7 @@ def block(
             positive_int(item["tokens"], where + ".tokens") == count,
             where + " token count mismatch",
         )
-    if require_rank:
+    if candidate:
         positive_int(item["rank"], where + ".rank")
     if "grade" in item:
         grade_value(item["grade"], where)
@@ -560,115 +529,32 @@ def _check_split_leakage(
                 )
 
 
-def _validate_suite_v1(
+def validate_suite(
     repo: Path, payload: Any
 ) -> tuple[dict[str, Any], dict[str, Any], SourceSnapshot]:
-    suite = object_keys(
-        payload, ["schema_version", "suite_id", "repository_commit", "routes", "tasks"], "suite"
-    )
-    require(
-        type(suite["schema_version"]) is int and suite["schema_version"] == 1,
-        "unsupported suite schema",
-    )
-    string(suite["suite_id"], "suite_id")
-    commit = suite["repository_commit"]
-    require(
-        isinstance(commit, str) and bool(COMMIT_RE.fullmatch(commit)),
-        "repository_commit must be a full lowercase Git SHA",
-    )
-    source = SourceSnapshot(repo, commit)
-    routes = suite["routes"]
-    require(
-        isinstance(routes, list) and len(routes) >= 2,
-        "suite requires at least two routes for ablation",
-    )
-    for route in routes:
-        string(route, "route")
-    require(len(set(routes)) == len(routes), "duplicate route")
-    tasks = suite["tasks"]
-    require(isinstance(tasks, list) and bool(tasks), "suite requires tasks")
-    seen_ids = set()
-    seen_queries = set()
-    eval_count = 0
-    gold_count = 0
-    no_gold_count = 0
-    labels_by_split: dict[str, set[tuple[str, int, int]]] = {"train": set(), "eval": set()}
-    for raw in tasks:
-        task = object_keys(
-            raw, ["task_id", "split", "query", "query_sha256", "answerable", "gold"], "task"
-        )
-        task_id = string(task["task_id"], "task_id")
-        require(task_id not in seen_ids, "duplicate task_id: " + task_id)
-        seen_ids.add(task_id)
-        require(task["split"] in ("train", "eval"), "invalid task split: " + task_id)
-        query = string(task["query"], "query")
-        query_hash = sha(task["query_sha256"], "query_sha256")
-        require(digest(query.encode("utf-8")) == query_hash, "query hash mismatch: " + task_id)
-        require(
-            query_hash not in seen_queries, "query leakage/duplication across tasks: " + task_id
-        )
-        seen_queries.add(query_hash)
-        require(type(task["answerable"]) is bool, "answerable must be boolean: " + task_id)
-        labels = task["gold"]
-        require(isinstance(labels, list), "gold must be a list: " + task_id)
-        require(task["answerable"] == bool(labels), "answerable/gold mismatch: " + task_id)
-        seen_labels = set()
-        for label in labels:
-            block(source, label, "gold label for " + task_id, candidate=False)
-            key = (label["path"], label["start_line"], label["end_line"])
-            require(key not in seen_labels, "duplicate gold label: " + task_id)
-            seen_labels.add(key)
-            labels_by_split[task["split"]].add(key)
-        if task["split"] == "eval":
-            eval_count += 1
-            gold_count += bool(labels)
-            no_gold_count += not bool(labels)
-    require(
-        eval_count > 0 and gold_count > 0 and no_gold_count > 0,
-        "eval split requires answerable and no-gold tasks",
-    )
-    _check_split_leakage(labels_by_split)
-    blinded = {
-        "schema_version": 1,
-        "suite_id": suite["suite_id"],
-        "suite_commitment_sha256": digest(canonical(suite)),
-        "repository_commit": commit,
-        "tokenizer": TOKENIZER,
-        "routes": routes,
-        "tasks": [
-            {
-                "task_id": task["task_id"],
-                "query": task["query"],
-                "query_sha256": task["query_sha256"],
-            }
-            for task in tasks
-            if task["split"] == "eval"
-        ],
-    }
-    return suite, blinded, source
-
-
-def _validate_suite_v2_v3(
-    repo: Path, payload: Any, version: int
-) -> tuple[dict[str, Any], dict[str, Any], SourceSnapshot]:
-    required = ["schema_version", "suite_id", "repository_commit", "routes", "tasks"]
-    optional = ["file_universe"]
-    if version == 3:
-        required.insert(3, "comparison_contract")
-        required.extend(["file_universe", "file_universe_digest"])
-        optional = ["leakage_allowlist"]
+    version = payload.get("schema_version") if isinstance(payload, dict) else None
+    require(type(version) is int and version == SCHEMA_VERSION, "unsupported suite schema")
+    required = [
+        "schema_version",
+        "suite_id",
+        "repository_commit",
+        "comparison_contract",
+        "routes",
+        "tasks",
+        "file_universe",
+        "file_universe_digest",
+    ]
     suite = object_keys_optional(
         payload,
         required,
-        optional,
+        ["leakage_allowlist"],
         "suite",
     )
     require(
-        type(suite["schema_version"]) is int and suite["schema_version"] == version,
+        type(suite["schema_version"]) is int and suite["schema_version"] == SCHEMA_VERSION,
         "unsupported suite schema",
     )
-    if version == 3:
-        validate_comparison_contract(suite["comparison_contract"], "suite.comparison_contract")
+    validate_comparison_contract(suite["comparison_contract"], "suite.comparison_contract")
     string(suite["suite_id"], "suite_id")
     commit = suite["repository_commit"]
     require(
@@ -681,19 +567,15 @@ def _validate_suite_v2_v3(
     for route in routes:
         string(route, "route")
     require(len(set(routes)) == len(routes), "duplicate route")
-    universe: set[str] | None = None
-    ordered_universe: list[dict[str, str]] = []
-    if "file_universe" in suite:
-        entries, ordered_universe = validate_file_universe(source, suite["file_universe"])
-        universe = set(entries)
-    if version == 3:
-        require(
-            sha(suite["file_universe_digest"], "file_universe_digest")
-            == universe_digest(ordered_universe),
-            "file universe digest mismatch",
-        )
+    entries, ordered_universe = validate_file_universe(source, suite["file_universe"])
+    universe = set(entries)
+    require(
+        sha(suite["file_universe_digest"], "file_universe_digest")
+        == universe_digest(ordered_universe),
+        "file universe digest mismatch",
+    )
     allowlist: frozenset[tuple[str, int, int]] = frozenset()
-    if version == 3 and "leakage_allowlist" in suite:
+    if "leakage_allowlist" in suite:
         allowlist = validate_leakage_allowlist(source, suite["leakage_allowlist"])
     tasks = suite["tasks"]
     require(isinstance(tasks, list) and bool(tasks), "suite requires tasks")
@@ -703,9 +585,15 @@ def _validate_suite_v2_v3(
     families: dict[str, set[str]] = {}
     queries: list[tuple[str, str]] = []
     labels_by_split: dict[str, set[tuple[str, int, int]]] = {"train": set(), "eval": set()}
-    task_required = ["task_id", "split", "query", "query_sha256", "answerable", "gold"]
-    if version == 3:
-        task_required.insert(4, "query_family_id")
+    task_required = [
+        "task_id",
+        "split",
+        "query",
+        "query_sha256",
+        "query_family_id",
+        "answerable",
+        "gold",
+    ]
     for raw in tasks:
         task = object_keys_optional(
             raw,
@@ -727,9 +615,8 @@ def _validate_suite_v2_v3(
         )
         seen_queries.add(query_hash)
         queries.append((task_id, query))
-        if version == 3:
-            family = string(task["query_family_id"], "query_family_id for " + task_id)
-            families.setdefault(family, set()).add(task["split"])
+        family = string(task["query_family_id"], "query_family_id for " + task_id)
+        families.setdefault(family, set()).add(task["split"])
         require(type(task["answerable"]) is bool, "answerable must be boolean: " + task_id)
         labels = task["gold"]
         require(isinstance(labels, list), "gold must be a list: " + task_id)
@@ -743,7 +630,6 @@ def _validate_suite_v2_v3(
                 candidate=False,
                 universe=universe,
                 allow_grade=True,
-                byte_spans=(version == 3),
             )
             key = (label["path"], label["start_line"], label["end_line"])
             require(key not in seen_labels, "duplicate gold label: " + task_id)
@@ -752,16 +638,15 @@ def _validate_suite_v2_v3(
         if task["split"] == "eval":
             eval_count += 1
     require(eval_count > 0, "eval split requires at least one task")
-    if version == 3:
-        for family, splits in sorted(families.items()):
-            require(
-                len(splits) == 1,
-                f"query family spans train and eval: {family}",
-            )
-        check_query_near_duplicates(queries)
+    for family, splits in sorted(families.items()):
+        require(
+            len(splits) == 1,
+            f"query family spans train and eval: {family}",
+        )
+    check_query_near_duplicates(queries)
     _check_split_leakage(labels_by_split, allowlist)
     blinded = {
-        "schema_version": version,
+        "schema_version": SCHEMA_VERSION,
         "suite_id": suite["suite_id"],
         "suite_commitment_sha256": digest(canonical(suite)),
         "repository_commit": commit,
@@ -779,199 +664,19 @@ def _validate_suite_v2_v3(
             if task["split"] == "eval"
         ],
     }
-    if version == 3:
-        blinded["comparison_contract"] = suite["comparison_contract"]
-        blinded["file_universe_digest"] = suite["file_universe_digest"]
+    blinded["comparison_contract"] = suite["comparison_contract"]
+    blinded["file_universe_digest"] = suite["file_universe_digest"]
     return suite, blinded, source
 
 
-def _validate_suite_v2(
-    repo: Path, payload: Any
-) -> tuple[dict[str, Any], dict[str, Any], SourceSnapshot]:
-    return _validate_suite_v2_v3(repo, payload, 2)
-
-
-def _validate_suite_v3(
-    repo: Path, payload: Any
-) -> tuple[dict[str, Any], dict[str, Any], SourceSnapshot]:
-    return _validate_suite_v2_v3(repo, payload, 3)
-
-
-def validate_suite(
-    repo: Path, payload: Any
-) -> tuple[dict[str, Any], dict[str, Any], SourceSnapshot]:
-    require(isinstance(payload, dict), "suite must be an object")
-    version = payload.get("schema_version")
-    require(type(version) is int and version in SUITE_VERSIONS, "unsupported suite schema")
-    if version == 1:
-        return _validate_suite_v1(repo, payload)
-    if version == 2:
-        return _validate_suite_v2(repo, payload)
-    return _validate_suite_v3(repo, payload)
-
-
-def _load_run_v1(
+def _validate_run(
     run: dict[str, Any],
     pack: dict[str, Any],
     suite: dict[str, Any],
     source: SourceSnapshot,
 ) -> dict[str, Any]:
     require(
-        type(run["schema_version"]) is int and run["schema_version"] == 1,
-        "unsupported runner schema",
-    )
-    require(
-        sha(run["query_pack_sha256"], "query_pack_sha256") == digest(canonical(pack)),
-        "runner query pack hash mismatch",
-    )
-    runner = object_keys(
-        run["runner"], ["name", "revision", "run_id", "tokenizer", "gold_access"], "runner"
-    )
-    for key in ("name", "revision", "run_id"):
-        string(runner[key], "runner." + key)
-    require(runner["tokenizer"] == TOKENIZER, "runner tokenizer mismatch")
-    require(
-        runner["gold_access"] is False, "runner attests gold access or lacks no-gold attestation"
-    )
-    results = run["results"]
-    require(isinstance(results, list), "results must be a list")
-    tasks = {task["task_id"]: task for task in suite["tasks"] if task["split"] == "eval"}
-    expected = {(task_id, route) for task_id in tasks for route in suite["routes"]}
-    found = set()
-    for raw in results:
-        result = object_keys(raw, ["task_id", "route", "abstain", "candidates"], "result")
-        key = (string(result["task_id"], "result.task_id"), string(result["route"], "result.route"))
-        require(key in expected and key not in found, f"unexpected/duplicate task route: {key}")
-        found.add(key)
-        require(type(result["abstain"]) is bool, f"abstain must be boolean: {key}")
-        candidates = result["candidates"]
-        require(isinstance(candidates, list), f"candidates must be a list: {key}")
-        require(
-            not result["abstain"] or not candidates, f"abstention cannot contain candidates: {key}"
-        )
-        require(result["abstain"] or bool(candidates), f"empty non-abstaining result: {key}")
-        seen_blocks = set()
-        for candidate in candidates:
-            block(source, candidate, f"candidate for {key}", candidate=True)
-            span = (candidate["path"], candidate["start_line"], candidate["end_line"])
-            require(span not in seen_blocks, f"duplicate candidate block: {key}")
-            seen_blocks.add(span)
-    require(found == expected, f"missing task route evidence: {sorted(expected - found)}")
-    return run
-
-
-def _load_run_v2(
-    run: dict[str, Any],
-    pack: dict[str, Any],
-    suite: dict[str, Any],
-    source: SourceSnapshot,
-) -> dict[str, Any]:
-    require(
-        type(run["schema_version"]) is int and run["schema_version"] == 2,
-        "unsupported runner schema",
-    )
-    require(
-        sha(run["query_pack_sha256"], "query_pack_sha256") == digest(canonical(pack)),
-        "runner query pack hash mismatch",
-    )
-    runner = object_keys(
-        run["runner"],
-        [
-            "name",
-            "revision",
-            "run_id",
-            "tokenizer",
-            "tokenizer_budget_version",
-            "gold_access",
-            "blinding",
-            "isolation_method",
-            "access_block_log",
-        ],
-        "runner",
-    )
-    for key in ("name", "revision", "run_id"):
-        string(runner[key], "runner." + key)
-    require(runner["tokenizer"] == TOKENIZER, "runner tokenizer mismatch")
-    require(
-        runner["tokenizer_budget_version"] == TOKENIZER_BUDGET_VERSION,
-        "runner tokenizer/budget version mismatch",
-    )
-    require(
-        runner["gold_access"] is False, "runner attests gold access or lacks no-gold attestation"
-    )
-    require(runner["blinding"] in BLINDING_VALUES, "runner blinding must be isolated or attested")
-    string(runner["isolation_method"], "runner.isolation_method")
-    string(runner["access_block_log"], "runner.access_block_log")
-    provenance = run["route_provenance"]
-    require(isinstance(provenance, dict), "route_provenance must be an object")
-    require(
-        set(provenance) == set(suite["routes"]),
-        f"route_provenance has missing/unknown routes: {sorted(set(provenance) ^ set(suite['routes']))}",
-    )
-    for route, entry in provenance.items():
-        item = object_keys(
-            entry, ["system", "model", "model_revision"], f"route_provenance.{route}"
-        )
-        for key in ("system", "model", "model_revision"):
-            string(item[key], f"route_provenance.{route}.{key}")
-    universe: set[str] | None = None
-    if "file_universe" in suite:
-        universe = {entry["path"] for entry in suite["file_universe"]}
-    results = run["results"]
-    require(isinstance(results, list), "results must be a list")
-    tasks = {task["task_id"]: task for task in suite["tasks"] if task["split"] == "eval"}
-    expected = {(task_id, route) for task_id in tasks for route in suite["routes"]}
-    found = set()
-    for raw in results:
-        result = object_keys(
-            raw, ["task_id", "route", "status", "candidates", "timings", "error"], "result"
-        )
-        key = (string(result["task_id"], "result.task_id"), string(result["route"], "result.route"))
-        require(key in expected and key not in found, f"unexpected/duplicate task route: {key}")
-        found.add(key)
-        status = result["status"]
-        require(status in RESULT_STATUSES, f"unknown result status for {key}: {status!r}")
-        candidates = result["candidates"]
-        require(isinstance(candidates, list), f"candidates must be a list: {key}")
-        timings = object_keys(result["timings"], ["query_latency_ms"], f"timings for {key}")
-        finite_timing(timings["query_latency_ms"], f"timings for {key}")
-        error = result["error"]
-        if status in SCORED_STATUSES:
-            require(error is None, f"error must be null for {status} result: {key}")
-            require(bool(candidates), f"empty non-abstaining result: {key}")
-        else:
-            require(not candidates, f"non-success result cannot contain candidates: {key}")
-            if status == "abstained":
-                require(error is None, f"error must be null for abstained result: {key}")
-            else:
-                item = object_keys(error, ["code", "message"], f"error for {key}")
-                string(item["code"], f"error.code for {key}")
-                string(item["message"], f"error.message for {key}")
-        for index, candidate in enumerate(candidates, start=1):
-            block(
-                source,
-                candidate,
-                f"candidate for {key}",
-                candidate=True,
-                universe=universe,
-                require_rank=True,
-            )
-            require(
-                candidate["rank"] == index,
-                f"duplicate/non-sequential candidate rank for {key}: expected {index}",
-            )
-    require(found == expected, f"missing task route evidence: {sorted(expected - found)}")
-    return run
-
-
-def _load_run_v3(
-    run: dict[str, Any],
-    pack: dict[str, Any],
-    suite: dict[str, Any],
-    source: SourceSnapshot,
-) -> dict[str, Any]:
-    require(
-        type(run["schema_version"]) is int and run["schema_version"] == 3,
+        type(run["schema_version"]) is int and run["schema_version"] == SCHEMA_VERSION,
         "unsupported runner schema",
     )
     require(
@@ -1081,8 +786,6 @@ def _load_run_v3(
                 f"candidate for {key}",
                 candidate=True,
                 universe=universe,
-                require_rank=True,
-                byte_spans=True,
             )
             require(
                 candidate["rank"] == index,
@@ -1105,40 +808,21 @@ def load_evidence(
     suite, pack, source = validate_suite(repo, read_json(suite_path))
     payload = read_json(runner_path)
     version = payload.get("schema_version") if isinstance(payload, dict) else None
-    require(type(version) is int and version in RUNNER_VERSIONS, "unsupported runner schema")
-    require(
-        version == suite["schema_version"],
-        "suite/runner schema version mismatch",
+    require(type(version) is int and version == SCHEMA_VERSION, "unsupported runner schema")
+    run = object_keys(
+        payload,
+        [
+            "schema_version",
+            "query_pack_sha256",
+            "comparison_contract",
+            "runner",
+            "captures",
+            "route_provenance",
+            "results",
+        ],
+        "runner record",
     )
-    if version == 1:
-        run = object_keys(
-            payload,
-            ["schema_version", "query_pack_sha256", "runner", "results"],
-            "runner record",
-        )
-        _load_run_v1(run, pack, suite, source)
-    elif version == 2:
-        run = object_keys(
-            payload,
-            ["schema_version", "query_pack_sha256", "runner", "route_provenance", "results"],
-            "runner record",
-        )
-        _load_run_v2(run, pack, suite, source)
-    else:
-        run = object_keys(
-            payload,
-            [
-                "schema_version",
-                "query_pack_sha256",
-                "comparison_contract",
-                "runner",
-                "captures",
-                "route_provenance",
-                "results",
-            ],
-            "runner record",
-        )
-        _load_run_v3(run, pack, suite, source)
+    _validate_run(run, pack, suite, source)
     verify_repo(repo, suite["repository_commit"])
     return suite, pack, run
 
@@ -1157,18 +841,10 @@ def selected(candidates: list[dict[str, Any]], budget: int) -> tuple[list[dict[s
 def covers(candidate: dict[str, Any], label: dict[str, Any]) -> bool:
     if candidate["path"] != label["path"]:
         return False
-    # Byte spans decide coverage whenever both sides carry them (v3);
-    # line spans are a consistency-checked projection only, so a window
-    # that cuts a line mid-way can never claim full-line credit.
-    keys = ("start_byte", "end_byte")
-    if all(k in candidate and k in label for k in keys):
-        return (
-            candidate["start_byte"] <= label["start_byte"]
-            and candidate["end_byte"] >= label["end_byte"]
-        )
+    # Line spans are only a checked projection; partial bytes earn no credit.
     return (
-        candidate["start_line"] <= label["start_line"]
-        and candidate["end_line"] >= label["end_line"]
+        candidate["start_byte"] <= label["start_byte"]
+        and candidate["end_byte"] >= label["end_byte"]
     )
 
 
@@ -1353,31 +1029,26 @@ def no_answer_delta_summary(
     }
 
 
-def _result_status(result: dict[str, Any], version: int) -> str:
-    if version == 1:
-        return "abstained" if result["abstain"] else "success"
+def _result_status(result: dict[str, Any]) -> str:
     return str(result["status"])
 
 
-def _result_latency(result: dict[str, Any], version: int) -> float | None:
-    if version == 1:
-        return None
+def _result_latency(result: dict[str, Any]) -> float | None:
     value = result["timings"]["query_latency_ms"]
     if value is None:
         return None
     return float(value)
 
 
-def _result_error_code(result: dict[str, Any], version: int) -> str | None:
-    if version == 1 or result.get("error") is None:
+def _result_error_code(result: dict[str, Any]) -> str | None:
+    if result["error"] is None:
         return None
     return str(result["error"]["code"])
 
 
-def _ordered_candidates(result: dict[str, Any], version: int) -> list[dict[str, Any]]:
+def _ordered_candidates(result: dict[str, Any]) -> list[dict[str, Any]]:
     candidates = list(result["candidates"])
-    if version in (2, 3):
-        candidates.sort(key=lambda c: int(c["rank"]))
+    candidates.sort(key=lambda c: int(c["rank"]))
     return candidates
 
 
@@ -1388,7 +1059,6 @@ def evaluate(
         baseline in suite["routes"] and candidate in suite["routes"] and baseline != candidate,
         "comparison routes must be distinct registered routes",
     )
-    version = int(suite["schema_version"])
     eval_tasks = {task["task_id"]: task for task in suite["tasks"] if task["split"] == "eval"}
     task_ids = sorted(eval_tasks)
     routes = list(suite["routes"])
@@ -1399,13 +1069,10 @@ def evaluate(
         all("grade" in label for label in eval_tasks[t]["gold"]) for t in answerable_ids
     )
     primary_metric = "ndcg_at_10" if graded else "recall_at_10"
-    if "file_universe" in suite:
-        ordered = sorted(suite["file_universe"], key=lambda e: str(e["path"]))
-        universe_digest: str | None = digest(canonical(ordered))
-    else:
-        universe_digest = None
+    ordered = sorted(suite["file_universe"], key=lambda e: str(e["path"]))
+    file_universe_digest = digest(canonical(ordered))
     output: dict[str, Any] = {
-        "schema_version": version,
+        "schema_version": SCHEMA_VERSION,
         "suite_id": suite["suite_id"],
         "suite_commitment_sha256": digest(canonical(suite)),
         "query_pack_sha256": digest(canonical(pack)),
@@ -1414,7 +1081,7 @@ def evaluate(
         "runner": run["runner"],
         "tokenizer": TOKENIZER,
         "tokenizer_budget_version": TOKENIZER_BUDGET_VERSION,
-        "file_universe_digest": universe_digest,
+        "file_universe_digest": file_universe_digest,
         "primary_metric": primary_metric,
         "graded": graded,
         "answerable_tasks": len(answerable_ids),
@@ -1422,14 +1089,12 @@ def evaluate(
         "sample_count": len(task_ids),
         "budgets": {},
     }
-    if version in (2, 3):
-        output["rank_metric_version"] = "rb-rank-v2-first-coverage"
-        output["route_provenance"] = run["route_provenance"]
-        output["blinding"] = run["runner"]["blinding"]
-    if version == 3:
-        output["comparison_contract"] = run["comparison_contract"]
-        output["captures"] = run["captures"]
-    # Budgeted BCY view (v1-compatible numbers, NA-aware for v2 strata).
+    output["rank_metric_version"] = "rb-rank-v2-first-coverage"
+    output["route_provenance"] = run["route_provenance"]
+    output["blinding"] = run["runner"]["blinding"]
+    output["comparison_contract"] = run["comparison_contract"]
+    output["captures"] = run["captures"]
+    # Budgeted BCY view.
     for budget in BUDGETS:
         per_route: dict[str, Any] = {}
         successes: dict[str, dict[str, bool]] = {}
@@ -1447,12 +1112,12 @@ def evaluate(
             for task_id in task_ids:
                 task = eval_tasks[task_id]
                 result = results[(task_id, route)]
-                status = _result_status(result, version)
+                status = _result_status(result)
                 status_counts[status] = status_counts.get(status, 0) + 1
-                latency = _result_latency(result, version)
+                latency = _result_latency(result)
                 if latency is not None:
                     latencies.append(latency)
-                candidates = _ordered_candidates(result, version)
+                candidates = _ordered_candidates(result)
                 chosen, used = selected(candidates, budget)
                 consumed += used
                 labels = task["gold"]
@@ -1542,16 +1207,16 @@ def evaluate(
         status_counts: dict[str, int] = {}
         for task_id in task_ids:
             result = results[(task_id, route)]
-            status = _result_status(result, version)
+            status = _result_status(result)
             status_counts[status] = status_counts.get(status, 0) + 1
-            latency = _result_latency(result, version)
+            latency = _result_latency(result)
             if latency is not None:
                 latencies.append(latency)
             if task_id not in per_task_primary:
                 continue
             labels = eval_tasks[task_id]["gold"]
             if status in SCORED_STATUSES:
-                candidates = _ordered_candidates(result, version)
+                candidates = _ordered_candidates(result)
                 collapsed = collapse_by_file(candidates)
                 chunk_vals = {
                     f"recall_at_{k}": recall_at_k(candidates, labels, k) for k in RECALL_KS
@@ -1600,8 +1265,8 @@ def evaluate(
         (
             task_id,
             eval_tasks[task_id],
-            float(_result_status(results[(task_id, candidate)], version) == "abstained")
-            - float(_result_status(results[(task_id, baseline)], version) == "abstained"),
+            float(_result_status(results[(task_id, candidate)]) == "abstained")
+            - float(_result_status(results[(task_id, baseline)]) == "abstained"),
         )
         for task_id in no_gold_ids
     ]
@@ -1674,8 +1339,8 @@ def evaluate(
         labels = task["gold"]
         for route in sorted(routes):
             result = results[(task_id, route)]
-            status = _result_status(result, version)
-            candidates = _ordered_candidates(result, version)
+            status = _result_status(result)
+            candidates = _ordered_candidates(result)
             collapsed = collapse_by_file(candidates)
             if not labels:
                 row = {
@@ -1690,8 +1355,8 @@ def evaluate(
                     "mrr_at_10": NOT_APPLICABLE,
                     "ndcg_at_10": NOT_APPLICABLE,
                     "file_hit_at_10": NOT_APPLICABLE,
-                    "error_code": _result_error_code(result, version),
-                    "query_latency_ms": _result_latency(result, version),
+                    "error_code": _result_error_code(result),
+                    "query_latency_ms": _result_latency(result),
                 }
             elif status in SCORED_STATUSES:
                 row = {
@@ -1709,7 +1374,7 @@ def evaluate(
                     ),
                     "file_hit_at_10": bool(file_recall_at_k(candidates, labels, MRR_K) > 0),
                     "error_code": None,
-                    "query_latency_ms": _result_latency(result, version),
+                    "query_latency_ms": _result_latency(result),
                 }
             else:
                 row = {
@@ -1724,8 +1389,8 @@ def evaluate(
                     "mrr_at_10": 0.0,
                     "ndcg_at_10": (0.0 if graded else NOT_APPLICABLE),
                     "file_hit_at_10": False,
-                    "error_code": _result_error_code(result, version),
-                    "query_latency_ms": _result_latency(result, version),
+                    "error_code": _result_error_code(result),
+                    "query_latency_ms": _result_latency(result),
                 }
             rows.append(row)
     output["per_query"] = rows

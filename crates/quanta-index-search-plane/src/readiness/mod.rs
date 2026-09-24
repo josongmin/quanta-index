@@ -12,7 +12,7 @@
 //!   it extends), `ledger`, `retention_receipt`, `search_corpus_generation`,
 //!   `pair_digest`, `durable_fs`, `serde_support`, `errors`.
 //! - `auxiliary_store` — opening the store, startup reconciliation, restore
-//!   and legacy migration. Depends on `ledger`, the state modules, `keys`,
+//!   operations. Depends on `ledger`, the state modules, `keys`,
 //!   `search_corpus_generation`, `pair_digest`, `durable_fs`.
 //! - `ledger_apply` — how batches, deltas and channel ops land on the
 //!   ledger's auxiliary states. Depends on `ledger`, the state modules.
@@ -53,8 +53,7 @@ pub use crate::search_corpus_retention::{
 pub use activation_catalog::{ActivationCatalog, ActiveGenerationRecord};
 pub use aux_epoch::{AuxEpochRefusedError, AuxRead};
 pub use auxiliary_store::{
-    AuxiliaryAuthorityStore, LegacyAuxiliaryMigrationReceipt,
-    import_legacy_auxiliary_snapshots_readonly, restore_auxiliary_rows_into,
+    AuxiliaryAuthorityStore, restore_auxiliary_rows_into,
 };
 #[cfg(test)]
 pub(crate) use auxiliary_store::{ScriptedIndexBytesV1, TEST_INDEX_BYTES_PER_GENERATION};

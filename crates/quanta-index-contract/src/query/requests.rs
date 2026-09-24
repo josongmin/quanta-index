@@ -543,7 +543,8 @@ macro_rules! impl_hybrid_seed_query_request_serde {
                         .ok_or_else(|| de::Error::missing_field("semantic_query_text"))?,
                     generation,
                     generation_selector,
-                    dense_corpora: dense_corpora.unwrap_or_default(),
+                    dense_corpora: dense_corpora
+                        .ok_or_else(|| de::Error::missing_field("dense_corpora"))?,
                     top_k: top_k.ok_or_else(|| de::Error::missing_field("top_k"))?,
                 })
             }

@@ -96,8 +96,8 @@ impl PlaneDispatch<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>
             SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(_) => {
                 "control.rollback_corpus"
             }
-            SearchPlaneControlIpcRequest::RepoMapActivate(_) => "control.activate_repo_map_v1",
             SearchPlaneControlIpcRequest::RepoMapActivateV2(_) => "control.activate_repo_map_v2",
+            SearchPlaneControlIpcRequest::RepoMapActiveHeadV2(_) => "control.repo_map_active_head_v2",
             SearchPlaneControlIpcRequest::CurrentGeneration(_) => "control.current_generation",
             SearchPlaneControlIpcRequest::GenerationStatus(_) => "control.generation_status",
             SearchPlaneControlIpcRequest::MetricsSnapshot(_) => "control.metrics",
@@ -112,8 +112,8 @@ impl PlaneDispatch<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>
             SearchPlaneControlIpcResponse::Error(error) => Some(error.code),
             SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
-            | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
             | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
+            | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
@@ -153,7 +153,6 @@ impl PlaneDispatch<SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse>
             SearchPlaneIngestIpcRequest::PublishDirtyBatch(_) => "ingest.dirty",
             SearchPlaneIngestIpcRequest::PublishRuntimeCatalogBatch(_) => "ingest.runtime_catalog",
             SearchPlaneIngestIpcRequest::PublishStructuralBatch(_) => "ingest.structural",
-            SearchPlaneIngestIpcRequest::PublishRepoMapBundle(_) => "ingest.repo_map_v1",
             SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(_) => "ingest.repo_map_v2",
             SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(_) => "ingest.repo_meta",
             SearchPlaneIngestIpcRequest::PublishRepoDescriptionBatch(_) => {
@@ -174,7 +173,6 @@ impl PlaneDispatch<SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse>
             | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
             | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-            | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
             | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_) => None,

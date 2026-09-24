@@ -18,7 +18,8 @@ use quanta_index_core::{CoreError, SemanticGenerationContractV1};
 
 use crate::codec::{self, cbor_serde, decode_current_format, format_unsupported};
 
-pub(crate) const GENERATION_CONTRACT_VERSION: u32 = 2;
+/// Version 3 rejects pre-cutover unfinished generations before any write.
+pub(crate) const GENERATION_CONTRACT_VERSION: u32 = 3;
 
 /// Return `Err($variant(format!(...)))` when two contract fields disagree.
 ///
@@ -290,6 +291,33 @@ mod tests {
                 assert!(message.contains("rebuild"), "{message}");
             }
             other => panic!("a format-1 contract must be refused typed, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_format_2_contract_with_the_current_fields_is_refused_typed()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let previous = GenerationContract {
+            format_version: 2,
+            mode: BatchIngestMode::ReplaceGeneration,
+            base_generation: None,
+            model_id: "pre-cutover-model".to_string(),
+            model_version: Some("v1".to_string()),
+            dimension: 3,
+            distance_metric: "cosine".to_string(),
+            normalization: "l2_unit".to_string(),
+            required_corpora: vec!["RawCodeFallback".to_string()],
+            corpus_policy_digest: Some("semantic-source.v1".to_string()),
+        };
+        let bytes = previous.encode()?;
+        match GenerationContract::decode(&bytes) {
+            Err(CoreError::Typed { code, message }) => {
+                assert_eq!(code, FORMAT_UNSUPPORTED_CODE);
+                assert!(message.contains("format version 2"), "{message}");
+                assert!(message.contains("rebuild"), "{message}");
+            }
+            other => panic!("format-2 contract must be refused, got {other:?}"),
         }
         Ok(())
     }

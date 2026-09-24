@@ -26,19 +26,21 @@
 
 use std::error::Error;
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{Arc, Barrier};
+use std::thread;
 use std::time::Duration;
 
 use quanta_index_catalog::SqliteCatalog;
 use quanta_index_contract::{
-    FileId, ManifestGeneration, RepoId, RepoMapActivateGenerationRequest,
-    RepoMapActivateGenerationRequestV2, RepoMapExactnessSummary, RepoMapFileNode,
-    RepoMapGraphCoverage, RepoMapGraphCoverageClass, RepoMapItemIndexAvailability,
-    RepoMapMutationPhaseV2, RepoMapNode, RepoMapPublishBundleRequestV2, RepoMapQueryRequest,
-    RepoMapRedactionState, RepoMapSourceBundle, RepoRelativePath, RevisionId,
+    CandidateCommitmentV1, FileId, ManifestGeneration, RepoId, RepoMapActivateGenerationRequestV2,
+    RepoMapExpectedActiveV2,
+    RepoMapExactnessSummary, RepoMapFileNode, RepoMapGraphCoverage, RepoMapGraphCoverageClass,
+    RepoMapItemIndexAvailability, RepoMapMutationPhaseV2, RepoMapNode,
+    RepoMapPublishBundleRequestV2, RepoMapQueryRequest, RepoMapRedactionState, RepoMapSourceBundle,
+    RepoRelativePath, RevisionId,
 };
-use quanta_index_core::{CoreError, RepoMapMutationReceiptV1, RepoMapQuarantinePort};
-use quanta_index_repomap::{CandidateProjectionMetaV1, RepoMapGenerationStore};
+use quanta_index_core::{CoreError, RepoMapMutationCommit, RepoMapQuarantinePort};
+use quanta_index_repomap::{CandidateProjectionMeta, RepoMapGenerationStore};
 use tempfile::TempDir;
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -116,15 +118,6 @@ fn bundle(generation: u64, marker: &str) -> RepoMapSourceBundle {
     }))
 }
 
-fn activate_request(generation: u64) -> RepoMapActivateGenerationRequest {
-    RepoMapActivateGenerationRequest {
-        repo_id: repo(),
-        revision_id: revision(),
-        manifest_generation: ManifestGeneration::new(generation),
-        manifest_digest: producer_hex(&format!("g{generation}")),
-    }
-}
-
 struct Fixture {
     dir: TempDir,
     catalog: Arc<SqliteCatalog>,
@@ -154,8 +147,44 @@ fn publish(
     store: &RepoMapGenerationStore,
     generation: u64,
     marker: &str,
-) -> Result<RepoMapMutationReceiptV1, CoreError> {
-    store.ingest_bundle(&bundle(generation, marker))
+) -> Result<RepoMapMutationCommit, CoreError> {
+    let request = RepoMapPublishBundleRequestV2::new(bundle(generation, marker))
+        .map_err(|error| CoreError::InvalidContract(error.to_string()))?;
+    let mutation = store.ingest_bundle_v2(&request)?.mutation;
+    Ok(project_mutation(mutation))
+}
+
+fn activate(
+    store: &RepoMapGenerationStore,
+    generation: u64,
+) -> Result<RepoMapMutationCommit, CoreError> {
+    let mut request = RepoMapActivateGenerationRequestV2::for_bundle(&bundle(
+        generation,
+        &format!("g{generation}"),
+    ))
+    .map_err(|error| CoreError::InvalidContract(error.to_string()))?;
+    request.expected_active = store.active_head_token(&repo(), &revision())?;
+    let mutation = store.activate_generation_v2(&request)?.mutation;
+    Ok(project_mutation(mutation))
+}
+
+fn project_mutation(mutation: quanta_index_contract::RepoMapMutationAck) -> RepoMapMutationCommit {
+    RepoMapMutationCommit {
+        prior_candidate_commitment: mutation.prior_candidate_commitment,
+        new_candidate_commitment: mutation.new_candidate_commitment,
+        activation_epoch: mutation.activation_epoch,
+        terminal_sequence: mutation.terminal_sequence,
+        replayed: mutation.replayed,
+    }
+}
+
+fn expected_from_mutation(
+    mutation: &RepoMapMutationCommit,
+) -> Result<RepoMapExpectedActiveV2, Box<dyn Error>> {
+    let epoch = std::num::NonZeroU64::new(mutation.activation_epoch)
+        .ok_or_else(|| std::io::Error::other("activation epoch must be positive"))?;
+    let commitment = CandidateCommitmentV1::from_wire_str(&mutation.new_candidate_commitment)?;
+    Ok(RepoMapExpectedActiveV2::new(epoch, commitment))
 }
 
 fn query(store: &RepoMapGenerationStore, generation: u64) -> Result<(), CoreError> {
@@ -226,14 +255,18 @@ fn closed_transition_table_publish_activate_supersede_and_illegal_refusals() -> 
     }
 
     // Sealed -> Activated.
-    let activation = store.activate_generation(&activate_request(1))?;
+    let activation = activate(store, 1)?;
     assert!(!activation.replayed);
     assert_eq!(activation.activation_epoch, 1);
     assert!(activation.prior_candidate_commitment.is_none());
     assert!(query(store, 1).is_ok());
 
     // Activated -> (same) replay of the original activation receipt.
-    let replay_activation = store.activate_generation(&activate_request(1))?;
+    let replay_activation = store
+        .activate_generation_v2(&RepoMapActivateGenerationRequestV2::for_bundle(&bundle(
+            1, "g1",
+        ))?)?
+        .mutation;
     assert!(replay_activation.replayed);
     assert_eq!(
         replay_activation.terminal_sequence,
@@ -242,14 +275,19 @@ fn closed_transition_table_publish_activate_supersede_and_illegal_refusals() -> 
 
     // Activate a fresh generation: supersedes, binds prior commitment.
     let seal_two = publish(store, 2, "g2")?;
-    let supersede = store.activate_generation(&activate_request(2))?;
+    let supersede = activate(store, 2)?;
     assert!(!supersede.replayed);
     assert_eq!(supersede.activation_epoch, 2);
     assert_eq!(
         supersede.prior_candidate_commitment.as_deref(),
         Some(seal.new_candidate_commitment.as_str())
     );
-    let supersede_replay = store.activate_generation(&activate_request(2))?;
+    let supersede_replay = store
+        .activate_generation_v2(
+            &RepoMapActivateGenerationRequestV2::for_bundle(&bundle(2, "g2"))?
+                .with_expected_active(expected_from_mutation(&activation)?),
+        )?
+        .mutation;
     assert!(supersede_replay.replayed);
     assert_eq!(
         supersede_replay.prior_candidate_commitment, supersede.prior_candidate_commitment,
@@ -267,13 +305,13 @@ fn closed_transition_table_publish_activate_supersede_and_illegal_refusals() -> 
     drop(seal_two);
 
     // Activating an absent generation: typed NotFound.
-    let absent = store.activate_generation(&activate_request(9));
+    let absent = activate(store, 9);
     assert!(absent.is_err());
 
     // An empty manifest digest: refused before any mutation.
-    let mut bad_request = activate_request(2);
+    let mut bad_request = RepoMapActivateGenerationRequestV2::for_bundle(&bundle(2, "g2"))?;
     bad_request.manifest_digest = String::new();
-    assert!(store.activate_generation(&bad_request).is_err());
+    assert!(store.activate_generation_v2(&bad_request).is_err());
     Ok(())
 }
 
@@ -283,13 +321,9 @@ fn global_terminal_sequence_is_strictly_monotonic_across_operations() -> TestRes
     let store = fixture.store.as_ref();
     let sequences = vec![
         publish(store, 1, "g1")?.terminal_sequence,
-        store
-            .activate_generation(&activate_request(1))?
-            .terminal_sequence,
+        activate(store, 1)?.terminal_sequence,
         publish(store, 2, "g2")?.terminal_sequence,
-        store
-            .activate_generation(&activate_request(2))?
-            .terminal_sequence,
+        activate(store, 2)?.terminal_sequence,
     ];
     for (previous, following) in sequences.iter().zip(sequences.iter().skip(1)) {
         assert!(
@@ -351,6 +385,176 @@ fn v2_receipts_bind_full_bundle_and_replay_after_restart() -> TestResult {
     let mut expected_activate_replay = activate;
     expected_activate_replay.mutation.replayed = true;
     assert_eq!(activate_replay, expected_activate_replay);
+    Ok(())
+}
+
+#[test]
+fn v2_activation_replay_repairs_missing_in_process_projection() -> TestResult {
+    let fixture = fixture()?;
+    let source = bundle(1, "g1");
+    let published = fixture
+        .store
+        .ingest_bundle_v2(&RepoMapPublishBundleRequestV2::new(source.clone())?)?;
+    let commitment =
+        CandidateCommitmentV1::from_wire_str(&published.mutation.new_candidate_commitment)?;
+
+    // Model the boundary after the catalog commit but before the store's
+    // in-memory head projection is updated. A retry must derive the missing
+    // projection from the committed catalog outcome, not mint a new event.
+    let committed = fixture.catalog.activate_repomap_candidate(
+        source.repo_id.as_str(),
+        source.revision_id.as_str(),
+        source.manifest_generation.get(),
+        commitment.as_bytes(),
+        None,
+    )?;
+    assert!(!committed.replayed);
+    assert!(query(fixture.store.as_ref(), 1).is_err());
+
+    let replay = fixture
+        .store
+        .activate_generation_v2(&RepoMapActivateGenerationRequestV2::for_bundle(&source)?)?;
+    assert!(replay.mutation.replayed);
+    assert_eq!(
+        replay.mutation.terminal_sequence,
+        u64::try_from(committed.terminal_sequence)?
+    );
+    assert_eq!(replay.mutation.activation_epoch, committed.epoch);
+    assert_eq!(
+        fixture
+            .store
+            .activated_generation_for(&repo(), &revision())?,
+        Some(1)
+    );
+    query(fixture.store.as_ref(), 1)?;
+    Ok(())
+}
+
+#[test]
+fn concurrent_v2_activations_leave_projection_at_catalog_head() -> TestResult {
+    let fixture = fixture()?;
+    let first_source = bundle(1, "g1");
+    let second_source = bundle(2, "g2");
+    let _first_publish = fixture
+        .store
+        .ingest_bundle_v2(&RepoMapPublishBundleRequestV2::new(first_source.clone())?)?;
+    let _second_publish = fixture
+        .store
+        .ingest_bundle_v2(&RepoMapPublishBundleRequestV2::new(second_source.clone())?)?;
+    let first_request = RepoMapActivateGenerationRequestV2::for_bundle(&first_source)?;
+    let second_request = RepoMapActivateGenerationRequestV2::for_bundle(&second_source)?;
+    let start = Arc::new(Barrier::new(3));
+
+    let first_store = Arc::clone(&fixture.store);
+    let first_start = Arc::clone(&start);
+    let first = thread::spawn(move || {
+        let _started = first_start.wait();
+        first_store.activate_generation_v2(&first_request)
+    });
+    let second_store = Arc::clone(&fixture.store);
+    let second_start = Arc::clone(&start);
+    let second = thread::spawn(move || {
+        let _started = second_start.wait();
+        second_store.activate_generation_v2(&second_request)
+    });
+    let _started = start.wait();
+    let first_result = first
+        .join()
+        .map_err(|_panic| std::io::Error::other("first activation worker panicked"))?;
+    let second_result = second
+        .join()
+        .map_err(|_panic| std::io::Error::other("second activation worker panicked"))?;
+    assert!(first_result.is_ok() || second_result.is_ok());
+
+    let active = fixture
+        .catalog
+        .repomap_activation_row(repo().as_str(), revision().as_str())?
+        .ok_or_else(|| std::io::Error::other("catalog has no activated head"))?;
+    assert!(active.active);
+    assert_eq!(
+        fixture
+            .store
+            .activated_generation_for(&repo(), &revision())?,
+        Some(active.manifest_generation)
+    );
+    query(fixture.store.as_ref(), active.manifest_generation)?;
+    Ok(())
+}
+
+#[test]
+fn stale_prepared_activation_cannot_replace_newer_catalog_head() -> TestResult {
+    let fixture = fixture()?;
+    let stale_source = bundle(1, "stale");
+    let current_source = bundle(2, "current");
+    let _stale_publish = fixture
+        .store
+        .ingest_bundle_v2(&RepoMapPublishBundleRequestV2::new(stale_source.clone())?)?;
+    let _current_publish = fixture
+        .store
+        .ingest_bundle_v2(&RepoMapPublishBundleRequestV2::new(current_source.clone())?)?;
+    let current = fixture.store.activate_generation_v2(
+        &RepoMapActivateGenerationRequestV2::for_bundle(&current_source)?,
+    )?;
+    let before = fixture
+        .catalog
+        .repomap_activation_row(repo().as_str(), revision().as_str())?
+        .ok_or_else(|| std::io::Error::other("active catalog row missing"))?;
+    let sequence_before = fixture.catalog.sequence_allocator()?;
+
+    let stale = fixture.store.activate_generation_v2(
+        &RepoMapActivateGenerationRequestV2::for_bundle(&stale_source)?,
+    );
+    let stale = stale.expect_err("stale activation must not supersede catalog head");
+    assert_typed(
+        &stale,
+        quanta_index_contract::SearchPlaneErrorCodeV2::ActivationCasConflict,
+    );
+    let after = fixture
+        .catalog
+        .repomap_activation_row(repo().as_str(), revision().as_str())?
+        .ok_or_else(|| std::io::Error::other("active catalog row missing"))?;
+    assert_eq!(after, before);
+    assert_eq!(fixture.catalog.sequence_allocator()?, sequence_before);
+    assert_eq!(after.manifest_generation, 2);
+    assert_eq!(current.mutation.activation_epoch, after.epoch);
+    query(fixture.store.as_ref(), 2)?;
+    Ok(())
+}
+
+#[test]
+fn activation_replay_refuses_a_changed_prior_head_expectation() -> TestResult {
+    let fixture = fixture()?;
+    let source = bundle(1, "g1");
+    let _published = fixture
+        .store
+        .ingest_bundle_v2(&RepoMapPublishBundleRequestV2::new(source.clone())?)?;
+    let original = RepoMapActivateGenerationRequestV2::for_bundle(&source)?;
+    let committed = fixture.store.activate_generation_v2(&original)?;
+    let row_before = fixture
+        .catalog
+        .repomap_activation_row(repo().as_str(), revision().as_str())?
+        .ok_or_else(|| std::io::Error::other("active catalog row missing"))?;
+    let sequence_before = fixture.catalog.sequence_allocator()?;
+    let changed = original.with_expected_active(fixture.store.active_head_token(&repo(), &revision())?
+        .ok_or_else(|| std::io::Error::other("active token missing"))?);
+    let error = fixture
+        .store
+        .activate_generation_v2(&changed)
+        .expect_err("a changed prior expectation cannot borrow the original receipt");
+    assert_typed(
+        &error,
+        quanta_index_contract::SearchPlaneErrorCodeV2::ActivationCasConflict,
+    );
+    assert_eq!(
+        fixture
+            .catalog
+            .repomap_activation_row(repo().as_str(), revision().as_str())?,
+        Some(row_before),
+    );
+    assert_eq!(fixture.catalog.sequence_allocator()?, sequence_before);
+    let replay = fixture.store.activate_generation_v2(&RepoMapActivateGenerationRequestV2::for_bundle(&source)?)?;
+    assert!(replay.mutation.replayed);
+    assert_eq!(replay.mutation.terminal_sequence, committed.mutation.terminal_sequence);
     Ok(())
 }
 
@@ -444,47 +648,22 @@ fn v2_replay_refuses_corrupt_sealed_object() -> TestResult {
 }
 
 #[test]
-fn v1_replay_remains_compatible_and_cannot_upgrade_legacy_custody_to_v2() -> TestResult {
-    let fixture = fixture()?;
+fn legacy_projection_meta_without_strong_custody_is_refused() -> TestResult {
     let source = bundle(1, "g1");
-    let first = fixture.store.ingest_bundle(&source)?;
-    let durable_before = fixture
-        .catalog
-        .repomap_candidate_row("repo-p03", "rev-p03", 1)?
-        .expect("V1 publish sealed the candidate");
-    assert!(!durable_before.projection_meta.contains("manifest_digest"));
-    assert!(
-        !durable_before
-            .projection_meta
-            .contains("source_bundle_digest")
-    );
-
-    let replay = fixture.store.ingest_bundle(&source)?;
-    assert!(replay.replayed, "exact V1 replay must remain compatible");
-    assert_eq!(replay.terminal_sequence, first.terminal_sequence);
-    assert_eq!(
-        fixture
-            .catalog
-            .repomap_candidate_row("repo-p03", "rev-p03", 1)?
-            .expect("V1 replay preserved the candidate"),
-        durable_before
-    );
-
-    let strong_request = RepoMapPublishBundleRequestV2::new(source)?;
-    let upgrade_error = fixture
-        .store
-        .ingest_bundle_v2(&strong_request)
-        .expect_err("legacy V1 custody cannot be relabeled as a V2 strong publish");
+    let legacy_json = serde_json::json!({
+        "snapshot_id": source.snapshot_id,
+        "projection_version": source.projection_version,
+        "authority_digest": source.authority_digest,
+        "item_index_availability": source.graph_coverage.item_index_availability.as_code_str(),
+        "graph_coverage_class": source.graph_coverage.graph_coverage_class.as_code_str(),
+        "exactness_summary": source.exactness_summary.as_code_str(),
+        "redaction_state": source.redaction_state.as_code_str(),
+    });
+    let upgrade_error = CandidateProjectionMeta::from_json(&legacy_json.to_string())
+        .expect_err("legacy metadata without strong custody must be refused");
     assert_typed(
         &upgrade_error,
-        quanta_index_contract::SearchPlaneErrorCodeV2::CandidateCommitmentConflict,
-    );
-    assert_eq!(
-        fixture
-            .catalog
-            .repomap_candidate_row("repo-p03", "rev-p03", 1)?
-            .expect("V2 upgrade refusal preserved the legacy candidate"),
-        durable_before
+        quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
     );
     Ok(())
 }
@@ -496,31 +675,39 @@ fn v1_replay_remains_compatible_and_cannot_upgrade_legacy_custody_to_v2() -> Tes
 #[test]
 fn projection_meta_rejects_partial_or_malformed_v2_strong_custody() -> TestResult {
     let source = bundle(1, "g1");
-    let legacy_meta = CandidateProjectionMetaV1::from_bundle(&source);
-    let mut partial: serde_json::Value = serde_json::from_str(&legacy_meta.to_json()?)?;
-    partial["manifest_digest"] = serde_json::Value::String(source.manifest_digest);
-    let error = CandidateProjectionMetaV1::from_json(&serde_json::to_string(&partial)?)
+    let current_meta = CandidateProjectionMeta::from_bundle_with_source_digest(
+        &source,
+        RepoMapPublishBundleRequestV2::new(source.clone())?.source_bundle_digest,
+    );
+    let current_json = current_meta.to_json()?;
+    let mut partial: serde_json::Value = serde_json::from_str(&current_json)?;
+    let removed = partial
+        .as_object_mut()
+        .expect("metadata object")
+        .remove("source_bundle_digest");
+    assert!(removed.is_some());
+    let error = CandidateProjectionMeta::from_json(&serde_json::to_string(&partial)?)
         .expect_err("one strong-custody field without its pair is corrupt");
     assert_typed(
         &error,
         quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
     );
 
-    let mut wrong_types: serde_json::Value = serde_json::from_str(&legacy_meta.to_json()?)?;
+    let mut wrong_types: serde_json::Value = serde_json::from_str(&current_json)?;
     wrong_types["manifest_digest"] = serde_json::json!(7);
     wrong_types["source_bundle_digest"] = serde_json::json!(["sha256:invalid"]);
-    let error = CandidateProjectionMetaV1::from_json(&serde_json::to_string(&wrong_types)?)
-        .expect_err("present non-string strong-custody fields cannot decode as legacy custody");
+    let error = CandidateProjectionMeta::from_json(&serde_json::to_string(&wrong_types)?)
+        .expect_err("non-string strong-custody fields must refuse");
     assert_typed(
         &error,
         quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
     );
 
-    let mut malformed_digests: serde_json::Value = serde_json::from_str(&legacy_meta.to_json()?)?;
+    let mut malformed_digests: serde_json::Value = serde_json::from_str(&current_json)?;
     malformed_digests["manifest_digest"] = serde_json::json!("not-a-manifest-digest");
     malformed_digests["source_bundle_digest"] =
         serde_json::json!(format!("sha256:{}", "A".repeat(64)));
-    let error = CandidateProjectionMetaV1::from_json(&serde_json::to_string(&malformed_digests)?)
+    let error = CandidateProjectionMeta::from_json(&serde_json::to_string(&malformed_digests)?)
         .expect_err("malformed strong-custody digest strings must fail catalog decode");
     assert_typed(
         &error,
@@ -592,7 +779,7 @@ fn corruption_durable_invalidation_and_no_resurrection() -> TestResult {
     {
         let (_catalog, store) = open_fixture(&root)?;
         let _seal = publish(store.as_ref(), 1, "g1")?;
-        let _activated = store.as_ref().activate_generation(&activate_request(1))?;
+        let _activated = activate(store.as_ref(), 1)?;
         assert!(query(store.as_ref(), 1).is_ok());
     }
     // Corrupt the sealed object bytes in place.
@@ -619,7 +806,7 @@ fn corruption_durable_invalidation_and_no_resurrection() -> TestResult {
     // The corrupt object is gone (quarantined, not left to serve).
     assert!(!object_path.exists());
     // Re-activation of the invalidated candidate: typed refusal.
-    let refused = store.as_ref().activate_generation(&activate_request(1));
+    let refused = activate(store.as_ref(), 1);
     assert!(refused.is_err());
 
     // Repair publish of the same original bytes, restart: still no
@@ -667,7 +854,7 @@ fn quarantine_projection_exact_byte_replay_and_tombstone_discard() -> TestResult
     let root = dir.path().to_path_buf();
     let (catalog, store) = open_fixture(&root)?;
     let _sealed = publish(store.as_ref(), 1, "g1")?;
-    let _activated = store.as_ref().activate_generation(&activate_request(1))?;
+    let _activated = activate(store.as_ref(), 1)?;
     let object_path = find_single_object(&root.join("repo-map").join("objects").join("sha256"))?;
     let original = std::fs::read(&object_path)?;
     std::fs::remove_file(&object_path)?;
@@ -795,7 +982,7 @@ fn legacy_v1_root_refuses_mutation_typed_and_untouched() -> TestResult {
         &refused_v2,
         quanta_index_contract::SearchPlaneErrorCodeV2::StateRootFormatUnsupported,
     );
-    let refused_activate = store.as_ref().activate_generation(&activate_request(1));
+    let refused_activate = activate(store.as_ref(), 1);
     assert!(refused_activate.is_err());
     if let Err(error) = refused_activate {
         assert_typed(
@@ -822,15 +1009,12 @@ fn ack_binding_fields_carry_prior_new_commitment_epoch_sequence_replay() -> Test
     let first = publish(store, 1, "g1")?;
     assert!(first.prior_candidate_commitment.is_none());
     assert_eq!(first.activation_epoch, 0);
-    let activate_first = store.activate_generation(&activate_request(1))?;
+    let activate_first = activate(store, 1)?;
     assert_eq!(activate_first.activation_epoch, 1);
     let second = publish(store, 2, "g2")?;
-    assert_eq!(
-        second.prior_candidate_commitment.as_deref(),
-        Some(first.new_candidate_commitment.as_str())
-    );
-    assert_eq!(second.activation_epoch, 1);
-    let activate_second = store.activate_generation(&activate_request(2))?;
+    assert!(second.prior_candidate_commitment.is_none());
+    assert_eq!(second.activation_epoch, 0);
+    let activate_second = activate(store, 2)?;
     assert_eq!(activate_second.activation_epoch, 2);
     assert_eq!(
         activate_second.prior_candidate_commitment.as_deref(),
@@ -852,7 +1036,7 @@ fn restart_serves_the_activated_generation_with_identical_projection() -> TestRe
     {
         let (_catalog, store) = open_fixture(&root)?;
         let _sealed = publish(store.as_ref(), 1, "g1")?;
-        let _activated = store.as_ref().activate_generation(&activate_request(1))?;
+        let _activated = activate(store.as_ref(), 1)?;
     }
     let (_catalog, store) = open_fixture(&root)?;
     assert!(query(store.as_ref(), 1).is_ok());
@@ -946,7 +1130,7 @@ fn insecure_object_metadata_refuses_mutation_typed() -> TestResult {
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(&object_path, std::fs::Permissions::from_mode(0o644))?;
     }
-    let refused = store.as_ref().activate_generation(&activate_request(1));
+    let refused = activate(store.as_ref(), 1);
     assert!(refused.is_err());
     if let Err(error) = refused {
         assert!(

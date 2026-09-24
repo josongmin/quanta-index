@@ -131,6 +131,27 @@ The supported input is **producer-authored indexed material**, not an arbitrary 
 
 Commonality is at the **batch lifecycle** (scope mutations, canonical digest, resource preflight, idempotent publish, seal, receipt and CAS). Representation is deliberately separate: lexical chunks/symbols, semantic source records/cluster memberships, and other domain batches have different authority and validation. `SearchCorpusBatch` should remain the shared SDK gateway for search-corpus ingest; do not introduce a schema-free `Source`, universal `Document`, or pluggable chunker in the daemon. A new producer can map its own parser/chunker output to existing records without changing the SDK. A genuinely new searchable corpus kind, provenance field or ranking behavior requires explicit contract/daemon changes and migration proof.
 
-Two practical limits need tests before claiming broader extensibility: the default semantic derivation mode permits legacy chunk-text fallback when typed sources are absent, so inspect the resulting provenance/capability rather than assuming typed semantic quality; and `ChunkRecord` has `source_repo_id` while `SemanticSourceRecordV1` has no parallel field, so a multi-repository semantic-source producer needs an explicit authority/provenance design before it is declared supported. Neither limit alone proves a current production failure.
+Current working-tree `semantic_derive.rs` consumes only typed semantic sources; an empty typed-source set is a semantic no-op, not a chunk-text fallback. `ChunkRecord` has `source_repo_id` while `SemanticSourceRecordV1` has no parallel field, so a multi-repository semantic-source producer needs an explicit provenance decision. Re-freeze this concurrent source before implementation.
 
-When onboarding a second external producer, first add producer-local mapping and fixtures, then prove stable IDs/spans, deterministic batch digest, replacement/tombstone/delete behavior, typed-source validation, fallback/refusal mode, receipt replay and publish→activate→query→restart. Owners: `crates/quanta-index-contract/src/{channel/records.rs,ipc/ingest.rs,ipc/semantic_source.rs}` for shared input; `crates/quanta-index-sdk/src/lexical.rs` for the SDK gateway; `crates/quanta-index-search-plane/src/{semantic_derive.rs,ingest_dispatcher/search_corpus.rs}` for build behavior. Change these only for a demonstrated missing contract, not to accommodate a producer's private parsing algorithm.
+When onboarding a second external producer, first add producer-local mapping and fixtures, then prove stable IDs/spans, deterministic batch digest, replacement/tombstone/delete behavior, typed-source validation or explicit semantic no-op, receipt replay and publish→activate→query→restart. Owners: `crates/quanta-index-contract/src/{channel/records.rs,ipc/ingest.rs,ipc/semantic_source.rs}` for shared input; `crates/quanta-index-sdk/src/lexical.rs` for the SDK gateway; `crates/quanta-index-search-plane/src/{semantic_derive.rs,ingest_dispatcher/search_corpus.rs}` for build behavior. Change these only for a demonstrated missing contract, not to accommodate a producer's private parsing algorithm.
+
+## 9. Decision on optional source preparation
+
+Producer-owned **semantic** chunking remains the authority for code/HIR/cards: the index cannot infer parser symbols, graph ownership or card provenance from raw bytes. The earlier wording was too absolute for ordinary text sources. If Quanta is to accept raw Markdown/plain text from another producer, add an **optional preparation helper before `SearchCorpusBatch`** that emits both lexical chunks and typed `DocumentLeaf` semantic sources. The caller can still supply prebuilt records unchanged. The helper does not run inside `searchd`, mutate a generation, choose an embedding model or create a second ingest protocol. The detailed target is [source preparation RFC](sep-24-source-preparation-sdk-rfc.md).
+
+Proposed shape, not an implemented API:
+
+```rust
+let key = SourceKey::new("docs/guide.md", "guide-001")?;
+let prepared = source_prep::prepare_text(
+    TextSource::markdown(repo.clone(), revision.clone(), key, text)?,
+    &TextPreparationPolicy::v1(),
+)?;
+let batch = SearchCorpusBatch::replace_generation(repo, revision, generation, manifest_digest)
+    .replace_prepared(prepared)?;
+let receipt = client.search_corpus().publish(&batch)?;
+```
+
+Start with one maintained text policy; keep language/parser-specific code chunkers in their producers. The helper must produce exact UTF-8 byte and line spans for lexical chunks, typed semantic document leaves, deterministic IDs/order, bounded size and explicit policy identity bound by the producer into its manifest/scope digest. The existing wire does not independently attest that policy: document and test how the producer computes the digest before claiming reproducibility. A parse failure must not silently switch a semantic-code source to generic text chunks. Do not infer semantic code cards from raw text.
+
+Implement this helper only alongside a concrete raw-text producer/onboarding scenario; a library-only helper with no caller adds API maintenance without demonstrated value. Place it in a small producer-side module or separate prep crate if dependencies require it, then feed the existing SDK batch. Validate against independent fixtures for empty/Unicode/long text, stable IDs and spans, changed policy/content, scoped replacement/deletion, replay and query results. Do not touch `semantic_derive.rs` or the IPC contract unless one of those scenarios proves a missing server responsibility.

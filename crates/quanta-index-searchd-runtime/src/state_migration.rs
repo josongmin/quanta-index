@@ -1,15 +1,14 @@
-//! Concrete wiring for the offline `migrate-state` / `backup-state` /
-//! `restore-state` / `verify-state` commands (SEP-21 P10 / S21-11).
+//! Concrete wiring for the offline `backup-state` / `restore-state` /
+//! `verify-state` commands.
 //!
 //! This is the composition root for the offline surface: it is the only
-//! place that names [`SqliteCatalog`], [`SemanticAdapter`], the lexical
+//! place that names [`SqliteCatalog`], the lexical
 //! inventory and [`RepoMapGenerationStore`], and it hands them to the engine
-//! as the three ports `quanta_index_searchd::app::state_migration` declares.
+//! as the two ports `quanta_index_searchd::app::state_migration` declares.
 //! The engine itself never names an adapter, so its ordering and refusal
 //! rules are provable without a storage engine.
 //!
-//! The legacy semantic parser is linked **here only**; the daemon's boot path
-//! has no migrator and refuses a legacy root typed.
+//! The daemon's boot path refuses a legacy root typed.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -17,27 +16,22 @@ use std::time::Duration;
 
 use anyhow::Result;
 use quanta_index_catalog::{
-    CatalogSnapshotReceiptV1, SqliteCatalog, live_catalog_receipt, normalize_catalog_journal_mode,
-    snapshot_catalog_file, verify_snapshot,
+    CatalogSnapshotReceiptV1, SqliteCatalog, live_catalog_receipt, snapshot_catalog_file,
+    verify_snapshot,
 };
 use quanta_index_core::CoreError;
 use quanta_index_repomap::RepoMapGenerationStore;
-use quanta_index_search_plane::readiness::import_legacy_auxiliary_snapshots_readonly;
-use quanta_index_searchd::app::LegacySemanticJournalReaderV1;
 use quanta_index_searchd::app::runtime::StateRootLease;
-use quanta_index_searchd::app::semantic_boot;
 use quanta_index_searchd::app::state_format::{
-    EnvironmentStateMigrationFaultV1, LEGACY_SEMANTIC_JOURNAL_RELATIVE, STATE_ROOT_LEASE_FILE_NAME,
-    StateMigrationFaultPort,
+    EnvironmentStateMigrationFaultV1, StateMigrationFaultPort, refuse_legacy_state_root_v1,
 };
 use quanta_index_searchd::app::state_migration::{
-    CatalogFreezeV1, CatalogSnapshotPort, CatalogSnapshotV1, LegacyImportOutcomeV1,
-    LegacyStateImportPort, OfflineSourceSessionV1, OfflineStateCommandV1, OfflineStateOperationV1,
-    OfflineStateOutcomeV1, OfflineStateVerificationV1, StateRootDeepOpenPort,
-    StateRootDeepOpenReceiptV1, VerifyManifestKindV1, peek_verify_manifest_v1,
-    run_offline_backup_v1, run_offline_migrate_v1, run_offline_restore_v1, run_offline_verify_v1,
+    CatalogFreezeV1, CatalogSnapshotPort, CatalogSnapshotV1, OfflineSourceSessionV1,
+    OfflineStateCommandV1, OfflineStateOperationV1, OfflineStateOutcomeV1,
+    OfflineStateVerificationV1, StateRootDeepOpenPort, StateRootDeepOpenReceiptV1,
+    VerifyManifestKindV1, peek_verify_manifest_v1, run_offline_backup_v1, run_offline_restore_v1,
+    run_offline_verify_v1,
 };
-use quanta_index_semantic::SemanticAdapter;
 
 /// How long an offline catalog open waits on a held lock before answering
 /// typed; the daemon uses the same budget for the same reason.
@@ -77,197 +71,6 @@ fn map_receipt(receipt: &CatalogSnapshotReceiptV1) -> CatalogSnapshotV1 {
         byte_size: receipt.byte_size,
         table_rows: receipt.table_rows.clone(),
     }
-}
-
-/// The offline legacy importer: the only surface that links the legacy
-/// semantic journal parser and the legacy `RepoMap` layout.
-struct LegacyStateImporterV1;
-
-impl LegacyStateImportPort for LegacyStateImporterV1 {
-    fn import_legacy_into(
-        &self,
-        source_root: &Path,
-        staging_root: &Path,
-    ) -> Result<LegacyImportOutcomeV1, CoreError> {
-        let mut imported_records: u64 = 0;
-        let mut consumed_markers: Vec<String> = Vec::new();
-
-        // A V1 RepoMap snapshot is a materialized view, not the source graph
-        // bundle required by the current generation store. Copying its bytes
-        // into an inert namespace would publish a root with no active RepoMap
-        // while claiming that migration succeeded. Refuse such a root until
-        // the producer can replay its source bundle into current authority.
-        for name in quanta_index_searchd::app::state_format::LEGACY_REPOMAP_DIRECTORY_NAMES {
-            let legacy = source_root.join("repo-map").join(name);
-            refuse_unconvertible_legacy_repomap_v1(&legacy)?;
-        }
-        refuse_unconsumed_legacy_objects_v1(source_root)?;
-
-        if source_root.join(LEGACY_SEMANTIC_JOURNAL_RELATIVE).exists() {
-            let semantic_root = quanta_index_semantic::semantic_state_root(staging_root);
-            let adapter = SemanticAdapter::with_state_root(semantic_root.clone())?;
-            // Read-only open of the source journal: no lock, no receipt, no
-            // cleanup inside the source. The receipt lands in the staging
-            // semantic root only.
-            let reader = LegacySemanticJournalReaderV1::open(source_root.join("semantic"))?;
-            let outcome = semantic_boot::migrate_legacy_semantic_journal(
-                &reader,
-                &adapter,
-                &semantic_root,
-                adapter.window_policy(),
-            )?;
-            if let semantic_boot::SemanticMigrationOutcome::Migrated { imported } = outcome {
-                imported_records = imported_records
-                    .saturating_add(u64::try_from(imported).map_or(u64::MAX, |count| count));
-            }
-            consumed_markers.push(LEGACY_SEMANTIC_JOURNAL_RELATIVE.to_string());
-        }
-
-        // Staging schema migration (S21-11 step 5): the produced root gets a
-        // whole catalog from its first open, and its journal mode is
-        // normalized to the offline snapshot form so `verify-state` can read
-        // it without a shared-memory file.
-        let catalog = SqliteCatalog::open(staging_root, OFFLINE_CATALOG_BUSY_BUDGET)?;
-        let auxiliary =
-            import_legacy_auxiliary_snapshots_readonly(&source_root.join("authorities"), &catalog)?;
-        if let Some(receipt) = auxiliary {
-            imported_records = imported_records.saturating_add(receipt.rows_written);
-            for relative in
-                quanta_index_searchd::app::state_format::LEGACY_AUXILIARY_SNAPSHOT_RELATIVES
-            {
-                if std::fs::symlink_metadata(source_root.join(relative)).is_ok() {
-                    consumed_markers.push(relative.to_string());
-                }
-            }
-        }
-        let catalog_path = catalog.path().to_path_buf();
-        drop(catalog);
-        let _receipt = normalize_catalog_journal_mode(&catalog_path)?;
-
-        Ok(LegacyImportOutcomeV1 {
-            imported_records,
-            consumed_markers,
-        })
-    }
-}
-
-/// Refuse source data files this importer cannot convert.
-///
-/// A mixed root can carry a legacy marker alongside catalog/index authority.
-/// Seeing that marker must not permit publication of a smaller current root.
-fn refuse_unconsumed_legacy_objects_v1(source_root: &Path) -> Result<(), CoreError> {
-    fn visit(source_root: &Path, directory: &Path) -> Result<(), CoreError> {
-        let mut entries = std::fs::read_dir(directory)
-            .map_err(|error| {
-                CoreError::Storage(format!(
-                    "state migration: list legacy source {}: {error}",
-                    directory.display()
-                ))
-            })?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| {
-                CoreError::Storage(format!(
-                    "state migration: read legacy source {}: {error}",
-                    directory.display()
-                ))
-            })?;
-        entries.sort_by_key(std::fs::DirEntry::path);
-        for entry in entries {
-            let path = entry.path();
-            let relative = path.strip_prefix(source_root).map_err(|error| {
-                CoreError::Storage(format!(
-                    "state migration: relativize legacy object {}: {error}",
-                    path.display()
-                ))
-            })?;
-            let kind = entry.file_type().map_err(|error| {
-                CoreError::Storage(format!(
-                    "state migration: inspect legacy object {}: {error}",
-                    path.display()
-                ))
-            })?;
-            if kind.is_dir() {
-                visit(source_root, &path)?;
-                continue;
-            }
-            if !kind.is_file() {
-                return Err(CoreError::Typed {
-                    code: quanta_index_contract::SearchPlaneErrorCodeV2::StateRootInsecure,
-                    message: format!(
-                        "state migration: legacy source object {} is not a regular file",
-                        path.display()
-                    ),
-                });
-            }
-            let semantic_residue = source_root.join(LEGACY_SEMANTIC_JOURNAL_RELATIVE).is_file()
-                && (relative == Path::new("semantic/MIGRATED")
-                    || relative == Path::new("semantic/MIGRATED.lock"));
-            let convertible = relative == Path::new(STATE_ROOT_LEASE_FILE_NAME)
-                || semantic_residue
-                || relative == Path::new(LEGACY_SEMANTIC_JOURNAL_RELATIVE)
-                || quanta_index_searchd::app::state_format::LEGACY_AUXILIARY_SNAPSHOT_RELATIVES
-                    .iter()
-                    .any(|allowed| relative == Path::new(allowed));
-            if !convertible {
-                return Err(CoreError::Typed {
-                    code: quanta_index_contract::SearchPlaneErrorCodeV2::StateRootFormatUnsupported,
-                    message: format!(
-                        "state migration: legacy source object {} has no lossless converter",
-                        path.display()
-                    ),
-                });
-            }
-        }
-        Ok(())
-    }
-    visit(source_root, source_root)
-}
-
-/// Empty legacy layout directories are markers, not authority. Any entry is
-/// unconvertible without the original graph producer and must not be silently
-/// dropped from the produced current root.
-fn refuse_unconvertible_legacy_repomap_v1(source: &Path) -> Result<(), CoreError> {
-    let metadata = match std::fs::symlink_metadata(source) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => {
-            return Err(CoreError::Storage(format!(
-                "state migration: inspect legacy RepoMap directory {}: {error}",
-                source.display()
-            )));
-        }
-    };
-    if !metadata.is_dir() {
-        return Err(CoreError::Typed {
-            code: quanta_index_contract::SearchPlaneErrorCodeV2::StateRootInsecure,
-            message: format!(
-                "state migration: legacy RepoMap path {} is not a directory",
-                source.display()
-            ),
-        });
-    }
-    let mut entries = std::fs::read_dir(source).map_err(|error| {
-        CoreError::Storage(format!(
-            "state migration: read legacy RepoMap directory {}: {error}",
-            source.display()
-        ))
-    })?;
-    if let Some(entry) = entries.next() {
-        let entry = entry.map_err(|error| {
-            CoreError::Storage(format!(
-                "state migration: read legacy RepoMap entry in {}: {error}",
-                source.display()
-            ))
-        })?;
-        return Err(CoreError::Typed {
-            code: quanta_index_contract::SearchPlaneErrorCodeV2::StateRootFormatUnsupported,
-            message: format!(
-                "state migration: legacy RepoMap authority {} cannot be converted from materialized V1 snapshots; replay the producer source bundle into a current root",
-                entry.path().display()
-            ),
-        });
-    }
-    Ok(())
 }
 
 /// The deep open a produced root must survive before it is published.
@@ -324,8 +127,8 @@ pub fn run_offline_state_command_v1(
 ///
 /// Custody is established here, once per command, before the engine runs:
 /// a current root's session binds the daemon's own lease (a live owner
-/// fails that handover with the existing `STATE_ROOT_IN_USE`), while legacy
-/// and backup roots open under read-only custody that creates nothing
+/// fails that handover with the existing `STATE_ROOT_IN_USE`), while
+/// backup roots open under read-only custody that creates nothing
 /// inside the source.
 pub fn run_offline_state_command_with_v1(
     command: &OfflineStateCommandV1,
@@ -353,17 +156,6 @@ pub fn run_offline_state_command_with_v1(
                 fault,
             )?
         }
-        OfflineStateOperationV1::Migrate => {
-            let (session, destination) = migrate_session_v1(command)?;
-            run_offline_migrate_v1(
-                &session,
-                &destination,
-                &LegacyStateImporterV1,
-                &catalog,
-                &RootDeepOpenAdapter,
-                fault,
-            )?
-        }
         // `verify-state` names one root; its arm returns the verified
         // outcome directly rather than through a produced-root receipt, and
         // so it never requires a destination.
@@ -378,7 +170,7 @@ pub fn run_offline_state_command_with_v1(
 
 /// The destination one *producing* offline command requires.
 ///
-/// Only the three producing operations reach this, so a missing destination
+/// Only the two producing operations reach this, so a missing destination
 /// is refused typed here rather than reaching the engine.
 fn producing_destination_v1(
     command: &OfflineStateCommandV1,
@@ -414,18 +206,9 @@ fn backup_session_v1(
             ),
         });
     }
+    refuse_legacy_state_root_v1(&command.source_root)?;
     let lease = StateRootLease::acquire(&command.source_root)?;
     let session = OfflineSourceSessionV1::open_current(lease)?;
-    Ok((session, destination))
-}
-
-/// Custody for `migrate-state`: read-only custody of the legacy source.
-/// Nothing is created inside it.
-fn migrate_session_v1(
-    command: &OfflineStateCommandV1,
-) -> Result<(OfflineSourceSessionV1, std::path::PathBuf), CoreError> {
-    let destination = producing_destination_v1(command)?;
-    let session = OfflineSourceSessionV1::open_legacy_read_only(&command.source_root)?;
     Ok((session, destination))
 }
 
@@ -446,6 +229,7 @@ fn restore_session_v1(
 /// lease — a live owner fails that handover with the existing
 /// `STATE_ROOT_IN_USE`.
 fn verify_session_v1(command: &OfflineStateCommandV1) -> Result<OfflineSourceSessionV1, CoreError> {
+    refuse_legacy_state_root_v1(&command.source_root)?;
     match peek_verify_manifest_v1(&command.source_root)? {
         VerifyManifestKindV1::BackupRoot => {
             OfflineSourceSessionV1::open_produced_backup(&command.source_root)
@@ -465,14 +249,13 @@ pub fn render_offline_outcome_v1(
 ) -> String {
     match outcome {
         OfflineStateCommandOutcomeV1::Produced(produced) => format!(
-            "{}: {} -> {} objects={} catalog-rows={} manifest={} legacy-records={} sealed-generations={}",
+            "{}: {} -> {} objects={} catalog-rows={} manifest={} sealed-generations={}",
             command.operation.command_name(),
             command.source_root.display(),
             produced.destination_root.display(),
             produced.objects,
             produced.catalog_rows,
             produced.manifest_digest_hex,
-            produced.imported_legacy_records,
             produced.deep_open.sealed_generations,
         ),
         OfflineStateCommandOutcomeV1::Verified(verified) => format!(

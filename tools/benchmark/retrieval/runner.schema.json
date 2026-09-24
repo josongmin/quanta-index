@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://quanta-index.invalid/benchmark/retrieval/runner-v3",
   "title": "Frozen retrieval runner record v3 (W0-A comparison contract)",
-  "description": "V3 cutover: v2 records are never valid v3. Adds the comparison contract (top_k, tokenizer, budget version, output-unit policy), per-capture provenance with runner/searchd binary identity and generation/receipt binding, route->capture_id references, and nullable timings (unknown is null; 0 only when actually measured).",
+  "description": "Only accepted runner artifact shape. Carries the comparison contract, per-capture provenance with binary identity and generation/receipt binding, route->capture_id references, and nullable timings (unknown is null; 0 only when actually measured).",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "query_pack_sha256", "comparison_contract", "runner", "captures", "route_provenance", "results"],

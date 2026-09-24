@@ -948,7 +948,73 @@ def test_manifest_refuses_absolute_traversal_and_symlink_escape(tmp_path: Path) 
             bind_source=False,
         )
     )
-    assert any("daemon binary path escapes repository root" in item for item in messages)
+    assert any("daemon binary is not a regular archive" in item for item in messages)
+
+
+def test_manifest_refuses_in_repo_symlinked_evidence_and_binary(
+    tmp_path: Path,
+) -> None:
+    proof = _proof(tmp_path)
+    proof["binary_binding"] = "release-daemon"
+    payload = _manifest(tmp_path, proof)
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    for field, expected in (
+        (payload["artifacts"][0], "proof artifact is not a regular archive"),
+        (payload["daemon_binary"], "daemon binary is not a regular archive"),
+    ):
+        archive = tmp_path / field["path"]
+        mutable_copy = tmp_path / f"mutable-{archive.name}"
+        mutable_copy.write_bytes(archive.read_bytes())
+        archive.unlink()
+        archive.symlink_to(mutable_copy)
+        messages = _messages(
+            MODULE.check_manifest(
+                payload,
+                manifest_path=tmp_path / "proof.json",
+                proof=proof,
+                schema=schema,
+                root=tmp_path,
+                bind_source=False,
+            )
+        )
+        assert any(expected in message for message in messages), messages
+
+
+def test_manifest_refuses_in_repo_symlinked_dependency_archive(
+    tmp_path: Path,
+) -> None:
+    parent = _proof(tmp_path)
+    parent["id"] = "parent-proof"
+    child = _proof(tmp_path)
+    child["id"] = "child-proof"
+    child["dependencies"] = [parent["id"]]
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    parent_payload = _manifest(tmp_path, parent)
+    parent_bytes = (json.dumps(parent_payload, sort_keys=True) + "\n").encode()
+    digest = hashlib.sha256(parent_bytes).hexdigest()
+    relative = MODULE.proof_archive_relative_path(parent_payload, digest)
+    archive = tmp_path / relative
+    archive.parent.mkdir(parents=True)
+    mutable_copy = tmp_path / "mutable-parent.json"
+    mutable_copy.write_bytes(parent_bytes)
+    archive.symlink_to(mutable_copy)
+    child_payload = _manifest(tmp_path, child)
+    child_payload["dependency_receipts"] = [
+        {"proof_id": parent["id"], "path": relative, "sha256": digest}
+    ]
+
+    messages = _messages(
+        MODULE.check_manifest(
+            child_payload,
+            manifest_path=tmp_path / "child.json",
+            proof=child,
+            schema=schema,
+            root=tmp_path,
+            bind_source=False,
+            proof_by_id={parent["id"]: parent, child["id"]: child},
+        )
+    )
+    assert any("dependency receipt is unreadable" in message for message in messages), messages
 
 
 def test_dependency_closure_is_registry_driven_and_excludes_target() -> None:

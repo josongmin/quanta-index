@@ -23,9 +23,10 @@ use quanta_index_contract::{
 use quanta_index_core::{
     BATCH_DIGEST_MISMATCH_CODE, CoreError, FileContributorIngestPort, FileOwnershipIngestPort,
     IdempotencyKeyV1, IngestBatchBodyV1 as _, IngestResourcePolicy, RepoCommitRecencyIngestPort,
-    RepoDescriptionIngestPort, RepoMapBundleIngestPort, RepoMapMutationReceiptV1,
-    RepoMetaIngestPort, RepoTopicIngestPort, RequestBudgetV1, SearchCorpusIngestPort,
-    SemanticIngestPort, SemanticStreamWindowPolicy, TextEmbeddingProvider,
+    RepoDescriptionIngestPort, RepoMapBundleIngestPort,
+    RepoMetaIngestPort, RepoTopicIngestPort, RequestBudgetV1, RequestProviderStageV1,
+    RequestStageDiagnosticPortV1, SearchCorpusIngestPort, SemanticIngestPort,
+    SemanticStreamWindowPolicy, TextEmbeddingProvider,
 };
 use quanta_index_ipc::{canonical_batch_digest_v1, stamp_batch_digest_v1};
 
@@ -48,6 +49,15 @@ use crate::{Ledger, SEARCH_OWNED_SEMANTIC_DIMENSION, SnapshotRegistries, Snapsho
 
 type TestRes = Result<(), Box<dyn std::error::Error>>;
 
+#[derive(Debug, Default)]
+struct RecordingProviderStages(Mutex<Vec<RequestProviderStageV1>>);
+
+impl RequestStageDiagnosticPortV1 for RecordingProviderStages {
+    fn record_provider_stage_v1(&self, stage: RequestProviderStageV1) {
+        self.0.lock().expect("provider stage recorder").push(stage);
+    }
+}
+
 /// A route the test never expects to reach.
 struct Unreachable;
 
@@ -63,6 +73,7 @@ impl SearchCorpusIngestPort for Unreachable {
     fn publish_batch(
         &self,
         _batch: &SearchCorpusIngestBatch,
+        _budget: &RequestBudgetV1,
     ) -> Result<BatchPublishReceipt, CoreError> {
         Err(unreachable_route("search corpus"))
     }
@@ -142,8 +153,8 @@ impl StructuralIngestPort for Unreachable {
 impl RepoMapBundleIngestPort for Unreachable {
     fn ingest_bundle(
         &self,
-        _bundle: &RepoMapSourceBundle,
-    ) -> Result<RepoMapMutationReceiptV1, CoreError> {
+        _request: &RepoMapPublishBundleRequestV2,
+    ) -> Result<RepoMapTerminalReceiptV2, CoreError> {
         Err(unreachable_route("repo map bundle"))
     }
 }
@@ -254,9 +265,10 @@ impl SearchCorpusIngestPort for CountingSearchCorpus {
     fn publish_batch(
         &self,
         batch: &SearchCorpusIngestBatch,
+        budget: &RequestBudgetV1,
     ) -> Result<BatchPublishReceipt, CoreError> {
         let _prior = self.applies.fetch_add(1, Ordering::SeqCst);
-        self.inner.publish_batch(batch)
+        self.inner.publish_batch(batch, budget)
     }
 }
 
@@ -271,6 +283,7 @@ struct SearchCorpusFakes {
 fn search_corpus_materializer(
     catalog: Arc<MemoryIdempotencyCatalog>,
     authority_exact: bool,
+    build_from_unsealed: bool,
 ) -> (DirectSearchCorpusMaterializer, SearchCorpusFakes) {
     let lexical_builder = Arc::new(FakeSearchCorpusBuilder::default());
     let semantic_builder = Arc::new(FakeSemanticBuilder::default());
@@ -292,8 +305,16 @@ fn search_corpus_materializer(
             semantic_ingest: semantic_materializer,
             semantic_embedder: embedder_port,
             authority: authority.clone(),
-            lexical_generation_validator: always_valid_generation(),
-            semantic_generation_validator: always_valid_generation(),
+            lexical_generation_validator: if build_from_unsealed {
+                crate::ingest_dispatcher::tests::support::build_then_valid_generation()
+            } else {
+                always_valid_generation()
+            },
+            semantic_generation_validator: if build_from_unsealed {
+                crate::ingest_dispatcher::tests::support::build_then_valid_generation()
+            } else {
+                always_valid_generation()
+            },
             semantic_content_roots:
                 crate::content_roots_test_support::generation_keyed_content_roots(),
             lexical_incomplete_discard: test_incomplete_generation_discard(),
@@ -354,7 +375,6 @@ fn typed_code_of(
         | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
         | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
         | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
         | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_) => None,
@@ -375,7 +395,6 @@ fn receipt_of(response: SearchPlaneIngestIpcResponse) -> Result<BatchPublishRece
         | SearchPlaneIngestIpcResponse::FileContributorReceipt(_)
         | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
         | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
         | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)) => {
@@ -503,7 +522,7 @@ fn a_well_formed_but_wrong_digest_is_a_mismatch() -> TestRes {
 #[test]
 fn a_refused_search_corpus_batch_freezes_its_refusal() -> TestRes {
     let catalog = memory_catalog();
-    let (materializer, fakes) = search_corpus_materializer(Arc::clone(&catalog), false);
+    let (materializer, fakes) = search_corpus_materializer(Arc::clone(&catalog), false, false);
     let counting = Arc::new(CountingSearchCorpus::new(materializer));
     let dispatcher = search_corpus_dispatcher_with_port(counting.clone(), Arc::clone(&catalog));
     let budget = RequestBudgetV1::unbounded();
@@ -608,7 +627,7 @@ fn a_refused_search_corpus_batch_freezes_its_refusal() -> TestRes {
 #[test]
 fn a_resumed_sealed_batch_finalizes_without_re_embedding() -> TestRes {
     let catalog = memory_catalog();
-    let (materializer, fakes) = search_corpus_materializer(Arc::clone(&catalog), true);
+    let (materializer, fakes) = search_corpus_materializer(Arc::clone(&catalog), true, false);
     let dispatcher = search_corpus_dispatcher(materializer, Arc::clone(&catalog));
     let budget = RequestBudgetV1::unbounded();
 
@@ -673,10 +692,11 @@ fn a_resumed_sealed_batch_finalizes_without_re_embedding() -> TestRes {
 #[test]
 fn a_committed_replay_runs_no_preflight_apply_or_storage() -> TestRes {
     let catalog = memory_catalog();
-    let (materializer, fakes) = search_corpus_materializer(Arc::clone(&catalog), true);
+    let (materializer, fakes) = search_corpus_materializer(Arc::clone(&catalog), true, false);
     let counting = Arc::new(CountingSearchCorpus::new(materializer));
     let dispatcher = search_corpus_dispatcher_with_port(counting.clone(), Arc::clone(&catalog));
-    let budget = RequestBudgetV1::unbounded();
+    let stages = Arc::new(RecordingProviderStages::default());
+    let budget = RequestBudgetV1::unbounded().with_diagnostics(stages.clone());
 
     let batch = fixture_search_corpus_batch()?;
     let first = receipt_of(dispatcher.dispatch(
@@ -688,6 +708,17 @@ fn a_committed_replay_runs_no_preflight_apply_or_storage() -> TestRes {
     }
     if counting.preflights() != 1 || counting.applies() != 1 {
         return Err("the first publish runs preflight and apply exactly once".into());
+    }
+    let first_stages = stages
+        .0
+        .lock()
+        .map_err(|error| format!("provider stage recorder: {error}"))?
+        .clone();
+    if !first_stages.is_empty() {
+        return Err(format!(
+            "finalize-only publish must not emit provider stages: {first_stages:?}"
+        )
+        .into());
     }
     let builds_after_apply = fakes
         .lexical_builder
@@ -727,6 +758,14 @@ fn a_committed_replay_runs_no_preflight_apply_or_storage() -> TestRes {
         )
         .into());
     }
+    if *stages
+        .0
+        .lock()
+        .map_err(|error| format!("provider stage recorder: {error}"))?
+        != first_stages
+    {
+        return Err("journal replay must not issue provider stages".into());
+    }
 
     // A dispatcher whose routes cannot serve anything still answers the
     // replay from the journal alone.
@@ -742,6 +781,76 @@ fn a_committed_replay_runs_no_preflight_apply_or_storage() -> TestRes {
         )
         .into());
     }
+    if *stages
+        .0
+        .lock()
+        .map_err(|error| format!("provider stage recorder: {error}"))?
+        != first_stages
+    {
+        return Err("cold journal replay must not issue provider stages".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn ingest_dispatch_carries_provider_window_stages_and_replay_does_not() -> TestRes {
+    let catalog = memory_catalog();
+    let (materializer, fakes) = search_corpus_materializer(Arc::clone(&catalog), false, true);
+    let dispatcher = search_corpus_dispatcher(materializer, Arc::clone(&catalog));
+    let stages = Arc::new(RecordingProviderStages::default());
+    let budget = RequestBudgetV1::unbounded().with_diagnostics(stages.clone());
+    let batch = fixture_search_corpus_batch()?;
+
+    let first = receipt_of(dispatcher.dispatch(
+        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch.clone()),
+        &budget,
+    ))?;
+    if !first.applied {
+        return Err(format!("first ingest publish must apply: {first:?}").into());
+    }
+    let first_stages = stages
+        .0
+        .lock()
+        .map_err(|error| format!("provider stage recorder: {error}"))?
+        .clone();
+    if first_stages
+        != [
+            RequestProviderStageV1::IngestWindowStarted { window_ordinal: 1 },
+            RequestProviderStageV1::IngestWindowReturned { window_ordinal: 1 },
+        ]
+    {
+        return Err(format!("provider window stages differ: {first_stages:?}").into());
+    }
+    let calls = *fakes
+        .embedder
+        .calls
+        .lock()
+        .map_err(|error| format!("provider call recorder: {error}"))?;
+    if calls != 1 {
+        return Err(format!("one ingest provider call expected, got {calls}").into());
+    }
+
+    let replay = receipt_of(dispatcher.dispatch(
+        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch),
+        &budget,
+    ))?;
+    if replay.applied || replay.durable_sequence != first.durable_sequence {
+        return Err(format!("journal replay must not apply again: {replay:?}").into());
+    }
+    if *stages
+        .0
+        .lock()
+        .map_err(|error| format!("provider stage recorder: {error}"))?
+        != first_stages
+        || *fakes
+            .embedder
+            .calls
+            .lock()
+            .map_err(|error| format!("provider call recorder: {error}"))?
+            != calls
+    {
+        return Err("journal replay must not re-enter the provider boundary".into());
+    }
     Ok(())
 }
 
@@ -753,13 +862,6 @@ struct CountingRepoMap {
 
 impl RepoMapBundleIngestPort for CountingRepoMap {
     fn ingest_bundle(
-        &self,
-        _bundle: &RepoMapSourceBundle,
-    ) -> Result<RepoMapMutationReceiptV1, CoreError> {
-        Err(unreachable_route("repo map bundle"))
-    }
-
-    fn ingest_bundle_v2(
         &self,
         request: &RepoMapPublishBundleRequestV2,
     ) -> Result<RepoMapTerminalReceiptV2, CoreError> {
@@ -842,7 +944,6 @@ fn repomap_receipt_of(
         | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
         | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
         | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)) => {
             Err(format!("unexpected response {other:?}"))
@@ -921,7 +1022,6 @@ fn a_repomap_v2_publish_journals_once_and_replays_without_the_store() -> TestRes
         | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
         | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
         | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
         | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)) => {
@@ -932,32 +1032,9 @@ fn a_repomap_v2_publish_journals_once_and_replays_without_the_store() -> TestRes
         return Err("a forged digest must not reach the store".into());
     }
 
-    // The V1 bundle arm stays journal-free: its store error records
-    // nothing.
-    match dispatcher.dispatch(
-        SearchPlaneIngestIpcRequest::PublishRepoMapBundle(repomap_bundle_fixture()),
-        &budget,
-    ) {
-        SearchPlaneIngestIpcResponse::Error(_) => {}
-        other @ (SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
-        | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
-        | SearchPlaneIngestIpcResponse::FileOwnershipReceipt(_)
-        | SearchPlaneIngestIpcResponse::FileContributorReceipt(_)
-        | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
-        | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
-        | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
-        | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)) => {
-            return Err(format!("the V1 arm must error on the fake store, got {other:?}").into());
-        }
-    }
     if catalog.records() != records_before + 1 {
         return Err(format!(
-            "only the V2 publish journals: records={} before={records_before}",
+            "only the current publish journals: records={} before={records_before}",
             catalog.records()
         )
         .into());

@@ -66,14 +66,13 @@ pub use query_embedder::{
 };
 pub use readiness::{
     ActivationCatalog, ActiveGenerationRecord, AuxiliaryAuthorityStore, Ledger,
-    LegacyAuxiliaryMigrationReceipt, PairIndexBytesMeasurer, PreparedSearchCorpusGenerationV1,
+    PairIndexBytesMeasurer, PreparedSearchCorpusGenerationV1,
     SealedSearchCorpusAuthorityStateV1, SearchCorpusGenerationActivationV1,
     SearchCorpusGenerationV1, SearchCorpusIndexBytesPort, TrackLedger,
 };
 pub use search_corpus_lifecycle::{
     ActivationPromotionParts, SearchCorpusLifecycleOwner, SearchCorpusLifecycleParts,
 };
-pub use semantic_derive::SemanticDerivationModeV1;
 pub use snapshot_registry::{
     OpenedSnapshot, SnapshotAcquireOutcome, SnapshotAcquired, SnapshotKey, SnapshotPromoteOutcome,
     SnapshotRegistries, SnapshotRegistry, SnapshotRegistryPolicy, SnapshotRegistryStats,

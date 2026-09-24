@@ -12,11 +12,12 @@ use crate::{
     GenerationStatusRequest, HistoryQueryRequest, HybridQueryRequest, HybridQueryResponse,
     HybridSeedQueryRequest, HybridSeedQueryResponse, MetricsSnapshotRequest, MetricsSnapshotV1,
     ProcessReadinessRequest, ProcessReadinessV1, QuarantineDiscardAck, QuarantineDiscardRequest,
-    QuarantineInventoryRequest, QuarantineInventoryV1, RepoMapActivateGenerationRequest,
-    RepoMapActivateGenerationRequestV2, RepoMapMutationAck, RepoMapQueryRequest,
-    RepoMapQueryResponse, RepoMapTerminalReceiptV2, RuntimeMetadataQueryRequest,
-    SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneExplainQueryRequest,
-    SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse, SearchPlaneIpcError,
+    QuarantineInventoryRequest, QuarantineInventoryV1, RepoMapActivateGenerationRequestV2,
+    RepoMapActiveHeadRequestV2, RepoMapActiveHeadResponseV2, RepoMapQueryRequest,
+    RepoMapQueryResponse, RepoMapTerminalReceiptV2,
+    RuntimeMetadataQueryRequest, SearchPlaneActivateSearchCorpusGenerationCasRequest,
+    SearchPlaneExplainQueryRequest, SearchPlaneExplainQueryResponse,
+    SearchPlaneHistoryQueryResponse, SearchPlaneIpcError,
     SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneRuntimeMetadataQueryResponse,
     SearchPlaneSearchCorpusActivationCasAck, SearchPlaneSearchCorpusRollbackCasAck,
     SearchPlaneStructuralQueryResponse, SemanticQueryRequest, SemanticQueryResponse,
@@ -60,8 +61,8 @@ const SEARCH_PLANE_QUERY_IPC_RESPONSE_VARIANTS: &[&str] = &[
 const SEARCH_PLANE_CONTROL_IPC_REQUEST_VARIANTS: &[&str] = &[
     "ActivateSearchCorpusGenerationCas",
     "RollbackSearchCorpusGenerationCas",
-    "RepoMapActivate",
     "RepoMapActivateV2",
+    "RepoMapActiveHeadV2",
     "CurrentGeneration",
     "GenerationStatus",
     "MetricsSnapshot",
@@ -72,8 +73,8 @@ const SEARCH_PLANE_CONTROL_IPC_REQUEST_VARIANTS: &[&str] = &[
 const SEARCH_PLANE_CONTROL_IPC_RESPONSE_VARIANTS: &[&str] = &[
     "SearchCorpusActivationCasAck",
     "SearchCorpusRollbackCasAck",
-    "RepoMapMutationAck",
     "RepoMapTerminalReceiptV2",
+    "RepoMapActiveHeadV2",
     "Error",
     "CurrentGenerationSnapshot",
     "GenerationStatusReport",
@@ -171,14 +172,8 @@ pub enum SearchPlaneControlIpcRequest {
     ActivateSearchCorpusGenerationCas(SearchPlaneActivateSearchCorpusGenerationCasRequest),
     /// Explicit composite rollback CAS; normal activation remains monotonic.
     RollbackSearchCorpusGenerationCas(SearchPlaneRollbackSearchCorpusGenerationCasRequest),
-    // QI-INT-01: `RepoMapIngest(RepoMapSourceBundle)` was removed from the
-    // control surface. All RepoMap bundle publishes now go through the
-    // typed ingest IPC (`SearchPlaneIngestIpcRequest::PublishRepoMapBundle`)
-    // — the SDK switched in QI-SDK-01 and external consumers are expected to
-    // follow. Breaking-first per CLAUDE.md "compatibility preservation is
-    // not the default".
-    RepoMapActivate(RepoMapActivateGenerationRequest),
     RepoMapActivateV2(RepoMapActivateGenerationRequestV2),
+    RepoMapActiveHeadV2(RepoMapActiveHeadRequestV2),
     /// QI-ACT-01: read-only generation admin query for one
     /// `(repo, revision, track)` triple.
     CurrentGeneration(CurrentGenerationRequest),
@@ -207,8 +202,8 @@ pub struct SearchPlaneControlIpcResponseEnvelope {
 pub enum SearchPlaneControlIpcResponse {
     SearchCorpusActivationCasAck(SearchPlaneSearchCorpusActivationCasAck),
     SearchCorpusRollbackCasAck(SearchPlaneSearchCorpusRollbackCasAck),
-    RepoMapMutationAck(RepoMapMutationAck),
     RepoMapTerminalReceiptV2(RepoMapTerminalReceiptV2),
+    RepoMapActiveHeadV2(RepoMapActiveHeadResponseV2),
     Error(SearchPlaneIpcError),
     /// QI-ACT-01: response to [`SearchPlaneControlIpcRequest::CurrentGeneration`].
     CurrentGenerationSnapshot(GenerationSnapshot),
@@ -831,15 +826,15 @@ impl Serialize for SearchPlaneControlIpcRequest {
                 payload,
                 serializer,
             ),
-            Self::RepoMapActivate(payload) => serialize_adjacent_tagged(
-                "SearchPlaneControlIpcRequest",
-                "RepoMapActivate",
-                payload,
-                serializer,
-            ),
             Self::RepoMapActivateV2(payload) => serialize_adjacent_tagged(
                 "SearchPlaneControlIpcRequest",
                 "RepoMapActivateV2",
+                payload,
+                serializer,
+            ),
+            Self::RepoMapActiveHeadV2(payload) => serialize_adjacent_tagged(
+                "SearchPlaneControlIpcRequest",
+                "RepoMapActiveHeadV2",
                 payload,
                 serializer,
             ),
@@ -924,11 +919,11 @@ impl<'de> Visitor<'de> for SearchPlaneControlIpcRequestVisitor {
                                 map.next_value()?,
                             )
                         }
-                        "RepoMapActivate" => {
-                            SearchPlaneControlIpcRequest::RepoMapActivate(map.next_value()?)
-                        }
                         "RepoMapActivateV2" => {
                             SearchPlaneControlIpcRequest::RepoMapActivateV2(map.next_value()?)
+                        }
+                        "RepoMapActiveHeadV2" => {
+                            SearchPlaneControlIpcRequest::RepoMapActiveHeadV2(map.next_value()?)
                         }
                         "CurrentGeneration" => {
                             SearchPlaneControlIpcRequest::CurrentGeneration(map.next_value()?)
@@ -1055,15 +1050,15 @@ impl Serialize for SearchPlaneControlIpcResponse {
                 payload,
                 serializer,
             ),
-            Self::RepoMapMutationAck(payload) => serialize_adjacent_tagged(
-                "SearchPlaneControlIpcResponse",
-                "RepoMapMutationAck",
-                payload,
-                serializer,
-            ),
             Self::RepoMapTerminalReceiptV2(payload) => serialize_adjacent_tagged(
                 "SearchPlaneControlIpcResponse",
                 "RepoMapTerminalReceiptV2",
+                payload,
+                serializer,
+            ),
+            Self::RepoMapActiveHeadV2(payload) => serialize_adjacent_tagged(
+                "SearchPlaneControlIpcResponse",
+                "RepoMapActiveHeadV2",
                 payload,
                 serializer,
             ),
@@ -1154,13 +1149,13 @@ impl<'de> Visitor<'de> for SearchPlaneControlIpcResponseVisitor {
                                 map.next_value()?,
                             )
                         }
-                        "RepoMapMutationAck" => {
-                            SearchPlaneControlIpcResponse::RepoMapMutationAck(map.next_value()?)
-                        }
                         "RepoMapTerminalReceiptV2" => {
                             SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(
                                 map.next_value()?,
                             )
+                        }
+                        "RepoMapActiveHeadV2" => {
+                            SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(map.next_value()?)
                         }
                         "Error" => SearchPlaneControlIpcResponse::Error(map.next_value()?),
                         "CurrentGenerationSnapshot" => {
@@ -1481,7 +1476,8 @@ mod tests {
                     "kind": "Error",
                     "payload": {
                         "code": "INVALID_REQUEST",
-                        "message": "bad request"
+                        "message": "bad request",
+                        "repair": null
                     }
                 }
             })
@@ -1596,17 +1592,25 @@ mod tests {
             "ActivateGeneration",
             "ActivateGenerationCas",
             "RollbackGeneration",
+            "RepoMapActivate",
         ] {
             let wire = json!({
                 "request_id": 12,
                 "payload": {"kind": legacy_kind, "payload": {}}
             });
+            let mut old_cbor = Vec::new();
+            ciborium::ser::into_writer(&wire, &mut old_cbor).expect("legacy fixture encodes");
             let error = serde_json::from_value::<SearchPlaneControlIpcRequestEnvelope>(wire)
                 .expect_err("removed single-track activation wire tag must fail closed");
             assert!(
                 error.to_string().contains("unknown variant"),
                 "legacy tag {legacy_kind} must fail as an unknown control variant: {error}"
             );
+            let error = ciborium::de::from_reader::<SearchPlaneControlIpcRequestEnvelope, _>(
+                old_cbor.as_slice(),
+            )
+            .expect_err("removed control opcode must fail closed on CBOR");
+            assert!(error.to_string().contains("unknown variant"), "{error}");
         }
 
         let response = json!({

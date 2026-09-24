@@ -8,10 +8,10 @@ use std::sync::Arc;
 
 use quanta_index_contract::{
     CurrentGenerationRequest, GenerationSnapshot, GenerationStatusReport, GenerationStatusRequest,
-    MetricsSnapshotV1, RepoMapActivateGenerationRequest, RepoMapActivateGenerationRequestV2,
-    RepoMapMutationAck, RepoMapTerminalReceiptV2, SearchCorpusGenerationIdentityV1,
-    SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
-    SearchPlaneControlIpcResponse, SearchPlaneIpcError,
+    MetricsSnapshotV1, RepoMapActivateGenerationRequestV2, RepoMapActiveHeadRequestV2,
+    RepoMapActiveHeadResponseV2, RepoMapTerminalReceiptV2,
+    SearchCorpusGenerationIdentityV1, SearchPlaneActivateSearchCorpusGenerationCasRequest,
+    SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse, SearchPlaneIpcError,
     SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneSearchCorpusActivationCasAck,
     SearchPlaneSearchCorpusRollbackCasAck, TrackReadinessRecord,
 };
@@ -87,8 +87,8 @@ impl ControlCapabilityV1 {
             | SearchPlaneControlIpcRequest::ProcessReadiness(_) => Self::Observe,
             SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(_)
             | SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(_)
-            | SearchPlaneControlIpcRequest::RepoMapActivate(_)
             | SearchPlaneControlIpcRequest::RepoMapActivateV2(_)
+            | SearchPlaneControlIpcRequest::RepoMapActiveHeadV2(_)
             | SearchPlaneControlIpcRequest::QuarantineDiscard(_) => Self::Admin,
         }
     }
@@ -189,28 +189,18 @@ impl SearchPlaneControlDispatcher {
         port.readiness()
     }
 
-    fn repo_map_activate(
-        &self,
-        request: RepoMapActivateGenerationRequest,
-    ) -> Result<RepoMapMutationAck, CoreError> {
-        let receipt = self.repo_map_activate.activate_generation(&request)?;
-        Ok(RepoMapMutationAck {
-            repo_id: request.repo_id,
-            revision_id: request.revision_id,
-            manifest_generation: request.manifest_generation,
-            prior_candidate_commitment: receipt.prior_candidate_commitment,
-            new_candidate_commitment: receipt.new_candidate_commitment,
-            activation_epoch: receipt.activation_epoch,
-            terminal_sequence: receipt.terminal_sequence,
-            replayed: receipt.replayed,
-        })
-    }
-
     fn repo_map_activate_v2(
         &self,
         request: &RepoMapActivateGenerationRequestV2,
     ) -> Result<RepoMapTerminalReceiptV2, CoreError> {
-        self.repo_map_activate.activate_generation_v2(request)
+        self.repo_map_activate.activate_generation(request)
+    }
+
+    fn repo_map_active_head_v2(
+        &self,
+        request: &RepoMapActiveHeadRequestV2,
+    ) -> Result<RepoMapActiveHeadResponseV2, CoreError> {
+        self.repo_map_activate.active_head(request)
     }
 
     /// Promote a prepared lexical plus semantic corpus after proving both
@@ -396,15 +386,15 @@ impl SearchPlaneControlDispatcher {
                     Err(err) => SearchPlaneControlIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
-            SearchPlaneControlIpcRequest::RepoMapActivate(request) => {
-                match self.repo_map_activate(request) {
-                    Ok(resp) => SearchPlaneControlIpcResponse::RepoMapMutationAck(resp),
-                    Err(err) => SearchPlaneControlIpcResponse::Error(core_error_to_ipc(err)),
-                }
-            }
             SearchPlaneControlIpcRequest::RepoMapActivateV2(request) => {
                 match self.repo_map_activate_v2(&request) {
                     Ok(resp) => SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(resp),
+                    Err(err) => SearchPlaneControlIpcResponse::Error(core_error_to_ipc(err)),
+                }
+            }
+            SearchPlaneControlIpcRequest::RepoMapActiveHeadV2(request) => {
+                match self.repo_map_active_head_v2(&request) {
+                    Ok(resp) => SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(resp),
                     Err(err) => SearchPlaneControlIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
@@ -493,16 +483,16 @@ mod tests {
     use quanta_index_contract::{
         GenerationSnapshot, ManifestGeneration, MetricsSnapshotRequest, MetricsSnapshotV1,
         QuarantineDiscardOutcomeDtoV1, QuarantineDiscardRequest, QuarantineInventoryRequest,
-        QuarantineTargetV1, RepoId, RepoMapActivateGenerationRequest, RepoMapMutationAck,
-        RevisionId, SearchCorpusGenerationIdentityV1,
-        SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
-        SearchPlaneControlIpcResponse, SearchPlaneIpcError,
+        QuarantineTargetV1, RepoId, RepoMapActivateGenerationRequestV2,
+        RepoMapActiveHeadRequestV2, RepoMapActiveHeadResponseV2, RepoMapMutationAck,
+        RepoMapMutationPhaseV2, RepoMapTerminalReceiptV2, RevisionId,
+        SearchCorpusGenerationIdentityV1, SearchPlaneActivateSearchCorpusGenerationCasRequest,
+        SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse, SearchPlaneIpcError,
         SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneTrackKind,
     };
     use quanta_index_core::{
         CoreError, GenerationQuarantineReasonV1, MetricPointV1, MetricSourcePort,
-        QUARANTINE_TARGET_NOT_QUARANTINED_CODE, RepoMapGenerationActivatePort,
-        RepoMapMutationReceiptV1, RequestBudgetV1,
+        QUARANTINE_TARGET_NOT_QUARANTINED_CODE, RepoMapGenerationActivatePort, RequestBudgetV1,
     };
     use quanta_index_lq_obs::{Dimensions, MetricKind, MetricSample};
     use tempfile::tempdir;
@@ -773,8 +763,8 @@ mod tests {
         match other {
             SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
-            | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
             | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
+            | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
@@ -794,8 +784,8 @@ mod tests {
             SearchPlaneControlIpcResponse::Error(error) => error.code,
             ref other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
-            | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
             | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
+            | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
@@ -926,8 +916,8 @@ mod tests {
             }
             ref other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
-            | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
             | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
+            | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
@@ -946,8 +936,8 @@ mod tests {
             }
             ref other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
-            | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
             | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
+            | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
@@ -1013,8 +1003,8 @@ mod tests {
             SearchPlaneControlIpcResponse::Error(error) => Err(error),
             other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
-            | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
             | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
+            | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
@@ -1176,21 +1166,43 @@ mod tests {
     }
 
     impl RepoMapGenerationActivatePort for StubRepoMapActivatePort {
+        fn active_head(
+            &self,
+            request: &RepoMapActiveHeadRequestV2,
+        ) -> Result<RepoMapActiveHeadResponseV2, CoreError> {
+            Ok(RepoMapActiveHeadResponseV2 {
+                repo_id: request.repo_id.clone(),
+                revision_id: request.revision_id.clone(),
+                active: None,
+            })
+        }
+
         fn activate_generation(
             &self,
-            request: &RepoMapActivateGenerationRequest,
-        ) -> Result<RepoMapMutationReceiptV1, CoreError> {
+            request: &RepoMapActivateGenerationRequestV2,
+        ) -> Result<RepoMapTerminalReceiptV2, CoreError> {
             if request.manifest_digest.is_empty() {
                 return Err(CoreError::InvalidContract(
                     "repo-map activate: manifest_digest must not be empty".to_string(),
                 ));
             }
-            Ok(RepoMapMutationReceiptV1 {
-                prior_candidate_commitment: None,
-                new_candidate_commitment: "sha256:".to_string(),
-                activation_epoch: 1,
-                terminal_sequence: 1,
-                replayed: false,
+            Ok(RepoMapTerminalReceiptV2 {
+                phase: RepoMapMutationPhaseV2::Activate,
+                mutation: RepoMapMutationAck {
+                    repo_id: request.repo_id.clone(),
+                    revision_id: request.revision_id.clone(),
+                    manifest_generation: request.manifest_generation,
+                    prior_candidate_commitment: None,
+                    new_candidate_commitment: "sha256:".to_string(),
+                    activation_epoch: 1,
+                    terminal_sequence: 1,
+                    replayed: false,
+                },
+                manifest_digest: request.manifest_digest.clone(),
+                snapshot_id: request.snapshot_id.clone(),
+                projection_version: request.projection_version,
+                authority_digest: request.authority_digest.clone(),
+                source_bundle_digest: request.source_bundle_digest.clone(),
             })
         }
     }
@@ -1199,10 +1211,12 @@ mod tests {
         response: SearchPlaneControlIpcResponse,
     ) -> Result<RepoMapMutationAck, Box<dyn std::error::Error>> {
         match response {
-            SearchPlaneControlIpcResponse::RepoMapMutationAck(ack) => Ok(ack),
+            SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(receipt) => {
+                Ok(receipt.mutation)
+            }
             other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
-            | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
+            | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
             | SearchPlaneControlIpcResponse::Error(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
@@ -1221,8 +1235,8 @@ mod tests {
         match response {
             SearchPlaneControlIpcResponse::Error(err) => Ok(err.code),
             other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
-            | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
             | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
+            | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
@@ -1237,10 +1251,7 @@ mod tests {
 
     #[test]
     fn repo_map_control_and_prepared_corpus_activation_preserve_composite_identity() -> TestResult {
-        // QI-INT-01: control surface only handles `RepoMapActivate` and
-        // activation queries; the ingest variant moved to the ingest IPC
-        // (`SearchPlaneIngestIpcRequest::PublishRepoMapBundle`). See
-        // `ingest_dispatcher` tests for the ingest-side coverage.
+        // RepoMap activation is a control mutation; publication is ingest-only.
         let dir = tempdir()?;
         let activation_catalog = Arc::new(ActivationCatalog::open(dir.path())?);
         let ledger = Arc::new(RwLock::new(Ledger::new()));
@@ -1284,14 +1295,21 @@ mod tests {
 
         let activate = into_repo_map_mutation_ack(
             dispatcher.dispatch(
-                SearchPlaneControlIpcRequest::RepoMapActivate(RepoMapActivateGenerationRequest {
-                    repo_id: RepoId::new("repo-map-ipc")
-                        .expect("static fixture ID satisfies canonical policy"),
-                    revision_id: RevisionId::new("rev-map-ipc")
-                        .expect("static fixture ID satisfies canonical policy"),
-                    manifest_generation: ManifestGeneration::new(9),
-                    manifest_digest: "manifest-digest-9".to_string(),
-                }),
+                SearchPlaneControlIpcRequest::RepoMapActivateV2(
+                    RepoMapActivateGenerationRequestV2 {
+                        repo_id: RepoId::new("repo-map-ipc")
+                            .expect("static fixture ID satisfies canonical policy"),
+                        revision_id: RevisionId::new("rev-map-ipc")
+                            .expect("static fixture ID satisfies canonical policy"),
+                        manifest_generation: ManifestGeneration::new(9),
+                        manifest_digest: "manifest-digest-9".to_string(),
+                        snapshot_id: "snapshot-9".to_string(),
+                        projection_version: 1,
+                        authority_digest: "sha256:".to_string() + &"a".repeat(64),
+                        source_bundle_digest: "sha256:".to_string() + &"b".repeat(64),
+                        expected_active: None,
+                    },
+                ),
                 &RequestBudgetV1::unbounded(),
             ),
         )?;

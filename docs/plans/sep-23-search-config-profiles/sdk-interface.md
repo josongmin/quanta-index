@@ -3,6 +3,9 @@
 - Status: superseded for SDK public-shape and source-compatibility decisions by [Sep-24 SDK DSL RFC](../sep-24-sdk-dsl-rfc.md). This earlier proposal remains background for the server/client configuration boundary; no SDK or wire implementation is claimed.
 - Source audit: local `1306325e81189a8c0df5d38c56567664a6f20c1d` on 2026-09-24. Concurrent benchmark/CI files were dirty; re-freeze source and owners before implementation.
 - Parent: [search configuration RFC](rfc.md). The server remains the authority for effective policy and sealed-generation compatibility.
+- Semantic cutover target: one producer-authored typed-source live path, with no
+  derive-mode environment setting or chunk-text fallback. This document does
+  not qualify the server binary or cross-repo producer.
 
 ## 1. Decision
 
@@ -33,7 +36,7 @@ The builder selects request semantics and bounds; it does not choose an embeddin
 |---|---|---|---|
 | Client transport | SDK `ConnectOptions` | state-root/socket selection, I/O timeout/deadline | Local client choice; no daemon or index rewrite. Prefer private fields and additive setters. |
 | Request intent | Typed query/batch builders or exact request DTOs | active/pinned selector, syntax, constraints, `top_k`, bounded scope, continuation | Permit only values already represented and validated by the wire contract. No untyped option map. |
-| Server execution policy | `SearchdConfig` and immutable named recipes/profiles | derivation mode, model identity, RRF/ANN recipe, memory/provider budgets | Resolve once at boot; a changed profile requires the RFC's generation compatibility and release proof. SDK may display a **server-reported** effective identity, never predict or set it. |
+| Server execution policy | `SearchdConfig` and immutable named recipes/profiles | typed semantic-source contract, model identity, RRF/ANN recipe, memory/provider budgets | Resolve once at boot; a changed profile requires the RFC's generation compatibility and release proof. SDK may display a **server-reported** effective identity, never predict or set it. |
 | Artifact/read identity | Daemon's sealed generation, read view and response | generation pin, manifest/content roots, model/normalizer/ANN evidence | Query/activation checks remain server-side. The SDK binds the response to the request; it does not recalculate seal compatibility. |
 
 V1 does **not** need a public SDK profile selector or new wire field solely to mirror `index-build-v1`/`query-execution-v1`: both are compiled server choices. If an operator needs to inspect them remotely later, add a typed **read-only** `effective_policy()`/capability response with its own privilege, version, redaction and freshness contract. Do not infer it from `ConnectOptions`, `ClientProfile` or a previous query. A `config show` CLI response is not automatically a remote SDK endpoint.

@@ -13,8 +13,8 @@
 //! mutation_lease_v1(scope, owner, fence_token, deadline_ms, row_sha256)
 //! ```
 //!
-//! `idempotency_v1` and `catalog_sequence_v1` stay readable as
-//! legacy-input-only (offline migration class); no dual write happens.
+//! Only the current journal and sequence tables are created and read.
+//! Superseded local tables have no compatibility reader.
 //!
 //! Every terminal transition (commit, refusal, abort) allocates the
 //! global sequence and appends its generic ledger event
@@ -52,24 +52,8 @@ const RECEIPT_DIGEST_DOMAIN: &[u8] = b"quanta-index:catalog:idempotency-receipt:
 const LEASE_ROW_DIGEST_DOMAIN: &[u8] = b"quanta-index:catalog:mutation-lease-row:v1\0";
 const FIELD_SEPARATOR: &[u8] = b"\x1f";
 
-/// The journal table, the durable mutation lease table, and the
-/// superseded v1 table (legacy-input-only), created at open.
-pub(crate) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS idempotency_v1 (
-                     kind TEXT NOT NULL,
-                     repo_id TEXT NOT NULL,
-                     revision_id TEXT NOT NULL,
-                     generation INTEGER NOT NULL,
-                     batch_digest TEXT NOT NULL,
-                     body_sha256 BLOB NOT NULL,
-                     applied INTEGER NOT NULL,
-                     receipt_cbor BLOB,
-                     durable_sequence INTEGER,
-                     row_sha256 BLOB NOT NULL,
-                     PRIMARY KEY (kind, repo_id, revision_id, generation, batch_digest)
-                  ) WITHOUT ROWID;
-                  CREATE INDEX IF NOT EXISTS idempotency_v1_by_generation
-                      ON idempotency_v1 (repo_id, revision_id, generation);
-                  CREATE TABLE IF NOT EXISTS idempotency_v2 (
+/// The current journal and durable mutation lease tables, created at open.
+pub(crate) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS idempotency_v2 (
                      kind TEXT NOT NULL,
                      repo_id TEXT NOT NULL,
                      revision_id TEXT NOT NULL,

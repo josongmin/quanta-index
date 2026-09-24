@@ -373,10 +373,16 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
                 Finding(path, f"{where} family {family} requires release-daemon binding")
             )
         artifact_schema = proof.get("artifact_schema")
-        if isinstance(artifact_schema, str) and not (root / artifact_schema).is_file():
-            findings.append(
-                Finding(path, f"{where}.artifact_schema does not exist: {artifact_schema}")
-            )
+        if isinstance(artifact_schema, str):
+            try:
+                _payload_sha256(root, artifact_schema, label="proof artifact schema")
+            except (OSError, ValueError):
+                findings.append(
+                    Finding(
+                        path,
+                        f"{where}.artifact_schema does not exist or is unsafe: {artifact_schema}",
+                    )
+                )
         owner = proof.get("owner")
         if isinstance(owner, str) and owner and not (root / owner).is_file():
             findings.append(Finding(path, f"{where}.owner does not exist: {owner}"))
@@ -662,14 +668,13 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
             findings.append(Finding(path, "aggregate.target_proof must be p12-final-qualification"))
         aggregate_schema = aggregate.get("schema")
         if isinstance(aggregate_schema, str):
-            schema_path, schema_error = _payload_repo_file(
-                root, aggregate_schema, label="aggregate schema"
-            )
-            if schema_error is not None:
-                findings.append(Finding(path, schema_error))
-            elif schema_path is None or not schema_path.is_file():
+            try:
+                _payload_sha256(root, aggregate_schema, label="aggregate schema")
+            except (OSError, ValueError):
                 findings.append(
-                    Finding(path, f"aggregate.schema does not exist: {aggregate_schema}")
+                    Finding(
+                        path, f"aggregate.schema does not exist or is unsafe: {aggregate_schema}"
+                    )
                 )
         aggregate_artifact = aggregate.get("artifact")
         if isinstance(aggregate_artifact, str):
@@ -779,8 +784,10 @@ def _payload_repo_file(
     *,
     label: str,
 ) -> tuple[Path | None, str | None]:
-    """Resolve an untrusted manifest path without permitting repository escape."""
+    """Keep an untrusted path lexical; opening it is the leaf reader's job."""
 
+    if not isinstance(value, str):
+        return None, f"{label} path must be canonical repo-relative: {value!r}"
     relative = PurePosixPath(value)
     if (
         not value
@@ -791,16 +798,40 @@ def _payload_repo_file(
         or relative == PurePosixPath(".")
     ):
         return None, f"{label} path must be canonical repo-relative: {value!r}"
+    return root.resolve() / Path(*relative.parts), None
+
+
+def _payload_bytes(root: Path, value: str, *, label: str) -> bytes:
+    return HANDOFF_VALIDATION._read_repo_regular_bytes(root.resolve(), value, label=label)
+
+
+def _payload_entry_absent(root: Path, value: str, *, label: str) -> bool:
+    """Only a genuinely absent entry is NOT_RUN; unsafe paths remain FAILED."""
+
     try:
-        resolved_root = root.resolve()
-        resolved = (resolved_root / Path(*relative.parts)).resolve()
-    except (OSError, RuntimeError) as error:
-        return None, f"{label} path cannot be resolved safely: {value!r}: {error}"
-    try:
-        resolved.relative_to(resolved_root)
-    except ValueError:
-        return None, f"{label} path escapes repository root: {value!r}"
-    return resolved, None
+        return not HANDOFF_VALIDATION._repo_entry_present_no_follow(
+            root.resolve(), value, label=label
+        )
+    except (OSError, ValueError):
+        return False
+
+
+def _payload_sha256(root: Path, value: str, *, label: str) -> str:
+    return HANDOFF_VALIDATION._sha256_repo_regular_file(root.resolve(), value, label=label)
+
+
+def _payload_json(root: Path, value: str, *, label: str) -> Any:
+    return json.loads(_payload_bytes(root, value, label=label))
+
+
+def _explicit_file_bytes(path: Path, *, label: str) -> bytes:
+    """Read a caller-named diagnostic input without following path symlinks."""
+
+    absolute = path if path.is_absolute() else Path.cwd() / path
+    anchor = Path(absolute.anchor)
+    return HANDOFF_VALIDATION._read_repo_regular_bytes(
+        anchor, absolute.relative_to(anchor).as_posix(), label=label
+    )
 
 
 def _git(root: Path, *args: str) -> str:
@@ -1308,8 +1339,12 @@ def paired_source_snapshot(
     if path_error is not None:
         raise ValueError(path_error)
     assert lock_path is not None
-    if not lock_path.is_file():
-        raise ValueError(f"paired dependency lock is missing: {lock_value!r}")
+    try:
+        lock_digest = _payload_sha256(checkout, lock_value, label="paired dependency lock")
+    except (OSError, ValueError) as error:
+        raise ValueError(
+            f"paired dependency lock is missing or unsafe: {lock_value!r}: {error}"
+        ) from error
     # Bind the canonical repository identity, not the transport spelling of
     # the remote. The same trusted GitHub repository may be checked out via an
     # HTTPS URL or an SSH host alias; that must not fork release receipts.
@@ -1322,7 +1357,7 @@ def paired_source_snapshot(
         "source": source_snapshot(checkout),
         "dependency_lock": {
             "path": lock_value,
-            "sha256": _sha256(lock_path),
+            "sha256": lock_digest,
         },
     }
 
@@ -1500,8 +1535,16 @@ def check_manifest(
             findings.append(Finding(manifest_path, path_error))
         elif daemon_path is None or not daemon_path.is_file():
             findings.append(Finding(manifest_path, f"daemon binary is missing: {daemon_path}"))
-        elif _sha256(daemon_path) != daemon_binary["sha256"]:
-            findings.append(Finding(manifest_path, "daemon binary digest mismatch"))
+        else:
+            try:
+                daemon_digest = _payload_sha256(root, daemon_binary["path"], label="daemon binary")
+            except (OSError, ValueError) as error:
+                findings.append(
+                    Finding(manifest_path, f"daemon binary is not a regular archive: {error}")
+                )
+            else:
+                if daemon_digest != daemon_binary["sha256"]:
+                    findings.append(Finding(manifest_path, "daemon binary digest mismatch"))
     for artifact in payload["artifacts"]:
         expected_artifact_path = content_archive_relative_path("evidence", artifact["sha256"])
         if artifact["path"] != expected_artifact_path:
@@ -1517,10 +1560,18 @@ def check_manifest(
             findings.append(Finding(manifest_path, path_error))
         elif artifact_path is None or not artifact_path.is_file():
             findings.append(Finding(manifest_path, f"proof artifact is missing: {artifact_path}"))
-        elif _sha256(artifact_path) != artifact["sha256"]:
-            findings.append(
-                Finding(manifest_path, f"proof artifact digest mismatch: {artifact_path}")
-            )
+        else:
+            try:
+                artifact_digest = _payload_sha256(root, artifact["path"], label="proof artifact")
+            except (OSError, ValueError) as error:
+                findings.append(
+                    Finding(manifest_path, f"proof artifact is not a regular archive: {error}")
+                )
+            else:
+                if artifact_digest != artifact["sha256"]:
+                    findings.append(
+                        Finding(manifest_path, f"proof artifact digest mismatch: {artifact_path}")
+                    )
 
     dependencies = payload["dependency_receipts"]
     archive_stack = (_archive_stack or frozenset()) | {payload["proof_id"]}
@@ -1553,14 +1604,24 @@ def check_manifest(
             findings.append(
                 Finding(manifest_path, f"dependency receipt is missing: {dependency_path}")
             )
-        elif _sha256(dependency_path) != dependency["sha256"]:
-            findings.append(
-                Finding(manifest_path, f"dependency receipt digest mismatch: {dependency_path}")
-            )
         else:
             try:
-                dependency_payload = _read_json(dependency_path)
-            except (OSError, json.JSONDecodeError) as error:
+                dependency_bytes = _payload_bytes(
+                    root, dependency["path"], label="dependency receipt"
+                )
+            except (OSError, ValueError) as error:
+                findings.append(
+                    Finding(manifest_path, f"dependency receipt is unreadable: {error}")
+                )
+                continue
+            if hashlib.sha256(dependency_bytes).hexdigest() != dependency["sha256"]:
+                findings.append(
+                    Finding(manifest_path, f"dependency receipt digest mismatch: {dependency_path}")
+                )
+                continue
+            try:
+                dependency_payload = json.loads(dependency_bytes)
+            except (UnicodeDecodeError, json.JSONDecodeError) as error:
                 findings.append(
                     Finding(manifest_path, f"dependency receipt is unreadable: {error}")
                 )
@@ -1806,8 +1867,14 @@ def check_aggregate_receipt(
         findings.append(Finding(receipt_path, "aggregate_id differs from registry authority"))
     if payload.get("target_proof_id") != target_id:
         findings.append(Finding(receipt_path, "target_proof_id differs from registry authority"))
-    if payload.get("registry_sha256") != _sha256(registry_path):
-        findings.append(Finding(receipt_path, "registry_sha256 is not the current registry"))
+    try:
+        registry_relative = registry_path.relative_to(root).as_posix()
+        registry_digest = _payload_sha256(root, registry_relative, label="proof registry")
+    except (OSError, ValueError) as error:
+        findings.append(Finding(receipt_path, f"proof registry is unreadable: {error}"))
+    else:
+        if payload.get("registry_sha256") != registry_digest:
+            findings.append(Finding(receipt_path, "registry_sha256 is not the current registry"))
 
     handoff_ledger, handoff_findings = HANDOFF_VALIDATION.inspect_handoff_ledger(
         root=root, proof_checker=sys.modules[__name__]
@@ -1912,12 +1979,15 @@ def check_aggregate_receipt(
         manifest: Any = None
         if proof.get("authority_state") != "executable":
             expected_status = "BLOCKED"
-        elif not manifest_path.is_file():
+        elif _payload_entry_absent(root, proof["artifact"], label="aggregate dependency"):
             expected_status = "NOT_RUN"
         else:
-            expected_sha256 = _sha256(manifest_path)
             try:
-                manifest = _read_json(manifest_path)
+                manifest_bytes = _payload_bytes(
+                    root, proof["artifact"], label="aggregate dependency"
+                )
+                expected_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+                manifest = json.loads(manifest_bytes)
                 proof_repository = proof.get("paired_repository")
                 manifest_checkout = (
                     (paired_checkouts or {}).get(proof_repository)
@@ -1957,7 +2027,9 @@ def check_aggregate_receipt(
                     manifest,
                     manifest_path=manifest_path,
                     proof=proof,
-                    schema=_read_json(root / proof["artifact_schema"]),
+                    schema=_payload_json(
+                        root, proof["artifact_schema"], label="proof artifact schema"
+                    ),
                     root=root,
                     bind_source=bind_source,
                     allow_non_passed=True,
@@ -1966,7 +2038,7 @@ def check_aggregate_receipt(
                     bound_source=bound_source,
                     bound_source_pair=bound_source_pair,
                 )
-            except (OSError, json.JSONDecodeError) as error:
+            except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
                 manifest_findings = [
                     Finding(manifest_path, f"aggregate dependency is unreadable: {error}")
                 ]
@@ -2152,16 +2224,28 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def _main_locked(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     root = args.root.resolve()
-    registry_path = (args.registry or root / "tools/ci/proof-authority.toml").resolve()
-    schema_path = (args.schema or root / "tools/ci/proof-manifest.schema.json").resolve()
+    registry_path = args.registry or root / "tools/ci/proof-authority.toml"
+    schema_path = args.schema or root / "tools/ci/proof-manifest.schema.json"
+    registry_path = registry_path if registry_path.is_absolute() else Path.cwd() / registry_path
+    schema_path = schema_path if schema_path.is_absolute() else Path.cwd() / schema_path
     try:
-        registry = _read_toml(registry_path)
-        schema = _read_json(schema_path)
+        registry = tomllib.loads(
+            _explicit_file_bytes(registry_path, label="proof registry").decode("utf-8")
+        )
+        schema = json.loads(_explicit_file_bytes(schema_path, label="proof manifest schema"))
     except (OSError, ValueError, json.JSONDecodeError, tomllib.TOMLDecodeError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2
 
     findings = check_registry(registry, root=root, path=registry_path)
+    if args.require_all or args.dependencies_of is not None:
+        for label, path in (("registry", registry_path), ("schema", schema_path)):
+            try:
+                path.relative_to(root)
+            except ValueError:
+                findings.append(
+                    Finding(path, f"authoritative {label} must be inside repository root")
+                )
     proof_by_id = {
         proof["id"]: proof
         for proof in registry.get("proofs", [])
@@ -2179,7 +2263,7 @@ def _main_locked(argv: list[str] | None = None) -> int:
         findings.append(
             Finding(registry_path, f"--paired-checkout names unknown repository {repository!r}")
         )
-    manifest_paths = [path.resolve() for path in args.manifest]
+    manifest_paths = [path if path.is_absolute() else root / path for path in args.manifest]
     expected_proof_by_path: dict[Path, str] = {}
 
     def require_registered_manifest(proof_id: str) -> None:
@@ -2222,8 +2306,8 @@ def _main_locked(argv: list[str] | None = None) -> int:
             findings.append(Finding(manifest_path, "required proof manifest is missing"))
             continue
         try:
-            payload = _read_json(manifest_path)
-        except (OSError, json.JSONDecodeError) as error:
+            payload = json.loads(_explicit_file_bytes(manifest_path, label="proof manifest"))
+        except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
             findings.append(Finding(manifest_path, f"unreadable proof manifest: {error}"))
             continue
         proof_id = payload.get("proof_id") if isinstance(payload, dict) else None
@@ -2281,9 +2365,13 @@ def _main_locked(argv: list[str] | None = None) -> int:
                 findings.append(Finding(registry_path, "registered aggregate artifact is missing"))
             else:
                 try:
-                    aggregate_payload = _read_json(aggregate_path)
-                    aggregate_schema = _read_json(root / aggregate["schema"])
-                except (OSError, json.JSONDecodeError) as error:
+                    aggregate_payload = _payload_json(
+                        root, aggregate["artifact"], label="aggregate artifact"
+                    )
+                    aggregate_schema = _payload_json(
+                        root, aggregate["schema"], label="aggregate schema"
+                    )
+                except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
                     findings.append(
                         Finding(aggregate_path, f"unreadable aggregate artifact: {error}")
                     )

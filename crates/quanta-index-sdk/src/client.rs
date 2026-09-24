@@ -361,8 +361,8 @@ impl QuantaIndex {
             }),
             payload @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
-            | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
             | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
+            | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
@@ -405,7 +405,6 @@ impl QuantaIndex {
                 repair: error.repair,
             }),
             payload @ (SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
-            | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
             | quanta_index_contract::SearchPlaneIngestIpcResponse::HistoryReceipt(_)
             | quanta_index_contract::SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(
@@ -472,10 +471,10 @@ impl QuantaIndex {
             SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_) => {
                 "search_corpus_rollback_cas_ack"
             }
-            SearchPlaneControlIpcResponse::RepoMapMutationAck(_) => "repomap_mutation_ack",
             SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_) => {
                 "repomap_terminal_receipt_v2"
             }
+            SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_) => "repomap_active_head_v2",
             SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_) => {
                 "current_generation_snapshot"
             }
@@ -493,7 +492,6 @@ impl QuantaIndex {
     ) -> &'static str {
         match response {
             SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_) => "search_corpus_receipt",
-            SearchPlaneIngestIpcResponse::RepoMapReceipt(_) => "repomap_receipt",
             SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_) => {
                 "repomap_terminal_receipt_v2"
             }
@@ -747,16 +745,9 @@ impl<'a> ProducerClient<'a> {
 
     pub fn publish_repomap(
         &self,
-        bundle: &quanta_index_contract::RepoMapSourceBundle,
-    ) -> Result<quanta_index_contract::RepoMapMutationAck, SdkError> {
-        self.client.repomap().publish(bundle)
-    }
-
-    pub fn publish_repomap_v2(
-        &self,
-        request: quanta_index_contract::RepoMapPublishBundleRequestV2,
+        request: &quanta_index_contract::RepoMapPublishBundleRequestV2,
     ) -> Result<quanta_index_contract::RepoMapTerminalReceiptV2, SdkError> {
-        self.client.repomap().publish_v2(request)
+        self.client.repomap().publish(request)
     }
 }
 
@@ -798,16 +789,9 @@ impl<'a> ControlClient<'a> {
 
     pub fn activate_repomap(
         &self,
-        request: quanta_index_contract::RepoMapActivateGenerationRequest,
-    ) -> Result<quanta_index_contract::RepoMapMutationAck, SdkError> {
-        self.client.repomap().activate(request)
-    }
-
-    pub fn activate_repomap_v2(
-        &self,
         request: quanta_index_contract::RepoMapActivateGenerationRequestV2,
     ) -> Result<quanta_index_contract::RepoMapTerminalReceiptV2, SdkError> {
-        self.client.repomap().activate_v2(request)
+        self.client.repomap().activate(request)
     }
 
     /// The daemon's metrics snapshot (QI-BB-015).

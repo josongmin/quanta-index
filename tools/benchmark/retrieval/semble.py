@@ -12,7 +12,7 @@ Layout contract (all outside the source checkout):
     worker.py               # exact spawned worker (auditable)
     native.json             # Semble-native results + timings + observed files
     mapping-proof.json      # path map + both-side path+SHA diff
-    record.json             # v2 runner record
+    record.json             # current runner record (schema v3)
     lockfile.txt            # external hash-pinned lockfile copy (+ digest)
 
 A common-universe pair requires a clean mapping proof: every admitted file

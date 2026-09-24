@@ -34,10 +34,7 @@ use crate::readiness::{
     SEARCH_CORPUS_LOCK_STRIPES_V1, SearchCorpusHistoryRetentionReceiptV1,
     search_corpus_lock_stripe_v1,
 };
-use crate::semantic_derive::{
-    DEFAULT_SEMANTIC_DERIVATION_MODE_V1, SemanticDerivationModeV1,
-    derive_semantic_stream_with_mode_v1, semantic_derivation_mode_from_env_v1,
-};
+use crate::semantic_derive::derive_semantic_stream_from_semantic_sources_v1;
 use crate::{
     Ledger, SealedSearchCorpusAuthorityStateV1, SnapshotKey, SnapshotRegistries,
     SnapshotRetireOutcome,
@@ -83,7 +80,6 @@ pub struct DirectSearchCorpusMaterializer {
     auxiliary_catalog: Arc<dyn AuxiliaryAuthorityCatalogPort + Send + Sync>,
     auxiliary_coordinator: Arc<AuxiliaryMutationCoordinator>,
     operation_locks: [Mutex<()>; SEARCH_CORPUS_LOCK_STRIPES_V1],
-    semantic_derivation_mode: SemanticDerivationModeV1,
     /// The history text index whose epochs go with a forgotten auxiliary
     /// generation (QI-BB-023 follow-up #1); a plane composed without one
     /// has none to reclaim.
@@ -252,20 +248,6 @@ pub struct SearchCorpusMaterializerParts {
 impl DirectSearchCorpusMaterializer {
     #[must_use]
     pub fn new_with_search_owned_semantics(parts: SearchCorpusMaterializerParts) -> Self {
-        Self::new_with_search_owned_semantics_with_mode(parts, DEFAULT_SEMANTIC_DERIVATION_MODE_V1)
-    }
-
-    pub fn new_with_search_owned_semantics_from_env(
-        parts: SearchCorpusMaterializerParts,
-    ) -> Result<Self, CoreError> {
-        let mode = semantic_derivation_mode_from_env_v1()?;
-        Ok(Self::new_with_search_owned_semantics_with_mode(parts, mode))
-    }
-
-    fn new_with_search_owned_semantics_with_mode(
-        parts: SearchCorpusMaterializerParts,
-        semantic_derivation_mode: SemanticDerivationModeV1,
-    ) -> Self {
         let SearchCorpusMaterializerParts {
             builder,
             ledger,
@@ -310,7 +292,6 @@ impl DirectSearchCorpusMaterializer {
             auxiliary_catalog,
             auxiliary_coordinator,
             operation_locks: std::array::from_fn(|_index| Mutex::new(())),
-            semantic_derivation_mode,
             history_text: None,
         }
     }
@@ -483,6 +464,7 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
     fn publish_batch(
         &self,
         batch: &SearchCorpusIngestBatch,
+        budget: &quanta_index_core::RequestBudgetV1,
     ) -> Result<BatchPublishReceipt, CoreError> {
         Self::validate_batch_shape_v1(batch)?;
         self.measure_resource_envelope(batch)?;
@@ -556,12 +538,12 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
         // mutated, as the all-at-once derivation did. Every source record is
         // validated before the first window is embedded.
         if build_semantic {
-            let mut derived = derive_semantic_stream_with_mode_v1(
+            let mut derived = derive_semantic_stream_from_semantic_sources_v1(
                 batch,
                 self.semantic_embedder.as_ref(),
-                self.semantic_derivation_mode,
                 self.semantic_stream_policy,
                 self.source_egress_policy.as_ref(),
+                budget,
             )?;
             let semantic_receipt = self
                 .semantic_ingest

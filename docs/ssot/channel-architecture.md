@@ -139,14 +139,16 @@ pub enum SemanticChannelOp {
 }
 ```
 
-**Authorship rule (current tree):** the producer in `semantica-codegraph-v2`
+**Authorship rule (typed-only cutover target):** the producer in `semantica-codegraph-v2`
 authors chunk/symbol/commit/parse-tree/structural/history/dirty handoff
-payloads and may also publish typed semantic-source replace/tombstone scopes.
+payloads and, under the typed-only cutover, publishes typed semantic-source
+replace/tombstone scopes or intentional empty semantic deltas. The current
+wire does not independently attest coverage for an empty list.
 The search plane validates those sources and derives the live dense corpus from
-their rendered text. Default derivation is
-`SemanticSourcesWithLegacyFallback`; `legacy_all_chunk` remains an explicit
-migration mode via `QUANTA_INDEX_SEMANTIC_DERIVE_MODE`.
-mode; it is an explicit compatibility path, not the target corpus authority.
+their rendered text. The target live path has no derive-mode environment
+setting and no chunk-text fallback. Producer-authored typed `RawCodeFallback`
+records remain valid semantic sources; old persisted artifacts require explicit
+offline migration/rebuild or typed refusal.
 The `EmbeddingRecord` / `SemanticChannelOp::UpsertEmbedding` sketch in this
 section remains historical producer-authored-vector material and must not be
 read as the current serving contract.

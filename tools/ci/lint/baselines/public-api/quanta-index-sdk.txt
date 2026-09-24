@@ -51,7 +51,6 @@ pub use quanta_index_sdk::QuarantineTargetV1
 pub use quanta_index_sdk::QuarantinedGenerationEntryV1
 pub use quanta_index_sdk::QuarantinedRepoMapFileEntryV1
 pub use quanta_index_sdk::RepoId
-pub use quanta_index_sdk::RepoMapActivateGenerationRequest
 pub use quanta_index_sdk::RepoMapCallEdge
 pub use quanta_index_sdk::RepoMapChunkNode
 pub use quanta_index_sdk::RepoMapContainsEdge
@@ -363,8 +362,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::ConnectOption
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::ConnectOptions
 pub struct quanta_index_sdk::ControlClient<'a>
 impl<'a> quanta_index_sdk::ControlClient<'a>
-pub fn quanta_index_sdk::ControlClient<'a>::activate_repomap(&self, request: quanta_index_contract::repomap::RepoMapActivateGenerationRequest) -> core::result::Result<quanta_index_contract::repomap::RepoMapMutationAck, quanta_index_sdk::SdkError>
-pub fn quanta_index_sdk::ControlClient<'a>::activate_repomap_v2(&self, request: quanta_index_contract::repomap::terminal_receipt_v2::RepoMapActivateGenerationRequestV2) -> core::result::Result<quanta_index_contract::repomap::terminal_receipt_v2::RepoMapTerminalReceiptV2, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::ControlClient<'a>::activate_repomap(&self, request: quanta_index_contract::repomap::terminal_receipt_v2::RepoMapActivateGenerationRequestV2) -> core::result::Result<quanta_index_contract::repomap::terminal_receipt_v2::RepoMapTerminalReceiptV2, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::ControlClient<'a>::current(&self, repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, track: quanta_index_contract::ipc::control::SearchPlaneTrackKind) -> core::result::Result<quanta_index_contract::ipc::control::GenerationSnapshot, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::ControlClient<'a>::discard_quarantined(&self, target: &quanta_index_contract::ipc::quarantine::QuarantineTargetV1) -> core::result::Result<quanta_index_contract::ipc::quarantine::QuarantineDiscardAck, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::ControlClient<'a>::metrics_snapshot(&self) -> core::result::Result<quanta_index_contract::ipc::metrics::MetricsSnapshotV1, quanta_index_sdk::SdkError>
@@ -680,8 +678,7 @@ pub struct quanta_index_sdk::ProducerClient<'a>
 impl<'a> quanta_index_sdk::ProducerClient<'a>
 pub fn quanta_index_sdk::ProducerClient<'a>::publish_dirty(&self, batch: &quanta_index_sdk::DirtyBatch) -> core::result::Result<quanta_index_sdk::BatchReceipt, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::ProducerClient<'a>::publish_history(&self, batch: &quanta_index_sdk::HistoryBatch) -> core::result::Result<quanta_index_sdk::BatchReceipt, quanta_index_sdk::SdkError>
-pub fn quanta_index_sdk::ProducerClient<'a>::publish_repomap(&self, bundle: &quanta_index_contract::repomap::RepoMapSourceBundle) -> core::result::Result<quanta_index_contract::repomap::RepoMapMutationAck, quanta_index_sdk::SdkError>
-pub fn quanta_index_sdk::ProducerClient<'a>::publish_repomap_v2(&self, request: quanta_index_contract::repomap::terminal_receipt_v2::RepoMapPublishBundleRequestV2) -> core::result::Result<quanta_index_contract::repomap::terminal_receipt_v2::RepoMapTerminalReceiptV2, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::ProducerClient<'a>::publish_repomap(&self, request: &quanta_index_contract::repomap::terminal_receipt_v2::RepoMapPublishBundleRequestV2) -> core::result::Result<quanta_index_contract::repomap::terminal_receipt_v2::RepoMapTerminalReceiptV2, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::ProducerClient<'a>::publish_search_corpus<const SEALED: bool>(&self, batch: &quanta_index_sdk::SearchCorpusBatch<SEALED>) -> core::result::Result<quanta_index_sdk::BatchReceipt, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::ProducerClient<'a>::publish_search_corpus_and_activate(&self, batch: &quanta_index_sdk::SearchCorpusBatch, expected_active: core::option::Option<quanta_index_contract::ipc::control::SearchCorpusGenerationIdentityV1>) -> core::result::Result<(quanta_index_sdk::BatchReceipt, quanta_index_contract::ipc::control::SearchPlaneSearchCorpusActivationCasAck), quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::ProducerClient<'a>::publish_structural<const SEALED: bool>(&self, batch: &quanta_index_sdk::StructuralBatch<SEALED>) -> core::result::Result<quanta_index_sdk::BatchReceipt, quanta_index_sdk::SdkError>
@@ -848,10 +845,8 @@ impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::RepoDescripti
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::RepoDescriptionMutation
 pub struct quanta_index_sdk::RepoMapNamespace<'a>
 impl<'a> quanta_index_sdk::RepoMapNamespace<'a>
-pub fn quanta_index_sdk::RepoMapNamespace<'a>::activate(&self, request: quanta_index_contract::repomap::RepoMapActivateGenerationRequest) -> core::result::Result<quanta_index_contract::repomap::RepoMapMutationAck, quanta_index_sdk::SdkError>
-pub fn quanta_index_sdk::RepoMapNamespace<'a>::activate_v2(&self, request: quanta_index_contract::repomap::terminal_receipt_v2::RepoMapActivateGenerationRequestV2) -> core::result::Result<quanta_index_contract::repomap::terminal_receipt_v2::RepoMapTerminalReceiptV2, quanta_index_sdk::SdkError>
-pub fn quanta_index_sdk::RepoMapNamespace<'a>::publish(&self, bundle: &quanta_index_contract::repomap::RepoMapSourceBundle) -> core::result::Result<quanta_index_contract::repomap::RepoMapMutationAck, quanta_index_sdk::SdkError>
-pub fn quanta_index_sdk::RepoMapNamespace<'a>::publish_v2(&self, request: quanta_index_contract::repomap::terminal_receipt_v2::RepoMapPublishBundleRequestV2) -> core::result::Result<quanta_index_contract::repomap::terminal_receipt_v2::RepoMapTerminalReceiptV2, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::RepoMapNamespace<'a>::activate(&self, request: quanta_index_contract::repomap::terminal_receipt_v2::RepoMapActivateGenerationRequestV2) -> core::result::Result<quanta_index_contract::repomap::terminal_receipt_v2::RepoMapTerminalReceiptV2, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::RepoMapNamespace<'a>::publish(&self, request: &quanta_index_contract::repomap::terminal_receipt_v2::RepoMapPublishBundleRequestV2) -> core::result::Result<quanta_index_contract::repomap::terminal_receipt_v2::RepoMapTerminalReceiptV2, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::RepoMapNamespace<'a>::query(&self, request: quanta_index_contract::repomap::RepoMapQueryRequest) -> core::result::Result<quanta_index_contract::repomap::RepoMapQueryResponse, quanta_index_sdk::SdkError>
 impl<'a> core::marker::Freeze for quanta_index_sdk::RepoMapNamespace<'a>
 impl<'a> core::marker::Send for quanta_index_sdk::RepoMapNamespace<'a>
@@ -1005,8 +1000,7 @@ pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::manifest_digest(&self) -> &s
 pub const fn quanta_index_sdk::SearchCorpusBatch<SEALED>::mode(&self) -> quanta_index_sdk::BatchMode
 pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::replace_scope(self, scope: quanta_index_contract::ipc::ingest::SearchScopeKey, scope_digest: impl core::convert::Into<alloc::string::String>, chunks: alloc::vec::Vec<quanta_index_contract::channel::records::ChunkRecord>, symbols: alloc::vec::Vec<quanta_index_contract::lex::symbol::SymbolRecord>) -> Self
 pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::replace_scopes(&self) -> &[quanta_index_contract::ipc::ingest::SearchCorpusReplaceScope]
-pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::replace_semantic_scope(self, scope: quanta_index_contract::ipc::semantic_source::SemanticSourceScopeKeyV1, scope_digest: impl core::convert::Into<alloc::string::String>, sources: alloc::vec::Vec<quanta_index_contract::ipc::semantic_source::SemanticSourceRecordV1>) -> Self
-pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::replace_semantic_scope_with_cluster_memberships_v1(self, scope: quanta_index_contract::ipc::semantic_source::SemanticSourceScopeKeyV1, scope_digest: impl core::convert::Into<alloc::string::String>, sources: alloc::vec::Vec<quanta_index_contract::ipc::semantic_source::SemanticSourceRecordV1>, cluster_memberships: alloc::vec::Vec<quanta_index_contract::ipc::semantic_source::ClusterMembershipReplaceV1>) -> Self
+pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::replace_semantic_scope(self, scope: quanta_index_contract::ipc::semantic_source::SemanticSourceScopeKeyV1, scope_digest: impl core::convert::Into<alloc::string::String>, sources: alloc::vec::Vec<quanta_index_contract::ipc::semantic_source::SemanticSourceRecordV1>, cluster_memberships: alloc::vec::Vec<quanta_index_contract::ipc::semantic_source::ClusterMembershipReplaceV1>) -> Self
 pub const fn quanta_index_sdk::SearchCorpusBatch<SEALED>::repo_id(&self) -> &quanta_index_contract_base::ids::RepoId
 pub const fn quanta_index_sdk::SearchCorpusBatch<SEALED>::revision_id(&self) -> &quanta_index_contract_base::ids::RevisionId
 pub const fn quanta_index_sdk::SearchCorpusBatch<SEALED>::seal_requested(&self) -> bool

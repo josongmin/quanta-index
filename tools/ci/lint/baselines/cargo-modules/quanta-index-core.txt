@@ -157,7 +157,7 @@ crate quanta_index_core
 │   │   │   ├── struct QuarantinedRepoMapFileV1: pub
 │   │   │   ├── trait RepoMapBundleIngestPort: pub
 │   │   │   ├── trait RepoMapGenerationActivatePort: pub
-│   │   │   ├── struct RepoMapMutationReceiptV1: pub
+│   │   │   ├── struct RepoMapMutationCommit: pub
 │   │   │   ├── struct RepoMapOpenReportV1: pub
 │   │   │   └── trait RepoMapQuarantinePort: pub
 │   │   ├── mod policy: pub(self)
@@ -249,5 +249,7 @@ crate quanta_index_core
 │   ├── struct CancelWaiterGuardV1: pub
 │   ├── struct CancelWaiterSetV1: pub(self)
 │   ├── struct RequestBudgetV1: pub
-│   └── struct RequestCorrelationV1: pub
+│   ├── struct RequestCorrelationV1: pub
+│   ├── enum RequestProviderStageV1: pub
+│   └── trait RequestStageDiagnosticPortV1: pub
 └── mod timeref: pub

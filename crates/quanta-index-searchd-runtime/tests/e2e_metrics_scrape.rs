@@ -359,7 +359,7 @@ fn boot_gauges_match_the_boot_inventory_and_the_writer_envelope_reflects_the_sea
     };
     let (lexical_finished, lexical_unfinished) = interrupted(&inventory.lexical);
     let (semantic_finished, semantic_unfinished) = interrupted(&inventory.semantic);
-    let expected_boot: [(&str, u64); 17] = [
+    let expected_boot: [(&str, u64); 16] = [
         (
             "boot_lexical_sealed_generations",
             u64::try_from(inventory.lexical.sealed_generations)?,
@@ -407,10 +407,6 @@ fn boot_gauges_match_the_boot_inventory_and_the_writer_envelope_reflects_the_sea
         (
             "boot_repomap_snapshots_loaded",
             inventory.repo_map.snapshots_loaded,
-        ),
-        (
-            "boot_repomap_snapshots_migrated",
-            inventory.repo_map.snapshots_migrated,
         ),
         (
             "boot_repomap_activations_loaded",

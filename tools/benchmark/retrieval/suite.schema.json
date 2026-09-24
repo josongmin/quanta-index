@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://quanta-index.invalid/benchmark/retrieval/suite-v3",
   "title": "Frozen retrieval suite v3 (W0-A comparison contract)",
-  "description": "V3 cutover: v2 suites are never valid v3. Adds the required comparison contract (top_k, tokenizer, budget version, output-unit policy) that packs and records must match byte-for-byte.",
+  "description": "Only accepted suite artifact shape. Requires a comparison contract (top_k, tokenizer, budget version, output-unit policy) that packs and records must match byte-for-byte; old or unknown stamps are rejected.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "suite_id", "repository_commit", "comparison_contract", "routes", "file_universe", "file_universe_digest", "tasks"],

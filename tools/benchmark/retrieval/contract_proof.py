@@ -6,8 +6,15 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
+
+try:
+    from tools.ci.nextest_events import NextestEvidenceError, parse_nextest
+except ModuleNotFoundError:  # direct script invocation
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    from tools.ci.nextest_events import NextestEvidenceError, parse_nextest
 
 
 def _count(value: str | None, label: str) -> int:
@@ -27,18 +34,50 @@ def pytest_summary(path: Path) -> dict[str, object]:
         root = ET.parse(path).getroot()
     except (OSError, ET.ParseError) as error:
         raise SystemExit(f"invalid pytest JUnit evidence {path}: {error}") from error
-    if root.get("tests") is not None:
-        suites = [root]
-    else:
-        suites = [
-            suite for suite in root.iter("testsuite") if not list(suite.iter("testsuite"))[1:]
-        ]
+    if root.tag not in {"testsuite", "testsuites"}:
+        raise SystemExit("pytest JUnit evidence has an unknown root")
+    if root.tag == "testsuites" and root.findall("testcase"):
+        raise SystemExit("pytest JUnit testcase outside a test suite")
+    if any(
+        suite.findall("testcase") for suite in root.iter("testsuite") if suite.findall("testsuite")
+    ):
+        raise SystemExit("pytest JUnit nested suite hides direct testcases")
+    suites = [suite for suite in root.iter("testsuite") if not suite.findall("testsuite")]
     if not suites:
         raise SystemExit("pytest JUnit evidence has no counted test suite")
-    tests = sum(_count(suite.get("tests"), "tests") for suite in suites)
-    failures = sum(_count(suite.get("failures"), "failures") for suite in suites)
-    errors = sum(_count(suite.get("errors"), "errors") for suite in suites)
-    skipped = sum(_count(suite.get("skipped"), "skipped") for suite in suites)
+    totals = {key: 0 for key in ("tests", "failures", "errors", "skipped")}
+    for suite in suites:
+        cases = suite.findall("testcase")
+        seen_cases: set[tuple[str, str]] = set()
+        observed = {"tests": len(cases), "failures": 0, "errors": 0, "skipped": 0}
+        for case in cases:
+            name = case.get("name")
+            if not name:
+                raise SystemExit("pytest JUnit testcase lacks a name")
+            identity = (case.get("classname", ""), name)
+            if identity in seen_cases:
+                raise SystemExit("duplicate pytest JUnit testcase")
+            seen_cases.add(identity)
+            outcomes = [
+                key for key in ("failure", "error", "skipped") if case.find(key) is not None
+            ]
+            if len(outcomes) > 1:
+                raise SystemExit("pytest JUnit testcase has contradictory outcomes")
+            if outcomes:
+                outcome_key = {"failure": "failures", "error": "errors", "skipped": "skipped"}
+                observed[outcome_key[outcomes[0]]] += 1
+        for key, value in observed.items():
+            if _count(suite.get(key), key) != value:
+                raise SystemExit(f"pytest JUnit {key} count disagrees with testcases")
+            totals[key] += value
+    if root not in suites and root.get("tests") is not None:
+        for key, value in totals.items():
+            if _count(root.get(key), key) != value:
+                raise SystemExit(f"pytest JUnit root {key} count disagrees with testcases")
+    tests = totals["tests"]
+    failures = totals["failures"]
+    errors = totals["errors"]
+    skipped = totals["skipped"]
     failed = failures + errors
     executed = tests - skipped
     passed = executed - failed
@@ -58,64 +97,19 @@ def pytest_summary(path: Path) -> dict[str, object]:
 
 
 def nextest_summary(path: Path) -> dict[str, object]:
-    counts = {"ok": 0, "failed": 0, "ignored": 0, "timeout": 0}
-    suites_started = 0
-    suites_finished = 0
-    suites_passed = 0
-    with path.open("rb") as stream:
-        for line in stream:
-            try:
-                event = json.loads(line)
-            except (UnicodeDecodeError, json.JSONDecodeError) as error:
-                raise SystemExit(f"invalid nextest JSON evidence {path}: {error}") from error
-            if not isinstance(event, dict) or event.get("type") not in {"suite", "test"}:
-                raise SystemExit(f"invalid nextest event in {path}")
-            if event["type"] == "suite":
-                outcome = event.get("event")
-                if outcome == "started":
-                    suites_started += 1
-                elif outcome == "ok":
-                    suites_finished += 1
-                    passed = event.get("passed")
-                    failed = event.get("failed")
-                    if (
-                        type(passed) is not int
-                        or passed < 0
-                        or type(failed) is not int
-                        or failed < 0
-                    ):
-                        raise SystemExit("nextest suite has invalid counts")
-                    suites_passed += passed
-                elif outcome == "failed":
-                    raise SystemExit("nextest suite failed")
-                else:
-                    raise SystemExit(f"unknown nextest suite outcome: {outcome!r}")
-                continue
-            outcome = event.get("event")
-            if outcome == "started":
-                continue
-            if outcome not in counts:
-                raise SystemExit(f"unknown nextest test outcome: {outcome!r}")
-            counts[outcome] += 1
-    if suites_started < 1 or suites_started != suites_finished:
-        raise SystemExit("nextest evidence has incomplete suite events")
-    if counts["failed"] or counts["timeout"]:
-        raise SystemExit("nextest evidence contains failed or timed-out tests")
-    if suites_passed != counts["ok"]:
-        raise SystemExit("nextest suite/test pass counts disagree")
-    selected = sum(counts.values())
-    executed = counts["ok"] + counts["failed"] + counts["timeout"]
-    if executed < 1:
-        raise SystemExit("nextest evidence has no executed tests")
+    try:
+        evidence = parse_nextest(path)
+    except NextestEvidenceError as error:
+        raise SystemExit(f"{error}: {path}") from error
     return {
         "command": (
             "./scripts/cargow nextest run -p quanta-index-retrieval-bench "
             "--lib --test chunking_contract --all-features --locked"
         ),
-        "selected": selected,
-        "executed": executed,
-        "passed": counts["ok"],
-        "failed": counts["failed"] + counts["timeout"],
+        "selected": evidence.selected,
+        "executed": evidence.executed,
+        "passed": evidence.passed,
+        "failed": evidence.failed,
     }
 
 

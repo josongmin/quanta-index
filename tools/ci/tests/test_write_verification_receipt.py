@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -16,6 +17,13 @@ from tools.ci import source_closure
 REPO_ROOT = Path(__file__).resolve().parents[3]
 WRITER = REPO_ROOT / "tools" / "ci" / "write-verification-receipt.py"
 SCHEMA = REPO_ROOT / "tools" / "ci" / "verification-receipt.schema.json"
+
+
+def _writer_env(**overrides: str) -> dict[str, str]:
+    env = os.environ.copy()
+    env.pop("GITHUB_SHA", None)
+    env.update(overrides)
+    return env
 
 
 def _clean_repo(tmp_path: Path) -> Path:
@@ -37,9 +45,11 @@ def test_receipt_binds_revision_evidence_digest_and_test_count(tmp_path: Path) -
     evidence = tmp_path / "nextest.jsonl"
     evidence.write_text(
         '{"type":"suite","event":"started"}\n'
+        '{"type":"test","event":"started","name":"first"}\n'
         '{"type":"test","event":"ok","name":"first"}\n'
         '{"type":"suite","event":"ok","passed":1,"failed":0,"ignored":0}\n'
         '{"type":"suite","event":"started"}\n'
+        '{"type":"test","event":"started","name":"second"}\n'
         '{"type":"test","event":"ok","name":"second"}\n'
         '{"type":"test","event":"ignored","name":"third"}\n'
         '{"type":"suite","event":"ok","passed":1,"failed":0,"ignored":1}\n',
@@ -63,12 +73,54 @@ def test_receipt_binds_revision_evidence_digest_and_test_count(tmp_path: Path) -
         ],
         check=True,
         cwd=source,
+        env=_writer_env(),
     )
     receipt = json.loads(output.read_text(encoding="utf-8"))
     schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
     jsonschema.validate(receipt, schema)
     assert receipt["test_event_count"] == 3
     assert receipt["evidence_sha256"] == hashlib.sha256(evidence.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize("matching", [False, True])
+def test_receipt_binds_github_sha_to_checked_out_head(tmp_path: Path, matching: bool) -> None:
+    source = _clean_repo(tmp_path)
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, text=True).strip()
+    evidence = tmp_path / "summary.json"
+    evidence.write_text(
+        json.dumps({"command": "proof", "selected": 1, "executed": 1, "passed": 1, "failed": 0}),
+        encoding="utf-8",
+    )
+    output = tmp_path / "receipt.json"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(WRITER),
+            "--rail",
+            "proof",
+            "--tier",
+            "correctness",
+            "--command",
+            "proof",
+            "--evidence-format",
+            "summary-json",
+            "--evidence",
+            str(evidence),
+            "--out",
+            str(output),
+        ],
+        cwd=source,
+        env=_writer_env(GITHUB_SHA=head if matching else "0" * 40),
+        capture_output=True,
+        text=True,
+    )
+    if matching:
+        assert result.returncode == 0, result.stderr
+        assert json.loads(output.read_text(encoding="utf-8"))["revision"] == head
+    else:
+        assert result.returncode != 0
+        assert "GITHUB_SHA differs from checked-out HEAD" in result.stderr
+        assert not output.exists()
 
 
 @pytest.mark.parametrize(
@@ -105,7 +157,7 @@ def test_receipt_binds_revision_evidence_digest_and_test_count(tmp_path: Path) -
         (
             '{"type":"suite","event":"started"}\n'
             '{"type":"test","event":"ok","name":"first"}\n'
-            '{"type":"suite","event":"ok","passed":2,"failed":0}\n',
+            '{"type":"suite","event":"ok","passed":2,"failed":0,"ignored":0}\n',
             "suite/test pass counts disagree",
         ),
         (
@@ -144,6 +196,7 @@ def test_receipt_rejects_non_green_evidence(tmp_path: Path, events: str, error: 
             str(output),
         ],
         cwd=source,
+        env=_writer_env(),
         capture_output=True,
         text=True,
     )
@@ -190,6 +243,7 @@ def test_receipt_binds_valid_summary_json(tmp_path: Path) -> None:
         ],
         check=True,
         cwd=source,
+        env=_writer_env(),
     )
     receipt = json.loads(output.read_text(encoding="utf-8"))
     assert receipt["test_event_count"] == 8
@@ -243,6 +297,7 @@ def test_receipt_rejects_invalid_summary_json(
             str(output),
         ],
         cwd=source,
+        env=_writer_env(),
         capture_output=True,
         text=True,
     )
@@ -279,6 +334,7 @@ def test_receipt_rejects_dirty_source_before_emitting(tmp_path: Path) -> None:
             str(output),
         ],
         cwd=source,
+        env=_writer_env(),
         capture_output=True,
         text=True,
     )
@@ -359,6 +415,7 @@ def test_receipt_refuses_overwriting_existing_output(tmp_path: Path) -> None:
             str(output),
         ],
         cwd=source,
+        env=_writer_env(),
         capture_output=True,
         text=True,
     )
