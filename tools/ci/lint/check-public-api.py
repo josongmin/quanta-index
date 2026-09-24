@@ -32,6 +32,7 @@ ROOT = Path(__file__).resolve().parents[3]
 BASELINE_DIR = ROOT / "tools" / "ci" / "lint" / "baselines" / "public-api"
 
 GUARDED_CRATES: list[str] = ["quanta-index-contract", "quanta-index-sdk"]
+PUBLIC_API_TOOLCHAIN = "nightly-2026-08-01"
 
 
 def default_cache_root() -> Path:
@@ -50,6 +51,9 @@ def default_cache_root() -> Path:
 
 def cargo_env(default_lane: str) -> dict[str, str]:
     env = os.environ.copy()
+    # Rustdoc JSON rendering changes across nightlies even when the Rust API
+    # does not. Keep the baseline tied to the toolchain that produced it.
+    env["RUSTUP_TOOLCHAIN"] = PUBLIC_API_TOOLCHAIN
     cache_root = default_cache_root()
     env.setdefault("QUANTA_INDEX_CACHE_ROOT", str(cache_root))
     env.setdefault("QUANTA_INDEX_REPO_ROOT", str(ROOT))

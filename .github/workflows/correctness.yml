@@ -332,8 +332,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust nightly (cargo-public-api requires it)
-        uses: dtolnay/rust-toolchain@nightly
+      - name: Install pinned Rust nightly for public API snapshots
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-08-01
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -341,7 +343,9 @@ jobs:
           python-version: "3.12"
 
       - name: Install cargo-public-api
-        uses: taiki-e/install-action@cargo-public-api
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-public-api@0.51.0
 
       - name: Diff public API of quanta-index-contract
         run: |
