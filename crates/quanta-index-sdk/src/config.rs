@@ -4,19 +4,6 @@ use std::time::{Duration, Instant};
 use crate::SdkError;
 use quanta_index_ipc::ClientIoPolicy;
 
-#[cfg(unix)]
-fn ensure_supported_ipc_transport() -> Result<(), SdkError> {
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn ensure_supported_ipc_transport() -> Result<(), SdkError> {
-    Err(SdkError::Usage(
-        "native IPC transport is unavailable on this platform; Unix socket paths cannot be used"
-            .to_string(),
-    ))
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConnectOptions {
     state_root: Option<PathBuf>,
@@ -115,7 +102,6 @@ impl ConnectOptions {
         self,
         profile: ClientProfile,
     ) -> Result<ResolvedConnectOptions, SdkError> {
-        ensure_supported_ipc_transport()?;
         let io_policy = match self.request_io_deadline {
             Some(deadline) => ClientIoPolicy::try_with_deadline(deadline),
             None => ClientIoPolicy::try_new(self.request_io_timeout),
