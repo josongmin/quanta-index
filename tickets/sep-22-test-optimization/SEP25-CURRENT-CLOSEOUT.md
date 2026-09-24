@@ -2,6 +2,38 @@
 
 Status: `BLOCKED` for current-source Rust qualification and performance evidence.
 
+## Sep 25 follow-up — fail-closed timing snapshot
+
+At clean isolated `f7b10d6340d7e957f761736e482b4d704209bab9`
+(cherry-picked to shared `main` as `8f811417`; both commits have the same
+tree), a new TOPT-00 control-plane gap was reproduced and fixed. A successful
+`ps` call with empty, malformed, or duplicate process rows previously dropped
+the bad rows and could report zero foreign Rust processes. A snapshot missing
+the preflight process itself was likewise not rejected. The parser now refuses
+those inputs; the entry point returns error status 2 and an error receipt
+instead of admitting a clean timing run. Regression tests first failed 5/5
+against the old implementation.
+
+- `VERIFIED`: the nine-file benchmark-control pytest selection passed 140/140
+  on the clean source. Raw log:
+  `artifacts/qualification/topt-2026-09-25/benchmark-python-8f811417.log`,
+  SHA-256 `11b9370be2d372a32fc753f419757e9ee02a837d8abbcb322e94fe128bac3ec6`.
+- `VERIFIED`: `just rust-policy` exited 0 on the same clean source. Raw log:
+  `artifacts/qualification/topt-2026-09-25/rust-policy-8f811417.log`,
+  SHA-256 `00e95aee51caeb31201c31e776155c8ed29623ce98466baa97f865611b643c25`.
+  Its proof-authority stage was registry-only and found no benchmark artifacts;
+  it is not an execution or performance verdict.
+- `BLOCKED`: the real timing preflight found 15 foreign Rust processes. The
+  host had load averages about 29/46/56 and swap use 17.4/18.4 GiB while
+  qualification was attempted. No timing sample or broad Rust run was admitted.
+- `NOT_RUN`: exact-source full `verify-rust`, daemon-all, public API/fuzz, and
+  TOPT paired timings at this commit. Earlier source-bound outcomes below do
+  not transfer to this tree. The shared main still has unrelated dirty files;
+  those changes are excluded from the clean-source receipts above.
+
+This control-plane repair does not restore the missing pre-implementation
+admission record. TOPT-00 and TOPT-08 remain open under their stated contract.
+
 This ledger supersedes the status line of the historical Sep 23 gate log. It
 does not supersede its source-bound receipts. The 18 retained Sep 22 findings
 have implementation owners; they are not 18 current open implementation bugs.
