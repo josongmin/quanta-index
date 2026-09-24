@@ -662,7 +662,7 @@ fn v2_replay_refuses_corrupt_sealed_object() -> TestResult {
 }
 
 #[test]
-fn legacy_projection_meta_without_strong_custody_is_refused() -> TestResult {
+fn legacy_projection_meta_without_strong_custody_is_refused() {
     let source = bundle(1, "g1");
     let legacy_json = serde_json::json!({
         "snapshot_id": source.snapshot_id,
@@ -679,7 +679,6 @@ fn legacy_projection_meta_without_strong_custody_is_refused() -> TestResult {
         &upgrade_error,
         quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
     );
-    Ok(())
 }
 
 #[expect(
