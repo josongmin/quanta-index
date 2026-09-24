@@ -656,6 +656,7 @@ impl IpcDispatcher<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>
             other @ (SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(_)
             | SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(_)
             | SearchPlaneControlIpcRequest::RepoMapActivateV2(_)
+            | SearchPlaneControlIpcRequest::RepoMapActiveHeadV2(_)
             | SearchPlaneControlIpcRequest::ProcessReadiness(_)) => control_error_response(
                 SearchPlaneErrorCodeV2::Internal,
                 format!("doctor mock received unexpected control request: {other:?}"),
