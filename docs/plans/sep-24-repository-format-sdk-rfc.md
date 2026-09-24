@@ -1,6 +1,6 @@
 # RFC: Extensible repository-format SDK for Quanta Index
 
-- Status: **proposed; no implementation or integration proof**.
+- Status: **DRAFT — discussion only; not approved for implementation**. No implementation or integration proof.
 - Product goal: Quanta Index is the repository search plane for code, documentation, configuration, structured files, and eventually supported binary/media assets. Adding a source-format adapter should not require rewriting the public ingest lifecycle. A format is *supported* only when its adapter, engine capability, query behavior, and verification are present; an arbitrary file is never silently treated as fully indexed.
 - Source inspection: Quanta HEAD `688238a8f98e6e4bf1fb13605f970a2aecb65232` on 2026-09-24, with concurrent dirty docs. `ChunkRecord` and `SemanticSourceRecordV1` carry text; `semantic_derive.rs` uses `TextEmbeddingProvider`; the SDK currently publishes prepared `SearchCorpusBatch` records. This is a text-capable engine, not a native multimodal ingest contract. Re-freeze before implementation.
 - Related: [current SDK DSL RFC](sep-24-sdk-dsl-rfc.md), [text adapter subdesign](sep-24-source-preparation-sdk-rfc.md), [execution plan](sep-24-source-preparation-execution-plan.md).
