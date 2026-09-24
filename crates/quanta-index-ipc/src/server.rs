@@ -126,10 +126,11 @@ impl DispatchContextV1 {
 fn elapsed_micros_v1(started: Instant) -> u64 {
     // The wire field is bounded; saturate only if the monotonic duration
     // cannot be represented in that field.
-    match u64::try_from(started.elapsed().as_micros()) {
-        Ok(micros) => micros,
-        Err(_) => u64::MAX,
-    }
+    let elapsed = started.elapsed();
+    elapsed
+        .as_secs()
+        .saturating_mul(1_000_000)
+        .saturating_add(u64::from(elapsed.subsec_micros()))
 }
 
 /// Emits one terminal event even when a dispatcher unwinds or a transport
