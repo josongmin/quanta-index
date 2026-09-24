@@ -1,6 +1,8 @@
 # TOPT-00 — Authority Freeze and Measurement Contract
 
-Status: `blocked — uncontended baseline and retrospective admission missing`
+Status: `blocked — quiet-host timing absent; historical admission irrecoverable`
+
+Current source/evidence boundary: [SEP25-CURRENT-CLOSEOUT.md](SEP25-CURRENT-CLOSEOUT.md).
 
 Depends on: none
 

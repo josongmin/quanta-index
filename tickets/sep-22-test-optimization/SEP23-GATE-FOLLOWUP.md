@@ -1,6 +1,8 @@
 # Sep 23 gate follow-up — shared checkout
 
-Status: `BLOCKED — committed code rails passed through 474422f7; dirty overlay and TOPT-00 timing remain`
+Status: `historical log — latest complete code receipt b0e147a4; current state in SEP25-CURRENT-CLOSEOUT.md`
+
+Current source/evidence boundary: [SEP25-CURRENT-CLOSEOUT.md](SEP25-CURRENT-CLOSEOUT.md).
 
 This is a current shared-worktree repair record, **not** a clean-HEAD or
 performance qualification. At initial capture, `main` was

@@ -1,6 +1,8 @@
 # TOPT-08 — Same-Source Integration and Qualification
 
-Status: `blocked — committed code-qualified through 474422f7; dirty overlay and uncontended performance evidence remain`
+Status: `blocked — current source lacks full Rust and uncontended performance evidence`
+
+Current source/evidence boundary: [SEP25-CURRENT-CLOSEOUT.md](SEP25-CURRENT-CLOSEOUT.md).
 
 Depends on: TOPT-01 through TOPT-07
 
