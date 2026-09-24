@@ -196,7 +196,11 @@ pub fn assemble_batch(
         for chunk in file_chunks {
             let scope = semantic_scope(chunk)?;
             let scope_digest = scope.scope_digest.clone();
-            batch = batch.replace_semantic_scope(scope.scope, scope_digest, scope.sources);
+            // Retrieval benchmark chunks do not author ClusterCard membership
+            // evidence. Keep that authority explicitly empty instead of
+            // synthesizing memberships from semantic source proximity.
+            batch =
+                batch.replace_semantic_scope(scope.scope, scope_digest, scope.sources, Vec::new());
             report.semantic_scopes = report
                 .semantic_scopes
                 .checked_add(1)
