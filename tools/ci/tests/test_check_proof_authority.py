@@ -1270,6 +1270,49 @@ def test_p12a_refuses_downgraded_source_binding() -> None:
     assert any("P12A requires exact-pair source binding" in message for message in messages)
 
 
+@pytest.mark.parametrize(
+    "prefix",
+    ("python3 -m pytest", "python3 tools/ci/proof_execution_result.py run-p12a"),
+)
+@pytest.mark.parametrize(
+    "option",
+    ("--lf", "--last-failed", "--stepwise", "-kselected", "--ignore-glob=*.py"),
+)
+def test_python_proof_recipe_refuses_selection_narrowing(prefix: str, option: str) -> None:
+    path = "tools/ci/tests/test_write_proof_manifest.py"
+    valid = f"{prefix} {path}" + (" -q" if prefix == "python3 -m pytest" else "")
+    assert MODULE._recipe_selects_python_target(valid, path)
+    assert not MODULE._recipe_selects_python_target(f"{valid} {option}", path)
+    if prefix != "python3 -m pytest":
+        assert not MODULE._recipe_selects_python_target(f"{valid} -q", path)
+
+
+def test_p12a_registry_refuses_last_failed_recipe(monkeypatch) -> None:
+    registry = MODULE._read_toml(REGISTRY_PATH)
+    authority = MODULE._read_toml(REPO_ROOT / "tools/ci/test-authority.toml")
+    paths = {item["id"]: item["path"] for item in authority["python_targets"]}
+    selectors = " ".join(paths[target] for target in MODULE.EXPECTED_P12A_TEST_TARGETS)
+    original_body = MODULE._just_recipe_body
+    monkeypatch.setattr(
+        MODULE,
+        "_just_recipe_body",
+        lambda root, recipe: (
+            f"python3 tools/ci/proof_execution_result.py run-p12a {selectors} --lf"
+            if recipe == "proof-p12a-proof-infrastructure"
+            else original_body(root, recipe)
+        ),
+    )
+    messages = _messages(MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH))
+    assert any("does not execute Python targets" in message for message in messages)
+
+
+def test_python_proof_recipes_refuse_addopts_before_running() -> None:
+    for recipe in ("proof-p00-authority-freeze", "proof-p12a-proof-infrastructure"):
+        body = MODULE._just_recipe_body(REPO_ROOT, recipe)
+        assert body is not None
+        assert body.splitlines()[0].startswith('@test -z "${PYTEST_ADDOPTS:-}"')
+
+
 def test_aggregate_refuses_source_and_release_daemon_identity_drift(tmp_path: Path) -> None:
     proof_a = _proof(tmp_path)
     proof_a["id"] = "proof-a"

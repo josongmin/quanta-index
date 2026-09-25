@@ -3,11 +3,92 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
 
-from tools.ci.proof_execution_result import ExecutionResultError, derive_test_result
+from tools.ci import proof_execution_result as MODULE
+from tools.ci.proof_execution_result import (
+    ExecutionResultError,
+    collect_pytest_inventory,
+    derive_test_result,
+)
+
+
+@pytest.mark.parametrize("variable", ("PYTEST_ADDOPTS", "PYTEST_PLUGINS"))
+def test_pytest_collection_refuses_environment_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, variable: str
+) -> None:
+    monkeypatch.setenv(variable, "-k selected" if variable == "PYTEST_ADDOPTS" else "selector")
+    output = tmp_path / "inventory.json"
+    with pytest.raises(ExecutionResultError, match=variable):
+        collect_pytest_inventory(["tools/ci/tests/test_proof_execution_result.py"], output)
+    assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    "selectors",
+    (
+        ["tools/ci/tests/test_proof_execution_result.py", "-k", "selected"],
+        [
+            "tools/ci/tests/test_proof_execution_result.py::test_nextest_result_is_derived_from_complete_inventory"
+        ],
+    ),
+)
+def test_pytest_collection_refuses_partial_selectors(tmp_path: Path, selectors: list[str]) -> None:
+    output = tmp_path / "inventory.json"
+    with pytest.raises(ExecutionResultError, match="complete test file selectors"):
+        collect_pytest_inventory(selectors, output)
+    assert not output.exists()
+
+
+def test_pytest_collection_never_overwrites_existing_inventory(tmp_path: Path) -> None:
+    output = tmp_path / "inventory.json"
+    output.write_bytes(b"earlier run\n")
+    with pytest.raises(ExecutionResultError, match="already exists"):
+        collect_pytest_inventory(["tools/ci/tests/test_proof_execution_result.py"], output)
+    assert output.read_bytes() == b"earlier run\n"
+
+
+def test_run_p12a_emits_complete_junit_pair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    selector = "tools/ci/tests/test_proof_execution_result.py"
+    raw_dir = tmp_path / "raw"
+
+    def collect(selectors: list[str], output: Path) -> None:
+        assert selectors == [selector]
+        output.parent.mkdir(parents=True)
+        output.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "kind": "pytest",
+                    "selector": selector,
+                    "tests": ["tools.ci.tests.test_proof_execution_result.test_case"],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        assert kwargs["cwd"] == MODULE.ROOT
+        assert command[-1] == f"--junitxml={raw_dir / 'p12a-junit.xml'}"
+        (raw_dir / "p12a-junit.xml").write_text(
+            '<testsuite tests="1" failures="0" errors="0" skipped="0">'
+            '<testcase classname="tools.ci.tests.test_proof_execution_result" '
+            'name="test_case"/></testsuite>',
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(MODULE, "collect_pytest_inventory", collect)
+    monkeypatch.setattr(MODULE.subprocess, "run", run)
+    assert MODULE.run_p12a_pytest([selector], raw_dir) == 0
+    assert (raw_dir / "p12a-inventory.json").is_file()
+    with pytest.raises(ExecutionResultError, match="already exists"):
+        MODULE.run_p12a_pytest([selector], raw_dir)
 
 
 def _nextest_fixture(root: Path) -> tuple[dict, list[dict[str, str]], Path]:

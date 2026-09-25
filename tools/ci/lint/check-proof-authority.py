@@ -179,13 +179,17 @@ def _recipe_selects_python_target(body: str, path: str) -> bool:
             tokens = shlex.split(line)
         except ValueError:
             continue
-        if tokens[:3] != ["python3", "-m", "pytest"]:
+        direct_pytest = tokens[:3] == ["python3", "-m", "pytest"]
+        proof_runner = tokens[:3] == ["python3", "tools/ci/proof_execution_result.py", "run-p12a"]
+        if not (direct_pytest or proof_runner):
             continue
-        selectors = tokens[3:]
+        # A proof recipe must select whole test files. Pytest options such as
+        # --lf and --stepwise can silently narrow that selection, so admit
+        # only the quiet flag used by the canonical owner recipe.
+        quiet_flags = {"-q", "--quiet"} if direct_pytest else set()
+        selectors = [item for item in tokens[3:] if item not in quiet_flags]
         if any(
-            item in {"-k", "-m", "--ignore", "--deselect", "--collect-only"}
-            or item.startswith(("-k=", "-m=", "--ignore=", "--deselect="))
-            for item in selectors
+            re.fullmatch(r"tools/ci/tests/test_[a-z0-9_]+\.py", item) is None for item in selectors
         ):
             continue
         if path in selectors:

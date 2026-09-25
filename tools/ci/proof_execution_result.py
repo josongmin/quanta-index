@@ -5,7 +5,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
+import subprocess
 import sys
+import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
@@ -21,6 +24,20 @@ class ExecutionResultError(ValueError):
     """The archived runner evidence does not establish the claimed outcome."""
 
 
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def _validate_pytest_selection(selectors: list[str]) -> None:
+    if not selectors or any(
+        re.fullmatch(r"tools/ci/tests/test_[a-z0-9_]+\.py", selector) is None
+        for selector in selectors
+    ):
+        raise ExecutionResultError("proof collection requires complete test file selectors")
+    for variable in ("PYTEST_ADDOPTS", "PYTEST_PLUGINS"):
+        if os.environ.get(variable):
+            raise ExecutionResultError(f"{variable} can alter proof test collection")
+
+
 def pytest_junit_identity(nodeid: str) -> str:
     """Map a collected pytest node ID to its JUnit classname and case name."""
     parts = nodeid.split("::")
@@ -32,6 +49,10 @@ def pytest_junit_identity(nodeid: str) -> str:
 
 def collect_pytest_inventory(selectors: list[str], output: Path) -> None:
     """Use pytest's actual collector rather than a hand-maintained expected-case list."""
+    _validate_pytest_selection(selectors)
+    if os.path.lexists(output):
+        raise ExecutionResultError(f"proof collection inventory already exists: {output}")
+
     import pytest
 
     class Collector:
@@ -54,9 +75,56 @@ def collect_pytest_inventory(selectors: list[str], output: Path) -> None:
         "tests": identities,
     }
     output.parent.mkdir(parents=True, exist_ok=True)
-    temporary = output.with_name(f".{output.name}.{os.getpid()}.tmp")
-    temporary.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-    os.replace(temporary, output)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            prefix=f".{output.name}.",
+            suffix=".tmp",
+            dir=output.parent,
+            delete=False,
+        ) as stream:
+            temporary = Path(stream.name)
+            stream.write(json.dumps(payload, sort_keys=True, indent=2) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        # link creates the final path only if no prior evidence exists.
+        os.link(temporary, output)
+    except FileExistsError as error:
+        raise ExecutionResultError(
+            f"proof collection inventory already exists: {output}"
+        ) from error
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def run_p12a_pytest(selectors: list[str], raw_dir: Path | None) -> int:
+    """Run the P12A files and emit raw JUnit in proof mode."""
+    _validate_pytest_selection(selectors)
+    if Path.cwd().resolve() != ROOT:
+        raise ExecutionResultError("proof pytest runner must start at the repository root")
+    command = [sys.executable, "-m", "pytest", *selectors, "-q"]
+    if raw_dir is None:
+        return subprocess.run(command, cwd=ROOT, check=False).returncode
+
+    raw_dir = (ROOT / raw_dir).resolve()
+    inventory = raw_dir / "p12a-inventory.json"
+    junit = raw_dir / "p12a-junit.xml"
+    if os.path.lexists(junit):
+        raise ExecutionResultError(f"proof JUnit result already exists: {junit}")
+    collect_pytest_inventory(selectors, inventory)
+    completed = subprocess.run([*command, f"--junitxml={junit}"], cwd=ROOT, check=False)
+    if completed.returncode != 0:
+        return completed.returncode
+    counts, _ = _pytest_result(junit, inventory)
+    print(
+        f"proof pytest evidence: selected={counts['selected']}; "
+        f"inventory={inventory}; junit={junit}",
+        flush=True,
+    )
+    return 0
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -204,13 +272,21 @@ def derive_test_result(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=["collect-pytest"])
-    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("operation", choices=["collect-pytest", "run-p12a"])
+    parser.add_argument("--output", type=Path)
     parser.add_argument("selectors", nargs="+")
     args = parser.parse_args(argv)
     try:
-        collect_pytest_inventory(args.selectors, args.output)
-    except ExecutionResultError as error:
+        if args.operation == "collect-pytest":
+            if args.output is None:
+                raise ExecutionResultError("collect-pytest requires --output")
+            collect_pytest_inventory(args.selectors, args.output)
+        else:
+            if args.output is not None:
+                raise ExecutionResultError("run-p12a does not accept --output")
+            raw_dir = os.environ.get("QUANTA_PROOF_RAW_DIR")
+            return run_p12a_pytest(args.selectors, Path(raw_dir) if raw_dir else None)
+    except (ExecutionResultError, OSError) as error:
         parser.error(str(error))
     return 0
 
