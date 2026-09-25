@@ -26,4 +26,4 @@
 - mid-line UTF-8, CRLF, 1024바이트 초과 한 줄, nested/긴 함수, attributes/decorators, 다중 정의/같은 파일 후순위 정답.
 - 고정 손계산 예제로 exact 10바이트와 1MB context를 구분하고 rank-only는 같은 rank에 같은 점수를 준다.
 - coverage/ID determinism, missing bytes, empty tokens, fallback reason, overlap union을 검증한다.
-- 출력: matrix별 raw 후보·metric·coverage와 변경/유지 결정. 청커 기본값 변경은 [TEST-PLAN](TEST-PLAN.md)의 holdout gate 이후에만 한다.
+- 출력: matrix별 raw 후보·metric·coverage와 development 단계의 후보 선택. 청커 기본값 승격은 다른 조건부 변경과 함께 고정한 한 조합의 [TEST-PLAN](TEST-PLAN.md) 최종 holdout 판정 이후에만 한다.

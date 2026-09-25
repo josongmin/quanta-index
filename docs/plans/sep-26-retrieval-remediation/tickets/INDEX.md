@@ -11,7 +11,7 @@
 - 즉시 구현: 입력 정책, 실제 lane/응답 진단, 비교 profile, 심볼 연결, 검증 inventory, resource sampler 수정.
 - 필수 실험: 청크/평가 span 분해, encoder parity, exact-vs-ANN, query/ingest 단계 비용. 결과가 나와야 알고리즘 변경을 선택한다.
 - 조건부 구현: exact-name ranking, fetch 정책, ingest delete 최적화. 측정 없이 새 기본값·모델·랭커를 지정하지 않는다.
-- 기존 200개 질의는 development 데이터다. holdout 정의·분리는 튜닝 **전에**, 평가 공개는 튜닝 종료 후 수행한다.
+- 기존 200개 질의는 development 데이터다. holdout 정의·분리는 튜닝 **전에** 고정한다. 조건부 티켓의 후보는 development에서 선택하고, 함께 고정한 한 후보 묶음을 최종 holdout에서 한 번 평가한다.
 - 수동 라이선스 승인·독립 심사자 섭외·운영 호스트 확보는 개발 작업 티켓에 넣지 않는다. 해당 입력이 없는 경우 개발/진단 작업은 진행하되 qualified quality/performance 주장은 내지 않는다.
 - 코퍼스, 모델, 대용량 trace, 실행 산출물은 레포 외부. 이 디렉터리에는 티켓과 작은 감사 근거만 둔다.
 
@@ -38,8 +38,8 @@
 1. RBR-00·11 수정, RBR-12의 평가 계획/분리 고정. 이어 RBR-01·02·03 구현.
 2. 같은 외부 코퍼스·같은 원문 질의로 새 development baseline 확보. native-default 비교와 통제 실험은 별도 spec/output으로 실행.
 3. RBR-04→05 연결. RBR-06/07 실험 및 RBR-09/10 계측. 한 실험에서 모델·청커·질의·랭커를 동시에 바꾸지 않는다.
-4. 관측된 원인만 RBR-08/09/10 변경으로 전환. 합격 기준 미달이면 기본값을 유지하고 실패/불확실 결과도 보존한다.
-5. 문서/코드/테스트가 고정된 뒤 RBR-12 최종 proof와 holdout pair. 그 뒤 source-bound 문서를 바꾸면 해당 receipt를 다시 발급한다.
+4. 관측된 원인만 RBR-08/09/10의 실험 profile에 반영한다. development에서 후보 하나를 고정하고, 제품 기본값 승격은 RBR-12의 단일 최종 평가 후 판정한다. 증거가 부족하면 기존 기본값을 유지한다.
+5. 계약 문서·코드·테스트를 고정한 뒤 RBR-12 proof와 단일 holdout pair를 수행한다. 동시 변경 조합은 묶음으로 채택하거나 유지 결정한다. 최종 상태·결과표는 레포 외부 증거에 발행한다. source-bound 문서를 결과 확인 후 수정한다면 proof와 pair를 새 revision에서 다시 발급한다.
 
 공유 main의 dirty 편집은 허용한다. 기존 변경을 reset/stash하지 않는다. `sdk.rs`, `main.rs`, `diagnostics.rs`, `record.rs`, `run.py`, schemas, proof inventory는 티켓 간 공용 파일이다. **한 번에 한 통합 담당만 같은 파일을 수정**하고, 티켓별 작업 결과를 직렬 통합한다. 이 계획은 별도 에이전트 실행을 지시하지 않는다.
 

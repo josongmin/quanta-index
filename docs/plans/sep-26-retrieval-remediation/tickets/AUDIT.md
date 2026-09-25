@@ -2,6 +2,8 @@
 
 감사일: 2026-09-26. 최종 기준 HEAD: `33b24dd5df959f38c0df4717ff834b96750faf34` + 기존 dirty overlay. 시작 HEAD는 `e38e07865daf19661deaa5d1e580acc5814504ef`였고 작업 중 공유 main에서 다른 작업의 커밋이 들어왔다. 최종 검사 입력 57개를 해시 재대조하여 일치함을 확인하고 Python 집중 테스트를 다시 실행했다. 코드 구현은 이 작업에서 수정하지 않았다. 새 티켓 패킷만 작성했다.
 
+2026-09-26 패킷 재감사: 관측 HEAD `937403350911ffe29246cc68c18f13da098f4991`, 작업 트리 clean 상태에서 아래 57개 검사 입력 및 설치 reference bytes를 재대조하여 drift 0개를 확인했다. `33b24dd5` 이후 새 커밋은 이 입력 밖의 searchd-runtime E2E 테스트를 수정했다. 이 재대조는 최신 HEAD의 전체 Rust/daemon 검증이 아니며, 아래 집중 Python 결과의 실행 revision도 변경하지 않는다.
+
 정확한 시각, 환경, dirty 목록, 검사 입력별 SHA-256, 설치된 reference source hash와 probe 결과는 [audit-evidence.json](audit-evidence.json)에 있다. 해당 파일은 **한정된 코드 감사 기록**이지 완전한 source-closure receipt가 아니다. 이후 HEAD/관련 bytes가 바뀌면 재감사가 필요하다.
 
 ## 결론과 작업 매핑
@@ -23,6 +25,7 @@
 | 새 Rust diagnostic test declaration이 authority에 없음 | static 누락 관측. 실제 Rust 수집/실행은 NOT_RUN | RBR-00 |
 | positive-RSS descendant가 live zero-RSS parent를 통해 연결되면 누락 | 독립 process-tree 불변식의 fixture 반례 재현 | RBR-11 |
 | 새 티켓 경로가 현 retrieval closure에 미포함 | 이 패킷을 계약으로 채택할 때 필요한 통합 작업 | RBR-00 |
+| 조건부 티켓마다 동일 holdout으로 후보를 선택할 수 있었음 | 반복 평가가 holdout을 development 데이터로 바꾸는 계획 결함 | RBR-06/08/09/10/12와 TEST-PLAN 수정 |
 
 ## 이번에 실행한 검증
 
@@ -85,6 +88,6 @@ PY
 
 ## 계획의 확정 범위
 
-확정한 것은 수정 경계, 의존성, 첫 실험 matrix, 독립 oracle, 선택/유지 기준이다. 실행 전 알고리즘 우승자나 개선 배수를 확정하지 않는다. 세부 실행 순서는 [INDEX](INDEX.md), 모든 티켓의 공통 합격 기준은 [TEST-PLAN](TEST-PLAN.md)을 따른다.
+확정한 것은 수정 경계, 의존성, 첫 실험 matrix, 독립 oracle, 선택/유지 기준이다. 재감사에서 조건부 후보를 development에서만 선택하고 한 조합을 최종 holdout에서 한 번 평가하도록 고쳤다. qualified primary는 기존 graded density-aware NDCG@10이며 rank/query/ingest 목표 지표와 표본 단위를 별도로 사전 고정한다. 실행 전 알고리즘 우승자나 개선 배수를 확정하지 않는다. 세부 실행 순서는 [INDEX](INDEX.md), 모든 티켓의 공통 합격 기준은 [TEST-PLAN](TEST-PLAN.md)을 따른다.
 
 패킷 검증: Markdown 16개(작업 티켓 13개 포함), 상대 파일 링크 88개가 존재하며 code fence/공백 검사에 오류 없음. `python3 tools/prompt-manager/pm.py lint`는 `all 4 target(s) in sync`; 이는 생성된 agent 문서 동기화 검사이지 티켓 내용의 correctness 검증은 아니다. source hash 재대조에서 변경 0개. `git diff --check`와 별도로 untracked 티켓의 trailing whitespace를 검사했다.

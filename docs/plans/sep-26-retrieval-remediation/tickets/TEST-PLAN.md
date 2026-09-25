@@ -51,13 +51,15 @@ just retrieval-verdict <repo> <suite> <run-manifest> <fresh-external-verdict>
 
 1. RBR-12에서 튜닝 전에 task family, split, candidate matrix, primary/secondary metric, 실행 순서·seed, 반복·표본 수, 시간 상한, 판단 규칙을 외부 experiment manifest에 고정한다. 원본 질의 동일성과 내부 변환 차이를 별개로 기록한다.
 2. native-default 제품 비교와 controlled mechanism 비교를 합산하지 않는다. lexical, semantic, hybrid, symbol을 별도로 보고하고 공통 지원 범위를 명시한다.
-3. 정확성 fixture는 전부 일치해야 한다. 핵심 primary quality는 기존 density-aware metric을 유지하며 exact-span Recall@10, rank-only MRR/Hit@1, context bytes를 보조로 보고한다. no-answer는 false-positive/abstention을 별도로 보고한다. top-10만 수집했으면 @20을 측정했다고 쓰지 않는다.
-4. 개선 선택 기본 규칙: development에서 후보를 고른 후 holdout에서 primary quality 차이의 paired 95% CI 하한이 0 이상이고, 선언된 strata의 recall이 악화되지 않아야 한다. 속도 개선은 같은 조건에서 warm p95 차이 CI 상한이 0 미만이어야 한다. 기존 protocol의 표본/quiet-host 최소조건도 충족해야 한다. 다른 margin을 쓸 경우 결과를 보기 **전에** manifest에 근거와 함께 고정한다.
-5. 표본 부족·CI 불확실은 개선 증명이 아니다. holdout 실패 후 같은 holdout으로 재튜닝하지 않는다. 개발 baseline은 허용하지만 qualified 주장은 admission/receipt 조건까지 통과해야 한다.
-6. 튜닝 후보는 티켓의 유한 matrix를 사용한다. 확대가 필요하면 사유와 추가 예산을 먼저 기록하고 새 실험으로 분리한다. 결과를 보고 유리한 질의/레포를 제거하지 않는다.
+3. 정확성 fixture는 전부 일치해야 한다. **qualified quality의 primary는 기존 RB TEST-PLAN §2.6의 graded density-aware NDCG@10**으로 유지한다. 독립 adjudicated gold가 없으면 이 값을 qualified primary로 계산하거나 대체하지 않는다. exact-span Recall@10, rank-only MRR/Hit@1, context bytes와 no-answer false-positive/abstention은 보조 지표다. top-10만 수집했으면 @20을 측정했다고 쓰지 않는다.
+4. RBR-08/09/10의 효과 지표를 각각 개발 실험 전에 고정한다: symbol Hit@1/MRR, 동일 조건 warm query p95, fresh-root time-to-searchable. 공통 품질 guard는 qualified primary NDCG@10과 선언된 strata의 exact-span recall이다. 기능을 새로 여는 RBR-02/05와 청킹 RBR-06도 효과·guard·지원 task 범위를 미리 명시한다. 결과를 보고 primary나 margin을 바꾸지 않는다.
+5. 후보 선택은 development에서 끝낸다. 동시에 변경된 query/chunk/rank/fetch/ingest 정책의 **최종 조합 한 개**와 기준 조합을 잠근 뒤 holdout을 한 번 연다. holdout에서 NDCG 차이의 query-paired 95% CI 하한이 사전 선언한 비열등 margin 이상이어야 하고, 채택을 주장하는 효과 지표의 CI가 사전 선언한 개선 기준을 충족해야 한다. 기본 margin은 0이다. 각 strata guard, quiet-host 및 기존 표본 floor도 충족해야 한다. 다중 후보를 holdout에서 고르지 않는다. 한 조합으로 시험한 변경은 묶음으로 채택하거나 기본 조합을 유지한다. 개별 효과를 주장하려면 development ablation과 별도 독립 holdout이 필요하다.
+6. 품질 interval은 query/repo를 단위로, warm latency interval은 query·fresh-root의 반복 구조를 보존하여 재표본한다. 1,000개 반복 시간을 1,000개 독립 질의로 취급하지 않는다. ingest 시간은 fresh root를 단위로 계산한다. interval 방법·seed·반복 수·계층 처리·결측/실패 취급을 결과 보기 전에 고정한다. 실패/timeout/partial을 좋은 지연 샘플에서 제외하고 속도 개선으로 계산하지 않는다.
+7. 표본 부족·CI 불확실은 개선 증명이 아니다. holdout 실패 후 같은 holdout으로 재튜닝하지 않는다. 필요한 후속 튜닝은 개발 데이터에서 수행하고, 새로 독립 고정한 holdout으로 별도 실험을 만든다. 개발 baseline은 허용하지만 qualified 주장은 admission/receipt 조건까지 통과해야 한다.
+8. 튜닝 후보는 티켓의 유한 matrix를 사용한다. 확대가 필요하면 사유와 추가 예산을 먼저 기록하고 새 실험으로 분리한다. 결과를 보고 유리한 질의/레포를 제거하지 않는다.
 
 ## 5. 증거 묶음과 완료
 
-각 결과에 full HEAD, 관련 dirty paths/source hash, 입력·모델·parser·dependency·설정·binary hash, host/runtime, 정확한 명령, raw 출력/종료 상태, 산출물 경로/SHA-256, covered/excluded scope를 남긴다. schema/config/policy 변경은 옛 증거 재사용을 무효화한다.
+각 결과에 full HEAD, 관련 dirty paths/source hash, 입력·모델·parser·dependency·설정·binary hash, host/runtime, 정확한 명령, raw 출력/종료 상태, 산출물 경로/SHA-256, covered/excluded scope를 남긴다. schema/config/policy 변경은 옛 증거 재사용을 무효화한다. 새 티켓 디렉터리가 source closure에 편입되면 이 문서의 사후 상태 변경도 receipt를 무효화한다. 최종 상태·결과표는 레포 외부의 digest-bound closeout artifact에 기록한다.
 
 개발 작업의 종료와 `PAIR_VALID`, `QUALITY_DELTA`, `PERF_QUALIFIED`의 종료를 분리한다. 외부 독립 입력이 없으면 해당 qualification만 `BLOCKED` 또는 `NOT_RUN`으로 남기고, 개발 티켓에 가짜 승인·정답·quiet-host를 만드는 작업을 추가하지 않는다.
