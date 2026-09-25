@@ -21,6 +21,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from compare_dsl_bench import (  # noqa: E402
+    FULL_HEAD_RE,
     MIN_SAMPLES_FOR_AUTHORITY,
     ArtifactRefused,
     load_artifact,
@@ -44,6 +45,30 @@ def require_clean_worktree(repo_root: Path) -> None:
     if completed.stdout:
         raise RuntimeError(
             "worktree is dirty: benchmark producers require a clean checkout before capture"
+        )
+
+
+def resolve_checkout_head(repo_root: Path) -> str:
+    completed = subprocess.run(
+        ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(f"git rev-parse HEAD failed: {completed.stderr.strip()}")
+    head = completed.stdout.strip()
+    if not FULL_HEAD_RE.fullmatch(head):
+        raise RuntimeError(f"invalid checkout HEAD {head!r}")
+    return head
+
+
+def require_frozen_source(repo_root: Path, initial_head: str) -> None:
+    require_clean_worktree(repo_root)
+    current_head = resolve_checkout_head(repo_root)
+    if current_head != initial_head:
+        raise RuntimeError(
+            f"checkout HEAD changed during benchmark run: {initial_head} -> {current_head}"
         )
 
 
@@ -331,6 +356,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             require_declared_baselines(repo_root, profile, manifest)
             require_clean_worktree(repo_root)
+            initial_head = resolve_checkout_head(repo_root)
         except RuntimeError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 2
@@ -344,6 +370,7 @@ def main(argv: list[str] | None = None) -> int:
             return preflight_result
         try:
             require_clean_preflight_receipt(receipt, args.profile)
+            require_frozen_source(repo_root, initial_head)
         except RuntimeError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 2
@@ -361,12 +388,28 @@ def main(argv: list[str] | None = None) -> int:
             if completed.returncode:
                 print(f"ERROR: producer recipe {recipe!r} failed", file=sys.stderr)
                 return completed.returncode
+            try:
+                require_frozen_source(repo_root, initial_head)
+            except RuntimeError as exc:
+                print(f"ERROR: {exc}", file=sys.stderr)
+                return 2
     validation = validate(repo_root, artifact_profile)
     if validation:
         return validation
+    if args.command == "run":
+        try:
+            require_frozen_source(repo_root, initial_head)
+        except RuntimeError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
     if args.command in {"run", "compare"}:
         try:
-            return compare(repo_root, profile, manifest)
+            result = compare(repo_root, profile, manifest)
+            if result:
+                return result
+            if args.command == "run":
+                require_frozen_source(repo_root, initial_head)
+            return 0
         except RuntimeError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 2

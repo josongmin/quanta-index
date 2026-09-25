@@ -165,6 +165,7 @@ def test_run_refuses_contended_override_before_producers(
         encoding="utf-8",
     )
     monkeypatch.setattr(MODULE, "require_clean_worktree", lambda _repo_root: None)
+    monkeypatch.setattr(MODULE, "resolve_checkout_head", lambda _repo_root: "a" * 40)
 
     def contended(_repo_root, _profile, receipt, _manifest):
         receipt.parent.mkdir(parents=True, exist_ok=True)
@@ -244,6 +245,7 @@ def test_clean_preflight_runs_exact_profile_recipes(monkeypatch, tmp_path: Path)
         encoding="utf-8",
     )
     monkeypatch.setattr(MODULE, "require_clean_worktree", lambda _repo_root: None)
+    monkeypatch.setattr(MODULE, "resolve_checkout_head", lambda _repo_root: "a" * 40)
 
     def clean(_repo_root, _profile, receipt, _manifest):
         receipt.parent.mkdir(parents=True, exist_ok=True)
@@ -307,3 +309,54 @@ def test_clean_label_with_overloaded_host_is_refused(tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="host load"):
         MODULE.require_clean_preflight_receipt(receipt, "systems")
+
+
+def _prepare_source_drift_run(monkeypatch, tmp_path: Path) -> list[list[str]]:
+    manifest_path = tmp_path / "tools" / "benchmark" / "manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(
+        (REPO_ROOT / "tools" / "benchmark" / "manifest.json").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(MODULE, "require_declared_baselines", lambda *_args: None)
+    monkeypatch.setattr(MODULE, "preflight", lambda *_args: 0)
+    monkeypatch.setattr(MODULE, "require_clean_preflight_receipt", lambda *_args: None)
+    monkeypatch.setattr(MODULE, "validate", lambda *_args: 0)
+    monkeypatch.setattr(MODULE, "compare", lambda *_args: 0)
+    calls: list[list[str]] = []
+
+    def run(command, **_kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(MODULE.subprocess, "run", run)
+    return calls
+
+
+def test_run_refuses_head_drift_before_admitting_artifacts(monkeypatch, tmp_path: Path) -> None:
+    calls = _prepare_source_drift_run(monkeypatch, tmp_path)
+    monkeypatch.setattr(MODULE, "require_clean_worktree", lambda _repo_root: None)
+    heads = iter(["a" * 40, "b" * 40])
+    monkeypatch.setattr(
+        MODULE, "resolve_checkout_head", lambda _repo_root: next(heads), raising=False
+    )
+
+    assert MODULE.main(["--repo-root", str(tmp_path), "run", "systems"]) == 2
+    assert calls == []
+
+
+def test_run_refuses_dirty_tree_after_first_producer(monkeypatch, tmp_path: Path) -> None:
+    calls = _prepare_source_drift_run(monkeypatch, tmp_path)
+    checks = 0
+
+    def check_clean(_repo_root):
+        nonlocal checks
+        checks += 1
+        if checks >= 3:
+            raise RuntimeError("worktree changed during benchmark run")
+
+    monkeypatch.setattr(MODULE, "require_clean_worktree", check_clean)
+    monkeypatch.setattr(MODULE, "resolve_checkout_head", lambda _repo_root: "a" * 40, raising=False)
+
+    assert MODULE.main(["--repo-root", str(tmp_path), "run", "systems"]) == 2
+    assert calls == [["just", "rust-verify-quality-freshness"]]
