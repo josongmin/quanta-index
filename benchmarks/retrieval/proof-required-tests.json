@@ -302,7 +302,16 @@
     "quanta-index-retrieval-bench::quanta_index_retrieval_bench$sdk::empty_status_tests::error_classification_preserves_typed_outcomes",
     "quanta-index-retrieval-bench::quanta_index_retrieval_bench$sdk::empty_status_tests::explicit_binary_pin_never_falls_back",
     "quanta-index-retrieval-bench::quanta_index_retrieval_bench$sdk::empty_status_tests::sealed_receipt_forgeries_refuse",
-    "quanta-index-retrieval-bench::quanta_index_retrieval_bench$sdk::empty_status_tests::unset_pin_refuses_without_discovery"
+    "quanta-index-retrieval-bench::quanta_index_retrieval_bench$sdk::empty_status_tests::unset_pin_refuses_without_discovery",
+    "quanta-index-retrieval-bench::quanta_index_retrieval_bench$symbols::tests::crlf_line_spans_stay_consistent",
+    "quanta-index-retrieval-bench::quanta_index_retrieval_bench$symbols::tests::extraction_is_deterministic_and_ids_bind_identity",
+    "quanta-index-retrieval-bench::quanta_index_retrieval_bench$symbols::tests::go_functions_methods_and_types",
+    "quanta-index-retrieval-bench::quanta_index_retrieval_bench$symbols::tests::homonymous_definitions_keep_distinct_ids",
+    "quanta-index-retrieval-bench::quanta_index_retrieval_bench$symbols::tests::javascript_and_typescript_definitions",
+    "quanta-index-retrieval-bench::quanta_index_retrieval_bench$symbols::tests::python_definitions_and_decorator_span",
+    "quanta-index-retrieval-bench::quanta_index_retrieval_bench$symbols::tests::rust_definitions_qualify_methods_inside_impls",
+    "quanta-index-retrieval-bench::quanta_index_retrieval_bench$symbols::tests::tsx_files_use_the_tsx_grammar",
+    "quanta-index-retrieval-bench::quanta_index_retrieval_bench$symbols::tests::unknown_extensions_and_parse_failures_are_typed"
   ],
   "schema_version": 1,
   "sdk": [

@@ -18,6 +18,7 @@ pub mod query_plan;
 pub mod record;
 pub mod schedule;
 pub mod sdk;
+pub mod symbols;
 
 use thiserror::Error;
 

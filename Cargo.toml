@@ -165,11 +165,15 @@ tempfile = "3.16.0"
 thiserror = "1.0.69"
 toml = "0.8"
 tokio = { version = "1.42", default-features = false, features = ["fs", "rt", "rt-multi-thread", "net", "io-util", "macros", "signal", "sync", "time"] }
-# Benchmark-only parsing for the retrieval brace-heuristic chunker (RB-03):
-# tree-sitter boundaries replace the retired hand lexer. No product crate
-# may depend on these.
+# Benchmark-only parsing for the retrieval brace-heuristic chunker (RB-03)
+# and the RBR-04 source-bound symbol producer: tree-sitter boundaries
+# replace the retired hand lexer. No product crate may depend on these.
 tree-sitter = "0.25"
+tree-sitter-go = "0.25"
+tree-sitter-javascript = "0.25"
+tree-sitter-python = "0.25"
 tree-sitter-rust = "0.24"
+tree-sitter-typescript = "0.23"
 unicode-normalization = "0.1"
 
 [profile.dev]

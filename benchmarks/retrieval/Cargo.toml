@@ -27,7 +27,11 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
 tree-sitter = { workspace = true }
+tree-sitter-go = { workspace = true }
+tree-sitter-javascript = { workspace = true }
+tree-sitter-python = { workspace = true }
 tree-sitter-rust = { workspace = true }
+tree-sitter-typescript = { workspace = true }
 
 [dev-dependencies]
 quanta-index-lq-norm = { version = "0.1.0", path = "../../crates/quanta-index-lq-norm" }
