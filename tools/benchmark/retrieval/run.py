@@ -36,6 +36,7 @@ from pathlib import Path
 try:
     from tools.benchmark.retrieval import linux_isolation, linux_process, portable_proof
     from tools.benchmark.retrieval import query_plan as qp
+    from tools.benchmark.retrieval import semble as semble_adapter
     from tools.benchmark.retrieval.contract_proof import nextest_summary, pytest_summary
     from tools.benchmark.retrieval.evaluator import (
         CHUNK_STRATEGIES,
@@ -60,6 +61,7 @@ except ImportError:  # direct script invocation: import the sibling module
     import linux_process  # noqa: E402
     import portable_proof  # noqa: E402
     import query_plan as qp  # noqa: E402
+    import semble as semble_adapter  # noqa: E402
     from contract_proof import nextest_summary, pytest_summary  # noqa: E402
     from evaluator import (  # noqa: E402
         CHUNK_STRATEGIES,
@@ -2989,7 +2991,11 @@ def _validate_diagnostic_response_v3(row: dict, key: tuple[str, str]) -> dict[st
     kind = row["response_kind"]
     response = row["response"]
     if kind == "sdk_failure":
-        if response is not None or row["error_code"] is None:
+        if (
+            response is not None
+            or row["error_code"] is None
+            or row["error_code"] in {"stale_generation", "empty_non_exhausted_window"}
+        ):
             raise RunError(f"{where} SDK failure shape is invalid")
         return {}
     if not isinstance(response, dict):
@@ -3156,6 +3162,20 @@ def validate_retrieval_diagnostic(
             lane_execution: dict[str, bool] = {}
         else:
             lane_execution = _validate_diagnostic_response_v3(row, key)
+            if row["response_kind"] == "rejected_response":
+                captures = record.get("captures")
+                route_owner = provenance.get(key[1])
+                capture_id = route_owner.get("capture_id") if isinstance(route_owner, dict) else None
+                capture = captures.get(capture_id) if isinstance(captures, dict) else None
+                expected_pin = row["response"]["expected_generation"]
+                if (
+                    not isinstance(capture, dict)
+                    or type(capture.get("generation")) is not int
+                    or expected_pin["manifest_generation"] != capture["generation"]
+                ):
+                    raise RunError(
+                        "retrieval diagnostic rejected response is not bound to capture generation"
+                    )
         for position, (candidate, scored) in enumerate(
             zip(row["candidates"], reference["candidates"]), 1
         ):
@@ -4159,6 +4179,8 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
             )
         ):
             raise RunError(f"{where} Semble lane counts contradict the profile")
+        if lane_counts["encode"] != lane_counts["semantic"]:
+            raise RunError(f"{where} Semble semantic and encode call counts differ")
         if not _is_hex(metrics["execution_events_sha256"], 64):
             raise RunError(f"{where} has invalid Semble execution event digest")
         identities = metrics["function_identity"]
@@ -5203,12 +5225,9 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         "query_protocol_sha256s",
         "execution_profiles",
         "execution_profiles_sha256",
+        "retrieval_diagnostic_version",
+        "rank_metric_k_policy",
     }
-    if isinstance(protocol_payload, dict) and (
-        "retrieval_diagnostic_version" in protocol_payload
-        or "rank_metric_k_policy" in protocol_payload
-    ):
-        protocol_keys.update({"retrieval_diagnostic_version", "rank_metric_k_policy"})
     if parent_binding is not None:
         protocol_keys.add("delegated_cgroup_parent")
     protocol_shape_valid = (
@@ -5274,15 +5293,8 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             and isinstance(protocol_payload["execution_profiles"], dict)
             and protocol_payload["execution_profiles_sha256"]
             == digest(canonical_bytes(protocol_payload["execution_profiles"]))
-            and (
-                "retrieval_diagnostic_version" not in protocol_payload
-                or type(protocol_payload["retrieval_diagnostic_version"]) is int
-                and protocol_payload["retrieval_diagnostic_version"] in (2, 3)
-            )
-            and (
-                "rank_metric_k_policy" not in protocol_payload
-                or protocol_payload["rank_metric_k_policy"] == "declared_top_k_v1"
-            )
+            and protocol_payload["retrieval_diagnostic_version"] == 3
+            and protocol_payload["rank_metric_k_policy"] == "declared_top_k_v1"
         )
         if protocol_shape_valid:
             try:
@@ -5553,6 +5565,8 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     for path in resolved["phase_metrics"]:
         try:
             metrics = _validate_phase_metrics(read_json(Path(path)), f"phase metrics {path}")
+            if metrics["schema_version"] != 2:
+                raise RunError("current pair replay requires phase metrics schema_version 2")
             phase_record_digests.append(metrics["record_sha256"])
             if metrics["record_sha256"] in phase_by_record:
                 phase_ok = False
@@ -5566,8 +5580,9 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 and metrics["warmup_passes"] < 1
             ):
                 phase_ok = False
-        except (RunError, ValueError, OSError):
+        except (RunError, ValueError, OSError) as exc:
             phase_ok = False
+            pair_note(f"phase_metrics_invalid:{exc}", ("T12",))
     if set(phase_record_digests) != record_digests or len(phase_record_digests) != len(
         record_digests
     ):
@@ -5650,6 +5665,55 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 raise RunError("Semble index memory attribution differs from native evidence")
         except (KeyError, RunError, ValueError, OSError):
             resource_ok = False
+
+    expected_semble_profile = protocol_payload.get("execution_profiles", {}).get("semble")
+    expected_query_sha256 = {
+        task["task_id"]: task["query_sha256"] for task in pack.get("tasks", [])
+    }
+    validated_semble_native: dict[str, dict] = {}
+    for path in resolved["semble_native"]:
+        try:
+            if not isinstance(expected_semble_profile, dict):
+                raise RunError("protocol lock lacks the Semble execution profile")
+            rep = _rep_segment(Path(path), root)
+            semble_records = [
+                record_path
+                for record_path in rep_records.get(rep, [])
+                if validated[record_path]["system"] == "semble"
+            ]
+            if len(semble_records) != 1:
+                raise RunError("Semble native artifact lacks one record owner")
+            record_digest = sha_file(Path(semble_records[0]))
+            phase = phase_by_record.get(record_digest)
+            if not isinstance(phase, dict) or phase.get("schema_version") != 2:
+                raise RunError("Semble native artifact lacks current phase metrics")
+            native = read_json(Path(path))
+            if not isinstance(native, dict):
+                raise RunError("Semble native artifact must be an object")
+            semble_adapter.validate_native_profile_report(
+                native,
+                expected_semble_profile["mode"],
+                expected_semble_profile["alpha"],
+                expected_query_sha256=expected_query_sha256,
+            )
+            native_phase_bindings = {
+                "profile": native["semble_profile"],
+                "requested_alpha": native["requested_alpha"],
+                "rerank_applied": native["rerank_applied"],
+                "lane_call_counts": native["lane_call_counts"],
+                "execution_events_sha256": native["execution_events_sha256"],
+                "function_identity": native["function_identity"],
+                "observed_wrapped_call_ns": native["observed_wrapped_call_ns"],
+            }
+            if any(phase.get(key) != value for key, value in native_phase_bindings.items()):
+                raise RunError("Semble native actual-call evidence differs from phase metrics")
+            if native.get("query_protocol") != phase.get("query_protocol"):
+                raise RunError("Semble native query protocol differs from phase metrics")
+            validated_semble_native[rep] = native
+        except (KeyError, RunError, ValueError, OSError) as exc:
+            phase_ok = False
+            pair_note(f"semble_native_actual_call_invalid:{exc}", ("T11", "T12"))
+
     for path in resolved["quanta_manifests"]:
         content = read_note(path, "quanta_manifest", ("T12",))
         if not isinstance(content, dict) or not isinstance(content.get("runs"), list):
@@ -5726,9 +5790,15 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                         suite_payload,
                         sorted(record_payload["route_provenance"]),
                     )
-                    validate_retrieval_diagnostic(
+                    diagnostic = validate_retrieval_diagnostic(
                         read_json(diagnostic_path), record_payload, observed, projected_pack
                     )
+                    if diagnostic["schema_version"] != protocol_payload.get(
+                        "retrieval_diagnostic_version"
+                    ):
+                        raise RunError(
+                            "retrieval diagnostic version differs from the current protocol lock"
+                        )
                 except (KeyError, TypeError, ValueError, OSError) as exc:
                     pair_note(f"retrieval_diagnostic_invalid:{exc}", ("T12",))
     for path, entry in validated.items():
@@ -5838,6 +5908,21 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 and (lane_counts["bm25"] <= 0 or lane_counts["semantic"] <= 0)
             ):
                 pair_note("semble_lane_profile_drift", ("T11", "T12"))
+            rep0_native = validated_semble_native.get("rep-00")
+            manifest_native_fields = (
+                "actual_alpha_by_task",
+                "lane_call_counts",
+                "execution_events_sha256",
+                "function_identity",
+                "observed_wrapped_call_ns",
+                "rerank_applied",
+                "requested_alpha",
+            )
+            if not isinstance(rep0_native, dict) or any(
+                adapter.get(field) != rep0_native.get(field)
+                for field in manifest_native_fields
+            ):
+                pair_note("adapter_native_actual_call_binding_broken", ("T11", "T12"))
     mapping_diff = mapping_payload.get("diff_digest") if isinstance(mapping_payload, dict) else None
     for _path, entry in validated.items():
         if entry["system"] != "semble":
@@ -7141,6 +7226,8 @@ def build_latency_matrix(rep_layouts: list[dict]) -> dict:
                     read_json(Path(layout["quanta_phase_metrics"][strategy])),
                     f"rep {layout['rep']} quanta {strategy} phase metrics",
                 )
+                if phase["schema_version"] != 2:
+                    raise RunError("current Quanta latency matrix requires phase metrics v2")
                 if phase.get("query_protocol") != protocol:
                     raise RunError("Quanta phase metrics do not echo the shared query protocol")
                 cell["warm_latencies"] = phase["warm_latencies_ms"]
@@ -7154,6 +7241,8 @@ def build_latency_matrix(rep_layouts: list[dict]) -> dict:
                 read_json(Path(layout["semble_phase_metrics"])),
                 f"rep {layout['rep']} semble phase metrics",
             )
+            if phase["schema_version"] != 2:
+                raise RunError("current Semble latency matrix requires phase metrics v2")
             if phase.get("query_protocol") != protocol:
                 raise RunError("Semble phase metrics do not echo the shared query protocol")
             cell["warm_latencies"] = phase["warm_latencies_ms"]

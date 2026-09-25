@@ -12,9 +12,9 @@ use std::collections::BTreeMap;
 use quanta_index_contract::lex::SymbolRecord;
 
 use crate::chunking::Chunk;
-use crate::corpus::SourceFile;
+use crate::corpus::{SourceFile, split_line_starts};
 use crate::symbols::SYMBOL_PRODUCER_IDENTITY;
-use crate::{BenchError, BenchResult};
+use crate::{BenchError, BenchResult, sha256_hex};
 
 /// Which published namespace a unit belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,6 +75,9 @@ impl PublishedUnitRegistry {
         symbols: &BTreeMap<String, Vec<SymbolRecord>>,
         sources: &BTreeMap<String, SourceFile>,
     ) -> BenchResult<Self> {
+        for (path, source) in sources {
+            validate_source(path, source)?;
+        }
         let mut registry = Self::default();
         for (path, file_chunks) in chunks {
             let source = sources.get(path).ok_or_else(|| {
@@ -85,6 +88,32 @@ impl PublishedUnitRegistry {
                     return Err(BenchError::Protocol(format!(
                         "published chunk path differs from its source bucket: {} != {path}",
                         chunk.path
+                    )));
+                }
+                validate_source_span(
+                    source,
+                    chunk.start_byte,
+                    chunk.end_byte,
+                    chunk.start_line,
+                    chunk.end_line,
+                    &chunk.chunk_id,
+                )?;
+                let start = usize::try_from(chunk.start_byte).map_err(|err| {
+                    BenchError::Protocol(format!(
+                        "published chunk start cannot fit usize for {}: {err}",
+                        chunk.chunk_id
+                    ))
+                })?;
+                let end = usize::try_from(chunk.end_byte).map_err(|err| {
+                    BenchError::Protocol(format!(
+                        "published chunk end cannot fit usize for {}: {err}",
+                        chunk.chunk_id
+                    ))
+                })?;
+                if source.bytes.get(start..end) != Some(chunk.text.as_bytes()) {
+                    return Err(BenchError::Protocol(format!(
+                        "published chunk text differs from admitted source bytes: {}",
+                        chunk.chunk_id
                     )));
                 }
                 registry.insert(PublishedUnit {
@@ -112,6 +141,14 @@ impl PublishedUnitRegistry {
                         symbol.repo_relative_path.as_str()
                     )));
                 }
+                validate_source_span(
+                    source,
+                    symbol.definition_span.byte_start,
+                    symbol.definition_span.byte_end,
+                    symbol.definition_span.line_start,
+                    symbol.definition_span.line_end,
+                    symbol.symbol_id.as_str(),
+                )?;
                 registry.insert(PublishedUnit {
                     kind: PublishedUnitKind::Symbol,
                     id: symbol.symbol_id.as_str().to_string(),
@@ -188,21 +225,74 @@ impl PublishedUnitRegistry {
     }
 }
 
+fn validate_source(path: &str, source: &SourceFile) -> BenchResult<()> {
+    let (expected_line_starts, exotic_boundary) = split_line_starts(&source.text);
+    if source.path != path
+        || source.text.as_bytes() != source.bytes
+        || sha256_hex(&source.bytes) != source.sha256
+        || exotic_boundary
+        || source.line_starts != expected_line_starts
+    {
+        return Err(BenchError::Protocol(format!(
+            "published-unit source authority is inconsistent: {path}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_source_span(
+    source: &SourceFile,
+    byte_start: u32,
+    byte_end: u32,
+    line_start: u32,
+    line_end: u32,
+    unit_id: &str,
+) -> BenchResult<()> {
+    let start = usize::try_from(byte_start).map_err(|err| {
+        BenchError::Protocol(format!(
+            "published unit start cannot fit usize for {unit_id}: {err}"
+        ))
+    })?;
+    let end = usize::try_from(byte_end).map_err(|err| {
+        BenchError::Protocol(format!(
+            "published unit end cannot fit usize for {unit_id}: {err}"
+        ))
+    })?;
+    if start >= end || end > source.bytes.len() {
+        return Err(BenchError::Protocol(format!(
+            "published unit byte span is outside admitted source: {unit_id}"
+        )));
+    }
+    let projected_start = source
+        .line_starts
+        .partition_point(|offset| *offset <= start);
+    let projected_end = source
+        .line_starts
+        .partition_point(|offset| *offset <= end.saturating_sub(1));
+    if usize::try_from(line_start) != Ok(projected_start)
+        || usize::try_from(line_end) != Ok(projected_end)
+    {
+        return Err(BenchError::Protocol(format!(
+            "published unit line projection differs from its byte span: {unit_id}"
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::corpus::split_line_starts;
-    use crate::sha256_hex;
     use crate::symbols::extract_symbols;
 
     fn chunk(path: &str, text: &str) -> Chunk {
+        let (line_starts, _) = split_line_starts(text);
         Chunk {
             chunk_id: format!("chunk-{path}-0"),
             path: path.to_string(),
             start_byte: 0,
             end_byte: u32::try_from(text.len()).expect("fixture length"),
             start_line: 1,
-            end_line: 1,
+            end_line: u32::try_from(line_starts.len()).expect("fixture line count"),
             text: text.to_string(),
             strategy: "whole_file".to_string(),
             version: "v1".to_string(),
@@ -311,6 +401,76 @@ mod tests {
                 &sources("src/lib.rs", RUST_SOURCE),
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn registry_refuses_units_that_do_not_match_source_bytes_or_line_projection() {
+        let source_map = sources("src/lib.rs", RUST_SOURCE);
+        let mut wrong_text = chunk("src/lib.rs", RUST_SOURCE);
+        wrong_text.text = "forged".to_string();
+        assert!(
+            PublishedUnitRegistry::from_chunks_and_symbols(
+                &BTreeMap::from([("src/lib.rs".to_string(), vec![wrong_text])]),
+                &BTreeMap::new(),
+                &source_map,
+            )
+            .is_err()
+        );
+
+        let mut wrong_line = chunk("src/lib.rs", RUST_SOURCE);
+        wrong_line.end_line = 1;
+        assert!(
+            PublishedUnitRegistry::from_chunks_and_symbols(
+                &BTreeMap::from([("src/lib.rs".to_string(), vec![wrong_line])]),
+                &BTreeMap::new(),
+                &source_map,
+            )
+            .is_err()
+        );
+
+        let mut forged_source = sources("src/lib.rs", RUST_SOURCE);
+        forged_source.get_mut("src/lib.rs").expect("source").sha256 = "0".repeat(64);
+        assert!(
+            PublishedUnitRegistry::from_chunks_and_symbols(
+                &BTreeMap::from([(
+                    "src/lib.rs".to_string(),
+                    vec![chunk("src/lib.rs", RUST_SOURCE)],
+                )]),
+                &BTreeMap::new(),
+                &forged_source,
+            )
+            .is_err()
+        );
+
+        let mut forged_lines = sources("src/lib.rs", RUST_SOURCE);
+        forged_lines
+            .get_mut("src/lib.rs")
+            .expect("source")
+            .line_starts = vec![0, 1];
+        assert!(
+            PublishedUnitRegistry::from_chunks_and_symbols(
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                &forged_lines,
+            )
+            .is_err()
+        );
+
+        let empty_source = SourceFile {
+            path: "empty.rs".to_string(),
+            bytes: Vec::new(),
+            text: String::new(),
+            line_starts: Vec::new(),
+            sha256: sha256_hex(b""),
+        };
+        assert!(
+            PublishedUnitRegistry::from_chunks_and_symbols(
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                &BTreeMap::from([("empty.rs".to_string(), empty_source)]),
+            )
+            .is_ok()
         );
     }
 }

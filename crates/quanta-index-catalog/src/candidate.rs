@@ -359,6 +359,77 @@ fn quarantine_row_digest(row: &RepoMapQuarantineIncidentRowV1) -> [u8; 32] {
     )
 }
 
+type QuarantineRawRow = (
+    Vec<u8>,
+    Vec<u8>,
+    Vec<u8>,
+    Vec<u8>,
+    i64,
+    i64,
+    String,
+    String,
+    i64,
+    Option<i64>,
+    Vec<u8>,
+);
+
+fn quarantine_raw_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<QuarantineRawRow> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+        row.get(5)?,
+        row.get(6)?,
+        row.get(7)?,
+        row.get(8)?,
+        row.get(9)?,
+        row.get(10)?,
+    ))
+}
+
+fn checked_quarantine_row(
+    raw: QuarantineRawRow,
+) -> Result<RepoMapQuarantineIncidentRowV1, CoreError> {
+    let (
+        digest,
+        payload,
+        envelope,
+        envelope_digest,
+        time,
+        sequence,
+        reason_code,
+        source_path,
+        discarded,
+        discard_sequence,
+        row_digest,
+    ) = raw;
+    let discarded = match discarded {
+        0 => false,
+        1 => true,
+        other => return Err(corrupt(&format!("quarantine discarded flag is {other}"))),
+    };
+    let incident = RepoMapQuarantineIncidentRowV1 {
+        incident_digest: blob32("incident digest", &digest)?,
+        payload_digest: blob32("incident payload digest", &payload)?,
+        envelope_bytes: envelope,
+        envelope_digest: blob32("quarantine envelope digest", &envelope_digest)?,
+        incident_time_unix_nanos: time,
+        sequence,
+        reason_code,
+        source_path,
+        discarded,
+        discard_sequence,
+    };
+    if quarantine_row_digest(&incident) != blob32("incident row digest", &row_digest)? {
+        return Err(corrupt(
+            "quarantine incident row does not match its own digest",
+        ));
+    }
+    Ok(incident)
+}
+
 fn read_candidate_row(
     transaction: &Connection,
     repo_id: &str,
@@ -1190,31 +1261,22 @@ impl SqliteCatalog {
         let transaction = connection
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|error| engine_error("begin repomap quarantine record", path, &error))?;
-        let existing: Option<(i64, Vec<u8>, Vec<u8>)> = transaction
+        let existing: Option<QuarantineRawRow> = transaction
             .query_row(
-                "SELECT sequence, envelope_bytes, envelope_digest
+                "SELECT incident_digest, payload_digest, envelope_bytes, envelope_digest,
+                        incident_time_unix_nanos, sequence, reason_code, source_path,
+                        discarded, discard_sequence, row_sha256
                  FROM repomap_quarantine_event_v1
                  WHERE incident_digest = ?1",
                 params![incident_digest.as_slice()],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                quarantine_raw_row,
             )
             .optional()
             .map_err(|error| engine_error("read repomap quarantine incident", path, &error))?;
-        if let Some((sequence, envelope_bytes, envelope_digest)) = existing {
-            // Exact retry: the same envelope replays the same sequence and
-            // time; nothing new is allocated.
-            return Ok(RepoMapQuarantineIncidentRowV1 {
-                incident_digest: *incident_digest,
-                payload_digest: *payload_digest,
-                envelope_bytes,
-                envelope_digest: blob32("quarantine envelope digest", &envelope_digest)?,
-                incident_time_unix_nanos,
-                sequence,
-                reason_code: reason_code.to_string(),
-                source_path: source_path.to_string(),
-                discarded: false,
-                discard_sequence: None,
-            });
+        if let Some(raw) = existing {
+            // Exact retry returns the self-digested durable row, including
+            // original observation fields and a later discard tombstone.
+            return checked_quarantine_row(raw);
         }
         let sequence = append_sequence_event(
             &transaction,
@@ -1561,56 +1623,12 @@ impl SqliteCatalog {
             )
             .map_err(|error| engine_error("prepare incident listing", &self.path, &error))?;
         let rows = statement
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, Vec<u8>>(0)?,
-                    row.get::<_, Vec<u8>>(1)?,
-                    row.get::<_, Vec<u8>>(2)?,
-                    row.get::<_, Vec<u8>>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, i64>(5)?,
-                    row.get::<_, String>(6)?,
-                    row.get::<_, String>(7)?,
-                    row.get::<_, i64>(8)?,
-                    row.get::<_, Option<i64>>(9)?,
-                    row.get::<_, Vec<u8>>(10)?,
-                ))
-            })
+            .query_map([], quarantine_raw_row)
             .map_err(|error| engine_error("list incidents", &self.path, &error))?;
         let mut out = Vec::new();
         for row in rows {
-            let (
-                digest,
-                payload,
-                envelope,
-                envelope_digest,
-                time,
-                sequence,
-                reason_code,
-                source_path,
-                discarded,
-                discard_sequence,
-                row_digest,
-            ) = row.map_err(|error| engine_error("read incident row", &self.path, &error))?;
-            let incident = RepoMapQuarantineIncidentRowV1 {
-                incident_digest: blob32("incident digest", &digest)?,
-                payload_digest: blob32("incident payload digest", &payload)?,
-                envelope_bytes: envelope,
-                envelope_digest: blob32("quarantine envelope digest", &envelope_digest)?,
-                incident_time_unix_nanos: time,
-                sequence,
-                reason_code,
-                source_path,
-                discarded: discarded == 1,
-                discard_sequence,
-            };
-            let stored = blob32("incident row digest", &row_digest)?;
-            if quarantine_row_digest(&incident) != stored {
-                return Err(corrupt(
-                    "quarantine incident row does not match its own digest",
-                ));
-            }
-            out.push(incident);
+            let raw = row.map_err(|error| engine_error("read incident row", &self.path, &error))?;
+            out.push(checked_quarantine_row(raw)?);
         }
         Ok(out)
     }
@@ -1631,6 +1649,96 @@ mod tests {
     };
     use crate::connection::{CATALOG_FILE_NAME, catalog_dir};
     use crate::sequence::{SequenceEventKindV1, append_sequence_event};
+
+    #[test]
+    fn quarantine_incident_retry_returns_the_stored_row_even_after_discard()
+    -> Result<(), Box<dyn Error>> {
+        let root = tempfile::tempdir()?;
+        let catalog = SqliteCatalog::open(root.path(), Duration::from_millis(100))?;
+        let digest = [1_u8; 32];
+        let first = catalog.record_repomap_quarantine_incident(
+            &digest,
+            &[2_u8; 32],
+            42,
+            "original-reason",
+            "original-path",
+            &|_sequence| Ok(([3_u8; 32], vec![4_u8])),
+        )?;
+        let replay = catalog.record_repomap_quarantine_incident(
+            &digest,
+            &[9_u8; 32],
+            99,
+            "different-reason",
+            "different-path",
+            &|_sequence| Err(CoreError::Storage("replay rebuilt envelope".to_string())),
+        )?;
+        if replay != first {
+            return Err("incident retry did not return the stored original row".into());
+        }
+        let discard_sequence = catalog.discard_repomap_quarantine_payload(&digest)?;
+        let replay_after_discard = catalog.record_repomap_quarantine_incident(
+            &digest,
+            &[9_u8; 32],
+            100,
+            "different-reason",
+            "different-path",
+            &|_sequence| Err(CoreError::Storage("replay rebuilt envelope".to_string())),
+        )?;
+        let listed = catalog.repomap_quarantine_incidents()?;
+        if listed.as_slice() != [replay_after_discard.clone()]
+            || !replay_after_discard.discarded
+            || replay_after_discard.discard_sequence != Some(discard_sequence)
+        {
+            return Err("discarded incident retry did not return durable tombstone".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn discarded_incident_without_discard_sequence_refuses_replay()
+    -> Result<(), Box<dyn Error>> {
+        let root = tempfile::tempdir()?;
+        let catalog = SqliteCatalog::open(root.path(), Duration::from_millis(100))?;
+        let digest = [5_u8; 32];
+        let incident = catalog.record_repomap_quarantine_incident(
+            &digest,
+            &[6_u8; 32],
+            42,
+            "reason",
+            "path",
+            &|_sequence| Ok(([7_u8; 32], vec![8_u8])),
+        )?;
+        let malformed = super::RepoMapQuarantineIncidentRowV1 {
+            discarded: true,
+            discard_sequence: None,
+            ..incident
+        };
+        {
+            let connection = catalog.lock()?;
+            let changed = connection.execute(
+                "UPDATE repomap_quarantine_event_v1
+                 SET discarded = 1, row_sha256 = ?1 WHERE incident_digest = ?2",
+                params![
+                    super::quarantine_row_digest(&malformed).as_slice(),
+                    digest.as_slice()
+                ],
+            )?;
+            if changed != 1 {
+                return Err("hostile fixture must update one incident".into());
+            }
+        }
+        let replay = catalog.discard_repomap_quarantine_payload(&digest);
+        if !matches!(
+            replay,
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                ..
+            })
+        ) {
+            return Err("missing discard sequence must not replay the record sequence".into());
+        }
+        Ok(())
+    }
 
     #[test]
     fn sealed_candidate_quarantine_replays_and_reopens_with_both_event_pairs()

@@ -337,7 +337,7 @@ impl RepoMapGenerationStore {
         let source_path = relative.to_string_lossy().into_owned();
         let reason_code = failure.reason.code();
         let reason_text = format!("{}/{}", u64::from(failure.reason.code()), failure.detail);
-        let incident = self.catalog.record_repomap_quarantine_incident(
+        let incident_row = self.catalog.record_repomap_quarantine_incident(
             &incident_digest,
             payload_digest
                 .unwrap_or_else(|| {
@@ -369,15 +369,38 @@ impl RepoMapGenerationStore {
                 Ok((*digest.as_bytes(), bytes))
             },
         )?;
-        let quarantine_entry = quarantine_entry_name(&incident.incident_digest);
-        let incident = quanta_index_contract::QuarantineIncidentV1::new(
-            u64::try_from(incident.sequence).map_or(0, |sequence| sequence),
-            observed_nanos,
-            evidence,
+        let quarantine_entry = quarantine_entry_name(&incident_row.incident_digest);
+        let incident = quanta_index_contract::QuarantineIncidentV1::decode_canonical(
+            &incident_row.envelope_bytes,
         )
-        .map_err(|error| {
-            CoreError::Storage(format!("repomap quarantine incident refused: {error}"))
+        .map_err(|error| CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+            message: format!("repomap stored quarantine envelope is invalid: {error}"),
         })?;
+        let stored_evidence_digest =
+            incident
+                .evidence()
+                .digest()
+                .map_err(|error| CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                    message: format!("repomap stored quarantine evidence is invalid: {error}"),
+                })?;
+        let stored_envelope_digest = incident.digest().map_err(|error| CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+            message: format!("repomap stored quarantine digest is invalid: {error}"),
+        })?;
+        let current_payload_digest = payload_digest.map_or([0_u8; 32], |digest| *digest.as_bytes());
+        if incident.sequence() != u64::try_from(incident_row.sequence).map_or(0, |value| value)
+            || stored_evidence_digest.as_bytes() != &incident_row.incident_digest
+            || stored_envelope_digest.as_bytes() != &incident_row.envelope_digest
+            || incident_row.payload_digest != current_payload_digest
+        {
+            return Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                message: "repomap stored quarantine envelope disagrees with catalog row"
+                    .to_string(),
+            });
+        }
         // Durable projections (create-new, exact-byte replay, fsync), then
         // the source unlink + source-directory fsync.
         let _projected = objects.project_quarantine(&incident, failure.raw_bytes.as_deref())?;

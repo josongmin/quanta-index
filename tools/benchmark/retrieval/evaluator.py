@@ -292,6 +292,8 @@ def validate_capture(value: Any, where: str, version: int = RUNNER_SCHEMA_VERSIO
     generation = nonnegative_int(capture["generation"], where + ".generation")
     if system == "semble":
         require(generation == 0, f"{where}.generation must be 0 for semble captures")
+    else:
+        require(generation > 0, f"{where}.generation must be positive for quanta captures")
     sha(capture["receipt_digest"], where + ".receipt_digest")
     sha(capture["activation_digest"], where + ".activation_digest")
     string(capture["model"], where + ".model")

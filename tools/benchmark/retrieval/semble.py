@@ -398,6 +398,11 @@ def main() -> int:
             f"{profile} profile must run both lanes (alpha endpoints are score "
             f"ablations, not single-lane runs): {lane_calls}"
         )
+    if lane_calls["encode"] != lane_calls["semantic"]:
+        raise SystemExit(
+            "Semble semantic lane and model encode call counts differ: "
+            f"{lane_calls}"
+        )
     first_query_ms = first_query_ms or 0.0
     if first_query_start_ns is None or first_query_end_ns is None:
         raise SystemExit("worker did not execute a first measured query")
@@ -487,7 +492,11 @@ SEMBLE_PROFILES = (
 
 
 def validate_native_profile_report(
-    native_payload: dict, profile: str, alpha: float | None
+    native_payload: dict,
+    profile: str,
+    alpha: float | None,
+    *,
+    expected_query_sha256: dict[str, str] | None = None,
 ) -> None:
     """Reject a worker report that disagrees with the requested profile.
 
@@ -533,14 +542,92 @@ def validate_native_profile_report(
             raise AdapterError("Semble worker alpha echo differs from the requested alpha")
         if native_payload.get("rerank_applied") is not False:
             raise AdapterError("hybrid-no-rerank capture must report rerank disabled")
+    if profile != "hybrid-no-rerank" and native_payload.get("requested_alpha") is not None:
+        raise AdapterError(f"{profile} capture must not report a requested alpha")
     events = native_payload.get("execution_events")
     if not isinstance(events, list) or not events:
         raise AdapterError("Semble worker execution event report is absent")
+    identities = native_payload.get("function_identity")
+    if not isinstance(identities, dict) or set(identities) != {
+        "bm25",
+        "index_search",
+        "module_search",
+        "resolve_alpha",
+        "semantic",
+    }:
+        raise AdapterError("Semble function identity report is malformed")
+    for name, identity in identities.items():
+        if (
+            not isinstance(identity, dict)
+            or set(identity) != {"module", "qualname", "source_sha256"}
+            or not isinstance(identity["module"], str)
+            or not identity["module"]
+            or not isinstance(identity["qualname"], str)
+            or not identity["qualname"]
+            or not isinstance(identity["source_sha256"], str)
+            or len(identity["source_sha256"]) != 64
+            or any(ch not in "0123456789abcdef" for ch in identity["source_sha256"])
+        ):
+            raise AdapterError(f"Semble function identity is invalid: {name}")
+    observed_ns = native_payload.get("observed_wrapped_call_ns")
+    if type(observed_ns) is not int or observed_ns < 0:
+        raise AdapterError("Semble wrapped-call duration is invalid")
+
+    native_rows = native_payload.get("native")
+    if not isinstance(native_rows, list) or not native_rows:
+        raise AdapterError("Semble native result rows are absent")
+    native_task_order = []
+    for row in native_rows:
+        if not isinstance(row, dict) or not isinstance(row.get("task_id"), str):
+            raise AdapterError("Semble native result row is malformed")
+        native_task_order.append(row["task_id"])
+    if len(native_task_order) != len(set(native_task_order)):
+        raise AdapterError("Semble native task rows are duplicated")
+    query_schedule = native_payload.get("query_schedule")
+    if (
+        not isinstance(query_schedule, list)
+        or any(not isinstance(task_id, str) or not task_id for task_id in query_schedule)
+        or len(query_schedule) != len(set(query_schedule))
+        or set(query_schedule) != set(native_task_order)
+    ):
+        raise AdapterError("Semble query schedule differs from native task rows")
+    repetitions = native_payload.get("repetitions")
+    warmup_passes = native_payload.get("warmup_passes")
+    if type(repetitions) is not int or repetitions <= 0:
+        raise AdapterError("Semble repetitions are invalid")
+    if type(warmup_passes) is not int or warmup_passes < 0:
+        raise AdapterError("Semble warmup passes are invalid")
+    protocol = native_payload.get("query_protocol")
+    expected_events: list[tuple[int, str, int, str]] = []
+    if protocol is not None:
+        protocol = validate_query_protocol(protocol, query_schedule)
+        if (
+            len(protocol["warmup_schedules"]) != warmup_passes
+            or len(protocol["measurement_schedules"]) != repetitions
+        ):
+            raise AdapterError("Semble query protocol counts differ from worker settings")
+        expected_events.append((0, "cold", 0, protocol["cold_probe_task_id"]))
+        warmup_schedules = protocol["warmup_schedules"]
+        measurement_schedules = protocol["measurement_schedules"]
+    else:
+        warmup_schedules = [query_schedule for _ in range(warmup_passes)]
+        measurement_schedules = [query_schedule for _ in range(repetitions)]
+    for iteration, schedule in enumerate(warmup_schedules):
+        expected_events.extend((0, "warmup", iteration, task_id) for task_id in schedule)
+    for repetition, schedule in enumerate(measurement_schedules):
+        expected_events.extend(
+            (repetition, "measured", repetition, task_id) for task_id in schedule
+        )
+    if native_task_order != measurement_schedules[0]:
+        raise AdapterError("Semble native row order differs from the first measured schedule")
+    if expected_query_sha256 is not None and set(expected_query_sha256) != set(query_schedule):
+        raise AdapterError("Semble expected query identity set differs from the query schedule")
+    if len(events) != len(expected_events):
+        raise AdapterError("Semble execution event count differs from the query protocol")
     expected_profile_sha = digest(canonical(execution_profile(profile, alpha)))
-    keys = set()
-    measured = {}
+    measured: dict[tuple[int, str], dict] = {}
     observed_lane_calls = {"bm25": 0, "semantic": 0}
-    for event in events:
+    for ordinal, (event, expected_event) in enumerate(zip(events, expected_events, strict=True)):
         required = {
             "rep", "phase", "phase_iteration", "task_id", "call_ordinal",
             "submitted_query_sha256", "profile_sha256", "actual_alpha",
@@ -549,16 +636,20 @@ def validate_native_profile_report(
         }
         if not isinstance(event, dict) or set(event) != required:
             raise AdapterError("Semble worker execution event shape is invalid")
-        key = tuple(event[name] for name in ("rep", "phase", "phase_iteration", "task_id", "call_ordinal"))
-        if key in keys:
-            raise AdapterError("Semble worker execution event key is duplicated")
-        keys.add(key)
+        key = tuple(event[name] for name in ("rep", "phase", "phase_iteration", "task_id"))
+        if key != expected_event or event["call_ordinal"] != ordinal:
+            raise AdapterError("Semble execution event order differs from the query protocol")
         if event["profile_sha256"] != expected_profile_sha:
             raise AdapterError("Semble worker execution event profile digest mismatch")
-        if not isinstance(event["task_id"], str) or not event["task_id"]:
-            raise AdapterError("Semble worker execution event task is invalid")
-        if event["phase"] not in ("cold", "warmup", "measured"):
-            raise AdapterError("Semble worker execution event phase is invalid")
+        query_sha = event["submitted_query_sha256"]
+        if (
+            not isinstance(query_sha, str)
+            or len(query_sha) != 64
+            or any(ch not in "0123456789abcdef" for ch in query_sha)
+            or expected_query_sha256 is not None
+            and query_sha != expected_query_sha256[event["task_id"]]
+        ):
+            raise AdapterError("Semble execution event query identity mismatch")
         lane_event = event["lane_entry_counts"]
         depths = event["lane_candidate_depths"]
         if (
@@ -590,20 +681,27 @@ def validate_native_profile_report(
         elif lane_event != {"bm25": 0, "semantic": 1} or depths["bm25"]:
             raise AdapterError("Semble semantic event crossed the lane boundary")
         if event["phase"] == "measured":
-            pair = (event["rep"], event["task_id"])
-            if pair in measured:
-                raise AdapterError("Semble measured event coverage is duplicated")
-            measured[pair] = event
+            measured[(event["rep"], event["task_id"])] = event
+    if native_payload.get("execution_events_sha256") != digest(canonical(events)):
+        raise AdapterError("Semble execution event digest mismatch")
     if any(lane_counts[lane] != count for lane, count in observed_lane_calls.items()):
         raise AdapterError("Semble aggregate lane calls differ from execution events")
-    native_tasks = {
-        row.get("task_id") for row in native_payload.get("native", []) if isinstance(row, dict)
-    }
-    repetitions = native_payload.get("repetitions")
-    if type(repetitions) is not int or repetitions <= 0 or set(measured) != {
-        (rep, task_id) for rep in range(repetitions) for task_id in native_tasks
+    if lane_counts["encode"] != lane_counts["semantic"]:
+        raise AdapterError("Semble semantic and encode call counts differ")
+    if set(measured) != {
+        (rep, task_id) for rep in range(repetitions) for task_id in query_schedule
     }:
         raise AdapterError("Semble measured execution event coverage is incomplete")
+    expected_alpha_by_task = (
+        {
+            task_id: measured[(0, task_id)]["actual_alpha"]
+            for task_id in measurement_schedules[0]
+        }
+        if profile in ("native-default", "hybrid-no-rerank")
+        else None
+    )
+    if native_payload.get("actual_alpha_by_task") != expected_alpha_by_task:
+        raise AdapterError("Semble actual alpha summary differs from measured events")
 
 
 class AdapterError(ValueError):
@@ -1483,11 +1581,14 @@ def run_adapter(args: argparse.Namespace) -> int:
         raise AdapterError("Semble native output must be an object")
     if native_payload.get("configured_model_name") != model_id:
         raise AdapterError("Semble worker model configuration differs from requested model")
-    validate_native_profile_report(native_payload, profile_mode, alpha)
-    if native_payload.get("execution_events_sha256") != digest(
-        canonical(native_payload.get("execution_events"))
-    ):
-        raise AdapterError("Semble execution event digest mismatch")
+    validate_native_profile_report(
+        native_payload,
+        profile_mode,
+        alpha,
+        expected_query_sha256={
+            task["task_id"]: task["query_sha256"] for task in pack["tasks"]
+        },
+    )
     observed = native_payload.get("observed_files", [])
     proof, diff_digest = mapping_proof(admitted_rows, observed, corpus_dir)
     (out_root / "mapping-proof.json").write_text(
@@ -1589,6 +1690,9 @@ def run_adapter(args: argparse.Namespace) -> int:
         "actual_alpha_by_task": native_payload.get("actual_alpha_by_task"),
         "rerank_applied": native_payload.get("rerank_applied"),
         "lane_call_counts": native_payload.get("lane_call_counts"),
+        "execution_events_sha256": native_payload.get("execution_events_sha256"),
+        "function_identity": native_payload.get("function_identity"),
+        "observed_wrapped_call_ns": native_payload.get("observed_wrapped_call_ns"),
         "semble_python": str(Path(args.python)),
         "interpreter": env_report["interpreter"],
         "worker_digest": worker_digest,

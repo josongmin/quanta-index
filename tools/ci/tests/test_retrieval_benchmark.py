@@ -288,6 +288,53 @@ def test_retrieval_diagnostic_v3_replays_typed_window_and_empty_non_exhausted():
     }
     pairrun.validate_retrieval_diagnostic(empty, empty_record, "b" * 64, pack)
 
+    forged_stale_record = json.loads(json.dumps(empty_record))
+    forged_stale_record["results"][0]["error"] = {
+        "code": "stale_generation",
+        "message": "forged null response",
+    }
+    forged_stale = json.loads(json.dumps(empty))
+    forged_stale["results"][0].update(
+        error_code="stale_generation",
+        response_kind="sdk_failure",
+        response=None,
+    )
+    with pytest.raises(pairrun.RunError, match="SDK failure shape"):
+        pairrun.validate_retrieval_diagnostic(
+            forged_stale, forged_stale_record, "b" * 64, pack
+        )
+
+    rejected_record = json.loads(json.dumps(empty_record))
+    rejected_record["captures"] = {"capture": {"generation": 7}}
+    rejected_record["results"][0]["error"] = {
+        "code": "stale_generation",
+        "message": "typed",
+    }
+    rejected = json.loads(json.dumps(empty))
+    rejected["results"][0].update(
+        error_code="stale_generation",
+        response_kind="rejected_response",
+        response={
+            "window": empty_window,
+            "explanation": None,
+            "observed_hit_count": 0,
+            "expected_generation": {
+                "repo_id": "repo",
+                "revision_id": "revision",
+                "manifest_generation": 7,
+            },
+            "observed_generation": {
+                "repo_id": "repo",
+                "revision_id": "revision",
+                "manifest_generation": 8,
+            },
+        },
+    )
+    pairrun.validate_retrieval_diagnostic(rejected, rejected_record, "b" * 64, pack)
+    rejected["results"][0]["response"]["expected_generation"]["manifest_generation"] = 6
+    with pytest.raises(pairrun.RunError, match="bound to capture generation"):
+        pairrun.validate_retrieval_diagnostic(rejected, rejected_record, "b" * 64, pack)
+
 
 def test_pair_record_identity_accepts_multi_route_quanta_and_rejects_mixed_captures():
     captures = {
@@ -1875,14 +1922,35 @@ def test_adapter_rejects_forged_or_mismatched_profile_reports():
             "lane_candidate_depths": depths,
         }
 
-    base = {
+    function_identity = {
+        name: {
+            "module": "semble.search",
+            "qualname": name,
+            "source_sha256": _fake_sha(f"profile-{name}"),
+        }
+        for name in ("bm25", "index_search", "module_search", "resolve_alpha", "semantic")
+    }
+
+    def complete(payload: dict) -> dict:
+        value = json.loads(json.dumps(payload))
+        value.setdefault("query_schedule", ["T1"])
+        value.setdefault("query_protocol", None)
+        value.setdefault("warmup_passes", 0)
+        value.setdefault("actual_alpha_by_task", None)
+        value.setdefault("function_identity", function_identity)
+        value.setdefault("observed_wrapped_call_ns", 17)
+        value["execution_events_sha256"] = ev.digest(ev.canonical(value["execution_events"]))
+        return value
+
+    base = complete({
         "semble_profile": "lexical-only",
         "lane_call_counts": {"bm25": 1, "semantic": 0, "encode": 0},
         "rerank_applied": False,
         "native": [{"task_id": "T1", "results": []}],
         "repetitions": 1,
         "execution_events": [event("lexical-only", None, {"bm25": 1, "semantic": 0}, {"bm25": [5], "semantic": []}, None)],
-    }
+        "actual_alpha_by_task": None,
+    })
     semble_adapter.validate_native_profile_report(dict(base), "lexical-only", None)
 
     # Worker echoing a different profile than requested.
@@ -1909,7 +1977,7 @@ def test_adapter_rejects_forged_or_mismatched_profile_reports():
         semble_adapter.validate_native_profile_report(semantic, "semantic-only", 0.5)
 
     # hybrid-no-rerank must echo alpha and report rerank disabled.
-    hybrid = {
+    hybrid = complete({
         "semble_profile": "hybrid-no-rerank",
         "lane_call_counts": {"bm25": 1, "semantic": 1, "encode": 1},
         "requested_alpha": 0.25,
@@ -1917,23 +1985,31 @@ def test_adapter_rejects_forged_or_mismatched_profile_reports():
         "native": [{"task_id": "T1", "results": []}],
         "repetitions": 1,
         "execution_events": [event("hybrid-no-rerank", 0.25, {"bm25": 1, "semantic": 1}, {"bm25": [25], "semantic": [25]}, False)],
-    }
+        "actual_alpha_by_task": {"T1": 0.25},
+    })
     semble_adapter.validate_native_profile_report(dict(hybrid), "hybrid-no-rerank", 0.25)
     with pytest.raises(semble_adapter.AdapterError, match="alpha echo"):
         semble_adapter.validate_native_profile_report(dict(hybrid), "hybrid-no-rerank", 0.5)
     reranked = dict(hybrid, rerank_applied=True)
     with pytest.raises(semble_adapter.AdapterError, match="rerank disabled"):
         semble_adapter.validate_native_profile_report(reranked, "hybrid-no-rerank", 0.25)
+    forged_encode = dict(hybrid, lane_call_counts={"bm25": 1, "semantic": 1, "encode": 9})
+    with pytest.raises(semble_adapter.AdapterError, match="semantic and encode"):
+        semble_adapter.validate_native_profile_report(
+            forged_encode, "hybrid-no-rerank", 0.25
+        )
 
-    native = {
+    native = complete({
         "semble_profile": "native-default",
         "lane_call_counts": {"bm25": 1, "semantic": 1, "encode": 1},
         "rerank_applied": True,
         "native": [{"task_id": "T1", "results": []}],
         "repetitions": 1,
         "execution_events": [event("native-default", None, {"bm25": 1, "semantic": 1}, {"bm25": [25], "semantic": [25]}, True)],
-    }
+        "actual_alpha_by_task": {"T1": 0.5},
+    })
     native["execution_events"][0]["actual_alpha"] = 0.5
+    native["execution_events_sha256"] = ev.digest(ev.canonical(native["execution_events"]))
     semble_adapter.validate_native_profile_report(native, "native-default", None)
     for malformed in (
         dict(native, rerank_applied=None),
@@ -1961,6 +2037,12 @@ def test_adapter_rejects_forged_or_mismatched_profile_reports():
     out_of_range_alpha = dict(native, execution_events=[dict(native["execution_events"][0], actual_alpha=1.5)])
     with pytest.raises(semble_adapter.AdapterError, match="actual alpha is invalid"):
         semble_adapter.validate_native_profile_report(out_of_range_alpha, "native-default", None)
+
+    wrong_ordinal = complete(
+        dict(base, execution_events=[dict(base["execution_events"][0], call_ordinal=999)])
+    )
+    with pytest.raises(semble_adapter.AdapterError, match="order differs"):
+        semble_adapter.validate_native_profile_report(wrong_ordinal, "lexical-only", None)
 
 
 def test_ucd17_scalar_property_and_normalization_oracle_is_pinned():
@@ -3420,6 +3502,48 @@ def _pair_stage(
         protocol = pairrun.build_query_protocol(task_ids, rep, 1, measurements)
         protocol_path = rep_dir / "query-protocol.json"
         protocol_path.write_text(json.dumps(protocol), encoding="utf-8")
+        tasks_by_id = {task["task_id"]: task for task in pack["tasks"]}
+        function_identity = {
+            name: {
+                "module": "semble.search",
+                "qualname": name,
+                "source_sha256": _fake_sha(f"semble-{name}"),
+            }
+            for name in ("bm25", "index_search", "module_search", "resolve_alpha", "semantic")
+        }
+        execution_events = []
+        event_schedule = [(0, "cold", 0, protocol["cold_probe_task_id"])]
+        for iteration, schedule in enumerate(protocol["warmup_schedules"]):
+            event_schedule.extend((0, "warmup", iteration, task_id) for task_id in schedule)
+        for repetition, schedule in enumerate(protocol["measurement_schedules"]):
+            event_schedule.extend(
+                (repetition, "measured", repetition, task_id) for task_id in schedule
+            )
+        for ordinal, (event_rep, phase, phase_iteration, task_id) in enumerate(event_schedule):
+            execution_events.append(
+                {
+                    "rep": event_rep,
+                    "phase": phase,
+                    "phase_iteration": phase_iteration,
+                    "task_id": task_id,
+                    "call_ordinal": ordinal,
+                    "submitted_query_sha256": tasks_by_id[task_id]["query_sha256"],
+                    "profile_sha256": ev.digest(
+                        ev.canonical(semble_adapter.execution_profile("native-default", None))
+                    ),
+                    "actual_alpha": 0.5,
+                    "actual_rerank": True,
+                    "candidate_depth": 50,
+                    "lane_entry_counts": {"bm25": 1, "semantic": 1},
+                    "lane_candidate_depths": {"bm25": [50], "semantic": [50]},
+                }
+            )
+        execution_events_sha256 = ev.digest(ev.canonical(execution_events))
+        lane_call_counts = {
+            "bm25": len(execution_events),
+            "semantic": len(execution_events),
+            "encode": len(execution_events),
+        }
         q_warm = {
             "lexical": {
                 row["task_id"]: [row["timings"]["query_latency_ms"]] * measurements
@@ -3436,7 +3560,7 @@ def _pair_stage(
         qphase.write_text(
             json.dumps(
                 {
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "system": "quanta",
                     "timing_layer": "runner_monotonic_wall_v1",
                     "strategy": "whole_file",
@@ -3446,6 +3570,11 @@ def _pair_stage(
                     "route_count": 1,
                     "file_count": 2,
                     "chunk_count": 2,
+                    "symbol_count": 0,
+                    "symbol_producer_identity": "source-bound-symbols-v1",
+                    "symbol_grammars": "tree-sitter@0.25;none@fixture",
+                    "symbol_unsupported_files": 0,
+                    "symbol_only_scopes": 0,
                     "query_schedule": [task["task_id"] for task in pack["tasks"]],
                     "warmup_passes": 1,
                     "measurement_repetitions": measurements,
@@ -3471,8 +3600,15 @@ def _pair_stage(
         sphase.write_text(
             json.dumps(
                 {
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "system": "semble",
+                    "profile": "native-default",
+                    "requested_alpha": None,
+                    "rerank_applied": True,
+                    "lane_call_counts": lane_call_counts,
+                    "execution_events_sha256": execution_events_sha256,
+                    "function_identity": function_identity,
+                    "observed_wrapped_call_ns": 17,
                     "timing_layer": "worker_monotonic_wall_v1",
                     "strategy": "native",
                     "record_sha256": ev.digest(spath.read_bytes()),
@@ -3585,8 +3721,20 @@ def _pair_stage(
         (sdir / "native.json").write_text(
             json.dumps(
                 {
+                    "semble_profile": "native-default",
+                    "requested_alpha": None,
+                    "actual_alpha_by_task": {
+                        task_id: 0.5 for task_id in protocol["measurement_schedules"][0]
+                    },
+                    "execution_events": execution_events,
+                    "execution_events_sha256": execution_events_sha256,
+                    "function_identity": function_identity,
+                    "observed_wrapped_call_ns": 17,
+                    "rerank_applied": True,
+                    "lane_call_counts": lane_call_counts,
                     "native": [
-                        {"task_id": row["task_id"], "results": []} for row in srec["results"]
+                        {"task_id": task_id, "results": []}
+                        for task_id in protocol["measurement_schedules"][0]
                     ],
                     "latencies_ms": latencies,
                     "stats": {
@@ -3595,6 +3743,10 @@ def _pair_stage(
                         "index_resident_bytes": 4096,
                         "index_measurement": "process_peak_rss_delta_v1",
                     },
+                    "query_schedule": task_ids,
+                    "query_protocol": protocol,
+                    "repetitions": measurements,
+                    "warmup_passes": 1,
                 }
             ),
             encoding="utf-8",
@@ -3636,16 +3788,22 @@ def _pair_stage(
                     "model_cache_manifest_digest": pairrun.sha_file(model_cache_path),
                     "profile": semble_adapter.execution_profile("native-default", None),
                     "requested_alpha": None,
+                    "actual_alpha_by_task": {
+                        task_id: 0.5 for task_id in protocol["measurement_schedules"][0]
+                    },
                     "rerank_applied": True,
-                    "lane_call_counts": {"bm25": 2, "semantic": 2, "encode": 2},
+                    "lane_call_counts": lane_call_counts,
+                    "execution_events_sha256": execution_events_sha256,
+                    "function_identity": function_identity,
+                    "observed_wrapped_call_ns": 17,
                     "record_digest": ev.digest(spath.read_bytes()),
                 }
             ),
             encoding="utf-8",
         )
-        tasks_by_id = {task["task_id"]: task for task in pack["tasks"]}
         diagnostic_rows = []
         for result in qrec["results"]:
+            returned = len(result["candidates"])
             diagnostic_rows.append(
                 {
                     "task_id": result["task_id"],
@@ -3665,15 +3823,27 @@ def _pair_stage(
                         }
                         for index, candidate in enumerate(result["candidates"])
                     ],
+                    "response_kind": "returned_window",
                     "response": {
-                        "request_id": None,
-                        "early_stop_reason": None,
-                        "engines_executed": None,
-                        "engines_touched": None,
-                        "strategy": None,
-                        "window_returned": None,
-                        "window_candidate_count": None,
-                        "lane_traces": [],
+                        "window": {
+                            "returned": returned,
+                            "candidate_count": {"kind": "exact", "value": returned},
+                            "outcome": {"kind": "exact_exhausted"},
+                            "coverage": {
+                                "examined": {"kind": "exact", "value": returned},
+                                "exhaustion_proof": {"kind": "exact_count", "total": returned},
+                                "lanes": [
+                                    {
+                                        "lane": result["route"],
+                                        "executed": True,
+                                        "contributed": returned > 0,
+                                        "filtered_out": 0,
+                                        "candidates": {"kind": "exact", "value": returned},
+                                    }
+                                ],
+                            },
+                        },
+                        "explanation": None,
                     },
                 }
             )
@@ -3681,7 +3851,7 @@ def _pair_stage(
         diagnostic_path.write_text(
             json.dumps(
                 {
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "kind": "quanta_returned_window_diagnostic",
                     "record_sha256": ev.digest(qpath.read_bytes()),
                     "query_pack_sha256": qrec["query_pack_sha256"],
@@ -4015,6 +4185,61 @@ def test_verdict_pair_only_green(tmp_path):
     )
 
 
+def test_current_pair_rejects_legacy_phase_metrics(tmp_path):
+    st = _pair_stage(tmp_path)
+    layout = st["rep_layouts"][0]
+    phase_path = Path(layout["quanta_phase_metrics"]["whole_file"])
+    phase = json.loads(phase_path.read_text(encoding="utf-8"))
+    phase["schema_version"] = 1
+    for key in (
+        "symbol_count",
+        "symbol_producer_identity",
+        "symbol_grammars",
+        "symbol_unsupported_files",
+        "symbol_only_scopes",
+    ):
+        phase.pop(key)
+    phase_path.write_text(json.dumps(phase), encoding="utf-8")
+    manifest_path = Path(layout["quanta_manifest"])
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["runs"][0]["phase_metrics_digest"] = pairrun.sha_file(phase_path)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    verdict = _stage_verdict(st)
+    assert verdict["states"]["PAIR_VALID"] == "fail"
+    assert "phase_metrics_invalid" in verdict["state_evidence"]["PAIR_VALID"]["reason"]
+
+
+def test_verdict_replays_semble_event_order_and_query_identity(tmp_path):
+    st = _pair_stage(tmp_path)
+    layout = st["rep_layouts"][0]
+    native_path = Path(layout["semble"]).parent / "native.json"
+    native = json.loads(native_path.read_text(encoding="utf-8"))
+    native["execution_events"][0]["call_ordinal"] = 999
+    native["execution_events"][0]["submitted_query_sha256"] = _fake_sha("wrong-query")
+    native["execution_events_sha256"] = ev.digest(ev.canonical(native["execution_events"]))
+    native_path.write_text(json.dumps(native), encoding="utf-8")
+    phase_path = Path(layout["semble_phase_metrics"])
+    phase = json.loads(phase_path.read_text(encoding="utf-8"))
+    phase["execution_events_sha256"] = native["execution_events_sha256"]
+    phase_path.write_text(json.dumps(phase), encoding="utf-8")
+    verdict = _stage_verdict(st)
+    assert verdict["states"]["PAIR_VALID"] == "fail"
+    assert "semble_native_actual_call_invalid" in (
+        verdict["state_evidence"]["PAIR_VALID"]["reason"]
+    )
+
+    adapter_stage = _pair_stage(tmp_path / "adapter")
+    adapter_path = Path(adapter_stage["stage"]) / "rep-00" / "semble" / "adapter-manifest.json"
+    adapter = json.loads(adapter_path.read_text(encoding="utf-8"))
+    adapter["observed_wrapped_call_ns"] += 1
+    adapter_path.write_text(json.dumps(adapter), encoding="utf-8")
+    adapter_verdict = _stage_verdict(adapter_stage)
+    assert adapter_verdict["states"]["PAIR_VALID"] == "fail"
+    assert "adapter_native_actual_call_binding_broken" in (
+        adapter_verdict["state_evidence"]["PAIR_VALID"]["reason"]
+    )
+
+
 def test_current_protocol_profile_is_bound_on_every_semble_repetition(tmp_path):
     st = _pair_stage(tmp_path, repetitions=2)
     record_path = st["stage"] / "rep-01" / "semble" / "record.json"
@@ -4059,88 +4284,26 @@ def test_new_protocol_requires_bound_retrieval_diagnostic_on_replay(tmp_path):
     assert _stage_verdict(st)["state_evidence"]["PAIR_VALID"]["reason"] == "protocol_lock_malformed"
     protocol["rank_metric_k_policy"] = "declared_top_k_v1"
     protocol["retrieval_diagnostic_version"] = 2
-    protocol.pop("semble_profile", None)
-    protocol.pop("semble_alpha", None)
+    protocol_path.write_text(json.dumps(protocol), encoding="utf-8")
+    assert _stage_verdict(st)["state_evidence"]["PAIR_VALID"]["reason"] == "protocol_lock_malformed"
+    protocol["retrieval_diagnostic_version"] = 3
     protocol_path.write_text(json.dumps(protocol), encoding="utf-8")
     qmanifest_path = stage / "rep-00" / "quanta" / "quanta-manifest.json"
     qmanifest = json.loads(qmanifest_path.read_text(encoding="utf-8"))
+    run = qmanifest["runs"][0]
+    diagnostic_ref = run["retrieval_diagnostic"]
+    diagnostic_digest = run["retrieval_diagnostic_digest"]
     for key in ("retrieval_diagnostic", "retrieval_diagnostic_digest"):
-        qmanifest["runs"][0].pop(key, None)
+        run.pop(key, None)
     qmanifest_path.write_text(json.dumps(qmanifest), encoding="utf-8")
     assert _stage_verdict(st)["states"]["PAIR_VALID"] == "fail"
 
-    qmanifest = json.loads(qmanifest_path.read_text(encoding="utf-8"))
-    run = qmanifest["runs"][0]
-    qrecord_path = qmanifest_path.parent / run["record"]
-    qrecord = json.loads(qrecord_path.read_text(encoding="utf-8"))
-    pack = json.loads((stage / "query-pack.json").read_text(encoding="utf-8"))
-    tasks = {task["task_id"]: task for task in pack["tasks"]}
-    rows = []
-    for result in qrecord["results"]:
-        rows.append(
-            {
-                "task_id": result["task_id"],
-                "query_sha256": tasks[result["task_id"]]["query_sha256"],
-                "route": result["route"],
-                "status": result["status"],
-                "error_code": result["error"]["code"] if result["error"] else None,
-                "candidates": [
-                    {
-                        "rank": candidate["rank"],
-                        "candidate_id": f"chunk-{result['task_id']}-{index}",
-                        "path": candidate["path"],
-                        "start_line": candidate["start_line"],
-                        "end_line": candidate["end_line"],
-                        "score": 1.0,
-                        "contributions": [],
-                    }
-                    for index, candidate in enumerate(result["candidates"])
-                ],
-                "response": {
-                    "request_id": None,
-                    "early_stop_reason": None,
-                    "engines_executed": None,
-                    "engines_touched": None,
-                    "strategy": None,
-                    "window_returned": None,
-                    "window_candidate_count": None,
-                    "lane_traces": [],
-                },
-            }
-        )
-    diagnostic = {
-        "schema_version": 2,
-        "kind": "quanta_returned_window_diagnostic",
-        "record_sha256": pairrun.sha_file(qrecord_path),
-        "query_pack_sha256": qrecord["query_pack_sha256"],
-        "top_k": qrecord["comparison_contract"]["top_k"],
-        "scope": "returned_window_only",
-        "results": rows,
-        "runner_timing_detail_ms": {
-            "clock": "runner_monotonic_wall_v1",
-            "daemon_boot_and_readiness": 1.0,
-            "sdk_publish_and_activate_opaque": 1.0,
-            "runner_record_assembly": 0.1,
-            "corpus_reverification": 0.1,
-            "daemon_shutdown": 0.1,
-        },
-    }
-    diagnostic_path = qrecord_path.parent / "retrieval-diagnostic.json"
-    diagnostic_path.write_text(json.dumps(diagnostic), encoding="utf-8")
-    run["retrieval_diagnostic"] = "strategy-00-whole_file/retrieval-diagnostic.json"
-    run["retrieval_diagnostic_digest"] = pairrun.sha_file(diagnostic_path)
+    run["retrieval_diagnostic"] = diagnostic_ref
+    run["retrieval_diagnostic_digest"] = diagnostic_digest
     qmanifest_path.write_text(json.dumps(qmanifest), encoding="utf-8")
-    semble_record = stage / "rep-00" / "semble" / "record.json"
-    scored_suite, scored_pack, combined = pairrun.merge_records(
-        st["repo"], st["suite_path"], [qrecord_path, semble_record]
-    )
-    strict_report = ev.evaluate(
-        scored_suite, scored_pack, combined, "hybrid", "lexical", strict_k=True
-    )
-    (stage / "report-hybrid-vs-lexical-whole_file.json").write_text(
-        json.dumps(strict_report), encoding="utf-8"
-    )
     assert _stage_verdict(st)["states"]["PAIR_VALID"] == "pass"
+    diagnostic_path = qmanifest_path.parent / diagnostic_ref
+    diagnostic = json.loads(diagnostic_path.read_text(encoding="utf-8"))
     diagnostic["results"][0]["status"] = "timeout"
     diagnostic_path.write_text(json.dumps(diagnostic), encoding="utf-8")
     run["retrieval_diagnostic_digest"] = pairrun.sha_file(diagnostic_path)
@@ -6430,6 +6593,32 @@ def test_v5_runner_schema_binds_query_identity_and_keeps_v3_v4_historical(tmp_pa
     runner_path.write_text(json.dumps(future), encoding="utf-8")
     with pytest.raises(ev.EvidenceError, match="unsupported runner schema"):
         ev.load_evidence(repo, suite_path, runner_path)
+
+
+def test_v5_capture_schema_rejects_zero_generation_and_cross_system_profiles(tmp_path):
+    _repo, _suite, run, _suite_path, _runner_path, _ = fixture_v3(tmp_path)
+    schema = _load_schema("runner.schema.json")
+
+    zero_generation = json.loads(json.dumps(run))
+    zero_generation["captures"]["q0"]["generation"] = 0
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(zero_generation, schema)
+    with pytest.raises(ev.EvidenceError, match="positive for quanta"):
+        ev.validate_capture(zero_generation["captures"]["q0"], "capture", version=5)
+
+    for system, wrong_profile in (
+        ("quanta", semble_adapter.execution_profile("native-default", None)),
+        ("semble", qp.execution_profile("native")),
+    ):
+        capture = _v3_capture(system, current=True)
+        capture["execution_profile"] = wrong_profile
+        capture["execution_profile_sha256"] = ev.digest(ev.canonical(wrong_profile))
+        malformed = json.loads(json.dumps(run))
+        malformed["captures"]["q0"] = capture
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(malformed, schema)
+        with pytest.raises(ev.EvidenceError):
+            ev.validate_capture(capture, "capture", version=5)
 
 
 @pytest.mark.parametrize(

@@ -1291,7 +1291,7 @@ mod tests {
             bytes: text.as_bytes().to_vec(),
             text: text.to_string(),
             line_starts: vec![0],
-            sha256: "a".repeat(64),
+            sha256: sha256_hex(text.as_bytes()),
         };
         let chunk = Chunk {
             path: "a.txt".to_string(),
@@ -1431,7 +1431,7 @@ mod tests {
             bytes: text.as_bytes().to_vec(),
             text: text.to_string(),
             line_starts: vec![0],
-            sha256: "a".repeat(64),
+            sha256: sha256_hex(text.as_bytes()),
         };
         let files = BTreeMap::from([("a.txt".to_string(), file)]);
         let chunk = Chunk {

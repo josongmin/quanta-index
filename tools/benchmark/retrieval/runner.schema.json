@@ -137,7 +137,21 @@
       "allOf": [
         {
           "if": {"properties": {"system": {"const": "semble"}}},
-          "then": {"properties": {"searchd_binary": {"type": "null"}, "generation": {"const": 0}}}
+          "then": {
+            "properties": {
+              "searchd_binary": {"type": "null"},
+              "generation": {"const": 0},
+              "execution_profile": {
+                "required": ["mode"],
+                "allOf": [
+                  {"if": {"properties": {"mode": {"const": "native-default"}}, "required": ["mode"]}, "then": {"properties": {"profile_id": {"const": "semble-native-default-v1"}, "alpha": {"type": "null"}, "rerank": {"const": "upstream-content-default"}}}},
+                  {"if": {"properties": {"mode": {"const": "hybrid-no-rerank"}}, "required": ["mode"]}, "then": {"properties": {"profile_id": {"const": "semble-hybrid-no-rerank-v1"}, "alpha": {"type": "number", "minimum": 0, "maximum": 1}, "rerank": {"const": false}}}},
+                  {"if": {"properties": {"mode": {"const": "lexical-only"}}, "required": ["mode"]}, "then": {"properties": {"profile_id": {"const": "semble-lexical-only-v1"}, "alpha": {"type": "null"}, "rerank": {"const": "not_applicable"}}}},
+                  {"if": {"properties": {"mode": {"const": "semantic-only"}}, "required": ["mode"]}, "then": {"properties": {"profile_id": {"const": "semble-semantic-only-v1"}, "alpha": {"type": "null"}, "rerank": {"const": "not_applicable"}}}}
+                ]
+              }
+            }
+          }
         },
         {
           "if": {"properties": {"system": {"const": "quanta"}}},
@@ -149,7 +163,9 @@
                 "properties": {
                   "binary_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
                 }
-              }
+              },
+              "generation": {"type": "integer", "minimum": 1},
+              "execution_profile": {"required": ["policy"]}
             }
           }
         }
