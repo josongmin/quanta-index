@@ -39,6 +39,7 @@ use quanta_index_retrieval_bench::sdk::{
     DEFAULT_IO_TIMEOUT, DEFAULT_READY_TIMEOUT, DaemonConfig, DaemonSession, QueryOutcome,
     RouteQuery, publish_and_activate, query_route, resolve_searchd_binary, verify_searchd_digest,
 };
+use quanta_index_retrieval_bench::symbols::extract_corpus_symbols;
 use quanta_index_retrieval_bench::{BenchError, BenchResult, sha256_hex};
 
 const KNOWN_ROUTES: [&str; 3] = ["lexical", "semantic", "hybrid"];
@@ -548,7 +549,10 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         generation,
         manifest_digest,
     )?;
-    let (batch, assembly) = assemble_batch(&identity, &selection.chunks)?;
+    // RBR-04: source-bound symbols for every admitted file, published in
+    // the same per-file replacement as the chunks.
+    let symbol_extraction = extract_corpus_symbols(&by_path)?;
+    let (batch, assembly) = assemble_batch(&identity, &selection.chunks, &symbol_extraction.symbols)?;
 
     let state_root = PathBuf::from(required(args, "state-root")?);
     require_external_path(&repo, &state_root, "--state-root")?;
@@ -947,6 +951,11 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         "route_count": routes.len(),
         "file_count": selection.coverage.files,
         "chunk_count": selection.coverage.chunks,
+        "symbol_count": assembly.symbols,
+        "symbol_producer_identity": quanta_index_retrieval_bench::symbols::SYMBOL_PRODUCER_IDENTITY,
+        "symbol_grammars": quanta_index_retrieval_bench::symbols::SYMBOL_PRODUCER_GRAMMARS,
+        "symbol_unsupported_files": symbol_extraction.unsupported_files.len(),
+        "symbol_only_scopes": assembly.symbol_only_scopes.len(),
         "query_schedule": pack.tasks.iter().map(|task| task.task_id.as_str()).collect::<Vec<_>>(),
         "warmup_passes": query_protocol.as_ref().map_or(0, |value| value.warmup_schedules.len()),
         "measurement_repetitions": query_protocol.as_ref().map_or(1, |value| value.measurement_schedules.len()),

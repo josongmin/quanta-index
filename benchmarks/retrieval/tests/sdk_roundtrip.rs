@@ -25,6 +25,7 @@ use quanta_index_retrieval_bench::corpus::{CorpusLimits, load_corpus, load_manif
 use quanta_index_retrieval_bench::query_plan::{
     NlPlanConfig, QueryInputPolicy, plan_query,
 };
+use quanta_index_retrieval_bench::symbols::extract_corpus_symbols;
 use quanta_index_retrieval_bench::record::{
     CaptureProvenance, PackTask, QueryPack, RouteProvenance, RunnerIdentity, RunnerRecordInput,
     pack_universe_digest, result_value, runner_record,
@@ -36,6 +37,12 @@ use quanta_index_retrieval_bench::sdk::{
 use quanta_index_retrieval_bench::{BenchError, sha256_hex};
 
 const EMBEDDER: &str = "hash-dev";
+
+fn symbols_for(files: &[quanta_index_retrieval_bench::corpus::SourceFile]) -> std::collections::BTreeMap<String, Vec<quanta_index_contract::lex::SymbolRecord>> {
+    let by_path: std::collections::BTreeMap<String, quanta_index_retrieval_bench::corpus::SourceFile> =
+        files.iter().map(|file| (file.path.clone(), file.clone())).collect();
+    extract_corpus_symbols(&by_path).expect("symbols").symbols
+}
 
 fn write_tiny_repo(root: &Path) {
     let files: &[(&str, &str)] = &[
@@ -294,7 +301,7 @@ fn unavailable_provider_is_typed_and_never_returns_hits() {
         "manifest:provider-unavailable".to_string(),
     )
     .expect("identity");
-    let (batch, _) = assemble_batch(&identity, &chunks).expect("batch");
+    let (batch, _) = assemble_batch(&identity, &chunks, &symbols_for(&files)).expect("batch");
     let state = tempfile::tempdir().expect("state root");
     let state_root = state.path().join("daemon");
     let config = DaemonConfig {
@@ -389,7 +396,7 @@ fn real_daemon_roundtrip_publishes_and_queries() {
         "manifest:test-roundtrip".to_string(),
     )
     .expect("identity");
-    let (batch, assembly) = assemble_batch(&identity, &chunks).expect("batch");
+    let (batch, assembly) = assemble_batch(&identity, &chunks, &symbols_for(&files)).expect("batch");
     assert_eq!(assembly.scopes, 3);
     assert_eq!(assembly.semantic_scopes, 3);
 
@@ -862,7 +869,10 @@ fn actual_runner_binary_emits_receipt_bound_v3_record() {
     );
     let record: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&out).expect("record bytes")).expect("record JSON");
-    assert_eq!(record["schema_version"], 3);
+    assert_eq!(
+        record["schema_version"],
+        serde_json::json!(quanta_index_retrieval_bench::record::RUNNER_SCHEMA_VERSION)
+    );
     assert_eq!(
         record["runner"]["revision"],
         format!("sha256:{runner_digest}")
@@ -935,7 +945,7 @@ fn second_boot_over_used_root_is_refused_without_cleanup() {
     let (chunks, _) = chunk_corpus(&WholeFileChunker, &files).expect("chunk");
     let identity = BatchIdentity::new("bench-repo", "bench-rev", 7, "manifest:reuse".to_string())
         .expect("identity");
-    let (batch, _) = assemble_batch(&identity, &chunks).expect("batch");
+    let (batch, _) = assemble_batch(&identity, &chunks, &symbols_for(&files)).expect("batch");
 
     let state = tempfile::tempdir().expect("state root");
     let state_root = state.path().join("daemon");
@@ -969,8 +979,8 @@ fn determinism_probe_repeats_identical_publish() {
     let (chunks, _) = chunk_corpus(&WholeFileChunker, &files).expect("chunk");
     let identity = BatchIdentity::new("bench-repo", "bench-rev", 9, "manifest:replay".to_string())
         .expect("identity");
-    let (left, _) = assemble_batch(&identity, &chunks).expect("batch");
-    let (right, _) = assemble_batch(&identity, &chunks).expect("batch");
+    let (left, _) = assemble_batch(&identity, &chunks, &symbols_for(&files)).expect("batch");
+    let (right, _) = assemble_batch(&identity, &chunks, &symbols_for(&files)).expect("batch");
     assert_eq!(
         left.batch_digest().expect("digest"),
         right.batch_digest().expect("digest")

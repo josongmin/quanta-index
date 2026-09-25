@@ -521,6 +521,39 @@ pub fn extract_symbols(
     Ok(records)
 }
 
+/// Extract symbols for a whole admitted corpus. Files whose language has
+/// no pinned grammar are counted as unsupported (no symbols, not a
+/// failure); parse failures in supported languages are explicit coverage
+/// failures that abort the run (RBR-04).
+pub struct CorpusSymbolExtraction {
+    pub symbols: std::collections::BTreeMap<String, Vec<SymbolRecord>>,
+    pub unsupported_files: Vec<String>,
+}
+
+pub fn extract_corpus_symbols(
+    files: &std::collections::BTreeMap<String, crate::corpus::SourceFile>,
+) -> crate::BenchResult<CorpusSymbolExtraction> {
+    let mut symbols = std::collections::BTreeMap::new();
+    let mut unsupported_files = Vec::new();
+    for (path, file) in files {
+        if SymbolLanguage::from_path(path).is_none() {
+            unsupported_files.push(path.clone());
+            continue;
+        }
+        let records = extract_symbols(path, &file.text).map_err(|error| {
+            crate::BenchError::Chunk {
+                path: path.clone(),
+                message: format!("symbol extraction coverage failure: {error}"),
+            }
+        })?;
+        let _previous = symbols.insert(path.clone(), records);
+    }
+    Ok(CorpusSymbolExtraction {
+        symbols,
+        unsupported_files,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
