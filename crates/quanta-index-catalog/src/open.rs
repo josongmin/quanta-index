@@ -56,6 +56,7 @@ impl SqliteCatalog {
         connection
             .execute_batch(crate::candidate::SCHEMA)
             .map_err(|error| engine_error("create repomap candidate schema", &path, &error))?;
+        crate::candidate::verify_installed_schema(&connection, &path)?;
         // Seed the allocator row (self-digested), then reconcile it from
         // the generic ledger and verify the event↔domain pairs
         // (SEP-21-002).

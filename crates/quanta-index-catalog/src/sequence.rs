@@ -442,13 +442,12 @@ pub(crate) fn reconcile(
 
 /// The integrity pass.
 ///
-/// Every operation-kind event has its exact domain terminal row in
-/// `idempotency_v2` (same sequence, terminal state matching the kind),
-/// every event row matches its own digest, and every `Invalidation` event
-/// names a generation whose journal rows are gone.
-/// Seal/activation/rollback/quarantine events have no domain table in
-/// this crate yet (their owners are later SEP-21 lanes); for them the
-/// ledger row itself is the record.
+/// Every event row matches its own commitment and digest. Operation-kind
+/// events pair with their terminal idempotency row or an invalidation;
+/// `RepoMap` candidate events pair with a self-digested candidate row whose
+/// logical identity and commitment match the event. Other `RepoMap` events
+/// pair with their activation or quarantine-incident rows by sequence.
+/// Rollback has no current producer and is represented only by its ledger row.
 pub(crate) fn verify_integrity(
     connection: &Connection,
     path: &std::path::Path,
@@ -542,15 +541,9 @@ pub(crate) fn verify_integrity(
             // idempotency-lane event and has no surviving row after GC.
             // Rollback is not emitted by any current owner; the
             // ledger row and its digests are its record until one is.
-            SequenceEventKindV1::CandidateSeal => {
-                pair_exists(
-                    connection,
-                    path,
-                    "SELECT 1 FROM repomap_candidate_v1 WHERE terminal_sequence = ?1",
-                    sequence,
-                    "candidate seal",
-                )?;
-            }
+            SequenceEventKindV1::CandidateSeal => crate::candidate::verify_candidate_event_pair(
+                connection, path, kind, sequence, &identity, &payload,
+            )?,
             SequenceEventKindV1::Activation => {
                 pair_exists(
                     connection,
@@ -575,13 +568,8 @@ pub(crate) fn verify_integrity(
                 )?;
             }
             SequenceEventKindV1::RepoMapCandidateQuarantine => {
-                pair_exists(
-                    connection,
-                    path,
-                    "SELECT 1 FROM repomap_candidate_v1
-                     WHERE quarantine_sequence = ?1 AND state = 4",
-                    sequence,
-                    "repomap candidate quarantine",
+                crate::candidate::verify_candidate_event_pair(
+                    connection, path, kind, sequence, &identity, &payload,
                 )?;
             }
             SequenceEventKindV1::QuarantineRecord => {

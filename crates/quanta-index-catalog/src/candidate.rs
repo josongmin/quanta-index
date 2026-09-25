@@ -44,7 +44,7 @@
 //! superseded generation requires a fresh sealed candidate at a new logical
 //! generation (publish-only), which is exactly the no-resurrection rule.
 
-use rusqlite::{Connection, OptionalExtension as _, Transaction, params};
+use rusqlite::{Connection, OptionalExtension as _, params};
 use sha2::{Digest, Sha256};
 use std::num::NonZeroU64;
 
@@ -78,6 +78,7 @@ pub(crate) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS repomap_candidate_v1
                         quarantine_sequence BETWEEN 1 AND 9223372036854775807),
              row_sha256 BLOB NOT NULL CHECK (length(row_sha256) = 32),
              CHECK ((state = 4) = (quarantine_sequence IS NOT NULL)),
+             CHECK (quarantine_sequence IS NULL OR quarantine_sequence > terminal_sequence),
              UNIQUE (repo_id, revision_id, manifest_generation)
          );
          CREATE TABLE IF NOT EXISTS repomap_activation_v1 (
@@ -113,6 +114,37 @@ pub(crate) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS repomap_candidate_v1
                             AND discarded = 1)),
              row_sha256 BLOB NOT NULL CHECK (length(row_sha256) = 32)
          ) WITHOUT ROWID;";
+
+/// Refuse an incompatible installed candidate table.
+///
+/// `CREATE IF NOT EXISTS` cannot add a new `CHECK` to an existing table.
+/// This service has no silent schema migration reader.
+pub(crate) fn verify_installed_schema(
+    connection: &Connection,
+    path: &std::path::Path,
+) -> Result<(), CoreError> {
+    let expected = SCHEMA
+        .split_once(';')
+        .map(|(candidate_table, _rest)| candidate_table)
+        .ok_or_else(|| corrupt("candidate schema has no table terminator"))?;
+    // SQLite stores CREATE TABLE without the idempotent IF NOT EXISTS clause.
+    let expected = expected.replacen("CREATE TABLE IF NOT EXISTS", "CREATE TABLE", 1);
+    let installed: String = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'repomap_candidate_v1'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| engine_error("read installed repomap candidate schema", path, &error))?;
+    let compact = |schema: &str| schema.split_whitespace().collect::<String>();
+    if compact(&installed) != compact(&expected) {
+        return Err(CoreError::Storage(format!(
+            "catalog: {} has an unsupported repomap candidate schema; this build has no migration reader",
+            path.display()
+        )));
+    }
+    Ok(())
+}
 
 /// The closed candidate state set (SEP-21 S21-02 target state machine).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -328,7 +360,7 @@ fn quarantine_row_digest(row: &RepoMapQuarantineIncidentRowV1) -> [u8; 32] {
 }
 
 fn read_candidate_row(
-    transaction: &Transaction<'_>,
+    transaction: &Connection,
     repo_id: &str,
     revision_id: &str,
     generation: u64,
@@ -405,6 +437,67 @@ fn read_candidate_row(
         ));
     }
     Ok(Some(row))
+}
+
+/// Verify a candidate event against the canonical candidate row, not merely
+/// against a sequence column. Both seal and quarantine events bind the same
+/// logical key and compiled candidate commitment.
+pub(crate) fn verify_candidate_event_pair(
+    connection: &Connection,
+    path: &std::path::Path,
+    kind: SequenceEventKindV1,
+    sequence: i64,
+    identity: &[u8; 32],
+    payload: &[u8; 32],
+) -> Result<(), CoreError> {
+    let (sql, label) = match kind {
+        SequenceEventKindV1::CandidateSeal => (
+            "SELECT repo_id, revision_id, manifest_generation FROM repomap_candidate_v1
+             WHERE terminal_sequence = ?1",
+            "candidate seal",
+        ),
+        SequenceEventKindV1::RepoMapCandidateQuarantine => (
+            "SELECT repo_id, revision_id, manifest_generation FROM repomap_candidate_v1
+             WHERE quarantine_sequence = ?1 AND state = 4",
+            "candidate quarantine",
+        ),
+        SequenceEventKindV1::OperationCommitted
+        | SequenceEventKindV1::OperationRefused
+        | SequenceEventKindV1::OperationAborted
+        | SequenceEventKindV1::Activation
+        | SequenceEventKindV1::Rollback
+        | SequenceEventKindV1::OperationInvalidation
+        | SequenceEventKindV1::QuarantineRecord
+        | SequenceEventKindV1::QuarantineDiscard
+        | SequenceEventKindV1::RepoMapInvalidation => {
+            return Err(corrupt(
+                "non-candidate event reached candidate pair verifier",
+            ));
+        }
+    };
+    let key: Option<(String, String, i64)> = connection
+        .query_row(sql, params![sequence], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .optional()
+        .map_err(|error| engine_error("read candidate event pair", path, &error))?;
+    let Some((repo_id, revision_id, generation)) = key else {
+        return Err(corrupt(&format!(
+            "{label} event {sequence} has no exact domain pair"
+        )));
+    };
+    let generation = u64::try_from(generation)
+        .map_err(|_error| corrupt("candidate event generation does not fit u64"))?;
+    let candidate = read_candidate_row(connection, &repo_id, &revision_id, generation)?
+        .ok_or_else(|| corrupt("candidate event pair disappeared during integrity check"))?;
+    if logical_key_digest(&repo_id, &revision_id, generation) != *identity
+        || candidate.candidate_commitment != *payload
+    {
+        return Err(corrupt(&format!(
+            "{label} event {sequence} disagrees with its candidate identity or commitment"
+        )));
+    }
+    Ok(())
 }
 
 fn read_activation_row(
@@ -1528,7 +1621,16 @@ mod tests {
     use std::error::Error;
     use std::time::Duration;
 
-    use super::{RepoMapCandidateStateV1, SqliteCatalog};
+    use quanta_index_contract::SearchPlaneErrorCodeV2;
+    use quanta_index_core::CoreError;
+    use rusqlite::params;
+
+    use super::{
+        RepoMapCandidateRowV1, RepoMapCandidateStateV1, SqliteCatalog, candidate_row_digest,
+        logical_key_digest, read_candidate_row,
+    };
+    use crate::connection::{CATALOG_FILE_NAME, catalog_dir};
+    use crate::sequence::{SequenceEventKindV1, append_sequence_event};
 
     #[test]
     fn sealed_candidate_quarantine_replays_and_reopens_with_both_event_pairs()
@@ -1563,6 +1665,234 @@ mod tests {
             || reopened.quarantine_repomap_candidate("repo", "revision", 1)? != quarantine
         {
             return Err("candidate quarantine pair changed after reopen".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn quarantine_event_must_bind_candidate_identity_and_commitment_at_reopen()
+    -> Result<(), Box<dyn Error>> {
+        for wrong_identity in [true, false] {
+            let root = tempfile::tempdir()?;
+            let catalog = SqliteCatalog::open(root.path(), Duration::from_millis(100))?;
+            let _seal = catalog.seal_repomap_candidate(
+                "repo",
+                "revision",
+                1,
+                &[1_u8; 32],
+                &[2_u8; 32],
+                &[3_u8; 32],
+                4,
+                "{}",
+            )?;
+            {
+                let mut connection = catalog.lock()?;
+                let transaction = connection.transaction()?;
+                let candidate = read_candidate_row(&transaction, "repo", "revision", 1)?
+                    .ok_or("sealed candidate is absent")?;
+                let identity = if wrong_identity {
+                    logical_key_digest("another-repo", "revision", 1)
+                } else {
+                    logical_key_digest("repo", "revision", 1)
+                };
+                let payload = if wrong_identity {
+                    candidate.candidate_commitment
+                } else {
+                    [9_u8; 32]
+                };
+                let sequence = append_sequence_event(
+                    &transaction,
+                    SequenceEventKindV1::RepoMapCandidateQuarantine,
+                    &identity,
+                    &payload,
+                )?;
+                let quarantined = RepoMapCandidateRowV1 {
+                    state: RepoMapCandidateStateV1::Quarantined,
+                    quarantine_sequence: Some(sequence),
+                    ..candidate
+                };
+                let changed = transaction.execute(
+                    "UPDATE repomap_candidate_v1 SET state = 4, quarantine_sequence = ?1,
+                     row_sha256 = ?2 WHERE repo_id = 'repo' AND revision_id = 'revision'
+                     AND manifest_generation = 1",
+                    params![sequence, candidate_row_digest(&quarantined).as_slice()],
+                )?;
+                if changed != 1 {
+                    return Err("hostile fixture must change exactly one candidate".into());
+                }
+                transaction.commit()?;
+                drop(connection);
+            }
+            drop(catalog);
+            let reopened = SqliteCatalog::open(root.path(), Duration::from_millis(100));
+            if !matches!(
+                reopened,
+                Err(CoreError::Typed {
+                    code: SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                    ..
+                })
+            ) {
+                return Err(format!(
+                    "quarantine event with wrong {} must refuse reopen",
+                    if wrong_identity {
+                        "identity"
+                    } else {
+                        "commitment"
+                    }
+                )
+                .into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn seal_event_must_bind_candidate_identity_at_reopen() -> Result<(), Box<dyn Error>> {
+        let root = tempfile::tempdir()?;
+        let catalog = SqliteCatalog::open(root.path(), Duration::from_millis(100))?;
+        {
+            let mut connection = catalog.lock()?;
+            let transaction = connection.transaction()?;
+            let sequence = append_sequence_event(
+                &transaction,
+                SequenceEventKindV1::CandidateSeal,
+                &logical_key_digest("another-repo", "revision", 1),
+                &[1_u8; 32],
+            )?;
+            let candidate = RepoMapCandidateRowV1 {
+                repo_id: "repo".to_string(),
+                revision_id: "revision".to_string(),
+                manifest_generation: 1,
+                candidate_commitment: [1_u8; 32],
+                object_address: [2_u8; 32],
+                content_digest: [3_u8; 32],
+                byte_size: 4,
+                projection_meta: "{}".to_string(),
+                state: RepoMapCandidateStateV1::Sealed,
+                terminal_sequence: sequence,
+                quarantine_sequence: None,
+            };
+            let inserted = transaction.execute(
+                "INSERT INTO repomap_candidate_v1
+                 (repo_id, revision_id, manifest_generation, candidate_commitment,
+                  object_address, content_digest, byte_size, projection_meta, state,
+                  terminal_sequence, row_sha256)
+                 VALUES (?1, ?2, 1, ?3, ?4, ?5, 4, '{}', 1, ?6, ?7)",
+                params![
+                    candidate.repo_id,
+                    candidate.revision_id,
+                    candidate.candidate_commitment.as_slice(),
+                    candidate.object_address.as_slice(),
+                    candidate.content_digest.as_slice(),
+                    sequence,
+                    candidate_row_digest(&candidate).as_slice(),
+                ],
+            )?;
+            if inserted != 1 {
+                return Err("hostile fixture must insert one candidate".into());
+            }
+            transaction.commit()?;
+            drop(connection);
+        }
+        drop(catalog);
+        let reopened = SqliteCatalog::open(root.path(), Duration::from_millis(100));
+        if !matches!(
+            reopened,
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                ..
+            })
+        ) {
+            return Err("seal event with wrong identity must refuse reopen".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn quarantine_sequence_must_follow_the_candidate_seal() -> Result<(), Box<dyn Error>> {
+        let root = tempfile::tempdir()?;
+        let catalog = SqliteCatalog::open(root.path(), Duration::from_millis(100))?;
+        let mut connection = catalog.lock()?;
+        let transaction = connection.transaction()?;
+        let identity = logical_key_digest("repo", "revision", 1);
+        let quarantine_sequence = append_sequence_event(
+            &transaction,
+            SequenceEventKindV1::RepoMapCandidateQuarantine,
+            &identity,
+            &[1_u8; 32],
+        )?;
+        let seal_sequence = append_sequence_event(
+            &transaction,
+            SequenceEventKindV1::CandidateSeal,
+            &identity,
+            &[1_u8; 32],
+        )?;
+        let candidate = RepoMapCandidateRowV1 {
+            repo_id: "repo".to_string(),
+            revision_id: "revision".to_string(),
+            manifest_generation: 1,
+            candidate_commitment: [1_u8; 32],
+            object_address: [2_u8; 32],
+            content_digest: [3_u8; 32],
+            byte_size: 4,
+            projection_meta: "{}".to_string(),
+            state: RepoMapCandidateStateV1::Quarantined,
+            terminal_sequence: seal_sequence,
+            quarantine_sequence: Some(quarantine_sequence),
+        };
+        let reversed = transaction.execute(
+            "INSERT INTO repomap_candidate_v1
+             (repo_id, revision_id, manifest_generation, candidate_commitment,
+              object_address, content_digest, byte_size, projection_meta, state,
+              terminal_sequence, quarantine_sequence, row_sha256)
+             VALUES (?1, ?2, 1, ?3, ?4, ?5, 4, '{}', 4, ?6, ?7, ?8)",
+            params![
+                candidate.repo_id,
+                candidate.revision_id,
+                candidate.candidate_commitment.as_slice(),
+                candidate.object_address.as_slice(),
+                candidate.content_digest.as_slice(),
+                seal_sequence,
+                quarantine_sequence,
+                candidate_row_digest(&candidate).as_slice(),
+            ],
+        );
+        if reversed.is_ok() {
+            return Err("quarantine before seal must violate the catalog state order".into());
+        }
+        drop(transaction);
+        drop(connection);
+        Ok(())
+    }
+
+    #[test]
+    fn candidate_schema_without_quarantine_order_refuses_open() -> Result<(), Box<dyn Error>> {
+        let root = tempfile::tempdir()?;
+        let directory = catalog_dir(root.path());
+        std::fs::create_dir_all(&directory)?;
+        let path = directory.join(CATALOG_FILE_NAME);
+        let connection = rusqlite::Connection::open(&path)?;
+        let old_schema = super::SCHEMA.replace(
+            "CHECK (quarantine_sequence IS NULL OR quarantine_sequence > terminal_sequence),",
+            "",
+        );
+        connection.execute_batch(&old_schema)?;
+        drop(connection);
+
+        let reopened = SqliteCatalog::open(root.path(), Duration::from_millis(100));
+        if !matches!(
+            reopened,
+            Err(CoreError::Storage(message)) if message.contains("unsupported repomap candidate schema")
+        ) {
+            return Err("candidate schema without quarantine ordering must refuse open".into());
+        }
+        let connection = rusqlite::Connection::open(path)?;
+        let allocator_rows: i64 =
+            connection.query_row("SELECT COUNT(*) FROM catalog_sequence_v2", [], |row| {
+                row.get(0)
+            })?;
+        if allocator_rows != 0 {
+            return Err("candidate schema refusal must precede allocator seed".into());
         }
         Ok(())
     }
