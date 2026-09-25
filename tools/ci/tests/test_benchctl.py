@@ -452,6 +452,33 @@ def test_dsl_admission_rejects_old_artifact_before_reading_it(monkeypatch, tmp_p
         )
 
 
+def test_dsl_admission_refuses_symlinked_candidate(monkeypatch, tmp_path: Path) -> None:
+    manifest = MODULE.load_manifest()
+    profile = MODULE.load_profiles()["dsl-authority"]
+    receipt = tmp_path / "preflight.json"
+    receipt.write_text("fresh receipt", encoding="utf-8")
+    target = tmp_path / "outside.json"
+    target.write_text("fabricated candidate", encoding="utf-8")
+    artifact = tmp_path / "artifacts/dsl-bench/warm-matrix.json"
+    artifact.parent.mkdir(parents=True)
+    artifact.symlink_to(target)
+    monkeypatch.setattr(
+        MODULE,
+        "load_artifact",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("symlink was parsed")),
+    )
+    with pytest.raises(RuntimeError, match="fresh DSL artifact unreadable"):
+        MODULE.admit_dsl_baselines(
+            tmp_path,
+            profile,
+            manifest,
+            receipt,
+            "a" * 40,
+            0,
+            hashlib.sha256(b"fresh receipt").hexdigest(),
+        )
+
+
 def test_dsl_admission_rejects_replaced_preflight_before_artifacts(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -487,7 +514,7 @@ def test_dsl_admission_does_not_write_warm_if_cold_is_invalid(monkeypatch, tmp_p
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(mode, encoding="utf-8")
 
-    def fake_load(path, *, role):
+    def fake_load(path, *, role, content=None):
         mode = "warm" if path.name.startswith("warm") else "cold"
         return SimpleNamespace(
             git_head="a" * 40,
@@ -525,7 +552,7 @@ def test_dsl_admission_writes_both_only_after_guarded_capture(monkeypatch, tmp_p
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(mode, encoding="utf-8")
 
-    def fake_load(path, *, role):
+    def fake_load(path, *, role, content=None):
         mode = "warm" if path.name.startswith("warm") else "cold"
         return SimpleNamespace(
             git_head="a" * 40,
@@ -549,3 +576,138 @@ def test_dsl_admission_writes_both_only_after_guarded_capture(monkeypatch, tmp_p
     )
     for mode in ("warm", "cold"):
         assert (tmp_path / f"tools/benchmark/baselines/{mode}-matrix.json").read_text() == mode
+
+
+def test_dsl_admission_refuses_receipt_changed_while_checking_candidates(
+    monkeypatch, tmp_path: Path
+) -> None:
+    manifest = MODULE.load_manifest()
+    profile = MODULE.load_profiles()["dsl-authority"]
+    receipt = tmp_path / "preflight.json"
+    receipt.write_text("original receipt", encoding="utf-8")
+    capture_started_ns = MODULE.time.time_ns()
+    for mode in ("warm", "cold"):
+        artifact_path = tmp_path / f"artifacts/dsl-bench/{mode}-matrix.json"
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        artifact_path.write_text(mode, encoding="utf-8")
+
+    def fake_load(path, *, role, content=None):
+        if path.name.startswith("cold"):
+            receipt.write_text("changed receipt", encoding="utf-8")
+        mode = "warm" if path.name.startswith("warm") else "cold"
+        return SimpleNamespace(
+            git_head="a" * 40,
+            mode=mode,
+            rows={"scenario": SimpleNamespace(samples=200 if mode == "warm" else 20)},
+        )
+
+    monkeypatch.setattr(MODULE, "load_artifact", fake_load)
+    monkeypatch.setattr(MODULE, "require_complete_baseline_candidate", lambda *_args: None)
+    monkeypatch.setattr(MODULE, "require_clean_preflight", lambda *_args: None)
+    monkeypatch.setattr(MODULE, "require_frozen_source", lambda *_args: None)
+    with pytest.raises(RuntimeError, match="receipt changed during admission"):
+        MODULE.admit_dsl_baselines(
+            tmp_path,
+            profile,
+            manifest,
+            receipt,
+            "a" * 40,
+            capture_started_ns,
+            hashlib.sha256(b"original receipt").hexdigest(),
+        )
+    assert not (tmp_path / "tools/benchmark/baselines/warm-matrix.json").exists()
+    assert not (tmp_path / "tools/benchmark/baselines/cold-matrix.json").exists()
+
+
+def test_dsl_admission_refuses_artifact_changed_after_validation(
+    monkeypatch, tmp_path: Path
+) -> None:
+    manifest = MODULE.load_manifest()
+    profile = MODULE.load_profiles()["dsl-authority"]
+    receipt = tmp_path / "preflight.json"
+    receipt.write_text("fresh receipt", encoding="utf-8")
+    capture_started_ns = MODULE.time.time_ns()
+    for mode in ("warm", "cold"):
+        artifact_path = tmp_path / f"artifacts/dsl-bench/{mode}-matrix.json"
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        artifact_path.write_text(mode, encoding="utf-8")
+
+    def fake_load(path, *, role, content=None):
+        mode = "warm" if path.name.startswith("warm") else "cold"
+        assert content == mode
+        if mode == "cold":
+            path.write_text("replacement", encoding="utf-8")
+        return SimpleNamespace(
+            git_head="a" * 40,
+            mode=mode,
+            rows={"scenario": SimpleNamespace(samples=200 if mode == "warm" else 20)},
+        )
+
+    monkeypatch.setattr(MODULE, "load_artifact", fake_load)
+    monkeypatch.setattr(MODULE, "require_complete_baseline_candidate", lambda *_args: None)
+    monkeypatch.setattr(MODULE, "require_clean_preflight", lambda *_args: None)
+    monkeypatch.setattr(MODULE, "require_frozen_source", lambda *_args: None)
+    with pytest.raises(RuntimeError, match="artifact changed during admission"):
+        MODULE.admit_dsl_baselines(
+            tmp_path,
+            profile,
+            manifest,
+            receipt,
+            "a" * 40,
+            capture_started_ns,
+            hashlib.sha256(b"fresh receipt").hexdigest(),
+        )
+    assert not (tmp_path / "tools/benchmark/baselines/warm-matrix.json").exists()
+    assert not (tmp_path / "tools/benchmark/baselines/cold-matrix.json").exists()
+
+
+def test_dsl_baseline_pair_restores_prior_files_if_second_write_fails(
+    monkeypatch, tmp_path: Path
+) -> None:
+    warm = tmp_path / "warm.json"
+    cold = tmp_path / "cold.json"
+    warm.write_text("prior warm", encoding="utf-8")
+    cold.write_text("prior cold", encoding="utf-8")
+    real_write = MODULE.atomically_write_baseline
+
+    def fail_cold(destination: Path, content: str) -> None:
+        if destination == cold:
+            raise OSError("injected cold failure")
+        real_write(destination, content)
+
+    monkeypatch.setattr(MODULE, "atomically_write_baseline", fail_cold)
+    with pytest.raises(RuntimeError, match="pair restored"):
+        MODULE.publish_dsl_baseline_pair([(warm, "new warm"), (cold, "new cold")])
+    assert warm.read_text(encoding="utf-8") == "prior warm"
+    assert cold.read_text(encoding="utf-8") == "prior cold"
+
+
+def test_dsl_baseline_pair_removes_first_new_file_if_second_write_fails(
+    monkeypatch, tmp_path: Path
+) -> None:
+    warm = tmp_path / "warm.json"
+    cold = tmp_path / "cold.json"
+    real_write = MODULE.atomically_write_baseline
+
+    def fail_cold(destination: Path, content: str) -> None:
+        if destination == cold:
+            raise OSError("injected cold failure")
+        real_write(destination, content)
+
+    monkeypatch.setattr(MODULE, "atomically_write_baseline", fail_cold)
+    with pytest.raises(RuntimeError, match="pair restored"):
+        MODULE.publish_dsl_baseline_pair([(warm, "new warm"), (cold, "new cold")])
+    assert not warm.exists()
+    assert not cold.exists()
+
+
+def test_dsl_baseline_pair_refuses_symlink_target(tmp_path: Path) -> None:
+    target = tmp_path / "outside.json"
+    target.write_text("preserved", encoding="utf-8")
+    warm = tmp_path / "warm.json"
+    cold = tmp_path / "cold.json"
+    warm.symlink_to(target)
+    with pytest.raises(RuntimeError, match="not a regular file"):
+        MODULE.publish_dsl_baseline_pair([(warm, "new warm"), (cold, "new cold")])
+    assert target.read_text(encoding="utf-8") == "preserved"
+    assert not cold.exists()

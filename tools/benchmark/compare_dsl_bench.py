@@ -189,10 +189,10 @@ def _required_samples(latency: dict, *, role: str, path: Path, index: int) -> in
     return samples
 
 
-def load_artifact(path: Path, *, role: str) -> Artifact:
+def load_artifact(path: Path, *, role: str, content: str | None = None) -> Artifact:
     """Decode one ``BenchArtifactV1``, refusing an old schema or a bad head."""
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8") if content is None else content)
     except FileNotFoundError:
         raise
     except (OSError, ValueError) as exc:

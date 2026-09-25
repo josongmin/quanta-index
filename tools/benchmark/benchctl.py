@@ -13,6 +13,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import stat
 import subprocess
 import sys
 import time
@@ -184,6 +186,17 @@ def require_declared_baselines(
             )
 
 
+def _file_identity(value: os.stat_result) -> tuple[int, int, int, int, int, int]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
 def admit_dsl_baselines(
     repo_root: Path,
     profile: dict[str, object],
@@ -206,6 +219,7 @@ def admit_dsl_baselines(
     if current_receipt_digest != preflight_digest:
         raise RuntimeError("DSL preflight receipt changed during capture")
     prepared: list[tuple[Path, str]] = []
+    artifact_snapshots: list[tuple[Path, tuple[int, int, int, int, int, int]]] = []
     for name in names:
         family = families[name]
         assert isinstance(family, dict)
@@ -220,13 +234,23 @@ def admit_dsl_baselines(
             raise RuntimeError(f"DSL baseline family {name!r} has no exact artifact/baseline pair")
         artifact_path = repo_root / relative_artifact
         try:
-            stat = artifact_path.stat()
-        except OSError as exc:
-            raise RuntimeError(f"fresh DSL artifact missing: {artifact_path}: {exc}") from exc
-        if min(stat.st_mtime_ns, stat.st_ctime_ns) < capture_started_ns:
-            raise RuntimeError(f"DSL artifact was not written by this run: {artifact_path}")
+            descriptor = os.open(artifact_path, os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
+                artifact_stat = os.fstat(handle.fileno())
+                if not stat.S_ISREG(artifact_stat.st_mode):
+                    raise RuntimeError(f"DSL artifact is not a regular file: {artifact_path}")
+                if min(artifact_stat.st_mtime_ns, artifact_stat.st_ctime_ns) < capture_started_ns:
+                    raise RuntimeError(f"DSL artifact was not written by this run: {artifact_path}")
+                content = handle.read()
+                if _file_identity(os.fstat(handle.fileno())) != _file_identity(artifact_stat):
+                    raise RuntimeError(f"DSL artifact changed while reading: {artifact_path}")
+            current_stat = artifact_path.lstat()
+            if _file_identity(current_stat) != _file_identity(artifact_stat):
+                raise RuntimeError(f"DSL artifact changed after reading: {artifact_path}")
+        except (OSError, UnicodeError) as exc:
+            raise RuntimeError(f"fresh DSL artifact unreadable: {artifact_path}: {exc}") from exc
         try:
-            artifact = load_artifact(artifact_path, role="baseline candidate")
+            artifact = load_artifact(artifact_path, role="baseline candidate", content=content)
             require_complete_baseline_candidate(artifact)
             require_clean_preflight(receipt, artifact)
         except ArtifactRefused as exc:
@@ -237,16 +261,69 @@ def admit_dsl_baselines(
         if any(row.samples < floor for row in artifact.rows.values()):
             raise RuntimeError(f"DSL baseline candidate {name!r} has fewer than {floor} samples")
         destination = repo_root / baseline["path"]
+        prepared.append((destination, content))
+        artifact_snapshots.append((artifact_path, _file_identity(artifact_stat)))
+    for artifact_path, identity in artifact_snapshots:
         try:
-            prepared.append((destination, artifact_path.read_text(encoding="utf-8")))
+            current_identity = _file_identity(artifact_path.lstat())
         except OSError as exc:
-            raise RuntimeError(f"DSL artifact disappeared: {artifact_path}: {exc}") from exc
+            raise RuntimeError(
+                f"DSL artifact disappeared during admission: {artifact_path}: {exc}"
+            ) from exc
+        if current_identity != identity:
+            raise RuntimeError(f"DSL artifact changed during admission: {artifact_path}")
+    try:
+        final_receipt_digest = hashlib.sha256(receipt.read_bytes()).hexdigest()
+    except OSError as exc:
+        raise RuntimeError(f"DSL preflight receipt disappeared: {exc}") from exc
+    if final_receipt_digest != preflight_digest:
+        raise RuntimeError("DSL preflight receipt changed during admission")
     require_frozen_source(repo_root, initial_head)
-    for destination, content in prepared:
+    publish_dsl_baseline_pair(prepared)
+
+
+def publish_dsl_baseline_pair(prepared: list[tuple[Path, str]]) -> None:
+    """Restore the prior pair if either baseline write fails."""
+    if len(prepared) != 2 or prepared[0][0] == prepared[1][0]:
+        raise RuntimeError("DSL baseline publication requires two distinct destinations")
+    prior: dict[Path, str | None] = {}
+    for destination, _ in prepared:
         try:
-            atomically_write_baseline(destination, content)
+            destination_stat = destination.lstat()
+        except FileNotFoundError:
+            prior[destination] = None
+            continue
         except OSError as exc:
-            raise RuntimeError(f"DSL baseline write failed: {destination}: {exc}") from exc
+            raise RuntimeError(f"cannot inspect DSL baseline {destination}: {exc}") from exc
+        if not stat.S_ISREG(destination_stat.st_mode):
+            raise RuntimeError(f"DSL baseline is not a regular file: {destination}")
+        try:
+            prior[destination] = destination.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise RuntimeError(f"cannot preserve DSL baseline {destination}: {exc}") from exc
+
+    written: list[Path] = []
+    try:
+        for destination, content in prepared:
+            atomically_write_baseline(destination, content)
+            written.append(destination)
+    except OSError as exc:
+        rollback_errors: list[str] = []
+        for destination in reversed(written):
+            try:
+                old_content = prior[destination]
+                if old_content is None:
+                    destination.unlink()
+                else:
+                    atomically_write_baseline(destination, old_content)
+            except OSError as rollback_error:
+                rollback_errors.append(f"{destination}: {rollback_error}")
+        if rollback_errors:
+            raise RuntimeError(
+                f"DSL baseline write failed: {exc}; rollback failed: {'; '.join(rollback_errors)}"
+            ) from exc
+        raise RuntimeError(f"DSL baseline write failed and pair restored: {exc}") from exc
+    for destination in written:
         print(f"baseline candidate written: {destination}")
 
 
