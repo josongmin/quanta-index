@@ -102,9 +102,7 @@ def test_scoped_repository_lints_skip_unrelated_docs_and_cover_their_inputs() ->
             "tools/ci/lint/check-digest-fallibility.py",
         ),
         "semgrep": (
-            "crates/quanta-index-core/src/lib.rs",
-            "crates/quanta-index-core/fuzz/fuzz_targets/silent.rs",
-            "benchmarks/retrieval/src/lib.rs",
+            "crates/quanta-index-searchd/src/lib.rs",
             ".github/workflows/ci.yml",
             "tools/ci/semgrep/rules.yml",
             "scripts/run-semgrep.sh",
@@ -117,6 +115,7 @@ def test_scoped_repository_lints_skip_unrelated_docs_and_cover_their_inputs() ->
         ),
         "rust-fallbacks": (
             "crates/quanta-index-core/src/lib.rs",
+            "crates/quanta-index-search-plane/src/lib.rs",
             "crates/quanta-index-core/fuzz/fuzz_targets/silent.rs",
             "benchmarks/retrieval/src/lib.rs",
             "tools/ci/lint/check-rust-fallbacks.py",
@@ -174,6 +173,9 @@ def test_semgrep_counterexamples_have_one_test_owner() -> None:
     scanner = re.compile(hooks["semgrep"]["files"])
     for irrelevant in (
         "scripts/check-semgrep-rules.sh",
+        "crates/quanta-index-core/src/lib.rs",
+        "crates/quanta-index-search-plane/src/lib.rs",
+        "benchmarks/retrieval/src/lib.rs",
         "crates/quanta-index-core/tests/operation_journal.rs",
         "benchmarks/retrieval/tests/fixture.rs",
         "tools/ci/tests/test_semgrep_policy.py",
@@ -249,19 +251,20 @@ def test_semgrep_keeps_code_scope_but_expands_policy_changes(tmp_path: Path) -> 
         return arguments[9:]
 
     code_paths = [
-        "crates/quanta-index-core/src/lib.rs",
+        "crates/quanta-index-searchd/src/lib.rs",
         "tools/ci/tests/test_precommit_scopes.py",
     ]
     assert scan_targets(*code_paths) == code_paths
-    assert scan_targets() == ["."]
+    full_targets = [".github/workflows", "crates/quanta-index-searchd/src"]
+    assert scan_targets() == full_targets
     for policy_path in (
         ".semgrepignore",
         "scripts/run-semgrep.sh",
         "tools/ci/semgrep/rules.yml",
     ):
-        assert scan_targets(*code_paths, policy_path) == ["."]
-        assert scan_targets(*code_paths, f"./{policy_path}") == ["."]
-        assert scan_targets(*code_paths, str(ROOT / policy_path)) == ["."]
+        assert scan_targets(*code_paths, policy_path) == full_targets
+        assert scan_targets(*code_paths, f"./{policy_path}") == full_targets
+        assert scan_targets(*code_paths, str(ROOT / policy_path)) == full_targets
     for unrelated in (".pre-commit-config.yaml", "pyproject.toml"):
         assert scan_targets(*code_paths, unrelated) == [*code_paths, unrelated]
 

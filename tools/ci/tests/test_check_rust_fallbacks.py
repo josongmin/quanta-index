@@ -1,4 +1,4 @@
-"""Counterexamples for production Rust fallback and debug-divergence guards."""
+"""Counterexamples for production Rust syntax and search-plane authority guards."""
 
 from __future__ import annotations
 
@@ -207,7 +207,6 @@ fn production() { if cfg!(debug_assertions) { fail_open(); } }
             [],
         )
 
-
     def test_search_plane_authority_paths(self) -> None:
         source = """use ciborium as codec;
 use git2::Repository as Repo;
@@ -215,6 +214,7 @@ extern crate tree_sitter;
 use tree_sitter_language_pack as pack;
 use std::process::Command as HostCommand;
 use tokio::process::{Command, Stdio};
+use std::{process::Command as StdCommand, io};
 fn f(value: ciborium::value::Value) {
     let _ = ciborium::de::from_reader(input());
     let _ = git2::Repository::open(".");
@@ -234,14 +234,15 @@ fn f(value: ciborium::value::Value) {
                 (4, LINT.RULE_PRODUCER_PARSER),
                 (5, LINT.RULE_PROCESS),
                 (6, LINT.RULE_PROCESS),
-                (7, LINT.RULE_CIBORIUM),
+                (7, LINT.RULE_PROCESS),
                 (8, LINT.RULE_CIBORIUM),
-                (9, LINT.RULE_PRODUCER_PARSER),
+                (9, LINT.RULE_CIBORIUM),
                 (10, LINT.RULE_PRODUCER_PARSER),
                 (11, LINT.RULE_PRODUCER_PARSER),
-                (12, LINT.RULE_PROCESS),
+                (12, LINT.RULE_PRODUCER_PARSER),
                 (13, LINT.RULE_PROCESS),
                 (14, LINT.RULE_PROCESS),
+                (15, LINT.RULE_PROCESS),
             ],
         )
         self.assertEqual(scan(source), [])
@@ -259,8 +260,8 @@ fn process_id() { let _ = format!("{}", std::process::id()); }
 
     def test_search_plane_macro_authority_fails_closed(self) -> None:
         for source in (
-            "macro_rules! source { () => { git2::Repository::open(\".\") }; }",
-            "fn f() { launch!{ Command::new(\"git\") }; }",
+            'macro_rules! source { () => { git2::Repository::open(".") }; }',
+            'fn f() { launch!{ Command::new("git") }; }',
         ):
             with (
                 self.subTest(source=source),

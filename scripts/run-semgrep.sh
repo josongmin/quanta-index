@@ -3,20 +3,21 @@ set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG_PATH="${ROOT_DIR}/tools/ci/semgrep/rules.yml"
+FULL_TARGETS=(.github/workflows crates/quanta-index-searchd/src)
 
 cd "${ROOT_DIR}"
 
 if [[ $# -eq 0 ]]; then
-  set -- .
+  set -- "${FULL_TARGETS[@]}"
 else
   # A rule, ignore, or scanner-wrapper change can create findings in files
-  # outside this push. Keep those runs repository-wide.
+  # outside this push. Rescan the full configured rule scope.
   for path in "$@"; do
     relative_path="${path#"${ROOT_DIR}"/}"
     relative_path="${relative_path#./}"
     case "$relative_path" in
       .semgrepignore | scripts/run-semgrep.sh | tools/ci/semgrep/*)
-        set -- .
+        set -- "${FULL_TARGETS[@]}"
         break
         ;;
     esac

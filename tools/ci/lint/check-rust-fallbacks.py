@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reject Rust silent-fallback and debug-divergence syntax in production source.
+"""Reject Rust silent-fallback, debug-divergence, and search-plane authority syntax.
 
 This is deliberately a syntax guard, not a type/flow proof. One Rust parse
 checks the governed shapes without Semgrep regex matches in comments/strings.
@@ -93,13 +93,14 @@ def use_paths(source: bytes, node: Any) -> list[tuple[bytes, ...]]:
         return use_paths(source, path) if path is not None else []
     if node.type == "scoped_use_list":
         path = node.child_by_field_name("path")
-        return use_paths(source, path) if path is not None else []
+        members = node.child_by_field_name("list")
+        if path is None or members is None:
+            return []
+        prefixes = use_paths(source, path)
+        suffixes = use_paths(source, members)
+        return [prefix + suffix for prefix in prefixes for suffix in suffixes]
     if node.type in {"use_list", "use_wildcard"}:
-        return [
-            path
-            for child in node.named_children
-            for path in use_paths(source, child)
-        ]
+        return [path for child in node.named_children for path in use_paths(source, child)]
     path = path_segments(source, node)
     return [path] if path else []
 
@@ -277,9 +278,7 @@ def opaque_search_authority(source: bytes, node: Any) -> bool:
     if node.type != "token_tree":
         return False
     children = [
-        child
-        for child in node.children
-        if child.type not in {"line_comment", "block_comment"}
+        child for child in node.children if child.type not in {"line_comment", "block_comment"}
     ]
     for index, child in enumerate(children):
         if child.type != "identifier":
@@ -473,8 +472,9 @@ def main() -> int:
                         }
                         and relative.parts[0] == "crates"
                     )
-                    include_search_plane = (
-                        relative.parts[0:2] == ("crates", "quanta-index-search-plane")
+                    include_search_plane = relative.parts[0:2] == (
+                        "crates",
+                        "quanta-index-search-plane",
                     )
                     if (
                         TOKEN_RE.search(source)

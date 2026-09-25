@@ -218,7 +218,7 @@ repos:
         stages: [pre-push]
 
       - id: rust-fallbacks
-        name: Rust fallback and debug syntax
+        name: Rust syntax and search-plane authority
         entry: python3 tools/ci/lint/check-rust-fallbacks.py
         language: system
         pass_filenames: false
@@ -286,5 +286,5 @@ repos:
         entry: bash scripts/run-semgrep.sh
         language: system
         pass_filenames: true
-        files: ^(crates/[^/]+/(?:src/.*|fuzz/fuzz_targets/.*)\.rs|benchmarks/[^/]+/src/.*\.rs|\.github/workflows/[^/]+\.ya?ml|tools/ci/semgrep/.*|scripts/run-semgrep\.sh|\.semgrepignore)$
+        files: ^(crates/quanta-index-searchd/src/.*\.rs|\.github/workflows/[^/]+\.ya?ml|tools/ci/semgrep/.*|scripts/run-semgrep\.sh|\.semgrepignore)$
         stages: [pre-push]
