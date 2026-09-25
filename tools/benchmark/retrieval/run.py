@@ -205,13 +205,22 @@ def validate_qualified_speed_spec(spec: dict, task_count: int) -> None:
 
 
 def _process_tree_sample(root_pid: int) -> list[dict]:
-    """Return one owned-process-tree RSS/CPU sample."""
+    """Return one owned-process-tree RSS/CPU sample.
+
+    Ownership is transitive PPID reachability over every syntactically valid
+    live (non-zombie) ps row, including live zero-RSS connector processes.
+    A live zero-RSS parent therefore keeps its positive-RSS descendants in
+    the owned set. Metric rows are emitted only for owned processes with
+    positive RSS: the frozen resource artifact only accepts positive-RSS
+    process rows, so connector nodes stay in the ownership graph without
+    producing metric rows, and no descendant is dropped with them.
+    """
     output = subprocess.check_output(
         ["ps", "-axo", "pid=,ppid=,rss=,pcpu=,stat=,comm="],
         text=True,
         stderr=subprocess.STDOUT,
     )
-    rows: dict[int, tuple[int, int, float, str, str]] = {}
+    topology: dict[int, tuple[int, int, float, str, str]] = {}
     for line in output.splitlines():
         fields = line.split(maxsplit=5)
         if len(fields) != 6:
@@ -227,29 +236,30 @@ def _process_tree_sample(root_pid: int) -> list[dict]:
             and ppid >= 0
             and rss_kib >= 0
             and math.isfinite(cpu_percent)
-            and rss_kib > 0
             and state
             and not state.startswith("Z")
         ):
-            rows[pid] = (ppid, rss_kib, max(cpu_percent, 0.0), state, command)
+            # Duplicate PID rows keep the last occurrence: dropping an
+            # ambiguous PID could disconnect and hide its descendants.
+            topology[pid] = (ppid, rss_kib, max(cpu_percent, 0.0), state, command)
     owned = {root_pid}
     changed = True
     while changed:
         changed = False
-        for pid, (ppid, _rss, _cpu, _state, _command) in rows.items():
+        for pid, (ppid, *_tail) in topology.items():
             if pid not in owned and ppid in owned:
                 owned.add(pid)
                 changed = True
     return [
         {
             "pid": pid,
-            "ppid": rows[pid][0],
-            "rss_bytes": rows[pid][1] * 1024,
-            "cpu_percent": rows[pid][2],
-            "command": rows[pid][4],
+            "ppid": topology[pid][0],
+            "rss_bytes": topology[pid][1] * 1024,
+            "cpu_percent": topology[pid][2],
+            "command": topology[pid][4],
         }
         for pid in sorted(owned)
-        if pid in rows
+        if pid in topology and topology[pid][1] > 0
     ]
 
 

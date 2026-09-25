@@ -1,6 +1,6 @@
 # SEP-26 Retrieval Remediation — 작업 티켓
 
-작성일: 2026-09-26. 상태: **계획 작성 / 구현 NOT_RUN**.
+작성일: 2026-09-26. 상태: **RBR-00 일부·RBR-11 구현 완료(2026-09-26 2차), 나머지 구현 NOT_RUN**.
 
 최종 감사 기준: `33b24dd5df959f38c0df4717ff834b96750faf34` + 기존 dirty 변경. 시작 기준은 `e38e07865daf19661deaa5d1e580acc5814504ef`였으며, 공유 main 커밋 후 검사 입력 57개의 해시를 재대조하고 집중 테스트를 재실행했다. 이 패킷은 구현 완료나 비교 우위의 증거가 아니다. 최종 재감사 근거는 [AUDIT.md](AUDIT.md), 실제 관측값·파일 해시는 [audit-evidence.json](audit-evidence.json), 공통 완료 계약은 [TEST-PLAN.md](TEST-PLAN.md)에 있다.
 
@@ -19,7 +19,7 @@
 
 | 티켓 | 우선순위 / 성격 | 선행조건 | 산출물 |
 | --- | --- | --- | --- |
-| [RBR-00](RBR-00-proof-contract.md) | P0 / 확정 수정 | 없음 | inventory 일치, 새 계약의 source closure, profile provenance |
+| [RBR-00](RBR-00-proof-contract.md) | P0 / 확정 수정 | 없음 | inventory 일치, 새 계약의 source closure, [profile provenance](PROFILE-CONTRACT.md) |
 | [RBR-01](RBR-01-diagnostics.md) | P0 / 확정 구현 | RBR-00 계약 합의 | response/trace 및 stage timing 관측 |
 | [RBR-02](RBR-02-query-policy.md) | P0 / 확정 구현 | RBR-00 | native/literal/NL 질의 정책 |
 | [RBR-03](RBR-03-semble-profiles.md) | P0 / 확정 구현 | RBR-00 | native-default / controlled 비교 분리 |
@@ -49,4 +49,11 @@ Rust-heavy 검증과 성능 측정은 경쟁 writer/build가 없는 구간에 �
 
 각 티켓은 구현, focused verification, integration, qualification을 별도 상태로 갱신한다. 상태 값은 `VERIFIED / FAILED / BLOCKED / NOT_RUN / NOT_APPLICABLE`이다. 조건부 티켓은 실험 근거와 유지 결정이 검증되면 종료할 수 있으나, 실행하지 않은 최적화를 완료라고 쓰지 않는다.
 
-현재 모든 구현 티켓: `NOT_RUN`. 현재 감사 검증만 [AUDIT.md](AUDIT.md)의 범위에서 관측되었다.
+### 2026-09-26 2차 라운드 상태
+
+| 티켓 | 구현 | focused verification | integration | qualification |
+| --- | --- | --- | --- | --- |
+| RBR-00 | 진행 중: inventory 일치(python 218/rust 55/sdk 12, 역할별 verify 통과), sep-26 closure 등록+거부 테스트, [PROFILE-CONTRACT](PROFILE-CONTRACT.md) 정의. schema/validator 배선은 RBR-02+와 함께 | `VERIFIED` — 3역할 inventory verify, receipt closure 24 passed | `NOT_RUN` — clean-source closure receipt는 커밋 후 발급 | `NOT_APPLICABLE` |
+| RBR-11 | `VERIFIED` — 소유 그래프에서 live zero-RSS 연결 노드 보존, resource policy는 소유 집합 확정 후 적용. zombie 회귀 기대치 수정 + 반례 7종 추가 | `VERIFIED` — 감사 oracle `[100,105]` 해소, sampler 8+실제 프로세스 smoke 1 passed, 풀 파일 218 passed | `NOT_RUN` — 커밋 후 clean-source receipt | 실제 프로세스 smoke `VERIFIED`(macOS) |
+
+RBR-01~10, RBR-12: `NOT_RUN`. 위 표의 검증은 dirty 작업 트리에서 수행한 진단 실행이며, TEST-PLAN §3의 clean-source proof rail은 커밋 후 별도 발급한다.

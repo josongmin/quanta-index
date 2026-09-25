@@ -24,6 +24,7 @@ PROFILES = {
             "Justfile",
             "benchmarks/retrieval/proof-required-tests.json",
             "docs/plans/sep-23-retrieval-bench",
+            "docs/plans/sep-26-retrieval-remediation",
             "scripts/cargow",
             "scripts/quanta-index-env.sh",
             "rust-toolchain.toml",

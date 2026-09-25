@@ -1732,7 +1732,128 @@ def test_process_tree_sampler_excludes_zombie_processes(monkeypatch):
 
     sample = pairrun._process_tree_sample(100)
 
-    assert [process["pid"] for process in sample] == [100, 101]
+    # The zombie row (102) and its child (103) stay excluded, but the live
+    # zero-RSS connector (104) must keep its positive-RSS descendant (105)
+    # inside the owned process tree.
+    assert [process["pid"] for process in sample] == [100, 101, 105]
+
+
+def _patch_ps_snapshot(monkeypatch, snapshot: str) -> None:
+    monkeypatch.setattr(
+        pairrun.subprocess,
+        "check_output",
+        lambda *_args, **_kwargs: snapshot,
+    )
+
+
+def test_process_tree_sampler_keeps_positive_rss_descendant_of_live_zero_rss_parent(monkeypatch):
+    # Independent invariant from the SEP-26 audit: a live positive-RSS
+    # descendant remains owned through a live zero-RSS parent. The metric
+    # rows cover exactly the positive-RSS owned processes.
+    _patch_ps_snapshot(
+        monkeypatch,
+        "100 50 1024 1.0 S runner\n"
+        "104 100 0 0.0 S startup-parent\n"
+        "105 104 4096 3.0 S live-descendant\n",
+    )
+
+    sample = pairrun._process_tree_sample(100)
+
+    assert [process["pid"] for process in sample] == [100, 105]
+    assert sample[1]["ppid"] == 104
+    assert sample[1]["rss_bytes"] == 4096 * 1024
+
+
+def test_process_tree_sampler_zero_rss_ownership_is_row_order_independent(monkeypatch):
+    snapshot = "100 50 1024 1.0 S runner\n104 100 0 0.0 S startup-parent\n105 104 4096 3.0 S live-descendant\n"
+    _patch_ps_snapshot(monkeypatch, snapshot)
+    ordered = pairrun._process_tree_sample(100)
+    reversed_snapshot = "\n".join(reversed(snapshot.strip().splitlines())) + "\n"
+    monkeypatch.setattr(
+        pairrun.subprocess,
+        "check_output",
+        lambda *_args, **_kwargs: reversed_snapshot,
+    )
+    reversed_sample = pairrun._process_tree_sample(100)
+
+    assert [process["pid"] for process in ordered] == [100, 105]
+    assert [process["pid"] for process in reversed_sample] == [100, 105]
+
+
+def test_process_tree_sampler_keeps_multi_level_zero_rss_connectors_and_excludes_unrelated(monkeypatch):
+    _patch_ps_snapshot(
+        monkeypatch,
+        "100 50 1024 1.0 S runner\n"
+        "110 100 0 0.0 S connector-a\n"
+        "111 110 0 0.0 S connector-b\n"
+        "112 111 8192 2.0 S worker\n"
+        "900 1 65536 9.0 S unrelated-positive\n"
+        "901 900 32768 8.0 S unrelated-child\n",
+    )
+
+    sample = pairrun._process_tree_sample(100)
+
+    assert [process["pid"] for process in sample] == [100, 112]
+    assert sample[-1]["rss_bytes"] == 8192 * 1024
+
+
+def test_process_tree_sampler_zero_rss_root_reports_positive_children_only(monkeypatch):
+    _patch_ps_snapshot(
+        monkeypatch,
+        "100 50 0 0.0 S runner\n"
+        "101 100 2048 1.5 S searchd\n",
+    )
+
+    sample = pairrun._process_tree_sample(100)
+
+    # The zero-RSS live root links its children but emits no metric row of
+    # its own: the frozen artifact only accepts positive-RSS process rows.
+    assert [process["pid"] for process in sample] == [101]
+    assert sample[0]["rss_bytes"] == 2048 * 1024
+
+
+def test_process_tree_sampler_skips_malformed_rows_and_is_deterministic_on_duplicate_pid(monkeypatch):
+    _patch_ps_snapshot(
+        monkeypatch,
+        "100 50 1024 1.0 S runner\n"
+        "101 100 not-a-number 1.0 S bad-rss\n"
+        "102 100\n"
+        "103 100 4096 2.0 S worker\n"
+        "103 100 512 0.5 S worker-retaken\n"
+        "104 103 2048 1.0 S inner\n",
+    )
+
+    sample = pairrun._process_tree_sample(100)
+
+    # Malformed rows are skipped without disconnecting the tree, and a
+    # duplicate PID deterministically keeps the last ps row (512 KiB), so
+    # the subtree under it stays owned and measurable.
+    assert [process["pid"] for process in sample] == [100, 103, 104]
+    assert sample[1]["rss_bytes"] == 512 * 1024
+
+
+def test_process_tree_sampler_missing_root_still_links_observed_children(monkeypatch):
+    _patch_ps_snapshot(
+        monkeypatch,
+        "101 999 2048 1.0 S orphaned-worker\n"
+        "102 1 4096 2.0 S unrelated\n",
+    )
+
+    sample = pairrun._process_tree_sample(999)
+
+    # An unobserved or already-exited root still owns the processes that
+    # report it as their parent.
+    assert [process["pid"] for process in sample] == [101]
+
+
+def test_process_tree_sampler_propagates_ps_failure(monkeypatch):
+    def _fail(*_args, **_kwargs):
+        raise pairrun.subprocess.CalledProcessError(1, "ps")
+
+    monkeypatch.setattr(pairrun.subprocess, "check_output", _fail)
+
+    with pytest.raises(pairrun.subprocess.CalledProcessError):
+        pairrun._process_tree_sample(100)
 
 
 @pytest.mark.skipif(
