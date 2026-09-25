@@ -3101,7 +3101,7 @@ def _nextest_evidence(identities):
 def _sdk_raw_record(binary_digest):
     return json.dumps(
         {
-            "schema_version": 3,
+            "schema_version": 5,
             "captures": {
                 "capture": {
                     "runner_binary": {"digest": binary_digest},
@@ -4151,6 +4151,75 @@ def _rewrite_manifest(st, mutator):
     st["manifest_path"].write_text(json.dumps(manifest), encoding="utf-8")
 
 
+def _rebind_semble_native_to_protocol(layout, protocol, pack):
+    """Rebuild the synthetic Semble actual-call trace for a mutated protocol."""
+    native_path = Path(layout["semble"]).parent / "native.json"
+    native = json.loads(native_path.read_text(encoding="utf-8"))
+    assert native["semble_profile"] == "native-default"
+    tasks = {task["task_id"]: task for task in pack["tasks"]}
+    schedule = [(0, "cold", 0, protocol["cold_probe_task_id"])]
+    for iteration, task_ids in enumerate(protocol["warmup_schedules"]):
+        schedule.extend((0, "warmup", iteration, task_id) for task_id in task_ids)
+    for repetition, task_ids in enumerate(protocol["measurement_schedules"]):
+        schedule.extend(
+            (repetition, "measured", repetition, task_id) for task_id in task_ids
+        )
+    profile_sha = ev.digest(
+        ev.canonical(semble_adapter.execution_profile("native-default", None))
+    )
+    native["execution_events"] = [
+        {
+            "rep": repetition,
+            "phase": phase,
+            "phase_iteration": iteration,
+            "task_id": task_id,
+            "call_ordinal": ordinal,
+            "submitted_query_sha256": tasks[task_id]["query_sha256"],
+            "profile_sha256": profile_sha,
+            "actual_alpha": 0.5,
+            "actual_rerank": True,
+            "candidate_depth": 50,
+            "lane_entry_counts": {"bm25": 1, "semantic": 1},
+            "lane_candidate_depths": {"bm25": [50], "semantic": [50]},
+        }
+        for ordinal, (repetition, phase, iteration, task_id) in enumerate(schedule)
+    ]
+    native["execution_events_sha256"] = ev.digest(ev.canonical(native["execution_events"]))
+    native["lane_call_counts"] = {
+        "bm25": len(schedule),
+        "semantic": len(schedule),
+        "encode": len(schedule),
+    }
+    native["query_protocol"] = protocol
+    native["warmup_passes"] = len(protocol["warmup_schedules"])
+    native["repetitions"] = len(protocol["measurement_schedules"])
+    native["actual_alpha_by_task"] = {
+        task_id: 0.5 for task_id in protocol["measurement_schedules"][0]
+    }
+    rows = {row["task_id"]: row for row in native["native"]}
+    native["native"] = [rows[task_id] for task_id in protocol["measurement_schedules"][0]]
+    phase_path = Path(layout["semble_phase_metrics"])
+    phase = json.loads(phase_path.read_text(encoding="utf-8"))
+    native["latencies_ms"] = phase["warm_latencies_ms"]["hybrid"]
+    native_path.write_text(json.dumps(native), encoding="utf-8")
+    for key in ("execution_events_sha256", "lane_call_counts"):
+        phase[key] = native[key]
+    phase_path.write_text(json.dumps(phase), encoding="utf-8")
+    adapter_path = native_path.parent / "adapter-manifest.json"
+    adapter = json.loads(adapter_path.read_text(encoding="utf-8"))
+    for key in (
+        "actual_alpha_by_task",
+        "execution_events_sha256",
+        "lane_call_counts",
+        "function_identity",
+        "observed_wrapped_call_ns",
+        "rerank_applied",
+        "requested_alpha",
+    ):
+        adapter[key] = native[key]
+    adapter_path.write_text(json.dumps(adapter), encoding="utf-8")
+
+
 def test_verdict_pair_only_green(tmp_path):
     st = _pair_stage(tmp_path)
     jsonschema.validate(st["manifest"], _load_schema("run-manifest.schema.json"))
@@ -4328,6 +4397,14 @@ def test_verdict_incomplete_observation_fails_pair(tmp_path):
     adapter = json.loads(adapter_path.read_text(encoding="utf-8"))
     adapter["record_digest"] = ev.digest(spath.read_bytes())
     adapter_path.write_text(json.dumps(adapter), encoding="utf-8")
+    phase_path = spath.parent / "phase-metrics.json"
+    phase = json.loads(phase_path.read_text(encoding="utf-8"))
+    phase["record_sha256"] = ev.digest(spath.read_bytes())
+    phase_path.write_text(json.dumps(phase), encoding="utf-8")
+    resource_path = Path(layout["semble_resource_metrics"])
+    resource = json.loads(resource_path.read_text(encoding="utf-8"))
+    resource["subject_sha256"] = ev.digest(spath.read_bytes())
+    resource_path.write_text(json.dumps(resource), encoding="utf-8")
     # A real run scores whatever the capture observed: rebuild the report
     # from the mutated records so only the incomplete-observation gate fires.
     _s, _p, combined = pairrun.merge_records(
@@ -5307,6 +5384,7 @@ def test_verdict_rejects_protocol_lock_pin_mutations(tmp_path, field, value):
 
 def test_qualified_replay_rejects_two_task_protocol_even_with_1000_samples(tmp_path):
     st = _pair_stage(tmp_path, repetitions=5, scope="qualified", claims={"speed": True})
+    pack = pairrun.read_json(Path(st["spec"]["query_pack"]))
     protocol_digests = []
     for layout in st["rep_layouts"]:
         protocol_path = Path(layout["query_protocol"])
@@ -5330,6 +5408,7 @@ def test_qualified_replay_rejects_two_task_protocol_even_with_1000_samples(tmp_p
                 phase["phase_boundaries_ns"]["query_end"] += 297_000_000
                 phase["phase_boundaries_ns"]["worker_end"] += 297_000_000
             phase_path.write_text(json.dumps(phase), encoding="utf-8")
+        _rebind_semble_native_to_protocol(layout, protocol, pack)
         quanta_manifest_path = Path(layout["quanta_manifest"])
         quanta_manifest = json.loads(quanta_manifest_path.read_text())
         quanta_manifest["runs"][0]["phase_metrics_digest"] = pairrun.sha_file(
@@ -7036,6 +7115,8 @@ def test_benchmark_prep_does_not_repeat_retrieval_contracts():
     prep = recipe("benchmark-prep-local")
     proof = recipe("retrieval-contract-proof", "/tmp/retrieval-proof")
     local = recipe("retrieval-contract-local")
+    assert "uv run --frozen --extra dev python -m pytest " in prep
+    assert "uv run --frozen --extra dev python -m pytest " in local
     assert "test_retrieval_benchmark.py -q" not in prep
     assert "test -p quanta-index-retrieval-bench" not in prep
     assert "portable_proof.py run --rail contract" in proof

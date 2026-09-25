@@ -26,7 +26,7 @@ except ModuleNotFoundError:  # direct script invocation
         parse_nextest_inventory,
     )
 
-PROOF_TEST = "actual_runner_binary_emits_receipt_bound_v3_record"
+PROOF_TEST = "actual_runner_binary_emits_receipt_bound_v5_record"
 
 
 def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -84,9 +84,9 @@ def build_summary_from_evidence(
     if (
         not isinstance(record, dict)
         or type(record.get("schema_version")) is not int
-        or record["schema_version"] != 3
+        or record["schema_version"] != 5
     ):
-        raise SystemExit("runner record must be a v3 object")
+        raise SystemExit("runner record must be a v5 object")
     captures = record.get("captures")
     routes = record.get("route_provenance")
     if not isinstance(captures, dict) or not captures:

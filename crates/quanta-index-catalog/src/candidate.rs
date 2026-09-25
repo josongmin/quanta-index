@@ -112,10 +112,12 @@ pub(crate) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS repomap_candidate_v1
                  CHECK (discard_sequence IS NULL
                         OR (discard_sequence BETWEEN 1 AND 9223372036854775807
                             AND discarded = 1)),
-             row_sha256 BLOB NOT NULL CHECK (length(row_sha256) = 32)
+             row_sha256 BLOB NOT NULL CHECK (length(row_sha256) = 32),
+             CHECK ((discarded = 1) = (discard_sequence IS NOT NULL)),
+             CHECK (discard_sequence IS NULL OR discard_sequence > sequence)
          ) WITHOUT ROWID;";
 
-/// Refuse an incompatible installed candidate table.
+/// Refuse incompatible installed candidate and quarantine tables.
 ///
 /// `CREATE IF NOT EXISTS` cannot add a new `CHECK` to an existing table.
 /// This service has no silent schema migration reader.
@@ -123,25 +125,32 @@ pub(crate) fn verify_installed_schema(
     connection: &Connection,
     path: &std::path::Path,
 ) -> Result<(), CoreError> {
-    let expected = SCHEMA
-        .split_once(';')
-        .map(|(candidate_table, _rest)| candidate_table)
-        .ok_or_else(|| corrupt("candidate schema has no table terminator"))?;
-    // SQLite stores CREATE TABLE without the idempotent IF NOT EXISTS clause.
-    let expected = expected.replacen("CREATE TABLE IF NOT EXISTS", "CREATE TABLE", 1);
-    let installed: String = connection
-        .query_row(
-            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'repomap_candidate_v1'",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|error| engine_error("read installed repomap candidate schema", path, &error))?;
     let compact = |schema: &str| schema.split_whitespace().collect::<String>();
-    if compact(&installed) != compact(&expected) {
-        return Err(CoreError::Storage(format!(
-            "catalog: {} has an unsupported repomap candidate schema; this build has no migration reader",
-            path.display()
-        )));
+    for (table, label) in [
+        ("repomap_candidate_v1", "repomap candidate"),
+        ("repomap_quarantine_event_v1", "repomap quarantine"),
+    ] {
+        let expected = SCHEMA
+            .split(';')
+            .find(|statement| statement.contains(&format!("CREATE TABLE IF NOT EXISTS {table}")))
+            .ok_or_else(|| corrupt(&format!("{label} schema has no table definition")))?
+            .trim()
+            .replacen("CREATE TABLE IF NOT EXISTS", "CREATE TABLE", 1);
+        let installed: String = connection
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                params![table],
+                |row| row.get(0),
+            )
+            .map_err(|error| {
+                engine_error(&format!("read installed {label} schema"), path, &error)
+            })?;
+        if compact(&installed) != compact(&expected) {
+            return Err(CoreError::Storage(format!(
+                "catalog: {} has an unsupported {label} schema; this build has no migration reader",
+                path.display()
+            )));
+        }
     }
     Ok(())
 }
@@ -410,6 +419,13 @@ fn checked_quarantine_row(
         1 => true,
         other => return Err(corrupt(&format!("quarantine discarded flag is {other}"))),
     };
+    if discarded != discard_sequence.is_some()
+        || discard_sequence.is_some_and(|discard_sequence| discard_sequence <= sequence)
+    {
+        return Err(corrupt(
+            "quarantine discard state or sequence is inconsistent",
+        ));
+    }
     let incident = RepoMapQuarantineIncidentRowV1 {
         incident_digest: blob32("incident digest", &digest)?,
         payload_digest: blob32("incident payload digest", &payload)?,
@@ -1342,66 +1358,36 @@ impl SqliteCatalog {
             .query_row(
                 "SELECT incident_digest, payload_digest, envelope_bytes, envelope_digest,
                         incident_time_unix_nanos, sequence, reason_code, source_path, discarded,
-                        discard_sequence
+                        discard_sequence, row_sha256
                  FROM repomap_quarantine_event_v1 WHERE incident_digest = ?1",
                 params![incident_digest.as_slice()],
-                |row| {
-                    Ok((
-                        row.get::<_, Vec<u8>>(0)?,
-                        row.get::<_, Vec<u8>>(1)?,
-                        row.get::<_, Vec<u8>>(2)?,
-                        row.get::<_, Vec<u8>>(3)?,
-                        row.get::<_, i64>(4)?,
-                        row.get::<_, i64>(5)?,
-                        row.get::<_, String>(6)?,
-                        row.get::<_, String>(7)?,
-                        row.get::<_, i64>(8)?,
-                        row.get::<_, Option<i64>>(9)?,
-                    ))
-                },
+                quarantine_raw_row,
             )
             .optional()
             .map_err(|error| engine_error("read repomap quarantine incident", path, &error))?;
-        let Some((
-            _digest,
-            payload,
-            envelope,
-            envelope_digest,
-            time,
-            record_sequence,
-            reason_code,
-            source_path,
-            discarded,
-            prior_discard_sequence,
-        )) = fetched
-        else {
+        let Some(raw) = fetched else {
             return Err(typed(
                 quanta_index_contract::SearchPlaneErrorCodeV2::QuarantineTargetNotQuarantined,
                 "catalog: no quarantine incident under that digest".to_string(),
             ));
         };
-        if discarded == 1 {
+        let prior = checked_quarantine_row(raw)?;
+        if prior.discarded {
             // Already tombstoned: exact replay of the discard receipt.
-            return Ok(prior_discard_sequence.unwrap_or(record_sequence));
+            return prior
+                .discard_sequence
+                .ok_or_else(|| corrupt("discarded quarantine incident has no discard sequence"));
         }
-        let payload_digest = blob32("quarantine payload digest", &payload)?;
         let sequence = append_sequence_event(
             &transaction,
             SequenceEventKindV1::QuarantineDiscard,
             incident_digest,
-            &payload_digest,
+            &prior.payload_digest,
         )?;
         let row = RepoMapQuarantineIncidentRowV1 {
-            incident_digest: *incident_digest,
-            payload_digest,
-            envelope_bytes: envelope,
-            envelope_digest: blob32("quarantine envelope digest", &envelope_digest)?,
-            incident_time_unix_nanos: time,
-            sequence: record_sequence,
-            reason_code,
-            source_path,
             discarded: true,
             discard_sequence: Some(sequence),
+            ..prior
         };
         let _updated = transaction
             .execute(
@@ -1695,8 +1681,7 @@ mod tests {
     }
 
     #[test]
-    fn discarded_incident_without_discard_sequence_refuses_replay()
-    -> Result<(), Box<dyn Error>> {
+    fn discarded_incident_without_discard_sequence_refuses_replay() -> Result<(), Box<dyn Error>> {
         let root = tempfile::tempdir()?;
         let catalog = SqliteCatalog::open(root.path(), Duration::from_millis(100))?;
         let digest = [5_u8; 32];
@@ -1715,6 +1700,20 @@ mod tests {
         };
         {
             let connection = catalog.lock()?;
+            let malformed_update = connection.execute(
+                "UPDATE repomap_quarantine_event_v1
+                 SET discarded = 1, row_sha256 = ?1 WHERE incident_digest = ?2",
+                params![
+                    super::quarantine_row_digest(&malformed).as_slice(),
+                    digest.as_slice()
+                ],
+            );
+            if malformed_update.is_ok() {
+                return Err("current schema must reject a missing discard sequence".into());
+            }
+            // Model a self-digested row imported from an older or tampered DB;
+            // the current schema independently rejects this state on writes.
+            connection.execute_batch("PRAGMA ignore_check_constraints = ON")?;
             let changed = connection.execute(
                 "UPDATE repomap_quarantine_event_v1
                  SET discarded = 1, row_sha256 = ?1 WHERE incident_digest = ?2",
@@ -1723,6 +1722,8 @@ mod tests {
                     digest.as_slice()
                 ],
             )?;
+            connection.execute_batch("PRAGMA ignore_check_constraints = OFF")?;
+            drop(connection);
             if changed != 1 {
                 return Err("hostile fixture must update one incident".into());
             }
@@ -1736,6 +1737,40 @@ mod tests {
             })
         ) {
             return Err("missing discard sequence must not replay the record sequence".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn quarantine_schema_without_discard_order_refuses_open() -> Result<(), Box<dyn Error>> {
+        let root = tempfile::tempdir()?;
+        let directory = catalog_dir(root.path());
+        std::fs::create_dir_all(&directory)?;
+        let path = directory.join(CATALOG_FILE_NAME);
+        let connection = rusqlite::Connection::open(&path)?;
+        let old_schema = super::SCHEMA.replace(
+            ",
+             CHECK ((discarded = 1) = (discard_sequence IS NOT NULL)),
+             CHECK (discard_sequence IS NULL OR discard_sequence > sequence)",
+            "",
+        );
+        connection.execute_batch(&old_schema)?;
+        drop(connection);
+
+        let reopened = SqliteCatalog::open(root.path(), Duration::from_millis(100));
+        if !matches!(
+            reopened,
+            Err(CoreError::Storage(message)) if message.contains("unsupported repomap quarantine schema")
+        ) {
+            return Err("quarantine schema without discard order must refuse open".into());
+        }
+        let connection = rusqlite::Connection::open(path)?;
+        let allocator_rows: i64 =
+            connection.query_row("SELECT COUNT(*) FROM catalog_sequence_v2", [], |row| {
+                row.get(0)
+            })?;
+        if allocator_rows != 0 {
+            return Err("quarantine schema refusal must precede allocator seed".into());
         }
         Ok(())
     }

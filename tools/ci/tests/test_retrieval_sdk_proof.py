@@ -25,7 +25,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
     record.write_text(
         json.dumps(
             {
-                "schema_version": 3,
+                "schema_version": 5,
                 "captures": {
                     "run-lexical": {
                         "runner_binary": {"name": "runner", "digest": digest},
@@ -41,8 +41,8 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
     nextest = tmp_path / "nextest.jsonl"
     nextest.write_text(
         '{"type":"suite","event":"started"}\n'
-        '{"type":"test","event":"started","name":"actual_runner_binary_emits_receipt_bound_v3_record"}\n'
-        '{"type":"test","event":"ok","name":"actual_runner_binary_emits_receipt_bound_v3_record"}\n'
+        '{"type":"test","event":"started","name":"actual_runner_binary_emits_receipt_bound_v5_record"}\n'
+        '{"type":"test","event":"ok","name":"actual_runner_binary_emits_receipt_bound_v5_record"}\n'
         '{"type":"suite","event":"ok","passed":1,"failed":0,"ignored":0}\n',
         encoding="utf-8",
     )
