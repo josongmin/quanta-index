@@ -95,9 +95,9 @@ TOOL_MIGRATION_FIXTURES = {
         "tools/ci/tests/test_check_proof_authority.py",
         "test_manifest_v0_is_refused",
     ),
-    "proof_aggregate_missing_or_not_ready_refused": (
+    "proof_aggregate_v1_refused": (
         "tools/ci/tests/test_write_proof_aggregate.py",
-        "test_p12_guard_refuses_registered_not_ready_aggregate",
+        "test_ready_aggregate_is_final_release_receipt",
     ),
     "error_authority_inventory_source_digest_changes": (
         "tools/ci/tests/test_write_error_authority_inventory.py",

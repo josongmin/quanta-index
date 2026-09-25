@@ -21,6 +21,12 @@ EXTENSIONS = {
     "typescript": frozenset({".ts", ".tsx"}),
     "javascript": frozenset({".js", ".jsx", ".mjs", ".cjs"}),
 }
+REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+
+
+def require_external_path(path: Path, label: str) -> None:
+    if path.resolve().is_relative_to(REPOSITORY_ROOT):
+        raise ValueError(f"{label} must stay outside the quanta-index checkout")
 
 
 def sha(data: bytes) -> str:
@@ -162,6 +168,9 @@ def main() -> None:
     parser.add_argument("--checkouts", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
+    require_external_path(args.spec, "corpus-set spec")
+    require_external_path(args.checkouts, "corpus checkouts")
+    require_external_path(args.out, "corpus artifacts")
     if args.out.exists() and any(args.out.iterdir()):
         raise ValueError("output directory must be absent or empty")
     spec = json.loads(args.spec.read_text(encoding="utf-8"))

@@ -6,7 +6,16 @@ This is a **local Quanta vs Semble code-search** standard, not an adoption of Se
 
 ## Frozen candidate corpus set
 
-The reproducible spec is [`corpus-set-sep-2026.json`](../../../../tools/benchmark/retrieval/corpus-set-sep-2026.json). The local freeze tool is [`corpus_set.py`](../../../../tools/benchmark/retrieval/corpus_set.py). Each repository remains an independent clean Git checkout and produces its **own** RB-00 `repository_commit` + sorted path/SHA manifest. The current pair runner accepts one repository per capture; aggregate across paired repository results, never fake one synthetic commit. File selection uses tracked UTF-8 code files under the declared root, a 1 MiB file cap, regular-file/no-symlink checks, and the explicit language extensions in the tool. Every excluded tracked path and reason is retained; test source files inside the root are included as realistic distractors, not silently removed. The Semble adapter must still prove its actual indexed path/SHA universe equals each manifest; a candidate manifest alone does not establish that equality.
+The reproducible [corpus-set spec](/Users/songmin/Documents/code-new/qi-rb-coverage-set-2026-09-25/corpus-set-sep-2026.json) is **outside this repository** (SHA-256 `4f4a6c5515e2265c261edfab270e07f3ef1a645cef6a8e1922bc4a6482d7eeb3`). The repository retains only the generic [`corpus_set.py`](../../../../tools/benchmark/retrieval/corpus_set.py) generator and its fixture tests; the generator rejects spec, checkout or output paths inside the quanta-index checkout. Each repository remains an independent clean external Git checkout and produces its **own** external RB-00 `repository_commit` + sorted path/SHA manifest. The current pair runner accepts one repository per capture; aggregate across paired repository results, never fake one synthetic commit. File selection uses tracked UTF-8 code files under the declared root, a 1 MiB file cap, regular-file/no-symlink checks, and the explicit language extensions in the tool. Every excluded tracked path and reason is retained; test source files inside the root are included as realistic distractors, not silently removed. The Semble adapter must still prove its actual indexed path/SHA universe equals each manifest; a candidate manifest alone does not establish that equality.
+
+Regenerate into a **fresh external** output directory only:
+
+```sh
+python3 tools/benchmark/retrieval/corpus_set.py \
+  --spec /Users/songmin/Documents/code-new/qi-rb-coverage-set-2026-09-25/corpus-set-sep-2026.json \
+  --checkouts /Users/songmin/Documents/code-new/qi-rb-coverage-set-2026-09-25/checkouts \
+  --out /Users/songmin/Documents/code-new/qi-rb-coverage-set-2026-09-25/<fresh-output-directory>
+```
 
 | Repository | Language | Commit | Code files | Upstream benchmark overlap |
 | --- | --- | --- | ---: | --- |
@@ -22,6 +31,10 @@ The reproducible spec is [`corpus-set-sep-2026.json`](../../../../tools/benchmar
 | vite | TypeScript | `bc598a6a8a6b7d6e157e9f19c16911cff8d2360c` | 256 | no |
 
 Frozen local candidate: 10 repositories, 5 languages, 1,480 files, with one Semble-public overlap and one non-overlap repository per language. External artifact: `/Users/songmin/Documents/code-new/qi-rb-coverage-set-2026-09-25/frozen-v4/corpus-set.json`, SHA-256 `31c248d79ad908052018ee74279630b4b0bd77c5e3cd5ead31d1651b0eb71f33`; per-repository manifests are in its `manifests/` directory. Each summary includes exact excluded paths/reasons and root license-source path/SHA inventory, **not** license approval. This expands the former 88-file Rust candidate. It has a five-language non-overlap *candidate* but no reviewed queries or gold, so it is not a fresh quality proof or population-level result. The overlapping half is useful for parity diagnostics, not as the sole generalization sample.
+
+Focused loader/chunker probe: `./scripts/cargow --lane test-daemon-lane run -q -p quanta-index-retrieval-bench --bin quanta-index-retrieval-bench --locked -- chunk --repo <checkout> --manifest <per-repo-manifest> --strategy fixed_window_strict --out <per-repo-output>` was run once for each of the ten named repositories on the current dirty source. The outputs are `/Users/songmin/Documents/code-new/qi-rb-coverage-set-2026-09-25/chunk-probes/{name}.json`: 1,480 files, 4,191 chunks, zero reported fallback chunks and zero uncovered bytes. This is input/chunk coverage only; it does not run searchd, Semble, queries, mapping proof or a paired verdict. Source-bound qualification receipts are not reissued by this probe.
+
+Raw Semble 0.6.0 file-walker discovery on these original checkouts is **not** the admitted universe: it sees three extra shell-completion files in ripgrep and two empty Python files in fastapi. The common-universe pair must index the exact materialized manifests and recheck the adapter's path/SHA mapping; native discovery is reported separately.
 
 ## Predeclared evaluation matrix
 

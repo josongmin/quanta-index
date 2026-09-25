@@ -74,6 +74,11 @@ class CorpusSetTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "invalid benchmark root"):
             corpus_set.freeze_set({"source_revision": "fixture", "repositories": [{**self.entry, "benchmark_root": "/src"}]}, self.checkouts)
 
+    def test_refuses_corpus_inputs_or_outputs_inside_checkout(self):
+        with self.assertRaisesRegex(ValueError, "outside"):
+            corpus_set.require_external_path(MODULE_PATH.parent / "candidate.json", "corpus-set spec")
+        corpus_set.require_external_path(self.checkouts, "corpus checkouts")
+
 
 if __name__ == "__main__":
     unittest.main()
