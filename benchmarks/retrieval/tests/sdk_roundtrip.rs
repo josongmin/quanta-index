@@ -1072,3 +1072,48 @@ fn symbol_route_answers_from_published_units_and_proves_spans() {
     assert_eq!(record["route"], "symbol");
     assert!(record["candidates"].as_array().is_some_and(|rows| !rows.is_empty()));
 }
+
+#[test]
+fn symbol_route_no_answer_is_typed_never_fake_success() {
+    // RBR-05: a symbol query with no published match abstains or fails
+    // typed; it never fabricates hits or borrows chunk results.
+    let repo = tempfile::tempdir().expect("repo root");
+    write_tiny_repo(repo.path());
+    let manifest = load_manifest(&repo.path().join("manifest.json")).expect("manifest");
+    let files = load_corpus(repo.path(), &manifest, &CorpusLimits::default()).expect("corpus");
+    let (chunks, _) = chunk_corpus(&WholeFileChunker, &files).expect("chunk");
+    let symbols = symbols_for(&files);
+    let identity = BatchIdentity::new("bench-repo", "bench-rev", 12, "manifest:none".to_string())
+        .expect("identity");
+    let (batch, _) = assemble_batch(&identity, &chunks, &symbols).expect("batch");
+    let state = tempfile::tempdir().expect("state root");
+    let session = boot_session(&state.path().join("daemon"), &identity);
+    let (_receipt, _ack) =
+        publish_and_activate(&session, &batch, &identity, None).expect("publish+activate");
+    let outcome = query_route(&RouteQuery {
+        client: session.client(),
+        route: "symbol",
+        lexical_request: "zzz_no_such_symbol_zzz",
+        semantic_text: "zzz_no_such_symbol_zzz",
+        repo_id: &identity.repo_id,
+        revision_id: &identity.revision_id,
+        generation: identity.generation,
+        top_k: 10,
+    });
+    session.stop().expect("bounded shutdown");
+    match outcome {
+        QueryOutcome::Hits { hits, outcome, .. } => {
+            if hits.is_empty() {
+                assert!(
+                    outcome.is_exhausted(),
+                    "empty symbol window must be an exact abstention"
+                );
+            } else {
+                panic!("nonsense symbol name must not produce hits: {hits:?}");
+            }
+        }
+        QueryOutcome::Failed { .. } => {
+            // A typed provider/transport failure is an acceptable refusal.
+        }
+    }
+}

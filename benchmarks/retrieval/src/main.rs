@@ -32,7 +32,8 @@ use quanta_index_retrieval_bench::record::{
     load_query_pack, runner_record,
 };
 use quanta_index_retrieval_bench::query_plan::{
-    NlPlanConfig, QueryInputPolicy, QueryPlan, plan_query,
+    NlPlanConfig, QueryInputPolicy, QueryPlan, QueryPlanError, plan_query,
+    policy_config_canonical,
 };
 use quanta_index_retrieval_bench::schedule::QueryProtocol;
 use quanta_index_retrieval_bench::sdk::{
@@ -68,7 +69,7 @@ fn print_help() -> BenchResult<()> {
          --blinding attested|isolated --isolation-method TEXT --access-block-log TEXT\n\
          [--materialized-corpus-sha256 HEX]\n\
          --searchd-bin PATH --searchd-expected-sha256 HEX\n\
-         --out PATH [--metrics-out PATH] [--diagnostics-out PATH] [--embedder potion-code|hash-dev]\n\
+         --out PATH --refusal-out PATH [--metrics-out PATH] [--diagnostics-out PATH] [--embedder potion-code|hash-dev]\n\
          [--max-file-bytes N]\n\
          [--io-timeout-secs N] [--ready-timeout-secs N]\n",
         )
@@ -289,6 +290,113 @@ fn write_json(path: &Path, value: &serde_json::Value) -> BenchResult<()> {
         })
 }
 
+fn query_plan_error_details(error: &QueryPlanError) -> serde_json::Value {
+    match error {
+        QueryPlanError::UnsupportedPolicy(policy) => serde_json::json!({"policy": policy}),
+        QueryPlanError::EmptyTokenPlan => serde_json::json!({}),
+        QueryPlanError::TokenLimitExceeded { tokens, max_tokens } => {
+            serde_json::json!({"tokens": tokens, "max_tokens": max_tokens})
+        }
+        QueryPlanError::TokenCharacterLimitExceeded {
+            chars,
+            max_token_chars,
+        } => serde_json::json!({"chars": chars, "max_token_chars": max_token_chars}),
+        QueryPlanError::IndexTokenTooLong { bytes, max_bytes } => {
+            serde_json::json!({"bytes": bytes, "max_bytes": max_bytes})
+        }
+        QueryPlanError::InvalidLexicalRequest {
+            parser_code,
+            detail,
+        } => serde_json::json!({"parser_code": parser_code, "detail": detail}),
+    }
+}
+
+fn write_query_plan_refusal(
+    path: &Path,
+    policy: &str,
+    policy_config_sha256: &str,
+    task_id: Option<&str>,
+    original_query_sha256: Option<&str>,
+    error: &QueryPlanError,
+) -> BenchResult<()> {
+    write_json(
+        path,
+        &serde_json::json!({
+            "schema_version": 1,
+            "kind": "quanta_retrieval_query_plan_refusal",
+            "phase": "query_plan",
+            "task_id": task_id,
+            "original_query_sha256": original_query_sha256,
+            "policy": policy,
+            "policy_config_sha256": policy_config_sha256,
+            "error": {
+                "code": error.code(),
+                "message": error.to_string(),
+                "details": query_plan_error_details(error),
+            },
+        }),
+    )
+}
+
+fn plan_query_pack(
+    args: &Args,
+    pack: &QueryPack,
+    refusal_out: &Path,
+) -> BenchResult<(QueryInputPolicy, NlPlanConfig, BTreeMap<String, QueryPlan>)> {
+    let policy_raw = required(args, "query-input-policy")?;
+    let policy = match QueryInputPolicy::parse(&policy_raw) {
+        Ok(policy) => policy,
+        Err(error) => {
+            let raw_config = format!("{{\"policy\":{}}}", serde_json::to_string(&policy_raw).map_err(
+                |err| BenchError::Json {
+                    path: "<query-input-policy>".to_string(),
+                    message: err.to_string(),
+                },
+            )?);
+            write_query_plan_refusal(
+                refusal_out,
+                &policy_raw,
+                &sha256_hex(raw_config.as_bytes()),
+                None,
+                None,
+                &error,
+            )?;
+            return Err(BenchError::Config(format!(
+                "--query-input-policy: {error}"
+            )));
+        }
+    };
+    let config = NlPlanConfig::default();
+    let policy_config_sha256 = sha256_hex(policy_config_canonical(policy, &config).as_bytes());
+    let mut plans = BTreeMap::new();
+    for task in &pack.tasks {
+        let plan = match plan_query(policy, task.query.as_str(), &config) {
+            Ok(plan) => plan,
+            Err(error) => {
+                write_query_plan_refusal(
+                    refusal_out,
+                    &policy_raw,
+                    &policy_config_sha256,
+                    Some(task.task_id.as_str()),
+                    Some(sha256_hex(task.query.as_bytes()).as_str()),
+                    &error,
+                )?;
+                return Err(BenchError::Config(format!(
+                    "query {} cannot be planned under policy {}: {error}",
+                    task.task_id, policy_raw
+                )));
+            }
+        };
+        if plans.insert(task.task_id.clone(), plan).is_some() {
+            return Err(BenchError::Protocol(format!(
+                "duplicate query task ID during planning: {}",
+                task.task_id
+            )));
+        }
+    }
+    Ok((policy, config, plans))
+}
+
 fn require_external_path(repo: &Path, path: &Path, label: &str) -> BenchResult<()> {
     if !path.is_absolute() {
         return Err(BenchError::Config(format!(
@@ -444,6 +552,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             "query-pack",
             "query-protocol",
             "query-input-policy",
+            "refusal-out",
             "routes",
             "top-k",
             "state-root",
@@ -500,6 +609,63 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             pack.contract_top_k
         )));
     }
+    let state_root = PathBuf::from(required(args, "state-root")?);
+    require_external_path(&repo, &state_root, "--state-root")?;
+    let out = PathBuf::from(required(args, "out")?);
+    require_external_path(&repo, &out, "--out")?;
+    if out.exists() {
+        return Err(BenchError::Config(format!(
+            "--out already exists: {}",
+            out.display()
+        )));
+    }
+    let metrics_out = args.flags.get("metrics-out").map(PathBuf::from);
+    if let Some(path) = &metrics_out {
+        require_external_path(&repo, path, "--metrics-out")?;
+        if path.exists() {
+            return Err(BenchError::Config(format!(
+                "--metrics-out already exists: {}",
+                path.display()
+            )));
+        }
+    }
+    let diagnostics_out = args.flags.get("diagnostics-out").map(PathBuf::from);
+    if let Some(path) = &diagnostics_out {
+        require_external_path(&repo, path, "--diagnostics-out")?;
+        if path.exists() {
+            return Err(BenchError::Config(format!(
+                "--diagnostics-out already exists: {}",
+                path.display()
+            )));
+        }
+    }
+    let refusal_out = PathBuf::from(required(args, "refusal-out")?);
+    require_external_path(&repo, &refusal_out, "--refusal-out")?;
+    if refusal_out.exists() {
+        return Err(BenchError::Config(format!(
+            "--refusal-out already exists: {}",
+            refusal_out.display()
+        )));
+    }
+    let mut output_paths = BTreeSet::new();
+    for (label, path) in [
+        ("--out", Some(&out)),
+        ("--metrics-out", metrics_out.as_ref()),
+        ("--diagnostics-out", diagnostics_out.as_ref()),
+        ("--refusal-out", Some(&refusal_out)),
+    ] {
+        if let Some(path) = path {
+            if !output_paths.insert(path) {
+                return Err(BenchError::Config(format!(
+                    "{label} must differ from every other output path"
+                )));
+            }
+        }
+    }
+    // The query plan is a preflight contract. No corpus chunking, daemon
+    // boot, publication, or measured request may happen before every task
+    // has one accepted plan.
+    let (policy, nl_plan_config, task_plans) = plan_query_pack(args, &pack, &refusal_out)?;
     let limits = CorpusLimits {
         max_file_bytes: optional_u64(
             args,
@@ -559,41 +725,6 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         &symbol_extraction.symbols,
     )?;
 
-    let state_root = PathBuf::from(required(args, "state-root")?);
-    require_external_path(&repo, &state_root, "--state-root")?;
-    let out = PathBuf::from(required(args, "out")?);
-    require_external_path(&repo, &out, "--out")?;
-    if out.exists() {
-        return Err(BenchError::Config(format!(
-            "--out already exists: {}",
-            out.display()
-        )));
-    }
-    let metrics_out = args.flags.get("metrics-out").map(PathBuf::from);
-    if let Some(path) = &metrics_out {
-        require_external_path(&repo, path, "--metrics-out")?;
-        if path.exists() {
-            return Err(BenchError::Config(format!(
-                "--metrics-out already exists: {}",
-                path.display()
-            )));
-        }
-    }
-    let diagnostics_out = args.flags.get("diagnostics-out").map(PathBuf::from);
-    if let Some(path) = &diagnostics_out {
-        require_external_path(&repo, path, "--diagnostics-out")?;
-        if path.exists() {
-            return Err(BenchError::Config(format!(
-                "--diagnostics-out already exists: {}",
-                path.display()
-            )));
-        }
-        if path == &out || metrics_out.as_ref() == Some(path) {
-            return Err(BenchError::Config(
-                "--diagnostics-out must differ from other output paths".to_string(),
-            ));
-        }
-    }
     let searchd_bin =
         resolve_searchd_binary(args.flags.get("searchd-bin").map(PathBuf::from).as_deref())?;
     let searchd_digest =
@@ -673,6 +804,10 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     for route in routes.iter().copied() {
         let (model, model_revision) = if route == "lexical" {
             ("none:lexical", "not-applicable")
+        } else if route == "symbol" {
+            // Symbol search runs in the lexical domain: no embedding model
+            // is exercised, so the capture must not claim one.
+            ("none:symbol", "not-applicable")
         } else {
             (profile.model_id, profile.model_revision)
         };
@@ -711,30 +846,6 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             )));
         }
     }
-    // RBR-02: build every task's query plan exactly once under the explicit
-    // input policy; cold/warmup/measured share these plans, so no phase can
-    // silently run a different policy or re-plan mid-capture.
-    let policy_raw = args
-        .flags
-        .get("query-input-policy")
-        .cloned()
-        .unwrap_or_else(|| "native".to_string());
-    let policy = QueryInputPolicy::parse(&policy_raw)
-        .map_err(|err| usage_error(format!("--query-input-policy: {err}")))?;
-    let nl_plan_config = NlPlanConfig::default();
-    let task_plans: BTreeMap<String, QueryPlan> = pack
-        .tasks
-        .iter()
-        .map(|task| {
-            let plan = plan_query(policy, task.query.as_str(), &nl_plan_config).map_err(|err| {
-                usage_error(format!(
-                    "query {} cannot be planned under policy {}: {err}",
-                    task.task_id, policy_raw
-                ))
-            })?;
-            Ok((task.task_id.clone(), plan))
-        })
-        .collect::<BenchResult<BTreeMap<String, QueryPlan>>>()?;
     let mut outcomes: BTreeMap<(String, String), QueryOutcome> = BTreeMap::new();
     let mut warm_latencies_ms: BTreeMap<String, BTreeMap<String, Vec<f64>>> = BTreeMap::new();
     let mut cold_latencies_ms: BTreeMap<String, f64> = BTreeMap::new();
@@ -1223,5 +1334,53 @@ mod tests {
         assert!(
             validate_blinding_claim("isolated", "macos-seatbelt-v1", "sha256:not-hex").is_err()
         );
+    }
+
+    #[test]
+    fn query_plan_preflight_writes_one_create_new_refusal() {
+        let parent = tempfile::tempdir().expect("tempdir");
+        let refusal = parent.path().join("query-plan-refusal.json");
+        let args = Args {
+            positional: vec!["run".to_string()],
+            flags: BTreeMap::from([(
+                "query-input-policy".to_string(),
+                "natural_language".to_string(),
+            )]),
+            help: false,
+        };
+        let pack = QueryPack {
+            suite_id: "suite".to_string(),
+            suite_commitment_sha256: "a".repeat(64),
+            repository_commit: "b".repeat(40),
+            tokenizer: "test".to_string(),
+            tokenizer_budget_version: None,
+            routes: vec!["lexical".to_string()],
+            file_universe: vec![("src/lib.rs".to_string(), "c".repeat(64))],
+            file_universe_digest: "d".repeat(64),
+            tasks: vec![quanta_index_retrieval_bench::record::PackTask {
+                task_id: "T01".to_string(),
+                query: "---".to_string(),
+                query_sha256: sha256_hex(b"---"),
+            }],
+            pack_sha256: "e".repeat(64),
+            comparison_contract: serde_json::json!({"top_k": 10}),
+            contract_top_k: 10,
+        };
+
+        let error = plan_query_pack(&args, &pack, &refusal)
+            .expect_err("unindexable task must refuse during preflight");
+        assert!(error.to_string().contains("T01"));
+        let artifact: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&refusal).expect("refusal bytes"),
+        )
+        .expect("refusal JSON");
+        assert_eq!(artifact["schema_version"], 1);
+        assert_eq!(artifact["phase"], "query_plan");
+        assert_eq!(artifact["task_id"], "T01");
+        assert_eq!(artifact["error"]["code"], "RBR_QUERY_NO_INDEXABLE_TOKENS");
+        assert_eq!(artifact["original_query_sha256"], sha256_hex(b"---"));
+        assert!(artifact["policy_config_sha256"].as_str().is_some());
+
+        assert!(plan_query_pack(&args, &pack, &refusal).is_err());
     }
 }
