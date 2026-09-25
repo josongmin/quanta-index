@@ -221,6 +221,24 @@ mod tests {
             "fixture model bytes differ from the crate pin"
         );
         assert_eq!(fixture["dimension"], 256);
+        // Audit hardening: bind the remaining fixture identities and the
+        // per-vector shapes before any comparison can silently narrow.
+        assert_eq!(
+            fixture["library"]["model2vec"], "0.9.0",
+            "reference library version drifted"
+        );
+        assert!(
+            fixture["model"]["tokenizer_sha256"].as_str().is_some_and(|value| {
+                value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+            }),
+            "tokenizer digest missing from the fixture"
+        );
+        assert!(
+            fixture["model"]["config_sha256"].as_str().is_some_and(|value| {
+                value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+            }),
+            "config digest missing from the fixture"
+        );
 
         let inputs: Vec<&str> = fixture["inputs"]
             .as_array()
@@ -247,6 +265,20 @@ mod tests {
 
         let provider = PotionCodeEmbeddingProvider::from_local_dir(Path::new(&model_dir))
             .expect("pinned model loads");
+        // Audit hardening: a truncated fixture must fail loudly here,
+        // not narrow the zip comparison below.
+        assert_eq!(
+            vectors_reference.len(),
+            inputs.len(),
+            "fixture holds a wrong number of reference vectors"
+        );
+        for vector in &vectors_reference {
+            assert_eq!(
+                vector.len(),
+                POTION_CODE_DIMENSION,
+                "fixture vector is not full-width"
+            );
+        }
         let raw = provider.embed_batch(&inputs).expect("raw inference");
         assert_eq!(raw.len(), inputs.len());
         for vector in &raw {
@@ -260,7 +292,12 @@ mod tests {
         let unit = normalized
             .embed_batch(&inputs)
             .expect("normalized inference");
-        const NORM_TOLERANCE: f32 = 0.005;
+        // Audit finding: 0.005 was ~100x the fp16 quantization step for
+        // the observed component magnitudes. Empirical floor: the
+        // tokenless (empty-pool) vector deviates up to ~1.3e-3 through
+        // the fp16->fp32 pooling path, so 2e-3 is the tight bound that
+        // still admits the real edge (2.5x tighter than the old 5e-3).
+        const NORM_TOLERANCE: f32 = 0.002;
         for (index, (actual, expected)) in unit.iter().zip(&vectors_reference).enumerate() {
             for (position, (a, e)) in actual.iter().zip(expected).enumerate() {
                 assert!(

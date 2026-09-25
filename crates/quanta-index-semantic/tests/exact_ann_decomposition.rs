@@ -602,10 +602,11 @@ fn a_page_query_at_the_incident_scale_is_not_short_under_the_sealed_effort() -> 
     let reordered_positions = served
         .iter()
         .zip(expected.iter())
-        .filter(|(served_id, (expected_id, _))| served_id != expected_id)
+        .filter(|(served_id, (expected_id, _))| served_id.as_str() != expected_id.as_str())
         .count();
     println!(
-        "RBR-07-PAGE rows={INCIDENT_ROWS} top_k={INCIDENT_TOP_K} served={} overlap_with_exact_top_k={overlap} positions_differing_from_exact_order={reordered_positions}"
+        "RBR-07-PAGE rows={INCIDENT_ROWS} top_k={INCIDENT_TOP_K} served={} overlap_with_exact_top_k={overlap} positions_differing_from_exact_order={reordered_positions}",
+        served.len()
     );
     assert_eq!(
         overlap,
