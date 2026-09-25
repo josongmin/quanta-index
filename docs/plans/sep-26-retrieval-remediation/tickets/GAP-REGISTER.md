@@ -11,14 +11,21 @@
 
 ## RBR-01 (P0) — diagnostics
 - 응답 보존(explanation/window/executed engines) — DONE (v2 diagnostic)
-- **query 단계별 elapsed/call counts 계측** — OPEN · BLOCKED-DIRTY(main.rs/sdk.rs)
-- **publish 내부 embedding/delete/append/seal/activate 단계 timing(서버 경계)** — OPEN · BLOCKED-DIRTY + 서버 노출 확인 필요
+- query 단계별 elapsed/call counts 계측 — PARTIAL(응답 단계 보존은 v2/v3 diagnostic으로 DONE; 단계별 timing은 PRODUCT-API 대기)
+- publish 내부 단계 timing — 계측 엔진 DONE(RBR-10 `build_stream_reported`, 63 passed); 공개 SDK 노출은 PRODUCT-API 대기
 - bounded opt-in stage trace — 조건부(원인 분리 실패 시만), 보류 정당
 - diagnostic on/off overhead 측정 — OPEN · BLOCKED-DIRTY
 
+## 감사·보완 이력 (2026-09-26 라운드 11-12)
+
+- 적대적 감사 16건 중 14건 수정 완료(발견 8·16은 이 라운드에 종결; 잔여 없음). 커밋 `36b2f8c5`, `2a2b296f`.
+- RBR-07 분해 레일 상륙(5 passed, 192s): short-result exact completion이 sealed effort에서 발동하지 않음을 실측 고정. RBR-10 계측 상륙(63 passed).
+- RBR-01 잔여(서버 내부 publish 단계 timing의 공개 노출)은 공개 SDK API 변경을 수반하므로 별도 계약 작업으로 분리 — `OPEN · PRODUCT-API`.
+- RBR-06 evaluator 지표·RBR-12 준비는 여전히 공유 dirty 대기(evaluator.py/run.py v5 진화 중).
+
 ## RBR-02 (P0) — query policy
 - 정책 엔진·v4 identity·재도출 oracle·tamper 거부 — DONE
-- **실daemon 문장 vs 식별자 distractor fixture** — OPEN · BLOCKED-DIRTY(sdk_roundtrip.rs)
+- 실daemon 문장 vs 식별자 distractor fixture — DONE(`2a2b296f`)
 
 ## RBR-03 (P0) — Semble profiles
 - 4 프로파일 dispatch·lane 격리·위조 거부 — DONE(stub)
@@ -30,7 +37,7 @@
 ## RBR-05 (P1) — symbol route
 - registry·route·증명·no-answer·capture 모델·route-generic — DONE
 - receipt — BLOCKED-DIRTY
-- 동명이인 실daemon 케이스(동일 이름 다른 namespace에서 혼동 없음) — OPEN · BLOCKED-DIRTY(sdk_roundtrip.rs)
+- 동명이인 실daemon 케이스 — DONE(`2a2b296f`)
 
 ## RBR-06 (P1) — span 회계·청커 대조
 - indexed vs SDK line span vs scored bytes + expansion ratio 기록 — OPEN
