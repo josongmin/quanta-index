@@ -597,9 +597,59 @@ def test_bind_source_refuses_stale_head_and_dirty_digest(tmp_path: Path) -> None
     )
     assert "source.head is not current HEAD" in messages
     assert "source.dirty_digest is not current working tree" in messages
-    assert "source.branch is not current branch" in messages
-    assert "source.upstream is not current upstream" in messages
-    assert "source.merge_base is not current upstream merge-base" in messages
+
+
+def test_bind_source_accepts_checkout_metadata_drift_for_same_bytes(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    proof = _proof(tmp_path)
+    payload = _manifest(tmp_path, proof)
+    current = MODULE.proof_source_snapshot(
+        tmp_path,
+        manifest_path=tmp_path / "proof.json",
+        proof=proof,
+        excluded_paths=[tmp_path / "artifacts/raw.jsonl"],
+    )
+    payload["source"].update(
+        head=current["head"],
+        dirty_digest=current["dirty_digest"],
+        branch="producer-branch",
+        upstream="origin/producer-branch",
+        merge_base="a" * 40,
+    )
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    messages = _messages(
+        MODULE.check_manifest(
+            payload,
+            manifest_path=tmp_path / "proof.json",
+            proof=proof,
+            schema=schema,
+            root=tmp_path,
+            bind_source=True,
+        )
+    )
+    assert not any(message.startswith("source.") for message in messages), messages
+
+
+def test_aggregate_compares_source_content_and_pair_lock() -> None:
+    source = {
+        "head": "a" * 40,
+        "dirty_digest": MODULE.CLEAN_DIRTY_DIGEST,
+        "branch": "producer",
+        "upstream": "origin/main",
+        "merge_base": "b" * 40,
+    }
+    checkout = {**source, "branch": None, "upstream": None, "merge_base": None}
+    assert MODULE.source_content_identity(source) == MODULE.source_content_identity(checkout)
+    pair = {
+        "repository": MODULE.PAIRED_REPOSITORY,
+        "remote_identity_digest": "sha256:" + "1" * 64,
+        "source": source,
+        "dependency_lock": {"path": "Cargo.lock", "sha256": "2" * 64},
+    }
+    other = {**pair, "source": checkout}
+    assert MODULE.paired_content_identity(pair) == MODULE.paired_content_identity(other)
+    other["dependency_lock"] = {"path": "Cargo.lock", "sha256": "3" * 64}
+    assert MODULE.paired_content_identity(pair) != MODULE.paired_content_identity(other)
 
 
 def test_dirty_digest_binds_staged_unstaged_and_scoped_untracked_bytes(
@@ -1242,8 +1292,34 @@ def test_aggregate_refuses_source_and_release_daemon_identity_drift(tmp_path: Pa
             path=tmp_path / "registry.toml",
         )
     )
-    assert "aggregate exact-source manifests do not share one source identity" in messages
+    assert "aggregate manifests do not share one primary source identity" in messages
     assert "aggregate release-daemon proofs do not share one daemon path and digest" in messages
+
+
+def test_aggregate_refuses_primary_source_drift_from_exact_pair(tmp_path: Path) -> None:
+    proof_a = _proof(tmp_path)
+    proof_a["id"] = "proof-a"
+    proof_b = copy.deepcopy(proof_a)
+    proof_b["id"] = "proof-b"
+    proof_b["source_binding"] = "exact-pair"
+    payload_a = _manifest(tmp_path / "a", proof_a)
+    payload_b = copy.deepcopy(payload_a)
+    payload_b["proof_id"] = "proof-b"
+    payload_b["source"]["head"] = "b" * 40
+    payload_b["source_pair"] = {
+        "repository": MODULE.PAIRED_REPOSITORY,
+        "remote_identity_digest": "sha256:" + "1" * 64,
+        "source": copy.deepcopy(payload_a["source"]),
+        "dependency_lock": {"path": "Cargo.lock", "sha256": "2" * 64},
+    }
+    messages = _messages(
+        MODULE.check_aggregate(
+            {"proof-a": payload_a, "proof-b": payload_b},
+            proof_by_id={"proof-a": proof_a, "proof-b": proof_b},
+            path=tmp_path / "registry.toml",
+        )
+    )
+    assert "aggregate manifests do not share one primary source identity" in messages
 
 
 def test_exact_pair_live_binding_and_nested_checkout_exclusion(tmp_path: Path) -> None:
@@ -1291,6 +1367,23 @@ def test_exact_pair_live_binding_and_nested_checkout_exclusion(tmp_path: Path) -
         excluded_paths=[paired],
     )
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    assert (
+        MODULE.check_manifest(
+            payload,
+            manifest_path=manifest_path,
+            proof=proof,
+            schema=schema,
+            root=root,
+            bind_source=True,
+            paired_checkouts={proof["paired_repository"]: paired},
+        )
+        == []
+    )
+    payload["source_pair"]["source"].update(
+        branch="producer-branch",
+        upstream="origin/producer-branch",
+        merge_base="a" * 40,
+    )
     assert (
         MODULE.check_manifest(
             payload,

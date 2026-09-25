@@ -539,9 +539,13 @@ def _validate_aggregate_issuance(
         raise ManifestRefused(f"aggregate receipt is not authoritative: {rendered}")
     if aggregate_artifact["sha256"] != hashlib.sha256(aggregate_bytes).hexdigest():
         raise ManifestRefused("aggregate artifact changed during P12 issuance")
-    if payload["source"] != aggregate_payload["source"]:
+    if checker.source_content_identity(payload["source"]) != checker.source_content_identity(
+        aggregate_payload["source"]
+    ):
         raise ManifestRefused("P12 source differs from aggregate source")
-    if payload["source_pair"] != aggregate_payload["source_pair"]:
+    if checker.paired_content_identity(payload["source_pair"]) != checker.paired_content_identity(
+        aggregate_payload["source_pair"]
+    ):
         raise ManifestRefused("P12 source pair differs from aggregate source pair")
     manifest_binary = payload["daemon_binary"]
     aggregate_binary = aggregate_payload["daemon_binary"]

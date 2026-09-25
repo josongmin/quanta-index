@@ -1393,6 +1393,24 @@ def paired_source_snapshot(
     }
 
 
+def source_content_identity(source: dict[str, Any]) -> tuple[str, str]:
+    """Compare source bytes, not checkout-local branch tracking metadata."""
+
+    return source["head"], source["dirty_digest"]
+
+
+def paired_content_identity(pair: dict[str, Any]) -> tuple[Any, ...]:
+    """Bind the external repository, source bytes, and dependency lock."""
+
+    return (
+        pair["repository"],
+        pair["remote_identity_digest"],
+        source_content_identity(pair["source"]),
+        pair["dependency_lock"]["path"],
+        pair["dependency_lock"]["sha256"],
+    )
+
+
 def check_manifest(
     payload: Any,
     *,
@@ -1493,7 +1511,9 @@ def check_manifest(
                     except (OSError, RuntimeError, ValueError) as error:
                         findings.append(Finding(manifest_path, f"cannot bind source_pair: {error}"))
                     else:
-                        if source_pair != live_pair:
+                        if paired_content_identity(source_pair) != paired_content_identity(
+                            live_pair
+                        ):
                             findings.append(
                                 Finding(manifest_path, "source_pair is not current paired source")
                             )
@@ -1790,13 +1810,7 @@ def check_manifest(
                 excluded_paths=runtime_exclusions,
             )
         )
-        labels = {
-            "head": "current HEAD",
-            "dirty_digest": "current working tree",
-            "branch": "current branch",
-            "upstream": "current upstream",
-            "merge_base": "current upstream merge-base",
-        }
+        labels = {"head": "current HEAD", "dirty_digest": "current working tree"}
         for field, label in labels.items():
             if payload["source"][field] != current_source[field]:
                 findings.append(Finding(manifest_path, f"source.{field} is not {label}"))
@@ -1887,14 +1901,12 @@ def check_aggregate(
     path: Path,
 ) -> list[Finding]:
     findings: list[Finding] = []
-    exact_sources = {
-        json.dumps(payload["source"], sort_keys=True, separators=(",", ":"))
-        for proof_id, payload in payload_by_id.items()
-        if proof_by_id[proof_id]["source_binding"] == "exact"
+    primary_sources = {
+        source_content_identity(payload["source"]) for payload in payload_by_id.values()
     }
-    if len(exact_sources) > 1:
+    if len(primary_sources) > 1:
         findings.append(
-            Finding(path, "aggregate exact-source manifests do not share one source identity")
+            Finding(path, "aggregate manifests do not share one primary source identity")
         )
     daemon_identities = {
         (payload["daemon_binary"]["path"], payload["daemon_binary"]["sha256"])
@@ -1910,7 +1922,7 @@ def check_aggregate(
             )
         )
     paired_sources = {
-        json.dumps(payload["source_pair"], sort_keys=True, separators=(",", ":"))
+        paired_content_identity(payload["source_pair"])
         for proof_id, payload in payload_by_id.items()
         if proof_by_id[proof_id]["source_binding"] == "exact-pair"
         and isinstance(payload["source_pair"], dict)
@@ -2029,7 +2041,7 @@ def check_aggregate_receipt(
         proof=target_proof,
         excluded_paths=excluded_pair_paths,
     )
-    if payload.get("source") != current_source:
+    if source_content_identity(payload["source"]) != source_content_identity(current_source):
         findings.append(Finding(receipt_path, "aggregate source is not current source"))
 
     expected_pair: dict[str, Any] | None = None
@@ -2059,7 +2071,9 @@ def check_aggregate_receipt(
                 pair_requests.append(
                     (checkout, repository, Path(target_proof["paired_dependency_lock"]))
                 )
-                if payload.get("source_pair") != expected_pair:
+                if paired_content_identity(payload["source_pair"]) != paired_content_identity(
+                    expected_pair
+                ):
                     findings.append(
                         Finding(receipt_path, "aggregate source_pair is not current paired source")
                     )
