@@ -1010,10 +1010,16 @@ fn remote_status(code: &SearchPlaneErrorCodeV2) -> &'static str {
 }
 
 /// Query one route with monotonic timing and generation binding.
+///
+/// `lexical_request` and `semantic_text` come from one
+/// [`crate::query_plan::QueryPlan`] built once per task under an explicit
+/// query input policy (RBR-02); the raw query text is never injected into a
+/// lane without the planner.
 pub struct RouteQuery<'a> {
     pub client: &'a QuantaIndex,
     pub route: &'static str,
-    pub query_text: &'a str,
+    pub lexical_request: &'a str,
+    pub semantic_text: &'a str,
     pub repo_id: &'a RepoId,
     pub revision_id: &'a RevisionId,
     pub generation: ManifestGeneration,
@@ -1033,7 +1039,7 @@ pub fn query_route(query: &RouteQuery<'_>) -> QueryOutcome {
                 .client
                 .lexical()
                 .query()
-                .native(query.query_text)
+                .native(query.lexical_request)
                 .active(query.repo_id.clone(), query.revision_id.clone())
                 .top_k(query.top_k)
                 .execute()
@@ -1054,7 +1060,7 @@ pub fn query_route(query: &RouteQuery<'_>) -> QueryOutcome {
                 .client
                 .semantic()
                 .query()
-                .text(query.query_text)
+                .text(query.semantic_text)
                 .active(query.repo_id.clone(), query.revision_id.clone())
                 .top_k(query.top_k)
                 .execute()
@@ -1075,8 +1081,8 @@ pub fn query_route(query: &RouteQuery<'_>) -> QueryOutcome {
                 .client
                 .search()
                 .hybrid()
-                .native(query.query_text)
-                .semantic_text(query.query_text)
+                .native(query.lexical_request)
+                .semantic_text(query.semantic_text)
                 .active(query.repo_id.clone(), query.revision_id.clone())
                 .top_k(query.top_k)
                 .execute()

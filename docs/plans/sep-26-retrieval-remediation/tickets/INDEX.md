@@ -53,7 +53,8 @@ Rust-heavy 검증과 성능 측정은 경쟁 writer/build가 없는 구간에 �
 
 | 티켓 | 구현 | focused verification | integration | qualification |
 | --- | --- | --- | --- | --- |
-| RBR-00 | 진행 중: inventory 일치(python 218/rust 55/sdk 12, 역할별 verify 통과), sep-26 closure 등록+거부 테스트, [PROFILE-CONTRACT](PROFILE-CONTRACT.md) 정의. schema/validator 배선은 RBR-02+와 함께 | `VERIFIED` — 3역할 inventory verify, receipt closure 24 passed | `BLOCKED` — `20f7b6cd` 커밋 후 closure capture가 공유 체크아웃의 타 writer dirty(`crates/quanta-index-catalog/*`)로 정상 거부. 경쟁 편집 정리 후 재발급 | `NOT_APPLICABLE` |
-| RBR-11 | `VERIFIED` — 소유 그래프에서 live zero-RSS 연결 노드 보존, resource policy는 소유 집합 확정 후 적용. zombie 회귀 기대치 수정 + 반례 7종 추가 | `VERIFIED` — 감사 oracle `[100,105]` 해소, sampler 8+실제 프로세스 smoke 1 passed, 풀 파일 218 passed | `BLOCKED` — RBR-00과 동일 원인 | 실제 프로세스 smoke `VERIFIED`(macOS) |
+| RBR-00 | 진행 중: inventory 일치(python 218/rust 68/sdk 12, 역할별 verify 통과), sep-26 closure 등록+거부 테스트, [PROFILE-CONTRACT](PROFILE-CONTRACT.md) 정의. schema/validator 배선은 RBR-02+와 함께 | `VERIFIED` — 3역할 inventory verify, receipt closure 24 passed | `VERIFIED` — clean-source closure receipt `2146054505486b0ab37b7f7eb88dc7546273f115134d6dc0935384b12f679b60` @ `b4e21b50` (818 files, capture+verify exit 0). 이후 변경분은 커밋마다 재발급 | `NOT_APPLICABLE` |
+| RBR-11 | `VERIFIED` — 소유 그래프에서 live zero-RSS 연결 노드 보존, resource policy는 소유 집합 확정 후 적용. zombie 회귀 기대치 수정 + 반례 7종 추가 | `VERIFIED` — 감사 oracle `[100,105]` 해소, sampler 8+실제 프로세스 smoke 1 passed, 풀 파일 218 passed | `VERIFIED` — RBR-00 동일 receipt @ `b4e21b50` 커버 | 실제 프로세스 smoke `VERIFIED`(macOS) |
+| RBR-02 | 진행 중 — `query_plan.rs` 정책 엔진(native/literal/NL 토큰 OR, typed refusal, 4중 identity SHA), `RouteQuery` planned 입력 전환, 작업당 1회 계획을 cold/warmup/measured 공유, `--query-input-policy` CLI. record/replay identity 기록·run.py protocol/replay 검증·문장/식별자 distractor fixture는 다음 단계 | `VERIFIED` — query_plan 13 tests(lq-norm literal round-trip 포함), bench lib 48 passed, chunking 20 passed; rust inventory 68로 재등록, sdk 12 재확인 | `NOT_RUN` | `NOT_APPLICABLE` |
 
 RBR-01~10, RBR-12: `NOT_RUN`. 위 표의 검증은 dirty 작업 트리에서 수행한 진단 실행이며, TEST-PLAN §3의 clean-source proof rail은 커밋 후 별도 발급한다.

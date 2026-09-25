@@ -311,7 +311,8 @@ fn unavailable_provider_is_typed_and_never_returns_hits() {
     match query_route(&RouteQuery {
         client: session.client(),
         route: "semantic",
-        query_text: "sphinx quartz vaults",
+        lexical_request: "sphinx quartz vaults",
+        semantic_text: "sphinx quartz vaults",
         repo_id: &identity.repo_id,
         revision_id: &identity.revision_id,
         generation: identity.generation,
@@ -344,7 +345,8 @@ fn terminated_daemon_is_typed_and_never_returns_hits() {
     match query_route(&RouteQuery {
         client: session.client(),
         route: "lexical",
-        query_text: "sphinx",
+        lexical_request: "sphinx",
+        semantic_text: "sphinx",
         repo_id: &identity.repo_id,
         revision_id: &identity.revision_id,
         generation: identity.generation,
@@ -397,7 +399,8 @@ fn real_daemon_roundtrip_publishes_and_queries() {
     let premature = query_route(&RouteQuery {
         client: session.client(),
         route: "lexical",
-        query_text: "sphinx",
+        lexical_request: "sphinx",
+        semantic_text: "sphinx",
         repo_id: &identity.repo_id,
         revision_id: &identity.revision_id,
         generation: identity.generation,
@@ -415,7 +418,8 @@ fn real_daemon_roundtrip_publishes_and_queries() {
     let stale_result = query_route(&RouteQuery {
         client: session.client(),
         route: "lexical",
-        query_text: "sphinx",
+        lexical_request: "sphinx",
+        semantic_text: "sphinx",
         repo_id: &identity.repo_id,
         revision_id: &identity.revision_id,
         generation: quanta_index_contract::ManifestGeneration::new(
@@ -440,7 +444,8 @@ fn real_daemon_roundtrip_publishes_and_queries() {
     let lexical = query_route(&RouteQuery {
         client: session.client(),
         route: "lexical",
-        query_text: "sphinx",
+        lexical_request: "sphinx",
+        semantic_text: "sphinx",
         repo_id: &identity.repo_id,
         revision_id: &identity.revision_id,
         generation: identity.generation,
@@ -470,7 +475,8 @@ fn real_daemon_roundtrip_publishes_and_queries() {
         let outcome = query_route(&RouteQuery {
             client: session.client(),
             route,
-            query_text: "sphinx quartz vaults",
+            lexical_request: "sphinx quartz vaults",
+        semantic_text: "sphinx quartz vaults",
             repo_id: &identity.repo_id,
             revision_id: &identity.revision_id,
             generation: identity.generation,
@@ -497,7 +503,8 @@ fn real_daemon_roundtrip_publishes_and_queries() {
     let missing = query_route(&RouteQuery {
         client: session.client(),
         route: "lexical",
-        query_text: "zzzznothinghere",
+        lexical_request: "zzzznothinghere",
+        semantic_text: "zzzznothinghere",
         repo_id: &identity.repo_id,
         revision_id: &identity.revision_id,
         generation: identity.generation,
@@ -517,7 +524,8 @@ fn real_daemon_roundtrip_publishes_and_queries() {
     match query_route(&RouteQuery {
         client: session.client(),
         route: "nope",
-        query_text: "sphinx",
+        lexical_request: "sphinx",
+        semantic_text: "sphinx",
         repo_id: &identity.repo_id,
         revision_id: &identity.revision_id,
         generation: identity.generation,

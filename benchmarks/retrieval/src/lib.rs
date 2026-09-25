@@ -14,6 +14,7 @@ pub mod chunking;
 pub mod corpus;
 pub mod diagnostics;
 pub mod profile;
+pub mod query_plan;
 pub mod record;
 pub mod schedule;
 pub mod sdk;

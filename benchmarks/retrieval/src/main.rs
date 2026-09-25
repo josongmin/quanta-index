@@ -31,6 +31,9 @@ use quanta_index_retrieval_bench::record::{
     CaptureProvenance, QueryPack, RouteProvenance, RunnerIdentity, RunnerRecordInput,
     load_query_pack, runner_record,
 };
+use quanta_index_retrieval_bench::query_plan::{
+    NlPlanConfig, QueryInputPolicy, QueryPlan, plan_query,
+};
 use quanta_index_retrieval_bench::schedule::QueryProtocol;
 use quanta_index_retrieval_bench::sdk::{
     DEFAULT_IO_TIMEOUT, DEFAULT_READY_TIMEOUT, DaemonConfig, DaemonSession, QueryOutcome,
@@ -57,7 +60,7 @@ fn print_help() -> BenchResult<()> {
          fixed_window_*: --window-bytes N (default 4000) --overlap-bytes N (default 400)\n\
          brace_heuristic: --max-item-bytes N (default 32768)\n\
          run adds: --query-pack PATH --routes a,b --top-k N --state-root PATH\n\
-         [--query-protocol PATH]\n\
+         [--query-protocol PATH] [--query-input-policy native|literal|natural_language]\n\
          --repo-id ID --revision-id ID --generation N\n\
          --runner-name NAME --runner-revision REV --run-id ID\n\
          --blinding attested|isolated --isolation-method TEXT --access-block-log TEXT\n\
@@ -438,6 +441,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             "max-file-bytes",
             "query-pack",
             "query-protocol",
+            "query-input-policy",
             "routes",
             "top-k",
             "state-root",
@@ -698,11 +702,30 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             )));
         }
     }
-    let task_queries: BTreeMap<&str, &str> = pack
+    // RBR-02: build every task's query plan exactly once under the explicit
+    // input policy; cold/warmup/measured share these plans, so no phase can
+    // silently run a different policy or re-plan mid-capture.
+    let policy_raw = args
+        .flags
+        .get("query-input-policy")
+        .cloned()
+        .unwrap_or_else(|| "native".to_string());
+    let policy = QueryInputPolicy::parse(&policy_raw)
+        .map_err(|err| usage_error(format!("--query-input-policy: {err}")))?;
+    let nl_plan_config = NlPlanConfig::default();
+    let task_plans: BTreeMap<&str, QueryPlan> = pack
         .tasks
         .iter()
-        .map(|task| (task.task_id.as_str(), task.query.as_str()))
-        .collect();
+        .map(|task| {
+            let plan = plan_query(policy, task.query.as_str(), &nl_plan_config).map_err(|err| {
+                usage_error(format!(
+                    "query {} cannot be planned under policy {}: {err}",
+                    task.task_id, policy_raw
+                ))
+            })?;
+            Ok((task.task_id.as_str(), plan))
+        })
+        .collect::<BenchResult<BTreeMap<&str, QueryPlan>>>()?;
     let mut outcomes: BTreeMap<(String, String), QueryOutcome> = BTreeMap::new();
     let mut warm_latencies_ms: BTreeMap<String, BTreeMap<String, Vec<f64>>> = BTreeMap::new();
     let mut cold_latencies_ms: BTreeMap<String, f64> = BTreeMap::new();
@@ -710,14 +733,15 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     let first_query_elapsed;
     let warm_query_elapsed = if let Some(protocol) = &query_protocol {
         let cold_start = Instant::now();
-        let cold_query = task_queries
+        let cold_plan = task_plans
             .get(protocol.cold_probe_task_id.as_str())
             .ok_or_else(|| BenchError::Protocol("cold probe task disappeared".to_string()))?;
         for route in routes.iter().copied() {
             let outcome = query_route(&RouteQuery {
                 client: session.client(),
                 route,
-                query_text: cold_query,
+                lexical_request: &cold_plan.lexical_request,
+                semantic_text: &cold_plan.semantic_text,
                 repo_id: &identity.repo_id,
                 revision_id: &identity.revision_id,
                 generation: identity.generation,
@@ -744,14 +768,15 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         let warmup_start = Instant::now();
         for schedule in &protocol.warmup_schedules {
             for task_id in schedule {
-                let query = task_queries
+                let plan = task_plans
                     .get(task_id.as_str())
                     .ok_or_else(|| BenchError::Protocol("warmup task disappeared".to_string()))?;
                 for route in routes.iter().copied() {
                     if let QueryOutcome::Failed { status, code, .. } = query_route(&RouteQuery {
                         client: session.client(),
                         route,
-                        query_text: query,
+                        lexical_request: &plan.lexical_request,
+                        semantic_text: &plan.semantic_text,
                         repo_id: &identity.repo_id,
                         revision_id: &identity.revision_id,
                         generation: identity.generation,
@@ -769,14 +794,15 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         let measurement_start = Instant::now();
         for (repetition, schedule) in protocol.measurement_schedules.iter().enumerate() {
             for task_id in schedule {
-                let query = task_queries.get(task_id.as_str()).ok_or_else(|| {
+                let plan = task_plans.get(task_id.as_str()).ok_or_else(|| {
                     BenchError::Protocol("measurement task disappeared".to_string())
                 })?;
                 for route in routes.iter().copied() {
                     let outcome = query_route(&RouteQuery {
                         client: session.client(),
                         route,
-                        query_text: query,
+                        lexical_request: &plan.lexical_request,
+                        semantic_text: &plan.semantic_text,
                         repo_id: &identity.repo_id,
                         revision_id: &identity.revision_id,
                         generation: identity.generation,
@@ -813,12 +839,16 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         let query_start = Instant::now();
         let mut first = Duration::ZERO;
         for task in &pack.tasks {
+            let plan = task_plans
+                .get(task.task_id.as_str())
+                .ok_or_else(|| BenchError::Protocol("planned task disappeared".to_string()))?;
             for route in routes.iter().copied() {
                 let single_query_start = Instant::now();
                 let outcome = query_route(&RouteQuery {
                     client: session.client(),
                     route,
-                    query_text: &task.query,
+                    lexical_request: &plan.lexical_request,
+                    semantic_text: &plan.semantic_text,
                     repo_id: &identity.repo_id,
                     revision_id: &identity.revision_id,
                     generation: identity.generation,
@@ -1014,10 +1044,11 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             .ok_or_else(|| BenchError::Protocol("outcome status count overflow".to_string()))?;
     }
     stdout_line(&format!(
-        "captured {} tasks x {} routes via {} (receipt gen {}, ack active {:?}); chunk={}ms boot={}ms publish={}ms query={}ms total={}ms; outcomes={status_counts:?}; binary={binary}",
+        "captured {} tasks x {} routes via {} under query_input_policy={} (receipt gen {}, ack active {:?}); chunk={}ms boot={}ms publish={}ms query={}ms total={}ms; outcomes={status_counts:?}; binary={binary}",
         pack.tasks.len(),
         routes.len(),
         selection.name,
+        policy.as_str(),
         receipt.generation.get(),
         ack.active,
         chunk_elapsed.as_millis(),
