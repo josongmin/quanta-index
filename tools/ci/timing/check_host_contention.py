@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import platform
 import re
@@ -17,6 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 RUST_PROCESS = re.compile(r"(?:^|/)(?:cargo(?:-[A-Za-z0-9_-]+)?|rustc)(?:\s|$)")
+MAX_ONE_MINUTE_LOAD_PER_CPU = 0.5
 
 
 @dataclass(frozen=True)
@@ -93,6 +95,25 @@ def host_snapshot() -> dict[str, object]:
     }
 
 
+def host_load_guard(host: dict[str, object]) -> tuple[float, float] | None:
+    """Reject missing load authority; half capacity is a conservative timing ceiling."""
+    cpu_count = host.get("cpu_count")
+    load_average = host.get("load_average")
+    if type(cpu_count) is not int or cpu_count <= 0:
+        return None
+    if not isinstance(load_average, list) or len(load_average) != 3:
+        return None
+    if any(
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value < 0
+        for value in load_average
+    ):
+        return None
+    return float(load_average[0]), cpu_count * MAX_ONE_MINUTE_LOAD_PER_CPU
+
+
 def preflight_receipt(
     *,
     run_id: str | None,
@@ -101,18 +122,24 @@ def preflight_receipt(
     override: bool,
     ps_ok: bool,
     expected_os: str | None = None,
+    host: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """Build a stable receipt; the caller decides whether the verdict blocks."""
-    host = host_snapshot()
-    actual_os = host["os"]
+    if host is None:
+        host = host_snapshot()
+    actual_os = host.get("os")
     host_matches = expected_os is None or actual_os == expected_os
+    load_guard = host_load_guard(host)
+    overloaded = load_guard is not None and load_guard[0] >= load_guard[1]
     if not ps_ok:
         status = "error"
     elif not host_matches:
         status = "unsupported_host"
-    elif foreign and override:
+    elif load_guard is None:
+        status = "error"
+    elif (foreign or overloaded) and override:
         status = "contended_override"
-    elif foreign:
+    elif foreign or overloaded:
         status = "blocked"
     else:
         status = "clean"
@@ -123,6 +150,11 @@ def preflight_receipt(
         "captured_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "status": status,
         "host": host,
+        "host_contention": {
+            "one_minute_load": load_guard[0] if load_guard is not None else None,
+            "one_minute_load_limit": load_guard[1] if load_guard is not None else None,
+            "over_limit": overloaded,
+        },
         "expected_os": expected_os,
         "process_snapshot_sha256": sha256_text(
             "\n".join(f"{process.pid} {process.ppid} {process.command}" for process in processes)
@@ -232,41 +264,52 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     foreign = foreign_rust_processes(processes, os.getpid())
     override = args.allow_contended or os.environ.get("QUANTA_INDEX_ALLOW_CONTENDED_TIMINGS") == "1"
+    receipt = preflight_receipt(
+        run_id=args.run_id,
+        processes=processes,
+        foreign=foreign,
+        override=override,
+        ps_ok=True,
+        expected_os=args.expected_os,
+    )
     if args.receipt is not None:
         try:
-            write_receipt(
-                args.receipt,
-                preflight_receipt(
-                    run_id=args.run_id,
-                    processes=processes,
-                    foreign=foreign,
-                    override=override,
-                    ps_ok=True,
-                    expected_os=args.expected_os,
-                ),
-            )
+            write_receipt(args.receipt, receipt)
         except OSError as exc:
             print(
                 f"TIMING_PREFLIGHT_ERROR reason=receipt_write_failed detail={exc}", file=sys.stderr
             )
             return 2
-    actual_os = platform.system().lower() or "unknown"
-    if args.expected_os is not None and actual_os != args.expected_os:
+    status = receipt["status"]
+    actual_os = receipt["host"]["os"]
+    if status == "unsupported_host":
         print(
             f"TIMING_PREFLIGHT_BLOCKED reason=unsupported_host expected_os={args.expected_os} actual_os={actual_os}",
             file=sys.stderr,
         )
         return 1
-    if not foreign:
+    if status == "error":
+        print("TIMING_PREFLIGHT_ERROR reason=invalid_host_load", file=sys.stderr)
+        return 2
+    if status == "clean":
         print("TIMING_PREFLIGHT_OK foreign_rust_processes=0 status=clean")
         return 0
 
     status = "OVERRIDE" if override else "BLOCKED"
     stream = sys.stdout if override else sys.stderr
-    print(
-        f"TIMING_PREFLIGHT_{status} reason=foreign_rust_processes count={len(foreign)}",
-        file=stream,
-    )
+    if foreign:
+        print(
+            f"TIMING_PREFLIGHT_{status} reason=foreign_rust_processes count={len(foreign)}",
+            file=stream,
+        )
+    if receipt["host_contention"]["over_limit"]:
+        contention = receipt["host_contention"]
+        print(
+            f"TIMING_PREFLIGHT_{status} reason=host_load "
+            f"one_minute={contention['one_minute_load']} "
+            f"limit={contention['one_minute_load_limit']}",
+            file=stream,
+        )
     for process in foreign[:12]:
         command = " ".join(process.command.split())
         print(f"pid={process.pid} ppid={process.ppid} command={command[:240]}", file=stream)
@@ -274,7 +317,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"additional_processes={len(foreign) - 12}", file=stream)
     if not override:
         print(
-            "wait for the foreign build or set QUANTA_INDEX_ALLOW_CONTENDED_TIMINGS=1 "
+            "wait for a quiet host or set QUANTA_INDEX_ALLOW_CONTENDED_TIMINGS=1 "
             "to run without a clean timing claim",
             file=sys.stderr,
         )

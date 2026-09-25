@@ -457,6 +457,39 @@ def require_complete_baseline_candidate(artifact: Artifact) -> None:
             )
 
 
+def require_clean_host_load(receipt: dict[str, object]) -> None:
+    """Recompute the timing load guard instead of trusting a clean status label."""
+    host = receipt.get("host")
+    contention = receipt.get("host_contention")
+    if not isinstance(host, dict) or not isinstance(contention, dict):
+        raise ArtifactRefused("preflight host load evidence is missing")
+    cpu_count = host.get("cpu_count")
+    loads = host.get("load_average")
+    if (
+        type(cpu_count) is not int
+        or cpu_count <= 0
+        or not isinstance(loads, list)
+        or len(loads) != 3
+    ):
+        raise ArtifactRefused("preflight host load evidence is invalid")
+    if any(
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value < 0
+        for value in loads
+    ):
+        raise ArtifactRefused("preflight host load evidence is invalid")
+    limit = cpu_count * 0.5
+    if (
+        loads[0] >= limit
+        or contention.get("one_minute_load") != float(loads[0])
+        or contention.get("one_minute_load_limit") != limit
+        or contention.get("over_limit") is not False
+    ):
+        raise ArtifactRefused("preflight host load is over limit or inconsistent")
+
+
 def require_clean_preflight(receipt_path: Path | None, artifact: Artifact) -> None:
     """Bind a baseline ratchet to a clean preflight on the measured host class."""
     if receipt_path is None:
@@ -473,6 +506,7 @@ def require_clean_preflight(receipt_path: Path | None, artifact: Artifact) -> No
         raise ArtifactRefused(f"preflight receipt status {receipt.get('status')!r} is not clean")
     if receipt.get("foreign_rust_processes") != []:
         raise ArtifactRefused("clean preflight receipt still names foreign Rust processes")
+    require_clean_host_load(receipt)
     host = receipt.get("host")
     if not isinstance(host, dict):
         raise ArtifactRefused("preflight receipt host is not an object")

@@ -9,6 +9,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT_PATH = REPO_ROOT / "tools" / "benchmark" / "benchctl.py"
 
@@ -253,6 +255,12 @@ def test_clean_preflight_runs_exact_profile_recipes(monkeypatch, tmp_path: Path)
                     "run_id": "benchctl:systems",
                     "status": "clean",
                     "foreign_rust_processes": [],
+                    "host": {"os": "darwin", "cpu_count": 8, "load_average": [1.0, 1.0, 1.0]},
+                    "host_contention": {
+                        "one_minute_load": 1.0,
+                        "one_minute_load_limit": 4.0,
+                        "over_limit": False,
+                    },
                 }
             ),
             encoding="utf-8",
@@ -274,3 +282,28 @@ def test_clean_preflight_runs_exact_profile_recipes(monkeypatch, tmp_path: Path)
         ["just", "rust-verify-quality-freshness"],
         ["just", "rust-verify-quality-open-loop"],
     ]
+
+
+def test_clean_label_with_overloaded_host_is_refused(tmp_path: Path) -> None:
+    receipt = tmp_path / "preflight.json"
+    receipt.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "kind": "quanta-index-timing-preflight",
+                "run_id": "benchctl:systems",
+                "status": "clean",
+                "foreign_rust_processes": [],
+                "host": {"os": "darwin", "cpu_count": 8, "load_average": [20.0, 1.0, 1.0]},
+                "host_contention": {
+                    "one_minute_load": 20.0,
+                    "one_minute_load_limit": 4.0,
+                    "over_limit": False,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="host load"):
+        MODULE.require_clean_preflight_receipt(receipt, "systems")

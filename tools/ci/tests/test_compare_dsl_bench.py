@@ -132,6 +132,7 @@ def _write_artifact(path: Path, mode: str, rows: list[dict], **overrides) -> Non
 
 def _write_clean_preflight(path: Path, *, host: dict | None = None, status: str = "clean") -> None:
     host = host or {"os": "linux", "arch": "x86_64", "cpu_count": 8}
+    host.setdefault("load_average", [1.0, 1.0, 1.0])
     path.write_text(
         json.dumps(
             {
@@ -139,6 +140,11 @@ def _write_clean_preflight(path: Path, *, host: dict | None = None, status: str 
                 "kind": "quanta-index-timing-preflight",
                 "status": status,
                 "host": host,
+                "host_contention": {
+                    "one_minute_load": host["load_average"][0],
+                    "one_minute_load_limit": host["cpu_count"] * 0.5,
+                    "over_limit": False,
+                },
                 "foreign_rust_processes": [],
             }
         ),
@@ -470,6 +476,25 @@ def test_update_baseline_requires_clean_matching_preflight(tmp_path: Path) -> No
     )
     assert mismatch.returncode == 2
     assert "does not match candidate host class" in mismatch.stderr
+
+
+def test_update_baseline_refuses_overloaded_receipt_labeled_clean(tmp_path: Path) -> None:
+    baseline = tmp_path / "baseline.json"
+    current = tmp_path / "current.json"
+    _write_artifact(current, "warm", [_row("lexical.keyword.native", 1.00)])
+    receipt = tmp_path / "preflight.json"
+    _write_clean_preflight(
+        receipt,
+        host={"os": "linux", "arch": "x86_64", "cpu_count": 8, "load_average": [20.0, 1.0, 1.0]},
+    )
+
+    result = _run(
+        str(baseline), str(current), "--update-baseline", "--preflight-receipt", str(receipt)
+    )
+
+    assert result.returncode == 2
+    assert "host load" in result.stderr
+    assert not baseline.exists()
 
 
 # ---------------------------------------------------------------------------

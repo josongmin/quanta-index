@@ -24,6 +24,7 @@ from compare_dsl_bench import (  # noqa: E402
     MIN_SAMPLES_FOR_AUTHORITY,
     ArtifactRefused,
     load_artifact,
+    require_clean_host_load,
 )
 from manifest import DEFAULT_MANIFEST_PATH, ManifestError, load_manifest  # noqa: E402
 
@@ -164,6 +165,10 @@ def require_clean_preflight_receipt(receipt: Path, profile: str) -> None:
         raise RuntimeError(
             f"timing preflight status {payload.get('status')!r} is not clean; diagnostic overrides cannot qualify"
         )
+    try:
+        require_clean_host_load(payload)
+    except ArtifactRefused as exc:
+        raise RuntimeError(str(exc)) from exc
 
 
 def preflight(

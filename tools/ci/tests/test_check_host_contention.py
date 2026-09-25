@@ -26,6 +26,10 @@ def _load_module():
 MODULE = _load_module()
 
 
+def idle_host() -> dict[str, object]:
+    return {"os": "darwin", "cpu_count": 16, "load_average": [1.0, 1.0, 1.0]}
+
+
 def test_foreign_rust_process_is_reported() -> None:
     processes = MODULE.parse_processes(
         """
@@ -110,6 +114,7 @@ def test_preflight_receipt_marks_override_as_non_clean() -> None:
         foreign=foreign,
         override=True,
         ps_ok=True,
+        host=idle_host(),
     )
 
     assert receipt["status"] == "contended_override"
@@ -125,13 +130,72 @@ def test_preflight_receipt_marks_an_unsupported_host() -> None:
         override=False,
         ps_ok=True,
         expected_os="linux",
+        host=idle_host(),
     )
 
-    if receipt["host"]["os"] == "linux":
-        assert receipt["status"] == "clean"
-    else:
-        assert receipt["status"] == "unsupported_host"
+    assert receipt["status"] == "unsupported_host"
     assert receipt["expected_os"] == "linux"
+
+
+@pytest.mark.parametrize(
+    ("load", "override", "expected"),
+    [(8.0, False, "blocked"), (51.0, False, "blocked"), (51.0, True, "contended_override")],
+)
+def test_overloaded_host_never_receives_clean_status(load, override, expected) -> None:
+    host = idle_host()
+    host["load_average"] = [load, 1.0, 1.0]
+    receipt = MODULE.preflight_receipt(
+        run_id="load-test",
+        processes=[],
+        foreign=[],
+        override=override,
+        ps_ok=True,
+        host=host,
+    )
+
+    assert receipt["status"] == expected
+    assert receipt["host_contention"]["one_minute_load_limit"] == 8.0
+
+
+@pytest.mark.parametrize(
+    "invalid_host",
+    [
+        {"os": "darwin", "cpu_count": 16, "load_average": None},
+        {"os": "darwin", "cpu_count": None, "load_average": [1.0, 1.0, 1.0]},
+    ],
+)
+def test_missing_load_authority_is_error(invalid_host) -> None:
+    receipt = MODULE.preflight_receipt(
+        run_id="load-test",
+        processes=[],
+        foreign=[],
+        override=False,
+        ps_ok=True,
+        host=invalid_host,
+    )
+
+    assert receipt["status"] == "error"
+
+
+def test_main_blocks_overloaded_host_with_consistent_receipt(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    self_pid = MODULE.os.getpid()
+    monkeypatch.setattr(
+        MODULE.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 0, f"{self_pid} 1 python3 check_host_contention.py\n", ""
+        ),
+    )
+    host = idle_host()
+    host["load_average"] = [51.0, 1.0, 1.0]
+    monkeypatch.setattr(MODULE, "host_snapshot", lambda: host)
+    receipt = tmp_path / "preflight.json"
+
+    assert MODULE.main(["--receipt", str(receipt)]) == 1
+    assert json.loads(receipt.read_text(encoding="utf-8"))["status"] == "blocked"
+    assert "host_load" in capsys.readouterr().err
 
 
 def test_receipt_write_is_valid_json_and_atomic_target(tmp_path: Path) -> None:
@@ -142,6 +206,7 @@ def test_receipt_write_is_valid_json_and_atomic_target(tmp_path: Path) -> None:
         foreign=[],
         override=False,
         ps_ok=True,
+        host=idle_host(),
     )
 
     MODULE.write_receipt(target, receipt)
