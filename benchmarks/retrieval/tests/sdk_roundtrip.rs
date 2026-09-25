@@ -66,6 +66,12 @@ fn write_tiny_repo(root: &Path) {
             "pub fn unrelated_helper() -> bool {\n    true\n}\n",
         ),
     ];
+    write_repo(root, files);
+}
+
+/// Write a fixture repository plus its manifest (helper for fixture
+/// variants beyond the tiny repo).
+fn write_repo(root: &Path, files: &[(&str, &str)]) {
     for (path, text) in files {
         let absolute = root.join(path);
         std::fs::create_dir_all(absolute.parent().expect("parent")).expect("dir");
@@ -1143,6 +1149,17 @@ fn symbol_route_no_answer_is_typed_never_fake_success() {
     let identity = BatchIdentity::new("bench-repo", "bench-rev", 12, "manifest:none".to_string())
         .expect("identity");
     let (batch, _) = assemble_batch(&identity, &chunks, &symbols).expect("batch");
+    let files_by_path: BTreeMap<_, _> = files
+        .iter()
+        .map(|file| (file.path.clone(), file.clone()))
+        .collect();
+    let published_units =
+        quanta_index_retrieval_bench::published_units::PublishedUnitRegistry::from_chunks_and_symbols(
+            &chunks,
+            &symbols,
+            &files_by_path,
+        )
+        .expect("published units");
     let state = tempfile::tempdir().expect("state root");
     let session = boot_session(&state.path().join("daemon"), &identity);
     let (_receipt, _ack) =
@@ -1158,19 +1175,255 @@ fn symbol_route_no_answer_is_typed_never_fake_success() {
         top_k: 10,
     });
     session.stop().expect("bounded shutdown");
+    let outcome = &outcome;
     match outcome {
         QueryOutcome::ReturnedWindow { hits, window, .. } => {
-            if hits.is_empty() {
-                assert!(
-                    window.outcome().is_exhausted(),
-                    "empty symbol window must be an exact abstention"
-                );
-            } else {
-                panic!("nonsense symbol name must not produce hits: {hits:?}");
-            }
+            assert!(
+                hits.is_empty(),
+                "nonsense symbol name must not produce hits: {hits:?}"
+            );
+            assert!(
+                window.outcome().is_exhausted(),
+                "empty symbol window must be an exact abstention"
+            );
+            // The record layer maps this exact shape to "abstained", never
+            // to a fake success or a silent error (audit finding 16).
+            let record = result_value(
+                "T1",
+                "symbol",
+                &outcome,
+                &plan_query(
+                    QueryInputPolicy::Native,
+                    "zzz_no_such_symbol_zzz",
+                    &NlPlanConfig::default(),
+                )
+                .expect("plan"),
+                10,
+                &files_by_path,
+                &published_units,
+            )
+            .expect("no-answer maps to a record row");
+            assert_eq!(record["status"], "abstained");
         }
-        QueryOutcome::RejectedResponse { .. } | QueryOutcome::SdkFailure { .. } => {
-            // A typed provider/transport failure is an acceptable refusal.
+        QueryOutcome::RejectedResponse { code, .. } => {
+            // Only binding-level refusals are acceptable here; a ranking
+            // path defect must not hide behind transport classes.
+            assert!(
+                code.contains("generation") || code.contains("pin"),
+                "unexpected rejection for a no-answer symbol query: {code}"
+            );
+        }
+        QueryOutcome::SdkFailure { status, code, .. } => {
+            assert!(
+                matches!(*status, "unavailable" | "timeout"),
+                "no-answer must not surface as {status}/{code}"
+            );
         }
     }
+}
+
+#[test]
+fn sentence_and_identifier_queries_anchor_the_same_definition_over_distractors() {
+    // RBR-02 acceptance: a natural-language sentence and a bare
+    // identifier must find the same definition while comment and
+    // reference distractors compete, and the executed requests must be
+    // the planned, policy-distinct ones.
+    let repo = tempfile::tempdir().expect("repo root");
+    write_repo(
+        repo.path(),
+        &[
+            (
+                "src/registry.rs",
+                concat!(
+                    "// The cache_key_for helper resolves tenant cache keys.\n",
+                    "// Callers mention cache_key_for in comments only.\n",
+                    "pub fn cache_key_for(tenant: &str) -> String {\n",
+                    "    format!(\"tenant:{tenant}\")\n",
+                    "}\n",
+                ),
+            ),
+            (
+                "src/elsewhere.rs",
+                concat!(
+                    "// A reference site, not the definition.\n",
+                    "pub fn warmup() {\n",
+                    "    let _ = crate::registry::cache_key_for(\"acme\");\n",
+                    "}\n",
+                ),
+            ),
+        ],
+    );
+    let manifest = load_manifest(&repo.path().join("manifest.json")).expect("manifest");
+    let files = load_corpus(repo.path(), &manifest, &CorpusLimits::default()).expect("corpus");
+    let (chunks, _) = chunk_corpus(&WholeFileChunker, &files).expect("chunk");
+    let symbols = symbols_for(&files);
+    let identity = BatchIdentity::new("bench-repo", "bench-rev", 21, "manifest:distract".to_string())
+        .expect("identity");
+    let (batch, _) = assemble_batch(&identity, &chunks, &symbols).expect("batch");
+    let files_by_path: BTreeMap<_, _> = files
+        .iter()
+        .map(|file| (file.path.clone(), file.clone()))
+        .collect();
+    let published_units =
+        quanta_index_retrieval_bench::published_units::PublishedUnitRegistry::from_chunks_and_symbols(
+            &chunks,
+            &symbols,
+            &files_by_path,
+        )
+        .expect("published units");
+    let state = tempfile::tempdir().expect("state root");
+    let session = boot_session(&state.path().join("daemon"), &identity);
+    let (_receipt, _ack) =
+        publish_and_activate(&session, &batch, &identity, None).expect("publish+activate");
+
+    // The two policies produce distinct executed lexical requests for the
+    // same definition intent; both must anchor hits in registry.rs.
+    let sentence = "Where is the tenant cache key computed?";
+    let identifier = "cache_key_for";
+    let sentence_plan =
+        plan_query(QueryInputPolicy::NaturalLanguage, sentence, &NlPlanConfig::default())
+            .expect("nl plan");
+    let identifier_plan =
+        plan_query(QueryInputPolicy::Native, identifier, &NlPlanConfig::default())
+            .expect("native plan");
+    assert_ne!(
+        sentence_plan.effective_lexical_request_sha256,
+        identifier_plan.effective_lexical_request_sha256,
+        "the two policies must execute distinct requests"
+    );
+    for plan in [&sentence_plan, &identifier_plan] {
+        let outcome = query_route(&RouteQuery {
+            client: session.client(),
+            route: "lexical",
+            lexical_request: &plan.lexical_request,
+            semantic_text: &plan.semantic_text,
+            repo_id: &identity.repo_id,
+            revision_id: &identity.revision_id,
+            generation: identity.generation,
+            top_k: 5,
+        });
+        let hits = match &outcome {
+            QueryOutcome::ReturnedWindow { hits, .. } => hits,
+            QueryOutcome::RejectedResponse { code, message, .. }
+            | QueryOutcome::SdkFailure { code, message, .. } => {
+                panic!("lexical query failed: {code} {message}")
+            }
+        };
+        assert!(
+            hits.iter().any(|hit| hit.path == "src/registry.rs"),
+            "the definition file must surface for policy-planned query"
+        );
+        let record = result_value(
+            "T1",
+            "lexical",
+            &outcome,
+            plan,
+            5,
+            &files_by_path,
+            &published_units,
+        )
+        .expect("policy-planned hits prove");
+        assert!(
+            record["candidates"]
+                .as_array()
+                .is_some_and(|rows| !rows.is_empty()),
+            "the record must carry proven candidates"
+        );
+    }
+    session.stop().expect("bounded shutdown");
+}
+
+#[test]
+fn homonymous_symbols_stay_distinct_units_on_the_symbol_route() {
+    // RBR-05 acceptance: same-named definitions in different files must
+    // resolve as distinct symbol units; the route never conflates them
+    // and never borrows a chunk identity.
+    let repo = tempfile::tempdir().expect("repo root");
+    write_repo(
+        repo.path(),
+        &[
+            (
+                "src/agent.rs",
+                "pub fn register() -> u32 {\n    1\n}\n",
+            ),
+            (
+                "src/device.rs",
+                "pub fn register() -> u32 {\n    2\n}\n",
+            ),
+        ],
+    );
+    let manifest = load_manifest(&repo.path().join("manifest.json")).expect("manifest");
+    let files = load_corpus(repo.path(), &manifest, &CorpusLimits::default()).expect("corpus");
+    let (chunks, _) = chunk_corpus(&WholeFileChunker, &files).expect("chunk");
+    let symbols = symbols_for(&files);
+    let identity = BatchIdentity::new("bench-repo", "bench-rev", 22, "manifest:homon".to_string())
+        .expect("identity");
+    let (batch, _) = assemble_batch(&identity, &chunks, &symbols).expect("batch");
+    let files_by_path: BTreeMap<_, _> = files
+        .iter()
+        .map(|file| (file.path.clone(), file.clone()))
+        .collect();
+    let published_units =
+        quanta_index_retrieval_bench::published_units::PublishedUnitRegistry::from_chunks_and_symbols(
+            &chunks,
+            &symbols,
+            &files_by_path,
+        )
+        .expect("published units");
+    // Two same-named symbols, distinct ids and paths.
+    let registers: Vec<_> = symbols
+        .values()
+        .flatten()
+        .filter(|symbol| &*symbol.local_name == "register")
+        .collect();
+    assert_eq!(registers.len(), 2, "both definitions publish");
+    assert_ne!(
+        registers[0].symbol_id.as_str(),
+        registers[1].symbol_id.as_str()
+    );
+    let state = tempfile::tempdir().expect("state root");
+    let session = boot_session(&state.path().join("daemon"), &identity);
+    let (_receipt, _ack) =
+        publish_and_activate(&session, &batch, &identity, None).expect("publish+activate");
+    let plan = plan_query(QueryInputPolicy::Native, "register", &NlPlanConfig::default())
+        .expect("native plan");
+    let outcome = query_route(&RouteQuery {
+        client: session.client(),
+        route: "symbol",
+        lexical_request: &plan.lexical_request,
+        semantic_text: &plan.semantic_text,
+        repo_id: &identity.repo_id,
+        revision_id: &identity.revision_id,
+        generation: identity.generation,
+        top_k: 10,
+    });
+    session.stop().expect("bounded shutdown");
+    let hits = match &outcome {
+        QueryOutcome::ReturnedWindow { hits, .. } => hits,
+        QueryOutcome::RejectedResponse { code, message, .. }
+        | QueryOutcome::SdkFailure { code, message, .. } => {
+            panic!("symbol query failed: {code} {message}")
+        }
+    };
+    let mut seen_ids = std::collections::BTreeSet::new();
+    for hit in hits {
+        let unit = published_units
+            .get(&hit.candidate_id)
+            .unwrap_or_else(|| panic!("hit is not a published unit: {}", hit.candidate_id));
+        assert_eq!(
+            unit.kind,
+            quanta_index_retrieval_bench::published_units::PublishedUnitKind::Symbol,
+            "homonym hits must stay symbol units, never chunk identities"
+        );
+        assert!(
+            matches!(hit.path.as_str(), "src/agent.rs" | "src/device.rs"),
+            "unexpected path: {}",
+            hit.path
+        );
+        let _duplicate = seen_ids.insert(hit.candidate_id.clone());
+    }
+    assert!(
+        seen_ids.len() <= 2 && !seen_ids.is_empty(),
+        "at most the two homonyms, each at most once: {seen_ids:?}"
+    );
 }
