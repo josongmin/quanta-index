@@ -24,6 +24,10 @@ proof that the host stayed isolated throughout a run. Baseline admission and
 profile execution independently recompute the load guard instead of trusting
 the receipt's `clean` status string. Old receipts without load evidence cannot
 be used for new baseline admission.
+`benchctl run` also freezes the initial Git HEAD and rechecks HEAD plus the
+clean worktree after preflight, every producer, validation, and comparison.
+An in-flight source edit or commit refuses the run before its artifacts can be
+admitted under the starting preflight.
 The integration summary independently validates its required artifacts before
 writing a green aggregate.
 For local PREP after benchmark-control-plane changes, run

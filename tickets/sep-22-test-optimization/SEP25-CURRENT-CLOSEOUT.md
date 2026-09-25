@@ -2,6 +2,39 @@
 
 Status: `BLOCKED` for current-source Rust qualification and performance evidence.
 
+## Sep 25 RCA — source drift during benchmark run
+
+At clean `91c1585341f68270354938368edcf5add77d289d`, `benchctl run`
+checked for a clean checkout only before preflight. Its final artifact
+validator checked the then-current HEAD, but there was no assertion that HEAD
+and dirty state remained the same between preflight, producer execution, and
+final validation. A concurrent commit could therefore pair an old preflight
+with artifacts attributed to a new HEAD. A concurrent uncommitted edit that
+persisted until a checkpoint could likewise escape the entry check.
+
+Commit `4865ea456f93edb0b0d460e5eaf684aabd8cb8d5` freezes the initial
+HEAD and rechecks HEAD and dirty state after preflight, after each producer,
+after validation, and after comparison. Two regression tests first showed
+that the old runner incorrectly returned success after simulated HEAD drift
+or a dirty first producer; the new runner refuses with exit 2 before admitting
+the artifacts. `VERIFIED`: the nine-file benchmark-control pytest selection
+passed 150/150 on the clean code commit. Raw output:
+`artifacts/qualification/topt-2026-09-25/benchmark-python-4865ea45.log`,
+SHA-256 `6e04c6d216a16a69bbc6122162ee62a55263078b9938a2ba5bf2cdb5fe93bb6e`.
+Ruff lint/format, Python compilation, and `git diff --check` passed.
+
+Residual boundary: standalone DSL `compare_dsl_bench.py --update-baseline`
+accepts an externally supplied clean preflight receipt. The DSL artifact has
+no capture-run identifier or capture timestamp, so the comparator cannot prove
+that the receipt belongs to that measurement rather than an earlier run on a
+similar host. This is not repaired by the `benchctl run` source freeze. It
+needs an owner change that binds a fresh capture identifier and preflight
+digest into both DSL producers' artifacts and validates their temporal order
+and exact source at baseline admission. Until then, standalone baseline
+promotion must not be used as TOPT-00 performance qualification.
+The checkpoint rechecks also cannot detect a transient edit or host contention
+that starts and ends entirely inside one producer's execution window.
+
 ## Sep 25 current-head overload guard
 
 At clean `5925a9b4b44968c19d91745482d5f60ccd851528`, the timing preflight
