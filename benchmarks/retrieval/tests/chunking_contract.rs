@@ -602,3 +602,144 @@ fn coverage_accounts_overlap_and_fallbacks() {
     assert_eq!(coverage.chunks, expected_chunks);
     assert_eq!(coverage.files, files.len());
 }
+
+// ---------------------------------------------------------------------------
+// RBR-06: hand-calculated fixtures pinning the strict-window byte math and
+// its UTF-8/mid-line behavior against the line-aligned variant.
+// ---------------------------------------------------------------------------
+
+fn source_file(path: &str, text: &str) -> SourceFile {
+    let bytes = text.as_bytes().to_vec();
+    let mut line_starts = vec![0];
+    for (offset, byte) in bytes.iter().enumerate() {
+        if *byte == b'\n' {
+            line_starts.push(offset + 1);
+        }
+    }
+    SourceFile {
+        path: path.to_string(),
+        sha256: quanta_index_retrieval_bench::sha256_hex(&bytes),
+        bytes,
+        text: text.to_string(),
+        line_starts,
+    }
+}
+
+#[test]
+fn strict_window_hand_calculated_spans_cut_mid_line() {
+    // 31 bytes of line 1 (30 a's + \n), then two-byte betas.
+    let text = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nββββββββββ\n";
+    let file = source_file("hand/midline.rs", text);
+    let chunker = StrictWindowChunker::new(30, 0);
+    let chunks = chunker.chunk(&file).expect("strict chunk");
+    // Hand calculation: window [0,30) ends mid-line-1 before the \n;
+    // window [30,52) covers the newline and line 2 to EOF.
+    assert_eq!(
+        chunks
+            .iter()
+            .map(|chunk| (chunk.start_byte, chunk.end_byte, chunk.start_line, chunk.end_line))
+            .collect::<Vec<_>>(),
+        vec![(0, 30, 1, 1), (30, 52, 1, 2)]
+    );
+    for chunk in &chunks {
+        assert!(text.is_char_boundary(chunk.start_byte as usize));
+        assert!(text.is_char_boundary(chunk.end_byte as usize));
+        assert_eq!(chunk.text, &text[chunk.start_byte as usize..chunk.end_byte as usize]);
+    }
+}
+
+#[test]
+fn strict_window_snaps_end_back_to_utf8_boundary() {
+    // Line 1 is 31 bytes; betas occupy [31,33),[33,35),[35,37)... A
+    // window of 36 bytes would end inside the beta at [35,37): the end
+    // must snap back to 35, never splitting a multi-byte character.
+    let text = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nββββββββββ\n";
+    let file = source_file("hand/utf8-snap.rs", text);
+    let chunker = StrictWindowChunker::new(36, 0);
+    let chunks = chunker.chunk(&file).expect("strict chunk");
+    let first = &chunks[0];
+    assert_eq!(first.start_byte, 0);
+    assert_eq!(first.end_byte, 35, "end snaps back to the UTF-8 boundary");
+    assert!(text.is_char_boundary(first.end_byte as usize));
+    assert_eq!(first.end_line, 2, "byte 34 sits on line 2");
+}
+
+#[test]
+fn strict_window_splits_single_oversize_line_by_hand() {
+    // One 100-byte line plus newline: a 30-byte window with no overlap
+    // yields exactly four windows, all on line 1, the last covering the
+    // newline.
+    let text = format!("{}z\n", "x".repeat(99));
+    let file = source_file("hand/oversize.rs", &text);
+    let chunker = StrictWindowChunker::new(30, 0);
+    let chunks = chunker.chunk(&file).expect("strict chunk");
+    assert_eq!(
+        chunks
+            .iter()
+            .map(|chunk| (chunk.start_byte, chunk.end_byte, chunk.start_line, chunk.end_line))
+            .collect::<Vec<_>>(),
+        vec![(0, 30, 1, 1), (30, 60, 1, 1), (60, 90, 1, 1), (90, 101, 1, 1)]
+    );
+}
+
+#[test]
+fn strict_and_line_aligned_diverge_with_the_same_parameters() {
+    // RBR-06 A/B premise: the same window/overlap produces different
+    // end bytes — the strict variant keeps the byte cap (mid-line ends),
+    // the line-aligned variant expands ends to enclosing line ends.
+    let text = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nββββββββββ\npub fn tail() {}\n";
+    let file = source_file("hand/ab.rs", text);
+    let strict = StrictWindowChunker::new(30, 0).chunk(&file).expect("strict");
+    let aligned = FixedWindowChunker::new(30, 0).chunk(&file).expect("aligned");
+    assert!(strict.len() >= aligned.len());
+    for chunk in &aligned {
+        let end = chunk.end_byte as usize;
+        assert!(
+            end == text.len() || text.as_bytes()[end - 1] == b'\n',
+            "line-aligned ends on a line boundary"
+        );
+    }
+    let strict_mid_line = strict
+        .iter()
+        .filter(|chunk| {
+            let end = chunk.end_byte as usize;
+            end < text.len() && text.as_bytes()[end - 1] != b'\n'
+        })
+        .count();
+    assert!(strict_mid_line > 0, "strict windows end mid-line by contract");
+}
+
+#[test]
+fn strict_window_overlap_union_is_exact_by_hand() {
+    // window=30, overlap=10 -> step 20, with UTF-8 snapping at both
+    // ends. Line 1 is bytes [0,31) (the newline at 30); betas occupy
+    // [31,33),[33,35),...,[49,51) and the trailing newline is byte 51.
+    // w1=[0,30). w2 start=20, nominal end 50 falls inside the beta at
+    // [49,51) and snaps back to 49 -> [20,49). w3 start=40 falls inside
+    // the beta at [39,41) and snaps forward to 41; its end caps at EOF ->
+    // [41,52). Union: [0,30)+[20,49)+[41,52) covers everything; the
+    // double-covered bytes are [20,30)=10 plus [41,49)=8 -> 18 overlap
+    // bytes, zero uncovered.
+    let text = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nββββββββββ\n";
+    let file = source_file("hand/overlap.rs", text);
+    let chunker = StrictWindowChunker::new(30, 10);
+    let chunks = chunker.chunk(&file).expect("strict chunk");
+    let spans: Vec<(u32, u32)> = chunks
+        .iter()
+        .map(|chunk| (chunk.start_byte, chunk.end_byte))
+        .collect();
+    assert_eq!(spans, vec![(0, 30), (20, 49), (41, 52)]);
+    let mut covered = vec![false; text.len()];
+    let mut overlap = 0;
+    for (start, end) in &spans {
+        for index in *start..*end {
+            if covered[index as usize] {
+                overlap += 1;
+            } else {
+                covered[index as usize] = true;
+            }
+        }
+    }
+    assert_eq!(overlap, 18);
+    assert!(covered.iter().all(|seen| *seen), "no uncovered bytes");
+}
