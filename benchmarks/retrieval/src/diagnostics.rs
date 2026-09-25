@@ -9,8 +9,41 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::{Value, json};
 
 use crate::record::QueryPack;
-use crate::sdk::QueryOutcome;
+use crate::sdk::{QueryOutcome, ResponseDetail};
 use crate::{BenchError, BenchResult};
+
+fn response_value(detail: &ResponseDetail) -> Value {
+    json!({
+        // null means the route response carried no explanation or no
+        // observation: missing, never a silent empty or zero.
+        "request_id": detail.request_id,
+        "early_stop_reason": detail.early_stop_reason,
+        "engines_executed": detail.engines_executed,
+        "engines_touched": detail.engines_touched,
+        "strategy": detail.strategy,
+        "window_returned": detail.window_returned,
+        "window_candidate_count": detail
+            .window_candidate_count
+            .map(|(kind, count)| json!({"kind": kind, "count": count})),
+        "lane_traces": detail
+            .lane_traces
+            .iter()
+            .map(|lane| {
+                json!({
+                    "lane": lane.lane,
+                    "executed": lane.executed,
+                    "contributed": lane.contributed,
+                    "candidates": lane
+                        .candidates
+                        .map(|(kind, count)| json!({"kind": kind, "count": count})),
+                    "filtered_out": lane.filtered_out,
+                    "cost": lane.cost,
+                    "profile": lane.profile,
+                })
+            })
+            .collect::<Vec<_>>(),
+    })
+}
 
 pub fn diagnostic_value(
     record_sha256: &str,
@@ -99,8 +132,13 @@ pub fn diagnostic_value(
             let record_row = normalized.get(&key).copied().ok_or_else(|| {
                 BenchError::Protocol("diagnostic record result disappeared".to_string())
             })?;
-            let (status, error_code, candidates) = match outcome {
-                QueryOutcome::Hits { hits, outcome, .. } => {
+            let (status, error_code, candidates, response) = match outcome {
+                QueryOutcome::Hits {
+                    hits,
+                    outcome,
+                    detail,
+                    ..
+                } => {
                     let top_k_len = usize::try_from(top_k).map_err(|error| {
                         BenchError::Protocol(format!(
                             "diagnostic top_k is not addressable: {error}"
@@ -243,7 +281,7 @@ pub fn diagnostic_value(
                             "contributions": lanes,
                         }));
                     }
-                    (status, Value::Null, candidates)
+                    (status, Value::Null, candidates, response_value(detail))
                 }
                 QueryOutcome::Failed { status, code, .. } => {
                     if !matches!(*status, "error" | "timeout" | "unavailable") || code.is_empty() {
@@ -267,7 +305,7 @@ pub fn diagnostic_value(
                             task.task_id, route
                         )));
                     }
-                    (*status, json!(code), Vec::new())
+                    (*status, json!(code), Vec::new(), Value::Null)
                 }
             };
             rows.push(json!({
@@ -277,11 +315,12 @@ pub fn diagnostic_value(
                 "status": status,
                 "error_code": error_code,
                 "candidates": candidates,
+                "response": response,
             }));
         }
     }
     Ok(json!({
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "quanta_returned_window_diagnostic",
         "record_sha256": record_sha256,
         "query_pack_sha256": pack.pack_sha256,
@@ -299,7 +338,7 @@ mod tests {
 
     use super::*;
     use crate::record::PackTask;
-    use crate::sdk::{RankedHit, RankedLaneContribution};
+    use crate::sdk::{LaneTraceFact, RankedHit, RankedLaneContribution, ResponseDetail};
 
     fn pack() -> QueryPack {
         QueryPack {
@@ -319,6 +358,40 @@ mod tests {
             pack_sha256: "d".repeat(64),
             comparison_contract: json!({}),
             contract_top_k: 10,
+        }
+    }
+
+    fn response_detail() -> ResponseDetail {
+        ResponseDetail {
+            request_id: Some(7),
+            early_stop_reason: Some("count_reached"),
+            engines_executed: Some(vec!["lexical", "semantic"]),
+            engines_touched: Some(vec!["lexical", "semantic"]),
+            strategy: Some("hybrid-rrf".to_string()),
+            window_returned: Some(1),
+            window_candidate_count: Some(("exact", 1)),
+            lane_traces: vec![
+                LaneTraceFact {
+                    lane: "lexical",
+                    executed: true,
+                    contributed: true,
+                    candidates: Some(("exact", 12)),
+                    filtered_out: Some(3),
+                    cost: Some(40),
+                    profile: Some("bm25".to_string()),
+                },
+                // An executed zero-hit lane stays recorded: executed and
+                // contributed are independent facts (RBR-01).
+                LaneTraceFact {
+                    lane: "dense",
+                    executed: true,
+                    contributed: false,
+                    candidates: Some(("at_least", 64)),
+                    filtered_out: Some(0),
+                    cost: None,
+                    profile: None,
+                },
+            ],
         }
     }
 
@@ -347,6 +420,7 @@ mod tests {
                     ],
                 }],
                 outcome: ExecutionOutcomeV2::ExactExhausted,
+                detail: response_detail(),
                 latency: Duration::from_millis(3),
             },
         )])
@@ -387,6 +461,97 @@ mod tests {
         assert_eq!(
             value.pointer("/results/0/candidates/0/contributions/1/lane"),
             Some(&json!("dense"))
+        );
+    }
+
+    #[test]
+    fn preserves_executed_vs_contributed_lanes_and_window_counts() {
+        let value = diagnostic_value(
+            &"e".repeat(64),
+            &record(),
+            &pack(),
+            &["hybrid"],
+            &outcomes(),
+            10,
+        )
+        .expect("complete diagnostic");
+        assert_eq!(value.get("schema_version"), Some(&json!(2)));
+        // Response-level facts survive alongside the candidates.
+        assert_eq!(
+            value.pointer("/results/0/response/request_id"),
+            Some(&json!(7))
+        );
+        assert_eq!(
+            value.pointer("/results/0/response/early_stop_reason"),
+            Some(&json!("count_reached"))
+        );
+        assert_eq!(
+            value.pointer("/results/0/response/engines_executed"),
+            Some(&json!(["lexical", "semantic"]))
+        );
+        assert_eq!(
+            value.pointer("/results/0/response/window_candidate_count"),
+            Some(&json!({"kind": "exact", "count": 1}))
+        );
+        // An executed lane that contributed nothing stays distinct from a
+        // lane that never ran.
+        assert_eq!(
+            value.pointer("/results/0/response/lane_traces/0/executed"),
+            Some(&json!(true))
+        );
+        assert_eq!(
+            value.pointer("/results/0/response/lane_traces/0/contributed"),
+            Some(&json!(true))
+        );
+        assert_eq!(
+            value.pointer("/results/0/response/lane_traces/1/lane"),
+            Some(&json!("dense"))
+        );
+        assert_eq!(
+            value.pointer("/results/0/response/lane_traces/1/executed"),
+            Some(&json!(true))
+        );
+        assert_eq!(
+            value.pointer("/results/0/response/lane_traces/1/contributed"),
+            Some(&json!(false))
+        );
+        assert_eq!(
+            value.pointer("/results/0/response/lane_traces/1/candidates"),
+            Some(&json!({"kind": "at_least", "count": 64}))
+        );
+    }
+
+    #[test]
+    fn missing_response_observations_stay_null_never_defaulted() {
+        let mut sparse = outcomes();
+        let outcome = sparse
+            .get_mut(&("T1".to_string(), "hybrid".to_string()))
+            .expect("fixture result");
+        if let QueryOutcome::Hits { detail, .. } = outcome {
+            *detail = ResponseDetail::default();
+        }
+        let value = diagnostic_value(
+            &"e".repeat(64),
+            &record(),
+            &pack(),
+            &["hybrid"],
+            &sparse,
+            10,
+        )
+        .expect("complete diagnostic");
+        // Absent observations remain explicit nulls: no explanation, no
+        // counts, no fabricated lanes.
+        assert_eq!(
+            value.pointer("/results/0/response/engines_executed"),
+            Some(&Value::Null)
+        );
+        assert_eq!(
+            value.pointer("/results/0/response/request_id"),
+            Some(&Value::Null)
+        );
+        assert_eq!(
+            value.pointer("/results/0/response/lane_traces"),
+            Some(&json!([]))
         );
     }
 

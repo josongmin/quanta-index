@@ -67,9 +67,40 @@ def test_retrieval_diagnostic_binds_complete_record_and_lanes():
                 "contributions": [{"lane": "lexical", "rank": 2, "raw_score": 3.0}],
             }
         ],
+        "response": {
+            "request_id": 7,
+            "early_stop_reason": "count_reached",
+            "engines_executed": ["lexical", "semantic"],
+            "engines_touched": ["lexical", "semantic"],
+            "strategy": "hybrid-rrf",
+            "window_returned": 1,
+            "window_candidate_count": {"kind": "exact", "count": 1},
+            "lane_traces": [
+                {
+                    "lane": "lexical",
+                    "executed": True,
+                    "contributed": True,
+                    "candidates": {"kind": "exact", "count": 12},
+                    "filtered_out": 3,
+                    "cost": 40,
+                    "profile": "bm25",
+                },
+                # An executed zero-hit lane stays distinct from a lane that
+                # never ran (RBR-01).
+                {
+                    "lane": "dense",
+                    "executed": True,
+                    "contributed": False,
+                    "candidates": {"kind": "at_least", "count": 64},
+                    "filtered_out": None,
+                    "cost": None,
+                    "profile": None,
+                },
+            ],
+        },
     }
     diagnostic = {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "quanta_returned_window_diagnostic",
         "record_sha256": "b" * 64,
         "query_pack_sha256": pack_sha,
@@ -104,6 +135,27 @@ def test_retrieval_diagnostic_binds_complete_record_and_lanes():
     tampered["runner_timing_detail_ms"]["daemon_shutdown"] = float("nan")
     with pytest.raises(pairrun.RunError, match="timing"):
         pairrun.validate_retrieval_diagnostic(tampered, record, "b" * 64, pack)
+    # A lane claiming hits without executing is a contradiction.
+    tampered = json.loads(json.dumps(diagnostic))
+    tampered["results"][0]["response"]["lane_traces"][1]["contributed"] = True
+    tampered["results"][0]["response"]["lane_traces"][1]["executed"] = False
+    with pytest.raises(pairrun.RunError, match="lane_traces entry is invalid"):
+        pairrun.validate_retrieval_diagnostic(tampered, record, "b" * 64, pack)
+    # Unknown observations must stay explicit nulls, never defaults.
+    tampered = json.loads(json.dumps(diagnostic))
+    tampered["results"][0]["response"].update(
+        {
+            "request_id": None,
+            "early_stop_reason": None,
+            "engines_executed": None,
+            "engines_touched": None,
+            "strategy": None,
+            "window_returned": None,
+            "window_candidate_count": None,
+            "lane_traces": [],
+        }
+    )
+    pairrun.validate_retrieval_diagnostic(tampered, record, "b" * 64, pack)
 
 
 def test_rank_report_refuses_primary_at_10_from_top_5(tmp_path):
@@ -3350,10 +3402,20 @@ def test_new_protocol_requires_bound_retrieval_diagnostic_on_replay(tmp_path):
                     }
                     for index, candidate in enumerate(result["candidates"])
                 ],
+                "response": {
+                    "request_id": None,
+                    "early_stop_reason": None,
+                    "engines_executed": None,
+                    "engines_touched": None,
+                    "strategy": None,
+                    "window_returned": None,
+                    "window_candidate_count": None,
+                    "lane_traces": [],
+                },
             }
         )
     diagnostic = {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "quanta_returned_window_diagnostic",
         "record_sha256": pairrun.sha_file(qrecord_path),
         "query_pack_sha256": qrecord["query_pack_sha256"],

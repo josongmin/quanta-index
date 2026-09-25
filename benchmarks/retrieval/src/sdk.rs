@@ -14,9 +14,9 @@ use std::time::{Duration, Instant};
 
 use quanta_index_contract::ipc::GenerationStatusReport;
 use quanta_index_contract::{
-    ExecutionOutcomeV2, GenerationPin, HybridCandidateV1, LexicalCandidate, ManifestGeneration,
-    RepoId, RevisionId, SearchCorpusActiveHeadV1, SearchPlaneErrorCodeV2,
-    SearchPlaneSearchCorpusActivationCasAck,
+    CandidateCountV1, ExecutionOutcomeV2, GenerationPin, HybridCandidateV1, LexicalCandidate,
+    ManifestGeneration, QueryResultWindowV2, RepoId, RevisionId, SearchCorpusActiveHeadV1,
+    SearchExplanation, SearchPlaneErrorCodeV2, SearchPlaneSearchCorpusActivationCasAck,
 };
 use quanta_index_sdk::{BatchReceipt, ConnectOptions, QuantaIndex, SdkError, SearchCorpusBatch};
 
@@ -894,6 +894,97 @@ pub struct RankedLaneContribution {
     pub raw_score: f32,
 }
 
+/// One lane execution fact preserved from an SDK response window
+/// (RBR-01). `executed` and `contributed` stay separate: an executed
+/// zero-hit lane is `executed = true, contributed = false` and must never
+/// be dropped or folded into "not run".
+#[derive(Debug, Clone, PartialEq)]
+pub struct LaneTraceFact {
+    pub lane: &'static str,
+    pub executed: bool,
+    pub contributed: bool,
+    /// Candidate count as the lane claimed it: `("exact", n)` or
+    /// `("at_least", n)`.
+    pub candidates: Option<(&'static str, u64)>,
+    pub filtered_out: Option<u64>,
+    pub cost: Option<u64>,
+    pub profile: Option<String>,
+}
+
+/// Response-level facts preserved from one SDK query response (RBR-01).
+///
+/// `None` means the response carried no explanation (the lexical text
+/// route) or no observation — missing, never a silent empty or zero.
+/// `engines_executed` lists lanes the plan ran; `engines_touched` lists
+/// lanes that contributed hits; the two are independent facts.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ResponseDetail {
+    /// Transport request id the response answers; `0` marks an
+    /// off-transport response.
+    pub request_id: Option<u64>,
+    pub early_stop_reason: Option<&'static str>,
+    pub engines_executed: Option<Vec<&'static str>>,
+    pub engines_touched: Option<Vec<&'static str>>,
+    pub strategy: Option<String>,
+    pub window_returned: Option<u32>,
+    pub window_candidate_count: Option<(&'static str, u64)>,
+    pub lane_traces: Vec<LaneTraceFact>,
+}
+
+fn lane_trace_fact(lane: &quanta_index_contract::LaneTraceV1) -> LaneTraceFact {
+    LaneTraceFact {
+        lane: lane.lane(),
+        executed: lane.executed(),
+        contributed: lane.contributed(),
+        candidates: Some(match lane.candidates() {
+            CandidateCountV1::Exact(count) => ("exact", count),
+            CandidateCountV1::AtLeast(count) => ("at_least", count),
+        }),
+        filtered_out: Some(lane.filtered_out()),
+        cost: lane.cost(),
+        profile: lane.profile().map(str::to_string),
+    }
+}
+
+/// Preserve the response-level facts of one SDK response before the
+/// outcome collapses onto hits. `explanation` is `None` for routes whose
+/// response type carries no explanation.
+fn response_detail(
+    window: &QueryResultWindowV2,
+    explanation: Option<&SearchExplanation>,
+) -> ResponseDetail {
+    ResponseDetail {
+        request_id: explanation.map(|explanation| explanation.request_id),
+        early_stop_reason: explanation.and_then(|explanation| {
+            explanation
+                .early_stop_reason
+                .as_ref()
+                .map(|reason| reason.as_str())
+        }),
+        engines_executed: explanation.map(|explanation| {
+            explanation
+                .engines_executed
+                .iter()
+                .map(|engine| engine.as_str())
+                .collect()
+        }),
+        engines_touched: explanation.map(|explanation| {
+            explanation
+                .engines_touched
+                .iter()
+                .map(|engine| engine.as_str())
+                .collect()
+        }),
+        strategy: explanation.map(|explanation| explanation.strategy.clone()),
+        window_returned: Some(window.returned()),
+        window_candidate_count: Some(match window.candidate_count() {
+            CandidateCountV1::Exact(count) => ("exact", count),
+            CandidateCountV1::AtLeast(count) => ("at_least", count),
+        }),
+        lane_traces: window.coverage().lanes().iter().map(lane_trace_fact).collect(),
+    }
+}
+
 /// Typed query outcome: either ranked hits under the expected generation or
 /// a classified failure. Timeouts and unavailable/degraded states are never
 /// converted to empty success.
@@ -902,6 +993,7 @@ pub enum QueryOutcome {
     Hits {
         hits: Vec<RankedHit>,
         outcome: ExecutionOutcomeV2,
+        detail: ResponseDetail,
         latency: Duration,
     },
     Failed {
@@ -1047,8 +1139,9 @@ pub fn query_route(query: &RouteQuery<'_>) -> QueryOutcome {
                 Ok(response) => {
                     let hits: Vec<RankedHit> = response.results.iter().map(lexical_hit).collect();
                     let outcome = response.window.outcome();
+                    let detail = response_detail(&response.window, None);
                     match check_pin(query.route, &response.generation, &expected_pin, start) {
-                        Ok(guard) => guard.with_hits(hits, outcome),
+                        Ok(guard) => guard.with_hits(hits, outcome, detail),
                         Err(failed) => failed,
                     }
                 }
@@ -1068,8 +1161,9 @@ pub fn query_route(query: &RouteQuery<'_>) -> QueryOutcome {
                 Ok(response) => {
                     let hits: Vec<RankedHit> = response.results.iter().map(lexical_hit).collect();
                     let outcome = response.window.outcome();
+                    let detail = response_detail(&response.window, Some(&response.explanation));
                     match check_pin(query.route, &response.generation, &expected_pin, start) {
-                        Ok(guard) => guard.with_hits(hits, outcome),
+                        Ok(guard) => guard.with_hits(hits, outcome, detail),
                         Err(failed) => failed,
                     }
                 }
@@ -1090,8 +1184,9 @@ pub fn query_route(query: &RouteQuery<'_>) -> QueryOutcome {
                 Ok(response) => {
                     let hits: Vec<RankedHit> = response.results.iter().map(hybrid_hit).collect();
                     let outcome = response.window.outcome();
+                    let detail = response_detail(&response.window, Some(&response.explanation));
                     match check_pin(query.route, &response.generation, &expected_pin, start) {
-                        Ok(guard) => guard.with_hits(hits, outcome),
+                        Ok(guard) => guard.with_hits(hits, outcome, detail),
                         Err(failed) => failed,
                     }
                 }
@@ -1112,10 +1207,16 @@ struct PinGuard {
 }
 
 impl PinGuard {
-    fn with_hits(self, hits: Vec<RankedHit>, outcome: ExecutionOutcomeV2) -> QueryOutcome {
+    fn with_hits(
+        self,
+        hits: Vec<RankedHit>,
+        outcome: ExecutionOutcomeV2,
+        detail: ResponseDetail,
+    ) -> QueryOutcome {
         QueryOutcome::Hits {
             hits,
             outcome,
+            detail,
             latency: self.latency,
         }
     }

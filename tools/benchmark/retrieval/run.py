@@ -2579,6 +2579,110 @@ def write_projected_pack(pack_path: Path, suite_path: Path, routes: list[str], o
     return out
 
 
+def _diagnostic_count(value: object, where: str) -> dict:
+    if not isinstance(value, dict):
+        raise RunError(f"{where} count is malformed")
+    count = _exact_keys(value, {"kind", "count"}, where)
+    if (
+        count["kind"] not in ("exact", "at_least")
+        or type(count["count"]) is not int
+        or count["count"] < 0
+    ):
+        raise RunError(f"{where} count is invalid")
+    return count
+
+
+def _validate_diagnostic_response(
+    response: object, error_code: object, key: tuple[str, str]
+) -> None:
+    """Validate one preserved SDK response detail (RBR-01).
+
+    Unknown observations stay explicit nulls; executed and contributed
+    lanes are independent facts. Failure rows carry no response object.
+    """
+    where = f"retrieval diagnostic response for {key}"
+    if error_code is not None:
+        if response is not None:
+            raise RunError(f"{where} must be null for failed results")
+        return
+    if not isinstance(response, dict):
+        raise RunError(f"{where} is malformed")
+    detail = _exact_keys(
+        response,
+        {
+            "request_id",
+            "early_stop_reason",
+            "engines_executed",
+            "engines_touched",
+            "strategy",
+            "window_returned",
+            "window_candidate_count",
+            "lane_traces",
+        },
+        where,
+    )
+    if detail["request_id"] is not None and (
+        type(detail["request_id"]) is not int or detail["request_id"] < 0
+    ):
+        raise RunError(f"{where}.request_id is invalid")
+    if detail["early_stop_reason"] is not None and not isinstance(
+        detail["early_stop_reason"], str
+    ):
+        raise RunError(f"{where}.early_stop_reason is invalid")
+    for field in ("engines_executed", "engines_touched"):
+        engines = detail[field]
+        if engines is None:
+            continue
+        if (
+            not isinstance(engines, list)
+            or any(not isinstance(engine, str) or not engine for engine in engines)
+            or len(set(engines)) != len(engines)
+        ):
+            raise RunError(f"{where}.{field} is invalid")
+    if detail["strategy"] is not None and not isinstance(detail["strategy"], str):
+        raise RunError(f"{where}.strategy is invalid")
+    if detail["window_returned"] is not None and (
+        type(detail["window_returned"]) is not int or detail["window_returned"] < 0
+    ):
+        raise RunError(f"{where}.window_returned is invalid")
+    if detail["window_candidate_count"] is not None:
+        _diagnostic_count(detail["window_candidate_count"], f"{where}.window")
+    if not isinstance(detail["lane_traces"], list):
+        raise RunError(f"{where}.lane_traces is malformed")
+    for lane in detail["lane_traces"]:
+        if not isinstance(lane, dict):
+            raise RunError(f"{where}.lane_traces entry is malformed")
+        trace = _exact_keys(
+            lane,
+            {
+                "lane",
+                "executed",
+                "contributed",
+                "candidates",
+                "filtered_out",
+                "cost",
+                "profile",
+            },
+            f"{where}.lane_traces entry",
+        )
+        if (
+            not isinstance(trace["lane"], str)
+            or not trace["lane"]
+            or type(trace["executed"]) is not bool
+            or type(trace["contributed"]) is not bool
+            or trace["contributed"]
+            and not trace["executed"]
+        ):
+            raise RunError(f"{where}.lane_traces entry is invalid")
+        if trace["candidates"] is not None:
+            _diagnostic_count(trace["candidates"], f"{where}.lane_traces entry")
+        for field in ("filtered_out", "cost"):
+            if trace[field] is not None and (type(trace[field]) is not int or trace[field] < 0):
+                raise RunError(f"{where}.lane_traces entry.{field} is invalid")
+        if trace["profile"] is not None and not isinstance(trace["profile"], str):
+            raise RunError(f"{where}.lane_traces entry.profile is invalid")
+
+
 def validate_retrieval_diagnostic(
     payload: object, record: object, record_sha256: str, pack: object
 ) -> dict:
@@ -2607,7 +2711,7 @@ def validate_retrieval_diagnostic(
     if not isinstance(contract, dict) or not _is_hex(record_sha256, 64):
         raise RunError("retrieval diagnostic requires a valid record contract and digest")
     if (
-        diagnostic["schema_version"] != 1
+        diagnostic["schema_version"] != 2
         or diagnostic["kind"] != "quanta_returned_window_diagnostic"
         or diagnostic["scope"] != "returned_window_only"
         or diagnostic["record_sha256"] != record_sha256
@@ -2674,7 +2778,15 @@ def validate_retrieval_diagnostic(
     for row in diagnostic["results"]:
         row = _exact_keys(
             row,
-            {"task_id", "query_sha256", "route", "status", "error_code", "candidates"},
+            {
+                "task_id",
+                "query_sha256",
+                "route",
+                "status",
+                "error_code",
+                "candidates",
+                "response",
+            },
             "retrieval diagnostic result",
         )
         if not isinstance(row["task_id"], str) or not isinstance(row["route"], str):
@@ -2698,6 +2810,7 @@ def validate_retrieval_diagnostic(
             )
         ):
             raise RunError("retrieval diagnostic differs from runner record")
+        _validate_diagnostic_response(row["response"], row["error_code"], key)
         for position, (candidate, scored) in enumerate(
             zip(row["candidates"], reference["candidates"]), 1
         ):
@@ -4640,7 +4753,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             and (
                 "retrieval_diagnostic_version" not in protocol_payload
                 or type(protocol_payload["retrieval_diagnostic_version"]) is int
-                and protocol_payload["retrieval_diagnostic_version"] == 1
+                and protocol_payload["retrieval_diagnostic_version"] == 2
             )
             and (
                 "rank_metric_k_policy" not in protocol_payload
@@ -5024,7 +5137,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 bound_records.add(observed)
             diagnostic_ref = run_entry.get("retrieval_diagnostic")
             diagnostic_digest = run_entry.get("retrieval_diagnostic_digest")
-            if protocol_payload.get("retrieval_diagnostic_version") == 1 and (
+            if protocol_payload.get("retrieval_diagnostic_version") == 2 and (
                 diagnostic_ref is None or diagnostic_digest is None
             ):
                 pair_note("retrieval_diagnostic_missing", ("T12",))
@@ -6154,7 +6267,7 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
         )
         driver_closure_digest = driver_closure["digest"]
     protocol_lock = {
-        "retrieval_diagnostic_version": 1,
+        "retrieval_diagnostic_version": 2,
         "rank_metric_k_policy": "declared_top_k_v1",
         "suite_digest": sha_file(Path(spec["suite"])),
         "query_pack_digest": sha_file(stage / "query-pack.json"),

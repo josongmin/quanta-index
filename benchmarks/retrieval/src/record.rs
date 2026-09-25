@@ -21,7 +21,7 @@ use crate::canonical::canonical_json;
 use crate::chunking::{Chunk, count_tokens};
 use crate::corpus::SourceFile;
 use crate::query_plan::{NlPlanConfig, QueryInputPolicy, QueryPlan};
-use crate::sdk::{QueryOutcome, RankedHit};
+use crate::sdk::{QueryOutcome, RankedHit, ResponseDetail};
 use crate::{BenchError, BenchResult, sha256_hex};
 
 pub const RUNNER_SCHEMA_VERSION: u64 = 4;
@@ -750,6 +750,7 @@ pub fn result_value(
             hits,
             outcome,
             latency,
+            ..
         } => {
             let hit_count = u64::try_from(hits.len()).map_err(|err| {
                 BenchError::Protocol(format!("SDK hit count cannot fit u64: {err}"))
@@ -1301,6 +1302,7 @@ mod tests {
         let exhausted = run(QueryOutcome::Hits {
             hits: vec![hit.clone()],
             outcome: ExecutionOutcomeV2::ExactExhausted,
+            detail: ResponseDetail::default(),
             latency: Duration::from_millis(1),
         });
         assert_eq!(exhausted["status"].as_str(), Some("success"));
@@ -1309,12 +1311,14 @@ mod tests {
             outcome: ExecutionOutcomeV2::LowerBound {
                 continuation: false,
             },
+            detail: ResponseDetail::default(),
             latency: Duration::from_millis(1),
         });
         assert_eq!(capped["status"].as_str(), Some("capped"));
         let empty_capped = run(QueryOutcome::Hits {
             hits: Vec::new(),
             outcome: ExecutionOutcomeV2::LowerBound { continuation: true },
+            detail: ResponseDetail::default(),
             latency: Duration::from_millis(1),
         });
         assert_eq!(empty_capped["status"].as_str(), Some("error"));
@@ -1325,6 +1329,7 @@ mod tests {
         let abstained = run(QueryOutcome::Hits {
             hits: Vec::new(),
             outcome: ExecutionOutcomeV2::ExactExhausted,
+            detail: ResponseDetail::default(),
             latency: Duration::from_millis(1),
         });
         assert_eq!(abstained["status"].as_str(), Some("abstained"));
@@ -1395,6 +1400,7 @@ mod tests {
         let outcome = QueryOutcome::Hits {
             hits: vec![hit],
             outcome: quanta_index_contract::ExecutionOutcomeV2::ExactExhausted,
+            detail: ResponseDetail::default(),
             latency: Duration::from_millis(3),
         };
         let outcomes = BTreeMap::from([(("T1".to_string(), "lexical".to_string()), outcome)]);
