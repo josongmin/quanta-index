@@ -26,6 +26,17 @@ def _load_module():
 MODULE = _load_module()
 
 
+def test_hostname_digest_matches_rust_host_v1_framing() -> None:
+    import hashlib
+
+    expected = (
+        "sha256:"
+        + hashlib.sha256(b"quanta-index:bench:hostname:v1\0" + b"5\0" + b"host1").hexdigest()
+    )
+    assert MODULE.hostname_digest("host1") == expected
+    assert MODULE.hostname_digest("host1") != MODULE.sha256_text("host1")
+
+
 def idle_host() -> dict[str, object]:
     return {"os": "darwin", "cpu_count": 16, "load_average": [1.0, 1.0, 1.0]}
 

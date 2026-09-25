@@ -10,7 +10,7 @@ Covers the Layer-3 DSL query-latency regression gate over `BenchArtifactV1`
 3. clear regression on the blocking metric: rel > 10% AND abs > threshold (exit 1)
 4. AND-gate: rel exceeded but abs not exceeded -> OK
 5. unmeasured current rows fail and unmeasured baselines are refused
-6. --update-baseline overwrites and exits 0
+6. standalone --update-baseline refuses receipt replay
 7. mode mismatch -> exit 2
 8. NEW scenarios require a reviewed baseline
 9. MISSING scenario always fails
@@ -29,6 +29,8 @@ import shlex
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 COMPARE_PATH = REPO_ROOT / "tools" / "benchmark" / "compare_dsl_bench.py"
@@ -132,12 +134,14 @@ def _write_artifact(path: Path, mode: str, rows: list[dict], **overrides) -> Non
 
 def _write_clean_preflight(path: Path, *, host: dict | None = None, status: str = "clean") -> None:
     host = host or {"os": "linux", "arch": "x86_64", "cpu_count": 8}
+    host.setdefault("hostname_hash", DIGEST)
     host.setdefault("load_average", [1.0, 1.0, 1.0])
     path.write_text(
         json.dumps(
             {
                 "schema_version": 1,
                 "kind": "quanta-index-timing-preflight",
+                "run_id": "benchctl:dsl-authority",
                 "status": status,
                 "host": host,
                 "host_contention": {
@@ -288,7 +292,7 @@ def test_clear_regression_exits_one(tmp_path: Path) -> None:
     assert "REGRESSION" in result.stdout
     assert "lexical.keyword.native" in result.stdout
     assert "FAIL" in result.stdout
-    assert "--update-baseline" in result.stdout
+    assert "benchctl run dsl-authority --admit-baseline" in result.stdout
 
 
 def test_warm_p95_only_drift_is_blocking(tmp_path: Path) -> None:
@@ -419,7 +423,7 @@ def test_current_early_stop_fails_closed(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_update_baseline_overwrites_and_exits_zero(tmp_path: Path) -> None:
+def test_standalone_baseline_update_refuses_replayed_clean_receipt(tmp_path: Path) -> None:
     baseline = tmp_path / "baseline.json"
     current = tmp_path / "current.json"
     _write_artifact(baseline, "warm", [_row("lexical.keyword.native", 1.00)])
@@ -433,13 +437,9 @@ def test_update_baseline_overwrites_and_exits_zero(tmp_path: Path) -> None:
     update_result = _run(
         str(baseline), str(current), "--update-baseline", "--preflight-receipt", str(receipt)
     )
-    assert update_result.returncode == 0, update_result.stdout + update_result.stderr
-    assert "updated baseline" in update_result.stdout
-    assert baseline.read_text(encoding="utf-8") == current.read_text(encoding="utf-8")
-
-    rerun = _run(str(baseline), str(current))
-    assert rerun.returncode == 0, rerun.stdout
-    assert "OK" in rerun.stdout
+    assert update_result.returncode == 2, update_result.stdout + update_result.stderr
+    assert "benchctl run dsl-authority --admit-baseline" in update_result.stderr
+    assert baseline.read_text(encoding="utf-8") != current.read_text(encoding="utf-8")
 
 
 def test_update_baseline_refuses_unmeasured_candidate(tmp_path: Path) -> None:
@@ -450,32 +450,25 @@ def test_update_baseline_refuses_unmeasured_candidate(tmp_path: Path) -> None:
         "warm",
         [_row("lexical.keyword.native", None, early_stop_reason="fixture_not_seeded")],
     )
-    result = _run(str(baseline), str(current), "--update-baseline")
-    assert result.returncode == 2, result.stdout + result.stderr
-    assert "baseline candidate" in result.stderr
+    artifact = COMPARE.load_artifact(current, role="baseline candidate")
+    with pytest.raises(COMPARE.ArtifactRefused, match="unmeasured"):
+        COMPARE.require_complete_baseline_candidate(artifact)
     assert not baseline.exists()
 
 
 def test_update_baseline_requires_clean_matching_preflight(tmp_path: Path) -> None:
-    baseline = tmp_path / "baseline.json"
     current = tmp_path / "current.json"
     _write_artifact(current, "warm", [_row("lexical.keyword.native", 1.00)])
-    missing = _run(str(baseline), str(current), "--update-baseline")
-    assert missing.returncode == 2
-    assert "requires --preflight-receipt" in missing.stderr
+    artifact = COMPARE.load_artifact(current, role="baseline candidate")
+    with pytest.raises(COMPARE.ArtifactRefused, match="requires a preflight receipt"):
+        COMPARE.require_clean_preflight(None, artifact)
     receipt = tmp_path / "preflight.json"
     _write_clean_preflight(receipt, status="blocked")
-    blocked = _run(
-        str(baseline), str(current), "--update-baseline", "--preflight-receipt", str(receipt)
-    )
-    assert blocked.returncode == 2
-    assert "is not clean" in blocked.stderr
+    with pytest.raises(COMPARE.ArtifactRefused, match="is not clean"):
+        COMPARE.require_clean_preflight(receipt, artifact)
     _write_clean_preflight(receipt, host={"os": "linux", "arch": "x86_64", "cpu_count": 4})
-    mismatch = _run(
-        str(baseline), str(current), "--update-baseline", "--preflight-receipt", str(receipt)
-    )
-    assert mismatch.returncode == 2
-    assert "does not match candidate host class" in mismatch.stderr
+    with pytest.raises(COMPARE.ArtifactRefused, match="does not match candidate host"):
+        COMPARE.require_clean_preflight(receipt, artifact)
 
 
 def test_update_baseline_refuses_overloaded_receipt_labeled_clean(tmp_path: Path) -> None:
@@ -488,12 +481,9 @@ def test_update_baseline_refuses_overloaded_receipt_labeled_clean(tmp_path: Path
         host={"os": "linux", "arch": "x86_64", "cpu_count": 8, "load_average": [20.0, 1.0, 1.0]},
     )
 
-    result = _run(
-        str(baseline), str(current), "--update-baseline", "--preflight-receipt", str(receipt)
-    )
-
-    assert result.returncode == 2
-    assert "host load" in result.stderr
+    artifact = COMPARE.load_artifact(current, role="baseline candidate")
+    with pytest.raises(COMPARE.ArtifactRefused, match="host load"):
+        COMPARE.require_clean_preflight(receipt, artifact)
     assert not baseline.exists()
 
 
@@ -614,15 +604,8 @@ def test_a_missing_baseline_is_a_typed_refusal(tmp_path: Path) -> None:
     _write_artifact(current, "warm", [_row("lexical.keyword.native", 1.00)])
     result = _run(str(baseline), str(current))
     assert result.returncode == 2, result.stdout + result.stderr
-    assert "no such artifact" in result.stderr and "--update-baseline" in result.stderr
-    # Recording it at HEAD makes the next comparison possible.
-    receipt = tmp_path / "preflight.json"
-    _write_clean_preflight(receipt)
-    update = _run(
-        str(baseline), str(current), "--update-baseline", "--preflight-receipt", str(receipt)
-    )
-    assert update.returncode == 0, update.stdout + update.stderr
-    assert _run(str(baseline), str(current)).returncode == 0
+    assert "no such artifact" in result.stderr
+    assert "benchctl run dsl-authority --admit-baseline" in result.stderr
 
 
 def test_cold_rows_with_insufficient_samples_fail_closed(tmp_path: Path) -> None:
@@ -794,9 +777,9 @@ def test_macos_artifact_cannot_be_admitted_as_canonical_baseline(tmp_path: Path)
             "hostname_hash": DIGEST,
         },
     )
-    result = _run(str(baseline), str(current), "--update-baseline")
-    assert result.returncode == 2, result.stdout + result.stderr
-    assert "canonical Linux host" in result.stderr
+    artifact = COMPARE.load_artifact(current, role="baseline candidate")
+    with pytest.raises(COMPARE.ArtifactRefused, match="canonical Linux host"):
+        COMPARE.require_complete_baseline_candidate(artifact)
     assert not baseline.exists()
 
 

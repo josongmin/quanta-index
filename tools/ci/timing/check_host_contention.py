@@ -73,6 +73,13 @@ def sha256_text(value: str) -> str:
     return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def hostname_digest(hostname: str) -> str:
+    """Match HostV1::observe's domain-separated, length-framed hostname digest."""
+    encoded = hostname.encode("utf-8")
+    framed = b"quanta-index:bench:hostname:v1\0" + str(len(encoded)).encode() + b"\0" + encoded
+    return "sha256:" + hashlib.sha256(framed).hexdigest()
+
+
 def host_snapshot() -> dict[str, object]:
     """Portable host facts recorded without pretending they establish isolation."""
     try:
@@ -89,7 +96,7 @@ def host_snapshot() -> dict[str, object]:
         "os": platform.system().lower() or "unknown",
         "arch": platform.machine().lower() or "unknown",
         "cpu_count": os.cpu_count(),
-        "hostname_hash": sha256_text(hostname),
+        "hostname_hash": hostname_digest(hostname),
         "load_average": load_average,
         "disk_available_bytes": disk_available_bytes,
     }

@@ -118,12 +118,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--update-baseline",
         action="store_true",
-        help="overwrite baseline with current after canonical-host and clean-preflight admission",
+        help="legacy option; refused in favor of guarded benchctl baseline admission",
     )
     parser.add_argument(
         "--preflight-receipt",
         type=Path,
-        help="clean timing receipt required with --update-baseline",
+        help="legacy receipt option; standalone baseline admission is refused",
     )
     parser.add_argument(
         "--rel-threshold",
@@ -491,9 +491,9 @@ def require_clean_host_load(receipt: dict[str, object]) -> None:
 
 
 def require_clean_preflight(receipt_path: Path | None, artifact: Artifact) -> None:
-    """Bind a baseline ratchet to a clean preflight on the measured host class."""
+    """Bind a baseline ratchet to a clean preflight on the measured host."""
     if receipt_path is None:
-        raise ArtifactRefused("--update-baseline requires --preflight-receipt")
+        raise ArtifactRefused("baseline admission requires a preflight receipt")
     try:
         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -502,6 +502,8 @@ def require_clean_preflight(receipt_path: Path | None, artifact: Artifact) -> No
         raise ArtifactRefused("preflight receipt is not an object")
     if receipt.get("schema_version") != 1 or receipt.get("kind") != "quanta-index-timing-preflight":
         raise ArtifactRefused("preflight receipt is not quanta-index-timing-preflight schema 1")
+    if receipt.get("run_id") != "benchctl:dsl-authority":
+        raise ArtifactRefused("preflight receipt is not bound to dsl-authority")
     if receipt.get("status") != "clean":
         raise ArtifactRefused(f"preflight receipt status {receipt.get('status')!r} is not clean")
     if receipt.get("foreign_rust_processes") != []:
@@ -510,11 +512,16 @@ def require_clean_preflight(receipt_path: Path | None, artifact: Artifact) -> No
     host = receipt.get("host")
     if not isinstance(host, dict):
         raise ArtifactRefused("preflight receipt host is not an object")
-    expected = artifact.host_identity[:3]
-    actual = (host.get("os"), host.get("arch"), host.get("cpu_count"))
+    expected = (
+        artifact.host_identity[0],
+        artifact.host_identity[1],
+        artifact.host_identity[2],
+        artifact.host_identity[4],
+    )
+    actual = (host.get("os"), host.get("arch"), host.get("cpu_count"), host.get("hostname_hash"))
     if actual != expected:
         raise ArtifactRefused(
-            f"preflight host {actual!r} does not match candidate host class {expected!r}"
+            f"preflight host {actual!r} does not match candidate host {expected!r}"
         )
 
 
@@ -536,6 +543,14 @@ def atomically_write_baseline(destination: Path, content: str) -> None:
 def main() -> int:
     args = parse_args()
 
+    if args.update_baseline:
+        print(
+            "ERROR: standalone baseline promotion cannot bind a receipt to the capture; "
+            "use benchctl run dsl-authority --admit-baseline",
+            file=sys.stderr,
+        )
+        return 2
+
     for flag, value in (
         ("--rel-threshold", args.rel_threshold),
         ("--abs-threshold-ms", args.abs_threshold_ms),
@@ -554,18 +569,12 @@ def main() -> int:
                 f"current artifact git_head {current.git_head} is not HEAD {head}: "
                 "stale artifact, re-run the rail at HEAD"
             )
-        if args.update_baseline:
-            require_complete_baseline_candidate(current)
-            require_clean_preflight(args.preflight_receipt, current)
-            atomically_write_baseline(args.baseline, args.current.read_text(encoding="utf-8"))
-            print(f"updated baseline {args.baseline} at head {head}")
-            return 0
         baseline = load_artifact(args.baseline, role="baseline")
         gate_provenance(baseline, current, head)
     except FileNotFoundError as exc:
         print(
             f"ERROR: {exc.filename}: no such artifact; capture one with the rail at HEAD "
-            "(`--update-baseline` records a baseline)",
+            "(use benchctl run dsl-authority --admit-baseline)",
             file=sys.stderr,
         )
         return 2
@@ -770,7 +779,7 @@ def main() -> int:
         if unmeasured_n:
             parts.append(f"{unmeasured_n} unmeasured")
         print(f"FAIL: {', '.join(parts)} scenario(s) over p50/p95 thresholds.")
-        print("To accept a deliberate change: re-run with --update-baseline.")
+        print("To accept a deliberate change: run benchctl run dsl-authority --admit-baseline.")
         return 1
 
     print("OK: no DSL latency regressions over thresholds.")

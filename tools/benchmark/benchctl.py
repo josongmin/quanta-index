@@ -11,9 +11,11 @@ actual authority path.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -24,8 +26,11 @@ from compare_dsl_bench import (  # noqa: E402
     FULL_HEAD_RE,
     MIN_SAMPLES_FOR_AUTHORITY,
     ArtifactRefused,
+    atomically_write_baseline,
     load_artifact,
     require_clean_host_load,
+    require_clean_preflight,
+    require_complete_baseline_candidate,
 )
 from manifest import DEFAULT_MANIFEST_PATH, ManifestError, load_manifest  # noqa: E402
 
@@ -104,6 +109,11 @@ def parse_args(
                 type=int,
                 help="DSL authority cold samples; accepted only for dsl-authority (minimum 20)",
             )
+            child.add_argument(
+                "--admit-baseline",
+                action="store_true",
+                help="capture and admit both DSL baselines in this same guarded run",
+            )
     preflight = subparsers.add_parser(
         "preflight", help="capture a host-contention receipt before a local timing run"
     )
@@ -172,6 +182,72 @@ def require_declared_baselines(
             raise RuntimeError(
                 f"declared baseline for {name} has unmeasured rows or fewer than {floor} samples"
             )
+
+
+def admit_dsl_baselines(
+    repo_root: Path,
+    profile: dict[str, object],
+    manifest: dict[str, object],
+    receipt: Path,
+    initial_head: str,
+    capture_started_ns: int,
+    preflight_digest: str,
+) -> None:
+    """Admit only artifacts freshly produced by this guarded DSL run."""
+    families = manifest["families"]
+    names = profile["families"]
+    assert isinstance(families, dict) and isinstance(names, list)
+    if names != ["dsl-warm", "dsl-cold"]:
+        raise RuntimeError("DSL baseline admission requires the exact warm/cold family pair")
+    try:
+        current_receipt_digest = hashlib.sha256(receipt.read_bytes()).hexdigest()
+    except OSError as exc:
+        raise RuntimeError(f"DSL preflight receipt disappeared: {exc}") from exc
+    if current_receipt_digest != preflight_digest:
+        raise RuntimeError("DSL preflight receipt changed during capture")
+    prepared: list[tuple[Path, str]] = []
+    for name in names:
+        family = families[name]
+        assert isinstance(family, dict)
+        relative_artifact = family["artifact_glob"]
+        baseline = family["baseline"]
+        if (
+            not isinstance(relative_artifact, str)
+            or any(char in relative_artifact for char in "*?[]")
+            or not isinstance(baseline, dict)
+            or baseline.get("comparator") != "dsl-latency"
+        ):
+            raise RuntimeError(f"DSL baseline family {name!r} has no exact artifact/baseline pair")
+        artifact_path = repo_root / relative_artifact
+        try:
+            stat = artifact_path.stat()
+        except OSError as exc:
+            raise RuntimeError(f"fresh DSL artifact missing: {artifact_path}: {exc}") from exc
+        if min(stat.st_mtime_ns, stat.st_ctime_ns) < capture_started_ns:
+            raise RuntimeError(f"DSL artifact was not written by this run: {artifact_path}")
+        try:
+            artifact = load_artifact(artifact_path, role="baseline candidate")
+            require_complete_baseline_candidate(artifact)
+            require_clean_preflight(receipt, artifact)
+        except ArtifactRefused as exc:
+            raise RuntimeError(f"DSL baseline candidate {name!r} refused: {exc}") from exc
+        if artifact.git_head != initial_head or artifact.mode != name.removeprefix("dsl-"):
+            raise RuntimeError(f"DSL baseline candidate {name!r} is not from frozen source/mode")
+        floor = MIN_SAMPLES_FOR_AUTHORITY[artifact.mode]
+        if any(row.samples < floor for row in artifact.rows.values()):
+            raise RuntimeError(f"DSL baseline candidate {name!r} has fewer than {floor} samples")
+        destination = repo_root / baseline["path"]
+        try:
+            prepared.append((destination, artifact_path.read_text(encoding="utf-8")))
+        except OSError as exc:
+            raise RuntimeError(f"DSL artifact disappeared: {artifact_path}: {exc}") from exc
+    require_frozen_source(repo_root, initial_head)
+    for destination, content in prepared:
+        try:
+            atomically_write_baseline(destination, content)
+        except OSError as exc:
+            raise RuntimeError(f"DSL baseline write failed: {destination}: {exc}") from exc
+        print(f"baseline candidate written: {destination}")
 
 
 def require_clean_preflight_receipt(receipt: Path, profile: str) -> None:
@@ -353,8 +429,12 @@ def main(argv: list[str] | None = None) -> int:
                     file=sys.stderr,
                 )
                 return 2
+        if args.admit_baseline and args.profile != "dsl-authority":
+            print("ERROR: --admit-baseline is only valid for dsl-authority", file=sys.stderr)
+            return 2
         try:
-            require_declared_baselines(repo_root, profile, manifest)
+            if not args.admit_baseline:
+                require_declared_baselines(repo_root, profile, manifest)
             require_clean_worktree(repo_root)
             initial_head = resolve_checkout_head(repo_root)
         except RuntimeError as exc:
@@ -371,14 +451,19 @@ def main(argv: list[str] | None = None) -> int:
         try:
             require_clean_preflight_receipt(receipt, args.profile)
             require_frozen_source(repo_root, initial_head)
+            preflight_digest = hashlib.sha256(receipt.read_bytes()).hexdigest()
         except RuntimeError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+        except OSError as exc:
+            print(f"ERROR: timing preflight receipt disappeared: {exc}", file=sys.stderr)
             return 2
         recipes = profile["recipes"]
         assert isinstance(recipes, list)
         if not recipes:
             print(f"ERROR: profile {args.profile!r} has no registered producer", file=sys.stderr)
             return 2
+        capture_started_ns = time.time_ns()
         for recipe in recipes:
             assert isinstance(recipe, str)
             command = ["just", recipe]
@@ -399,6 +484,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "run":
         try:
             require_frozen_source(repo_root, initial_head)
+            if args.admit_baseline:
+                admit_dsl_baselines(
+                    repo_root,
+                    profile,
+                    manifest,
+                    receipt,
+                    initial_head,
+                    capture_started_ns,
+                    preflight_digest,
+                )
+                return 0
         except RuntimeError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 2

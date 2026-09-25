@@ -2,6 +2,28 @@
 
 Status: `BLOCKED` for current-source Rust qualification and performance evidence.
 
+## Sep 25 follow-up — DSL baseline admission replay
+
+Standalone `compare_dsl_bench.py --update-baseline` could pair an old DSL
+artifact with a newly supplied `clean` preflight receipt from a similar host.
+The artifact does not identify the receipt or capture invocation. The direct
+promotion option now refuses with exit 2. The only baseline-admission path is
+`python3 tools/benchmark/benchctl.py run dsl-authority --admit-baseline`:
+one invocation preflights, freezes the source, runs both registered producers,
+validates their artifacts, checks the unchanged preflight digest, same-host
+identity, fresh file metadata, exact HEAD/mode, complete rows and sample floors,
+then writes both candidates after both pass. Review and commit remain manual.
+The preflight hostname digest was also aligned with Rust `HostV1`'s
+domain-separated framing; raw SHA-256 was incompatible with exact host matching.
+
+This removes the replayable standalone promotion path, not the need for a
+quiet canonical Linux run. File timestamps and local receipts are not
+cryptographic attestation against a malicious local writer. Preflight and
+source checkpoints cannot prove absence of transient contention or edits
+entirely within a producer. No current-source DSL measurement or full Rust
+qualification is claimed by this control-plane fix. The pre-implementation
+TOPT admission record cannot be reconstructed from later measurements.
+
 ## Sep 25 RCA — source drift during benchmark run
 
 At clean `91c1585341f68270354938368edcf5add77d289d`, `benchctl run`
@@ -23,17 +45,8 @@ passed 150/150 on the clean code commit. Raw output:
 SHA-256 `6e04c6d216a16a69bbc6122162ee62a55263078b9938a2ba5bf2cdb5fe93bb6e`.
 Ruff lint/format, Python compilation, and `git diff --check` passed.
 
-Residual boundary: standalone DSL `compare_dsl_bench.py --update-baseline`
-accepts an externally supplied clean preflight receipt. The DSL artifact has
-no capture-run identifier or capture timestamp, so the comparator cannot prove
-that the receipt belongs to that measurement rather than an earlier run on a
-similar host. This is not repaired by the `benchctl run` source freeze. It
-needs an owner change that binds a fresh capture identifier and preflight
-digest into both DSL producers' artifacts and validates their temporal order
-and exact source at baseline admission. Until then, standalone baseline
-promotion must not be used as TOPT-00 performance qualification.
-The checkpoint rechecks also cannot detect a transient edit or host contention
-that starts and ends entirely inside one producer's execution window.
+The standalone replay boundary described in the original RCA was closed by
+the guarded admission path above. The checkpoint limitation remains.
 
 ## Sep 25 current-head overload guard
 

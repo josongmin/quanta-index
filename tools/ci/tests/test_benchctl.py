@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -319,7 +321,13 @@ def _prepare_source_drift_run(monkeypatch, tmp_path: Path) -> list[list[str]]:
         encoding="utf-8",
     )
     monkeypatch.setattr(MODULE, "require_declared_baselines", lambda *_args: None)
-    monkeypatch.setattr(MODULE, "preflight", lambda *_args: 0)
+
+    def preflight(_repo_root, _profile, receipt, _manifest):
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        receipt.write_text("{}", encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(MODULE, "preflight", preflight)
     monkeypatch.setattr(MODULE, "require_clean_preflight_receipt", lambda *_args: None)
     monkeypatch.setattr(MODULE, "validate", lambda *_args: 0)
     monkeypatch.setattr(MODULE, "compare", lambda *_args: 0)
@@ -360,3 +368,184 @@ def test_run_refuses_dirty_tree_after_first_producer(monkeypatch, tmp_path: Path
 
     assert MODULE.main(["--repo-root", str(tmp_path), "run", "systems"]) == 2
     assert calls == [["just", "rust-verify-quality-freshness"]]
+
+
+def test_admit_baseline_is_dsl_only(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        MODULE, "preflight", lambda *_args: (_ for _ in ()).throw(AssertionError("no preflight"))
+    )
+    assert MODULE.main(["run", "systems", "--admit-baseline"]) == 2
+    assert "only valid for dsl-authority" in capsys.readouterr().err
+
+
+def test_dsl_admission_dispatches_both_producers_and_skips_old_baselines(
+    monkeypatch, tmp_path: Path
+) -> None:
+    manifest_path = tmp_path / "tools" / "benchmark" / "manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(
+        (REPO_ROOT / "tools/benchmark/manifest.json").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(MODULE, "require_clean_worktree", lambda _repo_root: None)
+    monkeypatch.setattr(MODULE, "resolve_checkout_head", lambda _repo_root: "a" * 40)
+    monkeypatch.setattr(
+        MODULE,
+        "require_declared_baselines",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("old baseline is not required")),
+    )
+
+    def preflight(_root, _profile, receipt, _manifest):
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        receipt.write_text("fresh receipt", encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(MODULE, "preflight", preflight)
+    monkeypatch.setattr(MODULE, "require_clean_preflight_receipt", lambda *_args: None)
+    monkeypatch.setattr(MODULE, "validate", lambda *_args: 0)
+    monkeypatch.setattr(
+        MODULE, "compare", lambda *_args: (_ for _ in ()).throw(AssertionError("no compare"))
+    )
+    commands = []
+    monkeypatch.setattr(
+        MODULE.subprocess,
+        "run",
+        lambda command, **_kwargs: (commands.append(command), SimpleNamespace(returncode=0))[1],
+    )
+    admitted = []
+    monkeypatch.setattr(MODULE, "admit_dsl_baselines", lambda *args: admitted.append(args))
+
+    assert (
+        MODULE.main(["--repo-root", str(tmp_path), "run", "dsl-authority", "--admit-baseline"]) == 0
+    )
+    assert commands == [["just", "rust-bench-dsl-warm"], ["just", "rust-bench-dsl-cold"]]
+    assert len(admitted) == 1
+    assert admitted[0][0] == tmp_path
+    assert admitted[0][5] <= MODULE.time.time_ns()
+    assert admitted[0][6] == hashlib.sha256(b"fresh receipt").hexdigest()
+
+
+def test_dsl_admission_rejects_old_artifact_before_reading_it(monkeypatch, tmp_path: Path) -> None:
+    manifest = MODULE.load_manifest()
+    profile = MODULE.load_profiles()["dsl-authority"]
+    receipt = tmp_path / "preflight.json"
+    receipt.write_text("fresh receipt", encoding="utf-8")
+    artifact = tmp_path / "artifacts/dsl-bench/warm-matrix.json"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("old artifact", encoding="utf-8")
+    old_ns = 1_000_000_000
+    os.utime(artifact, ns=(old_ns, old_ns))
+    monkeypatch.setattr(
+        MODULE,
+        "load_artifact",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("old artifact read")),
+    )
+    with pytest.raises(RuntimeError, match="not written by this run"):
+        MODULE.admit_dsl_baselines(
+            tmp_path,
+            profile,
+            manifest,
+            receipt,
+            "a" * 40,
+            MODULE.time.time_ns(),
+            hashlib.sha256(b"fresh receipt").hexdigest(),
+        )
+
+
+def test_dsl_admission_rejects_replaced_preflight_before_artifacts(
+    monkeypatch, tmp_path: Path
+) -> None:
+    manifest = MODULE.load_manifest()
+    profile = MODULE.load_profiles()["dsl-authority"]
+    receipt = tmp_path / "preflight.json"
+    receipt.write_text("replaced receipt", encoding="utf-8")
+    monkeypatch.setattr(
+        MODULE,
+        "load_artifact",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("artifact read")),
+    )
+    with pytest.raises(RuntimeError, match="receipt changed during capture"):
+        MODULE.admit_dsl_baselines(
+            tmp_path,
+            profile,
+            manifest,
+            receipt,
+            "a" * 40,
+            0,
+            hashlib.sha256(b"original receipt").hexdigest(),
+        )
+
+
+def test_dsl_admission_does_not_write_warm_if_cold_is_invalid(monkeypatch, tmp_path: Path) -> None:
+    manifest = MODULE.load_manifest()
+    profile = MODULE.load_profiles()["dsl-authority"]
+    receipt = tmp_path / "preflight.json"
+    receipt.write_text("fresh receipt", encoding="utf-8")
+    capture_started_ns = MODULE.time.time_ns()
+    for mode in ("warm", "cold"):
+        path = tmp_path / f"artifacts/dsl-bench/{mode}-matrix.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(mode, encoding="utf-8")
+
+    def fake_load(path, *, role):
+        mode = "warm" if path.name.startswith("warm") else "cold"
+        return SimpleNamespace(
+            git_head="a" * 40,
+            mode=mode,
+            rows={"scenario": SimpleNamespace(samples=200 if mode == "warm" else 0)},
+        )
+
+    monkeypatch.setattr(MODULE, "load_artifact", fake_load)
+    monkeypatch.setattr(MODULE, "require_complete_baseline_candidate", lambda *_args: None)
+    monkeypatch.setattr(MODULE, "require_clean_preflight", lambda *_args: None)
+    monkeypatch.setattr(MODULE, "require_frozen_source", lambda *_args: None)
+
+    with pytest.raises(RuntimeError, match="fewer than 20 samples"):
+        MODULE.admit_dsl_baselines(
+            tmp_path,
+            profile,
+            manifest,
+            receipt,
+            "a" * 40,
+            capture_started_ns,
+            hashlib.sha256(b"fresh receipt").hexdigest(),
+        )
+    assert not (tmp_path / "tools/benchmark/baselines/warm-matrix.json").exists()
+    assert not (tmp_path / "tools/benchmark/baselines/cold-matrix.json").exists()
+
+
+def test_dsl_admission_writes_both_only_after_guarded_capture(monkeypatch, tmp_path: Path) -> None:
+    manifest = MODULE.load_manifest()
+    profile = MODULE.load_profiles()["dsl-authority"]
+    receipt = tmp_path / "preflight.json"
+    receipt.write_text("fresh receipt", encoding="utf-8")
+    capture_started_ns = MODULE.time.time_ns()
+    for mode in ("warm", "cold"):
+        path = tmp_path / f"artifacts/dsl-bench/{mode}-matrix.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(mode, encoding="utf-8")
+
+    def fake_load(path, *, role):
+        mode = "warm" if path.name.startswith("warm") else "cold"
+        return SimpleNamespace(
+            git_head="a" * 40,
+            mode=mode,
+            rows={"scenario": SimpleNamespace(samples=200 if mode == "warm" else 20)},
+        )
+
+    monkeypatch.setattr(MODULE, "load_artifact", fake_load)
+    monkeypatch.setattr(MODULE, "require_complete_baseline_candidate", lambda *_args: None)
+    monkeypatch.setattr(MODULE, "require_clean_preflight", lambda *_args: None)
+    monkeypatch.setattr(MODULE, "require_frozen_source", lambda *_args: None)
+
+    MODULE.admit_dsl_baselines(
+        tmp_path,
+        profile,
+        manifest,
+        receipt,
+        "a" * 40,
+        capture_started_ns,
+        hashlib.sha256(b"fresh receipt").hexdigest(),
+    )
+    for mode in ("warm", "cold"):
+        assert (tmp_path / f"tools/benchmark/baselines/{mode}-matrix.json").read_text() == mode

@@ -69,12 +69,15 @@ on a quiet host at the head under test. There are no committed baselines
 right now: the previous schema-1 baselines (short `git_rev`, no corpus /
 config digest, host or resources, 200+ commits stale) were removed because
 the gate below refuses them, and a stale baseline cannot be migrated into an
-attributed one. `just rust-bench-dsl-compare` fails typed until
-`--update-baseline` records one at `HEAD`.
+attributed one. `just rust-bench-dsl-compare` fails typed until a guarded
+`python3 tools/benchmark/benchctl.py run dsl-authority --admit-baseline`
+captures and admits both at `HEAD`.
 
-`--update-baseline` is deliberately fail-closed: every scenario must have a
-real latency row. It cannot turn an `early_stop_reason` fixture gap into a
-committed ratchet reference.
+Standalone `compare_dsl_bench.py --update-baseline` is refused: an externally
+supplied receipt cannot prove it belongs to an existing artifact. Guarded
+admission requires a clean source, canonical Linux preflight, fresh warm/cold
+artifacts from the same run, matching measured host, and complete latency rows.
+It cannot turn an `early_stop_reason` fixture gap into a committed reference.
 
 ## Artifact schema (the contract): `BenchArtifactV1`
 
@@ -276,7 +279,7 @@ A green fast hellgate is not restart/replay proof.
 
 ```
 python3 tools/benchmark/compare_dsl_bench.py <baseline.json> <current.json> \
-    [--update-baseline] [--rel-threshold F] [--abs-threshold-ms F] \
+    [--rel-threshold F] [--abs-threshold-ms F] \
     [--p95-rel-threshold F] [--p95-abs-threshold-ms F]
 ```
 
@@ -284,7 +287,7 @@ python3 tools/benchmark/compare_dsl_bench.py <baseline.json> <current.json> \
   the current artifact's head must be the checkout's `HEAD` and both must share
   the corpus/config digest, model revision and host identity. Any of these
   refuses the comparison with exit 2, as does a missing baseline (capture
-  one with `--update-baseline`, which itself refuses a stale current).
+  both with `benchctl run dsl-authority --admit-baseline`).
 - Both artifacts must share the same top-level `mode`; a mismatch exits 2.
 - Matches scenarios by `scenario_id`.
 - Blocking metrics on both warm and cold artifacts:
@@ -293,9 +296,7 @@ python3 tools/benchmark/compare_dsl_bench.py <baseline.json> <current.json> \
 - Only `p99` remains an `ADVISORY` line.
 - New scenarios (in current, not baseline) fail until a reviewed baseline update.
 - Scenarios missing from current fail.
-- `--update-baseline --preflight-receipt <receipt.json>` atomically writes the
-  current artifact only when the candidate is Linux, complete, and the receipt
-  is clean for the same OS/architecture/CPU-count host class.
+- `--update-baseline` is a legacy option that exits 2 without writing.
 - Exit codes: `0` ok, `1` regression / missing-fail, `2` usage / mode-mismatch.
 
 ### `run_dsl_cold_matrix.py` — cold-matrix orchestrator
@@ -320,10 +321,12 @@ row; the default warm runner pools `100` samples across `5` passes.
 The scheduled Linux job requires a pinned `self-hosted, linux, quanta-bench`
 runner and is a blocking authority gate. Until its
 reviewed canonical baselines are committed it fails typed; it is never silently
-report-only. Capture warm/cold artifacts on that same canonical host class,
-review the artifact and scenario contract, then commit them through
-`--update-baseline`. A deliberate scenario or semantic change requires the
-same review, not an automatic PR-side update.
+report-only. Run `python3 tools/benchmark/benchctl.py run dsl-authority
+--admit-baseline` on a quiet canonical Linux host. It captures and validates
+both artifacts in one guarded invocation, then writes both baseline candidates.
+Review their metrics and scenario contract before committing them. A deliberate
+scenario or semantic change requires the same review, not an automatic PR-side
+update.
 
 ## Ratchet rule (exact)
 
