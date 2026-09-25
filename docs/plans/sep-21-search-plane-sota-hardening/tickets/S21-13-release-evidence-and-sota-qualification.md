@@ -20,7 +20,7 @@ Phase A status: `done` for the M0 foundation gate. Registry-driven atomic manife
 Git-visible-untracked source binding, conditional non-binary semantics, exact-pair binding, blocking P00 validation
 and the fail-closed aggregate release command are implemented. The P12A aggregate
 schema, writer, validator, handoff-DAG checks, and final recipe are also present
-in source. P12A's exact-pair receipt and the P12Q release receipt are absent;
+in source. P12A's exact-source receipt and the P12Q release receipt are absent;
 P12Q remains staged in the registry. Code presence does not qualify the product
 or the release.
 
@@ -29,15 +29,15 @@ or the release.
 store edit: `just proof-p12a-proof-infrastructure` exited 0, with
 test-authority lint OK, registry-only proof-authority lint reporting 26
 registered proofs and **zero validated manifests**, and 121/121 Python owner
-tests passing. This is a clean-Quanta-source infrastructure check only. It
-does not bind the Semantica source, a release daemon binary, or P11's handoff
-dependencies and therefore is not a P12A or P12Q release receipt.
+tests passing. This was a clean-Quanta-source infrastructure check without a
+source-bound P12A manifest or archived runner result. It was neither a P12A
+receipt nor P12Q release qualification.
 
 2026-09-24 dirty-source checkpoint at Quanta `563da185`: `just
 proof-p12a-proof-infrastructure` passed test-authority lint, registry-only
 proof-authority lint, and 121/121 Python owner tests. The registry lint
 validated **zero manifests**. This is local P12A infrastructure behavior,
-not an exact-pair P12A receipt or P12Q qualification.
+not an authoritative P12A receipt or P12Q qualification.
 
 Depends on: phase A depends on S21-00; phase B depends on S21-01 through S21-12
 
@@ -130,10 +130,16 @@ target before claiming its proof. Empty future target lists are not evidence and
 
 ### Phase B — final aggregate
 
-Phase B는 `P12A → P12Q` 두 직렬 proof lane이다. P12A infrastructure는 구현돼 있지만
-현재 exact-pair manifest가 없다. P11 source-pair dependency와 P12A handoff를
-검증한 뒤에만 P12A receipt를 발급한다. P12Q는 전체 final-source proof를
-실행·수집하고 terminal verdict/manifest를 발급한다.
+Phase B는 독립적인 P12A infrastructure proof와 최종 P12Q qualification으로 나뉜다.
+P12A는 Quanta exact-source와 원시 Python 실행 증거로 발급할 수 있다. P12Q는
+P11 exact-pair proof, P12A handoff, 전체 final-source proof 및 운영 동작을
+검증한 뒤에만 terminal verdict/manifest를 발급한다.
+
+Code/process proofs retain their registered Linux host-profile requirement but
+may run on distinct host instances. Deployment, activation and rollback must
+share one exact operational host identity, and P12 must bind to that host.
+The manual CI checkout under `.proof-pairs/` is excluded from Quanta's primary
+source dirty state; its Semantica source and lockfile are checked separately.
 
 - final clean source에서 동일 release daemon binary를 모든 process/cross-repo proof에 사용한다.
 - mandatory family 전부와 deployment/activation/rollback evidence를 aggregate하고 누락/실패/skipped/stale를

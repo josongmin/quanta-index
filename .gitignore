@@ -28,6 +28,7 @@ venv/
 env/
 
 # Agent / IDE / local tools
+/.proof-pairs/
 /.ken/
 .DS_Store
 .idea/

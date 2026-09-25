@@ -2,14 +2,14 @@
 
 The aggregate schema, writer, validator, shared handoff validator, and final
 recipe are present in source. This prompt is for current-source review,
-correction, and exact-pair P12A proof issuance; do not reimplement a second
+correction, and exact-source P12A proof issuance; do not reimplement a second
 aggregate or file-custody stack.
 
-Freeze Quanta HEAD/dirty state and Semantica HEAD/lockfile. Validate the P11
-exact-pair prerequisite and authentic P00-P11 historical handoffs before
-issuing a P12A receipt. Deployment, activation, and rollback are separate
-P12Q dependencies; their absence does not convert P12A owner code into a
-release qualification.
+Freeze Quanta HEAD/dirty state and collect P12A's raw Python inventory and
+JUnit. P11's exact pair and the authentic P00-P11 handoffs are final P12Q
+prerequisites; their absence does not prevent issuing a source-bound P12A
+receipt. Deployment, activation, and rollback remain separate P12Q
+dependencies.
 
 Review these existing owners:
 
@@ -27,8 +27,8 @@ source pair, dependency receipt digests, binary/host binding, and separate
 wrong-source, or wrong-host input must not become readiness. Preserve the
 independent expected DAG; the registry must not define its own oracle.
 
-Run `just proof-p12a-proof-infrastructure` on the frozen source. This is
-owner code proof only. Issue `p12a-proof-infrastructure` using the registered
-exact-pair writer only when its P11 dependency, infrastructure handoff, and
-terminal evidence are authentic. P12Q then runs separately on one final clean
-source pair; do not issue P12 from a P12A test result.
+Run `just proof-p12a-proof-infrastructure` with `QUANTA_PROOF_RAW_DIR` on the
+frozen source. Issue `p12a-proof-infrastructure` with the registered
+exact-source writer only after archiving the matching inventory and JUnit.
+The P12A handoff and P12Q run separately on one final clean source pair; do
+not issue P12 from a P12A test result.

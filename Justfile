@@ -832,8 +832,8 @@ proof-p00-authority-freeze:
         tools/ci/tests/test_check_lane_handoff.py \
         tools/ci/tests/test_handoff_validation.py -q
 
-# P12A is a Python owner proof. The exact-pair manifest is issued separately
-# only after its P11 dependency and paired checkout are source-bound.
+# P12A is a Python owner proof. Its exact-source manifest can be issued
+# independently; P12 final qualification binds P11 and the paired checkout.
 proof-p12a-proof-infrastructure:
     @test -z "${PYTEST_ADDOPTS:-}" && test -z "${PYTEST_PLUGINS:-}" || { echo "pytest environment overrides are forbidden for proof tests" >&2; exit 2; }
     python3 tools/ci/lint/check-test-authority.py

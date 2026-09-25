@@ -266,7 +266,9 @@ Authority rules:
 
 Parallelism:
 
-- 전체 graph는 `P00 → P01A → (P02A ∥ P02B) → P02I → P03 → P04 → … → P11 → P12A → P12Q`이다.
+- Product graph는 `P00 → P01A → (P02A ∥ P02B) → P02I → P03 → P04 → … → P11`이다.
+  P12A exact-source proof는 독립적으로 발급할 수 있다. 최종 P12Q는 P11 exact-pair proof와
+  P12A proof/handoff를 모두 요구한다.
 - 오직 P02A graph compiler와 P02B operation/global-event journal만 병렬 가능하다. 서로 다른 worktree/branch에서
   같은 P01A base를 사용하며 P03은 P02I same-HEAD 통합 proof 이후 시작한다.
 - W3는 P04→P05→P06 순차 stack이다. P06은 P05 public schema를 재설계하지 않는다.
@@ -274,8 +276,8 @@ Parallelism:
 - 같은 contract DTO/baseline 파일을 동시에 수정하는 병렬 작업과 그 밖의 병렬 lane은 금지한다.
 
 Handoff rule: 각 순차 lane은 immediate predecessor handoff만 직접 검증한다. P02I는 P02A/P02B 두 handoff와 proof를
-동일 HEAD에서 검증한다. 이 규칙은 transitive provenance를 버린다는 뜻이 아니다. P12A aggregate producer가 P00부터
-P11까지 전 체인과 fork/join을 검증하도록 구현하고 P12Q가 final source pair에서 재검증한다. 매 lane이 모든 과거
+동일 HEAD에서 검증한다. 이 규칙은 transitive provenance를 버린다는 뜻이 아니다. P12A는 aggregate/validator의
+동작을 원시 테스트로 검증하고, P12Q가 P00-P11 전 체인과 fork/join을 final source pair에서 검증한다. 매 lane이 모든 과거
 artifact를 재검증하는 방식은 금지한다.
 
 ## 7. Finding coverage

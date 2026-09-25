@@ -90,7 +90,7 @@ EXPECTED_PROOF_DEPENDENCIES: dict[str, list[str]] = {
     "p11-deployment": ["p11-cross-repo-cutover"],
     "p11-activation": ["p11-deployment"],
     "p11-rollback": ["p10-state-migration", "p11-activation"],
-    "p12a-proof-infrastructure": ["p11-cross-repo-cutover"],
+    "p12a-proof-infrastructure": [],
     "p12-final-qualification": ["p12a-proof-infrastructure"],
 }
 EXPECTED_VERDICT_PROOFS: dict[str, list[str]] = {
@@ -130,6 +130,7 @@ EXPECTED_P12A_TEST_TARGETS = [
     "proof-execution-result-python-owner",
     "proof-local-scope-runner-python-owner",
 ]
+OPERATIONAL_HOST_PROOFS = frozenset(("p11-deployment", "p11-activation", "p11-rollback"))
 STREAM_CHUNK_SIZE = 1024 * 1024
 
 
@@ -376,8 +377,8 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
                         f"{where}.paired_dependency_lock must be {PAIRED_DEPENDENCY_LOCK!r}",
                     )
                 )
-        if proof_id == "p12a-proof-infrastructure" and source_binding != "exact-pair":
-            findings.append(Finding(path, "P12A requires exact-pair source binding"))
+        if proof_id == "p12a-proof-infrastructure" and source_binding != "exact":
+            findings.append(Finding(path, "P12A requires exact source binding"))
         binary_binding = proof.get("binary_binding")
         if isinstance(binary_binding, str) and binary_binding not in {"none", "release-daemon"}:
             findings.append(Finding(path, f"{where}.binary_binding {binary_binding!r} is invalid"))
@@ -1904,6 +1905,38 @@ def code_qualified_proof_ids(registry: dict[str, Any]) -> list[str]:
     return [proof["id"] for proof in proofs if proof.get("id") in required]
 
 
+def operational_host_identities(
+    payload_by_id: dict[str, dict[str, Any]],
+) -> set[tuple[str, str]]:
+    """Bind deployment, activation and rollback to one actual target host."""
+    return {
+        (
+            payload["environment"]["host"]["profile"],
+            payload["environment"]["host"]["identity_digest"],
+        )
+        for proof_id, payload in payload_by_id.items()
+        if proof_id in OPERATIONAL_HOST_PROOFS
+    }
+
+
+def verdict_consistency_findings(
+    required_proofs: list[str],
+    *,
+    payload_by_id: dict[str, dict[str, Any]],
+    proof_by_id: dict[str, dict[str, Any]],
+    path: Path,
+) -> list[Finding]:
+    """Check only a verdict's proofs and their transitive prerequisites."""
+    selected = set(required_proofs)
+    for proof_id in required_proofs:
+        selected.update(dependency_closure(proof_by_id, proof_id))
+    return check_aggregate(
+        {proof_id: payload for proof_id, payload in payload_by_id.items() if proof_id in selected},
+        proof_by_id=proof_by_id,
+        path=path,
+    )
+
+
 def check_aggregate(
     payload_by_id: dict[str, dict[str, Any]],
     *,
@@ -1941,17 +1974,10 @@ def check_aggregate(
         findings.append(
             Finding(path, "aggregate exact-pair manifests do not share one paired source identity")
         )
-    release_hosts = {
-        (
-            payload["environment"]["host"]["profile"],
-            payload["environment"]["host"]["identity_digest"],
-        )
-        for proof_id, payload in payload_by_id.items()
-        if proof_by_id[proof_id]["binary_binding"] == "release-daemon"
-    }
+    release_hosts = operational_host_identities(payload_by_id)
     if len(release_hosts) > 1:
         findings.append(
-            Finding(path, "aggregate release-daemon proofs do not share one host identity")
+            Finding(path, "aggregate operational proofs do not share one host identity")
         )
     state_root_formats = {
         payload["state_root_format"]
@@ -2232,14 +2258,7 @@ def check_aggregate_receipt(
             for proof_id, manifest in payload_by_id.items()
             if proof_by_id[proof_id]["binary_binding"] == "release-daemon"
         }
-        host_values = {
-            (
-                manifest["environment"]["host"]["profile"],
-                manifest["environment"]["host"]["identity_digest"],
-            )
-            for proof_id, manifest in payload_by_id.items()
-            if proof_by_id[proof_id]["binary_binding"] == "release-daemon"
-        }
+        host_values = operational_host_identities(payload_by_id)
         root_values = {
             manifest["state_root_format"]
             for proof_id, manifest in payload_by_id.items()
@@ -2278,7 +2297,13 @@ def check_aggregate_receipt(
             required_statuses = [
                 dependency_statuses.get(proof_id, "FAILED") for proof_id in expected_proofs
             ]
-            if consistency_findings and all(status == "PASSED" for status in required_statuses):
+            verdict_findings = verdict_consistency_findings(
+                expected_proofs,
+                payload_by_id=payload_by_id,
+                proof_by_id=proof_by_id,
+                path=receipt_path,
+            )
+            if verdict_findings and all(status == "PASSED" for status in required_statuses):
                 expected_status = "FAILED"
             elif "FAILED" in required_statuses:
                 expected_status = "FAILED"

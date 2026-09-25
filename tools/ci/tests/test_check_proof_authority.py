@@ -1196,8 +1196,8 @@ def test_p12a_python_owner_is_registered_and_source_bound() -> None:
         proof for proof in registry["proofs"] if proof["id"] == "p12a-proof-infrastructure"
     )
     assert proof["authority_state"] == "executable"
-    assert proof["source_binding"] == "exact-pair"
-    assert proof["dependencies"] == ["p11-cross-repo-cutover"]
+    assert proof["source_binding"] == "exact"
+    assert proof["dependencies"] == []
     assert proof["test_authority_targets"] == MODULE.EXPECTED_P12A_TEST_TARGETS
     assert not MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH)
 
@@ -1258,16 +1258,31 @@ def test_p12a_python_owner_refuses_missing_scope_target_and_recipe(monkeypatch) 
     assert any("does not execute Python targets" in message for message in messages)
 
 
-def test_p12a_refuses_downgraded_source_binding() -> None:
+def test_p12a_refuses_unneeded_pair_binding() -> None:
     registry = MODULE._read_toml(REGISTRY_PATH)
     proof = next(
         proof for proof in registry["proofs"] if proof["id"] == "p12a-proof-infrastructure"
     )
-    proof["source_binding"] = "exact"
-    proof.pop("paired_repository")
-    proof.pop("paired_dependency_lock")
+    proof["source_binding"] = "exact-pair"
+    proof["paired_repository"] = MODULE.PAIRED_REPOSITORY
+    proof["paired_dependency_lock"] = MODULE.PAIRED_DEPENDENCY_LOCK
     messages = _messages(MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH))
-    assert any("P12A requires exact-pair source binding" in message for message in messages)
+    assert any("P12A requires exact source binding" in message for message in messages)
+
+
+def test_manual_paired_checkout_is_outside_primary_source() -> None:
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(REPO_ROOT),
+            "check-ignore",
+            "-q",
+            ".proof-pairs/semantica-codegraph-v2/Cargo.lock",
+        ],
+        check=False,
+    )
+    assert result.returncode == 0
 
 
 @pytest.mark.parametrize(

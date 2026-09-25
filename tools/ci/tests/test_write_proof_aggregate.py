@@ -838,7 +838,7 @@ def test_complete_proof_verdicts_cannot_bypass_either_handoff_ledger(
     assert payload["production_ready"] is False
 
 
-def test_writer_refuses_stale_p12a_exact_pair_after_paired_source_change(
+def test_writer_keeps_p12a_source_proof_when_paired_source_changes(
     tmp_path: Path,
     aggregate_templates: AggregateTemplates,
 ) -> None:
@@ -858,7 +858,8 @@ def test_writer_refuses_stale_p12a_exact_pair_after_paired_source_change(
     payload = json.loads(output.read_text(encoding="utf-8"))
     statuses = {item["proof_id"]: item["status"] for item in payload["dependency_receipts"]}
     assert not ready
-    assert statuses["p12a-proof-infrastructure"] == "FAILED"
+    assert statuses["p12a-proof-infrastructure"] == "PASSED"
+    assert statuses["p11-cross-repo-cutover"] == "FAILED"
     assert payload["production_ready"] is False
 
 
@@ -910,7 +911,35 @@ def test_aggregate_validation_refuses_source_change_during_cached_pass(
     )
 
 
-def test_writer_publishes_failed_diagnostic_for_cross_manifest_host_drift(
+def test_writer_accepts_distinct_code_proof_host_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    aggregate_templates: AggregateTemplates,
+) -> None:
+    _inject_verified_handoff_ledger(monkeypatch)
+    root, registry = _fixture_root(tmp_path, executable=True, templates=aggregate_templates)
+    paired = _paired_checkout(tmp_path, aggregate_templates)
+    _write_dependency_manifests(
+        root,
+        registry,
+        paired,
+        release_host_digest_overrides={"p08-runtime-supervisor": "sha256:" + "3" * 64},
+    )
+    _stub_verified_handoffs(monkeypatch)
+
+    output, _, ready = WRITER.publish_aggregate(
+        root=root,
+        registry_path=root / "tools/ci/proof-authority.toml",
+        paired_checkout=paired,
+    )
+
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert ready
+    assert payload["production_ready"] is True
+    assert payload["release_host"]["identity_digest"] == RELEASE_HOST_DIGEST
+
+
+def test_writer_refuses_operational_host_drift(
     tmp_path: Path,
     aggregate_templates: AggregateTemplates,
 ) -> None:
@@ -920,7 +949,7 @@ def test_writer_publishes_failed_diagnostic_for_cross_manifest_host_drift(
         root,
         registry,
         paired,
-        release_host_digest_overrides={"p08-runtime-supervisor": "sha256:" + "3" * 64},
+        release_host_digest_overrides={"p11-activation": "sha256:" + "3" * 64},
     )
 
     output, _, ready = WRITER.publish_aggregate(
@@ -933,7 +962,10 @@ def test_writer_publishes_failed_diagnostic_for_cross_manifest_host_drift(
     assert not ready
     assert payload["production_ready"] is False
     assert payload["release_host"] is None
-    assert payload["verdicts"]["CODE_QUALIFIED"]["status"] == "FAILED"
+    assert payload["verdicts"]["CODE_QUALIFIED"]["status"] == "PASSED"
+    assert payload["verdicts"]["DEPLOYED"]["status"] == "PASSED"
+    assert payload["verdicts"]["ACTIVATED"]["status"] == "FAILED"
+    assert payload["verdicts"]["ROLLBACK_PROVEN"]["status"] == "FAILED"
 
 
 def test_ready_aggregate_is_mandatory_and_sufficient_for_p12_issuance(

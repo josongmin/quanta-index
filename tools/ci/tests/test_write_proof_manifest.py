@@ -762,12 +762,59 @@ def test_exact_pair_is_derived_from_live_external_checkout_without_persisting_pa
     jsonschema.Draft202012Validator(schema["properties"]["source_pair"]).validate(source_pair)
 
 
-def test_p12a_manifest_refuses_missing_pair_and_p11_dependency(
+def test_p12a_manifest_issues_without_p11_or_paired_checkout(
     tmp_path: Path,
     manifest_templates: ManifestTemplates,
 ) -> None:
     root, _ = _fixture_root(tmp_path, manifest_templates)
-    terminal_path, _ = _terminal(root)
+    terminal_path, terminal = _terminal(root)
+    catalog = CHECKER._read_toml(root / "tools/ci/test-authority.toml")
+    paths = {item["id"]: item["path"] for item in catalog["python_targets"]}
+    registry = CHECKER._read_toml(root / "tools/ci/proof-authority.toml")
+    proof = next(item for item in registry["proofs"] if item["id"] == "p12a-proof-infrastructure")
+    selectors = [paths[target] for target in proof["test_authority_targets"]]
+    cases = sorted(f"{path[:-3].replace('/', '.')}.test_case" for path in selectors)
+    raw = root / "artifacts/proof-authority/raw"
+    inventory = raw / "p12a-inventory.json"
+    junit = raw / "p12a-junit.xml"
+    inventory.write_text(
+        json.dumps(
+            {"schema_version": 1, "kind": "pytest", "selector": " ".join(selectors), "tests": cases}
+        ),
+        encoding="utf-8",
+    )
+    junit.write_text(
+        f'<testsuite tests="{len(cases)}" failures="0" errors="0" skipped="0">'
+        + "".join(
+            f'<testcase classname="{case.rsplit(".", 1)[0]}" name="test_case"/>' for case in cases
+        )
+        + "</testsuite>",
+        encoding="utf-8",
+    )
+    terminal["counts"] = {
+        "selected": len(cases),
+        "executed": len(cases),
+        "passed": len(cases),
+        "failed": 0,
+        "ignored": 0,
+    }
+    terminal["artifacts"].extend(
+        [
+            "artifacts/proof-authority/raw/p12a-inventory.json",
+            "artifacts/proof-authority/raw/p12a-junit.xml",
+        ]
+    )
+    terminal["execution_result"] = {
+        "schema_version": 1,
+        "runs": [
+            {
+                "format": "pytest-junit",
+                "events": "artifacts/proof-authority/raw/p12a-junit.xml",
+                "inventory": "artifacts/proof-authority/raw/p12a-inventory.json",
+            }
+        ],
+    }
+    terminal_path.write_text(json.dumps(terminal), encoding="utf-8")
     kwargs = {
         "root": root,
         "registry_path": root / "tools/ci/proof-authority.toml",
@@ -775,13 +822,13 @@ def test_p12a_manifest_refuses_missing_pair_and_p11_dependency(
         "proof_id": "p12a-proof-infrastructure",
         "terminal_input_path": terminal_path,
     }
-    with pytest.raises(WRITER.ManifestRefused, match="requires a non-empty --paired-checkout"):
-        WRITER.publish_manifest(**kwargs, paired_checkout=None)
-
-    paired = _paired_checkout(tmp_path, manifest_templates)
-    with pytest.raises(WRITER.ManifestRefused, match="dependency p11-cross-repo-cutover"):
-        WRITER.publish_manifest(**kwargs, paired_checkout=paired)
-    assert not (root / "artifacts/proof-authority/p12a-proof-infrastructure.json").exists()
+    WRITER.publish_manifest(**kwargs, paired_checkout=None)
+    payload = json.loads(
+        (root / "artifacts/proof-authority/p12a-proof-infrastructure.json").read_text()
+    )
+    assert payload["status"] == "passed"
+    assert payload["source_pair"] is None
+    assert payload["dependency_receipts"] == []
 
 
 def test_exact_pair_manifest_is_live_bound_through_atomic_writer(

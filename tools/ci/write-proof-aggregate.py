@@ -216,14 +216,7 @@ def build_aggregate(
             for proof_id, manifest in payload_by_id.items()
             if proof_by_id[proof_id]["binary_binding"] == "release-daemon"
         }
-        host_values = {
-            (
-                manifest["environment"]["host"]["profile"],
-                manifest["environment"]["host"]["identity_digest"],
-            )
-            for proof_id, manifest in payload_by_id.items()
-            if proof_by_id[proof_id]["binary_binding"] == "release-daemon"
-        }
+        host_values = checker.operational_host_identities(payload_by_id)
         root_values = {
             manifest["state_root_format"]
             for proof_id, manifest in payload_by_id.items()
@@ -240,10 +233,16 @@ def build_aggregate(
 
     verdicts: dict[str, dict[str, Any]] = {}
     for verdict, required_proofs in aggregate["verdicts"].items():
+        verdict_findings = checker.verdict_consistency_findings(
+            required_proofs,
+            payload_by_id=payload_by_id,
+            proof_by_id=proof_by_id,
+            path=registry_path,
+        )
         verdicts[verdict] = {
             "status": _derived_verdict(
                 [dependency_statuses.get(proof_id, "FAILED") for proof_id in required_proofs],
-                consistency_failed=bool(consistency_findings),
+                consistency_failed=bool(verdict_findings),
             ),
             "required_proofs": required_proofs,
         }

@@ -10,6 +10,7 @@ remote SHA verification`이다. proof 뒤 source가 바뀌면 manifest와 handof
 P02A/P02B 통합 owner는 두 lane commit을 합친 clean HEAD에서 proof를 다시 실행하고 `P02I.json`을 만든다.
 P02I는 `integration_commits`에 P02A/P02B original/applied SHA와 MERGE/CHERRY_PICK mode를 기록한다.
 P11과 P12A/P12Q handoff는 top-level quanta SHA 외에 `paired_repositories`로 exact source pair를 기록한다.
+P12A proof manifest 자체는 Quanta exact-source만 묶으며 독립적으로 발급할 수 있다.
 paired list 순서는 `github:josongmin/quanta-index`, `github:josongmin/semantica-codegraph-v2`로 고정한다. schema가
 표현할 수 없는 cross-field 조건은 handoff semantic validator가 강제한다: top-level base/result/dirty digest는 첫 quanta
 entry와 exact match하고, `PUSHED` entry의 `remote_sha == result_sha`여야 한다. validator는 lane별 canonical
