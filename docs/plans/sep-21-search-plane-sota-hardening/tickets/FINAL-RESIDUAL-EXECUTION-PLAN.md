@@ -76,9 +76,11 @@ duplicate, partial and count-mismatched runner evidence. P00 passed counts are
 fixed to the single inventory invariant, and a source-bound P00 validation
 recomputes the archived discovery inventory. This closes the arbitrary-log/count
 path for executable owner-test manifests. `QUANTA_PROOF_RAW_DIR` makes local
-Nextest scopes emit collection inventories and JSONL events; P00/P12A collect
-pytest inventories, with JUnit emitted when the caller supplies the matching
-`PYTEST_ADDOPTS=--junitxml=...`. Default recipe runs do not emit these artifacts,
+Nextest scopes emit collection inventories and JSONL events. P00 collects a
+pytest inventory when `QUANTA_PROOF_RAW_DIR` is set; P12A collects an inventory
+and emits matching JUnit through `proof_execution_result.py run-p12a` in that
+mode. Both proof recipes reject `PYTEST_ADDOPTS` and `PYTEST_PLUGINS` because
+they can change test selection. Default recipe runs do not emit these artifacts,
 `--run-ignored all` scopes have no capture mode, and issuance does not bind
 every recipe subcommand to its exit result. No new owner `passed` manifest
 should be issued from human-readable logs. Trusted CI-run provenance, Linux host
