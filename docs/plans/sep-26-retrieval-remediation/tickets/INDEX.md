@@ -53,7 +53,7 @@ Rust-heavy 검증과 성능 측정은 경쟁 writer/build가 없는 구간에 �
 
 | 티켓 | 구현 | focused verification | integration | qualification |
 | --- | --- | --- | --- | --- |
-| RBR-00 | 진행 중: inventory 일치(python 218/rust 55/sdk 12, 역할별 verify 통과), sep-26 closure 등록+거부 테스트, [PROFILE-CONTRACT](PROFILE-CONTRACT.md) 정의. schema/validator 배선은 RBR-02+와 함께 | `VERIFIED` — 3역할 inventory verify, receipt closure 24 passed | `NOT_RUN` — clean-source closure receipt는 커밋 후 발급 | `NOT_APPLICABLE` |
-| RBR-11 | `VERIFIED` — 소유 그래프에서 live zero-RSS 연결 노드 보존, resource policy는 소유 집합 확정 후 적용. zombie 회귀 기대치 수정 + 반례 7종 추가 | `VERIFIED` — 감사 oracle `[100,105]` 해소, sampler 8+실제 프로세스 smoke 1 passed, 풀 파일 218 passed | `NOT_RUN` — 커밋 후 clean-source receipt | 실제 프로세스 smoke `VERIFIED`(macOS) |
+| RBR-00 | 진행 중: inventory 일치(python 218/rust 55/sdk 12, 역할별 verify 통과), sep-26 closure 등록+거부 테스트, [PROFILE-CONTRACT](PROFILE-CONTRACT.md) 정의. schema/validator 배선은 RBR-02+와 함께 | `VERIFIED` — 3역할 inventory verify, receipt closure 24 passed | `BLOCKED` — `20f7b6cd` 커밋 후 closure capture가 공유 체크아웃의 타 writer dirty(`crates/quanta-index-catalog/*`)로 정상 거부. 경쟁 편집 정리 후 재발급 | `NOT_APPLICABLE` |
+| RBR-11 | `VERIFIED` — 소유 그래프에서 live zero-RSS 연결 노드 보존, resource policy는 소유 집합 확정 후 적용. zombie 회귀 기대치 수정 + 반례 7종 추가 | `VERIFIED` — 감사 oracle `[100,105]` 해소, sampler 8+실제 프로세스 smoke 1 passed, 풀 파일 218 passed | `BLOCKED` — RBR-00과 동일 원인 | 실제 프로세스 smoke `VERIFIED`(macOS) |
 
 RBR-01~10, RBR-12: `NOT_RUN`. 위 표의 검증은 dirty 작업 트리에서 수행한 진단 실행이며, TEST-PLAN §3의 clean-source proof rail은 커밋 후 별도 발급한다.
