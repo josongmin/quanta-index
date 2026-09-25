@@ -777,7 +777,7 @@ mod tests {
         connection.execute_batch(
             "CREATE TABLE catalog_sequence_event_v2 (
                  sequence INTEGER PRIMARY KEY CHECK (sequence BETWEEN 1 AND 9223372036854775807),
-                 kind INTEGER NOT NULL CHECK (kind IN (1, 2, 3, 4, 5, 6, 7, 8, 9)),
+                 kind INTEGER NOT NULL CHECK (kind IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10)),
                  identity_digest BLOB NOT NULL CHECK (length(identity_digest) = 32),
                  payload_digest BLOB NOT NULL CHECK (length(payload_digest) = 32),
                  event_commitment BLOB NOT NULL CHECK (length(event_commitment) = 32),
