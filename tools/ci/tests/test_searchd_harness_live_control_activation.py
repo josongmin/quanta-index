@@ -109,7 +109,7 @@ def test_control_response_and_composite_activation_ack_are_request_bound_v1() ->
     assert "response.request_id != request_id" in dispatch_control_response
     assert "SearchPlaneControlIpcResponse::Error" in dispatch_control
     assert "SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(ack)" in activate
-    assert re.search(r"ack\.active\s*!=\s*candidate", activate)
+    assert re.search(r"ack\.active\.generation\s*!=\s*candidate", activate)
     assert re.search(
         r"ack\.previous_sealed_active\s*!=\s*expected_active",
         activate,
@@ -134,13 +134,13 @@ def test_activation_expectation_is_reloaded_from_daemon_control_authority_v1() -
     source = read_harness()
     runtime = rust_item_body(source, "pub struct E2eRuntime {")
     activate = rust_item_body(source, "activate_last_sealed_generation(")
-    current = rust_item_body(source, "fn current_search_corpus_identity_from_control_v1(")
+    current = rust_item_body(source, "fn current_search_corpus_head_from_control_v1(")
 
     assert "active_search_corpus_identity" not in runtime
-    assert "current_search_corpus_identity_from_control_v1" in activate
-    assert "SearchPlaneControlIpcRequest::CurrentGeneration" in current
-    assert "SearchPlaneTrackKind::Lexical" in current
-    assert "SearchPlaneTrackKind::Semantic" in current
-    assert "SearchCorpusGenerationIdentityV1" in current
-    assert ".validate_v1()" in current
+    assert "current_search_corpus_head_from_control_v1" in activate
+    assert "SearchPlaneControlIpcRequest::SearchCorpusActiveHead" in current
+    assert "SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation" in current
+    assert "observation.repo_id() != repo_id" in current
+    assert "observation.revision_id() != revision_id" in current
+    assert "observation.into_head()" in current
     assert "active_search_corpus_identity" not in activate

@@ -2,7 +2,7 @@
 """Guard closed Rust outcome enums against success laundering.
 
 This deliberately complements, rather than duplicates, the repository's
-Semgrep Result/error-fallback rules. It is a syntactic guard over explicitly
+Rust fallback syntax guard. It is a syntactic guard over explicitly
 registered enum families, not a Rust type checker or a proof of every flow.
 """
 

@@ -11,6 +11,7 @@ DISPATCHER = ROOT / "crates/quanta-index-search-plane/src/control_dispatcher.rs"
 # reads every production file of it as one text.
 READINESS_DIR = ROOT / "crates/quanta-index-search-plane/src/readiness"
 SDK_CLIENT = ROOT / "crates/quanta-index-sdk/src/client.rs"
+SDK_BINDING = ROOT / "crates/quanta-index-sdk/src/binding.rs"
 SDK_CORPUS = ROOT / "crates/quanta-index-sdk/src/lexical.rs"
 SDK_GENERATIONS = ROOT / "crates/quanta-index-sdk/src/generations.rs"
 SDK_LIB = ROOT / "crates/quanta-index-sdk/src/lib.rs"
@@ -81,8 +82,10 @@ def test_sdk_only_emits_composite_activation_ingress_v1() -> None:
     client = read_source(SDK_CLIENT)
     corpus = read_source(SDK_CORPUS)
 
-    assert "SearchCorpusGenerationIdentityV1" in client
-    assert "SearchPlaneSearchCorpusActivationCasAck" in client
+    assert "ControlCallBinding::from_request(&payload)" in client
+    assert "bind_control_response(&binding, &response.payload)" in client
+    assert "SearchCorpusGenerationIdentityV1" in corpus
+    assert "SearchPlaneSearchCorpusActivationCasAck" in corpus
     assert "ActivateSearchCorpusGenerationCas" in corpus
     assert "SearchPlaneActivateGenerationCasRequest" not in corpus
     assert "SearchPlaneActivateGenerationRequest" not in corpus
@@ -141,12 +144,17 @@ def test_rollback_contract_is_composite_only_v1() -> None:
 
 
 def test_sdk_binds_composite_success_acks_to_requests_v1() -> None:
-    corpus = read_source(SDK_CORPUS)
+    binding = read_source(SDK_BINDING)
     generations = read_source(SDK_GENERATIONS)
 
-    assert "validate_composite_activation_ack_v1" in corpus
+    assert "ControlCall::Activate(request)" in binding
+    assert "ack.active.generation != request.candidate" in binding
+    assert "ack.previous_sealed_active != request.expected_active" in binding
+    assert "check_activation_token_advance_v1(" in binding
     assert "validate_composite_rollback_request_v1" in generations
-    assert "validate_composite_rollback_ack_v1" in generations
+    assert "ControlCall::Rollback(request)" in binding
+    assert "ack.active.generation != request.target" in binding
+    assert "ack.previous_sealed_active != request.expected_active" in binding
     assert "request.validate_v1()" in generations
 
 

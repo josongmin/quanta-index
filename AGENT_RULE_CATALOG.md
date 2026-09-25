@@ -116,16 +116,16 @@ These checks apply **while you write**, not as a cleanup pass. Every diff should
 - **Digest fallibility** — `tools/ci/lint/check-digest-fallibility.py` enforces that every public function returning `[u8; N]` for `N ∈ {16, 20, 32, 48, 64}` either returns `Result<[u8; N], _>` OR carries a doc comment containing the literal phrase `infallible by construction`. Reason: a digest function with a non-Result return forces the implementer into `panic!()`/`unwrap()`/heuristic fallback when the internal codec step fails — exactly the pattern that landed in `lq-ranker::weights_hash` v0. Pre-push + CI gated.
 - **Semantic outcome honesty** — `tools/ci/lint/check-semantic-outcomes.py` uses the explicit `semantic-outcome-policy.json` enum inventory to reject negative-to-positive mapping, catch-all success (including an early `Ok` hidden before a terminal error), and the `StructuralReadiness` negative-to-empty/wrong-error projection or reason loss. An identity-preserving bound catch-all is allowed; `ExecutionOutcomeV2` negative-to-`None` remains valid when it means no exhaustion proof. Production `#[cfg(test)]` branches are excluded; parse errors overlapping governed syntax and any unclassified, missing, or renamed registered enum variant fail closed. This is a bounded syntax guard, not a substitute for owner tests or Rust type checking. Pre-push + CI gated.
 
-### Silent-fallback guards (semgrep)
+### Silent-fallback guards (Rust AST lint and Semgrep)
 
-- `rust-no-silent-or-else-ok` blocks `.or_else(|_| Ok(...))` shaped error-to-success conversions.
+- `tools/ci/lint/check-rust-fallbacks.py` owns three production Rust syntax guards in one tree-sitter pass: `rust-no-silent-or-else-ok` blocks `.or_else` closures whose tail or explicit return synthesizes `Ok(...)`; `rust-no-is-ok-as-branch` and `rust-no-is-err-as-branch` block Result predicates with an `else` block or `else if` continuation, including parenthesized conditions. Nested closure returns are not attributed to the outer recovery closure. Its counterexamples run separately from broad tooling tests. This guard is syntactic, not a type or flow proof.
 - Clippy's `match_wild_err_arm` owns wildcard `Err(_)` branches; the Semgrep duplicate was removed.
 - `rust-no-debug-assertions-divergence` blocks `cfg!(debug_assertions)` and `#[cfg(debug_assertions)]` in contract/core production paths so release behavior cannot silently diverge from debug.
 - Clippy's `disallowed-methods` owns `Result::ok`; the Semgrep duplicate was removed. `.err().is_some()` / `.err().is_none()` remain ordinary presence predicates.
-- `rust-no-is-ok-as-branch` / `rust-no-is-err-as-branch` block general `if x.is_ok() { ... } else { ... }` and `if x.is_err() { ... } else { ... }` two-branch patterns in production src/ trees. A checked `u8`/`u16`/`u32::try_from(value).is_ok()` width predicate is excluded: canonical CBOR uses it for representability, and Clippy requires that spelling. Reason: a general two-branch Result inspection can route errors to an alternate algorithm, default or no-op. Single-branch `if x.is_err() { return Err(...); }` is permitted because it propagates explicitly. Use `?`, `match { Ok(v) => ..., Err(e) => return Err(...) }`, or change the function signature to return `Result` so the typed Err can propagate.
+- A checked `u8`/`u16`/`u32::try_from(value).is_ok()` width predicate is excluded: canonical CBOR uses it for representability, and Clippy requires that spelling. A general two-branch Result inspection can route errors to an alternate algorithm, default or no-op. Single-branch `if x.is_err() { return Err(...); }` is permitted because it propagates explicitly. Use `?` or a typed `match` with explicit `Err` handling.
 - `search-plane-no-process-spawn` / `search-plane-no-producer-parser-import` block direct process execution and Git/parse-tree imports in search-plane production source. This mechanically protects one part of the producer-owned source-authority boundary; it does not prove that every file read is authority-safe.
 - Do not lint public `V<n>` type names as parallel IR by spelling alone: RepoMap layout/evidence types expose versioned artifact contracts. Enforce the single-IR rule against actual duplicate producer/consumer paths, not legitimate contract names.
-- *deliberately not enforced via semgrep:* `if let Ok(x) = ... { ... }` with no else. Semgrep's Rust grammar does not handle multi-statement block patterns reliably, and the idiom is too common in legitimate best-effort paths (metrics, logging) to lint without high false-positive rate. Manual code review covers it for now. Same for `Result::map_or(default, ...)` saturation idioms.
+- *deliberately not enforced automatically:* `if let Ok(x) = ... { ... }` with no else and `Result::map_or(default, ...)` saturation idioms are too common in legitimate best-effort or Option paths to lint accurately without type/intent evidence. Manual code review covers them.
 
 ### Verification
 
@@ -160,7 +160,7 @@ These checks apply **while you write**, not as a cleanup pass. Every diff should
 - Rust format: `just fmt-check`
 - Rust lint: `just rust-clippy`
 - Rust tests: `just rust-test`
-- Rust policy: `just rust-workspace-lints`, `just rust-hexagonal`, `just rust-no-allow`, `just rust-derive-allowlist`, `just rust-cargo-toml-hygiene`, `just rust-module-discipline`, `just rust-module-cycles`, `just rust-error-shape`, `just rust-digest-fallibility`, `just rust-semantic-outcomes`, `just rust-wire-inventory`, `just rust-deny`
+- Rust policy: `just rust-workspace-lints`, `just rust-hexagonal`, `just rust-no-allow`, `just rust-derive-allowlist`, `just rust-cargo-toml-hygiene`, `just rust-module-discipline`, `just rust-module-cycles`, `just rust-error-shape`, `just rust-digest-fallibility`, `just rust-semantic-outcomes`, `just rust-fallbacks`, `just rust-wire-inventory`, `just rust-deny`
 - Rust derive allowlist: `python3 tools/ci/lint/check-rust-derive-allowlist.py`
 - Rust Cargo.toml hygiene: `python3 tools/ci/lint/check-cargo-toml-hygiene.py`
 - Rust module discipline: `python3 tools/ci/lint/check-module-discipline.py`
@@ -168,9 +168,10 @@ These checks apply **while you write**, not as a cleanup pass. Every diff should
 - Rust error shape: `python3 tools/ci/lint/check-error-shape.py`
 - Rust digest fallibility: `python3 tools/ci/lint/check-digest-fallibility.py`
 - Rust semantic outcomes: `python3 tools/ci/lint/check-semantic-outcomes.py`
+- Rust fallback syntax: `just rust-fallbacks` (tree-sitter counterexamples and production scan)
 - Wire-surface inventory: `python3 tools/ci/lint/check-wire-inventory.py`
 - Rust supply chain: `bash scripts/run-cargo-deny.sh`
-- Semgrep: `just semgrep` (nonduplicated fallback, workflow, and search-plane authority guards; derive/allow/vendor/port checks have dedicated owners)
+- Semgrep: `just semgrep` (workflow and search-plane authority guards plus narrow Rust regex checks; fallback AST shapes and derive/allow/vendor/port checks have dedicated owners)
 - Prompt drift: `python3 tools/prompt-manager/pm.py lint`
 - Tooling tests: `python3 -m pytest tools -q`
 - Agent output envelope and evidence binding (PR-changed only): `python3 tools/ci/agent/validate_agent_output.py <file>`

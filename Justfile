@@ -695,6 +695,10 @@ rust-digest-fallibility:
 rust-semantic-outcomes:
     python3 tools/ci/lint/check-semantic-outcomes.py
 
+rust-fallbacks:
+    python3 tools/ci/tests/test_check_rust_fallbacks.py
+    python3 tools/ci/lint/check-rust-fallbacks.py
+
 rust-test-authority:
     python3 tools/ci/lint/check-test-authority.py
 
@@ -939,6 +943,7 @@ verify:
     @just semgrep-rule-tests
     @just semgrep
     @just rust-semantic-outcomes
+    @just rust-fallbacks
     @just python-lint
     @just python-format-check
     @just python-test

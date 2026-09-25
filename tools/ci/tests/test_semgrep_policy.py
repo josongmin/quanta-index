@@ -41,45 +41,8 @@ class SemgrepPolicyTest(unittest.TestCase):
       - continue-on-error: true
         run: ./scripts/cargow check --workspace
 """,
-            "crates/example/src/sample.rs": """pub struct CandidateAddressV1;
-fn width(value: u64) {
-    if u8::try_from(value).is_ok() { narrow(); } else { wide(); }
-}
-fn width_chain(value: u64) {
-    if value < 24 { tiny(); }
-    else if u8::try_from(value).is_ok() { narrow(); }
-    else if u16::try_from(value).is_ok() { medium(); }
-    else if u32::try_from(value).is_ok() { large(); }
-    else { wide(); }
-}
-fn hidden(result: Result<(), ()>) {
-    if result.is_ok() { serve(); } else { serve_default(); }
-}
-fn inverted(result: Result<(), ()>) {
-    if result.is_err() { serve_default(); } else { serve(); }
-}
-""",
             "crates/quanta-index-core/src/lib.rs": """fn bad(result: Result<(), ()>) {
-    let _ = result.or_else(|_| Ok(()));
-    let _ = result.or_else(|err| { log(err); Ok(()) });
-    let _ = result.or_else(|_| { Ok(()) });
     if cfg!(debug_assertions) { fail_open(); }
-}
-""",
-            "crates/quanta-index-core/tests/silent.rs": """fn test_only(result: Result<(), ()>) {
-    let _ = result.or_else(|_| Ok(()));
-}
-""",
-            "crates/quanta-index-core/src/tests.rs": """fn test_only(result: Result<(), ()>) {
-    let _ = result.or_else(|_| Ok(()));
-}
-""",
-            "crates/quanta-index-core/fuzz/fuzz_targets/silent.rs": """fn fuzz_target(result: Result<(), ()>) {
-    let _ = result.or_else(|_| Ok(()));
-}
-""",
-            "benchmarks/retrieval/src/silent.rs": """fn benchmark(result: Result<(), ()>) {
-    let _ = result.or_else(|_| Ok(()));
 }
 """,
             "crates/quanta-index-searchd/src/lib.rs": """fn bad() -> StructuralReadiness {
@@ -146,17 +109,6 @@ fn bad() { let _ = Command::new("git").output(); }
         self.assertEqual(len(configured), len(set(configured)))
         self.assertEqual({self.rule(item) for item in self.findings}, set(configured))
 
-    def test_result_branch_guards_and_checked_width_exceptions(self) -> None:
-        findings = {
-            (self.rule(item), item["start"]["line"])
-            for item in self.findings
-            if item["path"] == "crates/example/src/sample.rs"
-        }
-        self.assertEqual(
-            findings,
-            {("rust-no-is-ok-as-branch", 13), ("rust-no-is-err-as-branch", 16)},
-        )
-
     def test_workflow_guards(self) -> None:
         findings = {
             (Path(item["path"]).suffix, self.rule(item), item["start"]["line"])
@@ -178,7 +130,6 @@ fn bad() { let _ = Command::new("git").output(); }
 
     def test_other_rust_rules_and_test_exclusions(self) -> None:
         expected_rules = {
-            "rust-no-silent-or-else-ok",
             "rust-no-debug-assertions-divergence",
             "rust-no-ready-on-failed-structural-precondition",
             "rust-no-search-plane-direct-ciborium",
@@ -192,10 +143,9 @@ fn bad() { let _ = Command::new("git").output(); }
                 (self.rule(item), item["path"], item["start"]["line"])
                 for item in self.findings
                 if self.rule(item) in expected_rules
-                and self.rule(item) != "rust-no-silent-or-else-ok"
             },
             {
-                ("rust-no-debug-assertions-divergence", "crates/quanta-index-core/src/lib.rs", 5),
+                ("rust-no-debug-assertions-divergence", "crates/quanta-index-core/src/lib.rs", 2),
                 (
                     "rust-no-ready-on-failed-structural-precondition",
                     "crates/quanta-index-searchd/src/lib.rs",
@@ -206,20 +156,6 @@ fn bad() { let _ = Command::new("git").output(); }
                     "crates/quanta-index-search-plane/src/lib.rs",
                     2,
                 ),
-            },
-        )
-        self.assertEqual(
-            {
-                (item["path"], item["start"]["line"])
-                for item in self.findings
-                if self.rule(item) == "rust-no-silent-or-else-ok"
-            },
-            {
-                ("crates/quanta-index-core/src/lib.rs", 2),
-                ("crates/quanta-index-core/src/lib.rs", 3),
-                ("crates/quanta-index-core/src/lib.rs", 4),
-                ("crates/quanta-index-core/fuzz/fuzz_targets/silent.rs", 2),
-                ("benchmarks/retrieval/src/silent.rs", 2),
             },
         )
 

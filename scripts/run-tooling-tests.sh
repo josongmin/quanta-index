@@ -7,9 +7,9 @@ cd "${ROOT_DIR}"
 # shellcheck disable=SC1091
 source scripts/quanta-index-env.sh
 
-# The Semgrep counterexamples are owned by the Semgrep gate, which installs
-# and invokes the scanner. Running them here either repeats scans or skips them
-# when Semgrep is unavailable.
+# Dedicated counterexample gates own these scanners. Keep their focused tests
+# out of the broad tooling suite to avoid duplicate work.
 python3 -m pytest tools -q \
   --ignore=tools/ci/tests/test_semgrep_policy.py \
+  --ignore=tools/ci/tests/test_check_rust_fallbacks.py \
   -o cache_dir="${PYTEST_CACHE_DIR}" "$@"

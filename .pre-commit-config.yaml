@@ -217,6 +217,22 @@ repos:
         files: ^(crates/.*\.rs|benchmarks/.*\.rs|tools/ci/lint/(check-semantic-outcomes\.py|semantic-outcome-policy\.json)|tools/ci/tests/test_check_semantic_outcomes\.py)$
         stages: [pre-push]
 
+      - id: rust-fallbacks
+        name: Rust fallback syntax
+        entry: python3 tools/ci/lint/check-rust-fallbacks.py
+        language: system
+        pass_filenames: false
+        files: ^(crates/[^/]+/(?:src/.*|fuzz/fuzz_targets/.*)\.rs|benchmarks/[^/]+/src/.*\.rs|tools/ci/lint/check-rust-fallbacks\.py)$
+        stages: [pre-push]
+
+      - id: rust-fallback-tests
+        name: Rust fallback counterexamples
+        entry: python3 tools/ci/tests/test_check_rust_fallbacks.py
+        language: system
+        pass_filenames: false
+        files: ^(tools/ci/lint/check-rust-fallbacks\.py|tools/ci/tests/test_check_rust_fallbacks\.py)$
+        stages: [pre-push]
+
       - id: cargo-deny
         name: cargo deny
         entry: bash scripts/run-cargo-deny.sh
@@ -254,7 +270,7 @@ repos:
         entry: bash scripts/run-tooling-tests.sh
         language: system
         pass_filenames: false
-        files: ^(pyproject\.toml|tools/(?!ci/(?:semgrep/|tests/(?:test_semgrep_|test_precommit_scopes\.py$))).*|scripts/(?:check_workspace_lints\.py|run-tooling-tests\.sh))$
+        files: ^(pyproject\.toml|tools/(?!ci/(?:semgrep/|lint/check-rust-fallbacks\.py$|tests/(?:test_semgrep_|test_check_rust_fallbacks\.py$|test_precommit_scopes\.py$))).*|scripts/(?:check_workspace_lints\.py|run-tooling-tests\.sh))$
         stages: [pre-push]
 
       - id: semgrep-rule-tests

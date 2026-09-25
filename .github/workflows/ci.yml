@@ -236,6 +236,11 @@ jobs:
       - name: Semantic outcome honesty (registered Rust enums)
         run: python3 tools/ci/lint/check-semantic-outcomes.py
 
+      - name: Rust fallback syntax and counterexamples
+        run: |
+          python3 tools/ci/tests/test_check_rust_fallbacks.py
+          python3 tools/ci/lint/check-rust-fallbacks.py
+
       - name: Test authority (every integration and fuzz target has an owner rail)
         run: python3 tools/ci/lint/check-test-authority.py
 

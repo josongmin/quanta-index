@@ -115,6 +115,16 @@ def test_scoped_repository_lints_skip_unrelated_docs_and_cover_their_inputs() ->
             "tools/ci/tests/test_semgrep_policy.py",
             "scripts/check-semgrep-rules.sh",
         ),
+        "rust-fallbacks": (
+            "crates/quanta-index-core/src/lib.rs",
+            "crates/quanta-index-core/fuzz/fuzz_targets/silent.rs",
+            "benchmarks/retrieval/src/lib.rs",
+            "tools/ci/lint/check-rust-fallbacks.py",
+        ),
+        "rust-fallback-tests": (
+            "tools/ci/lint/check-rust-fallbacks.py",
+            "tools/ci/tests/test_check_rust_fallbacks.py",
+        ),
         "precommit-scope-tests": (
             ".pre-commit-config.yaml",
             ".github/workflows/ci.yml",
@@ -151,6 +161,11 @@ def test_semgrep_counterexamples_have_one_test_owner() -> None:
         assert dedicated.search(path), path
     assert generic.search("scripts/run-tooling-tests.sh")
     assert not generic.search("tools/ci/tests/test_precommit_scopes.py")
+    assert not generic.search("tools/ci/tests/test_check_rust_fallbacks.py")
+    assert not generic.search("tools/ci/lint/check-rust-fallbacks.py")
+    assert re.compile(hooks["rust-fallback-tests"]["files"]).search(
+        "tools/ci/tests/test_check_rust_fallbacks.py"
+    )
     assert not generic.search(".pre-commit-config.yaml")
     scoped = re.compile(hooks["precommit-scope-tests"]["files"])
     assert scoped.search("tools/ci/tests/test_precommit_scopes.py")
@@ -170,10 +185,12 @@ def test_semgrep_counterexamples_have_one_test_owner() -> None:
     assert hooks["semgrep-rule-tests"]["entry"] == "bash scripts/check-semgrep-rules.sh"
     runner = (ROOT / "scripts/run-tooling-tests.sh").read_text(encoding="utf-8")
     assert "--ignore=tools/ci/tests/test_semgrep_policy.py" in runner
+    assert "--ignore=tools/ci/tests/test_check_rust_fallbacks.py" in runner
     justfile = (ROOT / "Justfile").read_text(encoding="utf-8")
     verify = justfile.split("verify:\n", 1)[1].split("\n\n", 1)[0]
     assert verify.count("@just semgrep-rule-tests") == 1
     assert verify.count("@just semgrep\n") == 1
+    assert verify.count("@just rust-fallbacks") == 1
 
 
 def test_wire_inventory_scope_includes_tool_format_dependencies() -> None:
@@ -326,6 +343,8 @@ def test_proof_authority_ci_has_one_static_owner_and_one_test_owner() -> None:
     semgrep_commands = "\n".join(str(step.get("run", "")) for step in jobs["semgrep"]["steps"])
     assert semgrep_commands.count("bash scripts/check-semgrep-rules.sh") == 1
     assert "bash scripts/run-semgrep.sh" in semgrep_commands
+    assert "python3 tools/ci/lint/check-rust-fallbacks.py" in rust_policy_commands
+    assert "python3 tools/ci/tests/test_check_rust_fallbacks.py" in rust_policy_commands
 
 
 def test_ci_python_jobs_install_only_their_runtime_imports() -> None:
