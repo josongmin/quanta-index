@@ -14,7 +14,7 @@ qualification.
 | R3 — semantic scope | Locate an independent producer source-plan oracle before any completeness wire change; preserve legitimate lexical-only/no-op deltas. | [residual execution plan](FINAL-RESIDUAL-EXECUTION-PLAN.md) |
 | R4 — P10 state | Prove current-format backup/restore/verify and typed legacy refusal; inventory real target data before cutover. | [operator runbook](../../../operator/state-cutover-runbook.md) |
 | R5 — P11 exact pair | Freeze both sources and resolved Cargo path roots, then bind fresh build, QBC targets and actual runner result to one receipt. | [S21-12](S21-12-cross-repo-terminal-receipt-cutover.md) |
-| R6 — P11 operations/P12 | Issue distinct deployment/activation/rollback action receipts only on authorized targets; recover authentic handoffs, then reissue final-source dependencies and aggregate. | [S21-12](S21-12-cross-repo-terminal-receipt-cutover.md), [S21-13](S21-13-release-evidence-and-sota-qualification.md) |
+| R6 — P11 operations/P12 | Issue distinct deployment/activation/rollback action receipts only on authorized targets; reissue final-source dependencies and aggregate; audit historical handoffs separately. | [S21-12](S21-12-cross-repo-terminal-receipt-cutover.md), [S21-13](S21-13-release-evidence-and-sota-qualification.md) |
 
 2026-09-24 checkpoint tested at Quanta `7dec5965` plus the RepoMap receipt
 fix, committed as `3b1d7b19`: the owner integration target passed 19/19 and the malformed
@@ -22,14 +22,14 @@ terminal-sequence unit target passed 1/1. Before that edit, the clean-Quanta
 P12A infrastructure recipe passed 121/121 Python tests while validating zero
 proof manifests. These are local checks only. The registry still stages P09
 Linux process/component-loss, P10 restore/rollback, P11 exact-pair and
-deployment/activation/rollback, and P12Q; no final-source release bundle has
+deployment/activation/rollback; no final-source release bundle has
 been issued. See the P11/P12A tickets for precise source and exclusions.
 
 `just proof-authority-lint` checks registry structure only.
 `just proof-authority-current-gate` checks a fresh P00 receipt.
 `just proof-authority-code-gate` checks the fixed `CODE_QUALIFIED` closure
 against the current Quanta/Semantica source pair before deployment. It does
-not require deployment, activation, rollback, P12, or the final aggregate.
+not require deployment, activation, rollback, or the final aggregate.
 `just proof-authority-release-gate` checks the complete current-source bundle
 after those operational actions. The manual `correctness` workflow selects
 `proof_stage=code` or `proof_stage=final` (the default). Neither gate runs on

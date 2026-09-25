@@ -12,10 +12,10 @@ the present gate and source identity.
   typed legacy refusal.
 - [P11 exact pair](P11-cross-repo-cutover.md): producer protocol and four
   separate release/operational receipts.
-- [P12A infrastructure](P12A-final-proof-infrastructure.md): existing
-  aggregate and handoff code, then exact-pair owner receipt.
-- [P12Q qualification](P12-final-qualification.md): final-source dependency
-  graph, aggregate, and terminal manifest.
+- [P12A infrastructure](P12A-final-proof-infrastructure.md): proof tooling
+  and exact-source owner receipt.
+- [P12 final qualification](P12-final-qualification.md): final-source
+  dependency graph and aggregate receipt.
 
 An implementation ticket, prompt, owner test, or historical handoff cannot
 promote a staged proof. Record code completion, owner tests, exact-pair

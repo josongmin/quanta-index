@@ -5,12 +5,15 @@ schema = 2
 # A staged proof is a declared future owner, not executable release authority.
 # The manifest writer and validator refuse staged proofs even when a file is
 # present at the registered artifact path. Moving a proof to `executable`
-# requires its concrete test-authority targets (or the two closed non-test
-# modes below) to be in place first.
+# requires its concrete test-authority targets (or the closed non-test
+# assertion mode below) to be in place first.
 
 [aggregate]
 id = "p12-release-aggregate"
-target_proof = "p12-final-qualification"
+source_binding = "exact-pair"
+paired_repository = "github:josongmin/semantica-codegraph-v2"
+paired_dependency_lock = "Cargo.lock"
+prerequisites = ["p12a-proof-infrastructure"]
 schema = "tools/ci/proof-aggregate.schema.json"
 artifact = "artifacts/proof-authority/p12-release-aggregate.json"
 
@@ -617,27 +620,3 @@ test_authority_targets = ["proof-aggregate-python-owner", "proof-handoff-cli-pyt
 dependencies = []
 artifact = "artifacts/proof-authority/p12a-proof-infrastructure.json"
 required_host = "any"
-
-[[proofs]]
-id = "p12-final-qualification"
-authority_state = "staged"
-execution_mode = "aggregate"
-staged_reason = "P12Q awaits an exact-source P12A receipt, complete current-source dependency proofs, authentic handoffs, and the Linux release/deploy/activation/rollback evidence."
-ticket = "S21-13"
-family = "S"
-checkpoint = "M5"
-owner = "docs/plans/sep-21-search-plane-sota-hardening/tickets/S21-13-release-evidence-and-sota-qualification.md"
-command = "just proof-authority-final-qualification"
-gate = "release"
-profile = "proof-release"
-target = "p01-p11-release-dependencies"
-filter = "none"
-source_binding = "exact-pair"
-paired_repository = "github:josongmin/semantica-codegraph-v2"
-paired_dependency_lock = "Cargo.lock"
-binary_binding = "release-daemon"
-artifact_schema = "tools/ci/proof-manifest.schema.json"
-test_authority_targets = []
-dependencies = ["p12a-proof-infrastructure"]
-artifact = "artifacts/proof-authority/p12-final-qualification.json"
-required_host = "linux-production-like"

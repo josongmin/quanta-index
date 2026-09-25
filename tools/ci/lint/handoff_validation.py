@@ -1,6 +1,6 @@
 """SEP-21 handoff Git/archive validation and fixed product-chain policy.
 
-The leaf owns one handoff interpretation for the CLI and aggregate. It takes
+The leaf owns one handoff interpretation for the standalone CLI. It takes
 the proof checker as an injected dependency and never imports it back.
 """
 
@@ -92,12 +92,10 @@ HANDOFF_POLICIES: dict[str, dict[str, Any]] = {
     "P12A": {
         "ticket": "S21-13",
         "required": ["p12a-proof-infrastructure"],
-        "deferred": ["p12-final-qualification"],
     },
-    "P12": {"ticket": "S21-13", "required": ["p12-final-qualification"]},
 }
 
-PRODUCT_LANES: tuple[str, ...] = tuple(HANDOFF_POLICIES)[:-2]
+PRODUCT_LANES: tuple[str, ...] = tuple(HANDOFF_POLICIES)[:-1]
 RECORDED_OWNER_STATES = frozenset(("OWNER_PROOF_GREEN", "RELEASE_PROOF_PENDING"))
 
 

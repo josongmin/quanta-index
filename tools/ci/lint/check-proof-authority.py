@@ -52,7 +52,7 @@ FAMILIES = frozenset("SUADPFQX")
 CHECKPOINTS = ("M0", "M1", "M2", "M3", "M4", "M5")
 GATES = frozenset(("pr", "merge", "correctness", "release"))
 AUTHORITY_STATES = frozenset(("executable", "staged"))
-EXECUTION_MODES = frozenset(("test-authority", "non-test-assertion", "aggregate"))
+EXECUTION_MODES = frozenset(("test-authority", "non-test-assertion"))
 VERDICTS = frozenset(("CODE_QUALIFIED", "DEPLOYED", "ACTIVATED", "ROLLBACK_PROVEN"))
 PROOF_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]+$")
 TICKET_RE = re.compile(r"^S21-(?:0[0-9]|1[0-3])$")
@@ -91,7 +91,6 @@ EXPECTED_PROOF_DEPENDENCIES: dict[str, list[str]] = {
     "p11-activation": ["p11-deployment"],
     "p11-rollback": ["p10-state-migration", "p11-activation"],
     "p12a-proof-infrastructure": [],
-    "p12-final-qualification": ["p12a-proof-infrastructure"],
 }
 EXPECTED_VERDICT_PROOFS: dict[str, list[str]] = {
     "CODE_QUALIFIED": [
@@ -592,13 +591,6 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
             and proof.get("command") != "just proof-p00-authority-freeze"
         ):
             findings.append(Finding(path, f"{where} must use the composite P00 authority recipe"))
-        if execution_mode == "aggregate" and proof_id != "p12-final-qualification":
-            findings.append(Finding(path, f"{where} aggregate execution is reserved for P12"))
-        if (
-            proof_id == "p12-final-qualification"
-            and proof.get("command") != "just proof-authority-final-qualification"
-        ):
-            findings.append(Finding(path, f"{where} must use the canonical P12 aggregate recipe"))
         dependencies = proof.get("dependencies")
         if not isinstance(dependencies, list) or any(
             not isinstance(item, str) for item in dependencies
@@ -675,15 +667,32 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
     if not isinstance(aggregate, dict):
         findings.append(Finding(path, "`aggregate` must be a table"))
     else:
-        expected = {"id", "target_proof", "schema", "artifact", "verdicts"}
+        expected = {
+            "id",
+            "source_binding",
+            "paired_repository",
+            "paired_dependency_lock",
+            "prerequisites",
+            "schema",
+            "artifact",
+            "verdicts",
+        }
         if set(aggregate) != expected:
             findings.append(
-                Finding(path, "aggregate keys must be id,target_proof,schema,artifact,verdicts")
+                Finding(path, "aggregate keys differ from canonical release aggregate authority")
             )
         if aggregate.get("id") != "p12-release-aggregate":
             findings.append(Finding(path, "aggregate.id must be p12-release-aggregate"))
-        if aggregate.get("target_proof") != "p12-final-qualification":
-            findings.append(Finding(path, "aggregate.target_proof must be p12-final-qualification"))
+        if aggregate.get("source_binding") != "exact-pair":
+            findings.append(Finding(path, "aggregate.source_binding must be exact-pair"))
+        if aggregate.get("paired_repository") != PAIRED_REPOSITORY:
+            findings.append(Finding(path, "aggregate.paired_repository differs from authority"))
+        if aggregate.get("paired_dependency_lock") != PAIRED_DEPENDENCY_LOCK:
+            findings.append(
+                Finding(path, "aggregate.paired_dependency_lock differs from authority")
+            )
+        if aggregate.get("prerequisites") != ["p12a-proof-infrastructure"]:
+            findings.append(Finding(path, "aggregate.prerequisites must require P12A"))
         aggregate_schema = aggregate.get("schema")
         if isinstance(aggregate_schema, str):
             try:
@@ -708,11 +717,6 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
                 findings.append(
                     Finding(path, "aggregate.artifact must be unique canonical repo-relative")
                 )
-        target_proof = proof_by_id.get(aggregate.get("target_proof"))
-        if target_proof is not None and target_proof.get("execution_mode") != "aggregate":
-            findings.append(
-                Finding(path, "aggregate target proof must use aggregate execution mode")
-            )
         verdicts = aggregate.get("verdicts")
         if not isinstance(verdicts, dict) or set(verdicts) != VERDICTS:
             findings.append(Finding(path, f"aggregate verdicts must be exactly {sorted(VERDICTS)}"))
@@ -1864,10 +1868,17 @@ def aggregate_proof_ids(registry: dict[str, Any]) -> list[str]:
         if isinstance(proof, dict) and isinstance(proof.get("id"), str)
     }
     aggregate = registry.get("aggregate")
-    if not isinstance(aggregate, dict) or not isinstance(aggregate.get("target_proof"), str):
-        raise ValueError("registry has no aggregate target proof")
-    target_id = aggregate["target_proof"]
-    required = set(dependency_closure(proof_by_id, target_id))
+    if not isinstance(aggregate, dict):
+        raise ValueError("registry has no aggregate authority")
+    prerequisites = aggregate.get("prerequisites")
+    if not isinstance(prerequisites, list):
+        raise ValueError("registry has no aggregate prerequisites")
+    required: set[str] = set()
+    for proof_id in prerequisites:
+        if proof_id not in proof_by_id:
+            raise ValueError(f"aggregate prerequisite names unknown proof {proof_id!r}")
+        required.add(proof_id)
+        required.update(dependency_closure(proof_by_id, proof_id))
     verdicts = aggregate.get("verdicts")
     if not isinstance(verdicts, dict):
         raise ValueError("registry has no aggregate verdict table")
@@ -1879,7 +1890,6 @@ def aggregate_proof_ids(registry: dict[str, Any]) -> list[str]:
                 raise ValueError(f"aggregate verdict names unknown proof {proof_id!r}")
             required.add(proof_id)
             required.update(dependency_closure(proof_by_id, proof_id))
-    required.discard(target_id)
     return [proof["id"] for proof in proof_list if proof.get("id") in required]
 
 
@@ -2021,9 +2031,6 @@ def check_aggregate_receipt(
         for proof in registry.get("proofs", [])
         if isinstance(proof, dict) and isinstance(proof.get("id"), str)
     }
-    target_id = aggregate.get("target_proof")
-    if not isinstance(target_id, str):
-        return [Finding(receipt_path, "registry aggregate has no target proof")]
     try:
         dependency_ids = aggregate_proof_ids(registry)
     except ValueError as error:
@@ -2031,8 +2038,6 @@ def check_aggregate_receipt(
 
     if payload.get("aggregate_id") != aggregate.get("id"):
         findings.append(Finding(receipt_path, "aggregate_id differs from registry authority"))
-    if payload.get("target_proof_id") != target_id:
-        findings.append(Finding(receipt_path, "target_proof_id differs from registry authority"))
     try:
         registry_relative = registry_path.relative_to(root).as_posix()
         registry_digest = _payload_sha256(root, registry_relative, label="proof registry")
@@ -2041,19 +2046,6 @@ def check_aggregate_receipt(
     else:
         if payload.get("registry_sha256") != registry_digest:
             findings.append(Finding(receipt_path, "registry_sha256 is not the current registry"))
-
-    handoff_ledger, handoff_findings = HANDOFF_VALIDATION.inspect_handoff_ledger(
-        root=root, proof_checker=sys.modules[__name__]
-    )
-    for field in ("product_handoffs", "product_chain_status", "infrastructure_handoff"):
-        if payload.get(field) != handoff_ledger[field]:
-            findings.append(Finding(receipt_path, f"aggregate {field} is not derived authority"))
-    if require_ready:
-        findings.extend(Finding(receipt_path, message) for message in handoff_findings)
-    handoffs_ready = (
-        handoff_ledger["product_chain_status"] == "VERIFIED"
-        and handoff_ledger["infrastructure_handoff"]["status"] == "VERIFIED"
-    )
 
     receipts = payload.get("dependency_receipts")
     if not isinstance(receipts, list):
@@ -2066,7 +2058,6 @@ def check_aggregate_receipt(
             )
         )
 
-    target_proof = proof_by_id[target_id]
     excluded_pair_paths = tuple((paired_checkouts or {}).values())
     source_cache: dict[tuple[Path, Path | None, tuple[Path, ...]], dict[str, Any]] = {}
     pair_cache: dict[tuple[Path, str, Path], dict[str, Any]] = {}
@@ -2074,19 +2065,19 @@ def check_aggregate_receipt(
         source_cache,
         root,
         manifest_path=receipt_path,
-        proof=target_proof,
+        proof=aggregate,
         excluded_paths=excluded_pair_paths,
     )
     if source_content_identity(payload["source"]) != source_content_identity(current_source):
         findings.append(Finding(receipt_path, "aggregate source is not current source"))
 
     expected_pair: dict[str, Any] | None = None
-    repository = target_proof.get("paired_repository")
+    repository = aggregate.get("paired_repository")
     checkout = (paired_checkouts or {}).get(repository) if isinstance(repository, str) else None
     source_requests: list[tuple[Path, dict[str, Any], tuple[Path, ...]]] = []
     pair_requests: list[tuple[Path, str, Path]] = []
     if bind_source:
-        source_requests.append((receipt_path, target_proof, excluded_pair_paths))
+        source_requests.append((receipt_path, aggregate, excluded_pair_paths))
         if checkout is None:
             findings.append(
                 Finding(receipt_path, f"aggregate requires paired checkout for {repository!r}")
@@ -2097,7 +2088,7 @@ def check_aggregate_receipt(
                     pair_cache,
                     checkout,
                     repository=repository,
-                    dependency_lock=Path(target_proof["paired_dependency_lock"]),
+                    dependency_lock=Path(aggregate["paired_dependency_lock"]),
                 )
             except (OSError, RuntimeError, ValueError) as error:
                 findings.append(
@@ -2105,7 +2096,7 @@ def check_aggregate_receipt(
                 )
             else:
                 pair_requests.append(
-                    (checkout, repository, Path(target_proof["paired_dependency_lock"]))
+                    (checkout, repository, Path(aggregate["paired_dependency_lock"]))
                 )
                 if paired_content_identity(payload["source_pair"]) != paired_content_identity(
                     expected_pair
@@ -2325,7 +2316,6 @@ def check_aggregate_receipt(
         set(expected_verdict_statuses) == VERDICTS
         and all(status == "PASSED" for status in expected_verdict_statuses.values())
         and release_ready_inputs
-        and handoffs_ready
     )
     if payload.get("production_ready") is not expected_ready:
         findings.append(Finding(receipt_path, "aggregate production_ready is not derived verdict"))

@@ -136,9 +136,8 @@ def build_aggregate(
 ) -> tuple[dict[str, Any], Path]:
     aggregate = registry["aggregate"]
     proof_by_id = {proof["id"]: proof for proof in registry["proofs"]}
-    target = proof_by_id[aggregate["target_proof"]]
     dependency_ids = checker.aggregate_proof_ids(registry)
-    repository = target["paired_repository"]
+    repository = aggregate["paired_repository"]
     paired_checkouts = {repository: paired_checkout.resolve()}
     source_cache: dict[tuple[Path, Path | None, tuple[Path, ...]], dict[str, Any]] = {}
     pair_cache: dict[tuple[Path, str, Path], dict[str, Any]] = {}
@@ -152,7 +151,7 @@ def build_aggregate(
         source_cache,
         root,
         manifest_path=output_path,
-        proof=target,
+        proof=aggregate,
         excluded_paths=(paired_checkout.resolve(),),
     )
     try:
@@ -160,7 +159,7 @@ def build_aggregate(
             pair_cache,
             paired_checkout,
             repository=repository,
-            dependency_lock=Path(target["paired_dependency_lock"]),
+            dependency_lock=Path(aggregate["paired_dependency_lock"]),
         )
     except (OSError, RuntimeError, ValueError) as error:
         raise AggregateRefused(f"cannot bind paired checkout: {error}") from error
@@ -195,13 +194,6 @@ def build_aggregate(
         payload_by_id,
         proof_by_id=proof_by_id,
         path=registry_path,
-    )
-    handoff_ledger, _handoff_findings = checker.HANDOFF_VALIDATION.inspect_handoff_ledger(
-        root=root, proof_checker=checker
-    )
-    handoffs_ready = (
-        handoff_ledger["product_chain_status"] == "VERIFIED"
-        and handoff_ledger["infrastructure_handoff"]["status"] == "VERIFIED"
     )
     all_dependencies_passed = all(
         dependency_statuses.get(proof_id) == "PASSED" for proof_id in dependency_ids
@@ -246,16 +238,13 @@ def build_aggregate(
             ),
             "required_proofs": required_proofs,
         }
-    production_ready = (
-        release_ready_inputs
-        and all(verdict["status"] == "PASSED" for verdict in verdicts.values())
-        and handoffs_ready
+    production_ready = release_ready_inputs and all(
+        verdict["status"] == "PASSED" for verdict in verdicts.values()
     )
     return (
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "aggregate_id": aggregate["id"],
-            "target_proof_id": target["id"],
             "registry_sha256": checker._payload_sha256(
                 root, registry_path.relative_to(root).as_posix(), label="proof registry"
             ),
@@ -266,7 +255,6 @@ def build_aggregate(
             "state_root_format": state_root_format,
             "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "dependency_receipts": dependency_receipts,
-            **handoff_ledger,
             "verdicts": verdicts,
             "production_ready": production_ready,
         },
@@ -354,8 +342,7 @@ def _publish_aggregate_locked(
             temporary_name = checker.HANDOFF_VALIDATION._write_output_temporary(
                 parent_fd, output_path.name, serialized
             )
-            proof_by_id = {proof["id"]: proof for proof in registry["proofs"]}
-            target = proof_by_id[registry["aggregate"]["target_proof"]]
+            aggregate = registry["aggregate"]
             findings = checker.check_aggregate_receipt(
                 payload,
                 receipt_path=output_path,
@@ -364,7 +351,7 @@ def _publish_aggregate_locked(
                 schema=schema,
                 root=root,
                 bind_source=True,
-                paired_checkouts={target["paired_repository"]: paired_checkout},
+                paired_checkouts={aggregate["paired_repository"]: paired_checkout},
             )
             if findings:
                 rendered = "; ".join(finding.render() for finding in findings)
@@ -401,7 +388,7 @@ def _publish_aggregate_locked(
                     schema=schema,
                     root=root,
                     bind_source=True,
-                    paired_checkouts={target["paired_repository"]: paired_checkout},
+                    paired_checkouts={aggregate["paired_repository"]: paired_checkout},
                 )
                 if published_findings:
                     rendered = "; ".join(finding.render() for finding in published_findings)

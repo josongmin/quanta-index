@@ -22,8 +22,7 @@ and the fail-closed aggregate release command are implemented. The P12A aggregat
 schema, writer, validator, handoff-DAG checks, and final recipe are also present
 in source. P12A can issue an exact-source receipt independently of P11; its
 current alias is a generated runtime artifact, so validate it at the target
-HEAD rather than inferring its presence from this document. P12Q remains staged
-in the registry. Code presence does not qualify the product or the release.
+HEAD rather than inferring its presence from this document. The final aggregate requires all registered current-source proofs. Code presence does not qualify the product or the release.
 
 2026-09-24 clean-source local checkpoint at Quanta
 `7dec59654564412d2265e5ee46339ae3218c756b`, before the later RepoMap
@@ -32,13 +31,13 @@ test-authority lint OK, registry-only proof-authority lint reporting 26
 registered proofs and **zero validated manifests**, and 121/121 Python owner
 tests passing. This was a clean-Quanta-source infrastructure check without a
 source-bound P12A manifest or archived runner result. It was neither a P12A
-receipt nor P12Q release qualification.
+receipt nor final aggregate qualification.
 
 2026-09-24 dirty-source checkpoint at Quanta `563da185`: `just
 proof-p12a-proof-infrastructure` passed test-authority lint, registry-only
 proof-authority lint, and 121/121 Python owner tests. The registry lint
 validated **zero manifests**. This is local P12A infrastructure behavior,
-not an authoritative P12A receipt or P12Q qualification.
+not an authoritative P12A receipt or final aggregate qualification.
 
 Depends on: phase A depends on S21-00; phase B depends on S21-01 through S21-12
 
@@ -131,14 +130,14 @@ target before claiming its proof. Empty future target lists are not evidence and
 
 ### Phase B — final aggregate
 
-Phase B는 독립적인 P12A infrastructure proof와 최종 P12Q qualification으로 나뉜다.
-P12A는 Quanta exact-source와 원시 Python 실행 증거로 발급할 수 있다. P12Q는
-P11 exact-pair proof, P12A handoff, 전체 final-source proof 및 운영 동작을
-검증한 뒤에만 terminal verdict/manifest를 발급한다.
+Phase B는 독립적인 P12A infrastructure proof와 최종 aggregate qualification으로 나뉜다.
+P12A는 Quanta exact-source와 원시 Python 실행 증거로 발급할 수 있다. Aggregate는
+P11 exact-pair proof, P12A proof, 전체 final-source proof 및 운영 동작을
+검증한 뒤에만 최종 verdict를 발급한다.
 
 Code/process proofs retain their registered Linux host-profile requirement but
 may run on distinct host instances. Deployment, activation and rollback must
-share one exact operational host identity, and P12 must bind to that host.
+share one exact operational host identity, and the aggregate binds to that host.
 The manual CI checkout under `.proof-pairs/` is excluded from Quanta's primary
 source dirty state; its Semantica source and lockfile are checked separately.
 
@@ -146,12 +145,11 @@ source dirty state; its Semantica source and lockfile are checked separately.
 - mandatory family 전부와 deployment/activation/rollback evidence를 aggregate하고 누락/실패/skipped/stale를
   success로 계산하지 않는다.
 - verdict를 `CODE_QUALIFIED`, `DEPLOYED`, `ACTIVATED`, `ROLLBACK_PROVEN`으로 분리한다.
-- registered `AggregateQualificationReceiptV1` schema, registry-derived writer, validator and canonical final Just
-  recipe가 dependency manifest validation → four-verdict calculation → atomic aggregate artifact publication → P12
-  proof-manifest issuance를 수행한다. 기존 dependency manifests를 검사만 하고 새 aggregate artifact를 만들지 않는
-  command는 P12 producer가 아니며 final proof를 발행할 수 없다.
-- aggregate receipt는 P11 immediate handoff뿐 아니라 P00→P11 transitive handoff chain, P02A/P02B/P02I fork/join,
-  exact source pair, attested binary와 모든 mandatory artifact digest를 검증한다.
+- registered `AggregateQualificationReceiptV2` schema, registry-derived writer, validator and canonical final Just
+  recipe가 dependency manifest validation → four-verdict calculation → atomic aggregate artifact publication →
+  current-source release-gate validation을 수행한다. Aggregate 자체가 최종 릴리즈 receipt다.
+- aggregate receipt는 exact source pair, attested binary, operational host와 모든 mandatory artifact digest를 검증한다.
+  과거 handoff 체인은 별도 역사적 감사 도구로 검증하며 릴리즈 자격의 필수 입력이 아니다.
 
 ## Owner files
 
@@ -202,7 +200,7 @@ source dirty state; its Semantica source and lockfile are checked separately.
 - independent quality oracle does not derive expected output from SUT output
 - checklist mandatory P0/P1 rows are all `PASS`; runtime/external rows are not static-pass
 - final report separates code completion, test proof, deployment, and activation
-- final recipe가 새 aggregate receipt와 P12 manifest를 실제 생성하고 둘의 digest/source binding을 재검증한다.
+- final recipe가 새 aggregate receipt를 생성하고 현재 source binding과 dependency digest를 재검증한다.
 
 ## Final release gate
 

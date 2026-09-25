@@ -1099,14 +1099,13 @@ def test_manifest_refuses_in_repo_symlinked_dependency_archive(
     assert any("dependency receipt is unreadable" in message for message in messages), messages
 
 
-def test_dependency_closure_is_registry_driven_and_excludes_target() -> None:
+def test_aggregate_closure_is_registry_driven_and_includes_infrastructure() -> None:
     registry = MODULE._read_toml(REGISTRY_PATH)
-    proof_by_id = {proof["id"]: proof for proof in registry["proofs"]}
-    closure = MODULE.dependency_closure(proof_by_id, "p12-final-qualification")
+    closure = MODULE.aggregate_proof_ids(registry)
     assert closure[-1] == "p12a-proof-infrastructure"
-    assert "p11-deployment" not in closure
-    assert "p11-activation" not in closure
-    assert "p11-rollback" not in closure
+    assert "p11-deployment" in closure
+    assert "p11-activation" in closure
+    assert "p11-rollback" in closure
     assert len(closure) == len(set(closure))
 
 
@@ -1120,7 +1119,6 @@ def test_code_gate_selects_only_canonical_code_proofs_and_prerequisites() -> Non
         "p11-deployment",
         "p11-activation",
         "p11-rollback",
-        "p12-final-qualification",
     } & set(selected)
 
     registry["aggregate"]["verdicts"]["CODE_QUALIFIED"].remove("p11-cross-repo-cutover")
@@ -1164,6 +1162,15 @@ def test_registry_refuses_verdict_meaning_drift() -> None:
     messages = _messages(MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH))
 
     assert any("verdict proof sets differ from canonical" in message for message in messages)
+
+
+def test_registry_refuses_aggregate_prerequisite_drift() -> None:
+    registry = MODULE._read_toml(REGISTRY_PATH)
+    registry["aggregate"]["prerequisites"] = []
+
+    messages = _messages(MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH))
+
+    assert any("aggregate.prerequisites must require P12A" in message for message in messages)
 
 
 def test_executable_test_proof_requires_scope_that_selects_registered_targets() -> None:

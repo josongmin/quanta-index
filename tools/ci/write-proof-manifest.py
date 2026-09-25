@@ -475,97 +475,6 @@ def build_manifest(
     return payload, output_path
 
 
-def _validate_aggregate_issuance(
-    *,
-    root: Path,
-    registry: dict[str, Any],
-    registry_path: Path,
-    proof: dict[str, Any],
-    payload: dict[str, Any],
-    checker: ModuleType,
-    paired_checkout: Path | None,
-) -> None:
-    if proof.get("execution_mode") != "aggregate":
-        return
-    aggregate = registry.get("aggregate")
-    if not isinstance(aggregate, dict) or aggregate.get("target_proof") != proof["id"]:
-        raise ManifestRefused("aggregate proof has no registered aggregate authority")
-    if payload["status"] != "passed" or payload["counts"] != {
-        "selected": 1,
-        "executed": 1,
-        "passed": 1,
-        "failed": 0,
-        "ignored": 0,
-    }:
-        raise ManifestRefused("aggregate proof requires derived passed counts 1/1/1/0/0")
-    aggregate_path = aggregate.get("artifact")
-    aggregate_artifact = next(
-        (
-            artifact
-            for artifact in payload["artifacts"]
-            if artifact["source_path"] == aggregate_path
-        ),
-        None,
-    )
-    if aggregate_artifact is None:
-        raise ManifestRefused("aggregate proof must attest the registered aggregate artifact")
-    if not isinstance(aggregate_path, str):
-        raise ManifestRefused("registered aggregate artifact path is invalid")
-    aggregate_file = root / aggregate_path
-    _, aggregate_bytes = _repo_bytes(
-        root, aggregate_path, label="aggregate receipt", checker=checker
-    )
-    aggregate_payload = _json_object_bytes(aggregate_bytes, label="aggregate receipt")
-    _, aggregate_schema_bytes = _repo_bytes(
-        root, aggregate["schema"], label="aggregate schema", checker=checker
-    )
-    aggregate_schema = _json_object_bytes(aggregate_schema_bytes, label="aggregate schema")
-    paired_checkouts = None
-    if paired_checkout is not None:
-        paired_checkouts = {proof["paired_repository"]: paired_checkout}
-    findings = checker.check_aggregate_receipt(
-        aggregate_payload,
-        receipt_path=aggregate_file,
-        registry=registry,
-        registry_path=registry_path,
-        schema=aggregate_schema,
-        root=root,
-        bind_source=True,
-        paired_checkouts=paired_checkouts,
-        require_ready=True,
-    )
-    if findings:
-        rendered = "; ".join(finding.render() for finding in findings)
-        raise ManifestRefused(f"aggregate receipt is not authoritative: {rendered}")
-    if aggregate_artifact["sha256"] != hashlib.sha256(aggregate_bytes).hexdigest():
-        raise ManifestRefused("aggregate artifact changed during P12 issuance")
-    if checker.source_content_identity(payload["source"]) != checker.source_content_identity(
-        aggregate_payload["source"]
-    ):
-        raise ManifestRefused("P12 source differs from aggregate source")
-    if checker.paired_content_identity(payload["source_pair"]) != checker.paired_content_identity(
-        aggregate_payload["source_pair"]
-    ):
-        raise ManifestRefused("P12 source pair differs from aggregate source pair")
-    manifest_binary = payload["daemon_binary"]
-    aggregate_binary = aggregate_payload["daemon_binary"]
-    if (
-        not isinstance(manifest_binary, dict)
-        or not isinstance(aggregate_binary, dict)
-        or manifest_binary["sha256"] != aggregate_binary["sha256"]
-    ):
-        raise ManifestRefused("P12 daemon binary differs from aggregate daemon binary")
-    if payload["environment"]["host"]["profile"] != aggregate_payload["release_host"]["profile"]:
-        raise ManifestRefused("P12 host profile differs from aggregate release host")
-    if (
-        payload["environment"]["host"]["identity_digest"]
-        != aggregate_payload["release_host"]["identity_digest"]
-    ):
-        raise ManifestRefused("P12 host identity differs from aggregate release host")
-    if payload["state_root_format"] != aggregate_payload["state_root_format"]:
-        raise ManifestRefused("P12 state-root format differs from aggregate authority")
-
-
 def _validate_p00_issuance(
     *,
     root: Path,
@@ -828,15 +737,6 @@ def _publish_manifest_locked(
             parent_fd, output_path.name, serialized
         )
         temporary_path = output_path.parent / temporary_name
-        _validate_aggregate_issuance(
-            root=root,
-            registry=registry,
-            registry_path=registry_path,
-            proof=proof,
-            payload=payload,
-            checker=checker,
-            paired_checkout=paired_checkout,
-        )
         _validate_p00_issuance(root=root, proof=proof, payload=payload, checker=checker)
         findings = checker.check_manifest(
             payload,

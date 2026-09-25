@@ -210,11 +210,10 @@ P10-allowed restore-forward boundary. DoD: each stage has a distinct external
 pre/post observation and independently issuable manifest; deployment alone
 cannot yield activated or rollback-proven.
 
-Finally recover the authentic P00/P01/P02A/P02B/P02I/P11 historical handoffs
-and validate their Git/source edges with `handoff_validation.py`. If records
-cannot be recovered, explicitly revise the acceptance contract before P12A;
-do not fabricate them. On the final frozen clean pair, reissue all current
-owner/release proofs, P12A, aggregate and P12Q. `--require-all --bind-source`
+Audit available historical P00-P11 handoffs with `handoff_validation.py`;
+do not fabricate missing records. These records are not release prerequisites.
+On the final frozen clean pair, reissue all current
+owner/release proofs, P12A, and aggregate. `--require-all --bind-source`
 must accept the exact pair and raw evidence; deployment, activation and
 rollback verdicts remain separate. Missing, staged or stale evidence is not
 production readiness.

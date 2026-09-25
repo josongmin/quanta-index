@@ -1,12 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Quanta Index AggregateQualificationReceiptV1",
+  "title": "Quanta Index AggregateQualificationReceiptV2",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "schema_version",
     "aggregate_id",
-    "target_proof_id",
     "registry_sha256",
     "source",
     "source_pair",
@@ -15,16 +14,12 @@
     "state_root_format",
     "generated_at",
     "dependency_receipts",
-    "product_handoffs",
-    "product_chain_status",
-    "infrastructure_handoff",
     "verdicts",
     "production_ready"
   ],
   "properties": {
-    "schema_version": {"const": 1},
+    "schema_version": {"const": 2},
     "aggregate_id": {"const": "p12-release-aggregate"},
-    "target_proof_id": {"const": "p12-final-qualification"},
     "registry_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "source": {"$ref": "#/$defs/source"},
     "source_pair": {
@@ -91,14 +86,6 @@
         }
       }
     },
-    "product_handoffs": {
-      "type": "array",
-      "minItems": 14,
-      "maxItems": 14,
-      "items": {"$ref": "#/$defs/handoff_ref"}
-    },
-    "product_chain_status": {"enum": ["VERIFIED", "FAILED", "NOT_RUN"]},
-    "infrastructure_handoff": {"$ref": "#/$defs/handoff_ref"},
     "verdicts": {
       "type": "object",
       "additionalProperties": false,
@@ -113,17 +100,6 @@
     "production_ready": {"type": "boolean"}
   },
   "$defs": {
-    "handoff_ref": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["lane", "path", "sha256", "status"],
-      "properties": {
-        "lane": {"type": "string", "pattern": "^P(?:0[013-9]|02[ABI]|1[0-2]|12A)$"},
-        "path": {"type": "string", "pattern": "^artifacts/sep-21/handoffs/P(?:0[013-9]|02[ABI]|1[0-2]|12A)\\.json$"},
-        "sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
-        "status": {"enum": ["VERIFIED", "FAILED", "NOT_RUN"]}
-      }
-    },
     "source": {
       "type": "object",
       "additionalProperties": false,

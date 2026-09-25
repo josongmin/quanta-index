@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import importlib.util
 import json
@@ -21,7 +20,6 @@ CHECKER_PATH = REPO_ROOT / "tools/ci/lint/check-proof-authority.py"
 REGISTRY_PATH = REPO_ROOT / "tools/ci/proof-authority.toml"
 MANIFEST_SCHEMA_PATH = REPO_ROOT / "tools/ci/proof-manifest.schema.json"
 AGGREGATE_SCHEMA_PATH = REPO_ROOT / "tools/ci/proof-aggregate.schema.json"
-MANIFEST_WRITER_PATH = REPO_ROOT / "tools/ci/write-proof-manifest.py"
 INVENTORY_WRITER_PATH = REPO_ROOT / "tools/ci/write-error-authority-inventory.py"
 
 
@@ -36,7 +34,6 @@ def _load_module(name: str, path: Path):
 
 WRITER = _load_module("write_proof_aggregate", WRITER_PATH)
 CHECKER = _load_module("write_proof_aggregate_checker", CHECKER_PATH)
-MANIFEST_WRITER = _load_module("aggregate_test_manifest_writer", MANIFEST_WRITER_PATH)
 INVENTORY_WRITER = _load_module("aggregate_test_inventory_writer", INVENTORY_WRITER_PATH)
 
 RELEASE_HOST_INPUT = {
@@ -84,12 +81,6 @@ def _make_all_proofs_executable(text: str) -> str:
         r'authority_state = "staged"\nexecution_mode = "test-authority"\n'
         r'staged_reason = "[^"]*"',
         'authority_state = "executable"\nexecution_mode = "test-authority"',
-        text,
-    )
-    text = re.sub(
-        r'authority_state = "staged"\nexecution_mode = "aggregate"\n'
-        r'staged_reason = "[^"]*"',
-        'authority_state = "executable"\nexecution_mode = "aggregate"',
         text,
     )
     sections = text.split("[[proofs]]")
@@ -243,37 +234,6 @@ def _paired_checkout(tmp_path: Path, templates: AggregateTemplates) -> Path:
     checkout = tmp_path / "semantica"
     shutil.copytree(templates.paired_checkout, checkout)
     return checkout
-
-
-def _stub_verified_handoffs(monkeypatch: pytest.MonkeyPatch) -> dict:
-    """Isolate aggregate derivation; real handoff validation has owner tests."""
-    lanes = CHECKER.HANDOFF_VALIDATION.PRODUCT_LANES
-    ledger = {
-        "product_handoffs": [
-            {
-                "lane": lane,
-                "path": f"artifacts/sep-21/handoffs/{lane}.json",
-                "sha256": "a" * 64,
-                "status": "VERIFIED",
-            }
-            for lane in lanes
-        ],
-        "product_chain_status": "VERIFIED",
-        "infrastructure_handoff": {
-            "lane": "P12A",
-            "path": "artifacts/sep-21/handoffs/P12A.json",
-            "sha256": "b" * 64,
-            "status": "VERIFIED",
-        },
-    }
-    monkeypatch.setattr(WRITER, "_load_checker", lambda: CHECKER)
-    monkeypatch.setattr(MANIFEST_WRITER, "_load_checker", lambda: CHECKER)
-    monkeypatch.setattr(
-        CHECKER.HANDOFF_VALIDATION,
-        "inspect_handoff_ledger",
-        lambda **_kwargs: (ledger, []),
-    )
-    return ledger
 
 
 def _write_dependency_manifests(
@@ -510,48 +470,12 @@ def _write_dependency_manifests(
         archive_path.write_bytes(manifest_bytes)
 
 
-def _inject_verified_handoff_ledger(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Isolate aggregate composition from the separately tested handoff validator."""
-    lanes = (
-        "P00",
-        "P01",
-        "P02A",
-        "P02B",
-        "P02I",
-        "P03",
-        "P04",
-        "P05",
-        "P06",
-        "P07",
-        "P08",
-        "P09",
-        "P10",
-        "P11",
-    )
-
-    def reference(lane: str) -> dict[str, str]:
-        return {
-            "lane": lane,
-            "path": f"artifacts/sep-21/handoffs/{lane}.json",
-            "sha256": hashlib.sha256(f"fixture-{lane}".encode()).hexdigest(),
-            "status": "VERIFIED",
-        }
-
-    ledger = {
-        "product_handoffs": [reference(lane) for lane in lanes],
-        "product_chain_status": "VERIFIED",
-        "infrastructure_handoff": reference("P12A"),
-    }
+def _share_checker_modules(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Use the same checker module when tests patch its source validation."""
     monkeypatch.setattr(WRITER, "_load_checker", lambda: CHECKER)
-    monkeypatch.setattr(MANIFEST_WRITER, "_load_checker", lambda: CHECKER)
-    monkeypatch.setattr(
-        CHECKER.HANDOFF_VALIDATION,
-        "inspect_handoff_ledger",
-        lambda **_kwargs: (copy.deepcopy(ledger), []),
-    )
 
 
-def test_full_dependency_graph_without_handoffs_is_not_ready(
+def test_full_dependency_graph_qualifies_without_historical_handoffs(
     tmp_path: Path,
     aggregate_templates: AggregateTemplates,
 ) -> None:
@@ -566,11 +490,12 @@ def test_full_dependency_graph_without_handoffs_is_not_ready(
     )
 
     payload = json.loads(output.read_text(encoding="utf-8"))
-    assert not ready
+    assert ready
     assert all(item["status"] == "PASSED" for item in payload["dependency_receipts"])
-    assert payload["product_chain_status"] == "NOT_RUN"
-    assert payload["infrastructure_handoff"]["status"] == "NOT_RUN"
-    assert payload["production_ready"] is False
+    assert payload["production_ready"] is True
+    assert "product_handoffs" not in payload
+    assert "product_chain_status" not in payload
+    assert "infrastructure_handoff" not in payload
 
 
 def test_writer_publishes_truthful_not_ready_diagnostic_for_staged_graph(
@@ -644,16 +569,15 @@ def test_writer_rebinds_source_after_publication(
         assert output.read_bytes() == prior_bytes
 
 
-def test_writer_derives_ready_receipt_from_verified_handoff_input(
+def test_writer_derives_ready_receipt_from_verified_proof_input(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     aggregate_templates: AggregateTemplates,
 ) -> None:
-    _inject_verified_handoff_ledger(monkeypatch)
+    _share_checker_modules(monkeypatch)
     root, registry = _fixture_root(tmp_path, executable=True, templates=aggregate_templates)
     paired = _paired_checkout(tmp_path, aggregate_templates)
     _write_dependency_manifests(root, registry, paired)
-    _stub_verified_handoffs(monkeypatch)
 
     output, _, ready = WRITER.publish_aggregate(
         root=root,
@@ -774,7 +698,7 @@ def test_writer_refuses_symlinked_existing_aggregate_without_replacing(
     assert redirected.read_bytes() == b"prior external bytes\n"
 
 
-def test_full_proof_closure_without_historical_handoffs_is_not_ready(
+def test_ready_aggregate_rejects_injected_handoff_status(
     tmp_path: Path,
     aggregate_templates: AggregateTemplates,
 ) -> None:
@@ -788,14 +712,12 @@ def test_full_proof_closure_without_historical_handoffs_is_not_ready(
         paired_checkout=paired,
     )
     payload = json.loads(output.read_text(encoding="utf-8"))
-    assert not ready
+    assert ready
     assert all(item["status"] == "PASSED" for item in payload["dependency_receipts"])
     assert all(item["status"] == "PASSED" for item in payload["verdicts"].values())
-    assert payload["product_chain_status"] == "NOT_RUN"
-    assert payload["infrastructure_handoff"]["status"] == "NOT_RUN"
-    assert payload["production_ready"] is False
+    assert payload["production_ready"] is True
 
-    forged = dict(payload, product_chain_status="VERIFIED", production_ready=True)
+    forged = dict(payload, product_chain_status="VERIFIED")
     findings = CHECKER.check_aggregate_receipt(
         forged,
         receipt_path=output,
@@ -806,26 +728,20 @@ def test_full_proof_closure_without_historical_handoffs_is_not_ready(
         bind_source=True,
         paired_checkouts={"github:josongmin/semantica-codegraph-v2": paired},
     )
-    assert any("product_chain_status is not derived" in item.message for item in findings)
-    assert any("production_ready is not derived" in item.message for item in findings)
+    assert any("product_chain_status" in item.message for item in findings)
 
 
-@pytest.mark.parametrize("missing_axis", ["product", "infrastructure"])
-def test_complete_proof_verdicts_cannot_bypass_either_handoff_ledger(
+@pytest.mark.parametrize("proof_id", ["p11-cross-repo-cutover", "p12a-proof-infrastructure"])
+def test_complete_proof_verdicts_cannot_bypass_missing_dependency(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
     aggregate_templates: AggregateTemplates,
-    missing_axis: str,
+    proof_id: str,
 ) -> None:
     root, registry = _fixture_root(tmp_path, executable=True, templates=aggregate_templates)
     paired = _paired_checkout(tmp_path, aggregate_templates)
     _write_dependency_manifests(root, registry, paired)
-    ledger = _stub_verified_handoffs(monkeypatch)
-    if missing_axis == "product":
-        ledger["product_chain_status"] = "FAILED"
-    else:
-        ledger["infrastructure_handoff"]["status"] = "NOT_RUN"
-        ledger["infrastructure_handoff"]["sha256"] = None
+    proof = next(item for item in registry["proofs"] if item["id"] == proof_id)
+    (root / proof["artifact"]).unlink()
 
     output, _, ready = WRITER.publish_aggregate(
         root=root,
@@ -834,7 +750,14 @@ def test_complete_proof_verdicts_cannot_bypass_either_handoff_ledger(
     )
     payload = json.loads(output.read_text(encoding="utf-8"))
     assert not ready
-    assert all(item["status"] == "PASSED" for item in payload["verdicts"].values())
+    assert (
+        next(
+            item["status"]
+            for item in payload["dependency_receipts"]
+            if item["proof_id"] == proof_id
+        )
+        == "NOT_RUN"
+    )
     assert payload["production_ready"] is False
 
 
@@ -868,11 +791,10 @@ def test_aggregate_validation_refuses_source_change_during_cached_pass(
     monkeypatch: pytest.MonkeyPatch,
     aggregate_templates: AggregateTemplates,
 ) -> None:
-    _inject_verified_handoff_ledger(monkeypatch)
+    _share_checker_modules(monkeypatch)
     root, registry = _fixture_root(tmp_path, executable=True, templates=aggregate_templates)
     paired = _paired_checkout(tmp_path, aggregate_templates)
     _write_dependency_manifests(root, registry, paired)
-    _stub_verified_handoffs(monkeypatch)
     output, _, ready = WRITER.publish_aggregate(
         root=root,
         registry_path=root / "tools/ci/proof-authority.toml",
@@ -916,7 +838,7 @@ def test_writer_accepts_distinct_code_proof_host_identity(
     monkeypatch: pytest.MonkeyPatch,
     aggregate_templates: AggregateTemplates,
 ) -> None:
-    _inject_verified_handoff_ledger(monkeypatch)
+    _share_checker_modules(monkeypatch)
     root, registry = _fixture_root(tmp_path, executable=True, templates=aggregate_templates)
     paired = _paired_checkout(tmp_path, aggregate_templates)
     _write_dependency_manifests(
@@ -925,7 +847,6 @@ def test_writer_accepts_distinct_code_proof_host_identity(
         paired,
         release_host_digest_overrides={"p08-runtime-supervisor": "sha256:" + "3" * 64},
     )
-    _stub_verified_handoffs(monkeypatch)
 
     output, _, ready = WRITER.publish_aggregate(
         root=root,
@@ -968,68 +889,48 @@ def test_writer_refuses_operational_host_drift(
     assert payload["verdicts"]["ROLLBACK_PROVEN"]["status"] == "FAILED"
 
 
-def test_ready_aggregate_is_mandatory_and_sufficient_for_p12_issuance(
+def test_ready_aggregate_is_final_release_receipt(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
     aggregate_templates: AggregateTemplates,
 ) -> None:
-    _inject_verified_handoff_ledger(monkeypatch)
     root, registry = _fixture_root(tmp_path, executable=True, templates=aggregate_templates)
     paired = _paired_checkout(tmp_path, aggregate_templates)
     _write_dependency_manifests(root, registry, paired)
-    _stub_verified_handoffs(monkeypatch)
     aggregate_path, _, ready = WRITER.publish_aggregate(
         root=root,
         registry_path=root / "tools/ci/proof-authority.toml",
         paired_checkout=paired,
     )
     assert ready
-    terminal = {
-        "status": "passed",
-        "counts": {"selected": 1, "executed": 1, "passed": 1, "failed": 0, "ignored": 0},
-        "environment": {
-            "toolchain": "fixture",
-            "features": [],
-            "os": "linux",
-            "arch": "x86_64",
-            "host": RELEASE_HOST_INPUT,
-        },
-        "daemon_binary": "bin/searchd",
-        "state_root_format": "v2",
-        "inputs": {
-            "fixture": None,
-            "corpus": None,
-            "config": None,
-            "model": None,
-            "provider": None,
-        },
-        "started_at": "2026-09-21T00:00:02Z",
-        "ended_at": "2026-09-21T00:00:03Z",
-        "artifacts": [aggregate_path.relative_to(root).as_posix()],
-    }
-    terminal_path = root / "artifacts/proof-authority/raw/p12-terminal.json"
-    terminal_path.write_text(json.dumps(terminal), encoding="utf-8")
-    monkeypatch.setattr(MANIFEST_WRITER.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(MANIFEST_WRITER.platform, "machine", lambda: "x86_64")
-
-    output, _, status = MANIFEST_WRITER.publish_manifest(
-        root=root,
+    payload = json.loads(aggregate_path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == 2
+    findings = CHECKER.check_aggregate_receipt(
+        payload,
+        receipt_path=aggregate_path,
+        registry=registry,
         registry_path=root / "tools/ci/proof-authority.toml",
-        schema_path=root / "tools/ci/proof-manifest.schema.json",
-        proof_id="p12-final-qualification",
-        terminal_input_path=terminal_path,
-        paired_checkout=paired,
+        schema=json.loads((root / "tools/ci/proof-aggregate.schema.json").read_text()),
+        root=root,
+        bind_source=True,
+        paired_checkouts={registry["aggregate"]["paired_repository"]: paired},
+        require_ready=True,
     )
+    assert findings == []
+    assert "target_proof_id" not in payload
 
-    payload = json.loads(output.read_text(encoding="utf-8"))
-    assert status == "passed"
-    assert payload["artifacts"] == [
-        {
-            "source_path": registry["aggregate"]["artifact"],
-            "path": CHECKER.content_archive_relative_path("evidence", _digest(aggregate_path)),
-            "sha256": _digest(aggregate_path),
-        }
-    ]
+    stale = dict(payload, schema_version=1)
+    findings = CHECKER.check_aggregate_receipt(
+        stale,
+        receipt_path=aggregate_path,
+        registry=registry,
+        registry_path=root / "tools/ci/proof-authority.toml",
+        schema=json.loads((root / "tools/ci/proof-aggregate.schema.json").read_text()),
+        root=root,
+        bind_source=True,
+        paired_checkouts={registry["aggregate"]["paired_repository"]: paired},
+        require_ready=True,
+    )
+    assert any("schema schema_version" in item.message for item in findings)
 
 
 def test_failure_preserves_prior_aggregate(
@@ -1055,73 +956,3 @@ def test_failure_preserves_prior_aggregate(
         raise AssertionError("invalid paired source must be refused")
 
     assert output.read_bytes() == b"prior-authoritative-bytes\n"
-
-
-def test_p12_guard_refuses_an_unregistered_terminal_artifact(
-    tmp_path: Path,
-    aggregate_templates: AggregateTemplates,
-) -> None:
-    root, registry = _fixture_root(tmp_path, executable=False, templates=aggregate_templates)
-    proof = next(proof for proof in registry["proofs"] if proof["id"] == "p12-final-qualification")
-    payload = {
-        "status": "passed",
-        "counts": {"selected": 1, "executed": 1, "passed": 1, "failed": 0, "ignored": 0},
-        "artifacts": [
-            {
-                "source_path": "artifacts/proof-authority/raw/not-aggregate.log",
-                "path": "artifacts/proof-authority/evidence/" + "0" * 64,
-                "sha256": "0" * 64,
-            }
-        ],
-    }
-
-    with pytest.raises(
-        MANIFEST_WRITER.ManifestRefused,
-        match="must attest the registered aggregate artifact",
-    ):
-        MANIFEST_WRITER._validate_aggregate_issuance(
-            root=root,
-            registry=registry,
-            registry_path=root / "tools/ci/proof-authority.toml",
-            proof=proof,
-            payload=payload,
-            checker=CHECKER,
-            paired_checkout=None,
-        )
-
-
-def test_p12_guard_refuses_registered_not_ready_aggregate(
-    tmp_path: Path,
-    aggregate_templates: AggregateTemplates,
-) -> None:
-    root, registry = _fixture_root(tmp_path, executable=False, templates=aggregate_templates)
-    paired = _paired_checkout(tmp_path, aggregate_templates)
-    aggregate_path, aggregate_digest, ready = WRITER.publish_aggregate(
-        root=root,
-        registry_path=root / "tools/ci/proof-authority.toml",
-        paired_checkout=paired,
-    )
-    assert not ready
-    proof = next(proof for proof in registry["proofs"] if proof["id"] == "p12-final-qualification")
-    payload = {
-        "status": "passed",
-        "counts": {"selected": 1, "executed": 1, "passed": 1, "failed": 0, "ignored": 0},
-        "artifacts": [
-            {
-                "source_path": aggregate_path.relative_to(root).as_posix(),
-                "path": "artifacts/proof-authority/evidence/" + aggregate_digest,
-                "sha256": aggregate_digest,
-            }
-        ],
-    }
-
-    with pytest.raises(MANIFEST_WRITER.ManifestRefused, match="not authoritative"):
-        MANIFEST_WRITER._validate_aggregate_issuance(
-            root=root,
-            registry=registry,
-            registry_path=root / "tools/ci/proof-authority.toml",
-            proof=proof,
-            payload=payload,
-            checker=CHECKER,
-            paired_checkout=paired,
-        )

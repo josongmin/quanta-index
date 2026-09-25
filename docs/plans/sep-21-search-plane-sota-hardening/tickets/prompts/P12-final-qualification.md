@@ -1,22 +1,19 @@
-# P12Q — Final release qualification
+# P12 — Final release qualification
 
 The aggregate schema, writer, validator, and final recipe exist in source.
-`p12-final-qualification` remains staged until the registered dependency
-graph and release authority are ready. A P12A owner test pass alone cannot
-issue P12.
+The aggregate is the final release receipt. A P12A owner test pass alone
+cannot qualify a release.
 
 Freeze one clean Quanta/Semantica source pair, dependency locks, the attested
 release daemon binary, required Linux host, and every config, model, provider,
-corpus, and fixture identity. Validate authentic historical P00-P11 product
-handoffs, the P02 fork/join, and the distinct P12A infrastructure handoff.
-Reissue final-source manifests for every registered dependency; old `passed`
+corpus, and fixture identity. Reissue final-source manifests for every
+registered dependency; old `passed`
 aliases cannot be reused.
 
-With `SEMANTICA_CHECKOUT` and a schema-valid `P12_TERMINAL_INPUT` set,
-run `just proof-authority-final-qualification`. The recipe publishes the
-aggregate, issues the P12 manifest, then validates all registered manifests
-with `--require-all --bind-source`. If the aggregate is not ready, preserve
-its diagnostic artifact and do not claim a P12 manifest.
+With `SEMANTICA_CHECKOUT` set, run `just proof-authority-final-qualification`.
+The recipe publishes the aggregate, then validates all registered manifests
+and the aggregate with `--require-all --bind-source`. If the aggregate is not
+ready, its artifact is diagnostic and does not qualify the release.
 
 Report `CODE_QUALIFIED`, `DEPLOYED`, `ACTIVATED`, and
 `ROLLBACK_PROVEN` independently with exact commands, counts, raw evidence,

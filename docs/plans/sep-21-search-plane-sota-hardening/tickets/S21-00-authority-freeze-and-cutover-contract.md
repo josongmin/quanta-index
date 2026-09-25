@@ -116,9 +116,9 @@ ADR와 breaking cutover contract가 frozen된 뒤 owner implementation을 시작
 | generic event authority | allocator + `catalog_sequence_event_v2` + domain row가 one transaction; restore는 모든 event/domain high-water를 reconcile | S21-02, S21-04, S21-11 |
 | quarantine crash protocol | P03 catalog-first exact-envelope commit → immutable projections/fsync → unlink/source-dir fsync; retry는 time/sequence 재사용 | S21-01B, S21-02 |
 | lane split | P01A pure identity/codec/error/security; P03 live layout/quarantine/activation; P10 current-format backup/restore and typed old-root refusal | S21-01, S21-02, S21-11 |
-| handoff validation | canonical lane/ticket/proof/status, exact Git write set, immutable manifest archive와 current-clean source/result ancestry를 semantic validator가 검사; immediate predecessor만 매 lane validate; P02I는 P02A/P02B 둘; P12A가 complete transitive validator를 만들고 P12Q가 실행 | P01-P12Q |
-| historical proof archive | domain-versioned `{source,source_pair}` digest와 manifest-byte digest로 indexed create-new leaf 발급; evidence/binary도 content-addressed archive를 사용하고 dependency edge는 exact archive path/digest만 사용 | P01-P12Q |
-| aggregate receipt | P12A schema/writer/verdict producer/final recipe가 aggregate artifact를 발행하고 P12Q가 terminal manifest를 발급; dependency checker alone 불충분 | S21-13B |
+| handoff validation | canonical lane/ticket/proof/status, exact Git write set, immutable manifest archive와 current-clean source/result ancestry를 semantic validator가 검사; immediate predecessor만 매 lane validate; P02I는 P02A/P02B 둘; complete transitive validator는 독립적인 역사 감사 도구 | P01-P12A |
+| historical proof archive | domain-versioned `{source,source_pair}` digest와 manifest-byte digest로 indexed create-new leaf 발급; evidence/binary도 content-addressed archive를 사용하고 dependency edge는 exact archive path/digest만 사용 | P01-P12A |
+| aggregate receipt | P12A schema/writer/verdict producer/final recipe가 aggregate artifact를 발행하고 current-source release gate가 검증; aggregate가 최종 receipt | S21-13B |
 | shutdown escalation | cooperative deadline 뒤 process abort/non-zero exit 여부; kill 불가능한 Rust thread를 graceful로 표기 금지 | S21-09 |
 | provider policy | tenant/source/query classification별 egress consent, region, retention, budget owner | S21-08 |
 | active selector binding | resolution epoch/read identity로 검증; 원 요청 selector와 resolved pin의 단순 equality 금지 | S21-07 |

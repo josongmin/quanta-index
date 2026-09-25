@@ -9,7 +9,7 @@ remote SHA verification`이다. proof 뒤 source가 바뀌면 manifest와 handof
 
 P02A/P02B 통합 owner는 두 lane commit을 합친 clean HEAD에서 proof를 다시 실행하고 `P02I.json`을 만든다.
 P02I는 `integration_commits`에 P02A/P02B original/applied SHA와 MERGE/CHERRY_PICK mode를 기록한다.
-P11과 P12A/P12Q handoff는 top-level quanta SHA 외에 `paired_repositories`로 exact source pair를 기록한다.
+P11 handoff는 top-level quanta SHA 외에 `paired_repositories`로 exact source pair를 기록한다.
 P12A proof manifest 자체는 Quanta exact-source만 묶으며 독립적으로 발급할 수 있다.
 paired list 순서는 `github:josongmin/quanta-index`, `github:josongmin/semantica-codegraph-v2`로 고정한다. schema가
 표현할 수 없는 cross-field 조건은 handoff semantic validator가 강제한다: top-level base/result/dirty digest는 첫 quanta
@@ -39,5 +39,5 @@ GREEN이 아니다.
 
 전체 제품 이력의 누락·중복·순서·P02 fork/join·P03→P11 인접 SHA 결속은
 `just lane-handoff-chain-check`로 검사한다. 이 명령은 각 handoff의 historical Git/archive 검증을 먼저 실행하며,
-과거 result를 현재 HEAD라고 주장하지 않는다. P12 aggregate가 이 체인을 직접 소비하기 전에는 이 명령의 성공만으로
-P12A/P12 완료를 선언하지 않는다.
+과거 result를 현재 HEAD라고 주장하지 않는다. 이 명령은 역사적 이력 감사용이며 현재 릴리즈 자격의 필수 입력이 아니다.
+릴리즈 자격은 현재 source pair에 결속된 proof manifests와 최종 aggregate에서 판정한다.
