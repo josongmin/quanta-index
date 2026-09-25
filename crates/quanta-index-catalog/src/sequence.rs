@@ -9,7 +9,7 @@
 //!                     row_sha256 BLOB CHECK(length(row_sha256)=32))
 //! catalog_sequence_event_v2(sequence INTEGER UNIQUE
 //!                     CHECK(sequence BETWEEN 1 AND 9223372036854775807),
-//!                     kind INTEGER CHECK(kind IN (1..=10)),
+//!                     kind INTEGER CHECK(kind IN (1..=11)),
 //!                     identity_digest BLOB CHECK(length=32),
 //!                     payload_digest BLOB CHECK(length=32),
 //!                     event_commitment BLOB CHECK(length=32),
@@ -57,7 +57,7 @@ pub(crate) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS catalog_sequence_v2 
          CREATE TABLE IF NOT EXISTS catalog_sequence_event_v2 (
              sequence INTEGER PRIMARY KEY
                  CHECK (sequence BETWEEN 1 AND 9223372036854775807),
-             kind INTEGER NOT NULL CHECK (kind IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10)),
+             kind INTEGER NOT NULL CHECK (kind IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)),
              identity_digest BLOB NOT NULL CHECK (length(identity_digest) = 32),
              payload_digest BLOB NOT NULL CHECK (length(payload_digest) = 32),
              event_commitment BLOB NOT NULL CHECK (length(event_commitment) = 32),
@@ -82,10 +82,11 @@ pub(crate) enum SequenceEventKindV1 {
     QuarantineRecord = 8,
     QuarantineDiscard = 9,
     RepoMapInvalidation = 10,
+    RepoMapCandidateQuarantine = 11,
 }
 
 impl SequenceEventKindV1 {
-    pub(crate) const ALL: [Self; 10] = [
+    pub(crate) const ALL: [Self; 11] = [
         Self::OperationCommitted,
         Self::OperationRefused,
         Self::OperationAborted,
@@ -96,10 +97,11 @@ impl SequenceEventKindV1 {
         Self::QuarantineRecord,
         Self::QuarantineDiscard,
         Self::RepoMapInvalidation,
+        Self::RepoMapCandidateQuarantine,
     ];
 
     #[must_use]
-    /// The enum's discriminants are the closed 1..=10 `CHECK` set; the
+    /// The enum's discriminants are the closed 1..=11 `CHECK` set; the
     /// explicit match keeps the cast side-effect-free (no `as`).
     pub(crate) fn as_code(self) -> i64 {
         match self {
@@ -113,6 +115,7 @@ impl SequenceEventKindV1 {
             Self::QuarantineRecord => 8,
             Self::QuarantineDiscard => 9,
             Self::RepoMapInvalidation => 10,
+            Self::RepoMapCandidateQuarantine => 11,
         }
     }
 
@@ -139,6 +142,7 @@ impl SequenceEventKindV1 {
             8 => Ok(Self::QuarantineRecord),
             9 => Ok(Self::QuarantineDiscard),
             10 => Ok(Self::RepoMapInvalidation),
+            11 => Ok(Self::RepoMapCandidateQuarantine),
             other => Err(corrupt(&format!("event kind code {other} is not known"))),
         }
     }
@@ -498,6 +502,7 @@ pub(crate) fn verify_integrity(
                     | SequenceEventKindV1::Rollback
                     | SequenceEventKindV1::OperationInvalidation
                     | SequenceEventKindV1::RepoMapInvalidation
+                    | SequenceEventKindV1::RepoMapCandidateQuarantine
                     | SequenceEventKindV1::QuarantineRecord
                     | SequenceEventKindV1::QuarantineDiscard => 6_i64,
                 };
@@ -532,7 +537,8 @@ pub(crate) fn verify_integrity(
             // terminal sequence); every QuarantineRecord pairs the
             // incident's record sequence and QuarantineDiscard its
             // discard sequence. RepoMapInvalidation pairs the inactive
-            // activation row exactly; OperationInvalidation is an
+            // activation row; RepoMapCandidateQuarantine pairs the sealed
+            // candidate's quarantine sequence. OperationInvalidation is an
             // idempotency-lane event and has no surviving row after GC.
             // Rollback is not emitted by any current owner; the
             // ledger row and its digests are its record until one is.
@@ -566,6 +572,16 @@ pub(crate) fn verify_integrity(
                      WHERE terminal_sequence = ?1 AND active = 0",
                     sequence,
                     "repomap activation invalidation",
+                )?;
+            }
+            SequenceEventKindV1::RepoMapCandidateQuarantine => {
+                pair_exists(
+                    connection,
+                    path,
+                    "SELECT 1 FROM repomap_candidate_v1
+                     WHERE quarantine_sequence = ?1 AND state = 4",
+                    sequence,
+                    "repomap candidate quarantine",
                 )?;
             }
             SequenceEventKindV1::QuarantineRecord => {
@@ -717,6 +733,36 @@ mod tests {
             })
         ) {
             return Err("orphan RepoMap invalidation must refuse reopen".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn orphan_repomap_candidate_quarantine_refuses_reopen() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let catalog = SqliteCatalog::open(root.path(), Duration::from_millis(100))?;
+        {
+            let mut connection = catalog.lock()?;
+            let transaction = connection.transaction()?;
+            let _event = append_sequence_event(
+                &transaction,
+                SequenceEventKindV1::RepoMapCandidateQuarantine,
+                &[1_u8; 32],
+                &[2_u8; 32],
+            )?;
+            transaction.commit()?;
+            drop(connection);
+        }
+        drop(catalog);
+        let reopened = SqliteCatalog::open(root.path(), Duration::from_millis(100));
+        if !matches!(
+            reopened,
+            Err(quanta_index_core::CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                ..
+            })
+        ) {
+            return Err("orphan candidate quarantine must refuse reopen".into());
         }
         Ok(())
     }

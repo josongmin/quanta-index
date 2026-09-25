@@ -9,7 +9,8 @@
 //!                      object_address BLOB CHECK(len=32),
 //!                      content_digest BLOB CHECK(len=32),
 //!                      byte_size, state CHECK(state IN (1..=4)),
-//!                      terminal_sequence UNIQUE, row_sha256 CHECK(len=32),
+//!                      terminal_sequence UNIQUE, quarantine_sequence UNIQUE NULL,
+//!                      row_sha256 CHECK(len=32),
 //!                      UNIQUE(repo_id, revision_id, manifest_generation))
 //! repomap_activation_v1(repo_id, revision_id UNIQUE(repo_id, revision_id),
 //!                       epoch CHECK(epoch >= 1), manifest_generation,
@@ -72,7 +73,11 @@ pub(crate) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS repomap_candidate_v1
              state INTEGER NOT NULL CHECK (state IN (1, 2, 3, 4)),
              terminal_sequence INTEGER NOT NULL UNIQUE
                  CHECK (terminal_sequence BETWEEN 1 AND 9223372036854775807),
+             quarantine_sequence INTEGER UNIQUE
+                 CHECK (quarantine_sequence IS NULL OR
+                        quarantine_sequence BETWEEN 1 AND 9223372036854775807),
              row_sha256 BLOB NOT NULL CHECK (length(row_sha256) = 32),
+             CHECK ((state = 4) = (quarantine_sequence IS NOT NULL)),
              UNIQUE (repo_id, revision_id, manifest_generation)
          );
          CREATE TABLE IF NOT EXISTS repomap_activation_v1 (
@@ -156,7 +161,10 @@ pub struct RepoMapCandidateRowV1 {
     /// digest).
     pub projection_meta: String,
     pub state: RepoMapCandidateStateV1,
+    /// The `CandidateSeal` event remains stable across state transitions.
     pub terminal_sequence: i64,
+    /// The distinct terminal event for a sealed-only quarantine.
+    pub quarantine_sequence: Option<i64>,
 }
 
 /// One durable activation row (the serve-head pointer for a repo/revision).
@@ -256,6 +264,7 @@ fn candidate_row_digest(row: &RepoMapCandidateRowV1) -> [u8; 32] {
     let byte_size = row.byte_size.to_le_bytes();
     let state = row.state.as_code().to_le_bytes();
     let sequence = row.terminal_sequence.to_le_bytes();
+    let quarantine_sequence = row.quarantine_sequence.map_or([0_u8; 8], i64::to_le_bytes);
     hash_fields(
         CANDIDATE_ROW_DOMAIN,
         &[
@@ -269,6 +278,7 @@ fn candidate_row_digest(row: &RepoMapCandidateRowV1) -> [u8; 32] {
             row.projection_meta.as_bytes(),
             &state,
             &sequence,
+            &quarantine_sequence,
         ],
     )
 }
@@ -333,7 +343,7 @@ fn read_candidate_row(
         .query_row(
             "SELECT repo_id, revision_id, manifest_generation, candidate_commitment,
                     object_address, content_digest, byte_size, projection_meta, state,
-                    terminal_sequence, row_sha256
+                    terminal_sequence, quarantine_sequence, row_sha256
              FROM repomap_candidate_v1
              WHERE repo_id = ?1 AND revision_id = ?2 AND manifest_generation = ?3",
             params![repo_id, revision_id, generation_i64],
@@ -349,7 +359,8 @@ fn read_candidate_row(
                     row.get::<_, String>(7)?,
                     row.get::<_, i64>(8)?,
                     row.get::<_, i64>(9)?,
-                    row.get::<_, Vec<u8>>(10)?,
+                    row.get::<_, Option<i64>>(10)?,
+                    row.get::<_, Vec<u8>>(11)?,
                 ))
             },
         )
@@ -366,6 +377,7 @@ fn read_candidate_row(
         projection_meta,
         state,
         sequence,
+        quarantine_sequence,
         digest,
     )) = fetched
     else {
@@ -384,6 +396,7 @@ fn read_candidate_row(
         projection_meta,
         state: RepoMapCandidateStateV1::from_code(state)?,
         terminal_sequence: sequence,
+        quarantine_sequence,
     };
     let stored = blob32("candidate row digest", &digest)?;
     if candidate_row_digest(&row) != stored {
@@ -640,6 +653,7 @@ impl SqliteCatalog {
             projection_meta: projection_meta.to_string(),
             state: RepoMapCandidateStateV1::Sealed,
             terminal_sequence: sequence,
+            quarantine_sequence: None,
         };
         let generation_i64 = i64::try_from(manifest_generation).map_err(|error| {
             CoreError::InvalidContract(format!(
@@ -1253,7 +1267,7 @@ impl SqliteCatalog {
     }
 
     /// Mark a sealed (never-activated) candidate quarantined: terminal
-    /// state, one `Invalidation` event, no activation row touched.
+    /// state, one candidate-quarantine event, no activation row touched.
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the guard must outlive the transaction that borrows the connection; the suggested early drop would break the borrow"
@@ -1282,12 +1296,24 @@ impl SqliteCatalog {
         };
         if candidate.state == RepoMapCandidateStateV1::Quarantined {
             // Exact replay of the terminal state.
-            return Ok(candidate.terminal_sequence);
+            return candidate
+                .quarantine_sequence
+                .ok_or_else(|| corrupt("quarantined candidate has no quarantine sequence"));
+        }
+        if candidate.state != RepoMapCandidateStateV1::Sealed {
+            return Err(typed(
+                quanta_index_contract::SearchPlaneErrorCodeV2::ActivationTargetNotSealed,
+                format!(
+                    "catalog: cannot quarantine candidate in state {:?} for repo={repo_id} \
+                     revision={revision_id} generation={manifest_generation}",
+                    candidate.state
+                ),
+            ));
         }
         let identity = logical_key_digest(repo_id, revision_id, manifest_generation);
         let sequence = append_sequence_event(
             &transaction,
-            SequenceEventKindV1::RepoMapInvalidation,
+            SequenceEventKindV1::RepoMapCandidateQuarantine,
             &identity,
             &candidate.candidate_commitment,
         )?;
@@ -1298,13 +1324,16 @@ impl SqliteCatalog {
         })?;
         let quarantined_row = RepoMapCandidateRowV1 {
             state: RepoMapCandidateStateV1::Quarantined,
+            quarantine_sequence: Some(sequence),
             ..candidate
         };
         let _marked = transaction
             .execute(
-                "UPDATE repomap_candidate_v1 SET state = 4, row_sha256 = ?1 WHERE
-                     repo_id = ?2 AND revision_id = ?3 AND manifest_generation = ?4",
+                "UPDATE repomap_candidate_v1 SET state = 4, quarantine_sequence = ?1,
+                     row_sha256 = ?2 WHERE
+                     repo_id = ?3 AND revision_id = ?4 AND manifest_generation = ?5",
                 params![
+                    sequence,
                     candidate_row_digest(&quarantined_row).as_slice(),
                     repo_id,
                     revision_id,
@@ -1357,7 +1386,7 @@ impl SqliteCatalog {
             .prepare(
                 "SELECT repo_id, revision_id, manifest_generation, candidate_commitment,
                         object_address, content_digest, byte_size, projection_meta, state,
-                        terminal_sequence, row_sha256
+                        terminal_sequence, quarantine_sequence, row_sha256
                  FROM repomap_candidate_v1 ORDER BY terminal_sequence ASC",
             )
             .map_err(|error| engine_error("prepare candidate listing", &self.path, &error))?;
@@ -1374,7 +1403,8 @@ impl SqliteCatalog {
                     row.get::<_, String>(7)?,
                     row.get::<_, i64>(8)?,
                     row.get::<_, i64>(9)?,
-                    row.get::<_, Vec<u8>>(10)?,
+                    row.get::<_, Option<i64>>(10)?,
+                    row.get::<_, Vec<u8>>(11)?,
                 ))
             })
             .map_err(|error| engine_error("list candidates", &self.path, &error))?;
@@ -1391,6 +1421,7 @@ impl SqliteCatalog {
                 projection_meta,
                 state,
                 sequence,
+                quarantine_sequence,
                 digest,
             ) = row.map_err(|error| engine_error("read candidate row", &self.path, &error))?;
             let candidate = RepoMapCandidateRowV1 {
@@ -1406,6 +1437,7 @@ impl SqliteCatalog {
                 projection_meta,
                 state: RepoMapCandidateStateV1::from_code(state)?,
                 terminal_sequence: sequence,
+                quarantine_sequence,
             };
             let stored = blob32("candidate row digest", &digest)?;
             if candidate_row_digest(&candidate) != stored {
@@ -1488,5 +1520,50 @@ impl SqliteCatalog {
             out.push(incident);
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error;
+    use std::time::Duration;
+
+    use super::{RepoMapCandidateStateV1, SqliteCatalog};
+
+    #[test]
+    fn sealed_candidate_quarantine_replays_and_reopens_with_both_event_pairs()
+    -> Result<(), Box<dyn Error>> {
+        let root = tempfile::tempdir()?;
+        let catalog = SqliteCatalog::open(root.path(), Duration::from_millis(100))?;
+        let seal = catalog.seal_repomap_candidate(
+            "repo",
+            "revision",
+            1,
+            &[1_u8; 32],
+            &[2_u8; 32],
+            &[3_u8; 32],
+            4,
+            "{}",
+        )?;
+        let quarantine = catalog.quarantine_repomap_candidate("repo", "revision", 1)?;
+        if seal.terminal_sequence == quarantine
+            || catalog.quarantine_repomap_candidate("repo", "revision", 1)? != quarantine
+        {
+            return Err("quarantine did not allocate and replay its own sequence".into());
+        }
+        drop(catalog);
+
+        let reopened = SqliteCatalog::open(root.path(), Duration::from_millis(100))?;
+        let row = reopened
+            .repomap_candidate_row("repo", "revision", 1)?
+            .ok_or("sealed candidate disappeared after reopen")?;
+        if row.state != RepoMapCandidateStateV1::Quarantined
+            || row.terminal_sequence != seal.terminal_sequence
+            || row.quarantine_sequence != Some(quarantine)
+            || reopened.quarantine_repomap_candidate("repo", "revision", 1)? != quarantine
+        {
+            return Err("candidate quarantine pair changed after reopen".into());
+        }
+        Ok(())
     }
 }
