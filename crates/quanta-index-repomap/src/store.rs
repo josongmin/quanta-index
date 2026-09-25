@@ -14,7 +14,7 @@
 //! and data-retention decision.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fmt::Write as _,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, RwLock},
@@ -63,6 +63,9 @@ pub struct RepoMapGenerationStore {
     /// catalog remains durable authority; this gate only prevents an older
     /// completed writer from projecting over a newer catalog transaction.
     activation_commit_gate: Mutex<()>,
+    /// Keeps one store's discard receipt, live-reference decision and
+    /// physical reclaim in order. The catalog remains the durable authority.
+    quarantine_discard_gate: Mutex<()>,
     /// The pin table: how many pinned read views hold each logical
     /// generation (S21-05). Physical GC and republish defer to it.
     pins: Arc<RwLock<BTreeMap<RepoMapStoreKeyV1, u64>>>,
@@ -154,6 +157,7 @@ impl RepoMapGenerationStore {
                     snapshots: RwLock::new(BTreeMap::new()),
                     activated: RwLock::new(BTreeMap::new()),
                     activation_commit_gate: Mutex::new(()),
+                    quarantine_discard_gate: Mutex::new(()),
                     pins: Arc::new(RwLock::new(BTreeMap::new())),
                 },
                 report,
@@ -167,6 +171,7 @@ impl RepoMapGenerationStore {
             snapshots: RwLock::new(BTreeMap::new()),
             activated: RwLock::new(BTreeMap::new()),
             activation_commit_gate: Mutex::new(()),
+            quarantine_discard_gate: Mutex::new(()),
             pins: Arc::new(RwLock::new(BTreeMap::new())),
         };
         store.reconcile(&mut report)?;
@@ -273,6 +278,35 @@ impl RepoMapGenerationStore {
             for (key, generation) in reactivations {
                 let _prior = activated.insert(key, generation);
             }
+        }
+        self.reclaim_discarded_quarantine_payloads(objects)?;
+        Ok(())
+    }
+
+    /// Complete a tombstone whose payload unlink was interrupted. A payload
+    /// address can be shared by several incidents, so only addresses with
+    /// no live catalog reference are reclaimable.
+    fn reclaim_discarded_quarantine_payloads(
+        &self,
+        objects: &RepoMapObjectStore,
+    ) -> Result<(), CoreError> {
+        let incidents = self.catalog.repomap_quarantine_incidents()?;
+        let live_payloads: BTreeSet<[u8; 32]> = incidents
+            .iter()
+            .filter(|incident| !incident.discarded)
+            .map(|incident| incident.payload_digest)
+            .collect();
+        let reclaimable: BTreeSet<[u8; 32]> = incidents
+            .iter()
+            .filter(|incident| {
+                incident.discarded && !live_payloads.contains(&incident.payload_digest)
+            })
+            .map(|incident| incident.payload_digest)
+            .collect();
+        for digest in reclaimable {
+            let _reclaimed = objects.reclaim_quarantine_payload(
+                quanta_index_contract::QuarantinePayloadDigestV1::from_bytes(digest),
+            )?;
         }
         Ok(())
     }
@@ -1213,6 +1247,10 @@ impl RepoMapQuarantinePort for RepoMapGenerationStore {
         &self,
         entry: &QuarantinedRepoMapFileV1,
     ) -> Result<QuarantineDiscardOutcomeV1, CoreError> {
+        let _discard_guard = self
+            .quarantine_discard_gate
+            .lock()
+            .map_err(|error| storage_poisoned("quarantine discard gate", &error))?;
         let objects = self
             .objects
             .as_ref()
@@ -1241,24 +1279,37 @@ impl RepoMapQuarantinePort for RepoMapGenerationStore {
                 ),
             });
         }
-        if incident.discarded {
-            return Ok(QuarantineDiscardOutcomeV1::Absent);
-        }
-        // Journaled tombstone first, then the payload-only reclaim.
+        // Journaled tombstone first, then the payload-only reclaim. A prior
+        // tombstone can precede a crash before unlink; replay must finish
+        // that physical cleanup rather than treating the row as completion.
         let _sequence = self
             .catalog
             .discard_repomap_quarantine_payload(&incident.incident_digest)?;
-        let payload_bytes = objects
-            .read_quarantine_payload(
-                quanta_index_contract::QuarantinePayloadDigestV1::from_bytes(
-                    incident.payload_digest,
-                ),
-            )?
-            .map_or(0_usize, |bytes| bytes.len());
-        let reclaimed = u64::try_from(payload_bytes).map_or(0, |bytes| bytes);
-        let _reclaimed = objects.reclaim_quarantine_payload(
-            quanta_index_contract::QuarantinePayloadDigestV1::from_bytes(incident.payload_digest),
-        )?;
+        let still_live = self
+            .catalog
+            .repomap_quarantine_incidents()?
+            .iter()
+            .any(|other| !other.discarded && other.payload_digest == incident.payload_digest);
+        if still_live {
+            return Ok(if incident.discarded {
+                QuarantineDiscardOutcomeV1::Absent
+            } else {
+                QuarantineDiscardOutcomeV1::Discarded { bytes: 0 }
+            });
+        }
+        let payload_digest =
+            quanta_index_contract::QuarantinePayloadDigestV1::from_bytes(incident.payload_digest);
+        let payload_bytes = objects.read_quarantine_payload(payload_digest)?;
+        if incident.discarded && payload_bytes.is_none() {
+            return Ok(QuarantineDiscardOutcomeV1::Absent);
+        }
+        let reclaimed = payload_bytes.as_ref().map_or(0_usize, Vec::len);
+        let reclaimed = u64::try_from(reclaimed).map_err(|error| {
+            CoreError::Storage(format!(
+                "repomap quarantine payload size does not fit u64: {error}"
+            ))
+        })?;
+        let _reclaimed = objects.reclaim_quarantine_payload(payload_digest)?;
         Ok(QuarantineDiscardOutcomeV1::Discarded { bytes: reclaimed })
     }
 }

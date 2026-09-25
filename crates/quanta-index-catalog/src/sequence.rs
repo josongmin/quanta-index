@@ -572,22 +572,9 @@ pub(crate) fn verify_integrity(
                     connection, path, kind, sequence, &identity, &payload,
                 )?;
             }
-            SequenceEventKindV1::QuarantineRecord => {
-                pair_exists(
-                    connection,
-                    path,
-                    "SELECT 1 FROM repomap_quarantine_event_v1 WHERE sequence = ?1",
-                    sequence,
-                    "quarantine record",
-                )?;
-            }
-            SequenceEventKindV1::QuarantineDiscard => {
-                pair_exists(
-                    connection,
-                    path,
-                    "SELECT 1 FROM repomap_quarantine_event_v1 WHERE discard_sequence = ?1",
-                    sequence,
-                    "quarantine discard",
+            SequenceEventKindV1::QuarantineRecord | SequenceEventKindV1::QuarantineDiscard => {
+                crate::candidate::verify_quarantine_event_pair(
+                    connection, path, kind, sequence, &identity, &payload,
                 )?;
             }
         }

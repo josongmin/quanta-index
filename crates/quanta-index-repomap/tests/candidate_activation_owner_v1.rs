@@ -956,6 +956,205 @@ fn quarantine_projection_exact_byte_replay_and_tombstone_discard() -> TestResult
     Ok(())
 }
 
+#[test]
+fn tombstone_committed_before_payload_reclaim_is_retried() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().to_path_buf();
+    let (catalog, store) = open_fixture(&root)?;
+    let _sealed = publish(store.as_ref(), 1, "g1")?;
+    let _activated = activate(store.as_ref(), 1)?;
+    let object_path = find_single_object(&root.join("repo-map").join("objects").join("sha256"))?;
+    let damaged_bytes = b"damaged candidate payload";
+    std::fs::write(&object_path, damaged_bytes)?;
+    drop(store);
+    drop(catalog);
+
+    let (catalog, store) = open_fixture(&root)?;
+    let incidents = catalog.repomap_quarantine_incidents()?;
+    let incident = incidents.first().ok_or("missing durable incident")?;
+    if incidents.len() != 1 {
+        return Err("damaged object must create exactly one incident".into());
+    }
+    let mut listed = store.as_ref().quarantined_files()?;
+    let entry = listed.pop().ok_or("missing listed incident")?;
+    if !listed.is_empty() {
+        return Err("damaged object must list exactly one incident".into());
+    }
+    let payload_path = payload_projection_path(&root, &incident.payload_digest)?;
+    if std::fs::read(&payload_path)? != damaged_bytes {
+        return Err("quarantine projection must contain the damaged bytes".into());
+    }
+
+    // Simulate process death after the durable tombstone, before unlinking
+    // its payload projection. The old listed target is still retryable.
+    let discard_sequence = catalog.discard_repomap_quarantine_payload(&incident.incident_digest)?;
+    if discard_sequence <= incident.sequence || !payload_path.is_file() {
+        return Err("fault point requires a committed tombstone and live payload".into());
+    }
+    match store.as_ref().discard_quarantined_file(&entry)? {
+        quanta_index_core::QuarantineDiscardOutcomeV1::Discarded { bytes }
+            if bytes == u64::try_from(damaged_bytes.len())? => {}
+        quanta_index_core::QuarantineDiscardOutcomeV1::Discarded { bytes } => {
+            return Err(format!("retry reclaimed the wrong byte count: {bytes}").into());
+        }
+        quanta_index_core::QuarantineDiscardOutcomeV1::Absent => {
+            return Err("retry must reclaim the pending payload, not return Absent".into());
+        }
+    }
+    if payload_path.exists() {
+        return Err("retry left the tombstoned payload on disk".into());
+    }
+    let after = catalog.repomap_quarantine_incidents()?;
+    if after.first().and_then(|row| row.discard_sequence) != Some(discard_sequence) {
+        return Err("retry changed the durable discard receipt".into());
+    }
+    if !matches!(
+        store.as_ref().discard_quarantined_file(&entry)?,
+        quanta_index_core::QuarantineDiscardOutcomeV1::Absent
+    ) {
+        return Err("fully reclaimed incident must replay as absent".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn boot_finishes_a_tombstoned_payload_without_a_client_retry() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().to_path_buf();
+    let (catalog, store) = open_fixture(&root)?;
+    let _sealed = publish(store.as_ref(), 1, "g1")?;
+    let object_path = find_single_object(&root.join("repo-map").join("objects").join("sha256"))?;
+    let damaged_bytes = b"unreclaimed payload";
+    std::fs::write(&object_path, damaged_bytes)?;
+    drop(store);
+    drop(catalog);
+
+    let (catalog, store) = open_fixture(&root)?;
+    let incidents = catalog.repomap_quarantine_incidents()?;
+    let incident = incidents.first().ok_or("missing durable incident")?;
+    if incidents.len() != 1 {
+        return Err("damaged object must create one incident".into());
+    }
+    let entry = store
+        .as_ref()
+        .quarantined_files()?
+        .pop()
+        .ok_or("missing listed incident")?;
+    let payload_path = payload_projection_path(&root, &incident.payload_digest)?;
+    if std::fs::read(&payload_path)? != damaged_bytes {
+        return Err("fault point requires a projected payload".into());
+    }
+    let discard_sequence = catalog.discard_repomap_quarantine_payload(&incident.incident_digest)?;
+    drop(store);
+    drop(catalog);
+
+    let (catalog, store) = open_fixture(&root)?;
+    if payload_path.exists() {
+        return Err("boot failed to finish tombstoned payload reclaim".into());
+    }
+    let after = catalog.repomap_quarantine_incidents()?;
+    if after.first().and_then(|row| row.discard_sequence) != Some(discard_sequence) {
+        return Err("boot changed the tombstone receipt".into());
+    }
+    if !matches!(
+        store.as_ref().discard_quarantined_file(&entry)?,
+        quanta_index_core::QuarantineDiscardOutcomeV1::Absent
+    ) {
+        return Err("fully recovered tombstone must replay as absent".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn discarding_one_incident_preserves_a_shared_live_payload() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().to_path_buf();
+    let (catalog, store) = open_fixture(&root)?;
+    let _first = publish(store.as_ref(), 1, "g1")?;
+    let _second = publish(store.as_ref(), 2, "g2")?;
+    let object_root = root.join("repo-map").join("objects").join("sha256");
+    let objects = walk(&object_root)?;
+    if objects.len() != 2 {
+        return Err("fixture requires two distinct candidate objects".into());
+    }
+    let damaged_bytes = b"same damaged bytes";
+    for path in &objects {
+        std::fs::write(path, damaged_bytes)?;
+    }
+    drop(store);
+    drop(catalog);
+
+    let (catalog, store) = open_fixture(&root)?;
+    let incidents = catalog.repomap_quarantine_incidents()?;
+    let listed = store.as_ref().quarantined_files()?;
+    let [first_incident, second_incident] = incidents.as_slice() else {
+        return Err("two damaged candidates require two incidents".into());
+    };
+    let [first_entry, second_entry] = listed.as_slice() else {
+        return Err("two damaged candidates require two listed incidents".into());
+    };
+    if first_incident.payload_digest != second_incident.payload_digest {
+        return Err("fixture requires one shared content-addressed payload".into());
+    }
+    let payload_path = payload_projection_path(&root, &first_incident.payload_digest)?;
+    if std::fs::read(&payload_path)
+        .map_err(|error| format!("shared projection missing before discard: {error}"))?
+        != damaged_bytes
+    {
+        return Err("both incidents must share the projected bytes".into());
+    }
+    let first = store.as_ref().discard_quarantined_file(first_entry)?;
+    if !matches!(
+        first,
+        quanta_index_core::QuarantineDiscardOutcomeV1::Discarded { .. }
+    ) {
+        return Err("first listed incident was not discarded".into());
+    }
+    if std::fs::read(&payload_path)
+        .map_err(|error| format!("shared projection missing after first discard: {error}"))?
+        != damaged_bytes
+    {
+        return Err("discarding one incident removed another live incident's payload".into());
+    }
+    let remaining = store.as_ref().quarantined_files()?;
+    if remaining != [second_entry.clone()] {
+        return Err("one live incident must remain listed".into());
+    }
+    if !matches!(
+        store.as_ref().discard_quarantined_file(first_entry)?,
+        quanta_index_core::QuarantineDiscardOutcomeV1::Absent
+    ) {
+        return Err("repeated discard with a shared live payload must be Absent".into());
+    }
+    let second = store.as_ref().discard_quarantined_file(second_entry)?;
+    if !matches!(
+        second,
+        quanta_index_core::QuarantineDiscardOutcomeV1::Discarded { .. }
+    ) || payload_path.exists()
+    {
+        return Err("last incident must reclaim the unreferenced payload".into());
+    }
+    Ok(())
+}
+
+fn payload_projection_path(
+    root: &std::path::Path,
+    digest: &[u8; 32],
+) -> Result<std::path::PathBuf, Box<dyn Error>> {
+    let payload_hex = hex(digest);
+    Ok(root
+        .join("repo-map")
+        .join("quarantine")
+        .join("payloads")
+        .join("sha256")
+        .join(payload_hex.get(..2).ok_or("short payload digest")?)
+        .join(payload_hex.get(2..4).ok_or("short payload digest")?)
+        .join(format!(
+            "{}.bin",
+            payload_hex.get(4..).ok_or("short payload digest")?
+        )))
+}
+
 fn hex(bytes: &[u8]) -> String {
     let mut out = String::new();
     for byte in bytes {

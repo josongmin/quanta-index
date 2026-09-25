@@ -446,6 +446,52 @@ fn checked_quarantine_row(
     Ok(incident)
 }
 
+/// Bind the generic quarantine event to the self-digested incident row.
+/// A matching sequence alone does not prove the event's identity or payload.
+pub(crate) fn verify_quarantine_event_pair(
+    connection: &Connection,
+    path: &std::path::Path,
+    kind: SequenceEventKindV1,
+    sequence: i64,
+    identity: &[u8; 32],
+    payload: &[u8; 32],
+) -> Result<(), CoreError> {
+    if kind != SequenceEventKindV1::QuarantineRecord
+        && kind != SequenceEventKindV1::QuarantineDiscard
+    {
+        return Err(corrupt(
+            "non-quarantine event reached quarantine pair verifier",
+        ));
+    }
+    let sql = if kind == SequenceEventKindV1::QuarantineRecord {
+        "SELECT incident_digest, payload_digest, envelope_bytes, envelope_digest,
+                incident_time_unix_nanos, sequence, reason_code, source_path,
+                discarded, discard_sequence, row_sha256
+         FROM repomap_quarantine_event_v1 WHERE sequence = ?1"
+    } else {
+        "SELECT incident_digest, payload_digest, envelope_bytes, envelope_digest,
+                incident_time_unix_nanos, sequence, reason_code, source_path,
+                discarded, discard_sequence, row_sha256
+         FROM repomap_quarantine_event_v1 WHERE discard_sequence = ?1"
+    };
+    let raw = connection
+        .query_row(sql, params![sequence], quarantine_raw_row)
+        .optional()
+        .map_err(|error| engine_error("read quarantine event pair", path, &error))?
+        .ok_or_else(|| {
+            corrupt(&format!(
+                "quarantine event {sequence} has no exact domain pair"
+            ))
+        })?;
+    let incident = checked_quarantine_row(raw)?;
+    if incident.incident_digest != *identity || incident.payload_digest != *payload {
+        return Err(corrupt(&format!(
+            "quarantine event {sequence} disagrees with its incident identity or payload"
+        )));
+    }
+    Ok(())
+}
+
 fn read_candidate_row(
     transaction: &Connection,
     repo_id: &str,
@@ -1771,6 +1817,106 @@ mod tests {
             })?;
         if allocator_rows != 0 {
             return Err("quarantine schema refusal must precede allocator seed".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn quarantine_events_bind_incident_identity_and_payload_at_reopen() -> Result<(), Box<dyn Error>>
+    {
+        for kind in [
+            SequenceEventKindV1::QuarantineRecord,
+            SequenceEventKindV1::QuarantineDiscard,
+        ] {
+            let root = tempfile::tempdir()?;
+            let catalog = SqliteCatalog::open(root.path(), Duration::from_millis(100))?;
+            let digest = [1_u8; 32];
+            let payload = [2_u8; 32];
+            if kind == SequenceEventKindV1::QuarantineRecord {
+                let mut connection = catalog.lock()?;
+                let transaction = connection.transaction()?;
+                let sequence = append_sequence_event(&transaction, kind, &[9_u8; 32], &payload)?;
+                let row = super::RepoMapQuarantineIncidentRowV1 {
+                    incident_digest: digest,
+                    payload_digest: payload,
+                    envelope_bytes: vec![3_u8],
+                    envelope_digest: [4_u8; 32],
+                    incident_time_unix_nanos: 42,
+                    sequence,
+                    reason_code: "reason".to_string(),
+                    source_path: "path".to_string(),
+                    discarded: false,
+                    discard_sequence: None,
+                };
+                let inserted = transaction.execute(
+                    "INSERT INTO repomap_quarantine_event_v1
+                     (incident_digest, payload_digest, envelope_bytes, envelope_digest,
+                      incident_time_unix_nanos, sequence, reason_code, source_path,
+                      discarded, row_sha256)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9)",
+                    params![
+                        row.incident_digest.as_slice(),
+                        row.payload_digest.as_slice(),
+                        row.envelope_bytes,
+                        row.envelope_digest.as_slice(),
+                        row.incident_time_unix_nanos,
+                        row.sequence,
+                        row.reason_code,
+                        row.source_path,
+                        super::quarantine_row_digest(&row).as_slice(),
+                    ],
+                )?;
+                if inserted != 1 {
+                    return Err("hostile record fixture must insert one row".into());
+                }
+                transaction.commit()?;
+                drop(connection);
+            } else {
+                let row = catalog.record_repomap_quarantine_incident(
+                    &digest,
+                    &payload,
+                    42,
+                    "reason",
+                    "path",
+                    &|_sequence| Ok(([4_u8; 32], vec![3_u8])),
+                )?;
+                let mut connection = catalog.lock()?;
+                let transaction = connection.transaction()?;
+                let sequence = append_sequence_event(&transaction, kind, &digest, &[9_u8; 32])?;
+                let discarded = super::RepoMapQuarantineIncidentRowV1 {
+                    discarded: true,
+                    discard_sequence: Some(sequence),
+                    ..row
+                };
+                let updated = transaction.execute(
+                    "UPDATE repomap_quarantine_event_v1
+                     SET discarded = 1, discard_sequence = ?1, row_sha256 = ?2
+                     WHERE incident_digest = ?3",
+                    params![
+                        sequence,
+                        super::quarantine_row_digest(&discarded).as_slice(),
+                        digest.as_slice(),
+                    ],
+                )?;
+                if updated != 1 {
+                    return Err("hostile discard fixture must update one row".into());
+                }
+                transaction.commit()?;
+                drop(connection);
+            }
+            drop(catalog);
+            let reopened = SqliteCatalog::open(root.path(), Duration::from_millis(100));
+            if !matches!(
+                reopened,
+                Err(CoreError::Typed {
+                    code: SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                    ..
+                })
+            ) {
+                return Err(
+                    format!("{kind:?} event with mismatched identity or payload reopened").into(),
+                );
+            }
         }
         Ok(())
     }
