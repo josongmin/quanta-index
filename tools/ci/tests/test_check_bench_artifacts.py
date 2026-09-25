@@ -418,6 +418,15 @@ def test_the_cli_refuses_a_malformed_head(tmp_path: Path, capsys) -> None:
     assert "not 40 lowercase hex" in capsys.readouterr().err
 
 
+def test_baseline_checker_refuses_interrupted_pair(tmp_path: Path, capsys) -> None:
+    install_manifest(tmp_path)
+    marker = tmp_path / "tools/benchmark/baselines/.dsl-admission-pending"
+    marker.parent.mkdir(parents=True)
+    marker.write_text("interrupted", encoding="utf-8")
+    assert MODULE.main(["--repo-root", str(tmp_path), "--head", HEAD]) == 1
+    assert "baseline admission is incomplete" in capsys.readouterr().err
+
+
 def test_clean_worktree_requirement_refuses_any_git_status_output(
     monkeypatch, tmp_path: Path
 ) -> None:

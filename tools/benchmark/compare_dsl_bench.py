@@ -526,18 +526,45 @@ def require_clean_preflight(receipt_path: Path | None, artifact: Artifact) -> No
 
 
 def atomically_write_baseline(destination: Path, content: str) -> None:
-    """Do not leave a committed baseline truncated if admission is interrupted."""
+    """Durably replace one baseline without exposing a truncated file."""
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
         "w", encoding="utf-8", dir=destination.parent, prefix=f".{destination.name}.", delete=False
     ) as handle:
         temporary = Path(handle.name)
-        handle.write(content)
+        try:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
     try:
         os.replace(temporary, destination)
+        fsync_directory(destination.parent)
     except OSError:
         temporary.unlink(missing_ok=True)
         raise
+
+
+def fsync_directory(directory: Path) -> None:
+    descriptor = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def require_no_pending_admission(baseline: Path) -> None:
+    """A crash during the two-file update must invalidate both baselines."""
+    marker = baseline.parent / ".dsl-admission-pending"
+    try:
+        marker.lstat()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise ArtifactRefused(f"cannot inspect DSL admission marker {marker}: {exc}") from exc
+    raise ArtifactRefused(f"DSL baseline admission is incomplete: {marker}")
 
 
 def main() -> int:
@@ -569,6 +596,7 @@ def main() -> int:
                 f"current artifact git_head {current.git_head} is not HEAD {head}: "
                 "stale artifact, re-run the rail at HEAD"
             )
+        require_no_pending_admission(args.baseline)
         baseline = load_artifact(args.baseline, role="baseline")
         gate_provenance(baseline, current, head)
     except FileNotFoundError as exc:

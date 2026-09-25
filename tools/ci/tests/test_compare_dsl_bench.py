@@ -47,6 +47,16 @@ def _load_module(name: str, path: Path):
 
 
 COMPARE = _load_module("compare_dsl_bench", COMPARE_PATH)
+
+
+def test_comparator_refuses_interrupted_baseline_pair(tmp_path: Path) -> None:
+    baseline = tmp_path / "warm-matrix.json"
+    marker = tmp_path / ".dsl-admission-pending"
+    marker.write_text("interrupted", encoding="utf-8")
+    with pytest.raises(COMPARE.ArtifactRefused, match="admission is incomplete"):
+        COMPARE.require_no_pending_admission(baseline)
+
+
 COLD_MATRIX = _load_module("run_dsl_cold_matrix", COLD_MATRIX_PATH)
 
 HEAD = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, text=True).strip()

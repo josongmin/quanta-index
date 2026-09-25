@@ -603,6 +603,19 @@ def main(argv: list[str] | None = None) -> int:
         repo_root, selected_families, head=head, require=args.require, manifest=manifest
     )
     if not args.skip_baselines:
+        markers = {
+            (repo_root / relative).parent / ".dsl-admission-pending"
+            for _name, relative in baselines
+        }
+        for marker in sorted(markers):
+            try:
+                marker.lstat()
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                refusals.append(f"cannot inspect DSL baseline admission marker {marker}: {exc}")
+            else:
+                refusals.append(f"DSL baseline admission is incomplete: {marker}")
         baseline_refusals, baseline_checked, baseline_absent = check_families(
             repo_root, baselines, head=None, require=False, manifest=manifest
         )

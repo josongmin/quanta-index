@@ -29,10 +29,12 @@ from compare_dsl_bench import (  # noqa: E402
     MIN_SAMPLES_FOR_AUTHORITY,
     ArtifactRefused,
     atomically_write_baseline,
+    fsync_directory,
     load_artifact,
     require_clean_host_load,
     require_clean_preflight,
     require_complete_baseline_candidate,
+    require_no_pending_admission,
 )
 from manifest import DEFAULT_MANIFEST_PATH, ManifestError, load_manifest  # noqa: E402
 
@@ -163,6 +165,10 @@ def require_declared_baselines(
             continue
         assert isinstance(baseline, dict)
         path = repo_root / baseline["path"]
+        try:
+            require_no_pending_admission(path)
+        except ArtifactRefused as exc:
+            raise RuntimeError(str(exc)) from exc
         if not path.is_file():
             raise RuntimeError(
                 f"missing declared baseline for {name}: {path}; capture and admit a baseline before running this comparison profile"
@@ -283,11 +289,19 @@ def admit_dsl_baselines(
 
 
 def publish_dsl_baseline_pair(prepared: list[tuple[Path, str]]) -> None:
-    """Restore the prior pair if either baseline write fails."""
+    """Reject a crash-interrupted pair and restore ordinary write failures."""
     if len(prepared) != 2 or prepared[0][0] == prepared[1][0]:
         raise RuntimeError("DSL baseline publication requires two distinct destinations")
+    parent = prepared[0][0].parent
+    if prepared[1][0].parent != parent:
+        raise RuntimeError("DSL baseline pair must share one directory")
+    marker = parent / ".dsl-admission-pending"
     prior: dict[Path, str | None] = {}
     for destination, _ in prepared:
+        try:
+            require_no_pending_admission(destination)
+        except ArtifactRefused as exc:
+            raise RuntimeError(str(exc)) from exc
         try:
             destination_stat = destination.lstat()
         except FileNotFoundError:
@@ -301,6 +315,18 @@ def publish_dsl_baseline_pair(prepared: list[tuple[Path, str]]) -> None:
             prior[destination] = destination.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as exc:
             raise RuntimeError(f"cannot preserve DSL baseline {destination}: {exc}") from exc
+
+    try:
+        parent.mkdir(parents=True, exist_ok=True)
+        fsync_directory(parent.parent)
+        descriptor = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(b"dsl-baseline-admission-v1\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        fsync_directory(parent)
+    except OSError as exc:
+        raise RuntimeError(f"cannot start DSL baseline pair publication: {exc}") from exc
 
     written: list[Path] = []
     try:
@@ -320,9 +346,24 @@ def publish_dsl_baseline_pair(prepared: list[tuple[Path, str]]) -> None:
                 rollback_errors.append(f"{destination}: {rollback_error}")
         if rollback_errors:
             raise RuntimeError(
-                f"DSL baseline write failed: {exc}; rollback failed: {'; '.join(rollback_errors)}"
+                f"DSL baseline write failed: {exc}; rollback failed: {'; '.join(rollback_errors)}; "
+                f"admission marker retained at {marker}"
+            ) from exc
+        try:
+            fsync_directory(parent)
+            marker.unlink()
+            fsync_directory(parent)
+        except OSError as cleanup_error:
+            raise RuntimeError(
+                f"DSL baseline write failed: {exc}; pair restored but marker cleanup failed: "
+                f"{cleanup_error}"
             ) from exc
         raise RuntimeError(f"DSL baseline write failed and pair restored: {exc}") from exc
+    try:
+        marker.unlink()
+        fsync_directory(parent)
+    except OSError as exc:
+        raise RuntimeError(f"DSL baseline pair written but marker cleanup failed: {exc}") from exc
     for destination in written:
         print(f"baseline candidate written: {destination}")
 

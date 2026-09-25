@@ -576,6 +576,7 @@ def test_dsl_admission_writes_both_only_after_guarded_capture(monkeypatch, tmp_p
     )
     for mode in ("warm", "cold"):
         assert (tmp_path / f"tools/benchmark/baselines/{mode}-matrix.json").read_text() == mode
+    assert not (tmp_path / "tools/benchmark/baselines/.dsl-admission-pending").exists()
 
 
 def test_dsl_admission_refuses_receipt_changed_while_checking_candidates(
@@ -680,6 +681,7 @@ def test_dsl_baseline_pair_restores_prior_files_if_second_write_fails(
         MODULE.publish_dsl_baseline_pair([(warm, "new warm"), (cold, "new cold")])
     assert warm.read_text(encoding="utf-8") == "prior warm"
     assert cold.read_text(encoding="utf-8") == "prior cold"
+    assert not (tmp_path / ".dsl-admission-pending").exists()
 
 
 def test_dsl_baseline_pair_removes_first_new_file_if_second_write_fails(
@@ -699,6 +701,7 @@ def test_dsl_baseline_pair_removes_first_new_file_if_second_write_fails(
         MODULE.publish_dsl_baseline_pair([(warm, "new warm"), (cold, "new cold")])
     assert not warm.exists()
     assert not cold.exists()
+    assert not (tmp_path / ".dsl-admission-pending").exists()
 
 
 def test_dsl_baseline_pair_refuses_symlink_target(tmp_path: Path) -> None:
@@ -711,3 +714,41 @@ def test_dsl_baseline_pair_refuses_symlink_target(tmp_path: Path) -> None:
         MODULE.publish_dsl_baseline_pair([(warm, "new warm"), (cold, "new cold")])
     assert target.read_text(encoding="utf-8") == "preserved"
     assert not cold.exists()
+
+
+def test_dsl_baseline_pair_refuses_crash_marker(tmp_path: Path) -> None:
+    marker = tmp_path / ".dsl-admission-pending"
+    marker.write_text("interrupted", encoding="utf-8")
+    warm = tmp_path / "warm.json"
+    cold = tmp_path / "cold.json"
+    with pytest.raises(RuntimeError, match="admission is incomplete"):
+        MODULE.publish_dsl_baseline_pair([(warm, "new warm"), (cold, "new cold")])
+    assert marker.read_text(encoding="utf-8") == "interrupted"
+    assert not warm.exists()
+    assert not cold.exists()
+
+
+def test_dsl_baseline_pair_retains_marker_when_rollback_fails(monkeypatch, tmp_path: Path) -> None:
+    baseline_dir = tmp_path / "tools/benchmark/baselines"
+    baseline_dir.mkdir(parents=True)
+    warm = baseline_dir / "warm-matrix.json"
+    cold = baseline_dir / "cold-matrix.json"
+    warm.write_text("prior warm", encoding="utf-8")
+    real_write = MODULE.atomically_write_baseline
+
+    def fail_cold_and_rollback(destination: Path, content: str) -> None:
+        if destination == cold or content == "prior warm":
+            raise OSError("injected write failure")
+        real_write(destination, content)
+
+    monkeypatch.setattr(MODULE, "atomically_write_baseline", fail_cold_and_rollback)
+    with pytest.raises(RuntimeError, match="marker retained"):
+        MODULE.publish_dsl_baseline_pair([(warm, "new warm"), (cold, "new cold")])
+    assert warm.read_text(encoding="utf-8") == "new warm"
+    assert (baseline_dir / ".dsl-admission-pending").exists()
+    with pytest.raises(RuntimeError, match="admission is incomplete"):
+        MODULE.require_declared_baselines(
+            tmp_path,
+            MODULE.load_profiles()["dsl-authority"],
+            MODULE.load_manifest(),
+        )

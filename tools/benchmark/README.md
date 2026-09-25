@@ -78,6 +78,12 @@ supplied receipt cannot prove it belongs to an existing artifact. Guarded
 admission requires a clean source, canonical Linux preflight, fresh warm/cold
 artifacts from the same run, matching measured host, and complete latency rows.
 It cannot turn an `early_stop_reason` fixture gap into a committed reference.
+The two baseline files are published under a durable
+`tools/benchmark/baselines/.dsl-admission-pending` marker. A crash or failed
+rollback leaves that marker in place; the runner, comparator, and artifact
+checker refuse the pair until an owner inspects both files, restores or
+recaptures them, and removes the marker. Ordinary second-file write failures
+restore the prior pair and remove the marker.
 
 ## Artifact schema (the contract): `BenchArtifactV1`
 
