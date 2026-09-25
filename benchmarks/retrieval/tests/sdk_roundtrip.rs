@@ -23,9 +23,8 @@ use quanta_index_retrieval_bench::chunking::chunk_corpus;
 use quanta_index_retrieval_bench::chunking::whole_file::WholeFileChunker;
 use quanta_index_retrieval_bench::corpus::{CorpusLimits, load_corpus, load_manifest};
 use quanta_index_retrieval_bench::query_plan::{
-    NlPlanConfig, QueryInputPolicy, plan_query,
+    NlPlanConfig, QueryInputPolicy, execution_profile_sha256, execution_profile_value, plan_query,
 };
-use quanta_index_retrieval_bench::symbols::extract_corpus_symbols;
 use quanta_index_retrieval_bench::record::{
     CaptureProvenance, PackTask, QueryPack, RouteProvenance, RunnerIdentity, RunnerRecordInput,
     pack_universe_digest, result_value, runner_record,
@@ -34,13 +33,21 @@ use quanta_index_retrieval_bench::sdk::{
     DaemonConfig, DaemonSession, QueryOutcome, RouteQuery, publish_and_activate, query_route,
     resolve_searchd_binary,
 };
+use quanta_index_retrieval_bench::symbols::extract_corpus_symbols;
 use quanta_index_retrieval_bench::{BenchError, sha256_hex};
 
 const EMBEDDER: &str = "hash-dev";
 
-fn symbols_for(files: &[quanta_index_retrieval_bench::corpus::SourceFile]) -> std::collections::BTreeMap<String, Vec<quanta_index_contract::lex::SymbolRecord>> {
-    let by_path: std::collections::BTreeMap<String, quanta_index_retrieval_bench::corpus::SourceFile> =
-        files.iter().map(|file| (file.path.clone(), file.clone())).collect();
+fn symbols_for(
+    files: &[quanta_index_retrieval_bench::corpus::SourceFile],
+) -> std::collections::BTreeMap<String, Vec<quanta_index_contract::lex::SymbolRecord>> {
+    let by_path: std::collections::BTreeMap<
+        String,
+        quanta_index_retrieval_bench::corpus::SourceFile,
+    > = files
+        .iter()
+        .map(|file| (file.path.clone(), file.clone()))
+        .collect();
     extract_corpus_symbols(&by_path).expect("symbols").symbols
 }
 
@@ -328,11 +335,11 @@ fn unavailable_provider_is_typed_and_never_returns_hits() {
         generation: identity.generation,
         top_k: 10,
     }) {
-        QueryOutcome::Failed { status, code, .. } => {
+        QueryOutcome::SdkFailure { status, code, .. } => {
             assert_eq!(status, "unavailable");
             assert_eq!(code, "SEM_PROVIDER_UNAVAILABLE");
         }
-        QueryOutcome::Hits { .. } => panic!("unavailable provider must never return hits"),
+        other => panic!("unavailable provider must be an SDK failure: {other:?}"),
     }
     session.stop().expect("bounded shutdown");
 }
@@ -362,10 +369,10 @@ fn terminated_daemon_is_typed_and_never_returns_hits() {
         generation: identity.generation,
         top_k: 10,
     }) {
-        QueryOutcome::Failed { status, .. } => {
+        QueryOutcome::SdkFailure { status, .. } => {
             assert!(matches!(status, "error" | "timeout" | "unavailable"));
         }
-        QueryOutcome::Hits { .. } => panic!("terminated daemon must never return hits"),
+        other => panic!("terminated daemon must be an SDK failure: {other:?}"),
     }
     session.stop().expect("idempotent bounded shutdown");
 }
@@ -379,16 +386,17 @@ fn real_daemon_roundtrip_publishes_and_queries() {
     let chunker = WholeFileChunker;
     let (chunks, coverage) = chunk_corpus(&chunker, &files).expect("chunk");
     assert_eq!(coverage.chunks, 3);
-    let published_units =
-        quanta_index_retrieval_bench::published_units::PublishedUnitRegistry::from_chunks_and_symbols(
-            &chunks,
-            &symbols_for(&files),
-        )
-        .expect("published units");
     let files_by_path: BTreeMap<_, _> = files
         .iter()
         .map(|file| (file.path.clone(), file.clone()))
         .collect();
+    let published_units =
+        quanta_index_retrieval_bench::published_units::PublishedUnitRegistry::from_chunks_and_symbols(
+            &chunks,
+            &symbols_for(&files),
+            &files_by_path,
+        )
+        .expect("published units");
 
     let identity = BatchIdentity::new(
         "bench-repo",
@@ -397,7 +405,8 @@ fn real_daemon_roundtrip_publishes_and_queries() {
         "manifest:test-roundtrip".to_string(),
     )
     .expect("identity");
-    let (batch, assembly) = assemble_batch(&identity, &chunks, &symbols_for(&files)).expect("batch");
+    let (batch, assembly) =
+        assemble_batch(&identity, &chunks, &symbols_for(&files)).expect("batch");
     assert_eq!(assembly.scopes, 3);
     assert_eq!(assembly.semantic_scopes, 3);
 
@@ -418,7 +427,7 @@ fn real_daemon_roundtrip_publishes_and_queries() {
         top_k: 10,
     });
     assert!(
-        matches!(premature, QueryOutcome::Failed { .. }),
+        !matches!(premature, QueryOutcome::ReturnedWindow { .. }),
         "query before activation must fail, got {premature:?}"
     );
 
@@ -439,8 +448,22 @@ fn real_daemon_roundtrip_publishes_and_queries() {
         top_k: 10,
     });
     match &stale_result {
-        QueryOutcome::Failed { code, .. } => assert_eq!(code, "stale_generation"),
-        QueryOutcome::Hits { .. } => {
+        QueryOutcome::RejectedResponse {
+            code,
+            observed_hit_count,
+            window,
+            expected_pin,
+            observed_pin,
+            ..
+        } => {
+            assert_eq!(code, "stale_generation");
+            assert_eq!(
+                *observed_hit_count,
+                usize::try_from(window.returned()).expect("window count fits usize")
+            );
+            assert_ne!(expected_pin, observed_pin);
+        }
+        _ => {
             panic!("stale generation must fail, got {stale_result:?}")
         }
     }
@@ -465,15 +488,15 @@ fn real_daemon_roundtrip_publishes_and_queries() {
     let mut outcomes: BTreeMap<(String, String), QueryOutcome> = BTreeMap::new();
     let _previous = outcomes.insert(("T1".to_string(), "lexical".to_string()), lexical.clone());
     match &lexical {
-        QueryOutcome::Hits { hits, .. } => {
+        QueryOutcome::ReturnedWindow { hits, .. } => {
             assert!(!hits.is_empty(), "lexical must hit the sphinx term");
             assert!(hits.iter().any(|hit| hit.path == "src/lib.rs"), "{hits:?}");
             for hit in hits {
                 assert!(hit.start_line >= 1 && hit.start_line <= hit.end_line);
             }
         }
-        QueryOutcome::Failed { code, message, .. } => {
-            panic!("lexical query failed: {code}: {message}");
+        other => {
+            panic!("lexical query failed: {other:?}");
         }
     }
     let plan = plan_query(
@@ -482,9 +505,16 @@ fn real_daemon_roundtrip_publishes_and_queries() {
         &NlPlanConfig::default(),
     )
     .expect("native plan");
-    let lexical_record =
-        result_value("T1", "lexical", &lexical, &plan, 10, &files_by_path, &published_units)
-            .expect("lexical SDK hits refer to published chunks");
+    let lexical_record = result_value(
+        "T1",
+        "lexical",
+        &lexical,
+        &plan,
+        10,
+        &files_by_path,
+        &published_units,
+    )
+    .expect("lexical SDK hits refer to published chunks");
     assert_eq!(lexical_record["route"], "lexical");
 
     // Semantic and hybrid routes answer under the same generation; their
@@ -502,19 +532,21 @@ fn real_daemon_roundtrip_publishes_and_queries() {
         });
         let _previous = outcomes.insert(("T1".to_string(), route.to_string()), outcome.clone());
         match &outcome {
-            QueryOutcome::Hits { .. } => {}
-            QueryOutcome::Failed {
-                status,
-                code,
-                message,
-                ..
-            } => {
-                panic!("{route} query failed: {status} {code}: {message}");
+            QueryOutcome::ReturnedWindow { .. } => {}
+            other => {
+                panic!("{route} query failed: {other:?}");
             }
         }
-        let route_record =
-            result_value("T1", route, &outcome, &plan, 10, &files_by_path, &published_units)
-                .expect("SDK hits refer to published chunks");
+        let route_record = result_value(
+            "T1",
+            route,
+            &outcome,
+            &plan,
+            10,
+            &files_by_path,
+            &published_units,
+        )
+        .expect("SDK hits refer to published chunks");
         assert_eq!(route_record["route"], route);
     }
 
@@ -530,13 +562,13 @@ fn real_daemon_roundtrip_publishes_and_queries() {
         top_k: 10,
     });
     match missing {
-        QueryOutcome::Hits { hits, outcome, .. } => {
+        QueryOutcome::ReturnedWindow { hits, window, .. } => {
             assert!(
-                hits.is_empty() || outcome.is_exhausted(),
+                hits.is_empty() || window.outcome().is_exhausted(),
                 "unmatched hits must be exhausted, not capped"
             );
         }
-        QueryOutcome::Failed { .. } => {}
+        QueryOutcome::RejectedResponse { .. } | QueryOutcome::SdkFailure { .. } => {}
     }
 
     // Unknown routes fail typed.
@@ -550,8 +582,8 @@ fn real_daemon_roundtrip_publishes_and_queries() {
         generation: identity.generation,
         top_k: 10,
     }) {
-        QueryOutcome::Failed { code, .. } => assert_eq!(code, "unknown_route"),
-        QueryOutcome::Hits { .. } => panic!("unknown route must not hit"),
+        QueryOutcome::SdkFailure { code, .. } => assert_eq!(code, "unknown_route"),
+        other => panic!("unknown route must not hit: {other:?}"),
     }
 
     assert!(receipt.semantic_content.is_some());
@@ -645,6 +677,14 @@ fn real_daemon_roundtrip_publishes_and_queries() {
                 activation_digest: activation_binding.clone(),
                 model: model.to_string(),
                 model_revision: model_revision.to_string(),
+                execution_profile: execution_profile_value(
+                    QueryInputPolicy::Native,
+                    &NlPlanConfig::default(),
+                ),
+                execution_profile_sha256: execution_profile_sha256(
+                    QueryInputPolicy::Native,
+                    &NlPlanConfig::default(),
+                ),
             },
         );
     }
@@ -734,7 +774,7 @@ fn git(root: &Path, args: &[&str]) -> String {
 }
 
 #[test]
-fn actual_runner_binary_emits_receipt_bound_v3_record() {
+fn actual_runner_binary_emits_receipt_bound_v5_record() {
     let fixture = tempfile::tempdir().expect("fixture root");
     let repo = fixture.path().join("repo");
     let evidence = fixture.path().join("evidence");
@@ -813,6 +853,7 @@ fn actual_runner_binary_emits_receipt_bound_v3_record() {
     let searchd_digest = sha256_hex(&std::fs::read(&searchd).expect("searchd bytes"));
     let out = evidence.join("record.json");
     let diagnostic_out = evidence.join("retrieval-diagnostic.json");
+    let refusal_out = evidence.join("query-plan-refusal.json");
     let state = evidence.join("state");
     let output = Command::new(&runner)
         .args([
@@ -827,6 +868,8 @@ fn actual_runner_binary_emits_receipt_bound_v3_record() {
             pack_path.to_str().expect("pack path"),
             "--routes",
             "lexical,semantic,hybrid",
+            "--query-input-policy",
+            "native",
             "--top-k",
             "10",
             "--state-root",
@@ -859,6 +902,8 @@ fn actual_runner_binary_emits_receipt_bound_v3_record() {
             out.to_str().expect("output path"),
             "--diagnostics-out",
             diagnostic_out.to_str().expect("diagnostic path"),
+            "--refusal-out",
+            refusal_out.to_str().expect("refusal path"),
         ])
         .output()
         .expect("runner starts");
@@ -1002,21 +1047,25 @@ fn symbol_route_answers_from_published_units_and_proves_spans() {
     let identity = BatchIdentity::new("bench-repo", "bench-rev", 11, "manifest:symbol".to_string())
         .expect("identity");
     let (batch, assembly) = assemble_batch(&identity, &chunks, &symbols).expect("batch");
-    assert!(assembly.symbols >= 3, "tiny repo publishes its functions as symbols");
+    assert!(
+        assembly.symbols >= 3,
+        "tiny repo publishes its functions as symbols"
+    );
+    let files_by_path: BTreeMap<_, _> = files
+        .iter()
+        .map(|file| (file.path.clone(), file.clone()))
+        .collect();
     let published_units =
         quanta_index_retrieval_bench::published_units::PublishedUnitRegistry::from_chunks_and_symbols(
             &chunks,
             &symbols,
+            &files_by_path,
         )
         .expect("units");
     let state = tempfile::tempdir().expect("state root");
     let session = boot_session(&state.path().join("daemon"), &identity);
     let (_receipt, _ack) =
         publish_and_activate(&session, &batch, &identity, None).expect("publish+activate");
-    let files_by_path: BTreeMap<_, _> = files
-        .iter()
-        .map(|file| (file.path.clone(), file.clone()))
-        .collect();
     let plan = plan_query(
         QueryInputPolicy::Native,
         "sphinx_riddle",
@@ -1035,12 +1084,15 @@ fn symbol_route_answers_from_published_units_and_proves_spans() {
     });
     session.stop().expect("bounded shutdown");
     let hits = match outcome {
-        QueryOutcome::Hits { hits, .. } => hits,
-        QueryOutcome::Failed { status, code, message, .. } => {
-            panic!("symbol route failed: {status} {code} {message}")
+        QueryOutcome::ReturnedWindow { hits, .. } => hits,
+        other => {
+            panic!("symbol route failed: {other:?}")
         }
     };
-    assert!(!hits.is_empty(), "symbol route must answer for a published definition");
+    assert!(
+        !hits.is_empty(),
+        "symbol route must answer for a published definition"
+    );
     for hit in &hits {
         let unit = published_units
             .get(&hit.candidate_id)
@@ -1054,13 +1106,14 @@ fn symbol_route_answers_from_published_units_and_proves_spans() {
     }
     // The first hit proves into a record row against the same source-byte
     // accounting as chunk routes.
+    let returned = u32::try_from(hits.len()).expect("hit count fits u32");
     let record = result_value(
         "T1",
         "symbol",
-        &QueryOutcome::Hits {
+        &QueryOutcome::ReturnedWindow {
             hits,
-            outcome: quanta_index_contract::ExecutionOutcomeV2::ExactExhausted,
-            detail: Default::default(),
+            window: quanta_index_contract::QueryResultWindowV2::exact_probe(returned),
+            explanation: None,
             latency: Duration::from_millis(1),
         },
         &plan,
@@ -1070,7 +1123,11 @@ fn symbol_route_answers_from_published_units_and_proves_spans() {
     )
     .expect("symbol hits prove against published units");
     assert_eq!(record["route"], "symbol");
-    assert!(record["candidates"].as_array().is_some_and(|rows| !rows.is_empty()));
+    assert!(
+        record["candidates"]
+            .as_array()
+            .is_some_and(|rows| !rows.is_empty())
+    );
 }
 
 #[test]
@@ -1102,17 +1159,17 @@ fn symbol_route_no_answer_is_typed_never_fake_success() {
     });
     session.stop().expect("bounded shutdown");
     match outcome {
-        QueryOutcome::Hits { hits, outcome, .. } => {
+        QueryOutcome::ReturnedWindow { hits, window, .. } => {
             if hits.is_empty() {
                 assert!(
-                    outcome.is_exhausted(),
+                    window.outcome().is_exhausted(),
                     "empty symbol window must be an exact abstention"
                 );
             } else {
                 panic!("nonsense symbol name must not produce hits: {hits:?}");
             }
         }
-        QueryOutcome::Failed { .. } => {
+        QueryOutcome::RejectedResponse { .. } | QueryOutcome::SdkFailure { .. } => {
             // A typed provider/transport failure is an acceptable refusal.
         }
     }

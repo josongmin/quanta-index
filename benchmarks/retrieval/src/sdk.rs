@@ -14,9 +14,9 @@ use std::time::{Duration, Instant};
 
 use quanta_index_contract::ipc::GenerationStatusReport;
 use quanta_index_contract::{
-    CandidateCountV1, ExecutionOutcomeV2, GenerationPin, HybridCandidateV1, LexicalCandidate,
-    ManifestGeneration, QueryResultWindowV2, RepoId, RevisionId, SearchCorpusActiveHeadV1,
-    SearchExplanation, SearchPlaneErrorCodeV2, SearchPlaneSearchCorpusActivationCasAck,
+    GenerationPin, HybridCandidateV1, LexicalCandidate, ManifestGeneration, QueryResultWindowV2,
+    RepoId, RevisionId, SearchCorpusActiveHeadV1, SearchExplanation, SearchPlaneErrorCodeV2,
+    SearchPlaneSearchCorpusActivationCasAck,
 };
 use quanta_index_sdk::{BatchReceipt, ConnectOptions, QuantaIndex, SdkError, SearchCorpusBatch};
 
@@ -593,6 +593,29 @@ mod empty_status_tests {
             actual: "b".to_string(),
         };
         assert_eq!(classify_sdk_error(&binding).1, "sdk_binding");
+
+        for invalid in [
+            QueryOutcome::SdkFailure {
+                status: "success",
+                code: "forged".to_string(),
+                message: "forged".to_string(),
+                latency: Duration::ZERO,
+            },
+            QueryOutcome::SdkFailure {
+                status: "error",
+                code: String::new(),
+                message: "missing code".to_string(),
+                latency: Duration::ZERO,
+            },
+            QueryOutcome::SdkFailure {
+                status: "error",
+                code: "forged".to_string(),
+                message: String::new(),
+                latency: Duration::ZERO,
+            },
+        ] {
+            assert!(invalid.classification().is_err());
+        }
     }
 
     fn forged_identity() -> BatchIdentity {
@@ -894,31 +917,12 @@ pub struct RankedLaneContribution {
     pub raw_score: f32,
 }
 
-/// One lane execution fact preserved from an SDK response window
-/// (RBR-01). `executed` and `contributed` stay separate: an executed
-/// zero-hit lane is `executed = true, contributed = false` and must never
-/// be dropped or folded into "not run".
-#[derive(Debug, Clone, PartialEq)]
-pub struct LaneTraceFact {
-    pub lane: &'static str,
-    pub executed: bool,
-    pub contributed: bool,
-    /// Candidate count as the lane claimed it: `("exact", n)` or
-    /// `("at_least", n)`.
-    pub candidates: Option<(&'static str, u64)>,
-    pub filtered_out: Option<u64>,
-    pub cost: Option<u64>,
-    pub profile: Option<String>,
-}
-
-/// Response-level facts preserved from one SDK query response (RBR-01).
+/// Route explanation preserved from the actual SDK response. Window and
+/// lane authority remain in the typed [`QueryResultWindowV2`]; this value
 ///
-/// `None` means the response carried no explanation (the lexical text
-/// route) or no observation — missing, never a silent empty or zero.
-/// `engines_executed` lists lanes the plan ran; `engines_touched` lists
-/// lanes that contributed hits; the two are independent facts.
+/// carries only explanation fields and never mirrors window counts.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct ResponseDetail {
+pub struct RouteExplanation {
     /// Transport request id the response answers; `0` marks an
     /// off-transport response.
     pub request_id: Option<u64>,
@@ -926,82 +930,158 @@ pub struct ResponseDetail {
     pub engines_executed: Option<Vec<&'static str>>,
     pub engines_touched: Option<Vec<&'static str>>,
     pub strategy: Option<String>,
-    pub window_returned: Option<u32>,
-    pub window_candidate_count: Option<(&'static str, u64)>,
-    pub lane_traces: Vec<LaneTraceFact>,
 }
 
-fn lane_trace_fact(lane: &quanta_index_contract::LaneTraceV1) -> LaneTraceFact {
-    LaneTraceFact {
-        lane: lane.lane(),
-        executed: lane.executed(),
-        contributed: lane.contributed(),
-        candidates: Some(match lane.candidates() {
-            CandidateCountV1::Exact(count) => ("exact", count),
-            CandidateCountV1::AtLeast(count) => ("at_least", count),
-        }),
-        filtered_out: Some(lane.filtered_out()),
-        cost: lane.cost(),
-        profile: lane.profile().map(str::to_string),
-    }
-}
-
-/// Preserve the response-level facts of one SDK response before the
-/// outcome collapses onto hits. `explanation` is `None` for routes whose
-/// response type carries no explanation.
-fn response_detail(
-    window: &QueryResultWindowV2,
-    explanation: Option<&SearchExplanation>,
-) -> ResponseDetail {
-    ResponseDetail {
-        request_id: explanation.map(|explanation| explanation.request_id),
-        early_stop_reason: explanation.and_then(|explanation| {
-            explanation
-                .early_stop_reason
-                .as_ref()
-                .map(|reason| reason.as_str())
-        }),
-        engines_executed: explanation.map(|explanation| {
+fn route_explanation(explanation: &SearchExplanation) -> RouteExplanation {
+    RouteExplanation {
+        request_id: Some(explanation.request_id),
+        early_stop_reason: explanation
+            .early_stop_reason
+            .as_ref()
+            .map(|reason| reason.as_str()),
+        engines_executed: Some(
             explanation
                 .engines_executed
                 .iter()
                 .map(|engine| engine.as_str())
-                .collect()
-        }),
-        engines_touched: explanation.map(|explanation| {
+                .collect(),
+        ),
+        engines_touched: Some(
             explanation
                 .engines_touched
                 .iter()
                 .map(|engine| engine.as_str())
-                .collect()
-        }),
-        strategy: explanation.map(|explanation| explanation.strategy.clone()),
-        window_returned: Some(window.returned()),
-        window_candidate_count: Some(match window.candidate_count() {
-            CandidateCountV1::Exact(count) => ("exact", count),
-            CandidateCountV1::AtLeast(count) => ("at_least", count),
-        }),
-        lane_traces: window.coverage().lanes().iter().map(lane_trace_fact).collect(),
+                .collect(),
+        ),
+        strategy: Some(explanation.strategy.clone()),
     }
 }
 
-/// Typed query outcome: either ranked hits under the expected generation or
-/// a classified failure. Timeouts and unavailable/degraded states are never
-/// converted to empty success.
+/// Typed query outcome. A returned window, a response rejected after it was
+/// observed, and an SDK failure without a typed response are disjoint.
 #[derive(Debug, Clone)]
 pub enum QueryOutcome {
-    Hits {
+    ReturnedWindow {
         hits: Vec<RankedHit>,
-        outcome: ExecutionOutcomeV2,
-        detail: ResponseDetail,
+        window: QueryResultWindowV2,
+        explanation: Option<RouteExplanation>,
         latency: Duration,
     },
-    Failed {
+    RejectedResponse {
+        code: String,
+        message: String,
+        observed_hit_count: usize,
+        window: QueryResultWindowV2,
+        explanation: Option<RouteExplanation>,
+        expected_pin: GenerationPin,
+        observed_pin: GenerationPin,
+        latency: Duration,
+    },
+    SdkFailure {
         status: &'static str,
         code: String,
         message: String,
         latency: Duration,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutcomeClassification {
+    pub status: &'static str,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
+}
+
+impl QueryOutcome {
+    /// One shared status projection consumed by both record and diagnostic
+    /// emitters. It also rejects a hit/window cardinality contradiction.
+    pub fn classification(&self) -> Result<OutcomeClassification, &'static str> {
+        match self {
+            Self::ReturnedWindow { hits, window, .. } => {
+                let returned = usize::try_from(window.returned())
+                    .map_err(|_conversion_error| "typed window returned count cannot fit usize")?;
+                if returned != hits.len() {
+                    return Err("typed window returned count differs from SDK hit count");
+                }
+                if hits.is_empty() && !window.outcome().is_exhausted() {
+                    Ok(OutcomeClassification {
+                        status: "error",
+                        error_code: Some("empty_non_exhausted_window".to_string()),
+                        error_message: Some(
+                            "zero hits under a non-exhausted window cannot score".to_string(),
+                        ),
+                    })
+                } else if hits.is_empty() {
+                    Ok(OutcomeClassification {
+                        status: "abstained",
+                        error_code: None,
+                        error_message: None,
+                    })
+                } else if window.outcome().is_exhausted() {
+                    Ok(OutcomeClassification {
+                        status: "success",
+                        error_code: None,
+                        error_message: None,
+                    })
+                } else {
+                    Ok(OutcomeClassification {
+                        status: "capped",
+                        error_code: None,
+                        error_message: None,
+                    })
+                }
+            }
+            Self::RejectedResponse {
+                code,
+                message,
+                observed_hit_count,
+                window,
+                expected_pin,
+                observed_pin,
+                ..
+            } => {
+                if code != "stale_generation"
+                    || message.is_empty()
+                    || expected_pin == observed_pin
+                    || usize::try_from(window.returned()) != Ok(*observed_hit_count)
+                {
+                    return Err("rejected response evidence is contradictory");
+                }
+                Ok(OutcomeClassification {
+                    status: "error",
+                    error_code: Some(code.clone()),
+                    error_message: Some(message.clone()),
+                })
+            }
+            Self::SdkFailure {
+                status,
+                code,
+                message,
+                ..
+            } => {
+                if !matches!(*status, "error" | "timeout" | "unavailable")
+                    || code.is_empty()
+                    || message.is_empty()
+                {
+                    return Err("SDK failure status, code, or message is invalid");
+                }
+                Ok(OutcomeClassification {
+                    status,
+                    error_code: Some(code.clone()),
+                    error_message: Some(message.clone()),
+                })
+            }
+        }
+    }
+
+    #[must_use]
+    pub const fn latency(&self) -> Duration {
+        match self {
+            Self::ReturnedWindow { latency, .. }
+            | Self::RejectedResponse { latency, .. }
+            | Self::SdkFailure { latency, .. } => *latency,
+        }
+    }
 }
 
 fn lexical_hit(candidate: &LexicalCandidate) -> RankedHit {
@@ -1153,12 +1233,15 @@ pub fn query_route(query: &RouteQuery<'_>) -> QueryOutcome {
             {
                 Ok(response) => {
                     let hits: Vec<RankedHit> = response.results.iter().map(lexical_hit).collect();
-                    let outcome = response.window.outcome();
-                    let detail = response_detail(&response.window, None);
-                    match check_pin(query.route, &response.generation, &expected_pin, start) {
-                        Ok(guard) => guard.with_hits(hits, outcome, detail),
-                        Err(failed) => failed,
-                    }
+                    observed_response(
+                        query.route,
+                        hits,
+                        response.window,
+                        None,
+                        response.generation,
+                        expected_pin,
+                        start,
+                    )
                 }
                 Err(err) => failed_outcome(&err, start),
             }
@@ -1175,12 +1258,16 @@ pub fn query_route(query: &RouteQuery<'_>) -> QueryOutcome {
             {
                 Ok(response) => {
                     let hits: Vec<RankedHit> = response.results.iter().map(lexical_hit).collect();
-                    let outcome = response.window.outcome();
-                    let detail = response_detail(&response.window, Some(&response.explanation));
-                    match check_pin(query.route, &response.generation, &expected_pin, start) {
-                        Ok(guard) => guard.with_hits(hits, outcome, detail),
-                        Err(failed) => failed,
-                    }
+                    let explanation = route_explanation(&response.explanation);
+                    observed_response(
+                        query.route,
+                        hits,
+                        response.window,
+                        Some(explanation),
+                        response.generation,
+                        expected_pin,
+                        start,
+                    )
                 }
                 Err(err) => failed_outcome(&err, start),
             }
@@ -1198,12 +1285,16 @@ pub fn query_route(query: &RouteQuery<'_>) -> QueryOutcome {
             {
                 Ok(response) => {
                     let hits: Vec<RankedHit> = response.results.iter().map(hybrid_hit).collect();
-                    let outcome = response.window.outcome();
-                    let detail = response_detail(&response.window, Some(&response.explanation));
-                    match check_pin(query.route, &response.generation, &expected_pin, start) {
-                        Ok(guard) => guard.with_hits(hits, outcome, detail),
-                        Err(failed) => failed,
-                    }
+                    let explanation = route_explanation(&response.explanation);
+                    observed_response(
+                        query.route,
+                        hits,
+                        response.window,
+                        Some(explanation),
+                        response.generation,
+                        expected_pin,
+                        start,
+                    )
                 }
                 Err(err) => failed_outcome(&err, start),
             }
@@ -1220,17 +1311,20 @@ pub fn query_route(query: &RouteQuery<'_>) -> QueryOutcome {
             {
                 Ok(response) => {
                     let hits: Vec<RankedHit> = response.results.iter().map(symbol_hit).collect();
-                    let outcome = response.window.outcome();
-                    let detail = response_detail(&response.window, None);
-                    match check_pin(query.route, &response.generation, &expected_pin, start) {
-                        Ok(guard) => guard.with_hits(hits, outcome, detail),
-                        Err(failed) => failed,
-                    }
+                    observed_response(
+                        query.route,
+                        hits,
+                        response.window,
+                        None,
+                        response.generation,
+                        expected_pin,
+                        start,
+                    )
                 }
                 Err(err) => failed_outcome(&err, start),
             }
         }
-        other => QueryOutcome::Failed {
+        other => QueryOutcome::SdkFailure {
             status: "error",
             code: "unknown_route".to_string(),
             message: format!("unknown SDK route: {other}"),
@@ -1239,51 +1333,41 @@ pub fn query_route(query: &RouteQuery<'_>) -> QueryOutcome {
     }
 }
 
-struct PinGuard {
-    latency: Duration,
-}
-
-impl PinGuard {
-    fn with_hits(
-        self,
-        hits: Vec<RankedHit>,
-        outcome: ExecutionOutcomeV2,
-        detail: ResponseDetail,
-    ) -> QueryOutcome {
-        QueryOutcome::Hits {
-            hits,
-            outcome,
-            detail,
-            latency: self.latency,
-        }
-    }
-}
-
-fn check_pin(
+fn observed_response(
     route: &str,
-    observed: &GenerationPin,
-    expected: &GenerationPin,
+    hits: Vec<RankedHit>,
+    window: QueryResultWindowV2,
+    explanation: Option<RouteExplanation>,
+    observed_pin: GenerationPin,
+    expected_pin: GenerationPin,
     start: Instant,
-) -> Result<PinGuard, QueryOutcome> {
-    if observed == expected {
-        Ok(PinGuard {
+) -> QueryOutcome {
+    if observed_pin == expected_pin {
+        QueryOutcome::ReturnedWindow {
+            hits,
+            window,
+            explanation,
             latency: start.elapsed(),
-        })
+        }
     } else {
-        Err(QueryOutcome::Failed {
-            status: "error",
+        QueryOutcome::RejectedResponse {
             code: "stale_generation".to_string(),
             message: format!(
-                "{route} response generation {observed:?} differs from published {expected:?}"
+                "{route} response generation {observed_pin:?} differs from published {expected_pin:?}"
             ),
+            observed_hit_count: hits.len(),
+            window,
+            explanation,
+            expected_pin,
+            observed_pin,
             latency: start.elapsed(),
-        })
+        }
     }
 }
 
 fn failed_outcome(err: &SdkError, start: Instant) -> QueryOutcome {
     let (status, code, message) = classify_sdk_error(err);
-    QueryOutcome::Failed {
+    QueryOutcome::SdkFailure {
         status,
         code,
         message,

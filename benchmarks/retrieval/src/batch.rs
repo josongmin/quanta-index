@@ -20,7 +20,7 @@ use quanta_index_contract::{
 use quanta_index_sdk::{BatchReceipt, SearchCorpusBatch};
 
 use crate::chunking::Chunk;
-use crate::symbols::SYMBOL_PRODUCER_IDENTITY;
+use crate::symbols::{SYMBOL_PRODUCER_GRAMMARS, SYMBOL_PRODUCER_IDENTITY};
 use crate::{BenchError, BenchResult, sha256_hex};
 
 pub const SEMANTIC_AUTHORITY_DIGEST: &str = "quanta-retrieval-bench:chunk-source:v1";
@@ -94,6 +94,16 @@ fn scope_digest(chunks: &[Chunk], symbols: &[SymbolRecord]) -> String {
     let mut raw = Vec::new();
     raw.extend_from_slice(SYMBOL_PRODUCER_IDENTITY.as_bytes());
     raw.push(0);
+    // Grammar identity participates: bumping a pinned tree-sitter crate
+    // changes every scope digest and invalidates frozen evidence.
+    raw.extend_from_slice(SYMBOL_PRODUCER_GRAMMARS.as_bytes());
+    raw.push(0);
+    // Order canonicalization: descriptors hash in sorted id order so the
+    // digest does not depend on caller slice order (audit finding).
+    let mut chunks: Vec<&Chunk> = chunks.iter().collect();
+    chunks.sort_by(|left, right| left.chunk_id.cmp(&right.chunk_id));
+    let mut symbols: Vec<&SymbolRecord> = symbols.iter().collect();
+    symbols.sort_by(|left, right| left.symbol_id.as_str().cmp(right.symbol_id.as_str()));
     for chunk in chunks {
         for part in [
             chunk.chunk_id.as_str(),
@@ -332,7 +342,10 @@ mod tests {
     #[test]
     fn combined_replacement_carries_chunks_and_symbols_together() {
         let identity = identity();
-        let chunks = BTreeMap::from([("src/lib.rs".to_string(), vec![chunk("src/lib.rs", RUST_SOURCE)])]);
+        let chunks = BTreeMap::from([(
+            "src/lib.rs".to_string(),
+            vec![chunk("src/lib.rs", RUST_SOURCE)],
+        )]);
         let symbols = BTreeMap::from([(
             "src/lib.rs".to_string(),
             extract_symbols("src/lib.rs", RUST_SOURCE).expect("symbols"),
@@ -351,7 +364,10 @@ mod tests {
     #[test]
     fn symbol_only_change_moves_the_scope_digest() {
         let identity = identity();
-        let chunks = BTreeMap::from([("src/lib.rs".to_string(), vec![chunk("src/lib.rs", RUST_SOURCE)])]);
+        let chunks = BTreeMap::from([(
+            "src/lib.rs".to_string(),
+            vec![chunk("src/lib.rs", RUST_SOURCE)],
+        )]);
         let symbols = BTreeMap::from([(
             "src/lib.rs".to_string(),
             extract_symbols("src/lib.rs", RUST_SOURCE).expect("symbols"),
@@ -398,9 +414,59 @@ mod tests {
     }
 
     #[test]
+    fn scope_digest_is_order_independent_across_shuffled_inputs() {
+        // Audit finding: the digest must canonicalize order itself; the
+        // previous "order-independence" check rebuilt identical slices.
+        let identity = identity();
+        let source_a = "pub fn one() {}\nstruct Alpha;\n";
+        let source_b = "export function two() {}\n";
+        let mut chunks = BTreeMap::new();
+        let _previous = chunks.insert(
+            "src/a.rs".to_string(),
+            vec![chunk("src/a.rs", source_a), {
+                let mut second = chunk("src/a.rs", source_a);
+                second.chunk_id = "chunk-src/a.rs-1".to_string();
+                second.start_byte = 0;
+                second
+            }],
+        );
+        let mut symbols = BTreeMap::new();
+        let _previous = symbols.insert(
+            "src/a.rs".to_string(),
+            extract_symbols("src/a.rs", source_a).expect("symbols"),
+        );
+        let _previous = symbols.insert(
+            "ui/b.ts".to_string(),
+            extract_symbols("ui/b.ts", source_b).expect("symbols"),
+        );
+        let (base, _) = assemble_batch(&identity, &chunks, &symbols).expect("batch");
+        // Shuffle both maps' slices: reversed per-file orders must digest
+        // identically because scope_digest sorts by id.
+        let mut shuffled_chunks = BTreeMap::new();
+        for (path, mut file_chunks) in chunks {
+            file_chunks.reverse();
+            let _previous = shuffled_chunks.insert(path, file_chunks);
+        }
+        let mut shuffled_symbols = BTreeMap::new();
+        for (path, mut file_symbols) in symbols {
+            file_symbols.reverse();
+            let _previous = shuffled_symbols.insert(path, file_symbols);
+        }
+        let (shuffled, _) =
+            assemble_batch(&identity, &shuffled_chunks, &shuffled_symbols).expect("batch");
+        assert_eq!(
+            base.replace_scopes()[0].scope_digest,
+            shuffled.replace_scopes()[0].scope_digest
+        );
+    }
+
+    #[test]
     fn symbol_id_colliding_with_a_chunk_id_refuses() {
         let identity = identity();
-        let chunks = BTreeMap::from([("src/lib.rs".to_string(), vec![chunk("src/lib.rs", RUST_SOURCE)])]);
+        let chunks = BTreeMap::from([(
+            "src/lib.rs".to_string(),
+            vec![chunk("src/lib.rs", RUST_SOURCE)],
+        )]);
         let mut records = extract_symbols("src/lib.rs", RUST_SOURCE).expect("symbols");
         // Forge a collision: symbol id equal to the chunk id string.
         records[0].symbol_id = quanta_index_contract::SymbolId::new("chunk-src/lib.rs-0");

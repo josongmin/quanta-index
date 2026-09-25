@@ -98,6 +98,12 @@ Current verification posture (2026-09-16):
   open P1/P2 operational and contract gaps on HEAD `4914156` and later; treat
   bugbash as the current production-readiness inventory until remediated.
 
+Code-search benchmark (local setup observed 2026-09-26):
+
+- [Comparison plan and local path inventory](docs/plans/sep-23-retrieval-bench/tickets/CODE-SEARCH-COMPARATORS-2026-09.md) identifies the external Semble 0.6.0 environment, frozen candidate corpus, intended Sourcegraph/Quanta/Semble comparison lanes, evidence gates, and execution order. These machine-specific paths are observations, not repository prerequisites.
+- [RB-00–RB-06 test plan](docs/plans/sep-23-retrieval-bench/tickets/TEST-PLAN.md) remains the qualification contract; [RBR-03](docs/plans/sep-26-retrieval-remediation/tickets/RBR-03-semble-profiles.md) defines Semble profile separation, and the comparator note records the RBR-07 full-vector parity run plus two replayed 2026-09-26 Gin/ripgrep exploratory pairs. These and earlier ten-repository pairs are diagnostic, not independent-gold quality or qualified speed evidence.
+- Corpus checkouts, indexes, models, and raw results stay **outside** this repository. Do not infer current benchmark qualification from a package installation or a historical pair verdict.
+
 Build artifacts:
 
 - use `./scripts/cargow ...` for raw Cargo commands

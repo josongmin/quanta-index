@@ -235,7 +235,7 @@ impl SourceFile {
 /// Split byte offsets of line starts, mirroring Python `splitlines(keepends)`
 /// for `\r\n`, `\r`, `\n`. Returns the offsets plus whether the file holds an
 /// exotic boundary the model cannot represent.
-fn split_line_starts(text: &str) -> (Vec<usize>, bool) {
+pub(crate) fn split_line_starts(text: &str) -> (Vec<usize>, bool) {
     if text.is_empty() {
         return (Vec::new(), false);
     }

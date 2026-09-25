@@ -637,14 +637,22 @@ fn strict_window_hand_calculated_spans_cut_mid_line() {
     assert_eq!(
         chunks
             .iter()
-            .map(|chunk| (chunk.start_byte, chunk.end_byte, chunk.start_line, chunk.end_line))
+            .map(|chunk| (
+                chunk.start_byte,
+                chunk.end_byte,
+                chunk.start_line,
+                chunk.end_line
+            ))
             .collect::<Vec<_>>(),
         vec![(0, 30, 1, 1), (30, 52, 1, 2)]
     );
     for chunk in &chunks {
         assert!(text.is_char_boundary(chunk.start_byte as usize));
         assert!(text.is_char_boundary(chunk.end_byte as usize));
-        assert_eq!(chunk.text, &text[chunk.start_byte as usize..chunk.end_byte as usize]);
+        assert_eq!(
+            chunk.text,
+            &text[chunk.start_byte as usize..chunk.end_byte as usize]
+        );
     }
 }
 
@@ -676,9 +684,19 @@ fn strict_window_splits_single_oversize_line_by_hand() {
     assert_eq!(
         chunks
             .iter()
-            .map(|chunk| (chunk.start_byte, chunk.end_byte, chunk.start_line, chunk.end_line))
+            .map(|chunk| (
+                chunk.start_byte,
+                chunk.end_byte,
+                chunk.start_line,
+                chunk.end_line
+            ))
             .collect::<Vec<_>>(),
-        vec![(0, 30, 1, 1), (30, 60, 1, 1), (60, 90, 1, 1), (90, 101, 1, 1)]
+        vec![
+            (0, 30, 1, 1),
+            (30, 60, 1, 1),
+            (60, 90, 1, 1),
+            (90, 101, 1, 1)
+        ]
     );
 }
 
@@ -689,8 +707,12 @@ fn strict_and_line_aligned_diverge_with_the_same_parameters() {
     // the line-aligned variant expands ends to enclosing line ends.
     let text = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nββββββββββ\npub fn tail() {}\n";
     let file = source_file("hand/ab.rs", text);
-    let strict = StrictWindowChunker::new(30, 0).chunk(&file).expect("strict");
-    let aligned = FixedWindowChunker::new(30, 0).chunk(&file).expect("aligned");
+    let strict = StrictWindowChunker::new(30, 0)
+        .chunk(&file)
+        .expect("strict");
+    let aligned = FixedWindowChunker::new(30, 0)
+        .chunk(&file)
+        .expect("aligned");
     assert!(strict.len() >= aligned.len());
     for chunk in &aligned {
         let end = chunk.end_byte as usize;
@@ -706,7 +728,10 @@ fn strict_and_line_aligned_diverge_with_the_same_parameters() {
             end < text.len() && text.as_bytes()[end - 1] != b'\n'
         })
         .count();
-    assert!(strict_mid_line > 0, "strict windows end mid-line by contract");
+    assert!(
+        strict_mid_line > 0,
+        "strict windows end mid-line by contract"
+    );
 }
 
 #[test]

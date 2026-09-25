@@ -34,7 +34,7 @@ def test_proof_recipes_capture_source_once_before_execution(tmp_path: Path) -> N
         commands = completed.stdout + completed.stderr
         rail = "contract" if name == "retrieval-contract-proof" else "sdk"
         assert commands.strip() == (
-            f"python3 tools/benchmark/retrieval/portable_proof.py run --rail {rail} "
+            f"uv run --frozen --extra dev python tools/benchmark/retrieval/portable_proof.py run --rail {rail} "
             f'--out "{tmp_path / name}"'
         )
     tools = {

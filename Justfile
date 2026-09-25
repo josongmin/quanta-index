@@ -370,8 +370,8 @@ rust-bench-build:
 # running their tests, then runs the harness library tests.
 benchmark-prep-local:
     find crates/quanta-index-searchd-harness/src -name '*.rs' -print0 | xargs -0 rustfmt --check --edition 2024
-    python3 -m pytest tools/ci/tests/test_benchmark_manifest.py tools/ci/tests/test_benchctl.py tools/ci/tests/test_check_bench_artifacts.py tools/ci/tests/test_check_host_contention.py tools/ci/tests/test_compare_dsl_bench.py tools/ci/tests/test_quality_integration_summary.py tools/ci/tests/test_retrieval_contract_proof.py tools/ci/tests/test_retrieval_sdk_proof.py tools/ci/tests/test_write_verification_receipt.py -q
-    python3 -m py_compile tools/benchmark/benchctl.py tools/benchmark/manifest.py tools/benchmark/compare_dsl_bench.py tools/benchmark/quality_integration_summary.py tools/ci/lint/check-bench-artifacts.py tools/ci/timing/check_host_contention.py tools/benchmark/retrieval/evaluator.py tools/benchmark/retrieval/semble.py tools/benchmark/retrieval/run.py tools/benchmark/retrieval/contract_proof.py tools/benchmark/retrieval/sdk_proof.py tools/ci/source_closure.py tools/ci/write-verification-receipt.py
+    uv run --frozen --extra dev pytest tools/ci/tests/test_benchmark_manifest.py tools/ci/tests/test_benchctl.py tools/ci/tests/test_check_bench_artifacts.py tools/ci/tests/test_check_host_contention.py tools/ci/tests/test_compare_dsl_bench.py tools/ci/tests/test_quality_integration_summary.py tools/ci/tests/test_retrieval_contract_proof.py tools/ci/tests/test_retrieval_sdk_proof.py tools/ci/tests/test_write_verification_receipt.py -q
+    uv run --frozen --extra dev python -m py_compile tools/benchmark/benchctl.py tools/benchmark/manifest.py tools/benchmark/compare_dsl_bench.py tools/benchmark/quality_integration_summary.py tools/ci/lint/check-bench-artifacts.py tools/ci/timing/check_host_contention.py tools/benchmark/retrieval/evaluator.py tools/benchmark/retrieval/query_plan.py tools/benchmark/retrieval/retrieval_contract.py tools/benchmark/retrieval/semble.py tools/benchmark/retrieval/run.py tools/benchmark/retrieval/contract_proof.py tools/benchmark/retrieval/sdk_proof.py tools/ci/source_closure.py tools/ci/write-verification-receipt.py
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib --bins --all-features --locked --no-run
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib --all-features --locked
     python3 tools/ci/lint/check-test-authority.py
@@ -380,7 +380,7 @@ benchmark-prep-local:
 # Dirty-checkout retrieval edit loop. This is diagnostic only: use the proof
 # rail on a clean source to produce source-bound JUnit/nextest receipts.
 retrieval-contract-local:
-    python3 -m pytest tools/ci/tests/test_retrieval_benchmark.py -q
+    uv run --frozen --extra dev pytest tools/ci/tests/test_retrieval_benchmark.py -q
     {{cargo}} --lane test-daemon-lane test -p quanta-index-retrieval-bench --lib --test chunking_contract --all-features --locked
 
 # Retrieval benchmark: real-daemon SDK proof (T05-T07, T10). Builds the
@@ -390,7 +390,7 @@ retrieval-contract-local:
 # pair-spec.receipts maps sdk_execution_context/source_closure to this root;
 # the driver freezes sibling command logs automatically.
 retrieval-sdk-proof out:
-    python3 tools/benchmark/retrieval/portable_proof.py run --rail sdk --out "{{out}}"
+    uv run --frozen --extra dev python tools/benchmark/retrieval/portable_proof.py run --rail sdk --out "{{out}}"
 
 # Internal machine-evidence recipe; invoked only by portable_proof.py.
 _retrieval-sdk-proof-raw out:
@@ -407,7 +407,7 @@ _retrieval-sdk-proof-raw out:
 # pair-spec.receipts maps contract_execution_context/source_closure to this root;
 # the driver freezes sibling command logs automatically.
 retrieval-contract-proof out:
-    python3 tools/benchmark/retrieval/portable_proof.py run --rail contract --out "{{out}}"
+    uv run --frozen --extra dev python tools/benchmark/retrieval/portable_proof.py run --rail contract --out "{{out}}"
 
 # Retrieval benchmark: Quanta-only chunk A/B from a pinned spec file.
 # The spec names repo/manifest/suite/pack, strategies, binaries and output

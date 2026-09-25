@@ -27,20 +27,20 @@ use quanta_index_retrieval_bench::corpus::{
 };
 use quanta_index_retrieval_bench::diagnostics::diagnostic_value;
 use quanta_index_retrieval_bench::profile::EmbedderProfile;
+use quanta_index_retrieval_bench::published_units::PublishedUnitRegistry;
+use quanta_index_retrieval_bench::query_plan::{
+    NlPlanConfig, QueryInputPolicy, QueryPlan, QueryPlanError, execution_profile_sha256,
+    execution_profile_value, plan_query,
+};
 use quanta_index_retrieval_bench::record::{
     CaptureProvenance, QueryPack, RouteProvenance, RunnerIdentity, RunnerRecordInput,
     load_query_pack, runner_record,
-};
-use quanta_index_retrieval_bench::query_plan::{
-    NlPlanConfig, QueryInputPolicy, QueryPlan, QueryPlanError, plan_query,
-    policy_config_canonical,
 };
 use quanta_index_retrieval_bench::schedule::QueryProtocol;
 use quanta_index_retrieval_bench::sdk::{
     DEFAULT_IO_TIMEOUT, DEFAULT_READY_TIMEOUT, DaemonConfig, DaemonSession, QueryOutcome,
     RouteQuery, publish_and_activate, query_route, resolve_searchd_binary, verify_searchd_digest,
 };
-use quanta_index_retrieval_bench::published_units::PublishedUnitRegistry;
 use quanta_index_retrieval_bench::symbols::extract_corpus_symbols;
 use quanta_index_retrieval_bench::{BenchError, BenchResult, sha256_hex};
 
@@ -314,7 +314,7 @@ fn query_plan_error_details(error: &QueryPlanError) -> serde_json::Value {
 fn write_query_plan_refusal(
     path: &Path,
     policy: &str,
-    policy_config_sha256: &str,
+    execution_profile_sha256: Option<&str>,
     task_id: Option<&str>,
     original_query_sha256: Option<&str>,
     error: &QueryPlanError,
@@ -328,7 +328,7 @@ fn write_query_plan_refusal(
             "task_id": task_id,
             "original_query_sha256": original_query_sha256,
             "policy": policy,
-            "policy_config_sha256": policy_config_sha256,
+            "execution_profile_sha256": execution_profile_sha256,
             "error": {
                 "code": error.code(),
                 "message": error.to_string(),
@@ -347,27 +347,12 @@ fn plan_query_pack(
     let policy = match QueryInputPolicy::parse(&policy_raw) {
         Ok(policy) => policy,
         Err(error) => {
-            let raw_config = format!("{{\"policy\":{}}}", serde_json::to_string(&policy_raw).map_err(
-                |err| BenchError::Json {
-                    path: "<query-input-policy>".to_string(),
-                    message: err.to_string(),
-                },
-            )?);
-            write_query_plan_refusal(
-                refusal_out,
-                &policy_raw,
-                &sha256_hex(raw_config.as_bytes()),
-                None,
-                None,
-                &error,
-            )?;
-            return Err(BenchError::Config(format!(
-                "--query-input-policy: {error}"
-            )));
+            write_query_plan_refusal(refusal_out, &policy_raw, None, None, None, &error)?;
+            return Err(BenchError::Config(format!("--query-input-policy: {error}")));
         }
     };
     let config = NlPlanConfig::default();
-    let policy_config_sha256 = sha256_hex(policy_config_canonical(policy, &config).as_bytes());
+    let execution_profile_sha256 = execution_profile_sha256(policy, &config);
     let mut plans = BTreeMap::new();
     for task in &pack.tasks {
         let plan = match plan_query(policy, task.query.as_str(), &config) {
@@ -376,7 +361,7 @@ fn plan_query_pack(
                 write_query_plan_refusal(
                     refusal_out,
                     &policy_raw,
-                    &policy_config_sha256,
+                    Some(&execution_profile_sha256),
                     Some(task.task_id.as_str()),
                     Some(sha256_hex(task.query.as_bytes()).as_str()),
                     &error,
@@ -719,10 +704,12 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     // RBR-04: source-bound symbols for every admitted file, published in
     // the same per-file replacement as the chunks.
     let symbol_extraction = extract_corpus_symbols(&by_path)?;
-    let (batch, assembly) = assemble_batch(&identity, &selection.chunks, &symbol_extraction.symbols)?;
+    let (batch, assembly) =
+        assemble_batch(&identity, &selection.chunks, &symbol_extraction.symbols)?;
     let published_units = PublishedUnitRegistry::from_chunks_and_symbols(
         &selection.chunks,
         &symbol_extraction.symbols,
+        &by_path,
     )?;
 
     let searchd_bin =
@@ -799,6 +786,8 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     let runner_digest = runner_binary_digest()?;
     let run_id = required(args, "run-id")?;
     let runner_name = required(args, "runner-name")?;
+    let execution_profile = execution_profile_value(policy, &nl_plan_config);
+    let execution_profile_digest = execution_profile_sha256(policy, &nl_plan_config);
     let mut provenance: BTreeMap<String, RouteProvenance> = BTreeMap::new();
     let mut captures: BTreeMap<String, CaptureProvenance> = BTreeMap::new();
     for route in routes.iter().copied() {
@@ -837,6 +826,8 @@ fn run_capture(args: &Args) -> BenchResult<()> {
                     activation_digest: activation_binding.clone(),
                     model: model.to_string(),
                     model_revision: model_revision.to_string(),
+                    execution_profile: execution_profile.clone(),
+                    execution_profile_sha256: execution_profile_digest.clone(),
                 },
             )
             .is_some()
@@ -868,10 +859,18 @@ fn run_capture(args: &Args) -> BenchResult<()> {
                 top_k,
             });
             let latency = match &outcome {
-                QueryOutcome::Hits { latency, .. } => *latency,
-                QueryOutcome::Failed { status, code, .. } => {
+                QueryOutcome::ReturnedWindow { latency, .. } => *latency,
+                failed => {
+                    let classification = failed.classification().map_err(|message| {
+                        BenchError::Protocol(format!("invalid cold outcome: {message}"))
+                    })?;
                     return Err(BenchError::Protocol(format!(
-                        "cold probe failed for route {route}: {status}/{code}"
+                        "cold probe failed for route {route}: {}/{}",
+                        classification.status,
+                        classification
+                            .error_code
+                            .as_deref()
+                            .unwrap_or("missing_error_code")
                     )));
                 }
             };
@@ -892,7 +891,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
                     .get(task_id.as_str())
                     .ok_or_else(|| BenchError::Protocol("warmup task disappeared".to_string()))?;
                 for route in routes.iter().copied() {
-                    if let QueryOutcome::Failed { status, code, .. } = query_route(&RouteQuery {
+                    let outcome = query_route(&RouteQuery {
                         client: session.client(),
                         route,
                         lexical_request: &plan.lexical_request,
@@ -901,9 +900,18 @@ fn run_capture(args: &Args) -> BenchResult<()> {
                         revision_id: &identity.revision_id,
                         generation: identity.generation,
                         top_k,
-                    }) {
+                    });
+                    if !matches!(outcome, QueryOutcome::ReturnedWindow { .. }) {
+                        let classification = outcome.classification().map_err(|message| {
+                            BenchError::Protocol(format!("invalid warmup outcome: {message}"))
+                        })?;
                         return Err(BenchError::Protocol(format!(
-                            "warmup query failed for {task_id}/{route}: {status}/{code}"
+                            "warmup query failed for {task_id}/{route}: {}/{}",
+                            classification.status,
+                            classification
+                                .error_code
+                                .as_deref()
+                                .unwrap_or("missing_error_code")
                         )));
                     }
                 }
@@ -929,10 +937,20 @@ fn run_capture(args: &Args) -> BenchResult<()> {
                         top_k,
                     });
                     let latency = match &outcome {
-                        QueryOutcome::Hits { latency, .. } => *latency,
-                        QueryOutcome::Failed { status, code, .. } => {
+                        QueryOutcome::ReturnedWindow { latency, .. } => *latency,
+                        failed => {
+                            let classification = failed.classification().map_err(|message| {
+                                BenchError::Protocol(format!(
+                                    "invalid measurement outcome: {message}"
+                                ))
+                            })?;
                             return Err(BenchError::Protocol(format!(
-                                "measurement query failed for {task_id}/{route}: {status}/{code}"
+                                "measurement query failed for {task_id}/{route}: {}/{}",
+                                classification.status,
+                                classification
+                                    .error_code
+                                    .as_deref()
+                                    .unwrap_or("missing_error_code")
                             )));
                         }
                     };
@@ -1057,7 +1075,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         None
     };
     let mut phase_metrics = serde_json::json!({
-        "schema_version": 1,
+        "schema_version": 2,
         "system": "quanta",
         "timing_layer": "runner_monotonic_wall_v1",
         "strategy": selection.name,
@@ -1162,8 +1180,9 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     let mut status_counts: BTreeMap<&str, usize> = BTreeMap::new();
     for outcome in outcomes.values() {
         let status = match outcome {
-            QueryOutcome::Hits { .. } => "hits",
-            QueryOutcome::Failed { status, .. } => status,
+            QueryOutcome::ReturnedWindow { .. } => "returned_window",
+            QueryOutcome::RejectedResponse { .. } => "rejected_response",
+            QueryOutcome::SdkFailure { status, .. } => status,
         };
         let count = status_counts.entry(status).or_insert(0);
         *count = count
@@ -1370,16 +1389,15 @@ mod tests {
         let error = plan_query_pack(&args, &pack, &refusal)
             .expect_err("unindexable task must refuse during preflight");
         assert!(error.to_string().contains("T01"));
-        let artifact: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(&refusal).expect("refusal bytes"),
-        )
-        .expect("refusal JSON");
+        let artifact: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&refusal).expect("refusal bytes"))
+                .expect("refusal JSON");
         assert_eq!(artifact["schema_version"], 1);
         assert_eq!(artifact["phase"], "query_plan");
         assert_eq!(artifact["task_id"], "T01");
         assert_eq!(artifact["error"]["code"], "RBR_QUERY_NO_INDEXABLE_TOKENS");
         assert_eq!(artifact["original_query_sha256"], sha256_hex(b"---"));
-        assert!(artifact["policy_config_sha256"].as_str().is_some());
+        assert!(artifact["execution_profile_sha256"].as_str().is_some());
 
         assert!(plan_query_pack(&args, &pack, &refusal).is_err());
     }

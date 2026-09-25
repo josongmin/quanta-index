@@ -22,6 +22,8 @@ PROFILES = {
             "Cargo.lock",
             "Cargo.toml",
             "Justfile",
+            "pyproject.toml",
+            "uv.lock",
             "benchmarks/retrieval/proof-required-tests.json",
             "docs/plans/sep-23-retrieval-bench",
             "docs/plans/sep-26-retrieval-remediation",

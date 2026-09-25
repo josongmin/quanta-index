@@ -5,13 +5,17 @@ The runner consumes only the output of ``freeze``. Gold labels are read only by
 ``evaluate``. Hashes and a clean, pinned Git checkout bind every scored block
 to the repository contents; the evaluator never generates candidate results.
 
-The sole accepted artifact shape is schema v3. It requires a comparison
-contract (top_k, tokenizer, budget version, output-unit policy) on the
-suite, the blinded query pack and every record, with byte-equality
+The current suite/query-pack shape is schema v3 and current runner shape is
+schema v5. Runner v5 stores a canonical execution profile and digest on each
+capture, so routes bound to different systems can carry different query
+policies without runner-wide ambiguity. Runner v3/v4 are accepted only as
+historical replay inputs; new merges require v5. The evaluator requires a
+comparison contract (top_k, tokenizer, budget version, output-unit policy)
+on the suite, blinded query pack and every record, with byte-equality
 required between all three; per-capture provenance (chunk strategy and
-config, runner/searchd binary identity, generation, receipt and
-activation digests, model identity) preserved under ``captures`` with
-each route referencing one ``capture_id``; and nullable timings where
+config, runner/searchd binary identity, generation, receipt and activation
+digests, model identity and v5 execution profile) preserved under
+``captures`` with each route referencing one ``capture_id``; and nullable timings where
 unknown latency is null and 0 asserts an actually measured zero. V3
 spans are byte spans with a consistency-checked line projection:
 coverage is byte containment, and a byte span that disagrees with its
@@ -20,8 +24,9 @@ recomputed digest, per-task query families that must not span splits,
 normalized/shingle near-duplicate query refusal, and an explicit
 rationale-backed allowlist for any cross-split span overlap. Executed
 timeouts must carry their measured duration, and duplicate candidate
-byte spans are refused. Older or unknown artifact stamps are rejected;
-there is no migration reader or alternate scoring path.
+byte spans are refused. Unknown artifact stamps are rejected; historical
+runner records use explicit versioned validators and do not enter current
+record merges.
 
 Freeze output never contains gold spans, grades, answerability bits, or train
 tasks. Score computation depends only on recorded candidates and statuses,
@@ -31,7 +36,6 @@ never on runner identity or provenance strings.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import math
 import random
@@ -44,19 +48,21 @@ from typing import Any
 
 try:
     from tools.benchmark.retrieval import query_plan as query_plan_contract
+    from tools.benchmark.retrieval import retrieval_contract
 except ModuleNotFoundError:  # direct script invocation
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
     from tools.benchmark.retrieval import query_plan as query_plan_contract
+    from tools.benchmark.retrieval import retrieval_contract
 
 SCHEMA_VERSION = 3
-RUNNER_SCHEMA_VERSION = 4
-RUNNER_LEGACY_SCHEMA_VERSIONS = (3,)
+RUNNER_SCHEMA_VERSION = 5
+RUNNER_LEGACY_SCHEMA_VERSIONS = (3, 4)
 BUDGETS = (2000, 4000, 8000, 16000)
-TOKENIZER = "qi-regex-v1"
-TOKENIZER_BUDGET_VERSION = "qb-v1"
+TOKENIZER = retrieval_contract.TOKENIZER
+TOKENIZER_BUDGET_VERSION = retrieval_contract.TOKENIZER_BUDGET_VERSION
 # Explicit ASCII ranges keep token accounting stable across Python's Unicode
 # database revisions. Non-ASCII code points each count as one benchmark unit.
-TOKEN_RE = re.compile(r"[A-Za-z0-9_]+|[^\x00-\x20]")
+TOKEN_RE = retrieval_contract.TOKEN_RE
 HEX64_RE = re.compile(r"[0-9a-f]{64}\Z")
 COMMIT_RE = re.compile(r"[0-9a-f]{40}\Z")
 
@@ -67,8 +73,8 @@ RESULT_STATUSES = ("success", "abstained", "capped", "error", "timeout", "unavai
 NON_SUCCESS_EMPTY = ("abstained", "error", "timeout", "unavailable")
 SCORED_STATUSES = ("success", "capped")
 BLINDING_VALUES = ("isolated", "attested")
-OUTPUT_UNIT_POLICIES = ("rank_prefix",)
-SPAN_UNIT = "byte_span_with_line_projection_v1"
+OUTPUT_UNIT_POLICIES = retrieval_contract.OUTPUT_UNIT_POLICIES
+SPAN_UNIT = retrieval_contract.SPAN_UNIT
 QUERY_SHINGLE_N = 5
 QUERY_NEAR_DUP_JACCARD = 0.8
 CHUNK_STRATEGIES = (
@@ -164,23 +170,10 @@ def nullable_timing(value: Any, where: str) -> float | None:
 
 
 def validate_comparison_contract(value: Any, where: str) -> dict[str, Any]:
-    contract = object_keys(
-        value,
-        ["top_k", "tokenizer", "tokenizer_budget_version", "output_unit_policy", "span_unit"],
-        where,
-    )
-    positive_int(contract["top_k"], where + ".top_k")
-    require(contract["tokenizer"] == TOKENIZER, where + " tokenizer mismatch")
-    require(
-        contract["tokenizer_budget_version"] == TOKENIZER_BUDGET_VERSION,
-        where + " tokenizer/budget version mismatch",
-    )
-    require(
-        contract["output_unit_policy"] in OUTPUT_UNIT_POLICIES,
-        where + " output_unit_policy is not a frozen policy",
-    )
-    require(contract["span_unit"] == SPAN_UNIT, where + " span_unit mismatch")
-    return contract
+    try:
+        return retrieval_contract.validate_comparison_contract(value, where)
+    except ValueError as exc:
+        raise EvidenceError(str(exc)) from exc
 
 
 def normalize_query(text: str) -> str:
@@ -234,21 +227,50 @@ def validate_chunk_config(value: Any, where: str) -> dict[str, Any]:
     return config
 
 
-def validate_capture(value: Any, where: str) -> dict[str, Any]:
+def validate_execution_profile(value: Any, system: str, where: str) -> dict[str, Any]:
+    require(isinstance(value, dict), f"{where} must be an object")
+    if system == "quanta":
+        profile = object_keys(
+            value,
+            ["profile_id", "policy", "config", "planning_cost_in_latency"],
+            where,
+        )
+        policy = profile["policy"]
+        require(policy in query_plan_contract.SUPPORTED_POLICIES, f"{where}.policy is unknown")
+        config = profile["config"]
+        require(isinstance(config, dict), f"{where}.config must be an object")
+        expected = query_plan_contract.execution_profile(policy)
+        require(profile == expected, f"{where} differs from the frozen Quanta profile")
+        return profile
+    profile = object_keys(value, ["profile_id", "mode", "alpha", "rerank"], where)
+    modes = {
+        "native-default": ("semble-native-default-v1", None, "upstream-content-default"),
+        "lexical-only": ("semble-lexical-only-v1", None, "not_applicable"),
+        "semantic-only": ("semble-semantic-only-v1", None, "not_applicable"),
+    }
+    mode = profile["mode"]
+    if mode == "hybrid-no-rerank":
+        require(profile["profile_id"] == "semble-hybrid-no-rerank-v1", f"{where}.profile_id mismatch")
+        alpha = profile["alpha"]
+        require(type(alpha) in (int, float) and not isinstance(alpha, bool) and math.isfinite(alpha) and 0 <= alpha <= 1, f"{where}.alpha is invalid")
+        require(profile["rerank"] is False, f"{where}.rerank must be false")
+    else:
+        require(mode in modes, f"{where}.mode is unknown")
+        expected_id, alpha, rerank = modes[mode]
+        require(profile == {"profile_id": expected_id, "mode": mode, "alpha": alpha, "rerank": rerank}, f"{where} differs from the frozen Semble profile")
+    return profile
+
+
+def validate_capture(value: Any, where: str, version: int = RUNNER_SCHEMA_VERSION) -> dict[str, Any]:
+    fields = [
+        "system", "chunk_strategy", "chunk_config", "runner_binary", "searchd_binary",
+        "generation", "receipt_digest", "activation_digest", "model", "model_revision",
+    ]
+    if version == 5:
+        fields.extend(["execution_profile", "execution_profile_sha256"])
     capture = object_keys(
         value,
-        [
-            "system",
-            "chunk_strategy",
-            "chunk_config",
-            "runner_binary",
-            "searchd_binary",
-            "generation",
-            "receipt_digest",
-            "activation_digest",
-            "model",
-            "model_revision",
-        ],
+        fields,
         where,
     )
     system = capture["system"]
@@ -274,17 +296,22 @@ def validate_capture(value: Any, where: str) -> dict[str, Any]:
     sha(capture["activation_digest"], where + ".activation_digest")
     string(capture["model"], where + ".model")
     string(capture["model_revision"], where + ".model_revision")
+    if version == 5:
+        profile = validate_execution_profile(capture["execution_profile"], system, where + ".execution_profile")
+        require(
+            sha(capture["execution_profile_sha256"], where + ".execution_profile_sha256")
+            == digest(canonical(profile)),
+            f"{where}.execution_profile_sha256 mismatch",
+        )
     return capture
 
 
 def digest(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
+    return retrieval_contract.digest(data)
 
 
 def canonical(value: Any) -> bytes:
-    return json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
-    ).encode("utf-8")
+    return retrieval_contract.canonical(value)
 
 
 def read_json(path: Path) -> Any:
@@ -319,17 +346,10 @@ def git(repo: Path, *args: str) -> str:
 
 
 def verify_repo(repo: Path, commit: str) -> Path:
-    require(repo.is_dir(), f"repository checkout missing: {repo}")
-    root_text, separator, head = git(repo, "rev-parse", "--show-toplevel", "HEAD").rpartition("\n")
-    require(separator and root_text and head, "repository Git evidence unavailable")
-    root = Path(root_text).resolve()
-    require(root == repo.resolve(), "--repo must name the checkout root")
-    require(head == commit, "checkout HEAD differs from frozen commit")
-    require(
-        not git(root, "status", "--porcelain", "--untracked-files=all"),
-        "checkout has tracked or untracked changes",
-    )
-    return root
+    try:
+        return retrieval_contract.verify_repo(repo, commit)
+    except ValueError as exc:
+        raise EvidenceError(str(exc)) from exc
 
 
 class SourceSnapshot:
@@ -712,7 +732,7 @@ def _validate_run(
         "isolation_method",
         "access_block_log",
     ]
-    if version >= RUNNER_SCHEMA_VERSION:
+    if version == 4:
         runner_keys.append("query_input_policy")
     runner = object_keys(run["runner"], runner_keys, "runner")
     for key in ("name", "revision", "run_id"):
@@ -730,7 +750,7 @@ def _validate_run(
     string(runner["access_block_log"], "runner.access_block_log")
     policy = None
     nl_config = None
-    if version >= RUNNER_SCHEMA_VERSION:
+    if version == 4:
         policy_block = object_keys(
             runner["query_input_policy"],
             ["policy", "config", "policy_config_sha256", "planning_cost_in_latency"],
@@ -761,7 +781,7 @@ def _validate_run(
             )
         require(
             sha(policy_block["policy_config_sha256"], "policy_config_sha256")
-            == digest(query_plan_contract.policy_config_canonical(policy, nl_config).encode()),
+            == digest(query_plan_contract.policy_config_canonical_v4(policy, nl_config).encode()),
             "policy config digest does not match the canonical policy profile",
         )
         require(
@@ -776,7 +796,7 @@ def _validate_run(
             isinstance(capture_id, str) and bool(capture_id.strip()),
             "capture_id must be a nonempty string",
         )
-        validate_capture(entry, f"captures.{capture_id}")
+        validate_capture(entry, f"captures.{capture_id}", version)
     provenance = run["route_provenance"]
     require(isinstance(provenance, dict), "route_provenance must be an object")
     require(
@@ -798,7 +818,7 @@ def _validate_run(
     tasks = {task["task_id"]: task for task in suite["tasks"] if task["split"] == "eval"}
     expected = {(task_id, route) for task_id in tasks for route in suite["routes"]}
     result_keys = ["task_id", "route", "status", "candidates", "timings", "error"]
-    if version >= RUNNER_SCHEMA_VERSION:
+    if version in (4, 5):
         result_keys.insert(4, "query_identity")
     pack_queries = {task["task_id"]: task for task in pack["tasks"]}
     found = set()
@@ -807,24 +827,45 @@ def _validate_run(
         key = (string(result["task_id"], "result.task_id"), string(result["route"], "result.route"))
         require(key in expected and key not in found, f"unexpected/duplicate task route: {key}")
         found.add(key)
-        if version >= RUNNER_SCHEMA_VERSION:
-            identity = object_keys(
-                result["query_identity"],
-                [
-                    "original_query_sha256",
-                    "effective_lexical_request_sha256",
-                    "semantic_text_sha256",
-                ],
-                f"query_identity for {key}",
-            )
+        if version in (4, 5):
             pack_task = pack_queries.get(key[0])
             require(
                 pack_task is not None,
                 f"query identity refers to unknown pack task: {key}",
             )
-            expected_identity = query_plan_contract.derive_query_identity(
-                policy, pack_task["query"], nl_config
-            )
+            if version == 4:
+                identity = object_keys(
+                    result["query_identity"],
+                    ["original_query_sha256", "effective_lexical_request_sha256", "semantic_text_sha256"],
+                    f"query_identity for {key}",
+                )
+                expected_identity = query_plan_contract.derive_query_identity_v4(
+                    policy, pack_task["query"], nl_config
+                )
+            else:
+                capture_id = provenance[key[1]]["capture_id"]
+                capture = captures[capture_id]
+                profile = capture["execution_profile"]
+                if capture["system"] == "quanta":
+                    identity = object_keys(
+                        result["query_identity"],
+                        ["original_query_sha256", "effective_lexical_request_sha256", "semantic_text_sha256"],
+                        f"query_identity for {key}",
+                    )
+                    expected_identity = query_plan_contract.derive_query_identity(
+                        profile["policy"], pack_task["query"], profile["config"] or None
+                    )
+                else:
+                    identity = object_keys(
+                        result["query_identity"],
+                        ["original_query_sha256", "submitted_query_sha256"],
+                        f"query_identity for {key}",
+                    )
+                    raw_sha = digest(pack_task["query"].encode())
+                    expected_identity = {
+                        "original_query_sha256": raw_sha,
+                        "submitted_query_sha256": raw_sha,
+                    }
             require(
                 {field: sha(identity[field], f"{field} for {key}") for field in identity}
                 == expected_identity,

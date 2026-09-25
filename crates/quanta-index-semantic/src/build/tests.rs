@@ -18,16 +18,16 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{
     CoreError, RequestBudgetV1, ResidentScopeSource, SEMANTIC_STREAM_WINDOW_VECTOR_BYTES,
-    SemanticIndexOpenPort, SemanticIngestHeaderV1, SemanticScopeSource as _,
+    SemanticIndexOpenPort, SemanticIngestHeaderV1, SemanticScopeSource as _, SemanticStreamTallyV1,
     SemanticStreamWindowPolicy, build_resident_semantic_batch_v1,
 };
 
 use super::{
-    BACKUP_DIR_NAME, POST_DATASET_PRE_CONTRACT_PROMOTION, PRE_DATASET_PROMOTION,
-    PROMOTION_CRASH_BOUNDARY_ENV, PROMOTION_CRASH_EXIT_CODE, STAGING_DIR_NAME,
-    StreamScopeAuthorityV1, build_stream, column_as, ensure_generation_contract, failpoint,
-    open_connection, persist_generation_contract, recover_dataset_artifacts,
-    stage_generation_contract,
+    BACKUP_DIR_NAME, IngestStageDurations, IngestStageReport, POST_DATASET_PRE_CONTRACT_PROMOTION,
+    PRE_DATASET_PROMOTION, PROMOTION_CRASH_BOUNDARY_ENV, PROMOTION_CRASH_EXIT_CODE,
+    STAGING_DIR_NAME, StreamScopeAuthorityV1, build_stream, build_stream_reported, column_as,
+    ensure_generation_contract, failpoint, open_connection, persist_generation_contract,
+    recover_dataset_artifacts, stage_generation_contract,
 };
 use crate::budget::{DenseLaneBudgetV1, DenseLaneTalliesV1};
 use crate::durable_write::{set_atomic_write_fail_before_rename_action, write_atomic};
@@ -2050,5 +2050,224 @@ fn a_refused_third_window_seals_nothing_and_leaves_no_partial_rows() -> TestResu
         ],
         "no row of the refused batch is visible"
     );
+    Ok(())
+}
+
+// ---- RBR-10 step 1: ingest stage accounting ----
+
+/// Build through the streamed entry under `policy`, keeping the stage
+/// report the production port discards.
+fn build_reported(
+    runtime: &tokio::runtime::Runtime,
+    root: &Path,
+    batch: &SemanticIngestBatch,
+    policy: SemanticStreamWindowPolicy,
+) -> Result<(SemanticStreamTallyV1, IngestStageReport), CoreError> {
+    let header = SemanticIngestHeaderV1::of_batch(batch);
+    let mut source = ResidentScopeSource::new(&batch.replace_scopes, policy)?;
+    build_stream_reported(
+        runtime,
+        root,
+        policy,
+        &header,
+        &mut source,
+        &SealTalliesV1::default(),
+    )
+}
+
+// CASE-COVERS: RBR-10 step 1 — a fresh streamed ingest reports the batch's
+// own owner/window counts (one delete call and one delete commit per owner
+// scope, one append per window), the storage durations nest inside the
+// stream pass, and embedding stays unmeasured.
+#[test]
+fn ingest_stage_report_matches_fresh_batch_owner_and_window_counts() -> TestResult {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let temp = tempdir()?;
+    let generation = ManifestGeneration::new(821);
+    // Four scopes of one distinct-owner row each: a two-owner policy
+    // windows them into two windows of two owner scopes.
+    let batch = streamed_batch(generation, streamed_scopes(4, 1)?, false);
+    let two_owners = SemanticStreamWindowPolicy::new(2, SEMANTIC_STREAM_WINDOW_VECTOR_BYTES)?;
+
+    let (tally, report) = build_reported(&runtime, temp.path(), &batch, two_owners)?;
+
+    assert_eq!(tally.windows, 2, "source-issued windows anchor the report");
+    assert_eq!(tally.rows, 4);
+    assert_eq!(report.windows, tally.windows);
+    assert_eq!(
+        report.owner_scopes, 4,
+        "every input scope is one owner scope"
+    );
+    assert_eq!(
+        report.semantic_delete_calls, 4,
+        "one delete call per replace scope"
+    );
+    assert_eq!(
+        report.semantic_delete_commits, 4,
+        "one commit per distinct owner"
+    );
+    assert_eq!(report.semantic_append_calls, 2, "one append per window");
+    // The membership delete pass runs per replace scope regardless of
+    // corpus kind: four calls, none of which commit (no ClusterCard
+    // owners exist to delete), and nothing to append.
+    assert_eq!(report.membership_delete_calls, 4);
+    assert_eq!(report.membership_delete_commits, 0);
+    assert_eq!(report.membership_append_calls, 0);
+    assert!(
+        report.durations.embedding.is_none(),
+        "embedding is owned by the caller above this crate"
+    );
+    assert!(
+        report.durations.stream
+            >= report
+                .durations
+                .semantic_delete
+                .saturating_add(report.durations.semantic_append),
+        "storage-operation durations are sub-intervals of the stream pass"
+    );
+    Ok(())
+}
+
+// CASE-COVERS: RBR-10 step 1 — replacing existing owners runs (and
+// reports) the owner deletes before the appends, and the promoted table
+// afterwards holds exactly one row per owner: the accounting observed the
+// replace without touching its delete-before-append order.
+#[test]
+fn ingest_stage_report_replace_of_existing_owners_counts_owner_deletes() -> TestResult {
+    let temp = tempdir()?;
+    let root = temp.path().to_path_buf();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let generation = ManifestGeneration::new(822);
+    let one_owner = SemanticStreamWindowPolicy::new(1, SEMANTIC_STREAM_WINDOW_VECTOR_BYTES)?;
+
+    let _seed = build_reported(
+        &runtime,
+        &root,
+        &streamed_batch(generation, streamed_scopes(2, 1)?, false),
+        one_owner,
+    )?;
+
+    // The same two owners arrive again with fresh rows: delete-before-append
+    // is unconditional in this build path, so the replace pass deletes each
+    // owner scope once and commits one delete per owner.
+    let mut replacement = streamed_scopes(2, 1)?;
+    for (index, replace_scope) in replacement.iter_mut().enumerate() {
+        for record in &mut replace_scope.embeddings {
+            record.embedding_id = EmbeddingId::new(format!("replaced-{index}"));
+            record.record_id = format!("record-replaced-{index}").into_boxed_str();
+            record.vector = vec![0.0, 0.0, 1.0];
+        }
+    }
+    let mut replacement_batch = streamed_batch(generation, replacement, false);
+    replacement_batch.batch_digest = "batch:822:replace".to_string();
+    let (_tally, report) = build_reported(&runtime, &root, &replacement_batch, one_owner)?;
+
+    assert!(
+        report.semantic_delete_calls > 0,
+        "replacing existing owners must report owner delete calls: {report:?}"
+    );
+    assert_eq!(report.semantic_delete_calls, 2);
+    assert_eq!(report.semantic_delete_commits, 2);
+    assert_eq!(
+        report.semantic_append_calls, 2,
+        "one append per one-owner window"
+    );
+    assert!(
+        report.durations.semantic_delete > 0 || report.durations.semantic_append > 0,
+        "the replace pass spent measurable storage time"
+    );
+    assert_eq!(
+        crate::run_blocking(&runtime, promoted_row_count(&root, generation))?,
+        2,
+        "each replaced owner holds exactly one row: the deletes preceded the appends"
+    );
+    Ok(())
+}
+
+// CASE-COVERS: RBR-10 step 1 — a replace scope with no embeddings streams
+// no window: zero windows, zero appends, zero deletes, embedding still
+// unmeasured.
+#[test]
+fn ingest_stage_report_empty_scope_ingest_reports_zero_windows_and_appends() -> TestResult {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let temp = tempdir()?;
+    let generation = ManifestGeneration::new(823);
+    let empty_scope = SemanticReplaceScope {
+        scope: scope("src/empty.rs"),
+        scope_digest: "scope:src/empty.rs".to_string(),
+        embeddings: Vec::new(),
+        cluster_memberships: Vec::new(),
+    };
+    let batch = streamed_batch(generation, vec![empty_scope], false);
+
+    let (tally, report) = build_reported(
+        &runtime,
+        temp.path(),
+        &batch,
+        SemanticStreamWindowPolicy::DEFAULT,
+    )?;
+
+    assert_eq!(tally.rows, 0);
+    assert_eq!(tally.windows, 0);
+    assert_eq!(report.owner_scopes, 0);
+    assert_eq!(report.windows, 0);
+    assert_eq!(report.semantic_delete_calls, 0);
+    assert_eq!(report.semantic_delete_commits, 0);
+    assert_eq!(
+        report.semantic_append_calls, 0,
+        "an empty scope appends nothing"
+    );
+    assert_eq!(report.membership_delete_calls, 0);
+    assert_eq!(report.membership_delete_commits, 0);
+    assert_eq!(report.membership_append_calls, 0);
+    assert!(report.durations.embedding.is_none());
+    Ok(())
+}
+
+// CASE-COVERS: RBR-10 step 1 — the accounting is a function of the input:
+// the same batch into two fresh roots reports identical counts and stage
+// structure (wall-clock durations excluded, and both runs leave embedding
+// unmeasured).
+#[test]
+fn ingest_stage_report_is_deterministic_for_the_same_input() -> TestResult {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let generation = ManifestGeneration::new(824);
+    // Three scopes of two distinct-owner rows each: a two-owner policy
+    // windows each scope's two owners into one window of its own.
+    let batch = streamed_batch(generation, streamed_scopes(3, 2)?, false);
+    let two_owners = SemanticStreamWindowPolicy::new(2, SEMANTIC_STREAM_WINDOW_VECTOR_BYTES)?;
+    let first_root = tempdir()?;
+    let second_root = tempdir()?;
+
+    let (_first_tally, first_report) =
+        build_reported(&runtime, first_root.path(), &batch, two_owners)?;
+    let (_second_tally, second_report) =
+        build_reported(&runtime, second_root.path(), &batch, two_owners)?;
+
+    assert!(
+        first_report.durations.embedding.is_none() && second_report.durations.embedding.is_none(),
+        "neither run fabricates an embedding duration"
+    );
+    let mut first = first_report;
+    let mut second = second_report;
+    first.durations = IngestStageDurations::default();
+    second.durations = IngestStageDurations::default();
+    assert_eq!(
+        first, second,
+        "identical input reports identical stage accounting"
+    );
+    assert_eq!(first.owner_scopes, 3);
+    assert_eq!(first.windows, 3);
+    assert_eq!(first.semantic_delete_calls, 3);
+    assert_eq!(first.semantic_delete_commits, 6, "two owners per scope");
+    assert_eq!(first.semantic_append_calls, 3);
     Ok(())
 }

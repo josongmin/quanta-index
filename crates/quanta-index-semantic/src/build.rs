@@ -26,7 +26,7 @@ use std::collections::BTreeSet;
 use std::fs::{self};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use arrow_array::{
     Array, BooleanArray, FixedSizeListArray, Float32Array, RecordBatch, StringArray, UInt32Array,
@@ -258,6 +258,89 @@ fn built_at_unix_nanos() -> Result<u64, CoreError> {
         })?;
     u64::try_from(duration.as_nanos())
         .map_err(|err| CoreError::Storage(format!("semantic: build timestamp overflow: {err}")))
+}
+
+/// Monotonic nanos elapsed since `started`, saturating at `u64::MAX`.
+///
+/// Observation only: a clock reading that does not fit `u64` saturates
+/// instead of failing a build whose semantics do not depend on it.
+#[expect(
+    clippy::manual_unwrap_or,
+    clippy::option_if_let_else,
+    reason = "`Result::unwrap_or`/`map_or` are repo-disallowed silent-default shapes (clippy.toml); the explicit match keeps the saturation a visible, deliberate fallback"
+)]
+fn monotonic_nanos_since(started: Instant) -> u64 {
+    match u64::try_from(started.elapsed().as_nanos()) {
+        Ok(nanos) => nanos,
+        Err(_) => u64::MAX,
+    }
+}
+
+/// Monotonic wall-time durations of one ingest pass's storage stages, in
+/// nanoseconds (RBR-10 step 1).
+///
+/// Every value is an [`Instant`] delta, so the set is monotonic by
+/// construction — no wall-clock timestamp is recorded. The four
+/// storage-operation fields (`semantic_delete`, `membership_delete`,
+/// `semantic_append`, `membership_append`) accumulate inside the passes
+/// that contain them, so each stays at most the duration of the pass
+/// nesting it. Embedding time is owned by the caller above this crate —
+/// the source hands every window down already vectorized — so it is
+/// deliberately left unmeasured (`None`) rather than fabricated here.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct IngestStageDurations {
+    /// The clear-surface pass before the first window.
+    pub clear_surfaces: u64,
+    /// The whole streamed window pass: admission, validation, owner
+    /// deletes and appends of every window.
+    pub stream: u64,
+    /// Time inside semantic-table delete commits (owner and surface).
+    pub semantic_delete: u64,
+    /// Time inside membership-table delete commits (owner and surface).
+    pub membership_delete: u64,
+    /// Time inside semantic-table appends.
+    pub semantic_append: u64,
+    /// Time inside membership-table appends.
+    pub membership_append: u64,
+    /// The tombstone pass after the last window.
+    pub tombstones: u64,
+    /// The manifest commitment and vector-index seal; zero when the batch
+    /// does not seal.
+    pub seal: u64,
+    /// Never measured here: embedding happens above this crate.
+    pub embedding: Option<u64>,
+}
+
+/// What one ingest pass did to the generation's tables, and how long each
+/// stage took (RBR-10 step 1).
+///
+/// Pure observation: nothing in this report feeds a durability decision.
+/// The operations, their order, and every fsync/seal/promotion boundary
+/// are unchanged — the counters only watch them. Call-level counters
+/// tally helper invocations; commit-level counters tally the lancedb
+/// `delete` executions those helpers issued, so a helper covering several
+/// owners (or one that declines to delete) shows up as one call and
+/// zero-or-more commits.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct IngestStageReport {
+    /// Replace (owner) scopes admitted and applied across every window.
+    pub owner_scopes: u64,
+    /// Windows taken from the source.
+    pub windows: u64,
+    /// Semantic-table delete helper invocations.
+    pub semantic_delete_calls: u64,
+    /// Semantic-table `delete` commits issued to lancedb.
+    pub semantic_delete_commits: u64,
+    /// Membership-table delete helper invocations.
+    pub membership_delete_calls: u64,
+    /// Membership-table `delete` commits issued to lancedb.
+    pub membership_delete_commits: u64,
+    /// Semantic-table append calls (one `add` per window that has rows).
+    pub semantic_append_calls: u64,
+    /// Membership-table append calls (one `add` per scope with members).
+    pub membership_append_calls: u64,
+    /// Monotonic wall-time duration per stage.
+    pub durations: IngestStageDurations,
 }
 
 async fn open_connection(dataset_dir: &Path) -> Result<lancedb::Connection, CoreError> {
@@ -974,6 +1057,7 @@ async fn delete_by_semantic_scope(
     corpus_kind: &str,
     owner_kind: &str,
     owner_id: &str,
+    report: &mut IngestStageReport,
 ) -> Result<(), CoreError> {
     let predicate = format!(
         "{COLUMN_CORPUS_KIND} = {} AND {COLUMN_OWNER_KIND} = {} AND {COLUMN_OWNER_ID} = {}",
@@ -981,10 +1065,16 @@ async fn delete_by_semantic_scope(
         crate::sql::quote_sql_string(owner_kind),
         crate::sql::quote_sql_string(owner_id),
     );
+    let delete_started = Instant::now();
     let _result = table
         .delete(predicate.as_str())
         .await
         .map_err(|err| lancedb_err(&format!("delete predicate `{predicate}`"), err))?;
+    report.durations.semantic_delete = report
+        .durations
+        .semantic_delete
+        .saturating_add(monotonic_nanos_since(delete_started));
+    report.semantic_delete_commits = report.semantic_delete_commits.saturating_add(1);
     Ok(())
 }
 
@@ -992,23 +1082,32 @@ async fn delete_cluster_membership_by_owner(
     table: &lancedb::Table,
     owner_kind: &str,
     owner_id: &str,
+    report: &mut IngestStageReport,
 ) -> Result<(), CoreError> {
     let predicate = format!(
         "{COLUMN_MEMBERSHIP_OWNER_KIND} = {} AND {COLUMN_MEMBERSHIP_OWNER_ID} = {}",
         crate::sql::quote_sql_string(owner_kind),
         crate::sql::quote_sql_string(owner_id),
     );
+    let delete_started = Instant::now();
     let _result = table
         .delete(predicate.as_str())
         .await
         .map_err(|err| lancedb_err(&format!("delete membership predicate `{predicate}`"), err))?;
+    report.durations.membership_delete = report
+        .durations
+        .membership_delete
+        .saturating_add(monotonic_nanos_since(delete_started));
+    report.membership_delete_commits = report.membership_delete_commits.saturating_add(1);
     Ok(())
 }
 
 async fn delete_cluster_membership_for_surface(
     table: &lancedb::Table,
     surface: SearchScopeSurface,
+    report: &mut IngestStageReport,
 ) -> Result<(), CoreError> {
+    report.membership_delete_calls = report.membership_delete_calls.saturating_add(1);
     let owner_kinds = OwnerDocKind::ALL
         .iter()
         .copied()
@@ -1026,12 +1125,18 @@ async fn delete_cluster_membership_for_surface(
         return Ok(());
     }
     let predicate = owner_kinds.join(" OR ");
+    let delete_started = Instant::now();
     let _result = table.delete(predicate.as_str()).await.map_err(|err| {
         lancedb_err(
             &format!("delete cluster membership surface predicate `{predicate}`"),
             err,
         )
     })?;
+    report.durations.membership_delete = report
+        .durations
+        .membership_delete
+        .saturating_add(monotonic_nanos_since(delete_started));
+    report.membership_delete_commits = report.membership_delete_commits.saturating_add(1);
     Ok(())
 }
 
@@ -1076,23 +1181,33 @@ fn semantic_surface_delete_predicate_v1(surface: SearchScopeSurface) -> Result<S
 async fn delete_surface_rows(
     table: &lancedb::Table,
     surface: SearchScopeSurface,
+    report: &mut IngestStageReport,
 ) -> Result<(), CoreError> {
+    report.semantic_delete_calls = report.semantic_delete_calls.saturating_add(1);
     let predicate = semantic_surface_delete_predicate_v1(surface)?;
+    let delete_started = Instant::now();
     let _result = table.delete(predicate.as_str()).await.map_err(|err| {
         lancedb_err(
             &format!("delete semantic surface {surface:?} predicate `{predicate}`"),
             err,
         )
     })?;
+    report.durations.semantic_delete = report
+        .durations
+        .semantic_delete
+        .saturating_add(monotonic_nanos_since(delete_started));
+    report.semantic_delete_commits = report.semantic_delete_commits.saturating_add(1);
     Ok(())
 }
 
 async fn delete_replace_scope_rows(
     table: &lancedb::Table,
     scope: &SemanticReplaceScope,
+    report: &mut IngestStageReport,
 ) -> Result<(), CoreError> {
+    report.semantic_delete_calls = report.semantic_delete_calls.saturating_add(1);
     for (corpus_kind, owner_kind, owner_id) in semantic_scopes_for_replace_scope(scope) {
-        delete_by_semantic_scope(table, &corpus_kind, &owner_kind, &owner_id).await?;
+        delete_by_semantic_scope(table, &corpus_kind, &owner_kind, &owner_id, report).await?;
     }
     Ok(())
 }
@@ -1100,13 +1215,16 @@ async fn delete_replace_scope_rows(
 async fn delete_tombstone_scope_rows(
     table: &lancedb::Table,
     scope: &SemanticTombstoneScope,
+    report: &mut IngestStageReport,
 ) -> Result<(), CoreError> {
+    report.semantic_delete_calls = report.semantic_delete_calls.saturating_add(1);
     let semantic_scope = &scope.semantic_scope;
     delete_by_semantic_scope(
         table,
         semantic_scope.corpus_kind.as_code_str(),
         semantic_scope.owner_kind.as_code_str(),
         semantic_scope.owner_id.as_str(),
+        report,
     )
     .await
 }
@@ -1114,7 +1232,9 @@ async fn delete_tombstone_scope_rows(
 async fn delete_replace_scope_memberships(
     table: &lancedb::Table,
     scope: &SemanticReplaceScope,
+    report: &mut IngestStageReport,
 ) -> Result<(), CoreError> {
+    report.membership_delete_calls = report.membership_delete_calls.saturating_add(1);
     let mut owners = BTreeSet::new();
     for embedding in &scope.embeddings {
         if embedding.corpus_kind == SemanticCorpusKindV1::ClusterCard {
@@ -1125,7 +1245,7 @@ async fn delete_replace_scope_memberships(
         }
     }
     for (owner_kind, owner_id) in owners {
-        delete_cluster_membership_by_owner(table, owner_kind, owner_id).await?;
+        delete_cluster_membership_by_owner(table, owner_kind, owner_id, report).await?;
     }
     Ok(())
 }
@@ -1133,7 +1253,9 @@ async fn delete_replace_scope_memberships(
 async fn delete_tombstone_memberships(
     table: &lancedb::Table,
     scope: &SemanticTombstoneScope,
+    report: &mut IngestStageReport,
 ) -> Result<(), CoreError> {
+    report.membership_delete_calls = report.membership_delete_calls.saturating_add(1);
     let semantic_scope = &scope.semantic_scope;
     if semantic_scope.corpus_kind != SemanticCorpusKindV1::ClusterCard {
         return Ok(());
@@ -1142,6 +1264,7 @@ async fn delete_tombstone_memberships(
         table,
         semantic_scope.owner_kind.as_code_str(),
         semantic_scope.owner_id.as_str(),
+        report,
     )
     .await
 }
@@ -1152,6 +1275,7 @@ async fn append_window(
     table: &lancedb::Table,
     window: &SemanticScopeWindowV1,
     dimension: usize,
+    report: &mut IngestStageReport,
 ) -> Result<(), CoreError> {
     let mut rows: Vec<&EmbeddingRecord> = Vec::new();
     for scope in window.scopes() {
@@ -1167,26 +1291,39 @@ async fn append_window(
         return Ok(());
     }
     let batch = build_record_batch(&rows, dimension)?;
+    let append_started = Instant::now();
     let _result = table
         .add(batch)
         .execute()
         .await
         .map_err(|err| lancedb_err("table.add", err))?;
+    report.durations.semantic_append = report
+        .durations
+        .semantic_append
+        .saturating_add(monotonic_nanos_since(append_started));
+    report.semantic_append_calls = report.semantic_append_calls.saturating_add(1);
     Ok(())
 }
 
 async fn append_cluster_membership_scope(
     table: &lancedb::Table,
     scope: &SemanticReplaceScope,
+    report: &mut IngestStageReport,
 ) -> Result<(), CoreError> {
     let Some(batch) = build_cluster_membership_record_batch(scope)? else {
         return Ok(());
     };
+    let append_started = Instant::now();
     let _result = table
         .add(batch)
         .execute()
         .await
         .map_err(|err| lancedb_err("cluster membership table.add", err))?;
+    report.durations.membership_append = report
+        .durations
+        .membership_append
+        .saturating_add(monotonic_nanos_since(append_started));
+    report.membership_append_calls = report.membership_append_calls.saturating_add(1);
     Ok(())
 }
 
@@ -1531,10 +1668,11 @@ async fn open_working_tables(
 async fn apply_clear_surfaces(
     tables: &WorkingTables,
     surfaces: &[SearchScopeSurface],
+    report: &mut IngestStageReport,
 ) -> Result<(), CoreError> {
     for surface in surfaces {
-        delete_surface_rows(&tables.table, *surface).await?;
-        delete_cluster_membership_for_surface(&tables.membership_table, *surface).await?;
+        delete_surface_rows(&tables.table, *surface, report).await?;
+        delete_cluster_membership_for_surface(&tables.membership_table, *surface, report).await?;
     }
     Ok(())
 }
@@ -1545,14 +1683,15 @@ async fn apply_window(
     tables: &WorkingTables,
     window: &SemanticScopeWindowV1,
     dimension: usize,
+    report: &mut IngestStageReport,
 ) -> Result<(), CoreError> {
     for scope in window.scopes() {
-        delete_replace_scope_rows(&tables.table, scope).await?;
-        delete_replace_scope_memberships(&tables.membership_table, scope).await?;
+        delete_replace_scope_rows(&tables.table, scope, report).await?;
+        delete_replace_scope_memberships(&tables.membership_table, scope, report).await?;
     }
-    append_window(&tables.table, window, dimension).await?;
+    append_window(&tables.table, window, dimension, report).await?;
     for scope in window.scopes() {
-        append_cluster_membership_scope(&tables.membership_table, scope).await?;
+        append_cluster_membership_scope(&tables.membership_table, scope, report).await?;
     }
     Ok(())
 }
@@ -1560,10 +1699,11 @@ async fn apply_window(
 async fn apply_tombstones(
     tables: &WorkingTables,
     tombstones: &[SemanticTombstoneScope],
+    report: &mut IngestStageReport,
 ) -> Result<(), CoreError> {
     for scope in tombstones {
-        delete_tombstone_scope_rows(&tables.table, scope).await?;
-        delete_tombstone_memberships(&tables.membership_table, scope).await?;
+        delete_tombstone_scope_rows(&tables.table, scope, report).await?;
+        delete_tombstone_memberships(&tables.membership_table, scope, report).await?;
     }
     Ok(())
 }
@@ -1590,7 +1730,8 @@ async fn seal_manifest_bytes(
 ///
 /// Runs on the caller's thread: the source embeds on the calling thread,
 /// outside the runtime, and only the storage steps are driven through the
-/// crate's async seam.
+/// crate's async seam. Counts windows and owner scopes into `report` as
+/// they are admitted (observation only).
 fn apply_scope_stream(
     runtime: &tokio::runtime::Runtime,
     tables: &WorkingTables,
@@ -1598,18 +1739,21 @@ fn apply_scope_stream(
     header: &SemanticIngestHeaderV1,
     authority: &mut StreamScopeAuthorityV1,
     scopes: &mut dyn SemanticScopeSource,
+    report: &mut IngestStageReport,
 ) -> Result<SemanticStreamTallyV1, CoreError> {
     let dimension = header.dimension()?;
     let normalization = header.contract.model_contract.normalization;
     let mut tally = SemanticStreamTallyV1::default();
     while let Some(window) = scopes.next_window()? {
         let _fill = policy.admit(&window)?;
+        report.windows = report.windows.saturating_add(1);
         for scope in window.scopes() {
             validate_replace_scope(scope, dimension, normalization)?;
             authority.admit_replace_scope(scope)?;
+            report.owner_scopes = report.owner_scopes.saturating_add(1);
         }
         let rows = window.rows()?;
-        crate::run_blocking(runtime, apply_window(tables, &window, dimension))?;
+        crate::run_blocking(runtime, apply_window(tables, &window, dimension, report))?;
         tally.count_window(window.scopes().len(), rows, window.vector_bytes())?;
         drop(window);
     }
@@ -1629,6 +1773,27 @@ pub(crate) fn build_stream(
     scopes: &mut dyn SemanticScopeSource,
     seal_tallies: &SealTalliesV1,
 ) -> Result<SemanticStreamTallyV1, CoreError> {
+    let (tally, _stage_report) =
+        build_stream_reported(runtime, semantic_root, policy, header, scopes, seal_tallies)?;
+    Ok(tally)
+}
+
+/// [`build_stream`] with the ingest-stage accounting handed back instead of
+/// discarded (RBR-10 step 1).
+///
+/// The [`IngestStageReport`] is observation only: the durability sequence
+/// below is exactly the one [`build_stream`] runs, un-reordered, with every
+/// seal/promotion step intact. Callers that do not want the report keep
+/// using [`build_stream`] unchanged.
+pub(crate) fn build_stream_reported(
+    runtime: &tokio::runtime::Runtime,
+    semantic_root: &Path,
+    policy: SemanticStreamWindowPolicy,
+    header: &SemanticIngestHeaderV1,
+    scopes: &mut dyn SemanticScopeSource,
+    seal_tallies: &SealTalliesV1,
+) -> Result<(SemanticStreamTallyV1, IngestStageReport), CoreError> {
+    let mut report = IngestStageReport::default();
     let generation_dir = layout::generation_dir(
         semantic_root,
         &header.pin.repo_id,
@@ -1668,20 +1833,37 @@ pub(crate) fn build_stream(
     let (tally, manifest_bytes) = {
         let tables =
             crate::run_blocking(runtime, open_working_tables(&working_dataset, dimension))?;
+        let clear_started = Instant::now();
         crate::run_blocking(
             runtime,
-            apply_clear_surfaces(&tables, &header.mutations.clear_surfaces),
+            apply_clear_surfaces(&tables, &header.mutations.clear_surfaces, &mut report),
         )?;
-        let tally = apply_scope_stream(runtime, &tables, policy, header, &mut authority, scopes)?;
+        report.durations.clear_surfaces = monotonic_nanos_since(clear_started);
+        let stream_started = Instant::now();
+        let tally = apply_scope_stream(
+            runtime,
+            &tables,
+            policy,
+            header,
+            &mut authority,
+            scopes,
+            &mut report,
+        )?;
+        report.durations.stream = monotonic_nanos_since(stream_started);
+        let tombstones_started = Instant::now();
         crate::run_blocking(
             runtime,
-            apply_tombstones(&tables, &header.mutations.tombstone_scopes),
+            apply_tombstones(&tables, &header.mutations.tombstone_scopes, &mut report),
         )?;
+        report.durations.tombstones = monotonic_nanos_since(tombstones_started);
         let manifest_bytes = if header.batch.seal {
-            Some(crate::run_blocking(
+            let seal_started = Instant::now();
+            let sealed = crate::run_blocking(
                 runtime,
                 seal_manifest_bytes(semantic_root, &tables, header, &generation_contract),
-            )?)
+            )?;
+            report.durations.seal = monotonic_nanos_since(seal_started);
+            Some(sealed)
         } else {
             None
         };
@@ -1763,7 +1945,7 @@ pub(crate) fn build_stream(
             "write sealed marker",
         )?;
     }
-    Ok(tally)
+    Ok((tally, report))
 }
 
 #[cfg(test)]

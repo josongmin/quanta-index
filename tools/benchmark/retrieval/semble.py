@@ -3,7 +3,7 @@
 
 Runs a pinned Semble 0.6.0 install (an outside-the-checkout virtualenv)
 against the exact admitted file universe and blind query pack, then
-normalizes its native results into a v3 runner record for the single
+normalizes its native results into a v5 runner record for the single
 Quanta-owned evaluator. Semble ranking is never reimplemented here.
 
 Layout contract (all outside the source checkout):
@@ -12,7 +12,7 @@ Layout contract (all outside the source checkout):
     worker.py               # exact spawned worker (auditable)
     native.json             # Semble-native results + timings + observed files
     mapping-proof.json      # path map + both-side path+SHA diff
-    record.json             # current runner record (schema v3)
+    record.json             # current runner record (schema v5)
     lockfile.txt            # external digest-pinned exact freeze copy
 
 A common-universe pair requires a clean mapping proof: every admitted file
@@ -32,7 +32,7 @@ import sys
 from pathlib import Path
 
 try:
-    from tools.benchmark.retrieval.evaluator import (
+    from tools.benchmark.retrieval.retrieval_contract import (
         TOKEN_RE,
         TOKENIZER,
         TOKENIZER_BUDGET_VERSION,
@@ -40,15 +40,10 @@ try:
         digest,
         validate_comparison_contract,
         verify_repo,
-    )
-    from tools.benchmark.retrieval.query_plan import (
-        PLANNING_COST_IN_LATENCY,
-        derive_query_identity,
-        policy_config_canonical,
     )
 except ImportError:  # direct script invocation: import the sibling module
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from evaluator import (  # noqa: E402
+    from retrieval_contract import (  # noqa: E402
         TOKEN_RE,
         TOKENIZER,
         TOKENIZER_BUDGET_VERSION,
@@ -56,17 +51,30 @@ except ImportError:  # direct script invocation: import the sibling module
         digest,
         validate_comparison_contract,
         verify_repo,
-    )
-    from query_plan import (  # noqa: E402
-        PLANNING_COST_IN_LATENCY,
-        derive_query_identity,
-        policy_config_canonical,
     )
 
 SEMBLE_PINNED_VERSION = "0.6.0"
 
+
+def execution_profile(mode: str, alpha: float | None) -> dict:
+    fixed = {
+        "native-default": ("semble-native-default-v1", None, "upstream-content-default"),
+        "lexical-only": ("semble-lexical-only-v1", None, "not_applicable"),
+        "semantic-only": ("semble-semantic-only-v1", None, "not_applicable"),
+    }
+    if mode == "hybrid-no-rerank":
+        if type(alpha) not in (int, float) or isinstance(alpha, bool) or not math.isfinite(alpha) or not 0 <= alpha <= 1:
+            raise AdapterError("hybrid-no-rerank requires finite alpha in [0, 1]")
+        return {"profile_id": "semble-hybrid-no-rerank-v1", "mode": mode, "alpha": float(alpha), "rerank": False}
+    if mode not in fixed or alpha is not None:
+        raise AdapterError("invalid Semble execution profile")
+    profile_id, fixed_alpha, rerank = fixed[mode]
+    return {"profile_id": profile_id, "mode": mode, "alpha": fixed_alpha, "rerank": rerank}
+
 WORKER_TEMPLATE = '''"""Spawned Semble worker (pinned env only). Reads SPEC_JSON, writes NATIVE_JSON."""
 import json
+import hashlib
+import inspect
 import os
 import sys
 import time
@@ -126,6 +134,7 @@ def main() -> int:
     discovery_end_ns = time.monotonic_ns()
     from semble import SembleIndex
     import semble.search as semble_search
+    from semble.types import ContentType
     model_prepare_end_ns = time.monotonic_ns()
 
     profile = str(spec.get("semble_profile", "native-default"))
@@ -151,21 +160,83 @@ def main() -> int:
     if index_resident_bytes == 0:
         raise SystemExit("worker could not attribute positive resident bytes to the index")
 
-    # RBR-03: count lane executions at the pinned-module boundary so the
-    # payload proves which lanes actually ran. Pure-lane profiles must show
-    # zero calls into the other lane.
+    # Transparent wrappers are installed at the exact globals used by pinned
+    # Semble 0.6.0: SembleIndex.search -> index.index.search ->
+    # search.resolve_alpha/_search_* . Each wrapper calls its original once
+    # and preserves the return value.
+    events = []
+    active = None
+    observed_wrapped_call_ns = 0
+    semble_index_module = sys.modules[index.__class__.__module__]
+    _real_module_search = getattr(semble_index_module, "search", None)
+    if _real_module_search is None or not callable(_real_module_search):
+        raise SystemExit("pinned Semble index module lacks the module-local search boundary")
+    _real_resolve_alpha = semble_search.resolve_alpha
     lane_calls = {"bm25": 0, "semantic": 0, "encode": 0}
     _real_search_bm25 = semble_search._search_bm25
     _real_search_semantic = semble_search._search_semantic
 
+    def _source_identity(fn):
+        raw = inspect.getsource(fn).encode("utf-8")
+        return {
+            "module": fn.__module__,
+            "qualname": fn.__qualname__,
+            "source_sha256": hashlib.sha256(raw).hexdigest(),
+        }
+
+    function_identity = {
+        "index_search": _source_identity(index.__class__.search),
+        "module_search": _source_identity(_real_module_search),
+        "resolve_alpha": _source_identity(_real_resolve_alpha),
+        "bm25": _source_identity(_real_search_bm25),
+        "semantic": _source_identity(_real_search_semantic),
+    }
+
+    def _observed_resolve_alpha(query, requested):
+        nonlocal observed_wrapped_call_ns
+        started = time.monotonic_ns()
+        resolved = _real_resolve_alpha(query, requested)
+        observed_wrapped_call_ns += time.monotonic_ns() - started
+        if active is None:
+            raise SystemExit("resolve_alpha executed outside an observed dispatch")
+        active["actual_alpha"] = float(resolved)
+        return resolved
+
+    def _observed_module_search(*args, **kwargs):
+        nonlocal observed_wrapped_call_ns
+        if active is None:
+            raise SystemExit("Semble module search executed outside an observed dispatch")
+        top_k_arg = args[5] if len(args) > 5 else kwargs.get("top_k")
+        rerank_arg = args[8] if len(args) > 8 else kwargs.get("rerank", True)
+        if type(top_k_arg) is not int or top_k_arg <= 0 or type(rerank_arg) is not bool:
+            raise SystemExit("Semble module search arguments are not observable")
+        active["actual_rerank"] = rerank_arg
+        active["candidate_depth"] = top_k_arg * 5
+        started = time.monotonic_ns()
+        result = _real_module_search(*args, **kwargs)
+        observed_wrapped_call_ns += time.monotonic_ns() - started
+        return result
+
     def _counted_bm25(*args, **kwargs):
         lane_calls["bm25"] += 1
+        if active is not None:
+            active["lane_entry_counts"]["bm25"] += 1
+            active["lane_candidate_depths"]["bm25"].append(
+                int(args[3] if len(args) > 3 else kwargs["top_k"])
+            )
         return _real_search_bm25(*args, **kwargs)
 
     def _counted_semantic(*args, **kwargs):
         lane_calls["semantic"] += 1
+        if active is not None:
+            active["lane_entry_counts"]["semantic"] += 1
+            active["lane_candidate_depths"]["semantic"].append(
+                int(args[4] if len(args) > 4 else kwargs["top_k"])
+            )
         return _real_search_semantic(*args, **kwargs)
 
+    semble_search.resolve_alpha = _observed_resolve_alpha
+    semble_index_module.search = _observed_module_search
     semble_search._search_bm25 = _counted_bm25
     semble_search._search_semantic = _counted_semantic
     _real_encode = getattr(index.model, "encode", None)
@@ -183,25 +254,42 @@ def main() -> int:
             f"pinned Semble build does not expose single-lane functions; {profile} is unsupported"
         )
 
-    try:
-        from semble.ranking import resolve_alpha as _resolve_alpha
-    except ImportError:
-        _resolve_alpha = None
-
-    def dispatch(query, top_k):
+    def dispatch(query, top_k, *, rep, phase, phase_iteration, task_id):
+        nonlocal active
+        event = {
+            "rep": rep,
+            "phase": phase,
+            "phase_iteration": phase_iteration,
+            "task_id": task_id,
+            "call_ordinal": len(events),
+            "submitted_query_sha256": hashlib.sha256(query.encode("utf-8")).hexdigest(),
+            "profile_sha256": spec["execution_profile_sha256"],
+            "actual_alpha": None,
+            "actual_rerank": None,
+            "candidate_depth": top_k if profile in ("lexical-only", "semantic-only") else None,
+            "lane_entry_counts": {"bm25": 0, "semantic": 0},
+            "lane_candidate_depths": {"bm25": [], "semantic": []},
+        }
+        active = event
         # Single dispatch shared by cold, warmup, and measured phases
         # (RBR-03): no phase can run a different profile.
-        if profile == "native-default":
-            return index.search(query, top_k=top_k)
-        if profile == "hybrid-no-rerank":
-            return index.search(query, top_k=top_k, alpha=alpha, rerank=False)
-        if profile == "lexical-only":
-            return semble_search._search_bm25(
-                query, index._bm25_index, index.chunks, top_k, None
-            )
-        return semble_search._search_semantic(
-            query, index.model, index._semantic_index, index.chunks, top_k, None
-        )
+        try:
+            if profile == "native-default":
+                result = index.search(query, top_k=top_k)
+            elif profile == "hybrid-no-rerank":
+                result = index.search(query, top_k=top_k, alpha=alpha, rerank=False)
+            elif profile == "lexical-only":
+                result = semble_search._search_bm25(
+                    query, index._bm25_index, index.chunks, top_k, None
+                )
+            else:
+                result = semble_search._search_semantic(
+                    query, index.model, index._semantic_index, index.chunks, top_k, None
+                )
+        finally:
+            events.append(event)
+            active = None
+        return result
 
     observed = sorted({chunk.file_path for chunk in index.chunks})
     stats = {
@@ -225,7 +313,8 @@ def main() -> int:
     cold_query_end_ns = index_end_ns
     if protocol is not None:
         cold_query_start_ns = time.monotonic_ns()
-        dispatch(query_by_id[protocol["cold_probe_task_id"]], top_k)
+        task_id = protocol["cold_probe_task_id"]
+        dispatch(query_by_id[task_id], top_k, rep=0, phase="cold", phase_iteration=0, task_id=task_id)
         cold_query_end_ns = time.monotonic_ns()
         cold_latency_ms = (cold_query_end_ns - cold_query_start_ns) / 1_000_000.0
         warmup_schedules = protocol["warmup_schedules"]
@@ -233,9 +322,9 @@ def main() -> int:
     else:
         warmup_schedules = [[task_id for task_id, _ in queries] for _ in range(warmup)]
         measurement_schedules = [[task_id for task_id, _ in queries] for _ in range(repetitions)]
-    for schedule in warmup_schedules:
+    for warmup_iteration, schedule in enumerate(warmup_schedules):
         for task_id in schedule:
-            dispatch(query_by_id[task_id], top_k)
+            dispatch(query_by_id[task_id], top_k, rep=0, phase="warmup", phase_iteration=warmup_iteration, task_id=task_id)
     warmup_end_ns = time.monotonic_ns()
     native = []
     latencies = {}
@@ -247,17 +336,8 @@ def main() -> int:
     for rep, schedule in enumerate(measurement_schedules):
         for task_id in schedule:
             query = query_by_id[task_id]
-            if rep == 0 and _resolve_alpha is not None:
-                try:
-                    actual_alpha_by_task[task_id] = float(
-                        _resolve_alpha(
-                            query, alpha if profile == "hybrid-no-rerank" else None
-                        )
-                    )
-                except Exception:
-                    actual_alpha_by_task[task_id] = None
             t0 = time.monotonic_ns()
-            results = dispatch(query, top_k)
+            results = dispatch(query, top_k, rep=rep, phase="measured", phase_iteration=rep, task_id=task_id)
             ended_ns = time.monotonic_ns()
             elapsed_ms = (ended_ns - t0) / 1_000_000.0
             if first_query_ms is None:
@@ -280,7 +360,25 @@ def main() -> int:
                         ],
                     }
                 )
+                if profile in ("native-default", "hybrid-no-rerank"):
+                    actual_alpha_by_task[task_id] = events[-1]["actual_alpha"]
     query_end_ns = time.monotonic_ns()
+    expected_dispatch_count = sum(map(len, warmup_schedules)) + sum(
+        map(len, measurement_schedules)
+    ) + (1 if protocol is not None else 0)
+    if profile in ("native-default", "hybrid-no-rerank"):
+        expected_rerank = profile == "native-default"
+        if [event["actual_rerank"] for event in events] != [expected_rerank] * expected_dispatch_count:
+            raise SystemExit(
+                "Semble rerank trace differs from the requested profile: "
+                f"observed={[event['actual_rerank'] for event in events]} expected={expected_rerank} "
+                f"calls={expected_dispatch_count}"
+            )
+        rerank_applied = expected_rerank
+    else:
+        if any(event["actual_rerank"] is not None for event in events):
+            raise SystemExit("pure-lane profile unexpectedly used hybrid search")
+        rerank_applied = False
     # RBR-03 fail-closed lane invariants, checked at the source before the
     # payload leaves the worker.
     if profile == "lexical-only" and (lane_calls["semantic"] or lane_calls["encode"]):
@@ -328,10 +426,18 @@ def main() -> int:
         "requested_alpha": alpha if profile == "hybrid-no-rerank" else None,
         "actual_alpha_by_task": (
             actual_alpha_by_task
-            if _resolve_alpha is not None and profile in ("native-default", "hybrid-no-rerank")
+            if profile in ("native-default", "hybrid-no-rerank")
             else None
         ),
-        "rerank_applied": False if profile == "hybrid-no-rerank" else None,
+        "execution_events": events,
+        "execution_events_sha256": hashlib.sha256(
+            json.dumps(events, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest(),
+        "function_identity": function_identity,
+        # This includes the wrapped upstream calls. It is evidence about the
+        # observation boundary, never a value to subtract from query latency.
+        "observed_wrapped_call_ns": observed_wrapped_call_ns,
+        "rerank_applied": rerank_applied,
         "lane_call_counts": dict(lane_calls),
         "semble_index_ms": (index_end_ns - model_prepare_end_ns) / 1_000_000.0,
         "discovery_ms": (discovery_end_ns - worker_started_ns) / 1_000_000.0,
@@ -381,7 +487,7 @@ SEMBLE_PROFILES = (
 
 
 def validate_native_profile_report(
-    native_payload: dict, profile: str, alpha: float
+    native_payload: dict, profile: str, alpha: float | None
 ) -> None:
     """Reject a worker report that disagrees with the requested profile.
 
@@ -416,11 +522,88 @@ def validate_native_profile_report(
         raise AdapterError(
             f"{profile} capture must run both lanes; alpha endpoints are score ablations"
         )
+    if profile == "native-default" and native_payload.get("rerank_applied") is not True:
+        raise AdapterError("native-default capture must prove rerank_applied=True")
+    if profile != "native-default" and native_payload.get("rerank_applied") is not False:
+        if profile == "hybrid-no-rerank":
+            raise AdapterError("hybrid-no-rerank capture must report rerank disabled")
+        raise AdapterError(f"{profile} capture must prove rerank_applied=False")
     if profile == "hybrid-no-rerank":
         if native_payload.get("requested_alpha") != alpha:
             raise AdapterError("Semble worker alpha echo differs from the requested alpha")
         if native_payload.get("rerank_applied") is not False:
             raise AdapterError("hybrid-no-rerank capture must report rerank disabled")
+    events = native_payload.get("execution_events")
+    if not isinstance(events, list) or not events:
+        raise AdapterError("Semble worker execution event report is absent")
+    expected_profile_sha = digest(canonical(execution_profile(profile, alpha)))
+    keys = set()
+    measured = {}
+    observed_lane_calls = {"bm25": 0, "semantic": 0}
+    for event in events:
+        required = {
+            "rep", "phase", "phase_iteration", "task_id", "call_ordinal",
+            "submitted_query_sha256", "profile_sha256", "actual_alpha",
+            "actual_rerank", "candidate_depth", "lane_entry_counts",
+            "lane_candidate_depths",
+        }
+        if not isinstance(event, dict) or set(event) != required:
+            raise AdapterError("Semble worker execution event shape is invalid")
+        key = tuple(event[name] for name in ("rep", "phase", "phase_iteration", "task_id", "call_ordinal"))
+        if key in keys:
+            raise AdapterError("Semble worker execution event key is duplicated")
+        keys.add(key)
+        if event["profile_sha256"] != expected_profile_sha:
+            raise AdapterError("Semble worker execution event profile digest mismatch")
+        if not isinstance(event["task_id"], str) or not event["task_id"]:
+            raise AdapterError("Semble worker execution event task is invalid")
+        if event["phase"] not in ("cold", "warmup", "measured"):
+            raise AdapterError("Semble worker execution event phase is invalid")
+        lane_event = event["lane_entry_counts"]
+        depths = event["lane_candidate_depths"]
+        if (
+            not isinstance(lane_event, dict) or set(lane_event) != {"bm25", "semantic"}
+            or not isinstance(depths, dict) or set(depths) != {"bm25", "semantic"}
+            or any(type(value) is not int or value < 0 for value in lane_event.values())
+            or any(not isinstance(value, list) or any(type(depth) is not int or depth <= 0 for depth in value) for value in depths.values())
+        ):
+            raise AdapterError("Semble worker per-event lane report is invalid")
+        candidate_depth = event["candidate_depth"]
+        if type(candidate_depth) is not int or candidate_depth <= 0:
+            raise AdapterError("Semble event candidate depth is invalid")
+        for lane in observed_lane_calls:
+            if depths[lane] != [candidate_depth] * lane_event[lane]:
+                raise AdapterError("Semble event candidate depth differs from lane calls")
+            observed_lane_calls[lane] += lane_event[lane]
+        if profile in ("native-default", "hybrid-no-rerank"):
+            if lane_event != {"bm25": 1, "semantic": 1}:
+                raise AdapterError("Semble hybrid event did not enter both lanes exactly once")
+            if event["actual_rerank"] is not (profile == "native-default"):
+                raise AdapterError("Semble event rerank differs from the profile")
+            if type(event["actual_alpha"]) not in (int, float) or isinstance(event["actual_alpha"], bool) or not math.isfinite(event["actual_alpha"]) or not 0 <= event["actual_alpha"] <= 1:
+                raise AdapterError("Semble event actual alpha is invalid")
+            if profile == "hybrid-no-rerank" and event["actual_alpha"] != alpha:
+                raise AdapterError("Semble event actual alpha differs from requested alpha")
+        elif profile == "lexical-only":
+            if lane_event != {"bm25": 1, "semantic": 0} or depths["semantic"]:
+                raise AdapterError("Semble lexical event crossed the lane boundary")
+        elif lane_event != {"bm25": 0, "semantic": 1} or depths["bm25"]:
+            raise AdapterError("Semble semantic event crossed the lane boundary")
+        if event["phase"] == "measured":
+            pair = (event["rep"], event["task_id"])
+            if pair in measured:
+                raise AdapterError("Semble measured event coverage is duplicated")
+            measured[pair] = event
+    if any(lane_counts[lane] != count for lane, count in observed_lane_calls.items()):
+        raise AdapterError("Semble aggregate lane calls differ from execution events")
+    native_tasks = {
+        row.get("task_id") for row in native_payload.get("native", []) if isinstance(row, dict)
+    }
+    repetitions = native_payload.get("repetitions")
+    if type(repetitions) is not int or repetitions <= 0 or set(measured) != {
+        (rep, task_id) for rep in range(repetitions) for task_id in native_tasks
+    }:
+        raise AdapterError("Semble measured execution event coverage is incomplete")
 
 
 class AdapterError(ValueError):
@@ -901,6 +1084,7 @@ def normalize_record(
     model: str,
     model_revision: str,
     route: str,
+    profile: dict,
     capture_id: str,
     receipt_digest: str,
     worker_digest: str,
@@ -946,13 +1130,11 @@ def normalize_record(
     results = []
     for task in pack["tasks"]:
         task_id = task["task_id"]
-        # The Semble adapter passes the raw query verbatim to the pinned
-        # upstream search call: native policy, effective request == original
-        # bytes. The per-result identity binds that fact (RBR-02).
-        try:
-            query_identity = derive_query_identity("native", task["query"])
-        except ValueError as error:
-            raise AdapterError(f"cannot bind query identity for {task_id}: {error}") from error
+        submitted_sha = hashlib.sha256(task["query"].encode()).hexdigest()
+        query_identity = {
+            "original_query_sha256": submitted_sha,
+            "submitted_query_sha256": submitted_sha,
+        }
         if task_id not in by_task:
             results.append(
                 {
@@ -1079,11 +1261,11 @@ def normalize_record(
         )
     ordered_native = sorted(native, key=lambda row: str(row.get("task_id")))
     return {
-        "schema_version": 4,
+        "schema_version": 5,
         "query_pack_sha256": pack_sha256,
         "comparison_contract": contract,
         "runner": {
-            "name": "semble-adapter",
+            "name": f"semble-adapter/{profile['mode']}",
             "revision": run_id,
             "run_id": run_id,
             "tokenizer": TOKENIZER,
@@ -1092,14 +1274,6 @@ def normalize_record(
             "blinding": blinding,
             "isolation_method": isolation_method,
             "access_block_log": access_block_log,
-            "query_input_policy": {
-                "policy": "native",
-                "config": {},
-                "policy_config_sha256": digest(
-                    policy_config_canonical("native").encode()
-                ),
-                "planning_cost_in_latency": PLANNING_COST_IN_LATENCY,
-            },
         },
         "captures": {
             capture_id: {
@@ -1113,6 +1287,8 @@ def normalize_record(
                 "activation_digest": digest(canonical(ordered_native)),
                 "model": model,
                 "model_revision": model_revision,
+                "execution_profile": profile,
+                "execution_profile_sha256": digest(canonical(profile)),
             }
         },
         "route_provenance": {route: {"capture_id": capture_id}},
@@ -1238,12 +1414,10 @@ def run_adapter(args: argparse.Namespace) -> int:
             raise AdapterError("query protocol repetition count differs from CLI")
         if query_protocol["seed"] != seed:
             raise AdapterError("query protocol seed differs from CLI")
-    profile = str(getattr(args, "semble_profile", "native-default"))
-    if profile not in SEMBLE_PROFILES:
-        raise AdapterError(f"unknown semble profile: {profile}")
-    alpha = float(getattr(args, "alpha", 0.5))
-    if not 0.0 <= alpha <= 1.0:
-        raise AdapterError("alpha must lie in [0, 1]")
+    profile_mode = str(getattr(args, "semble_profile", "native-default"))
+    requested_alpha = getattr(args, "alpha", None)
+    profile = execution_profile(profile_mode, requested_alpha)
+    alpha = profile["alpha"]
     spec = {
         "corpus_dir": str(corpus_dir),
         "tasks": [{"task_id": task["task_id"], "query": task["query"]} for task in pack["tasks"]],
@@ -1252,19 +1426,37 @@ def run_adapter(args: argparse.Namespace) -> int:
         "warmup_passes": warmup_passes,
         "repetitions": repetitions,
         "query_protocol": query_protocol,
-        "semble_profile": profile,
+        "semble_profile": profile_mode,
         "alpha": alpha,
+        "execution_profile_sha256": digest(canonical(profile)),
     }
     spec_path = out_root / "spec.json"
     spec_path.write_text(json.dumps(spec, indent=2, sort_keys=True), encoding="utf-8")
     native_path = out_root / "native.json"
     cache_root.mkdir(parents=True, exist_ok=True)
+    model_id = args.model_id
+    model_revision, source_model_asset = resolve_model_revision(
+        cache_root / "hf", model_id, args.model_revision
+    )
+    materialized_hf = out_root / "model-cache" / "hf"
+    model_cache_manifest = materialize_model_cache(
+        cache_root / "hf", materialized_hf, model_id, model_revision
+    )
+    if model_asset_digest(materialized_hf, model_id, model_revision) != source_model_asset:
+        raise AdapterError("materialized model snapshot differs from the pinned source cache")
+    model_cache_path = out_root / "model-cache-manifest.json"
+    model_cache_path.write_text(
+        json.dumps(model_cache_manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     env = dict(os.environ)
     env["SPEC_JSON"] = str(spec_path)
     env["NATIVE_JSON"] = str(native_path)
     env["SEMBLE_CACHE_LOCATION"] = str(cache_root / "semble")
-    env["HF_HOME"] = str(cache_root / "hf")
-    env["SEMBLE_MODEL_NAME"] = args.model_id
+    env["HF_HOME"] = str(materialized_hf)
+    env["HF_HUB_OFFLINE"] = "1"
+    env["TRANSFORMERS_OFFLINE"] = "1"
+    env["SEMBLE_MODEL_NAME"] = model_id
     env["SEMBLE_MAX_FILE_BYTES"] = str(max_file_bytes)
     try:
         completed = subprocess.run(
@@ -1289,9 +1481,13 @@ def run_adapter(args: argparse.Namespace) -> int:
     native_payload = read_json(native_path)
     if not isinstance(native_payload, dict):
         raise AdapterError("Semble native output must be an object")
-    if native_payload.get("configured_model_name") != args.model_id:
+    if native_payload.get("configured_model_name") != model_id:
         raise AdapterError("Semble worker model configuration differs from requested model")
-    validate_native_profile_report(native_payload, profile, alpha)
+    validate_native_profile_report(native_payload, profile_mode, alpha)
+    if native_payload.get("execution_events_sha256") != digest(
+        canonical(native_payload.get("execution_events"))
+    ):
+        raise AdapterError("Semble execution event digest mismatch")
     observed = native_payload.get("observed_files", [])
     proof, diff_digest = mapping_proof(admitted_rows, observed, corpus_dir)
     (out_root / "mapping-proof.json").write_text(
@@ -1322,10 +1518,9 @@ def run_adapter(args: argparse.Namespace) -> int:
         ensure_ascii=False,
     )
     pack_sha256 = digest(pack_canonical.encode("utf-8"))
-    model_id = args.model_id
-    model_revision, model_asset = resolve_model_revision(
-        cache_root / "hf", model_id, args.model_revision
-    )
+    model_asset = model_asset_digest(materialized_hf, model_id, model_revision)
+    if model_asset != source_model_asset:
+        raise AdapterError("model snapshot changed while the worker was running")
     record = normalize_record(
         pack,
         pack_sha256,
@@ -1342,6 +1537,7 @@ def run_adapter(args: argparse.Namespace) -> int:
         model_id,
         model_revision,
         args.route,
+        profile,
         args.run_id,
         diff_digest,
         worker_digest,
@@ -1355,8 +1551,15 @@ def run_adapter(args: argparse.Namespace) -> int:
     record_path = out_root / "record.json"
     record_path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     phase_metrics = {
-        "schema_version": 1,
+        "schema_version": 2,
         "system": "semble",
+        "profile": profile_mode,
+        "requested_alpha": native_payload.get("requested_alpha"),
+        "rerank_applied": native_payload.get("rerank_applied"),
+        "lane_call_counts": native_payload.get("lane_call_counts"),
+        "execution_events_sha256": native_payload.get("execution_events_sha256"),
+        "function_identity": native_payload.get("function_identity"),
+        "observed_wrapped_call_ns": native_payload.get("observed_wrapped_call_ns"),
         "timing_layer": "worker_monotonic_wall_v1",
         "strategy": "native",
         "record_sha256": sha_file(record_path),
@@ -1381,6 +1584,11 @@ def run_adapter(args: argparse.Namespace) -> int:
     )
     manifest_out = {
         "semble_version": semble_version,
+        "profile": profile,
+        "requested_alpha": native_payload.get("requested_alpha"),
+        "actual_alpha_by_task": native_payload.get("actual_alpha_by_task"),
+        "rerank_applied": native_payload.get("rerank_applied"),
+        "lane_call_counts": native_payload.get("lane_call_counts"),
         "semble_python": str(Path(args.python)),
         "interpreter": env_report["interpreter"],
         "worker_digest": worker_digest,
@@ -1390,6 +1598,7 @@ def run_adapter(args: argparse.Namespace) -> int:
         "model_id": model_id,
         "model_revision": model_revision,
         "model_asset_digest": model_asset,
+        "model_cache_manifest_digest": sha_file(model_cache_path),
         "record_digest": sha_file(record_path),
         "timing_layer": "library",
         "semble_index_ms": native_payload.get("semble_index_ms"),
@@ -1410,23 +1619,30 @@ def run_adapter(args: argparse.Namespace) -> int:
 
 
 def model_asset_digest(hf_home: Path, model_id: str, revision: str) -> str:
-    """Digest every byte of the pinned model snapshot. Symlinks refused."""
+    """Digest logical paths and bytes of one pinned model snapshot."""
     slug = "models--" + model_id.replace("/", "--")
-    snapshot = hf_home / "hub" / slug / "snapshots" / revision
+    model_root = (hf_home / "hub" / slug).resolve()
+    snapshot = model_root / "snapshots" / revision
     if not snapshot.is_dir():
         raise AdapterError(f"model snapshot unavailable in HF cache: {model_id}@{revision}")
     digestor = hashlib.sha256()
     members = []
     for path in sorted(snapshot.rglob("*")):
-        if path.is_symlink():
-            raise AdapterError(f"model snapshot holds a symlink: {path}")
-        if path.is_file():
-            members.append(path)
+        try:
+            target = path.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise AdapterError(f"unsafe model snapshot member {path}: {exc}") from exc
+        if model_root != target and model_root not in target.parents:
+            raise AdapterError(f"model snapshot member escapes model root: {path}")
+        if target.is_file():
+            members.append((path, target))
+        elif not target.is_dir():
+            raise AdapterError(f"model snapshot member is not regular: {path}")
     if not members:
         raise AdapterError(f"model snapshot holds no files: {model_id}@{revision}")
-    for path in members:
+    for path, target in members:
         try:
-            data = path.read_bytes()
+            data = target.read_bytes()
         except OSError as exc:
             raise AdapterError(f"cannot read model asset {path}: {exc}") from exc
         digestor.update(path.relative_to(snapshot).as_posix().encode("utf-8"))
@@ -1434,6 +1650,91 @@ def model_asset_digest(hf_home: Path, model_id: str, revision: str) -> str:
         digestor.update(data)
         digestor.update(b"\0")
     return digestor.hexdigest()
+
+
+def materialize_model_cache(
+    source_hf_home: Path,
+    destination_hf_home: Path,
+    model_id: str,
+    revision: str,
+) -> dict:
+    """Copy one pinned HF snapshot into a closed, symlink-free cache."""
+    slug = "models--" + model_id.replace("/", "--")
+    source_repo = (source_hf_home / "hub" / slug).resolve()
+    snapshot = source_repo / "snapshots" / revision
+    ref = source_repo / "refs" / "main"
+    if not snapshot.is_dir() or not ref.is_file():
+        raise AdapterError(f"model cache lacks snapshot/ref for {model_id}@{revision}")
+    try:
+        ref_revision = ref.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise AdapterError(f"cannot read model cache ref: {exc}") from exc
+    if ref_revision != revision:
+        raise AdapterError(
+            f"model cache ref drift: refs/main={ref_revision!r}, pinned={revision!r}"
+        )
+    destination_repo = destination_hf_home / "hub" / slug
+    destination_resolved = destination_repo.resolve()
+    if source_repo == destination_resolved or source_repo in destination_resolved.parents:
+        raise AdapterError("materialized model cache must be outside the source model root")
+    if destination_repo.exists():
+        raise AdapterError(f"materialized model cache already exists: {destination_repo}")
+    destination_snapshot = destination_repo / "snapshots" / revision
+    destination_snapshot.mkdir(parents=True)
+    members = []
+    asset_digestor = hashlib.sha256()
+    for logical in sorted(snapshot.rglob("*")):
+        if logical.is_symlink():
+            try:
+                linked_target = logical.resolve(strict=True)
+            except (OSError, RuntimeError) as exc:
+                raise AdapterError(f"unsafe model cache link {logical}: {exc}") from exc
+            if linked_target.is_dir():
+                raise AdapterError(f"model cache directory symlink is unsupported: {logical}")
+        elif logical.is_dir():
+            continue
+        relative = logical.relative_to(snapshot)
+        try:
+            target = logical.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise AdapterError(f"unsafe model cache link {logical}: {exc}") from exc
+        if source_repo != target and source_repo not in target.parents:
+            raise AdapterError(f"model cache link escapes model root: {logical} -> {target}")
+        if not target.is_file():
+            raise AdapterError(f"model cache member is not a regular file: {logical}")
+        try:
+            data = target.read_bytes()
+        except OSError as exc:
+            raise AdapterError(f"cannot read model cache member {logical}: {exc}") from exc
+        output = destination_snapshot / relative
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(data)
+        asset_digestor.update(relative.as_posix().encode("utf-8"))
+        asset_digestor.update(b"\0")
+        asset_digestor.update(data)
+        asset_digestor.update(b"\0")
+        members.append(
+            {
+                "path": relative.as_posix(),
+                "sha256": digest(data),
+                "size": len(data),
+            }
+        )
+    if not members:
+        raise AdapterError("model snapshot holds no materializable files")
+    destination_ref = destination_repo / "refs" / "main"
+    destination_ref.parent.mkdir(parents=True)
+    destination_ref.write_text(revision + "\n", encoding="utf-8")
+    manifest = {
+        "schema_version": 1,
+        "model_id": model_id,
+        "revision": revision,
+        "ref": {"name": "main", "revision": revision},
+        "members": members,
+        "model_asset_digest": asset_digestor.hexdigest(),
+    }
+    manifest["snapshot_digest"] = digest(canonical(manifest))
+    return manifest
 
 
 def resolve_model_revision(hf_home: Path, model_id: str, pinned: str | None) -> tuple[str, str]:
@@ -1486,7 +1787,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--alpha",
         type=float,
-        default=0.5,
+        default=None,
         help="explicit fusion weight for --semble-profile hybrid-no-rerank",
     )
     run.add_argument("--timeout-secs", default="1800")

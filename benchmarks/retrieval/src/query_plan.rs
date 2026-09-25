@@ -21,15 +21,28 @@
 //! measurement phases.
 
 use crate::sha256_hex;
+use quanta_index_lq_norm::{parser::parse as parse_lq, tokenizer::tokenize as tokenize_lq};
+use quanta_index_lq_text_normalizer::{
+    CaseMode, TEXT_NORMALIZER_VERSION, TextQueryError, is_token_char, nfc, query_tokens,
+};
 
 /// Fixed natural-language plan profile identifier (part of the policy
 /// config identity).
-pub const NL_PLAN_PROFILE: &str = "nl-token-or-v1";
+pub const NL_PLAN_PROFILE: &str = "nl-token-or-v2";
 
 /// Whether the one-time planning cost is included in measured query
 /// latency. Planning happens once per task before the cold probe, so the
 /// measured windows never contain it.
 pub const PLANNING_COST_IN_LATENCY: bool = false;
+
+#[must_use]
+pub const fn execution_profile_id(policy: QueryInputPolicy) -> &'static str {
+    match policy {
+        QueryInputPolicy::Native => "quanta-native-v1",
+        QueryInputPolicy::Literal => "quanta-literal-v1",
+        QueryInputPolicy::NaturalLanguage => "quanta-natural-language-ucd17-v2",
+    }
+}
 
 /// Explicit caller-selected treatment of a raw query-pack query.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -101,7 +114,8 @@ impl NlPlanConfig {
         format!(
             "\"max_token_chars\":{},\"max_tokens\":{},\"min_token_chars\":{},\
              \"profile\":\"{NL_PLAN_PROFILE}\",\
-             \"tokenization\":\"unicode-alnum-joined-punct\"",
+             \"text_normalizer_version\":\"{TEXT_NORMALIZER_VERSION}\",\
+             \"tokenization\":\"lexical-ssot-nfc-with-path-joiners\"",
             self.max_token_chars, self.max_tokens, self.min_token_chars
         )
     }
@@ -122,13 +136,42 @@ pub enum QueryPlanError {
         /// Configured maximum.
         max_tokens: usize,
     },
-    /// A single token exceeded the configured per-token character maximum.
-    TokenTooLong {
+    /// A single planned token exceeded the profile's character maximum.
+    TokenCharacterLimitExceeded {
         /// Observed token character length.
         chars: usize,
         /// Configured maximum.
         max_token_chars: usize,
     },
+    /// A lexical token exceeds the index term byte cap and cannot match.
+    IndexTokenTooLong {
+        /// Observed token byte length after NFC normalization.
+        bytes: usize,
+        /// Canonical lexical index byte limit.
+        max_bytes: usize,
+    },
+    /// The effective lexical request failed the canonical tokenizer/parser.
+    InvalidLexicalRequest {
+        /// Canonical lq-norm error code.
+        parser_code: String,
+        /// Parser diagnostic detail.
+        detail: String,
+    },
+}
+
+impl QueryPlanError {
+    /// Stable refusal code used by the CLI artifact and runner protocol.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::UnsupportedPolicy(_) => "RBR_QUERY_POLICY_UNSUPPORTED",
+            Self::EmptyTokenPlan => "RBR_QUERY_NO_INDEXABLE_TOKENS",
+            Self::TokenLimitExceeded { .. } => "RBR_QUERY_TOKEN_LIMIT_EXCEEDED",
+            Self::TokenCharacterLimitExceeded { .. } => "RBR_QUERY_TOKEN_CHAR_LIMIT_EXCEEDED",
+            Self::IndexTokenTooLong { .. } => "RBR_QUERY_TOKEN_TOO_LONG",
+            Self::InvalidLexicalRequest { .. } => "RBR_QUERY_LEXICAL_INVALID",
+        }
+    }
 }
 
 impl std::fmt::Display for QueryPlanError {
@@ -141,12 +184,28 @@ impl std::fmt::Display for QueryPlanError {
                 write!(f, "natural-language plan produced no tokens")
             }
             Self::TokenLimitExceeded { tokens, max_tokens } => {
-                write!(f, "natural-language plan has {tokens} tokens (max {max_tokens})")
+                write!(
+                    f,
+                    "natural-language plan has {tokens} tokens (max {max_tokens})"
+                )
             }
-            Self::TokenTooLong {
+            Self::TokenCharacterLimitExceeded {
                 chars,
                 max_token_chars,
             } => write!(f, "token of {chars} chars exceeds max {max_token_chars}"),
+            Self::IndexTokenTooLong { bytes, max_bytes } => {
+                write!(
+                    f,
+                    "token of {bytes} bytes exceeds lexical term max {max_bytes}"
+                )
+            }
+            Self::InvalidLexicalRequest {
+                parser_code,
+                detail,
+            } => write!(
+                f,
+                "effective lexical request is invalid ({parser_code}): {detail}"
+            ),
         }
     }
 }
@@ -195,14 +254,64 @@ pub fn policy_config_canonical(policy: QueryInputPolicy, config: &NlPlanConfig) 
     }
 }
 
-/// Escape one raw string into a single lq-norm double-quoted phrase
-/// literal. The lq-norm phrase lexer decodes exactly `\\`, `\"`, `\n`,
-/// `\r`, `\t` and rejects every other escape, so escaping precisely those
-/// five characters round-trips every other `char` (including Unicode)
-/// verbatim.
+/// Canonical capture-scoped execution profile. The exact bytes are shared
+/// with the independent replay oracle and hashed into every capture.
+#[must_use]
+pub fn execution_profile_canonical(policy: QueryInputPolicy, config: &NlPlanConfig) -> String {
+    let profile_id = execution_profile_id(policy);
+    match policy {
+        QueryInputPolicy::NaturalLanguage => format!(
+            "{{\"config\":{{\"max_token_chars\":{},\"max_tokens\":{},\"min_token_chars\":{}}},\
+             \"planning_cost_in_latency\":false,\"policy\":\"{}\",\"profile_id\":\"{}\"}}",
+            config.max_token_chars,
+            config.max_tokens,
+            config.min_token_chars,
+            policy.as_str(),
+            profile_id,
+        ),
+        QueryInputPolicy::Native | QueryInputPolicy::Literal => format!(
+            "{{\"config\":{{}},\"planning_cost_in_latency\":false,\"policy\":\"{}\",\
+             \"profile_id\":\"{}\"}}",
+            policy.as_str(),
+            profile_id,
+        ),
+    }
+}
+
+#[must_use]
+pub fn execution_profile_value(
+    policy: QueryInputPolicy,
+    config: &NlPlanConfig,
+) -> serde_json::Value {
+    let config_value = match policy {
+        QueryInputPolicy::NaturalLanguage => serde_json::json!({
+            "max_token_chars": config.max_token_chars,
+            "max_tokens": config.max_tokens,
+            "min_token_chars": config.min_token_chars,
+        }),
+        QueryInputPolicy::Native | QueryInputPolicy::Literal => serde_json::json!({}),
+    };
+    serde_json::json!({
+        "profile_id": execution_profile_id(policy),
+        "policy": policy.as_str(),
+        "config": config_value,
+        "planning_cost_in_latency": PLANNING_COST_IN_LATENCY,
+    })
+}
+
+#[must_use]
+pub fn execution_profile_sha256(policy: QueryInputPolicy, config: &NlPlanConfig) -> String {
+    sha256_hex(execution_profile_canonical(policy, config).as_bytes())
+}
+
+/// Escape one raw string into a single lq-norm double-quoted phrase literal.
+///
+/// The lq-norm phrase lexer decodes exactly `\\`, `\"`, `\n`, `\r`, `\t`
+/// and rejects every other escape. Escaping precisely those five characters
+/// round-trips every other `char` (including Unicode) verbatim.
 #[must_use]
 pub fn literalize(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len() + 2);
+    let mut out = String::with_capacity(raw.len().saturating_add(2));
     out.push('"');
     for ch in raw.chars() {
         match ch {
@@ -218,10 +327,11 @@ pub fn literalize(raw: &str) -> String {
     out
 }
 
-/// Deterministic natural-language tokenization: a token is a maximal run
-/// of Unicode alphanumeric characters joined by `-`, `_`, `.`, or `/`.
-/// Whitespace and every other punctuation/symbol character separates
-/// tokens. Case is preserved.
+/// Deterministic natural-language tokenization.
+///
+/// A token is a maximal run of Unicode alphanumeric characters joined by
+/// `-`, `_`, `.`, or `/`. Whitespace and every other punctuation/symbol
+/// character separates tokens. Case is preserved.
 #[must_use]
 pub fn tokenize_nl(raw: &str) -> Vec<String> {
     fn joins(ch: char) -> bool {
@@ -229,8 +339,9 @@ pub fn tokenize_nl(raw: &str) -> Vec<String> {
     }
     let mut tokens: Vec<String> = Vec::new();
     let mut current = String::new();
-    for ch in raw.chars() {
-        if ch.is_alphanumeric() || joins(ch) {
+    let normalized = nfc(raw);
+    for ch in normalized.chars() {
+        if is_token_char(ch) || joins(ch) {
             current.push(ch);
         } else if !current.is_empty() {
             tokens.push(std::mem::take(&mut current));
@@ -256,19 +367,32 @@ pub fn plan_query(
 ) -> Result<QueryPlan, QueryPlanError> {
     let lexical_request = match policy {
         QueryInputPolicy::Native => raw.to_string(),
-        QueryInputPolicy::Literal => literalize(raw),
+        QueryInputPolicy::Literal => {
+            validate_indexable_text(raw)?;
+            literalize(raw)
+        }
         QueryInputPolicy::NaturalLanguage => {
             let mut distinct: Vec<String> = Vec::new();
             for token in tokenize_nl(raw) {
                 let chars = token.chars().count();
                 if chars > config.max_token_chars {
-                    return Err(QueryPlanError::TokenTooLong {
+                    return Err(QueryPlanError::TokenCharacterLimitExceeded {
                         chars,
                         max_token_chars: config.max_token_chars,
                     });
                 }
                 if chars < config.min_token_chars {
                     continue;
+                }
+                match query_tokens(&token, CaseMode::Folded) {
+                    Ok(_) => {}
+                    Err(TextQueryError::NoTokens) => continue,
+                    Err(TextQueryError::TokenTooLong { bytes, max }) => {
+                        return Err(QueryPlanError::IndexTokenTooLong {
+                            bytes,
+                            max_bytes: max,
+                        });
+                    }
                 }
                 if !distinct.iter().any(|seen| seen == &token) {
                     distinct.push(token);
@@ -290,6 +414,7 @@ pub fn plan_query(
                 .join(" OR ")
         }
     };
+    validate_lexical_request(&lexical_request)?;
     let effective_lexical_request_sha256 = sha256_hex(lexical_request.as_bytes());
     Ok(QueryPlan {
         policy,
@@ -304,10 +429,37 @@ pub fn plan_query(
     })
 }
 
+fn validate_indexable_text(raw: &str) -> Result<(), QueryPlanError> {
+    match query_tokens(raw, CaseMode::Folded) {
+        Ok(_) => Ok(()),
+        Err(TextQueryError::NoTokens) => Err(QueryPlanError::EmptyTokenPlan),
+        Err(TextQueryError::TokenTooLong { bytes, max }) => {
+            Err(QueryPlanError::IndexTokenTooLong {
+                bytes,
+                max_bytes: max,
+            })
+        }
+    }
+}
+
+fn validate_lexical_request(request: &str) -> Result<(), QueryPlanError> {
+    let tokens = tokenize_lq(request).map_err(|error| QueryPlanError::InvalidLexicalRequest {
+        parser_code: error.code.as_code_str().to_string(),
+        detail: error.to_string(),
+    })?;
+    let _parsed =
+        parse_lq(&tokens, request).map_err(|error| QueryPlanError::InvalidLexicalRequest {
+            parser_code: error.code.as_code_str().to_string(),
+            detail: error.to_string(),
+        })?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use quanta_index_lq_norm::tokenizer::{LqTokenKind, tokenize};
+    use sha2::{Digest, Sha256};
 
     fn phrase_round_trip(raw: &str) {
         let literal = literalize(raw);
@@ -315,10 +467,7 @@ mod tests {
         let kinds: Vec<LqTokenKind> = tokens.iter().map(|token| token.kind.clone()).collect();
         assert_eq!(
             kinds,
-            vec![
-                LqTokenKind::Phrase(raw.to_string()),
-                LqTokenKind::Eof
-            ],
+            vec![LqTokenKind::Phrase(raw.to_string()), LqTokenKind::Eof],
             "literal of {raw:?} must be exactly one phrase"
         );
     }
@@ -371,7 +520,8 @@ mod tests {
     #[test]
     fn natural_language_plan_is_deterministic_token_or() {
         let config = NlPlanConfig::default();
-        let raw = "Where does parse_and_expression handle ( AND ) tokens? See parse_and_expression!";
+        let raw =
+            "Where does parse_and_expression handle ( AND ) tokens? See parse_and_expression!";
         let plan = plan_query(QueryInputPolicy::NaturalLanguage, raw, &config)
             .expect("nonempty query plans");
         assert_eq!(
@@ -416,9 +566,102 @@ mod tests {
 
     #[test]
     fn natural_language_plan_refuses_empty_token_set() {
-        let err = plan_query(QueryInputPolicy::NaturalLanguage, "?? !!", &NlPlanConfig::default())
-            .expect_err("punctuation-only query has no tokens");
+        let err = plan_query(
+            QueryInputPolicy::NaturalLanguage,
+            "?? !!",
+            &NlPlanConfig::default(),
+        )
+        .expect_err("punctuation-only query has no tokens");
         assert_eq!(err, QueryPlanError::EmptyTokenPlan);
+    }
+
+    #[test]
+    fn natural_language_plan_drops_joiner_only_runs() {
+        let plan = plan_query(
+            QueryInputPolicy::NaturalLanguage,
+            "foo --- bar",
+            &NlPlanConfig::default(),
+        )
+        .expect("indexable terms remain");
+        assert_eq!(plan.lexical_request, "\"foo\" OR \"bar\"");
+
+        let err = plan_query(
+            QueryInputPolicy::NaturalLanguage,
+            "--- ... ///",
+            &NlPlanConfig::default(),
+        )
+        .expect_err("joiner-only query has no indexable token");
+        assert_eq!(err, QueryPlanError::EmptyTokenPlan);
+    }
+
+    #[test]
+    fn natural_language_plan_normalizes_nfc_before_identity_and_emission() {
+        let composed = plan_query(
+            QueryInputPolicy::NaturalLanguage,
+            "caf\u{e9}",
+            &NlPlanConfig::default(),
+        )
+        .expect("composed input plans");
+        let decomposed = plan_query(
+            QueryInputPolicy::NaturalLanguage,
+            "cafe\u{301}",
+            &NlPlanConfig::default(),
+        )
+        .expect("decomposed input plans");
+        assert_eq!(composed.lexical_request, "\"caf\u{e9}\"");
+        assert_eq!(decomposed.lexical_request, composed.lexical_request);
+        assert_eq!(
+            decomposed.effective_lexical_request_sha256,
+            composed.effective_lexical_request_sha256
+        );
+        assert_ne!(
+            decomposed.original_query_sha256,
+            composed.original_query_sha256
+        );
+    }
+
+    #[test]
+    fn natural_language_plan_enforces_index_term_byte_cap() {
+        let accepted = "\u{ac00}".repeat(85);
+        let _accepted = plan_query(
+            QueryInputPolicy::NaturalLanguage,
+            &accepted,
+            &NlPlanConfig::default(),
+        )
+        .expect("255-byte Hangul token is indexable");
+
+        let refused = "\u{ac00}".repeat(86);
+        let err = plan_query(
+            QueryInputPolicy::NaturalLanguage,
+            &refused,
+            &NlPlanConfig::default(),
+        )
+        .expect_err("258-byte Hangul token is not indexable");
+        assert_eq!(err.code(), "RBR_QUERY_TOKEN_TOO_LONG");
+    }
+
+    #[test]
+    fn literal_policy_refuses_unindexable_text() {
+        let err = plan_query(QueryInputPolicy::Literal, "---", &NlPlanConfig::default())
+            .expect_err("phrase without index terms must refuse before execution");
+        assert_eq!(err, QueryPlanError::EmptyTokenPlan);
+    }
+
+    #[test]
+    fn native_policy_enforces_exact_parser_input_byte_boundary() {
+        let accepted = format!("\"{}\"", "a".repeat(16_382));
+        assert_eq!(accepted.len(), 16 * 1024);
+        let _accepted_plan = plan_query(
+            QueryInputPolicy::Native,
+            &accepted,
+            &NlPlanConfig::default(),
+        )
+        .expect("exact 16 KiB phrase request is accepted");
+
+        let refused = format!("\"{}\"", "a".repeat(16_383));
+        let error = plan_query(QueryInputPolicy::Native, &refused, &NlPlanConfig::default())
+            .expect_err("request above 16 KiB is refused");
+        assert_eq!(error.code(), "RBR_QUERY_LEXICAL_INVALID");
     }
 
     #[test]
@@ -448,7 +691,7 @@ mod tests {
             .expect_err("single long token refuses");
         assert_eq!(
             err,
-            QueryPlanError::TokenTooLong {
+            QueryPlanError::TokenCharacterLimitExceeded {
                 chars: 9,
                 max_token_chars: 8
             }
@@ -480,12 +723,12 @@ mod tests {
     #[test]
     fn identity_digests_bind_original_policy_and_effective_requests() {
         let config = NlPlanConfig::default();
-        let native = plan_query(QueryInputPolicy::Native, "fix the bug", &config)
-            .expect("native plan");
-        let literal = plan_query(QueryInputPolicy::Literal, "fix the bug", &config)
-            .expect("literal plan");
-        let nl = plan_query(QueryInputPolicy::NaturalLanguage, "fix the bug", &config)
-            .expect("nl plan");
+        let native =
+            plan_query(QueryInputPolicy::Native, "fix the bug", &config).expect("native plan");
+        let literal =
+            plan_query(QueryInputPolicy::Literal, "fix the bug", &config).expect("literal plan");
+        let nl =
+            plan_query(QueryInputPolicy::NaturalLanguage, "fix the bug", &config).expect("nl plan");
 
         // Same original text: original and semantic digests match.
         assert_eq!(native.original_query_sha256, literal.original_query_sha256);
@@ -511,7 +754,9 @@ mod tests {
         );
         assert_eq!(
             nl.policy_config_sha256,
-            sha256_hex(policy_config_canonical(QueryInputPolicy::NaturalLanguage, &config).as_bytes())
+            sha256_hex(
+                policy_config_canonical(QueryInputPolicy::NaturalLanguage, &config).as_bytes()
+            )
         );
         assert!(!nl.planning_cost_in_latency);
     }
@@ -532,5 +777,51 @@ mod tests {
             policy_config_canonical(QueryInputPolicy::Native, &base),
             "{\"policy\":\"native\"}"
         );
+    }
+
+    #[test]
+    fn execution_profile_has_stable_capture_scoped_identity() {
+        let config = NlPlanConfig::default();
+        let profile = execution_profile_value(QueryInputPolicy::NaturalLanguage, &config);
+        assert_eq!(
+            profile.get("profile_id"),
+            Some(&serde_json::json!("quanta-natural-language-ucd17-v2"))
+        );
+        assert_eq!(
+            profile.pointer("/config/max_tokens"),
+            Some(&serde_json::json!(32))
+        );
+        assert_eq!(
+            sha256_hex(
+                crate::canonical::canonical_json(&profile)
+                    .expect("canonical profile")
+                    .as_bytes()
+            ),
+            execution_profile_sha256(QueryInputPolicy::NaturalLanguage, &config)
+        );
+    }
+
+    #[test]
+    fn unicode_scalar_token_property_matches_pinned_ucd17_oracle() {
+        let mut digest = Sha256::new();
+        let mut count = 0_u32;
+        for scalar in 0_u32..=0x10_FFFF {
+            let included = char::from_u32(scalar).is_some_and(is_token_char);
+            digest.update([u8::from(included)]);
+            count += u32::from(included);
+        }
+        assert_eq!(count, 150_270);
+        assert_eq!(
+            format!("{:x}", digest.finalize()),
+            "e711b4f9486890857e77db0d581642531caa7b41d4350a5911b84ea4ea862b24"
+        );
+        for (input, expected) in [
+            ("cafe\u{301}", "caf\u{e9}"),
+            ("A\u{30a}", "\u{c5}"),
+            ("\u{1100}\u{1161}", "\u{ac00}"),
+            ("\u{212b}", "\u{c5}"),
+        ] {
+            assert_eq!(nfc(input), expected);
+        }
     }
 }

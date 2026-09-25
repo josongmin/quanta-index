@@ -4565,6 +4565,7 @@ dependencies = [
  "quanta-index-embed",
  "quanta-index-ipc",
  "quanta-index-lq-norm",
+ "quanta-index-lq-text-normalizer",
  "quanta-index-sdk",
  "quanta-index-search-plane",
  "serde",

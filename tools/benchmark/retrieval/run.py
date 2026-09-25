@@ -35,9 +35,11 @@ from pathlib import Path
 
 try:
     from tools.benchmark.retrieval import linux_isolation, linux_process, portable_proof
+    from tools.benchmark.retrieval import query_plan as qp
     from tools.benchmark.retrieval.contract_proof import nextest_summary, pytest_summary
     from tools.benchmark.retrieval.evaluator import (
         CHUNK_STRATEGIES,
+        RUNNER_SCHEMA_VERSION,
         TOKENIZER_BUDGET_VERSION,
         canonical,
         digest,
@@ -57,9 +59,11 @@ except ImportError:  # direct script invocation: import the sibling module
     import linux_isolation  # noqa: E402
     import linux_process  # noqa: E402
     import portable_proof  # noqa: E402
+    import query_plan as qp  # noqa: E402
     from contract_proof import nextest_summary, pytest_summary  # noqa: E402
     from evaluator import (  # noqa: E402
         CHUNK_STRATEGIES,
+        RUNNER_SCHEMA_VERSION,
         TOKENIZER_BUDGET_VERSION,
         canonical,
         digest,
@@ -76,16 +80,172 @@ except ImportError:  # direct script invocation: import the sibling module
     from sdk_proof import build_summary_from_evidence  # noqa: E402
 
 VERDICT_VERSION = 2
-MANIFEST_VERSION = 1
+MANIFEST_VERSION = 2
 PILOT_OBSERVATIONS_FLOOR = 1000
 FRESH_ROOTS_FLOOR = 5
 FROZEN_TASKS_FLOOR = 20
 RUNNABLE_STRATEGIES = tuple(s for s in CHUNK_STRATEGIES if s != "semble_native")
 SEMBLE_PINNED_VERSION = "0.6.0"
+SEMBLE_PROFILES = (
+    "native-default",
+    "hybrid-no-rerank",
+    "lexical-only",
+    "semantic-only",
+)
+
+
+def _validate_semble_profile(value: object, where: str) -> dict:
+    if not isinstance(value, dict) or set(value) != {"profile_id", "mode", "alpha", "rerank"}:
+        raise RunError(f"{where} fields are invalid")
+    mode = value["mode"]
+    fixed = {
+        "native-default": ("semble-native-default-v1", None, "upstream-content-default"),
+        "lexical-only": ("semble-lexical-only-v1", None, "not_applicable"),
+        "semantic-only": ("semble-semantic-only-v1", None, "not_applicable"),
+    }
+    if mode == "hybrid-no-rerank":
+        alpha = value["alpha"]
+        if value["profile_id"] != "semble-hybrid-no-rerank-v1" or value["rerank"] is not False or type(alpha) not in (int, float) or isinstance(alpha, bool) or not math.isfinite(alpha) or not 0 <= alpha <= 1:
+            raise RunError(f"{where} hybrid profile is invalid")
+    elif mode in fixed:
+        profile_id, alpha, rerank = fixed[mode]
+        if value != {"profile_id": profile_id, "mode": mode, "alpha": alpha, "rerank": rerank}:
+            raise RunError(f"{where} differs from the frozen profile")
+    else:
+        raise RunError(f"{where}.mode is unknown")
+    return value
+
+
+def _validate_model_cache_manifest(value: object, where: str) -> dict:
+    manifest = _exact_keys(
+        value,
+        {
+            "schema_version",
+            "model_id",
+            "revision",
+            "ref",
+            "members",
+            "model_asset_digest",
+            "snapshot_digest",
+        },
+        where,
+    )
+    if manifest["schema_version"] != 1:
+        raise RunError(f"{where}.schema_version must be 1")
+    if not isinstance(manifest["model_id"], str) or not manifest["model_id"]:
+        raise RunError(f"{where}.model_id is invalid")
+    if not _is_hex(manifest["model_asset_digest"], 64):
+        raise RunError(f"{where}.model_asset_digest is invalid")
+    if not _is_hex(manifest["revision"], 40):
+        raise RunError(f"{where}.revision is invalid")
+    if manifest["ref"] != {"name": "main", "revision": manifest["revision"]}:
+        raise RunError(f"{where}.ref does not bind the pinned revision")
+    members = manifest["members"]
+    if not isinstance(members, list) or not members:
+        raise RunError(f"{where}.members must be nonempty")
+    paths = []
+    for index, member in enumerate(members):
+        row = _exact_keys(member, {"path", "sha256", "size"}, f"{where}.members[{index}]")
+        path = row["path"]
+        if (
+            not isinstance(path, str)
+            or not path
+            or Path(path).is_absolute()
+            or ".." in Path(path).parts
+            or not _is_hex(row["sha256"], 64)
+            or type(row["size"]) is not int
+            or row["size"] < 0
+        ):
+            raise RunError(f"{where}.members[{index}] is invalid")
+        paths.append(path)
+    if paths != sorted(set(paths)):
+        raise RunError(f"{where}.members are not sorted and unique")
+    core = {
+        key: manifest[key]
+        for key in (
+            "schema_version",
+            "model_id",
+            "revision",
+            "ref",
+            "members",
+            "model_asset_digest",
+        )
+    }
+    if manifest["snapshot_digest"] != digest(canonical_bytes(core)):
+        raise RunError(f"{where}.snapshot_digest mismatch")
+    return manifest
 SANDBOX_EXEC = Path("/usr/bin/sandbox-exec")
 MACOS_ISOLATION_BACKEND = "macos-seatbelt-v1"
 LINUX_ISOLATION_BACKEND = linux_isolation.BACKEND
-ISOLATION_PROOF_VERSION = 2
+ISOLATION_PROOF_VERSION = 3
+
+RUNNER_BUNDLE_MEMBERS = (
+    "semble.py",
+    "retrieval_contract.py",
+    "linux_isolation.py",
+)
+
+
+def build_runner_bundle(destination: Path) -> dict:
+    """Build a deterministic stdlib zipapp from the frozen source list."""
+    source_root = Path(__file__).resolve().parent
+    members: dict[str, bytes] = {
+        name: (source_root / name).read_bytes() for name in RUNNER_BUNDLE_MEMBERS
+    }
+    members["__main__.py"] = (
+        b"from semble import main\n"
+        b"raise SystemExit(main())\n"
+    )
+    manifest = {
+        "schema_version": 1,
+        "entrypoint": "semble:main",
+        "members": [
+            {"path": name, "sha256": digest(data), "size": len(data)}
+            for name, data in sorted(members.items())
+        ],
+    }
+    members["bundle-manifest.json"] = canonical_bytes(manifest) + b"\n"
+    with zipfile.ZipFile(destination, "x", compression=zipfile.ZIP_STORED) as archive:
+        for name, data in sorted(members.items()):
+            info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+            info.create_system = 3
+            info.external_attr = 0o100644 << 16
+            archive.writestr(info, data)
+    return {
+        "path": destination.name,
+        "sha256": sha_file(destination),
+        "manifest_sha256": digest(members["bundle-manifest.json"]),
+        "manifest": manifest,
+    }
+
+
+def validate_runner_bundle(path: Path, expected: dict) -> None:
+    if sha_file(path) != expected.get("sha256"):
+        raise RunError("runner bundle digest mismatch")
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = archive.namelist()
+            if names != sorted(names) or len(names) != len(set(names)):
+                raise RunError("runner bundle members are unordered or duplicated")
+            observed = {name: archive.read(name) for name in names}
+    except (OSError, zipfile.BadZipFile, KeyError) as exc:
+        raise RunError(f"runner bundle is unreadable: {exc}") from exc
+    manifest_bytes = observed.pop("bundle-manifest.json", None)
+    if manifest_bytes is None or digest(manifest_bytes) != expected.get("manifest_sha256"):
+        raise RunError("runner bundle manifest digest mismatch")
+    if set(observed) != {"__main__.py", *RUNNER_BUNDLE_MEMBERS}:
+        raise RunError("runner bundle member set differs from frozen source")
+    manifest = expected.get("manifest")
+    if not isinstance(manifest, dict):
+        raise RunError("runner bundle manifest is malformed")
+    rows = {row["path"]: row for row in manifest.get("members", []) if isinstance(row, dict)}
+    if set(rows) != set(observed):
+        raise RunError("runner bundle member manifest is incomplete")
+    for name, data in observed.items():
+        if rows[name] != {"path": name, "sha256": digest(data), "size": len(data)}:
+            raise RunError("runner bundle member bytes differ from manifest")
+        if name in RUNNER_BUNDLE_MEMBERS and data != (Path(__file__).resolve().parent / name).read_bytes():
+            raise RunError("runner bundle member differs from frozen source")
 
 
 class RunError(ValueError):
@@ -395,6 +555,7 @@ def _linux_owned_resource(
     timeout_secs: int,
     subject_path: Path | None,
     env: dict[str, str] | None,
+    cwd: str | None,
     sample_interval_ms: int,
     isolation: dict | None,
     attestation_pipe: tuple[int, int, str] | None,
@@ -423,6 +584,7 @@ def _linux_owned_resource(
             timeout_secs=timeout_secs,
             sample_interval_ms=sample_interval_ms,
             env=env,
+            cwd=cwd,
             stdout_path=str(stdout_path),
             stderr_path=str(stderr_path),
             qualified=qualified,
@@ -508,6 +670,7 @@ def run_monitored_process(
     timeout_secs: int,
     subject_path: Path | None = None,
     env: dict[str, str] | None = None,
+    cwd: str | None = None,
     sample_interval_ms: int = 50,
     isolation: dict | None = None,
     capture_scope: str = "exploratory",
@@ -573,6 +736,7 @@ def run_monitored_process(
             timeout_secs=timeout_secs,
             subject_path=subject_path,
             env=env,
+            cwd=cwd,
             sample_interval_ms=sample_interval_ms,
             isolation=isolation,
             attestation_pipe=attestation_pipe,
@@ -600,6 +764,7 @@ def run_monitored_process(
                 stderr=stderr,
                 text=True,
                 env=env,
+                cwd=cwd,
                 start_new_session=True,
                 pass_fds=(attestation_pipe[1],) if attestation_pipe else (),
             )
@@ -700,17 +865,22 @@ def write_process_failure(
     resource_path: Path,
     stderr_path: Path,
     record_path: Path,
+    refusal_path: Path | None = None,
 ) -> Path:
     """Freeze a typed non-scoreable process failure for forensic review."""
     failure_path = run_dir / "failure.json"
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
+        "phase": "query_plan" if refusal_path is not None and refusal_path.is_file() else "process",
         "system": system,
         "strategy": strategy,
         "failure_type": failure_type,
         "resource_sha256": sha_file(resource_path),
         "stderr_sha256": sha_file(stderr_path),
         "record_emitted": record_path.is_file(),
+        "query_plan_refusal_sha256": (
+            sha_file(refusal_path) if refusal_path is not None and refusal_path.is_file() else None
+        ),
     }
     with failure_path.open("x", encoding="utf-8") as handle:
         handle.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
@@ -783,6 +953,7 @@ def _seatbelt_profile(
         '(import "system.sb")',
         "(allow process*)",
         "(allow signal (target self))",
+        "(allow signal (target children))",
         "(allow sysctl-read)",
         "(allow mach-lookup)",
         "(allow ipc-posix-shm)",
@@ -796,6 +967,11 @@ def _seatbelt_profile(
         quoted = json.dumps(root)
         rules.append(f"(allow file-write* (literal {quoted}))")
         rules.append(f"(allow file-write* (subpath {quoted}))")
+        # Unix-domain listener creation and client connects are governed by
+        # Seatbelt's network operations as well as filesystem writes. Keep
+        # that authority path-scoped to the same capture output roots.
+        rules.append(f"(allow network-bind (prefix {quoted}))")
+        rules.append(f"(allow network-outbound (prefix {quoted}))")
     for root in denied:
         quoted = json.dumps(root)
         rules.append(f"(deny file-read* (literal {quoted}))")
@@ -1108,16 +1284,16 @@ def prepare_isolation(spec: dict, stage: Path, original_suite: Path) -> dict:
             "suite_secret_root also contains runner-readable inputs: " + ", ".join(conflicts)
         )
     evaluator_root = (stage / "evaluator-only").resolve()
-    runner_tools = (stage / "runner-tools").resolve()
-    runner_tools.mkdir()
-    for name in ("semble.py", "evaluator.py"):
-        shutil.copyfile(Path(__file__).resolve().parent / name, runner_tools / name)
+    runner_bundle = (stage / "runner-tools.pyz").resolve()
+    bundle_proof = build_runner_bundle(runner_bundle)
     suite_path = Path(spec["suite"]).resolve()
     pack_path = Path(spec["query_pack"]).resolve()
     if not _path_within(suite_path, evaluator_root):
         raise RunError("frozen suite must be under the evaluator-only stage root")
     denied_roots = sorted({str(secret_root), str(evaluator_root), str(source_repo)})
-    semble_env_root = Path(spec["semble_python"]).resolve().parent.parent
+    semble_python = Path(spec["semble_python"]).absolute()
+    semble_env_root = semble_python.parent.parent
+    semble_interpreter_root = semble_python.resolve().parent.parent
     extra_read_roots = [
         str(repo),
         str(Path(spec["manifest"]).resolve()),
@@ -1126,6 +1302,7 @@ def prepare_isolation(spec: dict, stage: Path, original_suite: Path) -> dict:
         str(Path(spec["searchd_binary"]).resolve()),
         str(Path(spec["semble_lockfile"]).resolve()),
         str(semble_env_root),
+        str(semble_interpreter_root),
         str(Path(sys.executable).resolve().parent.parent),
         str(Path(spec.get("semble_cache_root", stage / "semble-cache")).resolve()),
         str(stage.resolve()),
@@ -1149,7 +1326,9 @@ def prepare_isolation(spec: dict, stage: Path, original_suite: Path) -> dict:
         isolation = {"backend": backend, "profile": profile}
     else:
         backend = LINUX_ISOLATION_BACKEND
-        module = runner_tools / "linux_isolation.py"
+        platform_dir = (stage / "platform-tools").resolve()
+        platform_dir.mkdir()
+        module = platform_dir / "linux_isolation.py"
         shutil.copyfile(Path(linux_isolation.__file__), module)
         policy = _linux_policy(spec, stage, denied_roots)
         allowed_read_roots = policy["readonly"]
@@ -1211,13 +1390,19 @@ def prepare_isolation(spec: dict, stage: Path, original_suite: Path) -> dict:
             "proof_sha256": materialized["proof_sha256"],
             "file_count": len(materialized["files"]),
         },
-        "runner_tools": [
-            {
-                "path": (runner_tools / name).relative_to(stage.resolve()).as_posix(),
-                "sha256": sha_file(runner_tools / name),
-            }
-            for name in ("evaluator.py", "semble.py")
-        ],
+        "runner_bundle": {
+            **bundle_proof,
+            "path": runner_bundle.relative_to(stage.resolve()).as_posix(),
+        },
+        "platform_helpers": (
+            [{
+                "path": module.relative_to(stage.resolve()).as_posix(),
+                "sha256": sha_file(module),
+                "source": "linux_isolation.py",
+            }]
+            if system == "Linux"
+            else []
+        ),
         "probes": probes,
     }
     proof_path = stage / "isolation-proof.json"
@@ -1232,7 +1417,7 @@ def prepare_isolation(spec: dict, stage: Path, original_suite: Path) -> dict:
         "policy_sha256": policy_sha256,
         "proof_sha256": proof_sha256,
     }
-    updated["_semble_adapter"] = str(runner_tools / "semble.py")
+    updated["_semble_adapter"] = str(runner_bundle)
     return updated
 
 
@@ -1304,6 +1489,13 @@ def sandbox_command(spec: dict, command: list[str]) -> tuple[list[str], dict | N
     if backend == LINUX_ISOLATION_BACKEND:
         evidence["_child_check"] = {"pack_sha256": isolation["pack_sha256"]}
     return wrapped, evidence
+
+
+def capture_process_env(temp_root: Path) -> dict[str, str]:
+    """Pin all conventional temporary directories inside capture authority."""
+    temp_root.mkdir(mode=0o700, parents=True, exist_ok=False)
+    value = str(temp_root.resolve())
+    return {**os.environ, "TMPDIR": value, "TMP": value, "TEMP": value}
 
 
 def tree_size(root: Path) -> int:
@@ -1730,24 +1922,11 @@ def merge_records(
             raise RunError(
                 f"merged records disagree on the comparison contract: {differing}; refusing merge"
             )
-    merged_policy = None
-    policies = [run["runner"].get("query_input_policy") for run in validated_runs]
-    if any(policy is None for policy in policies):
-        if any(policy is not None for policy in policies):
-            raise RunError(
-                "cannot merge legacy policy-less records with query-identity records; "
-                "re-capture the legacy side under an explicit policy"
-            )
-        merged_schema_version = 3
-    else:
-        reference = policies[0]
-        for policy in policies[1:]:
-            if policy != reference:
-                raise RunError(
-                    "merged records disagree on the query input policy; refusing merge"
-                )
-        merged_policy = reference
-        merged_schema_version = 4
+    versions = {run.get("schema_version") for run in validated_runs}
+    if versions != {RUNNER_SCHEMA_VERSION}:
+        raise RunError(
+            "current merge requires only runner v5 records; historical v3/v4 records are inspection-only"
+        )
     merged_blinding = (
         "isolated"
         if all(r["runner"].get("blinding") == "isolated" for r in runners)
@@ -1765,7 +1944,7 @@ def merge_records(
     content_digests = sorted(digest(canonical_bytes(read_json(path))) for path in record_paths)
     merge_id = digest(canonical_bytes(content_digests))[:16]
     combined = {
-        "schema_version": merged_schema_version,
+        "schema_version": RUNNER_SCHEMA_VERSION,
         "query_pack_sha256": digest(canonical_bytes(pack)),
         "comparison_contract": first,
         "runner": {
@@ -1778,7 +1957,6 @@ def merge_records(
             "blinding": merged_blinding,
             "isolation_method": "merge of independently blinded records (weakest blinding wins)",
             "access_block_log": json.dumps(runners, sort_keys=True),
-            **({"query_input_policy": merged_policy} if merged_policy is not None else {}),
         },
         "captures": captures,
         "route_provenance": provenance,
@@ -2001,10 +2179,12 @@ def cmd_host_profile(args: argparse.Namespace) -> int:
 
 
 SPEC_REQUIRED = (
+    "spec_version",
     "repo",
     "manifest",
     "suite",
     "query_pack",
+    "execution_profiles",
     "top_k",
     "output_root",
     "runner_binary",
@@ -2353,6 +2533,18 @@ def load_spec(path: Path) -> dict:
     ):
         if not isinstance(spec[key], str) or not spec[key]:
             raise RunError(f"spec.{key} must be a nonempty string")
+    if spec["spec_version"] != 2:
+        raise RunError("spec.spec_version must be 2")
+    profiles = spec["execution_profiles"]
+    if not isinstance(profiles, dict) or set(profiles) not in ({"quanta"}, {"quanta", "semble"}):
+        raise RunError("spec.execution_profiles must contain quanta and optional semble")
+    quanta_profile = profiles["quanta"]
+    if not isinstance(quanta_profile, dict) or quanta_profile.get("policy") not in qp.SUPPORTED_POLICIES:
+        raise RunError("spec.execution_profiles.quanta is invalid")
+    if quanta_profile != qp.execution_profile(quanta_profile["policy"]):
+        raise RunError("spec.execution_profiles.quanta differs from the frozen profile")
+    if "semble" in profiles:
+        _validate_semble_profile(profiles["semble"], "spec.execution_profiles.semble")
     _spec_int(spec, "top_k", 1)
     if not _is_hex(spec["searchd_expected_sha256"], 64):
         raise RunError("spec.searchd_expected_sha256 must be a lowercase sha256")
@@ -2592,7 +2784,7 @@ def _diagnostic_count(value: object, where: str) -> dict:
     return count
 
 
-def _validate_diagnostic_response(
+def _validate_diagnostic_response_v2(
     response: object, error_code: object, key: tuple[str, str]
 ) -> None:
     """Validate one preserved SDK response detail (RBR-01).
@@ -2683,6 +2875,152 @@ def _validate_diagnostic_response(
             raise RunError(f"{where}.lane_traces entry.profile is invalid")
 
 
+def _typed_count(value: object, where: str) -> tuple[str, int]:
+    count = _exact_keys(value, {"kind", "value"}, where)
+    if count["kind"] not in ("exact", "at_least") or type(count["value"]) is not int or count["value"] < 0:
+        raise RunError(f"{where} is invalid")
+    return count["kind"], count["value"]
+
+
+def _typed_window(value: object, where: str) -> tuple[int, bool, dict[str, bool]]:
+    if not isinstance(value, dict):
+        raise RunError(f"{where} is malformed")
+    required = {"returned", "candidate_count", "outcome", "coverage"}
+    if set(value) not in (required, required | {"empty_provenance"}):
+        raise RunError(f"{where} fields are invalid")
+    returned = value["returned"]
+    if type(returned) is not int or returned < 0:
+        raise RunError(f"{where}.returned is invalid")
+    count_kind, count_value = _typed_count(value["candidate_count"], f"{where}.candidate_count")
+    if count_value < returned:
+        raise RunError(f"{where} candidate count is below returned")
+    outcome = value["outcome"]
+    if not isinstance(outcome, dict) or not isinstance(outcome.get("kind"), str):
+        raise RunError(f"{where}.outcome is malformed")
+    outcome_kind = outcome["kind"]
+    expected_outcome_fields = {
+        "exact_exhausted": {"kind"},
+        "lower_bound": {"kind", "continuation"},
+        "capped_unknown": {"kind", "cap"},
+        "interrupted_partial": {"kind", "reason"},
+        "approximate": {"kind", "method", "quality_contract"},
+    }
+    if outcome_kind not in expected_outcome_fields or set(outcome) != expected_outcome_fields[outcome_kind]:
+        raise RunError(f"{where}.outcome fields are invalid")
+    coverage = _exact_keys(
+        value["coverage"],
+        {"examined", "lanes"} | ({"exhaustion_proof"} if isinstance(value["coverage"], dict) and "exhaustion_proof" in value["coverage"] else set()),
+        f"{where}.coverage",
+    )
+    examined = coverage["examined"]
+    if not isinstance(examined, dict) or examined.get("kind") not in ("exact", "at_least", "unknown"):
+        raise RunError(f"{where}.coverage.examined is invalid")
+    if examined["kind"] == "unknown":
+        if set(examined) != {"kind"}:
+            raise RunError(f"{where}.coverage.examined fields are invalid")
+    elif set(examined) != {"kind", "value"} or type(examined["value"]) is not int or examined["value"] < 0:
+        raise RunError(f"{where}.coverage.examined fields are invalid")
+    proof = coverage.get("exhaustion_proof")
+    if outcome_kind == "exact_exhausted":
+        if count_kind != "exact" or count_value != returned or not isinstance(proof, dict):
+            raise RunError(f"{where} exact exhaustion evidence is invalid")
+        proof_kind = proof.get("kind")
+        proof_field = {"probe_exhausted": "fetched", "exact_count": "total", "universe_scanned": "scanned"}.get(proof_kind)
+        if proof_field is None or set(proof) != {"kind", proof_field} or proof[proof_field] != returned:
+            raise RunError(f"{where}.coverage.exhaustion_proof is invalid")
+    elif proof is not None:
+        raise RunError(f"{where} non-exhausted outcome carries an exhaustion proof")
+    if outcome_kind == "lower_bound":
+        if type(outcome["continuation"]) is not bool or (outcome["continuation"] and count_value <= returned):
+            raise RunError(f"{where} lower-bound outcome is invalid")
+    elif outcome_kind == "capped_unknown":
+        if type(outcome["cap"]) is not int or outcome["cap"] <= 0:
+            raise RunError(f"{where} capped outcome is invalid")
+    elif outcome_kind == "interrupted_partial":
+        if outcome["reason"] not in ("deadline", "cancelled", "examined_budget"):
+            raise RunError(f"{where} interrupted outcome is invalid")
+    elif outcome_kind == "approximate":
+        quality = outcome["quality_contract"]
+        if outcome["method"] not in ("ann_search", "filtered_refill") or not isinstance(quality, dict) or set(quality) != {"examined_lower_bound"} or type(quality["examined_lower_bound"]) is not int or quality["examined_lower_bound"] < 0:
+            raise RunError(f"{where} approximate outcome is invalid")
+    empty = value.get("empty_provenance")
+    if (returned == 0) != (empty in ("available_empty", "filtered_empty", "zero_hit_executed")):
+        raise RunError(f"{where}.empty_provenance contradicts returned")
+    lanes = coverage["lanes"]
+    if not isinstance(lanes, list):
+        raise RunError(f"{where}.coverage.lanes is malformed")
+    lane_execution: dict[str, bool] = {}
+    for lane in lanes:
+        if not isinstance(lane, dict) or set(lane) - {"lane", "executed", "contributed", "filtered_out", "candidates", "cost", "profile"} or not {"lane", "executed", "contributed", "filtered_out", "candidates"}.issubset(lane):
+            raise RunError(f"{where}.coverage lane fields are invalid")
+        name = lane["lane"]
+        if not isinstance(name, str) or not name or name in lane_execution or type(lane["executed"]) is not bool or type(lane["contributed"]) is not bool or lane["contributed"] and not lane["executed"]:
+            raise RunError(f"{where}.coverage lane is invalid")
+        if type(lane["filtered_out"]) is not int or lane["filtered_out"] < 0:
+            raise RunError(f"{where}.coverage lane filtered_out is invalid")
+        _typed_count(lane["candidates"], f"{where}.coverage lane candidates")
+        if "cost" in lane and (type(lane["cost"]) is not int or lane["cost"] < 0):
+            raise RunError(f"{where}.coverage lane cost is invalid")
+        if "profile" in lane and (not isinstance(lane["profile"], str) or not lane["profile"]):
+            raise RunError(f"{where}.coverage lane profile is invalid")
+        lane_execution[name] = lane["executed"]
+    exhausted = outcome_kind == "exact_exhausted"
+    return returned, exhausted, lane_execution
+
+
+def _validate_explanation(value: object, where: str) -> None:
+    if value is None:
+        return
+    detail = _exact_keys(value, {"request_id", "early_stop_reason", "engines_executed", "engines_touched", "strategy"}, where)
+    if detail["request_id"] is not None and (type(detail["request_id"]) is not int or detail["request_id"] < 0):
+        raise RunError(f"{where}.request_id is invalid")
+    if detail["early_stop_reason"] is not None and not isinstance(detail["early_stop_reason"], str):
+        raise RunError(f"{where}.early_stop_reason is invalid")
+    for field in ("engines_executed", "engines_touched"):
+        engines = detail[field]
+        if engines is not None and (not isinstance(engines, list) or any(not isinstance(item, str) or not item for item in engines) or len(engines) != len(set(engines))):
+            raise RunError(f"{where}.{field} is invalid")
+    if detail["strategy"] is not None and not isinstance(detail["strategy"], str):
+        raise RunError(f"{where}.strategy is invalid")
+
+
+def _validate_diagnostic_response_v3(row: dict, key: tuple[str, str]) -> dict[str, bool]:
+    where = f"retrieval diagnostic response for {key}"
+    kind = row["response_kind"]
+    response = row["response"]
+    if kind == "sdk_failure":
+        if response is not None or row["error_code"] is None:
+            raise RunError(f"{where} SDK failure shape is invalid")
+        return {}
+    if not isinstance(response, dict):
+        raise RunError(f"{where} is malformed")
+    if kind == "returned_window":
+        detail = _exact_keys(response, {"window", "explanation"}, where)
+        returned, exhausted, lanes = _typed_window(detail["window"], f"{where}.window")
+        _validate_explanation(detail["explanation"], f"{where}.explanation")
+        if returned != len(row["candidates"]):
+            raise RunError(f"{where} returned count differs from candidates")
+        expected_status = "abstained" if returned == 0 and exhausted else "error" if returned == 0 else "success" if exhausted else "capped"
+        expected_error = "empty_non_exhausted_window" if expected_status == "error" else None
+        if row["status"] != expected_status or row["error_code"] != expected_error:
+            raise RunError(f"{where} status contradicts typed window")
+        return lanes
+    if kind == "rejected_response":
+        detail = _exact_keys(response, {"window", "explanation", "observed_hit_count", "expected_generation", "observed_generation"}, where)
+        returned, _exhausted, lanes = _typed_window(detail["window"], f"{where}.window")
+        _validate_explanation(detail["explanation"], f"{where}.explanation")
+        if detail["observed_hit_count"] != returned or row["candidates"] or row["status"] != "error" or row["error_code"] != "stale_generation":
+            raise RunError(f"{where} rejected response fields are invalid")
+        for field in ("expected_generation", "observed_generation"):
+            pin = _exact_keys(detail[field], {"repo_id", "revision_id", "manifest_generation"}, f"{where}.{field}")
+            if not isinstance(pin["repo_id"], str) or not isinstance(pin["revision_id"], str) or type(pin["manifest_generation"]) is not int or pin["manifest_generation"] <= 0:
+                raise RunError(f"{where}.{field} is invalid")
+        if detail["expected_generation"] == detail["observed_generation"]:
+            raise RunError(f"{where} rejected generation pins are equal")
+        return lanes
+    raise RunError(f"{where} response_kind is invalid")
+
+
 def validate_retrieval_diagnostic(
     payload: object, record: object, record_sha256: str, pack: object
 ) -> dict:
@@ -2711,7 +3049,7 @@ def validate_retrieval_diagnostic(
     if not isinstance(contract, dict) or not _is_hex(record_sha256, 64):
         raise RunError("retrieval diagnostic requires a valid record contract and digest")
     if (
-        diagnostic["schema_version"] != 2
+        diagnostic["schema_version"] not in (2, 3)
         or diagnostic["kind"] != "quanta_returned_window_diagnostic"
         or diagnostic["scope"] != "returned_window_only"
         or diagnostic["record_sha256"] != record_sha256
@@ -2776,17 +3114,20 @@ def validate_retrieval_diagnostic(
         raise RunError("retrieval diagnostic record results are incomplete")
     seen = set()
     for row in diagnostic["results"]:
+        row_fields = {
+            "task_id",
+            "query_sha256",
+            "route",
+            "status",
+            "error_code",
+            "candidates",
+            "response",
+        }
+        if diagnostic["schema_version"] == 3:
+            row_fields.add("response_kind")
         row = _exact_keys(
             row,
-            {
-                "task_id",
-                "query_sha256",
-                "route",
-                "status",
-                "error_code",
-                "candidates",
-                "response",
-            },
+            row_fields,
             "retrieval diagnostic result",
         )
         if not isinstance(row["task_id"], str) or not isinstance(row["route"], str):
@@ -2810,7 +3151,11 @@ def validate_retrieval_diagnostic(
             )
         ):
             raise RunError("retrieval diagnostic differs from runner record")
-        _validate_diagnostic_response(row["response"], row["error_code"], key)
+        if diagnostic["schema_version"] == 2:
+            _validate_diagnostic_response_v2(row["response"], row["error_code"], key)
+            lane_execution: dict[str, bool] = {}
+        else:
+            lane_execution = _validate_diagnostic_response_v3(row, key)
         for position, (candidate, scored) in enumerate(
             zip(row["candidates"], reference["candidates"]), 1
         ):
@@ -2863,6 +3208,11 @@ def validate_retrieval_diagnostic(
                     or not math.isfinite(lane["raw_score"])
                 ):
                     raise RunError("retrieval diagnostic lane is invalid")
+                if diagnostic["schema_version"] == 3 and not (
+                    lane_execution.get(lane["lane"], False)
+                    or lane_execution.get(f"hybrid.{lane['lane']}", False)
+                ):
+                    raise RunError("retrieval diagnostic contribution names a lane that did not execute")
                 seen_lanes.add(lane["lane"])
             if len(lanes) == 2 and [lane["lane"] for lane in lanes] != ["lexical", "dense"]:
                 raise RunError("retrieval diagnostic lane order is invalid")
@@ -2938,6 +3288,7 @@ def run_quanta_strategy(
     phase_path = (run_dir / "phase-metrics.json").resolve()
     diagnostic_path = (run_dir / "retrieval-diagnostic.json").resolve()
     resource_path = (run_dir / "resource-metrics.json").resolve()
+    refusal_path = (run_dir / "query-plan-refusal.json").resolve()
     command = [
         spec["runner_binary"],
         "run",
@@ -2947,6 +3298,8 @@ def run_quanta_strategy(
         spec["manifest"],
         "--query-pack",
         str(pack_path),
+        "--query-input-policy",
+        spec["execution_profiles"]["quanta"]["policy"],
         "--strategy",
         name,
         "--routes",
@@ -2982,6 +3335,8 @@ def run_quanta_strategy(
         str(phase_path),
         "--diagnostics-out",
         str(diagnostic_path),
+        "--refusal-out",
+        str(refusal_path),
         "--out",
         str(record_path),
     ]
@@ -3004,6 +3359,7 @@ def run_quanta_strategy(
         if key in strategy:
             command += [flag, str(strategy[key])]
     command, isolation = sandbox_command(spec, command)
+    process_env = capture_process_env(run_dir / "process-tmp")
     resource = run_monitored_process(
         command,
         stdout_path=run_dir / "runner.stdout.log",
@@ -3011,6 +3367,8 @@ def run_quanta_strategy(
         resource_path=resource_path,
         timeout_secs=_int(spec.get("timeout_secs", 1800), "spec.timeout_secs"),
         subject_path=record_path,
+        env=process_env,
+        cwd=process_env["TMPDIR"],
         isolation=isolation,
         capture_scope=spec.get("scope", "exploratory"),
         linux_cgroup_parent=spec.get("linux_cgroup_parent"),
@@ -3025,6 +3383,7 @@ def run_quanta_strategy(
             resource_path=resource_path,
             stderr_path=run_dir / "runner.stderr.log",
             record_path=record_path,
+            refusal_path=refusal_path,
         )
         raise RunError(f"Rust runner timed out for {name}")
     if resource["exit_code"] != 0:
@@ -3036,6 +3395,7 @@ def run_quanta_strategy(
             resource_path=resource_path,
             stderr_path=run_dir / "runner.stderr.log",
             record_path=record_path,
+            refusal_path=refusal_path,
         )
         stderr_tail = (run_dir / "runner.stderr.log").read_text(encoding="utf-8", errors="replace")[
             -2000:
@@ -3052,6 +3412,7 @@ def run_quanta_strategy(
             resource_path=resource_path,
             stderr_path=run_dir / "runner.stderr.log",
             record_path=record_path,
+            refusal_path=refusal_path,
         )
         raise RunError(f"Rust runner omitted phase metrics for {name}")
     if not diagnostic_path.is_file():
@@ -3270,6 +3631,7 @@ def _validate_manifest_shape(payload: object) -> dict:
         "semble_adapter_manifest",
         "semble_lockfile",
         "semble_native",
+        "semble_model_cache_manifests",
         "phase_metrics",
         "resource_metrics",
         "protocol_lock",
@@ -3301,6 +3663,7 @@ def _validate_manifest_shape(payload: object) -> dict:
             "reports",
             "quanta_manifests",
             "semble_native",
+            "semble_model_cache_manifests",
             "phase_metrics",
             "resource_metrics",
             "annotation_receipts",
@@ -3377,13 +3740,12 @@ def _validate_manifest_shape(payload: object) -> dict:
 
 
 def _validate_single_record(repo: Path, suite: dict, pack: dict, path: Path) -> dict:
-    """Validate one raw v3 (historical) or v4 (query-identity) record
-    against its re-derived projected pack."""
+    """Validate one historical v3/v4 or current v5 record against its pack."""
     raw = read_json(path)
     if not isinstance(raw, dict):
         raise RunError(f"record is not an object: {path}")
-    if raw.get("schema_version") not in (3, 4):
-        raise RunError(f"v3/v4 record required: {path}")
+    if raw.get("schema_version") not in (3, 4, 5):
+        raise RunError(f"v3/v4/v5 record required: {path}")
     routes = sorted(raw.get("route_provenance", {}).keys())
     if not routes:
         raise RunError(f"record names no routes: {path}")
@@ -3413,12 +3775,19 @@ def _rep_sort_key(rep: str) -> int:
 
 def _record_identity(payload: dict, where: str) -> tuple[str, str]:
     captures = payload.get("captures")
-    if not isinstance(captures, dict) or len(captures) != 1:
-        raise RunError(f"{where} must be a raw single-capture record")
-    _capture_id, capture = next(iter(captures.items()))
-    if not isinstance(capture, dict):
-        raise RunError(f"{where} capture is not an object")
-    return capture.get("system"), capture.get("chunk_strategy")
+    if not isinstance(captures, dict) or not captures:
+        raise RunError(f"{where} must have captures")
+    identities = set()
+    for capture in captures.values():
+        if not isinstance(capture, dict):
+            raise RunError(f"{where} capture is not an object")
+        identities.add((capture.get("system"), capture.get("chunk_strategy")))
+    if len(identities) != 1:
+        raise RunError(f"{where} mixes capture systems or strategies")
+    system, strategy = identities.pop()
+    if system == "semble" and len(captures) != 1:
+        raise RunError(f"{where} Semble record must have one capture")
+    return system, strategy
 
 
 def _probe_clean(probe: object, profile: dict) -> bool:
@@ -3663,6 +4032,7 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
     if not isinstance(payload, dict):
         raise RunError(f"{where} must be an object")
     system = payload.get("system")
+    schema_version = payload.get("schema_version")
     protocol_mode = "query_protocol" in payload
     system_key = "runner_binary_sha256" if system == "quanta" else "worker_sha256"
     if system == "quanta":
@@ -3706,6 +4076,28 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
     }
     if system == "semble":
         metric_keys.add("phase_boundaries_ns")
+        if schema_version == 2:
+            metric_keys.update(
+                {
+                    "profile",
+                    "requested_alpha",
+                    "rerank_applied",
+                    "lane_call_counts",
+                    "execution_events_sha256",
+                    "function_identity",
+                    "observed_wrapped_call_ns",
+                }
+            )
+    elif schema_version == 2:
+        metric_keys.update(
+            {
+                "symbol_count",
+                "symbol_producer_identity",
+                "symbol_grammars",
+                "symbol_unsupported_files",
+                "symbol_only_scopes",
+            }
+        )
     if protocol_mode:
         metric_keys.update({"query_protocol", "warm_latencies_ms", "cold_latencies_ms"})
     metrics = _exact_keys(
@@ -3713,8 +4105,103 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
         metric_keys,
         where,
     )
-    if metrics["schema_version"] != 1 or system not in ("quanta", "semble"):
+    if system not in ("quanta", "semble") or (
+        system == "semble" and schema_version not in (1, 2)
+    ) or (system == "quanta" and schema_version not in (1, 2)):
         raise RunError(f"{where} has unknown schema/system")
+    if system == "semble" and schema_version == 2:
+        profile = metrics["profile"]
+        alpha = metrics["requested_alpha"]
+        rerank = metrics["rerank_applied"]
+        if profile not in {
+            "native-default",
+            "hybrid-no-rerank",
+            "lexical-only",
+            "semantic-only",
+        }:
+            raise RunError(f"{where} has unknown Semble profile")
+        if profile == "hybrid-no-rerank":
+            if (
+                isinstance(alpha, bool)
+                or not isinstance(alpha, (int, float))
+                or not math.isfinite(alpha)
+                or not 0 <= alpha <= 1
+                or rerank is not False
+            ):
+                raise RunError(f"{where} has invalid controlled Semble profile evidence")
+        elif alpha is not None or rerank is not (profile == "native-default"):
+            raise RunError(f"{where} has invalid Semble profile evidence")
+        lane_counts = metrics["lane_call_counts"]
+        if (
+            not isinstance(lane_counts, dict)
+            or set(lane_counts) != {"bm25", "semantic", "encode"}
+            or any(type(value) is not int or value < 0 for value in lane_counts.values())
+        ):
+            raise RunError(f"{where} has invalid Semble lane counts")
+        if (
+            profile == "lexical-only"
+            and not (
+                lane_counts["bm25"] > 0
+                and lane_counts["semantic"] == 0
+                and lane_counts["encode"] == 0
+            )
+            or profile == "semantic-only"
+            and not (
+                lane_counts["bm25"] == 0
+                and lane_counts["semantic"] > 0
+                and lane_counts["encode"] > 0
+            )
+            or profile in {"native-default", "hybrid-no-rerank"}
+            and not (
+                lane_counts["bm25"] > 0
+                and lane_counts["semantic"] > 0
+                and lane_counts["encode"] > 0
+            )
+        ):
+            raise RunError(f"{where} Semble lane counts contradict the profile")
+        if not _is_hex(metrics["execution_events_sha256"], 64):
+            raise RunError(f"{where} has invalid Semble execution event digest")
+        identities = metrics["function_identity"]
+        if not isinstance(identities, dict) or set(identities) != {
+            "bm25",
+            "index_search",
+            "module_search",
+            "resolve_alpha",
+            "semantic",
+        }:
+            raise RunError(f"{where} has invalid Semble function identity set")
+        for name, identity in identities.items():
+            if (
+                not isinstance(identity, dict)
+                or set(identity) != {"module", "qualname", "source_sha256"}
+                or not isinstance(identity["module"], str)
+                or not identity["module"]
+                or not isinstance(identity["qualname"], str)
+                or not identity["qualname"]
+                or not _is_hex(identity["source_sha256"], 64)
+            ):
+                raise RunError(f"{where} has invalid Semble function identity: {name}")
+        if (
+            type(metrics["observed_wrapped_call_ns"]) is not int
+            or metrics["observed_wrapped_call_ns"] < 0
+        ):
+            raise RunError(f"{where} has invalid observed wrapped-call duration")
+    if system == "quanta" and schema_version == 2:
+        if (
+            type(metrics["symbol_count"]) is not int
+            or metrics["symbol_count"] < 0
+            or metrics["symbol_producer_identity"] != "source-bound-symbols-v1"
+            or not isinstance(metrics["symbol_grammars"], str)
+            or not metrics["symbol_grammars"]
+        ):
+            raise RunError(f"{where} has invalid symbol producer evidence")
+        for key in ("symbol_unsupported_files", "symbol_only_scopes"):
+            if (
+                type(metrics[key]) is not int
+                or metrics[key] < 0
+                or metrics[key] > metrics["file_count"]
+            ):
+                raise RunError(f"{where}.{key} is outside the admitted file count")
     expected_layer = (
         "runner_monotonic_wall_v1" if system == "quanta" else "worker_monotonic_wall_v1"
     )
@@ -4328,7 +4815,8 @@ def _validate_isolation_proof(
             "suite",
             "query_pack",
             "corpus_view",
-            "runner_tools",
+            "runner_bundle",
+            "platform_helpers",
             "probes",
         },
         "isolation proof",
@@ -4450,14 +4938,32 @@ def _validate_isolation_proof(
     )
     if corpus_view["file_count"] != len(materialized["files"]):
         raise RunError("isolation proof corpus file count mismatch")
-    runner_tools = proof["runner_tools"]
-    if not isinstance(runner_tools, list) or len(runner_tools) != 2:
-        raise RunError("isolation proof runner_tools must bind two files")
-    for index, entry in enumerate(runner_tools):
-        row = _exact_keys(entry, {"path", "sha256"}, f"isolation proof runner_tools[{index}]")
-        tool_path = _resolve_artifact(root, row["path"], "isolation proof runner tool")
-        if not _is_hex(row["sha256"], 64) or sha_file(tool_path) != row["sha256"]:
-            raise RunError("isolation proof runner tool digest mismatch")
+    bundle = _exact_keys(
+        proof["runner_bundle"],
+        {"path", "sha256", "manifest_sha256", "manifest"},
+        "isolation proof runner_bundle",
+    )
+    bundle_path = _resolve_artifact(root, bundle["path"], "isolation proof runner bundle")
+    validate_runner_bundle(bundle_path, bundle)
+    helpers = proof["platform_helpers"]
+    expected_helpers = 1 if backend_name == LINUX_ISOLATION_BACKEND else 0
+    if not isinstance(helpers, list) or len(helpers) != expected_helpers:
+        raise RunError("isolation proof platform helper set is invalid")
+    for index, entry in enumerate(helpers):
+        row = _exact_keys(
+            entry,
+            {"path", "sha256", "source"},
+            f"isolation proof platform_helpers[{index}]",
+        )
+        if row["source"] != "linux_isolation.py":
+            raise RunError("isolation proof platform helper source is unknown")
+        helper_path = _resolve_artifact(root, row["path"], "isolation proof platform helper")
+        if (
+            not _is_hex(row["sha256"], 64)
+            or sha_file(helper_path) != row["sha256"]
+            or helper_path.read_bytes() != Path(linux_isolation.__file__).read_bytes()
+        ):
+            raise RunError("isolation proof platform helper digest mismatch")
     probes = _exact_keys(
         proof["probes"],
         {"suite_read_denied", "query_pack_read_allowed"}
@@ -4567,6 +5073,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         "reports",
         "quanta_manifests",
         "semble_native",
+        "semble_model_cache_manifests",
         "phase_metrics",
         "resource_metrics",
     ):
@@ -4675,11 +5182,14 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         pair_note("mapping_proof_digest_mismatch", ("T00", "T11"))
     protocol_payload = read_note(resolved["protocol_lock"], "protocol_lock", ("T12",))
     protocol_keys = {
+        "lock_version",
         "suite_digest",
         "query_pack_digest",
         "corpus_manifest_digest",
         "top_k",
         "strategies",
+        "quanta_routes",
+        "semble_route",
         "searchd_expected_sha256",
         "semble_lockfile_sha256",
         "host_profile_digest",
@@ -4691,6 +5201,8 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         "query_warmup_passes",
         "query_repetitions_per_root",
         "query_protocol_sha256s",
+        "execution_profiles",
+        "execution_profiles_sha256",
     }
     if isinstance(protocol_payload, dict) and (
         "retrieval_diagnostic_version" in protocol_payload
@@ -4717,6 +5229,8 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         system_orders = protocol_payload["system_orders"]
         root_digests = protocol_payload["query_protocol_sha256s"]
         protocol_shape_valid = protocol_shape_valid and (
+            protocol_payload["lock_version"] == 2
+            and
             all(
                 _is_hex(protocol_payload[key], 64)
                 for key in (
@@ -4747,19 +5261,40 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             and bool(strategies)
             and all(isinstance(strategy, str) and strategy for strategy in strategies)
             and len(strategies) == len(set(strategies))
+            and isinstance(protocol_payload["quanta_routes"], list)
+            and bool(protocol_payload["quanta_routes"])
+            and all(isinstance(route, str) and route for route in protocol_payload["quanta_routes"])
+            and len(protocol_payload["quanta_routes"])
+            == len(set(protocol_payload["quanta_routes"]))
+            and isinstance(protocol_payload["semble_route"], str)
+            and bool(protocol_payload["semble_route"])
             and isinstance(root_digests, list)
             and len(root_digests) == protocol_payload["repetitions"]
             and all(_is_hex(value, 64) for value in root_digests)
+            and isinstance(protocol_payload["execution_profiles"], dict)
+            and protocol_payload["execution_profiles_sha256"]
+            == digest(canonical_bytes(protocol_payload["execution_profiles"]))
             and (
                 "retrieval_diagnostic_version" not in protocol_payload
                 or type(protocol_payload["retrieval_diagnostic_version"]) is int
-                and protocol_payload["retrieval_diagnostic_version"] == 2
+                and protocol_payload["retrieval_diagnostic_version"] in (2, 3)
             )
             and (
                 "rank_metric_k_policy" not in protocol_payload
                 or protocol_payload["rank_metric_k_policy"] == "declared_top_k_v1"
             )
         )
+        if protocol_shape_valid:
+            try:
+                profiles = protocol_payload["execution_profiles"]
+                if set(profiles) != {"quanta", "semble"}:
+                    raise RunError("protocol execution profile systems are incomplete")
+                quanta = profiles["quanta"]
+                if quanta != qp.execution_profile(quanta.get("policy")):
+                    raise RunError("protocol Quanta execution profile is invalid")
+                _validate_semble_profile(profiles["semble"], "protocol execution profile")
+            except (AttributeError, KeyError, RunError, ValueError):
+                protocol_shape_valid = False
         authority_digests = (
             protocol_payload["admission_digest"],
             protocol_payload["driver_source_closure_digest"],
@@ -4848,8 +5383,11 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             continue
         validated[str(path)] = {"run": run, "rep": rep, "system": system, "strategy": strategy}
         rep_records.setdefault(rep, []).append(str(path))
-    if "rep-00" not in rep_records:
-        pair_note("rep_00_missing", ("T12", "T13"))
+    expected_reps = {
+        f"rep-{index:02d}" for index in range(protocol_payload.get("repetitions", 0))
+    }
+    if set(rep_records) != expected_reps:
+        pair_note("declared_rep_set_mismatch", ("T12", "T13"))
     native_reps: dict[str, list[str]] = {}
     for path in resolved["semble_native"]:
         try:
@@ -4869,6 +5407,25 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         strategies = [validated[p]["strategy"] for p in paths if validated[p]["system"] == "quanta"]
         if sorted(strategies) != sorted(protocol_payload.get("strategies", [])):
             pair_note(f"protocol_lock_strategies_drift:{rep}", ("T12",))
+        for record_path in paths:
+            entry = validated[record_path]
+            observed_routes = set(entry["run"].get("route_provenance", {}))
+            expected_routes = (
+                set(protocol_payload.get("quanta_routes", []))
+                if entry["system"] == "quanta"
+                else {protocol_payload.get("semble_route")}
+            )
+            if observed_routes != expected_routes:
+                pair_note(f"declared_route_coverage_drift:{rep}:{entry['system']}", ("T12",))
+            expected_profile = protocol_payload.get("execution_profiles", {}).get(entry["system"])
+            captures = entry["run"].get("captures", {})
+            if any(
+                capture.get("execution_profile") != expected_profile
+                or capture.get("execution_profile_sha256")
+                != digest(canonical_bytes(expected_profile))
+                for capture in captures.values()
+            ):
+                pair_note(f"execution_profile_record_drift:{rep}:{entry['system']}", ("T11", "T12"))
     for rep, paths in native_reps.items():
         if len(paths) != 1:
             pair_note(f"rep_native_count:{rep}", ("T12",))
@@ -4957,6 +5514,19 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     for strategy in quanta_by_strategy:
         if strategy not in {entry["strategy"] for entry in matched}:
             pair_note(f"strategy_without_report:{strategy}", ("T12", "T13"))
+    expected_report_keys = {
+        (strategy, protocol_payload.get("semble_route"), route)
+        for strategy in protocol_payload.get("strategies", [])
+        for route in protocol_payload.get("quanta_routes", [])
+    }
+    observed_report_keys = [
+        (entry["strategy"], entry["baseline_route"], entry["candidate_route"])
+        for entry in matched
+    ]
+    if len(observed_report_keys) != len(set(observed_report_keys)):
+        pair_note("duplicate_logical_report", ("T12", "T13"))
+    if set(observed_report_keys) != expected_report_keys:
+        pair_note("declared_report_set_mismatch", ("T12", "T13"))
 
     # T10: one model identity across strategies, rebuilt sources per strategy.
     rep0_captures = []
@@ -5137,7 +5707,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 bound_records.add(observed)
             diagnostic_ref = run_entry.get("retrieval_diagnostic")
             diagnostic_digest = run_entry.get("retrieval_diagnostic_digest")
-            if protocol_payload.get("retrieval_diagnostic_version") == 2 and (
+            if protocol_payload.get("retrieval_diagnostic_version") in (2, 3) and (
                 diagnostic_ref is None or diagnostic_digest is None
             ):
                 pair_note("retrieval_diagnostic_missing", ("T12",))
@@ -5197,6 +5767,77 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             pair_note("interpreter_digest_mismatch", ("T11",))
         if adapter.get("model_asset_digest") != provenance_claims["semble"]["model_asset_digest"]:
             pair_note("model_asset_digest_mismatch", ("T11",))
+        model_cache_paths = resolved.get("semble_model_cache_manifests", [])
+        if not isinstance(model_cache_paths, list) or len(model_cache_paths) != len(expected_reps):
+            pair_note("model_cache_manifest_set_mismatch", ("T11", "T12"))
+        else:
+            seen_model_reps = set()
+            model_cache_identities = set()
+            for model_cache_path in model_cache_paths:
+                try:
+                    rep = _rep_segment(Path(model_cache_path), root)
+                    cache_manifest = _validate_model_cache_manifest(
+                        read_json(Path(model_cache_path)), f"model cache manifest {rep}"
+                    )
+                    if rep in seen_model_reps:
+                        raise RunError("duplicate model cache manifest root")
+                    seen_model_reps.add(rep)
+                    if cache_manifest["revision"] != adapter.get("model_revision"):
+                        raise RunError("model cache revision differs from adapter")
+                    if cache_manifest["model_id"] != adapter.get("model_id"):
+                        raise RunError("model cache id differs from adapter")
+                    if cache_manifest["model_asset_digest"] != adapter.get(
+                        "model_asset_digest"
+                    ):
+                        raise RunError("model cache asset digest differs from adapter")
+                    model_cache_identities.add(
+                        (
+                            cache_manifest["model_id"],
+                            cache_manifest["revision"],
+                            cache_manifest["model_asset_digest"],
+                            cache_manifest["snapshot_digest"],
+                        )
+                    )
+                except (RunError, ValueError, OSError) as exc:
+                    pair_note(f"model_cache_manifest_invalid:{exc}", ("T11", "T12"))
+            if seen_model_reps != expected_reps:
+                pair_note("model_cache_manifest_root_mismatch", ("T11", "T12"))
+            if len(model_cache_identities) != 1:
+                pair_note("model_cache_identity_drift", ("T11", "T12"))
+            rep0_model_cache = next(
+                (Path(path) for path in model_cache_paths if "rep-00" in Path(path).parts),
+                None,
+            )
+            if (
+                rep0_model_cache is None
+                or adapter.get("model_cache_manifest_digest") != sha_file(rep0_model_cache)
+            ):
+                pair_note("adapter_model_cache_binding_broken", ("T11", "T12"))
+        if protocol_payload.get("retrieval_diagnostic_version") == 3:
+            expected_profile = protocol_payload.get("execution_profiles", {}).get("semble", {})
+            expected_mode = expected_profile.get("mode")
+            expected_alpha = expected_profile.get("alpha")
+            if adapter.get("profile") != expected_profile:
+                pair_note("semble_profile_drift", ("T11", "T12"))
+            if adapter.get("requested_alpha") != expected_alpha:
+                pair_note("semble_alpha_drift", ("T11", "T12"))
+            expected_rerank = expected_mode == "native-default"
+            if adapter.get("rerank_applied") is not expected_rerank:
+                pair_note("semble_rerank_profile_drift", ("T11", "T12"))
+            lane_counts = adapter.get("lane_call_counts")
+            if not isinstance(lane_counts, dict) or set(lane_counts) != {
+                "bm25", "semantic", "encode"
+            } or any(type(value) is not int or value < 0 for value in lane_counts.values()):
+                pair_note("semble_lane_counts_malformed", ("T11",))
+            elif (
+                expected_mode == "lexical-only"
+                and (lane_counts["bm25"] <= 0 or lane_counts["semantic"] or lane_counts["encode"])
+                or expected_mode == "semantic-only"
+                and (lane_counts["bm25"] or lane_counts["semantic"] <= 0)
+                or expected_mode in ("native-default", "hybrid-no-rerank")
+                and (lane_counts["bm25"] <= 0 or lane_counts["semantic"] <= 0)
+            ):
+                pair_note("semble_lane_profile_drift", ("T11", "T12"))
     mapping_diff = mapping_payload.get("diff_digest") if isinstance(mapping_payload, dict) else None
     for _path, entry in validated.items():
         if entry["system"] != "semble":
@@ -6105,6 +6746,8 @@ def run_pair(spec: dict) -> int:
 
 
 def _run_pair_staged(spec: dict, stage: Path) -> dict:
+    if "semble" not in spec["execution_profiles"]:
+        raise RunError("pair requires spec.execution_profiles.semble")
     order = spec.get("order", ["quanta", "semble"])
     if sorted(order) != ["quanta", "semble"]:
         raise RunError("spec.order must list quanta and semble exactly once")
@@ -6228,11 +6871,8 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
             payload = read_json(Path(record))
             if not isinstance(payload, dict):
                 raise RunError(f"record is not an object: {record}")
-            captures = payload.get("captures", {})
-            if not isinstance(captures, dict) or len(captures) != 1:
-                raise RunError(f"quanta record must carry exactly one capture: {record}")
-            _capture_id, capture = next(iter(captures.items()))
-            if not isinstance(capture, dict) or capture.get("chunk_strategy") != strategy:
+            system, captured_strategy = _record_identity(payload, f"quanta record {record}")
+            if system != "quanta" or captured_strategy != strategy:
                 raise RunError(f"strategy echo mismatch for {record}: {strategy}")
             merge_records(repo, suite_path, [Path(record), Path(layout["semble"])])
     baseline = spec.get("baseline_route", semble_routes[0])
@@ -6267,15 +6907,20 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
         )
         driver_closure_digest = driver_closure["digest"]
     protocol_lock = {
-        "retrieval_diagnostic_version": 2,
+        "lock_version": 2,
+        "retrieval_diagnostic_version": 3,
         "rank_metric_k_policy": "declared_top_k_v1",
         "suite_digest": sha_file(Path(spec["suite"])),
         "query_pack_digest": sha_file(stage / "query-pack.json"),
         "corpus_manifest_digest": sha_file(stage / "corpus-manifest.json"),
         "top_k": spec["top_k"],
         "strategies": [entry["name"] for entry in spec["strategies"]],
+        "quanta_routes": list(spec.get("routes", ["lexical", "semantic", "hybrid"])),
+        "semble_route": spec.get("semble_route", "semble-hybrid"),
         "searchd_expected_sha256": spec["searchd_expected_sha256"],
         "semble_lockfile_sha256": spec["semble_lockfile_sha256"],
+        "execution_profiles": spec["execution_profiles"],
+        "execution_profiles_sha256": digest(canonical_bytes(spec["execution_profiles"])),
         "host_profile_digest": sha_file(Path(spec["host_profile"])),
         **(
             {"delegated_cgroup_parent": spec["_linux_cgroup_parent_identity"]}
@@ -7183,6 +7828,20 @@ def build_run_manifest(
         raise RunError("rep-0 adapter manifest lacks the interpreter digest")
     if not _is_hex(adapter_manifest.get("model_asset_digest"), 64):
         raise RunError("rep-0 adapter manifest lacks the model asset digest")
+    semble_profile = spec["execution_profiles"]["semble"]
+    expected_profile = semble_profile["mode"]
+    expected_alpha = semble_profile["alpha"]
+    if adapter_manifest.get("profile") != semble_profile:
+        raise RunError("rep-0 adapter profile differs from the pair spec")
+    if adapter_manifest.get("requested_alpha") != expected_alpha:
+        raise RunError("rep-0 adapter alpha differs from the pair spec")
+    if adapter_manifest.get("rerank_applied") is not (expected_profile == "native-default"):
+        raise RunError("rep-0 adapter rerank state differs from the pair profile")
+    lane_counts = adapter_manifest.get("lane_call_counts")
+    if not isinstance(lane_counts, dict) or set(lane_counts) != {"bm25", "semantic", "encode"}:
+        raise RunError("rep-0 adapter manifest lacks lane call counts")
+    if any(type(count) is not int or count < 0 for count in lane_counts.values()):
+        raise RunError("rep-0 adapter lane call counts are malformed")
     lockfile_path = semble_dir / "lockfile.txt"
     if not lockfile_path.is_file():
         raise RunError("rep-0 Semble lockfile is missing")
@@ -7207,6 +7866,7 @@ def build_run_manifest(
 
     records: list[str] = []
     natives: list[str] = []
+    model_cache_manifests: list[str] = []
     quanta_manifests: list[str] = []
     phase_metrics: list[str] = []
     resource_metrics: list[str] = []
@@ -7215,6 +7875,9 @@ def build_run_manifest(
             records.append(relative(Path(record)))
         records.append(relative(Path(layout["semble"])))
         natives.append(relative(Path(layout["semble"]).parent / "native.json"))
+        model_cache_manifests.append(
+            relative(Path(layout["semble"]).parent / "model-cache-manifest.json")
+        )
         if "quanta_manifest" not in layout:
             raise RunError("rep layout lacks the quanta manifest path")
         quanta_manifest_path = Path(layout["quanta_manifest"])
@@ -7444,6 +8107,7 @@ def build_run_manifest(
         "semble_adapter_manifest": relative(adapter_path),
         "semble_lockfile": relative(lockfile_path),
         "semble_native": sorted(natives),
+        "semble_model_cache_manifests": sorted(model_cache_manifests),
         "phase_metrics": sorted(phase_metrics),
         "resource_metrics": sorted(resource_metrics),
         "protocol_lock": "protocol-lock.json",
@@ -7538,6 +8202,7 @@ def run_semble_capture(
     adapter = Path(spec.get("_semble_adapter", Path(__file__).resolve().parent / "semble.py"))
     command = [
         sys.executable,
+        *( ["-I", "-S"] if adapter.suffix == ".pyz" else [] ),
         str(adapter),
         "run",
         "--repo",
@@ -7574,7 +8239,11 @@ def run_semble_capture(
         str(spec.get("query_repetitions_per_root", 1)),
         "--warmup-passes",
         str(spec.get("query_warmup_passes", 1)),
+        "--semble-profile",
+        spec["execution_profiles"]["semble"]["mode"],
     ]
+    if spec["execution_profiles"]["semble"]["mode"] == "hybrid-no-rerank":
+        command += ["--alpha", str(spec["execution_profiles"]["semble"]["alpha"])]
     if "_query_protocol" in spec:
         command += ["--query-protocol", spec["_query_protocol"]]
     if "_materialized_corpus" in spec:
@@ -7586,6 +8255,7 @@ def run_semble_capture(
     resource_path = evidence_root / "semble-resource-metrics.json"
     stdout_path = evidence_root / "semble-adapter.stdout.log"
     stderr_path = evidence_root / "semble-adapter.stderr.log"
+    process_env = capture_process_env(evidence_root / "semble-process-tmp")
     resource = run_monitored_process(
         command,
         stdout_path=stdout_path,
@@ -7593,6 +8263,8 @@ def run_semble_capture(
         resource_path=resource_path,
         timeout_secs=_int(spec.get("timeout_secs", 1800), "spec.timeout_secs"),
         subject_path=out_dir / "record.json",
+        env=process_env,
+        cwd=process_env["TMPDIR"],
         isolation=isolation,
         capture_scope=spec.get("scope", "exploratory"),
         linux_cgroup_parent=spec.get("linux_cgroup_parent"),

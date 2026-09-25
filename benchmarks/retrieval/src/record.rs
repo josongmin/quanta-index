@@ -21,11 +21,13 @@ use crate::canonical::canonical_json;
 use crate::chunking::count_tokens;
 use crate::corpus::SourceFile;
 use crate::published_units::{PublishedUnitKind, PublishedUnitRegistry};
-use crate::query_plan::{NlPlanConfig, QueryInputPolicy, QueryPlan};
+use crate::query_plan::{
+    NlPlanConfig, QueryInputPolicy, QueryPlan, execution_profile_sha256, execution_profile_value,
+};
 use crate::sdk::{QueryOutcome, RankedHit};
 use crate::{BenchError, BenchResult, sha256_hex};
 
-pub const RUNNER_SCHEMA_VERSION: u64 = 4;
+pub const RUNNER_SCHEMA_VERSION: u64 = 5;
 pub const TOKENIZER: &str = "qi-regex-v1";
 pub const TOKENIZER_BUDGET_VERSION: &str = "qb-v1";
 pub const OUTPUT_UNIT_POLICY: &str = "rank_prefix";
@@ -509,6 +511,8 @@ pub struct CaptureProvenance {
     pub activation_digest: String,
     pub model: String,
     pub model_revision: String,
+    pub execution_profile: Value,
+    pub execution_profile_sha256: String,
 }
 
 fn validate_chunk_config_value(config: &Value) -> BenchResult<()> {
@@ -584,12 +588,22 @@ fn capture_value(capture_id: &str, capture: &CaptureProvenance) -> BenchResult<V
         ),
         ("receipt_digest", &capture.receipt_digest),
         ("activation_digest", &capture.activation_digest),
+        (
+            "execution_profile_sha256",
+            &capture.execution_profile_sha256,
+        ),
     ] {
         if !is_hex64(digest) {
             return Err(BenchError::Protocol(format!(
                 "capture {capture_id} {label} must be a lowercase sha256"
             )));
         }
+    }
+    let canonical_profile = canonical_json(&capture.execution_profile)?;
+    if sha256_hex(canonical_profile.as_bytes()) != capture.execution_profile_sha256 {
+        return Err(BenchError::Protocol(format!(
+            "capture {capture_id} execution profile digest mismatch"
+        )));
     }
     for (label, text) in [
         ("model", &capture.model),
@@ -615,6 +629,8 @@ fn capture_value(capture_id: &str, capture: &CaptureProvenance) -> BenchResult<V
         "activation_digest": capture.activation_digest,
         "model": capture.model,
         "model_revision": capture.model_revision,
+        "execution_profile": capture.execution_profile,
+        "execution_profile_sha256": capture.execution_profile_sha256,
     }))
 }
 
@@ -663,14 +679,12 @@ fn prove_hit(
                 // Only the chunk authority can prove an unanchored hit, and
                 // only when the returned snippet is exactly the published
                 // chunk text.
-                let chunk = units
-                    .chunk_text(&hit.candidate_id)
-                    .ok_or_else(|| {
-                        BenchError::Protocol(format!(
-                            "published chunk disappeared: {}",
-                            hit.candidate_id
-                        ))
-                    })?;
+                let chunk = units.chunk_text(&hit.candidate_id).ok_or_else(|| {
+                    BenchError::Protocol(format!(
+                        "published chunk disappeared: {}",
+                        hit.candidate_id
+                    ))
+                })?;
                 if chunk != hit.snippet.as_str() {
                     return Err(BenchError::Protocol(format!(
                         "SDK unanchored hit differs from published chunk: {}",
@@ -773,13 +787,13 @@ pub fn result_value(
         "effective_lexical_request_sha256": plan.effective_lexical_request_sha256,
         "semantic_text_sha256": plan.semantic_text_sha256,
     });
+    let classification = outcome.classification().map_err(|message| {
+        BenchError::Protocol(format!(
+            "invalid typed query outcome for {task_id}/{route}: {message}"
+        ))
+    })?;
     match outcome {
-        QueryOutcome::Hits {
-            hits,
-            outcome,
-            latency,
-            ..
-        } => {
+        QueryOutcome::ReturnedWindow { hits, latency, .. } => {
             let hit_count = u64::try_from(hits.len()).map_err(|err| {
                 BenchError::Protocol(format!("SDK hit count cannot fit u64: {err}"))
             })?;
@@ -790,69 +804,59 @@ pub fn result_value(
                 )));
             }
             if hits.is_empty() {
-                let (status, error) = if outcome.is_exhausted() {
-                    ("abstained", Value::Null)
-                } else {
-                    (
-                        "error",
+                let error = classification
+                    .error_code
+                    .as_ref()
+                    .map_or(Value::Null, |code| {
                         error_value(
-                            "empty_non_exhausted_window",
-                            "zero hits under a non-exhausted window cannot score",
-                        ),
-                    )
-                };
+                            code,
+                            classification
+                                .error_message
+                                .as_deref()
+                                .unwrap_or("missing error message"),
+                        )
+                    });
                 return Ok(serde_json::json!({
                     "task_id": task_id,
                     "route": route,
-                    "status": status,
+                    "status": classification.status,
                     "candidates": [],
                     "query_identity": query_identity,
                     "timings": timings_value(*latency)?,
                     "error": error,
                 }));
             }
-            let status = if outcome.is_exhausted() {
-                "success"
-            } else {
-                "capped"
-            };
             let mut candidates = Vec::with_capacity(hits.len());
             for (index, hit) in hits.iter().enumerate() {
-                candidates.push(prove_hit(
-                    hit,
-                    index.saturating_add(1),
-                    files,
-                    units,
-                )?);
+                candidates.push(prove_hit(hit, index.saturating_add(1), files, units)?);
             }
             Ok(serde_json::json!({
                 "task_id": task_id,
                 "route": route,
-                "status": status,
+                "status": classification.status,
                 "candidates": candidates,
                 "query_identity": query_identity,
                 "timings": timings_value(*latency)?,
                 "error": null,
             }))
         }
-        QueryOutcome::Failed {
-            status,
-            code,
-            message,
-            latency,
-        } => Ok(serde_json::json!({
+        QueryOutcome::RejectedResponse { latency, .. }
+        | QueryOutcome::SdkFailure { latency, .. } => Ok(serde_json::json!({
             "task_id": task_id,
             "route": route,
-            "status": status,
+            "status": classification.status,
             "candidates": [],
             "query_identity": query_identity,
             "timings": timings_value(*latency)?,
-            "error": error_value(code, message),
+            "error": error_value(
+                classification.error_code.as_deref().unwrap_or("missing_error_code"),
+                classification.error_message.as_deref().unwrap_or("missing error message"),
+            ),
         })),
     }
 }
 
-/// Assemble the complete v4 runner record.
+/// Assemble the complete v5 runner record.
 ///
 /// Results emit in deterministic `(task_id, route)` order from the
 /// pack's task order and sorted routes. Every route resolves to a
@@ -906,7 +910,11 @@ pub fn runner_record(input: &RunnerRecordInput<'_>) -> BenchResult<Value> {
                 task.task_id
             )));
         }
-        let signature = (plan.policy, plan.policy_config_sha256.clone(), plan.planning_cost_in_latency);
+        let signature = (
+            plan.policy,
+            plan.policy_config_sha256.clone(),
+            plan.planning_cost_in_latency,
+        );
         match &agreed_policy {
             None => agreed_policy = Some(signature),
             Some(expected) => {
@@ -919,26 +927,10 @@ pub fn runner_record(input: &RunnerRecordInput<'_>) -> BenchResult<Value> {
             }
         }
     }
-    let (policy, policy_config_sha256, planning_cost_in_latency) =
+    let (policy, _policy_config_sha256, _planning_cost_in_latency) =
         agreed_policy.ok_or_else(|| BenchError::Protocol("query pack has no tasks".to_string()))?;
-    let query_input_policy = match policy {
-        QueryInputPolicy::NaturalLanguage => serde_json::json!({
-            "policy": policy.as_str(),
-            "config": {
-                "max_token_chars": nl_config.max_token_chars,
-                "max_tokens": nl_config.max_tokens,
-                "min_token_chars": nl_config.min_token_chars,
-            },
-            "policy_config_sha256": policy_config_sha256,
-            "planning_cost_in_latency": planning_cost_in_latency,
-        }),
-        QueryInputPolicy::Native | QueryInputPolicy::Literal => serde_json::json!({
-            "policy": policy.as_str(),
-            "config": {},
-            "policy_config_sha256": policy_config_sha256,
-            "planning_cost_in_latency": planning_cost_in_latency,
-        }),
-    };
+    let expected_profile = execution_profile_value(policy, nl_config);
+    let expected_profile_sha256 = execution_profile_sha256(policy, nl_config);
     let mut routes: Vec<&String> = provenance.keys().collect();
     routes.sort();
     if routes.is_empty() {
@@ -983,6 +975,13 @@ pub fn runner_record(input: &RunnerRecordInput<'_>) -> BenchResult<Value> {
                 "capture_id {capture_id} is not referenced by any route"
             )));
         }
+        if capture.execution_profile != expected_profile
+            || capture.execution_profile_sha256 != expected_profile_sha256
+        {
+            return Err(BenchError::Protocol(format!(
+                "capture_id {capture_id} execution profile differs from the task plans"
+            )));
+        }
         let _previous =
             captures_value.insert(capture_id.clone(), capture_value(capture_id, capture)?);
     }
@@ -1022,7 +1021,6 @@ pub fn runner_record(input: &RunnerRecordInput<'_>) -> BenchResult<Value> {
             "blinding": identity.blinding,
             "isolation_method": identity.isolation_method,
             "access_block_log": identity.access_block_log,
-            "query_input_policy": query_input_policy,
         },
         "captures": captures_value,
         "route_provenance": provenance_value,
@@ -1039,7 +1037,7 @@ mod tests {
     use super::*;
     use crate::chunking::Chunk;
     use crate::query_plan::plan_query;
-    use crate::sdk::ResponseDetail;
+    use crate::sdk::RouteExplanation;
 
     #[test]
     fn gold_bearing_pack_keys_are_rejected() {
@@ -1127,6 +1125,7 @@ mod tests {
         let units = PublishedUnitRegistry::from_chunks_and_symbols(
             &BTreeMap::from([(path.to_string(), vec![chunk])]),
             &BTreeMap::new(),
+            &files,
         )
         .expect("registry");
         let hit = RankedHit {
@@ -1316,44 +1315,62 @@ mod tests {
             score: 1.0,
             contributions: Vec::new(),
         };
+        let files = BTreeMap::from([("a.txt".to_string(), file)]);
         let units = PublishedUnitRegistry::from_chunks_and_symbols(
             &BTreeMap::from([("a.txt".to_string(), vec![chunk])]),
             &BTreeMap::new(),
+            &files,
         )
         .expect("registry");
-        (BTreeMap::from([("a.txt".to_string(), file)]), units, hit)
+        (files, units, hit)
     }
 
     #[test]
     fn outcome_statuses_never_silently_downgrade() {
-        use quanta_index_contract::ExecutionOutcomeV2;
+        use quanta_index_contract::{
+            CandidateCountV1, CoverageV1, EmptyProvenanceV2, ExaminedUniverseV1,
+            ExecutionOutcomeV2, QueryResultWindowV2,
+        };
         let (files, chunks, hit) = status_fixture();
-        let plan =
-            plan_query(QueryInputPolicy::Native, "needle", &NlPlanConfig::default())
-                .expect("native plan");
+        let plan = plan_query(QueryInputPolicy::Native, "needle", &NlPlanConfig::default())
+            .expect("native plan");
         let run = |outcome: QueryOutcome| {
             result_value("T1", "lexical", &outcome, &plan, 10, &files, &chunks).expect("maps")
         };
-        let exhausted = run(QueryOutcome::Hits {
+        let exhausted = run(QueryOutcome::ReturnedWindow {
             hits: vec![hit.clone()],
-            outcome: ExecutionOutcomeV2::ExactExhausted,
-            detail: ResponseDetail::default(),
+            window: QueryResultWindowV2::exact_probe(1),
+            explanation: Some(RouteExplanation::default()),
             latency: Duration::from_millis(1),
         });
         assert_eq!(exhausted["status"].as_str(), Some("success"));
-        let capped = run(QueryOutcome::Hits {
+        let capped = run(QueryOutcome::ReturnedWindow {
             hits: vec![hit],
-            outcome: ExecutionOutcomeV2::LowerBound {
-                continuation: false,
-            },
-            detail: ResponseDetail::default(),
+            window: QueryResultWindowV2::new(
+                1,
+                CandidateCountV1::AtLeast(1),
+                ExecutionOutcomeV2::LowerBound {
+                    continuation: false,
+                },
+                CoverageV1::new(ExaminedUniverseV1::AtLeast(1), None, Vec::new()),
+                None,
+            )
+            .expect("capped window"),
+            explanation: Some(RouteExplanation::default()),
             latency: Duration::from_millis(1),
         });
         assert_eq!(capped["status"].as_str(), Some("capped"));
-        let empty_capped = run(QueryOutcome::Hits {
+        let empty_capped = run(QueryOutcome::ReturnedWindow {
             hits: Vec::new(),
-            outcome: ExecutionOutcomeV2::LowerBound { continuation: true },
-            detail: ResponseDetail::default(),
+            window: QueryResultWindowV2::new(
+                0,
+                CandidateCountV1::AtLeast(1),
+                ExecutionOutcomeV2::LowerBound { continuation: true },
+                CoverageV1::new(ExaminedUniverseV1::AtLeast(1), None, Vec::new()),
+                Some(EmptyProvenanceV2::ZeroHitExecuted),
+            )
+            .expect("empty capped window"),
+            explanation: Some(RouteExplanation::default()),
             latency: Duration::from_millis(1),
         });
         assert_eq!(empty_capped["status"].as_str(), Some("error"));
@@ -1361,10 +1378,10 @@ mod tests {
             empty_capped["error"]["code"].as_str(),
             Some("empty_non_exhausted_window")
         );
-        let abstained = run(QueryOutcome::Hits {
+        let abstained = run(QueryOutcome::ReturnedWindow {
             hits: Vec::new(),
-            outcome: ExecutionOutcomeV2::ExactExhausted,
-            detail: ResponseDetail::default(),
+            window: QueryResultWindowV2::exact_probe(0),
+            explanation: Some(RouteExplanation::default()),
             latency: Duration::from_millis(1),
         });
         assert_eq!(abstained["status"].as_str(), Some("abstained"));
@@ -1385,11 +1402,19 @@ mod tests {
             activation_digest: "b".repeat(64),
             model: "none:lexical".to_string(),
             model_revision: "not-applicable".to_string(),
+            execution_profile: execution_profile_value(
+                QueryInputPolicy::Native,
+                &NlPlanConfig::default(),
+            ),
+            execution_profile_sha256: execution_profile_sha256(
+                QueryInputPolicy::Native,
+                &NlPlanConfig::default(),
+            ),
         }
     }
 
     #[test]
-    fn v3_record_assembles_captures_and_byte_spans() {
+    fn current_record_assembles_captures_and_byte_spans() {
         let pack = load_fixture(&v3_pack_fixture()).expect("v3 pack loads");
         let identity = RunnerIdentity::new(
             "quanta-sdk-runner".to_string(),
@@ -1425,6 +1450,7 @@ mod tests {
         let units = PublishedUnitRegistry::from_chunks_and_symbols(
             &BTreeMap::from([("a.txt".to_string(), vec![chunk])]),
             &BTreeMap::new(),
+            &files,
         )
         .expect("registry");
         let hit = RankedHit {
@@ -1436,10 +1462,10 @@ mod tests {
             score: 1.0,
             contributions: Vec::new(),
         };
-        let outcome = QueryOutcome::Hits {
+        let outcome = QueryOutcome::ReturnedWindow {
             hits: vec![hit],
-            outcome: quanta_index_contract::ExecutionOutcomeV2::ExactExhausted,
-            detail: ResponseDetail::default(),
+            window: quanta_index_contract::QueryResultWindowV2::exact_probe(1),
+            explanation: Some(RouteExplanation::default()),
             latency: Duration::from_millis(3),
         };
         let outcomes = BTreeMap::from([(("T1".to_string(), "lexical".to_string()), outcome)]);
@@ -1465,24 +1491,25 @@ mod tests {
             units: &units,
         })
         .expect("v3 record assembles");
-        assert_eq!(record["schema_version"], serde_json::json!(RUNNER_SCHEMA_VERSION));
         assert_eq!(
-            record["runner"]["query_input_policy"]["policy"],
+            record["schema_version"],
+            serde_json::json!(RUNNER_SCHEMA_VERSION)
+        );
+        assert!(record["runner"].get("query_input_policy").is_none());
+        assert_eq!(
+            record["captures"]["cap-1"]["execution_profile"]["policy"],
             serde_json::json!("native")
         );
         assert_eq!(
-            record["runner"]["query_input_policy"]["policy_config_sha256"],
-            serde_json::json!(sha256_hex(
-                crate::query_plan::policy_config_canonical(
-                    QueryInputPolicy::Native,
-                    &NlPlanConfig::default()
-                )
-                .as_bytes()
+            record["captures"]["cap-1"]["execution_profile_sha256"],
+            serde_json::json!(execution_profile_sha256(
+                QueryInputPolicy::Native,
+                &NlPlanConfig::default()
             ))
         );
         assert_eq!(
             record["results"][0]["query_identity"]["original_query_sha256"],
-            serde_json::json!(sha256_hex("needle".as_bytes()))
+            serde_json::json!(sha256_hex(b"needle"))
         );
         assert_eq!(record["comparison_contract"], pack.comparison_contract);
         assert_eq!(
@@ -1504,7 +1531,7 @@ mod tests {
     }
 
     #[test]
-    fn v3_record_refuses_broken_capture_binding() {
+    fn current_record_refuses_broken_capture_binding() {
         let pack = load_fixture(&v3_pack_fixture()).expect("v3 pack loads");
         let identity = RunnerIdentity::new(
             "r".to_string(),
@@ -1515,7 +1542,7 @@ mod tests {
             "l".to_string(),
         )
         .expect("identity");
-        let failed = QueryOutcome::Failed {
+        let failed = QueryOutcome::SdkFailure {
             status: "error",
             code: "boom".to_string(),
             message: "typed".to_string(),

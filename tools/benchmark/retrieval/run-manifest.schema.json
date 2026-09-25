@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://quanta-index.invalid/benchmark/retrieval/run-manifest-v1",
-  "title": "Retrieval run manifest v1 (W0-A comparison contract)",
+  "$id": "https://quanta-index.invalid/benchmark/retrieval/run-manifest-v2",
+  "title": "Retrieval run manifest v2",
   "description": "Driver-observed manifest. Booleans/counts here are NEVER verdict authority: every digest claim is re-derived by the verdict from the sibling artifact bytes (paths resolve relative to this manifest file; absolute paths and '..' escape are refused). Contract/SDK evidence binds verification receipts to their underlying test-result artifacts by digest.",
   "type": "object",
   "additionalProperties": false,
   "required": ["manifest_version", "blinding", "isolation_method", "access_block_log", "scope", "claims", "repetitions", "evidence", "host", "artifacts", "provenance"],
   "properties": {
-    "manifest_version": {"const": 1},
+    "manifest_version": {"const": 2},
     "blinding": {"enum": ["isolated", "attested"]},
     "isolation_method": {"type": "string", "minLength": 1},
     "access_block_log": {"type": "string", "minLength": 1},
@@ -90,7 +90,7 @@
     },
     "artifacts": {
       "type": "object", "additionalProperties": false,
-      "required": ["suite", "query_pack", "corpus_manifest", "mapping_proof", "latency_matrix", "host_start", "host_end", "host_profile", "records", "reports", "quanta_manifests", "semble_adapter_manifest", "semble_lockfile", "semble_native", "phase_metrics", "resource_metrics", "protocol_lock"],
+      "required": ["suite", "query_pack", "corpus_manifest", "mapping_proof", "latency_matrix", "host_start", "host_end", "host_profile", "records", "reports", "quanta_manifests", "semble_adapter_manifest", "semble_lockfile", "semble_native", "semble_model_cache_manifests", "phase_metrics", "resource_metrics", "protocol_lock"],
       "properties": {
         "suite": {"type": "string", "minLength": 1},
         "query_pack": {"type": "string", "minLength": 1},
@@ -124,6 +124,10 @@
         "semble_native": {
           "type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1},
           "description": "Every rep's native.json: the verdict re-derives the full latency matrix from records + natives."
+        },
+        "semble_model_cache_manifests": {
+          "type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1},
+          "description": "One symlink-free pinned model cache manifest per Semble capture root."
         },
         "phase_metrics": {
           "type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1},

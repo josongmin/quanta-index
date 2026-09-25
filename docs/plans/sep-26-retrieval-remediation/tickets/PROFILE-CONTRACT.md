@@ -1,6 +1,6 @@
 # RBR Canonical Profile Contract — Query/Producer/Comparator/Diagnostic provenance
 
-- 작성 근거: [RBR-00](RBR-00-proof-contract.md) 작업 3. 상태: **계약 정의 only, 구현 `NOT_RUN`**.
+- 작성 근거: [RBR-00](RBR-00-proof-contract.md) 작업 3. 현재 wire 구현 기준: pair-spec v2, protocol-lock v2, runner record v5, diagnostic v3.
 - 이 문서는 RBR-01/02/03/04가 공통으로 사용하는 profile 계약의 단일 canonical 정의다. 구현 티켓은 이 정의를 변경 없이 구현하며, 변경이 필요하면 이 문서를 먼저 고치고 관련 receipt를 무효화한다.
 - 이 디렉터리는 retrieval source closure에 포함되므로(2026-09-26 등록), 이 계약의 사후 변경은 기존 proof/receipt를 무효화한다.
 
@@ -12,11 +12,11 @@
 4. **레거시 twin 금지.** 기존 internal IR에 병렬 스키마를 만들지 않는다. wire/artifact 확장은 producer·consumer·negative fixture·replay를 한 단위로 수정한다.
 5. **실행 관측과 기여 분리.** "실행된 lane/engine"과 "결과에 기여한 lane/engine"는 독립 필드다. free-text trace는 raw 보존이며 임의 파싱 결과를 authority로 승격하지 않는다.
 
-## 2. Query input policy (구현: RBR-02)
+## 2. Capture-scoped execution profile (구현: RBR-02/RBR-03)
 
 | 필드 | 값 계약 | authority | hash owner | frozen copy | validator | consumer |
 | --- | --- | --- | --- | --- | --- | --- |
-| `query_input_policy` | `native` \| `literal` \| `natural_language`. unknown 거부 | 이 계약 + `query_plan.rs` | runner (policy enum을 profile SHA 입력에 포함) | pair-spec/run-manifest의 query 섹션 | run.py spec 검증: unknown/missing policy 거부 | main.rs cold/warmup/measured, record.rs |
+| `captures[].execution_profile` | Quanta: `native` \| `literal` \| `natural_language`; Semble: §5 profile. unknown/missing 거부 | frozen pair-spec v2 + protocol-lock v2 | canonical profile JSON SHA-256 | capture와 protocol lock | spec/protocol/capture content와 digest 모두 대조 | main.rs/record.rs/semble.py |
 | `native` | 원문을 DSL 그대로 전달. operator/precedence 불변 | lq-norm parser 공개 계약 | — | 동일 | AST round-trip 회귀 | sdk.rs `query_route` |
 | `literal` | 전체 문자열의 안전한 literal화. escaping 규칙은 검증된 DSL emitter 재사용 | `query_plan.rs` | effective lexical request SHA | 동일 | quoting/backslash/colon/operator/Unicode/qualified-name fixture | lexical lane |
 | `natural_language` | 원문은 semantic text 그대로, lexical은 **결정적 토큰 OR 계획**. 토큰화·한도·중복 제거·escaping은 profile에 고정 | `query_plan.rs` + 이 계약 | policy config SHA + effective request SHA | 동일 | 빈 토큰/초과 길이는 typed refusal, match-all fallback 금지; gold/evaluator 파일 접근 부정 테스트 | lexical lane + semantic lane |
@@ -24,16 +24,15 @@
 
 ## 3. Original/effective query identity (구현: RBR-02)
 
-모든 query record는 다음 4개 SHA를 개별 필드로 가지며, replay validator는 전부 재계산해 대조한다.
+Quanta query result는 아래 3개 SHA를 가지며, policy/config identity는 capture profile과 `execution_profile_sha256`에 한 번 기록한다. Semble result는 `original_query_sha256`과 실제 전달 원문의 `submitted_query_sha256`만 가진다.
 
 | 필드 | 정의 | hash owner | validator |
 | --- | --- | --- | --- |
 | `original_query_sha256` | 호출자 원문 bytes | runner | run.py record/replay |
-| `query_policy_config_sha256` | policy enum + 토큰화/한도/escaping 설정의 canonical JSON | `query_plan.rs` → runner가 기록 | 동일 |
 | `effective_lexical_request_sha256` | 실제 lexical lane에 전달된 직렬화 요청 | `query_plan.rs` | 동일 |
 | `semantic_text_sha256` | semantic lane에 전달된 text bytes (원문과 다를 수 있음) | runner | 동일 |
 
-- 두 제품(Quanta/Semble)에는 **동일 원문**을 전달하고 각 변환 identity는 별도 기록한다.
+- 두 제품(Quanta/Semble)에는 **동일 원문**을 전달하고 제품별 identity shape를 혼합하지 않는다.
 - planning 비용의 latency 포함 여부는 `planning_cost_in_latency: bool`로 protocol에 고정한다. 결과를 본 뒤 바꾸지 않는다.
 
 ## 4. Producer/parser profile (구현: RBR-04/06)
@@ -49,9 +48,9 @@
 
 | 필드 | 계약 | authority | validator |
 | --- | --- | --- | --- |
-| `semble_profile` | `native-default` \| `hybrid-no-rerank` \| `lexical-only` \| `semantic-only` | 이 계약 + semble.py | unknown mode 거부, phase별 mode 차이 거부 |
+| `execution_profile.mode` | `native-default` \| `hybrid-no-rerank` \| `lexical-only` \| `semantic-only` | pair-spec/protocol-lock + semble.py | unknown mode 및 phase별 profile SHA 차이 거부 |
 | `actual_alpha` / `actual_rerank` | 요청 값이 아니라 **실행된 값**. alpha 0/1에서도 dual-lane 실행은 점수 ablation으로 표기 | worker가 관측해 기록 | 위조 시 rejection |
-| `lane_call_evidence` | pure-lane profile에서 반대 lane 호출 0임을 spy/sentinel으로 증명 | adapter 테스트 | lexical-only encode/dense 호출 0, semantic-only BM25 호출 0 |
+| `execution_events` | `(rep, phase, phase_iteration, task_id, call_ordinal)`별 actual alpha/rerank, lane count, candidate depth, query/profile SHA | pinned module-local search/resolve/lane wrapper | coverage·event digest·pure lane·dual lane 규칙 대조 |
 | `reference_binding` | pinned upstream 함수/소스 hash + library version 묶음. 사용 불가 시 explicit unsupported | semble.py + 외부 venv hash | version/API mismatch 거부 |
 
 ## 6. Diagnostic schema (구현: RBR-01)

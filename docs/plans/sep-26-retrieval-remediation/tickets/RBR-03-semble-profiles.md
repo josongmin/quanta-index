@@ -1,6 +1,6 @@
 # RBR-03 — Semble native-default와 통제 실험 분리
 
-- 우선순위: P0. 구현/검증: `NOT_RUN`. 선행: RBR-00.
+- 우선순위: P0. 구현 및 dirty-source 실핀 프로파일 진단: `VERIFIED`; 두 레포의 exploratory pair: `VERIFIED`; 현재 소스의 clean-source receipt와 W0-B pair 자격 판정: `NOT_RUN`. 선행: RBR-00.
 - 성격: 비교 모드 표기/실행 계약 공백. 설치된 Semble 0.6.0을 기준으로 한다.
 
 ## 파일·함수
@@ -31,3 +31,10 @@
 - native-default 결과가 같은 pinned upstream 호출과 일치한다. version/API mismatch와 unknown mode는 거부한다.
 - actual settings 위조, phase별 mode 차이, 파일 누락, 다른 SHA의 corpus를 거부한다.
 - 각 profile의 real pinned Semble 개발 캡처와 raw output이 남는다. strict pair 자격은 [TEST-PLAN](TEST-PLAN.md)와 RBR-12에서 별도 판정한다.
+
+## 2026-09-26 실행 상태
+
+- 고정 Semble 0.6.0과 GIN 99파일·20질의 입력에서 4 profile을 현재 worker로 다시 실행했다. 각 실행 이벤트 40건, 파일 누락/추가/해시 불일치 0건, pure-lane 격리 확인. 원본 경로, SHA-256, 재현 명령은 [비교 실행 기록](../../sep-23-retrieval-bench/tickets/CODE-SEARCH-COMPARATORS-2026-09.md)에 있다.
+- 어댑터가 총 BM25/semantic 호출 수와 각 이벤트의 lane 진입·candidate depth, 관측 alpha 범위를 대조하도록 보강했다. 관련 적대 테스트와 전체 Python retrieval 계약 테스트(287 passed, 32 subtests passed)가 통과했다.
+- 같은 native-default profile을 Quanta와 Gin·ripgrep의 20질의씩 pair로 실제 실행했다. 두 promoted verdict 모두 `PAIR_VALID=pass`, 80/80 시도, 오류 0이며 replay가 byte-for-byte 동일하다. 점수·지연·원본 해시는 [비교 실행 기록](../../sep-23-retrieval-bench/tickets/CODE-SEARCH-COMPARATORS-2026-09.md)에 있다. 이 과정에서 hybrid lane-prefix와 multi-route capture 검증기의 실제 불일치를 발견해 수정하고 회귀 테스트를 추가했다.
+- 위 실행은 한 번의 warmup·측정 반복으로 만든 개발 진단이다. 독립 gold, W0-B 승인, 현재 소스 clean receipt와 qualified pair는 없다. 두 exploratory verdict에서 `QUALITY_DELTA`와 `PERF_QUALIFIED`는 `not_applicable`이고, qualified claim 자체는 `NOT_RUN`이다.

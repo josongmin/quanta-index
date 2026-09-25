@@ -1,18 +1,18 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://quanta-index.invalid/benchmark/retrieval/runner-v4",
-  "title": "Frozen retrieval runner record v4 (W0-A comparison contract + RBR-02 query identity)",
-  "description": "Only accepted runner artifact shape. Carries the comparison contract, per-capture provenance with binary identity and generation/receipt binding, route->capture_id references, nullable timings (unknown is null; 0 only when actually measured), and (v4) the query input policy plus per-result query identity digests. v3 records remain immutable history validated by the v3 schema.",
+  "$id": "https://quanta-index.invalid/benchmark/retrieval/runner-v5",
+  "title": "Frozen retrieval runner record v5 (capture-scoped execution profiles)",
+  "description": "Current runner artifact shape. Carries the comparison contract, per-capture provenance with binary identity, generation/receipt binding, and a canonical execution profile plus digest, route->capture_id references, nullable timings (unknown is null; 0 only when actually measured), and profile-derived per-result query identity digests. v3/v4 records remain immutable historical inputs validated by the evaluator.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "query_pack_sha256", "comparison_contract", "runner", "captures", "route_provenance", "results"],
   "properties": {
-    "schema_version": {"const": 4},
+    "schema_version": {"const": 5},
     "query_pack_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "comparison_contract": {"$ref": "#/$defs/comparison_contract"},
     "runner": {
       "type": "object", "additionalProperties": false,
-      "required": ["name", "revision", "run_id", "tokenizer", "tokenizer_budget_version", "gold_access", "blinding", "isolation_method", "access_block_log", "query_input_policy"],
+      "required": ["name", "revision", "run_id", "tokenizer", "tokenizer_budget_version", "gold_access", "blinding", "isolation_method", "access_block_log"],
       "properties": {
         "name": {"type": "string", "minLength": 1},
         "revision": {"type": "string", "minLength": 1},
@@ -22,8 +22,7 @@
         "gold_access": {"const": false},
         "blinding": {"enum": ["isolated", "attested"]},
         "isolation_method": {"type": "string", "minLength": 1},
-        "access_block_log": {"type": "string", "minLength": 1},
-        "query_input_policy": {"$ref": "#/$defs/query_input_policy"}
+        "access_block_log": {"type": "string", "minLength": 1}
       }
     },
     "captures": {
@@ -40,39 +39,6 @@
     "results": {"type": "array", "items": {"$ref": "#/$defs/result"}}
   },
   "$defs": {
-    "query_input_policy": {
-      "type": "object", "additionalProperties": false,
-      "required": ["policy", "config", "policy_config_sha256", "planning_cost_in_latency"],
-      "properties": {
-        "policy": {
-          "enum": ["native", "literal", "natural_language"],
-          "description": "RBR-02 explicit query input policy. Unknown values are rejected; there is no implicit default."
-        },
-        "config": {
-          "type": "object", "additionalProperties": false,
-          "properties": {
-            "max_token_chars": {"type": "integer", "minimum": 1},
-            "max_tokens": {"type": "integer", "minimum": 1},
-            "min_token_chars": {"type": "integer", "minimum": 1}
-          },
-          "description": "Empty for native/literal; carries the pinned natural-language plan limits otherwise."
-        },
-        "policy_config_sha256": {
-          "type": "string", "pattern": "^[0-9a-f]{64}$",
-          "description": "SHA-256 of the canonical policy-config JSON; the evaluator re-derives it independently."
-        },
-        "planning_cost_in_latency": {
-          "type": "boolean",
-          "description": "Whether the one-time planning cost is inside measured query latency. Planning happens before the cold probe, so it is false."
-        }
-      },
-      "allOf": [
-        {
-          "if": {"properties": {"policy": {"const": "natural_language"}}},
-          "then": {"properties": {"config": {"required": ["max_token_chars", "max_tokens", "min_token_chars"]}}}
-        }
-      ]
-    },
     "query_identity": {
       "type": "object", "additionalProperties": false,
       "required": ["original_query_sha256", "effective_lexical_request_sha256", "semantic_text_sha256"],
@@ -110,7 +76,7 @@
     },
     "capture": {
       "type": "object", "additionalProperties": false,
-      "required": ["system", "chunk_strategy", "chunk_config", "runner_binary", "searchd_binary", "generation", "receipt_digest", "activation_digest", "model", "model_revision"],
+      "required": ["system", "chunk_strategy", "chunk_config", "runner_binary", "searchd_binary", "generation", "receipt_digest", "activation_digest", "model", "model_revision", "execution_profile", "execution_profile_sha256"],
       "properties": {
         "system": {"enum": ["quanta", "semble"]},
         "chunk_strategy": {
@@ -164,7 +130,9 @@
           "description": "Quanta: composite activation-identity digest. Semble: digest of the canonical native rows normalized into this record."
         },
         "model": {"type": "string", "minLength": 1},
-        "model_revision": {"type": "string", "minLength": 1}
+        "model_revision": {"type": "string", "minLength": 1},
+        "execution_profile": {"$ref": "#/$defs/execution_profile"},
+        "execution_profile_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
       },
       "allOf": [
         {
@@ -183,6 +151,58 @@
                 }
               }
             }
+          }
+        }
+      ]
+    },
+    "execution_profile": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["profile_id", "policy", "config", "planning_cost_in_latency"],
+          "properties": {
+            "profile_id": {"const": "quanta-native-v1"},
+            "policy": {"const": "native"},
+            "config": {"type": "object", "additionalProperties": false, "maxProperties": 0},
+            "planning_cost_in_latency": {"const": false}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["profile_id", "policy", "config", "planning_cost_in_latency"],
+          "properties": {
+            "profile_id": {"const": "quanta-literal-v1"},
+            "policy": {"const": "literal"},
+            "config": {"type": "object", "additionalProperties": false, "maxProperties": 0},
+            "planning_cost_in_latency": {"const": false}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["profile_id", "policy", "config", "planning_cost_in_latency"],
+          "properties": {
+            "profile_id": {"const": "quanta-natural-language-ucd17-v2"},
+            "policy": {"const": "natural_language"},
+            "config": {
+              "type": "object", "additionalProperties": false,
+              "required": ["max_token_chars", "max_tokens", "min_token_chars"],
+              "properties": {
+                "max_token_chars": {"const": 96},
+                "max_tokens": {"const": 32},
+                "min_token_chars": {"const": 1}
+              }
+            },
+            "planning_cost_in_latency": {"const": false}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["profile_id", "mode", "alpha", "rerank"],
+          "properties": {
+            "profile_id": {"enum": ["semble-native-default-v1", "semble-hybrid-no-rerank-v1", "semble-lexical-only-v1", "semble-semantic-only-v1"]},
+            "mode": {"enum": ["native-default", "hybrid-no-rerank", "lexical-only", "semantic-only"]},
+            "alpha": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+            "rerank": {"enum": ["upstream-content-default", false, "not_applicable"]}
           }
         }
       ]

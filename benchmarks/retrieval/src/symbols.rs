@@ -21,7 +21,7 @@ use tree_sitter::{Language, Node, Parser, Query, QueryCursor, StreamingIterator}
 
 use crate::sha256_hex;
 
-/// Pinned grammar identity carried into the batch manifest digest. The
+/// Pinned grammar identity bound into every scope digest (batch.rs). The
 /// versions mirror the workspace lockfile; changing a grammar changes the
 /// digest and invalidates frozen evidence.
 pub const SYMBOL_PRODUCER_GRAMMARS: &str = concat!(
@@ -44,7 +44,9 @@ pub enum SymbolLanguage {
     Python,
     JavaScript,
     /// `is_tsx` selects the TSX grammar variant (same language code).
-    TypeScript { is_tsx: bool },
+    TypeScript {
+        is_tsx: bool,
+    },
 }
 
 /// Typed extraction failures. Every variant is a coverage failure that the
@@ -57,6 +59,11 @@ pub enum SymbolExtractError {
     ParseFailure { path: String },
     /// Two definitions collapsed onto one deterministic id.
     IdCollision { path: String, symbol_id: String },
+    /// The producer itself is inconsistent with the pinned grammar (query
+    /// construction failed or a kind code is unregistered). A producer
+    /// defect aborts the whole corpus run; it is never a per-file parse
+    /// failure.
+    ProducerDefect { detail: String },
 }
 
 impl std::fmt::Display for SymbolExtractError {
@@ -66,6 +73,9 @@ impl std::fmt::Display for SymbolExtractError {
             Self::ParseFailure { path } => write!(formatter, "parse failure: {path}"),
             Self::IdCollision { path, symbol_id } => {
                 write!(formatter, "symbol id collision in {path}: {symbol_id}")
+            }
+            Self::ProducerDefect { detail } => {
+                write!(formatter, "symbol producer defect: {detail}")
             }
         }
     }
@@ -83,8 +93,8 @@ impl SymbolLanguage {
             "rs" => Some(Self::Rust),
             "go" => Some(Self::Go),
             "py" => Some(Self::Python),
-            "js" | "mjs" | "cjs" => Some(Self::JavaScript),
-            "ts" => Some(Self::TypeScript { is_tsx: false }),
+            "js" | "mjs" | "cjs" | "jsx" => Some(Self::JavaScript),
+            "ts" | "mts" | "cts" => Some(Self::TypeScript { is_tsx: false }),
             "tsx" => Some(Self::TypeScript { is_tsx: true }),
             _ => None,
         }
@@ -97,7 +107,9 @@ impl SymbolLanguage {
             Self::Python => tree_sitter_python::LANGUAGE.into(),
             Self::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
             Self::TypeScript { is_tsx: true } => tree_sitter_typescript::LANGUAGE_TSX.into(),
-            Self::TypeScript { is_tsx: false } => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+            Self::TypeScript { is_tsx: false } => {
+                tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()
+            }
         }
     }
 
@@ -108,17 +120,6 @@ impl SymbolLanguage {
             Self::Python => "python",
             Self::JavaScript => "javascript",
             Self::TypeScript { .. } => "typescript",
-        }
-    }
-
-    fn grammar_identity(self) -> &'static str {
-        match self {
-            Self::Rust => "rust@0.24",
-            Self::Go => "go@0.25",
-            Self::Python => "python@0.25",
-            Self::JavaScript => "javascript@0.25",
-            Self::TypeScript { is_tsx: false } => "typescript@0.23",
-            Self::TypeScript { is_tsx: true } => "typescript@0.23+tsx",
         }
     }
 
@@ -145,14 +146,16 @@ impl SymbolLanguage {
             (_, "function_declaration")
             | (_, "generator_function_declaration")
             | (_, "function_item")
-            | (_, "function_definition") => {
-                Some(if container_is_type { "method" } else { "function" })
-            }
+            | (_, "function_definition") => Some(if container_is_type {
+                "method"
+            } else {
+                "function"
+            }),
             (_, "method_declaration") | (_, "method_definition") => Some("method"),
             (_, "class_declaration")
             | (_, "abstract_class_declaration")
             | (_, "class_definition") => Some("class"),
-            (_, "struct_item") | (_, "type_spec") => Some("struct"),
+            (_, "struct_item") => Some("struct"),
             (_, "enum_item") => Some("enum"),
             (_, "trait_item") => Some("trait"),
             (_, "interface_declaration") => Some("interface"),
@@ -162,12 +165,31 @@ impl SymbolLanguage {
         }
     }
 
+    /// Container kinds that make a DIRECT child fn a method rather than
+    /// a local function.
+    fn is_type_container(self, node_kind: &str) -> bool {
+        match self {
+            Self::Rust => matches!(node_kind, "impl_item" | "trait_item"),
+            Self::Go => matches!(node_kind, "method_declaration"),
+            Self::Python => matches!(node_kind, "class_definition"),
+            Self::JavaScript | Self::TypeScript { .. } => matches!(
+                node_kind,
+                "class_declaration" | "abstract_class_declaration"
+            ),
+        }
+    }
+
     /// Node kinds that introduce a named container for qualification.
     fn is_container(self, node_kind: &str) -> bool {
         match self {
             Self::Rust => matches!(
                 node_kind,
-                "impl_item" | "trait_item" | "struct_item" | "enum_item" | "mod_item" | "function_item"
+                "impl_item"
+                    | "trait_item"
+                    | "struct_item"
+                    | "enum_item"
+                    | "mod_item"
+                    | "function_item"
             ),
             Self::Go => matches!(node_kind, "method_declaration"),
             Self::Python => matches!(node_kind, "class_definition"),
@@ -177,6 +199,9 @@ impl SymbolLanguage {
                     | "abstract_class_declaration"
                     | "function_declaration"
                     | "generator_function_declaration"
+                    | "module"
+                    | "internal_module"
+                    | "enum_declaration"
             ),
         }
     }
@@ -185,8 +210,19 @@ impl SymbolLanguage {
     fn container_name<'tree>(self, node: Node<'tree>, source: &str) -> Option<String> {
         if self == Self::Rust && node.kind() == "impl_item" {
             // impl blocks name their container through the `type` field.
+            // Generic argument lists (`Foo<T>`) are stripped so the same
+            // logical type yields one qualified-name spelling.
             let ty = node.child_by_field_name("type")?;
-            return Some(ty.utf8_text(source.as_bytes()).ok()?.to_string());
+            let text = ty.utf8_text(source.as_bytes()).ok()?;
+            let Some(open) = text.find('<') else {
+                return Some(text.to_string());
+            };
+            if !text.ends_with('>') || text.bytes().filter(|b| *b == b'<').count() != 1 {
+                // Malformed or operator-heavy generics: keep the raw text
+                // rather than mangling it.
+                return Some(text.to_string());
+            }
+            return Some(text[..open].to_string());
         }
         let name = node.child_by_field_name("name")?;
         Some(name.utf8_text(source.as_bytes()).ok()?.to_string())
@@ -206,7 +242,10 @@ fn find_descendant_kind<'tree>(node: Node<'tree>, kind: &str) -> Option<Node<'tr
             continue;
         }
         loop {
-            if cursor.goto_next_sibling() {
+            // Never leave the subtree: sibling moves are only valid from
+            // a child of `node`, and returning to `node` itself means the
+            // walk is exhausted.
+            if cursor.node().id() != node.id() && cursor.goto_next_sibling() {
                 break;
             }
             if !cursor.goto_parent() || cursor.node().id() == node.id() {
@@ -222,7 +261,10 @@ fn find_descendant_kind<'tree>(node: Node<'tree>, kind: &str) -> Option<Node<'tr
 fn go_receiver_type<'tree>(def_node: Node<'tree>, source: &str) -> Option<String> {
     let receiver = def_node.child_by_field_name("receiver")?;
     let type_node = find_descendant_kind(receiver, "type_identifier")?;
-    type_node.utf8_text(source.as_bytes()).ok().map(str::to_string)
+    type_node
+        .utf8_text(source.as_bytes())
+        .ok()
+        .map(str::to_string)
 }
 
 const RUST_QUERY: &str = r#"
@@ -268,13 +310,13 @@ struct LineIndex {
 
 impl LineIndex {
     fn new(source: &str) -> Self {
-        let mut starts = vec![0];
-        for (offset, byte) in source.bytes().enumerate() {
-            if byte == b'\n' {
-                starts.push(offset + 1);
-            }
+        // Single line-model source of truth: the corpus splitter mirrors
+        // Python splitlines over `\n`, `\r\n`, and lone `\r`. A private
+        // `\n`-only model would silently disagree with the corpus/prove
+        // path on lone-CR files (audit finding: line-model divergence).
+        Self {
+            starts: crate::corpus::split_line_starts(source).0,
         }
-        Self { starts }
     }
 
     fn line(&self, byte_offset: usize) -> u32 {
@@ -323,12 +365,11 @@ fn query_definitions(
     source: &str,
 ) -> Result<Vec<RawDefinition>, SymbolExtractError> {
     let grammar = language.grammar();
-    let query = Query::new(&grammar, language.query()).map_err(|_| {
+    let query = Query::new(&grammar, language.query()).map_err(|error| {
         // Query construction fails only when the pinned grammar and the
-        // shipped query drift: a producer defect, surfaced as a typed
-        // failure for the file.
-        SymbolExtractError::ParseFailure {
-            path: String::new(),
+        // shipped query drift: a producer defect, never a file failure.
+        SymbolExtractError::ProducerDefect {
+            detail: format!("grammar query construction failed: {error}"),
         }
     })?;
     let mut cursor = QueryCursor::new();
@@ -354,19 +395,21 @@ fn query_definitions(
             Err(_) => continue,
         };
         let mut containers: Vec<String> = Vec::new();
-        let mut container_is_type = false;
+        // The method/function decision uses the NEAREST container
+        // ancestor's kind: a fn whose innermost enclosing container is a
+        // type-like scope (impl/trait/class) is a method; a fn nested in
+        // a method body has the enclosing function as its nearest
+        // container and stays a function.
+        let mut nearest_type_container = false;
+        let mut seen_container = false;
         let mut parent = def_node.parent();
         while let Some(node) = parent {
             if language.is_container(node.kind()) {
                 if let Some(name) = language.container_name(node, source) {
-                    container_is_type = container_is_type
-                        || matches!(
-                            node.kind(),
-                            "impl_item"
-                                | "class_declaration"
-                                | "abstract_class_declaration"
-                                | "class_definition"
-                        );
+                    if !seen_container {
+                        seen_container = true;
+                        nearest_type_container = language.is_type_container(node.kind());
+                    }
                     containers.push(name);
                 }
             }
@@ -376,15 +419,21 @@ fn query_definitions(
             // Go methods carry their container (the receiver type) on the
             // node itself rather than through an ancestor.
             if let Some(receiver_type) = go_receiver_type(def_node, source) {
-                container_is_type = true;
+                nearest_type_container = true;
                 containers.push(receiver_type);
             }
         }
         containers.reverse();
-        let mut kind = language.kind_for(def_node.kind(), container_is_type);
+        let mut kind = language.kind_for(def_node.kind(), nearest_type_container);
         if language == SymbolLanguage::Go && def_node.kind() == "type_spec" {
+            // `type X ...` is classified by its type child: struct_type,
+            // interface_type, or a plain definition (type_alias).
             if find_descendant_kind(def_node, "interface_type").is_some() {
                 kind = Some("interface");
+            } else if find_descendant_kind(def_node, "struct_type").is_some() {
+                kind = Some("struct");
+            } else {
+                kind = Some("type_alias");
             }
         }
         let Some(kind) = kind else {
@@ -422,10 +471,7 @@ fn deterministic_symbol_id(
 /// Returns a typed [`SymbolExtractError`] for unsupported files, parse
 /// failures, or deterministic-id collisions. Empty output is a legitimate
 /// result (a file with no named definitions), not a failure.
-pub fn extract_symbols(
-    path: &str,
-    source: &str,
-) -> Result<Vec<SymbolRecord>, SymbolExtractError> {
+pub fn extract_symbols(path: &str, source: &str) -> Result<Vec<SymbolRecord>, SymbolExtractError> {
     let Some(language) = SymbolLanguage::from_path(path) else {
         return Err(SymbolExtractError::Unsupported {
             path: path.to_string(),
@@ -434,12 +480,11 @@ pub fn extract_symbols(
     let tree = parse(language, path, source)?;
     let definitions = query_definitions(language, &tree, source)?;
     let line_index = LineIndex::new(source);
-    let language_code =
-        LanguageCode::from_code_str(language.language_code()).ok_or_else(|| {
-            SymbolExtractError::Unsupported {
-                path: path.to_string(),
-            }
-        })?;
+    let language_code = LanguageCode::from_code_str(language.language_code()).ok_or_else(|| {
+        SymbolExtractError::Unsupported {
+            path: path.to_string(),
+        }
+    })?;
     let repo_path = RepoRelativePath::new(path.to_string());
     let mut records = Vec::with_capacity(definitions.len());
     let mut seen_ids: BTreeSet<String> = BTreeSet::new();
@@ -467,8 +512,11 @@ pub fn extract_symbols(
             Some(definition.containers.join(separator))
         };
         let kind = SymbolKindCode::from_code_str(definition.kind).ok_or_else(|| {
-            SymbolExtractError::ParseFailure {
-                path: path.to_string(),
+            SymbolExtractError::ProducerDefect {
+                detail: format!(
+                    "unregistered symbol kind emitted for {path}: {}",
+                    definition.kind
+                ),
             }
         })?;
         let symbol_id = deterministic_symbol_id(
@@ -516,8 +564,6 @@ pub fn extract_symbols(
             relationship: SymbolRelationship::Def,
         });
     }
-    let _ = SYMBOL_PRODUCER_GRAMMARS;
-    let _ = language.grammar_identity();
     Ok(records)
 }
 
@@ -540,12 +586,11 @@ pub fn extract_corpus_symbols(
             unsupported_files.push(path.clone());
             continue;
         }
-        let records = extract_symbols(path, &file.text).map_err(|error| {
-            crate::BenchError::Chunk {
+        let records =
+            extract_symbols(path, &file.text).map_err(|error| crate::BenchError::Chunk {
                 path: path.clone(),
                 message: format!("symbol extraction coverage failure: {error}"),
-            }
-        })?;
+            })?;
         let _previous = symbols.insert(path.clone(), records);
     }
     Ok(CorpusSymbolExtraction {
@@ -584,10 +629,7 @@ mod tests {
         let method = find(&records, "start");
         assert_eq!(method.symbol_kind.as_str(), "method");
         assert_eq!(qualified(method), "Engine::start");
-        assert_eq!(
-            method.container_qualified_name.as_deref(),
-            Some("Engine")
-        );
+        assert_eq!(method.container_qualified_name.as_deref(), Some("Engine"));
         let helper = find(&records, "secret_helper");
         assert_eq!(helper.symbol_kind.as_str(), "method");
         assert_eq!(qualified(helper), "Engine::secret_helper");
@@ -599,10 +641,11 @@ mod tests {
         assert_eq!(qualified(nested), "inner::nested");
         let structure = find(&records, "Engine");
         assert_eq!(structure.symbol_kind.as_str(), "struct");
-        assert!(records.iter().all(|record| record
-            .definition_span
-            .byte_start
-            <= record.definition_span.byte_end));
+        assert!(
+            records
+                .iter()
+                .all(|record| record.definition_span.byte_start <= record.definition_span.byte_end)
+        );
         assert_eq!(records[0].local_name.as_ref(), "Engine");
     }
 
@@ -645,8 +688,7 @@ mod tests {
         let decorated = find(&records, "build");
         let def_offset = source.find("def build").expect("def offset");
         assert_eq!(
-            decorated.definition_span.byte_start as usize,
-            def_offset,
+            decorated.definition_span.byte_start as usize, def_offset,
             "decorator is not part of the definition span"
         );
         let free = find(&records, "standalone");
@@ -662,10 +704,7 @@ mod tests {
                   }\n\
                   function main() {}\n";
         let records = extract_symbols("src/queue.js", js).expect("javascript parses");
-        assert_eq!(
-            find(&records, "push").symbol_kind.as_str(),
-            "method"
-        );
+        assert_eq!(find(&records, "push").symbol_kind.as_str(), "method");
         assert_eq!(qualified(find(&records, "push")), "Queue.push");
         assert_eq!(find(&records, "make").symbol_kind.as_str(), "method");
         assert_eq!(find(&records, "main").symbol_kind.as_str(), "function");
@@ -676,18 +715,9 @@ mod tests {
                   insert(node: Node) {}\n\
                   }\n";
         let records = extract_symbols("src/tree.ts", ts).expect("typescript parses");
-        assert_eq!(
-            find(&records, "Node").symbol_kind.as_str(),
-            "interface"
-        );
-        assert_eq!(
-            find(&records, "Alias").symbol_kind.as_str(),
-            "type_alias"
-        );
-        assert_eq!(
-            find(&records, "insert").symbol_kind.as_str(),
-            "method"
-        );
+        assert_eq!(find(&records, "Node").symbol_kind.as_str(), "interface");
+        assert_eq!(find(&records, "Alias").symbol_kind.as_str(), "type_alias");
+        assert_eq!(find(&records, "insert").symbol_kind.as_str(), "method");
         assert_eq!(qualified(find(&records, "insert")), "Tree.insert");
     }
 
@@ -696,8 +726,7 @@ mod tests {
         let source = "export function Card(props: { title: string }) {\n  \
                       return <section>{props.title}</section>;\n\
                       }\n";
-        let records =
-            extract_symbols("ui/card.tsx", source).expect("tsx parses with jsx");
+        let records = extract_symbols("ui/card.tsx", source).expect("tsx parses with jsx");
         assert_eq!(find(&records, "Card").symbol_kind.as_str(), "function");
         assert_eq!(records[0].language.as_str(), "typescript");
     }
@@ -746,7 +775,10 @@ mod tests {
             .collect();
         assert_eq!(ids, ids_again);
         assert_eq!(first.len(), ids.len());
-        assert_eq!(BTreeSet::<&str>::from_iter(ids.iter().copied()).len(), ids.len());
+        assert_eq!(
+            BTreeSet::<&str>::from_iter(ids.iter().copied()).len(),
+            ids.len()
+        );
 
         // A different path changes the id; a moved span changes it too.
         let moved_source = "\nstruct A;\nimpl A {\n  fn go(&self) {}\n}\n";
@@ -762,6 +794,102 @@ mod tests {
         );
     }
 
+    #[test]
+    fn lone_cr_line_model_matches_the_corpus_splitter() {
+        // Audit finding 1 regression: with lone-\r separators the symbol
+        // lines must agree with the corpus line model that prove_hit
+        // resolves bytes through.
+        let source = "fn a() {}\rfn b() {}\rfn c() {}\r";
+        let records = extract_symbols("src/cr.rs", source).expect("parses");
+        let b = find(&records, "b");
+        let starts = crate::corpus::split_line_starts(source).0;
+        let line = starts.partition_point(|start| *start <= b.definition_span.byte_start as usize);
+        assert_eq!(
+            b.definition_span.line_start as usize,
+            line.max(1),
+            "symbol line must match the corpus model"
+        );
+    }
+
+    #[test]
+    fn go_value_receivers_and_plain_type_definitions() {
+        let source = "package t\n\ntype Celsius float64\n\ntype Rect struct { W float64 }\n\nfunc (r Rect) Area() float64 { return r.W }\n";
+        let records = extract_symbols("t/temp.go", source).expect("go parses");
+        assert_eq!(
+            find(&records, "Celsius").symbol_kind.as_str(),
+            "type_alias",
+            "plain Go type definitions are not structs"
+        );
+        assert_eq!(find(&records, "Rect").symbol_kind.as_str(), "struct");
+        let area = find(&records, "Area");
+        assert_eq!(area.symbol_kind.as_str(), "method");
+        assert_eq!(qualified(area), "Rect.Area", "value receivers qualify too");
+    }
+
+    #[test]
+    fn typescript_namespaces_qualify_their_members() {
+        let source = "namespace Outer {\n  export function inner() {}\n}\nfunction outside() {}\n";
+        let records = extract_symbols("ns/a.ts", source).expect("ts parses");
+        assert_eq!(qualified(find(&records, "inner")), "Outer.inner");
+        assert_eq!(find(&records, "inner").symbol_kind.as_str(), "function");
+        assert_eq!(qualified(find(&records, "outside")), "outside");
+    }
+
+    #[test]
+    fn rust_trait_methods_are_methods_and_body_fns_stay_functions() {
+        let source = "trait Store {\n    fn load(&self);\n}\nimpl Store for u8 {\n    fn load(&self) {\n        let helper = || 1;\n        fn nested() {}\n    }\n}\n";
+        let records = extract_symbols("src/store.rs", source).expect("rust parses");
+        assert_eq!(
+            find(&records, "load").symbol_kind.as_str(),
+            "method",
+            "trait methods and impl methods share the method kind"
+        );
+        let body_fn = find(&records, "nested");
+        assert_eq!(
+            body_fn.symbol_kind.as_str(),
+            "function",
+            "a fn inside a method body is a local function, not a method"
+        );
+        // The impl names its own type (`u8`), so the body fn carries the
+        // honest chain through it.
+        assert_eq!(qualified(body_fn), "u8::load::nested");
+    }
+
+    #[test]
+    fn rust_impl_generics_stripped_from_container_names() {
+        let source = "struct Vec2<T> { x: T }\nimpl<T> Vec2<T> {\n    fn first(&self) -> &T { &self.x }\n}\nimpl Vec2<u8> {\n    fn second(&self) {}\n}\n";
+        let records = extract_symbols("src/generic.rs", source).expect("rust parses");
+        assert_eq!(qualified(find(&records, "first")), "Vec2::first");
+        assert_eq!(qualified(find(&records, "second")), "Vec2::second");
+    }
+
+    #[test]
+    fn unicode_identifiers_and_attribute_span() {
+        // Python allows Unicode identifiers; Rust attributes are sibling
+        // nodes, so a struct span starts at the struct itself.
+        let py = "def 관리자():\n    pass\n";
+        let records = extract_symbols("u/py.py", py).expect("python parses");
+        assert_eq!(find(&records, "관리자").symbol_kind.as_str(), "function");
+
+        let rs = "#[derive(Debug)]\nstruct Tagged;\n";
+        let records = extract_symbols("u/a.rs", rs).expect("rust parses");
+        let tagged = find(&records, "Tagged");
+        let struct_offset = rs.find("struct Tagged").expect("offset");
+        assert_eq!(
+            tagged.definition_span.byte_start as usize, struct_offset,
+            "Rust attribute lines are not part of the definition span"
+        );
+    }
+
+    #[test]
+    fn jsx_and_versioned_ts_extensions_map() {
+        let jsx = "export function Card() { return null; }\n";
+        let records = extract_symbols("ui/card.jsx", jsx).expect("jsx parses");
+        assert_eq!(records[0].language.as_str(), "javascript");
+        let mts = "export const x: number = 1;\nexport function go(): void {}\n";
+        let records = extract_symbols("m/a.mts", mts).expect("mts parses");
+        assert_eq!(records[0].language.as_str(), "typescript");
+    }
     #[test]
     fn homonymous_definitions_keep_distinct_ids() {
         let source = "struct Walker;\nimpl Walker {\n  fn step(&self) {}\n}\n\

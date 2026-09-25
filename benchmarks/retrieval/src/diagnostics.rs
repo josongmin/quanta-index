@@ -1,6 +1,6 @@
 //! Record-bound, non-scoring SDK retrieval diagnostics.
 //!
-//! This artifact is deliberately separate from the frozen v3 runner record.
+//! This artifact is deliberately separate from the current v5 runner record.
 //! It exposes the returned candidate window and hybrid lane contributions,
 //! not the unreturned lane universe or server-internal timing.
 
@@ -9,39 +9,23 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::{Value, json};
 
 use crate::record::QueryPack;
-use crate::sdk::{QueryOutcome, ResponseDetail};
+use crate::sdk::{QueryOutcome, RouteExplanation};
 use crate::{BenchError, BenchResult};
 
-fn response_value(detail: &ResponseDetail) -> Value {
+fn lane_trace_matches_contribution(trace_lane: &str, contribution_lane: &str) -> bool {
+    trace_lane == contribution_lane || trace_lane.strip_prefix("hybrid.") == Some(contribution_lane)
+}
+
+fn explanation_value(explanation: Option<&RouteExplanation>) -> Value {
+    let Some(detail) = explanation else {
+        return Value::Null;
+    };
     json!({
-        // null means the route response carried no explanation or no
-        // observation: missing, never a silent empty or zero.
         "request_id": detail.request_id,
         "early_stop_reason": detail.early_stop_reason,
         "engines_executed": detail.engines_executed,
         "engines_touched": detail.engines_touched,
         "strategy": detail.strategy,
-        "window_returned": detail.window_returned,
-        "window_candidate_count": detail
-            .window_candidate_count
-            .map(|(kind, count)| json!({"kind": kind, "count": count})),
-        "lane_traces": detail
-            .lane_traces
-            .iter()
-            .map(|lane| {
-                json!({
-                    "lane": lane.lane,
-                    "executed": lane.executed,
-                    "contributed": lane.contributed,
-                    "candidates": lane
-                        .candidates
-                        .map(|(kind, count)| json!({"kind": kind, "count": count})),
-                    "filtered_out": lane.filtered_out,
-                    "cost": lane.cost,
-                    "profile": lane.profile,
-                })
-            })
-            .collect::<Vec<_>>(),
     })
 }
 
@@ -132,11 +116,17 @@ pub fn diagnostic_value(
             let record_row = normalized.get(&key).copied().ok_or_else(|| {
                 BenchError::Protocol("diagnostic record result disappeared".to_string())
             })?;
-            let (status, error_code, candidates, response) = match outcome {
-                QueryOutcome::Hits {
+            let classification = outcome.classification().map_err(|message| {
+                BenchError::Protocol(format!(
+                    "diagnostic typed outcome is invalid for {}/{}: {message}",
+                    task.task_id, route
+                ))
+            })?;
+            let (candidates, response_kind, response) = match outcome {
+                QueryOutcome::ReturnedWindow {
                     hits,
-                    outcome,
-                    detail,
+                    window,
+                    explanation,
                     ..
                 } => {
                     let top_k_len = usize::try_from(top_k).map_err(|error| {
@@ -150,27 +140,20 @@ pub fn diagnostic_value(
                             task.task_id, route
                         )));
                     }
-                    let status = if hits.is_empty() {
-                        if !outcome.is_exhausted() {
-                            return Err(BenchError::Protocol(format!(
-                                "diagnostic empty non-exhausted result for {}/{}",
-                                task.task_id, route
-                            )));
-                        }
-                        "abstained"
-                    } else if outcome.is_exhausted() {
-                        "success"
-                    } else {
-                        "capped"
-                    };
                     let record_candidates = record_row
                         .get("candidates")
                         .and_then(Value::as_array)
                         .ok_or_else(|| {
                             BenchError::Protocol("record candidates are malformed".to_string())
                         })?;
-                    if record_row.get("status").and_then(Value::as_str) != Some(status)
+                    let record_error_code = record_row
+                        .get("error")
+                        .and_then(|error| error.get("code"))
+                        .and_then(Value::as_str);
+                    if record_row.get("status").and_then(Value::as_str)
+                        != Some(classification.status)
                         || record_candidates.len() != hits.len()
+                        || record_error_code != classification.error_code.as_deref()
                     {
                         return Err(BenchError::Protocol(format!(
                             "diagnostic outcome differs from record for {}/{}",
@@ -265,6 +248,21 @@ pub fn diagnostic_value(
                                     "diagnostic has invalid lane contribution".to_string(),
                                 ));
                             }
+                            let executed_lanes = window
+                                .coverage()
+                                .lanes()
+                                .iter()
+                                .filter(|lane| lane.executed())
+                                .map(quanta_index_contract::LaneTraceV1::lane)
+                                .collect::<Vec<_>>();
+                            if !executed_lanes.iter().any(|lane| {
+                                lane_trace_matches_contribution(lane, contribution.lane)
+                            }) {
+                                return Err(BenchError::Protocol(format!(
+                                    "candidate contribution lane {:?} is absent from executed lanes {:?}",
+                                    contribution.lane, executed_lanes
+                                )));
+                            }
                             lanes.push(json!({
                                 "lane": contribution.lane,
                                 "rank": contribution.rank,
@@ -281,14 +279,58 @@ pub fn diagnostic_value(
                             "contributions": lanes,
                         }));
                     }
-                    (status, Value::Null, candidates, response_value(detail))
+                    (
+                        candidates,
+                        "returned_window",
+                        json!({
+                            "window": window,
+                            "explanation": explanation_value(explanation.as_ref()),
+                        }),
+                    )
                 }
-                QueryOutcome::Failed { status, code, .. } => {
-                    if !matches!(*status, "error" | "timeout" | "unavailable") || code.is_empty() {
-                        return Err(BenchError::Protocol(
-                            "diagnostic failure has invalid status/code".to_string(),
-                        ));
+                QueryOutcome::RejectedResponse {
+                    code,
+                    observed_hit_count,
+                    window,
+                    explanation,
+                    expected_pin,
+                    observed_pin,
+                    ..
+                } => {
+                    debug_assert_eq!(code, "stale_generation");
+                    debug_assert_ne!(expected_pin, observed_pin);
+                    debug_assert_eq!(u32::try_from(*observed_hit_count), Ok(window.returned()));
+                    if record_row.get("status").and_then(Value::as_str) != Some("error")
+                        || record_row
+                            .get("candidates")
+                            .and_then(Value::as_array)
+                            .is_none_or(|candidates| !candidates.is_empty())
+                        || record_row
+                            .get("error")
+                            .and_then(|error| error.get("code"))
+                            .and_then(Value::as_str)
+                            != Some(code)
+                    {
+                        return Err(BenchError::Protocol(format!(
+                            "diagnostic rejected response differs from record for {}/{}",
+                            task.task_id, route
+                        )));
                     }
+                    (
+                        Vec::new(),
+                        "rejected_response",
+                        json!({
+                            "window": window,
+                            "explanation": explanation_value(explanation.as_ref()),
+                            "observed_hit_count": observed_hit_count,
+                            "expected_generation": expected_pin,
+                            "observed_generation": observed_pin,
+                        }),
+                    )
+                }
+                QueryOutcome::SdkFailure { status, code, .. } => {
+                    debug_assert!(matches!(*status, "error" | "timeout" | "unavailable"));
+                    debug_assert!(!code.is_empty());
                     if record_row.get("status").and_then(Value::as_str) != Some(status)
                         || record_row
                             .get("candidates")
@@ -305,22 +347,23 @@ pub fn diagnostic_value(
                             task.task_id, route
                         )));
                     }
-                    (*status, json!(code), Vec::new(), Value::Null)
+                    (Vec::new(), "sdk_failure", Value::Null)
                 }
             };
             rows.push(json!({
                 "task_id": task.task_id,
                 "query_sha256": task.query_sha256,
                 "route": route,
-                "status": status,
-                "error_code": error_code,
+                "status": classification.status,
+                "error_code": classification.error_code,
                 "candidates": candidates,
+                "response_kind": response_kind,
                 "response": response,
             }));
         }
     }
     Ok(json!({
-        "schema_version": 2,
+        "schema_version": 3,
         "kind": "quanta_returned_window_diagnostic",
         "record_sha256": record_sha256,
         "query_pack_sha256": pack.pack_sha256,
@@ -334,11 +377,13 @@ pub fn diagnostic_value(
 mod tests {
     use std::time::Duration;
 
-    use quanta_index_contract::ExecutionOutcomeV2;
+    use quanta_index_contract::{
+        CandidateCountV1, ExhaustionProofV1, LaneTraceV1, QueryResultWindowV2,
+    };
 
     use super::*;
     use crate::record::PackTask;
-    use crate::sdk::{LaneTraceFact, RankedHit, RankedLaneContribution, ResponseDetail};
+    use crate::sdk::{RankedHit, RankedLaneContribution, RouteExplanation};
 
     fn pack() -> QueryPack {
         QueryPack {
@@ -361,44 +406,37 @@ mod tests {
         }
     }
 
-    fn response_detail() -> ResponseDetail {
-        ResponseDetail {
+    fn route_explanation_fixture() -> RouteExplanation {
+        RouteExplanation {
             request_id: Some(7),
             early_stop_reason: Some("count_reached"),
             engines_executed: Some(vec!["lexical", "semantic"]),
             engines_touched: Some(vec!["lexical", "semantic"]),
             strategy: Some("hybrid-rrf".to_string()),
-            window_returned: Some(1),
-            window_candidate_count: Some(("exact", 1)),
-            lane_traces: vec![
-                LaneTraceFact {
-                    lane: "lexical",
-                    executed: true,
-                    contributed: true,
-                    candidates: Some(("exact", 12)),
-                    filtered_out: Some(3),
-                    cost: Some(40),
-                    profile: Some("bm25".to_string()),
-                },
-                // An executed zero-hit lane stays recorded: executed and
-                // contributed are independent facts (RBR-01).
-                LaneTraceFact {
-                    lane: "dense",
-                    executed: true,
-                    contributed: false,
-                    candidates: Some(("at_least", 64)),
-                    filtered_out: Some(0),
-                    cost: None,
-                    profile: None,
-                },
-            ],
         }
+    }
+
+    fn window_fixture() -> QueryResultWindowV2 {
+        QueryResultWindowV2::exact_exhausted(
+            1,
+            ExhaustionProofV1::ExactCount { total: 1 },
+            vec![
+                LaneTraceV1::new("hybrid.lexical", true, true)
+                    .with_candidates(CandidateCountV1::Exact(12))
+                    .with_filtered_out(3)
+                    .with_cost(40)
+                    .with_profile("bm25"),
+                // Executed and contributed remain independent.
+                LaneTraceV1::new("hybrid.dense", true, false)
+                    .with_candidates(CandidateCountV1::AtLeast(64)),
+            ],
+        )
     }
 
     fn outcomes() -> BTreeMap<(String, String), QueryOutcome> {
         BTreeMap::from([(
             ("T1".to_string(), "hybrid".to_string()),
-            QueryOutcome::Hits {
+            QueryOutcome::ReturnedWindow {
                 hits: vec![RankedHit {
                     candidate_id: "chunk-1".to_string(),
                     path: "src/lib.rs".to_string(),
@@ -419,8 +457,8 @@ mod tests {
                         },
                     ],
                 }],
-                outcome: ExecutionOutcomeV2::ExactExhausted,
-                detail: response_detail(),
+                window: window_fixture(),
+                explanation: Some(route_explanation_fixture()),
                 latency: Duration::from_millis(3),
             },
         )])
@@ -475,49 +513,53 @@ mod tests {
             10,
         )
         .expect("complete diagnostic");
-        assert_eq!(value.get("schema_version"), Some(&json!(2)));
+        assert_eq!(value.get("schema_version"), Some(&json!(3)));
+        assert_eq!(
+            value.pointer("/results/0/response_kind"),
+            Some(&json!("returned_window"))
+        );
         // Response-level facts survive alongside the candidates.
         assert_eq!(
-            value.pointer("/results/0/response/request_id"),
+            value.pointer("/results/0/response/explanation/request_id"),
             Some(&json!(7))
         );
         assert_eq!(
-            value.pointer("/results/0/response/early_stop_reason"),
+            value.pointer("/results/0/response/explanation/early_stop_reason"),
             Some(&json!("count_reached"))
         );
         assert_eq!(
-            value.pointer("/results/0/response/engines_executed"),
+            value.pointer("/results/0/response/explanation/engines_executed"),
             Some(&json!(["lexical", "semantic"]))
         );
         assert_eq!(
-            value.pointer("/results/0/response/window_candidate_count"),
-            Some(&json!({"kind": "exact", "count": 1}))
+            value.pointer("/results/0/response/window/candidate_count"),
+            Some(&json!({"kind": "exact", "value": 1}))
         );
         // An executed lane that contributed nothing stays distinct from a
         // lane that never ran.
         assert_eq!(
-            value.pointer("/results/0/response/lane_traces/0/executed"),
+            value.pointer("/results/0/response/window/coverage/lanes/0/executed"),
             Some(&json!(true))
         );
         assert_eq!(
-            value.pointer("/results/0/response/lane_traces/0/contributed"),
+            value.pointer("/results/0/response/window/coverage/lanes/0/contributed"),
             Some(&json!(true))
         );
         assert_eq!(
-            value.pointer("/results/0/response/lane_traces/1/lane"),
-            Some(&json!("dense"))
+            value.pointer("/results/0/response/window/coverage/lanes/1/lane"),
+            Some(&json!("hybrid.dense"))
         );
         assert_eq!(
-            value.pointer("/results/0/response/lane_traces/1/executed"),
+            value.pointer("/results/0/response/window/coverage/lanes/1/executed"),
             Some(&json!(true))
         );
         assert_eq!(
-            value.pointer("/results/0/response/lane_traces/1/contributed"),
+            value.pointer("/results/0/response/window/coverage/lanes/1/contributed"),
             Some(&json!(false))
         );
         assert_eq!(
-            value.pointer("/results/0/response/lane_traces/1/candidates"),
-            Some(&json!({"kind": "at_least", "count": 64}))
+            value.pointer("/results/0/response/window/coverage/lanes/1/candidates"),
+            Some(&json!({"kind": "at_least", "value": 64}))
         );
     }
 
@@ -527,8 +569,8 @@ mod tests {
         let outcome = sparse
             .get_mut(&("T1".to_string(), "hybrid".to_string()))
             .expect("fixture result");
-        if let QueryOutcome::Hits { detail, .. } = outcome {
-            *detail = ResponseDetail::default();
+        if let QueryOutcome::ReturnedWindow { explanation, .. } = outcome {
+            *explanation = None;
         }
         let value = diagnostic_value(
             &"e".repeat(64),
@@ -542,16 +584,8 @@ mod tests {
         // Absent observations remain explicit nulls: no explanation, no
         // counts, no fabricated lanes.
         assert_eq!(
-            value.pointer("/results/0/response/engines_executed"),
+            value.pointer("/results/0/response/explanation"),
             Some(&Value::Null)
-        );
-        assert_eq!(
-            value.pointer("/results/0/response/request_id"),
-            Some(&Value::Null)
-        );
-        assert_eq!(
-            value.pointer("/results/0/response/lane_traces"),
-            Some(&json!([]))
         );
     }
 
@@ -572,7 +606,7 @@ mod tests {
         let outcome = missing_lane
             .get_mut(&("T1".to_string(), "hybrid".to_string()))
             .expect("fixture result");
-        if let QueryOutcome::Hits { hits, .. } = outcome {
+        if let QueryOutcome::ReturnedWindow { hits, .. } = outcome {
             hits.first_mut().expect("fixture hit").contributions.clear();
         }
         assert!(
@@ -594,7 +628,7 @@ mod tests {
         let outcome = unanchored
             .get_mut(&("T1".to_string(), "hybrid".to_string()))
             .expect("fixture result");
-        if let QueryOutcome::Hits { hits, .. } = outcome {
+        if let QueryOutcome::ReturnedWindow { hits, .. } = outcome {
             let hit = hits.first_mut().expect("fixture hit");
             hit.start_line = 0;
             hit.end_line = 0;
