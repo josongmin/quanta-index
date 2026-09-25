@@ -1069,12 +1069,22 @@ def _ordered_candidates(result: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def evaluate(
-    suite: dict[str, Any], pack: dict[str, Any], run: dict[str, Any], baseline: str, candidate: str
+    suite: dict[str, Any],
+    pack: dict[str, Any],
+    run: dict[str, Any],
+    baseline: str,
+    candidate: str,
+    *,
+    strict_k: bool = False,
 ) -> dict[str, Any]:
-    require(
-        suite["comparison_contract"]["top_k"] >= NDCG_K,
-        "rank comparison requires top_k >= 10 for the declared @10 primary metric",
-    )
+    # Historical v3 reports used capped @k values even when top_k < k. The
+    # protocol-locked new report policy refuses that interpretation, while
+    # legacy mode exists solely to reproduce immutable prior captures.
+    if strict_k:
+        require(
+            suite["comparison_contract"]["top_k"] >= NDCG_K,
+            "rank comparison requires top_k >= 10 for the declared @10 primary metric",
+        )
     require(
         baseline in suite["routes"] and candidate in suite["routes"] and baseline != candidate,
         "comparison routes must be distinct registered routes",
@@ -1267,9 +1277,10 @@ def evaluate(
             if not sample_count:
                 return {k: NOT_APPLICABLE for k in sums}
             averaged: dict[str, Any] = {k: v / sample_count for k, v in sums.items()}
-            for k in RECALL_KS:
-                if k > declared_top_k:
-                    averaged[f"recall_at_{k}"] = NOT_APPLICABLE
+            if strict_k:
+                for k in RECALL_KS:
+                    if k > declared_top_k:
+                        averaged[f"recall_at_{k}"] = NOT_APPLICABLE
             if not graded:
                 averaged["ndcg_at_10"] = NOT_APPLICABLE
             return averaged
@@ -1439,7 +1450,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             _, value, _ = validate_suite(args.repo.resolve(), read_json(args.suite))
         else:
             suite, pack, run = load_evidence(args.repo.resolve(), args.suite, args.runner)
-            value = evaluate(suite, pack, run, args.baseline_route, args.candidate_route)
+            value = evaluate(
+                suite, pack, run, args.baseline_route, args.candidate_route, strict_k=True
+            )
         rendered = (
             json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False, allow_nan=False) + "\n"
         )

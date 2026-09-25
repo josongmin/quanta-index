@@ -4538,8 +4538,11 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         "query_repetitions_per_root",
         "query_protocol_sha256s",
     }
-    if isinstance(protocol_payload, dict) and "retrieval_diagnostic_version" in protocol_payload:
-        protocol_keys.add("retrieval_diagnostic_version")
+    if isinstance(protocol_payload, dict) and (
+        "retrieval_diagnostic_version" in protocol_payload
+        or "rank_metric_k_policy" in protocol_payload
+    ):
+        protocol_keys.update({"retrieval_diagnostic_version", "rank_metric_k_policy"})
     if parent_binding is not None:
         protocol_keys.add("delegated_cgroup_parent")
     protocol_shape_valid = (
@@ -4597,6 +4600,10 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 "retrieval_diagnostic_version" not in protocol_payload
                 or type(protocol_payload["retrieval_diagnostic_version"]) is int
                 and protocol_payload["retrieval_diagnostic_version"] == 1
+            )
+            and (
+                "rank_metric_k_policy" not in protocol_payload
+                or protocol_payload["rank_metric_k_policy"] == "declared_top_k_v1"
             )
         )
         authority_digests = (
@@ -4755,7 +4762,12 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         )
         try:
             rescored = evaluate(
-                suite, pack, merged, comparison.get("baseline"), comparison.get("candidate")
+                suite,
+                pack,
+                merged,
+                comparison.get("baseline"),
+                comparison.get("candidate"),
+                strict_k=protocol_payload.get("rank_metric_k_policy") == "declared_top_k_v1",
             )
         except (RunError, ValueError, TypeError):
             pair_note("report_rescore_failed", ("T04", "T13"))
@@ -6081,7 +6093,7 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
         )
         candidate_routes = sorted({row["route"] for row in payload["results"]})
         for candidate in candidate_routes:
-            report = evaluate(suite, pack, combined, baseline, candidate)
+            report = evaluate(suite, pack, combined, baseline, candidate, strict_k=True)
             name = f"report-{baseline}-vs-{candidate}-{strategy}.json"
             (stage / name).write_text(
                 json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -6102,6 +6114,7 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
         driver_closure_digest = driver_closure["digest"]
     protocol_lock = {
         "retrieval_diagnostic_version": 1,
+        "rank_metric_k_policy": "declared_top_k_v1",
         "suite_digest": sha_file(Path(spec["suite"])),
         "query_pack_digest": sha_file(stage / "query-pack.json"),
         "corpus_manifest_digest": sha_file(stage / "corpus-manifest.json"),

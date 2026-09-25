@@ -111,7 +111,7 @@ def test_rank_report_refuses_primary_at_10_from_top_5(tmp_path):
     narrow_suite = json.loads(json.dumps(loaded[0]))
     narrow_suite["comparison_contract"]["top_k"] = 5
     with pytest.raises(ev.EvidenceError, match="top_k >= 10"):
-        ev.evaluate(narrow_suite, loaded[1], loaded[2], "lexical", "hybrid")
+        ev.evaluate(narrow_suite, loaded[1], loaded[2], "lexical", "hybrid", strict_k=True)
 
 
 def test_duplicate_json_keys_refused(tmp_path):
@@ -217,7 +217,7 @@ def test_current_freeze_pack_is_blind(tmp_path):
 def test_current_hand_calculated_rank_metrics(tmp_path):
     repo, suite, run, suite_path, runner_path, _ = fixture_v3(tmp_path)
     loaded = record_v3(repo, suite, run, suite_path, runner_path)
-    report = ev.evaluate(*loaded, "lexical", "hybrid")
+    report = ev.evaluate(*loaded, "lexical", "hybrid", strict_k=True)
     assert report["schema_version"] == ev.SCHEMA_VERSION
     assert report["rank_metric_version"] == "rb-rank-context-density-first-coverage"
     assert report["graded"] is True
@@ -3146,6 +3146,14 @@ def test_new_protocol_requires_bound_retrieval_diagnostic_on_replay(tmp_path):
     protocol = json.loads(protocol_path.read_text(encoding="utf-8"))
     protocol["retrieval_diagnostic_version"] = 1
     protocol_path.write_text(json.dumps(protocol), encoding="utf-8")
+    assert _stage_verdict(st)["state_evidence"]["PAIR_VALID"]["reason"] == "protocol_lock_malformed"
+    protocol["rank_metric_k_policy"] = "declared_top_k_v1"
+    protocol_path.write_text(json.dumps(protocol), encoding="utf-8")
+    protocol["rank_metric_k_policy"] = "unknown"
+    protocol_path.write_text(json.dumps(protocol), encoding="utf-8")
+    assert _stage_verdict(st)["state_evidence"]["PAIR_VALID"]["reason"] == "protocol_lock_malformed"
+    protocol["rank_metric_k_policy"] = "declared_top_k_v1"
+    protocol_path.write_text(json.dumps(protocol), encoding="utf-8")
     assert _stage_verdict(st)["states"]["PAIR_VALID"] == "fail"
 
     qmanifest_path = stage / "rep-00" / "quanta" / "quanta-manifest.json"
@@ -3200,6 +3208,16 @@ def test_new_protocol_requires_bound_retrieval_diagnostic_on_replay(tmp_path):
     run["retrieval_diagnostic"] = "strategy-00-whole_file/retrieval-diagnostic.json"
     run["retrieval_diagnostic_digest"] = pairrun.sha_file(diagnostic_path)
     qmanifest_path.write_text(json.dumps(qmanifest), encoding="utf-8")
+    semble_record = stage / "rep-00" / "semble" / "record.json"
+    scored_suite, scored_pack, combined = pairrun.merge_records(
+        st["repo"], st["suite_path"], [qrecord_path, semble_record]
+    )
+    strict_report = ev.evaluate(
+        scored_suite, scored_pack, combined, "hybrid", "lexical", strict_k=True
+    )
+    (stage / "report-hybrid-vs-lexical-whole_file.json").write_text(
+        json.dumps(strict_report), encoding="utf-8"
+    )
     assert _stage_verdict(st)["states"]["PAIR_VALID"] == "pass"
     diagnostic["results"][0]["status"] = "timeout"
     diagnostic_path.write_text(json.dumps(diagnostic), encoding="utf-8")

@@ -6,7 +6,7 @@ Status: `F1–F4-remediation-implemented / size-aware-rubric-implemented / explo
 
 The baseline also separates the original **sentence-form hybrid** result from sentence-form lexical/semantic ablations and a **bare-identifier lexical** ablation. Sentence-form Quanta lexical returned zero candidates on all 200 tasks, whereas bare identifiers reached exact-span Recall@10 of 0.98; the bare-identifier NDCG@10 remained below Semble's default hybrid. These are different query forms and Semble is not a pure lexical control. Read the baseline's route section and exact external artifacts before using any number.
 
-Subsequent source work adds record-bound returned-window/lane diagnostics, honest runner-side timing detail, and `Recall@20=not_applicable` when `top_k=10`. This is instrumentation, not a fresh pair or qualified claim; see the baseline's follow-up section. Existing diagnostic captures predate the new sidecar.
+Subsequent source work adds record-bound returned-window/lane diagnostics and runner-side timing detail. New protocol-locked reports mark `Recall@20=not_applicable` when `top_k=10`; historical reports retain the capped calculation only for immutable replay and must not be described as measured @20. This is instrumentation, not a fresh pair or qualified claim; see the baseline's follow-up section. Existing diagnostic captures predate the new sidecar.
 
 ## Current closeout boundary (2026-09-24)
 
