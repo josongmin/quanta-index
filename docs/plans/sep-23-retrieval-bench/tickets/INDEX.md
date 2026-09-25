@@ -2,6 +2,8 @@
 
 Status: `F1–F4-remediation-implemented / size-aware-rubric-implemented / exploratory-pair-captured / W0-B-pending`. The shared cold/warm protocol, replay, pin and proof gates have focused regression coverage. Earlier clean-source contract and SDK receipts were issued; their exact revision and digests must be read from the external receipts, not inferred from this document. Subsequent source edits require renewed proof. Two non-qualifying diagnostic captures exist (details below); no W0-B admission or qualified quality/performance verdict exists. This packet is not evidence that Quanta beats Semble.
 
+2026-09-25 corpus expansion: [CODE-SEARCH-BASELINE-2026-09.md](CODE-SEARCH-BASELINE-2026-09.md) fixes the Semble-scope evaluation matrix and a 10-repository/5-language/1,480-code-file **candidate** set with per-repository commit/path/SHA manifests. Five repositories overlap Semble's public benchmark and five do not; no new independent gold, admitted suite or pair was issued. The historical diagnostic numbers below are unchanged and do not become quality evidence.
+
 ## Current closeout boundary (2026-09-24)
 
 Historical Python/Rust/SDK receipts bind only their exact revision, not later shared-main source. Issue all three on one clean final revision after this packet and concurrent transitive Rust changes settle. A passing source-closure check only proves the checkout is eligible for proof capture; it does not revive old receipts. Read the current exact revision and digests from external receipts, not this source-bound packet: editing this packet after capture would stale them again.

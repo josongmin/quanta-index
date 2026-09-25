@@ -2,6 +2,8 @@
 
 Status: `F1–F4-remediation-implemented / contract-and-SDK-proof-verified / pilot-qualification-open`. T00–T14 have implementation or contract-test surfaces, including focused regressions for promotion, protocol pins, proof inventory and performance eligibility. Clean-source contract/SDK receipts have been issued; the real pilot and terminal paired verdict remain absent. T15/T16 stay conditional. This document does not convert contract proof into benchmark evidence.
 
+The 2026-09-25 [code-search baseline](CODE-SEARCH-BASELINE-2026-09.md) adds a frozen multi-repository **candidate** corpus and explicit common-coverage criteria. It does not satisfy T00/T01/T02/T11/T17 for an admitted suite or reissue source-bound receipts.
+
 ## 0. Current execution boundary (2026-09-24)
 
 The adversarial source at `93b736cd0f18ab698f5a12e23a2d09677a3d869d` reproduced F1–F4: path relocation changed `PAIR_VALID`, recorded pins could be forged, partial/duplicate test evidence could certify the contract, and underpowered or physically impossible timing could qualify speed. Commits `688238a8`, `f42adc5f`, and `64938975` implement the corresponding validation, promotion replay, and a positive five-root/20-task/1,000-observation verdict test. At `a634b90a`, `benchmarks/retrieval/proof-required-tests.json` required 173 Python contract, 51 Rust contract and 12 SDK identities; clean-source execution passed every required identity without skips and issued three receipts against one source closure. Receipts remain valid only for their exact revision and bound inputs. Admitted paired evidence remains pending; see [INDEX.md](INDEX.md).
