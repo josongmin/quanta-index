@@ -1,4 +1,4 @@
-"""Counterexamples for the production Rust fallback syntax guard."""
+"""Counterexamples for production Rust fallback and debug-divergence guards."""
 
 from __future__ import annotations
 
@@ -16,8 +16,15 @@ SPEC.loader.exec_module(LINT)
 PARSER = get_parser("rust")
 
 
-def scan(source: str) -> list[tuple[int, str]]:
-    return LINT.scan_source(source.encode(), PARSER)
+def scan(
+    source: str, *, include_debug: bool = False, include_search_plane: bool = False
+) -> list[tuple[int, str]]:
+    return LINT.scan_source(
+        source.encode(),
+        PARSER,
+        include_debug=include_debug,
+        include_search_plane=include_search_plane,
+    )
 
 
 class RustFallbackTest(unittest.TestCase):
@@ -165,6 +172,101 @@ class RustFallbackTest(unittest.TestCase):
 }
 """
         self.assertEqual(scan(source), [])
+
+    def test_debug_divergence_is_ast_scoped(self) -> None:
+        source = """// cfg!(debug_assertions)
+const DOC: &str = "cfg!(debug_assertions)";
+const RAW_DOC: &str = r#"
+#[cfg(debug_assertions)]
+"#;
+#[cfg(debug_assertions)]
+fn debug_only() {}
+fn production() { if cfg!(debug_assertions) { fail_open(); } }
+"""
+        self.assertEqual(
+            scan(source, include_debug=True),
+            [(6, LINT.RULE_DEBUG_ASSERTIONS), (8, LINT.RULE_DEBUG_ASSERTIONS)],
+        )
+        self.assertEqual(scan(source), [])
+
+    def test_debug_divergence_inside_opaque_macro_fails_closed(self) -> None:
+        for source in (
+            "macro_rules! debug_only { () => { cfg!(debug_assertions) }; }",
+            "macro_rules! debug_only { () => { #[cfg(debug_assertions)] fn f() {} }; }",
+        ):
+            with (
+                self.subTest(source=source),
+                self.assertRaisesRegex(ValueError, "opaque Rust macro"),
+            ):
+                scan(source, include_debug=True)
+        self.assertEqual(
+            scan(
+                "macro_rules! harmless { () => { let cfg = debug_assertions; }; }",
+                include_debug=True,
+            ),
+            [],
+        )
+
+
+    def test_search_plane_authority_paths(self) -> None:
+        source = """use ciborium as codec;
+use git2::Repository as Repo;
+extern crate tree_sitter;
+use tree_sitter_language_pack as pack;
+use std::process::Command as HostCommand;
+use tokio::process::{Command, Stdio};
+fn f(value: ciborium::value::Value) {
+    let _ = ciborium::de::from_reader(input());
+    let _ = git2::Repository::open(".");
+    let _ = tree_sitter::Parser::new();
+    let _ = tree_sitter_language_pack::get_parser("rust");
+    let _ = Command::new("git");
+    let _ = std::process::Command::new("git");
+    let _ = tokio::process::Command::new("git");
+}
+"""
+        self.assertEqual(
+            scan(source, include_search_plane=True),
+            [
+                (1, LINT.RULE_CIBORIUM),
+                (2, LINT.RULE_PRODUCER_PARSER),
+                (3, LINT.RULE_PRODUCER_PARSER),
+                (4, LINT.RULE_PRODUCER_PARSER),
+                (5, LINT.RULE_PROCESS),
+                (6, LINT.RULE_PROCESS),
+                (7, LINT.RULE_CIBORIUM),
+                (8, LINT.RULE_CIBORIUM),
+                (9, LINT.RULE_PRODUCER_PARSER),
+                (10, LINT.RULE_PRODUCER_PARSER),
+                (11, LINT.RULE_PRODUCER_PARSER),
+                (12, LINT.RULE_PROCESS),
+                (13, LINT.RULE_PROCESS),
+                (14, LINT.RULE_PROCESS),
+            ],
+        )
+        self.assertEqual(scan(source), [])
+
+    def test_search_plane_authority_ignores_examples(self) -> None:
+        source = """// use std::process::Command;
+const DOC: &str = "git2::Repository ciborium::value::Value";
+const RAW: &str = r#"
+use tree_sitter::Parser;
+tokio::process::Command::new("git");
+"#;
+fn process_id() { let _ = format!("{}", std::process::id()); }
+"""
+        self.assertEqual(scan(source, include_search_plane=True), [])
+
+    def test_search_plane_macro_authority_fails_closed(self) -> None:
+        for source in (
+            "macro_rules! source { () => { git2::Repository::open(\".\") }; }",
+            "fn f() { launch!{ Command::new(\"git\") }; }",
+        ):
+            with (
+                self.subTest(source=source),
+                self.assertRaisesRegex(ValueError, "opaque Rust macro"),
+            ):
+                scan(source, include_search_plane=True)
 
 
 if __name__ == "__main__":

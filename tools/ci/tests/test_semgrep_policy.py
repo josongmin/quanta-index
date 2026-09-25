@@ -41,37 +41,21 @@ class SemgrepPolicyTest(unittest.TestCase):
       - continue-on-error: true
         run: ./scripts/cargow check --workspace
 """,
-            "crates/quanta-index-core/src/lib.rs": """fn bad(result: Result<(), ()>) {
-    if cfg!(debug_assertions) { fail_open(); }
-}
-""",
             "crates/quanta-index-searchd/src/lib.rs": """fn bad() -> StructuralReadiness {
     let Ok(value) = prerequisite() else { return StructuralReadiness::Ready; };
     let _ = value;
     StructuralReadiness::Ready
 }
 """,
-            "crates/quanta-index-search-plane/src/lib.rs": """fn bad() {
-    let _ = ciborium::from_reader(input());
+            "crates/quanta-index-searchd/src/benign.rs": """const DOC: &str = r#"
+let Ok(value) = prerequisite() else { return StructuralReadiness::Ready; };
+"#;
+""",
+            "crates/quanta-index-searchd/src/readiness/tests/bad.rs": """fn test_only() -> StructuralReadiness {
+    let Ok(value) = prerequisite() else { return StructuralReadiness::Ready; };
+    StructuralReadiness::Ready
 }
 """,
-            "crates/quanta-index-search-plane/src/bad.rs": """use std::process::Command;
-use tree_sitter::Parser;
-fn bad() { let _ = Command::new("git").output(); }
-""",
-            "crates/quanta-index-search-plane/src/direct.rs": (
-                'fn bad() { let _ = std::process::Command::new("git").output(); }\n'
-            ),
-            "crates/quanta-index-search-plane/src/aliased.rs": (
-                "use std::process::Command as HostCommand;\n"
-                'fn bad() { let _ = HostCommand::new("git"); }\n'
-            ),
-            "crates/quanta-index-search-plane/src/qualified.rs": (
-                'fn bad() { let _ = git2::Repository::open("."); }\n'
-            ),
-            "crates/quanta-index-search-plane/src/tests/harness.rs": (
-                'use std::process::Command;\nfn test_only() { let _ = Command::new("git"); }\n'
-            ),
         }
         files[".github/workflows/ci.yaml"] = files[".github/workflows/ci.yml"]
         for relative, contents in files.items():
@@ -109,6 +93,12 @@ fn bad() { let _ = Command::new("git").output(); }
         self.assertEqual(len(configured), len(set(configured)))
         self.assertEqual({self.rule(item) for item in self.findings}, set(configured))
 
+    def test_raw_string_example_is_not_a_finding(self) -> None:
+        self.assertFalse([item for item in self.findings if Path(item["path"]).name == "benign.rs"])
+
+    def test_test_only_source_is_excluded(self) -> None:
+        self.assertFalse([item for item in self.findings if "/tests/" in item["path"]])
+
     def test_workflow_guards(self) -> None:
         findings = {
             (Path(item["path"]).suffix, self.rule(item), item["start"]["line"])
@@ -129,11 +119,7 @@ fn bad() { let _ = Command::new("git").output(); }
         )
 
     def test_other_rust_rules_and_test_exclusions(self) -> None:
-        expected_rules = {
-            "rust-no-debug-assertions-divergence",
-            "rust-no-ready-on-failed-structural-precondition",
-            "rust-no-search-plane-direct-ciborium",
-        }
+        expected_rules = {"rust-no-ready-on-failed-structural-precondition"}
         self.assertEqual(
             {self.rule(item) for item in self.findings if self.rule(item) in expected_rules},
             expected_rules,
@@ -145,30 +131,12 @@ fn bad() { let _ = Command::new("git").output(); }
                 if self.rule(item) in expected_rules
             },
             {
-                ("rust-no-debug-assertions-divergence", "crates/quanta-index-core/src/lib.rs", 2),
                 (
                     "rust-no-ready-on-failed-structural-precondition",
                     "crates/quanta-index-searchd/src/lib.rs",
                     2,
                 ),
-                (
-                    "rust-no-search-plane-direct-ciborium",
-                    "crates/quanta-index-search-plane/src/lib.rs",
-                    2,
-                ),
             },
-        )
-
-    def test_search_plane_authority_rules(self) -> None:
-        authority_rules = {
-            "search-plane-no-process-spawn",
-            "search-plane-no-producer-parser-import",
-        }
-        findings = [item for item in self.findings if self.rule(item) in authority_rules]
-        self.assertEqual({self.rule(item) for item in findings}, authority_rules)
-        self.assertEqual(
-            {Path(item["path"]).name for item in findings},
-            {"bad.rs", "direct.rs", "aliased.rs", "qualified.rs"},
         )
 
 

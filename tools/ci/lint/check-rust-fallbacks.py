@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Reject syntactic Rust Result fallback shapes in production source.
+"""Reject Rust silent-fallback and debug-divergence syntax in production source.
 
-This is deliberately a syntax guard, not a type/flow proof. The three shapes
-were previously owned by Semgrep; one Rust parse now checks all of them.
+This is deliberately a syntax guard, not a type/flow proof. One Rust parse
+checks the governed shapes without Semgrep regex matches in comments/strings.
 """
 
 from __future__ import annotations
@@ -17,7 +17,22 @@ ROOT = Path(__file__).resolve().parents[3]
 RULE_OR_ELSE = "rust-no-silent-or-else-ok"
 RULE_IS_OK = "rust-no-is-ok-as-branch"
 RULE_IS_ERR = "rust-no-is-err-as-branch"
+RULE_DEBUG_ASSERTIONS = "rust-no-debug-assertions-divergence"
+RULE_CIBORIUM = "rust-no-search-plane-direct-ciborium"
+RULE_PROCESS = "search-plane-no-process-spawn"
+RULE_PRODUCER_PARSER = "search-plane-no-producer-parser-import"
 TOKEN_RE = re.compile(rb"\b(?:or_else|is_ok|is_err)\b")
+DEBUG_TOKEN_RE = re.compile(rb"\bdebug_assertions\b")
+POLICY_TOKEN_RE = re.compile(rb"\b(?:or_else|is_ok|is_err|debug_assertions)\b")
+SEARCH_TOKEN_RE = re.compile(
+    rb"\b(?:ciborium|git2|tree_sitter|tree_sitter_language_pack|process|Command)\b"
+)
+SEARCH_POLICY_TOKEN_RE = re.compile(
+    rb"\b(?:or_else|is_ok|is_err|ciborium|git2|tree_sitter|tree_sitter_language_pack|process|Command)\b"
+)
+ALL_POLICY_TOKEN_RE = re.compile(
+    rb"\b(?:or_else|is_ok|is_err|debug_assertions|ciborium|git2|tree_sitter|tree_sitter_language_pack|process|Command)\b"
+)
 
 
 def in_scope(path: Path) -> bool:
@@ -70,6 +85,51 @@ def path_segments(source: bytes, part: Any) -> tuple[bytes, ...]:
         if base is not None and final is not None:
             return path_segments(source, base) + (text(source, final),)
     return ()
+
+
+def use_paths(source: bytes, node: Any) -> list[tuple[bytes, ...]]:
+    if node.type == "use_as_clause":
+        path = node.child_by_field_name("path")
+        return use_paths(source, path) if path is not None else []
+    if node.type == "scoped_use_list":
+        path = node.child_by_field_name("path")
+        return use_paths(source, path) if path is not None else []
+    if node.type in {"use_list", "use_wildcard"}:
+        return [
+            path
+            for child in node.named_children
+            for path in use_paths(source, child)
+        ]
+    path = path_segments(source, node)
+    return [path] if path else []
+
+
+def search_plane_path_rule(path: tuple[bytes, ...]) -> str | None:
+    if not path:
+        return None
+    if path[0] == b"ciborium":
+        return RULE_CIBORIUM
+    if path[0] in {b"git2", b"tree_sitter", b"tree_sitter_language_pack"}:
+        return RULE_PRODUCER_PARSER
+    if path[:3] in {
+        (b"std", b"process", b"Command"),
+        (b"tokio", b"process", b"Command"),
+    }:
+        return RULE_PROCESS
+    return None
+
+
+def process_launch_call(source: bytes, node: Any) -> bool:
+    if node.type != "call_expression":
+        return False
+    function = unwrap_generic_function(node.child_by_field_name("function"))
+    if function is None:
+        return False
+    return path_segments(source, function) in {
+        (b"Command", b"new"),
+        (b"std", b"process", b"Command", b"new"),
+        (b"tokio", b"process", b"Command", b"new"),
+    }
 
 
 def call_name(source: bytes, node: Any, name: bytes) -> bool:
@@ -163,7 +223,98 @@ def closure_returns_ok(source: bytes, closure: Any) -> bool:
     return call_name(source, body, b"Ok")
 
 
-def opaque_macro_contains_policy_syntax(source: bytes, macro: Any) -> bool:
+def debug_assertions_cfg(source: bytes, node: Any) -> bool:
+    if node.type == "attribute_item":
+        attribute = next(
+            (child for child in node.named_children if child.type == "attribute"), None
+        )
+        if attribute is None:
+            return False
+        name = next(
+            (child for child in attribute.named_children if child.type == "identifier"), None
+        )
+        token_tree = next(
+            (child for child in attribute.named_children if child.type == "token_tree"), None
+        )
+    elif node.type == "macro_invocation":
+        name = node.child_by_field_name("macro")
+        token_tree = next(
+            (child for child in node.named_children if child.type == "token_tree"), None
+        )
+    else:
+        return False
+    if name is None or token_tree is None or text(source, name) != b"cfg":
+        return False
+    arguments = semantic_children(token_tree)
+    return len(arguments) == 1 and text(source, arguments[0]) == b"debug_assertions"
+
+
+def opaque_debug_cfg(source: bytes, node: Any) -> bool:
+    if node.type != "token_tree":
+        return False
+    children = [
+        child for child in node.children if child.type not in {"line_comment", "block_comment"}
+    ]
+    bracketed = source[node.start_byte : node.start_byte + 1] == b"["
+    for index, child in enumerate(children):
+        if child.type != "identifier" or text(source, child) != b"cfg":
+            continue
+        if bracketed and index + 1 < len(children):
+            arguments = children[index + 1]
+        elif index + 2 < len(children) and children[index + 1].type == "!":
+            arguments = children[index + 2]
+        else:
+            continue
+        if arguments.type != "token_tree":
+            continue
+        values = semantic_children(arguments)
+        if len(values) == 1 and text(source, values[0]) == b"debug_assertions":
+            return True
+    return False
+
+
+def opaque_search_authority(source: bytes, node: Any) -> bool:
+    if node.type != "token_tree":
+        return False
+    children = [
+        child
+        for child in node.children
+        if child.type not in {"line_comment", "block_comment"}
+    ]
+    for index, child in enumerate(children):
+        if child.type != "identifier":
+            continue
+        token = text(source, child)
+        if index + 2 < len(children) and children[index + 1].type == "::":
+            next_token = text(source, children[index + 2])
+            if token in {b"ciborium", b"git2", b"tree_sitter", b"tree_sitter_language_pack"}:
+                return True
+            if token in {b"std", b"tokio"} and next_token == b"process":
+                following = children[index + 3 : index + 5]
+                if (
+                    len(following) == 2
+                    and following[0].type == "::"
+                    and text(source, following[1]) == b"Command"
+                ):
+                    return True
+                if index > 0 and text(source, children[index - 1]) == b"use":
+                    return True
+            if token == b"Command" and next_token == b"new":
+                return True
+        if token in {b"ciborium", b"git2", b"tree_sitter", b"tree_sitter_language_pack"}:
+            previous = [text(source, item) for item in children[max(0, index - 2) : index]]
+            if b"use" in previous or previous == [b"extern", b"crate"]:
+                return True
+    return False
+
+
+def opaque_macro_contains_policy_syntax(
+    source: bytes,
+    macro: Any,
+    *,
+    include_debug: bool = False,
+    include_search_plane: bool = False,
+) -> bool:
     # A token tree is not a Rust expression AST. Inspect actual identifier/if
     # tokens, not raw bytes, so strings and comments do not create blockers.
     stack = list(macro.named_children[1:])
@@ -174,6 +325,10 @@ def opaque_macro_contains_policy_syntax(source: bytes, macro: Any) -> bool:
         node = stack.pop()
         if node.type in {"line_comment", "block_comment", "string_literal"}:
             continue
+        if include_debug and opaque_debug_cfg(source, node):
+            return True
+        if include_search_plane and opaque_search_authority(source, node):
+            return True
         if node.type == "identifier":
             token = text(source, node)
             if token == b"or_else":
@@ -188,9 +343,26 @@ def opaque_macro_contains_policy_syntax(source: bytes, macro: Any) -> bool:
     return has_if and has_else and has_predicate
 
 
-def scan_source(source: bytes, parser: Any) -> list[tuple[int, str]]:
-    if not TOKEN_RE.search(source):
+def scan_source(
+    source: bytes,
+    parser: Any,
+    *,
+    include_debug: bool = False,
+    include_search_plane: bool = False,
+) -> list[tuple[int, str]]:
+    if include_debug and include_search_plane:
+        token_re = ALL_POLICY_TOKEN_RE
+    elif include_debug:
+        token_re = POLICY_TOKEN_RE
+    elif include_search_plane:
+        token_re = SEARCH_POLICY_TOKEN_RE
+    else:
+        token_re = TOKEN_RE
+    if not token_re.search(source):
         return []
+    check_debug = include_debug and bool(DEBUG_TOKEN_RE.search(source))
+    check_fallback = bool(TOKEN_RE.search(source))
+    check_search_plane = include_search_plane and bool(SEARCH_TOKEN_RE.search(source))
     root = parser.parse(source).root_node
     if root.has_error:
         # The pinned parser predates some valid Rust macro/token forms. Reject
@@ -202,22 +374,51 @@ def scan_source(source: bytes, parser: Any) -> list[tuple[int, str]]:
             if node.type == "ERROR" or node.is_missing:
                 row = node.start_point.row
                 nearby = b"\n".join(lines[max(row - 1, 0) : row + 1])
-                if TOKEN_RE.search(text(source, node)) or TOKEN_RE.search(nearby):
-                    raise ValueError(f"Rust parse error over fallback syntax at line {row + 1}")
+                if token_re.search(text(source, node)) or token_re.search(nearby):
+                    raise ValueError(f"Rust parse error over governed syntax at line {row + 1}")
             if node.has_error:
                 errors.extend(node.children)
     findings: list[tuple[int, str]] = []
     stack = [root]
     while stack:
         node = stack.pop()
+        if check_debug and debug_assertions_cfg(source, node):
+            findings.append((node.start_point.row + 1, RULE_DEBUG_ASSERTIONS))
         if node.type in {"macro_invocation", "macro_definition"}:
-            if opaque_macro_contains_policy_syntax(source, node):
+            if opaque_macro_contains_policy_syntax(
+                source,
+                node,
+                include_debug=check_debug,
+                include_search_plane=check_search_plane,
+            ):
                 raise ValueError(
-                    f"fallback syntax inside opaque Rust macro at line {node.start_point.row + 1}"
+                    f"governed syntax inside opaque Rust macro at line {node.start_point.row + 1}"
                 )
             continue
         stack.extend(reversed(node.named_children))
-        if node.type == "if_expression":
+        if check_search_plane:
+            if node.type == "use_declaration":
+                argument = node.child_by_field_name("argument")
+                if argument is not None:
+                    for path in use_paths(source, argument):
+                        rule = (
+                            RULE_PROCESS
+                            if path[:2] in {(b"std", b"process"), (b"tokio", b"process")}
+                            else search_plane_path_rule(path)
+                        )
+                        if rule:
+                            findings.append((node.start_point.row + 1, rule))
+            elif node.type == "extern_crate_declaration":
+                name = node.child_by_field_name("name")
+                if name is not None:
+                    if rule := search_plane_path_rule((text(source, name),)):
+                        findings.append((node.start_point.row + 1, rule))
+            elif node.type in {"scoped_identifier", "scoped_type_identifier"}:
+                if rule := search_plane_path_rule(path_segments(source, node)):
+                    findings.append((node.start_point.row + 1, rule))
+            elif process_launch_call(source, node):
+                findings.append((node.start_point.row + 1, RULE_PROCESS))
+        if check_fallback and node.type == "if_expression":
             alternative = node.child_by_field_name("alternative")
             if alternative is None or not any(
                 child.type in {"block", "if_expression"} for child in alternative.named_children
@@ -229,13 +430,17 @@ def scan_source(source: bytes, parser: Any) -> list[tuple[int, str]]:
             elif (receiver := method_call(source, condition, b"is_ok")) is not None:
                 if not checked_width(source, receiver):
                     findings.append((node.start_point.row + 1, RULE_IS_OK))
-        elif node.type == "call_expression" and method_call(source, node, b"or_else") is not None:
+        elif (
+            check_fallback
+            and node.type == "call_expression"
+            and method_call(source, node, b"or_else") is not None
+        ):
             arguments = node.child_by_field_name("arguments")
             if arguments is not None:
                 children = semantic_children(arguments)
                 if len(children) == 1 and closure_returns_ok(source, children[0]):
                     findings.append((node.start_point.row + 1, RULE_OR_ELSE))
-    return sorted(findings)
+    return sorted(set(findings))
 
 
 def main() -> int:
@@ -260,9 +465,29 @@ def main() -> int:
                 scoped += 1
                 try:
                     source = (ROOT / relative).read_bytes()
-                    if TOKEN_RE.search(source):
+                    include_debug = (
+                        relative.parts[1]
+                        in {
+                            "quanta-index-contract",
+                            "quanta-index-core",
+                        }
+                        and relative.parts[0] == "crates"
+                    )
+                    include_search_plane = (
+                        relative.parts[0:2] == ("crates", "quanta-index-search-plane")
+                    )
+                    if (
+                        TOKEN_RE.search(source)
+                        or (include_debug and DEBUG_TOKEN_RE.search(source))
+                        or (include_search_plane and SEARCH_TOKEN_RE.search(source))
+                    ):
                         candidates += 1
-                    for line, rule in scan_source(source, parser):
+                    for line, rule in scan_source(
+                        source,
+                        parser,
+                        include_debug=include_debug,
+                        include_search_plane=include_search_plane,
+                    ):
                         findings.append((relative, line, rule))
                 except ValueError as error:
                     raise ValueError(f"{relative}: {error}") from error
@@ -274,13 +499,13 @@ def main() -> int:
         ValueError,
         subprocess.CalledProcessError,
     ) as error:
-        print(f"Rust fallback lint blocked: {error}", file=sys.stderr)
+        print(f"Rust syntax policy blocked: {error}", file=sys.stderr)
         return 2
     for path, line, rule in findings:
         print(f"{path}:{line}: {rule}")
     if findings:
         return 1
-    print(f"Rust fallback lint: clean ({scoped} scoped files, {candidates} parsed candidates)")
+    print(f"Rust syntax policy: clean ({scoped} scoped files, {candidates} parsed candidates)")
     return 0
 
 

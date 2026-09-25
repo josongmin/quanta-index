@@ -218,7 +218,7 @@ repos:
         stages: [pre-push]
 
       - id: rust-fallbacks
-        name: Rust fallback syntax
+        name: Rust fallback and debug syntax
         entry: python3 tools/ci/lint/check-rust-fallbacks.py
         language: system
         pass_filenames: false

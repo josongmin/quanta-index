@@ -24,25 +24,6 @@ rules:
         - "/.github/workflows/*.yaml"
     pattern-regex: '(?m)^[ \t]*(?:-[ \t]*)?continue-on-error:[ \t]*true[ \t]*(?:#.*)?$'
 
-  - id: rust-no-debug-assertions-divergence
-    message: |
-      `cfg!(debug_assertions)` / `#[cfg(debug_assertions)]` on a production
-      module makes release-mode behavior diverge from debug-mode behavior.
-      That is a silent-failure shape: bugs trigger in tests but slip in prod.
-    languages: [rust]
-    severity: ERROR
-    paths:
-      include:
-        - "/crates/quanta-index-core/src/**"
-        - "/crates/quanta-index-contract/src/**"
-      exclude:
-        - "**/tests/**"
-        - "**/benches/**"
-    patterns:
-      - pattern-either:
-          - pattern-regex: 'cfg!\s*\(\s*debug_assertions\s*\)'
-          - pattern-regex: '#\[\s*cfg\s*\(\s*debug_assertions\s*\)'
-
   - id: rust-no-ready-on-failed-structural-precondition
     # The semantic-outcome AST lint owns enum match-arm projections, not this
     # let-else early-return shape.
@@ -55,58 +36,12 @@ rules:
     paths:
       include:
         - "/crates/quanta-index-searchd/src/**"
-    pattern-regex: 'let\s+Ok\([^)]*\)\s*=\s*[^;]+else\s*\{\s*return\s+StructuralReadiness::Ready;'
-
-  # A public V<n> name is not evidence of a parallel internal IR. RepoMap's
-  # versioned address/evidence types are consumed by current layout contracts;
-  # blanket suffix rejection conflicted with those contracts and a nonexistent
-  # lq-ranker path. Guard actual IR duplication at its producer/consumer boundary.
-
-  - id: rust-no-search-plane-direct-ciborium
-    # The hexagonal dependency lint does not restrict external dependencies
-    # of search-plane; this source-level codec boundary remains independent.
-    message: |
-      `quanta-index-search-plane` must not name `ciborium` directly on
-      production paths. Route CBOR encode/decode through `quanta-index-ipc`.
-    languages: [rust]
-    severity: ERROR
-    paths:
-      include:
-        - "/crates/quanta-index-search-plane/src/**"
-    pattern-regex: '\bciborium::'
-
-  - id: search-plane-no-process-spawn
-    message: |
-      The search-plane crate has no direct process-launch authority. Keep
-      producer-owned source/Git/parser work in the producer, and route any
-      other external process through an explicit composition boundary.
-    languages: [rust]
-    severity: ERROR
-    paths:
-      include:
-        - "/crates/quanta-index-search-plane/src/**"
       exclude:
         - "**/tests/**"
-    patterns:
-      - pattern-either:
-          - pattern: Command::new(...)
-          - pattern: std::process::Command::new(...)
-          - pattern-regex: '(?m)^\s*use\s+(?:std|tokio)::process\b'
-
-  - id: search-plane-no-producer-parser-import
-    message: |
-      Git and parse-tree ownership belongs to the producer, not the search plane.
-    languages: [rust]
-    severity: ERROR
-    paths:
-      include:
-        - "/crates/quanta-index-search-plane/src/**"
-      exclude:
-        - "**/tests/**"
-    patterns:
-      - pattern-either:
-          - pattern-regex: '(?m)^\s*(?:use|extern crate)\s+(?:git2|tree_sitter(?:_language_pack)?)\b'
-          - pattern-regex: '(?m)^(?!\s*(?://|/\*|\*))[^\n]*\b(?:git2|tree_sitter(?:_language_pack)?)::'
+    pattern: |
+      let Ok($VALUE) = $EXPR else {
+        return StructuralReadiness::Ready;
+      };
 
   # NOTE: a `rust-no-map-or-else-non-err` rule was considered to catch
   # `Result::map_or(default, ...)` / `map_or_else` fallback patterns, but
