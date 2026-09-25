@@ -18,8 +18,9 @@ use serde::de::{self, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Value};
 
 use crate::canonical::canonical_json;
-use crate::chunking::{Chunk, count_tokens};
+use crate::chunking::count_tokens;
 use crate::corpus::SourceFile;
+use crate::published_units::{PublishedUnitKind, PublishedUnitRegistry};
 use crate::query_plan::{NlPlanConfig, QueryInputPolicy, QueryPlan};
 use crate::sdk::{QueryOutcome, RankedHit};
 use crate::{BenchError, BenchResult, sha256_hex};
@@ -629,40 +630,67 @@ fn duration_ms(latency: Duration) -> BenchResult<f64> {
 
 /// Prove one SDK hit against pinned source bytes and emit the evaluator's
 /// candidate object. Returned with its 1-based rank.
+///
+/// Authority is the typed published-unit registry (RBR-05): a chunk hit
+/// must match its published chunk span (unanchored hits fall back to the
+/// published chunk bytes), and a symbol hit must match its published
+/// definition span — the engine's snippet is a reference name, never
+/// source-byte evidence.
 fn prove_hit(
     hit: &RankedHit,
     rank: usize,
     files: &BTreeMap<String, SourceFile>,
-    chunks_by_id: &BTreeMap<String, Chunk>,
+    units: &PublishedUnitRegistry,
 ) -> BenchResult<Value> {
     let file = files.get(&hit.path).ok_or_else(|| {
         BenchError::Protocol(format!("SDK hit outside admitted universe: {}", hit.path))
     })?;
-    let chunk = chunks_by_id.get(&hit.candidate_id).ok_or_else(|| {
+    let unit = units.get(&hit.candidate_id).ok_or_else(|| {
         BenchError::Protocol(format!(
-            "SDK hit has no published chunk ID: {}",
+            "SDK hit has no published unit ID: {}",
             hit.candidate_id
         ))
     })?;
-    if chunk.path != hit.path {
+    if unit.path != hit.path {
         return Err(BenchError::Protocol(format!(
-            "SDK hit path differs from published chunk: {}",
+            "SDK hit path differs from published unit: {}",
             hit.candidate_id
         )));
     }
     let (start_line, end_line) = if hit.start_line == 0 && hit.end_line == 0 {
-        if chunk.text != hit.snippet {
-            return Err(BenchError::Protocol(format!(
-                "SDK unanchored hit differs from published chunk: {}",
-                hit.candidate_id
-            )));
+        match unit.kind {
+            PublishedUnitKind::Chunk => {
+                // Only the chunk authority can prove an unanchored hit, and
+                // only when the returned snippet is exactly the published
+                // chunk text.
+                let chunk = units
+                    .chunk_text(&hit.candidate_id)
+                    .ok_or_else(|| {
+                        BenchError::Protocol(format!(
+                            "published chunk disappeared: {}",
+                            hit.candidate_id
+                        ))
+                    })?;
+                if chunk != hit.snippet.as_str() {
+                    return Err(BenchError::Protocol(format!(
+                        "SDK unanchored hit differs from published chunk: {}",
+                        hit.candidate_id
+                    )));
+                }
+                (unit.start_line, unit.end_line)
+            }
+            PublishedUnitKind::Symbol => {
+                return Err(BenchError::Protocol(format!(
+                    "SDK unanchored symbol hit has no proving authority: {}",
+                    hit.candidate_id
+                )));
+            }
         }
-        (chunk.start_line, chunk.end_line)
     } else {
-        if (hit.start_line, hit.end_line) != (chunk.start_line, chunk.end_line) {
+        if (hit.start_line, hit.end_line) != (unit.start_line, unit.end_line) {
             return Err(BenchError::Protocol(format!(
-                "SDK hit span differs from published chunk: {}:{}-{} (published {}-{})",
-                hit.path, hit.start_line, hit.end_line, chunk.start_line, chunk.end_line
+                "SDK hit span differs from published unit: {}:{}-{} (published {}-{})",
+                hit.path, hit.start_line, hit.end_line, unit.start_line, unit.end_line
             )));
         }
         (hit.start_line, hit.end_line)
@@ -738,7 +766,7 @@ pub fn result_value(
     plan: &QueryPlan,
     top_k: u32,
     files: &BTreeMap<String, SourceFile>,
-    chunks_by_id: &BTreeMap<String, Chunk>,
+    units: &PublishedUnitRegistry,
 ) -> BenchResult<Value> {
     let query_identity = serde_json::json!({
         "original_query_sha256": plan.original_query_sha256,
@@ -794,7 +822,7 @@ pub fn result_value(
                     hit,
                     index.saturating_add(1),
                     files,
-                    chunks_by_id,
+                    units,
                 )?);
             }
             Ok(serde_json::json!({
@@ -843,7 +871,7 @@ pub struct RunnerRecordInput<'a> {
     pub nl_config: &'a NlPlanConfig,
     pub top_k: u32,
     pub files: &'a BTreeMap<String, SourceFile>,
-    pub chunks_by_id: &'a BTreeMap<String, Chunk>,
+    pub units: &'a PublishedUnitRegistry,
 }
 
 pub fn runner_record(input: &RunnerRecordInput<'_>) -> BenchResult<Value> {
@@ -857,7 +885,7 @@ pub fn runner_record(input: &RunnerRecordInput<'_>) -> BenchResult<Value> {
         nl_config,
         top_k,
         files,
-        chunks_by_id,
+        units,
     } = *input;
     if top_k != pack.contract_top_k {
         return Err(BenchError::Protocol(format!(
@@ -976,7 +1004,7 @@ pub fn runner_record(input: &RunnerRecordInput<'_>) -> BenchResult<Value> {
                 plan,
                 top_k,
                 files,
-                chunks_by_id,
+                units,
             )?);
         }
     }
@@ -1009,6 +1037,7 @@ pub fn runner_record(input: &RunnerRecordInput<'_>) -> BenchResult<Value> {
 )]
 mod tests {
     use super::*;
+    use crate::chunking::Chunk;
     use crate::query_plan::plan_query;
     use crate::sdk::ResponseDetail;
 
@@ -1095,7 +1124,11 @@ mod tests {
             chunk_id: "chunk-id".to_string(),
             fallback: false,
         };
-        let chunks = BTreeMap::from([("chunk-id".to_string(), chunk)]);
+        let units = PublishedUnitRegistry::from_chunks_and_symbols(
+            &BTreeMap::from([(path.to_string(), vec![chunk])]),
+            &BTreeMap::new(),
+        )
+        .expect("registry");
         let hit = RankedHit {
             candidate_id: "chunk-id".to_string(),
             path: path.to_string(),
@@ -1105,7 +1138,7 @@ mod tests {
             score: 1.0,
             contributions: Vec::new(),
         };
-        let candidate = prove_hit(&hit, 1, &files, &chunks).expect("anchored by published ID");
+        let candidate = prove_hit(&hit, 1, &files, &units).expect("anchored by published ID");
         assert_eq!(
             candidate.get("start_line"),
             Some(&Value::Number(1_u64.into()))
@@ -1121,25 +1154,25 @@ mod tests {
 
         let mut changed = hit.clone();
         changed.snippet = "not the published chunk".to_string();
-        assert!(prove_hit(&changed, 1, &files, &chunks).is_err());
+        assert!(prove_hit(&changed, 1, &files, &units).is_err());
         changed = hit.clone();
         changed.candidate_id = "unknown".to_string();
-        assert!(prove_hit(&changed, 1, &files, &chunks).is_err());
+        assert!(prove_hit(&changed, 1, &files, &units).is_err());
         changed = hit;
         changed.end_line = 1;
-        assert!(prove_hit(&changed, 1, &files, &chunks).is_err());
+        assert!(prove_hit(&changed, 1, &files, &units).is_err());
 
         let mut anchored = changed;
         anchored.start_line = 1;
-        assert!(prove_hit(&anchored, 1, &files, &chunks).is_ok());
+        assert!(prove_hit(&anchored, 1, &files, &units).is_ok());
         anchored.candidate_id = "unknown".to_string();
-        assert!(prove_hit(&anchored, 1, &files, &chunks).is_err());
+        assert!(prove_hit(&anchored, 1, &files, &units).is_err());
         anchored.candidate_id = "chunk-id".to_string();
         anchored.path = "other.rs".to_string();
-        assert!(prove_hit(&anchored, 1, &files, &chunks).is_err());
+        assert!(prove_hit(&anchored, 1, &files, &units).is_err());
         anchored.path = path.to_string();
         anchored.end_line = 2;
-        assert!(prove_hit(&anchored, 1, &files, &chunks).is_err());
+        assert!(prove_hit(&anchored, 1, &files, &units).is_err());
     }
 
     #[test]
@@ -1250,7 +1283,7 @@ mod tests {
 
     fn status_fixture() -> (
         BTreeMap<String, SourceFile>,
-        BTreeMap<String, Chunk>,
+        PublishedUnitRegistry,
         RankedHit,
     ) {
         let text = "fn main() {}\n";
@@ -1283,11 +1316,12 @@ mod tests {
             score: 1.0,
             contributions: Vec::new(),
         };
-        (
-            BTreeMap::from([("a.txt".to_string(), file)]),
-            BTreeMap::from([("chunk-id".to_string(), chunk)]),
-            hit,
+        let units = PublishedUnitRegistry::from_chunks_and_symbols(
+            &BTreeMap::from([("a.txt".to_string(), vec![chunk])]),
+            &BTreeMap::new(),
         )
+        .expect("registry");
+        (BTreeMap::from([("a.txt".to_string(), file)]), units, hit)
     }
 
     #[test]
@@ -1388,7 +1422,11 @@ mod tests {
             chunk_id: "chunk-id".to_string(),
             fallback: false,
         };
-        let chunks = BTreeMap::from([("chunk-id".to_string(), chunk)]);
+        let units = PublishedUnitRegistry::from_chunks_and_symbols(
+            &BTreeMap::from([("a.txt".to_string(), vec![chunk])]),
+            &BTreeMap::new(),
+        )
+        .expect("registry");
         let hit = RankedHit {
             candidate_id: "chunk-id".to_string(),
             path: "a.txt".to_string(),
@@ -1424,7 +1462,7 @@ mod tests {
             nl_config: &nl_config,
             top_k: 10,
             files: &files,
-            chunks_by_id: &chunks,
+            units: &units,
         })
         .expect("v3 record assembles");
         assert_eq!(record["schema_version"], serde_json::json!(RUNNER_SCHEMA_VERSION));
@@ -1485,7 +1523,7 @@ mod tests {
         };
         let outcomes = BTreeMap::from([(("T1".to_string(), "lexical".to_string()), failed)]);
         let files = BTreeMap::new();
-        let chunks = BTreeMap::new();
+        let units = PublishedUnitRegistry::default();
         let plans = native_plans_fixture(&pack);
         let nl_config = NlPlanConfig::default();
         let build = |provenance: &BTreeMap<String, RouteProvenance>,
@@ -1502,7 +1540,7 @@ mod tests {
                 nl_config: &nl_config,
                 top_k,
                 files: &files,
-                chunks_by_id: &chunks,
+                units: &units,
             })
         };
         let good_provenance = BTreeMap::from([(

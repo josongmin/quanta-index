@@ -379,14 +379,15 @@ fn real_daemon_roundtrip_publishes_and_queries() {
     let chunker = WholeFileChunker;
     let (chunks, coverage) = chunk_corpus(&chunker, &files).expect("chunk");
     assert_eq!(coverage.chunks, 3);
+    let published_units =
+        quanta_index_retrieval_bench::published_units::PublishedUnitRegistry::from_chunks_and_symbols(
+            &chunks,
+            &symbols_for(&files),
+        )
+        .expect("published units");
     let files_by_path: BTreeMap<_, _> = files
         .iter()
         .map(|file| (file.path.clone(), file.clone()))
-        .collect();
-    let chunks_by_id: BTreeMap<_, _> = chunks
-        .values()
-        .flatten()
-        .map(|chunk| (chunk.chunk_id.clone(), chunk.clone()))
         .collect();
 
     let identity = BatchIdentity::new(
@@ -482,7 +483,7 @@ fn real_daemon_roundtrip_publishes_and_queries() {
     )
     .expect("native plan");
     let lexical_record =
-        result_value("T1", "lexical", &lexical, &plan, 10, &files_by_path, &chunks_by_id)
+        result_value("T1", "lexical", &lexical, &plan, 10, &files_by_path, &published_units)
             .expect("lexical SDK hits refer to published chunks");
     assert_eq!(lexical_record["route"], "lexical");
 
@@ -512,7 +513,7 @@ fn real_daemon_roundtrip_publishes_and_queries() {
             }
         }
         let route_record =
-            result_value("T1", route, &outcome, &plan, 10, &files_by_path, &chunks_by_id)
+            result_value("T1", route, &outcome, &plan, 10, &files_by_path, &published_units)
                 .expect("SDK hits refer to published chunks");
         assert_eq!(route_record["route"], route);
     }
@@ -667,7 +668,7 @@ fn real_daemon_roundtrip_publishes_and_queries() {
         nl_config: &nl_config,
         top_k: 10,
         files: &files_by_path,
-        chunks_by_id: &chunks_by_id,
+        units: &published_units,
     })
     .expect("live v3 record assembles");
     // Pilot-debugging hook: dump the exact record bytes for out-of-band
@@ -985,4 +986,89 @@ fn determinism_probe_repeats_identical_publish() {
         left.batch_digest().expect("digest"),
         right.batch_digest().expect("digest")
     );
+}
+
+#[test]
+fn symbol_route_answers_from_published_units_and_proves_spans() {
+    // RBR-05: the public symbol route returns published symbol units, and
+    // every hit proves against the typed registry (definition span, never
+    // the engine snippet as source bytes).
+    let repo = tempfile::tempdir().expect("repo root");
+    write_tiny_repo(repo.path());
+    let manifest = load_manifest(&repo.path().join("manifest.json")).expect("manifest");
+    let files = load_corpus(repo.path(), &manifest, &CorpusLimits::default()).expect("corpus");
+    let (chunks, _) = chunk_corpus(&WholeFileChunker, &files).expect("chunk");
+    let symbols = symbols_for(&files);
+    let identity = BatchIdentity::new("bench-repo", "bench-rev", 11, "manifest:symbol".to_string())
+        .expect("identity");
+    let (batch, assembly) = assemble_batch(&identity, &chunks, &symbols).expect("batch");
+    assert!(assembly.symbols >= 3, "tiny repo publishes its functions as symbols");
+    let published_units =
+        quanta_index_retrieval_bench::published_units::PublishedUnitRegistry::from_chunks_and_symbols(
+            &chunks,
+            &symbols,
+        )
+        .expect("units");
+    let state = tempfile::tempdir().expect("state root");
+    let session = boot_session(&state.path().join("daemon"), &identity);
+    let (_receipt, _ack) =
+        publish_and_activate(&session, &batch, &identity, None).expect("publish+activate");
+    let files_by_path: BTreeMap<_, _> = files
+        .iter()
+        .map(|file| (file.path.clone(), file.clone()))
+        .collect();
+    let plan = plan_query(
+        QueryInputPolicy::Native,
+        "sphinx_riddle",
+        &NlPlanConfig::default(),
+    )
+    .expect("native plan");
+    let outcome = query_route(&RouteQuery {
+        client: session.client(),
+        route: "symbol",
+        lexical_request: &plan.lexical_request,
+        semantic_text: &plan.semantic_text,
+        repo_id: &identity.repo_id,
+        revision_id: &identity.revision_id,
+        generation: identity.generation,
+        top_k: 10,
+    });
+    session.stop().expect("bounded shutdown");
+    let hits = match outcome {
+        QueryOutcome::Hits { hits, .. } => hits,
+        QueryOutcome::Failed { status, code, message, .. } => {
+            panic!("symbol route failed: {status} {code} {message}")
+        }
+    };
+    assert!(!hits.is_empty(), "symbol route must answer for a published definition");
+    for hit in &hits {
+        let unit = published_units
+            .get(&hit.candidate_id)
+            .unwrap_or_else(|| panic!("hit id is not a published unit: {}", hit.candidate_id));
+        assert_eq!(
+            unit.kind,
+            quanta_index_retrieval_bench::published_units::PublishedUnitKind::Symbol,
+            "symbol route hits must resolve as symbol units"
+        );
+        assert_eq!(unit.path, hit.path);
+    }
+    // The first hit proves into a record row against the same source-byte
+    // accounting as chunk routes.
+    let record = result_value(
+        "T1",
+        "symbol",
+        &QueryOutcome::Hits {
+            hits,
+            outcome: quanta_index_contract::ExecutionOutcomeV2::ExactExhausted,
+            detail: Default::default(),
+            latency: Duration::from_millis(1),
+        },
+        &plan,
+        10,
+        &files_by_path,
+        &published_units,
+    )
+    .expect("symbol hits prove against published units");
+    assert_eq!(record["route"], "symbol");
+    assert!(record["candidates"].as_array().is_some_and(|rows| !rows.is_empty()));
 }

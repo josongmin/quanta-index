@@ -1036,6 +1036,21 @@ fn hybrid_hit(candidate: &HybridCandidateV1) -> RankedHit {
     }
 }
 
+/// Convert one symbol candidate. The snippet is the engine's reference
+/// name, not source bytes: span authority stays with the published-unit
+/// registry (RBR-05).
+fn symbol_hit(candidate: &quanta_index_contract::SymbolCandidate) -> RankedHit {
+    RankedHit {
+        candidate_id: candidate.candidate_id.clone(),
+        path: candidate.repo_relative_path.as_str().to_string(),
+        start_line: candidate.start_line,
+        end_line: candidate.end_line,
+        snippet: candidate.snippet.clone(),
+        score: f64::from(candidate.score),
+        contributions: Vec::new(),
+    }
+}
+
 /// Classify an SDK failure into a runner-record status. Returns
 /// `(status, code, message)`.
 #[must_use]
@@ -1185,6 +1200,28 @@ pub fn query_route(query: &RouteQuery<'_>) -> QueryOutcome {
                     let hits: Vec<RankedHit> = response.results.iter().map(hybrid_hit).collect();
                     let outcome = response.window.outcome();
                     let detail = response_detail(&response.window, Some(&response.explanation));
+                    match check_pin(query.route, &response.generation, &expected_pin, start) {
+                        Ok(guard) => guard.with_hits(hits, outcome, detail),
+                        Err(failed) => failed,
+                    }
+                }
+                Err(err) => failed_outcome(&err, start),
+            }
+        }
+        "symbol" => {
+            match query
+                .client
+                .symbol()
+                .query()
+                .native(query.lexical_request)
+                .active(query.repo_id.clone(), query.revision_id.clone())
+                .top_k(query.top_k)
+                .execute()
+            {
+                Ok(response) => {
+                    let hits: Vec<RankedHit> = response.results.iter().map(symbol_hit).collect();
+                    let outcome = response.window.outcome();
+                    let detail = response_detail(&response.window, None);
                     match check_pin(query.route, &response.generation, &expected_pin, start) {
                         Ok(guard) => guard.with_hits(hits, outcome, detail),
                         Err(failed) => failed,

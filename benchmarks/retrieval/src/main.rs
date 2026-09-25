@@ -39,10 +39,11 @@ use quanta_index_retrieval_bench::sdk::{
     DEFAULT_IO_TIMEOUT, DEFAULT_READY_TIMEOUT, DaemonConfig, DaemonSession, QueryOutcome,
     RouteQuery, publish_and_activate, query_route, resolve_searchd_binary, verify_searchd_digest,
 };
+use quanta_index_retrieval_bench::published_units::PublishedUnitRegistry;
 use quanta_index_retrieval_bench::symbols::extract_corpus_symbols;
 use quanta_index_retrieval_bench::{BenchError, BenchResult, sha256_hex};
 
-const KNOWN_ROUTES: [&str; 3] = ["lexical", "semantic", "hybrid"];
+const KNOWN_ROUTES: [&str; 4] = ["lexical", "semantic", "hybrid", "symbol"];
 
 fn usage_error(mut message: String) -> BenchError {
     message.push_str(" (see --help)");
@@ -553,6 +554,10 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     // the same per-file replacement as the chunks.
     let symbol_extraction = extract_corpus_symbols(&by_path)?;
     let (batch, assembly) = assemble_batch(&identity, &selection.chunks, &symbol_extraction.symbols)?;
+    let published_units = PublishedUnitRegistry::from_chunks_and_symbols(
+        &selection.chunks,
+        &symbol_extraction.symbols,
+    )?;
 
     let state_root = PathBuf::from(required(args, "state-root")?);
     require_external_path(&repo, &state_root, "--state-root")?;
@@ -887,7 +892,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         nl_config: &nl_plan_config,
         top_k,
         files: &by_path,
-        chunks_by_id: &chunks_by_id,
+        units: &published_units,
     })?;
     let record_elapsed = record_start.elapsed();
     let verify_start = Instant::now();
