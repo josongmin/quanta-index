@@ -121,6 +121,30 @@ def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         }
         Path(option("--out")).write_text(json.dumps(canonical), encoding="utf-8")
 
+    def write_sdk_record() -> None:
+        digest = hashlib.sha256(runner.read_bytes()).hexdigest()
+        (out / "actual-runner-record.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 5,
+                    "captures": {
+                        "run": {
+                            "runner_binary": {"name": "runner", "digest": digest},
+                            "searchd_binary": {
+                                "binary_digest": hashlib.sha256(
+                                    searchd.read_bytes()
+                                ).hexdigest()
+                            },
+                            "receipt_digest": "c" * 64,
+                            "activation_digest": "d" * 64,
+                        }
+                    },
+                    "route_provenance": {"lexical": {"capture_id": "run"}},
+                }
+            ),
+            encoding="utf-8",
+        )
+
     def run(argv, **kwargs):
         assert kwargs["cwd"] == portable_proof.ROOT
         assert kwargs["capture_output"] is True
@@ -146,28 +170,7 @@ def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             (out / "nextest.jsonl").write_bytes(
                 _events("sdk_roundtrip", portable_proof.sdk_proof.PROOF_TEST)
             )
-            digest = hashlib.sha256(runner.read_bytes()).hexdigest()
-            (out / "actual-runner-record.json").write_text(
-                json.dumps(
-                    {
-                        "schema_version": 3,
-                        "captures": {
-                            "run": {
-                                "runner_binary": {"name": "runner", "digest": digest},
-                                "searchd_binary": {
-                                    "binary_digest": hashlib.sha256(
-                                        searchd.read_bytes()
-                                    ).hexdigest()
-                                },
-                                "receipt_digest": "c" * 64,
-                                "activation_digest": "d" * 64,
-                            }
-                        },
-                        "route_provenance": {"lexical": {"capture_id": "run"}},
-                    }
-                ),
-                encoding="utf-8",
-            )
+            write_sdk_record()
             summary = portable_proof.sdk_proof.build_summary(
                 out / "actual-runner-record.json",
                 out / "nextest.jsonl",
@@ -199,28 +202,7 @@ def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             test = portable_proof.sdk_proof.PROOF_TEST if binary == "sdk_roundtrip" else "one"
             raw = _events(binary, test)
             if binary == "sdk_roundtrip":
-                digest = hashlib.sha256(runner.read_bytes()).hexdigest()
-                (out / "actual-runner-record.json").write_text(
-                    json.dumps(
-                        {
-                            "schema_version": 3,
-                            "captures": {
-                                "run": {
-                                    "runner_binary": {"name": "runner", "digest": digest},
-                                    "searchd_binary": {
-                                        "binary_digest": hashlib.sha256(
-                                            searchd.read_bytes()
-                                        ).hexdigest()
-                                    },
-                                    "receipt_digest": "c" * 64,
-                                    "activation_digest": "d" * 64,
-                                }
-                            },
-                            "route_provenance": {"lexical": {"capture_id": "run"}},
-                        }
-                    ),
-                    encoding="utf-8",
-                )
+                write_sdk_record()
         elif argv[1] == "-m":
             (out / "python-junit.xml").write_text(
                 '<testsuite tests="1" failures="0" errors="0" skipped="0">'
@@ -469,7 +451,7 @@ def test_sdk_record_rejects_duplicate_json_key(fake_execution) -> None:
     record = out / "actual-runner-record.json"
     record.write_bytes(
         record.read_bytes().replace(
-            b'"schema_version": 3', b'"schema_version": 3, "schema_version": 3'
+            b'"schema_version": 5', b'"schema_version": 5, "schema_version": 5'
         )
     )
     data = json.loads(receipt.read_text(encoding="utf-8"))
