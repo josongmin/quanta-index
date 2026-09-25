@@ -59,6 +59,7 @@ use quanta_index_search_plane::crash_point::{
     AFTER_SEMANTIC_SEAL, BEFORE_AUTHORITY_RECORD, BEFORE_RECORD_FORGET, BETWEEN_TRACK_RECLAIMS,
     CRASH_EXIT_CODE, CRASH_POINT_ENV,
 };
+use quanta_index_searchd_harness::semantic_source_scopes_for_chunk_records;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -90,7 +91,21 @@ fn batch(generation: u64) -> Result<SearchCorpusBatch, Box<dyn Error>> {
     let path = format!("src/g{generation}.rs");
     let text = format!("fn needle{generation}() {{}}");
     let end_byte = u32::try_from(text.len())?;
-    Ok(SearchCorpusBatch::replace_generation(
+    let chunk = ChunkRecord {
+        chunk_id: ChunkId::new(format!("chunk-g{generation}")),
+        repo_relative_path: RepoRelativePath::new(path.clone()),
+        language: LanguageCode::new("rust")?,
+        start_byte: 0,
+        end_byte,
+        start_line: 1,
+        end_line: 1,
+        text: text.into_boxed_str(),
+        structural: None,
+        parent_chunk_id: None,
+        source_repo_id: None,
+    };
+    let semantic_scopes = semantic_source_scopes_for_chunk_records(std::slice::from_ref(&chunk));
+    let mut batch = SearchCorpusBatch::replace_generation(
         RepoId::new(REPO)?,
         RevisionId::new(REVISION)?,
         ManifestGeneration::new(generation),
@@ -99,24 +114,21 @@ fn batch(generation: u64) -> Result<SearchCorpusBatch, Box<dyn Error>> {
     .replace_scope(
         SearchScopeKey {
             doc_surface: SearchScopeSurface::File,
-            repo_relative_path: RepoRelativePath::new(path.clone()),
+            repo_relative_path: RepoRelativePath::new(path),
         },
         format!("scope:crash-matrix:{generation}"),
-        vec![ChunkRecord {
-            chunk_id: ChunkId::new(format!("chunk-g{generation}")),
-            repo_relative_path: RepoRelativePath::new(path),
-            language: LanguageCode::new("rust")?,
-            start_byte: 0,
-            end_byte,
-            start_line: 1,
-            end_line: 1,
-            text: text.into_boxed_str(),
-            structural: None,
-            parent_chunk_id: None,
-            source_repo_id: None,
-        }],
+        vec![chunk],
         Vec::new(),
-    ))
+    );
+    for scope in semantic_scopes {
+        batch = batch.replace_semantic_scope(
+            scope.scope,
+            scope.scope_digest,
+            scope.sources,
+            scope.cluster_memberships,
+        );
+    }
+    Ok(batch)
 }
 
 fn publish_and_activate(

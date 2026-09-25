@@ -229,13 +229,28 @@ fn an_idle_writer_is_released_by_the_daemons_timer_without_another_batch() -> Te
     )?)?;
     rt.ingest_text("repo-idle", "src/idle.rs", "idle needle")?;
     let after_ingest = Scrape::take(&mut rt)?;
-    expect_eq(
-        "an unsealed batch leaves its writer open",
-        &after_ingest.gauge("lexical_writers_open")?,
-        &1.0,
-    )?;
-    if after_ingest.gauge("lexical_writers_allocated_heap_bytes")? < 1.0 {
-        return Err("an open writer holds its granted heap".into());
+    match after_ingest.gauge("lexical_writers_open")? {
+        1.0 => {
+            if after_ingest.gauge("lexical_writers_allocated_heap_bytes")? < 1.0 {
+                return Err("an open writer holds its granted heap".into());
+            }
+        }
+        0.0 => {
+            // A slow ingest or scrape can cross the short idle deadline.
+            // Accept that ordering only when the timer proves it released
+            // the writer; an unexplained early close is still a failure.
+            if after_ingest.counter("lexical_writer_idle_releases_total")? != 1
+                || after_ingest.counter("maintenance_idle_writer_releases_total")? != 1
+                || after_ingest.counter("maintenance_ticks_total")? == 0
+            {
+                return Err("writer closed before scrape without a timer release".into());
+            }
+        }
+        observed => {
+            return Err(
+                format!("unsealed batch has unexpected open writer count {observed}").into(),
+            );
+        }
     }
     // No further ingest. The timer alone must release the writer.
     let bound = idle

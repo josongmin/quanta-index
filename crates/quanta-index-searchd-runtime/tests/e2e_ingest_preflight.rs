@@ -36,7 +36,7 @@ use quanta_index_core::{
 };
 use quanta_index_ipc::stamp_batch_digest_v1;
 use quanta_index_sdk::{ConnectOptions, QuantaIndex, SdkError, SearchCorpusBatch};
-use quanta_index_searchd_harness as e2e_harness;
+use quanta_index_searchd_harness::{self as e2e_harness, semantic_source_scopes_for_chunk_records};
 
 use e2e_harness::E2eRuntime;
 
@@ -305,29 +305,40 @@ fn sdk_batch(
             manifest_digest,
         ),
     };
-    Ok(batch
+    let chunk = ChunkRecord {
+        chunk_id: ChunkId::new(format!("sdk-preflight-{path}")),
+        repo_relative_path: RepoRelativePath::new(path),
+        language: LanguageCode::new("rust")?,
+        start_byte: 0,
+        end_byte: u32::try_from(text.len())?,
+        start_line: 1,
+        end_line: 1,
+        text: text.to_string().into_boxed_str(),
+        structural: None,
+        parent_chunk_id: None,
+        source_repo_id: None,
+    };
+    let semantic_scopes = semantic_source_scopes_for_chunk_records(std::slice::from_ref(&chunk));
+    let mut batch = batch
         .replace_scope(
             SearchScopeKey {
                 doc_surface: SearchScopeSurface::File,
                 repo_relative_path: RepoRelativePath::new(path),
             },
             format!("scope:{path}"),
-            vec![ChunkRecord {
-                chunk_id: ChunkId::new(format!("sdk-preflight-{path}")),
-                repo_relative_path: RepoRelativePath::new(path),
-                language: LanguageCode::new("rust")?,
-                start_byte: 0,
-                end_byte: u32::try_from(text.len())?,
-                start_line: 1,
-                end_line: 1,
-                text: text.to_string().into_boxed_str(),
-                structural: None,
-                parent_chunk_id: None,
-                source_repo_id: None,
-            }],
+            vec![chunk],
             Vec::new(),
         )
-        .without_seal())
+        .without_seal();
+    for scope in semantic_scopes {
+        batch = batch.replace_semantic_scope(
+            scope.scope,
+            scope.scope_digest,
+            scope.sources,
+            scope.cluster_memberships,
+        );
+    }
+    Ok(batch)
 }
 
 fn remote_code(error: &SdkError) -> Option<&str> {
@@ -380,27 +391,39 @@ fn sdk_publishes_carry_the_canonical_digest_and_refusals_record_nothing() -> Tes
         );
     }
 
-    let oversized = sdk_batch(&rt, 1, None, "src/sdk_big.rs", "fn sdk_big() {}")?.replace_scope(
-        SearchScopeKey {
-            doc_surface: SearchScopeSurface::File,
-            repo_relative_path: RepoRelativePath::new("src/sdk_big_two.rs"),
-        },
-        "scope:sdk_big_two",
-        vec![ChunkRecord {
-            chunk_id: ChunkId::new("sdk-preflight-big-two"),
-            repo_relative_path: RepoRelativePath::new("src/sdk_big_two.rs"),
-            language: LanguageCode::new("rust")?,
-            start_byte: 0,
-            end_byte: 16,
-            start_line: 1,
-            end_line: 1,
-            text: "fn sdk_big_two()".to_string().into_boxed_str(),
-            structural: None,
-            parent_chunk_id: None,
-            source_repo_id: None,
-        }],
-        Vec::new(),
-    );
+    let extra_chunk = ChunkRecord {
+        chunk_id: ChunkId::new("sdk-preflight-big-two"),
+        repo_relative_path: RepoRelativePath::new("src/sdk_big_two.rs"),
+        language: LanguageCode::new("rust")?,
+        start_byte: 0,
+        end_byte: 16,
+        start_line: 1,
+        end_line: 1,
+        text: "fn sdk_big_two()".to_string().into_boxed_str(),
+        structural: None,
+        parent_chunk_id: None,
+        source_repo_id: None,
+    };
+    let semantic_scopes =
+        semantic_source_scopes_for_chunk_records(std::slice::from_ref(&extra_chunk));
+    let mut oversized = sdk_batch(&rt, 1, None, "src/sdk_big.rs", "fn sdk_big() {}")?
+        .replace_scope(
+            SearchScopeKey {
+                doc_surface: SearchScopeSurface::File,
+                repo_relative_path: RepoRelativePath::new("src/sdk_big_two.rs"),
+            },
+            "scope:sdk_big_two",
+            vec![extra_chunk],
+            Vec::new(),
+        );
+    for scope in semantic_scopes {
+        oversized = oversized.replace_semantic_scope(
+            scope.scope,
+            scope.scope_digest,
+            scope.sources,
+            scope.cluster_memberships,
+        );
+    }
     let refused = client
         .search_corpus()
         .publish(&oversized)
