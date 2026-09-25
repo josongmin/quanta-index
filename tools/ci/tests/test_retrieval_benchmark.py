@@ -1455,17 +1455,23 @@ def test_load_query_pack_refuses_smuggled_labels(tmp_path):
     assert semble_adapter.load_query_pack(pack_path)["tasks"]
 
 
-def test_worker_template_runs_against_stub_semble(tmp_path, monkeypatch):
-    (tmp_path / "semble.py").write_text(
+def _write_stub_semble(root: Path) -> None:
+    """A dual-lane stub mirroring the pinned Semble 0.6.0 module layout."""
+    package = root / "semble"
+    package.mkdir(exist_ok=True)
+    (package / "__init__.py").write_text(
+        "from semble.index_stub import SembleIndex\n",
+        encoding="utf-8",
+    )
+    (package / "index_stub.py").write_text(
         "class _Chunk:\n"
         "    def __init__(self, file_path, start_line, end_line):\n"
         "        self.file_path = file_path\n"
         "        self.start_line = start_line\n"
         "        self.end_line = end_line\n"
-        "class _Hit:\n"
-        "    def __init__(self, chunk, score):\n"
-        "        self.chunk = chunk\n"
-        "        self.score = score\n"
+        "class _Model:\n"
+        "    def encode(self, queries):\n"
+        "        return [[0.1, 0.2] for _ in queries]\n"
         "class _Stats:\n"
         "    indexed_files = 1\n"
         "    total_chunks = 1\n"
@@ -1475,13 +1481,46 @@ def test_worker_template_runs_against_stub_semble(tmp_path, monkeypatch):
         "    def from_path(cls, corpus_dir, show_progress_bar=False):\n"
         "        self = cls()\n"
         "        self._resident_index = bytearray(64 * 1024 * 1024)\n"
+        "        self.model = _Model()\n"
+        "        self._semantic_index = object()\n"
+        "        self._bm25_index = object()\n"
         "        self.chunks = [_Chunk('a.txt', 1, 1)]\n"
         "        self.stats = _Stats()\n"
         "        return self\n"
-        "    def search(self, query, top_k=10):\n"
-        "        return [_Hit(_Chunk('a.txt', 1, 1), 0.5)]\n",
+        "    def search(self, query, top_k=10, alpha=None, rerank=None):\n"
+        "        from semble import search as semble_search\n"
+        "        semantic = semble_search._search_semantic(query, self.model, self._semantic_index, self.chunks, top_k, None)\n"
+        "        lexical = semble_search._search_bm25(query, self._bm25_index, self.chunks, top_k, None)\n"
+        "        return semantic + lexical\n",
         encoding="utf-8",
     )
+    (package / "search.py").write_text(
+        "class _Hit:\n"
+        "    def __init__(self, chunk, score):\n"
+        "        self.chunk = chunk\n"
+        "        self.score = score\n"
+        "def _search_semantic(query, model, semantic_index, chunks, top_k, selector):\n"
+        "    model.encode([query])\n"
+        "    return [_Hit(chunks[0], 0.9)]\n"
+        "def _search_bm25(query, bm25_index, chunks, top_k, selector):\n"
+        "    return [_Hit(chunks[0], 0.5)]\n"
+        "def search(query, model, semantic_index, bm25_index, chunks, top_k, alpha=None, selector=None, rerank=True):\n"
+        "    semantic = _search_semantic(query, model, semantic_index, chunks, top_k, selector)\n"
+        "    lexical = _search_bm25(query, bm25_index, chunks, top_k, selector)\n"
+        "    return semantic + lexical\n",
+        encoding="utf-8",
+    )
+    (package / "ranking.py").write_text(
+        "def resolve_alpha(query, alpha=None):\n"
+        "    if alpha is not None:\n"
+        "        return float(alpha)\n"
+        "    return 0.5 if '?' in query else 1.0\n",
+        encoding="utf-8",
+    )
+
+
+def test_worker_template_runs_against_stub_semble(tmp_path, monkeypatch):
+    _write_stub_semble(tmp_path)
     worker = tmp_path / "worker.py"
     worker.write_text(semble_adapter.WORKER_TEMPLATE, encoding="utf-8")
     spec = {
@@ -1538,6 +1577,140 @@ def test_worker_template_runs_against_stub_semble(tmp_path, monkeypatch):
     duplicate = run_worker()
     assert duplicate.returncode != 0
     assert "duplicate task_ids" in duplicate.stderr
+
+
+def test_worker_template_dispatches_profiles_with_lane_isolation(tmp_path, monkeypatch):
+    _write_stub_semble(tmp_path)
+    worker = tmp_path / "worker.py"
+    worker.write_text(semble_adapter.WORKER_TEMPLATE, encoding="utf-8")
+    spec_path = tmp_path / "spec.json"
+    native_path = tmp_path / "native.json"
+    monkeypatch.setenv("SPEC_JSON", str(spec_path))
+    monkeypatch.setenv("NATIVE_JSON", str(native_path))
+    monkeypatch.setenv("SEMBLE_MODEL_NAME", "stub-model")
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+
+    def run_profile(profile: str, alpha: float | None = None):
+        spec = {
+            "corpus_dir": str(tmp_path),
+            "tasks": [{"task_id": "T1", "query": "where is it?"}],
+            "top_k": 5,
+            "seed": 0,
+            "warmup_passes": 1,
+            "repetitions": 1,
+            "semble_profile": profile,
+        }
+        if alpha is not None:
+            spec["alpha"] = alpha
+        spec_path.write_text(json.dumps(spec), encoding="utf-8")
+        for stale in (native_path,):
+            stale.unlink(missing_ok=True)
+        completed = subprocess.run(
+            [sys.executable, str(worker)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        return completed, (json.loads(native_path.read_text(encoding="utf-8")) if native_path.exists() else None)
+
+    # native-default: both lanes run; actual alpha comes from the pinned
+    # resolver (stub: no '?'-free path → 0.5).
+    completed, payload = run_profile("native-default")
+    assert completed.returncode == 0, completed.stderr
+    assert payload["semble_profile"] == "native-default"
+    assert payload["requested_alpha"] is None
+    counts = payload["lane_call_counts"]
+    assert counts["bm25"] > 0 and counts["semantic"] > 0 and counts["encode"] > 0
+    assert payload["actual_alpha_by_task"] == {"T1": 0.5}
+    assert payload["rerank_applied"] is None
+
+    # hybrid-no-rerank: explicit alpha echoed, rerank reported disabled,
+    # and both lanes still execute (alpha endpoints are ablations).
+    completed, payload = run_profile("hybrid-no-rerank", alpha=0.0)
+    assert completed.returncode == 0, completed.stderr
+    assert payload["semble_profile"] == "hybrid-no-rerank"
+    assert payload["requested_alpha"] == 0.0
+    assert payload["rerank_applied"] is False
+    assert payload["actual_alpha_by_task"] == {"T1": 0.0}
+    assert payload["lane_call_counts"]["bm25"] > 0
+    assert payload["lane_call_counts"]["semantic"] > 0
+
+    # lexical-only: zero semantic/encode lane calls — proven at the source.
+    # No query protocol: one warmup pass + one measured pass = 2 dispatches.
+    completed, payload = run_profile("lexical-only")
+    assert completed.returncode == 0, completed.stderr
+    assert payload["lane_call_counts"] == {"bm25": 2, "semantic": 0, "encode": 0}
+    assert payload["actual_alpha_by_task"] is None
+
+    # semantic-only: zero BM25 calls.
+    completed, payload = run_profile("semantic-only")
+    assert completed.returncode == 0, completed.stderr
+    assert payload["lane_call_counts"] == {"bm25": 0, "semantic": 2, "encode": 2}
+
+    # Unknown profiles are typed refusals, never a fallback.
+    completed, payload = run_profile("telepathy")
+    assert completed.returncode != 0
+    assert "unknown semble profile" in completed.stderr
+    assert payload is None
+
+    # hybrid-no-rerank without a valid alpha refuses.
+    completed, _ = run_profile("hybrid-no-rerank", alpha=None)
+    assert completed.returncode != 0
+    assert "alpha" in completed.stderr
+
+
+def test_adapter_rejects_forged_or_mismatched_profile_reports():
+    base = {
+        "semble_profile": "lexical-only",
+        "lane_call_counts": {"bm25": 2, "semantic": 0, "encode": 0},
+    }
+    semble_adapter.validate_native_profile_report(dict(base), "lexical-only", 0.5)
+
+    # Worker echoing a different profile than requested.
+    forged = dict(base, semble_profile="semantic-only")
+    with pytest.raises(semble_adapter.AdapterError, match="different profile"):
+        semble_adapter.validate_native_profile_report(forged, "lexical-only", 0.5)
+
+    # lexical-only claiming zero BM25 calls (no lane ran at all).
+    idle = dict(base, lane_call_counts={"bm25": 0, "semantic": 0, "encode": 0})
+    with pytest.raises(semble_adapter.AdapterError, match="ran no BM25 lane"):
+        semble_adapter.validate_native_profile_report(idle, "lexical-only", 0.5)
+
+    # lexical-only secretly executing the semantic lane.
+    leaked = dict(base, lane_call_counts={"bm25": 2, "semantic": 2, "encode": 2})
+    with pytest.raises(semble_adapter.AdapterError, match="semantic/encode lanes"):
+        semble_adapter.validate_native_profile_report(leaked, "lexical-only", 0.5)
+
+    # semantic-only secretly executing BM25.
+    semantic = {
+        "semble_profile": "semantic-only",
+        "lane_call_counts": {"bm25": 1, "semantic": 2, "encode": 2},
+    }
+    with pytest.raises(semble_adapter.AdapterError, match="BM25 lane"):
+        semble_adapter.validate_native_profile_report(semantic, "semantic-only", 0.5)
+
+    # hybrid-no-rerank must echo alpha and report rerank disabled.
+    hybrid = {
+        "semble_profile": "hybrid-no-rerank",
+        "lane_call_counts": {"bm25": 2, "semantic": 2, "encode": 2},
+        "requested_alpha": 0.25,
+        "rerank_applied": False,
+    }
+    semble_adapter.validate_native_profile_report(dict(hybrid), "hybrid-no-rerank", 0.25)
+    with pytest.raises(semble_adapter.AdapterError, match="alpha echo"):
+        semble_adapter.validate_native_profile_report(dict(hybrid), "hybrid-no-rerank", 0.5)
+    reranked = dict(hybrid, rerank_applied=True)
+    with pytest.raises(semble_adapter.AdapterError, match="rerank disabled"):
+        semble_adapter.validate_native_profile_report(reranked, "hybrid-no-rerank", 0.25)
+
+    # Malformed lane reports refuse.
+    for malformed in (
+        {"semble_profile": "lexical-only"},
+        dict(base, lane_call_counts={"bm25": 2}),
+        dict(base, lane_call_counts={"bm25": -1, "semantic": 0, "encode": 0}),
+    ):
+        with pytest.raises(semble_adapter.AdapterError, match="malformed|invalid"):
+            semble_adapter.validate_native_profile_report(malformed, "lexical-only", 0.5)
 
 
 def test_run_pair_requires_lockfile_path(tmp_path):
@@ -3371,6 +3544,7 @@ def test_new_protocol_requires_bound_retrieval_diagnostic_on_replay(tmp_path):
     protocol_path.write_text(json.dumps(protocol), encoding="utf-8")
     assert _stage_verdict(st)["state_evidence"]["PAIR_VALID"]["reason"] == "protocol_lock_malformed"
     protocol["rank_metric_k_policy"] = "declared_top_k_v1"
+    protocol["retrieval_diagnostic_version"] = 2
     protocol_path.write_text(json.dumps(protocol), encoding="utf-8")
     assert _stage_verdict(st)["states"]["PAIR_VALID"] == "fail"
 

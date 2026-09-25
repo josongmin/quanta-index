@@ -21,7 +21,7 @@ use crate::canonical::canonical_json;
 use crate::chunking::{Chunk, count_tokens};
 use crate::corpus::SourceFile;
 use crate::query_plan::{NlPlanConfig, QueryInputPolicy, QueryPlan};
-use crate::sdk::{QueryOutcome, RankedHit, ResponseDetail};
+use crate::sdk::{QueryOutcome, RankedHit};
 use crate::{BenchError, BenchResult, sha256_hex};
 
 pub const RUNNER_SCHEMA_VERSION: u64 = 4;
@@ -1010,6 +1010,7 @@ pub fn runner_record(input: &RunnerRecordInput<'_>) -> BenchResult<Value> {
 mod tests {
     use super::*;
     use crate::query_plan::plan_query;
+    use crate::sdk::ResponseDetail;
 
     #[test]
     fn gold_bearing_pack_keys_are_rejected() {

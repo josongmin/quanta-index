@@ -1,5 +1,6 @@
 {
   "python": [
+    "tools.ci.tests.test_retrieval_benchmark.test_adapter_rejects_forged_or_mismatched_profile_reports",
     "tools.ci.tests.test_retrieval_benchmark.test_benchmark_prep_does_not_repeat_retrieval_contracts",
     "tools.ci.tests.test_retrieval_benchmark.test_bootstrap_is_order_independent_and_rejects_invalid_pairs",
     "tools.ci.tests.test_retrieval_benchmark.test_check_semble_env_refuses_missing_installed_proof",
@@ -227,6 +228,7 @@
     "tools.ci.tests.test_retrieval_benchmark.test_verdict_stale_and_swapped_receipts",
     "tools.ci.tests.test_retrieval_benchmark.test_verdict_t15_t16_conditionals",
     "tools.ci.tests.test_retrieval_benchmark.test_verify_lockfile_pins_external_file_not_freeze",
+    "tools.ci.tests.test_retrieval_benchmark.test_worker_template_dispatches_profiles_with_lane_isolation",
     "tools.ci.tests.test_retrieval_benchmark.test_worker_template_runs_against_stub_semble",
     "tools.ci.tests.test_retrieval_benchmark.test_zero_grade_cannot_be_gold_in_suite_schema_or_evaluator"
   ],
@@ -261,6 +263,8 @@
     "quanta-index-retrieval-bench::quanta_index_retrieval_bench$corpus::tests::materialized_corpus_requires_exact_files_and_no_git_metadata",
     "quanta-index-retrieval-bench::quanta_index_retrieval_bench$corpus::tests::universe_digest_is_order_independent",
     "quanta-index-retrieval-bench::quanta_index_retrieval_bench$corpus::tests::unsafe_manifest_paths_fail",
+    "quanta-index-retrieval-bench::quanta_index_retrieval_bench$diagnostics::tests::missing_response_observations_stay_null_never_defaulted",
+    "quanta-index-retrieval-bench::quanta_index_retrieval_bench$diagnostics::tests::preserves_executed_vs_contributed_lanes_and_window_counts",
     "quanta-index-retrieval-bench::quanta_index_retrieval_bench$diagnostics::tests::preserves_hybrid_lane_provenance_and_record_binding",
     "quanta-index-retrieval-bench::quanta_index_retrieval_bench$diagnostics::tests::refuses_missing_result_or_lane_provenance",
     "quanta-index-retrieval-bench::quanta_index_retrieval_bench$diagnostics::tests::uses_record_span_when_sdk_hit_is_unanchored",

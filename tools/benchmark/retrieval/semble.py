@@ -125,7 +125,23 @@ def main() -> int:
         spec = json.load(handle)
     discovery_end_ns = time.monotonic_ns()
     from semble import SembleIndex
+    import semble.search as semble_search
     model_prepare_end_ns = time.monotonic_ns()
+
+    profile = str(spec.get("semble_profile", "native-default"))
+    if profile not in (
+        "native-default",
+        "hybrid-no-rerank",
+        "lexical-only",
+        "semantic-only",
+    ):
+        raise SystemExit(f"worker refuses unknown semble profile: {profile}")
+    alpha = spec.get("alpha") if profile == "hybrid-no-rerank" else None
+    if profile == "hybrid-no-rerank" and (
+        not isinstance(alpha, (int, float)) or isinstance(alpha, bool) or not 0.0 <= float(alpha) <= 1.0
+    ):
+        raise SystemExit("hybrid-no-rerank profile requires an explicit alpha in [0, 1]")
+    alpha = float(alpha) if alpha is not None else None
 
     rss_before_index = peak_resident_bytes()
     index = SembleIndex.from_path(spec["corpus_dir"], show_progress_bar=False)
@@ -134,6 +150,59 @@ def main() -> int:
     index_resident_bytes = max(rss_after_index - rss_before_index, 0)
     if index_resident_bytes == 0:
         raise SystemExit("worker could not attribute positive resident bytes to the index")
+
+    # RBR-03: count lane executions at the pinned-module boundary so the
+    # payload proves which lanes actually ran. Pure-lane profiles must show
+    # zero calls into the other lane.
+    lane_calls = {"bm25": 0, "semantic": 0, "encode": 0}
+    _real_search_bm25 = semble_search._search_bm25
+    _real_search_semantic = semble_search._search_semantic
+
+    def _counted_bm25(*args, **kwargs):
+        lane_calls["bm25"] += 1
+        return _real_search_bm25(*args, **kwargs)
+
+    def _counted_semantic(*args, **kwargs):
+        lane_calls["semantic"] += 1
+        return _real_search_semantic(*args, **kwargs)
+
+    semble_search._search_bm25 = _counted_bm25
+    semble_search._search_semantic = _counted_semantic
+    _real_encode = getattr(index.model, "encode", None)
+    if _real_encode is not None:
+        def _counted_encode(*args, **kwargs):
+            lane_calls["encode"] += 1
+            return _real_encode(*args, **kwargs)
+
+        index.model.encode = _counted_encode
+
+    if profile in ("lexical-only", "semantic-only") and not all(
+        hasattr(semble_search, name) for name in ("_search_bm25", "_search_semantic")
+    ):
+        raise SystemExit(
+            f"pinned Semble build does not expose single-lane functions; {profile} is unsupported"
+        )
+
+    try:
+        from semble.ranking import resolve_alpha as _resolve_alpha
+    except ImportError:
+        _resolve_alpha = None
+
+    def dispatch(query, top_k):
+        # Single dispatch shared by cold, warmup, and measured phases
+        # (RBR-03): no phase can run a different profile.
+        if profile == "native-default":
+            return index.search(query, top_k=top_k)
+        if profile == "hybrid-no-rerank":
+            return index.search(query, top_k=top_k, alpha=alpha, rerank=False)
+        if profile == "lexical-only":
+            return semble_search._search_bm25(
+                query, index._bm25_index, index.chunks, top_k, None
+            )
+        return semble_search._search_semantic(
+            query, index.model, index._semantic_index, index.chunks, top_k, None
+        )
+
     observed = sorted({chunk.file_path for chunk in index.chunks})
     stats = {
         "indexed_files": int(index.stats.indexed_files),
@@ -156,7 +225,7 @@ def main() -> int:
     cold_query_end_ns = index_end_ns
     if protocol is not None:
         cold_query_start_ns = time.monotonic_ns()
-        index.search(query_by_id[protocol["cold_probe_task_id"]], top_k=top_k)
+        dispatch(query_by_id[protocol["cold_probe_task_id"]], top_k)
         cold_query_end_ns = time.monotonic_ns()
         cold_latency_ms = (cold_query_end_ns - cold_query_start_ns) / 1_000_000.0
         warmup_schedules = protocol["warmup_schedules"]
@@ -166,10 +235,11 @@ def main() -> int:
         measurement_schedules = [[task_id for task_id, _ in queries] for _ in range(repetitions)]
     for schedule in warmup_schedules:
         for task_id in schedule:
-            index.search(query_by_id[task_id], top_k=top_k)
+            dispatch(query_by_id[task_id], top_k)
     warmup_end_ns = time.monotonic_ns()
     native = []
     latencies = {}
+    actual_alpha_by_task = {}
     query_started_ns = time.monotonic_ns()
     first_query_ms = None
     first_query_start_ns = None
@@ -177,8 +247,17 @@ def main() -> int:
     for rep, schedule in enumerate(measurement_schedules):
         for task_id in schedule:
             query = query_by_id[task_id]
+            if rep == 0 and _resolve_alpha is not None:
+                try:
+                    actual_alpha_by_task[task_id] = float(
+                        _resolve_alpha(
+                            query, alpha if profile == "hybrid-no-rerank" else None
+                        )
+                    )
+                except Exception:
+                    actual_alpha_by_task[task_id] = None
             t0 = time.monotonic_ns()
-            results = index.search(query, top_k=top_k)
+            results = dispatch(query, top_k)
             ended_ns = time.monotonic_ns()
             elapsed_ms = (ended_ns - t0) / 1_000_000.0
             if first_query_ms is None:
@@ -202,6 +281,25 @@ def main() -> int:
                     }
                 )
     query_end_ns = time.monotonic_ns()
+    # RBR-03 fail-closed lane invariants, checked at the source before the
+    # payload leaves the worker.
+    if profile == "lexical-only" and (lane_calls["semantic"] or lane_calls["encode"]):
+        raise SystemExit(
+            f"lexical-only profile executed semantic/encode lanes: {lane_calls}"
+        )
+    if profile == "lexical-only" and not lane_calls["bm25"]:
+        raise SystemExit(f"lexical-only profile ran no BM25 lane: {lane_calls}")
+    if profile == "semantic-only" and lane_calls["bm25"]:
+        raise SystemExit(f"semantic-only profile executed the BM25 lane: {lane_calls}")
+    if profile == "semantic-only" and not lane_calls["semantic"]:
+        raise SystemExit(f"semantic-only profile ran no semantic lane: {lane_calls}")
+    if profile in ("native-default", "hybrid-no-rerank") and not (
+        lane_calls["bm25"] and lane_calls["semantic"]
+    ):
+        raise SystemExit(
+            f"{profile} profile must run both lanes (alpha endpoints are score "
+            f"ablations, not single-lane runs): {lane_calls}"
+        )
     first_query_ms = first_query_ms or 0.0
     if first_query_start_ns is None or first_query_end_ns is None:
         raise SystemExit("worker did not execute a first measured query")
@@ -226,6 +324,15 @@ def main() -> int:
         "worker_end": worker_end_ns,
     }
     payload = {
+        "semble_profile": profile,
+        "requested_alpha": alpha if profile == "hybrid-no-rerank" else None,
+        "actual_alpha_by_task": (
+            actual_alpha_by_task
+            if _resolve_alpha is not None and profile in ("native-default", "hybrid-no-rerank")
+            else None
+        ),
+        "rerank_applied": False if profile == "hybrid-no-rerank" else None,
+        "lane_call_counts": dict(lane_calls),
         "semble_index_ms": (index_end_ns - model_prepare_end_ns) / 1_000_000.0,
         "discovery_ms": (discovery_end_ns - worker_started_ns) / 1_000_000.0,
         "model_provider_prepare_ms": (
@@ -263,6 +370,57 @@ def main() -> int:
 if __name__ == "__main__":
     raise SystemExit(main())
 '''
+
+
+SEMBLE_PROFILES = (
+    "native-default",
+    "hybrid-no-rerank",
+    "lexical-only",
+    "semantic-only",
+)
+
+
+def validate_native_profile_report(
+    native_payload: dict, profile: str, alpha: float
+) -> None:
+    """Reject a worker report that disagrees with the requested profile.
+
+    RBR-03: the worker must echo the requested profile and prove lane
+    isolation; a mismatched or forged execution report refuses the capture.
+    """
+    if native_payload.get("semble_profile") != profile:
+        raise AdapterError(
+            "Semble worker executed a different profile than requested: "
+            f"{native_payload.get('semble_profile')!r} != {profile!r}"
+        )
+    lane_counts = native_payload.get("lane_call_counts")
+    if not isinstance(lane_counts, dict) or set(lane_counts) != {
+        "bm25",
+        "semantic",
+        "encode",
+    }:
+        raise AdapterError("Semble worker lane-call report is malformed")
+    if any(type(count) is not int or count < 0 for count in lane_counts.values()):
+        raise AdapterError("Semble worker lane-call report is invalid")
+    if profile == "lexical-only" and (lane_counts["semantic"] or lane_counts["encode"]):
+        raise AdapterError("lexical-only capture executed semantic/encode lanes")
+    if profile == "lexical-only" and not lane_counts["bm25"]:
+        raise AdapterError("lexical-only capture ran no BM25 lane")
+    if profile == "semantic-only" and lane_counts["bm25"]:
+        raise AdapterError("semantic-only capture executed the BM25 lane")
+    if profile == "semantic-only" and not lane_counts["semantic"]:
+        raise AdapterError("semantic-only capture ran no semantic lane")
+    if profile in ("native-default", "hybrid-no-rerank") and not (
+        lane_counts["bm25"] and lane_counts["semantic"]
+    ):
+        raise AdapterError(
+            f"{profile} capture must run both lanes; alpha endpoints are score ablations"
+        )
+    if profile == "hybrid-no-rerank":
+        if native_payload.get("requested_alpha") != alpha:
+            raise AdapterError("Semble worker alpha echo differs from the requested alpha")
+        if native_payload.get("rerank_applied") is not False:
+            raise AdapterError("hybrid-no-rerank capture must report rerank disabled")
 
 
 class AdapterError(ValueError):
@@ -1080,6 +1238,12 @@ def run_adapter(args: argparse.Namespace) -> int:
             raise AdapterError("query protocol repetition count differs from CLI")
         if query_protocol["seed"] != seed:
             raise AdapterError("query protocol seed differs from CLI")
+    profile = str(getattr(args, "semble_profile", "native-default"))
+    if profile not in SEMBLE_PROFILES:
+        raise AdapterError(f"unknown semble profile: {profile}")
+    alpha = float(getattr(args, "alpha", 0.5))
+    if not 0.0 <= alpha <= 1.0:
+        raise AdapterError("alpha must lie in [0, 1]")
     spec = {
         "corpus_dir": str(corpus_dir),
         "tasks": [{"task_id": task["task_id"], "query": task["query"]} for task in pack["tasks"]],
@@ -1088,6 +1252,8 @@ def run_adapter(args: argparse.Namespace) -> int:
         "warmup_passes": warmup_passes,
         "repetitions": repetitions,
         "query_protocol": query_protocol,
+        "semble_profile": profile,
+        "alpha": alpha,
     }
     spec_path = out_root / "spec.json"
     spec_path.write_text(json.dumps(spec, indent=2, sort_keys=True), encoding="utf-8")
@@ -1125,6 +1291,7 @@ def run_adapter(args: argparse.Namespace) -> int:
         raise AdapterError("Semble native output must be an object")
     if native_payload.get("configured_model_name") != args.model_id:
         raise AdapterError("Semble worker model configuration differs from requested model")
+    validate_native_profile_report(native_payload, profile, alpha)
     observed = native_payload.get("observed_files", [])
     proof, diff_digest = mapping_proof(admitted_rows, observed, corpus_dir)
     (out_root / "mapping-proof.json").write_text(
@@ -1310,6 +1477,18 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--warmup-passes", default="1")
     run.add_argument("--repetitions", default="1")
     run.add_argument("--query-protocol", default=None)
+    run.add_argument(
+        "--semble-profile",
+        default="native-default",
+        choices=("native-default", "hybrid-no-rerank", "lexical-only", "semantic-only"),
+        help="RBR-03 comparison profile; every phase dispatches through one shared path",
+    )
+    run.add_argument(
+        "--alpha",
+        type=float,
+        default=0.5,
+        help="explicit fusion weight for --semble-profile hybrid-no-rerank",
+    )
     run.add_argument("--timeout-secs", default="1800")
     run.add_argument("--materialized-corpus", action="store_true")
     return parser
