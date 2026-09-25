@@ -15,14 +15,14 @@ rules:
     pattern-regex: '(?m)^[ \t]*(?:(?!\b(?:name|source)\s*:|#)[^\n])*?(?<![A-Za-z0-9_./-])cargo[ \t]+(?:build|check|clippy|test|fmt|doc|bench|nextest)\b'
 
   - id: workflow-no-continue-on-error
-    message: CI must fail closed. Do not mark workflow steps as continue-on-error.
+    message: CI must fail closed. Do not declare continue-on-error on jobs or steps.
     languages: [yaml]
     severity: ERROR
     paths:
       include:
         - "/.github/workflows/*.yml"
         - "/.github/workflows/*.yaml"
-    pattern-regex: '(?m)^[ \t]*(?:-[ \t]*)?continue-on-error:[ \t]*true[ \t]*(?:#.*)?$'
+    pattern: 'continue-on-error: $VALUE'
 
   - id: rust-no-ready-on-failed-structural-precondition
     # The semantic-outcome AST lint owns enum match-arm projections, not this

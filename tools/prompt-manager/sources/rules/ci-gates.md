@@ -14,7 +14,7 @@
 - Rust fallback syntax: `just rust-fallbacks` (tree-sitter counterexamples and production scan)
 - Wire-surface inventory: `python3 tools/ci/lint/check-wire-inventory.py`
 - Rust supply chain: `bash scripts/run-cargo-deny.sh`
-- Semgrep: `just semgrep` (workflow and search-plane authority guards plus narrow Rust regex checks; fallback AST shapes and derive/allow/vendor/port checks have dedicated owners)
+- Semgrep: `just semgrep` (workflow Cargo and `continue-on-error` guards plus the searchd structural-readiness early-return guard; Rust fallback and search-plane authority syntax have the dedicated AST owner, while derive/allow/vendor/port checks have separate owners)
 - Prompt drift: `python3 tools/prompt-manager/pm.py lint`
 - Tooling tests: `python3 -m pytest tools -q`
 - Agent output envelope and evidence binding (PR-changed only): `python3 tools/ci/agent/validate_agent_output.py <file>`

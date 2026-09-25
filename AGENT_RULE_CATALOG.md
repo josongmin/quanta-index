@@ -122,7 +122,7 @@ These checks apply **while you write**, not as a cleanup pass. Every diff should
 - Clippy's `match_wild_err_arm` owns wildcard `Err(_)` branches; the Semgrep duplicate was removed.
 - Clippy's `disallowed-methods` owns `Result::ok`; the Semgrep duplicate was removed. `.err().is_some()` / `.err().is_none()` remain ordinary presence predicates.
 - A checked `u8`/`u16`/`u32::try_from(value).is_ok()` width predicate is excluded: canonical CBOR uses it for representability, and Clippy requires that spelling. A general two-branch Result inspection can route errors to an alternate algorithm, default or no-op. Single-branch `if x.is_err() { return Err(...); }` is permitted because it propagates explicitly. Use `?` or a typed `match` with explicit `Err` handling.
-- `search-plane-no-process-spawn` / `search-plane-no-producer-parser-import` mechanically protect one part of the producer-owned source-authority boundary; they do not prove that every file read is authority-safe. The Semgrep suite retains workflow and structural-readiness rules, not duplicate search-plane Rust path guards.
+- `search-plane-no-process-spawn` / `search-plane-no-producer-parser-import` mechanically protect one part of the producer-owned source-authority boundary; they do not prove that every file read is authority-safe. The Semgrep suite retains workflow and structural-readiness rules, not duplicate search-plane Rust path guards. Its workflow `continue-on-error` guard rejects the YAML key for jobs and steps, including expressions, without matching shell text inside `run` blocks.
 - Do not lint public `V<n>` type names as parallel IR by spelling alone: RepoMap layout/evidence types expose versioned artifact contracts. Enforce the single-IR rule against actual duplicate producer/consumer paths, not legitimate contract names.
 - *deliberately not enforced automatically:* `if let Ok(x) = ... { ... }` with no else and `Result::map_or(default, ...)` saturation idioms are too common in legitimate best-effort or Option paths to lint accurately without type/intent evidence. Manual code review covers them.
 
@@ -170,7 +170,7 @@ These checks apply **while you write**, not as a cleanup pass. Every diff should
 - Rust fallback syntax: `just rust-fallbacks` (tree-sitter counterexamples and production scan)
 - Wire-surface inventory: `python3 tools/ci/lint/check-wire-inventory.py`
 - Rust supply chain: `bash scripts/run-cargo-deny.sh`
-- Semgrep: `just semgrep` (workflow and search-plane authority guards plus narrow Rust regex checks; fallback AST shapes and derive/allow/vendor/port checks have dedicated owners)
+- Semgrep: `just semgrep` (workflow Cargo and `continue-on-error` guards plus the searchd structural-readiness early-return guard; Rust fallback and search-plane authority syntax have the dedicated AST owner, while derive/allow/vendor/port checks have separate owners)
 - Prompt drift: `python3 tools/prompt-manager/pm.py lint`
 - Tooling tests: `python3 -m pytest tools -q`
 - Agent output envelope and evidence binding (PR-changed only): `python3 tools/ci/agent/validate_agent_output.py <file>`

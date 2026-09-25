@@ -40,6 +40,16 @@ class SemgrepPolicyTest(unittest.TestCase):
           cargo test -Z build-std
       - continue-on-error: true
         run: ./scripts/cargow check --workspace
+      - continue-on-error: True
+        run: ./scripts/cargow check --workspace
+      - continue-on-error: false
+        run: ./scripts/cargow check --workspace
+      - continue-on-error: ${{ matrix.experimental }}
+        run: ./scripts/cargow check --workspace
+      - run: |
+          cat <<'EOF'
+          continue-on-error: true
+          EOF
 """,
             "crates/quanta-index-searchd/src/lib.rs": """fn bad() -> StructuralReadiness {
     let Ok(value) = prerequisite() else { return StructuralReadiness::Ready; };
@@ -100,6 +110,7 @@ let Ok(value) = prerequisite() else { return StructuralReadiness::Ready; };
         self.assertFalse([item for item in self.findings if "/tests/" in item["path"]])
 
     def test_workflow_guards(self) -> None:
+        self.assertIs(YAML(typ="safe").load("continue-on-error: True")["continue-on-error"], True)
         findings = {
             (Path(item["path"]).suffix, self.rule(item), item["start"]["line"])
             for item in self.findings
@@ -114,6 +125,9 @@ let Ok(value) = prerequisite() else { return StructuralReadiness::Ready; };
                     ("workflow-use-cargow", 4),
                     ("workflow-use-cargow", 10),
                     ("workflow-no-continue-on-error", 11),
+                    ("workflow-no-continue-on-error", 13),
+                    ("workflow-no-continue-on-error", 15),
+                    ("workflow-no-continue-on-error", 17),
                 )
             },
         )
