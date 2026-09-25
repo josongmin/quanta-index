@@ -1694,8 +1694,10 @@ def merge_records(
     results: dict[tuple[str, str], dict] = {}
     runners: list[dict] = []
     contracts: list[dict] = []
+    validated_runs: list[dict] = []
     for path in record_paths:
         run = _validate_single_record(repo, suite, pack, path)
+        validated_runs.append(run)
         contracts.append(run["comparison_contract"])
         for capture_id, entry in run["captures"].items():
             if capture_id in captures:
@@ -1728,6 +1730,24 @@ def merge_records(
             raise RunError(
                 f"merged records disagree on the comparison contract: {differing}; refusing merge"
             )
+    merged_policy = None
+    policies = [run["runner"].get("query_input_policy") for run in validated_runs]
+    if any(policy is None for policy in policies):
+        if any(policy is not None for policy in policies):
+            raise RunError(
+                "cannot merge legacy policy-less records with query-identity records; "
+                "re-capture the legacy side under an explicit policy"
+            )
+        merged_schema_version = 3
+    else:
+        reference = policies[0]
+        for policy in policies[1:]:
+            if policy != reference:
+                raise RunError(
+                    "merged records disagree on the query input policy; refusing merge"
+                )
+        merged_policy = reference
+        merged_schema_version = 4
     merged_blinding = (
         "isolated"
         if all(r["runner"].get("blinding") == "isolated" for r in runners)
@@ -1745,7 +1765,7 @@ def merge_records(
     content_digests = sorted(digest(canonical_bytes(read_json(path))) for path in record_paths)
     merge_id = digest(canonical_bytes(content_digests))[:16]
     combined = {
-        "schema_version": 3,
+        "schema_version": merged_schema_version,
         "query_pack_sha256": digest(canonical_bytes(pack)),
         "comparison_contract": first,
         "runner": {
@@ -1758,6 +1778,7 @@ def merge_records(
             "blinding": merged_blinding,
             "isolation_method": "merge of independently blinded records (weakest blinding wins)",
             "access_block_log": json.dumps(runners, sort_keys=True),
+            **({"query_input_policy": merged_policy} if merged_policy is not None else {}),
         },
         "captures": captures,
         "route_provenance": provenance,
@@ -3243,12 +3264,13 @@ def _validate_manifest_shape(payload: object) -> dict:
 
 
 def _validate_single_record(repo: Path, suite: dict, pack: dict, path: Path) -> dict:
-    """Validate one raw v3 record against its re-derived projected pack."""
+    """Validate one raw v3 (historical) or v4 (query-identity) record
+    against its re-derived projected pack."""
     raw = read_json(path)
     if not isinstance(raw, dict):
         raise RunError(f"record is not an object: {path}")
-    if raw.get("schema_version") != 3:
-        raise RunError(f"v3 record required: {path}")
+    if raw.get("schema_version") not in (3, 4):
+        raise RunError(f"v3/v4 record required: {path}")
     routes = sorted(raw.get("route_provenance", {}).keys())
     if not routes:
         raise RunError(f"record names no routes: {path}")

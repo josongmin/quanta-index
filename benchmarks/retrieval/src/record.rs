@@ -20,10 +20,11 @@ use serde_json::{Map, Value};
 use crate::canonical::canonical_json;
 use crate::chunking::{Chunk, count_tokens};
 use crate::corpus::SourceFile;
+use crate::query_plan::{NlPlanConfig, QueryInputPolicy, QueryPlan};
 use crate::sdk::{QueryOutcome, RankedHit};
 use crate::{BenchError, BenchResult, sha256_hex};
 
-pub const RUNNER_SCHEMA_VERSION: u64 = 3;
+pub const RUNNER_SCHEMA_VERSION: u64 = 4;
 pub const TOKENIZER: &str = "qi-regex-v1";
 pub const TOKENIZER_BUDGET_VERSION: &str = "qb-v1";
 pub const OUTPUT_UNIT_POLICY: &str = "rank_prefix";
@@ -734,10 +735,16 @@ pub fn result_value(
     task_id: &str,
     route: &str,
     outcome: &QueryOutcome,
+    plan: &QueryPlan,
     top_k: u32,
     files: &BTreeMap<String, SourceFile>,
     chunks_by_id: &BTreeMap<String, Chunk>,
 ) -> BenchResult<Value> {
+    let query_identity = serde_json::json!({
+        "original_query_sha256": plan.original_query_sha256,
+        "effective_lexical_request_sha256": plan.effective_lexical_request_sha256,
+        "semantic_text_sha256": plan.semantic_text_sha256,
+    });
     match outcome {
         QueryOutcome::Hits {
             hits,
@@ -770,6 +777,7 @@ pub fn result_value(
                     "route": route,
                     "status": status,
                     "candidates": [],
+                    "query_identity": query_identity,
                     "timings": timings_value(*latency)?,
                     "error": error,
                 }));
@@ -793,6 +801,7 @@ pub fn result_value(
                 "route": route,
                 "status": status,
                 "candidates": candidates,
+                "query_identity": query_identity,
                 "timings": timings_value(*latency)?,
                 "error": null,
             }))
@@ -807,18 +816,21 @@ pub fn result_value(
             "route": route,
             "status": status,
             "candidates": [],
+            "query_identity": query_identity,
             "timings": timings_value(*latency)?,
             "error": error_value(code, message),
         })),
     }
 }
 
-/// Assemble the complete v3 runner record.
+/// Assemble the complete v4 runner record.
 ///
 /// Results emit in deterministic `(task_id, route)` order from the
 /// pack's task order and sorted routes. Every route resolves to a
 /// validated capture; unreferenced captures refuse (a capture with no
-/// route is meaningless provenance).
+/// route is meaningless provenance). Every result carries the per-task
+/// query identity of the single shared plan (RBR-02), and the runner
+/// block binds the policy/config identity all plans agreed on.
 #[derive(Clone, Copy)]
 pub struct RunnerRecordInput<'a> {
     pub pack: &'a QueryPack,
@@ -826,6 +838,8 @@ pub struct RunnerRecordInput<'a> {
     pub provenance: &'a BTreeMap<String, RouteProvenance>,
     pub captures: &'a BTreeMap<String, CaptureProvenance>,
     pub outcomes: &'a BTreeMap<(String, String), QueryOutcome>,
+    pub plans: &'a BTreeMap<String, QueryPlan>,
+    pub nl_config: &'a NlPlanConfig,
     pub top_k: u32,
     pub files: &'a BTreeMap<String, SourceFile>,
     pub chunks_by_id: &'a BTreeMap<String, Chunk>,
@@ -838,6 +852,8 @@ pub fn runner_record(input: &RunnerRecordInput<'_>) -> BenchResult<Value> {
         provenance,
         captures,
         outcomes,
+        plans,
+        nl_config,
         top_k,
         files,
         chunks_by_id,
@@ -848,6 +864,52 @@ pub fn runner_record(input: &RunnerRecordInput<'_>) -> BenchResult<Value> {
             pack.contract_top_k
         )));
     }
+    // Every task must have exactly one plan, and all plans must agree on
+    // the policy/config identity: a record cannot mix policies.
+    let mut agreed_policy: Option<(QueryInputPolicy, String, bool)> = None;
+    for task in &pack.tasks {
+        let plan = plans.get(&task.task_id).ok_or_else(|| {
+            BenchError::Protocol(format!("missing query plan for task {}", task.task_id))
+        })?;
+        if sha256_hex(plan.original.as_bytes()) != task.query_sha256 {
+            return Err(BenchError::Protocol(format!(
+                "query plan for task {} does not bind the pack query digest",
+                task.task_id
+            )));
+        }
+        let signature = (plan.policy, plan.policy_config_sha256.clone(), plan.planning_cost_in_latency);
+        match &agreed_policy {
+            None => agreed_policy = Some(signature),
+            Some(expected) => {
+                if &signature != expected {
+                    return Err(BenchError::Protocol(format!(
+                        "query plans for task {} disagree on policy/config identity",
+                        task.task_id
+                    )));
+                }
+            }
+        }
+    }
+    let (policy, policy_config_sha256, planning_cost_in_latency) =
+        agreed_policy.ok_or_else(|| BenchError::Protocol("query pack has no tasks".to_string()))?;
+    let query_input_policy = match policy {
+        QueryInputPolicy::NaturalLanguage => serde_json::json!({
+            "policy": policy.as_str(),
+            "config": {
+                "max_token_chars": nl_config.max_token_chars,
+                "max_tokens": nl_config.max_tokens,
+                "min_token_chars": nl_config.min_token_chars,
+            },
+            "policy_config_sha256": policy_config_sha256,
+            "planning_cost_in_latency": planning_cost_in_latency,
+        }),
+        QueryInputPolicy::Native | QueryInputPolicy::Literal => serde_json::json!({
+            "policy": policy.as_str(),
+            "config": {},
+            "policy_config_sha256": policy_config_sha256,
+            "planning_cost_in_latency": planning_cost_in_latency,
+        }),
+    };
     let mut routes: Vec<&String> = provenance.keys().collect();
     routes.sort();
     if routes.is_empty() {
@@ -897,6 +959,9 @@ pub fn runner_record(input: &RunnerRecordInput<'_>) -> BenchResult<Value> {
     }
     let mut results = Vec::new();
     for task in &pack.tasks {
+        let plan = plans
+            .get(&task.task_id)
+            .ok_or_else(|| BenchError::Protocol(format!("missing plan for {}", task.task_id)))?;
         for route in &routes {
             let outcome = outcomes
                 .get(&(task.task_id.clone(), (*route).clone()))
@@ -907,6 +972,7 @@ pub fn runner_record(input: &RunnerRecordInput<'_>) -> BenchResult<Value> {
                 &task.task_id,
                 route,
                 outcome,
+                plan,
                 top_k,
                 files,
                 chunks_by_id,
@@ -927,6 +993,7 @@ pub fn runner_record(input: &RunnerRecordInput<'_>) -> BenchResult<Value> {
             "blinding": identity.blinding,
             "isolation_method": identity.isolation_method,
             "access_block_log": identity.access_block_log,
+            "query_input_policy": query_input_policy,
         },
         "captures": captures_value,
         "route_provenance": provenance_value,
@@ -941,6 +1008,7 @@ pub fn runner_record(input: &RunnerRecordInput<'_>) -> BenchResult<Value> {
 )]
 mod tests {
     use super::*;
+    use crate::query_plan::plan_query;
 
     #[test]
     fn gold_bearing_pack_keys_are_rejected() {
@@ -1127,6 +1195,23 @@ mod tests {
         load_query_pack(&path)
     }
 
+    fn native_plans_fixture(pack: &QueryPack) -> BTreeMap<String, QueryPlan> {
+        pack.tasks
+            .iter()
+            .map(|task| {
+                (
+                    task.task_id.clone(),
+                    plan_query(
+                        QueryInputPolicy::Native,
+                        task.query.as_str(),
+                        &NlPlanConfig::default(),
+                    )
+                    .expect("native plan"),
+                )
+            })
+            .collect()
+    }
+
     #[test]
     fn v3_pack_loads_and_echoes_contract() {
         let pack = load_fixture(&v3_pack_fixture()).expect("v3 pack loads");
@@ -1207,8 +1292,11 @@ mod tests {
     fn outcome_statuses_never_silently_downgrade() {
         use quanta_index_contract::ExecutionOutcomeV2;
         let (files, chunks, hit) = status_fixture();
+        let plan =
+            plan_query(QueryInputPolicy::Native, "needle", &NlPlanConfig::default())
+                .expect("native plan");
         let run = |outcome: QueryOutcome| {
-            result_value("T1", "lexical", &outcome, 10, &files, &chunks).expect("maps")
+            result_value("T1", "lexical", &outcome, &plan, 10, &files, &chunks).expect("maps")
         };
         let exhausted = run(QueryOutcome::Hits {
             hits: vec![hit.clone()],
@@ -1317,18 +1405,40 @@ mod tests {
             },
         )]);
         let captures = BTreeMap::from([("cap-1".to_string(), v3_capture_fixture())]);
+        let plans = native_plans_fixture(&pack);
+        let nl_config = NlPlanConfig::default();
         let record = runner_record(&RunnerRecordInput {
             pack: &pack,
             identity: &identity,
             provenance: &provenance,
             captures: &captures,
             outcomes: &outcomes,
+            plans: &plans,
+            nl_config: &nl_config,
             top_k: 10,
             files: &files,
             chunks_by_id: &chunks,
         })
         .expect("v3 record assembles");
-        assert_eq!(record["schema_version"], serde_json::json!(3));
+        assert_eq!(record["schema_version"], serde_json::json!(RUNNER_SCHEMA_VERSION));
+        assert_eq!(
+            record["runner"]["query_input_policy"]["policy"],
+            serde_json::json!("native")
+        );
+        assert_eq!(
+            record["runner"]["query_input_policy"]["policy_config_sha256"],
+            serde_json::json!(sha256_hex(
+                crate::query_plan::policy_config_canonical(
+                    QueryInputPolicy::Native,
+                    &NlPlanConfig::default()
+                )
+                .as_bytes()
+            ))
+        );
+        assert_eq!(
+            record["results"][0]["query_identity"]["original_query_sha256"],
+            serde_json::json!(sha256_hex("needle".as_bytes()))
+        );
         assert_eq!(record["comparison_contract"], pack.comparison_contract);
         assert_eq!(
             record["captures"]["cap-1"]["system"],
@@ -1369,6 +1479,8 @@ mod tests {
         let outcomes = BTreeMap::from([(("T1".to_string(), "lexical".to_string()), failed)]);
         let files = BTreeMap::new();
         let chunks = BTreeMap::new();
+        let plans = native_plans_fixture(&pack);
+        let nl_config = NlPlanConfig::default();
         let build = |provenance: &BTreeMap<String, RouteProvenance>,
                      captures: &BTreeMap<String, CaptureProvenance>,
                      top_k: u32|
@@ -1379,6 +1491,8 @@ mod tests {
                 provenance,
                 captures,
                 outcomes: &outcomes,
+                plans: &plans,
+                nl_config: &nl_config,
                 top_k,
                 files: &files,
                 chunks_by_id: &chunks,

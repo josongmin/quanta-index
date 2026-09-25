@@ -22,6 +22,9 @@ use quanta_index_retrieval_bench::batch::{
 use quanta_index_retrieval_bench::chunking::chunk_corpus;
 use quanta_index_retrieval_bench::chunking::whole_file::WholeFileChunker;
 use quanta_index_retrieval_bench::corpus::{CorpusLimits, load_corpus, load_manifest};
+use quanta_index_retrieval_bench::query_plan::{
+    NlPlanConfig, QueryInputPolicy, plan_query,
+};
 use quanta_index_retrieval_bench::record::{
     CaptureProvenance, PackTask, QueryPack, RouteProvenance, RunnerIdentity, RunnerRecordInput,
     pack_universe_digest, result_value, runner_record,
@@ -465,8 +468,15 @@ fn real_daemon_roundtrip_publishes_and_queries() {
             panic!("lexical query failed: {code}: {message}");
         }
     }
-    let lexical_record = result_value("T1", "lexical", &lexical, 10, &files_by_path, &chunks_by_id)
-        .expect("lexical SDK hits refer to published chunks");
+    let plan = plan_query(
+        QueryInputPolicy::Native,
+        "sphinx quartz vaults",
+        &NlPlanConfig::default(),
+    )
+    .expect("native plan");
+    let lexical_record =
+        result_value("T1", "lexical", &lexical, &plan, 10, &files_by_path, &chunks_by_id)
+            .expect("lexical SDK hits refer to published chunks");
     assert_eq!(lexical_record["route"], "lexical");
 
     // Semantic and hybrid routes answer under the same generation; their
@@ -476,7 +486,7 @@ fn real_daemon_roundtrip_publishes_and_queries() {
             client: session.client(),
             route,
             lexical_request: "sphinx quartz vaults",
-        semantic_text: "sphinx quartz vaults",
+            semantic_text: "sphinx quartz vaults",
             repo_id: &identity.repo_id,
             revision_id: &identity.revision_id,
             generation: identity.generation,
@@ -494,8 +504,9 @@ fn real_daemon_roundtrip_publishes_and_queries() {
                 panic!("{route} query failed: {status} {code}: {message}");
             }
         }
-        let route_record = result_value("T1", route, &outcome, 10, &files_by_path, &chunks_by_id)
-            .expect("SDK hits refer to published chunks");
+        let route_record =
+            result_value("T1", route, &outcome, &plan, 10, &files_by_path, &chunks_by_id)
+                .expect("SDK hits refer to published chunks");
         assert_eq!(route_record["route"], route);
     }
 
@@ -629,12 +640,24 @@ fn real_daemon_roundtrip_publishes_and_queries() {
             },
         );
     }
+    let plans = BTreeMap::from([(
+        "T1".to_string(),
+        plan_query(
+            QueryInputPolicy::Native,
+            "sphinx quartz vaults",
+            &NlPlanConfig::default(),
+        )
+        .expect("native plan"),
+    )]);
+    let nl_config = NlPlanConfig::default();
     let record = runner_record(&RunnerRecordInput {
         pack: &pack,
         identity: &runner_identity,
         provenance: &provenance,
         captures: &captures,
         outcomes: &outcomes,
+        plans: &plans,
+        nl_config: &nl_config,
         top_k: 10,
         files: &files_by_path,
         chunks_by_id: &chunks_by_id,
@@ -646,7 +669,10 @@ fn real_daemon_roundtrip_publishes_and_queries() {
         let rendered = serde_json::to_string_pretty(&record).expect("record renders");
         std::fs::write(&path, rendered).expect("record dumps");
     }
-    assert_eq!(record["schema_version"], serde_json::json!(3));
+    assert_eq!(
+        record["schema_version"],
+        serde_json::json!(quanta_index_retrieval_bench::record::RUNNER_SCHEMA_VERSION)
+    );
     assert_eq!(record["comparison_contract"], pack.comparison_contract);
     assert_eq!(
         record["captures"]

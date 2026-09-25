@@ -20,6 +20,7 @@ import pytest
 
 from tools.benchmark.retrieval import evaluator as ev
 from tools.benchmark.retrieval import portable_proof
+from tools.benchmark.retrieval import query_plan as qp
 from tools.benchmark.retrieval import run as pairrun
 from tools.benchmark.retrieval import semble as semble_adapter
 from tools.ci import source_closure
@@ -606,6 +607,7 @@ def test_current_typed_failures_score_zero_and_are_counted(tmp_path):
         "route": "hybrid",
         "status": "timeout",
         "candidates": [],
+        "query_identity": run["results"][1]["query_identity"],
         "timings": {"query_latency_ms": 5.0},
         "error": {"code": "TIMEOUT", "message": "deadline"},
     }
@@ -1995,7 +1997,7 @@ def test_normalize_record_proves_spans_and_order(tmp_path):
         {"task_id": "T2", "results": []},
     ]
     record = build(native, {"T1": [3.0], "T2": [1.0]})
-    assert record["schema_version"] == 3
+    assert record["schema_version"] == 4
     assert [row["status"] for row in record["results"]] == ["success", "abstained"]
     assert [c["rank"] for c in record["results"][0]["candidates"]] == [1, 2]
     assert record["results"][0]["candidates"][0]["path"] == "a.txt"
@@ -2004,6 +2006,19 @@ def test_normalize_record_proves_spans_and_order(tmp_path):
     assert capture["chunk_strategy"] == "semble_native"
     assert capture["searchd_binary"] is None and capture["generation"] == 0
     assert record["route_provenance"] == {"semble-hybrid": {"capture_id": "cap-1"}}
+    # RBR-02: the Semble adapter binds its native passthrough policy and
+    # per-task identity (effective request == original bytes).
+    policy = record["runner"]["query_input_policy"]
+    assert policy["policy"] == "native"
+    assert policy["config"] == {}
+    assert policy["planning_cost_in_latency"] is False
+    identity = record["results"][0]["query_identity"]
+    first_query = pack["tasks"][0]["query"]
+    assert identity["original_query_sha256"] == identity["effective_lexical_request_sha256"]
+    assert identity["original_query_sha256"] == hashlib.sha256(
+        first_query.encode()
+    ).hexdigest()
+    assert identity["original_query_sha256"] == pack["tasks"][0]["query_sha256"]
 
     drifted = build(
         [
@@ -2235,7 +2250,7 @@ def test_v3_rescore_is_deterministic_under_row_order(tmp_path):
     old_run["schema_version"] = 2
     run2_path = tmp_path / "old-run.json"
     run2_path.write_text(json.dumps(old_run), encoding="utf-8")
-    with pytest.raises(pairrun.RunError, match="v3 record required"):
+    with pytest.raises(pairrun.RunError, match="v3/v4 record required"):
         pairrun.merge_records(repo, suite_path, [run2_path, sem_path])
 
     # Record/pack contract drift refused at merge.
@@ -2624,6 +2639,7 @@ def _pair_stage(
                 if source_row["task_id"] == source_task["task_id"]:
                     row = json.loads(json.dumps(source_row))
                     row["task_id"] = task["task_id"]
+                    row["query_identity"] = qp.derive_query_identity("native", task["query"])
                     run["results"].append(row)
     if not graded:
         for task in suite["tasks"]:
@@ -2741,7 +2757,7 @@ def _pair_stage(
         else:
             capture["receipt_digest"] = mapping["diff_digest"]
         return {
-            "schema_version": 3,
+            "schema_version": 4,
             "query_pack_sha256": pack_sha,
             "comparison_contract": pack["comparison_contract"],
             "runner": {
@@ -2754,6 +2770,14 @@ def _pair_stage(
                 "blinding": blinding,
                 "isolation_method": isolation_method,
                 "access_block_log": access_block_log,
+                "query_input_policy": {
+                    "policy": "native",
+                    "config": {},
+                    "policy_config_sha256": ev.digest(
+                        qp.policy_config_canonical("native").encode()
+                    ),
+                    "planning_cost_in_latency": False,
+                },
             },
             "captures": {capture_id: capture},
             "route_provenance": {route_rows[0]["route"]: {"capture_id": capture_id}},
@@ -5399,12 +5423,20 @@ def fixture_v3(tmp_path: Path, *, answerable_only: bool = False, blinding: str =
     }
     _, pack, _ = ev.validate_suite(repo, suite)
 
+    # RBR-02: current records are v4 — every result binds the query
+    # identity of the single native plan shared by all routes.
+    identities = {
+        task["task_id"]: qp.derive_query_identity("native", task["query"])
+        for task in pack["tasks"]
+    }
+
     def result(task_id, route, status, spans, latency=1.5, error=None):
         return {
             "task_id": task_id,
             "route": route,
             "status": status,
             "candidates": [cand(p, s, e, i + 1) for i, (p, s, e) in enumerate(spans)],
+            "query_identity": identities[task_id],
             "timings": {"query_latency_ms": latency},
             "error": error,
         }
@@ -5424,7 +5456,7 @@ def fixture_v3(tmp_path: Path, *, answerable_only: bool = False, blinding: str =
             result("T2", "hybrid", "abstained", []),
         ]
     run = {
-        "schema_version": 3,
+        "schema_version": 4,
         "query_pack_sha256": ev.digest(ev.canonical(pack)),
         "comparison_contract": _v3_contract(),
         "runner": {
@@ -5437,6 +5469,14 @@ def fixture_v3(tmp_path: Path, *, answerable_only: bool = False, blinding: str =
             "blinding": blinding,
             "isolation_method": "separate suite access; runner cannot read suite path",
             "access_block_log": "verified EACCES on suite path for runner uid",
+            "query_input_policy": {
+                "policy": "native",
+                "config": {},
+                "policy_config_sha256": ev.digest(
+                    qp.policy_config_canonical("native").encode()
+                ),
+                "planning_cost_in_latency": False,
+            },
         },
         "captures": {"q0": _v3_capture("quanta")},
         "route_provenance": {
@@ -5494,7 +5534,88 @@ def test_v3_load_evaluate_roundtrip_and_schema_conformance(tmp_path):
     assert report["sample_count"] == 2
 
 
-@pytest.mark.parametrize("old_version", [1, 2, 4])
+def test_v4_runner_schema_binds_query_identity_and_keeps_v3_historical(tmp_path):
+    repo, suite, run, suite_path, runner_path, _ = fixture_v3(tmp_path)
+    jsonschema.validate(run, _load_schema("runner.schema.json"))
+    loaded_suite, pack, loaded_run = record_v3(repo, suite, run, suite_path, runner_path)
+    assert loaded_run["schema_version"] == 4
+    assert loaded_run["runner"]["query_input_policy"]["policy"] == "native"
+
+    # v3 records stay loadable immutable history (no policy identity).
+    historical = json.loads(json.dumps(run))
+    historical["schema_version"] = 3
+    historical["runner"].pop("query_input_policy")
+    for row in historical["results"]:
+        row.pop("query_identity")
+    suite_path.write_text(json.dumps(suite), encoding="utf-8")
+    runner_path.write_text(json.dumps(historical), encoding="utf-8")
+    _, _, legacy_run = ev.load_evidence(repo, suite_path, runner_path)
+    assert legacy_run["schema_version"] == 3
+
+    # Unknown future stamps still refuse.
+    future = json.loads(json.dumps(run))
+    future["schema_version"] = 5
+    runner_path.write_text(json.dumps(future), encoding="utf-8")
+    with pytest.raises(ev.EvidenceError, match="unsupported runner schema"):
+        ev.load_evidence(repo, suite_path, runner_path)
+
+
+@pytest.mark.parametrize(
+    "mutation,match",
+    [
+        (lambda s, r, f: r["runner"]["query_input_policy"].update(policy="natural_language"), "missing/unknown fields"),
+        (lambda s, r, f: r["runner"]["query_input_policy"].update(policy="telepathy"), "unknown query input policy"),
+        (lambda s, r, f: r["runner"]["query_input_policy"].update(policy_config_sha256="0" * 64), "policy config digest"),
+        (lambda s, r, f: r["runner"]["query_input_policy"].update(planning_cost_in_latency=True), "planning_cost_in_latency"),
+        (lambda s, r, f: r["runner"]["query_input_policy"].update(config={"max_tokens": 4}), "config must be empty"),
+        (lambda s, r, f: r["runner"].pop("query_input_policy"), "missing/unknown fields"),
+        (lambda s, r, f: r["results"][0].pop("query_identity"), "missing/unknown fields"),
+        (lambda s, r, f: r["results"][0]["query_identity"].update(effective_lexical_request_sha256="0" * 64), "does not match the independently re-derived plan"),
+        (lambda s, r, f: r["results"][0]["query_identity"].update(original_query_sha256="0" * 64), "does not match the independently re-derived plan"),
+        (lambda s, r, f: r["results"][0]["query_identity"].update(semantic_text_sha256="b" * 64), "does not match the independently re-derived plan"),
+    ],
+)
+def test_v4_query_identity_tampering_is_rejected(tmp_path, mutation, match):
+    repo, suite, run, suite_path, runner_path, files = fixture_v3(tmp_path)
+    mutation(suite, run, files)
+    with pytest.raises(ev.EvidenceError, match=match):
+        record_v3(repo, suite, run, suite_path, runner_path)
+
+
+def test_v4_literal_and_nl_policies_replay_through_the_python_oracle(tmp_path):
+    repo, suite, run, suite_path, runner_path, _ = fixture_v3(tmp_path)
+    _, pack, _ = ev.validate_suite(repo, suite)
+    # Re-stamp the record as a literal-policy capture: identity digests are
+    # re-derived by the evaluator's independent Python planner.
+    run["runner"]["query_input_policy"] = {
+        "policy": "literal",
+        "config": {},
+        "policy_config_sha256": ev.digest(qp.policy_config_canonical("literal").encode()),
+        "planning_cost_in_latency": False,
+    }
+    for row in run["results"]:
+        query = next(t["query"] for t in pack["tasks"] if t["task_id"] == row["task_id"])
+        row["query_identity"] = qp.derive_query_identity("literal", query)
+    _suite, _pack, loaded = record_v3(repo, suite, run, suite_path, runner_path)
+    assert loaded["runner"]["query_input_policy"]["policy"] == "literal"
+
+    # An effective-request digest that does not match the literal plan
+    # (here: natural-language plan digests) is rejected.
+    for row in run["results"]:
+        query = next(t["query"] for t in pack["tasks"] if t["task_id"] == row["task_id"])
+        row["query_identity"] = qp.derive_query_identity("natural_language", query)
+    run["runner"]["query_input_policy"]["policy"] = "natural_language"
+    run["runner"]["query_input_policy"]["config"] = dict(qp.DEFAULT_NL_CONFIG)
+    run["runner"]["query_input_policy"]["policy_config_sha256"] = ev.digest(
+        qp.policy_config_canonical("natural_language", qp.DEFAULT_NL_CONFIG).encode()
+    )
+    # The NL plan digests now agree, so this must load: the oracle accepts
+    # any of the three canonical policies with self-consistent evidence.
+    _suite, _pack, loaded_nl = record_v3(repo, suite, run, suite_path, runner_path)
+    assert loaded_nl["runner"]["query_input_policy"]["policy"] == "natural_language"
+
+
+@pytest.mark.parametrize("old_version", [1, 2])
 def test_current_refuses_old_or_unknown_artifact_stamps(tmp_path, old_version):
     repo, suite, run, suite_path, runner_path, _ = fixture_v3(tmp_path)
     old_suite = dict(suite, schema_version=old_version)

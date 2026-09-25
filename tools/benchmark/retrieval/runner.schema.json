@@ -1,18 +1,18 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://quanta-index.invalid/benchmark/retrieval/runner-v3",
-  "title": "Frozen retrieval runner record v3 (W0-A comparison contract)",
-  "description": "Only accepted runner artifact shape. Carries the comparison contract, per-capture provenance with binary identity and generation/receipt binding, route->capture_id references, and nullable timings (unknown is null; 0 only when actually measured).",
+  "$id": "https://quanta-index.invalid/benchmark/retrieval/runner-v4",
+  "title": "Frozen retrieval runner record v4 (W0-A comparison contract + RBR-02 query identity)",
+  "description": "Only accepted runner artifact shape. Carries the comparison contract, per-capture provenance with binary identity and generation/receipt binding, route->capture_id references, nullable timings (unknown is null; 0 only when actually measured), and (v4) the query input policy plus per-result query identity digests. v3 records remain immutable history validated by the v3 schema.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "query_pack_sha256", "comparison_contract", "runner", "captures", "route_provenance", "results"],
   "properties": {
-    "schema_version": {"const": 3},
+    "schema_version": {"const": 4},
     "query_pack_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "comparison_contract": {"$ref": "#/$defs/comparison_contract"},
     "runner": {
       "type": "object", "additionalProperties": false,
-      "required": ["name", "revision", "run_id", "tokenizer", "tokenizer_budget_version", "gold_access", "blinding", "isolation_method", "access_block_log"],
+      "required": ["name", "revision", "run_id", "tokenizer", "tokenizer_budget_version", "gold_access", "blinding", "isolation_method", "access_block_log", "query_input_policy"],
       "properties": {
         "name": {"type": "string", "minLength": 1},
         "revision": {"type": "string", "minLength": 1},
@@ -22,7 +22,8 @@
         "gold_access": {"const": false},
         "blinding": {"enum": ["isolated", "attested"]},
         "isolation_method": {"type": "string", "minLength": 1},
-        "access_block_log": {"type": "string", "minLength": 1}
+        "access_block_log": {"type": "string", "minLength": 1},
+        "query_input_policy": {"$ref": "#/$defs/query_input_policy"}
       }
     },
     "captures": {
@@ -39,6 +40,57 @@
     "results": {"type": "array", "items": {"$ref": "#/$defs/result"}}
   },
   "$defs": {
+    "query_input_policy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["policy", "config", "policy_config_sha256", "planning_cost_in_latency"],
+      "properties": {
+        "policy": {
+          "enum": ["native", "literal", "natural_language"],
+          "description": "RBR-02 explicit query input policy. Unknown values are rejected; there is no implicit default."
+        },
+        "config": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "max_token_chars": {"type": "integer", "minimum": 1},
+            "max_tokens": {"type": "integer", "minimum": 1},
+            "min_token_chars": {"type": "integer", "minimum": 1}
+          },
+          "description": "Empty for native/literal; carries the pinned natural-language plan limits otherwise."
+        },
+        "policy_config_sha256": {
+          "type": "string", "pattern": "^[0-9a-f]{64}$",
+          "description": "SHA-256 of the canonical policy-config JSON; the evaluator re-derives it independently."
+        },
+        "planning_cost_in_latency": {
+          "type": "boolean",
+          "description": "Whether the one-time planning cost is inside measured query latency. Planning happens before the cold probe, so it is false."
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"policy": {"const": "natural_language"}}},
+          "then": {"properties": {"config": {"required": ["max_token_chars", "max_tokens", "min_token_chars"]}}}
+        }
+      ]
+    },
+    "query_identity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["original_query_sha256", "effective_lexical_request_sha256", "semantic_text_sha256"],
+      "properties": {
+        "original_query_sha256": {
+          "type": "string", "pattern": "^[0-9a-f]{64}$",
+          "description": "SHA-256 of the caller's raw query bytes; must equal the frozen query-pack task digest."
+        },
+        "effective_lexical_request_sha256": {
+          "type": "string", "pattern": "^[0-9a-f]{64}$",
+          "description": "SHA-256 of the exact lexical-lane request produced by the planner; the evaluator re-derives it from the raw query plus the recorded policy."
+        },
+        "semantic_text_sha256": {
+          "type": "string", "pattern": "^[0-9a-f]{64}$",
+          "description": "SHA-256 of the exact semantic-lane text bytes."
+        }
+      }
+    },
     "comparison_contract": {
       "type": "object", "additionalProperties": false,
       "required": ["top_k", "tokenizer", "tokenizer_budget_version", "output_unit_policy", "span_unit"],
@@ -180,12 +232,13 @@
     },
     "result": {
       "type": "object", "additionalProperties": false,
-      "required": ["task_id", "route", "status", "candidates", "timings", "error"],
+      "required": ["task_id", "route", "status", "candidates", "query_identity", "timings", "error"],
       "properties": {
         "task_id": {"type": "string", "minLength": 1},
         "route": {"type": "string", "minLength": 1},
         "status": {"enum": ["success", "abstained", "capped", "error", "timeout", "unavailable"]},
         "candidates": {"type": "array", "items": {"$ref": "#/$defs/candidate"}},
+        "query_identity": {"$ref": "#/$defs/query_identity"},
         "timings": {"$ref": "#/$defs/timings"},
         "error": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/error"}]}
       },

@@ -713,7 +713,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     let policy = QueryInputPolicy::parse(&policy_raw)
         .map_err(|err| usage_error(format!("--query-input-policy: {err}")))?;
     let nl_plan_config = NlPlanConfig::default();
-    let task_plans: BTreeMap<&str, QueryPlan> = pack
+    let task_plans: BTreeMap<String, QueryPlan> = pack
         .tasks
         .iter()
         .map(|task| {
@@ -723,9 +723,9 @@ fn run_capture(args: &Args) -> BenchResult<()> {
                     task.task_id, policy_raw
                 ))
             })?;
-            Ok((task.task_id.as_str(), plan))
+            Ok((task.task_id.clone(), plan))
         })
-        .collect::<BenchResult<BTreeMap<&str, QueryPlan>>>()?;
+        .collect::<BenchResult<BTreeMap<String, QueryPlan>>>()?;
     let mut outcomes: BTreeMap<(String, String), QueryOutcome> = BTreeMap::new();
     let mut warm_latencies_ms: BTreeMap<String, BTreeMap<String, Vec<f64>>> = BTreeMap::new();
     let mut cold_latencies_ms: BTreeMap<String, f64> = BTreeMap::new();
@@ -879,6 +879,8 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         provenance: &provenance,
         captures: &captures,
         outcomes: &outcomes,
+        plans: &task_plans,
+        nl_config: &nl_plan_config,
         top_k,
         files: &by_path,
         chunks_by_id: &chunks_by_id,

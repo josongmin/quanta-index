@@ -41,6 +41,11 @@ try:
         validate_comparison_contract,
         verify_repo,
     )
+    from tools.benchmark.retrieval.query_plan import (
+        PLANNING_COST_IN_LATENCY,
+        derive_query_identity,
+        policy_config_canonical,
+    )
 except ImportError:  # direct script invocation: import the sibling module
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from evaluator import (  # noqa: E402
@@ -51,6 +56,11 @@ except ImportError:  # direct script invocation: import the sibling module
         digest,
         validate_comparison_contract,
         verify_repo,
+    )
+    from query_plan import (  # noqa: E402
+        PLANNING_COST_IN_LATENCY,
+        derive_query_identity,
+        policy_config_canonical,
     )
 
 SEMBLE_PINNED_VERSION = "0.6.0"
@@ -778,12 +788,20 @@ def normalize_record(
     results = []
     for task in pack["tasks"]:
         task_id = task["task_id"]
+        # The Semble adapter passes the raw query verbatim to the pinned
+        # upstream search call: native policy, effective request == original
+        # bytes. The per-result identity binds that fact (RBR-02).
+        try:
+            query_identity = derive_query_identity("native", task["query"])
+        except ValueError as error:
+            raise AdapterError(f"cannot bind query identity for {task_id}: {error}") from error
         if task_id not in by_task:
             results.append(
                 {
                     "task_id": task_id,
                     "route": route,
                     "status": "error",
+                    "query_identity": query_identity,
                     "timings": {"query_latency_ms": None},
                     "candidates": [],
                     "error": {
@@ -806,6 +824,7 @@ def normalize_record(
                     "task_id": task_id,
                     "route": route,
                     "status": "abstained",
+                    "query_identity": query_identity,
                     "candidates": [],
                     "timings": {"query_latency_ms": latency},
                     "error": None,
@@ -882,6 +901,7 @@ def normalize_record(
                     "task_id": task_id,
                     "route": route,
                     "status": "error",
+                    "query_identity": query_identity,
                     "timings": {"query_latency_ms": latency},
                     "candidates": [],
                     "error": hit_error,
@@ -893,6 +913,7 @@ def normalize_record(
                 "task_id": task_id,
                 "route": route,
                 "status": "success",
+                "query_identity": query_identity,
                 "candidates": candidates,
                 "timings": {"query_latency_ms": latency},
                 "error": None,
@@ -900,7 +921,7 @@ def normalize_record(
         )
     ordered_native = sorted(native, key=lambda row: str(row.get("task_id")))
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "query_pack_sha256": pack_sha256,
         "comparison_contract": contract,
         "runner": {
@@ -913,6 +934,14 @@ def normalize_record(
             "blinding": blinding,
             "isolation_method": isolation_method,
             "access_block_log": access_block_log,
+            "query_input_policy": {
+                "policy": "native",
+                "config": {},
+                "policy_config_sha256": digest(
+                    policy_config_canonical("native").encode()
+                ),
+                "planning_cost_in_latency": PLANNING_COST_IN_LATENCY,
+            },
         },
         "captures": {
             capture_id: {

@@ -42,7 +42,15 @@ from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+try:
+    from tools.benchmark.retrieval import query_plan as query_plan_contract
+except ModuleNotFoundError:  # direct script invocation
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    from tools.benchmark.retrieval import query_plan as query_plan_contract
+
 SCHEMA_VERSION = 3
+RUNNER_SCHEMA_VERSION = 4
+RUNNER_LEGACY_SCHEMA_VERSIONS = (3,)
 BUDGETS = (2000, 4000, 8000, 16000)
 TOKENIZER = "qi-regex-v1"
 TOKENIZER_BUDGET_VERSION = "qb-v1"
@@ -675,8 +683,10 @@ def _validate_run(
     suite: dict[str, Any],
     source: SourceSnapshot,
 ) -> dict[str, Any]:
+    version = run["schema_version"]
     require(
-        type(run["schema_version"]) is int and run["schema_version"] == SCHEMA_VERSION,
+        type(version) is int
+        and version in (RUNNER_SCHEMA_VERSION, *RUNNER_LEGACY_SCHEMA_VERSIONS),
         "unsupported runner schema",
     )
     require(
@@ -691,21 +701,20 @@ def _validate_run(
         isinstance(pack_contract, dict) and pack_contract == contract,
         "record comparison contract differs from the query-pack contract",
     )
-    runner = object_keys(
-        run["runner"],
-        [
-            "name",
-            "revision",
-            "run_id",
-            "tokenizer",
-            "tokenizer_budget_version",
-            "gold_access",
-            "blinding",
-            "isolation_method",
-            "access_block_log",
-        ],
-        "runner",
-    )
+    runner_keys = [
+        "name",
+        "revision",
+        "run_id",
+        "tokenizer",
+        "tokenizer_budget_version",
+        "gold_access",
+        "blinding",
+        "isolation_method",
+        "access_block_log",
+    ]
+    if version >= RUNNER_SCHEMA_VERSION:
+        runner_keys.append("query_input_policy")
+    runner = object_keys(run["runner"], runner_keys, "runner")
     for key in ("name", "revision", "run_id"):
         string(runner[key], "runner." + key)
     require(runner["tokenizer"] == TOKENIZER, "runner tokenizer mismatch")
@@ -719,6 +728,47 @@ def _validate_run(
     require(runner["blinding"] in BLINDING_VALUES, "runner blinding must be isolated or attested")
     string(runner["isolation_method"], "runner.isolation_method")
     string(runner["access_block_log"], "runner.access_block_log")
+    policy = None
+    nl_config = None
+    if version >= RUNNER_SCHEMA_VERSION:
+        policy_block = object_keys(
+            runner["query_input_policy"],
+            ["policy", "config", "policy_config_sha256", "planning_cost_in_latency"],
+            "runner.query_input_policy",
+        )
+        policy = policy_block["policy"]
+        require(
+            policy in query_plan_contract.SUPPORTED_POLICIES,
+            f"unknown query input policy: {policy!r}",
+        )
+        config = policy_block["config"]
+        require(isinstance(config, dict), "runner.query_input_policy.config must be an object")
+        if policy == "natural_language":
+            nl_config = object_keys(
+                config,
+                ["max_token_chars", "max_tokens", "min_token_chars"],
+                "runner.query_input_policy.config",
+            )
+            for field in ("max_token_chars", "max_tokens", "min_token_chars"):
+                require(
+                    type(nl_config[field]) is int and nl_config[field] >= 1,
+                    f"runner.query_input_policy.config.{field} must be a positive integer",
+                )
+        else:
+            require(
+                not config,
+                "runner.query_input_policy.config must be empty unless natural_language",
+            )
+        require(
+            sha(policy_block["policy_config_sha256"], "policy_config_sha256")
+            == digest(query_plan_contract.policy_config_canonical(policy, nl_config).encode()),
+            "policy config digest does not match the canonical policy profile",
+        )
+        require(
+            policy_block["planning_cost_in_latency"]
+            is query_plan_contract.PLANNING_COST_IN_LATENCY,
+            "planning_cost_in_latency disagrees with the frozen profile contract",
+        )
     captures = run["captures"]
     require(isinstance(captures, dict) and bool(captures), "captures must be a nonempty object")
     for capture_id, entry in captures.items():
@@ -747,14 +797,43 @@ def _validate_run(
     require(isinstance(results, list), "results must be a list")
     tasks = {task["task_id"]: task for task in suite["tasks"] if task["split"] == "eval"}
     expected = {(task_id, route) for task_id in tasks for route in suite["routes"]}
+    result_keys = ["task_id", "route", "status", "candidates", "timings", "error"]
+    if version >= RUNNER_SCHEMA_VERSION:
+        result_keys.insert(4, "query_identity")
+    pack_queries = {task["task_id"]: task for task in pack["tasks"]}
     found = set()
     for raw in results:
-        result = object_keys(
-            raw, ["task_id", "route", "status", "candidates", "timings", "error"], "result"
-        )
+        result = object_keys(raw, result_keys, "result")
         key = (string(result["task_id"], "result.task_id"), string(result["route"], "result.route"))
         require(key in expected and key not in found, f"unexpected/duplicate task route: {key}")
         found.add(key)
+        if version >= RUNNER_SCHEMA_VERSION:
+            identity = object_keys(
+                result["query_identity"],
+                [
+                    "original_query_sha256",
+                    "effective_lexical_request_sha256",
+                    "semantic_text_sha256",
+                ],
+                f"query_identity for {key}",
+            )
+            pack_task = pack_queries.get(key[0])
+            require(
+                pack_task is not None,
+                f"query identity refers to unknown pack task: {key}",
+            )
+            expected_identity = query_plan_contract.derive_query_identity(
+                policy, pack_task["query"], nl_config
+            )
+            require(
+                {field: sha(identity[field], f"{field} for {key}") for field in identity}
+                == expected_identity,
+                f"query identity does not match the independently re-derived plan: {key}",
+            )
+            require(
+                identity["original_query_sha256"] == pack_task["query_sha256"],
+                f"original query digest differs from the frozen pack task digest: {key}",
+            )
         status = result["status"]
         require(status in RESULT_STATUSES, f"unknown result status for {key}: {status!r}")
         candidates = result["candidates"]
@@ -808,7 +887,11 @@ def load_evidence(
     suite, pack, source = validate_suite(repo, read_json(suite_path))
     payload = read_json(runner_path)
     version = payload.get("schema_version") if isinstance(payload, dict) else None
-    require(type(version) is int and version == SCHEMA_VERSION, "unsupported runner schema")
+    require(
+        type(version) is int
+        and version in (RUNNER_SCHEMA_VERSION, *RUNNER_LEGACY_SCHEMA_VERSIONS),
+        "unsupported runner schema",
+    )
     run = object_keys(
         payload,
         [
