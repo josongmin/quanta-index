@@ -285,15 +285,12 @@ jobs:
           ended_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           python3 - "$started_at" "$ended_at" <<'PY'
           import json
-          import os
           import platform
           import sys
           from pathlib import Path
 
-          try:
-              memory_bytes = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
-          except (AttributeError, OSError, ValueError):
-              memory_bytes = 1
+          from tools.ci.proof_host import github_host_environment
+
           terminal = {
               "status": "passed",
               "counts": {
@@ -308,22 +305,7 @@ jobs:
                   "features": [],
                   "os": platform.system().lower(),
                   "arch": platform.machine(),
-                  "host": {
-                      "profile": "github-hosted-ci",
-                      "cpu_count": os.cpu_count() or 1,
-                      "memory_bytes": memory_bytes,
-                      "identity": ":".join(
-                          filter(
-                              None,
-                              (
-                                  os.environ.get("RUNNER_NAME"),
-                                  os.environ.get("ImageOS"),
-                                  os.environ.get("ImageVersion"),
-                              ),
-                          )
-                      )
-                      or "github-hosted-ci",
-                  },
+                  "host": github_host_environment(),
               },
               "daemon_binary": None,
               "state_root_format": "not-applicable",

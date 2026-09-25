@@ -25,6 +25,95 @@ from tools.benchmark.retrieval import semble as semble_adapter
 from tools.ci import source_closure
 
 
+def test_retrieval_diagnostic_binds_complete_record_and_lanes():
+    pack = {"tasks": [{"task_id": "T1", "query_sha256": "a" * 64}]}
+    pack_sha = pairrun.digest(pairrun.canonical_bytes(pack))
+    record = {
+        "query_pack_sha256": pack_sha,
+        "comparison_contract": {"top_k": 10},
+        "route_provenance": {"hybrid": {"capture_id": "capture"}},
+        "results": [
+            {
+                "task_id": "T1",
+                "route": "hybrid",
+                "status": "success",
+                "error": None,
+                "candidates": [
+                    {
+                        "rank": 1,
+                        "path": "src/lib.rs",
+                        "start_line": 1,
+                        "end_line": 3,
+                    }
+                ],
+            }
+        ],
+    }
+    row = {
+        "task_id": "T1",
+        "query_sha256": "a" * 64,
+        "route": "hybrid",
+        "status": "success",
+        "error_code": None,
+        "candidates": [
+            {
+                "rank": 1,
+                "candidate_id": "chunk-1",
+                "path": "src/lib.rs",
+                "start_line": 1,
+                "end_line": 3,
+                "score": 0.02,
+                "contributions": [{"lane": "lexical", "rank": 2, "raw_score": 3.0}],
+            }
+        ],
+    }
+    diagnostic = {
+        "schema_version": 1,
+        "kind": "quanta_returned_window_diagnostic",
+        "record_sha256": "b" * 64,
+        "query_pack_sha256": pack_sha,
+        "top_k": 10,
+        "scope": "returned_window_only",
+        "results": [row],
+        "runner_timing_detail_ms": {
+            "clock": "runner_monotonic_wall_v1",
+            "daemon_boot_and_readiness": 1.0,
+            "sdk_publish_and_activate_opaque": 2.0,
+            "runner_record_assembly": 0.1,
+            "corpus_reverification": 0.2,
+            "daemon_shutdown": 0.3,
+        },
+    }
+    pairrun.validate_retrieval_diagnostic(diagnostic, record, "b" * 64, pack)
+    tampered = json.loads(json.dumps(diagnostic))
+    tampered["results"][0]["candidates"][0]["contributions"] = []
+    with pytest.raises(pairrun.RunError, match="lane provenance"):
+        pairrun.validate_retrieval_diagnostic(tampered, record, "b" * 64, pack)
+    tampered = json.loads(json.dumps(diagnostic))
+    tampered["results"] = []
+    with pytest.raises(pairrun.RunError, match="incomplete"):
+        pairrun.validate_retrieval_diagnostic(tampered, record, "b" * 64, pack)
+    with pytest.raises(pairrun.RunError, match="identity"):
+        pairrun.validate_retrieval_diagnostic(diagnostic, record, "c" * 64, pack)
+    tampered = json.loads(json.dumps(diagnostic))
+    tampered["results"][0]["candidates"][0]["start_line"] = 2
+    with pytest.raises(pairrun.RunError, match="candidate"):
+        pairrun.validate_retrieval_diagnostic(tampered, record, "b" * 64, pack)
+    tampered = json.loads(json.dumps(diagnostic))
+    tampered["runner_timing_detail_ms"]["daemon_shutdown"] = float("nan")
+    with pytest.raises(pairrun.RunError, match="timing"):
+        pairrun.validate_retrieval_diagnostic(tampered, record, "b" * 64, pack)
+
+
+def test_rank_report_refuses_primary_at_10_from_top_5(tmp_path):
+    repo, suite, run, suite_path, runner_path, _ = fixture_v3(tmp_path)
+    loaded = record_v3(repo, suite, run, suite_path, runner_path)
+    narrow_suite = json.loads(json.dumps(loaded[0]))
+    narrow_suite["comparison_contract"]["top_k"] = 5
+    with pytest.raises(ev.EvidenceError, match="top_k >= 10"):
+        ev.evaluate(narrow_suite, loaded[1], loaded[2], "lexical", "hybrid")
+
+
 def test_duplicate_json_keys_refused(tmp_path):
     path = tmp_path / "duplicate.json"
     path.write_text('{"schema_version":3,"schema_version":3}', encoding="utf-8")
@@ -141,6 +230,8 @@ def test_current_hand_calculated_rank_metrics(tmp_path):
     assert lex_chunk["recall_at_5"] == pytest.approx(0.5)
     assert hyb_chunk["recall_at_1"] == pytest.approx(0.5)
     assert hyb_chunk["recall_at_5"] == pytest.approx(1.0)
+    assert hyb_chunk["recall_at_20"] == ev.NOT_APPLICABLE  # top_k=10 cannot measure @20
+    assert report["rank_metrics"]["comparison"]["delta"]["recall_at_20"] == ev.NOT_APPLICABLE
     assert lex_chunk["mrr_at_10"] == pytest.approx(0.5)
     assert hyb_chunk["mrr_at_10"] == pytest.approx(1.0)
     import math as _math
@@ -1530,6 +1621,7 @@ def test_quanta_driver_defaults_to_potion_and_binary_digest(tmp_path, monkeypatc
         assert command[command.index("--runner-revision") + 1] == "sha256:" + "a" * 64
         assert command[command.index("--searchd-bin") + 1] == "/unused/searchd"
         assert command[command.index("--searchd-expected-sha256") + 1] == "b" * 64
+        assert command[command.index("--diagnostics-out") + 1].endswith("retrieval-diagnostic.json")
         Path(command[command.index("--out") + 1]).write_text("{}", encoding="utf-8")
         Path(command[command.index("--metrics-out") + 1]).write_text(
             json.dumps({"file_count": 1, "chunk_count": 1}), encoding="utf-8"
@@ -1551,10 +1643,10 @@ def test_quanta_driver_defaults_to_potion_and_binary_digest(tmp_path, monkeypatc
         "searchd_binary": "/unused/searchd",
         "searchd_expected_sha256": "b" * 64,
     }
-    result = pairrun.run_quanta_strategy(
-        spec, {"name": "whole_file"}, 0, tmp_path, ["lexical"], tmp_path / "pack.json", "a" * 64
-    )
-    assert result["runner_binary_sha256"] == "a" * 64
+    with pytest.raises(pairrun.RunError, match="omitted retrieval diagnostics"):
+        pairrun.run_quanta_strategy(
+            spec, {"name": "whole_file"}, 0, tmp_path, ["lexical"], tmp_path / "pack.json", "a" * 64
+        )
     for legacy in ("syntax", "fixed_window"):
         with pytest.raises(pairrun.RunError, match="unknown strategy"):
             pairrun.run_quanta_strategy(
@@ -2026,7 +2118,15 @@ def _counts_results(command, selected=10, executed=10, passed=10, failed=0):
     }
 
 
-def _receipt(command, results_bytes, revision, rail, raw_inputs, test_event_count=10):
+def _receipt(
+    command,
+    results_bytes,
+    revision,
+    rail,
+    raw_inputs,
+    test_event_count=10,
+    authority_sha256=None,
+):
     authority_path = (
         Path(__file__).resolve().parents[3] / "benchmarks/retrieval/proof-required-tests.json"
     )
@@ -2039,7 +2139,7 @@ def _receipt(command, results_bytes, revision, rail, raw_inputs, test_event_coun
             {"path": "Cargo.toml", "sha256": _fake_sha("source")},
             {
                 "path": "benchmarks/retrieval/proof-required-tests.json",
-                "sha256": pairrun.sha_file(authority_path),
+                "sha256": authority_sha256 or pairrun.sha_file(authority_path),
             },
         ],
     }
@@ -2176,11 +2276,14 @@ def _full_receipts(commit, binary_digest):
         "--lib --test chunking_contract --all-features --locked"
     )
     sdk_cmd = "just retrieval-sdk-proof"
-    authority = json.loads(
-        (
-            Path(__file__).resolve().parents[3] / "benchmarks/retrieval/proof-required-tests.json"
-        ).read_text()
+    # A synthetic qualified receipt models the committed source at `commit`,
+    # not the concurrently dirty working tree used to execute this test.
+    authority_bytes = subprocess.check_output(
+        ["git", "show", f"{commit}:benchmarks/retrieval/proof-required-tests.json"],
+        cwd=Path(__file__).resolve().parents[3],
     )
+    authority = json.loads(authority_bytes)
+    authority_sha256 = ev.digest(authority_bytes)
     py_count = len(authority["python"])
     rs_count = len(authority["rust"])
     sdk_count = len(authority["sdk"])
@@ -2220,6 +2323,7 @@ def _full_receipts(commit, binary_digest):
             "retrieval-contract-python",
             {"pytest-junit": py_raw, "pytest-inventory": py_inventory},
             py_count,
+            authority_sha256=authority_sha256,
         ),
         "contract_rust_results": rs_bytes,
         "contract_rust_raw": rust_raw,
@@ -2231,6 +2335,7 @@ def _full_receipts(commit, binary_digest):
             "retrieval-contract-rust",
             {"nextest-jsonl": rust_raw, "nextest-inventory": rust_inventory},
             rs_count,
+            authority_sha256=authority_sha256,
         ),
         "sdk_results": sdk_bytes,
         "sdk_nextest_raw": sdk_nextest,
@@ -2247,6 +2352,7 @@ def _full_receipts(commit, binary_digest):
                 "nextest-inventory": sdk_inventory,
             },
             sdk_count,
+            authority_sha256=authority_sha256,
         ),
     }
     closure = artifacts["contract_python_receipt"]["source_closure"]
@@ -3031,6 +3137,75 @@ def test_verdict_pair_only_green(tmp_path):
         verdict["provenance"]["quanta"]["source_sha"]
         == (st["manifest"]["provenance"]["quanta"]["source_sha"])
     )
+
+
+def test_new_protocol_requires_bound_retrieval_diagnostic_on_replay(tmp_path):
+    st = _pair_stage(tmp_path)
+    stage = st["stage"]
+    protocol_path = stage / "protocol-lock.json"
+    protocol = json.loads(protocol_path.read_text(encoding="utf-8"))
+    protocol["retrieval_diagnostic_version"] = 1
+    protocol_path.write_text(json.dumps(protocol), encoding="utf-8")
+    assert _stage_verdict(st)["states"]["PAIR_VALID"] == "fail"
+
+    qmanifest_path = stage / "rep-00" / "quanta" / "quanta-manifest.json"
+    qmanifest = json.loads(qmanifest_path.read_text(encoding="utf-8"))
+    run = qmanifest["runs"][0]
+    qrecord_path = qmanifest_path.parent / run["record"]
+    qrecord = json.loads(qrecord_path.read_text(encoding="utf-8"))
+    pack = json.loads((stage / "query-pack.json").read_text(encoding="utf-8"))
+    tasks = {task["task_id"]: task for task in pack["tasks"]}
+    rows = []
+    for result in qrecord["results"]:
+        rows.append(
+            {
+                "task_id": result["task_id"],
+                "query_sha256": tasks[result["task_id"]]["query_sha256"],
+                "route": result["route"],
+                "status": result["status"],
+                "error_code": result["error"]["code"] if result["error"] else None,
+                "candidates": [
+                    {
+                        "rank": candidate["rank"],
+                        "candidate_id": f"chunk-{result['task_id']}-{index}",
+                        "path": candidate["path"],
+                        "start_line": candidate["start_line"],
+                        "end_line": candidate["end_line"],
+                        "score": 1.0,
+                        "contributions": [],
+                    }
+                    for index, candidate in enumerate(result["candidates"])
+                ],
+            }
+        )
+    diagnostic = {
+        "schema_version": 1,
+        "kind": "quanta_returned_window_diagnostic",
+        "record_sha256": pairrun.sha_file(qrecord_path),
+        "query_pack_sha256": qrecord["query_pack_sha256"],
+        "top_k": qrecord["comparison_contract"]["top_k"],
+        "scope": "returned_window_only",
+        "results": rows,
+        "runner_timing_detail_ms": {
+            "clock": "runner_monotonic_wall_v1",
+            "daemon_boot_and_readiness": 1.0,
+            "sdk_publish_and_activate_opaque": 1.0,
+            "runner_record_assembly": 0.1,
+            "corpus_reverification": 0.1,
+            "daemon_shutdown": 0.1,
+        },
+    }
+    diagnostic_path = qrecord_path.parent / "retrieval-diagnostic.json"
+    diagnostic_path.write_text(json.dumps(diagnostic), encoding="utf-8")
+    run["retrieval_diagnostic"] = "strategy-00-whole_file/retrieval-diagnostic.json"
+    run["retrieval_diagnostic_digest"] = pairrun.sha_file(diagnostic_path)
+    qmanifest_path.write_text(json.dumps(qmanifest), encoding="utf-8")
+    assert _stage_verdict(st)["states"]["PAIR_VALID"] == "pass"
+    diagnostic["results"][0]["status"] = "timeout"
+    diagnostic_path.write_text(json.dumps(diagnostic), encoding="utf-8")
+    run["retrieval_diagnostic_digest"] = pairrun.sha_file(diagnostic_path)
+    qmanifest_path.write_text(json.dumps(qmanifest), encoding="utf-8")
+    assert _stage_verdict(st)["states"]["PAIR_VALID"] == "fail"
 
 
 def test_verdict_incomplete_observation_fails_pair(tmp_path):
@@ -5433,6 +5608,15 @@ def test_v3_spec_accepts_lockfile_path(tmp_path):
     spec_path.write_text(json.dumps(_g0_spec()), encoding="utf-8")
     loaded = pairrun.load_spec(spec_path)
     assert loaded["semble_lockfile"] == "/tmp/semble-lock.txt"
+    spec_with_timeout = _g0_spec()
+    spec_with_timeout["io_timeout_secs"] = 600
+    spec_path.write_text(json.dumps(spec_with_timeout), encoding="utf-8")
+    assert pairrun.load_spec(spec_path)["io_timeout_secs"] == 600
+    bad_timeout = _g0_spec()
+    bad_timeout["io_timeout_secs"] = 0
+    spec_path.write_text(json.dumps(bad_timeout), encoding="utf-8")
+    with pytest.raises(pairrun.RunError, match="spec.io_timeout_secs"):
+        pairrun.load_spec(spec_path)
     bad = _g0_spec()
     bad["semble_lockfile"] = ""
     spec_path.write_text(json.dumps(bad), encoding="utf-8")

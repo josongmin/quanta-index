@@ -1988,6 +1988,7 @@ SPEC_OPTIONAL = (
     "cache_regime",
     "seed",
     "timeout_secs",
+    "io_timeout_secs",
     "repetitions",
     "alternate_order",
     "order",
@@ -2356,6 +2357,7 @@ def load_spec(path: Path) -> dict:
         ("generation", 0),
         ("seed", 0),
         ("timeout_secs", 1),
+        ("io_timeout_secs", 1),
         ("repetitions", 1),
         ("query_repetitions_per_root", 1),
         ("query_warmup_passes", 1),
@@ -2537,6 +2539,185 @@ def write_projected_pack(pack_path: Path, suite_path: Path, routes: list[str], o
     return out
 
 
+def validate_retrieval_diagnostic(
+    payload: object, record: object, record_sha256: str, pack: object
+) -> dict:
+    """Reject a partial or unbound returned-window diagnostic.
+
+    This is diagnostic evidence only: it cannot establish relevance or the
+    identities of candidates the service did not return.
+    """
+    diagnostic = _exact_keys(
+        payload,
+        {
+            "schema_version",
+            "kind",
+            "record_sha256",
+            "query_pack_sha256",
+            "top_k",
+            "scope",
+            "results",
+            "runner_timing_detail_ms",
+        },
+        "retrieval diagnostic",
+    )
+    if not isinstance(record, dict) or not isinstance(pack, dict):
+        raise RunError("retrieval diagnostic requires record and pack objects")
+    contract = record.get("comparison_contract")
+    if not isinstance(contract, dict) or not _is_hex(record_sha256, 64):
+        raise RunError("retrieval diagnostic requires a valid record contract and digest")
+    if (
+        diagnostic["schema_version"] != 1
+        or diagnostic["kind"] != "quanta_returned_window_diagnostic"
+        or diagnostic["scope"] != "returned_window_only"
+        or diagnostic["record_sha256"] != record_sha256
+        or diagnostic["query_pack_sha256"] != record.get("query_pack_sha256")
+        or diagnostic["query_pack_sha256"] != digest(canonical_bytes(pack))
+        or type(diagnostic["top_k"]) is not int
+        or diagnostic["top_k"] != contract.get("top_k")
+    ):
+        raise RunError("retrieval diagnostic identity or contract mismatch")
+    detail = _exact_keys(
+        diagnostic["runner_timing_detail_ms"],
+        {
+            "clock",
+            "daemon_boot_and_readiness",
+            "sdk_publish_and_activate_opaque",
+            "runner_record_assembly",
+            "corpus_reverification",
+            "daemon_shutdown",
+        },
+        "retrieval diagnostic timing",
+    )
+    if detail["clock"] != "runner_monotonic_wall_v1" or any(
+        type(value) not in (int, float) or not math.isfinite(value) or value < 0
+        for key, value in detail.items()
+        if key != "clock"
+    ):
+        raise RunError("retrieval diagnostic timing is invalid")
+    record_results = record.get("results")
+    pack_tasks = pack.get("tasks")
+    provenance = record.get("route_provenance")
+    if (
+        not isinstance(record_results, list)
+        or not isinstance(pack_tasks, list)
+        or not isinstance(provenance, dict)
+        or not isinstance(diagnostic["results"], list)
+    ):
+        raise RunError("retrieval diagnostic inputs have invalid result shape")
+    tasks = {}
+    for task in pack_tasks:
+        if not isinstance(task, dict) or not isinstance(task.get("task_id"), str):
+            raise RunError("retrieval diagnostic pack task is malformed")
+        task_id = task["task_id"]
+        if not task_id or task_id in tasks or not _is_hex(task.get("query_sha256"), 64):
+            raise RunError("retrieval diagnostic pack tasks are duplicated or malformed")
+        tasks[task_id] = task
+    expected = {}
+    for result in record_results:
+        if not isinstance(result, dict):
+            raise RunError("retrieval diagnostic record result is malformed")
+        key = (result.get("task_id"), result.get("route"))
+        if (
+            not isinstance(key[0], str)
+            or not isinstance(key[1], str)
+            or key in expected
+            or key[0] not in tasks
+            or key[1] not in provenance
+            or not isinstance(result.get("candidates"), list)
+        ):
+            raise RunError("retrieval diagnostic record result is duplicated or unknown")
+        expected[key] = result
+    if len(expected) != len(tasks) * len(provenance):
+        raise RunError("retrieval diagnostic record results are incomplete")
+    seen = set()
+    for row in diagnostic["results"]:
+        row = _exact_keys(
+            row,
+            {"task_id", "query_sha256", "route", "status", "error_code", "candidates"},
+            "retrieval diagnostic result",
+        )
+        if not isinstance(row["task_id"], str) or not isinstance(row["route"], str):
+            raise RunError("retrieval diagnostic result has invalid identity")
+        key = (row["task_id"], row["route"])
+        if key in seen or key not in expected:
+            raise RunError("retrieval diagnostic result is duplicated or unexpected")
+        seen.add(key)
+        reference = expected[key]
+        if (
+            row["query_sha256"] != tasks[key[0]].get("query_sha256")
+            or row["status"] != reference.get("status")
+            or not isinstance(row["candidates"], list)
+            or len(row["candidates"]) != len(reference["candidates"])
+            or len(row["candidates"]) > diagnostic["top_k"]
+            or row["error_code"]
+            != (
+                reference.get("error", {}).get("code")
+                if isinstance(reference.get("error"), dict)
+                else None
+            )
+        ):
+            raise RunError("retrieval diagnostic differs from runner record")
+        for position, (candidate, scored) in enumerate(
+            zip(row["candidates"], reference["candidates"]), 1
+        ):
+            if not isinstance(scored, dict):
+                raise RunError("retrieval diagnostic reference candidate is malformed")
+            candidate = _exact_keys(
+                candidate,
+                {
+                    "rank",
+                    "candidate_id",
+                    "path",
+                    "start_line",
+                    "end_line",
+                    "score",
+                    "contributions",
+                },
+                "retrieval diagnostic candidate",
+            )
+            if (
+                type(candidate["rank"]) is not int
+                or candidate["rank"] != position
+                or candidate["rank"] != scored.get("rank")
+                or type(candidate["path"]) is not str
+                or candidate["path"] != scored.get("path")
+                or type(candidate["start_line"]) is not int
+                or candidate["start_line"] < 1
+                or candidate["start_line"] != scored.get("start_line")
+                or type(candidate["end_line"]) is not int
+                or candidate["end_line"] < candidate["start_line"]
+                or candidate["end_line"] != scored.get("end_line")
+                or not isinstance(candidate["candidate_id"], str)
+                or not candidate["candidate_id"]
+                or type(candidate["score"]) not in (int, float)
+                or not math.isfinite(candidate["score"])
+                or not isinstance(candidate["contributions"], list)
+            ):
+                raise RunError("retrieval diagnostic candidate is invalid")
+            lanes = candidate["contributions"]
+            if (key[1] == "hybrid") != bool(lanes) or len(lanes) > 2:
+                raise RunError("retrieval diagnostic lane provenance is missing or misplaced")
+            seen_lanes = set()
+            for lane in lanes:
+                lane = _exact_keys(lane, {"lane", "rank", "raw_score"}, "retrieval lane")
+                if (
+                    lane["lane"] not in ("lexical", "dense")
+                    or lane["lane"] in seen_lanes
+                    or type(lane["rank"]) is not int
+                    or lane["rank"] < 1
+                    or type(lane["raw_score"]) not in (int, float)
+                    or not math.isfinite(lane["raw_score"])
+                ):
+                    raise RunError("retrieval diagnostic lane is invalid")
+                seen_lanes.add(lane["lane"])
+            if len(lanes) == 2 and [lane["lane"] for lane in lanes] != ["lexical", "dense"]:
+                raise RunError("retrieval diagnostic lane order is invalid")
+    if seen != set(expected):
+        raise RunError("retrieval diagnostic results are incomplete")
+    return diagnostic
+
+
 def run_quanta(spec: dict, _spec_dir: Path) -> int:
     """Run the Rust SDK runner once per strategy. Returns process exit code."""
     out_root = preflight_capture(spec)
@@ -2602,6 +2783,7 @@ def run_quanta_strategy(
     state_root = (run_dir / "state").resolve()
     record_path = (run_dir / "record.json").resolve()
     phase_path = (run_dir / "phase-metrics.json").resolve()
+    diagnostic_path = (run_dir / "retrieval-diagnostic.json").resolve()
     resource_path = (run_dir / "resource-metrics.json").resolve()
     command = [
         spec["runner_binary"],
@@ -2645,6 +2827,8 @@ def run_quanta_strategy(
         ),
         "--metrics-out",
         str(phase_path),
+        "--diagnostics-out",
+        str(diagnostic_path),
         "--out",
         str(record_path),
     ]
@@ -2652,6 +2836,8 @@ def run_quanta_strategy(
         command += ["--query-protocol", spec["_query_protocol"]]
     command += ["--searchd-bin", spec["searchd_binary"]]
     command += ["--searchd-expected-sha256", spec["searchd_expected_sha256"]]
+    if "io_timeout_secs" in spec:
+        command += ["--io-timeout-secs", str(spec["io_timeout_secs"])]
     materialized = spec.get("_materialized_corpus")
     if materialized is not None:
         command += ["--materialized-corpus-sha256", materialized["proof_sha256"]]
@@ -2715,6 +2901,14 @@ def run_quanta_strategy(
             record_path=record_path,
         )
         raise RunError(f"Rust runner omitted phase metrics for {name}")
+    if not diagnostic_path.is_file():
+        raise RunError(f"Rust runner omitted retrieval diagnostics for {name}")
+    validate_retrieval_diagnostic(
+        read_json(diagnostic_path),
+        read_json(record_path),
+        sha_file(record_path),
+        read_json(pack_path),
+    )
     index_bytes = tree_size(state_root)
     phase = read_json(phase_path)
     if not isinstance(phase, dict):
@@ -2745,6 +2939,8 @@ def run_quanta_strategy(
         "index_bytes": index_bytes,
         "phase_metrics": phase_path.relative_to(out_abs).as_posix(),
         "phase_metrics_digest": sha_file(phase_path),
+        "retrieval_diagnostic": diagnostic_path.relative_to(out_abs).as_posix(),
+        "retrieval_diagnostic_digest": sha_file(diagnostic_path),
         "resource_metrics": resource_path.relative_to(out_abs).as_posix(),
         "resource_metrics_digest": sha_file(resource_path),
         "state_root": state_root.relative_to(out_abs).as_posix(),
@@ -4342,6 +4538,8 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         "query_repetitions_per_root",
         "query_protocol_sha256s",
     }
+    if isinstance(protocol_payload, dict) and "retrieval_diagnostic_version" in protocol_payload:
+        protocol_keys.add("retrieval_diagnostic_version")
     if parent_binding is not None:
         protocol_keys.add("delegated_cgroup_parent")
     protocol_shape_valid = (
@@ -4395,6 +4593,11 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             and isinstance(root_digests, list)
             and len(root_digests) == protocol_payload["repetitions"]
             and all(_is_hex(value, 64) for value in root_digests)
+            and (
+                "retrieval_diagnostic_version" not in protocol_payload
+                or type(protocol_payload["retrieval_diagnostic_version"]) is int
+                and protocol_payload["retrieval_diagnostic_version"] == 1
+            )
         )
         authority_digests = (
             protocol_payload["admission_digest"],
@@ -4766,6 +4969,32 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 pair_note("record_digest_mismatch", ("T12", "T13"))
             else:
                 bound_records.add(observed)
+            diagnostic_ref = run_entry.get("retrieval_diagnostic")
+            diagnostic_digest = run_entry.get("retrieval_diagnostic_digest")
+            if protocol_payload.get("retrieval_diagnostic_version") == 1 and (
+                diagnostic_ref is None or diagnostic_digest is None
+            ):
+                pair_note("retrieval_diagnostic_missing", ("T12",))
+            if diagnostic_ref is not None or diagnostic_digest is not None:
+                try:
+                    if not isinstance(diagnostic_ref, str) or not _is_hex(diagnostic_digest, 64):
+                        raise RunError("diagnostic reference/digest is incomplete")
+                    diagnostic_path = (path.parent / diagnostic_ref).resolve()
+                    if root.resolve() not in diagnostic_path.parents:
+                        raise RunError("diagnostic path escapes pair output")
+                    if sha_file(diagnostic_path) != diagnostic_digest:
+                        raise RunError("diagnostic digest mismatch")
+                    record_payload = read_json(target)
+                    projected_pack, _ = project_pack_and_suite(
+                        pack_payload,
+                        suite_payload,
+                        sorted(record_payload["route_provenance"]),
+                    )
+                    validate_retrieval_diagnostic(
+                        read_json(diagnostic_path), record_payload, observed, projected_pack
+                    )
+                except (KeyError, TypeError, ValueError, OSError) as exc:
+                    pair_note(f"retrieval_diagnostic_invalid:{exc}", ("T12",))
     for path, entry in validated.items():
         if entry["system"] != "quanta":
             continue
@@ -5872,6 +6101,7 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
         )
         driver_closure_digest = driver_closure["digest"]
     protocol_lock = {
+        "retrieval_diagnostic_version": 1,
         "suite_digest": sha_file(Path(spec["suite"])),
         "query_pack_digest": sha_file(stage / "query-pack.json"),
         "corpus_manifest_digest": sha_file(stage / "corpus-manifest.json"),

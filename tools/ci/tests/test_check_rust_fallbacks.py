@@ -101,6 +101,26 @@ class RustFallbackTest(unittest.TestCase):
             [(line, LINT.RULE_OR_ELSE) for line in (2, 3, 5, 6, 7, 8)],
         )
 
+    def test_raw_identifiers_and_branch_tails_are_not_escape_hatches(self) -> None:
+        source = """fn f(result: Result<(), ()>) {
+    if result.r#is_ok() { serve(); } else { fallback(); }
+    if result.r#is_err() { fallback(); } else { serve(); }
+    let _ = result.r#or_else(|_| r#Ok(()));
+    let _ = result.or_else(|_| if ready() { Ok(()) } else { Err(()) });
+    let _ = result.or_else(|_| match ready() { true => Err(()), false => Ok(()) });
+}
+"""
+        self.assertEqual(
+            scan(source),
+            [
+                (2, LINT.RULE_IS_OK),
+                (3, LINT.RULE_IS_ERR),
+                (4, LINT.RULE_OR_ELSE),
+                (5, LINT.RULE_OR_ELSE),
+                (6, LINT.RULE_OR_ELSE),
+            ],
+        )
+
     def test_typed_and_qualified_result_ok(self) -> None:
         source = """fn f(result: Result<(), ()>) {
     let _ = result.or_else(|_| Ok::<(), ()>(()));
@@ -207,6 +227,18 @@ fn production() { if cfg!(debug_assertions) { fail_open(); } }
             [],
         )
 
+    def test_nested_debug_cfg_is_governed(self) -> None:
+        source = """#[cfg(all(feature = "x", debug_assertions))]
+fn debug_only() {}
+fn f() { if cfg!(not(debug_assertions)) { diverge(); } }
+#[cfg(feature = "debug_assertions")]
+fn feature_only() {}
+"""
+        self.assertEqual(
+            scan(source, include_debug=True),
+            [(1, LINT.RULE_DEBUG_ASSERTIONS), (3, LINT.RULE_DEBUG_ASSERTIONS)],
+        )
+
     def test_search_plane_authority_paths(self) -> None:
         source = """use ciborium as codec;
 use git2::Repository as Repo;
@@ -257,6 +289,24 @@ tokio::process::Command::new("git");
 fn process_id() { let _ = format!("{}", std::process::id()); }
 """
         self.assertEqual(scan(source, include_search_plane=True), [])
+
+    def test_absolute_and_raw_search_plane_paths_are_governed(self) -> None:
+        source = """fn f() {
+    let _ = ::ciborium::de::from_reader(input());
+    let _ = r#ciborium::de::from_reader(input());
+    let _ = ::std::process::Command::new("git");
+    let _ = Command::r#new("git");
+}
+"""
+        self.assertEqual(
+            scan(source, include_search_plane=True),
+            [
+                (2, LINT.RULE_CIBORIUM),
+                (3, LINT.RULE_CIBORIUM),
+                (4, LINT.RULE_PROCESS),
+                (5, LINT.RULE_PROCESS),
+            ],
+        )
 
     def test_search_plane_macro_authority_fails_closed(self) -> None:
         for source in (

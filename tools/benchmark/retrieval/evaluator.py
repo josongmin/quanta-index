@@ -1072,6 +1072,10 @@ def evaluate(
     suite: dict[str, Any], pack: dict[str, Any], run: dict[str, Any], baseline: str, candidate: str
 ) -> dict[str, Any]:
     require(
+        suite["comparison_contract"]["top_k"] >= NDCG_K,
+        "rank comparison requires top_k >= 10 for the declared @10 primary metric",
+    )
+    require(
         baseline in suite["routes"] and candidate in suite["routes"] and baseline != candidate,
         "comparison routes must be distinct registered routes",
     )
@@ -1085,6 +1089,7 @@ def evaluate(
         all("grade" in label for label in eval_tasks[t]["gold"]) for t in answerable_ids
     )
     primary_metric = "ndcg_at_10" if graded else "recall_at_10"
+    declared_top_k = int(suite["comparison_contract"]["top_k"])
     ordered = sorted(suite["file_universe"], key=lambda e: str(e["path"]))
     file_universe_digest = digest(canonical(ordered))
     output: dict[str, Any] = {
@@ -1262,6 +1267,9 @@ def evaluate(
             if not sample_count:
                 return {k: NOT_APPLICABLE for k in sums}
             averaged: dict[str, Any] = {k: v / sample_count for k, v in sums.items()}
+            for k in RECALL_KS:
+                if k > declared_top_k:
+                    averaged[f"recall_at_{k}"] = NOT_APPLICABLE
             if not graded:
                 averaged["ndcg_at_10"] = NOT_APPLICABLE
             return averaged

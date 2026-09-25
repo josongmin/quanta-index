@@ -6,14 +6,14 @@ soft contract violation: downstream callers can no longer `?`-propagate it
 through a typed Result chain without manual wrapping, which usually leads to
 ad-hoc `Box<dyn Error>` or — worse — silent fallback (`.ok()`, `unwrap_or`).
 
-Structural invariants:
+Structural invariants (Rust AST, not a file-wide regex):
 
   1. Every `pub enum *Error` (or `pub struct *Error`) in workspace source must
      satisfy ONE of:
-       (a) a `#[derive(...)]` line within the preceding 6 lines includes
+       (a) an attached `#[derive(...)]` attribute includes
            `Error` (the thiserror derive form), OR
-       (b) the same file contains `impl std::error::Error for X` AND an
-           `impl <something>Display for X` (manual impl form — preferred in
+       (b) the same lexical module contains a typed Error impl AND a typed
+           Display impl for X (manual impl form — preferred in
            this repo because thiserror's proc-macro derive adds cold-build
            cost the build-hygiene policy wants to avoid).
   2. If form (a) is used, every variant of a `pub enum *Error` must carry its
@@ -33,6 +33,9 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
+
+from tree_sitter_language_pack import get_parser
 
 try:
     import tomllib
@@ -44,12 +47,8 @@ ROOT = Path(__file__).resolve().parents[3]
 WORKSPACE_TOML = ROOT / "Cargo.toml"
 CRATES_DIR = ROOT / "crates"
 
-DERIVE_RE = re.compile(r"#\[\s*derive\s*\(([^)]+)\)\s*\]")
-PUB_ERROR_DECL_RE = re.compile(
-    r"^\s*pub\s+(?P<kind>enum|struct)\s+(?P<name>[A-Z][A-Za-z0-9_]*Error(?:V[0-9]+)?)\b"
-)
-ERROR_ATTR_RE = re.compile(r"#\[\s*error\s*\(")
-VARIANT_RE = re.compile(r"^\s*(?P<name>[A-Z][A-Za-z0-9_]*)\s*(?:\{|\(|,|$)")
+ERROR_NAME_RE = re.compile(r"[A-Z][A-Za-z0-9_]*Error(?:V[0-9]+)?")
+PARSER = get_parser("rust")
 
 # Types named `*Error` that are NOT Rust error types — typically wire-protocol
 # DTOs carrying error-shaped payloads across IPC. They do not need to implement
@@ -61,22 +60,6 @@ WIRE_DTO_ERRORS: frozenset[str] = frozenset(
         "SearchPlaneIpcError",
     }
 )
-
-
-def has_manual_error_impl(text: str, type_name: str) -> bool:
-    """Return True iff `text` contains `impl std::error::Error for <type_name>`."""
-    pattern = re.compile(
-        rf"impl\s+(?:std::error::|core::error::)?Error\s+for\s+{re.escape(type_name)}\b"
-    )
-    return bool(pattern.search(text))
-
-
-def has_display_impl(text: str, type_name: str) -> bool:
-    """Return True iff `text` has any Display impl for `type_name`."""
-    pattern = re.compile(
-        rf"impl\s+(?:[\w:]+::)?(?:fmt::|std::fmt::|core::fmt::)?Display\s+for\s+{re.escape(type_name)}\b"
-    )
-    return bool(pattern.search(text))
 
 
 @dataclass(frozen=True)
@@ -104,128 +87,142 @@ def crate_source_files() -> list[Path]:
     return files
 
 
-def has_thiserror_derive(lines: list[str], decl_idx: int) -> bool:
-    """Walk back up to 6 non-blank lines looking for a derive(... Error ...)."""
-    seen = 0
-    for offset in range(1, 10):
-        idx = decl_idx - offset
-        if idx < 0:
+def node_text(source: bytes, node: Any) -> str:
+    return source[node.start_byte : node.end_byte].decode("utf-8")
+
+
+def walk(node: Any):
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        yield current
+        stack.extend(reversed(current.named_children))
+
+
+def attached_attributes(node: Any) -> list[Any]:
+    siblings = node.parent.named_children
+    index = next(index for index, sibling in enumerate(siblings) if sibling.id == node.id)
+    attributes: list[Any] = []
+    for previous in reversed(siblings[:index]):
+        if previous.type != "attribute_item":
             break
-        line = lines[idx].strip()
-        if not line:
+        attributes.append(previous)
+    return attributes
+
+
+def attribute_name(source: bytes, node: Any) -> str | None:
+    attribute = next((child for child in node.named_children if child.type == "attribute"), None)
+    if attribute is None:
+        return None
+    name = next((child for child in attribute.named_children if child.type == "identifier"), None)
+    return node_text(source, name) if name is not None else None
+
+
+def has_error_derive(source: bytes, node: Any) -> bool:
+    for item in attached_attributes(node):
+        if attribute_name(source, item) != "derive":
             continue
-        seen += 1
-        if seen > 6:
-            break
-        m = DERIVE_RE.search(line)
-        if m:
-            names = [n.strip().rsplit("::", 1)[-1] for n in m.group(1).split(",")]
-            if "Error" in names:
-                return True
+        attribute = item.named_children[0]
+        arguments = next(
+            (child for child in attribute.named_children if child.type == "token_tree"), None
+        )
+        if arguments is not None and any(
+            child.type == "identifier" and node_text(source, child) == "Error"
+            for child in walk(arguments)
+        ):
+            return True
     return False
 
 
-def audit_enum_variants(
-    path: Path, lines: list[str], decl_idx: int, enum_name: str
-) -> list[Violation]:
-    """Walk the enum body. Each variant declaration must carry #[error("...")]."""
-    findings: list[Violation] = []
-    depth = 0
-    opened = False
-    pending_error_attr = False
-
-    for i in range(decl_idx, len(lines)):
-        line = lines[i]
-        stripped = line.strip()
-
-        # Track {} balance to find body end.
-        depth += line.count("{") - line.count("}")
-        if line.count("{") > 0:
-            opened = True
-        if opened and depth <= 0:
-            break
-
-        # Skip the declaration line.
-        if i == decl_idx:
+def manual_impls(source: bytes, declaration: Any, name: str) -> tuple[bool, bool]:
+    error = display = False
+    for sibling in declaration.parent.named_children:
+        if sibling.type != "impl_item":
             continue
+        target = sibling.child_by_field_name("type")
+        trait = sibling.child_by_field_name("trait")
+        if target is None or trait is None or node_text(source, target).removeprefix("r#") != name:
+            continue
+        trait_name = node_text(source, trait).removeprefix("::")
+        if trait_name in {"std::error::Error", "core::error::Error"}:
+            error = True
+        if trait_name in {"Display", "fmt::Display", "std::fmt::Display", "core::fmt::Display"}:
+            display = True
+    return error, display
 
-        # Track attributes accumulating above a variant.
-        if ERROR_ATTR_RE.search(stripped):
-            pending_error_attr = True
-            continue
-        if stripped.startswith("#["):
-            # Some other attribute — does not reset pending_error_attr.
-            continue
-        if not stripped or stripped.startswith("//"):
-            continue
-        if stripped.startswith("}"):
-            continue
 
-        # This should be a variant identifier line.
-        m = VARIANT_RE.match(stripped)
-        if not m:
-            # Possibly continuation of a tuple/struct variant body — skip.
-            continue
-
-        if not pending_error_attr:
-            findings.append(
-                Violation(
-                    path,
-                    i + 1,
-                    f'variant `{enum_name}::{m.group("name")}` lacks `#[error("...")]` attribute',
-                )
-            )
-        pending_error_attr = False
-
-    return findings
+def audit_enum_variants(path: Path, source: bytes, declaration: Any, name: str) -> list[Violation]:
+    body = declaration.child_by_field_name("body")
+    if body is None:
+        raise ValueError(f"{path}: enum {name} has no parseable body")
+    return [
+        Violation(
+            path,
+            variant.start_point.row + 1,
+            f'variant `{name}::{node_text(source, variant.child_by_field_name("name")).removeprefix("r#")}` lacks `#[error("...")]` attribute',
+        )
+        for variant in body.named_children
+        if variant.type == "enum_variant"
+        if not any(attribute_name(source, item) == "error" for item in attached_attributes(variant))
+    ]
 
 
 def audit_file(path: Path) -> list[Violation]:
-    text = path.read_text(encoding="utf-8")
-    lines = text.splitlines()
+    source = path.read_bytes()
+    if b"pub" not in source or b"Error" not in source:
+        return []
+    root = PARSER.parse(source).root_node
+    for error in walk(root):
+        if error.type != "ERROR" and not error.is_missing:
+            continue
+        line = error.start_point.row
+        nearby = b"\n".join(source.splitlines()[max(0, line - 1) : line + 2])
+        if b"pub" in nearby and b"Error" in nearby:
+            raise ValueError(f"{path}:{line + 1}: Rust parse error overlaps public error syntax")
     findings: list[Violation] = []
-    for idx, line in enumerate(lines):
-        m = PUB_ERROR_DECL_RE.match(line)
-        if not m:
+    for node in walk(root):
+        if node.type not in {"enum_item", "struct_item"}:
             continue
-        name = m.group("name")
-        kind = m.group("kind")
-
-        if name in WIRE_DTO_ERRORS:
-            # Wire-protocol DTO — opt-out by explicit allowlist.
+        visibility = next(
+            (child for child in node.named_children if child.type == "visibility_modifier"), None
+        )
+        if visibility is None or node_text(source, visibility) != "pub":
             continue
-
-        derived = has_thiserror_derive(lines, idx)
-        manual_error = has_manual_error_impl(text, name)
-        manual_display = has_display_impl(text, name)
-        manual_ok = manual_error and manual_display
-
-        if not derived and not manual_ok:
+        name_node = node.child_by_field_name("name")
+        if name_node is None:
+            raise ValueError(
+                f"{path}:{node.start_point.row + 1}: public error name is not parseable"
+            )
+        name = node_text(source, name_node).removeprefix("r#")
+        if not ERROR_NAME_RE.fullmatch(name) or name in WIRE_DTO_ERRORS:
+            continue
+        kind = "enum" if node.type == "enum_item" else "struct"
+        derived = has_error_derive(source, node)
+        manual_error, manual_display = manual_impls(source, node, name)
+        if not derived and not (manual_error and manual_display):
             findings.append(
                 Violation(
                     path,
-                    idx + 1,
+                    node.start_point.row + 1,
                     f"`pub {kind} {name}` does not implement `std::error::Error`. "
-                    "Either add `#[derive(Debug, thiserror::Error)]` above it "
-                    "(thiserror form) OR add a manual `impl std::error::Error "
-                    f"for {name}` AND `impl Display for {name}` block in the "
-                    "same file (manual form).",
+                    "Either add an attached `#[derive(Debug, thiserror::Error)]` "
+                    f"or typed Error and Display impls for {name} in the same module.",
                 )
             )
-            continue
-
-        if kind == "enum" and derived:
-            # `#[error("...")]` per variant is only required when thiserror
-            # is doing the Display work. Manual Display already covers it.
-            findings.extend(audit_enum_variants(path, lines, idx, name))
+        elif kind == "enum" and derived:
+            findings.extend(audit_enum_variants(path, source, node, name))
     return findings
 
 
 def main() -> int:
-    violations: list[Violation] = []
-    files = crate_source_files()
-    for path in files:
-        violations.extend(audit_file(path))
+    try:
+        violations: list[Violation] = []
+        files = crate_source_files()
+        for path in files:
+            violations.extend(audit_file(path))
+    except (OSError, ValueError) as error:
+        print(f"Error-shape check blocked: {error}", file=sys.stderr)
+        return 2
 
     if violations:
         print("Error-shape check failed:", file=sys.stderr)

@@ -54,6 +54,91 @@ def test_cross_family_negative_cannot_claim_exact_exhaustion():
     assert [finding.rule for finding in findings] == ["SO-01"]
 
 
+@pytest.mark.parametrize(
+    "imports,pattern,value",
+    [
+        (
+            "use ExecutionOutcomeV2::{LowerBound, ExactExhausted};",
+            "LowerBound { .. }",
+            "ExactExhausted",
+        ),
+        (
+            "use ExecutionOutcomeV2::{LowerBound as Low, ExactExhausted as Exact};",
+            "Low { .. }",
+            "Exact",
+        ),
+        (
+            "use ExecutionOutcomeV2 as Outcome;",
+            "Outcome::LowerBound { .. }",
+            "Outcome::ExactExhausted",
+        ),
+        ("use ExecutionOutcomeV2::*;", "LowerBound { .. }", "ExactExhausted"),
+        ("", "ExecutionOutcomeV2::r#LowerBound { .. }", "ExecutionOutcomeV2::r#ExactExhausted"),
+    ],
+)
+def test_imports_aliases_and_raw_variants_cannot_promote_negative(imports, pattern, value):
+    findings = scan(
+        f"""
+        {imports}
+        fn project(status: ExecutionOutcomeV2) -> ExecutionOutcomeV2 {{
+            match status {{
+                {pattern} => {value},
+                other => other,
+            }}
+        }}
+        """
+    )
+    assert [finding.rule for finding in findings] == ["SO-01"]
+
+
+def test_raw_ok_early_return_cannot_hide_typed_error_projection():
+    findings = scan(
+        """
+        fn project(status: StructuralReadiness) -> Result<(), StructuralError> {
+            match status {
+                StructuralReadiness::InvalidRequest(reason) => {
+                    if maybe() { return r#Ok(()); }
+                    Err(StructuralError::InvalidRequest(reason))
+                }
+                other => Err(StructuralError::GenerationNotReady),
+            }
+        }
+        """
+    )
+    assert [finding.rule for finding in findings] == ["SO-03"]
+
+
+def test_qualified_ok_early_return_cannot_hide_typed_error_projection():
+    findings = scan(
+        """
+        fn project(status: StructuralReadiness) -> Result<(), StructuralError> {
+            match status {
+                StructuralReadiness::InvalidRequest(reason) => {
+                    if maybe() { return Result::Ok(()); }
+                    Err(StructuralError::InvalidRequest(reason))
+                }
+                other => Err(StructuralError::GenerationNotReady),
+            }
+        }
+        """
+    )
+    assert [finding.rule for finding in findings] == ["SO-03"]
+
+
+def test_raw_family_name_still_governs_wildcard():
+    findings = scan(
+        """
+        fn project(status: ExecutionOutcomeV2) -> ExecutionOutcomeV2 {
+            match status {
+                r#ExecutionOutcomeV2::LowerBound { .. } => ExecutionOutcomeV2::CappedUnknown { cap: 1 },
+                _ => ExecutionOutcomeV2::ExactExhausted,
+            }
+        }
+        """
+    )
+    assert [finding.rule for finding in findings] == ["SO-02"]
+
+
 def test_self_variant_is_recognized_in_impl():
     findings = scan(
         """
@@ -188,6 +273,21 @@ def test_wildcard_negative_variant_is_allowed():
             match status {
                 StructuralReadiness::Ready => StructuralReadiness::Ready,
                 _ => StructuralReadiness::GenerationNotReady,
+            }
+        }
+        """
+    )
+    assert findings == []
+
+
+def test_imported_negative_terminal_keeps_wildcard_fail_closed():
+    findings = scan(
+        """
+        use StructuralReadiness::{Ready, GenerationNotReady};
+        fn project(status: StructuralReadiness) -> StructuralReadiness {
+            match status {
+                Ready => Ready,
+                _ => GenerationNotReady,
             }
         }
         """

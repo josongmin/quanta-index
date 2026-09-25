@@ -770,6 +770,7 @@ fn actual_runner_binary_emits_receipt_bound_v3_record() {
     let searchd = resolve_searchd_binary(None).expect("explicit env pin resolves");
     let searchd_digest = sha256_hex(&std::fs::read(&searchd).expect("searchd bytes"));
     let out = evidence.join("record.json");
+    let diagnostic_out = evidence.join("retrieval-diagnostic.json");
     let state = evidence.join("state");
     let output = Command::new(&runner)
         .args([
@@ -814,6 +815,8 @@ fn actual_runner_binary_emits_receipt_bound_v3_record() {
             "attested-fixture-pack-only",
             "--out",
             out.to_str().expect("output path"),
+            "--diagnostics-out",
+            diagnostic_out.to_str().expect("diagnostic path"),
         ])
         .output()
         .expect("runner starts");
@@ -842,6 +845,41 @@ fn actual_runner_binary_emits_receipt_bound_v3_record() {
         }
     }
     assert_eq!(record["results"].as_array().expect("results").len(), 3);
+    let diagnostic: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&diagnostic_out).expect("diagnostic bytes"))
+            .expect("diagnostic JSON");
+    assert_eq!(
+        diagnostic["record_sha256"],
+        sha256_hex(&std::fs::read(&out).expect("record bytes"))
+    );
+    assert_eq!(diagnostic["query_pack_sha256"], record["query_pack_sha256"]);
+    assert_eq!(
+        diagnostic["results"]
+            .as_array()
+            .expect("diagnostic results")
+            .len(),
+        3
+    );
+    let hybrid = diagnostic["results"]
+        .as_array()
+        .expect("diagnostic results")
+        .iter()
+        .find(|row| row["route"] == "hybrid")
+        .expect("hybrid diagnostic");
+    let hybrid_candidates = hybrid["candidates"].as_array().expect("hybrid candidates");
+    assert!(!hybrid_candidates.is_empty(), "hybrid query must return a diagnostic candidate");
+    for candidate in hybrid_candidates {
+        assert!(
+            !candidate["contributions"]
+                .as_array()
+                .expect("lane contributions")
+                .is_empty()
+        );
+    }
+    assert_eq!(
+        diagnostic["runner_timing_detail_ms"]["clock"],
+        "runner_monotonic_wall_v1"
+    );
 
     if let Some(dir) = std::env::var_os("QUANTA_BENCH_SDK_EVIDENCE_DIR") {
         let destination = PathBuf::from(dir).join("actual-runner-record.json");

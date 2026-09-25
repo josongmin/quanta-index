@@ -382,16 +382,27 @@ def test_block_comment_does_not_confuse_parser(tmp_path: Path):
     assert violations == []
 
 
-def test_extract_return_type_strips_where_clause():
-    sig = "pub fn h<T>(t: T) -> [u8; 32] where T: Clone"
-    rt = MODULE.extract_return_type(sig)
-    assert rt == "[u8; 32]"
+def test_where_clause_does_not_hide_digest_return(tmp_path: Path):
+    p = write(tmp_path, "pub fn h<T>(t: T) -> [u8; 32] where T: Clone { [0; 32] }")
+    _, violations = MODULE.audit_file(p)
+    assert len(violations) == 1
 
 
-def test_extract_return_type_handles_result_generic():
-    sig = "pub fn h() -> Result<[u8; 32], MyErr>"
-    rt = MODULE.extract_return_type(sig)
-    assert rt == "Result<[u8; 32], MyErr>"
+def test_result_generic_is_an_explicit_failure_channel(tmp_path: Path):
+    p = write(tmp_path, "pub fn h() -> Result<[u8; 32], MyErr> { todo!() }")
+    sites, violations = MODULE.audit_file(p)
+    assert len(sites) == 1
+    assert violations == []
+
+
+def test_comment_delimiters_inside_strings_do_not_hide_following_function(tmp_path: Path):
+    p = write(
+        tmp_path,
+        'const MARKER: &str = "/*";\npub fn bad() -> [u8; 32] { [0; 32] }\n',
+    )
+    sites, violations = MODULE.audit_file(p)
+    assert len(sites) == 1
+    assert len(violations) == 1
 
 
 def test_repo_audit_surfaces_real_violations_only():

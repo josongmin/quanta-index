@@ -50,6 +50,10 @@ class SemgrepPolicyTest(unittest.TestCase):
           cat <<'EOF'
           continue-on-error: true
           EOF
+      - run: |
+          cargo \\
+            test --workspace
+      - run: 'echo name: && cargo test'
 """,
             "crates/quanta-index-searchd/src/lib.rs": """fn bad() -> StructuralReadiness {
     let Ok(value) = prerequisite() else { return StructuralReadiness::Ready; };
@@ -124,6 +128,8 @@ let Ok(value) = prerequisite() else { return StructuralReadiness::Ready; };
                 for rule, line in (
                     ("workflow-use-cargow", 4),
                     ("workflow-use-cargow", 10),
+                    ("workflow-use-cargow", 24),
+                    ("workflow-use-cargow", 26),
                     ("workflow-no-continue-on-error", 11),
                     ("workflow-no-continue-on-error", 13),
                     ("workflow-no-continue-on-error", 15),

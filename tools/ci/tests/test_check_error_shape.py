@@ -200,6 +200,48 @@ def test_missing_display_impl_still_fails(tmp_path: Path):
     assert "does not implement" in findings[0].message
 
 
+def test_commented_out_impls_do_not_satisfy_error_contract(tmp_path: Path):
+    p = write(
+        tmp_path,
+        """
+        pub enum ProbeError { A }
+        // impl std::error::Error for ProbeError {}
+        // impl std::fmt::Display for ProbeError {}
+        """,
+    )
+    assert len(MODULE.audit_file(p)) == 1
+
+
+def test_derive_attached_to_previous_item_does_not_transfer(tmp_path: Path):
+    p = write(
+        tmp_path,
+        """
+        #[derive(Debug, Error)]
+        pub enum PreviousError {
+            #[error("x")]
+            X,
+        }
+        pub enum ProbeError { A }
+        """,
+    )
+    findings = MODULE.audit_file(p)
+    assert len(findings) == 1
+    assert "ProbeError" in findings[0].message
+
+
+def test_impl_for_different_type_does_not_satisfy_error_contract(tmp_path: Path):
+    p = write(
+        tmp_path,
+        """
+        pub enum ProbeError { A }
+        pub enum OtherError { B }
+        impl std::error::Error for OtherError {}
+        impl std::fmt::Display for OtherError {}
+        """,
+    )
+    assert any("ProbeError" in item.message for item in MODULE.audit_file(p))
+
+
 def test_wire_dto_allowlist_recognised():
     """SearchPlaneIpcError is a wire DTO and must be in the allowlist."""
     assert "SearchPlaneIpcError" in MODULE.WIRE_DTO_ERRORS

@@ -1033,6 +1033,7 @@ mod tests {
             end_line: 0,
             snippet: chunk_text.to_string(),
             score: 1.0,
+            contributions: Vec::new(),
         };
         let candidate = prove_hit(&hit, 1, &files, &chunks).expect("anchored by published ID");
         assert_eq!(
@@ -1193,6 +1194,7 @@ mod tests {
             end_line: 1,
             snippet: text.to_string(),
             score: 1.0,
+            contributions: Vec::new(),
         };
         (
             BTreeMap::from([("a.txt".to_string(), file)]),
@@ -1300,6 +1302,7 @@ mod tests {
             end_line: 1,
             snippet: text.to_string(),
             score: 1.0,
+            contributions: Vec::new(),
         };
         let outcome = QueryOutcome::Hits {
             hits: vec![hit],

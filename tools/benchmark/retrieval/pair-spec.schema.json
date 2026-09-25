@@ -41,6 +41,7 @@
     "cache_regime": {"enum": ["true_process_cold", "warm_cache", "undeclared"]},
     "seed": {"type": "integer", "minimum": 0},
     "timeout_secs": {"type": "integer", "minimum": 1},
+    "io_timeout_secs": {"type": "integer", "minimum": 1, "description": "Explicit per-request Quanta SDK I/O timeout in seconds; frozen in the pair spec and passed to the Rust runner."},
     "repetitions": {"type": "integer", "minimum": 1},
     "query_repetitions_per_root": {
       "type": "integer", "minimum": 1,

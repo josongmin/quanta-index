@@ -25,6 +25,7 @@ use quanta_index_retrieval_bench::corpus::{
     CorpusLimits, Manifest, SourceFile, load_corpus, load_manifest, verify_checkout,
     verify_materialized_corpus,
 };
+use quanta_index_retrieval_bench::diagnostics::diagnostic_value;
 use quanta_index_retrieval_bench::profile::EmbedderProfile;
 use quanta_index_retrieval_bench::record::{
     CaptureProvenance, QueryPack, RouteProvenance, RunnerIdentity, RunnerRecordInput,
@@ -62,7 +63,7 @@ fn print_help() -> BenchResult<()> {
          --blinding attested|isolated --isolation-method TEXT --access-block-log TEXT\n\
          [--materialized-corpus-sha256 HEX]\n\
          --searchd-bin PATH --searchd-expected-sha256 HEX\n\
-         --out PATH [--metrics-out PATH] [--embedder potion-code|hash-dev]\n\
+         --out PATH [--metrics-out PATH] [--diagnostics-out PATH] [--embedder potion-code|hash-dev]\n\
          [--max-file-bytes N]\n\
          [--io-timeout-secs N] [--ready-timeout-secs N]\n",
         )
@@ -453,6 +454,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             "isolation-method",
             "access-block-log",
             "metrics-out",
+            "diagnostics-out",
             "out",
             "io-timeout-secs",
             "ready-timeout-secs",
@@ -562,6 +564,21 @@ fn run_capture(args: &Args) -> BenchResult<()> {
                 "--metrics-out already exists: {}",
                 path.display()
             )));
+        }
+    }
+    let diagnostics_out = args.flags.get("diagnostics-out").map(PathBuf::from);
+    if let Some(path) = &diagnostics_out {
+        require_external_path(&repo, path, "--diagnostics-out")?;
+        if path.exists() {
+            return Err(BenchError::Config(format!(
+                "--diagnostics-out already exists: {}",
+                path.display()
+            )));
+        }
+        if path == &out || metrics_out.as_ref() == Some(path) {
+            return Err(BenchError::Config(
+                "--diagnostics-out must differ from other output paths".to_string(),
+            ));
         }
     }
     let searchd_bin =
@@ -825,6 +842,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         query_start.elapsed().saturating_sub(first)
     };
 
+    let record_start = Instant::now();
     let record = runner_record(&RunnerRecordInput {
         pack: &pack,
         identity: &identity_block,
@@ -835,9 +853,14 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         files: &by_path,
         chunks_by_id: &chunks_by_id,
     })?;
+    let record_elapsed = record_start.elapsed();
+    let verify_start = Instant::now();
     verify_capture_corpus(args, &repo, &manifest)?;
+    let verify_elapsed = verify_start.elapsed();
     let binary = session.searchd_binary().display().to_string();
+    let shutdown_start = Instant::now();
     session.stop()?;
+    let shutdown_elapsed = shutdown_start.elapsed();
     let overall_elapsed = overall.elapsed();
     let phase_sum = discovery_elapsed
         .checked_add(chunk_elapsed)
@@ -855,6 +878,31 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             message: err.to_string(),
         })?;
     let record_digest = sha256_hex(format!("{rendered_record}\n").as_bytes());
+    let diagnostics = if diagnostics_out.is_some() {
+        let mut value = diagnostic_value(&record_digest, &pack, &routes, &outcomes, top_k)?;
+        let detail = serde_json::json!({
+            "clock": "runner_monotonic_wall_v1",
+            "daemon_boot_and_readiness": boot_elapsed.as_secs_f64() * 1000.0,
+            "sdk_publish_and_activate_opaque": publish_elapsed.as_secs_f64() * 1000.0,
+            "runner_record_assembly": record_elapsed.as_secs_f64() * 1000.0,
+            "corpus_reverification": verify_elapsed.as_secs_f64() * 1000.0,
+            "daemon_shutdown": shutdown_elapsed.as_secs_f64() * 1000.0,
+        });
+        let object = value.as_object_mut().ok_or_else(|| {
+            BenchError::Protocol("diagnostic value must be an object".to_string())
+        })?;
+        if object
+            .insert("runner_timing_detail_ms".to_string(), detail)
+            .is_some()
+        {
+            return Err(BenchError::Protocol(
+                "duplicate diagnostic timing detail".to_string(),
+            ));
+        }
+        Some(value)
+    } else {
+        None
+    };
     let mut phase_metrics = serde_json::json!({
         "schema_version": 1,
         "system": "quanta",
@@ -945,6 +993,9 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     }
     if let Some(path) = &metrics_out {
         write_json(path, &phase_metrics)?;
+    }
+    if let (Some(path), Some(value)) = (&diagnostics_out, &diagnostics) {
+        write_json(path, value)?;
     }
     // A failed owned-daemon shutdown or phase-artifact write must not leave a
     // scoreable success record. The record is the final create-new artifact.

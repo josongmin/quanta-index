@@ -8,12 +8,11 @@
 //! derive is banned workspace-wide).
 
 use core::fmt;
-use std::error::Error;
 
 use serde::{
-    Deserialize, Deserializer, Serialize, Serializer,
     de::{self, MapAccess, Visitor},
     ser::SerializeStruct,
+    Deserialize, Deserializer, Serialize, Serializer,
 };
 
 use super::{
@@ -146,7 +145,7 @@ impl fmt::Display for RepoMapCompileRefusalV1 {
     }
 }
 
-impl Error for RepoMapCompileRefusalV1 {}
+impl std::error::Error for RepoMapCompileRefusalV1 {}
 
 const REPOMAP_COMPILE_REFUSAL_FIELDS: &[&str] = &["stage", "code", "limit", "observed"];
 

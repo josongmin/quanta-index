@@ -230,6 +230,12 @@ pub struct DaemonConfig<'a> {
     pub history_max_generations: usize,
 }
 
+// Benchmark captures can index substantially larger real repositories than
+// the SDK smoke fixture. This is a runner-owned history retention policy, not
+// a product default or a measured cache budget.
+const BENCH_HISTORY_MAX_BYTES: u64 = 1024 * 1024 * 1024;
+const BENCH_HISTORY_MAX_TOTAL_BYTES: u64 = 4 * BENCH_HISTORY_MAX_BYTES;
+
 impl DaemonSession {
     /// Boot over a runner-owned fresh state root. A pre-existing non-empty
     /// root is refused: the runner never inherits a possibly stale index.
@@ -320,7 +326,7 @@ impl DaemonSession {
             )
             .env(
                 "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_BYTES",
-                (16 * 1024 * 1024).to_string(),
+                BENCH_HISTORY_MAX_BYTES.to_string(),
             )
             .env(
                 "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_REVISION_PAIRS",
@@ -328,7 +334,7 @@ impl DaemonSession {
             )
             .env(
                 "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_TOTAL_BYTES",
-                (256 * 1024 * 1024).to_string(),
+                BENCH_HISTORY_MAX_TOTAL_BYTES.to_string(),
             );
         if let Some(model_dir) = config.model_dir {
             let _configured = command.env("QUANTA_INDEX_EMBED_MODEL_DIR", model_dir);
@@ -876,6 +882,16 @@ pub struct RankedHit {
     pub end_line: u32,
     pub snippet: String,
     pub score: f64,
+    /// Hybrid fusion provenance. Empty for non-hybrid routes; not part of the
+    /// frozen v3 score record, but retained for the bound diagnostic artifact.
+    pub contributions: Vec<RankedLaneContribution>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RankedLaneContribution {
+    pub lane: &'static str,
+    pub rank: u32,
+    pub raw_score: f32,
 }
 
 /// Typed query outcome: either ranked hits under the expected generation or
@@ -904,6 +920,7 @@ fn lexical_hit(candidate: &LexicalCandidate) -> RankedHit {
         end_line: candidate.end_line,
         snippet: candidate.snippet.clone(),
         score: f64::from(candidate.score),
+        contributions: Vec::new(),
     }
 }
 
@@ -915,6 +932,15 @@ fn hybrid_hit(candidate: &HybridCandidateV1) -> RankedHit {
         end_line: candidate.candidate.end_line,
         snippet: candidate.candidate.snippet.clone(),
         score: candidate.fused_score,
+        contributions: candidate
+            .contributions
+            .iter()
+            .map(|contribution| RankedLaneContribution {
+                lane: contribution.lane.as_code_str(),
+                rank: contribution.rank,
+                raw_score: contribution.raw_score,
+            })
+            .collect(),
     }
 }
 

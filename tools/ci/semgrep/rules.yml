@@ -12,7 +12,7 @@ rules:
       include:
         - "/.github/workflows/*.yml"
         - "/.github/workflows/*.yaml"
-    pattern-regex: '(?m)^[ \t]*(?:(?!\b(?:name|source)\s*:|#)[^\n])*?(?<![A-Za-z0-9_./-])cargo[ \t]+(?:build|check|clippy|test|fmt|doc|bench|nextest)\b'
+    pattern-regex: '(?m)^(?![ \t]*(?:-\s*)?(?:name|source)\s*:|[ \t]*#)[ \t]*[^\n]*?(?<![A-Za-z0-9_./-])cargo(?:[ \t]|\\[ \t]*\r?\n[ \t]*)+(?:build|check|clippy|test|fmt|doc|bench|nextest)\b'
 
   - id: workflow-no-continue-on-error
     message: CI must fail closed. Do not declare continue-on-error on jobs or steps.

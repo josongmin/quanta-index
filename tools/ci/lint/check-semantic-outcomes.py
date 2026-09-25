@@ -124,6 +124,92 @@ def node_text(source: bytes, node: Any) -> str:
     return source[node.start_byte : node.end_byte].decode("utf-8")
 
 
+def rust_name(value: str) -> str:
+    return value.removeprefix("r#")
+
+
+def canonical_path_text(value: str) -> str:
+    return re.sub(r"(?<![A-Za-z0-9_])r#(?=[A-Za-z_])", "", value)
+
+
+def path_parts(source: bytes, node: Any) -> tuple[str, ...]:
+    return tuple(rust_name(part) for part in node_text(source, node).split("::") if part)
+
+
+@dataclass
+class UseBindings:
+    types: dict[str, str]
+    variants: dict[str, tuple[str, str]]
+
+
+def use_items(
+    node: Any, source: bytes, prefix: tuple[str, ...] = ()
+) -> Iterator[tuple[tuple[str, ...], str]]:
+    if node.type == "scoped_use_list":
+        path = node.child_by_field_name("path")
+        members = node.child_by_field_name("list")
+        if path is not None and members is not None:
+            yield from use_items(members, source, prefix + path_parts(source, path))
+    elif node.type == "use_list":
+        for child in node.named_children:
+            yield from use_items(child, source, prefix)
+    elif node.type == "use_as_clause":
+        path = node.child_by_field_name("path")
+        alias = node.child_by_field_name("alias")
+        if path is not None and alias is not None:
+            yield prefix + path_parts(source, path), rust_name(node_text(source, alias))
+    elif node.type == "use_wildcard":
+        path = next(iter(node.named_children), None)
+        if path is not None:
+            yield prefix + path_parts(source, path) + ("*",), "*"
+    else:
+        path = prefix + path_parts(source, node)
+        if path:
+            yield path, path[-1]
+
+
+def use_bindings_for(node: Any, source: bytes, families: dict[str, EnumFamily]) -> UseBindings:
+    """Resolve only lexically visible, explicit imports; ambiguous imports block."""
+    scopes: list[Any] = []
+    current = node.parent
+    while current is not None:
+        if current.type in {"source_file", "declaration_list", "block"}:
+            scopes.append(current)
+        current = current.parent
+    bindings = UseBindings({}, {})
+    for scope in reversed(scopes):
+        local_types: dict[str, str] = {}
+        local_variants: dict[str, tuple[str, str]] = {}
+        for child in scope.named_children:
+            if child.type != "use_declaration":
+                continue
+            argument = child.child_by_field_name("argument")
+            if argument is None:
+                continue
+            for path, alias in use_items(argument, source):
+                if path[-1] in families:
+                    local_types[alias] = path[-1]
+                elif len(path) >= 2 and path[-2] in families:
+                    family = families[path[-2]]
+                    variants = family.negative | family.positive | family.neutral
+                    if path[-1] == "*":
+                        for variant in variants:
+                            if variant in local_variants and local_variants[variant] != (
+                                family.name,
+                                variant,
+                            ):
+                                raise ValueError(f"ambiguous imported outcome variant: {variant}")
+                            local_variants[variant] = (family.name, variant)
+                    elif path[-1] in variants:
+                        resolved = (family.name, path[-1])
+                        if alias in local_variants and local_variants[alias] != resolved:
+                            raise ValueError(f"ambiguous imported outcome variant: {alias}")
+                        local_variants[alias] = resolved
+        bindings.types.update(local_types)
+        bindings.variants.update(local_variants)
+    return bindings
+
+
 def walk(node: Any) -> Iterator[Any]:
     stack = [node]
     while stack:
@@ -183,22 +269,31 @@ def enclosing_impl_type(node: Any, source: bytes) -> str | None:
         if current.type == "impl_item":
             target = current.child_by_field_name("type")
             if target is not None:
-                return node_text(source, target).split("::")[-1]
+                return rust_name(node_text(source, target).split("::")[-1])
         current = current.parent
     return None
 
 
-def variant_refs(node: Any, source: bytes, families: dict[str, EnumFamily]) -> set[tuple[str, str]]:
+def variant_refs(
+    node: Any, source: bytes, families: dict[str, EnumFamily], bindings: UseBindings
+) -> set[tuple[str, str]]:
     refs: set[tuple[str, str]] = set()
     for child in walk(node):
+        if child.type in {"identifier", "type_identifier"}:
+            if child.parent.type not in {"scoped_identifier", "scoped_type_identifier"}:
+                imported = bindings.variants.get(rust_name(node_text(source, child)))
+                if imported is not None:
+                    refs.add(imported)
+            continue
         if child.type not in {"scoped_identifier", "scoped_type_identifier"}:
             continue
-        parts = node_text(source, child).split("::")
+        parts = path_parts(source, child)
         if len(parts) < 2:
             continue
         family_name = parts[-2]
         if family_name == "Self":
             family_name = enclosing_impl_type(child, source) or ""
+        family_name = bindings.types.get(family_name, family_name)
         family = families.get(family_name)
         if family and parts[-1] in family.negative | family.positive | family.neutral:
             refs.add((family_name, parts[-1]))
@@ -206,16 +301,26 @@ def variant_refs(node: Any, source: bytes, families: dict[str, EnumFamily]) -> s
 
 
 def direct_pattern_families(
-    pattern: Any, source: bytes, families: dict[str, EnumFamily]
+    pattern: Any, source: bytes, families: dict[str, EnumFamily], bindings: UseBindings
 ) -> set[str]:
     """Exclude wrapped Option/tuple patterns whose wildcard covers other types."""
-    text = node_text(source, pattern).strip()
-    refs = variant_refs(pattern, source, families)
+    text = canonical_path_text(node_text(source, pattern).strip())
+    refs = variant_refs(pattern, source, families, bindings)
     return {
         family
         for family, _variant in refs
         if re.match(rf"^(?:[A-Za-z_][A-Za-z0-9_]*::)*{re.escape(family)}::", text)
         or (text.startswith("Self::") and enclosing_impl_type(pattern, source) == family)
+        or any(
+            re.match(rf"^{re.escape(alias)}(?:\b|\s*\{{|\s*\()", text)
+            for alias, bound in bindings.variants.items()
+            if bound[0] == family
+        )
+        or any(
+            text.startswith(f"{alias}::")
+            for alias, bound in bindings.types.items()
+            if bound == family
+        )
     }
 
 
@@ -233,8 +338,10 @@ def terminal_expression(node: Any) -> Any:
     return current
 
 
-def fail_closed_wildcard(value: Any, source: bytes, families: dict[str, EnumFamily]) -> bool:
-    if contains_success(value, source, families):
+def fail_closed_wildcard(
+    value: Any, source: bytes, families: dict[str, EnumFamily], bindings: UseBindings
+) -> bool:
+    if contains_success(value, source, families, bindings):
         return False
     terminal = terminal_expression(value)
     if terminal.type == "call_expression":
@@ -245,23 +352,31 @@ def fail_closed_wildcard(value: Any, source: bytes, families: dict[str, EnumFami
     elif terminal.type == "struct_expression":
         name = terminal.child_by_field_name("name")
         terminal = name if name is not None else terminal
-    if terminal.type not in {"scoped_identifier", "scoped_type_identifier"}:
+    if terminal.type not in {
+        "identifier",
+        "type_identifier",
+        "scoped_identifier",
+        "scoped_type_identifier",
+    }:
         return False
-    refs = variant_refs(terminal, source, families)
+    refs = variant_refs(terminal, source, families, bindings)
     return bool(refs) and all(variant in families[name].negative for name, variant in refs)
 
 
-def contains_success(value: Any, source: bytes, families: dict[str, EnumFamily]) -> bool:
+def contains_success(
+    value: Any, source: bytes, families: dict[str, EnumFamily], bindings: UseBindings
+) -> bool:
     if any(
         node.type == "call_expression"
         and (function := node.child_by_field_name("function")) is not None
-        and node_text(source, function) == "Ok"
+        and canonical_path_text(node_text(source, function))
+        in {"Ok", "Result::Ok", "std::result::Result::Ok", "core::result::Result::Ok"}
         for node in walk(value)
     ):
         return True
     return any(
         variant in families[name].positive
-        for name, variant in variant_refs(value, source, families)
+        for name, variant in variant_refs(value, source, families, bindings)
     )
 
 
@@ -278,7 +393,9 @@ def projected_error(value: Any, source: bytes) -> Any | None:
     return children[0] if len(children) == 1 else None
 
 
-def bound_payload_name(pattern: Any, source: bytes, family: str, variant: str) -> str | None:
+def bound_payload_name(
+    pattern: Any, source: bytes, family: str, variant: str, bindings: UseBindings
+) -> str | None:
     """Only a direct, named tuple payload can establish reason preservation."""
     for node in walk(pattern):
         if node.type != "tuple_struct_pattern":
@@ -286,11 +403,17 @@ def bound_payload_name(pattern: Any, source: bytes, family: str, variant: str) -
         children = node.named_children
         if not children:
             continue
-        head = node_text(source, children[0])
+        head = canonical_path_text(node_text(source, children[0]))
         if not (
             head == f"{family}::{variant}"
             or head.endswith(f"::{family}::{variant}")
             or (head == f"Self::{variant}" and enclosing_impl_type(node, source) == family)
+            or bindings.variants.get(rust_name(head)) == (family, variant)
+            or any(
+                head == f"{alias}::{variant}"
+                for alias, resolved in bindings.types.items()
+                if resolved == family
+            )
         ):
             continue
         if len(children) != 2 or children[1].type != "identifier":
@@ -303,9 +426,9 @@ def bound_payload_name(pattern: Any, source: bytes, family: str, variant: str) -
 def projected_error_name(error: Any, source: bytes) -> str | None:
     if error.type == "call_expression":
         function = error.child_by_field_name("function")
-        return node_text(source, function) if function is not None else None
+        return canonical_path_text(node_text(source, function)) if function is not None else None
     if error.type in {"scoped_identifier", "scoped_type_identifier"}:
-        return node_text(source, error)
+        return canonical_path_text(node_text(source, error))
     return None
 
 
@@ -368,12 +491,12 @@ def findings_for_source(
     for node in production_nodes(root, source):
         if node.type == "enum_item":
             name_node = node.child_by_field_name("name")
-            name = node_text(source, name_node) if name_node is not None else ""
+            name = rust_name(node_text(source, name_node)) if name_node is not None else ""
             if name in families:
                 if name in definitions:
                     raise ValueError(f"{path}: duplicate enum definition for {name}")
                 definitions[name] = {
-                    node_text(source, variant.child_by_field_name("name"))
+                    rust_name(node_text(source, variant.child_by_field_name("name")))
                     for variant in walk(node)
                     if variant.type == "enum_variant"
                     and variant.child_by_field_name("name") is not None
@@ -383,6 +506,7 @@ def findings_for_source(
         body = node.child_by_field_name("body")
         if body is None:
             continue
+        bindings = use_bindings_for(node, source, families)
         direct_families: set[str] = set()
         wildcard: Any = None
         for arm in body.named_children:
@@ -396,9 +520,9 @@ def findings_for_source(
             if pattern_text == "_" or re.fullmatch(r"[a-z][a-z0-9_]*", pattern_text):
                 wildcard = arm
                 continue
-            direct_families.update(direct_pattern_families(pattern, source, families))
-            refs = variant_refs(pattern, source, families)
-            outputs = variant_refs(value, source, families)
+            direct_families.update(direct_pattern_families(pattern, source, families, bindings))
+            refs = variant_refs(pattern, source, families, bindings)
+            outputs = variant_refs(value, source, families, bindings)
             for name, variant in sorted(refs):
                 family = families[name]
                 promoted = sorted(
@@ -419,7 +543,7 @@ def findings_for_source(
                     error = projected_error(value, source)
                     expected = family.error_projection[variant]
                     actual = projected_error_name(error, source) if error is not None else None
-                    if actual != expected or contains_success(value, source, families):
+                    if actual != expected or contains_success(value, source, families, bindings):
                         findings.append(
                             Finding(
                                 path,
@@ -429,7 +553,7 @@ def findings_for_source(
                             )
                         )
                     elif variant in family.preserve_payload:
-                        binding = bound_payload_name(pattern, source, name, variant)
+                        binding = bound_payload_name(pattern, source, name, variant, bindings)
                         if (
                             binding is None
                             or shadows_payload(value, source, binding)
@@ -450,7 +574,7 @@ def findings_for_source(
                     binding = node_text(source, wildcard.child_by_field_name("pattern")).strip()
                     if binding != "_" and node_text(source, value).strip() == binding:
                         continue
-                    if not fail_closed_wildcard(value, source, families):
+                    if not fail_closed_wildcard(value, source, families, bindings):
                         findings.append(
                             Finding(
                                 path,

@@ -12,6 +12,7 @@ pub mod batch;
 pub mod canonical;
 pub mod chunking;
 pub mod corpus;
+pub mod diagnostics;
 pub mod profile;
 pub mod record;
 pub mod schedule;

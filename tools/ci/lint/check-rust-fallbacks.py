@@ -52,6 +52,12 @@ def text(source: bytes, node: Any) -> bytes:
     return source[node.start_byte : node.end_byte]
 
 
+def identifier(source: bytes, node: Any) -> bytes:
+    """Compare Rust raw identifiers by their resolved spelling."""
+    value = text(source, node)
+    return value[2:] if value.startswith(b"r#") else value
+
+
 def semantic_children(node: Any) -> list[Any]:
     return [
         child
@@ -75,15 +81,17 @@ def unwrap_generic_function(node: Any) -> Any | None:
 
 def path_segments(source: bytes, part: Any) -> tuple[bytes, ...]:
     if part.type in {"identifier", "type_identifier"}:
-        return (text(source, part),)
+        return (identifier(source, part),)
     if part.type == "generic_type":
         base = part.child_by_field_name("type")
         return path_segments(source, base) if base is not None else ()
     if part.type in {"scoped_identifier", "scoped_type_identifier"}:
         base = part.child_by_field_name("path")
         final = part.child_by_field_name("name")
-        if base is not None and final is not None:
-            return path_segments(source, base) + (text(source, final),)
+        if final is not None:
+            return (path_segments(source, base) if base is not None else ()) + (
+                identifier(source, final),
+            )
     return ()
 
 
@@ -141,12 +149,12 @@ def call_name(source: bytes, node: Any, name: bytes) -> bool:
     if function is None:
         return False
     if function.type == "identifier":
-        return text(source, function) == name
+        return identifier(source, function) == name
     if function.type != "scoped_identifier":
         return False
     variant = function.child_by_field_name("name")
     path = function.child_by_field_name("path")
-    if variant is None or path is None or text(source, variant) != name:
+    if variant is None or path is None or identifier(source, variant) != name:
         return False
 
     # Only the standard Result::Ok constructor is a success conversion.
@@ -167,7 +175,7 @@ def method_call(source: bytes, node: Any, name: bytes) -> Any | None:
     if function is None or function.type != "field_expression" or arguments is None:
         return None
     field = function.child_by_field_name("field")
-    if field is None or text(source, field) != name:
+    if field is None or identifier(source, field) != name:
         return None
     if name != b"or_else" and semantic_children(arguments):
         return None
@@ -185,8 +193,8 @@ def checked_width(source: bytes, receiver: Any) -> bool:
     return (
         path is not None
         and name is not None
-        and text(source, path) in {b"u8", b"u16", b"u32"}
-        and text(source, name) == b"try_from"
+        and identifier(source, path) in {b"u8", b"u16", b"u32"}
+        and identifier(source, name) == b"try_from"
     )
 
 
@@ -216,12 +224,48 @@ def closure_returns_ok(source: bytes, closure: Any) -> bool:
             if children and call_name(source, children[0], b"Ok"):
                 return True
         pending.extend(node.named_children)
-    if body.type == "block":
-        children = semantic_children(body)
-        if not children:
-            return False
-        body = children[-1]
-    return call_name(source, body, b"Ok")
+    return tail_returns_ok(source, body)
+
+
+def tail_returns_ok(source: bytes, node: Any) -> bool:
+    """Inspect expression-producing branches, not only a direct closure tail."""
+    node = unwrap_parens(node)
+    if node is None:
+        return False
+    if call_name(source, node, b"Ok"):
+        return True
+    if node.type == "block":
+        children = semantic_children(node)
+        return bool(children) and tail_returns_ok(source, children[-1])
+    if node.type == "expression_statement":
+        children = semantic_children(node)
+        return len(children) == 1 and tail_returns_ok(source, children[0])
+    if node.type == "if_expression":
+        return any(
+            tail_returns_ok(source, branch)
+            for field in ("consequence", "alternative")
+            if (branch := node.child_by_field_name(field)) is not None
+        )
+    if node.type == "match_expression":
+        body = node.child_by_field_name("body")
+        return body is not None and any(
+            tail_returns_ok(source, value)
+            for arm in body.named_children
+            if arm.type == "match_arm"
+            if (value := arm.child_by_field_name("value")) is not None
+        )
+    return False
+
+
+def cfg_mentions_debug(source: bytes, token_tree: Any) -> bool:
+    stack = [token_tree]
+    while stack:
+        node = stack.pop()
+        if node.type == "identifier" and identifier(source, node) == b"debug_assertions":
+            return True
+        if node.type not in {"string_literal", "line_comment", "block_comment"}:
+            stack.extend(node.named_children)
+    return False
 
 
 def debug_assertions_cfg(source: bytes, node: Any) -> bool:
@@ -244,10 +288,9 @@ def debug_assertions_cfg(source: bytes, node: Any) -> bool:
         )
     else:
         return False
-    if name is None or token_tree is None or text(source, name) != b"cfg":
+    if name is None or token_tree is None or identifier(source, name) != b"cfg":
         return False
-    arguments = semantic_children(token_tree)
-    return len(arguments) == 1 and text(source, arguments[0]) == b"debug_assertions"
+    return cfg_mentions_debug(source, token_tree)
 
 
 def opaque_debug_cfg(source: bytes, node: Any) -> bool:
@@ -258,7 +301,7 @@ def opaque_debug_cfg(source: bytes, node: Any) -> bool:
     ]
     bracketed = source[node.start_byte : node.start_byte + 1] == b"["
     for index, child in enumerate(children):
-        if child.type != "identifier" or text(source, child) != b"cfg":
+        if child.type != "identifier" or identifier(source, child) != b"cfg":
             continue
         if bracketed and index + 1 < len(children):
             arguments = children[index + 1]
@@ -268,8 +311,7 @@ def opaque_debug_cfg(source: bytes, node: Any) -> bool:
             continue
         if arguments.type != "token_tree":
             continue
-        values = semantic_children(arguments)
-        if len(values) == 1 and text(source, values[0]) == b"debug_assertions":
+        if cfg_mentions_debug(source, arguments):
             return True
     return False
 
@@ -283,9 +325,9 @@ def opaque_search_authority(source: bytes, node: Any) -> bool:
     for index, child in enumerate(children):
         if child.type != "identifier":
             continue
-        token = text(source, child)
+        token = identifier(source, child)
         if index + 2 < len(children) and children[index + 1].type == "::":
-            next_token = text(source, children[index + 2])
+            next_token = identifier(source, children[index + 2])
             if token in {b"ciborium", b"git2", b"tree_sitter", b"tree_sitter_language_pack"}:
                 return True
             if token in {b"std", b"tokio"} and next_token == b"process":
@@ -293,15 +335,15 @@ def opaque_search_authority(source: bytes, node: Any) -> bool:
                 if (
                     len(following) == 2
                     and following[0].type == "::"
-                    and text(source, following[1]) == b"Command"
+                    and identifier(source, following[1]) == b"Command"
                 ):
                     return True
-                if index > 0 and text(source, children[index - 1]) == b"use":
+                if index > 0 and identifier(source, children[index - 1]) == b"use":
                     return True
             if token == b"Command" and next_token == b"new":
                 return True
         if token in {b"ciborium", b"git2", b"tree_sitter", b"tree_sitter_language_pack"}:
-            previous = [text(source, item) for item in children[max(0, index - 2) : index]]
+            previous = [identifier(source, item) for item in children[max(0, index - 2) : index]]
             if b"use" in previous or previous == [b"extern", b"crate"]:
                 return True
     return False
@@ -329,7 +371,7 @@ def opaque_macro_contains_policy_syntax(
         if include_search_plane and opaque_search_authority(source, node):
             return True
         if node.type == "identifier":
-            token = text(source, node)
+            token = identifier(source, node)
             if token == b"or_else":
                 return True
             if token in {b"is_ok", b"is_err"}:
@@ -410,7 +452,7 @@ def scan_source(
             elif node.type == "extern_crate_declaration":
                 name = node.child_by_field_name("name")
                 if name is not None:
-                    if rule := search_plane_path_rule((text(source, name),)):
+                    if rule := search_plane_path_rule((identifier(source, name),)):
                         findings.append((node.start_point.row + 1, rule))
             elif node.type in {"scoped_identifier", "scoped_type_identifier"}:
                 if rule := search_plane_path_rule(path_segments(source, node)):
