@@ -93,11 +93,9 @@ pub fn diagnostic_value(
     for task in &pack.tasks {
         for route in routes {
             let key = (task.task_id.clone(), (*route).to_string());
-            let outcome = outcomes
-                .get(&key)
-                .ok_or_else(|| {
-                    BenchError::Protocol("diagnostic outcome disappeared".to_string())
-                })?;
+            let outcome = outcomes.get(&key).ok_or_else(|| {
+                BenchError::Protocol("diagnostic outcome disappeared".to_string())
+            })?;
             let record_row = normalized.get(&key).copied().ok_or_else(|| {
                 BenchError::Protocol("diagnostic record result disappeared".to_string())
             })?;
@@ -148,34 +146,57 @@ pub fn diagnostic_value(
                                 "diagnostic hit has invalid identity or score".to_string(),
                             ));
                         }
-                        let scored = &record_candidates[position];
+                        let scored = record_candidates.get(position).ok_or_else(|| {
+                            BenchError::Protocol("record candidate disappeared".to_string())
+                        })?;
                         let rank = position.checked_add(1).ok_or_else(|| {
                             BenchError::Protocol("diagnostic rank overflow".to_string())
                         })?;
                         let path = scored.get("path").and_then(Value::as_str).ok_or_else(|| {
                             BenchError::Protocol("record candidate path is malformed".to_string())
                         })?;
-                        let start_line = scored
+                        let start_line_value = scored
                             .get("start_line")
                             .and_then(Value::as_u64)
-                            .and_then(|line| u32::try_from(line).ok())
-                            .filter(|line| *line > 0)
                             .ok_or_else(|| {
                                 BenchError::Protocol(
                                     "record candidate start line is malformed".to_string(),
                                 )
                             })?;
-                        let end_line = scored
+                        let start_line = u32::try_from(start_line_value).map_err(|error| {
+                            BenchError::Protocol(format!(
+                                "record candidate start line is out of range: {error}"
+                            ))
+                        })?;
+                        if start_line == 0 {
+                            return Err(BenchError::Protocol(
+                                "record candidate start line is zero".to_string(),
+                            ));
+                        }
+                        let end_line_value = scored
                             .get("end_line")
                             .and_then(Value::as_u64)
-                            .and_then(|line| u32::try_from(line).ok())
-                            .filter(|line| *line >= start_line)
                             .ok_or_else(|| {
                                 BenchError::Protocol(
                                     "record candidate end line is malformed".to_string(),
                                 )
                             })?;
-                        if scored.get("rank").and_then(Value::as_u64) != u64::try_from(rank).ok()
+                        let end_line = u32::try_from(end_line_value).map_err(|error| {
+                            BenchError::Protocol(format!(
+                                "record candidate end line is out of range: {error}"
+                            ))
+                        })?;
+                        if end_line < start_line {
+                            return Err(BenchError::Protocol(
+                                "record candidate end line precedes start line".to_string(),
+                            ));
+                        }
+                        let rank_u64 = u64::try_from(rank).map_err(|error| {
+                            BenchError::Protocol(format!(
+                                "diagnostic rank is out of range: {error}"
+                            ))
+                        })?;
+                        if scored.get("rank").and_then(Value::as_u64) != Some(rank_u64)
                             || path != hit.path
                         {
                             return Err(BenchError::Protocol(format!(
