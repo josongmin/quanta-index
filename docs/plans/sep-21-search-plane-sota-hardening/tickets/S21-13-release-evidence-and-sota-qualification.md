@@ -2,15 +2,15 @@
 
 Status: infrastructure implemented; final qualification blocked.
 
-2026-09-24 adversarial plan correction: `write-proof-manifest.py` accepts
-terminal status/counts and host profile from the terminal input; the checker
-validates schema/arithmetic and archived file digests but does not derive
-the claimed test outcome from the archived runner result or independently
-attest host class. The release workflow also accepts a caller-supplied
-proof-bundle run ID without verifying trusted producer identity. Thus an
-issued `passed` manifest is not by itself a trustworthy execution receipt.
-Before final proof issuance, implement the common result/host/producer
-authority in [R0](FINAL-RESIDUAL-EXECUTION-PLAN.md#r0--establish-the-proof-result-authority-before-release-claims).
+2026-09-24 adversarial audit found self-reported terminal test counts.
+The current checker derives passed test counts and target coverage from archived
+Nextest or pytest runner results plus collection inventories. This closes the
+arbitrary-log/count path for those registered test proofs. The terminal still
+supplies its host profile, and issuance does not attest every recipe subcommand
+or bind a downloaded CI proof bundle to a trusted producing run. An issued
+`passed` test manifest alone is therefore not release qualification. Complete
+the remaining host, command, and producer authority in
+[R0](FINAL-RESIDUAL-EXECUTION-PLAN.md#r0--establish-the-proof-result-authority-before-release-claims).
 Keep this as one proof-plane fix; do not implement bespoke parsers in every
 P03-P11 lane. Historical P00/P01/P02A/P02B/P02I/P11 handoffs are currently
 absent; recover authentic records or revise the acceptance contract, never
@@ -20,9 +20,10 @@ Phase A status: `done` for the M0 foundation gate. Registry-driven atomic manife
 Git-visible-untracked source binding, conditional non-binary semantics, exact-pair binding, blocking P00 validation
 and the fail-closed aggregate release command are implemented. The P12A aggregate
 schema, writer, validator, handoff-DAG checks, and final recipe are also present
-in source. P12A's exact-source receipt and the P12Q release receipt are absent;
-P12Q remains staged in the registry. Code presence does not qualify the product
-or the release.
+in source. P12A can issue an exact-source receipt independently of P11; its
+current alias is a generated runtime artifact, so validate it at the target
+HEAD rather than inferring its presence from this document. P12Q remains staged
+in the registry. Code presence does not qualify the product or the release.
 
 2026-09-24 clean-source local checkpoint at Quanta
 `7dec59654564412d2265e5ee46339ae3218c756b`, before the later RepoMap
