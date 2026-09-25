@@ -16,6 +16,19 @@ then writes both candidates after both pass. Review and commit remain manual.
 The preflight hostname digest was also aligned with Rust `HostV1`'s
 domain-separated framing; raw SHA-256 was incompatible with exact host matching.
 
+At clean shared `main` `dad270f13fced316ead544f55eaab9be3fd300a2`, the
+nine-file benchmark-control pytest selection passed 157/157. Raw output:
+`artifacts/qualification/topt-2026-09-25/benchmark-python-dad270f1.log`,
+SHA-256 `edf2773ee693b73f04fc5027631c92c45c3f5f7319196d67b23fa5873738b9b6`.
+Ruff lint/format and `git diff --check` passed. A real `benchctl run
+dsl-authority --admit-baseline` on macOS exited 1 with
+`unsupported_host expected_os=linux actual_os=darwin` before producers; the
+isolated checkout's receipt is `artifacts/benchmark-receipts/dsl-authority/preflight.json`, SHA-256
+`81cab82ab040b294c6ef554cb70c15aa1f73c4c78740ebbf0b6bbd57b4edcb4b`.
+The local timing host still had load averages 57.21/63.05/67.65 and used
+20,150.81 MiB of 21,504 MiB swap, so no Rust-wide or performance run was
+admitted. These are Python control-plane results, not performance evidence.
+
 This removes the replayable standalone promotion path, not the need for a
 quiet canonical Linux run. File timestamps and local receipts are not
 cryptographic attestation against a malicious local writer. Preflight and
@@ -202,12 +215,12 @@ nor that overlay inherits the `37b9b4b7` partial result.
 
 ## Remaining work, in dependency order
 
-1. Finish or stop the foreign host builds through their owners; do not kill
+1. Obtain a quiet host through the owners of the foreign builds; do not kill
    other tasks from this ticket. Confirm normal launch of generated Rust
    build-script binaries before retrying a wide Cargo gate. `_dyld_start`
    stalling is an observed symptom, not a proven root cause.
-2. Freeze one clean committed source after the shared dirty overlay is resolved
-   by its owners. Run exact-source `just rust-profile verify-rust`,
+2. Shared `main` is clean at `dad270f1`; freeze the selected qualification
+   revision and run exact-source `just rust-profile verify-rust`,
    `QUANTA_INDEX_TEST_THREADS=1 just rust-profile test-daemon-all`, and the
    public API/fuzz rails required by changed IPC/SDK surfaces. Retain raw
    command results, source/config identity, selector counts, and artifacts.
