@@ -4,9 +4,11 @@
 )]
 
 use std::num::NonZeroU64;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Barrier};
+use std::sync::{Arc, Barrier, Mutex, mpsc};
 use std::thread;
+use std::time::Duration;
 
 use quanta_index_contract::{
     GenerationSnapshot, ManifestGeneration, RepoId, RevisionId,
@@ -17,6 +19,7 @@ use tempfile::tempdir;
 
 use crate::readiness::activation_catalog::ActivationCatalog;
 use crate::readiness::auxiliary_store::AuxiliaryAuthorityStore;
+use crate::readiness::durable_fs::ParentDirectorySyncPort;
 use crate::readiness::search_corpus_generation::{
     PreparedSearchCorpusGenerationV1, SearchCorpusGenerationV1,
 };
@@ -26,6 +29,50 @@ use crate::readiness::tests::support::{
     search_corpus_retention,
 };
 use crate::search_corpus_lifecycle::SearchCorpusPairMutationCoordinator;
+
+/// Hold the post-rename parent sync so readers can inspect the unpublished head.
+#[derive(Debug)]
+struct BlockingParentSync {
+    target_parent: PathBuf,
+    armed: AtomicBool,
+    entered: mpsc::Sender<()>,
+    release: Mutex<mpsc::Receiver<()>>,
+}
+
+impl BlockingParentSync {
+    fn new(target_parent: &Path) -> (Arc<Self>, mpsc::Receiver<()>, mpsc::Sender<()>) {
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        (
+            Arc::new(Self {
+                target_parent: target_parent.to_path_buf(),
+                armed: AtomicBool::new(false),
+                entered: entered_tx,
+                release: Mutex::new(release_rx),
+            }),
+            entered_rx,
+            release_tx,
+        )
+    }
+}
+
+impl ParentDirectorySyncPort for BlockingParentSync {
+    fn sync_parent(&self, parent: &Path) -> std::io::Result<()> {
+        if parent == self.target_parent && self.armed.swap(false, Ordering::SeqCst) {
+            self.entered.send(()).map_err(|error| {
+                std::io::Error::other(format!("lost parent-sync observer: {error}"))
+            })?;
+            self.release
+                .lock()
+                .map_err(|_| std::io::Error::other("parent-sync release lock poisoned"))?
+                .recv_timeout(Duration::from_secs(10))
+                .map_err(|error| {
+                    std::io::Error::other(format!("parent-sync release timed out: {error}"))
+                })?;
+        }
+        std::fs::File::open(parent)?.sync_all()
+    }
+}
 
 #[test]
 #[expect(
@@ -487,6 +534,108 @@ fn activation_catalog_concurrent_cas_promotions_select_one_composite_winner() ->
         semantic.manifest_digest,
         winner.generation.semantic.manifest_digest
     );
+    Ok(())
+}
+
+#[test]
+fn activation_query_sees_old_pair_until_parent_sync_completes() -> TestResult {
+    let dir = tempdir()?;
+    let initial_catalog = ActivationCatalog::open(dir.path())?;
+    let initial = corpus_generation(17, "digest-17")?;
+    drop(
+        initial_catalog.activate_prepared_search_corpus_generation_v1(
+            &PreparedSearchCorpusGenerationV1::new(initial.clone(), None)?,
+        )?,
+    );
+
+    let (sync, entered, release) = BlockingParentSync::new(dir.path());
+    let catalog = Arc::new(ActivationCatalog::open_with_parent_sync(
+        dir.path(),
+        SearchCorpusPairMutationCoordinator::shared(),
+        sync.clone(),
+    )?);
+    let promoted = corpus_generation(18, "digest-18")?;
+    let prepared = PreparedSearchCorpusGenerationV1::new(
+        promoted.clone(),
+        Some(active_head(&catalog, &initial)?),
+    )?;
+    sync.armed.store(true, Ordering::SeqCst);
+    let writer = Arc::clone(&catalog);
+    let mutation =
+        thread::spawn(move || writer.activate_prepared_search_corpus_generation_v1(&prepared));
+    entered.recv_timeout(Duration::from_secs(10))?;
+
+    // Rename is complete, but the parent sync has not acknowledged durability.
+    for track in [
+        SearchPlaneTrackKind::Lexical,
+        SearchPlaneTrackKind::Semantic,
+    ] {
+        let visible = catalog.resolve_record(initial.repo_id(), initial.revision_id(), track)?;
+        assert_eq!(visible.manifest_generation, initial.manifest_generation());
+        assert_eq!(visible.manifest_digest, initial.manifest_digest());
+    }
+    release.send(())?;
+    let receipt = mutation
+        .join()
+        .map_err(|_| "activation thread panicked")??;
+    assert_eq!(receipt.active.generation, promoted.to_contract_v1());
+    for track in [
+        SearchPlaneTrackKind::Lexical,
+        SearchPlaneTrackKind::Semantic,
+    ] {
+        let visible = catalog.resolve_record(initial.repo_id(), initial.revision_id(), track)?;
+        assert_eq!(visible.manifest_generation, promoted.manifest_generation());
+        assert_eq!(visible.manifest_digest, promoted.manifest_digest());
+    }
+    Ok(())
+}
+
+#[test]
+fn rollback_query_sees_old_pair_until_parent_sync_completes() -> TestResult {
+    let dir = tempdir()?;
+    let initial_catalog = ActivationCatalog::open(dir.path())?;
+    let initial = corpus_generation(17, "digest-17")?;
+    drop(
+        initial_catalog.activate_prepared_search_corpus_generation_v1(
+            &PreparedSearchCorpusGenerationV1::new(initial.clone(), None)?,
+        )?,
+    );
+
+    let (sync, entered, release) = BlockingParentSync::new(dir.path());
+    let catalog = Arc::new(ActivationCatalog::open_with_parent_sync(
+        dir.path(),
+        SearchCorpusPairMutationCoordinator::shared(),
+        sync.clone(),
+    )?);
+    let target = corpus_generation(16, "digest-16")?;
+    let request = SearchPlaneRollbackSearchCorpusGenerationCasRequest {
+        expected_active: active_head(&catalog, &initial)?,
+        target: target.to_contract_v1(),
+    };
+    sync.armed.store(true, Ordering::SeqCst);
+    let writer = Arc::clone(&catalog);
+    let mutation = thread::spawn(move || writer.rollback(&request));
+    entered.recv_timeout(Duration::from_secs(10))?;
+
+    for track in [
+        SearchPlaneTrackKind::Lexical,
+        SearchPlaneTrackKind::Semantic,
+    ] {
+        let visible = catalog.resolve_record(initial.repo_id(), initial.revision_id(), track)?;
+        assert_eq!(visible.manifest_generation, initial.manifest_generation());
+        assert_eq!(visible.manifest_digest, initial.manifest_digest());
+    }
+    release.send(())?;
+    let receipt = mutation.join().map_err(|_| "rollback thread panicked")??;
+    assert_eq!(receipt.active.generation, target.to_contract_v1());
+    for track in [
+        SearchPlaneTrackKind::Lexical,
+        SearchPlaneTrackKind::Semantic,
+    ] {
+        let visible = catalog.resolve_record(initial.repo_id(), initial.revision_id(), track)?;
+        assert_eq!(visible.manifest_generation, target.manifest_generation());
+        assert_eq!(visible.manifest_digest, target.manifest_digest());
+    }
     Ok(())
 }
 

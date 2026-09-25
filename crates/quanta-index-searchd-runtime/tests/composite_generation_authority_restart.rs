@@ -13,6 +13,8 @@
 
 use std::error::Error;
 use std::path::Path;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use quanta_index_contract::{
     SearchCorpusActiveHeadV1, SearchPlaneErrorCodeV2,
@@ -20,9 +22,9 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{CoreError, GenerationStorageKeyV1};
 use quanta_index_sdk::{
-    ChunkId, ChunkRecord, ConnectOptions, LanguageCode, ManifestGeneration, QuantaIndex, RepoId,
-    RepoRelativePath, RevisionId, SdkError, SearchCorpusBatch, SearchCorpusGenerationIdentityV1,
-    SearchPlaneTrackKind, SearchScopeKey, SearchScopeSurface,
+    ChunkId, ChunkRecord, ConnectOptions, GenerationPin, LanguageCode, ManifestGeneration,
+    QuantaIndex, RepoId, RepoRelativePath, RevisionId, SdkError, SearchCorpusBatch,
+    SearchCorpusGenerationIdentityV1, SearchPlaneTrackKind, SearchScopeKey, SearchScopeSurface,
 };
 use quanta_index_searchd_harness::E2eRuntime;
 
@@ -223,6 +225,54 @@ fn publish_two_generations(client: &QuantaIndex) -> Result<Activated, Box<dyn Er
     let g1 = publish_generation(client, G1, G1_DIGEST, None)?;
     let g2 = publish_generation(client, G2, G2_DIGEST, Some(g1.clone()))?;
     Ok(Activated { g0: None, g1, g2 })
+}
+
+/// Observe the released binary only through the SDK query front door.
+fn assert_lexical_generation(
+    client: &QuantaIndex,
+    raw_generation: u64,
+    pinned: bool,
+) -> TestResult {
+    let started = Instant::now();
+    let mut last_error = None;
+    while started.elapsed() < Duration::from_secs(30) {
+        let query = client
+            .lexical()
+            .query()
+            .native(format!("generation_{raw_generation}"));
+        let query = if pinned {
+            query.pinned(GenerationPin::new(
+                repo(),
+                revision(),
+                generation(raw_generation),
+            ))
+        } else {
+            query.active(repo(), revision())
+        };
+        match query.top_k(5).execute() {
+            Ok(response) => {
+                let expected_pin =
+                    GenerationPin::new(repo(), revision(), generation(raw_generation));
+                let expected_candidate = format!("chunk-generation-{raw_generation}");
+                if response.generation != expected_pin
+                    || response
+                        .results
+                        .first()
+                        .map(|candidate| candidate.candidate_id.as_str())
+                        != Some(expected_candidate.as_str())
+                {
+                    return Err(format!(
+                        "SDK query observed wrong generation or candidate: {response:?}"
+                    )
+                    .into());
+                }
+                return Ok(());
+            }
+            Err(error) => last_error = Some(error),
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    Err(format!("SDK query did not become ready: {last_error:?}").into())
 }
 
 fn publish_three_generations(client: &QuantaIndex) -> Result<Activated, Box<dyn Error>> {
@@ -470,6 +520,8 @@ fn real_child_process_restart_preserves_and_rolls_back_composite_generation_v1()
     if current_composite(&first_client)? != activated.g2.generation {
         return Err("child process did not activate exact G2 composite identity".into());
     }
+    assert_lexical_generation(&first_client, G2, false)?;
+    assert_lexical_generation(&first_client, G1, true)?;
     drop(first_client);
     first_process.stop()?;
 
@@ -478,10 +530,14 @@ fn real_child_process_restart_preserves_and_rolls_back_composite_generation_v1()
     if current_composite(&second_client)? != activated.g2.generation {
         return Err("child process restart did not recover exact G2 composite identity".into());
     }
+    assert_lexical_generation(&second_client, G2, false)?;
+    assert_lexical_generation(&second_client, G1, true)?;
     rollback_g2_to_g1(&second_client, &activated)?;
     if current_composite(&second_client)? != activated.g1.generation {
         return Err("child process rollback did not activate exact G1 composite identity".into());
     }
+    assert_lexical_generation(&second_client, G1, false)?;
+    assert_lexical_generation(&second_client, G2, true)?;
     drop(second_client);
     second_process.stop()?;
 
@@ -492,6 +548,8 @@ fn real_child_process_restart_preserves_and_rolls_back_composite_generation_v1()
             "second child process restart did not preserve rolled-back G1 authority".into(),
         );
     }
+    assert_lexical_generation(&third_client, G1, false)?;
+    assert_lexical_generation(&third_client, G2, true)?;
     drop(third_client);
     third_process.stop()
 }
