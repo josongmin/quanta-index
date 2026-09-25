@@ -154,6 +154,16 @@ def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _python_target_has_passed_case(path: str, passed_cases: set[tuple[str, str]]) -> bool:
+    """Bind a Python target to the complete JUnit module path, not its basename."""
+    if not path.startswith("tools/ci/tests/test_") or not path.endswith(".py"):
+        raise ValueError(f"invalid Python test target path: {path!r}")
+    module = path[:-3].replace("/", ".")
+    return any(
+        runner == "pytest-junit" and name.startswith(f"{module}.") for runner, name in passed_cases
+    )
+
+
 def _just_recipe_body(root: Path, recipe: str) -> str | None:
     lines = (root / "Justfile").read_text(encoding="utf-8").splitlines()
     header = re.compile(rf"^{re.escape(recipe)}(?:\s+[^:]*)?:\s*(?:#.*)?$")
@@ -1676,11 +1686,7 @@ def check_manifest(
                             for runner, name in passed_cases
                         )
                     else:
-                        covered = any(
-                            runner == "pytest-junit"
-                            and (f".{binary}." in name or name.startswith(f"{binary}."))
-                            for runner, name in passed_cases
-                        )
+                        covered = _python_target_has_passed_case(target["path"], passed_cases)
                     if not covered:
                         raise ExecutionResultError(
                             f"registered test target has no passing runner case: {target_id}"

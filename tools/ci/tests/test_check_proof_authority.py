@@ -1287,6 +1287,22 @@ def test_python_proof_recipe_refuses_selection_narrowing(prefix: str, option: st
         assert not MODULE._recipe_selects_python_target(f"{valid} -q", path)
 
 
+def test_python_target_requires_exact_junit_module_path() -> None:
+    path = "tools/ci/tests/test_proof_execution_result.py"
+    module = "tools.ci.tests.test_proof_execution_result"
+    assert MODULE._python_target_has_passed_case(path, {("pytest-junit", f"{module}.test_case")})
+    for case in (
+        "unrelated.test_proof_execution_result.test_case",
+        f"other.{module}.test_case",
+        f"{module}_copy.test_case",
+        f"{module}",
+    ):
+        assert not MODULE._python_target_has_passed_case(path, {("pytest-junit", case)})
+    assert not MODULE._python_target_has_passed_case(
+        path, {("nextest-jsonl", f"{module}.test_case")}
+    )
+
+
 def test_p12a_registry_refuses_last_failed_recipe(monkeypatch) -> None:
     registry = MODULE._read_toml(REGISTRY_PATH)
     authority = MODULE._read_toml(REPO_ROOT / "tools/ci/test-authority.toml")
