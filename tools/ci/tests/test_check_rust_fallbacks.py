@@ -84,11 +84,30 @@ class RustFallbackTest(unittest.TestCase):
     let _ = result.or_else(|_| -> Result<(), ()> { Ok(()) });
     let _ = result.or_else(|error| Err(error));
     let _ = result.or_else(|_| (Ok(())));
+    let _ = result.or_else((|_| Ok(())));
+    let _ = result.or_else({ |_| Ok(()) });
+    let _ = result.or_else::<_, ()>(|_| Ok(()));
 }
 """
         self.assertEqual(
             scan(source),
-            [(2, LINT.RULE_OR_ELSE), (3, LINT.RULE_OR_ELSE), (5, LINT.RULE_OR_ELSE)],
+            [(line, LINT.RULE_OR_ELSE) for line in (2, 3, 5, 6, 7, 8)],
+        )
+
+    def test_typed_and_qualified_result_ok(self) -> None:
+        source = """fn f(result: Result<(), ()>) {
+    let _ = result.or_else(|_| Ok::<(), ()>(()));
+    let _ = result.or_else(|_| Result::Ok(()));
+    let _ = result.or_else(|_| Result::<(), ()>::Ok(()));
+    let _ = result.or_else(|_| std::result::Result::Ok(()));
+    let _ = result.or_else(|_| core::result::Result::Ok(()));
+    let _ = result.or_else(|_| Foo::Ok(()));
+    let _ = result.or_else(|_| { return Result::Ok(()); });
+}
+"""
+        self.assertEqual(
+            scan(source),
+            [(line, LINT.RULE_OR_ELSE) for line in (2, 3, 4, 5, 6, 8)],
         )
 
     def test_trailing_comments_do_not_hide_ok(self) -> None:
@@ -125,6 +144,27 @@ class RustFallbackTest(unittest.TestCase):
     def test_parse_error_over_governed_syntax_fails_closed(self) -> None:
         with self.assertRaisesRegex(ValueError, "parse error"):
             scan("fn f() { let _ = bad.or_else(|_| Ok(()); }")
+
+    def test_opaque_macro_fallback_is_not_silent_pass(self) -> None:
+        for source in (
+            "fn f(r: Result<(), ()>) { passthrough!{ r.or_else(|_| Ok(())) } }",
+            "fn f(r: Result<(), ()>) { choice!{ if r.is_ok() { a(); } else { b(); } } }",
+            "macro_rules! fallback { ($r:expr) => { $r.or_else(|_| Ok(())) }; }",
+        ):
+            with (
+                self.subTest(source=source),
+                self.assertRaisesRegex(ValueError, "opaque Rust macro"),
+            ):
+                scan(source)
+
+    def test_macro_strings_and_assertions_are_not_blocked(self) -> None:
+        source = """fn f(result: Result<(), ()>) {
+    println!("if result.is_ok() { fallback(); } else { serve(); }");
+    assert!(result.is_ok());
+    check!{ if result.is_err() { return Err(()); } }
+}
+"""
+        self.assertEqual(scan(source), [])
 
 
 if __name__ == "__main__":

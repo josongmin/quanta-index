@@ -52,22 +52,56 @@ def unwrap_parens(node: Any) -> Any | None:
     return node
 
 
+def unwrap_generic_function(node: Any) -> Any | None:
+    while node is not None and node.type == "generic_function":
+        node = node.child_by_field_name("function")
+    return node
+
+
+def path_segments(source: bytes, part: Any) -> tuple[bytes, ...]:
+    if part.type in {"identifier", "type_identifier"}:
+        return (text(source, part),)
+    if part.type == "generic_type":
+        base = part.child_by_field_name("type")
+        return path_segments(source, base) if base is not None else ()
+    if part.type in {"scoped_identifier", "scoped_type_identifier"}:
+        base = part.child_by_field_name("path")
+        final = part.child_by_field_name("name")
+        if base is not None and final is not None:
+            return path_segments(source, base) + (text(source, final),)
+    return ()
+
+
 def call_name(source: bytes, node: Any, name: bytes) -> bool:
     node = unwrap_parens(node)
-    return (
-        node is not None
-        and node.type == "call_expression"
-        and (function := node.child_by_field_name("function")) is not None
-        and function.type == "identifier"
-        and text(source, function) == name
-    )
+    if node is None or node.type != "call_expression":
+        return False
+    function = unwrap_generic_function(node.child_by_field_name("function"))
+    if function is None:
+        return False
+    if function.type == "identifier":
+        return text(source, function) == name
+    if function.type != "scoped_identifier":
+        return False
+    variant = function.child_by_field_name("name")
+    path = function.child_by_field_name("path")
+    if variant is None or path is None or text(source, variant) != name:
+        return False
+
+    # Only the standard Result::Ok constructor is a success conversion.
+    # A domain enum's Foo::Ok must not be interpreted as Result::Ok.
+    return path_segments(source, path) in {
+        (b"Result",),
+        (b"std", b"result", b"Result"),
+        (b"core", b"result", b"Result"),
+    }
 
 
 def method_call(source: bytes, node: Any, name: bytes) -> Any | None:
     node = unwrap_parens(node)
     if node is None or node.type != "call_expression":
         return None
-    function = node.child_by_field_name("function")
+    function = unwrap_generic_function(node.child_by_field_name("function"))
     arguments = node.child_by_field_name("arguments")
     if function is None or function.type != "field_expression" or arguments is None:
         return None
@@ -96,6 +130,12 @@ def checked_width(source: bytes, receiver: Any) -> bool:
 
 
 def closure_returns_ok(source: bytes, closure: Any) -> bool:
+    closure = unwrap_parens(closure)
+    if closure is not None and closure.type == "block":
+        children = semantic_children(closure)
+        closure = unwrap_parens(children[-1]) if children else None
+    if closure is None:
+        return False
     if closure.type != "closure_expression":
         return False
     body = closure.child_by_field_name("body")
@@ -123,6 +163,31 @@ def closure_returns_ok(source: bytes, closure: Any) -> bool:
     return call_name(source, body, b"Ok")
 
 
+def opaque_macro_contains_policy_syntax(source: bytes, macro: Any) -> bool:
+    # A token tree is not a Rust expression AST. Inspect actual identifier/if
+    # tokens, not raw bytes, so strings and comments do not create blockers.
+    stack = list(macro.named_children[1:])
+    has_if = False
+    has_else = False
+    has_predicate = False
+    while stack:
+        node = stack.pop()
+        if node.type in {"line_comment", "block_comment", "string_literal"}:
+            continue
+        if node.type == "identifier":
+            token = text(source, node)
+            if token == b"or_else":
+                return True
+            if token in {b"is_ok", b"is_err"}:
+                has_predicate = True
+            if token == b"else":
+                has_else = True
+        elif node.type == "if":
+            has_if = True
+        stack.extend(node.children)
+    return has_if and has_else and has_predicate
+
+
 def scan_source(source: bytes, parser: Any) -> list[tuple[int, str]]:
     if not TOKEN_RE.search(source):
         return []
@@ -145,6 +210,12 @@ def scan_source(source: bytes, parser: Any) -> list[tuple[int, str]]:
     stack = [root]
     while stack:
         node = stack.pop()
+        if node.type in {"macro_invocation", "macro_definition"}:
+            if opaque_macro_contains_policy_syntax(source, node):
+                raise ValueError(
+                    f"fallback syntax inside opaque Rust macro at line {node.start_point.row + 1}"
+                )
+            continue
         stack.extend(reversed(node.named_children))
         if node.type == "if_expression":
             alternative = node.child_by_field_name("alternative")
