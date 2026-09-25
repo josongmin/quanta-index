@@ -2,6 +2,49 @@
 
 Status: `BLOCKED` for current-source Rust qualification and performance evidence.
 
+## Sep 25 current-head overload guard
+
+At clean `5925a9b4b44968c19d91745482d5f60ccd851528`, the timing preflight
+returned exit 0 and `status=clean` with no foreign Rust process, despite a
+one-minute load of 51.44 on 16 logical CPUs. Raw preflight receipt:
+`/tmp/qi-topt-current-preflight-5925a9b4.json`, SHA-256
+`677596af9ec010aa6e92d94c844764012ac0cf311e3b5d8fd3f627321b15a69f`.
+This was a live false admission of an obviously overloaded host; the existing
+process-only guard was insufficient.
+
+Commit `547202fd1341b8e94c8c90c0ebdb188c5bb54dc1` in a clean isolated
+checkout adds a conservative one-minute-load ceiling of half the logical CPU
+count. Missing or malformed load authority is an error. The preflight's exit
+code, console verdict, and receipt now derive from one status. Both benchmark
+profile execution and DSL baseline admission recompute and check the load
+evidence, so a forged `clean` status over an overloaded host is refused.
+
+- `VERIFIED`: nine-file benchmark-control pytest selection exited 0, 148/148
+  passed on clean `547202fd`. Raw output:
+  `artifacts/qualification/topt-2026-09-25/benchmark-python-547202fd.log`,
+  SHA-256 `5846a86325732a7f286cbb5c5eb596cbcd7d40316d755c307271fdb3c32c9f5b`.
+- `VERIFIED`: `just rust-policy` exited 0 on the same source. Raw output:
+  `artifacts/qualification/topt-2026-09-25/rust-policy-547202fd.log`,
+  SHA-256 `c57495412c20b981f0eac8a03cb25d3308504d08f0accd411aa0f14881a84cff`.
+  It reported registry-only proof authority and zero benchmark artifacts; it
+  does not establish execution qualification.
+- `BLOCKED`: the exact preflight at `547202fd` exited 1, recording six foreign
+  Rust processes and one-minute load 63.72 against limit 8. Raw output and
+  receipt: `artifacts/qualification/topt-2026-09-25/timing-preflight-547202fd.log`
+  (SHA-256 `5d10cd72c36cf3d87697d84ec65be78b30459f0cb600010ff2fecdd494f58256`)
+  and `timing-preflight-547202fd.json` (SHA-256
+  `f4dfc8eaf4ba541aa00bd49661d60be65be4979fbb753fc059a8fb1d7ed25595`).
+  No timing samples were admitted.
+- `NOT_RUN`: full `verify-rust`, daemon-all, and source-triggered public
+  API/fuzz rails at this source. This Python timing-control repair does not
+  change Rust, IPC, or SDK surfaces, but earlier unqualified source drift
+  still prevents a current-head code-qualification claim.
+
+The load ceiling rejects obvious overcommit; it does not monitor contention
+after preflight or create a quiet-host measurement. TOPT-00 and TOPT-08 remain
+open for source-bound execution, the retrospective paired protocol, and an
+explicit decision on the irrecoverable pre-implementation admission record.
+
 ## Sep 25 follow-up — fail-closed timing snapshot
 
 At clean isolated `f7b10d6340d7e957f761736e482b4d704209bab9`

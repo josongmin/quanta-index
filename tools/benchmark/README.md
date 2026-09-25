@@ -18,6 +18,12 @@ can write timing-bearing evidence.
 dsl-authority`; authority comparison accepts no fewer than 20 cold samples.
 `benchctl run` requires declared baselines before starting a comparison run and
 requires a clean host preflight receipt; contention overrides are diagnostic.
+The preflight also refuses missing load data or a one-minute load average at or
+above half the logical CPU count. This is a conservative overload guard, not
+proof that the host stayed isolated throughout a run. Baseline admission and
+profile execution independently recompute the load guard instead of trusting
+the receipt's `clean` status string. Old receipts without load evidence cannot
+be used for new baseline admission.
 The integration summary independently validates its required artifacts before
 writing a green aggregate.
 For local PREP after benchmark-control-plane changes, run
