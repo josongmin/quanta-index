@@ -791,7 +791,9 @@ fn populate_over_maximum_runtime(rt: &mut E2eRuntime) -> Result<GenerationPin, B
         let ids = rt
             .ingest_text_files_one_batch(batch)
             .map_err(|error| format!("over-maximum fixture ingest batch {batch_index}: {error}"))?;
-        ingested_rows += ids.len();
+        ingested_rows = ingested_rows
+            .checked_add(ids.len())
+            .ok_or("over-maximum fixture row count overflow")?;
     }
     if ingested_rows != usize::try_from(OVER_MAXIMUM_ROWS)? {
         return Err(format!("over-maximum fixture ingested {ingested_rows} rows").into());
@@ -818,7 +820,7 @@ fn populate_over_maximum_runtime(rt: &mut E2eRuntime) -> Result<GenerationPin, B
 #[test]
 fn the_public_maximum_reports_the_continuation_over_ten_thousand_and_one_rows() -> TestResult {
     let (mut rt, pin) = over_maximum_runtime()?;
-    let scenario_result = check_public_maximum_continuation(&mut rt, pin);
+    let scenario_result = check_public_maximum_continuation(&mut rt, &pin);
     let teardown_result = rt.stop();
     match (scenario_result, teardown_result) {
         (Ok(()), Ok(())) => Ok(()),
@@ -831,7 +833,7 @@ fn the_public_maximum_reports_the_continuation_over_ten_thousand_and_one_rows() 
     }
 }
 
-fn check_public_maximum_continuation(rt: &mut E2eRuntime, pin: GenerationPin) -> TestResult {
+fn check_public_maximum_continuation(rt: &mut E2eRuntime, pin: &GenerationPin) -> TestResult {
     let rows = usize::try_from(OVER_MAXIMUM_ROWS)?;
     let maximum = usize::try_from(PUBLIC_TOP_K_MAX)?;
     for route in ROUTES

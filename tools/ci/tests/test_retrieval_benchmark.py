@@ -1714,6 +1714,27 @@ def test_process_tree_resource_sampler_counts_children_and_kills_timeout(tmp_pat
     )
 
 
+@pytest.mark.skipif(sys.platform == "linux", reason="legacy ps sampler is not Linux owner evidence")
+def test_process_tree_sampler_excludes_zombie_processes(monkeypatch):
+    snapshot = """\
+100 50 1024 1.0 S quanta-runner
+101 100 2048 2.0 S searchd
+102 100 0 0.0 Z <defunct>
+103 102 4096 3.0 S zombie-child
+104 100 0 0.0 S startup-child
+105 104 4096 3.0 S startup-descendant
+"""
+    monkeypatch.setattr(
+        pairrun.subprocess,
+        "check_output",
+        lambda *_args, **_kwargs: snapshot,
+    )
+
+    sample = pairrun._process_tree_sample(100)
+
+    assert [process["pid"] for process in sample] == [100, 101]
+
+
 @pytest.mark.skipif(
     pairrun.platform.system() != "Darwin" or not pairrun.SANDBOX_EXEC.is_file(),
     reason="macOS Seatbelt backend is unavailable",

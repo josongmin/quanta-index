@@ -207,27 +207,36 @@ def validate_qualified_speed_spec(spec: dict, task_count: int) -> None:
 def _process_tree_sample(root_pid: int) -> list[dict]:
     """Return one owned-process-tree RSS/CPU sample."""
     output = subprocess.check_output(
-        ["ps", "-axo", "pid=,ppid=,rss=,pcpu=,comm="],
+        ["ps", "-axo", "pid=,ppid=,rss=,pcpu=,stat=,comm="],
         text=True,
         stderr=subprocess.STDOUT,
     )
-    rows: dict[int, tuple[int, int, float, str]] = {}
+    rows: dict[int, tuple[int, int, float, str, str]] = {}
     for line in output.splitlines():
-        fields = line.split(maxsplit=4)
-        if len(fields) != 5:
+        fields = line.split(maxsplit=5)
+        if len(fields) != 6:
             continue
         try:
             pid, ppid, rss_kib = (int(field) for field in fields[:3])
             cpu_percent = float(fields[3])
         except ValueError:
             continue
-        if pid > 0 and ppid >= 0 and rss_kib >= 0 and math.isfinite(cpu_percent):
-            rows[pid] = (ppid, rss_kib, max(cpu_percent, 0.0), fields[4])
+        state, command = fields[4], fields[5]
+        if (
+            pid > 0
+            and ppid >= 0
+            and rss_kib >= 0
+            and math.isfinite(cpu_percent)
+            and rss_kib > 0
+            and state
+            and not state.startswith("Z")
+        ):
+            rows[pid] = (ppid, rss_kib, max(cpu_percent, 0.0), state, command)
     owned = {root_pid}
     changed = True
     while changed:
         changed = False
-        for pid, (ppid, _rss, _cpu, _command) in rows.items():
+        for pid, (ppid, _rss, _cpu, _state, _command) in rows.items():
             if pid not in owned and ppid in owned:
                 owned.add(pid)
                 changed = True
@@ -237,7 +246,7 @@ def _process_tree_sample(root_pid: int) -> list[dict]:
             "ppid": rows[pid][0],
             "rss_bytes": rows[pid][1] * 1024,
             "cpu_percent": rows[pid][2],
-            "command": rows[pid][3],
+            "command": rows[pid][4],
         }
         for pid in sorted(owned)
         if pid in rows

@@ -3,7 +3,7 @@
 > Status: `Historical archive. Not current-tree authority after the 2026-05-27 de-channelize cutover.`
 > Owners: producer-side lead (`semantica-codegraph-v2`), search-side lead (this repo).
 > Parent SSOT: [channel-architecture.md](channel-architecture.md) (historical parent; this doc extends its archived channel op catalogue).
-> Posture: **breaking-first** per [../../CLAUDE.md](../../CLAUDE.md) § Agent change posture. No long-lived shims.
+> Posture: **breaking-first** per [AGENT_CORE.md](../../AGENT_CORE.md) § Design Defaults. No long-lived shims.
 
 Current-tree note (2026-05-27):
 
@@ -60,7 +60,7 @@ PublishStructuralBatch}` plus the persisted authority stores in
 | Authoritativeness | This doc is the single source of truth for the wire shape, emission ordering, and error semantics of every op listed in §3. Downstream ticket specs ([LEX-05](../plans/may-24-lexical-indexing-sourcegraph/tickets/LEX-05.md), [LEX-07](../plans/may-24-lexical-indexing-sourcegraph/tickets/LEX-07.md), [STR-01](../plans/may-24-lexical-indexing-sourcegraph/tickets/STR-01.md), [RT-01](../plans/may-24-lexical-indexing-sourcegraph/tickets/RT-01.md)) reference this doc; conflicts resolve in favour of this doc. |
 | Trigger | The producer-authorship correction in [INDEX.md §3.6](../plans/may-24-lexical-indexing-sourcegraph/tickets/INDEX.md) inverted four tickets to consume producer-emitted records. The 9 ops + 11 AMB-PROD-* questions in [INDEX.md §3.7](../plans/may-24-lexical-indexing-sourcegraph/tickets/INDEX.md) need a single coherent answer. This doc is it. |
 | Cutover gate | LEX-07 / RT-01 / STR-01 integration cutover is blocked on producer sign-off of this doc per §8. |
-| Posture | Breaking-first per [../../CLAUDE.md](../../CLAUDE.md). No long-lived compatibility shims; one canonical wire shape per generation; cross-team cutover is lock-step. |
+| Posture | Breaking-first per [AGENT_CORE.md](../../AGENT_CORE.md). No long-lived compatibility shims; one canonical wire shape per generation; cross-team cutover is lock-step. |
 
 ---
 
@@ -88,7 +88,7 @@ The following rule, locked in [channel-architecture.md §3.1](channel-architectu
 | Search plane shells out to `git log`, `git rev-parse`, `git diff` | history adapter | violates authorship rule; producer is git authority. |
 | Search plane runs `tree-sitter` against source | structural / symbol adapters | violates authorship rule; producer ships parse trees. |
 | Producer ships ready-made semantic vectors for serving | semantic adapter | violates the dense-owner rule; live semantic vectors are derived by the search plane from typed semantic sources. |
-| Heuristic best-effort "fill-in" when the producer record is absent | any adapter | violates [../../CLAUDE.md](../../CLAUDE.md) "no heuristic authority when the real authority is absent"; must surface typed `NotReady` instead. |
+| Heuristic best-effort "fill-in" when the producer record is absent | any adapter | violates [AGENT_CORE.md](../../AGENT_CORE.md) "Authority must be typed or explicit"; must surface typed `NotReady` instead. |
 | A second producer→search ingress channel (e.g. an `apply_changes` UDS IPC) | any | violates [channel-architecture.md §11 rule 6](channel-architecture.md) — `BundleChannelPublisher::publish` is the only ingress. |
 
 If any of these appear in a PR against this repo, the PR is defective; correct it before merge.
@@ -108,7 +108,7 @@ If any of these appear in a PR against this repo, the PR is defective; correct i
 
 ## 3. Op Catalogue
 
-For every op below: channel, wire shape, emission ordering guarantee, idempotency, error semantics. Wire shape is normative; producer encodes via CBOR-canonical (`ciborium` or equivalent). Search side decodes via hand-rolled serde per [../../CLAUDE.md](../../CLAUDE.md) D18 (no `#[derive(Serialize|Deserialize)]`).
+For every op below: channel, wire shape, emission ordering guarantee, idempotency, error semantics. Wire shape is normative; producer encodes via CBOR-canonical (`ciborium` or equivalent). Search side decodes via hand-rolled serde per [AGENT_RULE_CATALOG.md](../../AGENT_RULE_CATALOG.md) build hygiene (no `#[derive(Serialize|Deserialize)]`).
 
 ### 3.1 History Track — UpsertCommit / UpsertRef / UpsertTag / DeleteRef / DeleteTag
 
@@ -522,7 +522,7 @@ The producer MUST emit a single `wire_version` per `(repo, revision, generation)
 
 ### 5.3 Breaking changes
 
-Per [../../CLAUDE.md](../../CLAUDE.md) breaking-first posture:
+Per [AGENT_CORE.md](../../AGENT_CORE.md) breaking-first posture:
 
 | Rule | Action |
 |---|---|
@@ -587,7 +587,7 @@ Typed codes the search side raises against producer-emitted ops. Per [channel-ar
 
 ### 6.7 No silent skip
 
-Per [../../CLAUDE.md](../../CLAUDE.md) and [channel-architecture.md §4.6](channel-architecture.md): there is **no silent skip path** for any code above. Every rejected op surfaces a typed code on the observability rail, and either the channel cursor advances (semantic rejection) or the track is marked degraded (structural corruption). The producer is the single source of truth; correct behaviour is to republish a valid op.
+Per [AGENT_CORE.md](../../AGENT_CORE.md) and [channel-architecture.md §4.6](channel-architecture.md): there is **no silent skip path** for any code above. Every rejected op surfaces a typed code on the observability rail, and either the channel cursor advances (semantic rejection) or the track is marked degraded (structural corruption). The producer is the single source of truth; correct behaviour is to republish a valid op.
 
 ---
 
@@ -673,11 +673,11 @@ Once cutover is locked:
 
 ### 9.5 Agent posture and rules
 
-- [../../CLAUDE.md](../../CLAUDE.md) — Agent change posture, breaking-first, no silent failure, no heuristic authority, D18 (no serde derives).
+- [AGENT_CORE.md](../../AGENT_CORE.md) — breaking-first, explicit authority, and no silent failure; [AGENT_RULE_CATALOG.md](../../AGENT_RULE_CATALOG.md) — serde derive ban.
 - [../../AGENTS.md](../../AGENTS.md) — shared agent router.
 
 ### 9.6 Lint and CI
 
 - [../../tools/ci/lint/lint-doc-paths.py](../../tools/ci/lint/lint-doc-paths.py) — doc-link linter; this doc must pass with 0 broken links.
 - [../../tools/ci/semgrep/rules.yml](../../tools/ci/semgrep/rules.yml) — `rust-no-serde-derive` enforces D18 across the wire decoders that consume the shapes in §3.
-- [../../tools/ci/agent/agent_output.schema.json](../../tools/ci/agent/agent_output.schema.json) — structured agent output schema; integration claims tied to this doc are evidence-bound per [../../CLAUDE.md](../../CLAUDE.md) Verification rules.
+- [../../tools/ci/agent/agent_output.schema.json](../../tools/ci/agent/agent_output.schema.json) — structured agent output schema; integration claims tied to this doc are evidence-bound per [AGENTS.md](../../AGENTS.md) Verification Contract.

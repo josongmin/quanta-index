@@ -146,8 +146,9 @@ fn activate(
     let publish = RepoMapPublishBundleRequestV2::new(source.clone())
         .map_err(|error| CoreError::InvalidContract(error.to_string()))?;
     let _receipt = store.ingest_bundle_v2(&publish)?;
-    let request = RepoMapActivateGenerationRequestV2::for_bundle(&source)
+    let mut request = RepoMapActivateGenerationRequestV2::for_bundle(&source)
         .map_err(|error| CoreError::InvalidContract(error.to_string()))?;
+    request.expected_active = store.active_head_token(&repo(), &revision())?;
     Ok(store.activate_generation_v2(&request)?.mutation)
 }
 

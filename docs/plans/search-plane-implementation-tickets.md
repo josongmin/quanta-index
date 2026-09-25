@@ -25,7 +25,7 @@
 
 - No `Result::ok()`, no `unwrap_or*`, no silent default replacement on production paths ([clippy.toml](../../clippy.toml) `disallowed-methods`).
 - No empty-result fallback when authoritative source is absent (`CoreError::NotReady` instead of empty `Vec`).
-- No heuristic success path when an authoritative path is missing ([CLAUDE.md](../../CLAUDE.md) "Agent change posture").
+- No heuristic success path when an authoritative path is missing ([AGENT_CORE.md](../../AGENT_CORE.md) "Design Defaults").
 
 ### Hexagonal boundary
 

@@ -867,7 +867,10 @@ fn actual_runner_binary_emits_receipt_bound_v3_record() {
         .find(|row| row["route"] == "hybrid")
         .expect("hybrid diagnostic");
     let hybrid_candidates = hybrid["candidates"].as_array().expect("hybrid candidates");
-    assert!(!hybrid_candidates.is_empty(), "hybrid query must return a diagnostic candidate");
+    assert!(
+        !hybrid_candidates.is_empty(),
+        "hybrid query must return a diagnostic candidate"
+    );
     for candidate in hybrid_candidates {
         assert!(
             !candidate["contributions"]

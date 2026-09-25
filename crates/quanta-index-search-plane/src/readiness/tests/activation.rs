@@ -30,6 +30,16 @@ use crate::readiness::tests::support::{
 };
 use crate::search_corpus_lifecycle::SearchCorpusPairMutationCoordinator;
 
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        message
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.as_str()
+    } else {
+        "non-string panic payload"
+    }
+}
+
 /// Hold the post-rename parent sync so readers can inspect the unpublished head.
 #[derive(Debug)]
 struct BlockingParentSync {
@@ -64,7 +74,9 @@ impl ParentDirectorySyncPort for BlockingParentSync {
             })?;
             self.release
                 .lock()
-                .map_err(|_| std::io::Error::other("parent-sync release lock poisoned"))?
+                .map_err(|error| {
+                    std::io::Error::other(format!("parent-sync release lock poisoned: {error}"))
+                })?
                 .recv_timeout(Duration::from_secs(10))
                 .map_err(|error| {
                     std::io::Error::other(format!("parent-sync release timed out: {error}"))
@@ -575,9 +587,12 @@ fn activation_query_sees_old_pair_until_parent_sync_completes() -> TestResult {
         assert_eq!(visible.manifest_digest, initial.manifest_digest());
     }
     release.send(())?;
-    let receipt = mutation
-        .join()
-        .map_err(|_| "activation thread panicked")??;
+    let receipt = mutation.join().map_err(|panic_payload| {
+        std::io::Error::other(format!(
+            "activation thread panicked: {}",
+            panic_message(panic_payload.as_ref())
+        ))
+    })??;
     assert_eq!(receipt.active.generation, promoted.to_contract_v1());
     for track in [
         SearchPlaneTrackKind::Lexical,
@@ -626,7 +641,12 @@ fn rollback_query_sees_old_pair_until_parent_sync_completes() -> TestResult {
         assert_eq!(visible.manifest_digest, initial.manifest_digest());
     }
     release.send(())?;
-    let receipt = mutation.join().map_err(|_| "rollback thread panicked")??;
+    let receipt = mutation.join().map_err(|panic_payload| {
+        std::io::Error::other(format!(
+            "rollback thread panicked: {}",
+            panic_message(panic_payload.as_ref())
+        ))
+    })??;
     assert_eq!(receipt.active.generation, target.to_contract_v1());
     for track in [
         SearchPlaneTrackKind::Lexical,

@@ -14,6 +14,7 @@ use crate::{BenchError, BenchResult};
 
 pub fn diagnostic_value(
     record_sha256: &str,
+    record: &Value,
     pack: &QueryPack,
     routes: &[&str],
     outcomes: &BTreeMap<(String, String), QueryOutcome>,
@@ -50,24 +51,64 @@ pub fn diagnostic_value(
                 .map(move |route| (task.task_id.clone(), (*route).to_string()))
         })
         .collect();
-    if expected.len() != pack.tasks.len() * routes.len()
+    let expected_count =
+        pack.tasks.len().checked_mul(routes.len()).ok_or_else(|| {
+            BenchError::Protocol("diagnostic task/route count overflow".to_string())
+        })?;
+    if expected.len() != expected_count
         || outcomes.keys().cloned().collect::<BTreeSet<_>>() != expected
     {
         return Err(BenchError::Protocol(
             "diagnostic outcomes are missing, duplicated or unexpected".to_string(),
         ));
     }
+    let record_rows = record
+        .get("results")
+        .and_then(Value::as_array)
+        .ok_or_else(|| BenchError::Protocol("diagnostic record results are missing".to_string()))?;
+    let mut normalized = BTreeMap::new();
+    for row in record_rows {
+        let key = (
+            row.get("task_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| BenchError::Protocol("record task id is malformed".to_string()))?
+                .to_string(),
+            row.get("route")
+                .and_then(Value::as_str)
+                .ok_or_else(|| BenchError::Protocol("record route is malformed".to_string()))?
+                .to_string(),
+        );
+        if !expected.contains(&key) || normalized.insert(key, row).is_some() {
+            return Err(BenchError::Protocol(
+                "diagnostic record results are duplicated or unexpected".to_string(),
+            ));
+        }
+    }
+    if normalized.keys().cloned().collect::<BTreeSet<_>>() != expected {
+        return Err(BenchError::Protocol(
+            "diagnostic record results are incomplete".to_string(),
+        ));
+    }
     let mut rows = Vec::with_capacity(expected.len());
     for task in &pack.tasks {
         for route in routes {
+            let key = (task.task_id.clone(), (*route).to_string());
             let outcome = outcomes
-                .get(&(task.task_id.clone(), (*route).to_string()))
+                .get(&key)
                 .ok_or_else(|| {
                     BenchError::Protocol("diagnostic outcome disappeared".to_string())
                 })?;
+            let record_row = normalized.get(&key).copied().ok_or_else(|| {
+                BenchError::Protocol("diagnostic record result disappeared".to_string())
+            })?;
             let (status, error_code, candidates) = match outcome {
                 QueryOutcome::Hits { hits, outcome, .. } => {
-                    if hits.len() > top_k as usize {
+                    let top_k_len = usize::try_from(top_k).map_err(|error| {
+                        BenchError::Protocol(format!(
+                            "diagnostic top_k is not addressable: {error}"
+                        ))
+                    })?;
+                    if hits.len() > top_k_len {
                         return Err(BenchError::Protocol(format!(
                             "diagnostic hit count exceeds top_k for {}/{}",
                             task.task_id, route
@@ -86,12 +127,61 @@ pub fn diagnostic_value(
                     } else {
                         "capped"
                     };
+                    let record_candidates = record_row
+                        .get("candidates")
+                        .and_then(Value::as_array)
+                        .ok_or_else(|| {
+                            BenchError::Protocol("record candidates are malformed".to_string())
+                        })?;
+                    if record_row.get("status").and_then(Value::as_str) != Some(status)
+                        || record_candidates.len() != hits.len()
+                    {
+                        return Err(BenchError::Protocol(format!(
+                            "diagnostic outcome differs from record for {}/{}",
+                            task.task_id, route
+                        )));
+                    }
                     let mut candidates = Vec::with_capacity(hits.len());
                     for (position, hit) in hits.iter().enumerate() {
                         if !hit.score.is_finite() || hit.candidate_id.is_empty() {
                             return Err(BenchError::Protocol(
                                 "diagnostic hit has invalid identity or score".to_string(),
                             ));
+                        }
+                        let scored = &record_candidates[position];
+                        let rank = position.checked_add(1).ok_or_else(|| {
+                            BenchError::Protocol("diagnostic rank overflow".to_string())
+                        })?;
+                        let path = scored.get("path").and_then(Value::as_str).ok_or_else(|| {
+                            BenchError::Protocol("record candidate path is malformed".to_string())
+                        })?;
+                        let start_line = scored
+                            .get("start_line")
+                            .and_then(Value::as_u64)
+                            .and_then(|line| u32::try_from(line).ok())
+                            .filter(|line| *line > 0)
+                            .ok_or_else(|| {
+                                BenchError::Protocol(
+                                    "record candidate start line is malformed".to_string(),
+                                )
+                            })?;
+                        let end_line = scored
+                            .get("end_line")
+                            .and_then(Value::as_u64)
+                            .and_then(|line| u32::try_from(line).ok())
+                            .filter(|line| *line >= start_line)
+                            .ok_or_else(|| {
+                                BenchError::Protocol(
+                                    "record candidate end line is malformed".to_string(),
+                                )
+                            })?;
+                        if scored.get("rank").and_then(Value::as_u64) != u64::try_from(rank).ok()
+                            || path != hit.path
+                        {
+                            return Err(BenchError::Protocol(format!(
+                                "diagnostic candidate identity differs from record for {}/{}",
+                                task.task_id, route
+                            )));
                         }
                         if *route == "hybrid" {
                             if hit.contributions.is_empty() || hit.contributions.len() > 2 {
@@ -123,11 +213,11 @@ pub fn diagnostic_value(
                             }));
                         }
                         candidates.push(json!({
-                            "rank": position + 1,
+                            "rank": rank,
                             "candidate_id": hit.candidate_id,
-                            "path": hit.path,
-                            "start_line": hit.start_line,
-                            "end_line": hit.end_line,
+                            "path": path,
+                            "start_line": start_line,
+                            "end_line": end_line,
                             "score": hit.score,
                             "contributions": lanes,
                         }));
@@ -139,6 +229,22 @@ pub fn diagnostic_value(
                         return Err(BenchError::Protocol(
                             "diagnostic failure has invalid status/code".to_string(),
                         ));
+                    }
+                    if record_row.get("status").and_then(Value::as_str) != Some(status)
+                        || record_row
+                            .get("candidates")
+                            .and_then(Value::as_array)
+                            .is_none_or(|candidates| !candidates.is_empty())
+                        || record_row
+                            .get("error")
+                            .and_then(|error| error.get("code"))
+                            .and_then(Value::as_str)
+                            != Some(code)
+                    {
+                        return Err(BenchError::Protocol(format!(
+                            "diagnostic failure differs from record for {}/{}",
+                            task.task_id, route
+                        )));
                     }
                     (*status, json!(code), Vec::new())
                 }
@@ -225,35 +331,104 @@ mod tests {
         )])
     }
 
+    fn record() -> Value {
+        json!({
+            "results": [{
+                "task_id": "T1",
+                "route": "hybrid",
+                "status": "success",
+                "candidates": [{
+                    "rank": 1,
+                    "path": "src/lib.rs",
+                    "start_line": 4,
+                    "end_line": 8,
+                }]
+            }]
+        })
+    }
+
     #[test]
     fn preserves_hybrid_lane_provenance_and_record_binding() {
-        let value = diagnostic_value(&"e".repeat(64), &pack(), &["hybrid"], &outcomes(), 10)
-            .expect("complete diagnostic");
-        assert_eq!(value["record_sha256"], "e".repeat(64));
+        let value = diagnostic_value(
+            &"e".repeat(64),
+            &record(),
+            &pack(),
+            &["hybrid"],
+            &outcomes(),
+            10,
+        )
+        .expect("complete diagnostic");
+        assert_eq!(value.get("record_sha256"), Some(&json!("e".repeat(64))));
         assert_eq!(
-            value["results"][0]["candidates"][0]["contributions"][0]["rank"],
-            2
+            value.pointer("/results/0/candidates/0/contributions/0/rank"),
+            Some(&json!(2))
         );
         assert_eq!(
-            value["results"][0]["candidates"][0]["contributions"][1]["lane"],
-            "dense"
+            value.pointer("/results/0/candidates/0/contributions/1/lane"),
+            Some(&json!("dense"))
         );
     }
 
     #[test]
     fn refuses_missing_result_or_lane_provenance() {
         assert!(
-            diagnostic_value(&"e".repeat(64), &pack(), &["hybrid"], &BTreeMap::new(), 10).is_err()
+            diagnostic_value(
+                &"e".repeat(64),
+                &record(),
+                &pack(),
+                &["hybrid"],
+                &BTreeMap::new(),
+                10,
+            )
+            .is_err()
         );
         let mut missing_lane = outcomes();
         let outcome = missing_lane
             .get_mut(&("T1".to_string(), "hybrid".to_string()))
             .expect("fixture result");
         if let QueryOutcome::Hits { hits, .. } = outcome {
-            hits[0].contributions.clear();
+            hits.first_mut().expect("fixture hit").contributions.clear();
         }
         assert!(
-            diagnostic_value(&"e".repeat(64), &pack(), &["hybrid"], &missing_lane, 10).is_err()
+            diagnostic_value(
+                &"e".repeat(64),
+                &record(),
+                &pack(),
+                &["hybrid"],
+                &missing_lane,
+                10,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn uses_record_span_when_sdk_hit_is_unanchored() {
+        let mut unanchored = outcomes();
+        let outcome = unanchored
+            .get_mut(&("T1".to_string(), "hybrid".to_string()))
+            .expect("fixture result");
+        if let QueryOutcome::Hits { hits, .. } = outcome {
+            let hit = hits.first_mut().expect("fixture hit");
+            hit.start_line = 0;
+            hit.end_line = 0;
+        }
+        let value = diagnostic_value(
+            &"e".repeat(64),
+            &record(),
+            &pack(),
+            &["hybrid"],
+            &unanchored,
+            10,
+        )
+        .expect("record supplies the normalized span");
+        assert_eq!(
+            value.pointer("/results/0/candidates/0/start_line"),
+            Some(&json!(4))
+        );
+        assert_eq!(
+            value.pointer("/results/0/candidates/0/end_line"),
+            Some(&json!(8))
         );
     }
 }

@@ -879,7 +879,8 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         })?;
     let record_digest = sha256_hex(format!("{rendered_record}\n").as_bytes());
     let diagnostics = if diagnostics_out.is_some() {
-        let mut value = diagnostic_value(&record_digest, &pack, &routes, &outcomes, top_k)?;
+        let mut value =
+            diagnostic_value(&record_digest, &record, &pack, &routes, &outcomes, top_k)?;
         let detail = serde_json::json!({
             "clock": "runner_monotonic_wall_v1",
             "daemon_boot_and_readiness": boot_elapsed.as_secs_f64() * 1000.0,
