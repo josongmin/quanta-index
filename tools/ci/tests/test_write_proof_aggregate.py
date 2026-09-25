@@ -195,7 +195,7 @@ def _build_fixture_root(tmp_path: Path, *, executable: bool) -> tuple[Path, dict
     binary = root / "bin/searchd"
     binary.parent.mkdir()
     binary.write_bytes(b"release-daemon")
-    (root / ".gitignore").write_text("/artifacts/\n", encoding="utf-8")
+    (root / ".gitignore").write_text("/artifacts/\n__pycache__/\n*.py[cod]\n", encoding="utf-8")
     _run(root, "git", "init", "-q")
     _run(root, "git", "config", "user.name", "Aggregate Fixture")
     _run(root, "git", "config", "user.email", "aggregate@example.invalid")

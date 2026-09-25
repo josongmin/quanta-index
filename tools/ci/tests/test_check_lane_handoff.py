@@ -61,9 +61,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, dict, Path]:
         owner = root / proof["owner"]
         owner.parent.mkdir(parents=True, exist_ok=True)
         owner.touch(exist_ok=True)
-    (root / ".gitignore").write_text(
-        "/artifacts/\n__pycache__/\n", encoding="utf-8"
-    )
+    (root / ".gitignore").write_text("/artifacts/\n__pycache__/\n*.py[cod]\n", encoding="utf-8")
 
     _run(root, "git", "init", "-q")
     _run(root, "git", "config", "user.name", "Fixture")

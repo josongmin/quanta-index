@@ -52,12 +52,19 @@ def freeze_one(entry: dict, checkouts: Path) -> tuple[dict, dict]:
         raise ValueError(f"unsupported language: {language}")
     if len(commit) != 40 or any(c not in "0123456789abcdef" for c in commit):
         raise ValueError(f"invalid revision: {name}")
-    if not isinstance(prefix, str) or prefix.startswith("/") or "\\" in prefix or (
-        prefix and any(p in {"", ".", ".."} for p in prefix.split("/"))
+    if (
+        not isinstance(prefix, str)
+        or prefix.startswith("/")
+        or "\\" in prefix
+        or (prefix and any(p in {"", ".", ".."} for p in prefix.split("/")))
     ):
         raise ValueError(f"invalid benchmark root: {name}")
     root = checkouts / name
-    if not root.is_dir() or root.is_symlink() or Path(git(root, "rev-parse", "--show-toplevel").decode().strip()) != root.resolve():
+    if (
+        not root.is_dir()
+        or root.is_symlink()
+        or Path(git(root, "rev-parse", "--show-toplevel").decode().strip()) != root.resolve()
+    ):
         raise ValueError(f"checkout root mismatch: {name}")
     if git(root, "rev-parse", "HEAD").decode().strip() != commit:
         raise ValueError(f"checkout revision mismatch: {name}")
@@ -73,7 +80,11 @@ def freeze_one(entry: dict, checkouts: Path) -> tuple[dict, dict]:
         if not raw_path:
             continue
         path = raw_path.decode("utf-8", "strict")
-        if path.startswith("/") or "\\" in path or any(p in {"", ".", ".."} for p in path.split("/")):
+        if (
+            path.startswith("/")
+            or "\\" in path
+            or any(p in {"", ".", ".."} for p in path.split("/"))
+        ):
             raise ValueError(f"noncanonical tracked path: {name}/{path}")
         license_name = path.lower()
         if "/" not in path and any(
@@ -135,13 +146,22 @@ def freeze_one(entry: dict, checkouts: Path) -> tuple[dict, dict]:
 
 
 def freeze_set(spec: dict, checkouts: Path) -> tuple[dict[str, dict], dict]:
-    if set(spec) != {"source_revision", "repositories"} or not isinstance(spec["repositories"], list):
+    if set(spec) != {"source_revision", "repositories"} or not isinstance(
+        spec["repositories"], list
+    ):
         raise ValueError("invalid corpus-set spec")
     seen: set[str] = set()
     manifests: dict[str, dict] = {}
     summaries = []
     for entry in spec["repositories"]:
-        if set(entry) != {"name", "language", "url", "revision", "benchmark_root", "upstream_semble_benchmark_overlap"}:
+        if set(entry) != {
+            "name",
+            "language",
+            "url",
+            "revision",
+            "benchmark_root",
+            "upstream_semble_benchmark_overlap",
+        }:
             raise ValueError("invalid repository entry")
         if type(entry["upstream_semble_benchmark_overlap"]) is not bool:
             raise ValueError("overlap must be boolean")
@@ -181,7 +201,16 @@ def main() -> None:
     for name, manifest in manifests.items():
         (manifest_dir / f"{name}.json").write_bytes(canonical_json(manifest))
     (args.out / "corpus-set.json").write_bytes(canonical_json(summary))
-    print(json.dumps({"repository_count": summary["repository_count"], "file_count": summary["file_count"], "corpus_set_sha256": sha(canonical_json(summary))}, sort_keys=True))
+    print(
+        json.dumps(
+            {
+                "repository_count": summary["repository_count"],
+                "file_count": summary["file_count"],
+                "corpus_set_sha256": sha(canonical_json(summary)),
+            },
+            sort_keys=True,
+        )
+    )
 
 
 if __name__ == "__main__":
