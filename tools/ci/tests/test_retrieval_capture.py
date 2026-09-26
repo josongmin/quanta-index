@@ -12,6 +12,7 @@ from evidence import sample_evidence
 from registry import load_registry
 
 from tools.ci.tests.test_portable_proof import fake_execution  # noqa: F401
+from tools.ci.tests.test_portable_proof import proof_actor_environment as proof_actor_environment
 
 
 def test_bridge_fixture_preserves_canonical_evidence_identity():

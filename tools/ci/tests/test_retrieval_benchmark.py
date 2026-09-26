@@ -9384,6 +9384,81 @@ def test_conditional_incremental_replay_compares_payload_membership_and_empty_st
                 cp.incremental_rows(output, malformed)
         for value in ("x" * 512, "é" * 256):
             cp.native_repository_identity(value, field)
+    # Native LanguageCode syntax and nullable closed SymbolKindCode must also
+    # survive input/raw agreement. These used to earn 5/5 despite being
+    # impossible to deserialize through the real EmbeddingRecord boundary.
+    for field, values in (
+        ("language", ("", "Rust", "rust.js", "러스트", "1rust", "rust\x00", None, True, [])),
+        ("symbol_kind", ("", "Function", "bogus", "type-alias", True, [])),
+    ):
+        for value in values:
+            bad_plan, bad_output = copy.deepcopy(plan), copy.deepcopy(output)
+            for case in bad_plan["cases"]:
+                for batch in ("before", "fresh", "delta"):
+                    for scope in case[batch]["replace_scopes"]:
+                        for row in scope["embeddings"]:
+                            row[field] = value
+            for case in bad_output["cases"]:
+                for batch in ("before", "fresh", "incremental"):
+                    for row in case[batch]["semantic"]["rows"]:
+                        row[field] = value
+                    case[batch]["semantic"]["rows"].sort(key=cp.canonical)
+            with pytest.raises(ValueError, match="language code|symbol_kind"):
+                cp.incremental_rows(bad_output, bad_plan)
+    for language in ("rust", "c++", "objective-c", "qglang2", "m+v_1", "r" * 4096):
+        cp.native_language_code(language)
+    for symbol_kind in (None, "function", "method", "class", "struct", "enum", "trait", "interface",
+                        "variable", "constant", "module", "macro", "type_alias"):
+        admitted = copy.deepcopy(plan["cases"][0]["before"])
+        for row in admitted["replace_scopes"][0]["embeddings"]:
+            row["symbol_kind"] = symbol_kind
+        assert cp.input_state(admitted)["semantic"]["count"] == 2
+    # Input-only DTO fields must be Rust String values even when the logical
+    # projection drops them. Escaped lone surrogates are legal Python JSON.
+    for field in ("view_kind", "scope_digest", "corpus_policy_digest"):
+        for value in ("\ud800", "\udfff", "x\ud800y"):
+            malformed = copy.deepcopy(plan)
+            for case in malformed["cases"]:
+                for batch in ("before", "fresh", "delta"):
+                    native_batch = case[batch]
+                    if field == "corpus_policy_digest":
+                        native_batch[field] = value
+                    for scope in native_batch["replace_scopes"]:
+                        if field == "scope_digest":
+                            scope[field] = value
+                        elif field == "view_kind":
+                            for row in scope["embeddings"]:
+                                row[field] = value
+            malformed = json.loads(json.dumps(malformed))
+            with pytest.raises(ValueError, match="valid UTF-8"):
+                cp.incremental_rows(output, malformed)
+    # Valid input must not mask inadmissible strings in any raw state table.
+    # Check ordinary and nullable text cells before row-set comparison, so a
+    # mismatch elsewhere cannot supply the rejection for this regression.
+    for state in ("before", "fresh", "incremental"):
+        for field in ("snippet", "package", "visibility"):
+            for value in ("\ud800", "\udfff"):
+                malformed_output = copy.deepcopy(output)
+                rows = malformed_output["cases"][0][state]["semantic"]["rows"]
+                assert rows
+                rows[0][field] = value
+                with pytest.raises(ValueError, match="valid UTF-8"):
+                    cp.incremental_rows(malformed_output, plan)
+    for value in ("", "\x00", "é", "e\u0301", json.loads('"\\ud83d\\ude00"')):
+        admitted = copy.deepcopy(plan["cases"][0]["before"])
+        admitted["corpus_policy_digest"] = value
+        for scope in admitted["replace_scopes"]:
+            scope["scope_digest"] = value
+            for row in scope["embeddings"]:
+                row["view_kind"] = value
+        assert cp.input_state(admitted)["semantic"]["count"] == 2
+    deeply_malformed = "text"
+    for _ in range(2000):
+        deeply_malformed = [deeply_malformed]
+    malformed = copy.deepcopy(plan["cases"][0]["before"])
+    malformed["replace_scopes"][0]["embeddings"][0]["view_kind"] = deeply_malformed
+    with pytest.raises(ValueError, match="bytes/view"):
+        cp.input_state(malformed)
     for field in ("required_corpora", "corpus_policy_digest"):
         malformed = json.loads(json.dumps(plan["cases"][0]["before"]))
         del malformed[field]

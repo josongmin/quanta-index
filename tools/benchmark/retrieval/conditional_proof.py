@@ -159,12 +159,40 @@ NATIVE_ENUMS = {
     "corpus_kind": {"SymbolCard", "ModuleCard", "ClusterCard", "RawCodeFallback", "DocumentLeaf", "DocumentSection", "DocumentSummary", "TestBehavior", "RepositorySummary"},
     "source_role": {"CardText", "RawFallbackText", "DocumentText", "SummaryText"},
     "capability_status": {"Full", "Degraded", "Unsupported", "NotComputed"},
+    "symbol_kind": {"function", "method", "class", "struct", "enum", "trait", "interface",
+                    "variable", "constant", "module", "macro", "type_alias"},
 }
 
 
 def native_enum(value: object, field: str) -> None:
     if not isinstance(value, str) or value not in NATIVE_ENUMS[field]:
         raise ValueError(f"logical {field} is outside the native enum contract")
+
+
+def native_language_code(value: object) -> None:
+    # contract-base query/constraints.rs::validate_language_code. This is a
+    # syntax contract, not a fixed language allowlist or a new length policy.
+    if not isinstance(value, str) or not value or not "a" <= value[0] <= "z" \
+        or any(character not in "abcdefghijklmnopqrstuvwxyz0123456789-_+" for character in value):
+        raise ValueError("logical language code is outside the native wire contract")
+
+
+def native_utf8(value: object) -> None:
+    # Rust String can represent every Unicode scalar, including controls, but
+    # cannot deserialize the unpaired surrogates accepted by Python json.loads.
+    pending = [value]
+    while pending:
+        cell = pending.pop()
+        if isinstance(cell, str):
+            try:
+                cell.encode("utf-8")
+            except UnicodeEncodeError as error:
+                raise ValueError("native DTO text is not valid UTF-8") from error
+        elif isinstance(cell, dict):
+            pending.extend(cell.keys())
+            pending.extend(cell.values())
+        elif isinstance(cell, list):
+            pending.extend(cell)
 
 
 def native_repository_identity(value: object, field: str) -> None:
@@ -179,6 +207,7 @@ def native_repository_identity(value: object, field: str) -> None:
 
 def table(value: object, name: str) -> dict:
     value = exact(value, {"count", "rows"}, name)
+    native_utf8(value)
     rows = value["rows"]
     if type(value["count"]) is not int or value["count"] < 0 or not isinstance(rows, list) or len(rows) != value["count"]:
         raise ValueError("incremental table is partial")
@@ -186,8 +215,11 @@ def table(value: object, name: str) -> dict:
         raise ValueError("incremental table contains invalid rows")
     for row in rows:
         exact(row, SEMANTIC_COLUMNS if name == "semantic" else MEMBERSHIP_COLUMNS, "full logical row")
-        for field in NATIVE_ENUMS.keys() & row.keys():
-            native_enum(row[field], field)
+        for field in NATIVE_ENUMS:
+            if field in row and not (field == "symbol_kind" and row[field] is None):
+                native_enum(row[field], field)
+        if name == "semantic":
+            native_language_code(row["language"])
         integer_fields = {"start_line", "end_line", "card_schema_version"} if name == "semantic" else {"ordinal", "member_count"}
         optional_fields = {"parent_owner_id", "package", "symbol_kind", "visibility"} if name == "semantic" else set()
         for key, cell in row.items():
@@ -256,6 +288,7 @@ def input_state(batch: dict) -> dict:
     exact(batch, {"repo_id", "revision_id", "generation", "base_generation", "manifest_digest", "batch_digest",
                   "mode", "model_contract", "required_corpora", "corpus_policy_digest", "clear_surfaces",
                   "replace_scopes", "tombstone_scopes", "seal"}, "native incremental batch")
+    native_utf8(batch)
     for field in ("repo_id", "revision_id"):
         native_repository_identity(batch[field], field)
     if not isinstance(batch["required_corpora"], list) or any(not isinstance(batch[key], str)
