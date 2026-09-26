@@ -1,5 +1,8 @@
 # RBR-11 — Zero-RSS live parent 아래 프로세스 누락 수정
 
+> Archive status: `Historical work packet`. Accepted decisions are owned by [SEP-26-002](../../../adr/SEP-26-002-retrieval-observation-experiment-and-default-policy.md). Current unfinished work is tracked only in [GAP-REGISTER.md](GAP-REGISTER.md). This file is retained for implementation and evidence history.
+
+
 ## 현행 판정 — 2026-09-26, [중앙 코드 감사](CURRENT-AUDIT.md) 기준
 
 - 구현 관측: `run.py`는 live zero-RSS connector를 소유 그래프에 유지하고 malformed/duplicate PID·missing root를 fail-closed 처리한다. macOS live fixture는 실제 자식 PID/positive RSS를 관측한 뒤 timeout을 시작하며 종료 시 child를 reap한다. cleanup `EPERM`은 성공으로 간주하지 않는다. 아래 `rss_kib > 0` 선필터와 `[100]`은 **수정 전 재현 기록**이며 같은 결함의 재구현 작업은 없다.

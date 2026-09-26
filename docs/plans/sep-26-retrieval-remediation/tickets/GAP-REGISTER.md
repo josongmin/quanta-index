@@ -1,36 +1,30 @@
-# SEP-26 RBR 잔여 공백 등록부 — 2026-09-27
+# SEP-26 Retrieval Active Gap Register
 
-## 최종 실행 checkpoint — 2026-09-27
+Status: `ACTIVE`
 
-[CURRENT-AUDIT의 최종 실행 checkpoint](CURRENT-AUDIT.md#최종-실행-checkpoint--2026-09-27)가 아래 이전 checkpoint보다 우선한다. reuse-build consumer/fixture seven-command·six-field build/metadata binding·single archive member cache·기존 native sibling/raw-link guards는 직렬 통합됐다. canonical command order/format 정리 후 root actual main focused14 passed/305 deselected·23.59s·exit0·selected source stable는 **VERIFIED local**이며 Ruff/diff0이다. [원본](/private/tmp/qi-rbr-sdk-symbol-final.TEINH2/final-reuse-native-consumer-ordered.log) SHA `a84df47812bea2987e30117d65e6133c7853a8eeeeb3b1d859212404b55e19db`. canonical SDK18/Python319/Rust108은 terminal 전 NOT_RUN이다. 새 native5는 dirty owner local diagnostic **VERIFIED5/5**이며 independent conditional replay도5/5다. [원본](/tmp/quanta-native5-current-v3-20260927.observed.json) SHA `38c0ad5e03066df1d9687dc44fb36a04de776156ca1e8f717d8ab8dc6d29154d`; full conditional source/model custody·encoder·restart·quiet performance 및 qualification은 제외한다. 이전 whole319 FAILED318/1 및 SDK rebuild custody FAILED를 focused 결과와 합성하지 않는다.
+Consolidated: 2026-09-27 from clean pre-documentation snapshot
+`5e6addd5814ce8b71af808ff201ddd0b18fbe6c4`.
 
-RBR06 세 actual SEARCH recipe는 동일 immutable binary/helper epoch에서 terminal0인 development local VERIFIED다. file hit10/12·rank1은 동일하고 occurrence coverage strict/line/whole27/30·27/30·28/30이다. [SUMMARY](/private/tmp/qi-rbr06-final-matrix.WSMPZu/SUMMARY.md) SHA `1571d783db7d71498bef2718abd144a2db0a18e2639d24a4fd360fa9fccb1b47`. partial-identifier query09/11의 Phrase 정책상0을 chunker/ranker 결함으로 단정하지 않는다. semantic gold/performance/final qualification은 제외한다. 제품 정책·public ID cap/window/default/authority 및 역사 raw/INDEX 하단 owner checkpoint는 불변이다.
+This file contains only work that can still change a current verification or qualification claim. Accepted design is
+owned by the [SEP-26 ADR set](../../../adr/README.md). Historical detail is indexed by
+[ARCHIVE-MANIFEST.md](ARCHIVE-MANIFEST.md).
 
-최신 관측 source: `907785f89d86e6aac9b01517b3309f8c0c8bba2e` + 공유 dirty; 최종 freeze는 root 재검증 대상이다. [CURRENT-AUDIT](CURRENT-AUDIT.md)와 [IMPLEMENTATION-WAVE](IMPLEMENTATION-WAVE.md)의 명령·원본·검증 경계를 따른다. parity fail-open·stage clock·공개 ingest report·symbol literal false-exhaustion·strict UTF-8 byte 누락·JSON/zipapp·31preflight 및 canonical native DTO/enum/member/scope/SQL guard는 미구현 목록에서 제거했다. 아래는 실제 잔여다. 기존 `7d581d05` local 증거나 선택 variant319를 최신 whole-source proof·검색 우위로 승격하지 않는다.
+| ID | Scope | Current status | Exit condition |
+|---|---|---|---|
+| G-01 | RBR-00/02/05/12 current-source integration | `NOT_RUN` | After this documentation/source-closure change, freeze one clean revision and run the canonical Python, Rust and SDK retrieval inventories with exact selected/executed/passed counts, raw terminals and fresh receipts. Do not compose older focused or stale-source runs. |
+| G-02 | RBR-01/09 observation overhead and query performance | `NOT_RUN` | Run identical on/off workloads, including tight-deadline behavior, then the declared k/filter/floor matrix on a quiet host. Bind actual planner trace and preserve failures/timeouts in the result. Default floor remains 100 until the qualified decision rule passes. |
+| G-03 | RBR-03/04/06/07/09/12 external development and final evaluation | `BLOCKED` on admitted external inputs; execution otherwise `NOT_RUN` | Freeze admitted corpus, model, comparator reference, independent gold, development/holdout split and experiment manifest. Run the finite development matrix, select one combination, then run one fresh final pair/replay. Bounded local parity, ANN and chunking probes do not satisfy this gate. |
+| G-04 | RBR-08 canonical symbol text authority and ranking | `NOT_RUN` | Either retain typed refusal, or accept a separate schema/ingest/lifecycle/cursor migration ADR. A rank change additionally needs a source-bound misranking case, development ablation and admitted final holdout. |
+| G-05 | RBR-10 ingest performance and resilience | `NOT_RUN` | Bind a current installed SDK/daemon and run fresh, replace and delete workloads with row-set invariants, activation, fault and restart checks, plus quiet-host latency. Transient timing must remain separate from durable receipts. |
+| G-06 | RBR-11 platform resource ownership | `NOT_RUN` outside the bounded macOS owner checks | Run owner proof on every supported platform with a clean receipt. Preserve the legacy `ps` PID-start-identity limitation unless the sampler binds a stable process identity. |
 
-| ID | 남은 작업 | 현재 경계 / 종료 조건 |
-| --- | --- | --- |
-| [RBR-00](RBR-00-proof-contract.md) | reuse-build metadata의 manual consumer/fixture 직렬 통합 → 단일 immutable snapshot canonical SDK18/Python319/Rust108 | 이전 frozen319는 wrapper의 `PYTHONPATH=.` 주입으로318pass/1fail **FAILED**; corrected focused1과 합성하지 않는다. 이전 native SDK도 nextest 재빌드로 inode/ctime이 바뀌어 **FAILED**다. Producer reuse metadata+no-follow epoch 수정은 반영했고 검사를 완화하지 않았다. 새 consumer 통합/focused/actual canonical terminal은 **NOT_RUN**. 이전 context-v2 focused14·portable145·scope18·native71·daemon parser30/reverse158은 각각 local 범위 |
-| [RBR-01](RBR-01-diagnostics.md) | 동일 workload on/off·sidecar 비용 측정 및 final-source custody | SDK18/18 actual on/off·floor9조건과 diagnostic6/protocol4·3route/10mutants replay 회수. roomy budget 동등성은 검증했으나 tight deadline·실제 overhead 비용은 별도 NOT_RUN |
-| [RBR-02](RBR-02-query-policy.md) | 정책/identity/negative fixture의 최종 revision 재자격 | 정책 코드는 구현돼 있다. native 제품 정책은 변경하지 않음; clean receipt `NOT_RUN` |
-| [RBR-03](RBR-03-semble-profiles.md) | 네 profile의 pinned reference capture·phase event·raw hash 재발급 | profile/phase validator 구현. 과거 탐색 pair를 현 source 자격으로 쓰지 않음 |
-| [RBR-04](RBR-04-symbol-producer.md) | 5언어 hand oracle·strict-full coverage·combined replace/reopen의 고정-source proof | 파일 path/SHA/text 및 coverage replay 구현. 현재 owning unit/live SDK와 clean receipt를 분리 |
-| [RBR-05](RBR-05-symbol-route-proof.md) | 실제 symbol route·forged/stale/no-answer/timeout·span binding의 final-source 재자격 | 공통 route/record producer 및 SDK18 실제 native positive/typed refusal·3route/D6 binding local proof 회수. 후속 rebuild의 현 installed binary·clean closure는 별도 |
-| [RBR-06](RBR-06-span-chunking.md) | immutable current binary 바인딩 후 외부1024 same-declared-overlap/whole-file 실제 검색 matrix와 final-source custody | UTF-8 수정/기존 chunking25·유한54,951case local proof 유지. [개발 입력](/private/tmp/qi-rbr06-dev-inputs.vwuXJ1/README.md): ripgrep88파일·blind literal12·독립 원문 occurrences30·strict/line1024 동일 선언 overlap256/whole-file fresh recipe 준비/검증. 준비와 chunk-only coverage는 actual SEARCH proof가 아님; matrix NOT_RUN. source occurrence는 semantic gold/qualified NDCG가 아니며 claimsfalse·primary 불변 |
-| [RBR-07](RBR-07-semantic-parity.md) | 외부 corpus/query/filter/churn matrix 확장과 source-qualified custody | CLI unit4·Clippy/fmt·synthetic512/14pre-write 거부·overwrite 거부 terminal 회수. 실제 pinned-model406×256/4query exact/served10/10/8/0·full semantic-row/source/vector·mutant10 local VERIFIED. membership raw-only. 전체 ANN/품질/perf·churn 및 matrix breadth NOT_RUN. parity tolerance 유지 |
-| [RBR-08](RBR-08-symbol-ranking.md) | 실제 phrase/raw/regex 지원의 canonical authority migration 결정·조건부 rank 실험 | typed refusal 구현·lib121/smoke37/192조합 및 installed SDK18 native symbol positive/literal refusal local VERIFIED. canonical text authority는 schema/ingest/lifecycle/cursor migration을 동반하는 별도 기능 확장 NOT_RUN. ranker 결함 미확정; 근거 없는 boost 금지 |
-| [RBR-09](RBR-09-query-performance.md) | 외부 k/filter·ANN guard·quiet-host 비용-품질 frontier | selector/core/daemon/runner/spec 및 diagnostic6/lock4 floor SHA·actual probe 구현. installed floor25/50/100×k1/10/100·SDK18 terminal 회수; default100 유지. 외부 frontier NOT_RUN |
-| [RBR-10](RBR-10-ingest-performance.md) | bounded native batch actual5/full-row·최신 installed SDK 재증명 → fresh/replace/delete 비용 측정·fault/restart | canonical14batch/4scope/27record·4enum·nonnull sorted unique membership 기존4096cap/modelpreflight·scope authority·private SQL32MiB preallocation guard 반영. historical native15입력 consumer15/15는 저장 입력 재생, 새 native 실행이 아님. native71 source-stable local terminal은 최신 full319/actual5/Rust108/SDK18을 대체하지 않음. 새 native5 NOT_RUN. fresh-only/delta CLI 부재는 제품 결함이 아님; provider/activation/daemon fault·restart/latency는 별도. durable receipt/제품 정책·public ID cap/window default 불변 |
-| [RBR-11](RBR-11-resource-accounting.md) | 지원 플랫폼 owner proof 및 clean resource replay | ps PID-start identity 미보장 한계 유지. macOS live fixture는 child reaping·실제 PID/RSS를 검증하고 cleanup EPERM을 성공으로 바꾸지 않음 |
-| [RBR-12](RBR-12-evaluation-closeout.md) | final source/document snapshot·canonical whole319·개발 matrix·단일 final pair | context-v2 consumer/adapter와 canonical RepoId/RevisionId12typed refusal까지 반영·focused14 local 회수. owner288/선택variant319/historical15입력/native71/conditional18/portable134는 각각 해당 local 범위다. RBR06 input-only 준비는 SEARCH가 아님. 새 native5/full319/Rust108/SDK18은 NOT_RUN. prior/focused 결과를 합성하지 않음. claim=false NOT_APPLICABLE; self-report는 signed attestation 아님 |
+## Closure order
 
-## 직렬 종료 순서
+1. G-01 after the final documentation revision.
+2. G-02 and G-05 on immutable current binaries.
+3. G-03 only after external admission inputs exist.
+4. G-04 only if product scope chooses the symbol-authority expansion.
+5. G-06 per supported platform.
 
-1. 현재 raw 실행의 실패를 RCA하고 소유 코드/fixture만 수정한다. producer→IPC/SDK→runner→diagnostic→Python replay와 실제 daemon을 확인한다. API/module/fuzz/daemon escalation gates 및 exact inventory를 최종 bytes에서 회수한다.
-2. 새 T15/T16 구현은 independent raw oracle, model/dependency/config/source/binary/environment, exact command 및 terminal custody를 묶어 양성/음성 모두 확인한다. exporter의 자기 보고와 임의 `pass`/count는 단독 증거가 아니다. Semble native `max_length=512`와 controlled `None`는 다른 정책이다.
-3. development에서 RBR-06/07/08/09/10의 유한 원인 matrix를 실행한다. 단일 후보 또는 근거 있는 유지 결정을 고정한다. 외부 gold가 없는 개발 진단과 qualified quality를 구분한다.
-4. 문서도 source closure 입력이므로 최종 문서 갱신 뒤 고정-source proof를 새로 발급한다. frozen corpus/model/spec·admission/독립 gold·holdout custody·quiet host가 충족된 때 한 final holdout pair/replay를 판정한다. 수동 승인·심사자·host 확보는 engineering 작업 티켓에 넣지 않는다.
-
-외부 corpus-set `/Users/songmin/Documents/code-new/qi-rb-coverage-set-2026-09-25/frozen-v4/corpus-set.json`은 SHA-256 `31c248d79ad908052018ee74279630b4b0bd77c5e3cd5ead31d1651b0eb71f33`, 10 repo/1,480파일의 `candidate_not_admitted_no_gold_no_pair` 후보다. manifest 확인은 현재 checkout/독립 gold/실제 pair 검증이 아니다. final `PAIR_VALID`, `QUALITY_DELTA`, `PERF_QUALIFIED`는 **NOT_RUN**이다.
-
-수정 전 단계별 상태는 Git 역사와 [CURRENT-AUDIT](CURRENT-AUDIT.md)의 역사 절에 남는다. 현재 미구현 목록으로 재사용하지 않는다.
+`PAIR_VALID`, `QUALITY_DELTA` and `PERF_QUALIFIED` remain `NOT_RUN` until their own exit conditions pass. A local pass,
+artifact presence or summary boolean does not close a row.

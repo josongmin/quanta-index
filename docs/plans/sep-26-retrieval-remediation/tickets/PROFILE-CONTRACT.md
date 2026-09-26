@@ -1,7 +1,10 @@
 # RBR Canonical Profile Contract — Query/Producer/Comparator/Diagnostic provenance
 
+> Archive status: `Historical detailed contract`. The accepted contract has been compressed into [SEP-26-001](../../../adr/SEP-26-001-retrieval-query-publication-and-result-proof.md), [SEP-26-002](../../../adr/SEP-26-002-retrieval-observation-experiment-and-default-policy.md) and [SEP-26-003](../../../adr/SEP-26-003-retrieval-evidence-custody-and-qualification.md). This file remains as implementation-era detail.
+
+
 - 작성 근거: [RBR-00](RBR-00-proof-contract.md) 작업 3. 현재 생산 기준: pair-spec v2, protocol-lock v4, runner record v5, diagnostic v6, publish wire V2. 이전 protocol2/3·diagnostic2~5는 immutable historical replay만 지원한다. protocol4/diagnostic6는 explicit experimental hybrid floor 및 실제 initial-fetch planner trace를 추가로 바인딩한다.
-- 이 문서는 RBR-01/02/03/04가 공통으로 사용하는 profile 계약의 단일 canonical 정의다. 구현 티켓은 이 정의를 변경 없이 구현하며, 변경이 필요하면 이 문서를 먼저 고치고 관련 receipt를 무효화한다.
+- 이 문서는 RBR-01/02/03/04가 구현 중 사용한 상세 profile 계약의 역사 기록이다. 현재 canonical decision은 위 SEP-26 ADR set이 소유한다. 구현 상세를 바꾸면 ADR 영향과 관련 receipt 무효화를 함께 판정한다.
 - 이 디렉터리는 retrieval source closure에 포함되므로(2026-09-26 등록), 이 계약의 사후 변경은 기존 proof/receipt를 무효화한다.
 
 ## 1. 원칙

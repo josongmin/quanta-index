@@ -1,5 +1,8 @@
 # RBR-00~12 현재 코드 감사 및 잔여 게이트 — 2026-09-27
 
+> Archive status: `Historical evidence ledger`. This chronological ledger preserves source, command, failure and receipt boundaries. It is not current status authority. Use the [accepted ADRs](../../../adr/README.md) and [active gap register](GAP-REGISTER.md).
+
+
 ## 최종 실행 checkpoint — 2026-09-27
 
 이 절이 아래 이전 checkpoint의 실행 대기 문구보다 우선한다. 관측 main `907785f89d86e6aac9b01517b3309f8c0c8bba2e` + 공유 dirty; 역사적 raw identity와 INDEX 하단 owner checkpoint는 보존한다.

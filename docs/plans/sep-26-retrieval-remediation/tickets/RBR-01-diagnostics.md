@@ -1,5 +1,8 @@
 # RBR-01 — SDK 응답과 단계별 실행 정보 보존
 
+> Archive status: `Historical work packet`. Accepted decisions are owned by [SEP-26-002](../../../adr/SEP-26-002-retrieval-observation-experiment-and-default-policy.md). Current unfinished work is tracked only in [GAP-REGISTER.md](GAP-REGISTER.md). This file is retained for implementation and evidence history.
+
+
 ## 현행 판정 — 2026-09-26, [중앙 코드 감사](CURRENT-AUDIT.md)의 공유 dirty source
 
 현재 runner는 diagnostic6/protocol4다. query stage selector와 transient V2 ingest binding에 canonical hybrid floor identity·actual initial-fetch trace 검증이 추가됐다. 최신 installed local SDK18/18 exact collection·terminal은 observation-off 동등성과 floor25/50/100×k1/10/100 initial-probe를 포함해 통과했다. `/private/tmp/qi-rbr-sdk-symbol-final.TEINH2/actual-terminals.json`, SHA `713a3cfd070b573ce27af094393712ada341a396285062e93508f7f4e46f6fdd`. 두 설치 binary SHA 전후 동일·source drift local이지 clean-source proof가 아니다. actual diagnostic6/floor50/record5의3route replay와10변조 거부는 `live-replay-current.log`, SHA `3bd82d3955e111796bbeab766be73742bb5f16d407c60acde70b851018f3930e`. 실제 quiet-host overhead/clean-source qualification은 NOT_RUN이다. 아래425/config38 및 이전 diagnostic4/5 기록은 해당 snapshot의 소유 local 증거이며 최신 전체 qualification이 아니다.

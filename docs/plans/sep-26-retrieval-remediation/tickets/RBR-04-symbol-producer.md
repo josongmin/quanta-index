@@ -1,5 +1,8 @@
 # RBR-04 — 소스 기반 심볼 생성과 파일 단위 combined publication
 
+> Archive status: `Historical work packet`. Accepted decisions are owned by [SEP-26-001](../../../adr/SEP-26-001-retrieval-query-publication-and-result-proof.md). Current unfinished work is tracked only in [GAP-REGISTER.md](GAP-REGISTER.md). This file is retained for implementation and evidence history.
+
+
 ## 현행 판정 — 2026-09-26, [중앙 코드 감사](CURRENT-AUDIT.md) 기준
 
 현재 owning 소스의 `extract_corpus_symbols`는 unsupported admitted path/SHA와 parse failure를 typed abort로 처리하며 source path/hash/text를 재검증한다. 현 profile은 partial capability를 선언하지 않은 strict full이다. phase metrics의 파일별 path/SHA/grammar/count coverage를 verdict가 frozen corpus와 비교하고 nonzero unsupported count를 거부한다. strict-full coverage를 다시 구현할 작업은 없다. [중앙 코드 감사](CURRENT-AUDIT.md), [잔여 작업](GAP-REGISTER.md)가 통합 상태 authority다.

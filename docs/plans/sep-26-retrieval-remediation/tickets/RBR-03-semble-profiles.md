@@ -1,5 +1,8 @@
 # RBR-03 — Semble native-default와 통제 실험 분리
 
+> Archive status: `Historical work packet`. Accepted decisions are owned by [SEP-26-002](../../../adr/SEP-26-002-retrieval-observation-experiment-and-default-policy.md). Current unfinished work is tracked only in [GAP-REGISTER.md](GAP-REGISTER.md). This file is retained for implementation and evidence history.
+
+
 ## 현행 판정 — 2026-09-26, [중앙 코드 감사](CURRENT-AUDIT.md) 기준
 
 - 구현 관측: `semble.py`의 네 profile·공통 cold/warmup/measured dispatch·lane/phase event와 `run.py`의 frozen profile 검증이 현재 owning 소스에 있다. 아래 99파일·20질의 Semble 0.6.0 캡처와 exploratory pair는 **과거 개발 관측**이다. profile 재구현이 아닌 실제 pinned output/phase capture 재발급이 잔여다.

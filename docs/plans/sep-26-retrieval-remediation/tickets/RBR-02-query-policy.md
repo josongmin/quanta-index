@@ -1,5 +1,8 @@
 # RBR-02 — 자연어·literal·native DSL 입력 계약 분리
 
+> Archive status: `Historical work packet`. Accepted decisions are owned by [SEP-26-001](../../../adr/SEP-26-001-retrieval-query-publication-and-result-proof.md). Current unfinished work is tracked only in [GAP-REGISTER.md](GAP-REGISTER.md). This file is retained for implementation and evidence history.
+
+
 ## 현행 판정 — 2026-09-26, [중앙 코드 감사](CURRENT-AUDIT.md)의 공유 dirty source
 
 - 구현 관측: `query_plan.rs`의 native/literal/NL 분기·original/effective identity, Python 독립 재도출 및 distractor/tamper fixture가 현재 owning 소스에 있다. 벤치 opt-in 정책이며 제품 native AND 기본값은 유지한다. 동일 정책 재구현은 잔여 작업이 아니다.

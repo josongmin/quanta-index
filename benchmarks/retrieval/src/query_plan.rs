@@ -14,7 +14,7 @@
 //!   over-limit plans are typed refusals; there is no match-all fallback.
 //!
 //! Every plan carries the four identity digests of the canonical profile
-//! contract (`docs/plans/sep-26-retrieval-remediation/tickets/PROFILE-CONTRACT.md`
+//! contract (`docs/adr/SEP-26-001-retrieval-query-publication-and-result-proof.md`
 //! §3): the original query, the policy config, the effective lexical
 //! request, and the semantic text. Planning happens once per task through
 //! [`plan_query`] and the resulting plan is shared by the cold, warmup, and

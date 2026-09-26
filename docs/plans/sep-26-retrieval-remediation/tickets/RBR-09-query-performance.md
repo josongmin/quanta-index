@@ -1,5 +1,8 @@
 # RBR-09 — Hybrid fetch 비용 측정과 제한된 정책 최적화
 
+> Archive status: `Historical work packet`. Accepted decisions are owned by [SEP-26-002](../../../adr/SEP-26-002-retrieval-observation-experiment-and-default-policy.md). Current unfinished work is tracked only in [GAP-REGISTER.md](GAP-REGISTER.md). This file is retained for implementation and evidence history.
+
+
 ## 현행 판정 — 2026-09-26, [중앙 코드 감사](CURRENT-AUDIT.md) 기준
 
 - 최신 installed integration `VERIFIED` local: SDK18 exact selected/executed/passed·failed0 및 실제 floor25/50/100×k1/10/100 초기 fetch golden 확인. runner/spec의 floor SHA는 diagnostic6/lock4로 연결됐고 floor50 actual3route sidecar+10targeted변조 replay도 exit0다. `/private/tmp/qi-rbr-sdk-symbol-final.TEINH2/actual-terminals.json`, SHA `713a3cfd070b573ce27af094393712ada341a396285062e93508f7f4e46f6fdd`. binary bytes 전후 동일·source drift local이며 quiet-host latency/외부k/filter/quality frontier는 제외한다. 아래 원래 CLI 연결 후속 범위와 installed 미실행은 역사적 checkpoint다.

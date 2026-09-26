@@ -1,5 +1,8 @@
 # RBR-05 — Symbol route와 공통 published-unit 증명
 
+> Archive status: `Historical work packet`. Accepted decisions are owned by [SEP-26-001](../../../adr/SEP-26-001-retrieval-query-publication-and-result-proof.md). Current unfinished work is tracked only in [GAP-REGISTER.md](GAP-REGISTER.md). This file is retained for implementation and evidence history.
+
+
 ## 현행 판정 — 2026-09-26, [중앙 코드 감사](CURRENT-AUDIT.md) 기준
 
 - 구현 관측: `published_units.rs` typed registry, SDK `symbol` route와 `record.rs::prove_hit`의 published-unit 증명 경로가 현재 owning 소스에 있다. scored byte span은 full-line projection이지만 **indexed/SDK/scored span 분리와 indexed-span 보조 지표는 RBR-06에서 이미 구현**됐다. 기존 미구현 판정은 철회한다; live propagation proof는 별도다.

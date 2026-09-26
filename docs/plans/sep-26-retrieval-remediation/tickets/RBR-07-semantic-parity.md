@@ -1,5 +1,8 @@
 # RBR-07 — Full-vector parity와 exact/ANN 원인 분리
 
+> Archive status: `Historical work packet`. Accepted decisions are owned by [SEP-26-002](../../../adr/SEP-26-002-retrieval-observation-experiment-and-default-policy.md). Current unfinished work is tracked only in [GAP-REGISTER.md](GAP-REGISTER.md). This file is retained for implementation and evidence history.
+
+
 ## 현행 판정 — 2026-09-26, [중앙 코드 감사](CURRENT-AUDIT.md) 기준
 
 - 구현 갱신: 마지막 관측 `f9c3b4dc487a1b54a260e4ab2d3dd199310d3a5e` + 공유 dirty. `model2vec/parity_fixture.rs`에 inference 전 strict typed validator를 추가했다. required/duplicate/unknown fields, schema/profile/model ID/revision/library/asset pins, 명시적 null policy, canonical 9-input 순서, full-width finite vectors, norms와 full pairwise triangle의 독립 재계산 정합성을 검증한다. asset-free 독립 basis-vector oracle과 omission/partial/reorder/forged/nonfinite/overflow/zero 반례 4 tests + capture safety 2 tests를 추가했다. Rust unit-layer norm 검증을 별도로 추가하고 기존 component `0.002`·cosine `0.005` tolerance는 유지했다. triangle index는 checked arithmetic으로 처리하며 lint suppression을 추가하지 않았다.

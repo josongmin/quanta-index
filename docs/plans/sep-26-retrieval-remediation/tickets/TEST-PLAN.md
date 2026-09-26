@@ -1,6 +1,6 @@
 # RBR 공통 검증·완료 계약
 
-상태: 공통 완료 계약. 현재 `2c08dccf` + 공유 dirty의 구현·명령별 실행 판정은 [CURRENT-AUDIT.md](CURRENT-AUDIT.md)의 최신 절을 따른다. strict fixture/manual serde 및 server observation/V2 ingest·typed floor 연결을 구현했으나 focused/local 실행은 clean-source proof나 qualified final pair가 아니다. 현재 diagnostic6/protocol4는 requested floor와 실제 initial-fetch trace를 대조한다. 두 bare-symbol 탐색 pair의 `PAIR_VALID=pass`는 이 게이트를 대체하지 않는다. 이 문서 변경도 retrieval source closure 입력이다. 기존 [RB TEST-PLAN](../../sep-23-retrieval-bench/tickets/TEST-PLAN.md)의 입력 격리·replay·성능 자격을 약화하지 않는다.
+상태: 공통 완료 계약. 현재 결정은 [SEP-26 ADR set](../../../adr/README.md), 미완료 실행·자격 판정은 [GAP-REGISTER.md](GAP-REGISTER.md)를 따른다. [CURRENT-AUDIT.md](CURRENT-AUDIT.md)는 이전 source·명령·원본의 역사 ledger다. strict fixture/manual serde 및 server observation/V2 ingest·typed floor 연결을 구현했으나 focused/local 실행은 clean-source proof나 qualified final pair가 아니다. 현재 diagnostic6/protocol4는 requested floor와 실제 initial-fetch trace를 대조한다. 두 bare-symbol 탐색 pair의 `PAIR_VALID=pass`는 이 게이트를 대체하지 않는다. 이 문서 변경도 retrieval source closure 입력이다. 기존 [RB TEST-PLAN](../../sep-23-retrieval-bench/tickets/TEST-PLAN.md)의 입력 격리·replay·성능 자격을 약화하지 않는다.
 
 ## 1. 공통 oracle와 부정 테스트
 
@@ -62,7 +62,7 @@ just retrieval-verdict <repo> <suite> <run-manifest> <fresh-external-verdict>
 
 각 결과에 full HEAD, 관련 dirty paths/source hash, 입력·모델·parser·dependency·설정·binary hash, host/runtime, 정확한 명령, raw 출력/종료 상태, 산출물 경로/SHA-256, covered/excluded scope를 남긴다. schema/config/policy 변경은 옛 증거 재사용을 무효화한다. 새 티켓 디렉터리가 source closure에 편입되면 이 문서의 사후 상태 변경도 receipt를 무효화한다. 최종 상태·결과표는 레포 외부의 digest-bound closeout artifact에 기록한다.
 
-조건부 T15(동일 모델)·T16(증분)의 `pass`/count JSON과 그 SHA-256은 독립 증거가 아니다. T15는 pinned 양쪽 모델·토크나이저·정밀도·입력·raw 전체 벡터·사전 선언 tolerance·실행 context로, T16은 동일 source/generation에서 before/typed operation/fresh/incremental full rows·실행 context로 재도출한다. 현재 schema2 producers/consumer는 존재하며 typed operation의 의미 있는 변화·무관 owner 보존·정확 scalar type·단 하나의 마지막 successful build terminal을 요구한다. no-op·sentinel 삭제·모순/중복/후속 terminal·bool/float 대체를 거부해야 한다. 임의 command 문자열 또는 새 digest를 붙인 요약으로 승인하지 않는다. actual exporter terminal·binary bytes·config/dependency/환경·collection/command/source binding을 별도로 확인한다. local self-reported hash는 signed remote attestation이 아니다. fault/restart는 실제 owning fault rail이 있어야 보장하며 full-row5case만으로 증명하지 않는다. [현재 감사](CURRENT-AUDIT.md)를 따른다.
+조건부 T15(동일 모델)·T16(증분)의 `pass`/count JSON과 그 SHA-256은 독립 증거가 아니다. T15는 pinned 양쪽 모델·토크나이저·정밀도·입력·raw 전체 벡터·사전 선언 tolerance·실행 context로, T16은 동일 source/generation에서 before/typed operation/fresh/incremental full rows·실행 context로 재도출한다. 현재 schema2 producers/consumer는 존재하며 typed operation의 의미 있는 변화·무관 owner 보존·정확 scalar type·단 하나의 마지막 successful build terminal을 요구한다. no-op·sentinel 삭제·모순/중복/후속 terminal·bool/float 대체를 거부해야 한다. 임의 command 문자열 또는 새 digest를 붙인 요약으로 승인하지 않는다. actual exporter terminal·binary bytes·config/dependency/환경·collection/command/source binding을 별도로 확인한다. local self-reported hash는 signed remote attestation이 아니다. fault/restart는 실제 owning fault rail이 있어야 보장하며 full-row5case만으로 증명하지 않는다. 현 미완료 판정은 [active gap register](GAP-REGISTER.md)를 따른다.
 
 `same_model=false`/`incremental=false`이면 각각 T15/T16은 `NOT_APPLICABLE`다. claim을 true로 여는 경우에만 해당 양성 protocol이 필수다. 이 조건을 일반 pair의 무조건 필수 gate로 늘리거나 protocol 없이 claim을 true로 설정하지 않는다.
 

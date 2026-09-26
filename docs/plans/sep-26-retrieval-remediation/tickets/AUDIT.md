@@ -1,5 +1,8 @@
 # 최종 코드 감사 — SEP-26 Retrieval Remediation
 
+> Archive status: `Historical audit ledger`. Initial observations are preserved here. Current decisions are in the [SEP-26 ADR set](../../../adr/README.md); current unfinished work is in [GAP-REGISTER.md](GAP-REGISTER.md).
+
+
 > 아래는 티켓 작성 당시의 역사적 감사다. `8d9b9f37` 이후를 포함한 티켓별 현재 상태와 남은 게이트는 [CURRENT-AUDIT.md](CURRENT-AUDIT.md)에 기록한다. 이 문서의 '최종'은 현 소스 전체 검증·비교 자격을 뜻하지 않는다.
 
 감사일: 2026-09-26. 최종 기준 HEAD: `33b24dd5df959f38c0df4717ff834b96750faf34` + 기존 dirty overlay. 시작 HEAD는 `e38e07865daf19661deaa5d1e580acc5814504ef`였고 작업 중 공유 main에서 다른 작업의 커밋이 들어왔다. 최종 검사 입력 57개를 해시 재대조하여 일치함을 확인하고 Python 집중 테스트를 다시 실행했다. 코드 구현은 이 작업에서 수정하지 않았다. 새 티켓 패킷만 작성했다.

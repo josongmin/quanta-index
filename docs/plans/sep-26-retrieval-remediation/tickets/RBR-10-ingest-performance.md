@@ -1,5 +1,8 @@
 # RBR-10 — Semantic owner delete 비용과 replacement 안전성
 
+> Archive status: `Historical work packet`. Accepted decisions are owned by [SEP-26-002](../../../adr/SEP-26-002-retrieval-observation-experiment-and-default-policy.md). Current unfinished work is tracked only in [GAP-REGISTER.md](GAP-REGISTER.md). This file is retained for implementation and evidence history.
+
+
 ## 최종 실행 checkpoint — 2026-09-27
 
 [CURRENT-AUDIT의 최종 실행 checkpoint](CURRENT-AUDIT.md#최종-실행-checkpoint--2026-09-27)가 아래 이전 checkpoint보다 우선한다. reuse-build consumer/fixture seven-command·six-field build/metadata binding·single archive member cache·기존 native sibling/raw-link guards는 직렬 통합됐다. canonical command order/format 정리 후 root actual main focused14 passed/305 deselected·23.59s·exit0·selected source stable는 **VERIFIED local**이며 Ruff/diff0이다. [원본](/private/tmp/qi-rbr-sdk-symbol-final.TEINH2/final-reuse-native-consumer-ordered.log) SHA `a84df47812bea2987e30117d65e6133c7853a8eeeeb3b1d859212404b55e19db`. canonical SDK18/Python319/Rust108은 terminal 전 NOT_RUN이다. 새 native5는 dirty owner local diagnostic **VERIFIED5/5**이며 independent conditional replay도5/5다. [원본](/tmp/quanta-native5-current-v3-20260927.observed.json) SHA `38c0ad5e03066df1d9687dc44fb36a04de776156ca1e8f717d8ab8dc6d29154d`; full conditional source/model custody·encoder·restart·quiet performance 및 qualification은 제외한다. 이전 whole319 FAILED318/1 및 SDK rebuild custody FAILED를 focused 결과와 합성하지 않는다.

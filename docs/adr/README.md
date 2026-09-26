@@ -19,3 +19,10 @@ SEP-21 accepted set:
 - [Read view, continuation and provider policy](SEP-21-003-read-view-continuation-and-provider-policy.md)
 - [Process supervision, state cutover and proof](SEP-21-004-process-supervision-state-cutover-and-proof.md)
 - [Decision registry](SEP-21-DECISION-REGISTRY.md)
+
+SEP-26 retrieval accepted set:
+
+- [Query, publication and result-proof contracts](SEP-26-001-retrieval-query-publication-and-result-proof.md)
+- [Observation, experiment and default policy](SEP-26-002-retrieval-observation-experiment-and-default-policy.md)
+- [Evidence custody and qualification boundaries](SEP-26-003-retrieval-evidence-custody-and-qualification.md)
+- [Decision registry](SEP-26-DECISION-REGISTRY.md)

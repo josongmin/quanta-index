@@ -1,5 +1,8 @@
 # RBR-08 — 근거 기반 exact-name 심볼 ranking
 
+> Archive status: `Historical work packet`. Accepted decisions are owned by [SEP-26-001](../../../adr/SEP-26-001-retrieval-query-publication-and-result-proof.md). Current unfinished work is tracked only in [GAP-REGISTER.md](GAP-REGISTER.md). This file is retained for implementation and evidence history.
+
+
 ## 현행 판정 — 2026-09-26, [중앙 코드 감사](CURRENT-AUDIT.md) 기준
 
 - 구현/검증: 독립 원문·정의 span·symbol ID를 선고정한 설치 daemon probe를 실행했다. native-safe 8개는 7 success/1 abstained, literal 10개는 10 abstained였다. **FAILED — literal symbol candidate admission**: 지원되지 않는 실행을 exact-empty로 응답하는 공백이 재현되었으며 ranker 변경으로 해결할 수 없다. 이것은 고정 설치 binary의 국소 관측이고 현재 dirty source 전체 qualification은 아니다.
