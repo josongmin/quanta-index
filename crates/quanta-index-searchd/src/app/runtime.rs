@@ -36,12 +36,12 @@ use quanta_index_core::{
     ProviderBudgetLedger, QuarantinedGenerationDiscardPort, RepoCommitRecencyIngestPort,
     RepoDescriptionIngestPort, RepoMapBundleIngestPort, RepoMapGenerationActivatePort,
     RepoMapOpenReportV1, RepoMapQuarantinePort, RepoMapSnapshotAcquirePort, RepoMetaIngestPort,
-    RepoTopicIngestPort, RequestBudgetV1, SealedGenerationReclaimPort, SealedGenerationScanPort,
-    SearchCorpusBatchBuildPort, SearchCorpusIngestPort, SemanticContentRootsPort,
-    SemanticEgressPolicyV1, SemanticIndexOpenPort, SemanticIngestPort,
-    SemanticScopeStreamBuildPort, StructuralError, StructuralMatchBinding,
-    StructuralMatchCandidate, StructuralReadiness, TextEmbeddingProvider, TrackDiskUsagePort,
-    WriterIdleSweepPort,
+    RepoTopicIngestPort, RequestBudgetV1, SealedGenerationIdentityProbePort,
+    SealedGenerationReclaimPort, SealedGenerationScanPort, SearchCorpusBatchBuildPort,
+    SearchCorpusIngestPort, SemanticContentRootsPort, SemanticEgressPolicyV1,
+    SemanticIndexOpenPort, SemanticIngestPort, SemanticScopeStreamBuildPort, StructuralError,
+    StructuralMatchBinding, StructuralMatchCandidate, StructuralReadiness, TextEmbeddingProvider,
+    TrackDiskUsagePort, WriterIdleSweepPort,
 };
 use quanta_index_embed::{
     CachingEmbeddingProvider, EmbeddingCacheIdentityV1, FileEmbeddingCache,
@@ -79,7 +79,9 @@ use crate::app::integrity_scrub::{PacedIntegrityScrubV1, ScrubSchedulerV1, Scrub
 use crate::app::ipc_dispatcher::{
     SearchPlaneControlIpcAdapter, SearchPlaneIngestIpcAdapter, SearchPlaneQueryIpcAdapter,
 };
-use crate::app::maintenance::{MaintenanceMetricSource, MaintenanceParts, MaintenanceTimer};
+use crate::app::maintenance::{
+    BackendProbeParts, MaintenanceMetricSource, MaintenanceParts, MaintenanceTimer,
+};
 use crate::app::readiness::{ProvenActive, RuntimeReadiness};
 use crate::app::semantic_boot;
 use crate::app::server::{
@@ -95,6 +97,7 @@ pub struct SearchdRuntimeParts {
     pub search_corpus_build_port: Arc<dyn SearchCorpusBatchBuildPort + Send + Sync>,
     pub lexical_generation_scanner: Arc<dyn SealedGenerationScanPort + Send + Sync>,
     pub lexical_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync>,
+    pub lexical_identity_probe: Arc<dyn SealedGenerationIdentityProbePort>,
     pub lexical_incomplete_discard: Arc<dyn IncompleteGenerationDiscardPort + Send + Sync>,
     pub lexical_sealed_reclaim: Arc<dyn SealedGenerationReclaimPort + Send + Sync>,
     pub lex_open_port: Arc<dyn LexicalIndexOpenPort + Send + Sync>,
@@ -107,6 +110,7 @@ pub struct SearchdRuntimeParts {
     pub sem_build_port: Arc<dyn SemanticScopeStreamBuildPort + Send + Sync>,
     pub semantic_generation_scanner: Arc<dyn SealedGenerationScanPort + Send + Sync>,
     pub semantic_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync>,
+    pub semantic_identity_probe: Arc<dyn SealedGenerationIdentityProbePort>,
     /// The content roots a sealed semantic generation carries (QI-BB-028):
     /// attested on sealed receipts, proven at activation and rehydrate.
     pub semantic_content_roots: Arc<dyn SemanticContentRootsPort + Send + Sync>,
@@ -1233,6 +1237,7 @@ impl SearchdRuntime {
             search_corpus_build_port,
             lexical_generation_scanner,
             lexical_generation_validator,
+            lexical_identity_probe,
             lexical_incomplete_discard,
             lexical_sealed_reclaim,
             lex_open_port,
@@ -1245,6 +1250,7 @@ impl SearchdRuntime {
             sem_build_port,
             semantic_generation_scanner,
             semantic_generation_validator,
+            semantic_identity_probe,
             semantic_content_roots,
             semantic_incomplete_discard,
             semantic_sealed_reclaim,
@@ -1549,6 +1555,11 @@ impl SearchdRuntime {
                 writer_sweep: writer_idle_sweep,
                 lexical_disk_usage,
                 semantic_disk_usage,
+                backend_probe: Some(BackendProbeParts {
+                    catalog: Arc::clone(&activation_catalog),
+                    lexical: lexical_identity_probe,
+                    semantic: semantic_identity_probe,
+                }),
                 integrity_scrub,
             },
             config.maintenance_policy().tick(),

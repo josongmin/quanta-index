@@ -11,10 +11,12 @@ use crate::{DURABLE_WRITE_TEMPORARY_MARKER, LEXICAL_SEALED_IDENTITY_FILE_NAME, S
 use quanta_index_contract::GenerationSnapshot;
 use quanta_index_core::CoreError;
 use std::fs::{File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use tantivy::Index;
+
+const MAX_SEALED_IDENTITY_BYTES: usize = 4096;
 
 /// Open an existing generation's index strictly, never creating or
 /// repairing one, with the tokenizers registered.
@@ -200,7 +202,7 @@ pub(crate) fn read_lexical_sealed_identity(
     generation_dir: &Path,
 ) -> Result<GenerationSnapshot, CoreError> {
     let path = lexical_sealed_identity_path(generation_dir);
-    let bytes = std::fs::read(&path).map_err(|error| {
+    let file = File::open(&path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityIncomplete,
@@ -216,6 +218,23 @@ pub(crate) fn read_lexical_sealed_identity(
             ))
         }
     })?;
+    // Repo/revision IDs are at most 512 bytes each and the seal writes a
+    // SHA-256 digest. A larger sidecar is not a valid identity; cap the read
+    // so a damaged file cannot make the maintenance liveness probe allocate
+    // without bound.
+    let mut bytes = Vec::new();
+    let _read_bytes = file.take(4097).read_to_end(&mut bytes).map_err(|error| {
+        CoreError::Storage(format!(
+            "lexical: read sealed generation identity {}: {error}",
+            path.display()
+        ))
+    })?;
+    if bytes.len() > MAX_SEALED_IDENTITY_BYTES {
+        return Err(CoreError::Storage(format!(
+            "lexical: sealed generation identity {} exceeds {MAX_SEALED_IDENTITY_BYTES} bytes",
+            path.display()
+        )));
+    }
     ciborium::from_reader(bytes.as_slice()).map_err(|error| {
         CoreError::Storage(format!(
             "lexical: decode sealed generation identity {}: {error}",

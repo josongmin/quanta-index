@@ -40,6 +40,22 @@ fn wait_until_ready(rt: &mut E2eRuntime) -> Result<ProcessReadinessV1, Box<dyn E
     }
 }
 
+fn wait_until_not_ready(rt: &mut E2eRuntime) -> Result<ProcessReadinessV1, Box<dyn Error>> {
+    match wait_for(
+        &RealTicker::new(),
+        Duration::from_secs(5),
+        Duration::from_millis(10),
+        "active backend root loss",
+        || rt.process_readiness(),
+        |report| !report.ready,
+        |_| false,
+    ) {
+        Ok(report) => Ok(report),
+        Err(WaitError::Terminal(error)) => Err(error.into()),
+        Err(WaitError::Timeout(timeout)) => Err(Box::new(timeout)),
+    }
+}
+
 #[test]
 fn zero_active_repositories_are_ready_only_with_all_supervised_children() -> TestResult {
     let mut rt = E2eRuntime::boot()?;
@@ -63,6 +79,30 @@ fn zero_active_repositories_are_ready_only_with_all_supervised_children() -> Tes
 }
 
 #[test]
+fn zero_active_repositories_do_not_require_existing_track_roots() -> TestResult {
+    let mut rt = E2eRuntime::boot()?;
+    for track in ["lexical", "semantic"] {
+        let root = rt.state_root().join("indexes").join(track);
+        if root.exists() {
+            let hidden = rt
+                .state_root()
+                .join("indexes")
+                .join(format!("{track}-hidden"));
+            std::fs::rename(&root, &hidden)?;
+            let report = wait_until_ready(&mut rt);
+            std::fs::rename(&hidden, &root)?;
+            require_eq(&report?.ready, &true, "zero-active readiness")?;
+        }
+    }
+    require_eq(
+        &wait_until_ready(&mut rt)?.ready,
+        &true,
+        "zero-active readiness",
+    )?;
+    Ok(())
+}
+
+#[test]
 fn active_repository_requires_physical_candidate_proof() -> TestResult {
     let mut rt = E2eRuntime::boot()?;
     rt.ingest_text("repo-readiness", "src/ready.rs", "readiness probe")?;
@@ -82,6 +122,46 @@ fn active_repository_requires_physical_candidate_proof() -> TestResult {
         &false,
         "active integrity failure reason",
     )?;
+    Ok(())
+}
+
+#[test]
+fn lost_active_track_root_invalidates_backend_readiness_and_restores() -> TestResult {
+    let mut rt = E2eRuntime::boot()?;
+    rt.ingest_text("repo-backend-loss", "src/ready.rs", "fn ready() {}")?;
+    let _sealed = rt.seal()?;
+    rt.activate_last_sealed_generation()?;
+    require_eq(
+        &wait_until_ready(&mut rt)?.ready,
+        &true,
+        "initial readiness",
+    )?;
+
+    for track in ["lexical", "semantic"] {
+        let root = rt.state_root().join("indexes").join(track);
+        let hidden = rt
+            .state_root()
+            .join("indexes")
+            .join(format!("{track}-hidden"));
+        std::fs::rename(&root, &hidden)?;
+        let outcome = (|| -> TestResult {
+            let report = wait_until_not_ready(&mut rt)?;
+            if !report
+                .not_ready_reasons
+                .contains(&ProcessReadinessReasonV1::RequiredBackendOpenUnproven)
+            {
+                return Err(format!("{track} root loss lacks backend reason: {report:?}").into());
+            }
+            Ok(())
+        })();
+        std::fs::rename(&hidden, &root)?;
+        outcome?;
+        require_eq(
+            &wait_until_ready(&mut rt)?.ready,
+            &true,
+            "restored readiness",
+        )?;
+    }
     Ok(())
 }
 

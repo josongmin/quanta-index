@@ -56,6 +56,7 @@ pub use semantic_ingest_fixtures_v1::{
 
 use std::collections::BTreeSet;
 use std::fs::File;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -65,9 +66,10 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{
     CoreError, FinishedReclaims, GenerationIdentityValidatePort, MetricPointV1, MetricSourcePort,
-    RECLAIM_AREA_DIR_NAME, SealedGenerationScanPort, SemanticIndexOpenPort, SemanticIngestHeaderV1,
-    SemanticScopeSource, SemanticScopeStreamBuildPort, SemanticStreamTallyV1,
-    SemanticStreamWindowPolicy, TrackDiskUsagePort,
+    RECLAIM_AREA_DIR_NAME, SealedGenerationIdentityProbePort, SealedGenerationScanPort,
+    SemanticIndexOpenPort, SemanticIngestHeaderV1, SemanticScopeSource,
+    SemanticScopeStreamBuildPort, SemanticStreamTallyV1, SemanticStreamWindowPolicy,
+    TrackDiskUsagePort,
     domains::generation::{
         GenerationQuarantineReasonV1, GenerationStorageKeyV1, IncompleteGenerationDiscardOutcomeV1,
         IncompleteGenerationDiscardPort, InventoriedSealedGenerationV1, QuarantineDiscardOutcomeV1,
@@ -84,6 +86,8 @@ use crate::codec::FORMAT_UNSUPPORTED_CODE;
 use crate::integrity::{SealTalliesV1, read_quarantine_receipt};
 use crate::manifest::SemanticManifest;
 use crate::search::{LoadedGeneration, PersistedSemanticSearcher, open_generation};
+
+const MAX_SEALED_MARKER_BYTES: usize = 4096;
 
 #[cfg(debug_assertions)]
 pub mod test_support {
@@ -311,6 +315,16 @@ impl GenerationIdentityValidatePort for SemanticAdapter {
     }
 }
 
+impl SealedGenerationIdentityProbePort for SemanticAdapter {
+    fn probe_sealed_generation_identity(
+        &self,
+        candidate: &GenerationSnapshot,
+    ) -> Result<(), CoreError> {
+        let _dir = self.sealed_candidate_dir(candidate, "readiness probe")?;
+        Ok(())
+    }
+}
+
 impl SemanticAdapter {
     /// The generation directory of `candidate`, whose sealed marker names
     /// exactly `candidate`'s digest.
@@ -337,7 +351,10 @@ impl SemanticAdapter {
                 generation_dir.display()
             )));
         }
-        let sealed_digest = std::fs::read_to_string(layout::sealed_marker_path(&generation_dir))
+        let marker_path = layout::sealed_marker_path(&generation_dir);
+        let mut sealed_digest = String::new();
+        let _read_bytes = File::open(&marker_path)
+            .and_then(|file| file.take(4097).read_to_string(&mut sealed_digest))
             .map_err(|error| {
                 if error.kind() == std::io::ErrorKind::NotFound {
                     CoreError::Typed {
@@ -354,6 +371,12 @@ impl SemanticAdapter {
                     ))
                 }
             })?;
+        if sealed_digest.len() > MAX_SEALED_MARKER_BYTES {
+            return Err(CoreError::Storage(format!(
+                "semantic: sealed marker {} exceeds {MAX_SEALED_MARKER_BYTES} bytes",
+                marker_path.display()
+            )));
+        }
         if sealed_digest != candidate.manifest_digest {
             return Err(CoreError::Typed {
                 code:

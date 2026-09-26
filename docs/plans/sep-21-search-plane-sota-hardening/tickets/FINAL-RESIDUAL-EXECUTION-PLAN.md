@@ -141,6 +141,24 @@ Owners: `crates/quanta-index-searchd/src/app/readiness.rs`,
   catalog/scrub invalidations it covers; do not perform an unbounded full
   repository scan on every readiness call or mistake an initial boot proof for
   ongoing health.
+- Root-loss counterexample (confirmed on pre-fix source): both lexical and
+  semantic `inventory_*generations` return an empty successful inventory when
+  their track root is missing; both `track_disk_bytes` ports return successful
+  zero bytes. A scrub that discovers candidates only from those inventories
+  can therefore go idle without incrementing its error epoch, leaving the
+  cached active proof and constant backend Boolean apparently healthy after
+  an active track root disappears. The live signal must compare durable active
+  expectations with observed backend state, or invalidate/re-prove that exact
+  active set through a bounded owner. Do not equate empty inventory/zero bytes
+  with health when active generations are named; missing roots remain valid
+  before any generation has been published. Define and test a maximum
+  root-loss detection interval, including recovery after an authorized
+  restore, without a full physical re-open on every readiness poll.
+- The local implementation in progress probes each active sealed identity on
+  the maintenance timer and binds the observation to the activation token;
+  the default readiness staleness horizon is three five-second maintenance
+  ticks. This closes the missing-root/marker liveness case in a dirty-overlay
+  runtime test, not the full P09 event/provenance scope or clean-HEAD proof.
 - Define a bounded control DTO and adapter projection from the *existing*
   `IpcServerCounters` ring. Bound event count and encoded bytes below the
   transport's 16 MiB frame cap; carry process instance, plane, sequence gap
@@ -152,7 +170,11 @@ Owners: `crates/quanta-index-searchd/src/app/readiness.rs`,
 - DoD: observer denial with zero ring disclosure; operator success; invalid
   limit/oversize refusal; wrap/drop/instance restart; real daemon request ID
   queue→backend/provider→terminal correlation; supervised child, maintenance
-  and backend loss independently make global readiness false.
+  and backend loss independently make global readiness false. A post-boot
+  rename/removal of either active lexical or semantic track root must make
+  readiness false within the declared detection interval even when the
+  inventory returns `Ok(empty)` and disk usage returns `Ok(0)`; the same
+  missing root with zero active generations must not be misreported as loss.
 
 ### R3 — Semantic omission oracle before changing the ingest wire
 

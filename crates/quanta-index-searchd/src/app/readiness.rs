@@ -88,6 +88,9 @@ impl ProcessReadinessPort for RuntimeReadiness {
                     && self.scrub.proof_invalidation_epoch() == scrub_epoch;
                 *cached_proof = valid.then(|| ProvenActive::new(before.0.clone(), scrub_epoch));
                 drop(cached_proof);
+                if valid {
+                    self.maintenance.record_backend_proof(&before.0)?;
+                }
                 Some(valid)
             }
         };
@@ -119,7 +122,9 @@ impl ProcessReadinessPort for RuntimeReadiness {
             control_plane: control_running && path_current(1)?,
             ingest_plane: ingest_running && path_current(2)?,
             maintenance_heartbeat: self.maintenance.heartbeat_fresh(self.maintenance_cadence)?,
-            required_backend: true, // Successful runtime assembly opened and proved required adapters.
+            required_backend: self
+                .maintenance
+                .required_backend_fresh(&before.0, self.maintenance_cadence)?,
             provider: ProcessProviderReadinessV1 {
                 claim: self.provider_claim,
                 healthy: self.provider_claim == ProcessProviderClaimV1::Required

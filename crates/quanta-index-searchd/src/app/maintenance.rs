@@ -22,10 +22,13 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use quanta_index_contract::SearchCorpusActivationTokenV1;
 use quanta_index_core::{
-    CoreError, MetricPointV1, MetricSourcePort, ProcessMemoryProbePort, TrackDiskUsagePort,
-    WriterIdleSweepPort,
+    CoreError, MetricPointV1, MetricSourcePort, ProcessMemoryProbePort,
+    SealedGenerationIdentityProbePort, TrackDiskUsagePort, WriterIdleSweepPort,
 };
+use quanta_index_search_plane::SearchCorpusGenerationV1;
+use quanta_index_search_plane::readiness::ActivationCatalog;
 
 use crate::app::integrity_scrub::PacedIntegrityScrubV1;
 
@@ -33,6 +36,8 @@ use crate::app::integrity_scrub::PacedIntegrityScrubV1;
 #[derive(Debug, Default)]
 pub struct MaintenanceTallies {
     last_completed_tick: Mutex<Option<Instant>>,
+    backend_observation: Mutex<Option<BackendObservation>>,
+    backend_probe_failures: AtomicU64,
     ticks: AtomicU64,
     idle_writer_releases: AtomicU64,
     sweep_failures: AtomicU64,
@@ -46,6 +51,12 @@ pub struct MaintenanceTallies {
     scrub_poisoned: AtomicU64,
 }
 
+#[derive(Debug)]
+struct BackendObservation {
+    identity: Vec<(SearchCorpusGenerationV1, SearchCorpusActivationTokenV1)>,
+    completed_at: Instant,
+}
+
 impl MaintenanceTallies {
     /// A stalled or dead timer is unhealthy even when earlier ticks succeeded.
     pub fn heartbeat_fresh(&self, cadence: Duration) -> Result<bool, CoreError> {
@@ -56,6 +67,43 @@ impl MaintenanceTallies {
             CoreError::Storage(format!("maintenance heartbeat lock poisoned: {error}"))
         })?;
         Ok(last.is_some_and(|last| last.elapsed() <= limit))
+    }
+
+    /// Only an exact, recent observation of the current active identities
+    /// proves that the required track backends remain present.
+    pub fn required_backend_fresh(
+        &self,
+        identity: &[(SearchCorpusGenerationV1, SearchCorpusActivationTokenV1)],
+        cadence: Duration,
+    ) -> Result<bool, CoreError> {
+        let Some(limit) = cadence.checked_mul(3) else {
+            return Ok(false);
+        };
+        let observation = self.backend_observation.lock().map_err(|error| {
+            CoreError::Storage(format!("backend observation lock poisoned: {error}"))
+        })?;
+        Ok(observation.as_ref().is_some_and(|observed| {
+            observed.identity == identity && observed.completed_at.elapsed() <= limit
+        }))
+    }
+
+    /// A successful physical door proof for a newly active identity can
+    /// seed the same observation immediately; the timer takes ownership of
+    /// subsequent liveness checks on its next tick.
+    pub fn record_backend_proof(
+        &self,
+        identity: &[(SearchCorpusGenerationV1, SearchCorpusActivationTokenV1)],
+    ) -> Result<(), CoreError> {
+        {
+            let mut observed = self.backend_observation.lock().map_err(|error| {
+                CoreError::Storage(format!("backend observation lock poisoned: {error}"))
+            })?;
+            *observed = Some(BackendObservation {
+                identity: identity.to_vec(),
+                completed_at: Instant::now(),
+            });
+        }
+        Ok(())
     }
 
     /// Ticks the timer has run.
@@ -88,15 +136,61 @@ pub struct MaintenanceParts {
     pub writer_sweep: Arc<dyn WriterIdleSweepPort>,
     pub lexical_disk_usage: Arc<dyn TrackDiskUsagePort>,
     pub semantic_disk_usage: Arc<dyn TrackDiskUsagePort>,
+    /// Active-generation identity liveness, distinct from the scrub's deep
+    /// content proof. Missing means unproven, never healthy.
+    pub backend_probe: Option<BackendProbeParts>,
     /// The integrity scrub, stepped on its own interval; `None` when no
     /// adapter scrubs.
     pub integrity_scrub: Option<Mutex<PacedIntegrityScrubV1>>,
+}
+
+pub struct BackendProbeParts {
+    pub catalog: Arc<ActivationCatalog>,
+    pub lexical: Arc<dyn SealedGenerationIdentityProbePort>,
+    pub semantic: Arc<dyn SealedGenerationIdentityProbePort>,
+}
+
+fn observe_backend(parts: &MaintenanceParts, tallies: &MaintenanceTallies) {
+    let observation = parts.backend_probe.as_ref().map(|probe| {
+        let (identity, _) = probe.catalog.active_inventory_v1()?;
+        for (generation, _token) in &identity {
+            probe
+                .lexical
+                .probe_sealed_generation_identity(generation.lexical())?;
+            probe
+                .semantic
+                .probe_sealed_generation_identity(generation.semantic())?;
+        }
+        if probe.catalog.active_inventory_v1()?.0 != identity {
+            return Err(CoreError::Storage(
+                "active identity changed during backend observation".to_owned(),
+            ));
+        }
+        Ok(BackendObservation {
+            identity,
+            completed_at: Instant::now(),
+        })
+    });
+    let observation = match observation {
+        Some(Ok(observed)) => Some(observed),
+        Some(Err(_failure)) => {
+            let _prior = tallies
+                .backend_probe_failures
+                .fetch_add(1, Ordering::AcqRel);
+            None
+        }
+        None => None,
+    };
+    if let Ok(mut observed) = tallies.backend_observation.lock() {
+        *observed = observation;
+    }
 }
 
 /// One tick's work, shared by the timer thread and the boot-time first
 /// measurement.
 fn tick(parts: &MaintenanceParts, tallies: &MaintenanceTallies) {
     let _tick = tallies.ticks.fetch_add(1, Ordering::AcqRel);
+    observe_backend(parts, tallies);
     match parts.writer_sweep.sweep_idle_writers() {
         Ok(released) => {
             let _prior = tallies
@@ -161,6 +255,7 @@ impl MaintenanceTimer {
     /// gauges are correct at the first scrape, not after the first tick.
     pub fn start(parts: MaintenanceParts, cadence: Duration) -> Result<Self, CoreError> {
         let tallies = Arc::new(MaintenanceTallies::default());
+        observe_backend(&parts, &tallies);
         refresh_disk_usage(&parts, &tallies);
         if let Ok(mut last) = tallies.last_completed_tick.lock() {
             *last = Some(Instant::now());
@@ -287,6 +382,10 @@ impl MetricSourcePort for MaintenanceMetricSource {
                 tallies.scrub_poisoned.load(Ordering::Acquire),
             ),
             MetricPointV1::counter(
+                "maintenance_backend_probe_failures_total",
+                tallies.backend_probe_failures.load(Ordering::Acquire),
+            ),
+            MetricPointV1::counter(
                 "maintenance_disk_refreshes_total",
                 tallies.disk_refreshes.load(Ordering::Acquire),
             ),
@@ -348,6 +447,37 @@ mod tests {
         );
     }
 
+    #[test]
+    fn backend_observation_is_not_healthy_when_unknown_or_stale() {
+        let tallies = MaintenanceTallies::default();
+        let cadence = Duration::from_secs(1);
+        assert!(
+            !tallies
+                .required_backend_fresh(&[], cadence)
+                .expect("unknown state")
+        );
+        tallies.record_backend_proof(&[]).expect("fresh proof");
+        assert!(
+            tallies
+                .required_backend_fresh(&[], cadence)
+                .expect("fresh state")
+        );
+        tallies
+            .backend_observation
+            .lock()
+            .expect("fixture observation lock")
+            .as_mut()
+            .expect("recorded observation")
+            .completed_at = Instant::now()
+            .checked_sub(Duration::from_secs(4))
+            .expect("representable instant");
+        assert!(
+            !tallies
+                .required_backend_fresh(&[], cadence)
+                .expect("stale state")
+        );
+    }
+
     struct CountingSweep(AtomicU64);
 
     impl WriterIdleSweepPort for CountingSweep {
@@ -380,6 +510,7 @@ mod tests {
                 writer_sweep,
                 lexical_disk_usage,
                 semantic_disk_usage,
+                backend_probe: None,
                 integrity_scrub: None,
             },
             Duration::from_millis(10),
@@ -430,6 +561,7 @@ mod tests {
                 writer_sweep: Arc::new(CountingSweep(AtomicU64::new(0))),
                 lexical_disk_usage: Arc::new(ScriptedDisk(AtomicU64::new(10))),
                 semantic_disk_usage: Arc::new(ScriptedDisk(AtomicU64::new(20))),
+                backend_probe: None,
                 integrity_scrub: None,
             },
             Duration::from_secs(30),

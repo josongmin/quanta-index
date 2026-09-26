@@ -113,6 +113,19 @@ pub trait GenerationIdentityValidatePort: Send + Sync {
     -> Result<(), CoreError>;
 }
 
+/// Cheap, cache-bypassing liveness check for an active sealed identity.
+///
+/// This checks the generation directory and its sealed identity/marker, not
+/// committed content bytes. The boot door and paced scrub own full content
+/// proof; readiness uses this port to detect a lost/replaced active backend
+/// without reopening every index on each health request.
+pub trait SealedGenerationIdentityProbePort: Send + Sync {
+    fn probe_sealed_generation_identity(
+        &self,
+        candidate: &GenerationSnapshot,
+    ) -> Result<(), CoreError>;
+}
+
 /// Why boot set a persisted generation aside instead of seeding it
 /// (QI-BB-026).
 ///

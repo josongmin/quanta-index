@@ -36,11 +36,11 @@ pub use domains::generation::{
     InventoriedSealedGenerationV1, PinnedGenerationReadinessV1,
     QUARANTINE_TARGET_NOT_QUARANTINED_CODE, QuarantineDiscardOutcomeV1,
     QuarantinedGenerationDiscardPort, QuarantinedGenerationV1, SealedArtifactCommitmentV1,
-    SealedGenerationBytesV1, SealedGenerationInventoryV1, SealedGenerationReclaimOutcomeV1,
-    SealedGenerationReclaimPort, SealedGenerationScanPort, TreeCommitmentMismatchV1,
-    TreeCommitmentV1, TreeScrubStepV1, TreeScrubVerdictV1, UNKNOWN_GENERATION_CODE,
-    commit_tree_inheriting_v1, commit_tree_v1, hash_committed_step_v1, scrub_tree_commitment_v1,
-    sha256_of_file, unique_inode_tree_bytes, unknown_generation_error,
+    SealedGenerationBytesV1, SealedGenerationIdentityProbePort, SealedGenerationInventoryV1,
+    SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort, SealedGenerationScanPort,
+    TreeCommitmentMismatchV1, TreeCommitmentV1, TreeScrubStepV1, TreeScrubVerdictV1,
+    UNKNOWN_GENERATION_CODE, commit_tree_inheriting_v1, commit_tree_v1, hash_committed_step_v1,
+    scrub_tree_commitment_v1, sha256_of_file, unique_inode_tree_bytes, unknown_generation_error,
     validate_pinned_generation_v1, verify_tree_commitment_v1, verify_tree_layout_v1,
 };
 pub use domains::hybrid::{

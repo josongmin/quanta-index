@@ -24,8 +24,8 @@ use quanta_index_core::{
     CoreError, DoorFindingOutcome, DoorFindingQuarantinePort, FinishedReclaims,
     GENERATION_SIDECAR_CORRUPT_CODE, GenerationIdentityValidatePort, IntegrityScrubBudgetV1,
     IntegrityScrubCandidateV1, IntegrityScrubCursorV1, IntegrityScrubPort, IntegrityScrubReportV1,
-    QuarantineDiscardOutcomeV1, QuarantinedGenerationDiscardPort, SealedGenerationScanPort,
-    reclaim_directory,
+    QuarantineDiscardOutcomeV1, QuarantinedGenerationDiscardPort,
+    SealedGenerationIdentityProbePort, SealedGenerationScanPort, reclaim_directory,
 };
 use std::collections::BTreeSet;
 
@@ -42,6 +42,16 @@ impl GenerationIdentityValidatePort for LexicalAdapter {
         // committed length. What is admitted here is what a query can open.
         let _verified = walk_sealed_generation(&generation_dir, &observed, &mut DiscardingVisitor)?;
         sync_generation_directory(&generation_dir)
+    }
+}
+
+impl SealedGenerationIdentityProbePort for LexicalAdapter {
+    fn probe_sealed_generation_identity(
+        &self,
+        candidate: &GenerationSnapshot,
+    ) -> Result<(), CoreError> {
+        let (_dir, _identity) = self.sealed_generation_dir_for(candidate, "readiness probe")?;
+        Ok(())
     }
 }
 
