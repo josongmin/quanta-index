@@ -1,5 +1,8 @@
 # DH-03 Predicate Proof Symmetry
 
+> Archive status: `Historical program record`. Current architecture: [JUN-02-001](../../../adr/JUN-02-001-search-dsl-authority-and-runtime-contract.md), [JUN-08-001](../../../adr/JUN-08-001-verification-hellgate-and-benchmark-separation.md). Archive map: [Completed Plan Archive](../../ARCHIVE-INDEX.md).
+
+
 Parent packet: [../README.md](../README.md)
 
 Status: `landed`

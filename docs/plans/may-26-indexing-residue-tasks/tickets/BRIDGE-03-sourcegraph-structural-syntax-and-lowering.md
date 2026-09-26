@@ -1,5 +1,8 @@
 # BRIDGE-03 - Sourcegraph Structural Syntax and Lowering
 
+> Archive status: `Historical program record`. Current architecture: [JUN-02-001](../../../adr/JUN-02-001-search-dsl-authority-and-runtime-contract.md). Archive map: [Completed Plan Archive](../../ARCHIVE-INDEX.md).
+
+
 Status: `shipped`
 Priority: `P1`
 Depends on: [BRIDGE-02](BRIDGE-02-sourcegraph-structural-honesty-gate.md)

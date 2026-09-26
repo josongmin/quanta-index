@@ -1,5 +1,8 @@
 # Jun 2 DSL Hardening
 
+> Archive status: `Historical program record`. Current architecture: [JUN-02-001](../../adr/JUN-02-001-search-dsl-authority-and-runtime-contract.md), [JUN-08-001](../../adr/JUN-08-001-verification-hellgate-and-benchmark-separation.md). Archive map: [Completed Plan Archive](../ARCHIVE-INDEX.md).
+
+
 Status: `closed`
 Date: `2026-06-02`
 Scope: post-closeout hardening for already-executable DSL surfaces

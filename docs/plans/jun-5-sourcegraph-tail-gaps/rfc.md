@@ -1,5 +1,8 @@
 # Jun 5 Sourcegraph Tail Gaps RFC
 
+> Archive status: `Historical program record`. Current architecture: [JUN-06-001](../../adr/JUN-06-001-sourcegraph-compatibility-boundary.md). Archive map: [Completed Plan Archive](../ARCHIVE-INDEX.md).
+
+
 Status: `landed`
 Date: `2026-06-05`
 Scope: document the exact post-`jun-4` Sourcegraph backlog that still remains after the landed parity packet

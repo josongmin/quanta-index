@@ -1,5 +1,8 @@
 # NO-GO-RULES
 
+> Archive status: `Historical program record`. Current architecture: [JUN-06-001](../../adr/JUN-06-001-sourcegraph-compatibility-boundary.md). Archive map: [Completed Plan Archive](../ARCHIVE-INDEX.md).
+
+
 Do not do any of the following in this packet.
 
 - do not reopen `jun-4-sourcegraph-parity` or `jun-5-sourcegraph-tail-gaps` as

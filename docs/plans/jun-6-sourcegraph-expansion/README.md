@@ -1,5 +1,8 @@
 # Jun 6 Sourcegraph Expansion
 
+> Archive status: `Historical program record`. Current architecture: [JUN-06-001](../../adr/JUN-06-001-sourcegraph-compatibility-boundary.md). Archive map: [Completed Plan Archive](../ARCHIVE-INDEX.md).
+
+
 Historical closeout packet for the post-`jun-5` Sourcegraph expansion work
 that landed after `jun-4-sourcegraph-parity` and
 `jun-5-sourcegraph-tail-gaps`.

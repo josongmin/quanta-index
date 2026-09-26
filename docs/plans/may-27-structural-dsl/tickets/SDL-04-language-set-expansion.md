@@ -1,5 +1,8 @@
 # SDL-04 - Structural Language Set Expansion
 
+> Archive status: `Historical program record`. Current architecture: [JUN-02-001](../../../adr/JUN-02-001-search-dsl-authority-and-runtime-contract.md). Archive map: [Completed Plan Archive](../../ARCHIVE-INDEX.md).
+
+
 Status: `planned`
 Priority: `P1`
 Depends on: [SDL-01](SDL-01-structural-boolean-composition.md), [SDL-02](SDL-02-typed-hole-semantics.md)

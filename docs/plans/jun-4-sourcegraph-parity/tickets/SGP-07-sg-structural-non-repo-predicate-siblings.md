@@ -1,5 +1,8 @@
 # SGP-07 SG Structural Non-Repo Predicate Siblings
 
+> Archive status: `Historical program record`. Current architecture: [JUN-06-001](../../../adr/JUN-06-001-sourcegraph-compatibility-boundary.md). Archive map: [Completed Plan Archive](../../ARCHIVE-INDEX.md).
+
+
 Parent RFC: [../rfc.md](../rfc.md)
 
 Status: `landed`

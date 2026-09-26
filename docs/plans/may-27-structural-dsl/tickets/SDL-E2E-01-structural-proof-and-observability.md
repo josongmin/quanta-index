@@ -1,5 +1,8 @@
 # SDL-E2E-01 - Structural Proof and Observability
 
+> Archive status: `Historical program record`. Current architecture: [JUN-02-001](../../../adr/JUN-02-001-search-dsl-authority-and-runtime-contract.md). Archive map: [Completed Plan Archive](../../ARCHIVE-INDEX.md).
+
+
 Status: `planned`
 Priority: `P0`
 Depends on: [SDL-01](SDL-01-structural-boolean-composition.md), [SDL-02](SDL-02-typed-hole-semantics.md), [SDL-03](SDL-03-sourcegraph-structural-v2-lowering.md), [SDL-04](SDL-04-language-set-expansion.md), [SDL-05](SDL-05-structural-codeql-bridge.md)

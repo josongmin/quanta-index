@@ -1,5 +1,8 @@
 # May 26 Indexing Residue Tasks
 
+> Archive status: `Historical program record`. Current architecture: [JUN-02-001](../../adr/JUN-02-001-search-dsl-authority-and-runtime-contract.md). Archive map: [Completed Plan Archive](../ARCHIVE-INDEX.md).
+
+
 Status: `shipped`
 Date: `2026-05-26`
 Scope: post-`may-25-lexical-enhancement` residue only.

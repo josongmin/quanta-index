@@ -1,5 +1,9 @@
 # Jun 4 DSL Capability Inventory
 
+Canonical architecture:
+- [DSL authority and runtime contract](../adr/JUN-02-001-search-dsl-authority-and-runtime-contract.md)
+- [Sourcegraph compatibility boundary](../adr/JUN-06-001-sourcegraph-compatibility-boundary.md)
+
 기준:
 - live code + current exact rail 기준
 - 문서 claim이 아니라 executable owner seam, runtime corpus, front-door, parity rail을 우선함

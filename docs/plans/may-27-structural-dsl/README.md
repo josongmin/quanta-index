@@ -1,5 +1,8 @@
 # May 27 Structural DSL Final Plan
 
+> Archive status: `Historical program record`. Current architecture: [JUN-02-001](../../adr/JUN-02-001-search-dsl-authority-and-runtime-contract.md). Archive map: [Completed Plan Archive](../ARCHIVE-INDEX.md).
+
+
 Status: `superseded-by-jfc`
 Date: `2026-06-02`
 Scope: historical structural planning packet kept for provenance and evidence only.

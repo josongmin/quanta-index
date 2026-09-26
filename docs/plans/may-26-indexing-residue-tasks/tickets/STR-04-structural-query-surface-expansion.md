@@ -1,5 +1,8 @@
 # STR-04 - Structural Query Surface Expansion
 
+> Archive status: `Historical program record`. Current architecture: [JUN-02-001](../../../adr/JUN-02-001-search-dsl-authority-and-runtime-contract.md). Archive map: [Completed Plan Archive](../../ARCHIVE-INDEX.md).
+
+
 Status: `shipped`
 Priority: `P1`
 Depends on: [STR-02](STR-02-authority-matcher-tree-walk-expansion.md)

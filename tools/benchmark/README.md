@@ -418,7 +418,9 @@ receipt authenticator exists; it never silently downgrades the request.
 
 The sections below document the DSL Layer-3 latency gate.
 
-The 3-layer DSL-benchmarking model is defined in
+The architecture and claim boundaries are defined in
+[`JUN-08-001`](../../docs/adr/JUN-08-001-verification-hellgate-and-benchmark-separation.md).
+The detailed 3-layer measurement contract remains in
 [`docs/plans/jun-2-dsl-hardening/RFC-DSL-Benchmarking.md`](../../docs/plans/jun-2-dsl-hardening/RFC-DSL-Benchmarking.md).
 This directory holds the **Layer-3 (query latency)** tooling: capturing and
 gating per-scenario warm and cold query latencies for the DSL query matrix.

@@ -450,7 +450,9 @@ retrieval-verdict repo suite run_manifest out:
 retrieval-host-probe out="":
     python3 tools/benchmark/retrieval/run.py host-probe {{if out != "" { "--out " + out } else { "" } }}
 
-# Layer-3 DSL query-latency matrix (docs/plans/jun-2-dsl-hardening/RFC-DSL-Benchmarking.md).
+# Layer-3 DSL query-latency matrix. Architecture:
+# docs/adr/JUN-08-001-verification-hellgate-and-benchmark-separation.md.
+# Detailed measurement contract: docs/plans/jun-2-dsl-hardening/RFC-DSL-Benchmarking.md.
 # Warm: in-process criterion + p50/p95/p99 artifact. Cold: fresh-process-per-sample runner.
 rust-bench-dsl-warm:
     mkdir -p artifacts/dsl-bench

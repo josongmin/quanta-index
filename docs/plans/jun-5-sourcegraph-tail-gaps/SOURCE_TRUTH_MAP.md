@@ -1,5 +1,8 @@
 # SOURCE_TRUTH_MAP
 
+> Archive status: `Historical program record`. Current architecture: [JUN-06-001](../../adr/JUN-06-001-sourcegraph-compatibility-boundary.md). Archive map: [Completed Plan Archive](../ARCHIVE-INDEX.md).
+
+
 Use these anchors before changing any ticket.
 
 ## Official Baseline

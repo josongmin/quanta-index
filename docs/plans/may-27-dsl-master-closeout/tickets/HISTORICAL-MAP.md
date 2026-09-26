@@ -1,5 +1,8 @@
 # Historical Ticket Map
 
+> Archive status: `Historical program record`. Current architecture: [JUN-02-001](../../../adr/JUN-02-001-search-dsl-authority-and-runtime-contract.md). Archive map: [Completed Plan Archive](../../ARCHIVE-INDEX.md).
+
+
 Parent packet: [../README.md](../README.md)
 
 This file preserves the original ticket files while re-attaching active

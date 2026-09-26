@@ -1,5 +1,8 @@
 # Jun 4 Sourcegraph Parity RFC
 
+> Archive status: `Historical program record`. Current architecture: [JUN-06-001](../../adr/JUN-06-001-sourcegraph-compatibility-boundary.md). Archive map: [Completed Plan Archive](../ARCHIVE-INDEX.md).
+
+
 Status: `landed`
 Date: `2026-06-04`
 Scope: close the highest-signal Sourcegraph parity gaps that remain after `jun-4-dsl-extension`

@@ -1,5 +1,8 @@
 # Tickets — LanceDB Adoption
 
+> Archive status: `Historical program record`. Current architecture: [MAY-31-001](../../../adr/MAY-31-001-lancedb-semantic-generation-authority.md). Archive map: [Completed Plan Archive](../../ARCHIVE-INDEX.md).
+
+
 Status: **all tickets `done` (lancedb rewrite + R1+R2+R3 hardening,
 2026-05-30 → 2026-05-31)** — the §3.1 in-house implementation was reversed;
 the §3.2 lancedb-backed implementation landed, and three rounds of

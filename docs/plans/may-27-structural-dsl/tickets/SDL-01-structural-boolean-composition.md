@@ -1,5 +1,8 @@
 # SDL-01 - Structural Boolean Composition
 
+> Archive status: `Historical program record`. Current architecture: [JUN-02-001](../../../adr/JUN-02-001-search-dsl-authority-and-runtime-contract.md). Archive map: [Completed Plan Archive](../../ARCHIVE-INDEX.md).
+
+
 Status: `planned`
 Priority: `P0`
 Depends on: shipped [STR-02](../../may-26-indexing-residue-tasks/tickets/STR-02-authority-matcher-tree-walk-expansion.md), [STR-03](../../may-26-indexing-residue-tasks/tickets/STR-03-native-structural-semantics-ast-ir-expansion.md), [STR-04](../../may-26-indexing-residue-tasks/tickets/STR-04-structural-query-surface-expansion.md)

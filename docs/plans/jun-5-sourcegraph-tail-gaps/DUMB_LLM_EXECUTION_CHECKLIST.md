@@ -1,5 +1,8 @@
 # DUMB_LLM_EXECUTION_CHECKLIST
 
+> Archive status: `Historical program record`. Current architecture: [JUN-06-001](../../adr/JUN-06-001-sourcegraph-compatibility-boundary.md). Archive map: [Completed Plan Archive](../ARCHIVE-INDEX.md).
+
+
 Before editing:
 
 1. Read [NO-GO-RULES.md](NO-GO-RULES.md)

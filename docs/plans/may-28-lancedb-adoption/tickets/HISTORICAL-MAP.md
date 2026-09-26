@@ -1,5 +1,8 @@
 # Historical Ticket Map
 
+> Archive status: `Historical program record`. Current architecture: [MAY-31-001](../../../adr/MAY-31-001-lancedb-semantic-generation-authority.md). Archive map: [Completed Plan Archive](../../ARCHIVE-INDEX.md).
+
+
 Parent packet: [../README.md](../README.md)
 
 This file maps prior semantic-storage planning and proof artifacts onto the

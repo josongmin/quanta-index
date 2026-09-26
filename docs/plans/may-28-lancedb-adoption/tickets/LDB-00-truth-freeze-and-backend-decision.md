@@ -1,5 +1,8 @@
 # LDB-00 — Truth Freeze and Backend Decision
 
+> Archive status: `Historical program record`. Current architecture: [MAY-31-001](../../../adr/MAY-31-001-lancedb-semantic-generation-authority.md). Archive map: [Completed Plan Archive](../../ARCHIVE-INDEX.md).
+
+
 Status: `done` (revised 2026-05-30)
 Parent: [../README.md](../README.md)
 Depends on: none

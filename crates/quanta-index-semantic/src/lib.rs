@@ -28,8 +28,8 @@
 //! composition root, and [`semantic_state_root`] so the composition root does
 //! not hardcode the layout root.
 //!
-//! See `docs/plans/may-28-lancedb-adoption/` for the full backend decision and
-//! migration packet.
+//! See `docs/adr/MAY-31-001-lancedb-semantic-generation-authority.md` for the
+//! backend and migration authority. The May-28 plan remains historical detail.
 
 #[cfg(feature = "proof")]
 pub mod ann_proof;

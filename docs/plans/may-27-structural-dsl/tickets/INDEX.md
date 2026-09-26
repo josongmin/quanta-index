@@ -1,5 +1,8 @@
 # Structural DSL Tickets — Final Packet Index
 
+> Archive status: `Historical program record`. Current architecture: [JUN-02-001](../../../adr/JUN-02-001-search-dsl-authority-and-runtime-contract.md). Archive map: [Completed Plan Archive](../../ARCHIVE-INDEX.md).
+
+
 Parent packet: [../README.md](../README.md)
 
 This directory is the execution-facing decomposition for the `may-27` structural

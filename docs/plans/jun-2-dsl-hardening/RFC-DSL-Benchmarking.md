@@ -1,5 +1,8 @@
 # Jun-2 DSL Benchmarking RFC
 
+> Contract status: `Active detailed contract`. Architecture and claim boundaries are owned by
+> [JUN-08-001](../../adr/JUN-08-001-verification-hellgate-and-benchmark-separation.md).
+
 Status: `adopted`
 Date: `2026-06-02`
 Owner packet: [README.md](README.md)

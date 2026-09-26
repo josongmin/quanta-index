@@ -1,5 +1,8 @@
 # May 28 LanceDB Adoption Plan
 
+> Archive status: `Historical program record`. Current architecture: [MAY-31-001](../../adr/MAY-31-001-lancedb-semantic-generation-authority.md). Archive map: [Completed Plan Archive](../ARCHIVE-INDEX.md).
+
+
 Status: `closed` (lancedb rewrite + R1–R3 hardening landed, 2026-05-31)
 Historical packet: its legacy-journal importer instructions were superseded by
 the 2026-09-24 prerelease breaking cutover. Current boot refuses old journals;

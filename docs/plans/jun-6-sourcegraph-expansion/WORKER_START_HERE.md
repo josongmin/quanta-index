@@ -1,5 +1,8 @@
 # WORKER_START_HERE
 
+> Archive status: `Historical program record`. Current architecture: [JUN-06-001](../../adr/JUN-06-001-sourcegraph-compatibility-boundary.md). Archive map: [Completed Plan Archive](../ARCHIVE-INDEX.md).
+
+
 If you are a low-context worker or LLM, start here before opening any ticket.
 
 ## 1. Goal

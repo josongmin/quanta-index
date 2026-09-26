@@ -1,5 +1,8 @@
 # Jun 4 DSL Extension RFC
 
+> Archive status: `Historical program record`. Current architecture: [JUN-02-001](../../adr/JUN-02-001-search-dsl-authority-and-runtime-contract.md), [JUN-06-001](../../adr/JUN-06-001-sourcegraph-compatibility-boundary.md). Archive map: [Completed Plan Archive](../ARCHIVE-INDEX.md).
+
+
 Status: `landed`
 Date: `2026-06-04`
 Scope: remove all `부분 지원` cells from the Jun 4 DSL capability inventory without reopening shipped closeout truth

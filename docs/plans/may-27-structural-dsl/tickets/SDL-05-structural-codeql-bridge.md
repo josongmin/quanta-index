@@ -1,5 +1,8 @@
 # SDL-05 - Structural CodeQL Bridge
 
+> Archive status: `Historical program record`. Current architecture: [JUN-02-001](../../../adr/JUN-02-001-search-dsl-authority-and-runtime-contract.md). Archive map: [Completed Plan Archive](../../ARCHIVE-INDEX.md).
+
+
 Status: `planned`
 Priority: `P2`
 Depends on: [SDL-01](SDL-01-structural-boolean-composition.md), [SDL-03](SDL-03-sourcegraph-structural-v2-lowering.md)

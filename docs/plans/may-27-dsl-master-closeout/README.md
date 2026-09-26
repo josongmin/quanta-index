@@ -1,5 +1,8 @@
 # May 27 DSL Master Closeout + Structural V2
 
+> Archive status: `Historical program record`. Current architecture: [JUN-02-001](../../adr/JUN-02-001-search-dsl-authority-and-runtime-contract.md). Archive map: [Completed Plan Archive](../ARCHIVE-INDEX.md).
+
+
 Status: `superseded-by-jfc`
 Date: `2026-06-02`
 Scope: historical whole-DSL regrouping packet kept for provenance and evidence only.

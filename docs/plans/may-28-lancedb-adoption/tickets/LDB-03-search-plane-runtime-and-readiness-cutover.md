@@ -1,5 +1,8 @@
 # LDB-03 — Search-plane Runtime and Readiness Cutover
 
+> Archive status: `Historical program record`. Current architecture: [MAY-31-001](../../../adr/MAY-31-001-lancedb-semantic-generation-authority.md). Archive map: [Completed Plan Archive](../../ARCHIVE-INDEX.md).
+
+
 Status: `done` (lancedb rewrite 2026-05-30; R1+R2+R3 hardening 2026-05-31)
 
 ## 0. Outcome

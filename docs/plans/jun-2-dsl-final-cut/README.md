@@ -1,5 +1,8 @@
 # Jun 2 DSL Final Cut
 
+> Archive status: `Historical program record`. Current architecture: [JUN-02-001](../../adr/JUN-02-001-search-dsl-authority-and-runtime-contract.md). Archive map: [Completed Plan Archive](../ARCHIVE-INDEX.md).
+
+
 Status: `closed`
 Date: `2026-06-02`
 Closed: `2026-06-02`

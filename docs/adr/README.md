@@ -26,3 +26,14 @@ SEP-26 retrieval accepted set:
 - [Observation, experiment and default policy](SEP-26-002-retrieval-observation-experiment-and-default-policy.md)
 - [Evidence custody and qualification boundaries](SEP-26-003-retrieval-evidence-custody-and-qualification.md)
 - [Decision registry](SEP-26-DECISION-REGISTRY.md)
+
+May–Jun 2026 accepted set:
+
+- [Search DSL authority and runtime contract](JUN-02-001-search-dsl-authority-and-runtime-contract.md)
+- [Sourcegraph compatibility boundary](JUN-06-001-sourcegraph-compatibility-boundary.md)
+- [LanceDB semantic generation authority](MAY-31-001-lancedb-semantic-generation-authority.md)
+- [Verification hellgate and benchmark separation](JUN-08-001-verification-hellgate-and-benchmark-separation.md)
+- [Decision registry](MAY-JUN-2026-DECISION-REGISTRY.md)
+
+Historical implementation packets absorbed by these ADRs are indexed in
+[the completed-plan archive](../plans/ARCHIVE-INDEX.md).

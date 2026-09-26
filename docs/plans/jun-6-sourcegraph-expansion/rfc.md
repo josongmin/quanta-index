@@ -1,5 +1,8 @@
 # Jun 6 Sourcegraph Expansion RFC
 
+> Archive status: `Historical program record`. Current architecture: [JUN-06-001](../../adr/JUN-06-001-sourcegraph-compatibility-boundary.md). Archive map: [Completed Plan Archive](../ARCHIVE-INDEX.md).
+
+
 Status: `landed`
 Date: `2026-06-07`
 Scope: document the post-`jun-5` Sourcegraph expansion work that this packet
