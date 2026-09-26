@@ -2,6 +2,9 @@
 
 Status: `code-landed; qualification pending`
 
+Historical implementation status only. Current-source qualification and
+remaining TOPT conditions: [CURRENT-STATUS.md](CURRENT-STATUS.md).
+
 Depends on: TOPT-01, TOPT-03
 
 Findings: TH-1, TH-2, TH-3

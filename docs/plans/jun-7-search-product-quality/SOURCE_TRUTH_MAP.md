@@ -2,14 +2,14 @@
 
 ## Baseline Capability and Correctness
 
-- DSL capability inventory:
-  - `docs/analysis/jun-4-dsl-capabilty.md`
+- DSL capability entrypoint:
+  - `docs/reference/dsl-capabilities.md`
 - Sourcegraph parity guard:
   - `tools/benchmark/sourcegraph_parity.py`
 - capability drift guard:
   - `tools/ci/lint/check-dsl-capability-truth.py`
 - correctness verification split:
-  - `docs/plans/jun-7-verification-hellgates/rfc.md`
+  - `docs/adr/JUN-08-001-verification-hellgate-and-benchmark-separation.md`
 
 ## External Competitive Baseline
 

@@ -1,6 +1,13 @@
-# Sep 25 current-source closeout boundary
+# Sep 25 source-bound closeout record
 
-Status: `BLOCKED` for current-source Rust qualification and performance evidence.
+Historical snapshot only. For the latest observed checkout and remaining TOPT
+conditions, use [CURRENT-STATUS.md](CURRENT-STATUS.md). All HEADs, commands,
+host observations and verdicts below apply only to their stated Sep 25 source
+and environment. The section titled “Remaining work” is the Sep 25 handoff,
+not a claim that `dad270f1` is the present HEAD.
+
+Status at the recorded sources: `BLOCKED` for Rust qualification and
+performance evidence.
 
 ## Sep 25 follow-up — DSL baseline admission replay
 
@@ -213,7 +220,7 @@ escalations. Compilation progress is not a bench-build pass. The shared main
 advanced to `62836029` and retains unrelated dirty changes; neither source
 nor that overlay inherits the `37b9b4b7` partial result.
 
-## Remaining work, in dependency order
+## Sep 25 handoff at its recorded source, in dependency order
 
 1. Obtain a quiet host through the owners of the foreign builds; do not kill
    other tasks from this ticket. Confirm normal launch of generated Rust

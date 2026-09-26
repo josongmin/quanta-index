@@ -26,6 +26,9 @@ contract, separate CI and independent consumer results to that snapshot only.
 Concurrent main changes and the subsequent G-02 on/off diagnostic comparator
 fix require a new exact-source freeze for any current-main qualification;
 the [active gap register](GAP-REGISTER.md) records the remaining gates.
+The post-G-06 source-bound attempt is reserved at
+`/private/tmp/qi-rbr-source-final.xEv5WC/final-closeout.json`; its status is
+`NOT_RUN` until terminal evidence is written. This path is not a passing flag.
 
 The final external `PAIR_VALID`, `QUALITY_DELTA` and `PERF_QUALIFIED` gates
 remain `NOT_RUN` until independent corpus/gold, admitted pair/replay and

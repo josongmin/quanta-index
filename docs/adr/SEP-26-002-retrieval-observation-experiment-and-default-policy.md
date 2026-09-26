@@ -58,6 +58,12 @@ node cannot hide positive-RSS descendants. Malformed and duplicate PIDs, an unob
 explicit failures. Platform APIs that cannot bind PID reuse to a stable process-start identity retain that limitation
 in their proof scope.
 
+The macOS v1 metric rows contain only positive-RSS processes, so a live zero-RSS
+root may be absent from those rows after sampling has observed it. Replay
+refuses duplicate emitted PIDs, a per-process peak above the tree peak, and
+per-process samples above the global sample count; it does not infer root
+observation or PID start identity from the filtered metric rows alone.
+
 ## Consequences
 
 - Diagnostic presence is not a performance result.

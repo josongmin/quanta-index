@@ -24,7 +24,7 @@
 | 08 | 정확 이름/동명이인/부분일치; stable tie; multi-page no duplication/omission | lexical fixtures + storage |
 | 09 | typed25/50/100와 default100; k1/10/100/public cap의 probe·ceiling·refill·pin·force-empty; spec/daemon/diagnostic6/lock4 SHA 및 actual initial-fetch exact trace. bool/float/unknown/missing/duplicate/alias 거부; 동일 후보 fixture에서 fusion 불변식; sparse filters; deadlines; actual lane cost | semantic/storage + 실제 SDK/daemon + 외부 ANN guard |
 | 10 | fresh/delta/reopen/replay/tombstone/fault/restart row set; transient observation의 request/repo/revision/batch/generation/receipt·activation digest 혼합·누락·partial/replay 거부; durable receipt timing 비혼입; V2 wire tag old request dispatch 전 거부·body digest 유지 | semantic integration + 실제 SDK/daemon |
-| 11 | 실제 프로세스 트리와 positive-RSS descendants; zero-RSS 연결 노드 | Python sampler + platform별 owner check |
+| 11 | 실제 프로세스 트리와 positive-RSS descendants; zero-RSS 연결 노드. macOS v1 replay는 emitted PID 중복, tree peak보다 큰 개별 RSS/CPU peak, global보다 큰 개별 samples를 거부하되 zero-RSS root의 metric-row 생략은 허용한다. root 생존과 PID start identity는 filtered v1 row만으로 추론하지 않는다 | Python sampler + platform별 owner check |
 | 12 | cross-suite dev/holdout file·definition·query-family 누수 거부; raw receipts/records로 fresh-process verdict 재도출; wrong-source/admission 및 조건부 T15/T16 `pass` 요약 위조 거부 | contract proof + SDK proof + pair/replay |
 
 ## 3. 실행 명령

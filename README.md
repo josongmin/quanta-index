@@ -191,10 +191,10 @@ Repo layout:
   - `searchd serve` binds the UDS, wires `DomainQueryEngine` to all adapters,
     handles SIGINT/SIGTERM with drain semantics
 
-Implementation packet (search-plane SSOT for this repo):
+Current search-plane authority and residual work:
 
-- [`docs/ssot/README.md`](docs/ssot/README.md)
-- [`docs/ssot/may-23-storage-architecture-endgame-implementation.md`](docs/ssot/may-23-storage-architecture-endgame-implementation.md)
+- [accepted architecture decisions](docs/adr/README.md)
+- [current residual execution plan](docs/plans/sep-21-search-plane-sota-hardening/tickets/FINAL-RESIDUAL-EXECUTION-PLAN.md)
 
 Producer integration points in `semantica-codegraph-v2`:
 

@@ -5,7 +5,7 @@ Status: `PARTIAL / CORPUS_VIEWS_AND_CONTRACT_PAIR_LEXICAL_ADAPTERS_IMPLEMENTED`;
 Open implementation and verification boundaries are in [CURRENT-AUDIT.md](CURRENT-AUDIT.md).
 Historical receipt details are recoverable with
 `git show 84c9331f:docs/plans/sep-26-bench-migration/tickets/CURRENT-AUDIT.md`;
-the old `CLOSEOUT.md` and [BM-07 matrix](BM-07-MIGRATION-MATRIX.md) do not
+the old `CLOSEOUT.md` and historical BM-07 matrix (`git show eff53181:docs/plans/sep-26-bench-migration/tickets/BM-07-MIGRATION-MATRIX.md`) do not
 establish current migration qualification.
 
 ## Purpose

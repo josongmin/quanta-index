@@ -45,6 +45,11 @@ proof. The external receipt and raw artifacts own exact counts, dependencies,
 commands, digests and exclusions. Do not edit a frozen source closure merely
 to insert a passing status.
 
+The post-G-06 final-source verification output is reserved at
+`/private/tmp/qi-rbr-source-final.xEv5WC/final-closeout.json`. It is `NOT_RUN`
+until its terminal artifacts and independent POST identities are bound there.
+The path alone is not evidence.
+
 | ID | Scope and current boundary | Exit condition |
 |---|---|---|
 | G-01 | Native input admission, symbol-owner classification, no-follow evidence reading and staged-output custody are implemented. The nFF immutable snapshot has source-bound native, CI and replay `VERIFIED`; the later changed current main remains `NOT_RUN`. Hosted CI was last observed `BLOCKED` by billing (14 jobs/0 steps). | After concurrent main edits stabilize, freeze the new exact source and rerun affected native Python/Rust/SDK, full CI, gates and evidence replay with all bound identities. Do not compose old owner, partial or frozen-snapshot receipts with the changed source tree. |
@@ -52,7 +57,7 @@ to insert a passing status.
 | G-03 | Broad external quality and conditional model/incremental qualification `NOT_RUN`. Bounded SEARCH3, ANN and native5/85 probes are historical development evidence, not a full admitted pair. | Obtain independent corpus/gold and quiet-host inputs, freeze development and one holdout combination, run the actual pair/replay and declared breadth/filter/churn matrix. Do not reopen bounded implementation probes as missing code. |
 | G-04 | Canonical symbol-text authority expansion `NOT_APPLICABLE` without explicit new product scope. No source-bound ranking defect has been established. | Preserve typed refusal. A new scope requires schema, ingress, lifecycle and cursor migration; ranking changes independently require a demonstrated misranking case and evaluation. |
 | G-05 | Ingest performance, fault and restart qualification `NOT_RUN`; transient timings are not durable receipts. | On a current installed SDK/daemon, run fresh, replace and delete workloads with row-set, activation, fault and restart invariants plus quiet-host latency. |
-| G-06 | Supported-platform resource qualification remains incomplete: macOS bounded owner checks exist; Linux delegated-cgroup/Landlock positive proof `NOT_RUN`. Native Windows pair is `NOT_APPLICABLE` absent new scope. | Bind platform-specific owner/resource custody on supported macOS/Linux. Fake-owner/process-group diagnostics do not qualify Linux cgroup behavior; preserve the macOS legacy `ps` PID-identity exclusion. |
+| G-06 | The macOS v1 resource replay validator now rejects duplicate emitted PIDs, individual RSS/CPU peaks above tree peaks, and per-row samples above the global count. Preimage accepted forged inputs; corrected main passed focused 13/13 and owning module 324/324. A live zero-RSS root is validly absent from positive-RSS metric rows; no v1 replay root-membership or PID start-identity claim is made. Linux delegated-cgroup/Landlock positive proof remains `NOT_RUN`; native Windows pair is `NOT_APPLICABLE` absent new scope. | Requalify the changed source closure and bind platform-specific owner/resource custody on supported macOS/Linux. Fake-owner/process-group diagnostics do not qualify Linux cgroup behavior; preserve the macOS legacy `ps` PID-identity exclusion. |
 
 Closure order: G-01 after the final documentation revision; G-02 and G-05 on
 immutable binaries; G-03 only after the user-owned admission inputs exist;

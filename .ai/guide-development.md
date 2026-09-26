@@ -7,7 +7,7 @@
 1. `AGENTS.md`
 2. `CLAUDE.md`
 3. `README.md`
-4. `docs/ssot/**`
+4. `docs/adr/**`
 5. `docs/plans/**`
 6. `.ai/**`
 
@@ -16,8 +16,7 @@
 | 문서 | 역할 |
 | --- | --- |
 | [`README.md`](../README.md) | 현재 tree truth, build/test entrypoints |
-| [`docs/ssot/README.md`](../docs/ssot/README.md) | SSOT index |
-| [`docs/ssot/may-23-storage-architecture-endgame-implementation.md`](../docs/ssot/may-23-storage-architecture-endgame-implementation.md) | search-plane implementation plan |
+| [`docs/adr/SEP-21-DECISION-REGISTRY.md`](../docs/adr/SEP-21-DECISION-REGISTRY.md) | accepted search-plane decisions |
 | [`docs/plans/may-25-lexical-enhancement/lexical-capability-matrix.md`](../docs/plans/may-25-lexical-enhancement/lexical-capability-matrix.md) | DSL capability matrix |
 | [`SEP-21 decisions`](../docs/adr/SEP-21-DECISION-REGISTRY.md) and [residual ledger](../docs/plans/sep-21-search-plane-sota-hardening/tickets/FINAL-RESIDUAL-EXECUTION-PLAN.md) | Current contract and unfinished readiness work; the Sep-16 audit is historical |
 
@@ -25,6 +24,7 @@ Historical only:
 
 - `git show eff53181:docs/ssot/channel-architecture.md`
 - `git show eff53181:docs/ssot/producer-handoff.md`
+- `git show eff53181:docs/ssot/may-23-storage-architecture-endgame-implementation.md`
 
 ## Fast Start
 

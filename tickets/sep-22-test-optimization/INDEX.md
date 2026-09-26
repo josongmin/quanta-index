@@ -1,18 +1,23 @@
 # TOPT — SEP-22 Test Optimization Structural Remediation
 
-Status: `implementation integrated; current-source qualification blocked`
+Status: `implementation history retained; current-source qualification not established`
 
-Current actionable ledger: [SEP25-CURRENT-CLOSEOUT.md](SEP25-CURRENT-CLOSEOUT.md).
+Current actionable ledger: [CURRENT-STATUS.md](CURRENT-STATUS.md). The
+[Sep 25 closeout](SEP25-CURRENT-CLOSEOUT.md) is a historical source-bound
+receipt, not the current checkout verdict.
 
 Historical integration receipt: `git show eff53181:tickets/sep-22-test-optimization/RCA-2026-09-23-current-source.md`. The 18 finding owners have code changes; this is not a current-source performance or full-workspace-green claim. TOPT-00 and TOPT-08 remain open on the exact gates in the current ledger.
 
 Latest shared-checkout gate follow-up: `git show eff53181:tickets/sep-22-test-optimization/SEP23-GATE-FOLLOWUP.md`.
 
-Source base: `23bd3d7fa7af1122f904e59f1f514935bd5ffe7e`
+Historical audit source base: `23bd3d7fa7af1122f904e59f1f514935bd5ffe7e`
 
-Audit input: `docs/bugbash/sep-22-test-optimization/00-plan.md` and its five
-owner documents. The audit documents and this packet are worktree changes, not
-implementation or qualification receipts.
+Historical audit input: six files formerly under
+`docs/bugbash/sep-22-test-optimization/`, recoverable with
+`git show eff53181:docs/bugbash/sep-22-test-optimization/00-plan.md`
+and `git ls-tree -r --name-only eff53181 -- docs/bugbash/sep-22-test-optimization/`.
+They were removed from the live tree during documentation consolidation; their
+Sep 22 `18 open actions` status is not the current implementation state.
 
 ## Goal
 
@@ -42,6 +47,9 @@ test-cost seams inside their owners:
 - S21-13: source-bound evidence and final qualification boundary.
 
 ## Tickets
+
+The owner tickets below preserve implementation plans and historical receipts.
+Use [CURRENT-STATUS.md](CURRENT-STATUS.md) for live qualification gaps.
 
 | Ticket | Owner outcome | Findings | Depends on |
 |---|---|---|---|

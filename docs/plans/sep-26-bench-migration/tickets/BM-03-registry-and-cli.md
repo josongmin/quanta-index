@@ -1,7 +1,7 @@
 # BM-03 — One registry and one benchmark CLI
 
 Status: `PLAN / NOT_RUN`. Priority: P0. Depends on: BM-02. Common gates: [TEST-PLAN](TEST-PLAN.md).
-Implementation/verification/qualification verdicts for this ticket are recorded in `git show eff53181:docs/plans/sep-26-bench-migration/tickets/CLOSEOUT.md` and, where relevant, [BM-00-INVENTORY.md](BM-00-INVENTORY.md), [BM-03 decision ADR](../../../adr/SEP-27-002-single-benchmark-orchestrator-and-typed-evidence.md) and [BM-07-MIGRATION-MATRIX.md](BM-07-MIGRATION-MATRIX.md). The original `PLAN / NOT_RUN` status above is the plan-time state, not the closeout state.
+The original `PLAN / NOT_RUN` status above is plan-time state, not current verdict. [CURRENT-AUDIT.md](CURRENT-AUDIT.md) owns unfinished work; [SEP-27-002](../../../adr/SEP-27-002-single-benchmark-orchestrator-and-typed-evidence.md) owns the CLI decision. Historical implementation inventory, migration matrix and closeout remain recoverable at `eff53181`, but their receipts are source-specific and do not qualify current code.
 
 ## Purpose
 

@@ -69,13 +69,13 @@ state-cutover runbook. This does not close qualification.
 Authority inputs:
 
 - `docs/analysis/quanta-index-purpose-validation-checklist.md`
-- `docs/analysis/quanta-index-purpose-static-audit-2026-09-21.md`
-- `docs/analysis/quanta-index-purpose-static-audit-2026-09-21-pass2.md`
-- `docs/analysis/quanta-index-purpose-static-audit-2026-09-21-pass3.md`
-- `docs/bugbash/sep-16/structural-remediation-plan.md`
-- `docs/bugbash/sep-16/test-plan.md`
+- `git show eff53181:docs/analysis/quanta-index-purpose-static-audit-2026-09-21.md`
+- `git show eff53181:docs/analysis/quanta-index-purpose-static-audit-2026-09-21-pass2.md`
+- `git show eff53181:docs/analysis/quanta-index-purpose-static-audit-2026-09-21-pass3.md`
+- `git show eff53181:docs/bugbash/sep-16/structural-remediation-plan.md`
+- `git show eff53181:docs/bugbash/sep-16/test-plan.md`
 - `git show eff53181:docs/plans/sep-21-search-plane-sota-hardening/tickets/FINAL-AUDIT.md`
-- [file-level execution action list](ACTION-LIST.md)
+- [current residual action audit](CURRENT-RESIDUAL-2026-09-26.md)
 - [final current-source residual execution plan](FINAL-RESIDUAL-EXECUTION-PLAN.md)
 - [current execution entrypoints](prompts/README.md)
 - [execution progress ledger](EXECUTION-PROGRESS.md)

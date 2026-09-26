@@ -46,13 +46,13 @@ pub(super) fn core_error_to_ipc(err: CoreError) -> SearchPlaneIpcError {
 /// Advisory only — it never changes the fail-closed `code`/`message` outcome and
 /// never rewrites the query. Each repairable code maps to its [`RepairClass`],
 /// a set of *confirmed-supported* alternative filter shapes the caller can move
-/// to, and a docs anchor pointing at the in-repo capability inventory. Internal
+/// to, and a docs anchor pointing at the in-repo capability entrypoint. Internal
 /// invariant breaks (e.g. `BRIDGE_TRANSLATE_FAIL`) and generic failures the
 /// caller cannot act on return `None` rather than a misleading hint.
 ///
 /// The alternative shapes are intentionally the small set verified to exist in
 /// this plane (`repo:` / `file:` / `path:` / `lang:` / `rev:`); the anchor is the
-/// authority for the full list. The auxiliary-epoch refusals (QI-BB-020
+/// navigation point for the full list. The auxiliary-epoch refusals (QI-BB-020
 /// W2) name the one repair that exists for a stale continuation: start
 /// the walk over without a cursor.
 ///
@@ -60,7 +60,7 @@ pub(super) fn core_error_to_ipc(err: CoreError) -> SearchPlaneIpcError {
 /// boundary emits without re-deriving the policy.
 #[must_use]
 pub fn repair_for_code(code: SearchPlaneErrorCodeV2) -> Option<QueryErrorRepair> {
-    const DOCS_ANCHOR: &str = "docs/analysis/jun-4-dsl-capabilty.md";
+    const DOCS_ANCHOR: &str = "docs/reference/dsl-capabilities.md";
     #[expect(
         clippy::wildcard_enum_match_arm,
         reason = "codes without a confirmed repair must return `None`, including future codes; a wildcard is the only maintainable form for this contract-sized enum"

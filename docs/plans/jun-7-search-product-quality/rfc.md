@@ -466,7 +466,7 @@ Owner seams:
 
 - `/Users/songmin/Documents/code-new/quanta-index/tools/benchmark/README.md`
 - `/Users/songmin/Documents/code-new/quanta-index/Justfile`
-- `/Users/songmin/Documents/code-new/quanta-index/docs/analysis/jun-4-dsl-capabilty.md`
+- `/Users/songmin/Documents/code-new/quanta-index/docs/reference/dsl-capabilities.md`
 
 Required work:
 

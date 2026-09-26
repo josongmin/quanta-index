@@ -1079,7 +1079,7 @@ qualification.
 found proof-result/host trust, resolved cross-repo Cargo dependency-root,
 P09 backend-health/diagnostic, and P11 operational-action authority gaps.
 The [residual execution plan](FINAL-RESIDUAL-EXECUTION-PLAN.md) and
-[action list](ACTION-LIST.md) now sequence the repairs. This document update
+[residual execution plan](FINAL-RESIDUAL-EXECUTION-PLAN.md) now sequences the repairs. This document update
 issued no proof manifest and did not run Rust or release qualification.
 
 ## Source of truth

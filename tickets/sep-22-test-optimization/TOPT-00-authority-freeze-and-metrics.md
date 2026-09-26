@@ -2,7 +2,8 @@
 
 Status: `blocked — quiet-host timing absent; historical admission irrecoverable`
 
-Current source/evidence boundary: [SEP25-CURRENT-CLOSEOUT.md](SEP25-CURRENT-CLOSEOUT.md).
+Current status and remaining evidence: [CURRENT-STATUS.md](CURRENT-STATUS.md).
+The [Sep 25 closeout](SEP25-CURRENT-CLOSEOUT.md) is historical.
 
 Depends on: none
 

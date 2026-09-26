@@ -1,8 +1,9 @@
 # TOPT-08 — Same-Source Integration and Qualification
 
-Status: `blocked — current source lacks full Rust and uncontended performance evidence`
+Status: `blocked — current-source full Rust and performance qualification not established`
 
-Current source/evidence boundary: [SEP25-CURRENT-CLOSEOUT.md](SEP25-CURRENT-CLOSEOUT.md).
+Current status and remaining evidence: [CURRENT-STATUS.md](CURRENT-STATUS.md).
+The [Sep 25 closeout](SEP25-CURRENT-CLOSEOUT.md) is historical.
 
 Depends on: TOPT-01 through TOPT-07
 

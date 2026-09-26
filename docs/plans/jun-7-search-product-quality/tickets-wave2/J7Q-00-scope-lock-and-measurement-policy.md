@@ -26,9 +26,9 @@ single verdict.
 
 ## Source Truth Anchors
 
-- `/Users/songmin/Documents/code-new/quanta-index/docs/plans/jun-7-verification-hellgates/rfc.md`
+- `/Users/songmin/Documents/code-new/quanta-index/docs/adr/JUN-08-001-verification-hellgate-and-benchmark-separation.md`
 - `/Users/songmin/Documents/code-new/quanta-index/tools/benchmark/README.md`
-- `/Users/songmin/Documents/code-new/quanta-index/docs/analysis/jun-4-dsl-capabilty.md`
+- `/Users/songmin/Documents/code-new/quanta-index/docs/reference/dsl-capabilities.md`
 - `/Users/songmin/Documents/code-new/quanta-index/docs/plans/jun-7-search-product-quality/MEASUREMENT_MATRIX.md`
 - `/Users/songmin/Documents/code-new/quanta-index/docs/plans/jun-7-search-product-quality/COMMAND_AND_ARTIFACT_CONTRACT.md`
 
@@ -78,7 +78,7 @@ python3 tools/ci/lint/check-dsl-capability-truth.py
 
 ```bash
 sed -n '1,220p' docs/plans/jun-7-search-product-quality/rfc.md
-sed -n '1,220p' docs/plans/jun-7-verification-hellgates/rfc.md
+sed -n '1,220p' docs/adr/JUN-08-001-verification-hellgate-and-benchmark-separation.md
 sed -n '1,220p' tools/benchmark/README.md
 ```
 
