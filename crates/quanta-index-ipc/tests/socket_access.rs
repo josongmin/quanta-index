@@ -79,7 +79,8 @@ impl IpcDispatcher<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse> 
             | SearchPlaneControlIpcRequest::MetricsSnapshot(_)
             | SearchPlaneControlIpcRequest::QuarantineInventory(_)
             | SearchPlaneControlIpcRequest::QuarantineDiscard(_)
-            | SearchPlaneControlIpcRequest::ProcessReadiness(_)) => {
+            | SearchPlaneControlIpcRequest::ProcessReadiness(_)
+            | SearchPlaneControlIpcRequest::ProcessRequestEventsV1(_)) => {
                 SearchPlaneControlIpcResponse::Error(quanta_index_contract::SearchPlaneIpcError {
                     code: quanta_index_contract::SearchPlaneErrorCodeV2::Internal,
                     message: format!("only CurrentGeneration is stubbed, got {other:?}"),
