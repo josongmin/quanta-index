@@ -1259,7 +1259,10 @@ fn actual_runner_binary_emits_receipt_bound_v5_record() {
     let diagnostic: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&diagnostic_out).expect("diagnostic bytes"))
             .expect("diagnostic JSON");
-    assert_eq!(diagnostic["schema_version"], 6);
+    assert_eq!(
+        diagnostic["schema_version"],
+        serde_json::json!(quanta_index_retrieval_bench::diagnostics::DIAGNOSTIC_SCHEMA_VERSION)
+    );
     assert_eq!(
         diagnostic["hybrid_fetch_policy"],
         quanta_index_retrieval_bench::diagnostics::hybrid_fetch_policy_value(

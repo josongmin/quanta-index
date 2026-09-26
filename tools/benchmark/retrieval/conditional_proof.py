@@ -293,6 +293,57 @@ def operation_oracle(case: dict) -> tuple[dict, dict, dict]:
     return before, fresh, expected
 
 
+def default_window_operation_oracle(batch: dict) -> dict[str, int]:
+    """Independent operation oracle for the registered resident proof recipe.
+
+    The recipe uses the public default contract: 1024 indivisible owner groups,
+    32 MiB f32 vectors. These are verifier expectations, never runtime policy.
+    A policy change must deliberately migrate this oracle and its goldens.
+    Counts are derived from inputs, not accepted from the producer's report.
+    """
+    max_owners, max_bytes = 1024, 32 * 1024 * 1024
+    windows: list[list[tuple[int, tuple, list[dict]]]] = []
+    current: list[tuple[int, tuple, list[dict]]] = []
+    used_bytes = 0
+    for scope_index, scope in enumerate(batch["replace_scopes"]):
+        groups: dict[tuple, list[dict]] = {}
+        for row in scope["embeddings"]:
+            groups.setdefault(owner(row), []).append(row)
+        for identity, rows in groups.items():
+            byte_count = sum(4 * len(row["vector"]) for row in rows)
+            if byte_count > max_bytes:
+                raise ValueError("incremental input owner exceeds default window contract")
+            if current and (len(current) == max_owners or used_bytes + byte_count > max_bytes):
+                windows.append(current)
+                current, used_bytes = [], 0
+            current.append((scope_index, identity, rows))
+            used_bytes += byte_count
+    if current:
+        windows.append(current)
+    fragments = sum(len({index for index, _, _ in window}) for window in windows)
+    cluster_windows = sum(any(identity[0] == "ClusterCard" for _, identity, _ in window)
+                          for window in windows)
+    membership_appends = 0
+    for window in windows:
+        for index in {index for index, _, _ in window}:
+            record_ids = {row["record_id"] for scope_index, _, rows in window
+                          if scope_index == index for row in rows}
+            membership_appends += any(item["members"] and item["cluster_record_id"] in record_ids
+                                      for item in batch["replace_scopes"][index]["cluster_memberships"])
+    tombstones = batch["tombstone_scopes"]
+    chunks = [tombstones[start:start + max_owners] for start in range(0, len(tombstones), max_owners)]
+    cluster_chunks = sum(any(item["semantic_scope"]["corpus_kind"] == "ClusterCard" for item in chunk)
+                         for chunk in chunks)
+    clears = batch["clear_surfaces"]
+    # Every admitted surface has an explicit matching ClusterCard owner kind.
+    if any(surface not in {"File", "Module", "Symbol", "Chunk"} for surface in clears):
+        raise ValueError("incremental clear surface is not in the public contract")
+    return {"windows": len(windows), "replace_scopes": fragments,
+            "semantic_delete_commits": len(windows) + len(clears) + len(chunks),
+            "membership_delete_commits": cluster_windows + len(clears) + cluster_chunks,
+            "membership_append_calls": membership_appends}
+
+
 def incremental_rows(observed: object, plan: object) -> tuple[list[dict], int]:
     observed = exact(observed, {"schema_version", "cases"}, "incremental output")
     plan = exact(plan, {"schema_version", "cases"}, "incremental plan")
@@ -337,13 +388,12 @@ def incremental_rows(observed: object, plan: object) -> tuple[list[dict], int]:
             raise ValueError("before/fresh full state differs from independent input/operation oracle")
         receipts = exact(raw["receipts"], {"fresh", "before", "delta"}, "build receipts")
         for key, batch in (("fresh", case["fresh"]), ("before", case["before"]), ("delta", delta)):
-            nonempty_scopes = sum(bool(scope["embeddings"]) for scope in batch["replace_scopes"])
-            owner_groups = sum(len({owner(row) for row in scope["embeddings"]}) for scope in batch["replace_scopes"])
+            expected_operations = default_window_operation_oracle(batch)
             receipt = exact(receipts[key], {"generation", "batch_digest", "manifest_digest", "windows", "replace_scopes", "rows", "stages"}, "owner execution receipt")
             if type(receipt["generation"]) is not int or not 0 <= receipt["generation"] < 2**64 \
                 or any(type(receipt[field]) is not int or not 0 <= receipt[field] < 2**64 for field in ("windows", "replace_scopes", "rows")) \
                 or any(receipt[field] != batch[field] for field in ("generation", "batch_digest", "manifest_digest")) \
-                or not nonempty_scopes <= receipt["replace_scopes"] <= owner_groups \
+                or receipt["replace_scopes"] != expected_operations["replace_scopes"] \
                 or receipt["rows"] != sum(len(scope["embeddings"]) for scope in batch["replace_scopes"]):
                 raise ValueError("incremental build receipt does not bind input batch")
             stages = exact(receipt["stages"], {"owner_scopes", "windows", "semantic_delete_calls",
@@ -353,27 +403,16 @@ def incremental_rows(observed: object, plan: object) -> tuple[list[dict], int]:
                 or stages["owner_scopes"] != receipt["replace_scopes"] or stages["windows"] != receipt["windows"]:
                 raise ValueError("ingest stage report differs from actual batch tally")
             scopes, windows = receipt["replace_scopes"], receipt["windows"]
-            membership_scopes = sum(any(item["members"] for item in scope["cluster_memberships"])
-                                    for scope in batch["replace_scopes"])
-            membership_groups = sum(len({owner(row) for row in scope["embeddings"] if any(
-                item["cluster_record_id"] == row["record_id"] and item["members"]
-                for item in scope["cluster_memberships"]
-            )}) for scope in batch["replace_scopes"])
             if (windows == 0) != (scopes == 0) or windows > scopes \
+                or windows != expected_operations["windows"] \
                 or stages["semantic_append_calls"] != windows \
-                or not membership_scopes <= stages["membership_append_calls"] <= membership_groups:
+                or stages["membership_append_calls"] != expected_operations["membership_append_calls"]:
                 raise ValueError("ingest stage execution counts cannot produce the bound batch")
             mutations = len(batch["clear_surfaces"]) + len(batch["tombstone_scopes"])
-            cluster_groups = sum(len({owner(row) for row in scope["embeddings"]
-                                      if row["corpus_kind"] == "ClusterCard"})
-                                 for scope in batch["replace_scopes"])
-            cluster_mutations = len(batch["clear_surfaces"]) + sum(
-                scope["semantic_scope"]["corpus_kind"] == "ClusterCard"
-                for scope in batch["tombstone_scopes"])
             if stages["semantic_delete_calls"] != scopes + mutations \
                 or stages["membership_delete_calls"] != scopes + mutations \
-                or stages["semantic_delete_commits"] != owner_groups + mutations \
-                or stages["membership_delete_commits"] != cluster_groups + cluster_mutations:
+                or stages["semantic_delete_commits"] != expected_operations["semantic_delete_commits"] \
+                or stages["membership_delete_commits"] != expected_operations["membership_delete_commits"]:
                 raise ValueError("ingest delete counts differ from bound owner/mutation execution")
             durations = exact(stages["durations"], {"total", "prepare", "promotion", "clear_surfaces", "stream", "semantic_delete",
                 "membership_delete", "semantic_append", "membership_append", "tombstones", "seal", "embedding"}, "ingest stage durations")

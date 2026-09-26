@@ -541,3 +541,78 @@ def test_failed_command_cannot_emit_receipt(
     with pytest.raises(ValueError, match="exit 1"):
         portable_proof.produce("contract", out)
     assert not (out / "execution-context.json").exists()
+
+
+@pytest.mark.parametrize("rail", ["contract", "sdk"])
+def test_validator_captures_each_artifact_once_before_path_replacement(fake_execution, monkeypatch, rail):
+    out, _, _ = fake_execution
+    receipt = portable_proof.produce(rail, out)
+    reader = portable_proof._read_repo_regular_bytes
+    reads = {}
+
+    def replace_after_capture(root, name, *, label):
+        raw = reader(root, name, label=label)
+        reads[name] = reads.get(name, 0) + 1
+        (root / name).write_bytes(b"tampered after descriptor capture")
+        return raw
+
+    monkeypatch.setattr(portable_proof, "_read_repo_regular_bytes", replace_after_capture)
+    assert portable_proof.validate(receipt)["rail"] == rail
+    assert reads and all(count == 1 for count in reads.values())
+    with pytest.raises((ValueError, OSError)):
+        portable_proof.validate(receipt)
+
+
+@pytest.mark.parametrize("rail", ["contract", "sdk"])
+def test_validator_refuses_symlink_for_every_consumed_proof_artifact(fake_execution, monkeypatch, rail):
+    out, _, _ = fake_execution
+    receipt = portable_proof.produce(rail, out)
+    reader = portable_proof._read_repo_regular_bytes
+    consumed = set()
+
+    def track(root, name, *, label):
+        consumed.add(name)
+        return reader(root, name, label=label)
+
+    monkeypatch.setattr(portable_proof, "_read_repo_regular_bytes", track)
+    portable_proof.validate(receipt)
+    artifacts = [out / name for name in consumed]
+    for path in artifacts:
+        saved = path.read_bytes()
+        copy = out / "custody-symlink-target"
+        copy.write_bytes(saved)
+        path.unlink()
+        path.symlink_to(copy.name)
+        try:
+            with pytest.raises((ValueError, OSError)):
+                portable_proof.validate(receipt)
+        finally:
+            path.unlink()
+            path.write_bytes(saved)
+            copy.unlink()
+
+
+def test_canonical_summary_digest_and_parse_use_one_capture(tmp_path, monkeypatch):
+    summary = tmp_path / "summary.json"
+    receipt = tmp_path / "receipt.json"
+    summary.write_text(json.dumps({"command": "fixture", "executed": 1}))
+    different = json.dumps({"command": "forged", "executed": 1}).encode()
+    closure = {"revision": "b" * 40}
+    receipt.write_text(json.dumps({
+        "schema_version": 2, "revision": "b" * 40, "rail": "fixture",
+        "tier": "correctness", "command": "fixture", "evidence_path": str(summary),
+        "evidence_sha256": hashlib.sha256(different).hexdigest(), "test_event_count": 1,
+        "source_closure": closure, "input_evidence": [],
+    }))
+    original_json = portable_proof._json
+
+    def replace_after_json(path):
+        parsed = original_json(path)
+        if path == summary:
+            summary.write_bytes(different)
+        return parsed
+
+    monkeypatch.setattr(portable_proof, "_json", replace_after_json)
+    with pytest.raises(ValueError, match="differs from source and machine evidence"):
+        portable_proof._canonical_receipt(receipt, rail="fixture", command="fixture",
+            summary=summary, inputs={}, closure=closure)

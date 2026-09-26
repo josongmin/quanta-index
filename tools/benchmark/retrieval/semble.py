@@ -641,6 +641,11 @@ def validate_native_profile_report(
         }
         if not isinstance(event, dict) or set(event) != required:
             raise AdapterError("Semble worker execution event shape is invalid")
+        if any(
+            type(event[name]) is not int or event[name] < 0
+            for name in ("rep", "phase_iteration", "call_ordinal")
+        ):
+            raise AdapterError("Semble execution event integer identity is invalid")
         key = tuple(event[name] for name in ("rep", "phase", "phase_iteration", "task_id"))
         if key != expected_event or event["call_ordinal"] != ordinal:
             raise AdapterError("Semble execution event order differs from the query protocol")

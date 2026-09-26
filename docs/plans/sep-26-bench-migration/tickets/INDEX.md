@@ -43,7 +43,8 @@ New benchmark-only packages stay in the **root Cargo workspace** and share its t
   now has a contract-proof adapter using typed test counts and frozen SDK
   binaries, a five-product lexical recorded-scoring capture adapter and a
   paired diagnostic bridge to the existing native execution/verdict owner.
-  Current paired integration proof is in progress. Fresh lexical search,
+  Frozen paired/CLI contract proof passed 112 tests; the complete selected
+  canonical Python recipe passed 579 tests. Fresh lexical search,
   external corpus release/views and the actual two-repo pilot remain open. Native binary inventory,
   monitored host-lease admission and hosted CI remain separate open proof/code
   boundaries, detailed in [CURRENT-AUDIT.md](CURRENT-AUDIT.md).

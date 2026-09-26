@@ -5,6 +5,14 @@ proofs do not establish current-source or release closure. Use the
 [execution evidence index](EXECUTION-PROGRESS.md) to inspect the live result.
 Tracked docs do not embed a result SHA; validated receipts own it.
 
+Latest P08 hard-deadline owner change uses one phase origin across drain,
+required-child-loss and rollback; registered child/stop-time/overflow scenarios
+were added. Native validation is still in a cold dependency build and has no
+terminal owner verdict. The initial source-moving run cannot establish RED or
+final-source closure; see the progress ledger for its live handle and reissue
+condition. R0 tool binding/captured-byte admission are coordinated Python work,
+not closed by the historical execution-custody results.
+
 2026-09-26 current implementation/residual status:
 [parallel structural audit](CURRENT-RESIDUAL-2026-09-26.md). Supervisor loss,
 resolved Cargo roots and pytest evidence admission were repaired; release and

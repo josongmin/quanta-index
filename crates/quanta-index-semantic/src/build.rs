@@ -22,7 +22,7 @@
     reason = "module is intentionally crate-internal; pub(crate) is the deliberate visibility — clippy normalizes to redundant but workspace `unreachable_pub = deny` blocks the alternate `pub` form"
 )]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -1003,32 +1003,72 @@ fn semantic_scope_tuple_from_embedding(
     )
 }
 
-fn semantic_scopes_for_replace_scope(
-    scope: &SemanticReplaceScope,
-) -> BTreeSet<(String, String, String)> {
-    scope
-        .embeddings
-        .iter()
-        .map(semantic_scope_tuple_from_embedding)
-        .collect()
+/// Preserve exact tuples: independently combining corpus/kind/ID lists would
+/// delete the cross product, including owners absent from this mutation.
+fn semantic_scope_delete_predicate(scopes: &BTreeSet<(String, String, String)>) -> Option<String> {
+    let mut groups: BTreeMap<(&str, &str), Vec<String>> = BTreeMap::new();
+    for (corpus, kind, id) in scopes {
+        groups
+            .entry((corpus, kind))
+            .or_default()
+            .push(crate::sql::quote_sql_string(id));
+    }
+    let clauses: Vec<String> = groups.into_iter().map(|((corpus, kind), ids)| {
+        format!("({COLUMN_CORPUS_KIND} = {} AND {COLUMN_OWNER_KIND} = {} AND {COLUMN_OWNER_ID} IN ({}))",
+            crate::sql::quote_sql_string(corpus), crate::sql::quote_sql_string(kind), ids.join(", "))
+    }).collect();
+    (!clauses.is_empty()).then(|| clauses.join(" OR "))
 }
 
-async fn delete_by_semantic_scope(
-    table: &lancedb::Table,
-    corpus_kind: &str,
-    owner_kind: &str,
-    owner_id: &str,
+fn membership_scope_delete_predicate(
+    scopes: &BTreeSet<(String, String, String)>,
+) -> Option<String> {
+    let mut groups: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    for (corpus, kind, id) in scopes {
+        if corpus == SemanticCorpusKindV1::ClusterCard.as_code_str() {
+            groups
+                .entry(kind)
+                .or_default()
+                .push(crate::sql::quote_sql_string(id));
+        }
+    }
+    let clauses: Vec<String> = groups
+        .into_iter()
+        .map(|(kind, ids)| {
+            format!(
+                "({COLUMN_MEMBERSHIP_OWNER_KIND} = {} AND {COLUMN_MEMBERSHIP_OWNER_ID} IN ({}))",
+                crate::sql::quote_sql_string(kind),
+                ids.join(", ")
+            )
+        })
+        .collect();
+    (!clauses.is_empty()).then(|| clauses.join(" OR "))
+}
+
+/// One native delete per table for a bounded set of mutation owners. The
+/// logical scope counters are recorded by the callers, not by native calls.
+async fn delete_scope_batch(
+    tables: &WorkingTables,
+    scopes: &BTreeSet<(String, String, String)>,
     report: &mut IngestStageReport,
 ) -> Result<(), CoreError> {
-    let predicate = format!(
-        "{COLUMN_CORPUS_KIND} = {} AND {COLUMN_OWNER_KIND} = {} AND {COLUMN_OWNER_ID} = {}",
-        crate::sql::quote_sql_string(corpus_kind),
-        crate::sql::quote_sql_string(owner_kind),
-        crate::sql::quote_sql_string(owner_id),
-    );
+    if let Some(predicate) = semantic_scope_delete_predicate(scopes) {
+        delete_semantic_predicate(&tables.table, &predicate, report).await?;
+    }
+    if let Some(predicate) = membership_scope_delete_predicate(scopes) {
+        delete_membership_predicate(&tables.membership_table, &predicate, report).await?;
+    }
+    Ok(())
+}
+
+async fn delete_semantic_predicate(
+    table: &lancedb::Table,
+    predicate: &str,
+    report: &mut IngestStageReport,
+) -> Result<(), CoreError> {
     let delete_started = Instant::now();
     let _result = table
-        .delete(predicate.as_str())
+        .delete(predicate)
         .await
         .map_err(|err| lancedb_err(&format!("delete predicate `{predicate}`"), err))?;
     report.durations.semantic_delete = report
@@ -1039,20 +1079,14 @@ async fn delete_by_semantic_scope(
     Ok(())
 }
 
-async fn delete_cluster_membership_by_owner(
+async fn delete_membership_predicate(
     table: &lancedb::Table,
-    owner_kind: &str,
-    owner_id: &str,
+    predicate: &str,
     report: &mut IngestStageReport,
 ) -> Result<(), CoreError> {
-    let predicate = format!(
-        "{COLUMN_MEMBERSHIP_OWNER_KIND} = {} AND {COLUMN_MEMBERSHIP_OWNER_ID} = {}",
-        crate::sql::quote_sql_string(owner_kind),
-        crate::sql::quote_sql_string(owner_id),
-    );
     let delete_started = Instant::now();
     let _result = table
-        .delete(predicate.as_str())
+        .delete(predicate)
         .await
         .map_err(|err| lancedb_err(&format!("delete membership predicate `{predicate}`"), err))?;
     report.durations.membership_delete = report
@@ -1159,75 +1193,6 @@ async fn delete_surface_rows(
         .saturating_add(monotonic_nanos_since(delete_started));
     report.semantic_delete_commits = report.semantic_delete_commits.saturating_add(1);
     Ok(())
-}
-
-async fn delete_replace_scope_rows(
-    table: &lancedb::Table,
-    scope: &SemanticReplaceScope,
-    report: &mut IngestStageReport,
-) -> Result<(), CoreError> {
-    report.semantic_delete_calls = report.semantic_delete_calls.saturating_add(1);
-    for (corpus_kind, owner_kind, owner_id) in semantic_scopes_for_replace_scope(scope) {
-        delete_by_semantic_scope(table, &corpus_kind, &owner_kind, &owner_id, report).await?;
-    }
-    Ok(())
-}
-
-async fn delete_tombstone_scope_rows(
-    table: &lancedb::Table,
-    scope: &SemanticTombstoneScope,
-    report: &mut IngestStageReport,
-) -> Result<(), CoreError> {
-    report.semantic_delete_calls = report.semantic_delete_calls.saturating_add(1);
-    let semantic_scope = &scope.semantic_scope;
-    delete_by_semantic_scope(
-        table,
-        semantic_scope.corpus_kind.as_code_str(),
-        semantic_scope.owner_kind.as_code_str(),
-        semantic_scope.owner_id.as_str(),
-        report,
-    )
-    .await
-}
-
-async fn delete_replace_scope_memberships(
-    table: &lancedb::Table,
-    scope: &SemanticReplaceScope,
-    report: &mut IngestStageReport,
-) -> Result<(), CoreError> {
-    report.membership_delete_calls = report.membership_delete_calls.saturating_add(1);
-    let mut owners = BTreeSet::new();
-    for embedding in &scope.embeddings {
-        if embedding.corpus_kind == SemanticCorpusKindV1::ClusterCard {
-            let _inserted = owners.insert((
-                embedding.owner_kind.as_code_str(),
-                embedding.owner_id.as_ref(),
-            ));
-        }
-    }
-    for (owner_kind, owner_id) in owners {
-        delete_cluster_membership_by_owner(table, owner_kind, owner_id, report).await?;
-    }
-    Ok(())
-}
-
-async fn delete_tombstone_memberships(
-    table: &lancedb::Table,
-    scope: &SemanticTombstoneScope,
-    report: &mut IngestStageReport,
-) -> Result<(), CoreError> {
-    report.membership_delete_calls = report.membership_delete_calls.saturating_add(1);
-    let semantic_scope = &scope.semantic_scope;
-    if semantic_scope.corpus_kind != SemanticCorpusKindV1::ClusterCard {
-        return Ok(());
-    }
-    delete_cluster_membership_by_owner(
-        table,
-        semantic_scope.owner_kind.as_code_str(),
-        semantic_scope.owner_id.as_str(),
-        report,
-    )
-    .await
 }
 
 /// Append every row of `window` as one batch, after its owners' rows are
@@ -1638,7 +1603,7 @@ async fn apply_clear_surfaces(
     Ok(())
 }
 
-/// Replace one window: every scope's owners are deleted, then the window's
+/// Replace one admitted window: its exact owners are deleted in one batch, then the window's
 /// rows are appended as one batch and its memberships per scope.
 async fn apply_window(
     tables: &WorkingTables,
@@ -1646,10 +1611,17 @@ async fn apply_window(
     dimension: usize,
     report: &mut IngestStageReport,
 ) -> Result<(), CoreError> {
-    for scope in window.scopes() {
-        delete_replace_scope_rows(&tables.table, scope, report).await?;
-        delete_replace_scope_memberships(&tables.membership_table, scope, report).await?;
+    let scopes = window
+        .scopes()
+        .iter()
+        .flat_map(|scope| &scope.embeddings)
+        .map(semantic_scope_tuple_from_embedding)
+        .collect();
+    for _scope in window.scopes() {
+        report.semantic_delete_calls = report.semantic_delete_calls.saturating_add(1);
+        report.membership_delete_calls = report.membership_delete_calls.saturating_add(1);
     }
+    delete_scope_batch(tables, &scopes, report).await?;
     append_window(&tables.table, window, dimension, report).await?;
     for scope in window.scopes() {
         append_cluster_membership_scope(&tables.membership_table, scope, report).await?;
@@ -1660,11 +1632,22 @@ async fn apply_window(
 async fn apply_tombstones(
     tables: &WorkingTables,
     tombstones: &[SemanticTombstoneScope],
+    policy: SemanticStreamWindowPolicy,
     report: &mut IngestStageReport,
 ) -> Result<(), CoreError> {
-    for scope in tombstones {
-        delete_tombstone_scope_rows(&tables.table, scope, report).await?;
-        delete_tombstone_memberships(&tables.membership_table, scope, report).await?;
+    for chunk in tombstones.chunks(policy.max_owner_scopes()) {
+        let mut scopes = BTreeSet::new();
+        for scope in chunk {
+            let owner = &scope.semantic_scope;
+            let _inserted = scopes.insert((
+                owner.corpus_kind.as_code_str().to_owned(),
+                owner.owner_kind.as_code_str().to_owned(),
+                owner.owner_id.clone(),
+            ));
+            report.semantic_delete_calls = report.semantic_delete_calls.saturating_add(1);
+            report.membership_delete_calls = report.membership_delete_calls.saturating_add(1);
+        }
+        delete_scope_batch(tables, &scopes, report).await?;
     }
     Ok(())
 }
@@ -1812,7 +1795,12 @@ pub(crate) fn build_stream_reported(
         let tombstones_started = Instant::now();
         crate::run_blocking(
             runtime,
-            apply_tombstones(&tables, &header.mutations.tombstone_scopes, &mut report),
+            apply_tombstones(
+                &tables,
+                &header.mutations.tombstone_scopes,
+                policy,
+                &mut report,
+            ),
         )?;
         report.durations.tombstones = monotonic_nanos_since(tombstones_started);
         let manifest_bytes = if header.batch.seal {

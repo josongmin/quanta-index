@@ -1,5 +1,68 @@
 # SEP-21 execution evidence
 
+## 2026-09-26 hard-deadline phase-origin repair — native proof pending
+
+Started at main `ef22fb055be265eeece2b9a9942f071870e6a679`; another
+writer advanced shared main to `6e266b99ab03cd585aa0a3e2f8b3bf890cd04169`
+and included the initial unproved regression in that commit. This is not code
+or owner closure. Other writers' benchmark/Python/governance changes remain
+outside this Rust owner's edit scope.
+
+- RCA: drain first consumed the cooperative interval and then constructed
+  `now + hard_deadline`, instead of charging both checkpoints to one phase
+  origin. Required-child-loss also began its hard budget after stop callbacks.
+  Default 30/125-second configuration could therefore wait roughly 155 seconds;
+  the existing 400-ms fixture only asserted an outer five seconds.
+- Extended the existing supervisor owner, not a second timer/IR: drain,
+  required-child-loss and rollback capture the hard deadline at phase entry.
+  Cooperative collection uses that same origin and cannot exceed the hard
+  deadline. Stop callback time consumes the budget. Overflow is exhausted,
+  never a renewed origin or unlimited interval. Removed `hard_at_or`.
+  Child classification, unfinished-child custody and the reaper remain intact.
+- Added registered owner scenarios: unreported, reported-but-live and adopted
+  children; stop callback time in operator drain, required-child-loss and
+  actual refused-spawn rollback; unrepresentable hard deadline. Held children
+  are released before assertions, and guards must remain held until actual
+  child termination. RR corrected the reported fixture to publish only after
+  drain's stop callback, avoiding accidental startup/loss-path coverage.
+- Pre-patch owner SHA-256:
+  `b4bbf107ce7d15adc8364ac0a40f32faa55e5f44a07fe1c8b7c707bd4ec7904f`.
+  Current implementation hash:
+  `1603345d351edda3d410b1baf65beb5911429403b4b68cd709483ccb86d05d6b`;
+  owner-test hash:
+  `1af9e7859d36a9d662c375c1e6131c8724d9a78561a0259a2b5b7eec6ff26824`.
+  `Cargo.lock` remained
+  `ff40c97922eb0c81ec1c46ca6bcc3e40e4b9d2d51ea497ec1a288cbb2b314837`;
+  pinned toolchain file
+  `c3b14ae51e250f5dfbccefccabcead245ffb3ee3b023050aa79e3cc544023d69`;
+  `.cargo/config.toml`
+  `f6308580477cf746b7a3fa03750293049dd4fe07b78fbed3f98b125663686234`.
+- `rustfmt --edition 2024` on the two owned Rust files and scoped
+  `git diff --check`: exit 0. No test result is implied by formatting.
+- Native command: `just rust-profile test-runtime-supervisor-owner`.
+  Its declared target is `runtime-supervisor-owner-v1`, four test threads,
+  lane `test-runtime-supervisor-owner-lane`, one Cargo/Nextest process.
+  Raw ongoing log: `/tmp/quanta-drain-deadline.Tg8oiK/red.log` (the name
+  denotes the initial planned RED, not an executed RED result).
+  Executor session 4514, Nextest PID 22890 / Cargo PID 23023 were confirmed
+  live in DataFusion/Lance dependency compilation. This cold run started
+  before the repair and source changed while it was building dependencies;
+  any terminal output is interim/source-moving evidence only. Behavioral
+  RED and final-source owner result are **NOT_RUN**, not zero-test success.
+  Once terminal, reissue this exact registered rail against fixed final owner
+  hashes; do not restart on an observation timeout or substitute a smaller rail.
+- Exclusions: no trusted final proof manifest, whole-workspace, release daemon,
+  Linux signal/maintenance-loss/FD-residue qualification, activation or push.
+  Actual wired stop actions were inspected: IPC/provider use atomic stop flags,
+  maintenance sends its stop signal. This change charges callback time; it does
+  not sandbox arbitrary user-provided blocking callbacks or OS scheduling.
+  The mandatory 10001-row daemon failure and semantic per-owner delete
+  multiplier are independent, still-open obligations.
+- Ownership coordination: the lint/CI root owns R0 actual tool selection;
+  its `ratchet_finalagent` owns captured raw-evidence bytes. Their Python paths
+  are not modified here. Existing 70/87 process-custody runs remain historical
+  scoped evidence, not proof that either R0 invariant is now closed.
+
 ## 2026-09-26 direct-exit process-group custody
 
 Review and repair on shared dirty main

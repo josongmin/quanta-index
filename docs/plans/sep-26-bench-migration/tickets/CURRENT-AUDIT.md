@@ -4,9 +4,97 @@
 language in `CLOSEOUT.md` and `BM-07-MIGRATION-MATRIX.md`. A registered producer
 and a valid typed fixture are not an implemented profile execution adapter.
 
+## Latest paired common CLI checkpoint
+
+Implementation was captured from original main `6e266b99ab03cd585aa0a3e2f8b3bf890cd04169`
+plus concurrent dirty changes into independent clean snapshot
+`70f46e332d9ab349ddac3d078d3c17d09632dad7` at
+`/tmp/quanta-pair-freeze.SvGG3G/repo`. The original patch is retained as
+`/tmp/quanta-pair-freeze.SvGG3G/source.patch`, SHA-256
+`0303fb28227da92fc7e657307928acf32998cb86780feb985242ab0c18ab3e9b`.
+Main subsequently advanced independently; this receipt is not mutable-main
+or global repository qualification.
+
+- `pair_capture.py` connects the native `pair` and `verdict` owners to common
+  `run/validate/replay/summarize` with external `--pair-spec`. The existing
+  scorer remains authoritative; separate file/context/indexed-span cases are
+  validated from raw native output rather than fabricated common scores.
+- Corpus replay retains a real self-contained Git bundle (commit/tree and
+  executable modes), exact five-role inputs, driver/runner/searchd/Semble
+  executable identities and original native bytes/path provenance. Original
+  mutable corpus/output directories are not required by replay.
+- The actual native manifest/schema is **v2**. Registry v5 was an erroneous
+  registration; it is corrected to v2 and checked against the owner and JSON
+  schema. No artifact was silently converted to another version.
+- Traversal, symlink/special entries, duplicate/reordered inventory, compression,
+  encryption, malformed ZIP and CRC failures refuse. Evidence/native output/
+  corpus root overlaps are rejected before creating capture directories.
+- The public CLI fixture exercises capture, validation, summary and raw replay;
+  its producer is explicitly mocked. Native verdict re-scoring and Git restore
+  are real subprocesses. This is **not** live Quanta/Semble search evidence.
+- Shared current-source focused result: **26 passed in 93.50 s**, uv CPython
+  3.13.9, command `uv run --frozen --extra dev python -m pytest
+  tools/ci/tests/test_pair_capture.py -q -x
+  --junitxml=/tmp/quanta-micro-audit.EwaPQA/pair-cli-hardened-current.xml`.
+  JUnit SHA-256 `1ee4f4a8ee562a8a2cd19b18e65c75a71a38bc5dee38e9fdf6eb206d31dc9324`.
+  Exact pair owner/test digests retained in the frozen snapshot are
+  `063ce3ef52b732b76c90cbce722b8962d84d4ae97d3488e85d4afd2fe7a17014`
+  and `f188e83cc96e06394ca1de26456746f82381777a3f7554725418ef57684fcd0d`.
+  Focused shared-source proof excludes complete integration and native products.
+
+**FAILED — preserved earlier receipts:** the initial shared CLI suite failed
+one stale expectation that still required an unimplemented pair adapter (68
+passed); raw JUnit `pair-cli-current.xml`, SHA-256
+`f87488a8c9922e7def8826521fd3e6143e896da0147d357c3176493c9e84bc7e`,
+under `/tmp/quanta-micro-audit.EwaPQA`. A frozen command named nonexistent
+`test_source_closure.py` and collected no tests; raw
+`/tmp/quanta-pair-freeze.SvGG3G/paired-integration.xml`, SHA-256
+`b49b02106b6138bcca5f80c2b63c614fbec4af46d22e8b6b0c2f71d18f611ad2`.
+Corrected runs are separate receipts, not replacements or filtered success.
+
+**VERIFIED — frozen paired/CLI integration contract:** uv CPython 3.13.9,
+`uv run --frozen --extra dev python -m pytest
+tools/ci/tests/test_pair_capture.py tools/ci/tests/test_benchctl.py
+tools/ci/tests/test_benchmark_manifest.py tools/ci/tests/test_benchmark_policy.py
+-q -x --junitxml=/tmp/quanta-pair-freeze.SvGG3G/paired-integration-final.xml`
+completed **112 passed in 168.82 s**, exit 0. JUnit SHA-256
+`23e27712eb944f32e7fbd7833d01bd31a22188c363b565ce1b1fcaa0d3ddc2f6`.
+The independent source-closure suite completed **48 passed in 89.32 s**;
+`/tmp/quanta-pair-freeze.SvGG3G/source-closure.xml`, SHA-256
+`5beaac4c2ed26e446f96be7d7547379748192068a9a0a7c58bd19834c9373e35`.
+`benchmark-retrieval` closure binds 914 files with identity
+`e0ea34a37e2e4c2ef51372379f382de6bf33481f6c3abcdd188b40efe43e3d99`;
+manifest `/tmp/quanta-pair-freeze.SvGG3G/source-identity.json`, SHA-256
+`e3d766889a66a844e588c784d36fe1c3387c4bc6f0af34b37af92653a41c5073`.
+Test-authority, scoped Ruff and clean snapshot diff checks also exited 0.
+
+**VERIFIED — full selected canonical Python contract recipe:**
+`PYTEST_ADDOPTS=--junitxml=/tmp/quanta-pair-freeze.SvGG3G/canonical-contract.xml
+just benchmark-control-contract-local` completed in the same clean snapshot
+with **579 passed in 284.62 s**, exit 0; JUnit has 579 tests, zero failures,
+zero errors and zero skipped. Raw JUnit SHA-256
+`aecb3b5b01d5f8974c7c1c67f2a4ee9118014db89cb11f6aaabcfb3d2beb4248`;
+full selected command/stdout log
+`/tmp/quanta-pair-freeze.SvGG3G/canonical-contract.log`, SHA-256
+`e20e047aed84efecb44931b0eaf3301d94f0bc6fc33847dcfac6221dd3f91bc4`.
+All 23 selected owner files executed under the internally locked uv Python
+entrypoint. This covers Python benchmark control/capture/custody contracts,
+not native Rust execution, hosted CI, live searches or quiet-host performance.
+
+Remaining code/real-execution scope: external corpus release with both
+`code_only`/`developer_search` materialized views and complete tracked inventory
+policy; owned live comparator capture and fresh two-repo pilot; complete native
+test executable inventory/build provenance and capture-time host lease. The
+current pair bridge duplicates corpus bundle/native archive bytes per metric
+case; large-corpus storage deduplication/streaming is not proven. Existing
+`corpus_set.py` candidate code manifests are not those materialized release
+views. Independent gold/license/model/quiet-host admission remains a separate
+qualification boundary. Native micro and retrieval-contract processes still
+have no accepted complete-profile terminal receipt in this checkpoint.
+
 ## Latest common lexical capture checkpoint
 
-Main base remains `577d60b518344163145ad2f1afe1f3e7c656762e` with concurrent
+Historical main base was `577d60b518344163145ad2f1afe1f3e7c656762e` with concurrent
 dirty work. The lexical adapter was frozen independently at
 `421a2527bf0ecf310f8407c17d01daf16f026a74` in
 `/tmp/quanta-micro-audit.EwaPQA/proof-lexical-capture` (clean checkout).
@@ -41,7 +129,7 @@ This does not qualify mutable main or the live products.
   Quanta: `d5eb808215b206cc4b4248039cce64cc9aef36fe1c4ffe1ab95791f225cde543`;
   Semble: `d36dd98576385cf9686cfa8e7c0aaee0fd213dd5c2777e1b5ba7bf7ac08cd7cd`.
 
-**NOT_RUN — fresh live-product search/corpus pilot, paired common CLI adapter,
+**NOT_RUN — fresh live-product search/corpus pilot,
 quality/performance qualification and hosted CI.** Fixture commands prove the
 execution/evidence contract, not comparator availability, independent gold,
 live index freshness or product quality/speed. Real native micro and retrieval
@@ -660,14 +748,14 @@ in-progress root above; it is **NOT_RUN** until that sequence terminates.
 | Owner | Required code work | DoD |
 | --- | --- | --- |
 | BM-04 | Complete the actual full-profile Criterion capture/validate/replay receipt | Adapter and focused custody tests exist; require both registered targets and every case through the clean frozen CLI, then fresh-process raw-derived replay. Diagnostic ns only; instruction and performance rails are not implemented/qualified. |
-| BM-05 | Paired CLI execution/evidence adapter, fresh live lexical pilot and actual contract-profile receipt | Contract and lexical recorded-input adapters exist; lexical frozen contract tests and CLI replay are VERIFIED above. Require terminal actual SDK/contract run plus fresh validation/replay, paired common execution with external corpus/query/gold paths, and a fresh real-product/corpus lexical pilot. Preserve file/span and judged/unjudged spaces and reuse scorer owners. |
+| BM-05 | Corpus release/views, fresh live lexical pilot and actual contract-profile receipt | Contract, pair and lexical recorded-input adapters exist; pair frozen integration (112 tests) and complete selected Python recipe (579 tests) are VERIFIED in the latest checkpoint. Require terminal actual SDK/contract run plus fresh validation/replay, complete external corpus release/views and a fresh real-product two-repo pilot. Preserve file/span and judged/unjudged spaces and reuse scorer owners. |
 | BM-06 | No remaining unauthenticated import implementation gap in this audited scope | Clean-source import/validate/two-family fresh-process replay is VERIFIED on fixed fixtures. Authentic recording verification and real-agent outcomes remain NOT_RUN; the CLI rejects authenticated claims rather than fabricating that proof. |
 | BM-04/07 | Native build/binary inventory and capture-time host lease | Exact executed binary/toolchain/flags bound before execution; monitored lease loss and generator saturation exclude speed/capacity qualification; clean-source representative capture and hosted CI receipts |
 
 BM-00/01/02 infrastructure remains in place. BM-03 is a partial execution
 surface, BM-04 has native wiring/fixture coverage but not complete micro support,
-BM-05 has contract-proof and lexical recorded-input adapters but no completed
-paired common adapter or fresh live lexical pilot;
+BM-05 has contract-proof, paired diagnostic and lexical recorded-input adapters
+with focused frozen integration receipts but no fresh live lexical pilot;
 BM-06 has a verified unauthenticated diagnostic import contract, not real-agent
 qualification. BM-07 cannot claim global cutover while the other gaps remain.
 

@@ -2270,6 +2270,13 @@ def test_adapter_rejects_forged_or_mismatched_profile_reports():
         "actual_alpha_by_task": None,
     })
     semble_adapter.validate_native_profile_report(dict(base), "lexical-only", None)
+    for field in ("rep", "phase_iteration", "call_ordinal"):
+        for invalid in (False, 0.0):
+            forged = json.loads(json.dumps(base))
+            forged["execution_events"][0][field] = invalid
+            forged["execution_events_sha256"] = ev.digest(ev.canonical(forged["execution_events"]))
+            with pytest.raises(semble_adapter.AdapterError, match="integer identity"):
+                semble_adapter.validate_native_profile_report(forged, "lexical-only", None)
     for field in ("repetitions", "warmup_passes", "event_lane_count"):
         forged = json.loads(json.dumps(base))
         if field == "event_lane_count":

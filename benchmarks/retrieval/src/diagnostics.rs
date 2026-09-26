@@ -14,6 +14,9 @@ use crate::record::QueryPack;
 use crate::sdk::{QueryOutcome, RouteExplanation};
 use crate::{BenchError, BenchResult};
 
+/// Current diagnostic artifact version, independent of runner record schema.
+pub const DIAGNOSTIC_SCHEMA_VERSION: u64 = 6;
+
 fn lane_trace_matches_contribution(trace_lane: &str, contribution_lane: &str) -> bool {
     trace_lane == contribution_lane || trace_lane.strip_prefix("hybrid.") == Some(contribution_lane)
 }
@@ -369,7 +372,7 @@ pub fn diagnostic_value(
         }
     }
     Ok(json!({
-        "schema_version": 6,
+        "schema_version": DIAGNOSTIC_SCHEMA_VERSION,
         "server_observation": server_observation_value(observation_policy)?,
         "hybrid_fetch_policy": hybrid_fetch_policy_value(fetch_floor_policy)?,
         "ingest": null,

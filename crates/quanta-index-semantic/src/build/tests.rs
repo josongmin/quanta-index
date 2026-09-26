@@ -2076,8 +2076,8 @@ fn build_reported(
 }
 
 // CASE-COVERS: RBR-10 step 1 — a fresh streamed ingest reports the batch's
-// own owner/window counts (one delete call and one delete commit per owner
-// scope, one append per window), the storage durations nest inside the
+// own owner/window counts (one logical delete per scope, one native delete
+// and append per window), the storage durations nest inside the
 // stream pass, and embedding stays unmeasured.
 #[test]
 fn ingest_stage_report_matches_fresh_batch_owner_and_window_counts() -> TestResult {
@@ -2105,8 +2105,8 @@ fn ingest_stage_report_matches_fresh_batch_owner_and_window_counts() -> TestResu
         "one delete call per replace scope"
     );
     assert_eq!(
-        report.semantic_delete_commits, 4,
-        "one commit per distinct owner"
+        report.semantic_delete_commits, 2,
+        "one successful native delete per admitted window"
     );
     assert_eq!(report.semantic_append_calls, 2, "one append per window");
     // The membership delete pass runs per replace scope regardless of
@@ -2267,7 +2267,216 @@ fn ingest_stage_report_is_deterministic_for_the_same_input() -> TestResult {
     assert_eq!(first.owner_scopes, 3);
     assert_eq!(first.windows, 3);
     assert_eq!(first.semantic_delete_calls, 3);
-    assert_eq!(first.semantic_delete_commits, 6, "two owners per scope");
+    assert_eq!(
+        first.semantic_delete_commits, 3,
+        "one native delete per two-owner window"
+    );
     assert_eq!(first.semantic_append_calls, 3);
+    Ok(())
+}
+
+// CASE-COVERS: replacement and tombstone batching retain exact tuple isolation
+// and SQL quoting. Actual stored rows, not predicate shape, are the oracle.
+#[test]
+fn batched_owner_deletes_preserve_cross_product_neighbors_and_memberships() -> TestResult {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let temp = tempdir()?;
+    let tables = crate::run_blocking(&runtime, super::open_working_tables(temp.path(), 3))?;
+    let hostile = "a' OR 1=1 --";
+    let specifications = [
+        (
+            "delete-symbol",
+            OwnerDocKind::Symbol,
+            hostile,
+            SemanticCorpusKindV1::SymbolCard,
+        ),
+        (
+            "keep-symbol",
+            OwnerDocKind::Symbol,
+            "b",
+            SemanticCorpusKindV1::SymbolCard,
+        ),
+        (
+            "delete-module",
+            OwnerDocKind::Module,
+            "b",
+            SemanticCorpusKindV1::ModuleCard,
+        ),
+        (
+            "keep-module",
+            OwnerDocKind::Module,
+            hostile,
+            SemanticCorpusKindV1::ModuleCard,
+        ),
+        (
+            "keep-corpus",
+            OwnerDocKind::Module,
+            "b",
+            SemanticCorpusKindV1::ClusterCard,
+        ),
+        (
+            "delete-cluster-a",
+            OwnerDocKind::Module,
+            hostile,
+            SemanticCorpusKindV1::ClusterCard,
+        ),
+        (
+            "delete-cluster-b",
+            OwnerDocKind::RepoMap,
+            "b",
+            SemanticCorpusKindV1::ClusterCard,
+        ),
+        (
+            "keep-cluster-kind",
+            OwnerDocKind::RepoMap,
+            hostile,
+            SemanticCorpusKindV1::ClusterCard,
+        ),
+    ];
+    let records: Vec<EmbeddingRecord> = specifications
+        .iter()
+        .map(|(id, kind, owner, corpus)| {
+            embedding(
+                id,
+                "src/shared.rs",
+                *kind,
+                owner,
+                *corpus,
+                vec![1.0, 0.0, 0.0],
+            )
+        })
+        .collect::<Result<_, _>>()?;
+    let seed = SemanticReplaceScope {
+        scope: scope("src/shared.rs"),
+        scope_digest: "scope:shared".to_string(),
+        embeddings: records,
+        cluster_memberships: specifications
+            .iter()
+            .filter(|(_, _, _, corpus)| *corpus == SemanticCorpusKindV1::ClusterCard)
+            .map(|(id, _, _, _)| ClusterMembershipReplaceV1 {
+                cluster_record_id: format!("record-{id}"),
+                authority_digest: format!("auth:{id}"),
+                members: vec![SymbolId::new(format!("member-{id}"))],
+            })
+            .collect(),
+    };
+    crate::run_blocking(&runtime, async {
+        let rows: Vec<_> = seed.embeddings.iter().collect();
+        let _added = tables
+            .table
+            .add(super::build_record_batch(&rows, 3)?)
+            .execute()
+            .await
+            .map_err(|error| CoreError::Storage(format!("seed semantic rows: {error}")))?;
+        let mut report = IngestStageReport::default();
+        super::append_cluster_membership_scope(&tables.membership_table, &seed, &mut report).await
+    })?;
+    let replacements = [0, 2, 5, 6]
+        .into_iter()
+        .map(|index| seed.embeddings[index].clone())
+        .collect();
+    let replace = SemanticReplaceScope {
+        embeddings: replacements,
+        cluster_memberships: seed
+            .cluster_memberships
+            .iter()
+            .filter(|membership| {
+                matches!(
+                    membership.cluster_record_id.as_str(),
+                    "record-delete-cluster-a" | "record-delete-cluster-b"
+                )
+            })
+            .cloned()
+            .collect(),
+        ..seed.clone()
+    };
+    let policy = SemanticStreamWindowPolicy::new(4, SEMANTIC_STREAM_WINDOW_VECTOR_BYTES)?;
+    let replace_scopes = vec![replace];
+    let mut source = ResidentScopeSource::new(&replace_scopes, policy)?;
+    let window = source
+        .next_window()?
+        .ok_or("replacement must issue a window")?;
+    let _fill = policy.admit(&window)?;
+    let mut replacement_report = IngestStageReport::default();
+    crate::run_blocking(
+        &runtime,
+        super::apply_window(&tables, &window, 3, &mut replacement_report),
+    )?;
+    assert_eq!(replacement_report.semantic_delete_commits, 1);
+    assert_eq!(replacement_report.membership_delete_commits, 1);
+    // All eight rows remain exactly once: replacement removed its old rows
+    // before append and did not touch any of the cross-product neighbors.
+    let read_ids =
+        |table: &lancedb::Table, column: &'static str| -> Result<Vec<String>, CoreError> {
+            crate::run_blocking(&runtime, async {
+                let batches = table
+                    .query()
+                    .execute()
+                    .await
+                    .map_err(|error| CoreError::Storage(format!("query fixture: {error}")))?
+                    .try_collect::<Vec<_>>()
+                    .await
+                    .map_err(|error| CoreError::Storage(format!("collect fixture: {error}")))?;
+                let mut ids = Vec::new();
+                for batch in &batches {
+                    let values = column_as::<arrow_array::StringArray>(batch, column, "Utf8")?;
+                    ids.extend((0..values.len()).map(|index| values.value(index).to_string()));
+                }
+                ids.sort();
+                Ok(ids)
+            })
+        };
+    let mut all_expected: Vec<_> = specifications
+        .iter()
+        .map(|(id, _, _, _)| format!("record-{id}"))
+        .collect();
+    all_expected.sort();
+    assert_eq!(read_ids(&tables.table, COLUMN_RECORD_ID)?, all_expected);
+    let tombstones: Vec<_> = [0, 2, 5, 6]
+        .into_iter()
+        .map(|index| {
+            let row = &seed.embeddings[index];
+            SemanticTombstoneScope {
+                semantic_scope: semantic_scope(row.corpus_kind, row.owner_kind, &row.owner_id),
+            }
+        })
+        .collect();
+    let mut tombstone_report = IngestStageReport::default();
+    let two = SemanticStreamWindowPolicy::new(2, SEMANTIC_STREAM_WINDOW_VECTOR_BYTES)?;
+    crate::run_blocking(
+        &runtime,
+        super::apply_tombstones(&tables, &tombstones, two, &mut tombstone_report),
+    )?;
+    assert_eq!(tombstone_report.semantic_delete_calls, 4);
+    assert_eq!(tombstone_report.membership_delete_calls, 4);
+    assert_eq!(tombstone_report.semantic_delete_commits, 2);
+    assert_eq!(tombstone_report.membership_delete_commits, 1);
+    assert_eq!(
+        read_ids(&tables.table, COLUMN_RECORD_ID)?,
+        vec![
+            "record-keep-cluster-kind",
+            "record-keep-corpus",
+            "record-keep-module",
+            "record-keep-symbol"
+        ]
+    );
+    assert_eq!(
+        read_ids(
+            &tables.membership_table,
+            crate::layout::COLUMN_MEMBERSHIP_CLUSTER_RECORD_ID
+        )?,
+        vec!["record-keep-cluster-kind", "record-keep-corpus"]
+    );
+    let before_empty = tombstone_report.clone();
+    crate::run_blocking(
+        &runtime,
+        super::apply_tombstones(&tables, &[], two, &mut tombstone_report),
+    )?;
+    assert_eq!(
+        tombstone_report, before_empty,
+        "empty deletion performs no native operation"
+    );
     Ok(())
 }

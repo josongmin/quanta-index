@@ -9,12 +9,14 @@ Windows production remains blocked by Bash-only cargow and Just recipes.
 from __future__ import annotations
 
 import argparse
+import contextvars
 import hashlib
 import json
 import os
 import platform
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 try:
@@ -26,6 +28,7 @@ except ModuleNotFoundError:  # direct script invocation
     from tools.ci import source_closure
 
 from tools.benchmark.producer_execution import execute
+from tools.benchmark.retrieval.tool_custody import ToolCustody, resolve_tool_paths
 from tools.ci.lint.handoff_validation import (
     _read_repo_regular_bytes,
     _sha256_repo_regular_file,
@@ -46,6 +49,9 @@ RUST_COMMAND = (
     "--lib --test chunking_contract --all-features --locked"
 )
 SDK_COMMAND = "just retrieval-sdk-proof"
+_ACTIVE_CUSTODY: contextvars.ContextVar[tuple[ToolCustody, dict[str, str]] | None] = (
+    contextvars.ContextVar("portable_tool_custody", default=None)
+)
 
 
 def _sha(path: Path) -> str:
@@ -119,12 +125,7 @@ def _tools() -> dict[str, dict[str, str]]:
             "Windows canonical proof is blocked: scripts/cargow and source_closure use Bash; "
             "the verdict also lacks execution-context binding"
         )
-    paths = {"python": Path(sys.executable)}
-    for name in ("cargo", "cargo-nextest", "rustc", "git", "bash", "just"):
-        found = shutil.which(name)
-        if found is None:
-            raise ValueError(f"required executable unavailable: {name}")
-        paths[name] = Path(found)
+    paths = resolve_tool_paths(ROOT, dict(os.environ))
     paths["cargow"] = WRAPPER
     result = {}
     for name, path in paths.items():
@@ -132,6 +133,7 @@ def _tools() -> dict[str, dict[str, str]]:
         resolved = path.resolve(strict=True)
         if not resolved.is_file():
             raise ValueError(f"required executable is not a file: {resolved}")
+        before = (resolved.stat(), _sha(invocation))
         if name == "cargow":
             version = "source-controlled wrapper"
         else:
@@ -144,10 +146,12 @@ def _tools() -> dict[str, dict[str, str]]:
             version = stdout.decode("utf-8").strip()
             if not version:
                 raise ValueError(f"required executable has no version identity: {name}")
+        if (resolved.stat(), _sha(invocation)) != before or invocation.resolve() != resolved:
+            raise ValueError(f"required executable changed during version probe: {name}")
         result[name] = {
             "path": str(invocation),
             "realpath": str(resolved),
-            "sha256": _sha(invocation),
+            "sha256": before[1],
             "version": version,
         }
     return result
@@ -176,6 +180,15 @@ RELEVANT_ENV = frozenset(
         "RUSTFLAGS",
         "CARGO_ENCODED_RUSTFLAGS",
         "RUSTC_WRAPPER",
+        "RUSTC_WORKSPACE_WRAPPER",
+        "RUSTC",
+        "PATH",
+        "RUSTUP_HOME",
+        "PYTHONHOME",
+        "PYTEST_PLUGINS",
+        "BASH_ENV",
+        "ENV",
+        "ZDOTDIR",
         "CARGO_BUILD_TARGET",
         "PYTHONPATH",
         "PYTEST_ADDOPTS",
@@ -196,6 +209,20 @@ def _relevant_environment(environment: dict[str, str]) -> dict[str, str]:
     return {key: environment[key] for key in sorted(RELEVANT_ENV & environment.keys())}
 
 
+def _tool_overrides(
+    tools: dict[str, dict[str, str]], inherited: dict[str, str]
+) -> dict[str, str]:
+    return {
+        "PATH": str(Path(tools["cargo"]["path"]).parent)
+        + os.pathsep
+        + inherited.get("PATH", os.defpath),
+        "RUSTC": tools["rustc"]["realpath"],
+        "RUSTC_WRAPPER": "",
+        "RUSTC_WORKSPACE_WRAPPER": "",
+        "QUANTA_INDEX_SCCACHE": "0",
+    }
+
+
 def _run(
     name: str,
     argv: list[str],
@@ -206,14 +233,27 @@ def _run(
 ) -> bytes:
     if not argv or not Path(argv[0]).is_absolute():
         raise ValueError(f"{name} requires an absolute executable")
-    overrides = {"CARGO_NET_OFFLINE": "true", **(env_overrides or {})}
-    environment = {**os.environ, **overrides}
-    output, errors, _ = execute(
-        argv,
-        cwd=ROOT,
-        env=environment,
-        timeout=PROOF_COMMAND_TIMEOUT_SECONDS,
-    )
+    active = _ACTIVE_CUSTODY.get()
+    inherited = dict(os.environ) if active is None else active[1]
+    controls = {} if active is None else _tool_overrides(active[0].tools(), inherited)
+    overrides = {"CARGO_NET_OFFLINE": "true", **controls, **(env_overrides or {})}
+    if any(overrides.get(key) != value for key, value in controls.items()):
+        raise ValueError("proof command attempted to override selected tool custody")
+    environment = {**inherited, **overrides}
+    if active is not None:
+        if _relevant_environment(dict(os.environ)) != _relevant_environment(inherited):
+            raise ValueError("proof inherited environment changed during production")
+        active[0].check()
+    try:
+        output, errors, _ = execute(
+            argv,
+            cwd=ROOT,
+            env=environment,
+            timeout=PROOF_COMMAND_TIMEOUT_SECONDS,
+        )
+    finally:
+        if active is not None:
+            active[0].check()
     stdout = f"{name}.stdout"
     stderr = f"{name}.stderr"
     _write(out / stdout, output)
@@ -224,7 +264,7 @@ def _run(
             "argv": argv,
             "cwd": str(ROOT),
             "environment": overrides,
-            "inherited_environment": _relevant_environment(dict(os.environ)),
+            "inherited_environment": _relevant_environment(inherited),
             "environment_sha256": _environment_digest(_relevant_environment(environment)),
             "exit_code": 0,
             "stdout": stdout,
@@ -635,7 +675,7 @@ def validate(
             captured[name] = _read_repo_regular_bytes(out, name, label="portable proof evidence")
         return captured[name]
 
-    def digest(name: str) -> str:
+    def captured_digest(name: str) -> str:
         return hashlib.sha256(capture(name)).hexdigest()
 
     execution_root = out if execution_root is None else execution_root
@@ -762,7 +802,7 @@ def validate(
         for role in ("stdout", "stderr"):
             if (
                 row[role] != f"{row['name']}.{role}"
-                or digest(row[role]) != row[f"{role}_sha256"]
+                or captured_digest(row[role]) != row[f"{role}_sha256"]
             ):
                 raise ValueError("proof command output changed")
     raw_evidence = context["raw_evidence"]
@@ -785,7 +825,7 @@ def validate(
     if not isinstance(raw_evidence, dict) or set(raw_evidence) != expected_raw:
         raise ValueError("invalid execution context raw evidence set")
     for name, digest in raw_evidence.items():
-        if digest(name) != digest:
+        if captured_digest(name) != digest:
             raise ValueError(f"proof evidence changed: {name}")
     if context["rail"] == "contract":
         proof_inventory.verify_inventory_authority(capture("python-inventory.json"), "python")

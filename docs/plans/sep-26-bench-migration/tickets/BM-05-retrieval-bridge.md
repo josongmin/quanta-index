@@ -1,6 +1,6 @@
 # BM-05 — Retrieval benchmark registration and product adapters
 
-Status: `PARTIAL / CONTRACT_PAIR_AND_LEXICAL_SCORING_ADAPTERS_IMPLEMENTED`; current paired integration verification is in progress; fresh paired/lexical search pilot remains `NOT_RUN`. Priority: P1. Depends on: BM-02/BM-03; coordinate with RBR-12. Common gates: [TEST-PLAN](TEST-PLAN.md).
+Status: `PARTIAL / CONTRACT_PAIR_AND_LEXICAL_SCORING_ADAPTERS_IMPLEMENTED`; frozen paired/CLI contract verification passed (112 tests), full selected canonical Python recipe passed (579 tests); fresh paired/lexical search pilot remains `NOT_RUN`. Priority: P1. Depends on: BM-02/BM-03; coordinate with RBR-12. Common gates: [TEST-PLAN](TEST-PLAN.md).
 
 Current implementation/verification boundaries are recorded in [CURRENT-AUDIT.md](CURRENT-AUDIT.md). Historical [CLOSEOUT.md](CLOSEOUT.md) and [BM-07-MIGRATION-MATRIX.md](BM-07-MIGRATION-MATRIX.md) do not establish complete migration qualification.
 
