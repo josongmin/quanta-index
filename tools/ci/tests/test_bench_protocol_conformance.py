@@ -448,6 +448,91 @@ def test_run_store_refuses_a_repeated_run_id(tmp_path: Path) -> None:
         store.stage(sealed["run_id"])
 
 
+def test_run_store_refuses_existing_staging_without_erasing_first_writer(tmp_path: Path) -> None:
+    module = _load_evidence_module()
+    store = module.RunStore(tmp_path)
+    run_id = module.sample_evidence()["run_id"]
+    first = store.stage(run_id)
+    first.write_raw("raw/warm-matrix.json", module.SAMPLE_RAW)
+    with pytest.raises(module.EvidenceError, match="staging"):
+        store.stage(run_id)
+    assert (first.path / "raw/warm-matrix.json").read_bytes() == module.SAMPLE_RAW
+
+
+def test_run_store_refuses_linked_staging_parent_and_dangling_run_id(tmp_path: Path) -> None:
+    module = _load_evidence_module()
+    root = tmp_path / "store"
+    root.mkdir()
+    store = module.RunStore(root)
+    run_id = module.sample_evidence()["run_id"]
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    store.staging_dir.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(module.EvidenceError, match="symlink"):
+        store.stage(run_id)
+    assert not (outside / run_id).exists()
+    store.staging_dir.unlink()
+    store.runs_dir.mkdir()
+    store.run_dir(run_id).symlink_to(tmp_path / "missing-run", target_is_directory=True)
+    with pytest.raises(module.EvidenceError, match="already exists"):
+        store.stage(run_id)
+
+
+def test_collect_refuses_linked_runs_parent_without_deleting_outside(tmp_path: Path) -> None:
+    module = _load_evidence_module()
+    root = tmp_path / "store"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    victim = outside / "unreferenced"
+    victim.mkdir(parents=True)
+    marker = victim / "retain-me"
+    marker.write_text("user data")
+    (root / "runs").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(module.EvidenceError, match="symlink"):
+        module.RunStore(root).collect([])
+    assert marker.read_text() == "user data"
+
+
+def test_baseline_admission_refuses_linked_parent_without_writing_outside(tmp_path: Path) -> None:
+    module = _load_evidence_module()
+    root = tmp_path / "store"
+    store = module.RunStore(root)
+    sealed = module.seal(module.sample_evidence())
+    _promote(module, store, sealed)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    store.baselines_dir.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(module.EvidenceError, match="symlink"):
+        store.admit_baseline("dsl-warm", sealed["run_id"], 10_000, "blocked-paired")
+    assert not (outside / "dsl-warm.json").exists()
+
+
+def test_staged_raw_write_refuses_linked_parent_without_writing_outside(tmp_path: Path) -> None:
+    module = _load_evidence_module()
+    staged = module.RunStore(tmp_path / "store").stage(module.sample_evidence()["run_id"])
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (staged.path / "raw").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(module.EvidenceError, match="symlink"):
+        staged.write_raw("raw/warm-matrix.json", module.SAMPLE_RAW)
+    assert not (outside / "warm-matrix.json").exists()
+
+
+def test_staged_raw_write_refuses_existing_hardlink_without_clobber(tmp_path: Path) -> None:
+    module = _load_evidence_module()
+    staged = module.RunStore(tmp_path / "store").stage(module.sample_evidence()["run_id"])
+    outside = tmp_path / "outside"
+    outside.write_bytes(b"retain")
+    (staged.path / "raw").mkdir()
+    os.link(outside, staged.path / "raw" / "warm-matrix.json")
+
+    with pytest.raises(module.EvidenceError, match="unsafe staged raw output"):
+        staged.write_raw("raw/warm-matrix.json", module.SAMPLE_RAW)
+    assert outside.read_bytes() == b"retain"
+
+
 def test_crash_before_promotion_leaves_no_admissible_run(tmp_path: Path) -> None:
     module = _load_evidence_module()
     store = module.RunStore(tmp_path)

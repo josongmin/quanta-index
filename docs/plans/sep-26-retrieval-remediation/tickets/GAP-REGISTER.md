@@ -17,9 +17,30 @@ CI1648 with 15 dynamic subtests and 12 gates. Its external closeout is
 That receipt excludes the changed main documentation tree, hosted CI,
 qualified external pair/performance, full Rust workspace and deployment.
 
+The post-consolidation `20676778` attempt was controlled-stopped when the
+shared store's staged-raw output could write through a linked ancestor. Its
+SDK18 partial result and CI944/1648 partial result are not qualification;
+stop receipt `/private/tmp/qi-rbr-current-final.n3mN6s/final-closeout.json`
+SHA-256 `4fdd909ea0f4b4dc6be480641726dbe49c6098b5af74b7b506b306c3036fa297`.
+The exact main preimage also wrote 39 bytes outside the requested store in a
+bounded reproducer. The corrected writer uses no-follow directory descriptors,
+exclusive raw leaf creation and refuses duplicate staging; the existing
+reader/pointer guards remain. Five added negative controls failed on the old
+source, while the corrected owner-local four-file suite passed 130/130 with
+stable selected inputs (raw `/private/tmp/qi-rbr-sdk-symbol-final.TEINH2/final-store-output-main-green.log`,
+SHA-256 `e751294fc83ca599986cf2f5acf931bfca246fe9d87a69e1cac3c2129de3b29c`).
+This local proof does not qualify a full source or a hostile concurrent
+directory-rename race.
+
+The next exact-source closeout is planned at
+`/private/tmp/qi-rbr-store-final.nFFdMH/final-closeout.json` (`NOT_RUN` at
+this document revision). This path is not proof until terminal raw results
+and identities are bound there. Do not edit this source-closure document
+after the next freeze merely to insert a passing status.
+
 | ID | Scope and current boundary | Exit condition |
 |---|---|---|
-| G-01 | Native input admission, symbol-owner classification and no-follow evidence reading are implemented. Focused/owner-local proofs exist on earlier identified inputs; current-main integration `NOT_RUN`. Hosted CI was last observed `BLOCKED` by billing (14 jobs/0 steps). | Freeze the final source and run canonical Python, Rust, SDK, full CI, gates and evidence replay. Bind selected/executed/passed identities, dependencies, binaries, environment and raw terminals. Do not compose old owner, partial or frozen-snapshot receipts with the changed documentation tree. |
+| G-01 | Native input admission, symbol-owner classification, no-follow evidence reading and staged-output custody are implemented. Focused/owner-local proofs exist on bound earlier inputs; current-main integration `NOT_RUN`. Hosted CI was last observed `BLOCKED` by billing (14 jobs/0 steps). | Freeze the final source and run canonical Python, Rust, SDK, full CI, gates and evidence replay. Bind selected/executed/passed identities, dependencies, binaries, environment and raw terminals. Do not compose old owner, partial or frozen-snapshot receipts with the changed documentation tree. |
 | G-02 | Observation overhead and query performance `NOT_RUN`; hybrid floor default is 100. | Run identical observation on/off workloads, tight deadlines and the declared k/filter/floor matrix on a quiet host. Bind actual planner traces and retain failures/timeouts. Change the default only under the ADR decision rule. |
 | G-03 | Broad external quality and conditional model/incremental qualification `NOT_RUN`. Bounded SEARCH3, ANN and native5/85 probes are historical development evidence, not a full admitted pair. | Obtain independent corpus/gold and quiet-host inputs, freeze development and one holdout combination, run the actual pair/replay and declared breadth/filter/churn matrix. Do not reopen bounded implementation probes as missing code. |
 | G-04 | Canonical symbol-text authority expansion `NOT_APPLICABLE` without explicit new product scope. No source-bound ranking defect has been established. | Preserve typed refusal. A new scope requires schema, ingress, lifecycle and cursor migration; ranking changes independently require a demonstrated misranking case and evaluation. |

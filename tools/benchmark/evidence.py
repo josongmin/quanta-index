@@ -903,21 +903,57 @@ def _entry_present_no_follow(path: Path) -> bool:
         raise EvidenceError(f"unsafe optional benchmark pointer {path}: {error}") from error
 
 
-def _write_atomic(path: Path, data: bytes) -> None:
-    import tempfile
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temporary = Path(name)
+def _open_output_parent(path: Path) -> tuple[Path, int]:
+    absolute = path.absolute()
+    if ".." in absolute.parts or not absolute.name:
+        raise EvidenceError(f"noncanonical benchmark output path: {path}")
     try:
+        directory_fd = os.open(absolute.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as error:
+        raise EvidenceError(f"refusing symlink or unsafe benchmark output path {path}: {error}") from error
+    try:
+        for part in absolute.parts[1:-1]:
+            try:
+                os.mkdir(part, mode=0o700, dir_fd=directory_fd)
+            except FileExistsError:
+                pass
+            next_fd = os.open(
+                part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory_fd
+            )
+            os.close(directory_fd)
+            directory_fd = next_fd
+        return absolute, directory_fd
+    except OSError as error:
+        os.close(directory_fd)
+        raise EvidenceError(f"refusing symlink or unsafe benchmark output path {path}: {error}") from error
+
+
+def _write_atomic(path: Path, data: bytes) -> None:
+    import secrets
+
+    absolute, directory_fd = _open_output_parent(path)
+    temporary = f".{absolute.name}.{secrets.token_hex(16)}.tmp"
+    try:
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=directory_fd,
+        )
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
-        _sync_dir(path.parent)
+        os.replace(temporary, absolute.name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+        os.fsync(directory_fd)
+    except OSError as error:
+        raise EvidenceError(f"refusing symlink or unsafe benchmark output path {path}: {error}") from error
     finally:
-        temporary.unlink(missing_ok=True)
+        try:
+            os.unlink(temporary, dir_fd=directory_fd)
+        except FileNotFoundError:
+            pass
+        os.close(directory_fd)
 
 
 def _sync_dir(path: Path) -> None:
@@ -955,11 +991,15 @@ class RunStore:
 
     def stage(self, run_id: str) -> StagingRun:
         _run_id(run_id)
-        if self.run_dir(run_id).exists():
+        if any(path.is_symlink() for path in (self.root, *self.root.absolute().parents)):
+            raise EvidenceError("run store root or ancestor is a symlink")
+        if self.run_dir(run_id).exists() or self.run_dir(run_id).is_symlink():
             raise EvidenceError(f"run {run_id!r} already exists; run ids are immutable")
         path = self.staging_dir / run_id
-        if path.exists():
-            _remove_dir(path)
+        if self.staging_dir.is_symlink() or self.runs_dir.is_symlink():
+            raise EvidenceError("run store staging/runs directory is a symlink")
+        if path.exists() or path.is_symlink():
+            raise EvidenceError(f"staging run {run_id!r} already exists")
         path.mkdir(parents=True)
         return StagingRun(run_id=run_id, path=path)
 
@@ -967,8 +1007,10 @@ class RunStore:
         evidence = staged.read_evidence()
         self._verify_raw(staged.path, evidence)
         target = self.run_dir(staged.run_id)
-        if target.exists():
+        if target.exists() or target.is_symlink():
             raise EvidenceError(f"run {staged.run_id!r} already exists; run ids are immutable")
+        if self.runs_dir.is_symlink():
+            raise EvidenceError("run store runs directory is a symlink")
         self.runs_dir.mkdir(parents=True, exist_ok=True)
         _sync_dir(staged.path)
         os.rename(staged.path, target)
@@ -1054,6 +1096,8 @@ class RunStore:
 
     def _collect(self, keep: list[str]) -> list[str]:
         retained = set(keep)
+        if self.runs_dir.is_symlink() or self.baselines_dir.is_symlink():
+            raise EvidenceError("run store runs/baselines directory is a symlink")
         # Captures are immutable custody records, including historical ones.
         # Resolve every reference before deleting anything; corruption refuses GC.
         from profile_capture import load_capture
@@ -1137,10 +1181,23 @@ class StagingRun:
     def write_raw(self, relative: str, data: bytes) -> dict[str, Any]:
         _relative_path(relative, "raw path")
         target = self.path / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(data)
+        absolute, directory_fd = _open_output_parent(target)
+        try:
+            descriptor = os.open(
+                absolute.name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o644,
+                dir_fd=directory_fd,
+            )
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.fsync(directory_fd)
+        except OSError as error:
+            raise EvidenceError(f"refusing unsafe staged raw output {relative}: {error}") from error
+        finally:
+            os.close(directory_fd)
         return {"path": relative, "sha256": digest_bytes(data), "bytes": len(data)}
 
     def write_evidence(self, evidence: dict[str, Any]) -> None:
