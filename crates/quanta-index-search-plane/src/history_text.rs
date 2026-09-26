@@ -24,7 +24,8 @@
 //! Residency is bounded by what the ledger retains: at most
 //! `AUX_EPOCH_RETAIN + 1` epochs per history generation, and only the
 //! generations retention keeps; a forgotten generation's handles are
-//! retired with its rows.
+//! retired with its rows. Weak custody also tracks detached handles until
+//! their readers leave, without keeping the native indexes resident.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -37,7 +38,7 @@ use quanta_index_core::{
 };
 
 use crate::post_durable::defer_storage_failure;
-use crate::single_flight::{AwaitFlightFailure, Flight};
+use crate::single_flight::{AwaitFlightFailure, Flight, LiveHandleTracker};
 use crate::snapshot_registry::SnapshotRetireOutcome;
 
 /// The checkpoint name a reader's interruption carries while it waits on
@@ -247,12 +248,40 @@ pub(crate) enum HistoryTextClaim {
 /// flight.
 #[derive(Default)]
 pub struct HistoryTextHandles {
-    slots: Mutex<BTreeMap<EpochKey, Slot>>,
+    state: Mutex<HistoryHandleState>,
+}
+
+#[derive(Default)]
+struct HistoryHandleState {
+    slots: BTreeMap<EpochKey, Slot>,
+    tracked: LiveHandleTracker<EpochKey, dyn HistoryTextSearcher>,
+}
+
+impl HistoryHandleState {
+    fn retire_key(&mut self, key: &EpochKey) -> SnapshotRetireOutcome {
+        let removed = match self.slots.remove(key) {
+            Some(Slot::Resident(handle)) => Some(handle),
+            Some(Slot::Opening(flight)) => {
+                let _previous = self.slots.insert(key.clone(), Slot::Opening(flight));
+                let holders = self.tracked.external_holders(key, None).saturating_add(1);
+                return SnapshotRetireOutcome::StillReferenced { holders };
+            }
+            None => None,
+        };
+        let holders = self.tracked.external_holders(key, removed.as_ref());
+        if holders > 0 {
+            SnapshotRetireOutcome::StillReferenced { holders }
+        } else if removed.is_some() {
+            SnapshotRetireOutcome::Released
+        } else {
+            SnapshotRetireOutcome::NotResident
+        }
+    }
 }
 
 impl HistoryTextHandles {
-    fn lock(&self) -> Result<std::sync::MutexGuard<'_, BTreeMap<EpochKey, Slot>>, CoreError> {
-        self.slots
+    fn lock(&self) -> Result<std::sync::MutexGuard<'_, HistoryHandleState>, CoreError> {
+        self.state
             .lock()
             .map_err(|err| CoreError::Storage(format!("history text handles poisoned: {err}")))
     }
@@ -264,14 +293,14 @@ impl HistoryTextHandles {
         generation: &AuxiliaryGenerationKeyV1,
         epoch: AuxEpochV1,
     ) -> Result<HistoryTextClaim, CoreError> {
-        let mut slots = self.lock()?;
+        let mut state = self.lock()?;
         let key = (generation.clone(), epoch);
-        let claim = match slots.get(&key) {
+        let claim = match state.slots.get(&key) {
             Some(Slot::Resident(handle)) => HistoryTextClaim::Resident(Arc::clone(handle)),
             Some(Slot::Opening(flight)) => HistoryTextClaim::Await(Arc::clone(flight)),
             None => {
                 let flight = Arc::new(Flight::new());
-                let _previous = slots.insert(key, Slot::Opening(Arc::clone(&flight)));
+                let _previous = state.slots.insert(key, Slot::Opening(Arc::clone(&flight)));
                 HistoryTextClaim::Open {
                     generation: generation.clone(),
                     epoch,
@@ -279,7 +308,7 @@ impl HistoryTextHandles {
                 }
             }
         };
-        drop(slots);
+        drop(state);
         Ok(claim)
     }
 
@@ -317,20 +346,23 @@ impl HistoryTextHandles {
                 // Settle the flight even if the registry lock is poisoned:
                 // a waiter must never be left blocked on an outcome that
                 // will not arrive.
-                let recorded = self.lock().map(|mut slots| {
+                let recorded = self.lock().map(|mut state| {
                     let key = (generation, epoch);
                     let ours = matches!(
-                        slots.get(&key),
+                        state.slots.get(&key),
                         Some(Slot::Opening(pending)) if Arc::ptr_eq(pending, &flight)
                     );
+                    if let Ok(handle) = &opened {
+                        state.tracked.track(&key, handle);
+                    }
                     if ours {
                         match &opened {
                             Ok(handle) => {
                                 let _opening =
-                                    slots.insert(key, Slot::Resident(Arc::clone(handle)));
+                                    state.slots.insert(key, Slot::Resident(Arc::clone(handle)));
                             }
                             Err(_failed) => {
-                                let _opening = slots.remove(&key);
+                                let _opening = state.slots.remove(&key);
                             }
                         }
                     }
@@ -347,26 +379,17 @@ impl HistoryTextHandles {
     }
 
     /// Drop the registry's reference to `epoch` and report whether
-    /// anything else still holds it. An open in flight holds it: the
-    /// discard is deferred, and the open's handle is retired by the next
-    /// pass.
+    /// anything else still holds it, including on repeated retirement.
+    /// An open in flight also defers the discard.
     pub fn retire(
         &self,
         generation: &AuxiliaryGenerationKeyV1,
         epoch: AuxEpochV1,
     ) -> Result<SnapshotRetireOutcome, CoreError> {
-        let mut slots = self.lock()?;
+        let mut state = self.lock()?;
         let key = (generation.clone(), epoch);
-        let outcome = match slots.get(&key).map(Self::retire_outcome) {
-            None => SnapshotRetireOutcome::NotResident,
-            Some((outcome, stays)) => {
-                if !stays {
-                    let _removed = slots.remove(&key);
-                }
-                outcome
-            }
-        };
-        drop(slots);
+        let outcome = state.retire_key(&key);
+        drop(state);
         Ok(outcome)
     }
 
@@ -375,37 +398,20 @@ impl HistoryTextHandles {
         &self,
         generation: &AuxiliaryGenerationKeyV1,
     ) -> Result<Vec<(AuxEpochV1, SnapshotRetireOutcome)>, CoreError> {
-        let mut slots = self.lock()?;
+        let mut state = self.lock()?;
+        let keys = state
+            .slots
+            .keys()
+            .chain(state.tracked.keys())
+            .filter(|(key, _epoch)| key == generation)
+            .cloned()
+            .collect::<BTreeSet<_>>();
         let mut outcomes = Vec::new();
-        slots.retain(|(key, epoch), slot| {
-            if key != generation {
-                return true;
-            }
-            let (outcome, stays) = Self::retire_outcome(slot);
-            outcomes.push((*epoch, outcome));
-            stays
-        });
-        drop(slots);
-        Ok(outcomes)
-    }
-
-    /// What retiring `slot` answers, and whether the slot stays: an open in
-    /// flight stays and defers the discard; a resident handle leaves and
-    /// reports who else holds it.
-    fn retire_outcome(slot: &Slot) -> (SnapshotRetireOutcome, bool) {
-        match slot {
-            Slot::Opening(_flight) => (SnapshotRetireOutcome::StillReferenced { holders: 1 }, true),
-            Slot::Resident(handle) => {
-                // The registry's own reference is one of the counted ones.
-                let holders = Arc::strong_count(handle).saturating_sub(1);
-                let outcome = if holders == 0 {
-                    SnapshotRetireOutcome::Released
-                } else {
-                    SnapshotRetireOutcome::StillReferenced { holders }
-                };
-                (outcome, false)
-            }
+        for key in keys {
+            outcomes.push((key.1, state.retire_key(&key)));
         }
+        drop(state);
+        Ok(outcomes)
     }
 }
 
@@ -577,12 +583,44 @@ mod tests {
             None,
             "the reader still holds the landed handle"
         );
+        assert_eq!(
+            parts.retire_and_discard_epoch(&generation(), EPOCH)?,
+            None,
+            "a retry must not discard after the resident slot was removed"
+        );
         drop(handle);
         match parts.retire_and_discard_epoch(&generation(), EPOCH)? {
             Some(HistoryTextDiscardOutcomeV1::Discarded { .. }) => {}
             other => return Err(format!("released, the epoch is discarded: {other:?}").into()),
         }
         assert!(index.epochs_of(&generation())?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn generation_discard_retries_keep_live_retired_epoch_pinned() -> TestResult {
+        let index = index_with(&[1])?;
+        let parts = HistoryTextIndexParts::new(index.clone());
+        let claim = parts.claim(&generation(), EPOCH)?;
+        let handle = parts.land(claim, &RequestBudgetV1::unbounded())?;
+        for _retry in 0..2 {
+            if parts
+                .retire_and_discard_generation(&generation())?
+                .is_some()
+            {
+                return Err("generation discard ignored a live retired epoch".into());
+            }
+            if index.epochs_of(&generation())? != vec![EPOCH] {
+                return Err("generation bytes were discarded under a live epoch handle".into());
+            }
+        }
+        drop(handle);
+        if !matches!(
+            parts.retire_and_discard_generation(&generation())?,
+            Some(HistoryTextDiscardOutcomeV1::Discarded { .. })
+        ) {
+            return Err("generation discard did not resume after the handle dropped".into());
+        }
         Ok(())
     }
 

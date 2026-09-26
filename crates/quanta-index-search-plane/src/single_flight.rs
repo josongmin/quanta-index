@@ -8,9 +8,10 @@
 //! reader's interruption while the open lands for whoever still waits.
 
 use std::any::Any;
+use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 
 use quanta_index_core::{CoreError, RequestBudgetV1};
 
@@ -50,6 +51,83 @@ pub(crate) fn catch_open<T>(
             )),
             Some(payload),
         ),
+    }
+}
+
+/// Weak custody for handles that can outlive removal from a resident map.
+///
+/// It never retains native resources. Dead entries are swept periodically,
+/// while retirement for one key checks every live incarnation of that key.
+pub(crate) struct LiveHandleTracker<K: Ord, H: ?Sized> {
+    tracked: BTreeMap<K, Vec<Weak<H>>>,
+    tracks_since_sweep: u8,
+}
+
+impl<K: Ord, H: ?Sized> Default for LiveHandleTracker<K, H> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<K: Ord, H: ?Sized> LiveHandleTracker<K, H> {
+    pub(crate) const fn new() -> Self {
+        Self {
+            tracked: BTreeMap::new(),
+            tracks_since_sweep: 0,
+        }
+    }
+}
+
+impl<K: Ord + Clone, H: ?Sized> LiveHandleTracker<K, H> {
+    pub(crate) fn track(&mut self, key: &K, handle: &Arc<H>) {
+        let weak = Arc::downgrade(handle);
+        let handles = self.tracked.entry(key.clone()).or_default();
+        handles.retain(|prior| prior.strong_count() > 0);
+        if !handles.iter().any(|prior| prior.ptr_eq(&weak)) {
+            handles.push(weak);
+        }
+        self.tracks_since_sweep = self.tracks_since_sweep.saturating_add(1);
+        if self.tracks_since_sweep >= 64 {
+            self.tracked.retain(|_, handles| {
+                handles.retain(|prior| prior.strong_count() > 0);
+                !handles.is_empty()
+            });
+            self.tracks_since_sweep = 0;
+        }
+    }
+
+    /// Count references outside the removed resident slot, including old
+    /// incarnations that survived eviction or an earlier retirement.
+    pub(crate) fn external_holders(&mut self, key: &K, removed: Option<&Arc<H>>) -> usize {
+        let Some(handles) = self.tracked.get_mut(key) else {
+            return 0;
+        };
+        let mut holders = 0usize;
+        handles.retain(|weak| {
+            let Some(handle) = weak.upgrade() else {
+                return false;
+            };
+            let registry_reference =
+                usize::from(removed.is_some_and(|resident| Arc::ptr_eq(resident, &handle)));
+            holders = holders.saturating_add(
+                Arc::strong_count(&handle)
+                    .saturating_sub(1usize.saturating_add(registry_reference)),
+            );
+            true
+        });
+        if handles.is_empty() {
+            let _empty = self.tracked.remove(key);
+        }
+        holders
+    }
+
+    pub(crate) fn keys(&self) -> impl Iterator<Item = &K> {
+        self.tracked.keys()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tracked_key_count(&self) -> usize {
+        self.tracked.len()
     }
 }
 

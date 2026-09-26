@@ -44,14 +44,14 @@
 //! hit, not a second full open.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
 use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId};
 use quanta_index_core::domains::lexical::LexicalSearcher;
 use quanta_index_core::domains::semantic::SemanticSearcher;
 
-use crate::single_flight::{AwaitFlightFailure, Flight};
+use crate::single_flight::{AwaitFlightFailure, Flight, LiveHandleTracker};
 use quanta_index_core::{
     CoreError, MetricPointV1, MetricSourcePort, RequestBudgetV1, count_from_usize,
 };
@@ -212,32 +212,12 @@ struct Entry<H: ?Sized> {
 struct RegistryState<H: ?Sized> {
     resident: BTreeMap<SnapshotKey, Entry<H>>,
     in_flight: BTreeMap<SnapshotKey, Arc<Flight<H>>>,
-    // Weak references cover handles that outlive eviction or were too large
-    // to cache. Retirement must account for them before deleting disk bytes.
-    tracked: BTreeMap<SnapshotKey, Vec<Weak<H>>>,
-    tracks_since_sweep: u8,
+    tracked: LiveHandleTracker<SnapshotKey, H>,
     tick: u64,
     stats: SnapshotRegistryStats,
 }
 
 impl<H: ?Sized> RegistryState<H> {
-    fn track(&mut self, key: &SnapshotKey, handle: &Arc<H>) {
-        let weak = Arc::downgrade(handle);
-        let handles = self.tracked.entry(key.clone()).or_default();
-        handles.retain(|prior| prior.strong_count() > 0);
-        if !handles.iter().any(|prior| prior.ptr_eq(&weak)) {
-            handles.push(weak);
-        }
-        self.tracks_since_sweep = self.tracks_since_sweep.saturating_add(1);
-        if self.tracks_since_sweep >= 64 {
-            self.tracked.retain(|_, handles| {
-                handles.retain(|prior| prior.strong_count() > 0);
-                !handles.is_empty()
-            });
-            self.tracks_since_sweep = 0;
-        }
-    }
-
     fn touch(&mut self, key: &SnapshotKey) -> Option<Arc<H>> {
         self.tick = self.tick.saturating_add(1);
         let tick = self.tick;
@@ -279,7 +259,7 @@ impl<H: ?Sized> RegistryState<H> {
         key: SnapshotKey,
         opened: &OpenedSnapshot<H>,
     ) -> SnapshotPromoteOutcome {
-        self.track(&key, &opened.handle);
+        self.tracked.track(&key, &opened.handle);
         if opened.resident_bytes > policy.max_resident_bytes {
             self.stats.oversize_uncached = self.stats.oversize_uncached.saturating_add(1);
             return SnapshotPromoteOutcome::Oversize;
@@ -321,31 +301,6 @@ impl<H: ?Sized> RegistryState<H> {
         self.stats.retirements = self.stats.retirements.saturating_add(1);
         Some(removed.handle)
     }
-
-    fn external_holders(&mut self, key: &SnapshotKey, removed: Option<&Arc<H>>) -> usize {
-        let Some(handles) = self.tracked.get_mut(key) else {
-            return 0;
-        };
-        let mut holders = 0usize;
-        handles.retain(|weak| {
-            let Some(handle) = weak.upgrade() else {
-                return false;
-            };
-            let registry_reference =
-                usize::from(removed.is_some_and(|resident| Arc::ptr_eq(resident, &handle)));
-            // This upgrade and the removed registry reference are not
-            // readers; every other strong reference prevents deletion.
-            holders = holders.saturating_add(
-                Arc::strong_count(&handle)
-                    .saturating_sub(1usize.saturating_add(registry_reference)),
-            );
-            true
-        });
-        if handles.is_empty() {
-            let _empty = self.tracked.remove(key);
-        }
-        holders
-    }
 }
 
 /// Registry of opened sealed generations for one track.
@@ -362,8 +317,7 @@ impl<H: ?Sized + Send + Sync + 'static> SnapshotRegistry<H> {
             state: Mutex::new(RegistryState {
                 resident: BTreeMap::new(),
                 in_flight: BTreeMap::new(),
-                tracked: BTreeMap::new(),
-                tracks_since_sweep: 0,
+                tracked: LiveHandleTracker::new(),
                 tick: 0,
                 stats: SnapshotRegistryStats {
                     hits: 0,
@@ -512,12 +466,13 @@ impl<H: ?Sized + Send + Sync + 'static> SnapshotRegistry<H> {
         let mut state = self.lock()?;
         let removed = state.remove(key);
         let fenced = state.in_flight.get(key).cloned();
-        if let Some(flight) = &fenced {
-            if flight.fence() {
-                state.stats.fenced_in_flight = state.stats.fenced_in_flight.saturating_add(1);
-            }
+        if let Some(flight) = &fenced
+            && flight.fence()
+        {
+            state.stats.fenced_in_flight = state.stats.fenced_in_flight.saturating_add(1);
         }
         let holders = state
+            .tracked
             .external_holders(key, removed.as_ref())
             .saturating_add(usize::from(fenced.is_some()));
         drop(state);
@@ -1117,7 +1072,7 @@ mod tests {
             })?;
             drop(held);
         }
-        let tracked = registry.lock()?.tracked.len();
+        let tracked = registry.lock()?.tracked.tracked_key_count();
         if tracked > 64 {
             return Err(format!("dead weak tracking grew with all old misses: {tracked}").into());
         }
