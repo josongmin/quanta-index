@@ -526,7 +526,10 @@ fn real_daemon_roundtrip_publishes_and_queries() {
                 assert!(hit.start_line >= 1 && hit.start_line <= hit.end_line);
             }
         }
-        other => {
+        QueryOutcome::ReturnedWindow {
+            explanation: None, ..
+        } => panic!("lexical query omitted explanation"),
+        other @ (QueryOutcome::RejectedResponse { .. } | QueryOutcome::SdkFailure { .. }) => {
             panic!("lexical query failed: {other:?}");
         }
     }
@@ -580,7 +583,7 @@ fn real_daemon_roundtrip_publishes_and_queries() {
                 );
                 assert_eq!(
                     stages.last().and_then(|stage| stage.returned_candidates),
-                    Some(hits.len() as u64)
+                    Some(u64::try_from(hits.len()).expect("hit count fits u64"))
                 );
             }
             QueryOutcome::ReturnedWindow {

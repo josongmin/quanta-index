@@ -7869,8 +7869,11 @@ def test_v3_byte_coverage_decides_credit():
         "tokens": 5,
         "rank": 1,
         "span_accounting": {
+            "unit_id": "fixed-10-byte-span",
             "indexed_start_byte": 10,
             "indexed_end_byte": 20,
+            "sdk_start_line": 1,
+            "sdk_end_line": 1,
             "extra_context_bytes": 10,
         },
     }
@@ -7885,22 +7888,41 @@ def test_v3_byte_coverage_decides_credit():
     tasks = {"T": {"gold": [gold]}}
     report = ev.indexed_span_diagnostics(run, {("T", "q"): row}, tasks)
     assert report["routes"]["q"]["mean"] == {
-        "hit_at_1": 1.0,
-        "mrr_at_10": 1.0,
-        "recall_at_10": 1.0,
+        "rank_only_hit_at_1": 1.0,
+        "exact_index_span_mrr_at_10": 1.0,
+        "exact_index_span_recall_at_10": 1.0,
         "scored_context_bytes_at_10": 20.0,
         "scored_context_tokens_at_10": 5.0,
         "indexed_bytes_at_10": 10.0,
         "extra_context_bytes_at_10": 10.0,
     }
+    context = report["per_candidate"][0]
+    assert context["indexed_bytes"] == 10
+    assert context["sdk_line_span_bytes"] == 20
+    assert context["scored_projection_bytes"] == 20
+    assert context["scored_to_indexed_expansion_ratio"] == 2.0
+    assert context["sdk_to_indexed_expansion_ratio"] == 2.0
+    exact = json.loads(json.dumps(candidate))
+    exact["start_byte"] = 10
+    exact["end_byte"] = 20
+    exact["tokens"] = 2
+    exact["span_accounting"]["extra_context_bytes"] = 0
+    exact["span_accounting"]["sdk_start_line"] = 0
+    exact["span_accounting"]["sdk_end_line"] = 0
+    row["candidates"] = [exact]
+    exact_report = ev.indexed_span_diagnostics(run, {("T", "q"): row}, tasks)
+    assert exact_report["routes"]["q"]["mean"]["rank_only_hit_at_1"] == 1.0
+    assert exact_report["per_candidate"][0]["scored_projection_bytes"] == 10
+    assert exact_report["per_candidate"][0]["scored_to_indexed_expansion_ratio"] == 1.0
+    assert exact_report["per_candidate"][0]["sdk_line_span_bytes"] is None
     miss = json.loads(json.dumps(candidate))
     miss["span_accounting"]["indexed_start_byte"] = 12
     miss["span_accounting"]["extra_context_bytes"] = 12
     assert ev.covers(miss, gold) is True
     row["candidates"] = [miss]
     report = ev.indexed_span_diagnostics(run, {("T", "q"): row}, tasks)
-    assert report["routes"]["q"]["mean"]["hit_at_1"] == 0.0
-    assert report["routes"]["q"]["mean"]["recall_at_10"] == 0.0
+    assert report["routes"]["q"]["mean"]["rank_only_hit_at_1"] == 0.0
+    assert report["routes"]["q"]["mean"]["exact_index_span_recall_at_10"] == 0.0
     partial = dict(miss)
     partial.pop("span_accounting")
     row["candidates"] = [miss, dict(partial, rank=2)]

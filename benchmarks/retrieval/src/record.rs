@@ -752,7 +752,16 @@ fn prove_hit(
             hit.candidate_id
         )));
     }
-    let extra_context_bytes = u64::try_from((end - start) - (indexed_end - indexed_start))
+    let scored_bytes = end.checked_sub(start).ok_or_else(|| {
+        BenchError::Protocol("scored projection has inverted byte span".to_string())
+    })?;
+    let indexed_bytes = indexed_end
+        .checked_sub(indexed_start)
+        .ok_or_else(|| BenchError::Protocol("published unit has inverted byte span".to_string()))?;
+    let extra_context_bytes = scored_bytes.checked_sub(indexed_bytes).ok_or_else(|| {
+        BenchError::Protocol("published unit exceeds scored projection".to_string())
+    })?;
+    let extra_context_bytes = u64::try_from(extra_context_bytes)
         .map_err(|err| BenchError::Protocol(format!("context expansion cannot fit u64: {err}")))?;
     let rank = u64::try_from(rank)
         .map_err(|err| BenchError::Protocol(format!("SDK hit rank cannot fit u64: {err}")))?;

@@ -1172,6 +1172,7 @@ def indexed_span_diagnostics(
     answerable = sorted(task_id for task_id, task in tasks.items() if task["gold"])
     routes: dict[str, Any] = {}
     rows: list[dict[str, Any]] = []
+    candidate_rows: list[dict[str, Any]] = []
     for route in sorted(run["route_provenance"]):
         capture_id = run["route_provenance"][route]["capture_id"]
         if run["captures"][capture_id]["system"] != "quanta":
@@ -1183,6 +1184,34 @@ def indexed_span_diagnostics(
                     all("span_accounting" in item for item in result["candidates"]),
                     f"partial indexed span evidence: {task_id}/{route}",
                 )
+                for item in result["candidates"]:
+                    span = item["span_accounting"]
+                    indexed_bytes = span["indexed_end_byte"] - span["indexed_start_byte"]
+                    scored_bytes = item["end_byte"] - item["start_byte"]
+                    require(indexed_bytes > 0 and scored_bytes >= indexed_bytes,
+                            f"invalid candidate span accounting: {task_id}/{route}")
+                    sdk_start = span["sdk_start_line"]
+                    sdk_end = span["sdk_end_line"]
+                    require(
+                        (sdk_start == sdk_end == 0)
+                        or (sdk_start > 0 and sdk_start <= sdk_end),
+                        f"invalid SDK line span: {task_id}/{route}",
+                    )
+                    sdk_bytes = scored_bytes if sdk_start > 0 else None
+                    candidate_rows.append({
+                        "task_id": task_id,
+                        "route": route,
+                        "rank": item["rank"],
+                        "unit_id": span["unit_id"],
+                        "indexed_bytes": indexed_bytes,
+                        "sdk_line_span_bytes": sdk_bytes,
+                        "scored_projection_bytes": scored_bytes,
+                        "scored_projection_tokens": item["tokens"],
+                        "scored_to_indexed_expansion_ratio": scored_bytes / indexed_bytes,
+                        "sdk_to_indexed_expansion_ratio": (
+                            sdk_bytes / indexed_bytes if sdk_bytes is not None else None
+                        ),
+                    })
         if not answerable:
             routes[route] = {"status": "not_applicable", "reason": "no_answerable_tasks"}
             continue
@@ -1190,9 +1219,9 @@ def indexed_span_diagnostics(
             routes[route] = {"status": "not_run", "reason": "incomplete_answerable_observation"}
             continue
         sums = {
-            "hit_at_1": 0.0,
-            "mrr_at_10": 0.0,
-            "recall_at_10": 0.0,
+            "rank_only_hit_at_1": 0.0,
+            "exact_index_span_mrr_at_10": 0.0,
+            "exact_index_span_recall_at_10": 0.0,
             "scored_context_bytes_at_10": 0.0,
             "scored_context_tokens_at_10": 0.0,
             "indexed_bytes_at_10": 0.0,
@@ -1202,13 +1231,13 @@ def indexed_span_diagnostics(
             labels = tasks[task_id]["gold"]
             top = _ordered_candidates(results[(task_id, route)])[:10]
             metrics = {
-                "hit_at_1": float(bool(top) and any(indexed_covers(top[0], label) for label in labels)),
-                "mrr_at_10": next(
+                "rank_only_hit_at_1": float(bool(top) and any(indexed_covers(top[0], label) for label in labels)),
+                "exact_index_span_mrr_at_10": next(
                     (1.0 / rank for rank, item in enumerate(top, start=1)
                      if any(indexed_covers(item, label) for label in labels)),
                     0.0,
                 ),
-                "recall_at_10": sum(
+                "exact_index_span_recall_at_10": sum(
                     any(indexed_covers(item, label) for item in top) for label in labels
                 ) / len(labels),
                 "scored_context_bytes_at_10": sum(item["end_byte"] - item["start_byte"] for item in top),
@@ -1230,10 +1259,12 @@ def indexed_span_diagnostics(
             "mean": {key: value / len(answerable) for key, value in sums.items()},
         }
     return {
-        "scorer_identity": "rb-exact-index-rank-only-v1",
+        "scorer_identity": "rb-indexed-span-coverage-v1",
+        "rank_source": "candidate_rank_v1",
         "scope": "diagnostic_not_primary_ndcg",
         "routes": routes,
         "per_query": rows,
+        "per_candidate": sorted(candidate_rows, key=lambda row: (row["task_id"], row["route"], row["rank"])),
     }
 
 
