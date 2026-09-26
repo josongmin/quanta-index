@@ -1,12 +1,12 @@
 # RBR-01 — SDK 응답과 단계별 실행 정보 보존
 
-## 현행 판정 — 2026-09-26, [중앙 코드 감사](CURRENT-AUDIT.md) 기준
+## 현행 판정 — 2026-09-26, `f16bad93` 기반 dirty overlay
 
-- 구현: `sdk.rs`/`diagnostics.rs`의 response·window·executed/contributed 분리와 `run.py` diagnostic v3 검증은 확인. runner-level phase wall time은 서버 내부 query/ingest stage 비용이 아니다.
-- 검증: 이 감사의 current-source SDK roundtrip, stage timing 및 diagnostic on/off overhead는 `NOT_RUN`. 과거 local contract 숫자는 현 bytes의 proof가 아니다.
-- 잔여: 서버 경계에서 query 단계별 duration/calls·candidate counts를 source-bound DTO/sidecar로 공개하고, RBR-10 ingest stage report와 연결한다. missing/partial/timeout 및 overhead 부정 테스트와 daemon roundtrip을 같은 revision에서 실행한다. [현재 전수 판정](CURRENT-AUDIT.md).
+- 구현: `SearchExplanation.stage_timings`의 typed server-monotonic elapsed/calls/returned-candidate DTO를 semantic/hybrid 실제 prepare/read-view/lexical/embed/dense/admission/fusion/project 경계에 추가했다. SDK가 해당 응답을 보존하고 diagnostic v4가 route별 필수·순서·중복·count·request ID를 검증한다. dense fetch는 refill의 중복 출력 누계이고 dense admission에 중첩되므로 합산 총시간이 아니다. lexical-only 응답과 ingest publish stage는 아직 내부 계측 공개 경로가 없다.
+- 검증: contract `lxe_unified_surface` 19, search-plane lib 413, retrieval lib 82 passed; workspace all-targets compile exit 0(공유 dirty local diagnostic). 실제 SDK 통합 `sdk_roundtrip` 16/16 passed(exit 0, 136.99s). raw record capture가 검증한 바이너리 SHA-256은 searchd `e7f5ec6ba6cad409d2fdce18e72c6166a03548724e2b5f63b914ab0f4c312b20`, runner `045682aa5c47637ea52b0d6ccc0945f827c8744d1387a453db97cb9d7f7366ac`; 이후 공유 target의 searchd 바이너리가 다시 바뀌었으므로 현재 target bytes와 혼동하지 않는다. raw artifact: `/private/tmp/rbr01-stage-v4-final.edu3NK/{actual-runner-record,actual-runner-pack,actual-runner-diagnostic}.json`, SHA-256은 순서대로 `bfa213c163e97863acafd66dee2a4513f9e054c6d61757e776915408b98aebae`, `f30afc079e12b2851c411fb6a41b6c6ec3f7f75d7cc03c34af83e2227b412618`, `4c2793cc89ede4756cf4398fd3d8d6727b2d337257f228663fb90f4b38a98db5`. 별도 Python replay가 v4·3 route를 수용하고 실측 sidecar의 request ID 0, stage 누락/역순, 최종 count 위조, 외부 stage 이름의 5가지 변조를 거부했다. 실행 시 `main`은 `33924335cad664bc23f262a9ed1bbf8f791d7edc` + 공유 dirty overlay였으므로 clean-source receipt가 아니다. 진단 on/off overhead는 `NOT_RUN`.
+- 잔여: lexical-only search stage 공개, RBR-10 ingest report 연결, 서버 계측 on/off overhead 측정, 그리고 현 dirty live/local 결과를 고정 clean revision의 정식 SDK receipt로 재발급한다. [현재 전수 판정](CURRENT-AUDIT.md).
 
-- 우선순위: P0. 응답 진단은 구현 관측, 내부 stage timing·overhead는 잔여. 현 소스 proof 미발급. [현재 전수 판정](CURRENT-AUDIT.md). 선행: RBR-00 계약.
+- 우선순위: P0. semantic/hybrid 내부 stage timing은 구현·local live 관측, lexical-only/ingest·overhead 및 clean-source proof는 잔여. [현재 전수 판정](CURRENT-AUDIT.md). 선행: RBR-00 계약.
 - 성격: 확정 관측성 공백. [TEST-PLAN](TEST-PLAN.md) 적용.
 
 ## 파일·함수

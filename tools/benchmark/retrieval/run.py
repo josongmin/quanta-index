@@ -47,6 +47,7 @@ try:
         evaluate,
         load_evidence,
         validate_comparison_contract,
+        validate_experiment_custody,
         validate_suite,
         verify_repo,
     )
@@ -72,6 +73,7 @@ except ImportError:  # direct script invocation: import the sibling module
         evaluate,
         load_evidence,
         validate_comparison_contract,
+        validate_experiment_custody,
         validate_suite,
         verify_repo,
     )
@@ -1999,6 +2001,8 @@ def merge_records(
         "route_provenance": provenance,
         "results": ordered,
     }
+    if any(run.get("span_accounting_version") == 1 for run in validated_runs):
+        combined["span_accounting_version"] = 1
     # The merge itself must validate: re-run the evaluator over it.
     with tempfile_record(combined) as merged_path:
         _, _, checked = load_evidence(repo, suite_path, merged_path)
@@ -2292,6 +2296,8 @@ RECEIPT_KEYS = (
 )
 ADMISSION_KEYS = (
     "manifest",
+    "experiment_custody",
+    "development_suite",
     "license_receipt",
     "annotation_receipts",
     "adjudication_receipt",
@@ -2352,6 +2358,8 @@ def validate_admission_manifest(payload: object) -> dict:
             "repository_commit",
             "corpus_manifest_sha256",
             "suite_sha256",
+            "development_suite_sha256",
+            "experiment_custody_sha256",
             "query_pack_sha256",
             "license",
             "gold",
@@ -2363,7 +2371,7 @@ def validate_admission_manifest(payload: object) -> dict:
         },
         "qualification admission",
     )
-    if admission["schema_version"] != 1:
+    if admission["schema_version"] != 2:
         raise RunError("qualification admission schema version mismatch")
     for key in ("admission_id", "issued_at"):
         if not isinstance(admission[key], str) or not admission[key]:
@@ -2374,6 +2382,8 @@ def validate_admission_manifest(payload: object) -> dict:
     for key in (
         "corpus_manifest_sha256",
         "suite_sha256",
+        "development_suite_sha256",
+        "experiment_custody_sha256",
         "query_pack_sha256",
         "semble_lockfile_sha256",
         "host_profile_sha256",
@@ -2457,6 +2467,9 @@ def verify_admission_bundle(
     source_revision: str,
     corpus_manifest_path: Path,
     suite_path: Path,
+    development_suite_path: Path,
+    experiment_custody_path: Path,
+    repo: Path,
     query_pack_path: Path,
     lockfile_path: Path,
     host_profile_path: Path,
@@ -2491,12 +2504,22 @@ def verify_admission_bundle(
     for key, path in (
         ("corpus_manifest_sha256", corpus_manifest_path),
         ("suite_sha256", suite_path),
+        ("development_suite_sha256", development_suite_path),
+        ("experiment_custody_sha256", experiment_custody_path),
         ("query_pack_sha256", query_pack_path),
         ("semble_lockfile_sha256", lockfile_path),
         ("host_profile_sha256", host_profile_path),
     ):
         if admission[key] != sha_file(path):
             raise RunError(f"qualification admission {key} mismatch")
+    custody = validate_experiment_custody(
+        repo,
+        read_json(experiment_custody_path),
+        read_json(development_suite_path),
+        suite_payload,
+    )
+    if custody["source_revision"] != source_revision:
+        raise RunError("qualification experiment source revision mismatch")
     if admission["cache_regime"] != cache_regime:
         raise RunError("qualification admission cache regime mismatch")
     if admission["license"]["receipt_sha256"] != sha_file(license_path):
@@ -2689,7 +2712,7 @@ def load_spec(path: Path) -> dict:
                 raise RunError(f"spec.receipts.{key} must be a nonempty path")
     if "admission" in spec:
         admission = _exact_keys(spec["admission"], set(ADMISSION_KEYS), "spec.admission")
-        for key in ("manifest", "license_receipt", "adjudication_receipt"):
+        for key in ("manifest", "experiment_custody", "development_suite", "license_receipt", "adjudication_receipt"):
             if not isinstance(admission[key], str) or not admission[key]:
                 raise RunError(f"spec.admission.{key} must be a nonempty path")
         annotation_receipts = admission["annotation_receipts"]
@@ -3005,10 +3028,17 @@ def _typed_window(value: object, where: str) -> tuple[int, bool, dict[str, bool]
     return returned, exhausted, lane_execution
 
 
-def _validate_explanation(value: object, where: str) -> None:
+def _validate_explanation(
+    value: object, where: str, route: str, version: int, returned: int
+) -> None:
     if value is None:
+        if version == 4 and route in ("lexical", "semantic", "hybrid"):
+            raise RunError(f"{where} is missing measured stage timings")
         return
-    detail = _exact_keys(value, {"request_id", "early_stop_reason", "engines_executed", "engines_touched", "strategy"}, where)
+    fields = {"request_id", "early_stop_reason", "engines_executed", "engines_touched", "strategy"}
+    if version == 4:
+        fields.add("stage_timings")
+    detail = _exact_keys(value, fields, where)
     if detail["request_id"] is not None and (type(detail["request_id"]) is not int or detail["request_id"] < 0):
         raise RunError(f"{where}.request_id is invalid")
     if detail["early_stop_reason"] is not None and not isinstance(detail["early_stop_reason"], str):
@@ -3019,9 +3049,87 @@ def _validate_explanation(value: object, where: str) -> None:
             raise RunError(f"{where}.{field} is invalid")
     if detail["strategy"] is not None and not isinstance(detail["strategy"], str):
         raise RunError(f"{where}.strategy is invalid")
+    if version != 4:
+        return
+    timings = detail["stage_timings"]
+    stages = {
+        "lexical": ("prepare", "read_view", "search", "project"),
+        "semantic": ("prepare", "read_view", "lexical_scope", "embedding", "dense_search", "project"),
+        "hybrid": ("prepare", "read_view", "lexical_search", "embedding", "dense_fetch", "dense_admission", "fusion"),
+    }.get(route)
+    if stages is None or not isinstance(timings, list) or not timings:
+        raise RunError(f"{where} stage timings are missing or route is unknown")
+    if type(detail["request_id"]) is not int or detail["request_id"] <= 0:
+        raise RunError(f"{where} measured timings require a transport request id")
+    observed = []
+    for index, item in enumerate(timings):
+        timing = _exact_keys(
+            item, {"stage", "elapsed_ns", "calls", "returned_candidates"},
+            f"{where}.stage_timings[{index}]",
+        )
+        stage = timing["stage"]
+        if (
+            not isinstance(stage, str)
+            or stage not in {f"{route}.{name}" for name in stages}
+            or stage in observed
+            or type(timing["elapsed_ns"]) is not int
+            or timing["elapsed_ns"] < 0
+            or type(timing["calls"]) is not int
+            or timing["calls"] < 1
+            or (timing["returned_candidates"] is not None and (
+                type(timing["returned_candidates"]) is not int
+                or timing["returned_candidates"] < 0
+            ))
+        ):
+            raise RunError(f"{where} stage timing is invalid")
+        observed.append(stage)
+    if observed != [f"{route}.{name}" for name in stages if f"{route}.{name}" in observed]:
+        raise RunError(f"{where} stage order is invalid")
+    required = {
+        "lexical": {"lexical.prepare", "lexical.project"},
+        "semantic": {"semantic.prepare", "semantic.read_view", "semantic.embedding", "semantic.dense_search", "semantic.project"},
+        "hybrid": {"hybrid.prepare", "hybrid.read_view", "hybrid.embedding", "hybrid.dense_admission", "hybrid.fusion"},
+    }[route]
+    if not required.issubset(observed):
+        raise RunError(f"{where} required stages are absent")
+    counts = {item["stage"]: item["returned_candidates"] for item in timings}
+    candidate_stages = (
+        {"lexical.search", "lexical.project"} if route == "lexical" else
+        {"semantic.lexical_scope", "semantic.dense_search", "semantic.project"} if route == "semantic" else
+        {"hybrid.lexical_search", "hybrid.dense_fetch", "hybrid.dense_admission", "hybrid.fusion"}
+    )
+    for item in timings:
+        if (item["stage"] in candidate_stages) != (item["returned_candidates"] is not None):
+            raise RunError(f"{where} stage candidate count is missing or misplaced")
+        if item["stage"] != "hybrid.dense_fetch" and item["calls"] != 1:
+            raise RunError(f"{where} single-pass stage claims multiple calls")
+    if route == "lexical":
+        searched = "lexical.search" in counts
+        if (
+            ("lexical.read_view" in observed) != searched
+            or (searched and (counts["lexical.project"] > counts["lexical.search"] or detail["engines_executed"] != ["lexical"]))
+            or (not searched and (returned != 0 or detail["engines_executed"] != []))
+            or detail["strategy"] != "lexical"
+        ):
+            raise RunError(f"{where} lexical stage execution contradicts response")
+    if route == "semantic" and counts["semantic.project"] > counts["semantic.dense_search"]:
+        raise RunError(f"{where} projection exceeds dense search rows")
+    if route == "hybrid":
+        lexical = counts.get("hybrid.lexical_search", 0)
+        dense = counts["hybrid.dense_admission"]
+        if (
+            ("hybrid.dense_fetch" in counts) != ("hybrid.lexical_search" in counts)
+            or counts["hybrid.fusion"] > lexical + dense
+            or ("hybrid.dense_fetch" in counts and dense > counts["hybrid.dense_fetch"])
+        ):
+            raise RunError(f"{where} hybrid stage counts contradict lane execution")
+    if timings[-1]["returned_candidates"] != returned:
+        raise RunError(f"{where} final stage count differs from returned window")
 
 
-def _validate_diagnostic_response_v3(row: dict, key: tuple[str, str]) -> dict[str, bool]:
+def _validate_diagnostic_response_v3(
+    row: dict, key: tuple[str, str], version: int
+) -> dict[str, bool]:
     where = f"retrieval diagnostic response for {key}"
     kind = row["response_kind"]
     response = row["response"]
@@ -3038,7 +3146,7 @@ def _validate_diagnostic_response_v3(row: dict, key: tuple[str, str]) -> dict[st
     if kind == "returned_window":
         detail = _exact_keys(response, {"window", "explanation"}, where)
         returned, exhausted, lanes = _typed_window(detail["window"], f"{where}.window")
-        _validate_explanation(detail["explanation"], f"{where}.explanation")
+        _validate_explanation(detail["explanation"], f"{where}.explanation", key[1], version, returned)
         if returned != len(row["candidates"]):
             raise RunError(f"{where} returned count differs from candidates")
         expected_status = "abstained" if returned == 0 and exhausted else "error" if returned == 0 else "success" if exhausted else "capped"
@@ -3049,7 +3157,7 @@ def _validate_diagnostic_response_v3(row: dict, key: tuple[str, str]) -> dict[st
     if kind == "rejected_response":
         detail = _exact_keys(response, {"window", "explanation", "observed_hit_count", "expected_generation", "observed_generation"}, where)
         returned, _exhausted, lanes = _typed_window(detail["window"], f"{where}.window")
-        _validate_explanation(detail["explanation"], f"{where}.explanation")
+        _validate_explanation(detail["explanation"], f"{where}.explanation", key[1], version, returned)
         if detail["observed_hit_count"] != returned or row["candidates"] or row["status"] != "error" or row["error_code"] != "stale_generation":
             raise RunError(f"{where} rejected response fields are invalid")
         for field in ("expected_generation", "observed_generation"):
@@ -3090,7 +3198,7 @@ def validate_retrieval_diagnostic(
     if not isinstance(contract, dict) or not _is_hex(record_sha256, 64):
         raise RunError("retrieval diagnostic requires a valid record contract and digest")
     if (
-        diagnostic["schema_version"] not in (2, 3)
+        diagnostic["schema_version"] not in (2, 3, 4)
         or diagnostic["kind"] != "quanta_returned_window_diagnostic"
         or diagnostic["scope"] != "returned_window_only"
         or diagnostic["record_sha256"] != record_sha256
@@ -3154,6 +3262,7 @@ def validate_retrieval_diagnostic(
     if len(expected) != len(tasks) * len(provenance):
         raise RunError("retrieval diagnostic record results are incomplete")
     seen = set()
+    seen_request_ids = set()
     for row in diagnostic["results"]:
         row_fields = {
             "task_id",
@@ -3164,7 +3273,7 @@ def validate_retrieval_diagnostic(
             "candidates",
             "response",
         }
-        if diagnostic["schema_version"] == 3:
+        if diagnostic["schema_version"] in (3, 4):
             row_fields.add("response_kind")
         row = _exact_keys(
             row,
@@ -3196,7 +3305,12 @@ def validate_retrieval_diagnostic(
             _validate_diagnostic_response_v2(row["response"], row["error_code"], key)
             lane_execution: dict[str, bool] = {}
         else:
-            lane_execution = _validate_diagnostic_response_v3(row, key)
+            lane_execution = _validate_diagnostic_response_v3(row, key, diagnostic["schema_version"])
+            if diagnostic["schema_version"] == 4 and key[1] in ("lexical", "semantic", "hybrid") and row["response_kind"] != "sdk_failure":
+                request_id = row["response"]["explanation"]["request_id"]
+                if request_id in seen_request_ids:
+                    raise RunError("retrieval diagnostic reuses a transport request id")
+                seen_request_ids.add(request_id)
             if row["response_kind"] == "rejected_response":
                 captures = record.get("captures")
                 route_owner = provenance.get(key[1])
@@ -3263,7 +3377,7 @@ def validate_retrieval_diagnostic(
                     or not math.isfinite(lane["raw_score"])
                 ):
                     raise RunError("retrieval diagnostic lane is invalid")
-                if diagnostic["schema_version"] == 3 and not (
+                if diagnostic["schema_version"] in (3, 4) and not (
                     lane_execution.get(lane["lane"], False)
                     or lane_execution.get(f"hybrid.{lane['lane']}", False)
                 ):
@@ -3693,6 +3807,8 @@ def _validate_manifest_shape(payload: object) -> dict:
     }
     admission_artifacts = {
         "admission_manifest",
+        "experiment_custody",
+        "development_suite",
         "license_receipt",
         "annotation_receipts",
         "adjudication_receipt",
@@ -4153,6 +4269,10 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
                 "symbol_only_scopes",
             }
         )
+        if "symbol_coverage" in payload:
+            metric_keys.add("symbol_coverage")
+        if "symbol_unsupported_details" in payload:
+            metric_keys.add("symbol_unsupported_details")
     if protocol_mode:
         metric_keys.update({"query_protocol", "warm_latencies_ms", "cold_latencies_ms"})
     metrics = _exact_keys(
@@ -4259,6 +4379,67 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
                 or metrics[key] > metrics["file_count"]
             ):
                 raise RunError(f"{where}.{key} is outside the admitted file count")
+        unsupported = metrics.get("symbol_unsupported_details", [])
+        if not isinstance(unsupported, list) or len(unsupported) != metrics["symbol_unsupported_files"]:
+            raise RunError(f"{where} unsupported symbol details differ from count")
+        unsupported_paths = []
+        for index, raw in enumerate(unsupported):
+            row = _exact_keys(
+                raw, {"path", "file_sha256", "reason"},
+                f"{where}.symbol_unsupported_details[{index}]",
+            )
+            path = row["path"]
+            if (
+                not isinstance(path, str) or not path or path.startswith("/")
+                or "\\" in path or "\x00" in path
+                or any(part in ("", ".", "..") for part in path.split("/"))
+            ):
+                raise RunError(f"{where} unsupported symbol path is invalid")
+            if not _is_hex(row["file_sha256"], 64) or row["reason"] != "unsupported_language":
+                raise RunError(f"{where} unsupported symbol hash or reason is invalid")
+            unsupported_paths.append(path)
+        if unsupported_paths != sorted(set(unsupported_paths)):
+            raise RunError(f"{where} unsupported symbol paths are duplicate or reordered")
+        if metrics["symbol_unsupported_files"] != 0:
+            raise RunError(f"{where} has incomplete symbol coverage")
+        if "symbol_coverage" in metrics:
+            coverage = metrics["symbol_coverage"]
+            if not isinstance(coverage, list) or len(coverage) != metrics["file_count"]:
+                raise RunError(f"{where} symbol coverage does not enumerate every file")
+            language_by_extension = {
+                "rs": "rust", "go": "go", "py": "python",
+                "js": "javascript", "mjs": "javascript", "cjs": "javascript", "jsx": "javascript",
+                "ts": "typescript", "mts": "typescript", "cts": "typescript", "tsx": "typescript_tsx",
+            }
+            covered_paths = []
+            definition_sum = 0
+            for index, raw in enumerate(coverage):
+                row = _exact_keys(
+                    raw, {"path", "source_sha256", "language", "definition_count"},
+                    f"{where}.symbol_coverage[{index}]",
+                )
+                path = row["path"]
+                if (
+                    not isinstance(path, str)
+                    or not path
+                    or path.startswith("/")
+                    or "\\" in path
+                    or "\x00" in path
+                    or any(part in ("", ".", "..") for part in path.split("/"))
+                    or "." not in path
+                ):
+                    raise RunError(f"{where} symbol coverage path is invalid")
+                expected_language = language_by_extension.get(path.rsplit(".", 1)[-1])
+                if expected_language is None or row["language"] != expected_language:
+                    raise RunError(f"{where} symbol coverage grammar mismatch: {path}")
+                if not _is_hex(row["source_sha256"], 64):
+                    raise RunError(f"{where} symbol coverage source hash is invalid: {path}")
+                if type(row["definition_count"]) is not int or row["definition_count"] < 0:
+                    raise RunError(f"{where} symbol coverage definition count is invalid: {path}")
+                covered_paths.append(path)
+                definition_sum += row["definition_count"]
+            if covered_paths != sorted(set(covered_paths)) or definition_sum != metrics["symbol_count"]:
+                raise RunError(f"{where} symbol coverage is duplicate, reordered, or incomplete")
     expected_layer = (
         "runner_monotonic_wall_v1" if system == "quanta" else "worker_monotonic_wall_v1"
     )
@@ -4439,6 +4620,28 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
                         f"{where} first warm sample differs from first query boundaries: {route}"
                     )
     return metrics
+
+
+def _verify_symbol_coverage_corpus(metrics: dict, corpus: object) -> None:
+    """Bind a marked Quanta record's successful coverage to admitted bytes."""
+    if "symbol_coverage" not in metrics:
+        raise RunError("current Quanta phase metrics lack file-level symbol coverage")
+    corpus_files = corpus.get("files") if isinstance(corpus, dict) else None
+    if not isinstance(corpus_files, list):
+        raise RunError("corpus manifest lacks file list for symbol coverage")
+    try:
+        expected_rows = sorted(
+            (entry["path"], entry["file_sha256"])
+            for entry in corpus_files
+        )
+        actual_rows = [
+            (entry["path"], entry["source_sha256"])
+            for entry in metrics["symbol_coverage"]
+        ]
+    except (KeyError, TypeError) as exc:
+        raise RunError("malformed symbol coverage or corpus file row") from exc
+    if actual_rows != expected_rows:
+        raise RunError("symbol coverage differs from frozen corpus manifest")
 
 
 def _validate_linux_resource_metrics(payload: dict, where: str) -> dict:
@@ -5142,7 +5345,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         resolved["driver_source_closure"] = _resolve_artifact(
             root, artifacts["driver_source_closure"], "artifacts.driver_source_closure"
         )
-        for key in ("admission_manifest", "license_receipt", "adjudication_receipt"):
+        for key in ("admission_manifest", "experiment_custody", "development_suite", "license_receipt", "adjudication_receipt"):
             resolved[key] = _resolve_artifact(root, artifacts[key], f"artifacts.{key}")
         resolved["annotation_receipts"] = [
             _resolve_artifact(root, ref, "artifacts.annotation_receipts")
@@ -5328,7 +5531,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             and isinstance(protocol_payload["execution_profiles"], dict)
             and protocol_payload["execution_profiles_sha256"]
             == digest(canonical_bytes(protocol_payload["execution_profiles"]))
-            and protocol_payload["retrieval_diagnostic_version"] == 3
+            and protocol_payload["retrieval_diagnostic_version"] == 4
             and protocol_payload["rank_metric_k_policy"] == "declared_top_k_v1"
         )
         if protocol_shape_valid:
@@ -5593,6 +5796,11 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     # Record <-> capture-manifest binding.
     bound_records: set[str] = set()
     record_digests = {sha_file(Path(path)) for path in resolved["records"]}
+    marked_quanta_digests = {
+        sha_file(Path(path))
+        for path, entry in validated.items()
+        if entry["system"] == "quanta" and entry["run"].get("span_accounting_version") == 1
+    }
     phase_record_digests: list[str] = []
     phase_by_record: dict[str, dict] = {}
     phase_ok = len(resolved["phase_metrics"]) == len(resolved["records"])
@@ -5602,6 +5810,8 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             metrics = _validate_phase_metrics(read_json(Path(path)), f"phase metrics {path}")
             if metrics["schema_version"] != 2:
                 raise RunError("current pair replay requires phase metrics schema_version 2")
+            if metrics["system"] == "quanta" and metrics["record_sha256"] in marked_quanta_digests:
+                _verify_symbol_coverage_corpus(metrics, corpus_payload)
             phase_record_digests.append(metrics["record_sha256"])
             if metrics["record_sha256"] in phase_by_record:
                 phase_ok = False
@@ -5806,7 +6016,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 bound_records.add(observed)
             diagnostic_ref = run_entry.get("retrieval_diagnostic")
             diagnostic_digest = run_entry.get("retrieval_diagnostic_digest")
-            if protocol_payload.get("retrieval_diagnostic_version") in (2, 3) and (
+            if protocol_payload.get("retrieval_diagnostic_version") in (2, 3, 4) and (
                 diagnostic_ref is None or diagnostic_digest is None
             ):
                 pair_note("retrieval_diagnostic_missing", ("T12",))
@@ -5918,7 +6128,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 or adapter.get("model_cache_manifest_digest") != sha_file(rep0_model_cache)
             ):
                 pair_note("adapter_model_cache_binding_broken", ("T11", "T12"))
-        if protocol_payload.get("retrieval_diagnostic_version") == 3:
+        if protocol_payload.get("retrieval_diagnostic_version") in (3, 4):
             expected_profile = protocol_payload.get("execution_profiles", {}).get("semble", {})
             expected_mode = expected_profile.get("mode")
             expected_alpha = expected_profile.get("alpha")
@@ -6021,6 +6231,9 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 source_revision=provenance_claims["quanta"]["source_sha"],
                 corpus_manifest_path=resolved["corpus_manifest"],
                 suite_path=resolved["suite"],
+                development_suite_path=resolved["development_suite"],
+                experiment_custody_path=resolved["experiment_custody"],
+                repo=repo,
                 query_pack_path=resolved["query_pack"],
                 lockfile_path=resolved["semble_lockfile"],
                 host_profile_path=resolved["host_profile"],
@@ -6664,16 +6877,14 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             ref = f"{key}_results"
             if ref not in resolved:
                 raise RunError("no artifact")
-            results = _validate_parity_results_shape(read_json(resolved[ref]), f"{key} results")
+            _validate_parity_results_shape(read_json(resolved[ref]), f"{key} results")
             if sha_file(resolved[ref]) != evidence[key]["test_result_digest"]:
                 raise RunError("manifest digest mismatch")
-            if not (
-                results["status"] == "pass"
-                and results["failed"] == 0
-                and results["executed"] >= 1
-                and results["passed"] + results["failed"] == results["executed"]
-            ):
-                raise RunError("parity/incremental not proven")
+            # A self-reported status/count tuple and its digest are not
+            # independent evidence for model equality or incremental state.
+            # Until raw vectors/row-sets plus execution-context binding are
+            # replayable here, a claimed conditional gate must fail closed.
+            raise RunError(f"{tid} raw proof protocol is not implemented")
         except (RunError, ValueError, OSError):
             missing.append(tid)
             classes.append(fail_class)
@@ -7028,7 +7239,7 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
         driver_closure_digest = driver_closure["digest"]
     protocol_lock = {
         "lock_version": 2,
-        "retrieval_diagnostic_version": 3,
+        "retrieval_diagnostic_version": 4,
         "rank_metric_k_policy": "declared_top_k_v1",
         "suite_digest": sha_file(Path(spec["suite"])),
         "query_pack_digest": sha_file(stage / "query-pack.json"),
@@ -7818,6 +8029,8 @@ def freeze_admission(spec: dict, stage: Path, frozen_receipts: dict[str, str]) -
     frozen: dict[str, object] = {}
     scalar_names = {
         "manifest": "admission.json",
+        "experiment_custody": "experiment-custody.json",
+        "development_suite": "development-suite.json",
         "license_receipt": "license-receipt.json",
         "adjudication_receipt": "adjudication-receipt.json",
     }
@@ -7867,6 +8080,9 @@ def freeze_admission(spec: dict, stage: Path, frozen_receipts: dict[str, str]) -
         source_revision=git_head_sha(Path(__file__).resolve().parents[3]),
         corpus_manifest_path=Path(spec["manifest"]),
         suite_path=Path(spec["suite"]),
+        development_suite_path=Path(str(frozen["development_suite"])),
+        experiment_custody_path=Path(str(frozen["experiment_custody"])),
+        repo=Path(spec["repo"]),
         query_pack_path=Path(spec["query_pack"]),
         lockfile_path=Path(spec["semble_lockfile"]),
         host_profile_path=Path(spec["host_profile"]),
@@ -8200,6 +8416,9 @@ def build_run_manifest(
             source_revision=source_sha,
             corpus_manifest_path=Path(spec["manifest"]),
             suite_path=Path(spec["suite"]),
+            development_suite_path=Path(str(admission_files["development_suite"])),
+            experiment_custody_path=Path(str(admission_files["experiment_custody"])),
+            repo=Path(spec["repo"]),
             query_pack_path=Path(spec["query_pack"]),
             lockfile_path=Path(spec["semble_lockfile"]),
             host_profile_path=profile_path,
@@ -8258,6 +8477,8 @@ def build_run_manifest(
         artifacts.update(
             {
                 "admission_manifest": relative(Path(str(admission_files["manifest"]))),
+                "experiment_custody": relative(Path(str(admission_files["experiment_custody"]))),
+                "development_suite": relative(Path(str(admission_files["development_suite"]))),
                 "license_receipt": relative(Path(str(admission_files["license_receipt"]))),
                 "annotation_receipts": [
                     relative(Path(str(path))) for path in admission_files["annotation_receipts"]

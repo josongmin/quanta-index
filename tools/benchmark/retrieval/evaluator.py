@@ -404,6 +404,7 @@ def block(
     candidate: bool,
     universe: set[str] | None = None,
     allow_grade: bool = False,
+    allow_span_accounting: bool = False,
 ) -> dict[str, Any]:
     required = [
         "path",
@@ -417,6 +418,8 @@ def block(
     if candidate:
         required.extend(["tokens", "rank"])
     optional = ["grade"] if (allow_grade and not candidate) else []
+    if candidate and allow_span_accounting:
+        optional.append("span_accounting")
     if optional:
         item = object_keys_optional(value, required, optional, where)
     else:
@@ -461,6 +464,40 @@ def block(
         )
     if candidate:
         positive_int(item["rank"], where + ".rank")
+        if "span_accounting" in item:
+            accounting = object_keys(
+                item["span_accounting"],
+                [
+                    "unit_kind", "unit_id", "producer_identity", "indexed_start_byte",
+                    "indexed_end_byte", "sdk_start_line", "sdk_end_line", "extra_context_bytes",
+                ],
+                where + ".span_accounting",
+            )
+            require(accounting["unit_kind"] in ("chunk", "symbol"), where + " has unknown unit kind")
+            string(accounting["unit_id"], where + ".unit_id")
+            string(accounting["producer_identity"], where + ".producer_identity")
+            indexed_start = nonnegative_int(accounting["indexed_start_byte"], where + ".indexed_start_byte")
+            indexed_end = positive_int(accounting["indexed_end_byte"], where + ".indexed_end_byte")
+            require(
+                start_byte <= indexed_start < indexed_end <= end_byte,
+                where + " indexed span escapes scored projection",
+            )
+            try:
+                raw[indexed_start:indexed_end].decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise EvidenceError(where + " indexed span cuts a UTF-8 boundary") from exc
+            sdk_start = nonnegative_int(accounting["sdk_start_line"], where + ".sdk_start_line")
+            sdk_end = nonnegative_int(accounting["sdk_end_line"], where + ".sdk_end_line")
+            require(
+                (sdk_start == sdk_end == 0 and accounting["unit_kind"] == "chunk")
+                or (sdk_start == start and sdk_end == end),
+                where + " SDK line span differs from scored projection",
+            )
+            require(
+                nonnegative_int(accounting["extra_context_bytes"], where + ".extra_context_bytes")
+                == (end_byte - start_byte) - (indexed_end - indexed_start),
+                where + " context expansion differs from source spans",
+            )
     if "grade" in item:
         grade_value(item["grade"], where)
     return item
@@ -699,6 +736,84 @@ def validate_suite(
     return suite, blinded, source
 
 
+def validate_experiment_custody(
+    repo: Path,
+    manifest: Any,
+    development: Any,
+    holdout: Any,
+) -> dict[str, Any]:
+    """Re-derive the frozen cross-suite development/holdout boundary.
+
+    This is separate from the historical suite-v3 intra-suite train/eval
+    contract. A gold-bearing file is indivisible for this boundary: distinct
+    gold spans in the same source file still leak development context into
+    holdout. Both suites may index the same corpus universe.
+    """
+    record = object_keys(
+        manifest,
+        [
+            "schema_version", "source_revision", "repository_commit",
+            "development_suite_sha256", "holdout_suite_sha256",
+        ],
+        "experiment custody",
+    )
+    require(
+        type(record["schema_version"]) is int and record["schema_version"] == 1,
+        "unsupported experiment custody schema",
+    )
+    require(
+        isinstance(record["source_revision"], str)
+        and bool(COMMIT_RE.fullmatch(record["source_revision"])),
+        "experiment source_revision must be a full Git SHA",
+    )
+    require(
+        isinstance(record["repository_commit"], str)
+        and bool(COMMIT_RE.fullmatch(record["repository_commit"])),
+        "experiment repository_commit must be a full Git SHA",
+    )
+    dev_suite, _dev_pack, _dev_source = validate_suite(repo, development)
+    holdout_suite, _holdout_pack, _holdout_source = validate_suite(repo, holdout)
+    require(dev_suite["suite_id"] != holdout_suite["suite_id"], "development and holdout suite IDs coincide")
+    require(
+        dev_suite["repository_commit"] == holdout_suite["repository_commit"] == record["repository_commit"],
+        "cross-suite repository commit mismatch",
+    )
+    require(
+        dev_suite["comparison_contract"] == holdout_suite["comparison_contract"]
+        and dev_suite["routes"] == holdout_suite["routes"],
+        "cross-suite scoring or route contract differs",
+    )
+    for label, suite in (("development", dev_suite), ("holdout", holdout_suite)):
+        require(
+            sha(record[f"{label}_suite_sha256"], f"{label}_suite_sha256")
+            == digest(canonical(suite)),
+            f"{label} suite differs from frozen experiment custody",
+        )
+    dev_files = {gold["path"] for task in dev_suite["tasks"] for gold in task["gold"]}
+    holdout_files = {gold["path"] for task in holdout_suite["tasks"] for gold in task["gold"]}
+    require(
+        not (dev_files & holdout_files),
+        f"cross-suite file leakage: {sorted(dev_files & holdout_files)}",
+    )
+    dev_families = {task["query_family_id"] for task in dev_suite["tasks"]}
+    holdout_families = {task["query_family_id"] for task in holdout_suite["tasks"]}
+    require(
+        not (dev_families & holdout_families),
+        f"cross-suite query family leakage: {sorted(dev_families & holdout_families)}",
+    )
+    dev_blocks = {gold["block_sha256"] for task in dev_suite["tasks"] for gold in task["gold"]}
+    holdout_blocks = {gold["block_sha256"] for task in holdout_suite["tasks"] for gold in task["gold"]}
+    require(
+        not (dev_blocks & holdout_blocks),
+        "cross-suite gold definition content leakage",
+    )
+    check_query_near_duplicates(
+        [(f"development/{task['task_id']}", task["query"]) for task in dev_suite["tasks"]]
+        + [(f"holdout/{task['task_id']}", task["query"]) for task in holdout_suite["tasks"]]
+    )
+    return record
+
+
 def _validate_run(
     run: dict[str, Any],
     pack: dict[str, Any],
@@ -710,6 +825,11 @@ def _validate_run(
         type(version) is int
         and version in (RUNNER_SCHEMA_VERSION, *RUNNER_LEGACY_SCHEMA_VERSIONS),
         "unsupported runner schema",
+    )
+    span_protocol = run.get("span_accounting_version")
+    require(
+        span_protocol is None or (version == RUNNER_SCHEMA_VERSION and type(span_protocol) is int and span_protocol == 1),
+        "unsupported span accounting protocol",
     )
     require(
         sha(run["query_pack_sha256"], "query_pack_sha256") == digest(canonical(pack)),
@@ -799,6 +919,11 @@ def _validate_run(
             "capture_id must be a nonempty string",
         )
         validate_capture(entry, f"captures.{capture_id}", version)
+    if span_protocol == 1:
+        require(
+            any(entry["system"] == "quanta" for entry in captures.values()),
+            "span accounting protocol lacks a Quanta capture",
+        )
     provenance = run["route_provenance"]
     require(isinstance(provenance, dict), "route_provenance must be an object")
     require(
@@ -901,14 +1026,36 @@ def _validate_run(
                 string(item["code"], f"error.code for {key}")
                 string(item["message"], f"error.message for {key}")
         seen_spans = set()
+        seen_unit_ids: set[str] = set()
         for index, candidate in enumerate(candidates, start=1):
+            capture = captures[provenance[key[1]]["capture_id"]]
             block(
                 source,
                 candidate,
                 f"candidate for {key}",
                 candidate=True,
                 universe=universe,
+                allow_span_accounting=version == 5 and capture["system"] == "quanta",
             )
+            if "span_accounting" in candidate:
+                require(span_protocol == 1, f"span evidence lacks record protocol: {key}")
+                accounting = candidate["span_accounting"]
+                expected_producer = (
+                    "source-bound-symbols-v1"
+                    if accounting["unit_kind"] == "symbol"
+                    else capture["chunk_strategy"]
+                )
+                require(
+                    accounting["producer_identity"] == expected_producer,
+                    f"published unit producer differs from capture: {key}",
+                )
+                require(
+                    accounting["unit_id"] not in seen_unit_ids,
+                    f"duplicate published unit ID in result: {key}",
+                )
+                seen_unit_ids.add(accounting["unit_id"])
+            elif span_protocol == 1 and capture["system"] == "quanta":
+                raise EvidenceError(f"missing published-unit span evidence: {key}")
             require(
                 candidate["rank"] == index,
                 f"duplicate/non-sequential candidate rank for {key}: expected {index}",
@@ -935,7 +1082,7 @@ def load_evidence(
         and version in (RUNNER_SCHEMA_VERSION, *RUNNER_LEGACY_SCHEMA_VERSIONS),
         "unsupported runner schema",
     )
-    run = object_keys(
+    run = object_keys_optional(
         payload,
         [
             "schema_version",
@@ -946,6 +1093,7 @@ def load_evidence(
             "route_provenance",
             "results",
         ],
+        ["span_accounting_version"] if version == RUNNER_SCHEMA_VERSION else [],
         "runner record",
     )
     _validate_run(run, pack, suite, source)
@@ -996,6 +1144,97 @@ def mrr_at_k(candidates: list[dict[str, Any]], labels: list[dict[str, Any]], k: 
         if any(covers(item, label) for label in labels):
             return 1.0 / index
     return 0.0
+
+
+def indexed_covers(candidate: dict[str, Any], label: dict[str, Any]) -> bool:
+    """Exact published-unit coverage, never the SDK's line projection."""
+    span = candidate["span_accounting"]
+    return (
+        candidate["path"] == label["path"]
+        and span["indexed_start_byte"] <= label["start_byte"]
+        and span["indexed_end_byte"] >= label["end_byte"]
+    )
+
+
+def indexed_span_diagnostics(
+    run: dict[str, Any],
+    results: dict[tuple[str, str], dict[str, Any]],
+    tasks: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Separate rank-only indexed-span and returned-context accounting.
+
+    Absence in an old record leaves its historical report byte-for-byte
+    unchanged. Once any current candidate carries this evidence, partial
+    Quanta evidence is an error rather than a silently reduced sample.
+    """
+    if run.get("span_accounting_version") != 1:
+        return None
+    answerable = sorted(task_id for task_id, task in tasks.items() if task["gold"])
+    routes: dict[str, Any] = {}
+    rows: list[dict[str, Any]] = []
+    for route in sorted(run["route_provenance"]):
+        capture_id = run["route_provenance"][route]["capture_id"]
+        if run["captures"][capture_id]["system"] != "quanta":
+            routes[route] = {"status": "not_applicable", "reason": "no_published_unit_authority"}
+            continue
+        for (task_id, result_route), result in results.items():
+            if result_route == route:
+                require(
+                    all("span_accounting" in item for item in result["candidates"]),
+                    f"partial indexed span evidence: {task_id}/{route}",
+                )
+        if not answerable:
+            routes[route] = {"status": "not_applicable", "reason": "no_answerable_tasks"}
+            continue
+        if any(_result_status(results[(task_id, route)]) not in SCORED_STATUSES for task_id in answerable):
+            routes[route] = {"status": "not_run", "reason": "incomplete_answerable_observation"}
+            continue
+        sums = {
+            "hit_at_1": 0.0,
+            "mrr_at_10": 0.0,
+            "recall_at_10": 0.0,
+            "scored_context_bytes_at_10": 0.0,
+            "scored_context_tokens_at_10": 0.0,
+            "indexed_bytes_at_10": 0.0,
+            "extra_context_bytes_at_10": 0.0,
+        }
+        for task_id in answerable:
+            labels = tasks[task_id]["gold"]
+            top = _ordered_candidates(results[(task_id, route)])[:10]
+            metrics = {
+                "hit_at_1": float(bool(top) and any(indexed_covers(top[0], label) for label in labels)),
+                "mrr_at_10": next(
+                    (1.0 / rank for rank, item in enumerate(top, start=1)
+                     if any(indexed_covers(item, label) for label in labels)),
+                    0.0,
+                ),
+                "recall_at_10": sum(
+                    any(indexed_covers(item, label) for item in top) for label in labels
+                ) / len(labels),
+                "scored_context_bytes_at_10": sum(item["end_byte"] - item["start_byte"] for item in top),
+                "scored_context_tokens_at_10": sum(item["tokens"] for item in top),
+                "indexed_bytes_at_10": sum(
+                    item["span_accounting"]["indexed_end_byte"]
+                    - item["span_accounting"]["indexed_start_byte"] for item in top
+                ),
+                "extra_context_bytes_at_10": sum(
+                    item["span_accounting"]["extra_context_bytes"] for item in top
+                ),
+            }
+            rows.append({"task_id": task_id, "route": route, **metrics})
+            for key, value in metrics.items():
+                sums[key] += value
+        routes[route] = {
+            "status": "observed",
+            "sample_count": len(answerable),
+            "mean": {key: value / len(answerable) for key, value in sums.items()},
+        }
+    return {
+        "scorer_identity": "rb-exact-index-rank-only-v1",
+        "scope": "diagnostic_not_primary_ndcg",
+        "routes": routes,
+        "per_query": rows,
+    }
 
 
 def ndcg_at_k(candidates: list[dict[str, Any]], labels: list[dict[str, Any]], k: int) -> float:
@@ -1493,6 +1732,9 @@ def evaluate(
             "no_answer_abstention_delta": no_answer_evidence,
         }
     output["rank_metrics"] = {"routes": rank_routes, "comparison": rank_comparison}
+    span_accounting = indexed_span_diagnostics(run, results, eval_tasks)
+    if span_accounting is not None:
+        output["span_accounting"] = span_accounting
     # Per-query rows in deterministic task/route order.
     rows = []
     for task_id in task_ids:

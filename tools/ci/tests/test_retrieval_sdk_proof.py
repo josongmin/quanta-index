@@ -26,6 +26,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
         json.dumps(
             {
                 "schema_version": 5,
+                "span_accounting_version": 1,
                 "captures": {
                     "run-lexical": {
                         "runner_binary": {"name": "runner", "digest": digest},
@@ -71,6 +72,15 @@ def test_build_summary_rejects_binary_substitution(tmp_path: Path) -> None:
     record, nextest, runner = _fixture(tmp_path)
     runner.write_bytes(b"substituted")
     with pytest.raises(SystemExit, match="differs from the executable"):
+        MODULE.build_summary(record, nextest, runner)
+
+
+def test_build_summary_rejects_downgraded_current_record(tmp_path: Path) -> None:
+    record, nextest, runner = _fixture(tmp_path)
+    payload = json.loads(record.read_text(encoding="utf-8"))
+    payload.pop("span_accounting_version")
+    record.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(SystemExit, match="lacks indexed-span protocol"):
         MODULE.build_summary(record, nextest, runner)
 
 

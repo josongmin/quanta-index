@@ -4809,6 +4809,7 @@ pub quanta_index_contract::lex::SearchExplanation::engines_touched: alloc::vec::
 pub quanta_index_contract::lex::SearchExplanation::planner_trace: alloc::vec::Vec<quanta_index_contract::PlannerTraceEntry>
 pub quanta_index_contract::lex::SearchExplanation::ranker_weights_hash: [u8; 32]
 pub quanta_index_contract::lex::SearchExplanation::request_id: u64
+pub quanta_index_contract::lex::SearchExplanation::stage_timings: core::option::Option<alloc::vec::Vec<quanta_index_contract::QueryStageTimingV1>>
 pub quanta_index_contract::lex::SearchExplanation::strategy: alloc::string::String
 pub quanta_index_contract::lex::SearchExplanation::summary: alloc::string::String
 impl quanta_index_contract::SearchExplanation
@@ -7535,6 +7536,46 @@ impl core::marker::Unpin for quanta_index_contract::PlannerStage
 impl core::marker::UnsafeUnpin for quanta_index_contract::PlannerStage
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::PlannerStage
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::PlannerStage
+pub enum quanta_index_contract::results::QueryStageKindV1
+pub quanta_index_contract::results::QueryStageKindV1::HybridDenseAdmission
+pub quanta_index_contract::results::QueryStageKindV1::HybridDenseFetch
+pub quanta_index_contract::results::QueryStageKindV1::HybridEmbedding
+pub quanta_index_contract::results::QueryStageKindV1::HybridFusion
+pub quanta_index_contract::results::QueryStageKindV1::HybridLexicalSearch
+pub quanta_index_contract::results::QueryStageKindV1::HybridPrepare
+pub quanta_index_contract::results::QueryStageKindV1::HybridReadView
+pub quanta_index_contract::results::QueryStageKindV1::LexicalPrepare
+pub quanta_index_contract::results::QueryStageKindV1::LexicalProject
+pub quanta_index_contract::results::QueryStageKindV1::LexicalReadView
+pub quanta_index_contract::results::QueryStageKindV1::LexicalSearch
+pub quanta_index_contract::results::QueryStageKindV1::SemanticDenseSearch
+pub quanta_index_contract::results::QueryStageKindV1::SemanticEmbedding
+pub quanta_index_contract::results::QueryStageKindV1::SemanticLexicalScope
+pub quanta_index_contract::results::QueryStageKindV1::SemanticPrepare
+pub quanta_index_contract::results::QueryStageKindV1::SemanticProject
+pub quanta_index_contract::results::QueryStageKindV1::SemanticReadView
+impl quanta_index_contract::QueryStageKindV1
+pub const fn quanta_index_contract::QueryStageKindV1::as_str(self) -> &'static str
+impl core::clone::Clone for quanta_index_contract::QueryStageKindV1
+pub fn quanta_index_contract::QueryStageKindV1::clone(&self) -> quanta_index_contract::QueryStageKindV1
+impl core::cmp::Eq for quanta_index_contract::QueryStageKindV1
+impl core::cmp::PartialEq for quanta_index_contract::QueryStageKindV1
+pub fn quanta_index_contract::QueryStageKindV1::eq(&self, other: &quanta_index_contract::QueryStageKindV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::QueryStageKindV1
+pub fn quanta_index_contract::QueryStageKindV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::QueryStageKindV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::QueryStageKindV1
+impl serde_core::ser::Serialize for quanta_index_contract::QueryStageKindV1
+pub fn quanta_index_contract::QueryStageKindV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::QueryStageKindV1
+pub fn quanta_index_contract::QueryStageKindV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::QueryStageKindV1
+impl core::marker::Send for quanta_index_contract::QueryStageKindV1
+impl core::marker::Sync for quanta_index_contract::QueryStageKindV1
+impl core::marker::Unpin for quanta_index_contract::QueryStageKindV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::QueryStageKindV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::QueryStageKindV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::QueryStageKindV1
 pub enum quanta_index_contract::results::SeedLane
 pub quanta_index_contract::results::SeedLane::Bm25
 pub quanta_index_contract::results::SeedLane::Dense
@@ -7832,6 +7873,29 @@ impl core::marker::Unpin for quanta_index_contract::PlannerTraceEntry
 impl core::marker::UnsafeUnpin for quanta_index_contract::PlannerTraceEntry
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::PlannerTraceEntry
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::PlannerTraceEntry
+pub struct quanta_index_contract::results::QueryStageTimingV1
+pub quanta_index_contract::results::QueryStageTimingV1::calls: u32
+pub quanta_index_contract::results::QueryStageTimingV1::elapsed_ns: u64
+pub quanta_index_contract::results::QueryStageTimingV1::returned_candidates: core::option::Option<u64>
+pub quanta_index_contract::results::QueryStageTimingV1::stage: quanta_index_contract::QueryStageKindV1
+impl core::clone::Clone for quanta_index_contract::QueryStageTimingV1
+pub fn quanta_index_contract::QueryStageTimingV1::clone(&self) -> quanta_index_contract::QueryStageTimingV1
+impl core::cmp::PartialEq for quanta_index_contract::QueryStageTimingV1
+pub fn quanta_index_contract::QueryStageTimingV1::eq(&self, other: &quanta_index_contract::QueryStageTimingV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::QueryStageTimingV1
+pub fn quanta_index_contract::QueryStageTimingV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::QueryStageTimingV1
+impl serde_core::ser::Serialize for quanta_index_contract::QueryStageTimingV1
+pub fn quanta_index_contract::QueryStageTimingV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::QueryStageTimingV1
+pub fn quanta_index_contract::QueryStageTimingV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::QueryStageTimingV1
+impl core::marker::Send for quanta_index_contract::QueryStageTimingV1
+impl core::marker::Sync for quanta_index_contract::QueryStageTimingV1
+impl core::marker::Unpin for quanta_index_contract::QueryStageTimingV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::QueryStageTimingV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::QueryStageTimingV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::QueryStageTimingV1
 pub struct quanta_index_contract::results::SearchExplanation
 pub quanta_index_contract::results::SearchExplanation::contributions: alloc::vec::Vec<quanta_index_contract::ExplanationRow>
 pub quanta_index_contract::results::SearchExplanation::early_stop_reason: core::option::Option<quanta_index_contract::EarlyStopReason>
@@ -7840,6 +7904,7 @@ pub quanta_index_contract::results::SearchExplanation::engines_touched: alloc::v
 pub quanta_index_contract::results::SearchExplanation::planner_trace: alloc::vec::Vec<quanta_index_contract::PlannerTraceEntry>
 pub quanta_index_contract::results::SearchExplanation::ranker_weights_hash: [u8; 32]
 pub quanta_index_contract::results::SearchExplanation::request_id: u64
+pub quanta_index_contract::results::SearchExplanation::stage_timings: core::option::Option<alloc::vec::Vec<quanta_index_contract::QueryStageTimingV1>>
 pub quanta_index_contract::results::SearchExplanation::strategy: alloc::string::String
 pub quanta_index_contract::results::SearchExplanation::summary: alloc::string::String
 impl quanta_index_contract::SearchExplanation
@@ -8153,6 +8218,7 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::SymbolQueryResponse
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SymbolQueryResponse
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SymbolQueryResponse
 pub struct quanta_index_contract::results::TextQueryResponse
+pub quanta_index_contract::results::TextQueryResponse::explanation: quanta_index_contract::SearchExplanation
 pub quanta_index_contract::results::TextQueryResponse::file_owner_rows: core::option::Option<alloc::vec::Vec<quanta_index_contract::FileOwnerProjectionRow>>
 pub quanta_index_contract::results::TextQueryResponse::generation: quanta_index_contract_base::query::pin::GenerationPin
 pub quanta_index_contract::results::TextQueryResponse::next_cursor: core::option::Option<quanta_index_contract_base::results::continuation_token::ContinuationTokenV2>
@@ -9048,6 +9114,46 @@ impl core::marker::Unpin for quanta_index_contract::QuarantineTargetV1
 impl core::marker::UnsafeUnpin for quanta_index_contract::QuarantineTargetV1
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::QuarantineTargetV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::QuarantineTargetV1
+pub enum quanta_index_contract::QueryStageKindV1
+pub quanta_index_contract::QueryStageKindV1::HybridDenseAdmission
+pub quanta_index_contract::QueryStageKindV1::HybridDenseFetch
+pub quanta_index_contract::QueryStageKindV1::HybridEmbedding
+pub quanta_index_contract::QueryStageKindV1::HybridFusion
+pub quanta_index_contract::QueryStageKindV1::HybridLexicalSearch
+pub quanta_index_contract::QueryStageKindV1::HybridPrepare
+pub quanta_index_contract::QueryStageKindV1::HybridReadView
+pub quanta_index_contract::QueryStageKindV1::LexicalPrepare
+pub quanta_index_contract::QueryStageKindV1::LexicalProject
+pub quanta_index_contract::QueryStageKindV1::LexicalReadView
+pub quanta_index_contract::QueryStageKindV1::LexicalSearch
+pub quanta_index_contract::QueryStageKindV1::SemanticDenseSearch
+pub quanta_index_contract::QueryStageKindV1::SemanticEmbedding
+pub quanta_index_contract::QueryStageKindV1::SemanticLexicalScope
+pub quanta_index_contract::QueryStageKindV1::SemanticPrepare
+pub quanta_index_contract::QueryStageKindV1::SemanticProject
+pub quanta_index_contract::QueryStageKindV1::SemanticReadView
+impl quanta_index_contract::QueryStageKindV1
+pub const fn quanta_index_contract::QueryStageKindV1::as_str(self) -> &'static str
+impl core::clone::Clone for quanta_index_contract::QueryStageKindV1
+pub fn quanta_index_contract::QueryStageKindV1::clone(&self) -> quanta_index_contract::QueryStageKindV1
+impl core::cmp::Eq for quanta_index_contract::QueryStageKindV1
+impl core::cmp::PartialEq for quanta_index_contract::QueryStageKindV1
+pub fn quanta_index_contract::QueryStageKindV1::eq(&self, other: &quanta_index_contract::QueryStageKindV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::QueryStageKindV1
+pub fn quanta_index_contract::QueryStageKindV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::QueryStageKindV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::QueryStageKindV1
+impl serde_core::ser::Serialize for quanta_index_contract::QueryStageKindV1
+pub fn quanta_index_contract::QueryStageKindV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::QueryStageKindV1
+pub fn quanta_index_contract::QueryStageKindV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::QueryStageKindV1
+impl core::marker::Send for quanta_index_contract::QueryStageKindV1
+impl core::marker::Sync for quanta_index_contract::QueryStageKindV1
+impl core::marker::Unpin for quanta_index_contract::QueryStageKindV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::QueryStageKindV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::QueryStageKindV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::QueryStageKindV1
 pub enum quanta_index_contract::RawFallbackReasonV1
 pub quanta_index_contract::RawFallbackReasonV1::AlgorithmBodyDependent
 pub quanta_index_contract::RawFallbackReasonV1::DslConfigOrSchema
@@ -12212,6 +12318,29 @@ impl core::marker::Unpin for quanta_index_contract::QueryErrorRepair
 impl core::marker::UnsafeUnpin for quanta_index_contract::QueryErrorRepair
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::QueryErrorRepair
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::QueryErrorRepair
+pub struct quanta_index_contract::QueryStageTimingV1
+pub quanta_index_contract::QueryStageTimingV1::calls: u32
+pub quanta_index_contract::QueryStageTimingV1::elapsed_ns: u64
+pub quanta_index_contract::QueryStageTimingV1::returned_candidates: core::option::Option<u64>
+pub quanta_index_contract::QueryStageTimingV1::stage: quanta_index_contract::QueryStageKindV1
+impl core::clone::Clone for quanta_index_contract::QueryStageTimingV1
+pub fn quanta_index_contract::QueryStageTimingV1::clone(&self) -> quanta_index_contract::QueryStageTimingV1
+impl core::cmp::PartialEq for quanta_index_contract::QueryStageTimingV1
+pub fn quanta_index_contract::QueryStageTimingV1::eq(&self, other: &quanta_index_contract::QueryStageTimingV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::QueryStageTimingV1
+pub fn quanta_index_contract::QueryStageTimingV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::QueryStageTimingV1
+impl serde_core::ser::Serialize for quanta_index_contract::QueryStageTimingV1
+pub fn quanta_index_contract::QueryStageTimingV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::QueryStageTimingV1
+pub fn quanta_index_contract::QueryStageTimingV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::QueryStageTimingV1
+impl core::marker::Send for quanta_index_contract::QueryStageTimingV1
+impl core::marker::Sync for quanta_index_contract::QueryStageTimingV1
+impl core::marker::Unpin for quanta_index_contract::QueryStageTimingV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::QueryStageTimingV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::QueryStageTimingV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::QueryStageTimingV1
 pub struct quanta_index_contract::ReplaceLexicalScope
 pub quanta_index_contract::ReplaceLexicalScope::generation: quanta_index_contract_base::ids::ManifestGeneration
 pub quanta_index_contract::ReplaceLexicalScope::payload: alloc::vec::Vec<u8>
@@ -13558,6 +13687,7 @@ pub quanta_index_contract::SearchExplanation::engines_touched: alloc::vec::Vec<q
 pub quanta_index_contract::SearchExplanation::planner_trace: alloc::vec::Vec<quanta_index_contract::PlannerTraceEntry>
 pub quanta_index_contract::SearchExplanation::ranker_weights_hash: [u8; 32]
 pub quanta_index_contract::SearchExplanation::request_id: u64
+pub quanta_index_contract::SearchExplanation::stage_timings: core::option::Option<alloc::vec::Vec<quanta_index_contract::QueryStageTimingV1>>
 pub quanta_index_contract::SearchExplanation::strategy: alloc::string::String
 pub quanta_index_contract::SearchExplanation::summary: alloc::string::String
 impl quanta_index_contract::SearchExplanation
@@ -14635,6 +14765,7 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::SymbolQueryResponse
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SymbolQueryResponse
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SymbolQueryResponse
 pub struct quanta_index_contract::TextQueryResponse
+pub quanta_index_contract::TextQueryResponse::explanation: quanta_index_contract::SearchExplanation
 pub quanta_index_contract::TextQueryResponse::file_owner_rows: core::option::Option<alloc::vec::Vec<quanta_index_contract::FileOwnerProjectionRow>>
 pub quanta_index_contract::TextQueryResponse::generation: quanta_index_contract_base::query::pin::GenerationPin
 pub quanta_index_contract::TextQueryResponse::next_cursor: core::option::Option<quanta_index_contract_base::results::continuation_token::ContinuationTokenV2>

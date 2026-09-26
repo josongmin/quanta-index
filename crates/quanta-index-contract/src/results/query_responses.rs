@@ -28,6 +28,7 @@ pub struct TextQueryResponse {
     pub generation: GenerationPin,
     pub results: Vec<LexicalCandidate>,
     pub window: QueryResultWindowV2,
+    pub explanation: SearchExplanation,
     pub file_owner_rows: Option<Vec<FileOwnerProjectionRow>>,
     pub next_cursor: Option<ContinuationTokenV2>,
 }
@@ -254,6 +255,7 @@ const TEXT_QUERY_RESPONSE_FIELDS: &[&str] = &[
     "generation",
     "results",
     "window",
+    "explanation",
     "file_owner_rows",
     "next_cursor",
 ];
@@ -1555,7 +1557,7 @@ impl Serialize for TextQueryResponse {
     {
         validate_file_owner_projection_v1(&self.results, self.file_owner_rows.as_deref())
             .map_err(serde::ser::Error::custom)?;
-        let mut field_count = 3usize;
+        let mut field_count = 4usize;
         if self.file_owner_rows.is_some() {
             field_count = field_count.saturating_add(1);
         }
@@ -1566,6 +1568,7 @@ impl Serialize for TextQueryResponse {
         state.serialize_field("generation", &self.generation)?;
         state.serialize_field("results", &self.results)?;
         state.serialize_field("window", &self.window)?;
+        state.serialize_field("explanation", &self.explanation)?;
         if let Some(file_owner_rows) = &self.file_owner_rows {
             state.serialize_field("file_owner_rows", file_owner_rows)?;
         }
@@ -1592,6 +1595,7 @@ impl<'de> Visitor<'de> for TextQueryResponseVisitor {
         let mut generation: Option<GenerationPin> = None;
         let mut results: Option<Vec<LexicalCandidate>> = None;
         let mut window: Option<QueryResultWindowV2> = None;
+        let mut explanation: Option<SearchExplanation> = None;
         let mut file_owner_rows: Option<Vec<FileOwnerProjectionRow>> = None;
         let mut file_owner_rows_seen = false;
         let mut next_cursor: Option<ContinuationTokenV2> = None;
@@ -1616,6 +1620,12 @@ impl<'de> Visitor<'de> for TextQueryResponseVisitor {
                     }
                     window = Some(map.next_value()?);
                 }
+                "explanation" => {
+                    if explanation.is_some() {
+                        return Err(de::Error::duplicate_field("explanation"));
+                    }
+                    explanation = Some(map.next_value()?);
+                }
                 "file_owner_rows" => {
                     if file_owner_rows_seen {
                         return Err(de::Error::duplicate_field("file_owner_rows"));
@@ -1638,6 +1648,7 @@ impl<'de> Visitor<'de> for TextQueryResponseVisitor {
         let generation = generation.ok_or_else(|| de::Error::missing_field("generation"))?;
         let results = results.ok_or_else(|| de::Error::missing_field("results"))?;
         let window = window.ok_or_else(|| de::Error::missing_field("window"))?;
+        let explanation = explanation.ok_or_else(|| de::Error::missing_field("explanation"))?;
         check_ranked_page_v2(
             &window,
             results.len(),
@@ -1651,6 +1662,7 @@ impl<'de> Visitor<'de> for TextQueryResponseVisitor {
             generation,
             results,
             window,
+            explanation,
             file_owner_rows,
             next_cursor,
         })
@@ -2772,6 +2784,7 @@ mod tests {
             projection_fixture_row("cand-2", 1.0),
         ];
         let valid = TextQueryResponse {
+            explanation: SearchExplanation::empty(),
             generation: sample_generation_pin(),
             results: results.clone(),
             window: QueryResultWindowV2::exact_probe(2),

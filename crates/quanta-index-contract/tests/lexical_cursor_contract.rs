@@ -73,6 +73,7 @@ fn token(label: &str) -> Result<ContinuationTokenV2, Box<dyn Error>> {
 
 fn continued(results: Vec<LexicalCandidate>) -> Result<TextQueryResponse, Box<dyn Error>> {
     Ok(TextQueryResponse {
+        explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: pin(),
         next_cursor: Some(token("text-page")?),
         window: QueryResultWindowV2::pageable(
@@ -108,6 +109,7 @@ fn a_continued_page_and_a_final_page_round_trip() -> TestResult {
         return Err("a continued page must round-trip".into());
     }
     let last_page = TextQueryResponse {
+        explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: pin(),
         results: rows(),
         window: QueryResultWindowV2::exact_probe(3),

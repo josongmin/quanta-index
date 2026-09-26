@@ -626,6 +626,10 @@ crate quanta_index_contract
 │   │   ├── struct PlannerTraceEntry: pub
 │   │   ├── struct PlannerTraceEntryVisitor: pub(self)
 │   │   │   └── type Value: pub(self)
+│   │   ├── enum QueryStageKindV1: pub
+│   │   ├── struct QueryStageTimingV1: pub
+│   │   ├── struct QueryStageTimingVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
 │   │   ├── struct SearchExplanation: pub
 │   │   ├── struct SearchExplanationBuilder: pub
 │   │   ├── struct SearchExplanationVisitor: pub(self)

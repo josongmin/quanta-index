@@ -55,6 +55,7 @@ def _write_catalog(path: Path, body: str) -> Path:
     workflow = path / ".github" / "workflows" / "test.yml"
     workflow.parent.mkdir(parents=True)
     workflow.write_text(
+        "on: [push, pull_request, merge_group, schedule, workflow_dispatch]\n"
         "jobs:\n  test:\n    steps:\n      - name: run\n        run: |\n"
         + "\n".join(f"          {command}" for command in commands),
         encoding="utf-8",

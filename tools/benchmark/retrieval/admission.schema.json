@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://quanta-index.invalid/benchmark/retrieval/admission-v1",
-  "title": "Retrieval qualification admission v1",
+  "$id": "https://quanta-index.invalid/benchmark/retrieval/admission-v2",
+  "title": "Retrieval qualification admission v2",
   "description": "W0-B authority packet. This manifest binds independently reviewed license and gold receipts to the exact corpus, suite, models, verification receipts, host profile, cache regime, and source revision admitted before a qualified capture.",
   "type": "object",
   "additionalProperties": false,
@@ -13,6 +13,8 @@
     "repository_commit",
     "corpus_manifest_sha256",
     "suite_sha256",
+    "development_suite_sha256",
+    "experiment_custody_sha256",
     "query_pack_sha256",
     "license",
     "gold",
@@ -23,13 +25,15 @@
     "verification"
   ],
   "properties": {
-    "schema_version": {"const": 1},
+    "schema_version": {"const": 2},
     "admission_id": {"type": "string", "minLength": 1},
     "issued_at": {"type": "string", "minLength": 1},
     "source_revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "repository_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "corpus_manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "suite_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "development_suite_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "experiment_custody_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "query_pack_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "license": {
       "type": "object",

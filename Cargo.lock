@@ -4361,6 +4361,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "quanta-index-bench-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "quanta-index-catalog"
 version = "0.1.0"
 dependencies = [

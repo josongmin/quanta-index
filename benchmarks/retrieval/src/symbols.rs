@@ -84,6 +84,19 @@ impl std::fmt::Display for SymbolExtractError {
 impl std::error::Error for SymbolExtractError {}
 
 impl SymbolLanguage {
+    /// Stable per-file coverage identity. TSX uses a distinct grammar from TS.
+    #[must_use]
+    pub const fn coverage_identity(self) -> &'static str {
+        match self {
+            Self::Rust => "rust",
+            Self::Go => "go",
+            Self::Python => "python",
+            Self::JavaScript => "javascript",
+            Self::TypeScript { is_tsx: false } => "typescript",
+            Self::TypeScript { is_tsx: true } => "typescript_tsx",
+        }
+    }
+
     /// Map a repo-relative path to its language by extension. `None` is an
     /// explicit unsupported file, not an error to hide.
     #[must_use]
@@ -661,12 +674,17 @@ pub fn extract_symbols(path: &str, source: &str) -> Result<Vec<SymbolRecord>, Sy
 
 /// Extract symbols for a whole admitted corpus.
 ///
-/// Files whose language has no pinned grammar are counted as unsupported
-/// (no symbols, not a failure); parse failures in supported languages are
-/// explicit coverage failures that abort the run (RBR-04).
+/// Unsupported admitted files retain a per-file coverage failure for the
+/// phase metrics. Parse failures in a supported language abort the run.
+pub struct UnsupportedSymbolFile {
+    pub path: String,
+    pub file_sha256: String,
+    pub reason: &'static str,
+}
+
 pub struct CorpusSymbolExtraction {
     pub symbols: std::collections::BTreeMap<String, Vec<SymbolRecord>>,
-    pub unsupported_files: Vec<String>,
+    pub unsupported_files: Vec<UnsupportedSymbolFile>,
 }
 
 pub fn extract_corpus_symbols(
@@ -675,17 +693,34 @@ pub fn extract_corpus_symbols(
     let mut symbols = std::collections::BTreeMap::new();
     let mut unsupported_files = Vec::new();
     for (path, file) in files {
+        if &file.path != path
+            || file.sha256 != sha256_hex(&file.bytes)
+            || file.text.as_bytes() != file.bytes.as_slice()
+        {
+            return Err(crate::BenchError::Corpus {
+                path: path.clone(),
+                message: "symbol source path/hash/text differs from admitted bytes".to_string(),
+            });
+        }
         if SymbolLanguage::from_path(path).is_none() {
-            unsupported_files.push(path.clone());
+            unsupported_files.push(UnsupportedSymbolFile {
+                path: path.clone(),
+                file_sha256: file.sha256.clone(),
+                reason: "unsupported_language",
+            });
             continue;
         }
         let records = extract_symbols(path, &file.text).map_err(|error| match error {
             SymbolExtractError::ProducerDefect { detail } => crate::BenchError::Protocol(format!(
-                "symbol producer defect for {path}: {detail}"
+                "symbol producer defect for {path}: {detail}; source_sha256={}",
+                file.sha256
             )),
             _ => crate::BenchError::Chunk {
                 path: path.clone(),
-                message: format!("symbol extraction coverage failure: {error}"),
+                message: format!(
+                    "symbol extraction coverage failure: {error}; source_sha256={}",
+                    file.sha256
+                ),
             },
         })?;
         let _previous = symbols.insert(path.clone(), records);
@@ -862,6 +897,55 @@ mod tests {
                 path: "src/broken.rs".to_string()
             }
         );
+
+        let text = "# hi".to_string();
+        let digest = sha256_hex(text.as_bytes());
+        let file = crate::corpus::SourceFile {
+            path: "docs/readme.md".to_string(),
+            bytes: text.as_bytes().to_vec(),
+            text,
+            line_starts: vec![0],
+            sha256: digest.clone(),
+        };
+        let files = std::collections::BTreeMap::from([(file.path.clone(), file)]);
+        let extraction = extract_corpus_symbols(&files).expect("coverage is reported");
+        assert!(extraction.symbols.is_empty());
+        let unsupported = extraction.unsupported_files.first().expect("unsupported file");
+        assert_eq!(unsupported.path, "docs/readme.md");
+        assert_eq!(unsupported.file_sha256, digest);
+        assert_eq!(unsupported.reason, "unsupported_language");
+
+        let malformed = "fn incomplete( {".to_string();
+        let malformed_sha = sha256_hex(malformed.as_bytes());
+        let supported_file = crate::corpus::SourceFile {
+            path: "src/broken.rs".to_string(),
+            bytes: malformed.as_bytes().to_vec(),
+            text: malformed,
+            line_starts: vec![0],
+            sha256: malformed_sha.clone(),
+        };
+        let supported =
+            std::collections::BTreeMap::from([(supported_file.path.clone(), supported_file)]);
+        let parse_error = extract_corpus_symbols(&supported)
+            .err()
+            .expect("supported parse failure must abort")
+            .to_string();
+        assert!(parse_error.contains("src/broken.rs"));
+        assert!(parse_error.contains(&malformed_sha));
+        assert!(parse_error.contains("symbol extraction coverage failure"));
+
+        let mut forged = files;
+        forged
+            .get_mut("docs/readme.md")
+            .expect("fixture file")
+            .sha256 = "0".repeat(64);
+        assert!(
+            extract_corpus_symbols(&forged)
+                .err()
+                .expect("forged source hash must abort")
+                .to_string()
+                .contains("symbol source path/hash/text differs")
+        );
     }
 
     #[test]
@@ -1009,6 +1093,18 @@ mod tests {
 
     #[test]
     fn jsx_and_versioned_ts_extensions_map() {
+        assert_eq!(
+            SymbolLanguage::from_path("ui/card.jsx")
+                .expect("jsx grammar")
+                .coverage_identity(),
+            "javascript"
+        );
+        assert_eq!(
+            SymbolLanguage::from_path("ui/card.tsx")
+                .expect("tsx grammar")
+                .coverage_identity(),
+            "typescript_tsx"
+        );
         let jsx = "export function Card() { return null; }\n";
         let records = extract_symbols("ui/card.jsx", jsx).expect("jsx parses");
         assert_eq!(

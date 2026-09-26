@@ -26,6 +26,7 @@ members = [
     "crates/quanta-index-corpus-smoke",
     "crates/quanta-index-catalog",
     "benchmarks/retrieval",
+    "benchmarks/bench-protocol",
 ]
 resolver = "2"
 

@@ -1,7 +1,10 @@
 //! Lexical text and symbol query routes.
 
+use std::time::Instant;
+
 use quanta_index_contract::{
-    CursorRouteV2, GenerationPin, LexicalCursor, LexicalRowOrderKey, QueryResultWindowV1,
+    CursorRouteV2, EngineTouched, GenerationPin, LexicalCursor, LexicalRowOrderKey,
+    QueryResultWindowV1, QueryStageKindV1, QueryStageTimingV1, SearchExplanation,
     SearchPlaneTrackKind, SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest,
     TextQueryResponse, validate_lexical_page_v1,
 };
@@ -20,12 +23,27 @@ use crate::query_dispatcher::planning::{
 use crate::query_dispatcher::read_view::ReadViewRequestV1;
 use crate::query_dispatcher::response_budget::fit_ranked_page;
 use crate::query_dispatcher::selection::resolve_optional_selection;
+use crate::query_dispatcher::stage_timing::elapsed;
 use crate::query_dispatcher::window::{
     finalize_probe_window_v1, lexical_fetch_limit_v1, lexical_page_window_v1, pageable_window_v2,
     probe_top_k_v1,
 };
 
 const LEXICAL_CURSOR_ORDER_V2: &str = "score_desc_path_line_candidate_v1";
+
+fn lexical_explanation(
+    budget: &RequestBudgetV1,
+    execution: &LaneExecutionSummaryV1,
+    stage_timings: Vec<QueryStageTimingV1>,
+) -> SearchExplanation {
+    let mut explanation = SearchExplanation::empty();
+    explanation.request_id = budget.response_request_id();
+    explanation.engines_executed = execution.executed_engines();
+    explanation.engines_touched = execution.touched_engines();
+    explanation.strategy = "lexical".to_string();
+    explanation.stage_timings = Some(stage_timings);
+    explanation
+}
 
 impl SearchPlaneDispatcher {
     /// Lower the request, acquire the view its plan declares, and forward
@@ -46,6 +64,7 @@ impl SearchPlaneDispatcher {
     ) -> Result<(TextQueryResponse, LaneExecutionSummaryV1), CoreError> {
         let execution = LaneExecutionRecorderV1::new();
         budget.checkpoint("lexical:entry")?;
+        let prepare_started = Instant::now();
         let _accepted_top_k = validate_query_top_k(request.top_k)?;
         let opened = request
             .cursor
@@ -84,27 +103,51 @@ impl SearchPlaneDispatcher {
             self.cursors()?
                 .require_context(opened, &cursor_context, Vec::new())?;
         }
+        let mut stage_timings = vec![elapsed(
+            QueryStageKindV1::LexicalPrepare,
+            prepare_started,
+            1,
+            None,
+        )];
         let wants_file_owner_projection = query_selects_file_owner_projection(&planned.query);
         if planned.force_empty {
+            let project_started = Instant::now();
+            let window = pageable_window_v2(QueryResultWindowV1::exact(0), "lexical")?;
+            stage_timings.push(elapsed(
+                QueryStageKindV1::LexicalProject,
+                project_started,
+                1,
+                Some(0),
+            ));
+            let summary = execution.summary();
             return Ok((
                 TextQueryResponse {
                     generation: planned.pin.clone(),
                     results: Vec::new(),
-                    window: pageable_window_v2(QueryResultWindowV1::exact(0), "lexical")?,
+                    window,
+                    explanation: lexical_explanation(budget, &summary, stage_timings),
                     file_owner_rows: wants_file_owner_projection.then(Vec::new),
                     next_cursor: None,
                 },
-                execution.summary(),
+                summary,
             ));
         }
+        let view_started = Instant::now();
         let view = self.acquire_read_view(
             &ReadViewRequestV1::new("lexical", &planned.pin, planned.domains),
             budget,
         )?;
+        stage_timings.push(elapsed(
+            QueryStageKindV1::LexicalReadView,
+            view_started,
+            1,
+            None,
+        ));
         let searcher = view.lexical()?;
         let fetch_top_k = lexical_fetch_limit_v1(&planned.query, request.top_k)?;
         budget.checkpoint("lexical:search")?;
         execution.record_lexical_invocation();
+        let search_started = Instant::now();
         let mut page = searcher.search_constrained(
             &planned.query,
             &planned.constraints,
@@ -114,7 +157,14 @@ impl SearchPlaneDispatcher {
             },
             budget,
         )?;
+        stage_timings.push(elapsed(
+            QueryStageKindV1::LexicalSearch,
+            search_started,
+            1,
+            Some(page.candidates.len()),
+        ));
         budget.checkpoint("lexical:project")?;
+        let project_started = Instant::now();
         let window = lexical_page_window_v1(&mut page, request.top_k, fetch_top_k)?;
         let results = page.candidates;
         let next_boundary = next_cursor(
@@ -134,11 +184,24 @@ impl SearchPlaneDispatcher {
             .as_ref()
             .map(|boundary| self.cursors()?.mint(boundary, &cursor_context, Vec::new()))
             .transpose()?;
-        let response = fit_ranked_page(
+        stage_timings.push(elapsed(
+            QueryStageKindV1::LexicalProject,
+            project_started,
+            1,
+            Some(results.len()),
+        ));
+        let mut explanation = lexical_explanation(budget, &execution.summary(), stage_timings);
+        if !results.is_empty() {
+            // Reserve the maximal explanation shape before response-budget
+            // fitting. A truncated page can only remove this contribution.
+            explanation.engines_touched.push(EngineTouched::Lexical);
+        }
+        let mut response = fit_ranked_page(
             TextQueryResponse {
                 generation: planned.pin.clone(),
                 results,
                 window: public_window,
+                explanation,
                 file_owner_rows,
                 next_cursor,
             },
@@ -148,7 +211,18 @@ impl SearchPlaneDispatcher {
         if !response.results.is_empty() {
             execution.record_lexical_contribution();
         }
-        Ok((response, execution.summary()))
+        let summary = execution.summary();
+        response.explanation.engines_touched = summary.touched_engines();
+        let final_stage = response
+            .explanation
+            .stage_timings
+            .as_mut()
+            .and_then(|stages| stages.last_mut())
+            .ok_or_else(|| CoreError::InvalidContract("lexical project stage missing".to_string()))?;
+        final_stage.returned_candidates = Some(
+            u64::try_from(response.results.len()).map_or(u64::MAX, |count| count),
+        );
+        Ok((response, summary))
     }
 
     pub(in crate::query_dispatcher) fn symbol_with_execution(

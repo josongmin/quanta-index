@@ -172,11 +172,28 @@ def _validate_rail_binding(
     )
     if workflow is None:
         return
+    trigger = workflow.get("on", workflow.get(True))
+    required_events = {
+        "pr": {"pull_request"},
+        "merge": {"merge_group"},
+        "nightly": {"schedule"},
+        "weekly": {"schedule"},
+        "correctness": {"schedule", "workflow_dispatch"},
+    }.get(raw_rail.get("tier"), set())
+    enabled_events = set(trigger) if isinstance(trigger, dict) else (
+        {trigger} if isinstance(trigger, str) else set(trigger) if isinstance(trigger, list) else set()
+    )
+    if not enabled_events.intersection(required_events):
+        violations.append(_violation(catalog, f"rail {rail_id} workflow cannot run for its tier event"))
+        return
     jobs = workflow.get("jobs")
     if not isinstance(jobs, dict) or not isinstance(jobs.get(job_id), dict):
         violations.append(
             _violation(catalog, f"rail {rail_id} workflow job does not exist: {job_id}")
         )
+        return
+    if _is_disabled(jobs[job_id].get("if")):
+        violations.append(_violation(catalog, f"rail {rail_id} workflow job is disabled"))
         return
     steps = jobs[job_id].get("steps")
     if not isinstance(steps, list):
@@ -185,6 +202,9 @@ def _validate_rail_binding(
     for step in steps:
         if not isinstance(step, dict) or step.get("name") != step_name:
             continue
+        if _is_disabled(step.get("if")):
+            violations.append(_violation(catalog, f"rail {rail_id} workflow step is disabled"))
+            return
         run = step.get("run")
         if isinstance(run, str) and _executes_declared_command(run, command):
             return
@@ -211,9 +231,19 @@ def _executes_declared_command(run: str, command: str) -> bool:
             statement = " ".join(statement.split())
             if statement.startswith(command):
                 suffix = statement[len(command) :]
+                if "nextest run" in command and suffix.strip() and not suffix.strip().startswith("|"):
+                    continue
                 if not suffix or suffix[0].isspace() or suffix[0] == "|":
                     return True
     return False
+
+
+def _is_disabled(value: object) -> bool:
+    if value is False:
+        return True
+    if not isinstance(value, str):
+        return False
+    return value.strip().lower() in {"false", "${{ false }}"}
 
 
 def _validate_rails(

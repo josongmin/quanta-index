@@ -78,9 +78,11 @@
     "admission": {
       "type": "object", "additionalProperties": false,
       "description": "Required when scope=qualified. Paths to the W0-B authority manifest and the independently produced evidence bytes it binds.",
-      "required": ["manifest", "license_receipt", "annotation_receipts", "adjudication_receipt"],
+      "required": ["manifest", "experiment_custody", "development_suite", "license_receipt", "annotation_receipts", "adjudication_receipt"],
       "properties": {
         "manifest": {"type": "string", "minLength": 1},
+        "experiment_custody": {"type": "string", "minLength": 1},
+        "development_suite": {"type": "string", "minLength": 1},
         "license_receipt": {"type": "string", "minLength": 1},
         "annotation_receipts": {
           "type": "array", "minItems": 2, "maxItems": 2,

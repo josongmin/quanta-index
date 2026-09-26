@@ -559,6 +559,212 @@ impl std::error::Error for WeightsHashError {}
 /// and `summary` carry hybrid/semantic-planner provenance. Use
 /// [`SearchExplanation::empty`] for incremental population by producers, or
 /// [`SearchExplanationBuilder`] when the build site wants typed push helpers.
+/// One measured server-side query stage. The stage name identifies a fixed
+/// producer boundary; elapsed time is monotonic and never inferred from the
+/// client wall clock. `returned_candidates` is absent when the stage does not
+/// produce candidates, not a synthetic zero.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum QueryStageKindV1 {
+    LexicalPrepare,
+    LexicalReadView,
+    LexicalSearch,
+    LexicalProject,
+    SemanticPrepare,
+    SemanticReadView,
+    SemanticLexicalScope,
+    SemanticEmbedding,
+    SemanticDenseSearch,
+    SemanticProject,
+    HybridPrepare,
+    HybridReadView,
+    HybridLexicalSearch,
+    HybridEmbedding,
+    HybridDenseFetch,
+    HybridDenseAdmission,
+    HybridFusion,
+}
+
+const QUERY_STAGE_NAMES: &[&str] = &[
+    "lexical.prepare",
+    "lexical.read_view",
+    "lexical.search",
+    "lexical.project",
+    "semantic.prepare",
+    "semantic.read_view",
+    "semantic.lexical_scope",
+    "semantic.embedding",
+    "semantic.dense_search",
+    "semantic.project",
+    "hybrid.prepare",
+    "hybrid.read_view",
+    "hybrid.lexical_search",
+    "hybrid.embedding",
+    "hybrid.dense_fetch",
+    "hybrid.dense_admission",
+    "hybrid.fusion",
+];
+
+impl QueryStageKindV1 {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::LexicalPrepare => "lexical.prepare",
+            Self::LexicalReadView => "lexical.read_view",
+            Self::LexicalSearch => "lexical.search",
+            Self::LexicalProject => "lexical.project",
+            Self::SemanticPrepare => "semantic.prepare",
+            Self::SemanticReadView => "semantic.read_view",
+            Self::SemanticLexicalScope => "semantic.lexical_scope",
+            Self::SemanticEmbedding => "semantic.embedding",
+            Self::SemanticDenseSearch => "semantic.dense_search",
+            Self::SemanticProject => "semantic.project",
+            Self::HybridPrepare => "hybrid.prepare",
+            Self::HybridReadView => "hybrid.read_view",
+            Self::HybridLexicalSearch => "hybrid.lexical_search",
+            Self::HybridEmbedding => "hybrid.embedding",
+            Self::HybridDenseFetch => "hybrid.dense_fetch",
+            Self::HybridDenseAdmission => "hybrid.dense_admission",
+            Self::HybridFusion => "hybrid.fusion",
+        }
+    }
+}
+
+impl Serialize for QueryStageKindV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for QueryStageKindV1 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        match value.as_str() {
+            "lexical.prepare" => Ok(Self::LexicalPrepare),
+            "lexical.read_view" => Ok(Self::LexicalReadView),
+            "lexical.search" => Ok(Self::LexicalSearch),
+            "lexical.project" => Ok(Self::LexicalProject),
+            "semantic.prepare" => Ok(Self::SemanticPrepare),
+            "semantic.read_view" => Ok(Self::SemanticReadView),
+            "semantic.lexical_scope" => Ok(Self::SemanticLexicalScope),
+            "semantic.embedding" => Ok(Self::SemanticEmbedding),
+            "semantic.dense_search" => Ok(Self::SemanticDenseSearch),
+            "semantic.project" => Ok(Self::SemanticProject),
+            "hybrid.prepare" => Ok(Self::HybridPrepare),
+            "hybrid.read_view" => Ok(Self::HybridReadView),
+            "hybrid.lexical_search" => Ok(Self::HybridLexicalSearch),
+            "hybrid.embedding" => Ok(Self::HybridEmbedding),
+            "hybrid.dense_fetch" => Ok(Self::HybridDenseFetch),
+            "hybrid.dense_admission" => Ok(Self::HybridDenseAdmission),
+            "hybrid.fusion" => Ok(Self::HybridFusion),
+            other => Err(de::Error::unknown_variant(other, QUERY_STAGE_NAMES)),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct QueryStageTimingV1 {
+    pub stage: QueryStageKindV1,
+    pub elapsed_ns: u64,
+    pub calls: u32,
+    pub returned_candidates: Option<u64>,
+}
+
+const QUERY_STAGE_TIMING_FIELDS: &[&str] = &["stage", "elapsed_ns", "calls", "returned_candidates"];
+
+impl Serialize for QueryStageTimingV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("QueryStageTimingV1", 4)?;
+        state.serialize_field("stage", &self.stage)?;
+        state.serialize_field("elapsed_ns", &self.elapsed_ns)?;
+        state.serialize_field("calls", &self.calls)?;
+        state.serialize_field("returned_candidates", &self.returned_candidates)?;
+        state.end()
+    }
+}
+
+struct QueryStageTimingVisitor;
+
+impl<'de> Visitor<'de> for QueryStageTimingVisitor {
+    type Value = QueryStageTimingV1;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a QueryStageTimingV1 map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut stage = None;
+        let mut elapsed_ns = None;
+        let mut calls = None;
+        let mut returned_candidates = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "stage" => {
+                    if stage.is_some() {
+                        return Err(de::Error::duplicate_field("stage"));
+                    }
+                    stage = Some(map.next_value()?);
+                }
+                "elapsed_ns" => {
+                    if elapsed_ns.is_some() {
+                        return Err(de::Error::duplicate_field("elapsed_ns"));
+                    }
+                    elapsed_ns = Some(map.next_value()?);
+                }
+                "calls" => {
+                    if calls.is_some() {
+                        return Err(de::Error::duplicate_field("calls"));
+                    }
+                    calls = Some(map.next_value()?);
+                }
+                "returned_candidates" => {
+                    if returned_candidates.is_some() {
+                        return Err(de::Error::duplicate_field("returned_candidates"));
+                    }
+                    returned_candidates = Some(map.next_value::<Option<u64>>()?);
+                }
+                other => return Err(de::Error::unknown_field(other, QUERY_STAGE_TIMING_FIELDS)),
+            }
+        }
+        let stage = stage.ok_or_else(|| de::Error::missing_field("stage"))?;
+        let calls: u32 = calls.ok_or_else(|| de::Error::missing_field("calls"))?;
+        if calls == 0 {
+            return Err(de::Error::custom("calls must be positive"));
+        }
+        Ok(QueryStageTimingV1 {
+            stage,
+            elapsed_ns: elapsed_ns.ok_or_else(|| de::Error::missing_field("elapsed_ns"))?,
+            calls,
+            returned_candidates: returned_candidates
+                .ok_or_else(|| de::Error::missing_field("returned_candidates"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for QueryStageTimingV1 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "QueryStageTimingV1",
+            QUERY_STAGE_TIMING_FIELDS,
+            QueryStageTimingVisitor,
+        )
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchExplanation {
     pub planner_trace: Vec<PlannerTraceEntry>,
@@ -573,6 +779,9 @@ pub struct SearchExplanation {
     /// typed payload correlates without its envelope. `0` means the
     /// response was built off-transport (stubs, in-process calls).
     pub request_id: u64,
+    /// `None` means no server-internal stage measurement was supplied.
+    /// A measured query carries a nonempty ordered list.
+    pub stage_timings: Option<Vec<QueryStageTimingV1>>,
     pub early_stop_reason: Option<EarlyStopReason>,
     pub contributions: Vec<ExplanationRow>,
     pub ranker_weights_hash: [u8; 32],
@@ -591,6 +800,7 @@ impl SearchExplanation {
             engines_touched: Vec::new(),
             engines_executed: Vec::new(),
             request_id: 0,
+            stage_timings: None,
             early_stop_reason: None,
             contributions: Vec::new(),
             ranker_weights_hash: [0u8; 32],
@@ -611,6 +821,7 @@ const SEARCH_EXPLANATION_FIELDS: &[&str] = &[
     "engines_touched",
     "engines_executed",
     "request_id",
+    "stage_timings",
     "early_stop_reason",
     "contributions",
     "ranker_weights_hash",
@@ -623,11 +834,12 @@ impl Serialize for SearchExplanation {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("SearchExplanation", 9)?;
+        let mut state = serializer.serialize_struct("SearchExplanation", 10)?;
         state.serialize_field("planner_trace", &self.planner_trace)?;
         state.serialize_field("engines_touched", &self.engines_touched)?;
         state.serialize_field("engines_executed", &self.engines_executed)?;
         state.serialize_field("request_id", &self.request_id)?;
+        state.serialize_field("stage_timings", &self.stage_timings)?;
         state.serialize_field("early_stop_reason", &self.early_stop_reason)?;
         state.serialize_field("contributions", &self.contributions)?;
         state.serialize_field("ranker_weights_hash", &self.ranker_weights_hash)?;
@@ -654,6 +866,7 @@ impl<'de> Visitor<'de> for SearchExplanationVisitor {
         let mut engines_touched: Option<Vec<EngineTouched>> = None;
         let mut engines_executed: Option<Vec<EngineTouched>> = None;
         let mut request_id: Option<u64> = None;
+        let mut stage_timings: Option<Option<Vec<QueryStageTimingV1>>> = None;
         let mut early_stop_reason: Option<Option<EarlyStopReason>> = None;
         let mut contributions: Option<Vec<ExplanationRow>> = None;
         let mut ranker_weights_hash: Option<[u8; 32]> = None;
@@ -684,6 +897,12 @@ impl<'de> Visitor<'de> for SearchExplanationVisitor {
                         return Err(de::Error::duplicate_field("request_id"));
                     }
                     request_id = Some(map.next_value()?);
+                }
+                "stage_timings" => {
+                    if stage_timings.is_some() {
+                        return Err(de::Error::duplicate_field("stage_timings"));
+                    }
+                    stage_timings = Some(map.next_value()?);
                 }
                 "early_stop_reason" => {
                     if early_stop_reason.is_some() {
@@ -726,6 +945,8 @@ impl<'de> Visitor<'de> for SearchExplanationVisitor {
             engines_executed: engines_executed
                 .ok_or_else(|| de::Error::missing_field("engines_executed"))?,
             request_id: request_id.ok_or_else(|| de::Error::missing_field("request_id"))?,
+            stage_timings: stage_timings
+                .ok_or_else(|| de::Error::missing_field("stage_timings"))?,
             early_stop_reason: early_stop_reason
                 .ok_or_else(|| de::Error::missing_field("early_stop_reason"))?,
             contributions: contributions

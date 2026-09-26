@@ -1,136 +1,110 @@
-"""Canonical benchmark family and profile manifest loader.
+"""Registry-backed view of the benchmark control plane.
 
-The manifest is intentionally a data-only control plane.  Producers remain
-Justfile recipes, while validators and the CLI consume the same declared
-family, artifact, sample-floor and baseline policy rather than keeping their
-own parallel tables.
+`tools/benchmark/registry.toml` is the single data-only authority (see
+`tools/benchmark/registry.py`). This module projects it into the artifact
+checker's family/profile shape so that `check-bench-artifacts.py`,
+`quality_integration_summary.py` and `benchctl.py` consume the same declared
+family, artifact, sample-floor, host-policy, verdict and baseline policy
+instead of keeping a parallel table.
+
+There is no second data source: `tools/benchmark/manifest.json` was removed
+when the registry landed. An artifact family is one whose registered producer
+declares at least one output path; families with no native artifact (crate-local
+Criterion benches, retrieval rails and recorded-only evaluators) are not
+`BenchArtifactV1` families and are intentionally absent from this projection.
 """
 
 from __future__ import annotations
 
-import json
+import sys
 from pathlib import Path
 from typing import Any
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from registry import RegistryError, load_registry  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_MANIFEST_PATH = ROOT / "tools" / "benchmark" / "manifest.json"
+DEFAULT_MANIFEST_PATH = ROOT / "tools" / "benchmark" / "registry.toml"
 SCHEMA_VERSION = 2
+
+#: Purposes whose rails must carry an explicit rail verdict in their artifact.
+VERDICT_PURPOSES = frozenset({"search-quality", "systems"})
+#: Comparator ids the artifact checker knows how to compare.
+BASELINE_COMPARATORS = frozenset({"dsl-latency"})
 
 
 class ManifestError(ValueError):
-    """The benchmark control-plane manifest is malformed."""
+    """The benchmark control plane is malformed."""
 
 
-def _object(value: object, where: str) -> dict[str, object]:
-    if not isinstance(value, dict):
-        raise ManifestError(f"{where} must be an object")
-    return value
+def _artifact_glob(registry: dict[str, Any], family: dict[str, Any]) -> str | None:
+    reference = family["producer"]
+    if reference == "none":
+        return None
+    producer = registry["producers"].get(reference)
+    if not isinstance(producer, dict):
+        raise ManifestError(f"family references unknown producer {reference!r}")
+    outputs = producer.get("outputs") or []
+    if not outputs:
+        return None
+    return outputs[0]
 
 
-def _string(value: object, where: str) -> str:
-    if not isinstance(value, str) or not value:
-        raise ManifestError(f"{where} must be a non-empty string")
-    return value
+def _baseline(family: dict[str, Any]) -> dict[str, str] | None:
+    path = family["baseline"]
+    if path == "none":
+        return None
+    scorer = family["scorer"]
+    if scorer == "none" or scorer not in BASELINE_COMPARATORS:
+        raise ManifestError(
+            f"family baseline {path!r} needs a registered comparator, found {scorer!r}"
+        )
+    admission = "canonical-linux" if family["host_policy"] == "canonical-linux" else "local-diagnostic"
+    return {"path": path, "comparator": scorer, "admission": admission}
 
 
-def _string_list(value: object, where: str, *, nonempty: bool = True) -> list[str]:
-    if not isinstance(value, list) or (nonempty and not value):
-        raise ManifestError(f"{where} must be a {'non-empty ' if nonempty else ''}array")
-    if not all(isinstance(item, str) and item for item in value):
-        raise ManifestError(f"{where} must contain non-empty strings")
-    if len(set(value)) != len(value):
-        raise ManifestError(f"{where} contains duplicate values")
-    return list(value)
-
-
-def load_manifest(path: Path = DEFAULT_MANIFEST_PATH) -> dict[str, Any]:
-    """Load and fail closed on the full benchmark control-plane manifest."""
+def load_manifest(path: Path | None = None, repo_root: Path | None = None) -> dict[str, Any]:
+    """Load the registry and project it into the artifact-checker shape."""
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ManifestError(f"cannot load {path}: {exc}") from exc
-    root = _object(payload, "manifest")
-    if set(root) != {"schema_version", "families", "profiles"}:
-        raise ManifestError("manifest must contain exactly schema_version, families and profiles")
-    if root["schema_version"] != SCHEMA_VERSION:
-        raise ManifestError(f"unsupported manifest schema_version {root['schema_version']!r}")
+        registry = load_registry(path or DEFAULT_MANIFEST_PATH, repo_root=repo_root or ROOT)
+    except RegistryError as exc:
+        raise ManifestError(str(exc)) from exc
 
-    raw_families = _object(root["families"], "manifest.families")
-    if not raw_families:
-        raise ManifestError("manifest.families must not be empty")
     families: dict[str, dict[str, Any]] = {}
-    for name, raw in raw_families.items():
-        _string(name, "manifest family name")
-        family = _object(raw, f"family {name!r}")
-        expected = {
-            "dimension",
-            "artifact_glob",
-            "producer",
-            "minimum_samples",
-            "host_policy",
-            "baseline",
-            "requires_verdict",
+    for name, family in registry["families"].items():
+        glob = _artifact_glob(registry, family)
+        if glob is None:
+            continue
+        families[name] = {
+            "dimension": name,
+            "artifact_glob": glob,
+            "producer": name,
+            "minimum_samples": family["sample_floor"] or None,
+            "host_policy": family["host_policy"],
+            "requires_verdict": family["purpose"] in VERDICT_PURPOSES,
+            "baseline": _baseline(family),
         }
-        if set(family) != expected:
-            raise ManifestError(f"family {name!r} must contain exactly {sorted(expected)}")
-        if _string(family["dimension"], f"family {name!r}.dimension") != name:
-            raise ManifestError(f"family {name!r}.dimension must equal its family name")
-        _string(family["artifact_glob"], f"family {name!r}.artifact_glob")
-        _string(family["producer"], f"family {name!r}.producer")
-        minimum_samples = family["minimum_samples"]
-        if minimum_samples is not None and (
-            not isinstance(minimum_samples, int)
-            or isinstance(minimum_samples, bool)
-            or minimum_samples < 1
-        ):
-            raise ManifestError(
-                f"family {name!r}.minimum_samples must be null or a positive integer"
-            )
-        if family["host_policy"] not in {"any", "local-diagnostic", "canonical-linux"}:
-            raise ManifestError(f"family {name!r}.host_policy is not registered")
-        if type(family["requires_verdict"]) is not bool:
-            raise ManifestError(f"family {name!r}.requires_verdict must be a boolean")
-        baseline = family["baseline"]
-        if baseline is not None:
-            baseline_obj = _object(baseline, f"family {name!r}.baseline")
-            if set(baseline_obj) != {"path", "comparator", "admission"}:
-                raise ManifestError(
-                    f"family {name!r}.baseline must contain exactly path, comparator and admission"
-                )
-            _string(baseline_obj["path"], f"family {name!r}.baseline.path")
-            if baseline_obj["comparator"] != "dsl-latency":
-                raise ManifestError(f"family {name!r}.baseline.comparator is not registered")
-            if baseline_obj["admission"] not in {"canonical-linux", "local-diagnostic"}:
-                raise ManifestError(f"family {name!r}.baseline.admission is not registered")
-        families[name] = family
 
-    raw_profiles = _object(root["profiles"], "manifest.profiles")
-    if not raw_profiles:
-        raise ManifestError("manifest.profiles must not be empty")
     profiles: dict[str, dict[str, Any]] = {}
-    for name, raw in raw_profiles.items():
-        _string(name, "manifest profile name")
-        profile = _object(raw, f"profile {name!r}")
-        if set(profile) != {"families", "recipes", "description"}:
-            raise ManifestError(
-                f"profile {name!r} must contain exactly families, recipes and description"
-            )
-        family_names = _string_list(profile["families"], f"profile {name!r}.families")
-        unknown = sorted(set(family_names) - set(families))
-        if unknown:
-            raise ManifestError(f"profile {name!r} names unknown family(s): {', '.join(unknown)}")
-        recipes = _string_list(profile["recipes"], f"profile {name!r}.recipes", nonempty=False)
-        expected_recipes = {
-            families[family_name]["producer"]
-            for family_name in family_names
-            if families[family_name]["producer"] != "recorded-experiment"
+    for name, profile in registry["profiles"].items():
+        selected = [family for family in profile["families"] if family in families]
+        if not selected:
+            continue
+        recipes = [
+            registry["producers"][registry["families"][family]["producer"]]["recipe"]
+            for family in selected
+            if registry["families"][family]["producer"] != "none"
+            and registry["producers"][registry["families"][family]["producer"]]["kind"]
+            == "just-recipe"
+        ]
+        profiles[name] = {
+            "families": selected,
+            "recipes": recipes,
+            "description": profile["description"],
         }
-        if set(recipes) != expected_recipes:
-            raise ManifestError(
-                f"profile {name!r}.recipes must exactly name each runnable family producer"
-            )
-        _string(profile["description"], f"profile {name!r}.description")
-        profiles[name] = profile
 
     return {"schema_version": SCHEMA_VERSION, "families": families, "profiles": profiles}
 
@@ -143,7 +117,7 @@ def fresh_families(manifest: dict[str, Any]) -> tuple[tuple[str, str], ...]:
 
 
 def baseline_families(manifest: dict[str, Any]) -> tuple[tuple[str, str], ...]:
-    """Committed baseline paths declared by the family manifest."""
+    """Committed baseline paths declared by the family registry."""
     families = manifest["families"]
     assert isinstance(families, dict)
     return tuple(

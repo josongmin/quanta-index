@@ -311,6 +311,7 @@ fn active_resolution_rejects_wrong_same_domain_query_generation() {
     let query = Arc::new(StubQueryTransport::sequence([
         SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(active_resolution(resolved)),
         SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
+            explanation: quanta_index_contract::SearchExplanation::empty(),
             generation: wrong,
             results: Vec::new(),
             window: QueryResultWindowV2::exact_probe(0),
@@ -375,6 +376,7 @@ fn lexical_time_resolution_binds_the_final_ancestor_pin() {
         let query = Arc::new(StubQueryTransport::sequence([
             SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(ancestor.clone()),
             SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
+                explanation: quanta_index_contract::SearchExplanation::empty(),
                 generation: final_pin.clone(),
                 results: vec![],
                 window: QueryResultWindowV2::exact_probe(0),
@@ -649,6 +651,7 @@ fn sample_explanation() -> SearchExplanation {
         engines_touched: vec![quanta_index_contract::EngineTouched::Semantic],
         engines_executed: vec![quanta_index_contract::EngineTouched::Semantic],
         request_id: 0,
+        stage_timings: None,
         early_stop_reason: None,
         contributions: Vec::new(),
         ranker_weights_hash: [0; 32],
@@ -905,6 +908,7 @@ fn sample_parse_tree_record() -> ParseTreeRecord {
 fn unused_query() -> Arc<StubQueryTransport> {
     Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(
         TextQueryResponse {
+            explanation: quanta_index_contract::SearchExplanation::empty(),
             generation: sample_generation_pin(),
             results: vec![],
             window: QueryResultWindowV2::exact_probe(0),
@@ -1611,6 +1615,7 @@ fn semantic_scope_sourcegraph_query_preserves_scope_wire_fields() {
 fn lexical_query_builder_carries_top_k_to_wire_contract() {
     let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(
         TextQueryResponse {
+            explanation: quanta_index_contract::SearchExplanation::empty(),
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
             window: QueryResultWindowV2::exact_probe(1),
@@ -1650,6 +1655,7 @@ fn lexical_query_builder_carries_top_k_to_wire_contract() {
 fn lexical_constraint_setters_preserve_path_and_language_axes_v1() {
     let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(
         TextQueryResponse {
+            explanation: quanta_index_contract::SearchExplanation::empty(),
             generation: sample_generation_pin(),
             results: Vec::new(),
             window: QueryResultWindowV2::exact_probe(0),
@@ -1835,6 +1841,7 @@ fn semantic_hybrid_seed_and_symbol_setters_preserve_both_constraint_axes_v1() {
 fn lexical_query_request_resolves_active_before_forwarding() {
     let query = Arc::new(StubQueryTransport::active(
         SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
+            explanation: quanta_index_contract::SearchExplanation::empty(),
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
             window: QueryResultWindowV2::exact_probe(1),
@@ -2075,6 +2082,7 @@ fn hybrid_seed_request_resolves_active_before_forwarding() {
 fn lexical_sourcegraph_query_builder_dispatches_text_query_request() {
     let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(
         TextQueryResponse {
+            explanation: quanta_index_contract::SearchExplanation::empty(),
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
             window: QueryResultWindowV2::exact_probe(1),
@@ -2499,6 +2507,7 @@ fn search_corpus_semantic_scope_conflicts_fail_before_transport_io() {
 fn reader_client_routes_lexical_query_surface() {
     let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(
         TextQueryResponse {
+            explanation: quanta_index_contract::SearchExplanation::empty(),
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
             window: QueryResultWindowV2::exact_probe(1),
@@ -4979,6 +4988,7 @@ fn text_query_builder_refuses_out_of_range_top_k_before_any_round_trip() {
 fn text_query_builder_accepts_the_public_maximum_top_k() {
     let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(
         TextQueryResponse {
+            explanation: quanta_index_contract::SearchExplanation::empty(),
             generation: quanta_index_contract::GenerationPin::new(
                 RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
                 RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
@@ -5382,6 +5392,7 @@ fn text_swapped_owner_projection_is_refused_on_the_projection_axis() {
     let first = binding_hit("cand-1", 2.0);
     let second = binding_hit("cand-2", 1.0);
     let response = SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
+        explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: sample_generation_pin(),
         results: vec![first.clone(), second.clone()],
         window: QueryResultWindowV2::exact_probe(2),
@@ -5407,6 +5418,7 @@ fn text_exact_owner_projection_passes_binding() {
     let first = binding_hit("cand-1", 2.0);
     let second = binding_hit("cand-2", 1.0);
     let response = SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
+        explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: sample_generation_pin(),
         results: vec![first.clone(), second.clone()],
         window: QueryResultWindowV2::exact_probe(2),

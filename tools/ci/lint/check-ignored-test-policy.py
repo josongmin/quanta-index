@@ -17,29 +17,43 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
 
 ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_POLICY = ROOT / "tools" / "ci" / "ignored-test-policy.toml"
-IGNORE = re.compile(r'ignore\s*=\s*"([^"]+)"')
-FUNCTION = re.compile(r"\bfn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+IGNORE = re.compile(r'^#\[\s*ignore(?:\s*=\s*"([^"]+)")?\s*\]$')
 
 
 def _ignored_tests(root: Path) -> set[tuple[str, str, str]]:
+    from tree_sitter_language_pack import get_parser
+
     found: set[tuple[str, str, str]] = set()
-    for source in root.glob("crates/**/*.rs"):
-        lines = source.read_text(encoding="utf-8").splitlines()
-        for index, line in enumerate(lines):
-            match = IGNORE.search(line)
-            if match is None:
-                continue
-            function = next(
-                (
-                    candidate.group(1)
-                    for candidate_line in lines[index + 1 : index + 10]
-                    if (candidate := FUNCTION.search(candidate_line))
-                ),
-                None,
-            )
-            if function is None:
-                raise ValueError(f"cannot identify ignored test function: {source}:{index + 1}")
-            found.add((source.relative_to(root).as_posix(), function, match.group(1)))
+    parser = get_parser("rust")
+    for source in (*root.glob("crates/**/*.rs"), *root.glob("benchmarks/**/*.rs")):
+        tree = parser.parse(source.read_bytes())
+
+        def visit(node: object) -> None:
+            children = node.children
+            for index, child in enumerate(children):
+                if child.type == "attribute_item":
+                    attribute = child.text.decode("utf-8").strip()
+                    match = IGNORE.fullmatch(attribute)
+                    conditional = attribute.startswith("#[cfg_attr(") and re.search(
+                        r"\bignore\b", attribute
+                    )
+                    if match or conditional:
+                        target = next(
+                            (candidate for candidate in children[index + 1 :] if candidate.type not in {"attribute_item", "line_comment", "block_comment"}),
+                            None,
+                        )
+                        name = target.child_by_field_name("name") if target is not None else None
+                        if target is None or target.type != "function_item" or name is None:
+                            raise ValueError(f"cannot identify ignored test function: {source}:{child.start_point.row + 1}")
+                        conditional_reason = re.search(r'\bignore\s*=\s*"([^"]+)"', attribute)
+                        reason = (match.group(1) or "") if match else (
+                            conditional_reason.group(1) if conditional_reason else "<conditional ignore>"
+                        )
+                        found.add((source.relative_to(root).as_posix(), name.text.decode("utf-8"), reason))
+                else:
+                    visit(child)
+
+        visit(tree.root_node)
     return found
 
 
@@ -79,7 +93,10 @@ def audit(root: Path = ROOT, policy_path: Path = DEFAULT_POLICY) -> list[str]:
         if entry in declared:
             errors.append(f"{policy_path}: duplicate exception: {entry[0]}::{entry[1]}")
         declared.add(entry)
-    actual = _ignored_tests(root)
+    try:
+        actual = _ignored_tests(root)
+    except (OSError, ValueError) as error:
+        return [f"ignored-test source scan failed: {error}"]
     for entry in sorted(actual - declared):
         errors.append(f"unowned ignored test: {entry[0]}::{entry[1]}")
     for entry in sorted(declared - actual):

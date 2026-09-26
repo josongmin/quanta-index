@@ -123,18 +123,17 @@ def main() -> int:
     args = parse_args()
     BASELINE_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Filter packages against current workspace membership so mid-refactor
-    # crate removals don't crash this gate.
+    # A removed protected crate is a structural change, not a passing snapshot.
     present = workspace_member_names()
     packages = [p for p in args.packages if p in present]
-    skipped = [p for p in args.packages if p not in present]
-    for p in skipped:
+    missing = [p for p in args.packages if p not in present]
+    for p in missing:
         print(
-            f"{p}: not in workspace.members (skipped — adjust GUARDED_CRATES if intentional)",
+            f"{p}: protected crate is absent from workspace.members; update the guarded contract explicitly",
             file=sys.stderr,
         )
 
-    bad = False
+    bad = bool(missing)
     for pkg in packages:
         current = render_module_tree(pkg)
         path = baseline_path(pkg)

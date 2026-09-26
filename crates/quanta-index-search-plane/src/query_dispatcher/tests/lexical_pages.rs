@@ -295,6 +295,7 @@ fn a_large_later_owner_projection_cannot_refuse_a_fitting_paired_prefix() -> Tes
         })
         .collect();
     let page = TextQueryResponse {
+        explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: ready_pin(),
         results,
         window: QueryResultWindowV2::pageable(3, CandidateCountV1::Exact(3), false, vec![])?,
@@ -321,7 +322,8 @@ fn a_large_later_owner_projection_cannot_refuse_a_fitting_paired_prefix() -> Tes
 
 #[test]
 fn a_fitting_first_row_is_not_refused_by_cursor_reservation() -> TestResult {
-    let budget = ResponsePayloadBudget::new(2_300)?;
+    // The lexical explanation now carries four bounded server stage records.
+    let budget = ResponsePayloadBudget::new(2_900)?;
     let dispatcher = stub_dispatcher(rows(2, 1_000))?.with_response_budget(budget);
     let first = text(dispatcher.dispatch(request(2, None), &RequestBudgetV1::unbounded()))?;
     if first.results.len() != 1 || first.window.has_more() != Some(true) {
@@ -339,6 +341,7 @@ fn a_shorter_prefix_can_exceed_the_budget_when_its_cursor_is_larger() -> TestRes
     let results = rows(4, 8);
     let large_token = ContinuationTokenV2::new("L".repeat(3_000))?;
     let page = TextQueryResponse {
+        explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: ready_pin(),
         results,
         window: QueryResultWindowV2::pageable(4, CandidateCountV1::AtLeast(5), true, vec![])?,

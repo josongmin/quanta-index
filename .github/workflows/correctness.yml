@@ -491,32 +491,36 @@ jobs:
       - name: Install just
         uses: taiki-e/install-action@just
 
-      - name: Refuse contended benchmark host
-        run: python3 tools/ci/timing/check_host_contention.py
+      - name: Benchmark control-plane policy (registry, dependency direction, no direct bypass)
+        run: python3 tools/ci/lint/check-benchmark-policy.py
 
-      - name: Warm matrix (authority producer)
-        run: just rust-bench-dsl-warm
+      # The DSL and systems families are driven only through the single registry
+      # CLI: source freeze, host preflight, producer order, artifact validation,
+      # immutable BenchmarkEvidenceV1 promotion and the declared comparators all
+      # happen inside `benchctl run`. A direct `just <producer>` or
+      # `compare_dsl_bench.py` step here would be a bypass and fails policy.
+      - name: DSL authority profile through the registry CLI
+        run: |
+          python3 tools/benchmark/benchctl.py run dsl-authority \
+            --cold-samples 20 \
+            --evidence-root "$RUNNER_TEMP/quanta-bench-evidence"
 
-      - name: Cold matrix (fresh process, 20 samples per measured scenario)
-        run: just rust-bench-dsl-cold 20
+      - name: Systems profile through the registry CLI
+        run: |
+          python3 tools/benchmark/benchctl.py run systems \
+            --evidence-root "$RUNNER_TEMP/quanta-bench-evidence"
 
-      - name: Require current-source DSL evidence
-        run: python3 tools/ci/lint/check-bench-artifacts.py --profile dsl-authority --require --skip-baselines
+      - name: Require the promoted runs in a fresh process
+        run: |
+          python3 tools/benchmark/benchctl.py validate dsl-authority \
+            --evidence-root "$RUNNER_TEMP/quanta-bench-evidence"
+          python3 tools/benchmark/benchctl.py validate systems \
+            --evidence-root "$RUNNER_TEMP/quanta-bench-evidence"
 
-      - name: Workspace freshness matrix
-        run: just rust-verify-quality-freshness
-
-      - name: Open-loop offered-load matrix
-        run: just rust-verify-quality-open-loop
-
-      - name: Require current-source systems evidence
-        run: python3 tools/ci/lint/check-bench-artifacts.py --profile systems --require --skip-baselines
-
-      - name: Compare warm vs baseline
-        run: python3 tools/benchmark/compare_dsl_bench.py tools/benchmark/baselines/warm-matrix.json artifacts/dsl-bench/warm-matrix.json
-
-      - name: Compare cold vs baseline
-        run: python3 tools/benchmark/compare_dsl_bench.py tools/benchmark/baselines/cold-matrix.json artifacts/dsl-bench/cold-matrix.json
+      - name: Replay the DSL warm run from its captured raw evidence
+        run: |
+          python3 tools/benchmark/benchctl.py replay --family dsl-warm \
+            --evidence-root "$RUNNER_TEMP/quanta-bench-evidence"
 
       - name: Upload DSL benchmark evidence
         if: always()
@@ -524,7 +528,7 @@ jobs:
         with:
           name: dsl-bench-${{ github.run_id }}-${{ github.job }}
           path: artifacts/dsl-bench/
-          if-no-files-found: warn
+          if-no-files-found: error
 
       - name: Upload systems benchmark evidence
         if: always()
@@ -534,4 +538,12 @@ jobs:
           path: |
             artifacts/search-quality/freshness/latest/
             artifacts/search-quality/open-loop/latest/
-          if-no-files-found: warn
+          if-no-files-found: error
+
+      - name: Upload immutable benchmark runs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-runs-${{ github.run_id }}-${{ github.job }}
+          path: ${{ runner.temp }}/quanta-bench-evidence/
+          if-no-files-found: error

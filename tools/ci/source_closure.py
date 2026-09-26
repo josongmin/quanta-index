@@ -45,6 +45,43 @@ PROFILES = {
             "tools/ci/write-verification-receipt.py",
         ),
     },
+    "benchmark-control-plane": {
+        # Normative benchmark registration/evidence/CLI surface only. Product
+        # source is bound separately through the envelope's Git revision and
+        # measured binary digests; the retrieval rail keeps its own profile.
+        # Planning/history under docs/plans/sep-26-bench-migration is
+        # deliberately excluded: a status edit is not a contract change.
+        "cargo_packages": ("quanta-index-bench-protocol",),
+        "paths": (
+            ".cargo/config.toml",
+            "Cargo.lock",
+            "Cargo.toml",
+            "Justfile",
+            "pyproject.toml",
+            "rust-toolchain.toml",
+            "scripts/cargow",
+            "benchmarks/bench-protocol",
+            "tools/benchmark/registry.toml",
+            "tools/benchmark/registry.py",
+            "tools/benchmark/manifest.py",
+            "tools/benchmark/evidence.py",
+            "tools/benchmark/evidence.schema.json",
+            "tools/benchmark/evidence_bridge.py",
+            "tools/benchmark/benchctl.py",
+            "tools/benchmark/compare_dsl_bench.py",
+            "tools/benchmark/quality_integration_summary.py",
+            "tools/ci/lint/check-bench-artifacts.py",
+            "tools/ci/lint/check-benchmark-policy.py",
+            "tools/ci/source_closure.py",
+            "tools/ci/timing/check_host_contention.py",
+            "tools/ci/tests/test_bench_protocol_conformance.py",
+            "tools/ci/tests/test_benchmark_evidence_bridge.py",
+            "tools/ci/tests/test_benchmark_manifest.py",
+            "tools/ci/tests/test_benchmark_policy.py",
+            "tools/ci/tests/test_benchmark_source_closure.py",
+            "tools/ci/tests/test_benchctl.py",
+        ),
+    },
 }
 
 

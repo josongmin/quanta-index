@@ -546,6 +546,7 @@ fn search_explanation_cbor_roundtrip() -> TestRes {
         engines_touched: Vec::new(),
         engines_executed: vec![EngineTouched::Lexical],
         request_id: 11,
+        stage_timings: None,
         early_stop_reason: None,
         contributions: vec![
             ExplanationRow {

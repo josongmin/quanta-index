@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -60,15 +61,24 @@ def parse_args() -> argparse.Namespace:
 
 def load_crates(path: Path) -> dict[str, CrateRow]:
     payload = json.loads(path.read_text(encoding="utf-8"))
-    rows = payload.get("top_repo_crates", [])
-    return {
-        row["name"]: CrateRow(
-            name=row["name"],
-            duration=float(row["duration"]),
-            units=int(row["units"]),
-        )
-        for row in rows
-    }
+    if not isinstance(payload, dict) or not isinstance(payload.get("top_repo_crates"), list):
+        raise ValueError(f"{path}: missing top_repo_crates array")
+    rows = payload["top_repo_crates"]
+    if not rows:
+        raise ValueError(f"{path}: top_repo_crates is empty")
+    crates: dict[str, CrateRow] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError(f"{path}: invalid crate row")
+        name, duration, units = row.get("name"), row.get("duration"), row.get("units")
+        if not isinstance(name, str) or not name or name in crates:
+            raise ValueError(f"{path}: empty or duplicate crate name: {name!r}")
+        if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not math.isfinite(duration) or duration < 0:
+            raise ValueError(f"{path}: invalid duration for {name}")
+        if type(units) is not int or units < 1:
+            raise ValueError(f"{path}: invalid units for {name}")
+        crates[name] = CrateRow(name=name, duration=float(duration), units=units)
+    return crates
 
 
 def main() -> int:
@@ -82,8 +92,16 @@ def main() -> int:
         print(f"updated baseline {args.baseline}")
         return 0
 
-    baseline = load_crates(args.baseline)
-    current = load_crates(args.current)
+    try:
+        baseline = load_crates(args.baseline)
+        current = load_crates(args.current)
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        print(f"invalid timing evidence: {error}", file=sys.stderr)
+        return 2
+    missing = sorted(set(baseline) - set(current))
+    if missing:
+        print(f"current timing evidence omits baseline crates: {', '.join(missing)}", file=sys.stderr)
+        return 2
 
     all_crates = sorted(set(baseline) | set(current))
     regressed: list[tuple[str, float, float, float, float]] = []

@@ -87,6 +87,8 @@ def build_summary_from_evidence(
         or record["schema_version"] != 5
     ):
         raise SystemExit("runner record must be a v5 object")
+    if type(record.get("span_accounting_version")) is not int or record["span_accounting_version"] != 1:
+        raise SystemExit("current runner record lacks indexed-span protocol")
     captures = record.get("captures")
     routes = record.get("route_provenance")
     if not isinstance(captures, dict) or not captures:

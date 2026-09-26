@@ -95,3 +95,19 @@ def test_no_changed_production_lines_is_explicitly_not_a_coverage_claim(tmp_path
 
     assert result.violations == []
     assert result.total_lines == 0
+
+
+def test_duplicate_lcov_line_and_partial_record_are_refused(tmp_path: Path):
+    import pytest
+
+    module = _load_module()
+    source = tmp_path / "crates" / "demo" / "src" / "lib.rs"
+    source.parent.mkdir(parents=True)
+    source.write_text("pub fn demo() {}\n", encoding="utf-8")
+    lcov = tmp_path / "coverage.lcov"
+    lcov.write_text(f"SF:{source}\nDA:1,0\nDA:1,1\nend_of_record\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="duplicate LCOV DA"):
+        module.parse_lcov(tmp_path, lcov)
+    lcov.write_text(f"SF:{source}\nDA:1,1\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="lacks end_of_record"):
+        module.parse_lcov(tmp_path, lcov)

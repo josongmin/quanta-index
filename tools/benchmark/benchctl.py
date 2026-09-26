@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 """Run and validate named benchmark evidence profiles through one CLI.
 
-This is intentionally a thin dispatcher. Producers remain the canonical
-Justfile recipes; the CLI owns only the profile-to-recipe mapping and invokes
-the artifact validator after production. It never accepts arbitrary shell
-commands, because that would make a benchmark label independent from its
-actual authority path.
+This is the single current benchmark orchestrator. Producers remain the
+registered owners (Justfile recipes, cargo bench targets and allowlisted Python
+modules); the CLI owns source freeze, host preflight, profile execution,
+artifact validation, immutable `BenchmarkEvidenceV1` promotion, verdict
+comparison and fresh-process replay. It never accepts arbitrary shell commands,
+because that would make a benchmark label independent from its actual
+authority path.
+
+The typed evidence contract is defined by the Rust crate
+`benchmarks/bench-protocol`; `tools/benchmark/evidence.py` writes the same
+canonical bytes. Registration lives in `tools/benchmark/registry.toml`.
 """
 
 from __future__ import annotations
@@ -14,6 +20,8 @@ import argparse
 import hashlib
 import json
 import os
+import platform
+import socket
 import stat
 import subprocess
 import sys
@@ -36,7 +44,9 @@ from compare_dsl_bench import (  # noqa: E402
     require_complete_baseline_candidate,
     require_no_pending_admission,
 )
+from evidence import EvidenceError, RunStore  # noqa: E402
 from manifest import DEFAULT_MANIFEST_PATH, ManifestError, load_manifest  # noqa: E402
+from registry import load_registry, registry_digest  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -82,10 +92,28 @@ def require_frozen_source(repo_root: Path, initial_head: str) -> None:
 
 
 def load_profiles(path: Path = DEFAULT_MANIFEST_PATH) -> dict[str, dict[str, object]]:
-    """Compatibility-sized profile view backed by the canonical manifest."""
-    manifest = load_manifest(path)
-    profiles = manifest["profiles"]
-    assert isinstance(profiles, dict)
+    """Full registry profile view: every registered profile is selectable.
+
+    `recipes` names only the Justfile producers of the profile (cargo/Python/
+    recorded producers are invoked by the CLI through their own allowlisted
+    command), so a profile with no Just recipe is still listed and resolvable.
+    """
+    registry = load_registry(path, repo_root=ROOT)
+    families = registry["families"]
+    producers = registry["producers"]
+    profiles: dict[str, dict[str, object]] = {}
+    for name, profile in registry["profiles"].items():
+        recipes = [
+            producers[families[family]["producer"]]["recipe"]
+            for family in profile["families"]
+            if families[family]["producer"] != "none"
+            and producers[families[family]["producer"]]["kind"] == "just-recipe"
+        ]
+        profiles[name] = {
+            "families": list(profile["families"]),
+            "recipes": recipes,
+            "description": profile["description"],
+        }
     return profiles
 
 
@@ -98,7 +126,24 @@ def parse_args(
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--repo-root", type=Path, default=repo_root, help="checkout to operate on")
     subparsers = parser.add_subparsers(dest="command", required=True)
-    subparsers.add_parser("list", help="show registered benchmark profiles")
+    subparsers.add_parser("list", help="show registered benchmark profiles and the registry digest")
+    subparsers.add_parser("plan", help="emit the resolved, digest-bound plan for a profile").add_argument(
+        "profile", choices=sorted(profiles)
+    )
+    replay = subparsers.add_parser(
+        "replay", help="fresh-process re-validation of one immutable evidence run"
+    )
+    replay.add_argument(
+        "reference",
+        nargs="?",
+        help="run id under <evidence-root>/runs/, or a path to a run directory",
+    )
+    replay.add_argument("--family", help="select the newest valid run of this registered family")
+    replay.add_argument(
+        "--evidence-root",
+        type=Path,
+        help="external benchmark root; defaults to $QUANTA_BENCH_EVIDENCE_ROOT",
+    )
     for command, help_text in (
         ("run", "run producer recipes serially, then require their evidence"),
         ("validate", "require existing current-source evidence without running producers"),
@@ -107,6 +152,15 @@ def parse_args(
     ):
         child = subparsers.add_parser(command, help=help_text)
         child.add_argument("profile", choices=sorted(profiles))
+        if command in {"run", "validate"}:
+            child.add_argument(
+                "--evidence-root",
+                type=Path,
+                help=(
+                    "external benchmark root; when set, promote (run) or require (validate) "
+                    "immutable BenchmarkEvidenceV1 runs for every artifact family"
+                ),
+            )
         if command == "run":
             child.add_argument(
                 "--cold-samples",
@@ -158,7 +212,11 @@ def require_declared_baselines(
     names = profile["families"]
     assert isinstance(families, dict) and isinstance(names, list)
     for name in names:
-        family = families[name]
+        family = families.get(name)
+        if family is None:
+            # A registered family with no BenchArtifactV1 artifact cannot have
+            # a declared artifact baseline; it is not silently treated as one.
+            continue
         assert isinstance(family, dict)
         baseline = family["baseline"]
         if baseline is None:
@@ -435,7 +493,9 @@ def compare(repo_root: Path, profile: dict[str, object], manifest: dict[str, obj
     comparator = repo_root / "tools" / "benchmark" / "compare_dsl_bench.py"
     for name in family_names:
         assert isinstance(name, str)
-        family = raw_families[name]
+        family = raw_families.get(name)
+        if family is None:
+            continue
         assert isinstance(family, dict)
         baseline = family["baseline"]
         if baseline is None:
@@ -466,7 +526,17 @@ def summarize(repo_root: Path, profile: dict[str, object], manifest: dict[str, o
     families: list[dict[str, object]] = []
     for name in family_names:
         assert isinstance(name, str)
-        family = raw_families[name]
+        family = raw_families.get(name)
+        if family is None:
+            families.append(
+                {
+                    "family": name,
+                    "host_policy": None,
+                    "artifacts": [],
+                    "status": "registered_without_bench_artifact",
+                }
+            )
+            continue
         assert isinstance(family, dict)
         pattern = family["artifact_glob"]
         assert isinstance(pattern, str)
@@ -510,27 +580,491 @@ def summarize(repo_root: Path, profile: dict[str, object], manifest: dict[str, o
     return 0
 
 
+def resolve_evidence_root(explicit: Path | None) -> Path | None:
+    """External benchmark root; never inside the checkout."""
+    if explicit is not None:
+        return explicit.resolve()
+    value = os.environ.get("QUANTA_BENCH_EVIDENCE_ROOT")
+    return Path(value).resolve() if value else None
+
+
+def producer_command(repo_root: Path, registry_entry: dict[str, object], family: str) -> list[str]:
+    """Resolve one allowlisted producer invocation; no shell fragments."""
+    kind = registry_entry.get("kind")
+    if kind == "just-recipe":
+        return ["just", str(registry_entry["recipe"])]
+    if kind == "cargo-bench":
+        return [
+            str(repo_root / "scripts" / "cargow"),
+            "--lane",
+            "bench-lane",
+            "bench",
+            "-p",
+            str(registry_entry["package"]),
+            "--bench",
+            str(registry_entry["target"]),
+            "--all-features",
+            "--locked",
+        ]
+    if kind == "python-module":
+        argv = registry_entry.get("argv") or []
+        assert isinstance(argv, list)
+        return [sys.executable, str(repo_root / str(registry_entry["module"])), *map(str, argv)]
+    raise RuntimeError(f"family {family!r} has no runnable producer kind {kind!r}")
+
+
+def plan_command(repo_root: Path, profile_name: str) -> int:
+    """Emit the resolved, digest-bound plan for a profile; never mutates."""
+    registry = load_registry(repo_root / "tools" / "benchmark" / "registry.toml")
+    profiles = registry["profiles"]
+    families = registry["families"]
+    producers = registry["producers"]
+    selected = profiles[profile_name]["families"]
+    steps: list[dict[str, object]] = []
+    for family in selected:
+        entry = families[family]
+        producer_id = entry["producer"]
+        if producer_id == "none":
+            steps.append(
+                {
+                    "family": family,
+                    "kind": "recorded-input",
+                    "runnable": False,
+                    "reason": "recorded-only family: the CLI cannot manufacture a capture",
+                }
+            )
+            continue
+        producer = producers[producer_id]
+        steps.append(
+            {
+                "family": family,
+                "kind": producer["kind"],
+                "runnable": True,
+                "command": producer_command(repo_root, producer, family),
+                "outputs": list(producer.get("outputs") or []),
+                "validator": entry["validator"],
+                "scorer": entry["scorer"],
+                "payload": entry["payload"],
+                "host_policy": entry["host_policy"],
+                "gate_tier": entry["gate_tier"],
+                "sample_floor": entry["sample_floor"],
+                "baseline": entry["baseline"],
+                "closure": registry["closures"][entry["closure"]]["profile"],
+            }
+        )
+    plan = {
+        "registry_schema_version": registry["schema_version"],
+        "registry_digest": registry_digest(registry),
+        "profile": profile_name,
+        "description": profiles[profile_name]["description"],
+        "families": list(selected),
+        "steps": steps,
+        "mutates": False,
+    }
+    print(json.dumps(plan, sort_keys=True, indent=2))
+    return 0
+
+
+def latest_run_for_family(store: object, family: str) -> str | None:
+    """Newest promoted run for one family, by evidence creation time."""
+    runs = store.runs_dir
+    if not runs.is_dir():
+        return None
+    candidates: list[tuple[str, str]] = []
+    for entry in sorted(runs.iterdir()):
+        if not entry.is_dir() or entry.is_symlink():
+            raise EvidenceError(f"invalid run entry: {entry}")
+        try:
+            evidence = store.load(entry.name)
+        except EvidenceError as exc:
+            raise EvidenceError(f"invalid run {entry.name!r}: {exc}") from exc
+        if evidence["family"] == family:
+            candidates.append((str(evidence["created_utc"]), entry.name))
+    if not candidates:
+        return None
+    candidates.sort()
+    return candidates[-1][1]
+
+
+def replay_command(repo_root: Path, reference: str, evidence_root: Path | None) -> int:
+    """Fresh-process re-validation of one immutable run.
+
+    Integrity is recomputed from raw bytes, and for a native `BenchArtifactV1`
+    payload the independent artifact checker re-runs against the captured raw
+    file. A changed input is refused; nothing is promoted.
+    """
+    candidate = Path(reference)
+    if candidate.is_dir() and (candidate / "evidence.json").is_file():
+        run_dir = candidate.resolve()
+        store = RunStore(run_dir.parent.parent)
+        run_id = candidate.name
+    else:
+        root = resolve_evidence_root(evidence_root)
+        if root is None:
+            print(
+                "ERROR: replay needs a run directory or an --evidence-root/QUANTA_BENCH_EVIDENCE_ROOT",
+                file=sys.stderr,
+            )
+            return 2
+        store = RunStore(root)
+        run_id = reference
+        run_dir = store.run_dir(run_id)
+    try:
+        evidence = store.load(run_id)
+    except EvidenceError as exc:
+        print(f"ERROR: replay refused: {exc}", file=sys.stderr)
+        return 2
+    artifact_oracle = "not_applicable"
+    native = None
+    for raw_reference in evidence["raw"]:
+        payload_path = run_dir / raw_reference["path"]
+        if payload_path.suffix == ".json":
+            native = payload_path
+            break
+    if native is not None:
+        checker = _load_lint_module(repo_root)
+        try:
+            payload = json.loads(native.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"ERROR: replay cannot parse native raw {native}: {exc}", file=sys.stderr)
+            return 2
+        if isinstance(payload, dict) and payload.get("schema_version") == 2:
+            refusals = checker.check_envelope(
+                payload, dimension=evidence["family"], head=evidence["source"]["revision"]
+            )
+            if refusals:
+                print(
+                    "ERROR: replay refused: native artifact oracle failed: "
+                    + "; ".join(refusal.reason for refusal in refusals),
+                    file=sys.stderr,
+                )
+                return 2
+            artifact_oracle = "pass"
+    receipt = {
+        "run_id": run_id,
+        "family": evidence["family"],
+        "profile": evidence["profile"],
+        "evidence_digest": evidence["digest"],
+        "raw_references": len(evidence["raw"]),
+        "raw_verified": True,
+        "artifact_oracle": artifact_oracle,
+        "payload_kind": evidence["payload"]["kind"],
+        "verdict": evidence["verdict"],
+        "replay": "contract_only" if artifact_oracle == "not_applicable" else "re_derived",
+    }
+    print(json.dumps(receipt, sort_keys=True, indent=2))
+    return 0
+
+
+def _load_lint_module(repo_root: Path):
+    import importlib.util
+
+    path = repo_root / "tools" / "ci" / "lint" / "check-bench-artifacts.py"
+    spec = importlib.util.spec_from_file_location("check_bench_artifacts", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def promote_profile_runs(
+    repo_root: Path,
+    profile_name: str,
+    manifest: dict[str, object],
+    evidence_root: Path,
+    initial_head: str,
+    receipt: Path,
+) -> int:
+    """Promote each family *of this profile* into an immutable evidence run.
+
+    Only the profile's declared artifact families are promoted; promoting every
+    registered family would silently widen what a profile capture claims.
+    """
+    from evidence import digest_bytes
+    from evidence_bridge import (
+        host_identity,
+        latency_payload_from_artifact,
+        promote_native_run,
+        source_identity,
+    )
+
+    families = manifest["families"]
+    profiles = manifest["profiles"]
+    assert isinstance(families, dict) and isinstance(profiles, dict)
+    selected = profiles[profile_name]["families"]
+    store = RunStore(evidence_root)
+    created = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    hostname = socket.gethostname() or "unknown"
+    lease_mode = "none"
+    lease_samples = 0
+    try:
+        preflight_payload = json.loads(receipt.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        preflight_payload = None
+    if isinstance(preflight_payload, dict) and preflight_payload.get("status") == "clean":
+        lease_mode = "shared"
+        lease_samples = 1
+    promoted: list[str] = []
+    for family in selected:
+        entry = families[family]
+        pattern = entry["artifact_glob"]
+        paths = sorted(repo_root.glob(pattern))
+        if not paths:
+            print(f"ERROR: family {family!r} has no artifact at {pattern}", file=sys.stderr)
+            return 2
+        path = paths[0]
+        native_bytes = path.read_bytes()
+        try:
+            artifact = json.loads(native_bytes)
+        except json.JSONDecodeError as exc:
+            print(f"ERROR: family {family!r} native artifact is not JSON: {exc}", file=sys.stderr)
+            return 2
+        try:
+            payload = latency_payload_from_artifact(artifact)
+        except EvidenceError as exc:
+            print(f"ERROR: family {family!r} cannot be promoted: {exc}", file=sys.stderr)
+            return 2
+        if artifact.get("provenance", {}).get("git_head") not in {None, initial_head}:
+            print(f"ERROR: family {family!r} artifact is not from the frozen source", file=sys.stderr)
+            return 2
+        try:
+            source = source_identity(repo_root, "benchmark-control-plane")
+        except EvidenceError as exc:
+            print(f"ERROR: cannot bind source closure: {exc}", file=sys.stderr)
+            return 2
+        # Promotion occurs only after the native validator and declared
+        # comparator have both succeeded in this run.
+        verdict_status = "pass"
+        verdict_reason = None
+        detail = artifact.get("detail")
+        if isinstance(detail, dict) and isinstance(detail.get("passed"), bool):
+            verdict_status = "pass" if detail["passed"] else "fail"
+            verdict_reason = None if detail["passed"] else "rail verdict false"
+        run_id = f"{family}-{stamp}-{digest_bytes(native_bytes)[7:15]}"
+        try:
+            promotion = promote_native_run(
+                evidence_root=evidence_root,
+                run_id=run_id,
+                family=family,
+                profile=profile_name,
+                created_utc=created,
+                native_path=path,
+                native_bytes=native_bytes,
+                payload=payload,
+                source=source,
+                build={
+                    "toolchain": _toolchain_identity(repo_root),
+                    "target_triple": f"{sys.platform}-{platform.machine()}",
+                    "lockfile_digest": digest_bytes((repo_root / "Cargo.lock").read_bytes()),
+                    "profile": "bench",
+                    "flags": ["--locked"],
+                    "binaries": [],
+                },
+                inputs=_declared_inputs(payload),
+                host=host_identity(
+                    policy=str(entry["host_policy"]),
+                    os_name=_host_os(),
+                    arch=platform.machine() or "unknown",
+                    cpu_count=os.cpu_count() or 1,
+                    hostname=hostname,
+                    lease_mode=lease_mode,
+                    lease_samples=lease_samples,
+                ),
+                command={
+                    "argv": ["benchctl", "run", profile_name],
+                    "cwd": ".",
+                    "status": "completed",
+                    "exit_code": 0,
+                    "timeout_seconds": 3600,
+                    "wall_ms": 0,
+                },
+                boundary={
+                    "clock": "monotonic",
+                    "instrumentation": "none",
+                    "start_event": "producer_exec",
+                    "end_event": "artifact_written",
+                },
+                verdict={
+                    "scope": "diagnostic",
+                    "status": verdict_status,
+                    "reason": verdict_reason,
+                    "metrics": [],
+                },
+                case_id=None,
+            )
+        except EvidenceError as exc:
+            print(f"ERROR: family {family!r} promotion refused: {exc}", file=sys.stderr)
+            return 2
+        promoted.append(promotion["run_id"])
+        print(f"promoted run: {promotion['run_dir']}")
+    latest = store.read_latest()
+    if latest is None or latest.get("run_id") != promoted[-1]:
+        print("ERROR: latest pointer was not updated by promotion", file=sys.stderr)
+        return 2
+    print(json.dumps({"profile": profile_name, "promoted": promoted}, sort_keys=True))
+    return 0
+
+
+def _host_os() -> str:
+    if sys.platform.startswith("linux"):
+        return "linux"
+    if sys.platform == "darwin":
+        return "macos"
+    return "windows"
+
+
+def _toolchain_identity(repo_root: Path) -> str:
+    pinned = repo_root / "rust-toolchain.toml"
+    channel = "unknown"
+    try:
+        for line in pinned.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped.startswith("channel"):
+                channel = stripped.split("=", 1)[1].strip().strip('"')
+    except (OSError, IndexError):
+        channel = "unknown"
+    completed = subprocess.run(
+        ["rustc", "--version"], check=False, capture_output=True, text=True
+    )
+    if completed.returncode == 0 and completed.stdout.strip():
+        return f"{completed.stdout.strip()} (pinned {channel})"
+    return f"unresolved rustc (pinned {channel})"
+
+
+def _declared_inputs(payload: dict[str, object]) -> list[dict[str, object]]:
+    """Inputs the payload actually binds; `corpus` is unavailable when unbound."""
+    if payload.get("kind") == "retrieval":
+        return [
+            {
+                "id": "corpus",
+                "availability": "present",
+                "digest": payload["corpus_digest"],
+                "reason": None,
+            },
+            {
+                "id": "query-pack",
+                "availability": "present",
+                "digest": payload["query_pack_digest"],
+                "reason": None,
+            },
+        ]
+    return [
+        {
+            "id": "workspace-fixture",
+            "availability": "unavailable",
+            "digest": None,
+            "reason": "the rail builds its deterministic fixture in-process; no external corpus",
+        }
+    ]
+
+
+def validate_promoted_runs(
+    evidence_root: Path,
+    profile_name: str,
+    manifest: dict[str, object],
+    expected_source: dict[str, object],
+    expected_lock_digest: str,
+) -> int:
+    """Require a valid promoted run for every artifact family in the profile."""
+    store = RunStore(evidence_root)
+    families = manifest["families"]
+    profiles = manifest["profiles"]
+    assert isinstance(families, dict) and isinstance(profiles, dict)
+    selected = profiles[profile_name]["families"]
+    receipts: list[dict[str, object]] = []
+    missing: list[str] = []
+    for family in selected:
+        try:
+            run_id = latest_run_for_family(store, family)
+        except EvidenceError as exc:
+            print(f"ERROR: cannot select promoted run: {exc}", file=sys.stderr)
+            return 2
+        if run_id is None:
+            missing.append(family)
+            continue
+        try:
+            evidence = store.load(run_id)
+        except EvidenceError as exc:
+            print(f"ERROR: promoted run for {family!r} is invalid: {exc}", file=sys.stderr)
+            return 2
+        if evidence["profile"] != profile_name or evidence["source"] != expected_source:
+            print(f"ERROR: run {run_id!r} has wrong profile or source identity", file=sys.stderr)
+            return 2
+        if evidence["build"]["lockfile_digest"] != expected_lock_digest:
+            print(f"ERROR: run {run_id!r} has wrong lockfile identity", file=sys.stderr)
+            return 2
+        if evidence["verdict"]["status"] != "pass":
+            print(f"ERROR: run {run_id!r} has non-passing verdict", file=sys.stderr)
+            return 2
+        if evidence["host"]["policy"] != families[family]["host_policy"]:
+            print(f"ERROR: run {run_id!r} has wrong host policy", file=sys.stderr)
+            return 2
+        receipts.append(
+            {
+                "family": family,
+                "run_id": run_id,
+                "digest": evidence["digest"],
+                "verdict": evidence["verdict"]["status"],
+                "payload": evidence["payload"]["kind"],
+            }
+        )
+    if missing:
+        print(
+            f"ERROR: profile {profile_name!r} has no promoted evidence run for: "
+            + ", ".join(sorted(missing)),
+            file=sys.stderr,
+        )
+        return 2
+    print(json.dumps({"profile": profile_name, "runs": receipts}, sort_keys=True, indent=2))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     bootstrap = argparse.ArgumentParser(add_help=False)
     bootstrap.add_argument("--repo-root", type=Path, default=ROOT)
     bootstrap_args, _ = bootstrap.parse_known_args(argv)
     repo_root = bootstrap_args.repo_root.resolve()
     try:
-        profiles = load_profiles(repo_root / "tools" / "benchmark" / "manifest.json")
+        profiles = load_profiles(repo_root / "tools" / "benchmark" / "registry.toml")
     except ManifestError as exc:
         print(f"ERROR: invalid benchmark profile manifest: {exc}", file=sys.stderr)
         return 2
     args = parse_args(argv, profiles, repo_root=repo_root)
     repo_root = args.repo_root.resolve()
     if args.command == "list":
+        registry = load_registry(repo_root / "tools" / "benchmark" / "registry.toml")
         for name in sorted(profiles):
             profile = profiles[name]
             print(f"{name}\t{name}\t{profile.get('description', '')}")
+        print(f"registry-digest\t-\t{registry_digest(registry)}")
         return 0
+    if args.command == "plan":
+        return plan_command(repo_root, args.profile)
+    if args.command == "replay":
+        if bool(args.reference) == bool(args.family):
+            print("ERROR: replay requires exactly one run reference or --family", file=sys.stderr)
+            return 2
+        reference = args.reference
+        if args.family:
+            evidence_root = resolve_evidence_root(args.evidence_root)
+            if evidence_root is None:
+                print("ERROR: --family requires an evidence root", file=sys.stderr)
+                return 2
+            try:
+                reference = latest_run_for_family(RunStore(evidence_root), args.family)
+            except EvidenceError as exc:
+                print(f"ERROR: cannot select replay run: {exc}", file=sys.stderr)
+                return 2
+            if reference is None:
+                print(f"ERROR: no promoted run for family {args.family!r}", file=sys.stderr)
+                return 2
+        return replay_command(repo_root, reference, args.evidence_root)
 
     profile = profiles[args.profile]
     artifact_profile = args.profile
-    manifest = load_manifest(repo_root / "tools" / "benchmark" / "manifest.json")
+    manifest = load_manifest(repo_root / "tools" / "benchmark" / "registry.toml")
     if args.command == "preflight":
         return preflight(repo_root, args.profile, args.receipt, manifest)
     if args.command == "summarize":
@@ -596,9 +1130,35 @@ def main(argv: list[str] | None = None) -> int:
             except RuntimeError as exc:
                 print(f"ERROR: {exc}", file=sys.stderr)
                 return 2
-    validation = validate(repo_root, artifact_profile)
-    if validation:
-        return validation
+    evidence_root = resolve_evidence_root(getattr(args, "evidence_root", None))
+    if args.command == "validate" and evidence_root is not None:
+        from evidence import digest_bytes
+        from evidence_bridge import source_identity
+
+        try:
+            require_clean_worktree(repo_root)
+            expected_source = source_identity(repo_root, "benchmark-control-plane")
+            expected_lock = digest_bytes((repo_root / "Cargo.lock").read_bytes())
+        except (RuntimeError, EvidenceError, OSError) as exc:
+            print(f"ERROR: cannot establish current validation identity: {exc}", file=sys.stderr)
+            return 2
+        return validate_promoted_runs(
+            evidence_root, args.profile, manifest, expected_source, expected_lock
+        )
+    if artifact_profile in manifest["profiles"]:
+        validation = validate(repo_root, artifact_profile)
+        if validation:
+            return validation
+    else:
+        # Crate-local Criterion, retrieval and recorded-only profiles have no
+        # BenchArtifactV1 family; they are exercised through plan/replay or an
+        # explicit --evidence-root, never through the artifact checker.
+        print(
+            f"ERROR: profile {args.profile!r} registers no BenchArtifactV1 family; "
+            "use `plan` or an explicit --evidence-root",
+            file=sys.stderr,
+        )
+        return 2
     if args.command == "run":
         try:
             require_frozen_source(repo_root, initial_head)
@@ -623,10 +1183,23 @@ def main(argv: list[str] | None = None) -> int:
                 return result
             if args.command == "run":
                 require_frozen_source(repo_root, initial_head)
-            return 0
         except RuntimeError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 2
+    if args.command == "run" and evidence_root is not None:
+        if evidence_root == repo_root or repo_root in evidence_root.parents:
+            print(
+                "ERROR: --evidence-root must stay outside the checkout; run artifacts are external",
+                file=sys.stderr,
+            )
+            return 2
+        result = promote_profile_runs(
+            repo_root, args.profile, manifest, evidence_root, initial_head, receipt
+        )
+        if result:
+            return result
+    if args.command in {"run", "compare"}:
+        return 0
     return 0
 
 

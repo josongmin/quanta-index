@@ -2,7 +2,8 @@
 //!
 //! This artifact is deliberately separate from the current v5 runner record.
 //! It exposes the returned candidate window and hybrid lane contributions,
-//! not the unreturned lane universe or server-internal timing.
+//! not the unreturned lane universe. Server timings are included only when
+//! the response carries typed stage measurements.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -26,6 +27,7 @@ fn explanation_value(explanation: Option<&RouteExplanation>) -> Value {
         "engines_executed": detail.engines_executed,
         "engines_touched": detail.engines_touched,
         "strategy": detail.strategy,
+        "stage_timings": detail.stage_timings,
     })
 }
 
@@ -363,7 +365,7 @@ pub fn diagnostic_value(
         }
     }
     Ok(json!({
-        "schema_version": 3,
+        "schema_version": 4,
         "kind": "quanta_returned_window_diagnostic",
         "record_sha256": record_sha256,
         "query_pack_sha256": pack.pack_sha256,
@@ -413,6 +415,7 @@ mod tests {
             engines_executed: Some(vec!["lexical", "semantic"]),
             engines_touched: Some(vec!["lexical", "semantic"]),
             strategy: Some("hybrid-rrf".to_string()),
+            stage_timings: None,
         }
     }
 
@@ -513,7 +516,7 @@ mod tests {
             10,
         )
         .expect("complete diagnostic");
-        assert_eq!(value.get("schema_version"), Some(&json!(3)));
+        assert_eq!(value.get("schema_version"), Some(&json!(4)));
         assert_eq!(
             value.pointer("/results/0/response_kind"),
             Some(&json!("returned_window"))

@@ -60,12 +60,41 @@ def last_segment(name: str) -> str:
 
 def derives_in(text: str) -> list[tuple[int, list[str]]]:
     """Return (line_number, [derive_name, ...]) for every derive site in text."""
+    from tree_sitter_language_pack import get_parser
+
     sites: list[tuple[int, list[str]]] = []
-    for match in DERIVE_RE.finditer(text):
-        names = [token.strip() for token in match.group(1).split(",")]
-        names = [n for n in names if n]
-        line = text[: match.start()].count("\n") + 1
-        sites.append((line, names))
+    tree = get_parser("rust").parse(text.encode("utf-8"))
+    # Other source syntax errors are owned by rustc. An invalid derive site must
+    # still be rejected here because the parser may otherwise omit it.
+    def invalid_derive(node: object) -> bool:
+        if node.type == "ERROR" and b"derive" in node.text:
+            return True
+        return any(invalid_derive(child) for child in node.children)
+
+    if invalid_derive(tree.root_node):
+        raise ValueError("invalid derive syntax; derive policy cannot certify it")
+
+    def visit(node: object) -> None:
+        if node.type in {"attribute_item", "inner_attribute_item"}:
+            stack = [node]
+            while stack:
+                current = stack.pop()
+                children = current.children
+                for index, child in enumerate(children[:-1]):
+                    if child.type == "identifier" and child.text == b"derive":
+                        argument = children[index + 1]
+                        if argument.type != "token_tree":
+                            raise ValueError("derive attribute has no argument list")
+                        body = argument.text.decode("utf-8")[1:-1]
+                        names = [name.strip() for name in body.split(",") if name.strip()]
+                        sites.append((child.start_point.row + 1, names))
+                    else:
+                        stack.append(child)
+            return
+        for child in node.children:
+            visit(child)
+
+    visit(tree.root_node)
     return sites
 
 

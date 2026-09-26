@@ -59,7 +59,7 @@ def test_schema_one_verdict_is_never_quality_authority() -> None:
 
 
 def test_quality_dimensions_follow_the_canonical_quality_full_profile() -> None:
-    manifest = MODULE.load_manifest(REPO_ROOT / "tools" / "benchmark" / "manifest.json")
+    manifest = MODULE.load_manifest(REPO_ROOT / "tools" / "benchmark" / "registry.toml")
     profile = manifest["profiles"]["quality-full"]
     dimensions = MODULE.quality_dimensions()
 
@@ -116,15 +116,18 @@ def test_cli_refuses_invalid_evidence_before_writing_green(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
-    manifest = tmp_path / "tools" / "benchmark" / "manifest.json"
+    manifest = tmp_path / "tools" / "benchmark" / "registry.toml"
     manifest.parent.mkdir(parents=True)
     manifest.write_text(
-        (REPO_ROOT / "tools" / "benchmark" / "manifest.json").read_text(encoding="utf-8"),
+        (REPO_ROOT / "tools" / "benchmark" / "registry.toml").read_text(encoding="utf-8"),
         encoding="utf-8",
+    )
+    (tmp_path / "Justfile").write_text(
+        (REPO_ROOT / "Justfile").read_text(encoding="utf-8"), encoding="utf-8"
     )
     (tmp_path / ".gitignore").write_text("artifacts/\n", encoding="utf-8")
     subprocess.run(
-        ["git", "-C", str(tmp_path), "add", "tools/benchmark/manifest.json", ".gitignore"],
+        ["git", "-C", str(tmp_path), "add", "tools/benchmark/registry.toml", "Justfile", ".gitignore"],
         check=True,
     )
     subprocess.run(

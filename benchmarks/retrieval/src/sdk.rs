@@ -930,6 +930,9 @@ pub struct RouteExplanation {
     pub engines_executed: Option<Vec<&'static str>>,
     pub engines_touched: Option<Vec<&'static str>>,
     pub strategy: Option<String>,
+    /// Measured inside the server route and bound to this response's
+    /// request id and generation. `None` is unmeasured, not zero cost.
+    pub stage_timings: Option<Vec<quanta_index_contract::QueryStageTimingV1>>,
 }
 
 fn route_explanation(explanation: &SearchExplanation) -> RouteExplanation {
@@ -954,6 +957,7 @@ fn route_explanation(explanation: &SearchExplanation) -> RouteExplanation {
                 .collect(),
         ),
         strategy: Some(explanation.strategy.clone()),
+        stage_timings: explanation.stage_timings.clone(),
     }
 }
 
@@ -1233,11 +1237,12 @@ pub fn query_route(query: &RouteQuery<'_>) -> QueryOutcome {
             {
                 Ok(response) => {
                     let hits: Vec<RankedHit> = response.results.iter().map(lexical_hit).collect();
+                    let explanation = route_explanation(&response.explanation);
                     observed_response(
                         query.route,
                         hits,
                         response.window,
-                        None,
+                        Some(explanation),
                         response.generation,
                         expected_pin,
                         start,

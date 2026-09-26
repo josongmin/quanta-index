@@ -704,6 +704,40 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     // RBR-04: source-bound symbols for every admitted file, published in
     // the same per-file replacement as the chunks.
     let symbol_extraction = extract_corpus_symbols(&by_path)?;
+    let symbol_coverage = by_path
+        .iter()
+        .filter(|(path, _)| {
+            quanta_index_retrieval_bench::symbols::SymbolLanguage::from_path(path).is_some()
+        })
+        .map(|(path, file)| {
+            let language = quanta_index_retrieval_bench::symbols::SymbolLanguage::from_path(path)
+                .ok_or_else(|| {
+                BenchError::Protocol(format!("symbol coverage lost grammar: {path}"))
+            })?;
+            let count = symbol_extraction
+                .symbols
+                .get(path)
+                .ok_or_else(|| BenchError::Protocol(format!("symbol coverage lost file: {path}")))?
+                .len();
+            Ok(serde_json::json!({
+                "path": path,
+                "source_sha256": file.sha256,
+                "language": language.coverage_identity(),
+                "definition_count": count,
+            }))
+        })
+        .collect::<BenchResult<Vec<_>>>()?;
+    let symbol_unsupported_details = symbol_extraction
+        .unsupported_files
+        .iter()
+        .map(|file| {
+            serde_json::json!({
+                "path": file.path,
+                "file_sha256": file.file_sha256,
+                "reason": file.reason,
+            })
+        })
+        .collect::<Vec<_>>();
     let (batch, assembly) =
         assemble_batch(&identity, &selection.chunks, &symbol_extraction.symbols)?;
     let published_units = PublishedUnitRegistry::from_chunks_and_symbols(
@@ -1090,7 +1124,9 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         "symbol_count": assembly.symbols,
         "symbol_producer_identity": quanta_index_retrieval_bench::symbols::SYMBOL_PRODUCER_IDENTITY,
         "symbol_grammars": quanta_index_retrieval_bench::symbols::SYMBOL_PRODUCER_GRAMMARS,
+        "symbol_coverage": symbol_coverage,
         "symbol_unsupported_files": symbol_extraction.unsupported_files.len(),
+        "symbol_unsupported_details": symbol_unsupported_details,
         "symbol_only_scopes": assembly.symbol_only_scopes.len(),
         "query_schedule": pack.tasks.iter().map(|task| task.task_id.as_str()).collect::<Vec<_>>(),
         "warmup_passes": query_protocol.as_ref().map_or(0, |value| value.warmup_schedules.len()),

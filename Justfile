@@ -361,6 +361,20 @@ rust-bench:
 rust-bench-build:
     {{cargo}} --lane bench-lane bench --workspace --all-features --locked --no-run
 
+# Machine-checkable benchmark control-plane policy: registry validity, every
+# Cargo bench target registered, no production->benchmark dependency, and no CI
+# direct producer/comparator bypass. Cheap but requires cargo metadata.
+benchmark-policy-local:
+    python3 tools/ci/lint/check-benchmark-policy.py --print-registry-digest
+
+# Print the resolved, digest-bound plan for one registered profile (no mutation).
+benchmark-plan profile:
+    python3 tools/benchmark/benchctl.py plan {{profile}}
+
+# Fresh-process re-validation of one immutable run (run id or run directory).
+benchmark-replay run:
+    python3 tools/benchmark/benchctl.py replay {{run}}
+
 # Fast local PREP check for the shared benchmark control plane. Retrieval
 # contracts have their own local/proof rails and are not run here a second time.
 # This does not produce a benchmark artifact, enter the timing preflight, or
@@ -370,8 +384,9 @@ rust-bench-build:
 # running their tests, then runs the harness library tests.
 benchmark-prep-local:
     find crates/quanta-index-searchd-harness/src -name '*.rs' -print0 | xargs -0 rustfmt --check --edition 2024
-    uv run --frozen --extra dev python -m pytest tools/ci/tests/test_benchmark_manifest.py tools/ci/tests/test_benchctl.py tools/ci/tests/test_check_bench_artifacts.py tools/ci/tests/test_check_host_contention.py tools/ci/tests/test_compare_dsl_bench.py tools/ci/tests/test_quality_integration_summary.py tools/ci/tests/test_retrieval_contract_proof.py tools/ci/tests/test_retrieval_sdk_proof.py tools/ci/tests/test_write_verification_receipt.py -q
-    uv run --frozen --extra dev python -m py_compile tools/benchmark/benchctl.py tools/benchmark/manifest.py tools/benchmark/compare_dsl_bench.py tools/benchmark/quality_integration_summary.py tools/ci/lint/check-bench-artifacts.py tools/ci/timing/check_host_contention.py tools/benchmark/retrieval/evaluator.py tools/benchmark/retrieval/query_plan.py tools/benchmark/retrieval/retrieval_contract.py tools/benchmark/retrieval/semble.py tools/benchmark/retrieval/run.py tools/benchmark/retrieval/contract_proof.py tools/benchmark/retrieval/sdk_proof.py tools/ci/source_closure.py tools/ci/write-verification-receipt.py
+    uv run --frozen --extra dev python -m pytest tools/ci/tests/test_benchmark_manifest.py tools/ci/tests/test_benchmark_policy.py tools/ci/tests/test_bench_protocol_conformance.py tools/ci/tests/test_benchmark_evidence_bridge.py tools/ci/tests/test_benchmark_source_closure.py tools/ci/tests/test_benchctl.py tools/ci/tests/test_check_bench_artifacts.py tools/ci/tests/test_check_host_contention.py tools/ci/tests/test_compare_dsl_bench.py tools/ci/tests/test_quality_integration_summary.py tools/ci/tests/test_retrieval_contract_proof.py tools/ci/tests/test_retrieval_sdk_proof.py tools/ci/tests/test_write_verification_receipt.py -q
+    uv run --frozen --extra dev python -m py_compile tools/benchmark/benchctl.py tools/benchmark/registry.py tools/benchmark/manifest.py tools/benchmark/evidence.py tools/benchmark/evidence_bridge.py tools/benchmark/compare_dsl_bench.py tools/benchmark/quality_integration_summary.py tools/ci/lint/check-bench-artifacts.py tools/ci/lint/check-benchmark-policy.py tools/ci/timing/check_host_contention.py tools/benchmark/retrieval/evaluator.py tools/benchmark/retrieval/query_plan.py tools/benchmark/retrieval/retrieval_contract.py tools/benchmark/retrieval/semble.py tools/benchmark/retrieval/run.py tools/benchmark/retrieval/contract_proof.py tools/benchmark/retrieval/sdk_proof.py tools/ci/source_closure.py tools/ci/write-verification-receipt.py
+    {{cargo}} --lane bench-lane test -p quanta-index-bench-protocol --all-features --locked
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib --bins --all-features --locked --no-run
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib --all-features --locked
     python3 tools/ci/lint/check-test-authority.py

@@ -498,14 +498,35 @@ fn real_daemon_roundtrip_publishes_and_queries() {
     let mut outcomes: BTreeMap<(String, String), QueryOutcome> = BTreeMap::new();
     let _previous = outcomes.insert(("T1".to_string(), "lexical".to_string()), lexical.clone());
     match &lexical {
-        QueryOutcome::ReturnedWindow { hits, .. } => {
+        QueryOutcome::ReturnedWindow {
+            hits,
+            explanation: Some(explanation),
+            ..
+        } => {
             assert!(!hits.is_empty(), "lexical must hit the sphinx term");
             assert!(hits.iter().any(|hit| hit.path == "src/lib.rs"), "{hits:?}");
+            assert!(explanation.request_id.is_some_and(|id| id > 0));
+            let stages = explanation
+                .stage_timings
+                .as_ref()
+                .expect("lexical stage timings");
+            assert_eq!(
+                stages.first().expect("prepare").stage.as_str(),
+                "lexical.prepare"
+            );
+            assert_eq!(
+                stages.last().expect("project").stage.as_str(),
+                "lexical.project"
+            );
+            assert_eq!(
+                stages.last().expect("project").returned_candidates,
+                Some(u64::try_from(hits.len()).expect("hit count fits u64"))
+            );
             for hit in hits {
                 assert!(hit.start_line >= 1 && hit.start_line <= hit.end_line);
             }
         }
-        other @ (QueryOutcome::RejectedResponse { .. } | QueryOutcome::SdkFailure { .. }) => {
+        other => {
             panic!("lexical query failed: {other:?}");
         }
     }
@@ -542,7 +563,31 @@ fn real_daemon_roundtrip_publishes_and_queries() {
         });
         let _previous = outcomes.insert(("T1".to_string(), route.to_string()), outcome.clone());
         match &outcome {
-            QueryOutcome::ReturnedWindow { .. } => {}
+            QueryOutcome::ReturnedWindow {
+                hits,
+                explanation: Some(explanation),
+                ..
+            } => {
+                assert!(explanation.request_id.is_some_and(|id| id > 0));
+                let stages = explanation
+                    .stage_timings
+                    .as_ref()
+                    .expect("server stage timing");
+                assert!(
+                    stages
+                        .iter()
+                        .all(|stage| stage.stage.as_str().starts_with(route))
+                );
+                assert_eq!(
+                    stages.last().and_then(|stage| stage.returned_candidates),
+                    Some(hits.len() as u64)
+                );
+            }
+            QueryOutcome::ReturnedWindow {
+                explanation: None, ..
+            } => {
+                panic!("{route} query omitted explanation");
+            }
             other @ (QueryOutcome::RejectedResponse { .. } | QueryOutcome::SdkFailure { .. }) => {
                 panic!("{route} query failed: {other:?}");
             }
@@ -742,6 +787,25 @@ fn real_daemon_roundtrip_publishes_and_queries() {
         3
     );
     assert_eq!(record["results"].as_array().expect("results").len(), 3);
+    assert_eq!(record["span_accounting_version"], 1);
+    let mut witnessed = 0;
+    for row in record["results"].as_array().expect("results") {
+        for candidate in row["candidates"].as_array().expect("candidates") {
+            let accounting = &candidate["span_accounting"];
+            assert!(accounting["unit_id"].as_str().is_some());
+            assert!(accounting["producer_identity"].as_str().is_some());
+            assert!(
+                accounting["indexed_start_byte"]
+                    .as_u64()
+                    .expect("indexed start")
+                    < accounting["indexed_end_byte"]
+                        .as_u64()
+                        .expect("indexed end")
+            );
+            witnessed += 1;
+        }
+    }
+    assert!(witnessed > 0, "live record must emit indexed-span evidence");
     for row in record["results"].as_array().expect("results") {
         let route = row["route"].as_str().expect("route");
         let capture_id = format!("run-roundtrip-{route}");
@@ -865,6 +929,7 @@ fn actual_runner_binary_emits_receipt_bound_v5_record() {
     let searchd_digest = sha256_hex(&std::fs::read(&searchd).expect("searchd bytes"));
     let out = evidence.join("record.json");
     let diagnostic_out = evidence.join("retrieval-diagnostic.json");
+    let metrics_out = evidence.join("phase-metrics.json");
     let refusal_out = evidence.join("query-plan-refusal.json");
     let state = evidence.join("state");
     let output = Command::new(&runner)
@@ -914,6 +979,8 @@ fn actual_runner_binary_emits_receipt_bound_v5_record() {
             out.to_str().expect("output path"),
             "--diagnostics-out",
             diagnostic_out.to_str().expect("diagnostic path"),
+            "--metrics-out",
+            metrics_out.to_str().expect("metrics path"),
             "--refusal-out",
             refusal_out.to_str().expect("refusal path"),
         ])
@@ -947,9 +1014,30 @@ fn actual_runner_binary_emits_receipt_bound_v5_record() {
         }
     }
     assert_eq!(record["results"].as_array().expect("results").len(), 3);
+    assert_eq!(record["span_accounting_version"], 1);
+    let metrics: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&metrics_out).expect("phase metrics bytes"))
+            .expect("phase metrics JSON");
+    let coverage = metrics["symbol_coverage"]
+        .as_array()
+        .expect("per-file symbol coverage");
+    assert_eq!(coverage.len(), universe.len());
+    for (row, (path, source_sha)) in coverage.iter().zip(&universe) {
+        assert_eq!(row["path"], *path);
+        assert_eq!(row["source_sha256"], *source_sha);
+        assert_eq!(row["language"], "rust");
+    }
+    assert_eq!(
+        coverage
+            .iter()
+            .map(|row| row["definition_count"].as_u64().expect("definition count"))
+            .sum::<u64>(),
+        metrics["symbol_count"].as_u64().expect("symbol count")
+    );
     let diagnostic: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&diagnostic_out).expect("diagnostic bytes"))
             .expect("diagnostic JSON");
+    assert_eq!(diagnostic["schema_version"], 4);
     assert_eq!(
         diagnostic["record_sha256"],
         sha256_hex(&std::fs::read(&out).expect("record bytes"))
@@ -962,6 +1050,33 @@ fn actual_runner_binary_emits_receipt_bound_v5_record() {
             .len(),
         3
     );
+    for route in ["lexical", "semantic", "hybrid"] {
+        let row = diagnostic["results"]
+            .as_array()
+            .expect("diagnostic results")
+            .iter()
+            .find(|row| row["route"] == route)
+            .expect("measured route result");
+        let explanation = &row["response"]["explanation"];
+        assert!(
+            explanation["request_id"]
+                .as_u64()
+                .is_some_and(|request_id| request_id > 0),
+            "measured route must retain transport request id"
+        );
+        let stages = explanation["stage_timings"]
+            .as_array()
+            .expect("server stage timings");
+        assert!(stages.iter().all(|stage| {
+            stage["stage"]
+                .as_str()
+                .is_some_and(|name| name.starts_with(route))
+        }));
+        assert_eq!(
+            stages.last().expect("last stage")["returned_candidates"],
+            row["response"]["window"]["returned"]
+        );
+    }
     let hybrid = diagnostic["results"]
         .as_array()
         .expect("diagnostic results")
@@ -987,10 +1102,16 @@ fn actual_runner_binary_emits_receipt_bound_v5_record() {
     );
 
     if let Some(dir) = std::env::var_os("QUANTA_BENCH_SDK_EVIDENCE_DIR") {
-        let destination = PathBuf::from(dir).join("actual-runner-record.json");
-        std::fs::create_dir_all(destination.parent().expect("evidence parent"))
-            .expect("evidence output dir");
-        let _copied = std::fs::copy(&out, destination).expect("evidence record copies");
+        let destination = PathBuf::from(dir);
+        std::fs::create_dir_all(&destination).expect("evidence output dir");
+        for (source, name) in [
+            (&out, "actual-runner-record.json"),
+            (&pack_path, "actual-runner-pack.json"),
+            (&diagnostic_out, "actual-runner-diagnostic.json"),
+        ] {
+            let _copied =
+                std::fs::copy(source, destination.join(name)).expect("evidence artifact copies");
+        }
     }
 }
 
@@ -1263,8 +1384,13 @@ fn sentence_and_identifier_queries_anchor_the_same_definition_over_distractors()
     let files = load_corpus(repo.path(), &manifest, &CorpusLimits::default()).expect("corpus");
     let (chunks, _) = chunk_corpus(&WholeFileChunker, &files).expect("chunk");
     let symbols = symbols_for(&files);
-    let identity = BatchIdentity::new("bench-repo", "bench-rev", 21, "manifest:distract".to_string())
-        .expect("identity");
+    let identity = BatchIdentity::new(
+        "bench-repo",
+        "bench-rev",
+        21,
+        "manifest:distract".to_string(),
+    )
+    .expect("identity");
     let (batch, _) = assemble_batch(&identity, &chunks, &symbols).expect("batch");
     let files_by_path: BTreeMap<_, _> = files
         .iter()
@@ -1286,12 +1412,18 @@ fn sentence_and_identifier_queries_anchor_the_same_definition_over_distractors()
     // same definition intent; both must anchor hits in registry.rs.
     let sentence = "Where is the tenant cache key computed?";
     let identifier = "cache_key_for";
-    let sentence_plan =
-        plan_query(QueryInputPolicy::NaturalLanguage, sentence, &NlPlanConfig::default())
-            .expect("nl plan");
-    let identifier_plan =
-        plan_query(QueryInputPolicy::Native, identifier, &NlPlanConfig::default())
-            .expect("native plan");
+    let sentence_plan = plan_query(
+        QueryInputPolicy::NaturalLanguage,
+        sentence,
+        &NlPlanConfig::default(),
+    )
+    .expect("nl plan");
+    let identifier_plan = plan_query(
+        QueryInputPolicy::Native,
+        identifier,
+        &NlPlanConfig::default(),
+    )
+    .expect("native plan");
     assert_ne!(
         sentence_plan.effective_lexical_request_sha256,
         identifier_plan.effective_lexical_request_sha256,
@@ -1348,14 +1480,8 @@ fn homonymous_symbols_stay_distinct_units_on_the_symbol_route() {
     write_repo(
         repo.path(),
         &[
-            (
-                "src/agent.rs",
-                "pub fn register() -> u32 {\n    1\n}\n",
-            ),
-            (
-                "src/device.rs",
-                "pub fn register() -> u32 {\n    2\n}\n",
-            ),
+            ("src/agent.rs", "pub fn register() -> u32 {\n    1\n}\n"),
+            ("src/device.rs", "pub fn register() -> u32 {\n    2\n}\n"),
         ],
     );
     let manifest = load_manifest(&repo.path().join("manifest.json")).expect("manifest");
@@ -1391,8 +1517,12 @@ fn homonymous_symbols_stay_distinct_units_on_the_symbol_route() {
     let session = boot_session(&state.path().join("daemon"), &identity);
     let (_receipt, _ack) =
         publish_and_activate(&session, &batch, &identity, None).expect("publish+activate");
-    let plan = plan_query(QueryInputPolicy::Native, "register", &NlPlanConfig::default())
-        .expect("native plan");
+    let plan = plan_query(
+        QueryInputPolicy::Native,
+        "register",
+        &NlPlanConfig::default(),
+    )
+    .expect("native plan");
     let outcome = query_route(&RouteQuery {
         client: session.client(),
         route: "symbol",

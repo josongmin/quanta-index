@@ -1263,6 +1263,31 @@ mod incomplete_generation_discard_tests {
     }
 
     #[test]
+    fn readiness_probe_refuses_oversized_sealed_marker() {
+        let temp = tempfile::tempdir().expect("fixture state root");
+        let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf()).expect("adapter");
+        let sealed = candidate(6, "digest-a");
+        let generation_dir = layout::generation_dir(
+            temp.path(),
+            &sealed.repo_id,
+            &sealed.revision_id,
+            sealed.manifest_generation,
+        );
+        std::fs::create_dir_all(&generation_dir).expect("generation directory");
+        std::fs::write(
+            layout::sealed_marker_path(&generation_dir),
+            vec![b'x'; 4097],
+        )
+        .expect("oversized marker fixture");
+        let error = adapter
+            .probe_sealed_generation_identity(&sealed)
+            .expect_err("oversized marker must be refused");
+        assert!(
+            matches!(error, CoreError::Storage(message) if message.contains("exceeds 4096 bytes"))
+        );
+    }
+
+    #[test]
     fn discard_is_contained_and_idempotent_for_incomplete_generation() {
         let temp = tempfile::tempdir().expect("tempdir");
         let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf()).expect("adapter");

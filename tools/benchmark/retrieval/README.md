@@ -177,6 +177,16 @@ per-system records (`merge`), re-scores immutable records into the TEST-PLAN
 §8 verdict artifact (`verdict`), records the host check (`host-probe`), and
 freezes a canonical machine/power fingerprint (`host-profile`).
 
+The current Quanta runner emits returned-window diagnostic v4. Semantic and
+hybrid responses carry measured server-side `stage_timings` (monotonic ns,
+backend call count, and stage output count) through the typed SDK response.
+Replay rejects missing, duplicate, reordered, malformed, or request-ID-mixed
+stages and final counts that differ from the returned window. Dense fetch can
+refill and repeat rows; its output count is cumulative, while admission is
+the final admitted set. The two timings overlap and must not be added.
+Lexical-only and ingest stages are still opaque; runner wall time cannot be
+split into those costs. These diagnostics do not qualify speed or relevance.
+
 Each system consumes a projected pack (same tasks/universe/commit, narrowed
 routes, rebound suite commitment); the merge re-derives and re-validates
 every projection with this evaluator before scoring. Records, corpora,
@@ -214,12 +224,21 @@ keys: `repo`, `manifest`, `suite`, `query_pack`, `top_k`, `output_root`,
 | `order` | `["quanta","semble"]` | base system order |
 | `baseline_route` | Semble route | report baseline |
 | `scope` | `exploratory` | `exploratory` or `qualified` |
-| `admission` | required for `qualified` | paths to the W0-B manifest, license receipt, two independent annotation receipts, and adjudication receipt |
+| `admission` | required for `qualified` | v2 W0-B manifest plus frozen development suite, experiment-custody manifest, license receipt, two independent annotation receipts, and adjudication receipt; the verdict revalidates both suites and their source-bound cross-suite leakage boundary |
 | `host_profile` | required for `pair` | path to a generated host-profile JSON; the file is frozen, digest-bound, and matched against both host probes |
 | `linux_cgroup_parent` | none | required for qualified native Linux: an explicitly delegated cgroup v2 parent, frozen by path/device/inode and rechecked with the resource owner |
 | `claims` | all `false` | `{quality,speed,same_model,incremental}` |
 | `receipts` | omitted | paths to contract/SDK summaries, receipts, raw JUnit/nextest JSONL, actual-runner record and Python/Rust/SDK collection inventories; all bytes are frozen and raw evidence is reparsed by the verdict |
 | `timeout_secs` | `1800` | per-capture timeout |
+
+The experiment-custody v1 manifest binds canonical SHA-256 of the development
+and holdout suite-v3 payloads, repository commit, and driver source revision.
+The holdout suite remains the pair spec's `suite`; `admission.development_suite`
+and `admission.experiment_custody` are separate frozen inputs. Gold-bearing
+files, exact gold blocks, query families, and near-duplicate queries may not
+cross that boundary. Both suites may index the same corpus. Historical
+admission v1 cannot qualify a new pair. Conditional T15/T16 claims currently
+fail closed: summary `pass`/counts/digests are not raw vector or row-set proof.
 
 On Unix, preflight computes every searchd socket pathname from the proposed
 output root, repetition and strategy before creating capture state. macOS

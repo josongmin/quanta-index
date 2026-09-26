@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://quanta-index.invalid/benchmark/retrieval/experiment-custody-v1",
+  "title": "Frozen retrieval development/holdout custody v1",
+  "description": "Binds two independently validated suite-v3 payloads to one source and repository revision. The evaluator refuses shared gold-bearing files, gold block content, query families, and near-duplicate query text across suites; a shared indexed corpus is allowed.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "source_revision", "repository_commit", "development_suite_sha256", "holdout_suite_sha256"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "source_revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "repository_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "development_suite_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "holdout_suite_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

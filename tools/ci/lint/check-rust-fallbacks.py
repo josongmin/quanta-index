@@ -488,24 +488,16 @@ def main() -> int:
     try:
         from tree_sitter_language_pack import get_parser
 
-        listed = subprocess.run(
-            ["git", "ls-files", "-z", "--", "crates", "benchmarks"],
-            cwd=ROOT,
-            check=True,
-            capture_output=True,
-        ).stdout
         parser = get_parser("rust")
         findings = []
         scoped = 0
         candidates = 0
-        for raw in listed.split(b"\0"):
-            if not raw:
-                continue
-            relative = Path(raw.decode("utf-8"))
+        for source_path in sorted((*ROOT.glob("crates/**/*.rs"), *ROOT.glob("benchmarks/**/*.rs"))):
+            relative = source_path.relative_to(ROOT)
             if in_scope(relative):
                 scoped += 1
                 try:
-                    source = (ROOT / relative).read_bytes()
+                    source = source_path.read_bytes()
                     include_debug = (
                         relative.parts[1]
                         in {

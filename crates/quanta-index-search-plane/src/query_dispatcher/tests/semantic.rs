@@ -726,6 +726,27 @@ fn semantic_dispatch_embeds_query_text() -> TestResult {
                 )
                 .into());
             }
+            let stages = semantic
+                .explanation
+                .stage_timings
+                .as_ref()
+                .ok_or("missing server timings")?;
+            let names = stages
+                .iter()
+                .map(|stage| stage.stage.as_str())
+                .collect::<Vec<_>>();
+            if names
+                != [
+                    "semantic.prepare",
+                    "semantic.read_view",
+                    "semantic.embedding",
+                    "semantic.dense_search",
+                    "semantic.project",
+                ]
+                || stages.last().and_then(|stage| stage.returned_candidates) != Some(1)
+            {
+                return Err(format!("semantic stage provenance is incomplete: {stages:?}").into());
+            }
         }
         other @ (SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
         | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)

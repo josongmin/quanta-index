@@ -8,6 +8,7 @@
   "required": ["schema_version", "query_pack_sha256", "comparison_contract", "runner", "captures", "route_provenance", "results"],
   "properties": {
     "schema_version": {"const": 5},
+    "span_accounting_version": {"const": 1, "description": "Present on new Quanta producer records; all Quanta candidates then require published-unit span evidence. Optional only for immutable historical v5 records."},
     "query_pack_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "comparison_contract": {"$ref": "#/$defs/comparison_contract"},
     "runner": {
@@ -245,7 +246,21 @@
         "file_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "block_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "tokens": {"type": "integer", "minimum": 1},
-        "rank": {"type": "integer", "minimum": 1}
+        "rank": {"type": "integer", "minimum": 1},
+        "span_accounting": {
+          "type": "object", "additionalProperties": false,
+          "required": ["unit_kind", "unit_id", "producer_identity", "indexed_start_byte", "indexed_end_byte", "sdk_start_line", "sdk_end_line", "extra_context_bytes"],
+          "properties": {
+            "unit_kind": {"enum": ["chunk", "symbol"]},
+            "unit_id": {"type": "string", "minLength": 1},
+            "producer_identity": {"type": "string", "minLength": 1},
+            "indexed_start_byte": {"type": "integer", "minimum": 0},
+            "indexed_end_byte": {"type": "integer", "minimum": 1},
+            "sdk_start_line": {"type": "integer", "minimum": 0},
+            "sdk_end_line": {"type": "integer", "minimum": 0},
+            "extra_context_bytes": {"type": "integer", "minimum": 0}
+          }
+        }
       }
     },
     "timings": {

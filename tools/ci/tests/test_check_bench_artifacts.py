@@ -100,11 +100,14 @@ def write(path: Path, payload: dict) -> None:
 
 def install_manifest(repo_root: Path) -> None:
     """A target checkout owns its benchmark control plane."""
-    destination = repo_root / "tools" / "benchmark" / "manifest.json"
+    destination = repo_root / "tools" / "benchmark" / "registry.toml"
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(
-        (REPO_ROOT / "tools" / "benchmark" / "manifest.json").read_text(encoding="utf-8"),
+        (REPO_ROOT / "tools" / "benchmark" / "registry.toml").read_text(encoding="utf-8"),
         encoding="utf-8",
+    )
+    (repo_root / "Justfile").write_text(
+        (REPO_ROOT / "Justfile").read_text(encoding="utf-8"), encoding="utf-8"
     )
 
 

@@ -484,6 +484,7 @@ fn build_presence_explanation(
         engines_executed: execution.executed_engines(),
         // W10-R2: the route's budget correlation; 0 only off-transport.
         request_id,
+        stage_timings: None,
         early_stop_reason: None,
         contributions: Vec::new(),
         ranker_weights_hash: [0u8; 32],
@@ -672,6 +673,7 @@ fn build_lexical_score_explanation(
         engines_executed: execution.executed_engines(),
         // W10-R2: the route's budget correlation; 0 only off-transport.
         request_id,
+        stage_timings: None,
         early_stop_reason: None,
         contributions,
         ranker_weights_hash: ranker_weights_hash_v1(&query.options, RankerFusionV1::None),
@@ -974,6 +976,7 @@ impl HybridTraceReportV1 {
             engines_executed: execution.executed_engines(),
             // W10-R2: the route's budget correlation; 0 only off-transport.
             request_id,
+            stage_timings: None,
             early_stop_reason: None,
             contributions: self.contributions,
             ranker_weights_hash: ranker_weights_hash_v1(options, RankerFusionV1::Rrf),

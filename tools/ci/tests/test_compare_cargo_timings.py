@@ -71,10 +71,13 @@ def test_load_crates_parses_top_repo_crates(tmp_path: Path) -> None:
     assert crates["quanta-index-lexical"].units == 2
 
 
-def test_load_crates_handles_missing_top_repo_crates_key(tmp_path: Path) -> None:
+def test_load_crates_rejects_missing_top_repo_crates_key(tmp_path: Path) -> None:
     p = tmp_path / "summary.json"
     p.write_text(json.dumps({"summary": {}}), encoding="utf-8")
-    assert MODULE.load_crates(p) == {}
+    import pytest
+
+    with pytest.raises(ValueError, match="missing top_repo_crates"):
+        MODULE.load_crates(p)
 
 
 # ---------------------------------------------------------------------------
@@ -225,8 +228,8 @@ def test_new_crate_above_abs_threshold_regresses(tmp_path: Path) -> None:
     assert "REGRESSION" in result.stdout
 
 
-def test_crate_removed_in_current_is_not_a_regression(tmp_path: Path) -> None:
-    """A crate present in baseline but absent in current is a negative delta, never a regression."""
+def test_crate_removed_in_current_is_invalid_evidence(tmp_path: Path) -> None:
+    """A missing baseline crate cannot be interpreted as a timing improvement."""
     baseline = tmp_path / "baseline.json"
     current = tmp_path / "current.json"
     _write_json(
@@ -238,8 +241,9 @@ def test_crate_removed_in_current_is_not_a_regression(tmp_path: Path) -> None:
     )
     _write_json(current, [{"name": "quanta-index-contract", "duration": 1.00, "units": 1}])
     result = _run(str(baseline), str(current))
-    assert result.returncode == 0, result.stdout
-    assert "quanta-index-gone" in result.stdout
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "omits baseline crates" in result.stderr
+    assert "quanta-index-gone" in result.stderr
     assert "REGRESSION" not in result.stdout
 
 

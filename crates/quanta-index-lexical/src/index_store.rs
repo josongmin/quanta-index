@@ -260,3 +260,21 @@ pub(crate) fn validate_lexical_sealed_identity(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod sealed_identity_probe_tests {
+    use super::{lexical_sealed_identity_path, read_lexical_sealed_identity};
+    use quanta_index_core::CoreError;
+
+    #[test]
+    fn oversized_sealed_identity_is_refused_before_decode() {
+        let temp = tempfile::tempdir().expect("fixture generation directory");
+        std::fs::write(lexical_sealed_identity_path(temp.path()), vec![b'x'; 4097])
+            .expect("oversized identity fixture");
+        let error = read_lexical_sealed_identity(temp.path())
+            .expect_err("oversized sidecar must be refused");
+        assert!(
+            matches!(error, CoreError::Storage(message) if message.contains("exceeds 4096 bytes"))
+        );
+    }
+}

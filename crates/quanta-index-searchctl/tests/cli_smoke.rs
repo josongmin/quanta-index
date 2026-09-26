@@ -1300,6 +1300,7 @@ fn dispatch_lexical_request(request: SearchPlaneQueryIpcRequest) -> SearchPlaneQ
         );
     };
     SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
+        explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: generation.clone(),
         results: vec![stub_candidate(generation)],
         window: QueryResultWindowV2::exact_probe(1),
@@ -1630,6 +1631,7 @@ fn stub_explanation(summary: &str, engines_touched: Vec<EngineTouched>) -> Searc
         engines_touched: engines_touched.clone(),
         engines_executed: engines_touched,
         request_id: 0,
+        stage_timings: None,
         early_stop_reason: None,
         contributions: vec![ExplanationRow {
             signal_name: "bm25".into(),

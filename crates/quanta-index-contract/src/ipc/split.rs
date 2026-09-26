@@ -2102,6 +2102,7 @@ mod tests {
             (
                 "Text",
                 SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
+                    explanation: crate::SearchExplanation::empty(),
                     generation: pin(),
                     results: Vec::new(),
                     window: window(),

@@ -740,6 +740,20 @@ fn prove_hit(
     let tokens = u64::try_from(tokens).map_err(|err| {
         BenchError::Protocol(format!("SDK hit token count cannot fit u64: {err}"))
     })?;
+    let indexed_start = usize::try_from(unit.byte_start).map_err(|err| {
+        BenchError::Protocol(format!("published unit start cannot fit usize: {err}"))
+    })?;
+    let indexed_end = usize::try_from(unit.byte_end).map_err(|err| {
+        BenchError::Protocol(format!("published unit end cannot fit usize: {err}"))
+    })?;
+    if indexed_start < start || indexed_end > end || indexed_start >= indexed_end {
+        return Err(BenchError::Protocol(format!(
+            "published unit span is outside scored line projection: {}",
+            hit.candidate_id
+        )));
+    }
+    let extra_context_bytes = u64::try_from((end - start) - (indexed_end - indexed_start))
+        .map_err(|err| BenchError::Protocol(format!("context expansion cannot fit u64: {err}")))?;
     let rank = u64::try_from(rank)
         .map_err(|err| BenchError::Protocol(format!("SDK hit rank cannot fit u64: {err}")))?;
     let start_byte = u64::try_from(start)
@@ -756,6 +770,16 @@ fn prove_hit(
         "block_sha256": sha256_hex(block),
         "tokens": tokens,
         "rank": rank,
+        "span_accounting": {
+            "unit_kind": unit.kind.as_str(),
+            "unit_id": unit.id,
+            "producer_identity": unit.producer_identity,
+            "indexed_start_byte": unit.byte_start,
+            "indexed_end_byte": unit.byte_end,
+            "sdk_start_line": hit.start_line,
+            "sdk_end_line": hit.end_line,
+            "extra_context_bytes": extra_context_bytes,
+        },
     }))
 }
 
@@ -1009,6 +1033,7 @@ pub fn runner_record(input: &RunnerRecordInput<'_>) -> BenchResult<Value> {
     }
     Ok(serde_json::json!({
         "schema_version": RUNNER_SCHEMA_VERSION,
+        "span_accounting_version": 1,
         "query_pack_sha256": pack.pack_sha256,
         "comparison_contract": pack.comparison_contract,
         "runner": {
@@ -1495,6 +1520,7 @@ mod tests {
             record["schema_version"],
             serde_json::json!(RUNNER_SCHEMA_VERSION)
         );
+        assert_eq!(record["span_accounting_version"], 1);
         assert!(record["runner"].get("query_input_policy").is_none());
         assert_eq!(
             record["captures"]["cap-1"]["execution_profile"]["policy"],
@@ -1527,7 +1553,60 @@ mod tests {
         let candidate = &record["results"][0]["candidates"][0];
         assert_eq!(candidate["start_byte"], serde_json::json!(0));
         assert_eq!(candidate["end_byte"], serde_json::json!(text.len()));
+        assert_eq!(candidate["span_accounting"]["unit_kind"], "chunk");
+        assert_eq!(candidate["span_accounting"]["indexed_start_byte"], 0);
+        assert_eq!(candidate["span_accounting"]["indexed_end_byte"], text.len());
+        assert_eq!(candidate["span_accounting"]["extra_context_bytes"], 0);
         assert_eq!(record["results"][0]["status"], serde_json::json!("success"));
+    }
+
+    #[test]
+    fn indexed_span_remains_distinct_from_scored_line_projection() {
+        let text = "aa fn ok() {}\n";
+        let file = SourceFile {
+            path: "a.rs".to_string(),
+            bytes: text.as_bytes().to_vec(),
+            text: text.to_string(),
+            line_starts: vec![0],
+            sha256: sha256_hex(text.as_bytes()),
+        };
+        let chunk = Chunk {
+            path: "a.rs".to_string(),
+            start_byte: 3,
+            end_byte: 13,
+            start_line: 1,
+            end_line: 1,
+            text: "fn ok() {}".to_string(),
+            strategy: "fixed_window_strict".to_string(),
+            version: "test".to_string(),
+            config: "test".to_string(),
+            chunk_id: "mid-line".to_string(),
+            fallback: false,
+        };
+        let files = BTreeMap::from([("a.rs".to_string(), file)]);
+        let units = PublishedUnitRegistry::from_chunks_and_symbols(
+            &BTreeMap::from([("a.rs".to_string(), vec![chunk])]),
+            &BTreeMap::new(),
+            &files,
+        )
+        .expect("published mid-line chunk");
+        let hit = RankedHit {
+            candidate_id: "mid-line".to_string(),
+            path: "a.rs".to_string(),
+            start_line: 1,
+            end_line: 1,
+            snippet: "fn ok() {}".to_string(),
+            score: 1.0,
+            contributions: Vec::new(),
+        };
+        let candidate = prove_hit(&hit, 1, &files, &units).expect("source-bound hit");
+        assert_eq!(candidate["start_byte"], 0);
+        assert_eq!(candidate["end_byte"], 14);
+        assert_eq!(candidate["span_accounting"]["indexed_start_byte"], 3);
+        assert_eq!(candidate["span_accounting"]["indexed_end_byte"], 13);
+        assert_eq!(candidate["span_accounting"]["sdk_start_line"], 1);
+        assert_eq!(candidate["span_accounting"]["sdk_end_line"], 1);
+        assert_eq!(candidate["span_accounting"]["extra_context_bytes"], 4);
     }
 
     #[test]

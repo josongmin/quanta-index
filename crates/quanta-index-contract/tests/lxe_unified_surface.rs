@@ -25,8 +25,8 @@ use quanta_index_contract::lex::{
     SearchExplanation, SearchExplanationBuilder, WeightsHashError,
 };
 use quanta_index_contract::{
-    GenerationPin, HybridQueryRequest, ManifestGeneration, RepoId, RevisionId,
-    SemanticQueryRequest, TextQueryRequest, TextQuerySyntax,
+    GenerationPin, HybridQueryRequest, ManifestGeneration, QueryStageKindV1, QueryStageTimingV1,
+    RepoId, RevisionId, SemanticQueryRequest, TextQueryRequest, TextQuerySyntax,
 };
 use serde::{
     Deserialize, Deserializer,
@@ -271,6 +271,7 @@ fn sample_explanation_full() -> SearchExplanation {
         // swaps the two vec fields must fail the roundtrip below.
         engines_executed: vec![EngineTouched::Lexical],
         request_id: 41,
+        stage_timings: None,
         early_stop_reason: Some(EarlyStopReason::CountReached),
         contributions: vec![ExplanationRow {
             signal_name: Box::from("bm25"),
@@ -285,7 +286,7 @@ fn sample_explanation_full() -> SearchExplanation {
 }
 
 #[test]
-fn search_explanation_round_trips_all_nine_fields() -> TestRes {
+fn search_explanation_round_trips_all_ten_fields() -> TestRes {
     let original = sample_explanation_full();
     let bytes = encode(&original)?;
     let decoded: SearchExplanation = decode(&bytes)?;
@@ -325,6 +326,9 @@ fn search_explanation_round_trips_all_nine_fields() -> TestRes {
     if decoded.request_id != 41 {
         return Err("request_id dropped on roundtrip".into());
     }
+    if decoded.stage_timings.is_some() {
+        return Err("unmeasured stage timings acquired a synthetic value".into());
+    }
     if decoded.early_stop_reason != Some(EarlyStopReason::CountReached) {
         return Err("early_stop_reason dropped on roundtrip".into());
     }
@@ -358,6 +362,38 @@ fn search_explanation_empty_round_trips() -> TestRes {
         || !decoded.summary.is_empty()
     {
         return Err("SearchExplanation::empty did not produce empty fields".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn server_stage_timing_round_trips_and_refuses_false_shapes() -> TestRes {
+    let stage = QueryStageTimingV1 {
+        stage: QueryStageKindV1::HybridDenseFetch,
+        elapsed_ns: 1_234,
+        calls: 2,
+        returned_candidates: Some(13),
+    };
+    let original = SearchExplanation {
+        stage_timings: Some(vec![stage.clone()]),
+        ..sample_explanation_full()
+    };
+    let decoded: SearchExplanation = decode(&encode(&original)?)?;
+    if decoded != original {
+        return Err("typed stage timing disappeared over CBOR".into());
+    }
+    let invalid = [
+        r#"{"stage":"hybrid.dense_fetch","elapsed_ns":1,"calls":0,"returned_candidates":1}"#,
+        r#"{"stage":"","elapsed_ns":1,"calls":1,"returned_candidates":1}"#,
+        r#"{"stage":"hybrid.unknown","elapsed_ns":1,"calls":1,"returned_candidates":1}"#,
+        r#"{"stage":"hybrid.dense_fetch","elapsed_ns":1,"calls":1}"#,
+        r#"{"stage":"hybrid.dense_fetch","elapsed_ns":1,"calls":1,"returned_candidates":1,"stage":"hybrid.fusion"}"#,
+        r#"{"stage":"hybrid.dense_fetch","elapsed_ns":1,"calls":1,"returned_candidates":1,"unknown":1}"#,
+    ];
+    for payload in invalid {
+        if serde_json::from_str::<QueryStageTimingV1>(payload).is_ok() {
+            return Err(format!("invalid stage timing decoded: {payload}").into());
+        }
     }
     Ok(())
 }
@@ -638,7 +674,7 @@ fn wire_map_keys(wire: &ciborium::Value) -> Result<Vec<&str>, Box<dyn std::error
 #[test]
 fn search_explanation_current_reader_refuses_v0_payload() -> TestRes {
     let full = sample_explanation_full();
-    for field in ["engines_executed", "request_id"] {
+    for field in ["engines_executed", "request_id", "stage_timings"] {
         let old = strip_explanation_fields(&full, &[field])?;
         let error = decode::<SearchExplanation>(&encode(&old)?)
             .expect_err("old explanation missing current field must refuse");
@@ -658,7 +694,7 @@ fn search_explanation_pinned_v0_decoder_rejects_each_new_field() -> TestRes {
     // Positive control: a true V0 payload reads cleanly, so the
     // rejections below prove the pin trips on the new fields — not that
     // the pin rejects everything.
-    let v0 = strip_explanation_fields(&full, &["engines_executed", "request_id"])?;
+    let v0 = strip_explanation_fields(&full, &["engines_executed", "request_id", "stage_timings"])?;
     let pinned: SearchExplanationV0Pin = decode(&encode(&v0)?)?;
     if pinned.strategy != "hybrid-v1"
         || pinned.summary != "regex narrowed by repo filter"
@@ -681,6 +717,11 @@ fn search_explanation_pinned_v0_decoder_rejects_each_new_field() -> TestRes {
             "current payload without request_id",
             vec!["request_id"],
             "engines_executed",
+        ),
+        (
+            "current payload with only stage_timings new",
+            vec!["engines_executed", "request_id"],
+            "stage_timings",
         ),
     ];
     for (label, strip, expected) in cases {
@@ -748,6 +789,11 @@ fn search_explanation_rejects_duplicate_request_id() -> TestRes {
 }
 
 #[test]
+fn search_explanation_rejects_duplicate_stage_timings() -> TestRes {
+    duplicate_explanation_field_is_refused("stage_timings")
+}
+
+#[test]
 fn search_explanation_early_stop_reason_is_explicit_even_when_null() -> TestRes {
     let present = sample_explanation_full();
     let absent = SearchExplanation {
@@ -758,11 +804,11 @@ fn search_explanation_early_stop_reason_is_explicit_even_when_null() -> TestRes 
     let absent_wire: ciborium::Value = decode(&encode(&absent)?)?;
     let present_keys = wire_map_keys(&present_wire)?;
     let absent_keys = wire_map_keys(&absent_wire)?;
-    if present_keys.len() != 9 {
-        return Err(format!("present map must hold 9 fields: {present_keys:?}").into());
+    if present_keys.len() != 10 {
+        return Err(format!("present map must hold 10 fields: {present_keys:?}").into());
     }
-    if absent_keys.len() != 9 {
-        return Err(format!("null map must hold 9 fields: {absent_keys:?}").into());
+    if absent_keys.len() != 10 {
+        return Err(format!("null map must hold 10 fields: {absent_keys:?}").into());
     }
     if !present_keys.contains(&"early_stop_reason") {
         return Err(format!("present map must carry early_stop_reason: {present_keys:?}").into());

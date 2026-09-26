@@ -29,6 +29,19 @@ def _load_module():
 MODULE = _load_module()
 
 
+def install_control_plane(repo_root: Path) -> None:
+    """A fixture checkout owns the registry and the Justfile its producers name."""
+    target = repo_root / "tools" / "benchmark"
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "registry.toml").write_text(
+        (REPO_ROOT / "tools" / "benchmark" / "registry.toml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (repo_root / "Justfile").write_text(
+        (REPO_ROOT / "Justfile").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+
+
 def test_manifest_maps_profiles_to_explicit_recipes_and_validator_profiles() -> None:
     profiles = MODULE.load_profiles()
     assert profiles["dsl-authority"]["recipes"] == ["rust-bench-dsl-warm", "rust-bench-dsl-cold"]
@@ -42,18 +55,22 @@ def test_manifest_maps_profiles_to_explicit_recipes_and_validator_profiles() -> 
     assert profiles["systems"]["families"] == ["freshness", "open-loop"]
 
 
-def test_manifest_refuses_profile_that_omits_a_runnable_family_producer(tmp_path: Path) -> None:
-    manifest = json.loads((REPO_ROOT / "tools/benchmark/manifest.json").read_text(encoding="utf-8"))
-    manifest["profiles"]["quality-core"]["recipes"].pop()
-    path = tmp_path / "manifest.json"
-    path.write_text(json.dumps(manifest), encoding="utf-8")
+def test_registry_refuses_a_profile_that_names_an_unknown_family(tmp_path: Path) -> None:
+    text = (REPO_ROOT / "tools/benchmark/registry.toml").read_text(encoding="utf-8")
+    mutated = text.replace(
+        'families = ["relevance", "ambiguity", "snippet", "scale", "tail"]',
+        'families = ["relevance", "ambiguity", "snippet", "scale", "tail", "not-a-family"]',
+    )
+    assert mutated != text
+    path = tmp_path / "registry.toml"
+    path.write_text(mutated, encoding="utf-8")
 
     try:
         MODULE.load_manifest(path)
     except MODULE.ManifestError as error:
-        assert "must exactly name each runnable family producer" in str(error)
+        assert "unknown families" in str(error)
     else:
-        raise AssertionError("manifest with a missing producer recipe was accepted")
+        raise AssertionError("registry with an unknown profile family was accepted")
 
 
 def test_list_exposes_only_registered_profiles() -> None:
@@ -160,12 +177,7 @@ def test_run_rejects_invalid_dsl_cold_sample_override_before_producers(monkeypat
 def test_run_refuses_contended_override_before_producers(
     monkeypatch, tmp_path: Path, capsys
 ) -> None:
-    manifest_path = tmp_path / "tools" / "benchmark" / "manifest.json"
-    manifest_path.parent.mkdir(parents=True)
-    manifest_path.write_text(
-        (REPO_ROOT / "tools" / "benchmark" / "manifest.json").read_text(encoding="utf-8"),
-        encoding="utf-8",
-    )
+    install_control_plane(tmp_path)
     monkeypatch.setattr(MODULE, "require_clean_worktree", lambda _repo_root: None)
     monkeypatch.setattr(MODULE, "resolve_checkout_head", lambda _repo_root: "a" * 40)
 
@@ -199,12 +211,7 @@ def test_run_refuses_contended_override_before_producers(
 def test_run_refuses_missing_declared_baseline_before_preflight(
     monkeypatch, tmp_path: Path, capsys
 ) -> None:
-    manifest_path = tmp_path / "tools" / "benchmark" / "manifest.json"
-    manifest_path.parent.mkdir(parents=True)
-    manifest_path.write_text(
-        (REPO_ROOT / "tools" / "benchmark" / "manifest.json").read_text(encoding="utf-8"),
-        encoding="utf-8",
-    )
+    install_control_plane(tmp_path)
     monkeypatch.setattr(MODULE, "require_clean_worktree", lambda _repo_root: None)
     monkeypatch.setattr(
         MODULE,
@@ -219,12 +226,7 @@ def test_run_refuses_missing_declared_baseline_before_preflight(
 def test_run_refuses_invalid_declared_baseline_before_preflight(
     monkeypatch, tmp_path: Path, capsys
 ) -> None:
-    manifest_path = tmp_path / "tools" / "benchmark" / "manifest.json"
-    manifest_path.parent.mkdir(parents=True)
-    manifest_path.write_text(
-        (REPO_ROOT / "tools" / "benchmark" / "manifest.json").read_text(encoding="utf-8"),
-        encoding="utf-8",
-    )
+    install_control_plane(tmp_path)
     baseline = tmp_path / "tools" / "benchmark" / "baselines" / "warm-matrix.json"
     baseline.parent.mkdir(parents=True)
     baseline.write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
@@ -240,12 +242,7 @@ def test_run_refuses_invalid_declared_baseline_before_preflight(
 
 
 def test_clean_preflight_runs_exact_profile_recipes(monkeypatch, tmp_path: Path) -> None:
-    manifest_path = tmp_path / "tools" / "benchmark" / "manifest.json"
-    manifest_path.parent.mkdir(parents=True)
-    manifest_path.write_text(
-        (REPO_ROOT / "tools" / "benchmark" / "manifest.json").read_text(encoding="utf-8"),
-        encoding="utf-8",
-    )
+    install_control_plane(tmp_path)
     monkeypatch.setattr(MODULE, "require_clean_worktree", lambda _repo_root: None)
     monkeypatch.setattr(MODULE, "resolve_checkout_head", lambda _repo_root: "a" * 40)
 
@@ -314,12 +311,7 @@ def test_clean_label_with_overloaded_host_is_refused(tmp_path: Path) -> None:
 
 
 def _prepare_source_drift_run(monkeypatch, tmp_path: Path) -> list[list[str]]:
-    manifest_path = tmp_path / "tools" / "benchmark" / "manifest.json"
-    manifest_path.parent.mkdir(parents=True)
-    manifest_path.write_text(
-        (REPO_ROOT / "tools" / "benchmark" / "manifest.json").read_text(encoding="utf-8"),
-        encoding="utf-8",
-    )
+    install_control_plane(tmp_path)
     monkeypatch.setattr(MODULE, "require_declared_baselines", lambda *_args: None)
 
     def preflight(_repo_root, _profile, receipt, _manifest):
@@ -381,12 +373,7 @@ def test_admit_baseline_is_dsl_only(monkeypatch, capsys) -> None:
 def test_dsl_admission_dispatches_both_producers_and_skips_old_baselines(
     monkeypatch, tmp_path: Path
 ) -> None:
-    manifest_path = tmp_path / "tools" / "benchmark" / "manifest.json"
-    manifest_path.parent.mkdir(parents=True)
-    manifest_path.write_text(
-        (REPO_ROOT / "tools/benchmark/manifest.json").read_text(encoding="utf-8"),
-        encoding="utf-8",
-    )
+    install_control_plane(tmp_path)
     monkeypatch.setattr(MODULE, "require_clean_worktree", lambda _repo_root: None)
     monkeypatch.setattr(MODULE, "resolve_checkout_head", lambda _repo_root: "a" * 40)
     monkeypatch.setattr(
@@ -752,3 +739,311 @@ def test_dsl_baseline_pair_retains_marker_when_rollback_fails(monkeypatch, tmp_p
             MODULE.load_profiles()["dsl-authority"],
             MODULE.load_manifest(),
         )
+
+
+# --------------------------------------------------------------------------
+# plan / replay / immutable evidence promotion
+# --------------------------------------------------------------------------
+
+
+def test_plan_is_deterministic_and_digest_bound(capsys) -> None:
+    assert MODULE.main(["plan", "dsl-authority"]) == 0
+    first = capsys.readouterr().out
+    assert MODULE.main(["plan", "dsl-authority"]) == 0
+    second = capsys.readouterr().out
+    assert first == second
+    plan = json.loads(first)
+    assert plan["mutates"] is False
+    assert plan["families"] == ["dsl-warm", "dsl-cold"]
+    assert plan["registry_digest"].startswith("sha256:")
+    warm = next(step for step in plan["steps"] if step["family"] == "dsl-warm")
+    assert warm["command"] == ["just", "rust-bench-dsl-warm"]
+    assert warm["host_policy"] == "canonical-linux"
+    assert warm["baseline"] == "tools/benchmark/baselines/warm-matrix.json"
+    assert warm["closure"] == "benchmark-control-plane"
+
+
+def test_plan_resolves_a_cargo_producer_without_a_just_recipe(capsys) -> None:
+    assert MODULE.main(["plan", "micro"]) == 0
+    plan = json.loads(capsys.readouterr().out)
+    step = next(item for item in plan["steps"] if item["family"] == "micro-lq-norm-pipeline")
+    assert step["kind"] == "cargo-bench"
+    assert step["command"][1:3] == ["--lane", "bench-lane"]
+    assert "pipeline" in step["command"]
+
+
+def test_plan_marks_recorded_families_as_not_runnable(capsys) -> None:
+    assert MODULE.main(["plan", "recorded"]) == 0
+    plan = json.loads(capsys.readouterr().out)
+    agent = next(item for item in plan["steps"] if item["family"] == "agent-outcome")
+    assert agent["runnable"] is False
+    assert "recorded-only" in agent["reason"]
+
+
+def _promote_sample_run(root: Path, run_id: str) -> Path:
+    import evidence as evidence_module
+    import evidence_bridge
+
+    sealed = evidence_module.seal(evidence_module.sample_evidence())
+    sealed["run_id"] = run_id
+    sealed["digest"] = None
+    sealed = evidence_module.seal(sealed)
+    native = evidence_module.SAMPLE_RAW
+    return evidence_bridge.promote_native_run(
+        evidence_root=root,
+        run_id=run_id,
+        family="dsl-warm",
+        profile="dsl-authority",
+        created_utc="2026-09-26T12:00:00Z",
+        native_path=Path("warm-matrix.json"),
+        native_bytes=native,
+        payload=sealed["payload"],
+        source=sealed["source"],
+        build=sealed["build"],
+        inputs=sealed["inputs"],
+        host=sealed["host"],
+        command=sealed["command"],
+        boundary=sealed["boundary"],
+        verdict=sealed["verdict"],
+    )["run_dir"]
+
+
+def test_replay_validates_an_immutable_run_from_raw_evidence(tmp_path: Path, capsys) -> None:
+    sys.path.insert(0, str(REPO_ROOT / "tools" / "benchmark"))
+    run_id = "dsl-warm-20260926T120000Z-deadbeef"
+    run_dir = _promote_sample_run(tmp_path / "root", run_id)
+    assert MODULE.main(["replay", str(run_dir)]) == 0
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["run_id"] == run_id
+    assert receipt["raw_verified"] is True
+    assert receipt["replay"] == "contract_only"
+    assert MODULE.main(["replay", "--evidence-root", str(tmp_path / "root"), run_id]) == 0
+
+
+def test_replay_refuses_a_tampered_run(tmp_path: Path, capsys) -> None:
+    sys.path.insert(0, str(REPO_ROOT / "tools" / "benchmark"))
+    run_id = "dsl-warm-20260926T120000Z-deadbeef"
+    run_dir = _promote_sample_run(tmp_path / "root", run_id)
+    raw = run_dir / "raw" / "warm-matrix.json"
+    raw.write_bytes(raw.read_bytes().replace(b"0.42", b"0.43"))
+    assert MODULE.main(["replay", str(run_dir)]) == 2
+    assert "digest mismatch" in capsys.readouterr().err
+
+
+def test_replay_requires_an_evidence_root_outside_a_run_directory(capsys) -> None:
+    assert MODULE.main(["replay", "no-such-run"]) == 2
+    assert "evidence-root" in capsys.readouterr().err
+
+
+def test_evidence_root_inside_the_checkout_is_refused(monkeypatch, tmp_path: Path, capsys) -> None:
+    install_control_plane(tmp_path)
+    monkeypatch.setattr(MODULE, "require_clean_worktree", lambda _repo_root: None)
+    monkeypatch.setattr(MODULE, "resolve_checkout_head", lambda _repo_root: "a" * 40)
+    monkeypatch.setattr(MODULE, "require_declared_baselines", lambda *_args: None)
+    monkeypatch.setattr(MODULE, "require_clean_preflight_receipt", lambda *_args: None)
+    monkeypatch.setattr(MODULE, "require_frozen_source", lambda *_args: None)
+    monkeypatch.setattr(MODULE, "validate", lambda *_args: 0)
+
+    def clean(_repo_root, _profile, receipt, _manifest):
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        receipt.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "kind": "quanta-index-timing-preflight",
+                    "run_id": "benchctl:dsl-authority",
+                    "status": "clean",
+                    "foreign_rust_processes": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return 0
+
+    monkeypatch.setattr(MODULE, "preflight", clean)
+    monkeypatch.setattr(
+        MODULE.subprocess, "run", lambda *_args, **_kwargs: SimpleNamespace(returncode=0)
+    )
+    assert (
+        MODULE.main(
+            [
+                "--repo-root",
+                str(tmp_path),
+                "run",
+                "dsl-authority",
+                "--evidence-root",
+                str(tmp_path / "evidence"),
+            ]
+        )
+        == 2
+    )
+    assert "outside the checkout" in capsys.readouterr().err
+
+
+def _promote_family_run(root: Path, family: str, run_id: str) -> Path:
+    import evidence as evidence_module
+    import evidence_bridge
+
+    payload = (
+        {
+            "kind": "freshness",
+            "phases": [{"name": "full_build", "ms": 10.0, "samples": 1}],
+            "stale_hits": 0,
+            "generation": "g1",
+        }
+        if family == "freshness"
+        else {
+            "kind": "load",
+            "arrival": "open_loop",
+            "generator_saturated": False,
+            "points": [
+                {
+                    "label": "rate-200",
+                    "offered_rate": 200.0,
+                    "completed_rate": 180.0,
+                    "dropped": 20,
+                    "timeouts": 0,
+                }
+            ],
+            "errors": 0,
+        }
+    )
+    return evidence_bridge.promote_native_run(
+        evidence_root=root,
+        run_id=run_id,
+        family=family,
+        profile="systems",
+        created_utc="2026-09-26T12:00:00Z",
+        native_path=Path(f"{family}-summary.json"),
+        native_bytes=evidence_module.SAMPLE_RAW,
+        payload=payload,
+        source={
+            "revision": "a" * 40,
+            "dirty": False,
+            "dirty_paths_digest": None,
+            "closure_profile": "benchmark-control-plane",
+            "closure_digest": "sha256:" + "11" * 32,
+        },
+        build={
+            "toolchain": "rustc 1.92.0",
+            "target_triple": "aarch64-apple-darwin",
+            "lockfile_digest": "sha256:" + "22" * 32,
+            "profile": "bench",
+            "flags": ["--locked"],
+            "binaries": [],
+        },
+        inputs=[
+            {
+                "id": "workspace-fixture",
+                "availability": "unavailable",
+                "digest": None,
+                "reason": "in-process deterministic fixture",
+            }
+        ],
+        host=evidence_bridge.host_identity(
+            policy="local-diagnostic",
+            os_name="macos",
+            arch="aarch64",
+            cpu_count=10,
+            hostname="host-a",
+            lease_mode="shared",
+            lease_samples=1,
+        ),
+        command={
+            "argv": ["benchctl", "run", "systems"],
+            "cwd": ".",
+            "status": "completed",
+            "exit_code": 0,
+            "timeout_seconds": 1800,
+            "wall_ms": 10,
+        },
+        boundary={
+            "clock": "monotonic",
+            "instrumentation": "none",
+            "start_event": "producer_exec",
+            "end_event": "artifact_written",
+        },
+        verdict={"scope": "diagnostic", "status": "pass", "reason": None, "metrics": []},
+    )["run_dir"]
+
+
+def test_promoted_run_validation_is_scoped_to_the_profile(tmp_path: Path, capsys) -> None:
+    """A profile must not require evidence runs owned by a different profile."""
+    sys.path.insert(0, str(REPO_ROOT / "tools" / "benchmark"))
+    manifest = MODULE.load_manifest()
+    root = tmp_path / "root"
+    _promote_family_run(root, "freshness", "freshness-20260926T120000Z-aaaaaaaa")
+    _promote_family_run(root, "open-loop", "open-loop-20260926T120000Z-bbbbbbbb")
+
+    expected_source = {
+        "revision": "a" * 40,
+        "dirty": False,
+        "dirty_paths_digest": None,
+        "closure_profile": "benchmark-control-plane",
+        "closure_digest": "sha256:" + "11" * 32,
+    }
+    expected_lock = "sha256:" + "22" * 32
+    assert MODULE.validate_promoted_runs(root, "systems", manifest, expected_source, expected_lock) == 0
+    receipts = json.loads(capsys.readouterr().out)
+    assert [entry["family"] for entry in receipts["runs"]] == ["freshness", "open-loop"]
+
+    # dsl-authority owns two different families; its runs are absent, so the
+    # profile must refuse rather than accept the systems runs.
+    assert MODULE.validate_promoted_runs(root, "dsl-authority", manifest, expected_source, expected_lock) == 2
+    assert "dsl-warm" in capsys.readouterr().err
+
+
+def test_promotion_is_scoped_to_the_profile_families(monkeypatch, tmp_path: Path) -> None:
+    """`run --evidence-root` may only promote the families the profile selects."""
+    sys.path.insert(0, str(REPO_ROOT / "tools" / "benchmark"))
+    import evidence_bridge
+
+    manifest = MODULE.load_manifest()
+    repo_root = tmp_path / "repo"
+    for family, path in (
+        ("freshness", "artifacts/search-quality/freshness/latest/summary.json"),
+        ("open-loop", "artifacts/search-quality/open-loop/latest/summary.json"),
+    ):
+        target = repo_root / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "dimension": family,
+                    "provenance": {"git_head": "a" * 40},
+                    "rows": [
+                        {
+                            "scenario_id": "s",
+                            "latency": {"p50_ms": 1.0, "p95_ms": 2.0, "p99_ms": 3.0, "samples": 25},
+                            "error_count": 0,
+                            "timeout_count": 0,
+                            "early_stop_reason": None,
+                        }
+                    ],
+                    "detail": {},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        evidence_bridge,
+        "promote_native_run",
+        lambda **kwargs: (
+            calls.append(kwargs["family"]),
+            {"run_dir": tmp_path, "run_id": kwargs["run_id"], "digest": "sha256:" + "0" * 64},
+        )[1],
+    )
+    monkeypatch.setattr(
+        evidence_bridge, "source_identity", lambda *_args, **_kwargs: {"revision": "a" * 40}
+    )
+    (repo_root / "Cargo.lock").write_text("# fixture\n", encoding="utf-8")
+    receipt = repo_root / "preflight.json"
+    receipt.write_text(json.dumps({"status": "clean"}), encoding="utf-8")
+
+    MODULE.promote_profile_runs(
+        repo_root, "systems", manifest, tmp_path / "evidence", "a" * 40, receipt
+    )
+    assert calls == ["freshness", "open-loop"], calls

@@ -43,12 +43,24 @@ def parse_lcov(root: Path, lcov_path: Path) -> dict[str, dict[int, int]]:
 
     coverage: dict[str, dict[int, int]] = {}
     current_source: str | None = None
+    in_record = False
     for raw_line in lcov_path.read_text(encoding="utf-8").splitlines():
         if raw_line.startswith("SF:"):
+            if in_record:
+                raise ValueError("LCOV source record lacks end_of_record")
             current_source = _relative_source_path(root, raw_line.removeprefix("SF:"))
+            in_record = True
             continue
-        if not raw_line.startswith("DA:") or current_source is None:
+        if raw_line == "end_of_record":
+            if not in_record:
+                raise ValueError("LCOV end_of_record has no source record")
+            current_source = None
+            in_record = False
             continue
+        if not raw_line.startswith("DA:"):
+            continue
+        if not in_record:
+            raise ValueError(f"LCOV DA record has no source: {raw_line!r}")
         payload = raw_line.removeprefix("DA:")
         try:
             line_text, hits_text, *_ = payload.split(",")
@@ -58,7 +70,13 @@ def parse_lcov(root: Path, lcov_path: Path) -> dict[str, dict[int, int]]:
             raise ValueError(f"invalid LCOV DA record {raw_line!r}: {error}") from error
         if line_number <= 0 or hits < 0:
             raise ValueError(f"invalid LCOV DA record {raw_line!r}")
-        coverage.setdefault(current_source, {})[line_number] = hits
+        if current_source is not None:
+            lines = coverage.setdefault(current_source, {})
+            if line_number in lines:
+                raise ValueError(f"duplicate LCOV DA record: {current_source}:{line_number}")
+            lines[line_number] = hits
+    if in_record:
+        raise ValueError("LCOV source record lacks end_of_record")
     return coverage
 
 

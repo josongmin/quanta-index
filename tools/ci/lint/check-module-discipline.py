@@ -124,35 +124,20 @@ def collect_facade_files() -> list[Path]:
 
 
 def audit_facade(path: Path) -> list[Violation]:
-    text = path.read_text(encoding="utf-8")
+    from tree_sitter_language_pack import get_parser
+
+    source = path.read_bytes()
+    tree = get_parser("rust").parse(source)
     findings: list[Violation] = []
-    # Track running text to detect "inside an open brace from a use-tree".
-    running = ""
-    for lineno, raw_line in enumerate(text.splitlines(), start=1):
-        running_before = running
-        running += raw_line + "\n"
-
-        stripped = raw_line.rstrip()
-        if not stripped:
+    for node in tree.root_node.children:
+        if node.type in {"line_comment", "block_comment", "attribute_item", "inner_attribute_item", "use_declaration"}:
             continue
-
-        # If we're inside an open use-tree from a previous line, accept identifier
-        # continuations and the closing brace.
-        if is_inside_use_tree(running_before):
+        if node.type == "mod_item" and any(child.type == ";" for child in node.children):
             continue
-
-        # Allow attribute / comment / facade tokens.
-        if any(p.match(stripped) for p in FACADE_PATTERNS):
-            continue
-
-        # If a forbidden keyword pattern matches, record it.
-        if any(p.match(stripped) for p in FORBIDDEN_PREFIXES):
-            findings.append(Violation(path, lineno, stripped[:120]))
-            continue
-
-        # Anything else at the top level is unexpected for a facade.
-        findings.append(Violation(path, lineno, stripped[:120]))
-
+        snippet = source[node.start_byte : node.end_byte].decode("utf-8", errors="replace")
+        findings.append(Violation(path, node.start_point.row + 1, snippet.splitlines()[0][:120]))
+    if tree.root_node.has_error and not findings:
+        findings.append(Violation(path, 1, "invalid Rust syntax in facade"))
     return findings
 
 

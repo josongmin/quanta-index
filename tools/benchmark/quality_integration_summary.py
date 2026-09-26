@@ -83,7 +83,7 @@ def validate_evidence() -> int:
 def quality_dimensions() -> list[tuple[str, str, str]]:
     """Resolve the aggregate's live families from the canonical manifest."""
     try:
-        manifest = load_manifest(ROOT / "tools" / "benchmark" / "manifest.json")
+        manifest = load_manifest(ROOT / "tools" / "benchmark" / "registry.toml")
     except ManifestError as exc:
         raise RuntimeError(f"invalid benchmark manifest: {exc}") from exc
     profiles = manifest["profiles"]

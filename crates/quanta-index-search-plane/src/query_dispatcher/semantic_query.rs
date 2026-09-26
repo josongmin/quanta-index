@@ -574,6 +574,7 @@ pub(super) fn build_hybrid_seed_response_explanation(
         engines_executed,
         // W10-R2: the route's budget correlation; 0 only off-transport.
         request_id,
+        stage_timings: None,
         early_stop_reason,
         contributions: Vec::new(),
         ranker_weights_hash: [0u8; 32],
@@ -975,6 +976,7 @@ pub(super) fn build_semantic_response_explanation(
         engines_executed,
         // W10-R2: the route's budget correlation; 0 only off-transport.
         request_id,
+        stage_timings: None,
         early_stop_reason,
         contributions: Vec::new(),
         ranker_weights_hash: [0u8; 32],
@@ -1051,6 +1053,7 @@ pub(super) fn build_hybrid_response_explanation(
         engines_executed: execution.executed_engines(),
         // W10-R2: the route's budget correlation; 0 only off-transport.
         request_id,
+        stage_timings: None,
         early_stop_reason,
         contributions: Vec::new(),
         ranker_weights_hash: [0u8; 32],

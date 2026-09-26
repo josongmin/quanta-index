@@ -343,8 +343,38 @@ fn direct_lexical_routes_report_actual_backend_activity() -> TestResult {
             SearchPlaneQueryIpcRequest::Text(text_query(query, constraints.clone())),
             &RequestBudgetV1::unbounded(),
         );
-        if !matches!(response, SearchPlaneQueryIpcResponse::Text(_)) {
+        let SearchPlaneQueryIpcResponse::Text(text) = response else {
             return Err(format!("{label}: expected text response, got {response:?}").into());
+        };
+        let stages = text
+            .explanation
+            .stage_timings
+            .as_deref()
+            .ok_or("missing lexical stages")?;
+        let expected_stages: &[&str] = if expected_calls == 0 {
+            &["lexical.prepare", "lexical.project"]
+        } else {
+            &[
+                "lexical.prepare",
+                "lexical.read_view",
+                "lexical.search",
+                "lexical.project",
+            ]
+        };
+        if stages
+            .iter()
+            .map(|stage| stage.stage.as_str())
+            .collect::<Vec<_>>()
+            != expected_stages
+            || stages.last().and_then(|stage| stage.returned_candidates)
+                != Some(u64::try_from(text.results.len())?)
+            || text.explanation.engines_executed.len() != usize::from(expected_calls > 0)
+            || text.explanation.engines_touched.len() != usize::from(label == "hit")
+        {
+            return Err(format!(
+                "{label}: lexical timing/execution contradicts response: {text:?}"
+            )
+            .into());
         }
         let calls = lanes
             .lexical

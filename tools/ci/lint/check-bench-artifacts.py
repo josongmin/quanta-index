@@ -526,7 +526,7 @@ def control_plane(
     dict[str, tuple[str, ...]],
 ]:
     """Load the manifest belonging to the checkout being gated."""
-    manifest = load_manifest(repo_root / "tools" / "benchmark" / "manifest.json")
+    manifest = load_manifest(repo_root / "tools" / "benchmark" / "registry.toml")
     return (
         manifest,
         fresh_families(manifest),

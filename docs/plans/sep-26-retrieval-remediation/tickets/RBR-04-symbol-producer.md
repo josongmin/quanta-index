@@ -2,9 +2,11 @@
 
 ## 현행 판정 — 2026-09-26, [중앙 코드 감사](CURRENT-AUDIT.md) 기준
 
-- 구현: `symbols.rs`의 다언어 definition producer, `batch.rs::assemble_batch`의 파일당 combined `replace_scope`, symbol payload/producer identity가 포함된 digest를 코드에서 확인. 단, `extract_corpus_symbols`는 **지원하지 않는 admitted 파일을 skip하고 경로 목록은 count만** phase metrics에 남긴다. 아래 작업 3의 `unsupported grammar ... explicit coverage failure` 계약과 다르다.
-- 검증: 이전 5언어/SDK 수행 기록은 현 source의 storage·daemon proof가 아니다. 현 frozen-source 수작업 span, replace/reopen, source/grammar mutation, exact nextest receipt는 `NOT_RUN`.
-- 잔여 코드: 지원 범위·admitted 파일별 path+SHA/skip reason을 source-bound manifest로 고정하고 validator가 재도출해야 한다. unsupported 파일을 full symbol coverage 성공으로 세지 않으며, 명시적 partial capability profile이 없다면 거부한다. supported parse failure는 이미 typed abort이다.
+2026-09-26 후속 dirty 코드 판정: `extract_corpus_symbols`는 unsupported admitted path/SHA와 parse failure를 typed abort로 처리하며 source path/hash/text를 재검증한다. 현 profile은 partial capability를 선언하지 않은 strict full이다. phase metrics의 파일별 path/SHA/grammar/count coverage를 verdict가 frozen corpus와 비교하고 nonzero unsupported count를 거부한다. Rust lib 82/chunking 25 및 live SDK 16 local 통과; clean-source receipt는 `NOT_RUN`. [현재 감사](CURRENT-AUDIT.md)가 최종 상태 authority다.
+
+- 구현: `symbols.rs`의 다언어 definition producer와 파일당 combined `replace_scope`가 있으며, unsupported admitted 파일은 path/SHA를 포함한 typed failure로 abort한다. 현 profile은 strict full이고 partial 지원은 선언하지 않는다.
+- 검증: 이번 dirty overlay의 Rust lib 82/chunking 25와 live SDK 16은 local diagnostic이다. frozen-source 5언어 수작업 span, replace/reopen, source/grammar mutation, exact nextest receipt는 `NOT_RUN`.
+- 잔여 코드: 현 strict-full 성공/실패 coverage는 phase metrics와 corpus replay에 연결했다. 별도 partial profile은 없으며 무음 skip은 허용하지 않는다.
 - 잔여 proof: 5언어 fixture와 실 daemon 게시·교체·재개방을 같은 revision/binary에서 다시 증명하고 parser/grammar/coverage manifest를 묶는다. [현재 전수 판정](CURRENT-AUDIT.md).
 
 - 우선순위: P1. producer·combined publication 코드 관측; 현 소스 storage/SDK proof 미발급. [현재 전수 판정](CURRENT-AUDIT.md). 선행: RBR-00.

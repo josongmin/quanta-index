@@ -1,0 +1,664 @@
+# Single benchmark registration, execution, evidence and verdict registry.
+#
+# This file is the ONLY data-only control plane for benchmark families. It is
+# consumed by:
+#   - tools/benchmark/registry.py  (fail-closed Python reader/validator)
+#   - benchmarks/bench-protocol    (Rust contract crate, canonical evidence)
+#   - tools/benchmark/benchctl.py  (the single current orchestrator CLI)
+#   - tools/ci/lint/check-benchmark-policy.py (CI policy guard)
+#
+# Replacing or moving a producer, validator, scorer, closure or baseline is a
+# registry edit. A family that is absent here is not a registered benchmark
+# family and cannot be promoted to evidence.
+#
+# Authority model (BM-03 go/no-go, see docs/plans/sep-26-bench-migration/
+# tickets/BM-03-DECISION.md): Python `benchctl` remains the single current
+# orchestrator. Producers stay the named Just/cargo/Python owners; domain
+# scorers keep their own metric mathematics. Rust owns the typed evidence
+# contract (`benchmarks/bench-protocol`) and independently validates the same
+# canonical bytes. There is exactly one live CLI.
+
+schema_version = 1
+
+# --------------------------------------------------------------------------
+# Source closures. `profile` names a tools/ci/source_closure.py profile.
+# --------------------------------------------------------------------------
+
+[closures.benchmark-control-plane]
+profile = "benchmark-control-plane"
+description = "Normative benchmark protocol, registry, CLI and their owning tests."
+
+[closures.retrieval]
+profile = "retrieval"
+description = "Rust SDK retrieval producer and its Python scorer/test authority."
+
+[closures.micro]
+profile = "benchmark-control-plane"
+description = "Crate-local Criterion benches measured from the product workspace."
+
+# --------------------------------------------------------------------------
+# External inputs. Never vendored into Git; bound by digest at replay time.
+# --------------------------------------------------------------------------
+
+[external_inputs.corpus-release]
+owner = "RBR-12"
+description = "Frozen external corpus release (repo commits, file hashes, views)."
+required_for = ["retrieval-pair", "retrieval-verdict", "lexical-file-comparison"]
+status = "blocked-outside-repo"
+
+[external_inputs.agent-recordings]
+owner = "BM-06"
+description = "Recorded A/B/C agent trajectory JSONL plus underlying test receipts."
+required_for = ["agent-outcome"]
+status = "blocked-outside-repo"
+
+[external_inputs.canonical-linux-host]
+owner = "platform"
+description = "Quiet self-hosted Linux bench host (lease + capture-time load samples)."
+required_for = ["dsl-warm", "dsl-cold"]
+status = "blocked-outside-repo"
+
+# --------------------------------------------------------------------------
+# Producers. Allowlisted invocation owners only; no arbitrary shell fragments.
+# --------------------------------------------------------------------------
+
+[producers.rust-bench-dsl-warm]
+kind = "just-recipe"
+recipe = "rust-bench-dsl-warm"
+outputs = ["artifacts/dsl-bench/warm-matrix.json"]
+
+[producers.rust-bench-dsl-cold]
+kind = "just-recipe"
+recipe = "rust-bench-dsl-cold"
+outputs = ["artifacts/dsl-bench/cold-matrix.json"]
+
+[producers.rust-bench-dsl-warm-criterion]
+kind = "just-recipe"
+recipe = "rust-bench-dsl-warm-criterion"
+outputs = ["artifacts/dsl-bench/warm-matrix.criterion.json"]
+
+[producers.rust-verify-quality-relevance]
+kind = "just-recipe"
+recipe = "rust-verify-quality-relevance"
+outputs = ["artifacts/search-quality/relevance/latest/summary.json"]
+
+[producers.rust-verify-quality-ambiguity]
+kind = "just-recipe"
+recipe = "rust-verify-quality-ambiguity"
+outputs = ["artifacts/search-quality/ambiguity/latest/summary.json"]
+
+[producers.rust-verify-quality-snippet]
+kind = "just-recipe"
+recipe = "rust-verify-quality-snippet"
+outputs = ["artifacts/search-quality/snippet/latest/summary.json"]
+
+[producers.rust-verify-quality-scale]
+kind = "just-recipe"
+recipe = "rust-verify-quality-scale"
+outputs = ["artifacts/search-quality/scale/latest/summary.json"]
+
+[producers.rust-verify-quality-tail]
+kind = "just-recipe"
+recipe = "rust-verify-quality-tail"
+outputs = ["artifacts/search-quality/tail/latest/summary.json"]
+
+[producers.rust-verify-quality-ann]
+kind = "just-recipe"
+recipe = "rust-verify-quality-ann"
+outputs = ["artifacts/search-quality/ann/latest/summary.json"]
+
+[producers.rust-verify-quality-concurrency]
+kind = "just-recipe"
+recipe = "rust-verify-quality-concurrency"
+outputs = ["artifacts/search-quality/concurrency/latest/summary-c*.json"]
+
+[producers.rust-verify-quality-freshness]
+kind = "just-recipe"
+recipe = "rust-verify-quality-freshness"
+outputs = ["artifacts/search-quality/freshness/latest/summary.json"]
+
+[producers.rust-verify-quality-open-loop]
+kind = "just-recipe"
+recipe = "rust-verify-quality-open-loop"
+outputs = ["artifacts/search-quality/open-loop/latest/summary.json"]
+
+[producers.rust-verify-quality-ops]
+kind = "just-recipe"
+recipe = "rust-verify-quality-ops"
+outputs = ["artifacts/search-quality/ops/latest/summary.json"]
+
+[producers.rust-verify-quality-ui]
+kind = "just-recipe"
+recipe = "rust-verify-quality-ui"
+outputs = ["artifacts/search-quality/ui/latest/summary.json"]
+
+[producers.rust-capture-quality-relevance-openai-ab]
+kind = "just-recipe"
+recipe = "rust-capture-quality-relevance-openai-ab"
+outputs = ["artifacts/search-quality/relevance/openai-ab/latest/summary.json"]
+
+[producers.criterion-lq-norm-pipeline]
+kind = "cargo-bench"
+package = "quanta-index-lq-norm"
+target = "pipeline"
+outputs = []
+
+[producers.criterion-searchd-runtime-dsl-query-matrix]
+kind = "cargo-bench"
+package = "quanta-index-searchd-runtime"
+target = "dsl_query_matrix"
+outputs = []
+
+[producers.retrieval-quanta]
+kind = "python-module"
+module = "tools/benchmark/retrieval/run.py"
+argv = ["quanta", "--spec"]
+requires_spec = true
+outputs = []
+
+[producers.retrieval-pair]
+kind = "python-module"
+module = "tools/benchmark/retrieval/run.py"
+argv = ["pair", "--spec"]
+requires_spec = true
+outputs = []
+
+[producers.retrieval-sdk-proof]
+kind = "just-recipe"
+recipe = "retrieval-sdk-proof"
+requires_out = true
+outputs = []
+
+[producers.retrieval-contract-proof]
+kind = "just-recipe"
+recipe = "retrieval-contract-proof"
+requires_out = true
+outputs = []
+
+[producers.scan-vs-index]
+kind = "python-module"
+module = "tools/benchmark/run_scan_vs_index.py"
+argv = []
+outputs = ["artifacts/experiments/scan-vs-index/*.json"]
+
+# --------------------------------------------------------------------------
+# Validators. Structural/shape/refusal owners; never metric scorers.
+# --------------------------------------------------------------------------
+
+[validators.bench-artifacts]
+kind = "python-module"
+module = "tools/ci/lint/check-bench-artifacts.py"
+
+[validators.agent-outcome]
+kind = "python-module"
+module = "tools/benchmark/agent_outcome/__main__.py"
+argv = ["validate"]
+
+[validators.retrieval-sdk]
+kind = "python-module"
+module = "tools/benchmark/retrieval/sdk_proof.py"
+
+[validators.retrieval-contract]
+kind = "python-module"
+module = "tools/benchmark/retrieval/contract_proof.py"
+
+[validators.evidence-protocol]
+kind = "rust-test"
+package = "quanta-index-bench-protocol"
+target = "adversarial"
+
+# --------------------------------------------------------------------------
+# Scorers. Domain metric mathematics; one authority per metric family.
+# --------------------------------------------------------------------------
+
+[scorers.dsl-latency]
+kind = "python-module"
+module = "tools/benchmark/compare_dsl_bench.py"
+
+[scorers.quality-integration]
+kind = "python-module"
+module = "tools/benchmark/quality_integration_summary.py"
+
+[scorers.retrieval-relevance]
+kind = "python-module"
+module = "tools/benchmark/retrieval/evaluator.py"
+
+[scorers.lexical-file-diagnostic]
+kind = "python-module"
+module = "tools/benchmark/retrieval/lexical_file_comparison.py"
+
+[scorers.agent-outcome]
+kind = "python-module"
+module = "tools/benchmark/agent_outcome/__main__.py"
+argv = ["summarize"]
+
+# --------------------------------------------------------------------------
+# Families. Every field is required; unknown values fail closed.
+# `authority = "registry"` means the common CLI is the live authority for this
+# family. `legacy` means the family is inventoried but not yet cut over.
+# `retired` requires a `retirement_reason`.
+# --------------------------------------------------------------------------
+
+[families.dsl-warm]
+title = "DSL warm query-latency matrix"
+purpose = "dsl-latency"
+payload = "latency"
+result_unit = "ms"
+producer = "rust-bench-dsl-warm"
+validator = "bench-artifacts"
+scorer = "dsl-latency"
+closure = "benchmark-control-plane"
+host_policy = "canonical-linux"
+gate_tier = "authority"
+sample_floor = 200
+baseline = "tools/benchmark/baselines/warm-matrix.json"
+native_schema = "BenchArtifactV1:2"
+authority = "registry"
+
+[families.dsl-cold]
+title = "DSL true-cold query-latency matrix"
+purpose = "dsl-latency"
+payload = "latency"
+result_unit = "ms"
+producer = "rust-bench-dsl-cold"
+validator = "bench-artifacts"
+scorer = "dsl-latency"
+closure = "benchmark-control-plane"
+host_policy = "canonical-linux"
+gate_tier = "authority"
+sample_floor = 20
+baseline = "tools/benchmark/baselines/cold-matrix.json"
+native_schema = "BenchArtifactV1:2"
+authority = "registry"
+
+[families.dsl-warm-criterion]
+title = "Exploratory Criterion view of warm DSL scenarios"
+purpose = "dsl-latency"
+payload = "micro"
+result_unit = "ns"
+producer = "rust-bench-dsl-warm-criterion"
+validator = "bench-artifacts"
+scorer = "none"
+closure = "benchmark-control-plane"
+host_policy = "local-diagnostic"
+gate_tier = "diagnostic"
+sample_floor = 0
+baseline = "none"
+native_schema = "criterion:raw"
+authority = "registry"
+
+[families.relevance]
+title = "Judged seeded-corpus relevance ranking"
+purpose = "search-quality"
+payload = "latency"
+result_unit = "ratio"
+producer = "rust-verify-quality-relevance"
+validator = "bench-artifacts"
+scorer = "quality-integration"
+closure = "benchmark-control-plane"
+host_policy = "any"
+gate_tier = "authority"
+sample_floor = 0
+baseline = "none"
+native_schema = "BenchArtifactV1:2"
+authority = "registry"
+
+[families.ambiguity]
+title = "Query ambiguity resolution rail"
+purpose = "search-quality"
+payload = "latency"
+result_unit = "ratio"
+producer = "rust-verify-quality-ambiguity"
+validator = "bench-artifacts"
+scorer = "quality-integration"
+closure = "benchmark-control-plane"
+host_policy = "local-diagnostic"
+gate_tier = "authority"
+sample_floor = 0
+baseline = "none"
+native_schema = "BenchArtifactV1:2"
+authority = "registry"
+
+[families.snippet]
+title = "Snippet quality rail"
+purpose = "search-quality"
+payload = "latency"
+result_unit = "ratio"
+producer = "rust-verify-quality-snippet"
+validator = "bench-artifacts"
+scorer = "quality-integration"
+closure = "benchmark-control-plane"
+host_policy = "local-diagnostic"
+gate_tier = "authority"
+sample_floor = 0
+baseline = "none"
+native_schema = "BenchArtifactV1:2"
+authority = "registry"
+
+[families.scale]
+title = "Index scale and latency rail"
+purpose = "systems"
+payload = "latency"
+result_unit = "ms"
+producer = "rust-verify-quality-scale"
+validator = "bench-artifacts"
+scorer = "quality-integration"
+closure = "benchmark-control-plane"
+host_policy = "local-diagnostic"
+gate_tier = "authority"
+sample_floor = 32
+baseline = "none"
+native_schema = "BenchArtifactV1:2"
+authority = "registry"
+
+[families.tail]
+title = "Latency tail rail"
+purpose = "systems"
+payload = "latency"
+result_unit = "ms"
+producer = "rust-verify-quality-tail"
+validator = "bench-artifacts"
+scorer = "quality-integration"
+closure = "benchmark-control-plane"
+host_policy = "local-diagnostic"
+gate_tier = "authority"
+sample_floor = 64
+baseline = "none"
+native_schema = "BenchArtifactV1:2"
+authority = "registry"
+
+[families.ann]
+title = "ANN semantic recall/latency rail"
+purpose = "systems"
+payload = "latency"
+result_unit = "ms"
+producer = "rust-verify-quality-ann"
+validator = "bench-artifacts"
+scorer = "quality-integration"
+closure = "benchmark-control-plane"
+host_policy = "local-diagnostic"
+gate_tier = "authority"
+sample_floor = 64
+baseline = "none"
+native_schema = "BenchArtifactV1:2"
+authority = "registry"
+
+[families.concurrency]
+title = "Closed-loop concurrency rail (1/8/32 clients)"
+purpose = "systems"
+payload = "load"
+result_unit = "qps"
+producer = "rust-verify-quality-concurrency"
+validator = "bench-artifacts"
+scorer = "quality-integration"
+closure = "benchmark-control-plane"
+host_policy = "local-diagnostic"
+gate_tier = "authority"
+sample_floor = 16
+baseline = "none"
+native_schema = "BenchArtifactV1:2"
+authority = "registry"
+
+[families.freshness]
+title = "Ingest freshness / time-to-searchable rail"
+purpose = "systems"
+payload = "freshness"
+result_unit = "ms"
+producer = "rust-verify-quality-freshness"
+validator = "bench-artifacts"
+scorer = "quality-integration"
+closure = "benchmark-control-plane"
+host_policy = "local-diagnostic"
+gate_tier = "authority"
+sample_floor = 20
+baseline = "none"
+native_schema = "BenchArtifactV1:2"
+authority = "registry"
+
+[families.open-loop]
+title = "Open-loop offered-load capacity rail"
+purpose = "systems"
+payload = "load"
+result_unit = "qps"
+producer = "rust-verify-quality-open-loop"
+validator = "bench-artifacts"
+scorer = "quality-integration"
+closure = "benchmark-control-plane"
+host_policy = "local-diagnostic"
+gate_tier = "authority"
+sample_floor = 0
+baseline = "none"
+native_schema = "BenchArtifactV1:2"
+authority = "registry"
+
+[families.ops]
+title = "Operational counters diagnostics"
+purpose = "systems"
+payload = "latency"
+result_unit = "ms"
+producer = "rust-verify-quality-ops"
+validator = "bench-artifacts"
+scorer = "quality-integration"
+closure = "benchmark-control-plane"
+host_policy = "local-diagnostic"
+gate_tier = "diagnostic"
+sample_floor = 0
+baseline = "none"
+native_schema = "BenchArtifactV1:2"
+authority = "registry"
+
+[families.ui]
+title = "UI-facing latency diagnostics"
+purpose = "systems"
+payload = "latency"
+result_unit = "ms"
+producer = "rust-verify-quality-ui"
+validator = "bench-artifacts"
+scorer = "quality-integration"
+closure = "benchmark-control-plane"
+host_policy = "local-diagnostic"
+gate_tier = "diagnostic"
+sample_floor = 0
+baseline = "none"
+native_schema = "BenchArtifactV1:2"
+authority = "registry"
+
+[families.relevance-openai-ab]
+title = "Semantic provider A/B capture"
+purpose = "search-quality"
+payload = "latency"
+result_unit = "ratio"
+producer = "rust-capture-quality-relevance-openai-ab"
+validator = "bench-artifacts"
+scorer = "quality-integration"
+closure = "benchmark-control-plane"
+host_policy = "any"
+gate_tier = "advisory"
+sample_floor = 0
+baseline = "none"
+native_schema = "BenchArtifactV1:2"
+authority = "registry"
+
+[families.micro-lq-norm-pipeline]
+title = "Crate-local Criterion bench: lq-norm pipeline"
+purpose = "micro"
+payload = "micro"
+result_unit = "ns"
+producer = "criterion-lq-norm-pipeline"
+validator = "evidence-protocol"
+scorer = "none"
+closure = "micro"
+host_policy = "local-diagnostic"
+gate_tier = "diagnostic"
+sample_floor = 0
+baseline = "none"
+native_schema = "criterion:raw"
+authority = "registry"
+
+[families.micro-searchd-runtime-dsl-query-matrix]
+title = "Crate-local Criterion bench: searchd-runtime DSL query matrix"
+purpose = "micro"
+payload = "micro"
+result_unit = "ns"
+producer = "criterion-searchd-runtime-dsl-query-matrix"
+validator = "evidence-protocol"
+scorer = "none"
+closure = "micro"
+host_policy = "local-diagnostic"
+gate_tier = "diagnostic"
+sample_floor = 0
+baseline = "none"
+native_schema = "criterion:raw"
+authority = "registry"
+
+[families.retrieval-sdk]
+title = "Quanta SDK retrieval runner proof"
+purpose = "retrieval"
+payload = "retrieval"
+result_unit = "ratio"
+producer = "retrieval-sdk-proof"
+validator = "retrieval-sdk"
+scorer = "retrieval-relevance"
+closure = "retrieval"
+host_policy = "any"
+gate_tier = "contract"
+sample_floor = 0
+baseline = "none"
+native_schema = "retrieval-run-manifest:v5"
+authority = "registry"
+
+[families.retrieval-contract]
+title = "Quanta retrieval contract proof (context-bound receipts)"
+purpose = "retrieval"
+payload = "retrieval"
+result_unit = "ratio"
+producer = "retrieval-contract-proof"
+validator = "retrieval-contract"
+scorer = "none"
+closure = "retrieval"
+host_policy = "any"
+gate_tier = "contract"
+sample_floor = 0
+baseline = "none"
+native_schema = "retrieval-run-manifest:v5"
+authority = "registry"
+
+[families.retrieval-pair]
+title = "Paired Quanta/Semble retrieval capture and verdict"
+purpose = "retrieval"
+payload = "retrieval"
+result_unit = "ratio"
+producer = "retrieval-pair"
+validator = "retrieval-contract"
+scorer = "retrieval-relevance"
+closure = "retrieval"
+host_policy = "any"
+gate_tier = "diagnostic"
+sample_floor = 0
+baseline = "none"
+native_schema = "retrieval-run-manifest:v5"
+authority = "registry"
+
+[families.lexical-file-comparison]
+title = "Bare-symbol lexical file diagnostic across products"
+purpose = "retrieval"
+payload = "retrieval"
+result_unit = "ratio"
+producer = "retrieval-pair"
+validator = "retrieval-contract"
+scorer = "lexical-file-diagnostic"
+closure = "retrieval"
+host_policy = "any"
+gate_tier = "diagnostic"
+sample_floor = 0
+baseline = "none"
+native_schema = "retrieval-run-manifest:v5"
+authority = "registry"
+
+[families.agent-outcome]
+title = "Recorded A/B/C agent outcome evaluation"
+purpose = "agent-outcome"
+payload = "agent_outcome"
+result_unit = "ratio"
+producer = "none"
+validator = "agent-outcome"
+scorer = "agent-outcome"
+closure = "benchmark-control-plane"
+host_policy = "any"
+gate_tier = "contract"
+sample_floor = 0
+baseline = "none"
+native_schema = "agent-outcome-jsonl:v1"
+authority = "registry"
+
+[families.scan-vs-index]
+title = "Recorded scan-vs-index scaling experiment"
+purpose = "recorded-experiment"
+payload = "recorded_experiment"
+result_unit = "ms"
+producer = "scan-vs-index"
+validator = "evidence-protocol"
+scorer = "none"
+closure = "benchmark-control-plane"
+host_policy = "local-diagnostic"
+gate_tier = "diagnostic"
+sample_floor = 0
+baseline = "none"
+native_schema = "BenchArtifactV1:2"
+authority = "registry"
+
+# --------------------------------------------------------------------------
+# Profiles. Named, non-overlapping-in-intent execution sets.
+# --------------------------------------------------------------------------
+
+[profiles.dsl-authority]
+description = "Warm and true-cold DSL latency authority with baseline comparison"
+families = ["dsl-warm", "dsl-cold"]
+
+[profiles.dsl-diagnostic]
+description = "DSL producer smoke on a non-canonical host; never a speed claim"
+families = ["dsl-warm-criterion"]
+
+[profiles.quality-core]
+description = "Core search quality, scale and latency-tail evidence"
+families = ["relevance", "ambiguity", "snippet", "scale", "tail"]
+
+[profiles.quality-full]
+description = "All live search-quality authority rails"
+families = [
+    "relevance",
+    "ambiguity",
+    "snippet",
+    "scale",
+    "tail",
+    "ann",
+    "concurrency",
+    "freshness",
+    "open-loop",
+    "ops",
+    "ui",
+]
+
+[profiles.systems]
+description = "Ingest freshness and offered-load diagnostic evidence"
+families = ["freshness", "open-loop"]
+
+[profiles.semantic-ab]
+description = "Provider semantic A/B capture; requires OPENAI_API_KEY"
+families = ["relevance-openai-ab"]
+
+[profiles.micro]
+description = "Crate-local Criterion microbenchmarks"
+families = ["micro-lq-norm-pipeline", "micro-searchd-runtime-dsl-query-matrix"]
+
+[profiles.retrieval-contract]
+description = "Retrieval SDK and contract proof rails"
+families = ["retrieval-sdk", "retrieval-contract"]
+
+[profiles.retrieval-diagnostic]
+description = "Retrieval paired capture diagnostics; requires external corpus"
+families = ["retrieval-pair", "lexical-file-comparison"]
+
+[profiles.recorded]
+description = "Recorded-only evaluation; no producer is allowed to manufacture input"
+families = ["agent-outcome", "scan-vs-index"]

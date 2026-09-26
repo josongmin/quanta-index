@@ -2,9 +2,11 @@
 
 ## 현행 판정 — 2026-09-26, [중앙 코드 감사](CURRENT-AUDIT.md) 기준
 
-- 구현: 단일 suite의 train/eval 질의 가족·겹친 gold span 검사는 있다. 서로 다른 development/holdout suite의 file·definition·task-family custody 경계는 없다.
-- 검증: 동일 Python 입력의 직전 전체 계약 272 passed/32 subtests passed(exit 0, local diagnostic)에는 기존 **단일-suite** split/near-duplicate/allowlist fixture가 포함된다. 현재 dirty bare-symbol latency 도구는 5 tests passed(focused local), GIN/ripgrep v4 탐색 verdict는 각각 `PAIR_VALID=pass`이지만 `CONTRACT_GREEN`·`SDK_PATH_GREEN=not_run`, 품질·성능은 `not_applicable`이다. **cross-suite** leakage fixture와 admitted final `PAIR_VALID`/`QUALITY_DELTA`/`PERF_QUALIFIED`는 `NOT_RUN`. 조건부 T15/T16은 `run.py`가 임의 `pass` 요약만으로 받아들일 수 있어 proof-integrity `FAILED`; 탐색 pair 판정과 구분한다.
-- 잔여 코드: 기존 v3 suite를 소급 변형하지 않고 별도 frozen experiment/admission schema에 development·holdout suite digest, repo/source identity, 정의/file/query-family split key를 묶는다. `evaluator.py`에 cross-suite validator, `run.py` freeze/replay 결합, 동일 파일의 disjoint span·근접 질의·위조/순서변경/교체 부정 fixture와 proof inventory를 추가한다. T15/T16은 raw vector/증분 row-set, 정확한 실행 명령·source/model/dependency, collection/terminal receipt와 결합하고 조작된 `pass` JSON을 거부한다.
+2026-09-26 후속 dirty 코드 판정: admission v2가 development suite와 experiment-custody manifest의 raw/canonical digest를 묶고, capture/verdict 양쪽에서 source revision, repository commit, gold-bearing file(서로 다른 span 포함), exact gold block, query family, normalized/near-duplicate query를 거부한다. indexed corpus 공유는 허용한다. T15/T16은 `pass`/count/digest만으로 승인하던 false positive를 차단했으나 raw 양성 proof 프로토콜은 **미구현**이다. 최종 holdout pair·quality/performance qualification은 `NOT_RUN`. 아래 기존 감사 문장은 수정 전 snapshot이며 [현재 감사](CURRENT-AUDIT.md)를 우선한다.
+
+- 구현: 단일 suite train/eval 검사에 더해 admission v2의 development/holdout custody가 gold-bearing file·exact block·query family·near-duplicate query를 검사한다. 동일 indexed corpus는 허용한다.
+- 검증: 현재 dirty overlay의 Python 전체 274 passed/32 subtests(exit 0, 이동 source local diagnostic)에는 cross-suite leak/위조, admission replay, T15/T16 summary-only refusal fixture가 포함된다. GIN/ripgrep v4 탐색 verdict의 `PAIR_VALID=pass`는 qualified final pair가 아니다. admitted final `PAIR_VALID`/`QUALITY_DELTA`/`PERF_QUALIFIED`와 T15/T16 양성 raw proof는 `NOT_RUN`.
+- 잔여 코드: custody의 현재 exact block hash 범위를 넘어서는 semantic definition identity가 필요하면 외부 adjudicated inventory와 검증 경계를 확장한다. T15/T16은 raw vector/증분 row-set, 정확한 실행 명령·source/model/dependency, collection/terminal receipt를 결합한 양성 protocol이 필요하다. 현재 조작된 `pass` JSON은 fail-closed다.
 - 잔여 외부 자격: 독립 gold·admission, frozen corpus/model/spec, quiet host와 final single holdout pair/replay. 이는 개발 티켓의 수동 작업 항목이 아니라 qualified claim의 입력 조건이다. [현재 전수 판정](CURRENT-AUDIT.md).
 
 - 우선순위: P1. 기존 split 검증·verdict framework는 관측됨; 독립 holdout·최종 pair/replay는 `NOT_RUN`. [현재 전수 판정](CURRENT-AUDIT.md).

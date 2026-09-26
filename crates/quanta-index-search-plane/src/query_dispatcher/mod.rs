@@ -24,7 +24,8 @@
 //!   over-fetch / admit / refill loop the `hybrid` and `hybrid_seed` routes
 //!   share (QI-BB-018 보완 #3). Depends only on core.
 //! - support: `selection`, `window`, `keyset_page`, `ranking`, `rev_at_time`,
-//!   `text_plane`, `timeref`, `errors`, `metrics`, `response_budget` (the
+//!   `text_plane`, `timeref`, `errors`, `metrics`, `stage_timing`,
+//!   `response_budget` (the
 //!   ranked lexical page's byte budget). `rev_at_time` and `text_plane`
 //!   depend on `timeref` / `errors`; the rest depend only on `errors`.
 
@@ -44,6 +45,7 @@ mod rev_at_time;
 mod routes;
 mod selection;
 mod semantic_query;
+mod stage_timing;
 mod text_plane;
 mod timeref;
 mod window;

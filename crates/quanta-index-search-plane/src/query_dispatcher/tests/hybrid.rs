@@ -461,7 +461,35 @@ fn hybrid_dispatch_emits_closed_obs_metrics() -> TestResult {
         &RequestBudgetV1::unbounded(),
     );
     match response {
-        SearchPlaneQueryIpcResponse::Hybrid(_) | SearchPlaneQueryIpcResponse::HybridSeed(_) => {}
+        SearchPlaneQueryIpcResponse::Hybrid(hybrid) => {
+            let stages = hybrid
+                .explanation
+                .stage_timings
+                .as_ref()
+                .ok_or("missing server timings")?;
+            let names = stages
+                .iter()
+                .map(|stage| stage.stage.as_str())
+                .collect::<Vec<_>>();
+            let expected_count = u64::try_from(hybrid.results.len())?;
+            if names
+                != [
+                    "hybrid.prepare",
+                    "hybrid.read_view",
+                    "hybrid.lexical_search",
+                    "hybrid.embedding",
+                    "hybrid.dense_fetch",
+                    "hybrid.dense_admission",
+                    "hybrid.fusion",
+                ]
+                || stages.last().and_then(|stage| stage.returned_candidates) != Some(expected_count)
+            {
+                return Err(format!("hybrid stage provenance is incomplete: {stages:?}").into());
+            }
+        }
+        SearchPlaneQueryIpcResponse::HybridSeed(_) => {
+            return Err("hybrid query returned hybrid seed response".into());
+        }
         other @ (SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
         | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
         | SearchPlaneQueryIpcResponse::Text(_)

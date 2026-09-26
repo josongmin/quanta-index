@@ -334,6 +334,7 @@ fn prop_search_explanation() -> impl Strategy<Value = SearchExplanation> {
                 engines_touched,
                 engines_executed,
                 request_id,
+                stage_timings: None,
                 early_stop_reason,
                 contributions,
                 ranker_weights_hash,

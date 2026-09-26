@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "vectors": [
+    {
+      "name": "empty_object",
+      "json": {},
+      "canonical": "{}"
+    },
+    {
+      "name": "key_order",
+      "json": {
+        "a": 2,
+        "b": 1
+      },
+      "canonical": "{\"a\":2,\"b\":1}"
+    },
+    {
+      "name": "nested",
+      "json": {
+        "a": {
+          "y": {
+            "k": "v"
+          },
+          "z": [
+            1,
+            2,
+            3
+          ]
+        }
+      },
+      "canonical": "{\"a\":{\"y\":{\"k\":\"v\"},\"z\":[1,2,3]}}"
+    },
+    {
+      "name": "scalars",
+      "json": {
+        "f": false,
+        "n": null,
+        "t": true
+      },
+      "canonical": "{\"f\":false,\"n\":null,\"t\":true}"
+    },
+    {
+      "name": "strings",
+      "json": {
+        "s": "quote\" backslash\\ newline\ntab\tctrl\u0001"
+      },
+      "canonical": "{\"s\":\"quote\\\" backslash\\\\ newline\\ntab\\tctrl\\u0001\"}"
+    },
+    {
+      "name": "unicode",
+      "json": {
+        "emoji": "🧪",
+        "u": "héllo wörld αβγ 한글"
+      },
+      "canonical": "{\"emoji\":\"🧪\",\"u\":\"héllo wörld αβγ 한글\"}"
+    },
+    {
+      "name": "integers",
+      "json": {
+        "i": [
+          0,
+          1,
+          -1,
+          1000000
+        ]
+      },
+      "canonical": "{\"i\":[0,1,-1,1000000]}"
+    },
+    {
+      "name": "floats",
+      "json": {
+        "f": [
+          0.5,
+          0.42,
+          1.0,
+          1234.5678
+        ]
+      },
+      "canonical": "{\"f\":[0.5,0.42,1.0,1234.5678]}"
+    },
+    {
+      "name": "small_floats",
+      "json": {
+        "s": [
+          0.0001,
+          0.001,
+          0.00001
+        ]
+      },
+      "canonical": "{\"s\":[0.0001,0.001,0.00001]}"
+    },
+    {
+      "name": "large_floats",
+      "json": {
+        "l": [
+          1000000000000000.0,
+          1e+16,
+          1.5e+20
+        ]
+      },
+      "canonical": "{\"l\":[1000000000000000.0,10000000000000000.0,150000000000000000000.0]}"
+    },
+    {
+      "name": "retrieval_like",
+      "json": {
+        "errors": 0,
+        "rows": [
+          {
+            "case_id": "lexical.keyword.native",
+            "p50": 0.42
+          }
+        ]
+      },
+      "canonical": "{\"errors\":0,\"rows\":[{\"case_id\":\"lexical.keyword.native\",\"p50\":0.42}]}"
+    },
+    {
+      "name": "digest_like",
+      "json": {
+        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "canonical": "{\"digest\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\"}"
+    }
+  ]
+}

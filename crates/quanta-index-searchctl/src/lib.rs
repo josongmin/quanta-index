@@ -2057,12 +2057,13 @@ fn render_pretty(
     fmt_ok(writeln!(rendered, "request_id: {}", response.request_id))?;
     match &response.payload {
         SearchPlaneQueryIpcResponse::Text(payload) => {
-            render_lexical_payload("lexical", payload, None, rendered)
+            render_lexical_payload("lexical", payload, Some(&payload.explanation), rendered)
         }
         SearchPlaneQueryIpcResponse::Symbol(payload) => render_symbol_payload(payload, rendered),
         SearchPlaneQueryIpcResponse::Semantic(payload) => render_lexical_payload(
             "semantic",
             &TextQueryResponse {
+                explanation: quanta_index_contract::SearchExplanation::empty(),
                 generation: payload.generation.clone(),
                 results: payload.results.clone(),
                 window: payload.window.clone(),
@@ -3446,6 +3447,7 @@ mod tests {
         let response = SearchPlaneQueryIpcResponseEnvelope {
             request_id: 1,
             payload: SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
+                explanation: quanta_index_contract::SearchExplanation::empty(),
                 generation: GenerationPin::new(
                     RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
                     RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
@@ -4492,6 +4494,7 @@ mod tests {
                     engines_touched: vec![EngineTouched::Lexical, EngineTouched::Semantic],
                     engines_executed: vec![EngineTouched::Lexical, EngineTouched::Semantic],
                     request_id: 0,
+                    stage_timings: None,
                     early_stop_reason: None,
                     contributions: Vec::new(),
                     ranker_weights_hash: [0u8; 32],

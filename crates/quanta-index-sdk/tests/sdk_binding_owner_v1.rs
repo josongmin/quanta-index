@@ -83,6 +83,7 @@ fn symbol_request() -> SymbolQueryRequest {
 
 fn text_response(generation: GenerationPin) -> SearchPlaneQueryIpcResponse {
     SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
+        explanation: quanta_index_contract::SearchExplanation::empty(),
         generation,
         results: vec![],
         window: quanta_index_contract::QueryResultWindowV2::exact_probe(0),
@@ -334,6 +335,7 @@ fn active_selector_rejects_wrong_same_domain_generation_over_uds() {
 fn foreign_candidate_fails_closed() {
     let dir = temp_dir("candidate");
     let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
+        explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: pin(repo_id()),
         results: vec![lexical_candidate(other_repo_id())],
         window: quanta_index_contract::QueryResultWindowV2::exact_probe(1),
@@ -359,6 +361,7 @@ fn foreign_candidate_fails_closed() {
 fn window_disagreeing_with_rows_fails_closed() {
     let dir = temp_dir("window");
     let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
+        explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: pin(repo_id()),
         results: vec![],
         window: quanta_index_contract::QueryResultWindowV2::exact_probe(3),
@@ -383,6 +386,7 @@ fn window_disagreeing_with_rows_fails_closed() {
 fn rows_over_request_cap_fails_closed() {
     let dir = temp_dir("cap");
     let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
+        explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: pin(repo_id()),
         results: vec![lexical_candidate(repo_id()), lexical_candidate(repo_id())],
         window: quanta_index_contract::QueryResultWindowV2::exact_probe(2),
@@ -459,6 +463,7 @@ fn swapped_owner_projection_fails_closed() {
     let first = owner_hit("cand-1", 2.0);
     let second = owner_hit("cand-2", 1.0);
     let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
+        explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: pin(repo_id()),
         results: vec![first.clone(), second.clone()],
         window: quanta_index_contract::QueryResultWindowV2::exact_probe(2),

@@ -1,21 +1,75 @@
 # Benchmark tooling
 
-The registered evidence CLI is `python3 tools/benchmark/benchctl.py list`.
-Its sole profile/family/path/baseline control plane is
-`tools/benchmark/manifest.json`; producers remain the referenced Just recipes.
-`run systems` executes the freshness and open-loop producers and then requires
-their current-HEAD artifacts. `validate systems` checks existing artifacts
-without rerunning them. `quality-full` additionally includes these rails.
-`benchctl run` and `benchctl validate` also require the target checkout to be
-clean; a HEAD-matching artifact captured before local source edits cannot be
-requalified as evidence for the dirty tree.
-`benchctl summarize <profile>` is read-only and labels observed files
+The registered evidence CLI is `python3 tools/benchmark/benchctl.py`. Its sole
+registration/producer/validator/scorer/baseline control plane is
+`tools/benchmark/registry.toml` (validated by `tools/benchmark/registry.py`);
+producers remain the referenced Just recipes, cargo bench targets and
+allowlisted Python modules. `tools/benchmark/manifest.json` was removed — the
+artifact checker and quality summary read the registry through the read-only
+`manifest.py` projection, so there is one data authority.
+
+Python `benchctl` is the **single current benchmark orchestrator**. The typed
+common evidence contract (`BenchmarkEvidenceV1`) is defined by the Rust crate
+`benchmarks/bench-protocol` and written with identical canonical bytes by
+`tools/benchmark/evidence.py`. The Rust/Python go/no-go decision is recorded in
+[`docs/plans/sep-26-bench-migration/tickets/BM-03-DECISION.md`](../../docs/plans/sep-26-bench-migration/tickets/BM-03-DECISION.md).
+
+```sh
+python3 tools/benchmark/benchctl.py list                    # profiles + registry digest
+python3 tools/benchmark/benchctl.py plan dsl-authority      # digest-bound, no mutation
+python3 tools/benchmark/benchctl.py run systems --evidence-root /external/bench
+python3 tools/benchmark/benchctl.py validate systems --evidence-root /external/bench
+python3 tools/benchmark/benchctl.py replay <run-id> --evidence-root /external/bench
+python3 tools/benchmark/benchctl.py summarize systems        # observed artifacts only
+python3 tools/ci/lint/check-benchmark-policy.py              # registry/dependency/CI policy
+```
+
+`run` executes a profile's producers serially and then requires their
+current-HEAD artifacts. `validate` checks existing artifacts without rerunning
+producers. `plan` is deterministic on the same frozen inputs and never mutates.
+`replay` re-validates one immutable run from its captured raw bytes in a fresh
+process and re-derives the verdict through the independent artifact checker; a
+changed input is refused. `summarize` is read-only and labels observed files
 `present_unvalidated`; it is deliberately not a qualification command.
-`just rust-verify-quality-all` delegates its producer order to `benchctl run
-quality-full`, so it has the same clean-worktree admission before a producer
-can write timing-bearing evidence.
-`just rust-bench-dsl-refresh <samples>` likewise delegates to `benchctl run
-dsl-authority`; authority comparison accepts no fewer than 20 cold samples.
+`benchctl run` and `benchctl validate` require the target checkout to be clean;
+a HEAD-matching artifact captured before local source edits cannot be
+requalified as evidence for the dirty tree.
+
+## Immutable runs and typed evidence
+
+Passing `--evidence-root <external-root>` (or setting
+`QUANTA_BENCH_EVIDENCE_ROOT`) makes `run` capture each family's **native**
+artifact verbatim into an immutable run:
+
+```
+<external-root>/runs/<run-id>/{evidence.json,raw/<native artifact>}
+<external-root>/latest                 # advisory pointer, never a baseline
+<external-root>/baselines/<family>.json
+```
+
+- The run id is immutable; promoting it twice is refused. A crash before
+  promotion leaves only a `.staging/` directory, which is never admissible.
+- `evidence.json` is a sealed `BenchmarkEvidenceV1`: protocol version, family/
+  profile/case ids, source closure, build/toolchain/lockfile/binary digests,
+  input and output digests, host policy with an explicit lease observation, the
+  exact command with exit/timeout/interruption, the measurement boundary, typed
+  payload, referenced raw files with SHA-256 and length, and the verdict scope.
+- Every referenced raw file is re-hashed at load and at replay. Missing, extra,
+  reordered, truncated or tampered bytes are refused, as is a symlinked or
+  path-escaping reference.
+- `latest` is a pointer, not a baseline. A baseline names an immutable run id
+  and digest, and a run that backs an admitted baseline (with its raw inputs)
+  can never be garbage-collected.
+- The evidence root must stay outside the checkout; artifact data is external.
+
+Typed payloads keep measurement kinds apart: a `micro` payload whose
+instrumentation is `instructions` cannot carry `ms`; a retrieval `span` metric
+space cannot be built from mechanically labelled file data; an `unjudged` or
+`timeout` retrieval row cannot carry a score; closed-loop throughput cannot be
+reported as an offered rate; a recorded experiment cannot claim qualification.
+See `benchmarks/bench-protocol/fixtures/` for the cross-language canonical
+vectors both implementations must reproduce byte-for-byte.
+
 `benchctl run` requires declared baselines before starting a comparison run and
 requires a clean host preflight receipt; contention overrides are diagnostic.
 The preflight also refuses missing load data or a one-minute load average at or
@@ -30,16 +84,28 @@ An in-flight source edit or commit refuses the run before its artifacts can be
 admitted under the starting preflight.
 The integration summary independently validates its required artifacts before
 writing a green aggregate.
+`just rust-verify-quality-all` delegates its producer order to `benchctl run
+quality-full`, so it has the same clean-worktree admission before a producer
+can write timing-bearing evidence.
+`just rust-bench-dsl-refresh <samples>` likewise delegates to `benchctl run
+dsl-authority`; authority comparison accepts no fewer than 20 cold samples.
+
+`just benchmark-policy-local` runs the machine-checkable policy: registry
+validity and reachability, every Cargo bench target registered, no production
+`crates/*` normal dependency on a `benchmarks/*` package, and no CI step that
+calls a registered producer or comparator directly instead of the CLI.
+
 For local PREP after benchmark-control-plane changes, run
-`just benchmark-prep-local`. It validates shared benchmark-control-plane Python
-contracts, benchmark-harness Rust formatting and library tests, and
-producer-binary compilation in the warm `test-daemon-lane`. Retrieval evaluator
-and chunking contracts are intentionally separate: run
-`just retrieval-contract-local` for a dirty-checkout edit loop, or
-`just retrieval-contract-proof <fresh-output-root>` once on a clean source to
-run them and emit source-bound receipts. Running prep followed by proof does not
-repeat retrieval contract tests. PREP does not create a benchmark artifact,
-invoke a timing preflight, or claim current-source qualification.
+`just benchmark-prep-local`. It validates the registry, the evidence contract
+(Rust tests plus Python conformance vectors), the benchmark-control-plane Python
+suites, benchmark-harness Rust formatting and library tests, and producer-binary
+compilation in the warm `test-daemon-lane`. Retrieval evaluator and chunking
+contracts are intentionally separate: run `just retrieval-contract-local` for a
+dirty-checkout edit loop, or `just retrieval-contract-proof <fresh-output-root>`
+once on a clean source to run them and emit source-bound receipts. Running prep
+followed by proof does not repeat retrieval contract tests. PREP does not create
+a benchmark artifact, invoke a timing preflight, or claim current-source
+qualification.
 Run a real profile only after the checkout is clean; DSL authority additionally
 requires the quiet canonical Linux host.
 The `dsl-authority` profile is canonical-Linux-only: it writes an
@@ -85,7 +151,15 @@ checker refuse the pair until an owner inspects both files, restores or
 recaptures them, and removes the marker. Ordinary second-file write failures
 restore the prior pair and remove the marker.
 
-## Artifact schema (the contract): `BenchArtifactV1`
+## Artifact schema (the native producer format): `BenchArtifactV1`
+
+`BenchArtifactV1` is the **native** format the rail binaries write. It is no
+longer the common benchmark envelope: it is captured verbatim as a run's raw
+evidence and wrapped in the typed `BenchmarkEvidenceV1` contract described
+above. A `BenchArtifactV1` artifact stays valid, and the artifact checker below
+still enforces its shape and attribution, but a common latency-row envelope is
+not a correct payload for retrieval judgments, microbenchmark instruction
+counts or recorded agent outcomes.
 
 Every benchmark and relevance artifact — the DSL warm/cold matrices, the
   ambiguity, snippet, scale, tail, ANN, concurrency, freshness, open-loop,
@@ -229,13 +303,21 @@ just rust-bench-dsl-cold 20     # cold matrix (20 samples/scenario) -> cold-matr
 just rust-bench-dsl-refresh 20  # warm -> cold -> compare, serialized authority run
 just rust-bench-dsl-compare     # gate both matrices against tools/benchmark/baselines/
 python3 tools/ci/lint/check-bench-artifacts.py --profile dsl-authority --require --skip-baselines
-python3 tools/benchmark/benchctl.py list  # list producer/validator authority profiles
+python3 tools/benchmark/benchctl.py list  # registered profiles + registry digest
+python3 tools/benchmark/benchctl.py plan dsl-authority  # digest-bound plan; no mutation
 python3 tools/benchmark/benchctl.py preflight dsl-authority --receipt artifacts/benchmark-receipts/dsl-authority/preflight.json
 python3 tools/benchmark/benchctl.py run dsl-authority  # clean-host preflight, serial producer, validate, compare
 python3 tools/benchmark/benchctl.py compare dsl-authority  # validate then run declared baseline comparators
+python3 tools/benchmark/benchctl.py replay <run-id> --evidence-root /external/bench
 python3 tools/benchmark/benchctl.py summarize systems  # observed artifacts only; never a pass claim
+python3 tools/ci/lint/check-benchmark-policy.py  # registry / dependency direction / CI bypass policy
 just rust-verify-quality-concurrency  # 1/8/32 clients + slow client -> concurrency/latest/summary-c*.json
 ```
+
+The individual `just rust-<producer>` recipes remain the producer owners and
+are invoked by `benchctl`; they must not be called directly from a CI timing
+step (the policy guard refuses it) because that bypasses source freeze,
+preflight, validation and immutable-run promotion.
 
 The warm authority runner honours `$DSL_BENCH_WARM_SAMPLES` (default 100).
 The dedicated warm runner also honours `$DSL_BENCH_WARM_REPEATS`

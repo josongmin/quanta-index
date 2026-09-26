@@ -373,6 +373,7 @@ fn explanation_v2() -> SearchExplanation {
         engines_touched: vec![EngineTouched::History, EngineTouched::Bridge],
         engines_executed: vec![EngineTouched::History, EngineTouched::Bridge],
         request_id: 0,
+        stage_timings: None,
         early_stop_reason: None,
         contributions: vec![ExplanationRow {
             signal_name: "lexical.score".into(),
@@ -858,6 +859,7 @@ fn search_plane_ipc_response_v2_symbol_roundtrips_kind_truth() -> TestRes {
 #[test]
 fn search_plane_ipc_response_v2_sourcegraph_roundtrips_text_candidates() -> TestRes {
     let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
+        explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: generation_pin(),
         results: vec![lexical_candidate()],
         window: QueryResultWindowV2::exact_probe(1),
@@ -1230,6 +1232,7 @@ fn search_plane_ipc_v2_history_refuses_order_and_score_disagreements() -> TestRe
 #[test]
 fn search_plane_ipc_response_v2_lexical_rejects_duplicate_results() -> TestRes {
     let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
+        explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: generation_pin(),
         results: vec![lexical_candidate()],
         window: QueryResultWindowV2::exact_probe(1),
@@ -1245,6 +1248,25 @@ fn search_plane_ipc_response_v2_lexical_rejects_duplicate_results() -> TestRes {
     })?;
 
     expect_decode_error_contains::<SearchPlaneQueryIpcResponse>(&bytes, "results")
+}
+
+#[test]
+fn text_response_requires_one_explanation() -> TestRes {
+    let response = text_response_with_lexical_candidate();
+    let missing = mutate_ipc_response_wire(&response, |wire| {
+        let fields = map_fields_mut(field_value_mut(map_fields_mut(wire)?, "payload")?)?;
+        fields.retain(
+            |(key, _)| !matches!(key, ciborium::Value::Text(name) if name == "explanation"),
+        );
+        Ok(())
+    })?;
+    expect_decode_error_contains::<SearchPlaneQueryIpcResponse>(&missing, "explanation")?;
+    let duplicate = mutate_ipc_response_wire(&response, |wire| {
+        let fields = map_fields_mut(field_value_mut(map_fields_mut(wire)?, "payload")?)?;
+        duplicate_text_field(fields, "explanation")?;
+        Ok(())
+    })?;
+    expect_decode_error_contains::<SearchPlaneQueryIpcResponse>(&duplicate, "explanation")
 }
 
 #[test]
@@ -1281,6 +1303,7 @@ fn text_response_rejects_missing_or_contradictory_window() -> TestRes {
 #[test]
 fn search_plane_ipc_response_v2_roundtrips_file_owner_projection_rows() -> TestRes {
     let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
+        explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: generation_pin(),
         results: vec![lexical_candidate()],
         window: QueryResultWindowV2::exact_probe(1),
@@ -1408,6 +1431,7 @@ fn search_plane_ipc_response_v2_hybrid_rejects_duplicate_explanation() -> TestRe
 
 fn text_response_with_lexical_candidate() -> SearchPlaneQueryIpcResponse {
     SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
+        explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: generation_pin(),
         results: vec![lexical_candidate()],
         window: QueryResultWindowV2::exact_probe(1),

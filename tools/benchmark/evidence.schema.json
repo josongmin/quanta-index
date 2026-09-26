@@ -1,0 +1,358 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://quanta-index.invalid/benchmark/evidence.schema.json",
+  "title": "BenchmarkEvidenceV1",
+  "description": "Canonical wire schema for the common benchmark evidence envelope. The Rust crate benchmarks/bench-protocol is the normative definition; this document is the checkable projection and is validated against the committed golden in benchmarks/bench-protocol/fixtures/. Payloads are purpose-specific: a retrieval judgment can never become a timing row, and an instruction count can never become wall latency.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protocol",
+    "protocol_version",
+    "run_id",
+    "family",
+    "profile",
+    "case_id",
+    "created_utc",
+    "source",
+    "build",
+    "inputs",
+    "host",
+    "command",
+    "boundary",
+    "payload",
+    "raw",
+    "output_digest",
+    "verdict",
+    "digest"
+  ],
+  "properties": {
+    "protocol": { "const": "BenchmarkEvidenceV1" },
+    "protocol_version": { "const": 1 },
+    "run_id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9._:-]+$" },
+    "family": { "type": "string", "minLength": 1 },
+    "profile": { "type": "string", "minLength": 1 },
+    "case_id": { "type": ["string", "null"] },
+    "created_utc": { "type": "string", "minLength": 1 },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["revision", "dirty", "dirty_paths_digest", "closure_profile", "closure_digest"],
+      "properties": {
+        "revision": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "dirty": { "type": "boolean" },
+        "dirty_paths_digest": { "type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$" },
+        "closure_profile": { "type": "string", "minLength": 1 },
+        "closure_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      }
+    },
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["toolchain", "target_triple", "lockfile_digest", "profile", "flags", "binaries"],
+      "properties": {
+        "toolchain": { "type": "string", "minLength": 1 },
+        "target_triple": { "type": "string", "minLength": 1 },
+        "lockfile_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "profile": { "type": "string", "minLength": 1 },
+        "flags": { "type": "array", "items": { "type": "string" } },
+        "binaries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "sha256"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+            }
+          }
+        }
+      }
+    },
+    "inputs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "availability", "digest", "reason"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "availability": { "enum": ["present", "unavailable"] },
+          "digest": { "type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$" },
+          "reason": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "host": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policy", "os", "arch", "cpu_count", "hostname_hash", "identity_digest", "lease"],
+      "properties": {
+        "policy": { "enum": ["any", "local-diagnostic", "canonical-linux"] },
+        "os": { "type": "string", "minLength": 1 },
+        "arch": { "type": "string", "minLength": 1 },
+        "cpu_count": { "type": "integer", "minimum": 0 },
+        "hostname_hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "identity_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "lease": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode", "observed_samples"],
+          "properties": {
+            "mode": { "enum": ["exclusive", "shared", "none"] },
+            "observed_samples": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["argv", "cwd", "status", "exit_code", "timeout_seconds", "wall_ms"],
+      "properties": {
+        "argv": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+        "cwd": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["completed", "failed", "timeout", "interrupted"] },
+        "exit_code": { "type": ["integer", "null"] },
+        "timeout_seconds": { "type": "integer", "minimum": 1 },
+        "wall_ms": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["clock", "instrumentation", "start_event", "end_event"],
+      "properties": {
+        "clock": { "type": "string", "minLength": 1 },
+        "instrumentation": { "type": "string", "minLength": 1 },
+        "start_event": { "type": "string", "minLength": 1 },
+        "end_event": { "type": "string", "minLength": 1 }
+      }
+    },
+    "payload": {
+      "oneOf": [
+        { "$ref": "#/$defs/micro" },
+        { "$ref": "#/$defs/latency" },
+        { "$ref": "#/$defs/load" },
+        { "$ref": "#/$defs/freshness" },
+        { "$ref": "#/$defs/retrieval" },
+        { "$ref": "#/$defs/agent_outcome" },
+        { "$ref": "#/$defs/recorded_experiment" }
+      ]
+    },
+    "raw": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "sha256", "bytes"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+          "bytes": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    "output_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "verdict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scope", "status", "reason", "metrics"],
+      "properties": {
+        "scope": { "enum": ["diagnostic", "contract", "quality", "performance"] },
+        "status": { "enum": ["pass", "fail", "unsupported", "not_run"] },
+        "reason": { "type": ["string", "null"] },
+        "metrics": { "type": "array", "items": { "$ref": "#/$defs/metric" } }
+      }
+    },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  },
+  "$defs": {
+    "unit": { "enum": ["ms", "ratio", "count", "ns", "instructions", "qps", "bytes"] },
+    "metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "unit", "value", "numerator", "denominator"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "unit": { "$ref": "#/$defs/unit" },
+        "value": { "type": "number" },
+        "numerator": { "type": ["integer", "null"], "minimum": 0 },
+        "denominator": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "micro": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "bench_id", "metric", "unit", "instrumentation", "statistic", "value", "iterations", "samples"],
+      "properties": {
+        "kind": { "const": "micro" },
+        "bench_id": { "type": "string", "minLength": 1 },
+        "metric": { "type": "string", "minLength": 1 },
+        "unit": { "$ref": "#/$defs/unit" },
+        "instrumentation": { "enum": ["wall", "instructions"] },
+        "statistic": { "enum": ["mean", "median", "min"] },
+        "value": { "type": "number" },
+        "iterations": { "type": "integer", "minimum": 0 },
+        "samples": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "latency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "rows", "errors", "timeouts", "drops"],
+      "properties": {
+        "kind": { "const": "latency" },
+        "rows": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["case_id", "metric", "unit", "samples", "p50", "p95", "p99", "error_count", "timeout_count", "early_stop_reason"],
+            "properties": {
+              "case_id": { "type": "string", "minLength": 1 },
+              "metric": { "type": "string", "minLength": 1 },
+              "unit": { "$ref": "#/$defs/unit" },
+              "samples": { "type": "integer", "minimum": 0 },
+              "p50": { "type": ["number", "null"] },
+              "p95": { "type": ["number", "null"] },
+              "p99": { "type": ["number", "null"] },
+              "error_count": { "type": "integer", "minimum": 0 },
+              "timeout_count": { "type": "integer", "minimum": 0 },
+              "early_stop_reason": { "type": ["string", "null"] }
+            }
+          }
+        },
+        "errors": { "type": "integer", "minimum": 0 },
+        "timeouts": { "type": "integer", "minimum": 0 },
+        "drops": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "load": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "arrival", "generator_saturated", "points", "errors"],
+      "properties": {
+        "kind": { "const": "load" },
+        "arrival": { "enum": ["open_loop", "closed_loop"] },
+        "generator_saturated": { "type": "boolean" },
+        "points": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["label", "offered_rate", "completed_rate", "dropped", "timeouts"],
+            "properties": {
+              "label": { "type": "string", "minLength": 1 },
+              "offered_rate": { "type": ["number", "null"] },
+              "completed_rate": { "type": "number" },
+              "dropped": { "type": "integer", "minimum": 0 },
+              "timeouts": { "type": "integer", "minimum": 0 }
+            }
+          }
+        },
+        "errors": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "freshness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "phases", "stale_hits", "generation"],
+      "properties": {
+        "kind": { "const": "freshness" },
+        "phases": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "ms", "samples"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "ms": { "type": "number" },
+              "samples": { "type": "integer", "minimum": 0 }
+            }
+          }
+        },
+        "stale_hits": { "type": "integer", "minimum": 0 },
+        "generation": { "type": ["string", "null"] }
+      }
+    },
+    "retrieval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "lane", "metric_space", "judgments", "unjudged", "rows", "universe_attested", "corpus_digest", "query_pack_digest"],
+      "properties": {
+        "kind": { "const": "retrieval" },
+        "lane": { "enum": ["native_default", "controlled_mechanism"] },
+        "metric_space": { "enum": ["file", "line", "span", "context"] },
+        "judgments": { "enum": ["judged", "pooled", "mechanically_labeled"] },
+        "unjudged": { "type": "integer", "minimum": 0 },
+        "rows": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["query_id", "metric", "unit", "value", "state"],
+            "properties": {
+              "query_id": { "type": "string", "minLength": 1 },
+              "metric": { "type": "string", "minLength": 1 },
+              "unit": { "$ref": "#/$defs/unit" },
+              "value": { "type": ["number", "null"] },
+              "state": { "enum": ["judged", "irrelevant", "unjudged", "no_answer", "timeout", "unsupported"] }
+            }
+          }
+        },
+        "universe_attested": { "type": "boolean" },
+        "corpus_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "query_pack_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      }
+    },
+    "agent_outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "task_count", "pair_count", "arms", "excluded_pairs", "unknown_pairs", "metrics", "capture", "input_digest"],
+      "properties": {
+        "kind": { "const": "agent_outcome" },
+        "task_count": { "type": "integer", "minimum": 0 },
+        "pair_count": { "type": "integer", "minimum": 1 },
+        "arms": { "type": "array", "items": { "type": "string" }, "minItems": 3, "maxItems": 3 },
+        "excluded_pairs": { "type": "integer", "minimum": 0 },
+        "unknown_pairs": { "type": "integer", "minimum": 0 },
+        "metrics": { "type": "array", "items": { "$ref": "#/$defs/metric" } },
+        "capture": { "enum": ["recorded_unauthenticated", "authenticated"] },
+        "input_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      }
+    },
+    "recorded_experiment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "experiment_id", "diagnostic_only", "points", "source_digest"],
+      "properties": {
+        "kind": { "const": "recorded_experiment" },
+        "experiment_id": { "type": "string", "minLength": 1 },
+        "diagnostic_only": { "const": true },
+        "points": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["label", "metric", "unit", "value"],
+            "properties": {
+              "label": { "type": "string", "minLength": 1 },
+              "metric": { "type": "string", "minLength": 1 },
+              "unit": { "$ref": "#/$defs/unit" },
+              "value": { "type": "number" }
+            }
+          }
+        },
+        "source_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      }
+    }
+  }
+}
