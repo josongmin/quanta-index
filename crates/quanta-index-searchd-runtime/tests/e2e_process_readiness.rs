@@ -166,6 +166,68 @@ fn lost_active_track_root_invalidates_backend_readiness_and_restores() -> TestRe
 }
 
 #[test]
+fn binary_daemon_detects_lost_active_backend_root() -> TestResult {
+    let parent = quanta_index_searchd_harness::private_tempdir()?;
+    let state_root = parent.path().join("state");
+    let mut prepared = E2eRuntime::boot_in(&state_root)?;
+    prepared.ingest_text("repo-binary-backend-loss", "src/ready.rs", "fn ready() {}")?;
+    let _sealed = prepared.seal()?;
+    prepared.activate_last_sealed_generation()?;
+    prepared.stop()?;
+
+    let process = SearchdBinaryProcess::start(&state_root)?;
+    let outcome = (|| -> TestResult {
+        let client = process.connect()?;
+        let ready = wait_for(
+            &RealTicker::new(),
+            Duration::from_secs(20),
+            Duration::from_millis(50),
+            "binary daemon active backend ready",
+            || client.observability().process_readiness(),
+            |report| report.ready,
+            |_| true,
+        )?;
+        require_eq(&ready.active_repositories, &1, "binary active repositories")?;
+
+        let root = state_root.join("indexes/lexical");
+        let hidden = state_root.join("indexes/lexical-hidden");
+        std::fs::rename(&root, &hidden)?;
+        let lost = (|| -> TestResult {
+            let report = wait_for(
+                &RealTicker::new(),
+                Duration::from_secs(20),
+                Duration::from_millis(50),
+                "binary daemon active backend loss",
+                || client.observability().process_readiness(),
+                |report| !report.ready,
+                |_| true,
+            )?;
+            if !report
+                .not_ready_reasons
+                .contains(&ProcessReadinessReasonV1::RequiredBackendOpenUnproven)
+            {
+                return Err(format!("binary root loss lacks backend reason: {report:?}").into());
+            }
+            Ok(())
+        })();
+        std::fs::rename(&hidden, &root)?;
+        lost?;
+        let restored = wait_for(
+            &RealTicker::new(),
+            Duration::from_secs(20),
+            Duration::from_millis(50),
+            "binary daemon active backend restored",
+            || client.observability().process_readiness(),
+            |report| report.ready,
+            |_| true,
+        )?;
+        require_eq(&restored.ready, &true, "binary restored readiness")
+    })();
+    let stopped = process.stop();
+    outcome.and(stopped)
+}
+
+#[test]
 fn reactivated_generation_reproves_physical_authority_after_aba() -> TestResult {
     let mut rt = E2eRuntime::boot()?;
     rt.ingest_text("repo-readiness", "src/ready.rs", "fn first() {}")?;
