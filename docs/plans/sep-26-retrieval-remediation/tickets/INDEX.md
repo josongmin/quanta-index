@@ -20,6 +20,13 @@ closure, so an earlier frozen checkout, including one with the same product
 code, cannot be promoted to a current-main receipt without revalidating the
 complete bound source and environment.
 
+The later nFF snapshot closeout is recorded outside the repository at
+`/private/tmp/qi-rbr-store-final.nFFdMH/final-closeout.json`. It binds native
+contract, separate CI and independent consumer results to that snapshot only.
+Concurrent main changes and the subsequent G-02 on/off diagnostic comparator
+fix require a new exact-source freeze for any current-main qualification;
+the [active gap register](GAP-REGISTER.md) records the remaining gates.
+
 The final external `PAIR_VALID`, `QUALITY_DELTA` and `PERF_QUALIFIED` gates
 remain `NOT_RUN` until independent corpus/gold, admitted pair/replay and
 quiet-host evidence pass. Hosted CI last observed 14 jobs/0 steps and was

@@ -9778,6 +9778,61 @@ def test_query_clock_overhead_replay_requires_identical_answers_and_coverage(tmp
     mutant["results"][0]["candidates"] = []
     with pytest.raises((ValueError, pairrun.RunError)):
         overhead.compare(record, mutant, phases, off_phases, diagnostic, off, pack)
+    # The runner record omits page/continuation and lane details. Each
+    # diagnostic can be individually valid while the on/off pair diverges.
+    mutants = []
+    changed = json.loads(json.dumps(off))
+    changed["results"][0]["response"]["window"]["coverage"]["examined"] = {"kind": "unknown"}
+    mutants.append(changed)
+    changed = json.loads(json.dumps(off))
+    changed["results"][0]["response"]["explanation"]["strategy"] = "forged"
+    mutants.append(changed)
+    changed = json.loads(json.dumps(off))
+    changed["results"][0]["response"]["window"]["coverage"]["lanes"][0]["filtered_out"] = 1
+    mutants.append(changed)
+    changed = json.loads(json.dumps(off))
+    candidate_row = next(row for row in changed["results"] if row["candidates"])
+    candidate_row["candidates"][0]["candidate_id"] = "forged-candidate"
+    mutants.append(changed)
+    changed = json.loads(json.dumps(off))
+    changed["results"].reverse()
+    mutants.append(changed)
+    changed = json.loads(json.dumps(off))
+    changed["results"].pop()
+    mutants.append(changed)
+    changed = json.loads(json.dumps(off))
+    changed["results"][1] = json.loads(json.dumps(changed["results"][0]))
+    mutants.append(changed)
+    for changed in mutants:
+        with pytest.raises((ValueError, pairrun.RunError)):
+            overhead.compare(record, record, phases, off_phases, diagnostic, changed, pack)
+    # Request IDs are transport-local; continuation is an observable page fact.
+    different_ids = json.loads(json.dumps(off))
+    for row in different_ids["results"]:
+        row["response"]["explanation"]["request_id"] += 100
+    assert overhead.compare(record, record, phases, off_phases, diagnostic, different_ids, pack)["rows"]
+    capped_record = json.loads(json.dumps(record))
+    capped_record["results"][0]["status"] = "capped"
+    capped_on = json.loads(json.dumps(diagnostic))
+    capped_off = json.loads(json.dumps(off))
+    for capture in (capped_on, capped_off):
+        capture["record_sha256"] = cp.sha(cp.canonical(capped_record))
+        row = capture["results"][0]
+        row["status"] = "capped"
+        window = row["response"]["window"]
+        window["candidate_count"] = {"kind": "at_least", "value": window["returned"] + 1}
+        window["outcome"] = {"kind": "lower_bound", "continuation": True}
+        window["coverage"].pop("exhaustion_proof")
+    capped_phases = json.loads(json.dumps(phases))
+    capped_phases["record_sha256"] = capped_on["record_sha256"]
+    capped_off_phases = json.loads(json.dumps(off_phases))
+    capped_off_phases["record_sha256"] = capped_on["record_sha256"]
+    assert overhead.compare(capped_record, capped_record, capped_phases, capped_off_phases,
+                            capped_on, capped_off, pack)["rows"]
+    capped_off["results"][0]["response"]["window"]["outcome"]["continuation"] = False
+    with pytest.raises(ValueError, match="observable diagnostic"):
+        overhead.compare(capped_record, capped_record, capped_phases, capped_off_phases,
+                         capped_on, capped_off, pack)
 
 
 @pytest.mark.parametrize("parameter", ["timeout_secs", "cleanup_timeout_secs"])

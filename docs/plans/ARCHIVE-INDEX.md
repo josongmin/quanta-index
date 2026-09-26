@@ -26,9 +26,10 @@ work remains in active tickets and qualification ledgers.
 | Historical child of active `may-25-search-owned-semantic-derivation` | 1 | Semantic generation ADR and active parent |
 | Superseded `sep-23-search-config-profiles/sdk-interface.md` | 1 | [SDK](../adr/MAY-27-002-sdk-ingress-and-public-surface-boundary.md), active Sep-24 draft |
 | Historical `sep-26-bench-migration` audit/closeout | 2 | [Verification ADR](../adr/JUN-08-001-verification-hellgate-and-benchmark-separation.md), active current audit |
+| Completed `sep-26-bench-migration/tickets/BM-03-DECISION.md` | 1 | [Benchmark orchestration ADR](../adr/SEP-27-002-single-benchmark-orchestrator-and-typed-evidence.md); active BM-03 ticket retained |
 | Historical `sep-26-retrieval-remediation/tickets` | 17 | [SEP-26 ADRs](../adr/SEP-26-DECISION-REGISTRY.md), [active gaps](sep-26-retrieval-remediation/tickets/GAP-REGISTER.md) |
 
-Total: 208 removed historical plan Markdown files. The SEP-26 historical
+Total: 209 removed historical plan Markdown files. The SEP-26 historical
 archive manifest and initial `audit-evidence.json` were also removed; both are
 recoverable at the same Git revision.
 

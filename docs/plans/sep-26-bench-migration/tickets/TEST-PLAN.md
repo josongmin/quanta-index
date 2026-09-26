@@ -1,6 +1,10 @@
 # BM common test, evidence, and cutover contract
 
-Status: **PLAN / NOT_RUN**. The commands and target package names introduced by BM tickets are planned interfaces, not currently available commands. Existing commands named below are source anchors, not claims that they passed on this revision.
+Status: **verification contract, not a current run result**. Some commands and
+packages below now exist, but their presence is not evidence that they ran or
+passed on this source. The [active gap register](CURRENT-AUDIT.md) owns
+unfinished execution; [SEP-27-002](../../../adr/SEP-27-002-single-benchmark-orchestrator-and-typed-evidence.md)
+owns the completed Python-CLI/Rust-protocol decision.
 
 ## 1. Evidence states and identity
 

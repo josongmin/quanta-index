@@ -14,7 +14,7 @@
 | 티켓 | 독립 oracle / 핵심 반례 | 최소 owning rail |
 | --- | --- | --- |
 | 00 | 실제 pytest/nextest collection; 새 계약 파일 변경 시 closure 거부; profile 위조. JUnit subTest count를 임의 보정하지 않고 producer의 독립 collected identity와 terminal을 정확 대조 | Python proof/receipt tests + contract |
-| 01 | SDK/sidecar 필드 대조; executed-but-empty lane; missing stage; exact enabled/disabled startup selector·config SHA; 실제 daemon 결과/페이지/cursor/failure 동등성, OFF explicit null. stage collection+DTO serialization/transport A/B와 runner sidecar 직렬화 분리 | contract + SDK + bounded overhead |
+| 01 | SDK/sidecar 필드 대조; executed-but-empty lane; missing stage; exact enabled/disabled startup selector·config SHA; 실제 daemon 결과/페이지/cursor/failure 동등성, OFF explicit null. on/off diagnostic은 행 순서와 window outcome·continuation·coverage·planner/lane·후보를 대조하고 per-run request ID와 stage timing만 비교에서 제외한다. stage collection+DTO serialization/transport A/B와 runner sidecar 직렬화 분리 | contract + SDK + bounded overhead |
 | 02 | DSL AND 보존; literal escaping; sentence/identifier paired fixture; gold 비접근 | contract + SDK |
 | 03 | pinned reference 함수 출력과 lane 호출 spy; alpha endpoint도 dual execution | Python adapter + 실제 pinned Semble 개발 캡처 |
 | 04 | 5개 언어의 수작업 definition spans; symbol-only 변경의 digest 변경; combined replacement; unsupported admitted 파일별 path+SHA/skip reason과 partial/full capability 판정 | contract + storage + SDK |

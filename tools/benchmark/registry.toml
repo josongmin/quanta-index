@@ -11,8 +11,9 @@
 # registry edit. A family that is absent here is not a registered benchmark
 # family and cannot be promoted to evidence.
 #
-# Authority model (BM-03 go/no-go, see docs/plans/sep-26-bench-migration/
-# tickets/BM-03-DECISION.md): Python `benchctl` remains the single current
+# Authority model (BM-03 go/no-go, see
+# docs/adr/SEP-27-002-single-benchmark-orchestrator-and-typed-evidence.md):
+# Python `benchctl` remains the single current
 # orchestrator. Producers stay the named Just/cargo/Python owners; domain
 # scorers keep their own metric mathematics. Rust owns the typed evidence
 # contract (`benchmarks/bench-protocol`) and independently validates the same

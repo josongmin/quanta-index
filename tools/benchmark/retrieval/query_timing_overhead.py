@@ -51,6 +51,27 @@ def compare(on: dict, off: dict, on_phases: dict, off_phases: dict, on_diagnosti
     if not on.get("results") or answers(on) != answers(off) \
         or any(row["status"] not in ("success", "capped", "abstained") for row in on["results"]):
         raise ValueError("on/off answer or ranking differs, or execution failed")
+    def observable_rows(record, diagnostic):
+        expected_order = [(row["route"], row["task_id"]) for row in record["results"]]
+        rows = diagnostic["results"]
+        if [(row["route"], row["task_id"]) for row in rows] != expected_order:
+            raise ValueError("on/off diagnostic row order differs from the executed record")
+        projected = []
+        for row in rows:
+            response = row["response"]
+            if isinstance(response, dict):
+                # Fresh daemon runs assign different transport IDs. Only stage
+                # clocks change under this policy; page, planner and lane facts do not.
+                explanation = response["explanation"]
+                if isinstance(explanation, dict):
+                    response = {**response, "explanation": {
+                        key: value for key, value in explanation.items()
+                        if key not in ("request_id", "stage_timings")
+                    }}
+            projected.append({**row, "response": response})
+        return projected
+    if observable_rows(on, on_diagnostic) != observable_rows(off, off_diagnostic):
+        raise ValueError("on/off observable diagnostic response or page differs")
     summaries = []
     for route, tasks in on_phases["warm_latencies_ms"].items():
         if route not in off_phases["warm_latencies_ms"]:

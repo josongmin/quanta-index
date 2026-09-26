@@ -2,7 +2,11 @@
 
 Status: `PARTIAL / CORPUS_VIEWS_AND_CONTRACT_PAIR_LEXICAL_ADAPTERS_IMPLEMENTED`; frozen corpus/CLI integration passed (158 tests), paired/CLI contract verification passed (112 tests), historical canonical Python recipe passed (579 tests); newly expanded recipe and fresh paired/lexical search pilot remain `NOT_RUN`. Priority: P1. Depends on: BM-02/BM-03; coordinate with RBR-12. Common gates: [TEST-PLAN](TEST-PLAN.md).
 
-Current implementation/verification boundaries are recorded in [CURRENT-AUDIT.md](CURRENT-AUDIT.md). Historical `git show eff53181:docs/plans/sep-26-bench-migration/tickets/CLOSEOUT.md` and [BM-07-MIGRATION-MATRIX.md](BM-07-MIGRATION-MATRIX.md) do not establish complete migration qualification.
+Open implementation and verification boundaries are in [CURRENT-AUDIT.md](CURRENT-AUDIT.md).
+Historical receipt details are recoverable with
+`git show 84c9331f:docs/plans/sep-26-bench-migration/tickets/CURRENT-AUDIT.md`;
+the old `CLOSEOUT.md` and [BM-07 matrix](BM-07-MIGRATION-MATRIX.md) do not
+establish current migration qualification.
 
 ## Purpose
 
@@ -39,8 +43,8 @@ publication remains separate from individually promoted runs.
 Focused shared-custody tests exercise owner-derived replay, changed counts,
 missing rail, partial/failed terminal counts, source mismatch and quoted
 external Just parameters. These tests do not establish a real SDK execution,
-paired comparison, gold quality or performance qualification. Current-source
-terminal receipts are recorded in [CURRENT-AUDIT.md](CURRENT-AUDIT.md).
+paired comparison, gold quality or performance qualification. Historical
+terminal receipts remain in the pre-compression audit named above.
 
 `lexical_capture.py` now implements common execution of the existing scorer
 over frozen external observations, five product-specific immutable runs,
@@ -57,8 +61,8 @@ Focused producer fixtures do not establish real product execution.
 `corpus_release.py` now provides common `benchctl corpus create/validate`,
 complete Git-object inventory and materialized `code_only`/`developer_search`
 views with explicit exclusions and retained self-contained bundles. Real
-gin/ripgrep input release creation and fresh-process validation are verified
-at the source-bound checkpoint in CURRENT-AUDIT; this is input generation,
+gin/ripgrep input release creation and fresh-process validation were verified
+at the historical source-bound checkpoint; this is input generation,
 not the required live comparison pilot. `corpus_binding.py` now binds common
 lexical schema v2 to one release/repository/view and exact suite/query universe,
 retaining Git bundles for reconstruction without mutable original paths.

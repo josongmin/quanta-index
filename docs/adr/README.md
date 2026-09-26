@@ -31,6 +31,10 @@ Documentation governance:
 
 - [Documentation authority and historical record custody](SEP-27-001-documentation-authority-and-historical-record-custody.md)
 
+Benchmark control plane:
+
+- [Single benchmark orchestrator and typed evidence](SEP-27-002-single-benchmark-orchestrator-and-typed-evidence.md)
+
 May–Jun 2026 accepted set:
 
 - [SDK ingress and public surface boundary](MAY-27-002-sdk-ingress-and-public-surface-boundary.md)

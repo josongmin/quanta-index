@@ -6,10 +6,12 @@ Current source follow-up: `tools/benchmark/recorded_capture.py` supplies explici
 external JSONL/native-JSON imports, complete-profile custody, existing-owner
 metric recomputation and raw-derived replay. Authenticated claims are explicitly
 refused; no authenticator or real agent-capture qualification is claimed.
-See [CURRENT-AUDIT.md](CURRENT-AUDIT.md) for exact snapshot/receipt boundaries;
-the historical closeout below does not qualify these newer changes.
+See the [active gaps](CURRENT-AUDIT.md) for remaining work. Exact prior
+snapshot/receipt details are recoverable with
+`git show 84c9331f:docs/plans/sep-26-bench-migration/tickets/CURRENT-AUDIT.md`;
+that historical proof does not qualify this revision.
 
-Implementation/verification/qualification verdicts for this ticket are recorded in `git show eff53181:docs/plans/sep-26-bench-migration/tickets/CLOSEOUT.md` and, where relevant, [BM-00-INVENTORY.md](BM-00-INVENTORY.md), [BM-03-DECISION.md](BM-03-DECISION.md) and [BM-07-MIGRATION-MATRIX.md](BM-07-MIGRATION-MATRIX.md). The original `PLAN / NOT_RUN` status above is the plan-time state, not the closeout state.
+Implementation/verification/qualification verdicts for this ticket are recorded in `git show eff53181:docs/plans/sep-26-bench-migration/tickets/CLOSEOUT.md` and, where relevant, [BM-00-INVENTORY.md](BM-00-INVENTORY.md), [BM-03 decision ADR](../../../adr/SEP-27-002-single-benchmark-orchestrator-and-typed-evidence.md) and [BM-07-MIGRATION-MATRIX.md](BM-07-MIGRATION-MATRIX.md). The original `PLAN / NOT_RUN` status above is the plan-time state, not the closeout state.
 
 ## Purpose
 

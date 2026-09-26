@@ -12,7 +12,7 @@ Python `benchctl` is the **single current benchmark orchestrator**. The typed
 common evidence contract (`BenchmarkEvidenceV1`) is defined by the Rust crate
 `benchmarks/bench-protocol` and written with identical canonical bytes by
 `tools/benchmark/evidence.py`. The Rust/Python go/no-go decision is recorded in
-[`docs/plans/sep-26-bench-migration/tickets/BM-03-DECISION.md`](../../docs/plans/sep-26-bench-migration/tickets/BM-03-DECISION.md).
+[`SEP-27-002`](../../docs/adr/SEP-27-002-single-benchmark-orchestrator-and-typed-evidence.md).
 
 ```sh
 python3 tools/benchmark/benchctl.py list                    # profiles + registry digest

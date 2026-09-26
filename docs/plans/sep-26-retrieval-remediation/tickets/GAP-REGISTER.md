@@ -32,16 +32,23 @@ SHA-256 `e751294fc83ca599986cf2f5acf931bfca246fe9d87a69e1cac3c2129de3b29c`).
 This local proof does not qualify a full source or a hostile concurrent
 directory-rename race.
 
-The next exact-source closeout is planned at
-`/private/tmp/qi-rbr-store-final.nFFdMH/final-closeout.json` (`NOT_RUN` at
-this document revision). This path is not proof until terminal raw results
-and identities are bound there. Do not edit this source-closure document
-after the next freeze merely to insert a passing status.
+The nFF exact-source snapshot closeout is
+`/private/tmp/qi-rbr-store-final.nFFdMH/final-closeout.json` (SHA-256
+`2c01663472c38030fc8b8eeba671ea6872f49e7934be59adb6307ca0768ab763`).
+On that immutable source, native SDK18/Python319/Rust108, fresh validate/two
+replays, both actual consumers with eight metadata refusals and five sealed
+binary copies, separate CI1654 with 15 dynamic subtests and 12 gates, and
+independent source/runtime POST verification terminated successfully. The
+snapshot predates later concurrent main ADR/BM/registry edits and the G-02
+comparator correction below: these results are snapshot-bound, not current-main
+proof. The external receipt and raw artifacts own exact counts, dependencies,
+commands, digests and exclusions. Do not edit a frozen source closure merely
+to insert a passing status.
 
 | ID | Scope and current boundary | Exit condition |
 |---|---|---|
-| G-01 | Native input admission, symbol-owner classification, no-follow evidence reading and staged-output custody are implemented. Focused/owner-local proofs exist on bound earlier inputs; current-main integration `NOT_RUN`. Hosted CI was last observed `BLOCKED` by billing (14 jobs/0 steps). | Freeze the final source and run canonical Python, Rust, SDK, full CI, gates and evidence replay. Bind selected/executed/passed identities, dependencies, binaries, environment and raw terminals. Do not compose old owner, partial or frozen-snapshot receipts with the changed documentation tree. |
-| G-02 | Observation overhead and query performance `NOT_RUN`; hybrid floor default is 100. | Run identical observation on/off workloads, tight deadlines and the declared k/filter/floor matrix on a quiet host. Bind actual planner traces and retain failures/timeouts. Change the default only under the ADR decision rule. |
+| G-01 | Native input admission, symbol-owner classification, no-follow evidence reading and staged-output custody are implemented. The nFF immutable snapshot has source-bound native, CI and replay `VERIFIED`; the later changed current main remains `NOT_RUN`. Hosted CI was last observed `BLOCKED` by billing (14 jobs/0 steps). | After concurrent main edits stabilize, freeze the new exact source and rerun affected native Python/Rust/SDK, full CI, gates and evidence replay with all bound identities. Do not compose old owner, partial or frozen-snapshot receipts with the changed source tree. |
+| G-02 | The on/off diagnostic comparator now checks observable page/continuation, planner/lane, candidate and row-order parity while normalizing only per-run request IDs and stage timings. Its preimage failed the new owning test; corrected main passed focused 1/1 and owning module 319/319. Full observation overhead and query performance remain `NOT_RUN`. Hybrid floor default is 100. | Run identical observation on/off workloads, tight deadlines and the declared k/filter/floor matrix on a quiet host. Bind actual planner traces and retain failures/timeouts. Requalify the changed source closure; change the default only under the ADR decision rule. |
 | G-03 | Broad external quality and conditional model/incremental qualification `NOT_RUN`. Bounded SEARCH3, ANN and native5/85 probes are historical development evidence, not a full admitted pair. | Obtain independent corpus/gold and quiet-host inputs, freeze development and one holdout combination, run the actual pair/replay and declared breadth/filter/churn matrix. Do not reopen bounded implementation probes as missing code. |
 | G-04 | Canonical symbol-text authority expansion `NOT_APPLICABLE` without explicit new product scope. No source-bound ranking defect has been established. | Preserve typed refusal. A new scope requires schema, ingress, lifecycle and cursor migration; ranking changes independently require a demonstrated misranking case and evaluation. |
 | G-05 | Ingest performance, fault and restart qualification `NOT_RUN`; transient timings are not durable receipts. | On a current installed SDK/daemon, run fresh, replace and delete workloads with row-set, activation, fault and restart invariants plus quiet-host latency. |

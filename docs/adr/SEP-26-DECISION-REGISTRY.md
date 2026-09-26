@@ -22,6 +22,7 @@ The linked ADRs own full semantics. This table is the compact implementation ind
 | R-RES-01 | Process-tree reachability is computed before RSS filtering | [SEP-26-002](SEP-26-002-retrieval-observation-experiment-and-default-policy.md) | RBR-11 |
 | R-EVID-01 | Implementation, owner proof, integration proof, product qualification and release proof are distinct layers | [SEP-26-003](SEP-26-003-retrieval-evidence-custody-and-qualification.md) | RBR-00/12 |
 | R-EVID-02 | Receipts bind exact source, inputs, dependencies, configuration, binaries, environment, command and raw terminal | [SEP-26-003](SEP-26-003-retrieval-evidence-custody-and-qualification.md) | RBR-00 |
+| R-EVID-03 | Evidence reads and staged writes use no-follow path custody; absent optional pointers differ from linked or tampered entries | [SEP-26-003](SEP-26-003-retrieval-evidence-custody-and-qualification.md) | RBR-00/12 |
 | R-EVAL-01 | Development selects one combination; one independently frozen holdout evaluates it | [SEP-26-003](SEP-26-003-retrieval-evidence-custody-and-qualification.md) | RBR-12 |
 
 Open execution and qualification work is not a decision. It is tracked only in the
