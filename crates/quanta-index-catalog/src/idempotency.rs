@@ -45,7 +45,9 @@ use rusqlite::{Connection, OptionalExtension as _, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
 use crate::connection::{SqliteCatalog, blob32, engine_error, generation_i64};
-use crate::sequence::{SequenceEventKindV1, append_sequence_event, is_invalidated_for_floor};
+use crate::sequence::{
+    SequenceEventKindV1, append_sequence_event, is_invalidated_for_floor, verify_event_reference,
+};
 
 const ROW_DIGEST_DOMAIN: &[u8] = b"quanta-index:catalog:idempotency-row:v2\0";
 const RECEIPT_DIGEST_DOMAIN: &[u8] = b"quanta-index:catalog:idempotency-receipt:v2\0";
@@ -500,7 +502,7 @@ fn read_row(
     if row_digest_of(&witness) != stored_digest {
         return Err(corrupt_row(key, "does not match its own digest"));
     }
-    Ok(Some(StoredRow {
+    let stored = StoredRow {
         body_sha256,
         state,
         owner: witness.owner,
@@ -512,7 +514,80 @@ fn read_row(
         durable_sequence,
         refusal_code: witness.refusal_code,
         refusal_message: witness.refusal_message,
-    }))
+    };
+    verify_terminal_row_event(connection, path, key, &stored)?;
+    Ok(Some(stored))
+}
+
+fn terminal_event_payload(
+    key: &IdempotencyKeyV1,
+    stored: &StoredRow,
+) -> Result<Option<(SequenceEventKindV1, [u8; 32])>, CoreError> {
+    let event = match stored.state {
+        OperationJournalStateV1::Committed => {
+            let bytes = stored
+                .receipt_cbor
+                .as_deref()
+                .ok_or_else(|| corrupt_row(key, "has no committed receipt bytes"))?;
+            if stored.receipt_digest != Some(receipt_digest(bytes)) {
+                return Err(corrupt_row(
+                    key,
+                    "receipt bytes disagree with receipt digest",
+                ));
+            }
+            (
+                SequenceEventKindV1::OperationCommitted,
+                payload_digest_of_parts(&[bytes]),
+            )
+        }
+        OperationJournalStateV1::Refused => {
+            let code = stored
+                .refusal_code
+                .as_deref()
+                .ok_or_else(|| corrupt_row(key, "has no refusal code"))?;
+            let message = stored
+                .refusal_message
+                .as_deref()
+                .ok_or_else(|| corrupt_row(key, "has no refusal message"))?;
+            (
+                SequenceEventKindV1::OperationRefused,
+                payload_digest_of_parts(&[code.as_bytes(), message.as_bytes()]),
+            )
+        }
+        OperationJournalStateV1::Aborted => (
+            SequenceEventKindV1::OperationAborted,
+            payload_digest_of_parts(&[&stored.fence_token.to_le_bytes()]),
+        ),
+        OperationJournalStateV1::Prepared
+        | OperationJournalStateV1::Claimed
+        | OperationJournalStateV1::Applying
+        | OperationJournalStateV1::Uncertain => return Ok(None),
+    };
+    Ok(Some(event))
+}
+
+fn verify_terminal_row_event(
+    connection: &Connection,
+    path: &Path,
+    key: &IdempotencyKeyV1,
+    stored: &StoredRow,
+) -> Result<(), CoreError> {
+    let Some((kind, payload)) = terminal_event_payload(key, stored)? else {
+        return Ok(());
+    };
+    let sequence = stored
+        .durable_sequence
+        .ok_or_else(|| corrupt_row(key, "has no terminal sequence"))?;
+    let sequence = i64::try_from(sequence)
+        .map_err(|_error| corrupt_row(key, "terminal sequence does not fit i64"))?;
+    verify_event_reference(
+        connection,
+        path,
+        kind,
+        sequence,
+        &key.identity_digest(),
+        &payload,
+    )
 }
 
 fn corrupt_row(key: &IdempotencyKeyV1, what: &str) -> CoreError {
@@ -750,6 +825,106 @@ pub(crate) fn recover_unfinished_rows(
     Ok(recovered)
 }
 
+type StoredKeyRaw = (String, String, String, i64, String);
+
+fn stored_key_from_raw(raw: StoredKeyRaw) -> Result<IdempotencyKeyV1, CoreError> {
+    let (kind, repo_id, revision_id, generation, batch_digest) = raw;
+    let kind = quanta_index_core::ingest_kind_from_code_str(kind.as_str())?;
+    let generation = u64::try_from(generation).map_err(|_error| {
+        CoreError::Storage("catalog: negative generation in journal".to_string())
+    })?;
+    Ok(IdempotencyKeyV1 {
+        kind,
+        repo_id: RepoId::new(repo_id.as_str()).map_err(|error| {
+            CoreError::Storage(format!(
+                "catalog: journal row holds an invalid repo ID: {error}"
+            ))
+        })?,
+        revision_id: RevisionId::new(revision_id.as_str()).map_err(|error| {
+            CoreError::Storage(format!(
+                "catalog: journal row holds an invalid revision ID: {error}"
+            ))
+        })?,
+        generation: ManifestGeneration::new(generation),
+        batch_digest,
+    })
+}
+
+/// Check the row-to-ledger direction before the forward event pass. A terminal
+/// row cannot borrow an event of another kind or omit its event entirely.
+pub(crate) fn verify_terminal_domain_integrity(
+    connection: &Connection,
+    path: &Path,
+) -> Result<(), CoreError> {
+    let invalid: Option<i64> = connection
+        .query_row(
+            "SELECT COALESCE(i.durable_sequence, -1) FROM idempotency_v2 AS i
+             WHERE (i.state IN (?1, ?2, ?3) AND
+                    (i.durable_sequence IS NULL OR NOT EXISTS (
+                        SELECT 1 FROM catalog_sequence_event_v2 AS e
+                        WHERE e.sequence = i.durable_sequence
+                          AND e.kind = CASE i.state
+                              WHEN ?1 THEN ?4 WHEN ?2 THEN ?5 WHEN ?3 THEN ?6 END
+                    )))
+                OR (i.state NOT IN (?1, ?2, ?3) AND i.durable_sequence IS NOT NULL)
+             LIMIT 1",
+            params![
+                OperationJournalStateV1::Committed.as_code(),
+                OperationJournalStateV1::Refused.as_code(),
+                OperationJournalStateV1::Aborted.as_code(),
+                SequenceEventKindV1::OperationCommitted.as_code(),
+                SequenceEventKindV1::OperationRefused.as_code(),
+                SequenceEventKindV1::OperationAborted.as_code(),
+            ],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| engine_error("verify terminal journal event references", path, &error))?;
+    if let Some(sequence) = invalid {
+        return Err(CoreError::Typed {
+            code: SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+            message: format!(
+                "catalog: journal row at sequence {sequence} has a missing or wrong-kind event"
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Verify a current terminal row against its canonical key, row digest and
+/// exact event identity/payload. An invalidated historical event may have no
+/// surviving row and is handled by the ledger caller.
+pub(crate) fn verify_terminal_event_pair(
+    connection: &Connection,
+    path: &Path,
+    sequence: i64,
+) -> Result<Option<i64>, CoreError> {
+    let raw: Option<StoredKeyRaw> = connection
+        .query_row(
+            "SELECT kind, repo_id, revision_id, generation, batch_digest
+             FROM idempotency_v2 WHERE durable_sequence = ?1",
+            params![sequence],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| engine_error("read terminal journal event pair", path, &error))?;
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let key = stored_key_from_raw(raw)?;
+    let stored = read_row(connection, path, &key)?
+        .ok_or_else(|| corrupt_row(&key, "disappeared during terminal event pairing"))?;
+    Ok(Some(stored.state.as_code()))
+}
+
 fn unfinished_keys(
     transaction: &rusqlite::Transaction<'_>,
     path: &Path,
@@ -774,27 +949,9 @@ fn unfinished_keys(
         .map_err(|error| engine_error("scan unfinished rows", path, &error))?;
     let mut keys = Vec::new();
     for row in rows {
-        let (kind, repo_id, revision_id, generation, batch_digest) =
-            row.map_err(|error| engine_error("read unfinished row", path, &error))?;
-        let kind = quanta_index_core::ingest_kind_from_code_str(kind.as_str())?;
-        let generation = u64::try_from(generation).map_err(|_error| {
-            CoreError::Storage("catalog: negative generation in journal".to_string())
-        })?;
-        keys.push(IdempotencyKeyV1 {
-            kind,
-            repo_id: RepoId::new(repo_id.as_str()).map_err(|error| {
-                CoreError::Storage(format!(
-                    "catalog: journal row holds an invalid repo ID: {error}"
-                ))
-            })?,
-            revision_id: RevisionId::new(revision_id.as_str()).map_err(|error| {
-                CoreError::Storage(format!(
-                    "catalog: journal row holds an invalid revision ID: {error}"
-                ))
-            })?,
-            generation: ManifestGeneration::new(generation),
-            batch_digest,
-        });
+        keys.push(stored_key_from_raw(row.map_err(|error| {
+            engine_error("read unfinished row", path, &error)
+        })?)?);
     }
     Ok(keys)
 }
@@ -1925,6 +2082,35 @@ impl MutationCoordinatorPort for SqliteCatalog {
             .commit()
             .map_err(|error| engine_error("commit lease release", &path, &error))?;
         drop(connection);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error;
+
+    use quanta_index_contract::{BatchPublishReceipt, ManifestGeneration, SearchPlaneErrorCodeV2};
+    use quanta_index_core::CoreError;
+
+    use super::{decode_versioned_receipt, encode_versioned_receipt};
+
+    #[test]
+    fn foreign_receipt_tag_refuses_decode_typed() -> Result<(), Box<dyn Error>> {
+        let receipt =
+            BatchPublishReceipt::empty_for(ManifestGeneration::new(1), None, "digest".to_string());
+        let mut bytes = encode_versioned_receipt(&receipt)?;
+        let tag = bytes.get_mut(0).ok_or("versioned receipt has no tag")?;
+        *tag ^= 0x40;
+        if !matches!(
+            decode_versioned_receipt(&bytes),
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                message,
+            }) if message.contains("format version")
+        ) {
+            return Err("foreign receipt version must refuse before payload decode".into());
+        }
         Ok(())
     }
 }

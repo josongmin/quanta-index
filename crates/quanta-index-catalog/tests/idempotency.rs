@@ -245,10 +245,8 @@ fn a_row_that_does_not_match_its_digest_is_refused_typed() -> TestResult {
     }
     drop(connection);
 
-    let catalog = SqliteCatalog::open(temp.path(), Duration::from_millis(100))?;
-    let refused = catalog
-        .claim_prepared(&key, &body, "test", LONG_LEASE_MS, &body)
-        .expect_err("a corrupt row must not be served as replay or conflict");
+    let refused = SqliteCatalog::open(temp.path(), Duration::from_millis(100))
+        .expect_err("a corrupt terminal row must refuse catalog reopen before any replay");
     if typed_code(&refused) != Some(CATALOG_ROW_CORRUPT_CODE) {
         return Err(format!("expected CATALOG_ROW_CORRUPT, got {refused:?}").into());
     }

@@ -516,6 +516,7 @@ pub(crate) fn verify_integrity(
     path: &std::path::Path,
 ) -> Result<(), CoreError> {
     crate::candidate::verify_repomap_domain_integrity(connection, path)?;
+    crate::idempotency::verify_terminal_domain_integrity(connection, path)?;
     let mut statement = connection
         .prepare(
             "SELECT sequence, kind, identity_digest, payload_digest, event_commitment, row_sha256
@@ -561,14 +562,8 @@ pub(crate) fn verify_integrity(
                 // Invalidation event (same identity digest). Every other
                 // missing pair is corruption.
                 let invalidated = is_invalidated(connection, path, &identity)?;
-                let paired: Option<i64> = connection
-                    .query_row(
-                        "SELECT state FROM idempotency_v2 WHERE durable_sequence = ?1",
-                        params![sequence],
-                        |row| row.get(0),
-                    )
-                    .optional()
-                    .map_err(|error| engine_error("pair integrity lookup", path, &error))?;
+                let paired =
+                    crate::idempotency::verify_terminal_event_pair(connection, path, sequence)?;
                 match (paired, invalidated) {
                     (Some(state), _) if state == expected_state => {}
                     (_, true) => {}
@@ -691,10 +686,14 @@ mod tests {
     use std::error::Error;
     use std::time::Duration;
 
-    use quanta_index_contract::SearchPlaneErrorCodeV2;
+    use quanta_index_contract::{
+        BatchPublishReceipt, IngestOperationKindV1, ManifestGeneration, RepoId, RevisionId,
+        SearchPlaneErrorCodeV2,
+    };
+    use quanta_index_core::{ClaimOutcomeV1, IdempotencyCatalogPort, IdempotencyKeyV1};
 
-    use super::{SequenceEventKindV1, append_sequence_event};
-    use crate::connection::{CATALOG_FILE_NAME, SqliteCatalog, catalog_dir};
+    use super::{SequenceEventKindV1, append_sequence_event, event_commitment, event_row_digest};
+    use crate::connection::{CATALOG_FILE_NAME, SqliteCatalog, blob32, catalog_dir};
 
     type TestResult = Result<(), Box<dyn Error>>;
 
@@ -860,6 +859,116 @@ mod tests {
                     "missing unpaired event at position {missing_index} must refuse reopen"
                 )
                 .into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn committed_operation_event_binds_kind_identity_and_payload() -> TestResult {
+        #[derive(Debug)]
+        enum Mutation {
+            Kind,
+            Identity,
+            Payload,
+        }
+        for mutation in [Mutation::Kind, Mutation::Identity, Mutation::Payload] {
+            let root = tempfile::tempdir()?;
+            let catalog = SqliteCatalog::open(root.path(), Duration::from_millis(100))?;
+            let key = IdempotencyKeyV1 {
+                kind: IngestOperationKindV1::History,
+                repo_id: RepoId::new("repo")?,
+                revision_id: RevisionId::new("revision")?,
+                generation: ManifestGeneration::new(1),
+                batch_digest: "digest".to_string(),
+            };
+            let body = [1_u8; 32];
+            let claim = match catalog.claim_prepared(
+                &key,
+                &body,
+                "owner",
+                i64::MAX.unsigned_abs(),
+                &body,
+            )? {
+                ClaimOutcomeV1::Claimed(claim) => claim,
+                ClaimOutcomeV1::Replay { .. } | ClaimOutcomeV1::ReplayRepoMap { .. } => {
+                    return Err("fixture expected a fresh operation claim".into());
+                }
+            };
+            catalog.mark_applying(&claim)?;
+            let mut receipt = BatchPublishReceipt::empty_for(
+                ManifestGeneration::new(1),
+                None,
+                "digest".to_string(),
+            );
+            receipt.accept_replace_scope();
+            let sequence = i64::try_from(catalog.commit(&claim, &receipt)?)?;
+            {
+                let connection = catalog.lock()?;
+                let (identity, payload): (Vec<u8>, Vec<u8>) = connection.query_row(
+                    "SELECT identity_digest, payload_digest FROM catalog_sequence_event_v2
+                 WHERE sequence = ?1",
+                    rusqlite::params![sequence],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                let mut identity = blob32("fixture event identity", &identity)?;
+                let mut payload = blob32("fixture event payload", &payload)?;
+                let kind = match mutation {
+                    Mutation::Kind => SequenceEventKindV1::Rollback,
+                    Mutation::Identity => {
+                        identity = [9_u8; 32];
+                        SequenceEventKindV1::OperationCommitted
+                    }
+                    Mutation::Payload => {
+                        payload = [9_u8; 32];
+                        SequenceEventKindV1::OperationCommitted
+                    }
+                };
+                let commitment = event_commitment(sequence, kind, &identity, &payload);
+                let digest = event_row_digest(sequence, kind, &identity, &payload, &commitment);
+                let updated = connection.execute(
+                    "UPDATE catalog_sequence_event_v2
+                 SET kind = ?1, identity_digest = ?2, payload_digest = ?3,
+                     event_commitment = ?4, row_sha256 = ?5
+                 WHERE sequence = ?6",
+                    rusqlite::params![
+                        kind.as_code(),
+                        identity.as_slice(),
+                        payload.as_slice(),
+                        commitment.as_slice(),
+                        digest.as_slice(),
+                        sequence,
+                    ],
+                )?;
+                if updated != 1 {
+                    return Err("fixture must rewrite one committed operation event".into());
+                }
+                drop(connection);
+            }
+            let replay =
+                catalog.claim_prepared(&key, &body, "retry", i64::MAX.unsigned_abs(), &body);
+            if !matches!(
+                replay,
+                Err(quanta_index_core::CoreError::Typed {
+                    code: SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                    ..
+                })
+            ) {
+                return Err(
+                    format!("committed journal replay accepted {mutation:?} event drift").into(),
+                );
+            }
+            drop(catalog);
+            if !matches!(
+                SqliteCatalog::open(root.path(), Duration::from_millis(100)),
+                Err(quanta_index_core::CoreError::Typed {
+                    code: SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                    ..
+                })
+            ) {
+                return Err(
+                    format!("committed journal row accepted {mutation:?} event drift").into(),
+                );
             }
         }
         Ok(())

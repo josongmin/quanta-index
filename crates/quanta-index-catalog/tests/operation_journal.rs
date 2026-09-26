@@ -409,20 +409,19 @@ fn timeout_disconnect_and_cancellation_have_distinct_terminals() -> TestResult {
     Ok(())
 }
 
-/// Old receipt / new runtime: a stored receipt whose format version is
-/// not this runtime's is a typed refusal before any mutation (no dual
-/// decoder, no live migration).
+/// A one-byte version rewrite without updating its receipt/event custody is
+/// corruption, and must refuse before replay at catalog open.
 #[test]
-fn a_foreign_receipt_version_is_refused_typed_before_mutation() -> TestResult {
+fn foreign_receipt_rewrite_without_digest_refuses_catalog_reopen() -> TestResult {
     let temp = tempfile::tempdir()?;
     {
         let catalog = SqliteCatalog::open(temp.path(), Duration::from_millis(200))?;
         let key = key(IngestOperationKindV1::SearchCorpus, 7, "d-ver");
         let _sequence = apply_and_commit(&catalog, &key, &[6_u8; 32], &receipt(7, "d-ver"))?;
     }
-    // Behind the catalog's back, rewrite the persisted receipt's version
-    // tag to a foreign future version (new receipt / old runtime); the
-    // same refusal answers the reverse direction by symmetry.
+    // Behind the catalog's back, rewrite only the persisted version tag.
+    // This is not a coherent future-format receipt: its digest and ledger
+    // payload still commit to the original bytes.
     let connection = raw(&temp)?;
     let stored: Vec<u8> = connection.query_row(
         "SELECT receipt_cbor FROM idempotency_v2 WHERE batch_digest = 'd-ver'",
@@ -443,21 +442,10 @@ fn a_foreign_receipt_version_is_refused_typed_before_mutation() -> TestResult {
     }
     drop(connection);
 
-    let catalog = SqliteCatalog::open(temp.path(), Duration::from_millis(200))?;
-    let key = key(IngestOperationKindV1::SearchCorpus, 7, "d-ver");
-    let refused = catalog
-        .claim_prepared(
-            &key,
-            &[6_u8; 32],
-            "journal-test",
-            LONG_LEASE_MS,
-            &[6_u8; 32],
-        )
-        .expect_err("a foreign receipt version must refuse");
-    if typed_code(&refused) != Some(CATALOG_ROW_CORRUPT_CODE)
-        || !refused.to_string().contains("format version")
-    {
-        return Err(format!("expected a typed version refusal, got {refused:?}").into());
+    let refused = SqliteCatalog::open(temp.path(), Duration::from_millis(200))
+        .expect_err("a tampered receipt must refuse catalog reopen");
+    if typed_code(&refused) != Some(CATALOG_ROW_CORRUPT_CODE) {
+        return Err(format!("expected typed receipt corruption, got {refused:?}").into());
     }
     Ok(())
 }
