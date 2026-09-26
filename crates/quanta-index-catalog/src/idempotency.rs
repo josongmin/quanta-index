@@ -2457,6 +2457,17 @@ mod tests {
                 .into());
             }
             let connection = rusqlite::Connection::open(catalog_path)?;
+            if remove_table {
+                let recreated: i64 = connection.query_row(
+                    "SELECT COUNT(*) FROM sqlite_master
+                     WHERE type = 'table' AND name = 'catalog_fence_v1'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                if recreated != 0 {
+                    return Err("failed open must roll back allocator schema creation".into());
+                }
+            }
             let events: i64 = connection.query_row(
                 "SELECT COUNT(*) FROM catalog_sequence_event_v2",
                 [],

@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use quanta_index_core::CoreError;
+use rusqlite::TransactionBehavior;
 
 use crate::connection::{
     CatalogClockPort, SqliteCatalog, SystemCatalogClock, engine_error, open_connection,
@@ -28,7 +29,7 @@ impl SqliteCatalog {
         busy_timeout: Duration,
         clock: Arc<dyn CatalogClockPort>,
     ) -> Result<Self, CoreError> {
-        let (connection, path) = open_connection(state_root, busy_timeout)?;
+        let (mut connection, path) = open_connection(state_root, busy_timeout)?;
         let legacy_tables: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN
@@ -54,29 +55,38 @@ impl SqliteCatalog {
             )
             .map_err(|error| engine_error("inspect current catalog tables", &path, &error))?;
         let fresh_root = existing_current_tables == 0;
-        connection
+        // DDL and allocator seeding are one durable decision. In particular,
+        // interruption before the first fence row must not strand a new root
+        // with only some current tables, which would look like an older root
+        // and (correctly) refuse implicit fence re-seeding on the next open.
+        let initialization = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| engine_error("begin catalog initialization", &path, &error))?;
+        initialization
             .execute_batch(crate::idempotency::SCHEMA)
             .map_err(|error| engine_error("create idempotency schema", &path, &error))?;
-        connection
+        initialization
             .execute_batch(crate::sequence::SCHEMA)
             .map_err(|error| engine_error("create sequence schema", &path, &error))?;
-        crate::sequence::verify_installed_schema(&connection, &path)?;
-        connection
+        crate::sequence::verify_installed_schema(&initialization, &path)?;
+        initialization
             .execute_batch(crate::auxiliary::SCHEMA)
             .map_err(|error| engine_error("create auxiliary schema", &path, &error))?;
-        connection
+        initialization
             .execute_batch(crate::candidate::SCHEMA)
             .map_err(|error| engine_error("create repomap candidate schema", &path, &error))?;
-        crate::candidate::verify_installed_schema(&connection, &path)?;
-        crate::idempotency::seed_fence_allocator(&connection, &path, fresh_root)?;
+        crate::candidate::verify_installed_schema(&initialization, &path)?;
+        crate::idempotency::seed_fence_allocator(&initialization, &path, fresh_root)?;
         // A missing or recast GC floor must refuse before recovery mutates
         // journal rows or clears old mutation leases.
-        crate::sequence::verify_gc_floor_domain_integrity(&connection, &path)?;
+        crate::sequence::verify_gc_floor_domain_integrity(&initialization, &path)?;
         // Seed the allocator row (self-digested), then reconcile it from
         // the generic ledger and verify the event↔domain pairs
         // (SEP-21-002).
-        crate::sequence::seed_allocator(&connection, &path)?;
-        let mut connection = connection;
+        crate::sequence::seed_allocator(&initialization, &path)?;
+        initialization
+            .commit()
+            .map_err(|error| engine_error("commit catalog initialization", &path, &error))?;
         // Crash recovery (S21-04): the state root admits one writer at a
         // time, so any unfinished journal row found here belongs to a dead
         // process and is aborted before the catalog answers anything.

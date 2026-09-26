@@ -1650,12 +1650,13 @@ mod tests {
             return Err("prior event-kind schema must refuse open".into());
         }
         let connection = rusqlite::Connection::open(path)?;
-        let allocator_rows: i64 =
-            connection.query_row("SELECT COUNT(*) FROM catalog_sequence_v2", [], |row| {
-                row.get(0)
-            })?;
-        if allocator_rows != 0 {
-            return Err("schema refusal must precede allocator seed".into());
+        let allocator_tables: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'catalog_sequence_v2'",
+            [],
+            |row| row.get(0),
+        )?;
+        if allocator_tables != 0 {
+            return Err("schema refusal must roll back allocator schema creation".into());
         }
         Ok(())
     }
@@ -1684,12 +1685,13 @@ mod tests {
             return Err("incomplete GC floor schema must refuse before recovery".into());
         }
         let connection = rusqlite::Connection::open(path)?;
-        let allocator_rows: i64 =
-            connection.query_row("SELECT COUNT(*) FROM catalog_sequence_v2", [], |row| {
-                row.get(0)
-            })?;
-        if allocator_rows != 0 {
-            return Err("schema refusal must precede allocator seed".into());
+        let allocator_tables: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'catalog_sequence_v2'",
+            [],
+            |row| row.get(0),
+        )?;
+        if allocator_tables != 0 {
+            return Err("schema refusal must roll back allocator schema creation".into());
         }
         Ok(())
     }
