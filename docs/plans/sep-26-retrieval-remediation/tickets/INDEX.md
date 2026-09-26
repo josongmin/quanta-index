@@ -104,3 +104,17 @@ RBR-04~10, RBR-12의 최종 자격 판정은 `NOT_RUN`. 현재 RBR-03 실핀 캡
 - receipt: `/private/tmp/qi-rbr-reaudit/final-owner-receipt.json`, SHA-256 `af5b795151554456673752d9372d12d67f875fc2ce850ba7a73f5fef57e58799`; 전체 raw log `/private/tmp/qi-rbr-reaudit/isolated-full.log`, SHA-256 `11abea584cb1f5d8760be63b83e91086e687472222ae2604e6b2d2c0328aa32e`.
 - `NOT_RUN` — 추가 빈 scope 실제 실행은 기존 binary의 SHA 변경을 감지해 실행 전에 거부했다. prerequisite identity 검사 `FAILED`이며 stale binary를 현재 owner proof로 사용하지 않는다. 저장된 과거 owner 원본의 재생은 새 Rust 실행을 대신하지 않는다.
 - `NOT_RUN` — 최신 공유 main 전체 qualification·clean-source proof·quiet-host 성능·최종 frozen holdout pair. local owner 결과를 이들로 승격하지 않는다.
+
+### 2026-09-26 conditional consumer 추가 재감사 — `ef22fb05` / `5a81fe69`
+
+| 티켓 / 범위 | 구현·소유 rail | 미발급 게이트 |
+| --- | --- | --- |
+| RBR-12 / T16 삭제 실행 | `VERIFIED` — 실제 저장 원본의 semantic/membership delete 호출·commit을 모두 0으로 바꿔도 5/5였던 경로를 거부한다. scope fragment·distinct owner·cluster owner·clear/tombstone 입력에서 필수 삭제 횟수를 대조한다. 정상 저장 원본의 current-consumer 재생 5/5를 유지한다 | `NOT_RUN` — fresh Rust owner 실행·daemon/embedding/holdout qualification |
+| RBR-07·12 / T15·T16 입력 거부 | `VERIFIED` — `10**400` JSON 정수의 f64 변환 전 범위를 검사해 OverflowError를 막는다. capture map·build event/target·Python version/environment·incremental batch 객체 형태를 먼저 확인해 AttributeError가 verdict를 중단시키는 경로를 거부한다. 벡터·norm·cosine metadata 및 context 변조 회귀와 기존 실제 T15 원본 재생 9/9 유지 | `NOT_RUN` — 최종 suite 전체의 fresh exporter·clean-source qualification |
+
+- 소유 코드와 conditional 테스트는 다른 writer가 `ef22fb055be265eeece2b9a9942f071870e6a679`에 포함했다. nested `just --dry-run`을 leaf command까지 펼친다고 가정한 기존 준비 recipe 테스트도 보완했고, 다른 writer의 `5a81fe694c6acccafa787264078b01eb4890b69f`에 포함됐다. 실제 prep→control 위임 1회와 leaf의 canonical pytest 명령을 각각 검사하며 두 경로의 retrieval 중복 실행 금지를 유지한다. 이 checkpoint commit은 검증 기록만 포함한다.
+- `FAILED` — 준비 recipe 테스트 보완 전 격리 전체 실행 **287 passed / 1 failed**, 802.78s. raw `/private/tmp/qi-rbr-deletion-audit/whole.log`를 보존했다. production recipe의 Python front door 위반이 아니라 nested dry-run 테스트 oracle의 잘못된 가정이었다.
+- `VERIFIED` — 고정 base `349090ca1ff5db875814dda848f01baf71131a10`의 별도 worktree에 소유 consumer/기존 테스트 보완만 적용한 최종 전체 실행 **288 passed**, exit 0, 798.98s: `PYTHONPATH=. uv run --frozen --extra dev python -m pytest tools/ci/tests/test_retrieval_benchmark.py -q --basetemp=/private/tmp/qi-rbr-deletion-audit/isolated-all-final`. Justfile을 포함한 모든 tracked bytes와 just/uv/git/Python binary hashes 전후 동일. 실제 `collect_pytest()` 288 identity와 해당 base authority exact-match; 소유 변경은 identity를 추가/삭제하지 않는다. committed consumer와 소유 테스트 함수 6개의 bytes도 검증 snapshot과 일치한다.
+- `VERIFIED` — 공유 main의 당시 fresh focused **4 passed, 315 deselected**, 46.92s; Ruff·diff 검사 exit 0. 이후 shared source 변경에 대한 전체 qualification으로 합성하지 않는다.
+- receipt `/private/tmp/qi-rbr-deletion-audit/final-owner-receipt.json`, SHA-256 `f5f86096342a8108fbd68c69726bbcaba04b1fa2b6dcc2de2d9ecde8f17305f8`; 최종 raw `/private/tmp/qi-rbr-deletion-audit/whole-final.log`, SHA-256 `3c2edbaa0ee607d58b07518d5803c89c6ff48d6675045f373f42bfa7d2a147a0`.
+- `NOT_RUN` — 최신 main 319 집합 전체·추가 인접 validator/의존성 변경의 qualification, fresh Rust/model 실행, clean-source·quiet-host·최종 holdout pair. 격리 owner 결과와 저장된 과거 raw의 재생은 이들 증명이 아니다.
