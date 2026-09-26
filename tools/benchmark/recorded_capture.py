@@ -16,7 +16,6 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from custody import custody
 from evidence import (
     EvidenceError,
     RunStore,
@@ -25,15 +24,15 @@ from evidence import (
     digest_bytes,
     parse_json,
     validate_payload,
+    write_raw_file,
 )
 from evidence_bridge import (
     _load_module,
     host_identity,
     latency_payload_from_artifact,
-    promote_native_run,
     source_identity,
 )
-from profile_capture import _directories, commit_capture, load_capture
+from profile_capture import _directories, load_capture, publish_capture
 from registry import registry_digest
 
 
@@ -255,73 +254,80 @@ def capture(
         lease_mode="none",
         lease_samples=0,
     )
-    with custody(root):
-        (root / "captures").mkdir(exist_ok=True)
-        runs = []
-        for family, name, raw, payload in prepared:
-            if time.monotonic_ns() - started >= 1800 * 1_000_000_000:
-                raise EvidenceError("recorded import exceeded its publication deadline")
-            require_frozen_source(repo, head)
-            promotion = promote_native_run(
-                evidence_root=root,
-                run_id=f"{capture_id}-{family}",
-                family=family,
-                profile="recorded",
-                case_id=None,
-                created_utc=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                native_path=Path(name),
-                native_bytes=raw,
-                additional_native=[
-                    (Path("agent-summary.json"), canonical_json(agent_summary).encode())
-                ]
-                if family == "agent-outcome"
-                else [],
-                payload=payload,
-                source=source,
-                build={
-                    "toolchain": f"Python {platform.python_version()}",
-                    "target_triple": f"{sys.platform}-{platform.machine()}",
-                    "lockfile_digest": digest_bytes((repo / "uv.lock").read_bytes()),
-                    "profile": "recorded-import",
-                    "flags": [],
-                    "binaries": [],
-                },
-                inputs=[
-                    {
-                        "id": family,
-                        "availability": "present",
-                        "digest": digest_bytes(raw),
-                        "reason": None,
-                    }
-                ],
-                host=host,
-                command={
-                    "argv": ["benchctl", "import-recorded", family],
-                    "cwd": str(repo),
-                    "status": "completed",
-                    "exit_code": 0,
-                    "timeout_seconds": 1800,
-                    "wall_ms": (time.monotonic_ns() - started) // 1_000_000,
-                },
-                boundary={
-                    "clock": "recorded",
-                    "instrumentation": "none",
-                    "start_event": "recorded_import",
-                    "end_event": "recorded_validation",
-                },
-                verdict={"scope": "diagnostic", "status": "pass", "reason": None, "metrics": []},
-            )
-            runs.append(promotion["run_id"])
-            replay_run(RunStore(root), RunStore(root).load(promotion["run_id"]))
+
+    def verify_source():
+        if time.monotonic_ns() - started >= 1800 * 1_000_000_000:
+            raise EvidenceError("recorded import exceeded its publication deadline")
         require_frozen_source(repo, head)
-        return commit_capture(
-            root,
-            capture_id=capture_id,
+
+    runs = []
+    for family, name, raw, payload in prepared:
+        verify_source()
+        promotion = dict(
+            run_id=f"{capture_id}-{family}",
+            family=family,
             profile="recorded",
-            registry_digest=registry_digest(registry),
-            expected_cases={p[0]: [None] for p in prepared},
-            run_ids=runs,
+            case_id=None,
+            created_utc=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            raw_files={
+                name: write_raw_file(root / "work" / capture_id / family / name, [raw]),
+                **(
+                    {
+                        "agent-summary.json": write_raw_file(
+                            root / "work" / capture_id / family / "agent-summary.json",
+                            [canonical_json(agent_summary).encode()],
+                        )
+                    }
+                    if family == "agent-outcome"
+                    else {}
+                ),
+            },
+            payload=payload,
+            source=source,
+            build={
+                "toolchain": f"Python {platform.python_version()}",
+                "target_triple": f"{sys.platform}-{platform.machine()}",
+                "lockfile_digest": digest_bytes((repo / "uv.lock").read_bytes()),
+                "profile": "recorded-import",
+                "flags": [],
+                "binaries": [],
+            },
+            inputs=[
+                {
+                    "id": family,
+                    "availability": "present",
+                    "digest": digest_bytes(raw),
+                    "reason": None,
+                }
+            ],
+            host=host,
+            command={
+                "argv": ["benchctl", "import-recorded", family],
+                "cwd": str(repo),
+                "status": "completed",
+                "exit_code": 0,
+                "timeout_seconds": 1800,
+                "wall_ms": (time.monotonic_ns() - started) // 1_000_000,
+            },
+            boundary={
+                "clock": "recorded",
+                "instrumentation": "none",
+                "start_event": "recorded_import",
+                "end_event": "recorded_validation",
+            },
+            verdict={"scope": "diagnostic", "status": "pass", "reason": None, "metrics": []},
         )
+        runs.append(promotion)
+    return publish_capture(
+        root,
+        capture_id=capture_id,
+        profile="recorded",
+        registry_digest=registry_digest(registry),
+        expected_cases={p[0]: [None] for p in prepared},
+        runs=runs,
+        replay=replay_run,
+        verify_source=verify_source,
+    )
 
 
 def validate(repo: Path, root: Path, registry: dict) -> dict:

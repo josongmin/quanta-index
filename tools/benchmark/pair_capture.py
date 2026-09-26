@@ -11,6 +11,7 @@ import math
 import os
 import platform
 import socket
+import stat
 import sys
 import tempfile
 import uuid
@@ -21,6 +22,7 @@ from pathlib import Path, PurePosixPath
 from custody import custody
 from evidence import (
     EvidenceError,
+    RawFile,
     RunStore,
     _read_regular_file,
     _run_id,
@@ -28,10 +30,11 @@ from evidence import (
     digest_bytes,
     parse_json,
     validate_payload,
+    write_raw_file,
 )
-from evidence_bridge import host_identity, promote_native_run, source_identity
+from evidence_bridge import host_identity, source_identity
 from producer_execution import execute
-from profile_capture import _directories, commit_capture, load_capture
+from profile_capture import _directories, load_capture, publish_capture
 from registry import registry_digest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -387,7 +390,67 @@ def typed_payloads(native: Path, manifest: dict) -> dict[str, dict]:
     return result
 
 
+def _replay_tree_identity(root: Path) -> dict[str, tuple[int, str | None]]:
+    """Bind private replay bytes, modes and links, including the Git database."""
+    identity = {}
+    for path in (root, *sorted(root.rglob("*"))):
+        mode = path.lstat().st_mode
+        if stat.S_ISREG(mode):
+            content = digest_bytes(_read_regular_file(path))
+        elif stat.S_ISLNK(mode):
+            content = os.readlink(path)
+        elif stat.S_ISDIR(mode):
+            content = None
+        else:
+            raise EvidenceError("pair replay workspace contains a special file")
+        identity[path.relative_to(root).as_posix()] = (mode, content)
+    return identity
+
+
+class _ReplayWorkspace:
+    """One invocation's restored inputs, with no cached verdict or payload."""
+
+    def __enter__(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="quanta-pair-corpus-")
+        self.root = Path(self.temporary.name).resolve()
+        self.archives = None
+        self.identity = None
+        return self
+
+    def __exit__(self, *exc):
+        self.temporary.cleanup()
+
+    def restore(self, raw: Path) -> tuple[Path, Path]:
+        # Compare actual bytes on every run; digest/mtime metadata is not authority.
+        archives = (
+            _read_regular_file(raw / "corpus.bundle"),
+            _read_regular_file(raw / "native-tree.zip"),
+        )
+        corpus, native = self.root / "corpus", self.root / "native"
+        if self.archives is None:
+            bundle = self.root / "corpus.bundle"
+            bundle.write_bytes(archives[0])
+            restore_corpus(bundle, corpus)
+            unpack_native(archives[1], native)
+            self.archives = archives
+            self.identity = _replay_tree_identity(self.root)
+        elif archives != self.archives:
+            raise EvidenceError("pair profile raw corpus/native archives differ across cases")
+        self.verify_unchanged()
+        return corpus, native
+
+    def verify_unchanged(self) -> None:
+        if _replay_tree_identity(self.root) != self.identity:
+            raise EvidenceError("pair restored replay workspace changed during validation")
+
+
 def replay_run(store: RunStore, evidence: dict) -> list[str]:
+    # An independent CLI replay always reconstructs and derives its own inputs.
+    with _ReplayWorkspace() as workspace:
+        return _replay_run(store, evidence, workspace)
+
+
+def _replay_run(store: RunStore, evidence: dict, workspace: _ReplayWorkspace) -> list[str]:
     with custody(store.root):
         raw = store.run_dir(evidence["run_id"]) / "raw"
         origin = parse_json(_read_regular_file(raw / "capture-origin.json").decode())
@@ -441,7 +504,7 @@ def replay_run(store: RunStore, evidence: dict) -> list[str]:
         binaries = [
             {
                 "name": entry["name"],
-                "sha256": digest_bytes(_read_regular_file(raw / f"binary-{entry['name']}")),
+                "sha256": RawFile.capture(raw / f"binary-{entry['name']}").sha256,
             }
             for entry in origin["binaries"]
         ]
@@ -459,17 +522,14 @@ def replay_run(store: RunStore, evidence: dict) -> list[str]:
             "repo": str(execution_root / "corpus"),
         }:
             raise EvidenceError("pair frozen spec differs from the original capture inputs")
-        with tempfile.TemporaryDirectory(prefix="quanta-pair-corpus-") as scratch:
-            corpus = Path(scratch).resolve() / "corpus"
-            native = Path(scratch).resolve() / "native"
-            restore_corpus(raw / "corpus.bundle", corpus)
-            unpack_native(_read_regular_file(raw / "native-tree.zip"), native)
-            manifest, _verdict = derive(native, corpus)
-            bind_runtime(native, manifest, binaries, evidence["source"]["revision"])
-            inputs = bound_inputs(native, manifest, raw)
-            if evidence["inputs"] != inputs or inputs != origin["inputs"]:
-                raise EvidenceError("pair input inventory differs from capture origin")
-            payloads = typed_payloads(native, manifest)
+        corpus, native = workspace.restore(raw)
+        manifest, _verdict = derive(native, corpus)
+        bind_runtime(native, manifest, binaries, evidence["source"]["revision"])
+        inputs = bound_inputs(native, manifest, raw)
+        if evidence["inputs"] != inputs or inputs != origin["inputs"]:
+            raise EvidenceError("pair input inventory differs from capture origin")
+        payloads = typed_payloads(native, manifest)
+        workspace.verify_unchanged()
         if (
             evidence["case_id"] not in payloads
             or evidence["payload"] != payloads[evidence["case_id"]]
@@ -527,9 +587,8 @@ def capture(repo: Path, root: Path, registry: dict, spec_path: Path, timeout: in
         "semble_python": Path(spec["semble_python"]).resolve(),
     }
     for name, path in paths.items():
-        data = _read_regular_file(path)
-        binaries[name] = digest_bytes(data)
-        (work / f"binary-{name}").write_bytes(data)
+        frozen_binary = RawFile.capture(path).copy_to(work / f"binary-{name}")
+        binaries[name] = frozen_binary.sha256
     frozen = {
         **spec,
         **{role: str(work / f"input-{role}") for role in INPUT_ROLES},
@@ -568,26 +627,32 @@ def capture(repo: Path, root: Path, registry: dict, spec_path: Path, timeout: in
         env={**os.environ, **GIT_ENV},
         timeout=timeout,
     )
-    raw = {"native-tree.zip": pack_native(output)}
-    raw.update({path.name: _read_regular_file(path) for path in work.iterdir() if path.is_file()})
+    spool = work / "prepared"
+    raw = {"native-tree.zip": write_raw_file(spool / "native-tree.zip", [pack_native(output)])}
+    raw.update({path.name: RawFile.capture(path) for path in work.iterdir() if path.is_file()})
     binary_inventory = [{"name": name, "sha256": sha} for name, sha in sorted(binaries.items())]
     bind_runtime(output, manifest, binary_inventory, head)
     toolchain = f"Python {platform.python_version()}"
     raw.update(
         {
-            "producer.stdout": _stdout,
-            "producer.stderr": _stderr,
-            "capture-origin.json": canonical_json(
-                {
-                    "capture_id": capture_id,
-                    "producer": command,
-                    "owner_digests": owner_digests(),
-                    "binaries": binary_inventory,
-                    "toolchain": toolchain,
-                    "inputs": inventory,
-                    "native_root": str(work),
-                }
-            ).encode(),
+            "producer.stdout": write_raw_file(spool / "producer.stdout", [_stdout]),
+            "producer.stderr": write_raw_file(spool / "producer.stderr", [_stderr]),
+            "capture-origin.json": write_raw_file(
+                spool / "capture-origin.json",
+                [
+                    canonical_json(
+                        {
+                            "capture_id": capture_id,
+                            "producer": command,
+                            "owner_digests": owner_digests(),
+                            "binaries": binary_inventory,
+                            "toolchain": toolchain,
+                            "inputs": inventory,
+                            "native_root": str(work),
+                        }
+                    ).encode()
+                ],
+            ),
         }
     )
     cpu = os.cpu_count()
@@ -603,51 +668,47 @@ def capture(repo: Path, root: Path, registry: dict, spec_path: Path, timeout: in
         lease_samples=0,
     )
     require_frozen_source(repo, head)
-    with custody(root):
-        runs = []
-        for case, payload in payloads.items():
-            items = list(raw.items())
-            result = promote_native_run(
-                evidence_root=root,
-                run_id=capture_id + "-" + case,
-                family=FAMILY,
-                profile=PROFILE,
-                case_id=case,
-                created_utc=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                native_path=Path(items[0][0]),
-                native_bytes=items[0][1],
-                additional_native=[(Path(name), data) for name, data in items[1:]],
-                payload=payload,
-                source=source,
-                build={
-                    "toolchain": toolchain,
-                    "target_triple": f"{sys.platform}-{platform.machine()}",
-                    "lockfile_digest": digest_bytes(_read_regular_file(repo / "uv.lock")),
-                    "profile": "paired-native-diagnostic",
-                    "flags": [],
-                    "binaries": binary_inventory,
-                },
-                inputs=inventory,
-                host=host,
-                command=command,
-                boundary={
-                    "clock": "recorded",
-                    "instrumentation": "none",
-                    "start_event": "native_pair_start",
-                    "end_event": "native_pair_verdict",
-                },
-                verdict={"scope": "diagnostic", "status": "pass", "reason": None, "metrics": []},
-            )
-            runs.append(result["run_id"])
-            replay_run(RunStore(root), RunStore(root).load(result["run_id"]))
-        require_frozen_source(repo, head)
-        return commit_capture(
+    runs = []
+    for case, payload in payloads.items():
+        result = dict(
+            run_id=capture_id + "-" + case,
+            family=FAMILY,
+            profile=PROFILE,
+            case_id=case,
+            created_utc=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            raw_files=raw,
+            payload=payload,
+            source=source,
+            build={
+                "toolchain": toolchain,
+                "target_triple": f"{sys.platform}-{platform.machine()}",
+                "lockfile_digest": digest_bytes(_read_regular_file(repo / "uv.lock")),
+                "profile": "paired-native-diagnostic",
+                "flags": [],
+                "binaries": binary_inventory,
+            },
+            inputs=inventory,
+            host=host,
+            command=command,
+            boundary={
+                "clock": "recorded",
+                "instrumentation": "none",
+                "start_event": "native_pair_start",
+                "end_event": "native_pair_verdict",
+            },
+            verdict={"scope": "diagnostic", "status": "pass", "reason": None, "metrics": []},
+        )
+        runs.append(result)
+    with _ReplayWorkspace() as workspace:
+        return publish_capture(
             root,
             capture_id=capture_id,
             profile=PROFILE,
             registry_digest=registry_digest(registry),
             expected_cases={FAMILY: list(payloads)},
-            run_ids=runs,
+            runs=runs,
+            replay=lambda store, evidence: _replay_run(store, evidence, workspace),
+            verify_source=lambda: require_frozen_source(repo, head),
         )
 
 
@@ -656,17 +717,18 @@ def validate(repo: Path, root: Path, registry: dict) -> dict:
 
     require_clean_worktree(repo)
     require_registration(registry)
-    document = load_capture(root, profile=PROFILE, registry_digest=registry_digest(registry))
-    if document["source"] != source_identity(repo, "benchmark-retrieval"):
-        raise EvidenceError("pair capture source differs from the current owner")
-    store = RunStore(root)
-    for row in document["runs"]:
-        evidence = store.load(row["run_id"])
-        if not evidence["run_id"].startswith(document["capture_id"] + "-") or evidence["build"][
-            "lockfile_digest"
-        ] != digest_bytes(_read_regular_file(repo / "uv.lock")):
-            raise EvidenceError("pair profile mixes captures or stale lockfile")
-        expected = {FAMILY: replay_run(store, evidence)}
-        if document["expected_cases"] != expected:
-            raise EvidenceError("pair complete-profile case inventory differs from native rows")
-    return document
+    with custody(root), _ReplayWorkspace() as workspace:
+        document = load_capture(root, profile=PROFILE, registry_digest=registry_digest(registry))
+        if document["source"] != source_identity(repo, "benchmark-retrieval"):
+            raise EvidenceError("pair capture source differs from the current owner")
+        store = RunStore(root)
+        for row in document["runs"]:
+            evidence = store.load(row["run_id"])
+            if not evidence["run_id"].startswith(document["capture_id"] + "-") or evidence["build"][
+                "lockfile_digest"
+            ] != digest_bytes(_read_regular_file(repo / "uv.lock")):
+                raise EvidenceError("pair profile mixes captures or stale lockfile")
+            expected = {FAMILY: _replay_run(store, evidence, workspace)}
+            if document["expected_cases"] != expected:
+                raise EvidenceError("pair complete-profile case inventory differs from native rows")
+        return document

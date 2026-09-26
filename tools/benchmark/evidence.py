@@ -32,14 +32,19 @@ import os
 import re
 import stat
 import sys
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO, TypeVar
 
 PROTOCOL = "BenchmarkEvidenceV1"
 PROTOCOL_VERSION = 1
 DIGEST_PREFIX = "sha256:"
 EVIDENCE_FILE = "evidence.json"
 RAW_DIR = "raw"
+IO_CHUNK_BYTES = 64 * 1024
+CONTROL_DOCUMENT_BYTES = 16 * 1024 * 1024
+_Consumed = TypeVar("_Consumed")
 
 HOST_POLICIES = frozenset({"any", "local-diagnostic", "canonical-linux"})
 SCOPES = frozenset({"diagnostic", "contract", "quality", "performance"})
@@ -829,7 +834,7 @@ def open_evidence(text: str) -> dict[str, Any]:
 
 def read_evidence(path: Path) -> dict[str, Any]:
     try:
-        return open_evidence(_read_regular_file(path).decode("utf-8"))
+        return open_evidence(_read_control_file(path).decode("utf-8"))
     except (OSError, UnicodeError) as exc:
         raise EvidenceError(f"cannot read evidence {path}: {exc}") from exc
 
@@ -844,16 +849,18 @@ def to_canonical_json(evidence: dict[str, Any]) -> str:
 # --------------------------------------------------------------------------
 
 
-def _read_regular_file(path: Path) -> bytes:
+def _consume_regular_file(path: Path, consume: Callable[[BinaryIO], _Consumed]) -> _Consumed:
+    """Consume a pinned file completely, retaining namespace and epoch custody."""
     try:
-        from tools.ci.lint.handoff_validation import _read_repo_regular_bytes
+        from tools.ci.lint.handoff_validation import _consume_repo_regular_file
     except ModuleNotFoundError:  # standalone evidence CLI
         sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-        from tools.ci.lint.handoff_validation import _read_repo_regular_bytes
+        from tools.ci.lint.handoff_validation import _consume_repo_regular_file
 
     path = path.absolute()
     if ".." in path.parts:
         raise EvidenceError(f"noncanonical evidence path: {path}")
+
     # Bind aliases/ancestors as well as the leaf. Directory timestamps are not
     # stable identities: unrelated siblings may legitimately be published.
     def identity() -> list[tuple]:
@@ -865,24 +872,168 @@ def _read_regular_file(path: Path) -> bytes:
             if prefix == path:
                 if not stat.S_ISREG(info.st_mode):
                     raise EvidenceError(f"not a regular file: {path}")
-                entries.append((info.st_dev, info.st_ino, info.st_mode, info.st_size,
-                                info.st_mtime_ns, info.st_ctime_ns))
+                entries.append(file_epoch(info))
             else:
                 if not stat.S_ISDIR(info.st_mode):
                     raise EvidenceError(f"not an evidence directory: {prefix}")
                 entries.append((info.st_dev, info.st_ino, info.st_mode))
         return entries
 
+    def file_epoch(info: os.stat_result) -> tuple:
+        return (
+            info.st_dev,
+            info.st_ino,
+            info.st_mode,
+            info.st_nlink,
+            info.st_size,
+            info.st_mtime_ns,
+            info.st_ctime_ns,
+        )
+
+    def consume_pinned(handle: BinaryIO) -> _Consumed:
+        # A before/after pathname check alone misses open-then-restore races.
+        if file_epoch(os.fstat(handle.fileno())) != before[-1]:
+            raise EvidenceError(f"evidence changed before descriptor consumption: {path}")
+        result = consume(handle)
+        if file_epoch(os.fstat(handle.fileno())) != before[-1]:
+            raise EvidenceError(f"evidence changed during descriptor consumption: {path}")
+        return result
+
     try:
         before = identity()
         root = Path(path.anchor)
-        raw = _read_repo_regular_bytes(root, path.relative_to(root).as_posix(),
-                                       label="benchmark evidence")
+        raw = _consume_repo_regular_file(
+            root,
+            path.relative_to(root).as_posix(),
+            label="benchmark evidence",
+            consume=consume_pinned,
+        )
         if identity() != before:
             raise EvidenceError(f"evidence changed while being read: {path}")
         return raw
     except (OSError, ValueError) as error:
         raise EvidenceError(f"unsafe benchmark evidence {path}: {error}") from error
+
+
+def _read_regular_file(path: Path) -> bytes:
+    """Materialize raw bytes; large-payload callers must migrate to streaming."""
+    return _consume_regular_file(path, lambda handle: handle.read())
+
+
+def _read_control_file(path: Path) -> bytes:
+    """Materialize only bounded control JSON, never arbitrary raw payloads."""
+
+    def read(handle: BinaryIO) -> bytes:
+        _check_control_size(os.fstat(handle.fileno()).st_size, path)
+        parts, count = [], 0
+        while block := handle.read(IO_CHUNK_BYTES):
+            count += len(block)
+            _check_control_size(count, path)
+            parts.append(block)
+        return b"".join(parts)
+
+    return _consume_regular_file(path, read)
+
+
+def _check_control_size(size: int, path: Path) -> None:
+    if size > CONTROL_DOCUMENT_BYTES:
+        raise EvidenceError(f"control document exceeds {CONTROL_DOCUMENT_BYTES}-byte limit: {path}")
+
+
+def file_digest(path: Path) -> tuple[str, int]:
+    """Hash the exact complete pinned bytes with payload-independent buffers."""
+
+    def consume(handle: BinaryIO) -> tuple[str, int]:
+        digest, count = hashlib.sha256(), 0
+        while block := handle.read(IO_CHUNK_BYTES):
+            digest.update(block)
+            count += len(block)
+        return DIGEST_PREFIX + digest.hexdigest(), count
+
+    return _consume_regular_file(path, consume)
+
+
+@dataclass(frozen=True)
+class RawFile:
+    """A file-backed byte commitment, revalidated when consumed or copied."""
+
+    path: Path
+    sha256: str
+    size: int
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.path, Path)
+            or not self.path.is_absolute()
+            or ".." in self.path.parts
+        ):
+            raise EvidenceError("raw file reference needs a canonical absolute path")
+        if not isinstance(self.sha256, str) or DIGEST_RE.fullmatch(self.sha256) is None:
+            raise EvidenceError("raw file reference needs a SHA-256 commitment")
+        if type(self.size) is not int or self.size < 0:
+            raise EvidenceError("raw file reference needs a nonnegative integer size")
+
+    @classmethod
+    def capture(cls, path: Path) -> RawFile:
+        if not isinstance(path, Path):
+            raise EvidenceError("raw file capture needs a Path")
+        path = path.absolute()
+        digest, size = file_digest(path)
+        return cls(path, digest, size)
+
+    def copy_to(self, target: Path) -> RawFile:
+        def copy(handle: BinaryIO) -> RawFile:
+            return write_raw_file(target, iter(lambda: handle.read(IO_CHUNK_BYTES), b""))
+
+        copied = _consume_regular_file(self.path, copy)
+        if (copied.sha256, copied.size) != (self.sha256, self.size):
+            raise EvidenceError("copied raw bytes differ from the prepared file commitment")
+        return copied
+
+
+def write_raw_file(path: Path, blocks: Iterable[bytes | bytearray | memoryview]) -> RawFile:
+    """Exclusively spool an owned raw stream, retaining partial output on failure."""
+    absolute, parent_fd = _open_output_parent(path)
+    digest, count = hashlib.sha256(), 0
+    try:
+        fd = os.open(
+            absolute.name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=parent_fd,
+        )
+        with os.fdopen(fd, "wb") as handle:
+            for block in blocks:
+                if not isinstance(block, (bytes, bytearray, memoryview)):
+                    raise EvidenceError("raw stream yielded a non-byte block")
+                try:
+                    view = memoryview(block).cast("B")
+                except (TypeError, ValueError) as error:
+                    raise EvidenceError("raw stream needs contiguous byte blocks") from error
+                for start in range(0, len(view), IO_CHUNK_BYTES):
+                    chunk = view[start : start + IO_CHUNK_BYTES]
+                    if handle.write(chunk) != len(chunk):
+                        raise EvidenceError("short raw output write")
+                    digest.update(chunk)
+                    count += len(chunk)
+            handle.flush()
+            os.fsync(handle.fileno())
+            written = os.fstat(handle.fileno())
+            if (
+                not stat.S_ISREG(written.st_mode)
+                or written.st_nlink != 1
+                or written.st_size != count
+            ):
+                raise EvidenceError("raw output identity or size changed during write")
+        os.fsync(parent_fd)
+    except OSError as error:
+        raise EvidenceError(f"unsafe or incomplete raw output {path}: {error}") from error
+    finally:
+        os.close(parent_fd)
+    result = RawFile(absolute, DIGEST_PREFIX + digest.hexdigest(), count)
+    if file_digest(absolute) != (result.sha256, result.size):
+        raise EvidenceError(f"raw output changed before verification: {path}")
+    return result
 
 
 def _entry_present_no_follow(path: Path) -> bool:
@@ -910,7 +1061,9 @@ def _open_output_parent(path: Path) -> tuple[Path, int]:
     try:
         directory_fd = os.open(absolute.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     except OSError as error:
-        raise EvidenceError(f"refusing symlink or unsafe benchmark output path {path}: {error}") from error
+        raise EvidenceError(
+            f"refusing symlink or unsafe benchmark output path {path}: {error}"
+        ) from error
     try:
         for part in absolute.parts[1:-1]:
             try:
@@ -925,12 +1078,15 @@ def _open_output_parent(path: Path) -> tuple[Path, int]:
         return absolute, directory_fd
     except OSError as error:
         os.close(directory_fd)
-        raise EvidenceError(f"refusing symlink or unsafe benchmark output path {path}: {error}") from error
+        raise EvidenceError(
+            f"refusing symlink or unsafe benchmark output path {path}: {error}"
+        ) from error
 
 
 def _write_atomic(path: Path, data: bytes) -> None:
     import secrets
 
+    _check_control_size(len(data), path)
     absolute, directory_fd = _open_output_parent(path)
     temporary = f".{absolute.name}.{secrets.token_hex(16)}.tmp"
     try:
@@ -947,7 +1103,9 @@ def _write_atomic(path: Path, data: bytes) -> None:
         os.replace(temporary, absolute.name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
         os.fsync(directory_fd)
     except OSError as error:
-        raise EvidenceError(f"refusing symlink or unsafe benchmark output path {path}: {error}") from error
+        raise EvidenceError(
+            f"refusing symlink or unsafe benchmark output path {path}: {error}"
+        ) from error
     finally:
         try:
             os.unlink(temporary, dir_fd=directory_fd)
@@ -1041,7 +1199,7 @@ class RunStore:
     def read_latest(self) -> dict[str, Any] | None:
         if not _entry_present_no_follow(self.latest_path):
             return None
-        payload = json.loads(_read_regular_file(self.latest_path).decode("utf-8"))
+        payload = json.loads(_read_control_file(self.latest_path).decode("utf-8"))
         if not isinstance(payload, dict):
             raise EvidenceError("latest pointer must be an object")
         return payload
@@ -1083,7 +1241,7 @@ class RunStore:
         path = self.baselines_dir / f"{family}.json"
         if not _entry_present_no_follow(path):
             return None
-        payload = json.loads(_read_regular_file(path).decode("utf-8"))
+        payload = json.loads(_read_control_file(path).decode("utf-8"))
         if not isinstance(payload, dict):
             raise EvidenceError("baseline record must be an object")
         return payload
@@ -1109,7 +1267,7 @@ class RunStore:
             if not captures.is_dir():
                 raise EvidenceError("capture path is not a directory")
             for path in sorted(captures.iterdir()):
-                document = parse_json(_read_regular_file(path).decode())
+                document = parse_json(_read_control_file(path).decode())
                 if not isinstance(document, dict):
                     raise EvidenceError("capture record is malformed")
                 capture = load_capture(
@@ -1123,7 +1281,7 @@ class RunStore:
                 retained.update(record["run_id"] for record in capture["runs"])
         if self.baselines_dir.is_dir():
             for path in sorted(self.baselines_dir.glob("*.json")):
-                record = json.loads(_read_regular_file(path).decode("utf-8"))
+                record = json.loads(_read_control_file(path).decode("utf-8"))
                 if not isinstance(record, dict) or not isinstance(record.get("run_id"), str):
                     raise EvidenceError(f"malformed baseline record: {path}")
                 retained.add(record["run_id"])
@@ -1144,13 +1302,12 @@ class RunStore:
                 raise EvidenceError(f"raw reference {reference['path']!r} is a symlink")
             if not path.is_file():
                 raise EvidenceError(f"referenced raw file {reference['path']!r} is missing")
-            data = _read_regular_file(path)
-            if len(data) != reference["bytes"]:
+            computed, size = file_digest(path)
+            if size != reference["bytes"]:
                 raise EvidenceError(
                     f"raw file {reference['path']!r} length mismatch: "
-                    f"declared {reference['bytes']}, actual {len(data)}"
+                    f"declared {reference['bytes']}, actual {size}"
                 )
-            computed = digest_bytes(data)
             if computed != reference["sha256"]:
                 raise EvidenceError(
                     f"raw file {reference['path']!r} digest mismatch: "
@@ -1178,27 +1335,20 @@ class StagingRun:
         self.run_id = run_id
         self.path = path
 
-    def write_raw(self, relative: str, data: bytes) -> dict[str, Any]:
+    def write_raw(self, relative: str, source: RawFile) -> dict[str, Any]:
         _relative_path(relative, "raw path")
+        if (
+            "\x00" in relative
+            or relative != f"raw/{Path(relative).name}"
+            or Path(relative).name in {"", ".", ".."}
+        ):
+            raise EvidenceError("staged raw path must be a canonical flat raw filename")
         target = self.path / relative
-        absolute, directory_fd = _open_output_parent(target)
-        try:
-            descriptor = os.open(
-                absolute.name,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                0o644,
-                dir_fd=directory_fd,
-            )
-            with os.fdopen(descriptor, "wb") as handle:
-                handle.write(data)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.fsync(directory_fd)
-        except OSError as error:
-            raise EvidenceError(f"refusing unsafe staged raw output {relative}: {error}") from error
-        finally:
-            os.close(directory_fd)
-        return {"path": relative, "sha256": digest_bytes(data), "bytes": len(data)}
+        if not isinstance(source, RawFile):
+            raise EvidenceError("staged raw input must be a file-backed commitment")
+
+        copied = source.copy_to(target)
+        return {"path": relative, "sha256": copied.sha256, "bytes": copied.size}
 
     def write_evidence(self, evidence: dict[str, Any]) -> None:
         if evidence.get("run_id") != self.run_id:
@@ -1208,7 +1358,21 @@ class StagingRun:
         _write_atomic(self.path / EVIDENCE_FILE, to_canonical_json(evidence).encode("utf-8"))
 
     def read_evidence(self) -> dict[str, Any]:
+        if _entry_present_no_follow(self.path / "failure.json"):
+            raise EvidenceError("failed staging epoch cannot be promoted")
         return read_evidence(self.path / EVIDENCE_FILE)
+
+    def mark_failed(self, error: BaseException) -> None:
+        _write_atomic(
+            self.path / "failure.json",
+            canonical_json(
+                {
+                    "run_id": self.run_id,
+                    "status": "failed",
+                    "error_type": type(error).__name__,
+                }
+            ).encode(),
+        )
 
     def abort(self) -> None:
         _remove_dir(self.path)

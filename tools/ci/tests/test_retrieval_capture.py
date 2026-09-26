@@ -37,7 +37,8 @@ def test_registration_requires_current_execution_context_version(rail):
     capture.require_registered_owner(entry, producer, rail)
     with pytest.raises(EvidenceError, match="registration"):
         capture.require_registered_owner(
-            {**entry, "native_schema": "retrieval-execution-context:v1"}, producer, rail)
+            {**entry, "native_schema": "retrieval-execution-context:v1"}, producer, rail
+        )
 
 
 def fixture(tmp_path, rail="contract"):
@@ -199,9 +200,10 @@ def test_common_custody_replays_owner_raw_and_rejects_tampering(fake_execution, 
         profile=capture.PROFILE,
         case_id=None,
         created_utc=template["created_utc"],
-        native_path=Path(items[0][0]),
-        native_bytes=items[0][1],
-        additional_native=[(Path(n), b) for n, b in items[1:]],
+        raw_files={
+            name: capture.write_raw_file(root / "work" / rail / name, [data])
+            for name, data in items
+        },
         payload=payload,
         source=source,
         build=build,

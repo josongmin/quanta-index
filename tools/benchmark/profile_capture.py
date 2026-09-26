@@ -8,13 +8,16 @@ partial family/case output never replaces the previous complete capture.
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
+from copy import deepcopy
 from pathlib import Path
 
 from custody import publication
 from evidence import (
     EvidenceError,
     RunStore,
-    _read_regular_file,
+    _check_control_size,
+    _read_control_file,
     _run_id,
     _sync_dir,
     _write_atomic,
@@ -34,6 +37,71 @@ def _directories(root: Path) -> None:
     for path in root.absolute().parents:
         if path.is_symlink():
             raise EvidenceError(f"capture ancestor is a symlink: {path}")
+
+
+@publication
+def publish_capture(
+    root: Path,
+    *,
+    capture_id: str,
+    profile: str,
+    registry_digest: str,
+    expected_cases: dict[str, list[str | None]],
+    runs: list[dict],
+    replay: Callable[[RunStore, dict], object],
+    verify_source: Callable[[], None],
+) -> dict:
+    """Publish prepared runs and their complete profile under one GC custody.
+
+    Producers must have completed before entry. Domain replay and source checks
+    remain caller-owned; no profile pointer changes until every run passes them.
+    Failed epochs may leave immutable unreferenced runs for explicit collection.
+    """
+    from evidence_bridge import promote_native_run
+
+    _run_id(capture_id)
+    _run_id(profile)
+    if not isinstance(runs, list) or not runs:
+        raise EvidenceError("publication needs a nonempty prepared run list")
+    prepared, expected = deepcopy(runs), deepcopy(expected_cases)
+    actual, ids, source = {}, set(), None
+    for run in prepared:
+        if not isinstance(run, dict) or "evidence_root" in run or run.get("profile") != profile:
+            raise EvidenceError("prepared run has wrong publication root or profile")
+        run_id = _run_id(run.get("run_id"))
+        family = _run_id(run.get("family"))
+        if run_id in ids:
+            raise EvidenceError("publication repeats a prepared run ID")
+        ids.add(run_id)
+        actual.setdefault(family, []).append(run.get("case_id"))
+        if not isinstance(run.get("source"), dict):
+            raise EvidenceError("prepared run has no source identity")
+        if source is None:
+            source = run["source"]
+        elif source != run["source"]:
+            raise EvidenceError("publication mixes prepared source identities")
+    _check_cases(actual, expected)
+    target = root / "captures" / f"{capture_id}.json"
+    if target.exists() or target.is_symlink():
+        raise EvidenceError("capture ID already exists")
+    # Establish Rust-collector exclusion BEFORE materializing any immutable run.
+    (root / "captures").mkdir(exist_ok=True)
+    store, promoted = RunStore(root), []
+    for run in prepared:
+        verify_source()
+        result = promote_native_run(evidence_root=root, **run)
+        record = store.load(result["run_id"])
+        replay(store, record)
+        promoted.append(record["run_id"])
+    verify_source()
+    return commit_capture(
+        root,
+        capture_id=capture_id,
+        profile=profile,
+        registry_digest=registry_digest,
+        expected_cases=expected,
+        run_ids=promoted,
+    )
 
 
 @publication
@@ -88,12 +156,15 @@ def commit_capture(
     }
     document = {**body, "digest": digest_bytes(canonical_json(body).encode())}
     target = root / "captures" / f"{capture_id}.json"
+    encoded = canonical_json(document).encode()
+    # Refuse before leaving an unreadable immutable reference that poisons GC.
+    _check_control_size(len(encoded), target)
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists() or target.is_symlink():
         raise EvidenceError("capture ID already exists")
     # Exclusive creation: two writers must not overwrite an immutable capture.
     with target.open("xb") as handle:
-        handle.write(canonical_json(document).encode())
+        handle.write(encoded)
         handle.flush()
         os.fsync(handle.fileno())
     _sync_dir(target.parent)
@@ -136,12 +207,12 @@ def load_capture(
     _directories(root)
     pointer = None
     if capture_id is None:
-        pointer = parse_json(_read_regular_file(root / "profiles" / f"{profile}.json").decode())
+        pointer = parse_json(_read_control_file(root / "profiles" / f"{profile}.json").decode())
         if not isinstance(pointer, dict) or set(pointer) != {"capture_id", "digest"}:
             raise EvidenceError("profile pointer is malformed")
         capture_id = pointer["capture_id"]
     _run_id(capture_id)
-    document = parse_json(_read_regular_file(root / "captures" / f"{capture_id}.json").decode())
+    document = parse_json(_read_control_file(root / "captures" / f"{capture_id}.json").decode())
     keys = {
         "schema_version",
         "capture_id",

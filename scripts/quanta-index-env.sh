@@ -47,6 +47,15 @@ export QUANTA_INDEX_STATE_ROOT="${QUANTA_INDEX_STATE_ROOT:-$_QUANTA_INDEX_CACHE_
 export PYTEST_CACHE_DIR="${PYTEST_CACHE_DIR:-$_QUANTA_INDEX_CACHE_ROOT/pytest}"
 export RUFF_CACHE_DIR="${RUFF_CACHE_DIR:-$_QUANTA_INDEX_CACHE_ROOT/ruff}"
 
+# Local agents may compile in several independent checkout/lane caches. Bound
+# each Cargo invocation instead of letting every one occupy all host CPUs.
+# Explicit CARGO_BUILD_JOBS (including invalid values for Cargo to reject) and
+# CLI --jobs retain their usual authority. CI owns its runner resource budget.
+# This is a per-invocation default, not a host-wide concurrency semaphore.
+if [[ "${CI:-}" != "true" && -z "${CARGO_BUILD_JOBS+x}" ]]; then
+  export CARGO_BUILD_JOBS=4
+fi
+
 # Reuse non-incremental dependency compilation after a lane is cleaned or its
 # target directory is recreated. Workspace crates keep Cargo's incremental
 # profile and remain non-cacheable. A repo-specific server port avoids attaching

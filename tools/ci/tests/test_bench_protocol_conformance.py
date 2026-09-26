@@ -8,10 +8,13 @@ bytes and refuses the same malformed documents, using the committed fixtures in
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
+import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 import pytest
@@ -77,7 +80,7 @@ def test_regular_evidence_refuses_mutation_during_read(tmp_path, monkeypatch, mu
     path.write_bytes(b"original")
     from tools.ci.lint import handoff_validation
 
-    original = handoff_validation._read_repo_regular_bytes
+    original = handoff_validation._consume_repo_regular_file
 
     def race(*args, **kwargs):
         raw = original(*args, **kwargs)
@@ -94,7 +97,7 @@ def test_regular_evidence_refuses_mutation_during_read(tmp_path, monkeypatch, mu
             os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
         return raw
 
-    monkeypatch.setattr(handoff_validation, "_read_repo_regular_bytes", race)
+    monkeypatch.setattr(handoff_validation, "_consume_repo_regular_file", race)
     with pytest.raises(module.EvidenceError, match="changed"):
         module._read_regular_file(path)
 
@@ -349,11 +352,384 @@ def test_typed_payload_confusion_is_refused(payload, match: str) -> None:
 # --------------------------------------------------------------------------
 
 
+def _source(module, staged, data):
+    return module.write_raw_file(staged.path.parent.parent / "work" / uuid.uuid4().hex, [data])
+
+
 def _promote(module, store, evidence) -> dict:
     staged = store.stage(evidence["run_id"])
-    staged.write_raw("raw/warm-matrix.json", module.SAMPLE_RAW)
+    staged.write_raw("raw/warm-matrix.json", _source(module, staged, module.SAMPLE_RAW))
     staged.write_evidence(evidence)
     return store.promote(staged)
+
+
+@pytest.mark.parametrize("operation", ["store", "staging", "prefixed", "hex"])
+def test_run_store_verifies_raw_with_bounded_reads(tmp_path, monkeypatch, operation):
+    module = _load_evidence_module()
+    from tools.ci.lint import handoff_validation
+
+    store = module.RunStore(tmp_path / "store")
+    data = b"0123456789abcdef" * 131073
+    record = module.sample_evidence()
+    staged = store.stage(record["run_id"])
+    record["raw"] = [staged.write_raw("raw/payload.bin", _source(module, staged, data))]
+    sealed = module.seal(record)
+    staged.write_evidence(sealed)
+    store.promote(staged)
+    consume_file = handoff_validation._consume_repo_regular_file
+    reads = []
+
+    class BoundedReader:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def __getattr__(self, name):
+            return getattr(self.handle, name)
+
+        def read(self, size=-1):
+            assert 0 < size <= 65536, f"unbounded raw read: {size}"
+            reads.append(size)
+            return self.handle.read(size)
+
+    def enforce(root, value, *, label, consume):
+        return consume_file(
+            root,
+            value,
+            label=label,
+            consume=lambda handle: (
+                consume(BoundedReader(handle)) if value.endswith("payload.bin") else consume(handle)
+            ),
+        )
+
+    monkeypatch.setattr(handoff_validation, "_consume_repo_regular_file", enforce)
+    expected = hashlib.sha256(data).hexdigest()
+    if operation == "staging":
+        source = module.RawFile.capture(store.run_dir(record["run_id"]) / "raw/payload.bin")
+        copied = store.stage("bounded-copy").write_raw("raw/payload.bin", source)
+        assert copied == {
+            "path": "raw/payload.bin",
+            "bytes": len(data),
+            "sha256": "sha256:" + expected,
+        }
+    elif operation == "store":
+        loaded = store.load(record["run_id"])
+        assert loaded["raw"] == [
+            {
+                "path": "raw/payload.bin",
+                "bytes": len(data),
+                "sha256": "sha256:" + expected,
+            }
+        ]
+    else:
+        import evidence_bridge
+
+        path = store.run_dir(record["run_id"]) / "raw/payload.bin"
+        actual = (
+            evidence_bridge.sha256_file(path)
+            if operation == "prefixed"
+            else evidence_bridge.sha256_hex_file(path)
+        )
+        assert actual == ("sha256:" + expected if operation == "prefixed" else expected)
+    assert len(reads) > 1
+
+
+def test_oversize_evidence_is_refused_before_json_decode(tmp_path, monkeypatch):
+    module = _load_evidence_module()
+    path = tmp_path / "evidence.json"
+    with path.open("wb") as handle:
+        handle.write(b"{}")
+        handle.seek(16 * 1024 * 1024)
+        handle.write(b" ")
+
+    def forbidden(_text):
+        pytest.fail("oversize control document reached the decoder")
+
+    monkeypatch.setattr(module, "open_evidence", forbidden)
+    with pytest.raises(module.EvidenceError, match="control document.*limit"):
+        module.read_evidence(path)
+
+
+@pytest.mark.parametrize("size", [0, 1, 65535, 65536, 65537, 196619])
+def test_file_digest_exact_count_and_hash(tmp_path, size):
+    module = _load_evidence_module()
+    path = tmp_path / "raw"
+    data = (bytes(range(256)) * (size // 256 + 1))[:size]
+    path.write_bytes(data)
+    assert module.file_digest(path) == ("sha256:" + hashlib.sha256(data).hexdigest(), size)
+
+
+@pytest.mark.parametrize("reader", ["raw", "control", "digest"])
+@pytest.mark.parametrize(
+    "mutation", ["replace", "grow", "truncate", "restore", "parent", "hardlink"]
+)
+def test_file_consumers_share_epoch_and_namespace_refusals(tmp_path, monkeypatch, reader, mutation):
+    module = _load_evidence_module()
+    from tools.ci.lint import handoff_validation
+
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    path = parent / "payload"
+    data = b"original"
+    path.write_bytes(data)
+    original = handoff_validation._consume_repo_regular_file
+
+    def race(root, value, *, label, consume):
+        def mutate(handle):
+            result = consume(handle)
+            before = path.stat()
+            if mutation == "replace":
+                other = parent / "replacement"
+                other.write_bytes(data)
+                other.replace(path)
+            elif mutation == "grow":
+                path.write_bytes(data + b"extra")
+            elif mutation == "truncate":
+                path.write_bytes(b"")
+            elif mutation == "restore":
+                path.write_bytes(b"tampered")
+                path.write_bytes(data)
+                os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+            elif mutation == "parent":
+                parent.rename(tmp_path / "old-parent")
+                parent.mkdir()
+                path.write_bytes(data)
+            else:
+                other = tmp_path / "same-bytes"
+                other.write_bytes(data)
+                path.unlink()
+                os.link(other, path)
+            return result
+
+        return original(root, value, label=label, consume=mutate)
+
+    monkeypatch.setattr(handoff_validation, "_consume_repo_regular_file", race)
+    operation = {
+        "raw": module._read_regular_file,
+        "control": module._read_control_file,
+        "digest": module.file_digest,
+    }[reader]
+    with pytest.raises(module.EvidenceError, match="changed"):
+        operation(path)
+
+
+def test_consumer_binds_the_open_descriptor_to_the_prechecked_file(tmp_path, monkeypatch):
+    module = _load_evidence_module()
+    from tools.ci.lint import handoff_validation
+
+    path, other = tmp_path / "original", tmp_path / "other"
+    path.write_bytes(b"same-bytes")
+    other.write_bytes(b"same-bytes")
+    original = handoff_validation._consume_repo_regular_file
+
+    def substituted(root, value, *, label, consume):
+        # Models opening a replaced inode then restoring the original pathname.
+        return original(root, other.relative_to(root).as_posix(), label=label, consume=consume)
+
+    monkeypatch.setattr(handoff_validation, "_consume_repo_regular_file", substituted)
+    with pytest.raises(module.EvidenceError, match="before descriptor"):
+        module.file_digest(path)
+
+
+@pytest.mark.parametrize("size", [255, 256, 257])
+def test_control_document_limit_is_inclusive(tmp_path, monkeypatch, size):
+    module = _load_evidence_module()
+    monkeypatch.setattr(module, "CONTROL_DOCUMENT_BYTES", 256)
+    path = tmp_path / "control.json"
+    path.write_bytes(b" " * size)
+    if size > 256:
+        with pytest.raises(module.EvidenceError, match="control document.*limit"):
+            module._read_control_file(path)
+    else:
+        assert module._read_control_file(path) == b" " * size
+
+
+def test_oversize_control_write_does_not_replace_prior_document(tmp_path, monkeypatch):
+    module = _load_evidence_module()
+    path = tmp_path / "control.json"
+    path.write_bytes(b"old")
+    monkeypatch.setattr(module, "CONTROL_DOCUMENT_BYTES", 256)
+    with pytest.raises(module.EvidenceError, match="control document.*limit"):
+        module._write_atomic(path, b" " * 257)
+    assert path.read_bytes() == b"old"
+    assert list(tmp_path.iterdir()) == [path]
+
+
+@pytest.mark.parametrize("kind", ["latest", "baseline", "capture-gc", "baseline-gc"])
+def test_oversize_custody_document_cannot_authorize_deletion(tmp_path, monkeypatch, kind):
+    module = _load_evidence_module()
+    store = module.RunStore(tmp_path / "store")
+    sealed = module.seal(module.sample_evidence())
+    _promote(module, store, sealed)
+    monkeypatch.setattr(module, "CONTROL_DOCUMENT_BYTES", 256)
+    paths = {
+        "latest": store.latest_path,
+        "baseline": store.baselines_dir / "family.json",
+        "capture-gc": store.root / "captures" / "capture.json",
+        "baseline-gc": store.baselines_dir / "family.json",
+    }
+    path = paths[kind]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b" " * 257)
+    with pytest.raises(module.EvidenceError, match="control document.*limit"):
+        if kind == "latest":
+            store.read_latest()
+        elif kind == "baseline":
+            store.read_baseline("family")
+        else:
+            store.collect([])
+    assert store.run_dir(sealed["run_id"]).is_dir()
+
+
+@pytest.mark.parametrize("operation", ["digest", "staging"])
+def test_streamed_raw_digest_peak_rss_does_not_scale_with_payload(
+    tmp_path, record_property, operation
+):
+    """Fresh process measurements complement the deterministic read-size oracle."""
+    script = """
+import json, resource, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from evidence import file_digest, RawFile, RunStore
+path = Path(sys.argv[2])
+if sys.argv[3] == 'staging':
+    store = RunStore(path.parent / ('store-' + path.name))
+    result = store.stage('copy').write_raw('raw/input.bin', RawFile.capture(path))
+    digest, count = result['sha256'], result['bytes']
+else:
+    digest, count = file_digest(path)
+peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+if sys.platform != 'darwin':
+    peak *= 1024
+print(json.dumps(dict(digest=digest, count=count, peak_bytes=peak)))
+"""
+    measurements = []
+    # Sparse zero files avoid reserving a large disk extent. The reader still
+    # consumes every logical byte; resource counts are child-process RSS only.
+    for size in (8 * 1024 * 1024, 128 * 1024 * 1024):
+        path = tmp_path / f"raw-{size}"
+        with path.open("wb") as handle:
+            handle.truncate(size)
+        completed = subprocess.run(
+            [sys.executable, "-I", "-c", script, str(EVIDENCE_PATH.parent), str(path), operation],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=60,
+        )
+        result = json.loads(completed.stdout)
+        expected = hashlib.sha256()
+        for _ in range(size // 65536):
+            expected.update(bytes(65536))
+        assert result["digest"] == "sha256:" + expected.hexdigest()
+        assert result["count"] == size
+        assert result["peak_bytes"] > 0
+        measurements.append(result)
+        record_property(f"{operation}_{size}_peak_bytes", result["peak_bytes"])
+    # A 120 MiB payload increase must not allocate another payload-sized buffer.
+    # Leave 32 MiB for process/allocator variance; this is not host performance
+    # admission or a bound for archive packing or the remaining bytes readers.
+    assert measurements[1]["peak_bytes"] - measurements[0]["peak_bytes"] < 32 * 1024 * 1024
+
+
+@pytest.mark.parametrize("mutation", ["sha", "size", "growth", "same-size", "symlink"])
+def test_streamed_staging_revalidates_prepared_commitment(tmp_path, mutation):
+    module = _load_evidence_module()
+    source = module.write_raw_file(tmp_path / "source", [b"original"])
+    if mutation == "sha":
+        source = module.RawFile(source.path, "sha256:" + "a" * 64, source.size)
+    elif mutation == "size":
+        source = module.RawFile(source.path, source.sha256, source.size + 1)
+    elif mutation == "growth":
+        source.path.write_bytes(b"original-extended")
+    elif mutation == "same-size":
+        source.path.write_bytes(b"modified")
+    else:
+        other = tmp_path / "replacement"
+        source.path.rename(other)
+        source.path.symlink_to(other)
+    store = module.RunStore(tmp_path / "store")
+    staged = store.stage("refused")
+    with pytest.raises(module.EvidenceError):
+        staged.write_raw("raw/input.bin", source)
+    assert not store.run_dir("refused").exists()
+    assert store.read_latest() is None
+
+
+@pytest.mark.parametrize("failure", ["disk-full", "interrupt", "invalid-block"])
+def test_raw_spool_retains_partial_output_without_issuing_a_reference(tmp_path, failure):
+    module = _load_evidence_module()
+
+    def stream():
+        yield b"first block"
+        if failure == "disk-full":
+            raise OSError(28, "No space left on device")
+        if failure == "interrupt":
+            raise KeyboardInterrupt("cancel raw spool")
+        yield "not bytes"
+
+    expected = KeyboardInterrupt if failure == "interrupt" else module.EvidenceError
+    with pytest.raises(expected):
+        module.write_raw_file(tmp_path / "partial", stream())
+    assert (tmp_path / "partial").read_bytes() == b"first block"
+
+
+def test_streamed_staging_rejects_short_writes(tmp_path, monkeypatch):
+    module = _load_evidence_module()
+    source = module.write_raw_file(tmp_path / "source", [b"original"])
+    staged = module.RunStore(tmp_path / "store").stage("short")
+    original = module.os.fdopen
+
+    class ShortWriter:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def __getattr__(self, name):
+            return getattr(self.handle, name)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return self.handle.__exit__(*args)
+
+        def write(self, data):
+            return self.handle.write(data[: len(data) // 2])
+
+    monkeypatch.setattr(
+        module.os,
+        "fdopen",
+        lambda fd, mode: ShortWriter(original(fd, mode)) if mode == "wb" else original(fd, mode),
+    )
+    with pytest.raises(module.EvidenceError, match="short raw output write"):
+        staged.write_raw("raw/input.bin", source)
+    assert (staged.path / "raw/input.bin").read_bytes() == b"orig"
+
+
+@pytest.mark.parametrize(
+    "relative",
+    ["failure.json", "raw/../outside", "raw//alias", "raw/./alias", "raw/a/b", "raw/a\x00b"],
+)
+def test_staging_does_not_accept_noncanonical_raw_destinations(tmp_path, relative):
+    module = _load_evidence_module()
+    source = module.write_raw_file(tmp_path / "source", [b"oracle"])
+    staged = module.RunStore(tmp_path / "store").stage("bad-path")
+    with pytest.raises(module.EvidenceError):
+        staged.write_raw(relative, source)
+    assert list(staged.path.iterdir()) == []
+
+
+def test_failed_staging_cannot_be_promoted_even_with_valid_raw_and_envelope(tmp_path):
+    module = _load_evidence_module()
+    store = module.RunStore(tmp_path / "store")
+    sealed = module.seal(module.sample_evidence())
+    staged = store.stage(sealed["run_id"])
+    staged.write_raw("raw/warm-matrix.json", _source(module, staged, module.SAMPLE_RAW))
+    staged.write_evidence(sealed)
+    staged.mark_failed(KeyboardInterrupt("canceled"))
+    with pytest.raises(module.EvidenceError, match="failed staging epoch"):
+        store.promote(staged)
+    assert store.read_latest() is None
+    assert (staged.path / "raw/warm-matrix.json").read_bytes() == module.SAMPLE_RAW
 
 
 def test_run_store_refuses_same_bytes_raw_symlink_swap_after_file_check(tmp_path, monkeypatch):
@@ -453,7 +829,7 @@ def test_run_store_refuses_existing_staging_without_erasing_first_writer(tmp_pat
     store = module.RunStore(tmp_path)
     run_id = module.sample_evidence()["run_id"]
     first = store.stage(run_id)
-    first.write_raw("raw/warm-matrix.json", module.SAMPLE_RAW)
+    first.write_raw("raw/warm-matrix.json", _source(module, first, module.SAMPLE_RAW))
     with pytest.raises(module.EvidenceError, match="staging"):
         store.stage(run_id)
     assert (first.path / "raw/warm-matrix.json").read_bytes() == module.SAMPLE_RAW
@@ -516,7 +892,7 @@ def test_staged_raw_write_refuses_linked_parent_without_writing_outside(tmp_path
     (staged.path / "raw").symlink_to(outside, target_is_directory=True)
 
     with pytest.raises(module.EvidenceError, match="symlink"):
-        staged.write_raw("raw/warm-matrix.json", module.SAMPLE_RAW)
+        staged.write_raw("raw/warm-matrix.json", _source(module, staged, module.SAMPLE_RAW))
     assert not (outside / "warm-matrix.json").exists()
 
 
@@ -528,8 +904,8 @@ def test_staged_raw_write_refuses_existing_hardlink_without_clobber(tmp_path: Pa
     (staged.path / "raw").mkdir()
     os.link(outside, staged.path / "raw" / "warm-matrix.json")
 
-    with pytest.raises(module.EvidenceError, match="unsafe staged raw output"):
-        staged.write_raw("raw/warm-matrix.json", module.SAMPLE_RAW)
+    with pytest.raises(module.EvidenceError, match="unsafe or incomplete raw output"):
+        staged.write_raw("raw/warm-matrix.json", _source(module, staged, module.SAMPLE_RAW))
     assert outside.read_bytes() == b"retain"
 
 
@@ -538,7 +914,7 @@ def test_crash_before_promotion_leaves_no_admissible_run(tmp_path: Path) -> None
     store = module.RunStore(tmp_path)
     sealed = module.seal(module.sample_evidence())
     staged = store.stage(sealed["run_id"])
-    staged.write_raw("raw/warm-matrix.json", module.SAMPLE_RAW)
+    staged.write_raw("raw/warm-matrix.json", _source(module, staged, module.SAMPLE_RAW))
     staged.write_evidence(sealed)
     with pytest.raises(module.EvidenceError, match="missing run directory"):
         store.load(sealed["run_id"])
@@ -557,15 +933,17 @@ def test_missing_extra_and_tampered_raw_files_are_refused(tmp_path: Path) -> Non
 
     store = module.RunStore(tmp_path / "extra")
     staged = store.stage(sealed["run_id"])
-    staged.write_raw("raw/warm-matrix.json", module.SAMPLE_RAW)
-    staged.write_raw("raw/undeclared.json", b"surprise")
+    staged.write_raw("raw/warm-matrix.json", _source(module, staged, module.SAMPLE_RAW))
+    staged.write_raw("raw/undeclared.json", _source(module, staged, b"surprise"))
     staged.write_evidence(sealed)
     with pytest.raises(module.EvidenceError, match="undeclared raw file"):
         store.promote(staged)
 
     store = module.RunStore(tmp_path / "tampered")
     staged = store.stage(sealed["run_id"])
-    staged.write_raw("raw/warm-matrix.json", module.SAMPLE_RAW.replace(b"0.42", b"0.43"))
+    staged.write_raw(
+        "raw/warm-matrix.json", _source(module, staged, module.SAMPLE_RAW.replace(b"0.42", b"0.43"))
+    )
     staged.write_evidence(sealed)
     with pytest.raises(module.EvidenceError, match="digest mismatch"):
         store.promote(staged)

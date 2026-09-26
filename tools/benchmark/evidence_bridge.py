@@ -15,7 +15,6 @@ rather than converted into an empty or synthetic payload.
 
 from __future__ import annotations
 
-import hashlib
 import importlib.util
 import json
 import re
@@ -29,8 +28,10 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from evidence import (  # noqa: E402
     EvidenceError,
+    RawFile,
     RunStore,
     digest_bytes,
+    file_digest,
     seal,
     validate_payload,
 )
@@ -339,7 +340,9 @@ def native_payload_from_artifacts(artifacts: list[dict[str, Any]], kind: str) ->
                 else:
                     refusals = validate_concurrency(artifact)
                     if refusals:
-                        raise EvidenceError("concurrency native contract refused: " + "; ".join(refusals))
+                        raise EvidenceError(
+                            "concurrency native contract refused: " + "; ".join(refusals)
+                        )
                     client = concurrency_clients_from_artifact(artifact)
                     if client in clients:
                         raise EvidenceError("duplicate concurrency artifact")
@@ -436,8 +439,7 @@ def promote_native_run(
     family: str,
     profile: str,
     created_utc: str,
-    native_path: Path,
-    native_bytes: bytes,
+    raw_files: dict[str, RawFile],
     payload: dict[str, Any],
     source: dict[str, Any],
     build: dict[str, Any],
@@ -447,16 +449,27 @@ def promote_native_run(
     boundary: dict[str, Any],
     verdict: dict[str, Any],
     case_id: str | None = None,
-    additional_native: list[tuple[Path, bytes]] | None = None,
 ) -> dict[str, Any]:
     """Stage, verify and atomically promote one immutable run."""
+    if not isinstance(raw_files, dict) or not raw_files:
+        raise EvidenceError("native promotion needs a nonempty file inventory")
+    inventory = tuple(raw_files.items())
+    for name, reference in inventory:
+        if (
+            not isinstance(name, str)
+            or name in {"", ".", ".."}
+            or "/" in name
+            or "\\" in name
+            or "\x00" in name
+            or not isinstance(reference, RawFile)
+        ):
+            raise EvidenceError("native promotion needs canonical file names and commitments")
     store = RunStore(evidence_root)
     staged = store.stage(run_id)
     try:
-        relative = f"raw/{native_path.name}"
-        references = [staged.write_raw(relative, native_bytes)]
-        for extra_path, extra_bytes in additional_native or []:
-            references.append(staged.write_raw(f"raw/{extra_path.name}", extra_bytes))
+        # Raw arrays preserve declared producer order. Lexical filename sorting
+        # would change native concurrency row order (e.g. c16 before c4) on replay.
+        references = [staged.write_raw(f"raw/{name}", reference) for name, reference in inventory]
         evidence = seal(
             {
                 "protocol": "BenchmarkEvidenceV1",
@@ -481,16 +494,22 @@ def promote_native_run(
         )
         staged.write_evidence(evidence)
         promotion = store.promote(staged)
-    except Exception:
+    except BaseException as error:
         if staged.path.exists():
-            staged.abort()
+            try:
+                staged.mark_failed(error)
+            except (OSError, EvidenceError) as marking:
+                raise EvidenceError(
+                    f"{type(error).__name__}; failure recording also failed: {marking}; "
+                    f"retained staging epoch: {staged.path}"
+                ) from error
         raise
     return {**promotion, "evidence": evidence}
 
 
 def sha256_file(path: Path) -> str:
-    return digest_bytes(path.read_bytes())
+    return file_digest(path)[0]
 
 
 def sha256_hex_file(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    return file_digest(path)[0].removeprefix("sha256:")

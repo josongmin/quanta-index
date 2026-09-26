@@ -4364,6 +4364,7 @@ dependencies = [
 name = "quanta-index-bench-protocol"
 version = "0.1.0"
 dependencies = [
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "sha2",

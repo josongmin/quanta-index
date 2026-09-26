@@ -16,7 +16,6 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from custody import custody
 from evidence import (
     EvidenceError,
     RunStore,
@@ -25,15 +24,15 @@ from evidence import (
     canonical_json,
     digest_bytes,
     parse_json,
+    write_raw_file,
 )
 from evidence_bridge import (
     host_identity,
     micro_payload_from_criterion,
-    promote_native_run,
     source_identity,
 )
 from producer_execution import execute
-from profile_capture import _directories, commit_capture, load_capture
+from profile_capture import _directories, load_capture, publish_capture
 from registry import registry_digest
 
 
@@ -498,28 +497,28 @@ def capture(
             }
             prepared.append((family, case, raw, payload(raw, case), build, command))
     require_frozen_source(repo, head)
-    with custody(root):
-        return _publish(
-            repo, root, profile, registry, head, source, host, capture_id, prepared, expected
-        )
+    return _publish(
+        repo, root, profile, registry, head, source, host, capture_id, prepared, expected
+    )
 
 
 def _publish(repo, root, profile, registry, head, source, host, capture_id, prepared, expected):
     from benchctl import require_frozen_source
 
-    promoted = []
+    runs = []
     for index, (family, case, raw, derived, build, command) in enumerate(prepared):
-        items = list(raw.items())
-        result = promote_native_run(
-            evidence_root=root,
+        result = dict(
             run_id=f"{capture_id}-{index}",
             family=family,
             profile=profile,
             case_id=case,
             created_utc=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            native_path=Path(items[0][0]),
-            native_bytes=items[0][1],
-            additional_native=[(Path(name), data) for name, data in items[1:]],
+            raw_files={
+                name: write_raw_file(
+                    root / "work" / capture_id / "prepared" / str(index) / name, [data]
+                )
+                for name, data in raw.items()
+            },
             payload=derived,
             source=source,
             build=build,
@@ -534,13 +533,14 @@ def _publish(repo, root, profile, registry, head, source, host, capture_id, prep
             },
             verdict={"scope": "diagnostic", "status": "pass", "reason": None, "metrics": []},
         )
-        promoted.append(result["run_id"])
-    require_frozen_source(repo, head)
-    return commit_capture(
+        runs.append(result)
+    return publish_capture(
         root,
         capture_id=capture_id,
         profile=profile,
         registry_digest=registry_digest(registry),
         expected_cases=expected,
-        run_ids=promoted,
+        runs=runs,
+        replay=replay_run,
+        verify_source=lambda: require_frozen_source(repo, head),
     )

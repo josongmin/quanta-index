@@ -954,17 +954,13 @@ def promote_profile_runs(
     validated_artifacts: dict[str, str],
     execution: dict[str, object] | None = None,
 ) -> int:
-    """Promote each family *of this profile* into an immutable evidence run.
-
-    Only the profile's declared artifact families are promoted; promoting every
-    registered family would silently widen what a profile capture claims.
-    """
-    from evidence import digest_bytes
+    """Publish exactly one complete native profile; latest is advisory only."""
+    from evidence import digest_bytes, write_raw_file
     from evidence_bridge import (
         host_identity,
-        promote_native_run,
         source_identity,
     )
+    from profile_capture import publish_capture
 
     promotion_started = time.monotonic_ns()
 
@@ -972,7 +968,6 @@ def promote_profile_runs(
     profiles = manifest["profiles"]
     assert isinstance(families, dict) and isinstance(profiles, dict)
     selected = profiles[profile_name]["families"]
-    store = RunStore(evidence_root)
     created = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
     stamp = f"{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-{time.time_ns()}"
     hostname = socket.gethostname() or "unknown"
@@ -987,7 +982,7 @@ def promote_profile_runs(
         return 2
     lease_mode = "shared"
     lease_samples = 1
-    promoted: list[str] = []
+    runs: list[dict] = []
     prepared = {}
     try:
         for family in selected:
@@ -1000,6 +995,9 @@ def promote_profile_runs(
                 capture_started_ns,
                 validated_artifacts,
             )
+            raw_paths = [path.name for path, _ in prepared[family][0]]
+            if len(raw_paths) != len(set(raw_paths)):
+                raise EvidenceError("native raw inventory repeats a destination filename")
             _native_inputs(prepared[family][1], preflight_digest)
     except (EvidenceError, OSError, ValueError) as exc:
         print(f"ERROR: profile native capture refused: {exc}", file=sys.stderr)
@@ -1007,7 +1005,6 @@ def promote_profile_runs(
     for family in selected:
         entry = families[family]
         captures, artifacts, payload = prepared[family]
-        path, native_bytes = captures[0]
         artifact = artifacts[0]
         if artifact.get("provenance", {}).get("git_head") != initial_head:
             print(
@@ -1031,15 +1028,18 @@ def promote_profile_runs(
             verdict_reason = "rail verdict false"
         run_id = f"{family}-{stamp}-{digest_bytes(b''.join(raw for _, raw in captures))[7:15]}"
         try:
-            promotion = promote_native_run(
-                evidence_root=evidence_root,
+            prepared_run = dict(
                 run_id=run_id,
                 family=family,
                 profile=profile_name,
                 created_utc=created,
-                native_path=path,
-                native_bytes=native_bytes,
-                additional_native=captures[1:],
+                raw_files={
+                    native.name: write_raw_file(
+                        evidence_root / "work" / f"{profile_name}-{stamp}" / family / native.name,
+                        [content],
+                    )
+                    for native, content in captures
+                },
                 payload=payload,
                 source=source,
                 build={
@@ -1090,13 +1090,43 @@ def promote_profile_runs(
         except EvidenceError as exc:
             print(f"ERROR: family {family!r} promotion refused: {exc}", file=sys.stderr)
             return 2
-        promoted.append(promotion["run_id"])
-        print(f"promoted run: {promotion['run_dir']}")
-    latest = store.read_latest()
-    if latest is None or latest.get("run_id") != promoted[-1]:
-        print("ERROR: latest pointer was not updated by promotion", file=sys.stderr)
+        runs.append(prepared_run)
+
+    def verify_source():
+        if source_identity(repo_root, "benchmark-control-plane") != source:
+            raise EvidenceError("benchmark source changed during publication")
+
+    def replay(store, record):
+        if replay_command(repo_root, str(store.run_dir(record["run_id"])), evidence_root):
+            raise EvidenceError("native run failed replay before profile publication")
+
+    try:
+        registry = load_registry(repo_root / "tools/benchmark/registry.toml")
+        if selected != registry["profiles"][profile_name]["families"]:
+            raise EvidenceError("native profile differs from registry family inventory")
+        document = publish_capture(
+            evidence_root,
+            capture_id=f"{profile_name}-{stamp}",
+            profile=profile_name,
+            registry_digest=registry_digest(registry),
+            expected_cases={family: [None] for family in selected},
+            runs=runs,
+            replay=replay,
+            verify_source=verify_source,
+        )
+    except (EvidenceError, OSError, ValueError) as exc:
+        print(f"ERROR: native profile publication refused: {exc}", file=sys.stderr)
         return 2
-    print(json.dumps({"profile": profile_name, "promoted": promoted}, sort_keys=True))
+    print(
+        json.dumps(
+            {
+                "profile": profile_name,
+                "capture": document["capture_id"],
+                "promoted": [run["run_id"] for run in document["runs"]],
+            },
+            sort_keys=True,
+        )
+    )
     return 0
 
 
@@ -1233,24 +1263,31 @@ def validate_promoted_runs(
     expected_lock_digest: str,
     repo_root: Path = ROOT,
 ) -> int:
-    """Require a valid promoted run for every artifact family in the profile."""
+    """Validate one committed capture, never synthesize a profile from latest runs."""
+    from profile_capture import load_capture
+
     store = RunStore(evidence_root)
     families = manifest["families"]
     profiles = manifest["profiles"]
     assert isinstance(families, dict) and isinstance(profiles, dict)
     selected = profiles[profile_name]["families"]
     receipts: list[dict[str, object]] = []
-    missing: list[str] = []
     capture_identity: tuple[str, str] | None = None
+    try:
+        registry = load_registry(repo_root / "tools/benchmark/registry.toml")
+        if selected != registry["profiles"][profile_name]["families"]:
+            raise EvidenceError("native profile differs from registry family inventory")
+        document = load_capture(
+            evidence_root, profile=profile_name, registry_digest=registry_digest(registry)
+        )
+        if document["expected_cases"] != {family: [None] for family in selected}:
+            raise EvidenceError("native capture differs from registry case inventory")
+        by_family = {record["family"]: record["run_id"] for record in document["runs"]}
+    except (EvidenceError, OSError, ValueError) as exc:
+        print(f"ERROR: cannot load complete profile {profile_name!r}: {exc}", file=sys.stderr)
+        return 2
     for family in selected:
-        try:
-            run_id = latest_run_for_family(store, family)
-        except EvidenceError as exc:
-            print(f"ERROR: cannot select promoted run: {exc}", file=sys.stderr)
-            return 2
-        if run_id is None:
-            missing.append(family)
-            continue
+        run_id = by_family[family]
         try:
             evidence = store.load(run_id)
         except EvidenceError as exc:
@@ -1294,13 +1331,6 @@ def validate_promoted_runs(
                 "payload": evidence["payload"]["kind"],
             }
         )
-    if missing:
-        print(
-            f"ERROR: profile {profile_name!r} has no promoted evidence run for: "
-            + ", ".join(sorted(missing)),
-            file=sys.stderr,
-        )
-        return 2
     for receipt in receipts:
         with contextlib.redirect_stdout(io.StringIO()):
             if replay_command(repo_root, str(store.run_dir(receipt["run_id"])), evidence_root):
@@ -1309,7 +1339,18 @@ def validate_promoted_runs(
                     file=sys.stderr,
                 )
                 return 2
-    print(json.dumps({"profile": profile_name, "runs": receipts}, sort_keys=True, indent=2))
+    print(
+        json.dumps(
+            {
+                "profile": profile_name,
+                "capture_id": document["capture_id"],
+                "capture_digest": document["digest"],
+                "runs": receipts,
+            },
+            sort_keys=True,
+            indent=2,
+        )
+    )
     return 0
 
 

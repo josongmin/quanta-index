@@ -168,6 +168,16 @@ def test_pair_registration_drift_refuses(changes):
 def test_capture_complete_profile_and_replay_with_original_corpus_changed(tmp_path, monkeypatch):
     import benchctl
 
+    calls = {"restore": 0, "derive": 0}
+    for label, name in (("restore", "restore_corpus"), ("derive", "derive")):
+        original = getattr(bridge, name)
+
+        def counted(*args, _label=label, _original=original, **kwargs):
+            calls[_label] += 1
+            return _original(*args, **kwargs)
+
+        monkeypatch.setattr(bridge, name, counted)
+
     stage = fixture(tmp_path)
     output = tmp_path / "pair-output"
     searchd = tmp_path / "searchd"
@@ -228,6 +238,22 @@ def test_capture_complete_profile_and_replay_with_original_corpus_changed(tmp_pa
     evidence = store.load(document["runs"][0]["run_id"])
     evidence["payload"]["rows"][0]["value"] = 0.12345
     with pytest.raises(ValueError, match="typed metrics"):
+        bridge.replay_run(store, evidence)
+    # Publication and three independent validations still derive all six cases.
+    # Two per-run replays restore separately; capture also derives once.
+    # The summary command advertises presence without claiming validation.
+    assert calls == {"restore": 6, "derive": 27}
+
+    evidence = store.load(document["runs"][0]["run_id"])
+    original_derive = bridge.derive
+
+    def mutating_owner(native, corpus):
+        result = original_derive(native, corpus)
+        (corpus / "a.txt").write_bytes(b"owner mutated its supposedly read-only input")
+        return result
+
+    monkeypatch.setattr(bridge, "derive", mutating_owner)
+    with pytest.raises(bridge.EvidenceError, match="workspace changed"):
         bridge.replay_run(store, evidence)
 
 

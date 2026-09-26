@@ -244,3 +244,74 @@ def test_local_env_preserves_a_non_sccache_rustc_wrapper(tmp_path: Path) -> None
     env.pop("SCCACHE_SERVER_PORT", None)
 
     assert _source_env(env) == ["/tools/custom-rustc-wrapper", "", "", ""]
+
+
+@pytest.mark.parametrize("shell", ["/bin/bash", "/bin/zsh"])
+@pytest.mark.parametrize(
+    "ci,jobs,expected",
+    [
+        (None, None, "4"),
+        ("false", None, "4"),
+        ("true", None, "UNSET"),
+        (None, "2", "2"),
+        (None, "-1", "-1"),
+        (None, "", ""),
+        ("true", "8", "8"),
+    ],
+)
+def test_local_build_budget_preserves_explicit_and_ci_authority(
+    tmp_path: Path, shell: str, ci: str | None, jobs: str | None, expected: str
+) -> None:
+    if not Path(shell).exists():
+        pytest.skip(f"shell unavailable: {shell}")
+    env = os.environ.copy()
+    env["QUANTA_INDEX_CACHE_ROOT"] = str(tmp_path / "cache")
+    env["QUANTA_INDEX_SCCACHE"] = "0"
+    for key, value in (("CI", ci), ("CARGO_BUILD_JOBS", jobs)):
+        if value is None:
+            env.pop(key, None)
+        else:
+            env[key] = value
+    result = subprocess.run(
+        [
+            shell,
+            "-c",
+            'set -eu; source "$1"; source "$1"; printf "%s" "${CARGO_BUILD_JOBS-UNSET}"',
+            "budget-test",
+            str(ENV_SCRIPT),
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout == expected
+
+
+def test_cargow_passes_budget_and_preserves_cli_and_failure(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    cargo = fake_bin / "cargo"
+    cargo.write_text('#!/bin/bash\nprintf "%s|%s\\n" "${CARGO_BUILD_JOBS-UNSET}" "$*"\nexit 17\n')
+    cargo.chmod(0o755)
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": f"{fake_bin}:{env['PATH']}",
+            "QUANTA_INDEX_CACHE_ROOT": str(tmp_path / "cache"),
+            "QUANTA_INDEX_SCCACHE": "0",
+            "QUANTA_INDEX_BUILD_LOGGING": "0",
+        }
+    )
+    env.pop("CARGO_BUILD_JOBS", None)
+    env.pop("CI", None)
+    result = subprocess.run(
+        [str(SCRIPT), "build", "--jobs", "2"],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.stdout.strip() == "4|build --jobs 2"
+    assert result.returncode == 17

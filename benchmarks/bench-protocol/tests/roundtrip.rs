@@ -79,7 +79,7 @@ fn sealing_is_order_insensitive_but_digest_sensitive() -> Result<(), Box<dyn Err
 #[test]
 fn run_store_promotes_and_replays() -> Result<(), Box<dyn Error>> {
     let root = tempfile::tempdir()?;
-    let store = RunStore::new(root.path());
+    let store = RunStore::new(root.path().canonicalize()?);
     let sealed = sample_sealed()?;
     let staged = store.stage(RUN_ID)?;
     let _reference = staged.write_raw("raw/warm-matrix.json", &sample_raw_bytes())?;
@@ -157,7 +157,7 @@ fn abort_removes_the_staged_run() -> Result<(), Box<dyn Error>> {
 #[test]
 fn collect_removes_only_unreferenced_runs() -> Result<(), Box<dyn Error>> {
     let root = tempfile::tempdir()?;
-    let store = RunStore::new(root.path());
+    let store = RunStore::new(root.path().canonicalize()?);
     let sealed = sample_sealed()?;
     let staged = store.stage(RUN_ID)?;
     let _reference = staged.write_raw("raw/warm-matrix.json", &sample_raw_bytes())?;

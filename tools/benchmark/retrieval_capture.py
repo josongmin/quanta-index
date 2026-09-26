@@ -14,9 +14,9 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from custody import custody
 from evidence import (
     EvidenceError,
+    RawFile,
     RunStore,
     _read_regular_file,
     _run_id,
@@ -24,10 +24,11 @@ from evidence import (
     digest_bytes,
     parse_json,
     validate_payload,
+    write_raw_file,
 )
-from evidence_bridge import host_identity, promote_native_run, source_identity
+from evidence_bridge import host_identity, source_identity
 from producer_execution import execute
-from profile_capture import _directories, commit_capture, load_capture
+from profile_capture import _directories, load_capture, publish_capture
 from registry import registry_digest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -149,9 +150,9 @@ def replay_run(store: RunStore, evidence: dict) -> None:
         origin["execution_root"],
     ]:
         raise EvidenceError("retrieval proof command differs from the registered producer")
-    expected_binaries = set(portable_proof.selected_test_binaries(
-        _read_regular_file(raw / "rust-collection.stdout"))) | (
-        {"runner", "searchd"} if RAILS[family] == "sdk" else set())
+    expected_binaries = set(
+        portable_proof.selected_test_binaries(_read_regular_file(raw / "rust-collection.stdout"))
+    ) | ({"runner", "searchd"} if RAILS[family] == "sdk" else set())
     if set(context["binaries"]) != expected_binaries:
         raise EvidenceError("retrieval proof binary role inventory is malformed")
     binary_files = {name: raw / f"frozen-binary-{name}" for name in context["binaries"]}
@@ -239,19 +240,29 @@ def capture(repo: Path, root: Path, registry: dict, timeout: int) -> dict:
         for path in sorted(native.iterdir()):
             if not path.is_file() or path.is_symlink():
                 raise EvidenceError("retrieval proof directory has an unexpected non-file entry")
-            raw[path.name] = _read_regular_file(path)
+            raw[path.name] = RawFile.capture(path)
+        spool = root / "work" / capture_id / "prepared" / family
         raw.update(
             {
-                "producer.stdout": stdout,
-                "producer.stderr": stderr,
-                "capture-origin.json": canonical_json(
-                    {"capture_id": capture_id, "execution_root": str(native), "producer": command}
-                ).encode(),
+                "producer.stdout": write_raw_file(spool / "producer.stdout", [stdout]),
+                "producer.stderr": write_raw_file(spool / "producer.stderr", [stderr]),
+                "capture-origin.json": write_raw_file(
+                    spool / "capture-origin.json",
+                    [
+                        canonical_json(
+                            {
+                                "capture_id": capture_id,
+                                "execution_root": str(native),
+                                "producer": command,
+                            }
+                        ).encode()
+                    ],
+                ),
             }
         )
         for name, binary in context["binaries"].items():
-            content = _read_regular_file(Path(binary["path"]))
-            if digest_bytes(content) != "sha256:" + binary["sha256"]:
+            content = RawFile.capture(Path(binary["path"]))
+            if content.sha256 != "sha256:" + binary["sha256"]:
                 raise EvidenceError("retrieval proof binary changed during freeze")
             raw[f"frozen-binary-{name}"] = content
         prepared.append((family, context, derived, raw, command))
@@ -265,69 +276,63 @@ def capture(repo: Path, root: Path, registry: dict, timeout: int) -> dict:
         lease_mode="none",
         lease_samples=0,
     )
-    with custody(root):
-        (root / "captures").mkdir(exist_ok=True)
-        runs = []
-        for family, context, derived, raw, command in prepared:
-            items = list(raw.items())
-            result = promote_native_run(
-                evidence_root=root,
-                run_id=f"{capture_id}-{family}",
-                family=family,
-                profile=PROFILE,
-                case_id=None,
-                created_utc=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                native_path=Path(items[0][0]),
-                native_bytes=items[0][1],
-                additional_native=[(Path(name), data) for name, data in items[1:]],
-                payload=derived,
-                source=source,
-                build={
-                    "toolchain": context["tools"]["rustc"]["version"],
-                    "target_triple": target_identity(context),
-                    "lockfile_digest": digest_bytes((repo / "Cargo.lock").read_bytes()),
-                    "profile": "proof",
-                    "flags": portable_proof.FLAGS,
-                    "binaries": [
-                        {"name": name, "sha256": "sha256:" + entry["sha256"]}
-                        for name, entry in sorted(context["binaries"].items())
-                    ],
-                },
-                inputs=[
-                    {
-                        "id": "execution-context",
-                        "availability": "present",
-                        "digest": derived["execution_context_digest"],
-                        "reason": None,
-                    },
-                    {
-                        "id": "native-source",
-                        "availability": "present",
-                        "digest": native_source["closure_digest"],
-                        "reason": None,
-                    },
-                ],
-                host=host,
-                command=command,
-                boundary={
-                    "clock": "monotonic",
-                    "instrumentation": "none",
-                    "start_event": "proof_producer_start",
-                    "end_event": "terminal_inventory_verified",
-                },
-                verdict={"scope": "contract", "status": "pass", "reason": None, "metrics": []},
-            )
-            runs.append(result["run_id"])
-            replay_run(RunStore(root), RunStore(root).load(result["run_id"]))
-        require_frozen_source(repo, head)
-        return commit_capture(
-            root,
-            capture_id=capture_id,
+    runs = []
+    for family, context, derived, raw, command in prepared:
+        result = dict(
+            run_id=f"{capture_id}-{family}",
+            family=family,
             profile=PROFILE,
-            registry_digest=registry_digest(registry),
-            expected_cases={family: [None] for family in selected},
-            run_ids=runs,
+            case_id=None,
+            created_utc=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            raw_files=raw,
+            payload=derived,
+            source=source,
+            build={
+                "toolchain": context["tools"]["rustc"]["version"],
+                "target_triple": target_identity(context),
+                "lockfile_digest": digest_bytes((repo / "Cargo.lock").read_bytes()),
+                "profile": "proof",
+                "flags": portable_proof.FLAGS,
+                "binaries": [
+                    {"name": name, "sha256": "sha256:" + entry["sha256"]}
+                    for name, entry in sorted(context["binaries"].items())
+                ],
+            },
+            inputs=[
+                {
+                    "id": "execution-context",
+                    "availability": "present",
+                    "digest": derived["execution_context_digest"],
+                    "reason": None,
+                },
+                {
+                    "id": "native-source",
+                    "availability": "present",
+                    "digest": native_source["closure_digest"],
+                    "reason": None,
+                },
+            ],
+            host=host,
+            command=command,
+            boundary={
+                "clock": "monotonic",
+                "instrumentation": "none",
+                "start_event": "proof_producer_start",
+                "end_event": "terminal_inventory_verified",
+            },
+            verdict={"scope": "contract", "status": "pass", "reason": None, "metrics": []},
         )
+        runs.append(result)
+    return publish_capture(
+        root,
+        capture_id=capture_id,
+        profile=PROFILE,
+        registry_digest=registry_digest(registry),
+        expected_cases={family: [None] for family in selected},
+        runs=runs,
+        replay=replay_run,
+        verify_source=lambda: require_frozen_source(repo, head),
+    )
 
 
 def validate(repo: Path, root: Path, registry: dict) -> dict:

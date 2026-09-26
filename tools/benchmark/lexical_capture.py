@@ -15,9 +15,9 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from custody import custody
 from evidence import (
     EvidenceError,
+    RawFile,
     RunStore,
     _read_regular_file,
     _run_id,
@@ -25,10 +25,11 @@ from evidence import (
     digest_bytes,
     parse_json,
     validate_payload,
+    write_raw_file,
 )
-from evidence_bridge import host_identity, promote_native_run, source_identity
+from evidence_bridge import host_identity, source_identity
 from producer_execution import execute
-from profile_capture import _directories, commit_capture, load_capture
+from profile_capture import _directories, load_capture, publish_capture
 from registry import registry_digest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -182,13 +183,17 @@ def replay_run(store: RunStore, evidence: dict) -> None:
     }:
         raise EvidenceError("lexical frozen spec differs from captured role paths")
     selection, _original_paths = corpus_binding.read_spec(
-        _read_regular_file(raw / "original-spec.json"), owner.INPUT_ROLES)
+        _read_regular_file(raw / "original-spec.json"), owner.INPUT_ROLES
+    )
     paths = frozen_inputs(raw)
     capsule = _read_regular_file(raw / "corpus-release.zip")
     binding_raw = _read_regular_file(raw / "corpus-binding.json")
-    binding = corpus_binding.replay(capsule, selection,
-                                    _read_regular_file(paths["suite"]),
-                                    _read_regular_file(paths["query_pack"]))
+    binding = corpus_binding.replay(
+        capsule,
+        selection,
+        _read_regular_file(paths["suite"]),
+        _read_regular_file(paths["query_pack"]),
+    )
     if parse_json(binding_raw.decode()) != binding:
         raise EvidenceError("lexical corpus/view/query binding differs from retained Git objects")
     summary = owner.evaluate_capture(paths)
@@ -206,10 +211,18 @@ def replay_run(store: RunStore, evidence: dict) -> None:
         }
         for role, path in paths.items()
     ] + [
-        {"id": "corpus-release", "availability": "present",
-         "digest": digest_bytes(capsule), "reason": None},
-        {"id": "corpus-view-query-binding", "availability": "present",
-         "digest": digest_bytes(binding_raw), "reason": None},
+        {
+            "id": "corpus-release",
+            "availability": "present",
+            "digest": digest_bytes(capsule),
+            "reason": None,
+        },
+        {
+            "id": "corpus-view-query-binding",
+            "availability": "present",
+            "digest": digest_bytes(binding_raw),
+            "reason": None,
+        },
     ]
     if evidence["inputs"] != inputs:
         raise EvidenceError("lexical frozen input inventory or digest differs")
@@ -231,7 +244,9 @@ def capture(repo: Path, root: Path, registry: dict, spec_path: Path, timeout: in
     original = _read_regular_file(spec_path)
     selection, paths = corpus_binding.read_spec(original, owner.INPUT_ROLES)
     release = Path(selection["release_path"])
-    if root.resolve().is_relative_to(release.resolve()) or release.resolve().is_relative_to(root.resolve()):
+    if root.resolve().is_relative_to(release.resolve()) or release.resolve().is_relative_to(
+        root.resolve()
+    ):
         raise EvidenceError("lexical evidence and corpus release roots overlap")
     if any(path.resolve().is_relative_to(repo.resolve()) for path in (spec_path, *paths.values())):
         raise EvidenceError("lexical spec and observations must stay outside the checkout")
@@ -241,8 +256,9 @@ def capture(repo: Path, root: Path, registry: dict, spec_path: Path, timeout: in
     contents = {role: _read_regular_file(path) for role, path in paths.items()}
     if _read_regular_file(spec_path) != original:
         raise EvidenceError("lexical spec changed during freeze")
-    binding, capsule = corpus_binding.capture(release, selection, contents["suite"],
-                                              contents["query_pack"])
+    binding, capsule = corpus_binding.capture(
+        release, selection, contents["suite"], contents["query_pack"]
+    )
     binding_raw = canonical_json(binding).encode()
     _directories(root)
     capture_id = f"lexical-{uuid.uuid4().hex}"
@@ -262,7 +278,7 @@ def capture(repo: Path, root: Path, registry: dict, spec_path: Path, timeout: in
         ),
         encoding="utf-8",
     )
-    python_digest = digest_bytes(_read_regular_file(Path(sys.executable).resolve()))
+    python_digest = RawFile.capture(Path(sys.executable).resolve()).sha256
     stdout, stderr, command = execute(
         [
             sys.executable,
@@ -277,28 +293,34 @@ def capture(repo: Path, root: Path, registry: dict, spec_path: Path, timeout: in
         env=dict(os.environ),
         timeout=timeout,
     )
-    if python_digest != digest_bytes(_read_regular_file(Path(sys.executable).resolve())):
+    if python_digest != RawFile.capture(Path(sys.executable).resolve()).sha256:
         raise EvidenceError("lexical Python executable changed during scoring")
     summary = owner.evaluate_capture(frozen_inputs(native))
     if parse_json(_read_regular_file(native / "report.json").decode()) != summary:
         raise EvidenceError("lexical producer report differs from independent raw replay")
     typed = payloads(summary, owner._read(native / "input-query_pack"))
-    raw = {path.name: _read_regular_file(path) for path in native.iterdir()}
+    raw = {path.name: RawFile.capture(path) for path in native.iterdir()}
+    spool = root / "work" / capture_id / "prepared"
     toolchain = f"Python {platform.python_version()}"
     raw.update(
         {
-            "producer.stdout": stdout,
-            "producer.stderr": stderr,
-            "capture-origin.json": canonical_json(
-                {
-                    "capture_id": capture_id,
-                    "execution_root": str(native),
-                    "producer": command,
-                    "owner_digest": digest_bytes(_read_regular_file(Path(owner.__file__))),
-                    "python_digest": python_digest,
-                    "toolchain": toolchain,
-                }
-            ).encode(),
+            "producer.stdout": write_raw_file(spool / "producer.stdout", [stdout]),
+            "producer.stderr": write_raw_file(spool / "producer.stderr", [stderr]),
+            "capture-origin.json": write_raw_file(
+                spool / "capture-origin.json",
+                [
+                    canonical_json(
+                        {
+                            "capture_id": capture_id,
+                            "execution_root": str(native),
+                            "producer": command,
+                            "owner_digest": digest_bytes(_read_regular_file(Path(owner.__file__))),
+                            "python_digest": python_digest,
+                            "toolchain": toolchain,
+                        }
+                    ).encode()
+                ],
+            ),
         }
     )
     require_frozen_source(repo, head)
@@ -314,66 +336,69 @@ def capture(repo: Path, root: Path, registry: dict, spec_path: Path, timeout: in
         lease_mode="none",
         lease_samples=0,
     )
-    with custody(root):
-        (root / "captures").mkdir(exist_ok=True)
-        runs = []
-        for product in PRODUCTS:
-            items = list(raw.items())
-            result = promote_native_run(
-                evidence_root=root,
-                run_id=f"{capture_id}-{product}",
-                family=FAMILY,
-                profile=PROFILE,
-                case_id=product,
-                created_utc=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                native_path=Path(items[0][0]),
-                native_bytes=items[0][1],
-                additional_native=[(Path(name), content) for name, content in items[1:]],
-                payload=typed[product],
-                source=source,
-                build={
-                    "toolchain": toolchain,
-                    "target_triple": f"{sys.platform}-{platform.machine()}",
-                    "lockfile_digest": digest_bytes((repo / "uv.lock").read_bytes()),
-                    "profile": "lexical-recorded-scoring",
-                    "flags": [],
-                    "binaries": [{"name": "python", "sha256": python_digest}],
-                },
-                inputs=[
-                    {
-                        "id": role,
-                        "availability": "present",
-                        "digest": digest_bytes(content),
-                        "reason": None,
-                    }
-                    for role, content in contents.items()
-                ] + [
-                    {"id": "corpus-release", "availability": "present",
-                     "digest": digest_bytes(capsule), "reason": None},
-                    {"id": "corpus-view-query-binding", "availability": "present",
-                     "digest": digest_bytes(binding_raw), "reason": None},
-                ],
-                host=host,
-                command=command,
-                boundary={
-                    "clock": "recorded",
-                    "instrumentation": "none",
-                    "start_event": "frozen_observation_scoring",
-                    "end_event": "scorer_replay",
-                },
-                verdict={"scope": "diagnostic", "status": "pass", "reason": None, "metrics": []},
-            )
-            runs.append(result["run_id"])
-            replay_run(RunStore(root), RunStore(root).load(result["run_id"]))
-        require_frozen_source(repo, head)
-        return commit_capture(
-            root,
-            capture_id=capture_id,
+    runs = []
+    for product in PRODUCTS:
+        result = dict(
+            run_id=f"{capture_id}-{product}",
+            family=FAMILY,
             profile=PROFILE,
-            registry_digest=registry_digest(registry),
-            expected_cases={FAMILY: list(PRODUCTS)},
-            run_ids=runs,
+            case_id=product,
+            created_utc=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            raw_files=raw,
+            payload=typed[product],
+            source=source,
+            build={
+                "toolchain": toolchain,
+                "target_triple": f"{sys.platform}-{platform.machine()}",
+                "lockfile_digest": digest_bytes((repo / "uv.lock").read_bytes()),
+                "profile": "lexical-recorded-scoring",
+                "flags": [],
+                "binaries": [{"name": "python", "sha256": python_digest}],
+            },
+            inputs=[
+                {
+                    "id": role,
+                    "availability": "present",
+                    "digest": digest_bytes(content),
+                    "reason": None,
+                }
+                for role, content in contents.items()
+            ]
+            + [
+                {
+                    "id": "corpus-release",
+                    "availability": "present",
+                    "digest": digest_bytes(capsule),
+                    "reason": None,
+                },
+                {
+                    "id": "corpus-view-query-binding",
+                    "availability": "present",
+                    "digest": digest_bytes(binding_raw),
+                    "reason": None,
+                },
+            ],
+            host=host,
+            command=command,
+            boundary={
+                "clock": "recorded",
+                "instrumentation": "none",
+                "start_event": "frozen_observation_scoring",
+                "end_event": "scorer_replay",
+            },
+            verdict={"scope": "diagnostic", "status": "pass", "reason": None, "metrics": []},
         )
+        runs.append(result)
+    return publish_capture(
+        root,
+        capture_id=capture_id,
+        profile=PROFILE,
+        registry_digest=registry_digest(registry),
+        expected_cases={FAMILY: list(PRODUCTS)},
+        runs=runs,
+        replay=replay_run,
+        verify_source=lambda: require_frozen_source(repo, head),
+    )
 
 
 def validate(repo: Path, root: Path, registry: dict) -> dict:

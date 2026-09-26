@@ -85,6 +85,9 @@ def test_capture_contracts_have_one_local_and_ci_entrypoint() -> None:
         "test_lexical_capture.py",
         "test_lexical_file_comparison.py",
         "test_portable_proof.py",
+        "test_producer_notifications.py",
+        "test_bootstrap_cache.py",
+        "test_proof_command_timings.py",
     ):
         assert f"tools/ci/tests/{filename}" in command
     assert len(command[8:]) == len(set(command[8:]))
@@ -95,6 +98,64 @@ def test_capture_contracts_have_one_local_and_ci_entrypoint() -> None:
     workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text())
     steps = workflow["jobs"]["rust-policy"]["steps"]
     assert sum(step.get("run") == invocation for step in steps) == 1
+
+
+def test_execution_regressions_are_registered_to_the_real_owner_scope():
+    import tomllib
+
+    from tools.ci.source_closure import PROFILES
+
+    authority = tomllib.loads((REPO_ROOT / "tools/ci/test-authority.toml").read_text())
+    members = authority["python_scopes"]["benchmark-control-capture"]["targets"]
+    assert len(members) == len(set(members))
+    for filename, owner, retrieval in (
+        ("test_producer_notifications.py", "producer_execution.py", False),
+        ("test_bootstrap_cache.py", "retrieval/evaluator.py", True),
+        ("test_proof_command_timings.py", "retrieval/portable_proof.py", True),
+    ):
+        path = f"tools/ci/tests/{filename}"
+        registered = [entry for entry in authority["python_targets"] if entry["path"] == path]
+        assert len(registered) == 1, path
+        target = registered[0]
+        assert target["id"] in members
+        assert target["owner"] == f"tools/benchmark/{owner}"
+        assert target["rail"] == "pr-benchmark-control-python"
+        profiles = ["benchmark-control-plane", "benchmark-micro", "benchmark-retrieval"]
+        if retrieval:
+            profiles.append("retrieval")
+        for profile in profiles:
+            assert path in PROFILES[profile]["paths"], (profile, path)
+
+
+def test_execution_regression_owners_have_nonempty_live_collection(tmp_path):
+    import subprocess
+
+    filenames = (
+        "test_producer_notifications.py",
+        "test_bootstrap_cache.py",
+        "test_proof_command_timings.py",
+    )
+    inventory = tmp_path / "inventory.json"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "tools/ci/proof_execution_result.py"),
+            "collect-pytest",
+            "--output",
+            str(inventory),
+            *(f"tools/ci/tests/{name}" for name in filenames),
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    identities = json.loads(inventory.read_text())["tests"]
+    assert len(identities) == len(set(identities))
+    for name in filenames:
+        prefix = f"tools.ci.tests.{Path(name).stem}."
+        assert any(identity.startswith(prefix) for identity in identities), name
 
 
 def test_inline_benchctl_comment_cannot_hide_direct_producer(tmp_path: Path) -> None:

@@ -363,7 +363,28 @@ targets = [
   "benchmark-portable-execution-python-owner",
   "benchmark-conditional-window-python-owner",
   "benchmark-conditional-execution-python-owner",
+  "benchmark-producer-notifications-python-owner",
+  "benchmark-bootstrap-cache-python-owner",
+  "benchmark-proof-command-timings-python-owner",
 ]
+
+[[python_targets]]
+id = "benchmark-producer-notifications-python-owner"
+path = "tools/ci/tests/test_producer_notifications.py"
+owner = "tools/benchmark/producer_execution.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-bootstrap-cache-python-owner"
+path = "tools/ci/tests/test_bootstrap_cache.py"
+owner = "tools/benchmark/retrieval/evaluator.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-proof-command-timings-python-owner"
+path = "tools/ci/tests/test_proof_command_timings.py"
+owner = "tools/benchmark/retrieval/portable_proof.py"
+rail = "pr-benchmark-control-python"
 
 [[python_targets]]
 id = "proof-aggregate-python-owner"

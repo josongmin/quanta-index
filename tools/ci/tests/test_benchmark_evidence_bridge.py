@@ -21,6 +21,12 @@ def _bridge():
     return import_module("evidence_bridge")
 
 
+def _raw_files(root, entries):
+    from evidence import write_raw_file
+
+    return {path.name: write_raw_file(root / path.name, [content]) for path, content in entries}
+
+
 def _artifact(rows: list[dict], schema_version: int = 2) -> dict:
     return {
         "schema_version": schema_version,
@@ -317,9 +323,7 @@ def test_system_runs_replay_native_payload_in_fresh_process(
         family=family,
         profile="quality-full" if family == "concurrency" else "systems",
         created_utc=template["created_utc"],
-        native_path=captures[0][0],
-        native_bytes=captures[0][1],
-        additional_native=captures[1:],
+        raw_files=_raw_files(tmp_path / "prepared", captures),
         payload=bridge.native_payload_from_artifacts(artifacts, kind),
         **{
             key: template[key]
@@ -364,8 +368,7 @@ def test_promote_native_run_writes_an_immutable_verifiable_run(tmp_path: Path) -
         family="dsl-warm",
         profile="dsl-authority",
         created_utc="2026-09-26T12:00:00Z",
-        native_path=native_path,
-        native_bytes=native_bytes,
+        raw_files={native_path.name: evidence_module.RawFile.capture(native_path)},
         payload=payload,
         source={
             "revision": "a" * 40,
@@ -432,8 +435,7 @@ def test_promote_native_run_writes_an_immutable_verifiable_run(tmp_path: Path) -
             family="dsl-warm",
             profile="dsl-authority",
             created_utc="2026-09-26T12:00:00Z",
-            native_path=native_path,
-            native_bytes=native_bytes,
+            raw_files={native_path.name: evidence_module.RawFile.capture(native_path)},
             payload=payload,
             source=loaded["source"],
             build=loaded["build"],
@@ -443,6 +445,145 @@ def test_promote_native_run_writes_an_immutable_verifiable_run(tmp_path: Path) -
             boundary=loaded["boundary"],
             verdict=loaded["verdict"],
         )
+
+
+def test_failed_promotion_retains_its_raw_epoch(tmp_path):
+    bridge = _bridge()
+    from evidence import sample_evidence
+
+    template = sample_evidence()
+    root = tmp_path / "evidence"
+    with pytest.raises(bridge.EvidenceError):
+        bridge.promote_native_run(
+            evidence_root=root,
+            run_id="failed-epoch",
+            family="dsl-warm",
+            profile="dsl-authority",
+            created_utc=template["created_utc"],
+            raw_files=_raw_files(
+                tmp_path / "prepared", [(Path("input.bin"), b"retained diagnostic bytes")]
+            ),
+            payload={"kind": "unknown"},
+            **{
+                key: template[key]
+                for key in ("source", "build", "inputs", "host", "command", "boundary", "verdict")
+            },
+        )
+    assert (
+        root / ".staging/failed-epoch/raw/input.bin"
+    ).read_bytes() == b"retained diagnostic bytes"
+    assert not (root / "runs/failed-epoch").exists()
+    assert not (root / "latest").exists()
+    assert json.loads((root / ".staging/failed-epoch/failure.json").read_text()) == {
+        "run_id": "failed-epoch",
+        "status": "failed",
+        "error_type": "EvidenceError",
+    }
+
+
+@pytest.mark.parametrize("bad", ["empty", "not-map", "bytes", "absolute", "nested", "dot", "nul"])
+def test_native_file_inventory_refuses_invalid_inputs_before_staging(tmp_path, bad):
+    bridge = _bridge()
+    from evidence import sample_evidence, write_raw_file
+
+    template = sample_evidence()
+    source = write_raw_file(tmp_path / "source", [b"oracle"])
+    names = {"absolute": "/outside", "nested": "a/b", "dot": "..", "nul": "a\x00b"}
+    raw = (
+        {}
+        if bad == "empty"
+        else []
+        if bad == "not-map"
+        else {"input": b"not a reference"}
+        if bad == "bytes"
+        else {names[bad]: source}
+    )
+    root = tmp_path / "evidence"
+    with pytest.raises(bridge.EvidenceError):
+        bridge.promote_native_run(
+            evidence_root=root,
+            run_id="invalid",
+            family="dsl-warm",
+            profile="dsl-authority",
+            created_utc=template["created_utc"],
+            raw_files=raw,
+            payload=template["payload"],
+            **{
+                key: template[key]
+                for key in ("source", "build", "inputs", "host", "command", "boundary", "verdict")
+            },
+        )
+    assert not root.exists()
+
+
+def test_native_file_inventory_preserves_declared_producer_order(tmp_path):
+    bridge = _bridge()
+    from evidence import sample_evidence, write_raw_file
+
+    template = sample_evidence()
+    source = write_raw_file(tmp_path / "source", [b"oracle"])
+    result = bridge.promote_native_run(
+        evidence_root=tmp_path / "store",
+        run_id="sorted",
+        family="dsl-warm",
+        profile="dsl-authority",
+        created_utc=template["created_utc"],
+        raw_files={"z": source, "a": source},
+        payload=template["payload"],
+        **{
+            key: template[key]
+            for key in ("source", "build", "inputs", "host", "command", "boundary", "verdict")
+        },
+    )
+    assert [row["path"] for row in result["evidence"]["raw"]] == ["raw/z", "raw/a"]
+
+
+@pytest.mark.parametrize("recording_failure", [False, True])
+def test_promotion_cancellation_keeps_primary_error_and_retains_raw(
+    tmp_path, monkeypatch, recording_failure
+):
+    bridge = _bridge()
+    from evidence import RunStore, StagingRun, sample_evidence, write_raw_file
+
+    template = sample_evidence()
+    source = write_raw_file(tmp_path / "source", [b"retained"])
+
+    def cancel(_store, _staged):
+        raise KeyboardInterrupt("owned cancellation")
+
+    def disk_full(_stage, _error):
+        raise OSError(28, "No space left for failure marker")
+
+    monkeypatch.setattr(RunStore, "promote", cancel)
+    if recording_failure:
+        monkeypatch.setattr(StagingRun, "mark_failed", disk_full)
+    expected = bridge.EvidenceError if recording_failure else KeyboardInterrupt
+    root = tmp_path / "store"
+    with pytest.raises(expected) as caught:
+        bridge.promote_native_run(
+            evidence_root=root,
+            run_id="cancelled",
+            family="dsl-warm",
+            profile="dsl-authority",
+            created_utc=template["created_utc"],
+            raw_files={"input": source},
+            payload=template["payload"],
+            **{
+                key: template[key]
+                for key in ("source", "build", "inputs", "host", "command", "boundary", "verdict")
+            },
+        )
+    if recording_failure:
+        assert isinstance(caught.value.__cause__, KeyboardInterrupt)
+        assert "failure recording also failed" in str(caught.value)
+    else:
+        assert (
+            json.loads((root / ".staging/cancelled/failure.json").read_text())["error_type"]
+            == "KeyboardInterrupt"
+        )
+    assert (root / ".staging/cancelled/raw/input").read_bytes() == b"retained"
+    assert not (root / "runs/cancelled").exists()
+    assert not (root / "latest").exists()
 
 
 def _artifact_checker():
@@ -478,8 +619,7 @@ def test_promoted_real_artifact_fixture_replays_through_the_artifact_oracle(
         family="dsl-warm",
         profile="dsl-authority",
         created_utc="2026-09-26T12:00:00Z",
-        native_path=native_path,
-        native_bytes=native_bytes,
+        raw_files={native_path.name: import_module("evidence").RawFile.capture(native_path)},
         payload=payload,
         source={
             "revision": fixture.HEAD,
@@ -604,9 +744,13 @@ def test_real_closure_digest_crosses_typed_evidence_boundary(tmp_path, monkeypat
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "normative.txt").write_text("fixed source\n")
-    for argv in (("init", "-q"), ("config", "user.name", "Bridge Test"),
-                 ("config", "user.email", "bridge@example.invalid"),
-                 ("add", "normative.txt"), ("commit", "-qm", "fixture")):
+    for argv in (
+        ("init", "-q"),
+        ("config", "user.name", "Bridge Test"),
+        ("config", "user.email", "bridge@example.invalid"),
+        ("add", "normative.txt"),
+        ("commit", "-qm", "fixture"),
+    ):
         subprocess.run(["git", "-C", str(repo), *argv], check=True, capture_output=True)
     monkeypatch.setattr(bridge, "source_closure_module", lambda: engine)
     manifest = engine.build_manifest(repo, "bridge-synthetic")
@@ -616,6 +760,7 @@ def test_real_closure_digest_crosses_typed_evidence_boundary(tmp_path, monkeypat
     evidence = bridge.source_closure_module()  # Same real engine remains the authority.
     evidence.validate_manifest_shape(manifest)
     from evidence import sample_evidence, seal, validate
+
     record = sample_evidence()
     record["source"] = source
     validate(seal(record))

@@ -18,9 +18,141 @@ fn profile_custody_refuses_rust_gc_without_deleting_runs() -> Result<(), Box<dyn
     let root = tempfile::tempdir()?;
     fs::create_dir_all(root.path().join("captures"))?;
     fs::create_dir_all(root.path().join("runs/pinned"))?;
-    let store = RunStore::new(root.path());
+    let store = RunStore::new(root.path().canonicalize()?);
     assert!(store.collect(&[]).is_err());
     assert!(root.path().join("runs/pinned").is_dir());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn profile_marker_is_checked_after_acquiring_publication_custody() -> Result<(), Box<dyn Error>> {
+    use std::sync::mpsc::{self, RecvTimeoutError};
+    use std::time::Duration;
+
+    let root = tempfile::tempdir()?;
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(root.path().join(".custody.lock"))?;
+    lock.lock()?;
+    fs::create_dir_all(root.path().join("runs/pinned"))?;
+    let store = RunStore::new(root.path().canonicalize()?);
+    let (started_tx, started_rx) = mpsc::channel();
+    let (finished_tx, finished_rx) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        started_tx
+            .send(())
+            .map_err(|error| format!("start receiver dropped: {error}"))?;
+        finished_tx
+            .send(store.collect(&[]))
+            .map_err(|error| format!("result receiver dropped: {error}"))
+    });
+    started_rx.recv_timeout(Duration::from_secs(5))?;
+    let before_marker = finished_rx.recv_timeout(Duration::from_millis(100));
+    fs::create_dir_all(root.path().join("captures"))?;
+    drop(lock);
+    assert!(
+        matches!(before_marker, Err(RecvTimeoutError::Timeout)),
+        "{before_marker:?}"
+    );
+    assert!(finished_rx.recv_timeout(Duration::from_secs(5))?.is_err());
+    worker
+        .join()
+        .map_err(|error| format!("collector thread panicked: {error:?}"))??;
+    assert!(root.path().join("runs/pinned").is_dir());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn collector_refuses_linked_lock_and_root_before_deleting_runs() -> Result<(), Box<dyn Error>> {
+    use std::os::unix::fs::symlink;
+
+    let root = tempfile::tempdir()?;
+    fs::create_dir_all(root.path().join("runs/pinned"))?;
+    let store = RunStore::new(root.path().canonicalize()?);
+    let outside = tempfile::tempdir()?;
+    let outside_file = outside.path().join("lock");
+    fs::write(&outside_file, b"foreign")?;
+    let lock = root.path().join(".custody.lock");
+    symlink(&outside_file, &lock)?;
+    assert!(store.collect(&[]).is_err());
+    fs::remove_file(&lock)?;
+    fs::hard_link(&outside_file, &lock)?;
+    assert!(store.collect(&[]).is_err());
+    fs::remove_file(&lock)?;
+    let root_link = outside.path().join("root-link");
+    symlink(root.path(), &root_link)?;
+    assert!(RunStore::new(&root_link).collect(&[]).is_err());
+    assert_eq!(fs::read(&outside_file)?, b"foreign");
+    assert!(root.path().join("runs/pinned").is_dir());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn rust_collector_obeys_python_flock_custody() -> Result<(), Box<dyn Error>> {
+    use std::io::{BufRead as _, BufReader};
+    use std::process::{Child, Command, Stdio};
+    use std::sync::mpsc::{self, RecvTimeoutError};
+    use std::time::Duration;
+
+    // The test owns and reaps this one child even when a handshake fails.
+    struct OwnedChild(Child);
+    impl Drop for OwnedChild {
+        fn drop(&mut self) {
+            let _kill_result = self.0.kill();
+            let _wait_result = self.0.wait();
+        }
+    }
+
+    let root = tempfile::tempdir()?;
+    let path = root.path().canonicalize()?;
+    fs::create_dir_all(path.join("runs/pinned"))?;
+    let mut child = OwnedChild(Command::new("python3")
+        .args(["-I", "-c", "import fcntl,sys; from pathlib import Path; f=(Path(sys.argv[1])/'.custody.lock').open('a+b'); fcntl.flock(f,fcntl.LOCK_EX); print('locked',flush=True); sys.stdin.buffer.read()"])
+        .arg(&path)
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit())
+        .spawn()?);
+    let stdout = child.0.stdout.take().ok_or("Python stdout pipe missing")?;
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut line = String::new();
+        let result = BufReader::new(stdout)
+            .read_line(&mut line)
+            .map(|_count| line);
+        let _send_result = ready_tx.send(result);
+    });
+    assert_eq!(ready_rx.recv_timeout(Duration::from_secs(5))??, "locked\n");
+    reader
+        .join()
+        .map_err(|error| format!("Python handshake panicked: {error:?}"))?;
+    let store = RunStore::new(&path);
+    let (started_tx, started_rx) = mpsc::channel();
+    let (finished_tx, finished_rx) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        started_tx
+            .send(())
+            .map_err(|error| format!("start receiver dropped: {error}"))?;
+        finished_tx
+            .send(store.collect(&[]))
+            .map_err(|error| format!("result receiver dropped: {error}"))
+    });
+    started_rx.recv_timeout(Duration::from_secs(5))?;
+    let before_marker = finished_rx.recv_timeout(Duration::from_millis(100));
+    fs::create_dir_all(path.join("captures"))?;
+    drop(child);
+    assert!(
+        matches!(before_marker, Err(RecvTimeoutError::Timeout)),
+        "{before_marker:?}"
+    );
+    assert!(finished_rx.recv_timeout(Duration::from_secs(5))?.is_err());
+    worker
+        .join()
+        .map_err(|error| format!("collector panicked: {error:?}"))??;
+    assert!(path.join("runs/pinned").is_dir());
     Ok(())
 }
 

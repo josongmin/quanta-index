@@ -103,6 +103,30 @@ def test_changed_file_invalidates_the_closure(tmp_path: Path) -> None:
         raise AssertionError("a changed normative file was captured into a closure")
 
 
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "test_producer_notifications.py",
+        "test_bootstrap_cache.py",
+        "test_proof_command_timings.py",
+    ],
+)
+def test_execution_owner_test_mutation_invalidates_its_bound_closure(tmp_path, filename):
+    repo, module = _synthetic_repo(tmp_path)
+    relative = f"tools/ci/tests/{filename}"
+    assert relative in module.PROFILES["benchmark-control-plane"]["paths"]
+    path = repo / relative
+    path.parent.mkdir(parents=True)
+    path.write_bytes((REPO_ROOT / relative).read_bytes())
+    module.PROFILES["bm-synthetic"]["paths"] += (relative,)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "bind owner test")
+    manifest = module.build_manifest(repo, "bm-synthetic")
+    path.write_text(path.read_text() + "\n# changed owner test\n")
+    with pytest.raises(module.ClosureError, match="dirty|changed"):
+        module.verify_manifest(repo, manifest)
+
+
 def test_committed_source_change_invalidates_the_closure(tmp_path: Path) -> None:
     repo, module = _synthetic_repo(tmp_path)
     manifest = module.build_manifest(repo, "bm-synthetic")

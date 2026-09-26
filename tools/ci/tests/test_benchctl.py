@@ -836,8 +836,11 @@ def _promote_sample_run(root: Path, run_id: str) -> Path:
         family="dsl-warm",
         profile="dsl-authority",
         created_utc="2026-09-26T12:00:00Z",
-        native_path=Path("warm-matrix.json"),
-        native_bytes=native,
+        raw_files={
+            "warm-matrix.json": evidence_module.write_raw_file(
+                root / "work" / run_id / "warm-matrix.json", [native]
+            )
+        },
         payload=sealed["payload"],
         source=sealed["source"],
         build=sealed["build"],
@@ -980,8 +983,11 @@ def _promote_family_run(
         family=family,
         profile="systems",
         created_utc=created_utc,
-        native_path=Path(f"{family}-summary.json"),
-        native_bytes=evidence_module.SAMPLE_RAW,
+        raw_files={
+            f"{family}-summary.json": evidence_module.write_raw_file(
+                root / "work" / run_id / "summary.json", [evidence_module.SAMPLE_RAW]
+            )
+        },
         payload=payload,
         source={
             "revision": revision,
@@ -1044,6 +1050,22 @@ def _promote_family_run(
     )["run_dir"]
 
 
+def _commit_native_test_capture(root, profile, capture_id="native-capture", run_ids=None):
+    from profile_capture import commit_capture
+
+    registry = MODULE.load_registry(REPO_ROOT / "tools/benchmark/registry.toml")
+    return commit_capture(
+        root,
+        capture_id=capture_id,
+        profile=profile,
+        registry_digest=MODULE.registry_digest(registry),
+        expected_cases={family: [None] for family in registry["profiles"][profile]["families"]},
+        run_ids=run_ids
+        if run_ids is not None
+        else sorted(p.name for p in (root / "runs").iterdir()),
+    )
+
+
 def test_promoted_run_validation_refuses_unverifiable_payloads_and_other_profile(
     tmp_path: Path, capsys
 ) -> None:
@@ -1052,6 +1074,7 @@ def test_promoted_run_validation_refuses_unverifiable_payloads_and_other_profile
     root = tmp_path / "root"
     _promote_family_run(root, "freshness", "freshness-20260926T120000Z-aaaaaaaa")
     _promote_family_run(root, "open-loop", "open-loop-20260926T120000Z-bbbbbbbb")
+    _commit_native_test_capture(root, "systems")
 
     expected_source = {
         "revision": "a" * 40,
@@ -1075,7 +1098,7 @@ def test_promoted_run_validation_refuses_unverifiable_payloads_and_other_profile
         )
         == 2
     )
-    assert "dsl-warm" in capsys.readouterr().err
+    assert "complete profile 'dsl-authority'" in capsys.readouterr().err
 
 
 def test_promoted_latency_profile_replays_both_native_artifacts(tmp_path: Path, capsys) -> None:
@@ -1103,8 +1126,11 @@ def test_promoted_latency_profile_replays_both_native_artifacts(tmp_path: Path, 
             family=family,
             profile="dsl-authority",
             created_utc="2026-09-26T12:00:00Z",
-            native_path=Path(f"{family}.json"),
-            native_bytes=raw,
+            raw_files={
+                f"{family}.json": evidence_module.write_raw_file(
+                    root / "work" / family / "native.json", [raw]
+                )
+            },
             payload=evidence_bridge.latency_payload_from_artifact(native),
             source=source,
             build={
@@ -1148,6 +1174,7 @@ def test_promoted_latency_profile_replays_both_native_artifacts(tmp_path: Path, 
             },
             verdict={"scope": "diagnostic", "status": "pass", "reason": None, "metrics": []},
         )
+    _commit_native_test_capture(root, "dsl-authority")
     assert MODULE.validate_promoted_runs(root, "dsl-authority", manifest, source, lock) == 0
     assert len(json.loads(capsys.readouterr().out)["runs"]) == 2
     evidence_path = root / "runs" / "dsl-warm-native-proof" / "evidence.json"
@@ -1159,6 +1186,9 @@ def test_promoted_latency_profile_replays_both_native_artifacts(tmp_path: Path, 
     forged["digest"] = None
     forged = evidence_module.seal(forged)
     evidence_path.write_text(evidence_module.to_canonical_json(forged), encoding="utf-8")
+    # Rebind the forged envelope coherently: native replay, not a stale digest,
+    # must catch the disagreement with immutable raw samples.
+    _commit_native_test_capture(root, "dsl-authority", capture_id="forged-capture")
     assert MODULE.validate_promoted_runs(root, "dsl-authority", manifest, source, lock) == 2
     assert "typed payload differs" in capsys.readouterr().err
 
@@ -1180,12 +1210,14 @@ def test_promoted_run_validation_rejects_failed_wrong_source_and_tampered_runs(
         root, "freshness", "freshness-20260926T120000Z-failed01", verdict_status="fail"
     )
     _promote_family_run(root, "open-loop", "open-loop-20260926T120000Z-passed01")
-    assert MODULE.validate_promoted_runs(root, "systems", manifest, expected_source, lock) == 2
-    assert "non-passing verdict" in capsys.readouterr().err
+    with pytest.raises(MODULE.EvidenceError, match="non-passing"):
+        _commit_native_test_capture(root, "systems")
+    assert not (root / "profiles/systems.json").exists()
 
     root = tmp_path / "wrong-source"
     _promote_family_run(root, "freshness", "freshness-20260926T120000Z-wrong001", revision="b" * 40)
-    _promote_family_run(root, "open-loop", "open-loop-20260926T120000Z-passed02")
+    _promote_family_run(root, "open-loop", "open-loop-20260926T120000Z-passed02", revision="b" * 40)
+    _commit_native_test_capture(root, "systems")
     assert MODULE.validate_promoted_runs(root, "systems", manifest, expected_source, lock) == 2
     assert "wrong profile or source" in capsys.readouterr().err
 
@@ -1193,13 +1225,17 @@ def test_promoted_run_validation_rejects_failed_wrong_source_and_tampered_runs(
     _promote_family_run(root, "freshness", "freshness-20260926T120000Z-old00001")
     new = _promote_family_run(root, "freshness", "freshness-20260926T130000Z-new00001")
     _promote_family_run(root, "open-loop", "open-loop-20260926T120000Z-passed03")
+    _commit_native_test_capture(
+        root, "systems", run_ids=[new.name, "open-loop-20260926T120000Z-passed03"]
+    )
     (new / "raw" / "freshness-summary.json").write_bytes(b"tampered")
     assert MODULE.validate_promoted_runs(root, "systems", manifest, expected_source, lock) == 2
-    assert "invalid run" in capsys.readouterr().err
+    assert "raw file" in capsys.readouterr().err
 
     root = tmp_path / "wrong-payload"
     _promote_family_run(root, "freshness", "freshness-wrong-payload", wrong_payload=True)
     _promote_family_run(root, "open-loop", "open-loop-correct-payload")
+    _commit_native_test_capture(root, "systems")
     assert MODULE.validate_promoted_runs(root, "systems", manifest, expected_source, lock) == 2
     assert "wrong payload kind" in capsys.readouterr().err
 
@@ -1224,16 +1260,14 @@ def test_promoted_profile_refuses_mixed_capture_even_with_same_source(
         "closure_profile": "benchmark-control-plane",
         "closure_digest": "sha256:" + "11" * 32,
     }
+    _commit_native_test_capture(root, "systems")
     assert (
         MODULE.validate_promoted_runs(root, "systems", manifest, source, "sha256:" + "22" * 32) == 2
     )
     assert "mixes different benchmark captures" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("profile_name", ["dsl-authority", "systems"])
-def test_promotion_is_scoped_to_the_profile_families(
-    monkeypatch, tmp_path: Path, profile_name: str
-) -> None:
+def _native_profile_fixture(monkeypatch, tmp_path: Path, profile_name: str) -> dict:
     """Real validator, bridge and store only publish the two selected families."""
     import evidence_bridge
 
@@ -1242,6 +1276,13 @@ def test_promotion_is_scoped_to_the_profile_families(
     manifest = MODULE.load_manifest()
     repo = tmp_path / "repo"
     install_control_plane(repo)
+    registry = MODULE.load_registry(REPO_ROOT / "tools/benchmark/registry.toml")
+    for table in ("producers", "validators", "scorers"):
+        for entry in registry[table].values():
+            if "module" in entry:
+                target = repo / entry["module"]
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes((REPO_ROOT / entry["module"]).read_bytes())
     selected = manifest["profiles"][profile_name]["families"]
     for family in [*selected, "scale"]:
         target = repo / manifest["families"][family]["artifact_glob"]
@@ -1296,24 +1337,50 @@ def test_promotion_is_scoped_to_the_profile_families(
         ),
         encoding="utf-8",
     )
-    root = tmp_path / "evidence"
-    assert (
-        MODULE.promote_profile_runs(
-            repo,
-            profile_name,
-            manifest,
-            root,
-            HEAD,
-            receipt,
-            "sha256:" + hashlib.sha256(receipt.read_bytes()).hexdigest(),
-            0,
-            MODULE.snapshot_profile_artifacts(repo, profile_name, manifest),
-        )
-        == 0
+    return dict(
+        repo_root=repo,
+        profile_name=profile_name,
+        manifest=manifest,
+        evidence_root=tmp_path / "evidence",
+        initial_head=HEAD,
+        receipt=receipt,
+        preflight_digest="sha256:" + hashlib.sha256(receipt.read_bytes()).hexdigest(),
+        capture_started_ns=0,
+        validated_artifacts=MODULE.snapshot_profile_artifacts(repo, profile_name, manifest),
     )
+
+
+@pytest.mark.parametrize("profile_name", ["dsl-authority", "systems"])
+def test_promotion_is_scoped_to_the_profile_families(monkeypatch, tmp_path, profile_name):
+    import evidence_bridge
+
+    args = _native_profile_fixture(monkeypatch, tmp_path, profile_name)
+    repo, root = args["repo_root"], args["evidence_root"]
+    manifest = args["manifest"]
+    selected = manifest["profiles"][profile_name]["families"]
+    source = evidence_bridge.source_identity(repo, "benchmark-control-plane")
+    assert MODULE.promote_profile_runs(**args) == 0
     runs = [MODULE.RunStore(root).load(path.name) for path in (root / "runs").iterdir()]
     assert {run["family"] for run in runs} == set(selected)
     assert len(runs) == 2
+    assert (root / "profiles" / f"{profile_name}.json").is_file()
+    assert MODULE.RunStore(root).collect([]) == []
+    for run in runs:
+        replay = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT_PATH),
+                "replay",
+                run["run_id"],
+                "--evidence-root",
+                str(root),
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert replay.returncode == 0, replay.stdout + replay.stderr
     assert (
         MODULE.validate_promoted_runs(
             root,
@@ -1324,6 +1391,125 @@ def test_promotion_is_scoped_to_the_profile_families(
         )
         == 0
     )
+
+
+def test_native_raw_filename_collision_refuses_before_promotion(monkeypatch, tmp_path, capsys):
+    args = _native_profile_fixture(monkeypatch, tmp_path, "systems")
+    original = MODULE._capture_native_family
+
+    def duplicated(*values, **kwargs):
+        raw, artifacts, payload = original(*values, **kwargs)
+        return [*raw, raw[0]], artifacts, payload
+
+    monkeypatch.setattr(MODULE, "_capture_native_family", duplicated)
+    assert MODULE.promote_profile_runs(**args) == 2
+    assert "repeats a destination filename" in capsys.readouterr().err
+    assert not (args["evidence_root"] / "runs").exists()
+
+
+def test_native_partial_publication_preserves_prior_complete_capture(monkeypatch, tmp_path):
+    import evidence_bridge
+    from profile_capture import load_capture
+
+    args = _native_profile_fixture(monkeypatch, tmp_path, "systems")
+    root = args["evidence_root"]
+    assert MODULE.promote_profile_runs(**args) == 0
+    pointer = root / "profiles/systems.json"
+    previous = pointer.read_bytes()
+    real = evidence_bridge.promote_native_run
+    calls = []
+
+    def fail_second(**kwargs):
+        calls.append(kwargs["family"])
+        if len(calls) == 2:
+            raise MODULE.EvidenceError("injected second-family failure")
+        return real(**kwargs)
+
+    monkeypatch.setattr(evidence_bridge, "promote_native_run", fail_second)
+    assert MODULE.promote_profile_runs(**args) == 2
+    assert calls == ["freshness", "open-loop"]
+    assert pointer.read_bytes() == previous
+    registry = MODULE.load_registry(REPO_ROOT / "tools/benchmark/registry.toml")
+    document = load_capture(
+        root, profile="systems", registry_digest=MODULE.registry_digest(registry)
+    )
+    assert len(document["runs"]) == 2
+    assert len(MODULE.RunStore(root).collect([])) == 1
+    source = evidence_bridge.source_identity(args["repo_root"], "benchmark-control-plane")
+    lock = MODULE.digest_bytes((args["repo_root"] / "Cargo.lock").read_bytes())
+    assert MODULE.validate_promoted_runs(root, "systems", args["manifest"], source, lock) == 0
+
+
+def test_native_validator_ignores_newer_uncommitted_runs_and_requires_pointer(
+    monkeypatch, tmp_path, capsys
+):
+    import evidence_bridge
+
+    args = _native_profile_fixture(monkeypatch, tmp_path, "systems")
+    assert MODULE.promote_profile_runs(**args) == 0
+    root, repo = args["evidence_root"], args["repo_root"]
+    _promote_family_run(root, "freshness", "newer-uncommitted", created_utc="2100-01-01T00:00:00Z")
+    source = evidence_bridge.source_identity(repo, "benchmark-control-plane")
+    lock = MODULE.digest_bytes((repo / "Cargo.lock").read_bytes())
+    assert MODULE.validate_promoted_runs(root, "systems", args["manifest"], source, lock) == 0
+    (root / "profiles/systems.json").unlink()
+    assert MODULE.validate_promoted_runs(root, "systems", args["manifest"], source, lock) == 2
+    assert "cannot load complete profile" in capsys.readouterr().err
+
+
+def test_native_profile_publication_excludes_real_gc_process(monkeypatch, tmp_path):
+    import selectors
+
+    import evidence_bridge
+
+    args = _native_profile_fixture(monkeypatch, tmp_path, "systems")
+    root = args["evidence_root"]
+    real, children = evidence_bridge.promote_native_run, []
+    script = f"""
+import fcntl, json, sys
+from pathlib import Path
+sys.path.insert(0, {str(REPO_ROOT / "tools/benchmark")!r})
+from evidence import RunStore
+root = Path(sys.argv[1])
+with (root / '.custody.lock').open('rb') as lock:
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print('custody-held', flush=True)
+    else:
+        raise RuntimeError('profile publication did not exclude GC')
+print(json.dumps(RunStore(root).collect([])), flush=True)
+"""
+
+    def competing_gc(**kwargs):
+        result = real(**kwargs)
+        assert (root / "captures").is_dir(), "Rust GC exclusion must precede first promotion"
+        if not children:
+            child = subprocess.Popen(
+                [sys.executable, "-c", script, str(root)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            children.append(child)
+            with selectors.DefaultSelector() as watch:
+                watch.register(child.stdout, selectors.EVENT_READ)
+                assert watch.select(10), "collector never tested custody"
+            assert child.stdout.readline().strip() == "custody-held"
+        return result
+
+    monkeypatch.setattr(evidence_bridge, "promote_native_run", competing_gc)
+    try:
+        assert MODULE.promote_profile_runs(**args) == 0
+        stdout, stderr = children[0].communicate(timeout=20)
+        assert children[0].returncode == 0, stderr
+        assert json.loads(stdout) == []
+        assert len(list((root / "runs").iterdir())) == 2
+    finally:
+        for child in children:
+            if child.poll() is None:
+                child.kill()
+                child.communicate(timeout=10)
 
 
 def test_promotion_refuses_missing_preflight_and_partial_multi_artifact_claim(

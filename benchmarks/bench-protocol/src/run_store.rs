@@ -350,13 +350,29 @@ impl RunStore {
     }
 
     /// Remove every run that is neither explicitly kept nor baseline-referenced.
+    ///
+    /// Requires a symlink-free POSIX root and the shared publication lock.
+    /// Complete-profile stores must be collected by the orchestrator instead.
     pub fn collect(&self, keep: &[String]) -> Result<Vec<String>, ProtocolError> {
+        // Serialize with Python publication before observing the marker. A
+        // pre-lock marker check can race the first complete-profile capture.
+        let _custody = gc_custody(&self.root)?;
         // Profile captures are orchestration-owned custody roots. Refuse GC
         // rather than deleting runs pinned by an unknown profile record.
-        if fs::symlink_metadata(self.root.join("captures")).is_ok() {
-            return Err(ProtocolError::semantic(
-                "profile-capture custody requires orchestrator garbage collection",
-            ));
+        let captures = self.root.join("captures");
+        match fs::symlink_metadata(&captures) {
+            Ok(_) => {
+                return Err(ProtocolError::semantic(
+                    "profile-capture custody requires orchestrator garbage collection",
+                ));
+            }
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(ProtocolError::Io {
+                    path: captures,
+                    source,
+                });
+            }
         }
         let mut retained: Vec<String> = keep.to_vec();
         let baselines = self.baselines_dir();
@@ -475,6 +491,69 @@ impl RunStore {
         }
         Ok(())
     }
+}
+
+#[cfg(unix)]
+fn gc_custody(root: &Path) -> Result<File, ProtocolError> {
+    use std::os::unix::fs::MetadataExt as _;
+
+    use rustix::fs::{Mode, OFlags};
+
+    let absolute = std::path::absolute(root).map_err(|source| ProtocolError::Io {
+        path: root.to_path_buf(),
+        source,
+    })?;
+    for ancestor in absolute.ancestors() {
+        match fs::symlink_metadata(ancestor) {
+            Ok(metadata) if !metadata.is_dir() => {
+                return Err(ProtocolError::semantic(
+                    "GC custody ancestor is not a regular directory",
+                ));
+            }
+            Ok(_) => {}
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(ProtocolError::Io {
+                    path: ancestor.to_path_buf(),
+                    source,
+                });
+            }
+        }
+    }
+    fs::create_dir_all(root).map_err(|source| ProtocolError::Io {
+        path: root.to_path_buf(),
+        source,
+    })?;
+    let path = root.join(".custody.lock");
+    let fd = rustix::fs::open(
+        &path,
+        OFlags::CREATE | OFlags::RDWR | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
+        Mode::RUSR | Mode::WUSR,
+    )
+    .map_err(|source| ProtocolError::Io {
+        path: path.clone(),
+        source: source.into(),
+    })?;
+    let file = File::from(fd);
+    let metadata = file.metadata().map_err(|source| ProtocolError::Io {
+        path: path.clone(),
+        source,
+    })?;
+    if !metadata.is_file() || metadata.nlink() != 1 {
+        return Err(ProtocolError::semantic(
+            "GC custody lock is not a single-link regular file",
+        ));
+    }
+    file.lock()
+        .map_err(|source| ProtocolError::Io { path, source })?;
+    Ok(file)
+}
+
+#[cfg(not(unix))]
+fn gc_custody(_root: &Path) -> Result<File, ProtocolError> {
+    Err(ProtocolError::semantic(
+        "run-store GC requires POSIX publication custody",
+    ))
 }
 
 fn decode_text(bytes: &[u8], path: &Path) -> Result<String, ProtocolError> {

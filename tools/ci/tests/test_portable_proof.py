@@ -389,7 +389,11 @@ def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, proof_actor_
             )
             raw = b""
         elif argv[3:5] == ["nextest", "list"]:
-            binary = "sdk_roundtrip" if "sdk_roundtrip" in argv else "chunking_contract"
+            if "--binaries-metadata" in argv:
+                prepared = json.loads(Path(argv[argv.index("--binaries-metadata") + 1]).read_bytes())
+                binary = next(iter(prepared["rust-binaries"].values()))["binary-name"]
+            else:
+                binary = "sdk_roundtrip" if "sdk_roundtrip" in argv else "chunking_contract"
             test = portable_proof.sdk_proof.PROOF_TEST if binary == "sdk_roundtrip" else "one"
             raw = _rust_inventory(binary, test, compiled_test)
             if "--list-type" in argv:

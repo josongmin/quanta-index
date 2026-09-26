@@ -217,12 +217,18 @@ def _capture_reuse_input_epoch(path: Path, expected: bytes) -> tuple:
 
 def _run_reused_nextest(wrapper: str, out: Path, commands: list[dict[str, object]],
                        binary_raw: bytes, metadata_raw: bytes, *,
-                       env_overrides: dict[str, str]) -> bytes:
+                       env_overrides: dict[str, str], operation: str = "run") -> bytes:
+    # Collection and execution consume the same one-time build. Neither may
+    # reinterpret mutable metadata or independently prepare another binary set.
+    if operation not in {"list", "run"}:
+        raise ValueError("unsupported reused nextest operation")
+    name = "rust-test" if operation == "run" else "rust-collection"
+    args = FORMAT if operation == "run" else ["--message-format", "json"]
     inputs = ((out / "rust-build.stdout", binary_raw),
               (out / "metadata.stdout", metadata_raw))
     epochs = [_reuse_input_epoch(path, raw) for path, raw in inputs]
     try:
-        return _run("rust-test", _reuse_nextest(wrapper, "run", out, *FORMAT),
+        return _run(name, _reuse_nextest(wrapper, operation, out, *args),
                     out, commands, env_overrides=env_overrides)
     finally:
         for (path, raw), epoch in zip(inputs, epochs, strict=True):
@@ -339,6 +345,7 @@ RELEVANT_ENV = frozenset(
         "ENV",
         "ZDOTDIR",
         "CARGO_BUILD_TARGET",
+        "CARGO_BUILD_JOBS",
         "PYTHONPATH",
         "PYTEST_ADDOPTS",
         "QUANTA_INDEX_CACHE_ROOT",
@@ -642,14 +649,11 @@ def _expected_commands(
                 ],
                 base,
             ),
-            (
-                "rust-collection",
-                _cargo(wrapper, "nextest", "list", *selector, "--message-format", "json"),
-                base,
-            ),
             ("rust-build", _cargo(wrapper, "nextest", "list", *selector,
                                   "--list-type", "binaries-only", "--message-format", "json"), base),
             ("metadata", _cargo(wrapper, "metadata", "--format-version", "1", "--locked"), base),
+            ("rust-collection", _reuse_nextest(wrapper, "list", out,
+                                              "--message-format", "json"), base),
             (
                 "python-test",
                 [
@@ -685,11 +689,6 @@ def _expected_commands(
             _cargo(wrapper, "build", "-p", PACKAGE, "--bin", PACKAGE, "--locked"),
             base,
         ),
-        (
-            "rust-collection",
-            _cargo(wrapper, "nextest", "list", *selector, "--message-format", "json"),
-            base,
-        ),
         ("rust-build", _cargo(wrapper, "nextest", "list", *selector,
                               "--list-type", "binaries-only", "--message-format", "json"), base),
         (
@@ -697,6 +696,8 @@ def _expected_commands(
             _cargo(wrapper, "metadata", "--format-version", "1", "--locked"),
             base,
         ),
+        ("rust-collection", _reuse_nextest(wrapper, "list", out,
+                                          "--message-format", "json"), base),
         (
             "rust-test",
             _reuse_nextest(wrapper, "run", out, *FORMAT),
@@ -778,20 +779,17 @@ def _produce(rail: str, out: Path, revision: str, tools: dict[str, dict[str, str
         python_inventory = _artifact(out, "python-inventory.json", raw_evidence)
         proof_inventory.verify_inventory_authority(python_inventory, "python")
         selector = ["-p", PACKAGE, "--lib", "--test", "chunking_contract", *FLAGS]
-        _run(
-            "rust-collection",
-            _cargo(wrapper, "nextest", "list", *selector, "--message-format", "json"),
-            out,
-            commands,
-        )
-        rust_inventory = out / "rust-inventory.json"
-        _write(rust_inventory, (out / "rust-collection.stdout").read_bytes())
-        _artifact(out, "rust-inventory.json", raw_evidence)
-        proof_inventory.verify_inventory_authority(rust_inventory, "rust")
         build_raw = _run("rust-build", _cargo(wrapper, "nextest", "list", *selector,
                          "--list-type", "binaries-only", "--message-format", "json"), out, commands)
         _target_dir(wrapper, out, commands)
         metadata_raw = (out / "metadata.stdout").read_bytes()
+        _run_reused_nextest(wrapper, out, commands, build_raw, metadata_raw,
+                           env_overrides={}, operation="list")
+        rust_inventory = out / "rust-inventory.json"
+        _write(rust_inventory, (out / "rust-collection.stdout").read_bytes())
+        _artifact(out, "rust-inventory.json", raw_evidence)
+        proof_inventory.verify_inventory_authority(rust_inventory, "rust")
+
         verify_reused_build(build_raw, metadata_raw,
                             rust_inventory.read_bytes(), workspace_root=ROOT)
         binaries = _bind_test_binaries(rust_inventory.read_bytes())
@@ -852,17 +850,14 @@ def _produce(rail: str, out: Path, revision: str, tools: dict[str, dict[str, str
             commands,
         )
         selector = ["-p", PACKAGE, "--test", "sdk_roundtrip", *FLAGS]
-        collected = _run(
-            "rust-collection",
-            _cargo(wrapper, "nextest", "list", *selector, "--message-format", "json"),
-            out,
-            commands,
-        )
-        _write(out / "nextest-inventory.json", collected)
         build_raw = _run("rust-build", _cargo(wrapper, "nextest", "list", *selector,
                          "--list-type", "binaries-only", "--message-format", "json"), out, commands)
         target = _target_dir(wrapper, out, commands)
         metadata_raw = (out / "metadata.stdout").read_bytes()
+        collected = _run_reused_nextest(wrapper, out, commands, build_raw, metadata_raw,
+                                       env_overrides={}, operation="list")
+        _write(out / "nextest-inventory.json", collected)
+
         verify_reused_build(build_raw, metadata_raw, collected,
                             workspace_root=ROOT)
         suffix = ".exe" if os.name == "nt" else ""
