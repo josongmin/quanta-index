@@ -1,6 +1,6 @@
 # RBR-05 — Symbol route와 공통 published-unit 증명
 
-## 현행 판정 — 2026-09-26, `6a142add` + sep-23 계약 문서 dirty
+## 현행 판정 — 2026-09-26, [중앙 코드 감사](CURRENT-AUDIT.md) 기준
 
 - 구현: `published_units.rs` typed registry, SDK `symbol` route와 `record.rs::prove_hit`의 published-unit 증명 경로 확인. `prove_hit`의 **scored byte span은 full-line projection**이므로 indexed span 품질은 RBR-06 미해결.
 - 검증: 과거 live SDK 기록은 현 source의 forged/stale/timeout/no-answer·동명이인 proof가 아니다. 현재 SDK rail/receipt는 `NOT_RUN`.

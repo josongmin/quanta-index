@@ -561,12 +561,12 @@ pub(crate) fn verify_integrity(
                 // retry superseded, is exactly attributable through its
                 // Invalidation event (same identity digest). Every other
                 // missing pair is corruption.
-                let invalidated = is_invalidated(connection, path, &identity)?;
+                let invalidated = has_later_invalidation(connection, path, sequence, &identity)?;
                 let paired =
                     crate::idempotency::verify_terminal_event_pair(connection, path, sequence)?;
                 match (paired, invalidated) {
                     (Some(state), _) if state == expected_state => {}
-                    (_, true) => {}
+                    (None, true) => {}
                     (paired, _) => {
                         return Err(corrupt(&format!(
                             "operation event {sequence} (kind {}) has no exact domain pair \
@@ -642,20 +642,23 @@ pub(crate) fn is_invalidated_for_floor(
     Ok(found.is_some())
 }
 
-/// Whether any invalidation event names `identity_digest` (the integrity
-/// pass's attribution check).
-pub(crate) fn is_invalidated(
+/// Whether a later invalidation event names `identity_digest` (the integrity
+/// pass's attribution check). An earlier invalidation cannot excuse a new
+/// unpaired terminal event after the replay floor was raised.
+fn has_later_invalidation(
     connection: &Connection,
     path: &std::path::Path,
+    terminal_sequence: i64,
     identity_digest: &[u8; 32],
 ) -> Result<bool, CoreError> {
     let found: Option<i64> = connection
         .query_row(
             "SELECT 1 FROM catalog_sequence_event_v2
-             WHERE kind = ?1 AND identity_digest = ?2 LIMIT 1",
+             WHERE kind = ?1 AND identity_digest = ?2 AND sequence > ?3 LIMIT 1",
             params![
                 SequenceEventKindV1::OperationInvalidation.as_code(),
-                identity_digest.as_slice()
+                identity_digest.as_slice(),
+                terminal_sequence,
             ],
             |row| row.get(0),
         )
@@ -970,6 +973,66 @@ mod tests {
                     format!("committed journal row accepted {mutation:?} event drift").into(),
                 );
             }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn invalidation_cannot_attribute_a_later_unpaired_operation_event() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let catalog = SqliteCatalog::open(root.path(), Duration::from_millis(100))?;
+        let key = IdempotencyKeyV1 {
+            kind: IngestOperationKindV1::History,
+            repo_id: RepoId::new("repo")?,
+            revision_id: RevisionId::new("revision")?,
+            generation: ManifestGeneration::new(1),
+            batch_digest: "digest".to_string(),
+        };
+        let body = [1_u8; 32];
+        let claim = match catalog.claim_prepared(
+            &key,
+            &body,
+            "owner",
+            i64::MAX.unsigned_abs(),
+            &body,
+        )? {
+            ClaimOutcomeV1::Claimed(claim) => claim,
+            ClaimOutcomeV1::Replay { .. } | ClaimOutcomeV1::ReplayRepoMap { .. } => {
+                return Err("fixture expected a fresh claim".into());
+            }
+        };
+        catalog.mark_applying(&claim)?;
+        let mut receipt = BatchPublishReceipt::empty_for(
+            ManifestGeneration::new(1),
+            None,
+            "digest".to_string(),
+        );
+        receipt.accept_replace_scope();
+        let _committed = catalog.commit(&claim, &receipt)?;
+        if catalog.forget_generation(&key.repo_id, &key.revision_id, key.generation)? != 1 {
+            return Err("fixture must invalidate one committed row".into());
+        }
+        {
+            let mut connection = catalog.lock()?;
+            let transaction = connection.transaction()?;
+            let _orphan = append_sequence_event(
+                &transaction,
+                SequenceEventKindV1::OperationCommitted,
+                &key.identity_digest(),
+                &[9_u8; 32],
+            )?;
+            transaction.commit()?;
+            drop(connection);
+        }
+        drop(catalog);
+        if !matches!(
+            SqliteCatalog::open(root.path(), Duration::from_millis(100)),
+            Err(quanta_index_core::CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                ..
+            })
+        ) {
+            return Err("an earlier invalidation cannot excuse a later orphan event".into());
         }
         Ok(())
     }

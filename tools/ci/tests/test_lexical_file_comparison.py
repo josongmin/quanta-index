@@ -8,7 +8,11 @@ import json
 import pytest
 
 from tools.benchmark.retrieval.evaluator import canonical, digest
-from tools.benchmark.retrieval.lexical_file_comparison import pair_result, product_result
+from tools.benchmark.retrieval.lexical_file_comparison import (
+    latency_summary,
+    pair_result,
+    product_result,
+)
 from tools.benchmark.retrieval.prepare_lexical_pair import build_spec
 
 
@@ -106,6 +110,7 @@ def test_product_result_rejects_wrong_query_and_duplicate(tmp_path):
             "error": None,
             "file_paths_top_10": gold,
             "file_hit_at_10": True,
+            "elapsed_ms": 1.0,
         }
         for task_id, (query, gold) in expected.items()
     ]
@@ -132,10 +137,19 @@ def test_pair_result_rejects_semantic_lane_even_if_report_has_hits(tmp_path):
         "sample_count": 20,
         "rank_metrics": {
             "routes": {
-                route: {"sample_count": 20, "chunk": {"file_recall_at_10": 1.0}}
+                route: {
+                    "sample_count": 20,
+                    "chunk": {"file_recall_at_10": 1.0},
+                    "mean_query_latency_ms": 1.0,
+                }
                 for route in ("lexical", "semble-hybrid")
             }
         },
+        "per_query": [
+            {"route": route, "task_id": task["task_id"], "query_latency_ms": 1.0}
+            for route in ("lexical", "semble-hybrid")
+            for task in pack["tasks"]
+        ],
     }
     lock = {
         "execution_profiles": {
@@ -168,3 +182,14 @@ def test_pair_result_rejects_semantic_lane_even_if_report_has_hits(tmp_path):
     paths[2].write_text(json.dumps(native), encoding="utf-8")
     with pytest.raises(ValueError, match="did not execute lexical-only"):
         pair_result(*paths, pack, suite, 20)
+
+
+def test_latency_summary_rejects_missing_and_nonfinite_values():
+    values = [float(number) for number in range(1, 21)]
+    summary = latency_summary(values, 20, "test-layer")
+    assert summary["p50_ms"] == 10.5
+    assert summary["p95_ms"] == 19.0
+    with pytest.raises(ValueError, match="invalid latency"):
+        latency_summary(values[:-1], 20, "test-layer")
+    with pytest.raises(ValueError, match="invalid latency"):
+        latency_summary(values[:-1] + [float("nan")], 20, "test-layer")

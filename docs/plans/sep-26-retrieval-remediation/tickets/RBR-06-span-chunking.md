@@ -1,6 +1,6 @@
 # RBR-06 — Span 회계 분리와 기존 청커 대조 실험
 
-## 현행 판정 — 2026-09-26, `6a142add` + sep-23 계약 문서 dirty
+## 현행 판정 — 2026-09-26, [중앙 코드 감사](CURRENT-AUDIT.md) 기준
 
 - 구현: strict/line-aligned/whole-file 청커와 손계산 fixture가 있다. `published_units.rs`에는 indexed byte span이 남지만 `record.rs::prove_hit`은 SDK line span을 `line_span_bytes`로 확장하여 **그 한 span만** scorer에 출력한다. `evaluator.py::recall_at_k`/`mrr_at_k`는 이 projected span에 `covers`를 적용한다.
 - 검증: dirty local chunking contract 25 passed는 진단 결과다. 현 frozen-source producer→schema→replay→scorer integration 및 외부 matrix는 `NOT_RUN`.

@@ -1,9 +1,9 @@
 # RBR-00 — Proof inventory와 새 실행 계약의 증거 바인딩
 
-## 현행 판정 — 2026-09-26, `6a142add` + sep-23 계약 문서 dirty
+## 현행 판정 — 2026-09-26, [중앙 코드 감사](CURRENT-AUDIT.md) 기준
 
 - 구현: Python authority·sep-26 source closure·profile 계약은 코드에서 확인. 아래 210/211 및 closure 미포함은 **티켓 작성 당시 반례**이며 현 상태가 아니다.
-- 검증: 현 HEAD에서 `collect_pytest()` 대 authority는 exit 0, Python **272/272**, missing/extra/duplicate 0, 순서 일치. 현 HEAD의 선택 Python rail 11 passed/261 deselected, split 관련 rail 4 passed/268 deselected. 전체 272 passed/32 subtests는 이전 이동 중인 source의 진단 기록이지 현 HEAD 전체 proof가 아니다. Rust 106·SDK 16은 manifest 수량 관측일 뿐 현재 source의 nextest collection과 clean receipt는 `NOT_RUN`. sep-23 계약 문서 dirty가 retrieval closure에 포함되어 있다.
+- 검증: 현 HEAD에서 `collect_pytest()` 대 authority는 exit 0, Python **272/272 exact**. `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_retrieval_benchmark.py -q -p no:cacheprovider`는 272 passed/32 subtests passed(exit 0, 197.17s). 실행 전후 Python 입력 SHA는 동일하지만 공유 dirty checkout이 이동했고 문서도 source closure 입력이므로 **local diagnostic**이다. Rust 106·SDK 16은 manifest 수량 관측일 뿐 현재 source의 nextest collection과 clean receipt는 `NOT_RUN`.
 - 잔여: 최종 dirty bytes 고정 → 3역할 exact collection·negative fixture → clean-source contract/SDK receipt. 현재 구현/문서 변경 뒤 이전 receipt 재사용 금지. [현재 전수 판정](CURRENT-AUDIT.md).
 
 - 우선순위: P0. Python inventory·closure 코드는 관측됨; 현 소스 전체 proof는 미발급. [현재 전수 판정](CURRENT-AUDIT.md).

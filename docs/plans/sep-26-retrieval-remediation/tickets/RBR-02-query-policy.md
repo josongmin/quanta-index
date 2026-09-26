@@ -1,6 +1,6 @@
 # RBR-02 — 자연어·literal·native DSL 입력 계약 분리
 
-## 현행 판정 — 2026-09-26, `6a142add` + sep-23 계약 문서 dirty
+## 현행 판정 — 2026-09-26, [중앙 코드 감사](CURRENT-AUDIT.md) 기준
 
 - 구현: `query_plan.rs`의 native/literal/NL 분기, effective/original identity, Python 재도출 oracle 및 distractor fixture 경로 확인. 벤치 opt-in 정책이지 제품 기본값 변경이 아니다.
 - 검증: 과거 dirty local contract 결과는 기록되어 있으나 현 frozen-source 정책/identity 부정 테스트와 live daemon SDK proof는 `NOT_RUN`.

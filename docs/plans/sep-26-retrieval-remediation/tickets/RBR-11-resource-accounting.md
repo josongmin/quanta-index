@@ -1,9 +1,9 @@
 # RBR-11 — Zero-RSS live parent 아래 프로세스 누락 수정
 
-## 현행 판정 — 2026-09-26, `6a142add` + sep-23 계약 문서 dirty
+## 현행 판정 — 2026-09-26, [중앙 코드 감사](CURRENT-AUDIT.md) 기준
 
 - 구현: live zero-RSS connector·malformed/duplicate PID·missing root의 fail-closed 처리는 `run.py` dirty bytes에 있다. 아래 `rss_kib > 0` 선필터와 `[100]` 결과는 **수정 전 재현 기록**이다.
-- 검증: 현 HEAD에서 process-tree/T15 선택 Python rail 11 passed/261 deselected(exit 0), Python inventory 272/272. 이전 전체 272 passed/32 subtests는 이동 중인 source의 진단 기록이다. 현 HEAD 전체 suite·플랫폼별 owner proof·clean receipt는 `NOT_RUN`.
+- 검증: 현 HEAD에서 Python inventory 272/272 exact, 전체 Python 계약 272 passed/32 subtests passed(exit 0, 197.17s). Python 입력 SHA는 실행 전후 동일했지만 공유 dirty checkout의 local diagnostic이다. 지원 플랫폼 owner proof·clean receipt는 `NOT_RUN`.
 - 잔여: ps snapshot은 PID 시작시각/identity를 묶지 않으므로 빠른 PID 재사용까지 증명하지 못한다. 이를 legacy diagnostic 한계로 명시하고, 지원 플랫폼 owner evidence·완전성 부정 fixture·최종 source 전체 contract를 재검증한다. 과거 peak RSS는 소급 교정 불가. [현재 전수 판정](CURRENT-AUDIT.md).
 
 - 우선순위: P0. sampler 수정 코드는 관측됨; 현 소스 전체 proof는 미발급. [현재 전수 판정](CURRENT-AUDIT.md). 선행: 없음; inventory는 RBR-00과 함께 갱신.

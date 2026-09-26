@@ -1,6 +1,6 @@
 # RBR 공통 검증·완료 계약
 
-상태: 공통 완료 계약. 티켓별 구현·검증의 **현재 판정**은 [CURRENT-AUDIT.md](CURRENT-AUDIT.md)의 HEAD `6a142add` 코드 재감사를 따른다. 현 소스의 전체 proof와 qualified pair는 아직 검증되지 않았다. sep-23 비교 문서 dirty는 retrieval source closure에 포함되어 있다. 기존 [RB TEST-PLAN](../../sep-23-retrieval-bench/tickets/TEST-PLAN.md)의 입력 격리·replay·성능 자격을 약화하지 않는다.
+상태: 공통 완료 계약. 티켓별 구현·검증의 **현재 판정**은 [CURRENT-AUDIT.md](CURRENT-AUDIT.md)의 최신 코드 재감사를 따른다. 동일 Python 입력의 직전 `f1d041ff` 전체 계약 272 passed/32 subtests와 현재 dirty lexical 도구 5 passed는 local diagnostic이며 Rust/SDK exact collection, clean-source proof와 qualified final pair는 아직 검증되지 않았다. 두 bare-symbol 탐색 pair의 `PAIR_VALID=pass`는 이 게이트를 대체하지 않는다. 현재 dirty 및 이 문서 변경은 retrieval source closure에 포함된다. 기존 [RB TEST-PLAN](../../sep-23-retrieval-bench/tickets/TEST-PLAN.md)의 입력 격리·replay·성능 자격을 약화하지 않는다.
 
 ## 1. 공통 oracle와 부정 테스트
 

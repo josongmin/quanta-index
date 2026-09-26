@@ -1,9 +1,9 @@
 # RBR-03 — Semble native-default와 통제 실험 분리
 
-## 현행 판정 — 2026-09-26, `6a142add` + sep-23 계약 문서 dirty
+## 현행 판정 — 2026-09-26, [중앙 코드 감사](CURRENT-AUDIT.md) 기준
 
 - 구현: 네 profile dispatch와 phase execution event 검증 경로 확인. 아래 99파일·20질의 Semble 0.6.0 캡처와 exploratory pair는 **과거 개발 관측**이다.
-- 검증: 현 HEAD의 bare-symbol lexical-only 비교 도구 테스트 4 passed(exit 0). 이 도구는 file recall `diagnostic_unqualified`를 생성하며 source-bound pinned raw capture proof가 아니다. 현 source에서 pinned adapter fixture·원본 output hash 재검증과 clean receipt는 `NOT_RUN`; qualified `PAIR_VALID`/quality/performance는 모두 `NOT_RUN`.
+- 검증: 새 dirty bare-symbol lexical-only 비교 도구의 5 tests passed(exit 0, focused local; 코드/테스트 SHA 전후 일치). GIN/ripgrep v4 영수증과 보존된 suite/query-pack/protocol/Semble native/report/verdict의 SHA는 이번 read-only 대조에서 일치했고, 양쪽 탐색 verdict는 `PAIR_VALID=pass`; 20 bare-symbol task·1 root·기계 라벨의 개발 진단이다. file Recall@10은 GIN 전 제품 20/20, ripgrep Quanta·Semble·OpenGrok·cs 19/20, Sourcegraph 20/20. 측정 층이 달라 latency는 descriptive only다. 현 source에서 clean pinned capture/contract/SDK receipt와 admitted **qualified final pair**는 `NOT_RUN`; quality/performance도 `NOT_RUN`. [비교 기록](../../sep-23-retrieval-bench/tickets/CODE-SEARCH-COMPARATORS-2026-09.md).
 - 잔여: 같은 frozen source/spec에서 실제 pinned reference output·lane 호출·phase event를 재대조한다. 독립 gold/admission/quiet-host가 없는 개발 캡처를 qualified pair로 승격하지 않는다. [현재 전수 판정](CURRENT-AUDIT.md).
 
 - 우선순위: P0. 과거 pinned 개발 캡처와 exploratory pair는 역사적 증거; local 계약은 이후 통과, clean-source receipt와 qualified pair는 `NOT_RUN`. [현재 전수 판정](CURRENT-AUDIT.md). 선행: RBR-00.

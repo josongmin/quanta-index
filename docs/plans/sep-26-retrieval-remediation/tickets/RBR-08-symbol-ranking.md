@@ -1,6 +1,6 @@
 # RBR-08 — 근거 기반 exact-name 심볼 ranking
 
-## 현행 판정 — 2026-09-26, `6a142add` + sep-23 계약 문서 dirty
+## 현행 판정 — 2026-09-26, [중앙 코드 감사](CURRENT-AUDIT.md) 기준
 
 - 구현/검증: `symbol` route는 있으나 source-bound 오순위 진입 사례, exact-name ranker 변경, 영향받은 lexical/page/reopen proof는 `NOT_RUN`. 제품 기본값 변경도 없다.
 - 잔여 결정: 정의 정답이 후보에 **있는데도** 참조/부분일치/동명이인 아래 놓이는 독립 사례를 먼저 수집한다. 사례가 없으면 이유와 raw probe로 **유지 결정**; 있으면 한 후보만 development에서 시험하고 schema 양 ingest 경로·pagination·reopen·holdout guard를 증명한다. [현재 전수 판정](CURRENT-AUDIT.md).

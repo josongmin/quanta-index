@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Validate one bare-symbol file-recall diagnostic across code-search products.
+"""Validate one bare-symbol diagnostic across code-search products.
 
-This intentionally does not compare native ranking or latency: the endpoints
-have different ranking units and timing layers. Mechanical labels are not an
-independent quality oracle.
+Latency is descriptive only: endpoints have different timing layers, so this
+tool does not calculate a cross-product speed ratio or ranking. Mechanical
+labels are not an independent quality oracle.
 """
 
 from __future__ import annotations
@@ -11,12 +11,39 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
+import statistics
 from pathlib import Path
 
 from tools.benchmark.retrieval.evaluator import canonical, digest
 from tools.benchmark.retrieval.query_plan import execution_profile
 
 PRODUCTS = ("sourcegraph", "opengrok", "cs")
+TIMING_LAYERS = {
+    "sourcegraph": "loopback_stream_http_request_wall",
+    "opengrok": "loopback_rest_http_request_wall",
+    "cs": "process_spawn_and_search_wall",
+    "quanta_lexical": "runner_sdk_query_call",
+    "semble_lexical_only": "worker_search_dispatch_call",
+}
+
+
+def latency_summary(values: list[object], expected_count: int, layer: str) -> dict:
+    if len(values) != expected_count or any(
+        type(value) not in (int, float) or not math.isfinite(value) or value < 0 for value in values
+    ):
+        raise ValueError(f"{layer}: missing, non-finite or invalid latency observation")
+    ordered = sorted(values)
+    return {
+        "count": len(ordered),
+        "timing_layer": layer,
+        "mean_ms": statistics.mean(ordered),
+        "p50_ms": statistics.median(ordered),
+        "p95_ms": ordered[math.ceil(0.95 * len(ordered)) - 1],
+        "min_ms": ordered[0],
+        "max_ms": ordered[-1],
+        "p95_definition": "nearest_rank",
+    }
 
 
 def _read(path: Path) -> dict:
@@ -86,6 +113,7 @@ def product_result(product: str, path: Path, expected: dict[str, tuple[str, list
         raise ValueError(f"{product}: incomplete symbol-only lane")
     seen: set[str] = set()
     hits = 0
+    elapsed: list[object] = []
     for row in selected:
         task_id = row.get("task_id")
         if task_id not in expected or task_id in seen:
@@ -110,10 +138,12 @@ def product_result(product: str, path: Path, expected: dict[str, tuple[str, list
         if row.get("file_hit_at_10") is not hit:
             raise ValueError(f"{product}: {task_id} hit flag differs from paths")
         hits += hit
+        elapsed.append(row.get("elapsed_ms"))
     return {
         "hits": hits,
         "tasks": len(expected),
         "file_recall_at_10": hits / len(expected),
+        "latency_ms": latency_summary(elapsed, len(expected), TIMING_LAYERS[product]),
         "raw_sha256": _sha(path),
     }
 
@@ -160,6 +190,9 @@ def pair_result(
     if report.get("sample_count") != task_count:
         raise ValueError("pair report task count differs")
     routes = report.get("rank_metrics", {}).get("routes", {})
+    per_query = report.get("per_query")
+    if not isinstance(per_query, list) or len(per_query) != 2 * task_count:
+        raise ValueError("pair report has incomplete per-query observations")
     result = {}
     for route, label in (("lexical", "quanta_lexical"), ("semble-hybrid", "semble_lexical_only")):
         data = routes.get(route)
@@ -173,7 +206,29 @@ def pair_result(
             raise ValueError(
                 f"pair report {route} file recall does not have task-count granularity"
             )
-        result[label] = {"hits": hits, "tasks": task_count, "file_recall_at_10": recall}
+        route_rows = [row for row in per_query if row.get("route") == route]
+        if len(route_rows) != task_count or {row.get("task_id") for row in route_rows} != {
+            task["task_id"] for task in pack["tasks"]
+        }:
+            raise ValueError(f"pair report {route} per-query tasks differ")
+        latency = latency_summary(
+            [row.get("query_latency_ms") for row in route_rows],
+            task_count,
+            TIMING_LAYERS[label],
+        )
+        reported_mean = data.get("mean_query_latency_ms")
+        if (
+            type(reported_mean) not in (int, float)
+            or not math.isfinite(reported_mean)
+            or abs(latency["mean_ms"] - reported_mean) > 1e-6
+        ):
+            raise ValueError(f"pair report {route} mean latency differs from observations")
+        result[label] = {
+            "hits": hits,
+            "tasks": task_count,
+            "file_recall_at_10": recall,
+            "latency_ms": latency,
+        }
     return {
         "routes": result,
         "report_sha256": _sha(path),
@@ -202,6 +257,7 @@ def main() -> None:
         "status": "diagnostic_unqualified",
         "query_form": "bare_symbol_v1",
         "metric": "file_recall_at_10",
+        "latency_interpretation": "descriptive_only_not_cross_product_comparable",
         "repository_commit": suite["repository_commit"],
         "file_universe_digest": suite["file_universe_digest"],
         "suite_sha256": _sha(args.suite),

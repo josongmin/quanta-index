@@ -1,6 +1,6 @@
 # RBR-09 — Hybrid fetch 비용 측정과 제한된 정책 최적화
 
-## 현행 판정 — 2026-09-26, `6a142add` + sep-23 계약 문서 dirty
+## 현행 판정 — 2026-09-26, [중앙 코드 감사](CURRENT-AUDIT.md) 기준
 
 - 구현/검증: `MIN_INTERNAL_FETCH_K=100`은 그대로다. 서버 내부 단계 timing, floor 100/25/50 matrix, ANN quality guard, quiet-host p95와 정책 변경 proof는 `NOT_RUN`.
 - 잔여 결정: RBR-01의 source-bound stage timing 후 같은 질의·filter·k에서 유한 matrix를 실행한다. 개선/품질/CI 근거가 부족하면 floor 100 **유지**. 측정 전 floor 축소나 순차 실행의 비용 비율 추정 금지. [현재 전수 판정](CURRENT-AUDIT.md).
