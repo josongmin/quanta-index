@@ -9,6 +9,9 @@ receipt. Earlier dated ticket sections are historical observations.
 - During integration another writer advanced main to
   `8eac12c5b45fedfa4aa7cb27da82979ecdbfbb10` and changed contract, semantic,
   ingest, query and benchmark files. Those changes were preserved.
+- Closeout main `4af3bb44ea4769205485a9ed4c7dddddb35a724f`: another writer
+  captured the repairs and this status file in a mixed-scope commit. Earlier
+  dirty-overlay tests are not final-commit qualification; see the progress ledger.
 - Semantica read-only audit: `941903ba9f61351b1228fba99110162f64120e5c`;
   not a frozen exact-pair proof. No Semantica edits, deployment or push.
 - Parallel ownership: supervisor lifecycle; Cargo resolution preflight;

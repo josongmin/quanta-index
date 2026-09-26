@@ -3260,14 +3260,16 @@ def _validate_ingest_diagnostic(payload: object, record: dict) -> dict:
         "applied", "durable_sequence", "semantic_content",
     }, "ingest receipt")
     captures = record.get("captures")
-    if not isinstance(captures, dict) or len(captures) != 1:
-        raise RunError("ingest diagnostic requires exactly one capture")
+    if not isinstance(captures, dict) or not captures:
+        raise RunError("ingest diagnostic requires nonempty captures")
     capture = next(iter(captures.values()))
     if not isinstance(capture, dict) or capture.get("receipt_digest") != digest(canonical_bytes(receipt)):
         raise RunError("ingest receipt digest differs from capture")
     ack = _exact_keys(ingest["activation_ack"], {"active", "previous_sealed_active"}, "ingest activation ack")
     if capture.get("activation_digest") != digest(canonical_bytes(ack["active"])):
         raise RunError("ingest activation digest differs from capture")
+    if any(not isinstance(item, dict) or any(item.get(key) != capture.get(key) for key in ("receipt_digest", "activation_digest", "generation")) for item in captures.values()):
+        raise RunError("ingest diagnostic capture bindings diverge")
     active = _exact_keys(ack["active"], {"generation", "activation_token"}, "ingest active head")
     generation = _exact_keys(active["generation"], {"lexical", "semantic", "semantic_content"}, "ingest active generation")
     pins = [_exact_keys(generation[lane], {"repo_id", "revision_id", "track", "manifest_generation", "manifest_digest"}, f"ingest {lane} pin") for lane in ("lexical", "semantic")]
@@ -3290,8 +3292,16 @@ def _validate_ingest_diagnostic(payload: object, record: dict) -> dict:
             raise RunError(f"{where} must be an unsigned integer")
         return value
     u64(observation["request_id"], "ingest request_id", True)
-    if not isinstance(active["activation_token"], str) or not active["activation_token"]:
-        raise RunError("ingest activation token is missing")
+    token = _exact_keys(active["activation_token"], {"root_incarnation", "activation_sequence"}, "ingest activation token")
+    incarnation = token["root_incarnation"]
+    if (not isinstance(incarnation, list) or len(incarnation) != 16
+        or any(type(value) is not int or not 0 <= value < 256 for value in incarnation)
+        or not any(incarnation)):
+        raise RunError("ingest activation root incarnation is invalid")
+    u64(token["activation_sequence"], "ingest activation sequence", True)
+    roots = _exact_keys(receipt["semantic_content"], {"row_root_digest", "membership_root_digest"}, "ingest semantic content roots")
+    if any(not isinstance(value, str) or not value.startswith("sha256:") or not _is_hex(value[7:], 64) for value in roots.values()):
+        raise RunError("ingest semantic content roots are not canonical")
     u64(receipt["durable_sequence"], "ingest durable sequence", True)
     for key in ("accepted_replace_scopes", "accepted_tombstone_scopes", "accepted_semantic_replace_scopes", "accepted_semantic_tombstone_scopes", "accepted_clear_surfaces"):
         if u64(receipt[key], f"ingest receipt {key}") >= 2**32:

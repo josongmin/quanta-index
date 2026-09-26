@@ -1,5 +1,68 @@
 # SEP-21 execution evidence
 
+## 2026-09-26 parallel residual structural repairs
+
+Current status/actions: [residual audit](CURRENT-RESIDUAL-2026-09-26.md).
+Review began on `7cefac4a10a06ed56b6f5b9f42b3726468b1f198`; concurrent
+work advanced main to `8eac12c5b45fedfa4aa7cb27da82979ecdbfbb10`. Named
+repairs remain a local dirty overlay; unrelated changes were preserved.
+At closeout, concurrent commit `4af3bb44ea4769205485a9ed4c7dddddb35a724f`
+captured these owner/proof repairs and ticket updates together with unrelated
+work; this progress entry remains uncommitted. That mixed ownership commit
+does not retroactively qualify the earlier moving-overlay results.
+Host: Darwin arm64, Python 3.9.6, Cargo 1.92.0. Cargo.lock SHA-256:
+`ff40c97922eb0c81ec1c46ca6bcc3e40e4b9d2d51ea497ec1a288cbb2b314837`.
+
+- Local focused `VERIFIED` behavior only:
+  `python3 -m pytest tools/ci/tests/test_proof_execution_result.py tools/ci/tests/test_paired_cargo_resolution.py -q`:
+  40 passed, 3.98s. Raw `/tmp/quanta-residual-audit.r8ZupY/negative-owners.log`,
+  SHA-256 `c4915b12510145f1415ff02d5d40e190a5a189df1ddc4e9b2c847384cfd7fa7c`.
+- Local focused `VERIFIED` supervisor behavior:
+  `./scripts/cargow test -p quanta-index-searchd-runtime --test runtime_supervisor_owner_v1`:
+  21 passed, zero failed/ignored/filtered; build 1m52s, cases 0.52s. Raw
+  `supervisor-owner.log` in that directory, SHA-256
+  `2380a72905a3dea40689d9ee969350b125c78fcc67ae253a0b30f40ea90a4c82`.
+  Bound owner bytes: supervisor SHA-256
+  `6d05e85abc6aa7e188c32be8d3978eb0e4484d483793fb3e3858876809892b7e`,
+  owner test `2919ef656f090ff95a98cb70a6921e21ec85cb5c6d819d4558bc75bd48c42c58`.
+  This is not an actual release-daemon maintenance-loss scenario.
+- Local focused `VERIFIED` exact-pair writer regression after fixture repair:
+  `python3 -m pytest tools/ci/tests/test_write_proof_manifest.py::test_exact_pair_manifest_is_live_bound_through_atomic_writer -q`:
+  1 passed, 5.16s; `exact-pair-regression.log` SHA-256
+  `5e8305ab5fe4d0b9626b3fdd9bc14ec7c91249c3c5bcadda9ed717b6ea50aaed`.
+  Earlier writer/checker run was `FAILED` (101 passed, one obsolete staged-reason
+  fixture failure). The fixture now matches the typed stanza independently of
+  human reason text; the focused rerun does not mean the whole scope was rerun.
+- Static local checks: scoped Ruff check/format and whitespace/shell syntax
+  exit 0; `python3 tools/ci/lint/check-test-authority.py` exit 0 after both
+  P00 inventory/execution and P12A recipe were connected to the new target.
+  `test-authority.log` SHA-256
+  `e04c60a38c36c65b6b659fc8ba2ad8360ec757a515b9104d4bf76e4f26daca02`.
+  Proof registry lint reports REGISTRY_ONLY, 25 proofs, zero validated manifests;
+  execution proof is explicitly not checked.
+- `FAILED` Clippy command:
+  `./scripts/cargow clippy -p quanta-index-searchd-runtime --test runtime_supervisor_owner_v1 -- -D warnings`
+  stopped in another writer's `ipc/ingest_observation.rs` at collapsible_if,
+  before qualifying the supervisor. Raw `clippy-supervisor.log` SHA-256
+  `7728e31122f87ffc3523eb04f4bfe977d44ff0183de290d34eeaff8c5685a4d0`.
+  Earlier compilation also hit a concurrently changed stream return-type
+  seam; its owner corrected it before the successful owner run. Neither
+  unrelated file was edited here. Supervisor Clippy qualification: NOT_RUN.
+- Complete aggregate suite: NOT_RUN to completion. An integration run during
+  registry edits failed on inconsistent P12A target snapshots and was interrupted.
+  A restarted final-target aggregate run passed its first six tests, then was
+  interrupted after 260.96s; never count that as aggregate PASS. Read-only
+  graph audit confirmed shared-ancestor revalidation cost; safe cache acceptance
+  is recorded as OPEN_PERFORMANCE in the residual table.
+- Full clean-source gate, actual live pair, Linux release, real provider,
+  authorized retained-root cutover, deployment/activation/rollback: NOT_RUN or
+  BLOCKED on the specific missing inputs listed in the residual table. No
+  qualification manifest, release verdict, remote push or operational action.
+
+Raw logs are temporary local evidence, not durable release receipts. Referenced
+source/config changes invalidate their applicability; concurrent dependency
+edits and the moving dirty source exclude repository qualification.
+
 This file indexes live evidence. The former dated execution ledger is available
 in Git history; its dirty-checkout observations and test counts are not current
 qualification.

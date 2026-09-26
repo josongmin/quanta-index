@@ -1695,11 +1695,8 @@ fn apply_scope_stream(
     Ok(tally)
 }
 
-/// Apply one streamed batch to the lancedb-backed durable generation,
-/// sealing on the header's `seal`.
-///
-/// Returns what was appended, counted on this side: the caller compares it
-/// with the source's own tally.
+/// Test-fixture projection of the canonical reported build. Production
+/// adapters retain the report through `SemanticScopeStreamBuildPort`.
 #[cfg(test)]
 pub(crate) fn build_stream(
     runtime: &tokio::runtime::Runtime,
@@ -1714,13 +1711,11 @@ pub(crate) fn build_stream(
     Ok(tally)
 }
 
-/// [`build_stream`] with the ingest-stage accounting handed back instead of
-/// discarded (RBR-10 step 1).
+/// The canonical storage build, returning tally and transient accounting.
 ///
 /// The [`IngestStageReport`] is observation only: the durability sequence
-/// below is exactly the one [`build_stream`] runs, un-reordered, with every
-/// seal/promotion step intact. Callers that do not want the report keep
-/// using [`build_stream`] unchanged.
+/// below is un-reordered, with every seal/promotion step intact. The test
+/// helper `build_stream` projects the tally without creating another build.
 pub(crate) fn build_stream_reported(
     runtime: &tokio::runtime::Runtime,
     semantic_root: &Path,

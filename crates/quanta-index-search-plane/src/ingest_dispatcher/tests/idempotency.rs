@@ -805,7 +805,7 @@ fn a_committed_replay_runs_no_preflight_apply_or_storage() -> TestRes {
         SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch),
         &budget,
     ))?;
-    if cold_replay != replay {
+    if cold_replay != replay.receipt {
         return Err(format!(
             "a route-less dispatcher must answer the identical stored receipt: {cold_replay:?}"
         )

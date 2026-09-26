@@ -1560,7 +1560,8 @@ impl SemanticScopeStreamBuildPort for FakeSemanticBuilder {
             .lock()
             .map_err(|err| CoreError::Storage(format!("fake semantic builder poisoned: {err}")))?
             .push(tally.windows);
-        let elapsed = u64::try_from(started.elapsed().as_nanos()).map_err(|error| CoreError::InvalidContract(error.to_string()))?;
+        let elapsed = u64::try_from(started.elapsed().as_nanos())
+            .map_err(|error| CoreError::InvalidContract(error.to_string()))?;
         let report = quanta_index_contract::IngestStageReport {
             windows: tally.windows,
             owner_scopes: tally.replace_scopes,

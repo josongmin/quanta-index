@@ -22,6 +22,9 @@ use serde::Serialize;
 /// id, the status and the payload's variant tag encode in far less.
 pub const RESPONSE_ENVELOPE_RESERVE_BYTES: u64 = 4_096;
 
+/// Same page overhead allowance under enabled and disabled stage observation.
+pub(super) const LEXICAL_STAGE_RESERVE_BYTES: u64 = 1024;
+
 /// How many encoded bytes one ranked page may take.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ResponsePayloadBudget {
@@ -191,10 +194,9 @@ impl RankedPage for TextQueryResponse {
         // At most four lexical stages, each with bounded kind, u64 timing and
         // candidate count, and u32 calls. 1024 bytes dominates the CBOR shape
         // even at every scalar maximum (covered by the reserve test).
-        const STAGE_RESERVE_BYTES: u64 = 1024;
         let whole = encoded_len(self, "ranked page")?;
         let measured_slot = encoded_len(&self.explanation.stage_timings, "lexical stage slot")?;
-        if measured_slot > STAGE_RESERVE_BYTES {
+        if measured_slot > LEXICAL_STAGE_RESERVE_BYTES {
             return Err(CoreError::InvalidContract(
                 "lexical stages exceed reserved shape".to_string(),
             ));
@@ -206,7 +208,7 @@ impl RankedPage for TextQueryResponse {
         whole
             .checked_sub(measured_slot)
             .and_then(|bytes| bytes.checked_add(empty_slot_bytes))
-            .and_then(|bytes| bytes.checked_add(STAGE_RESERVE_BYTES))
+            .and_then(|bytes| bytes.checked_add(LEXICAL_STAGE_RESERVE_BYTES))
             .ok_or_else(|| CoreError::InvalidContract("lexical stage reserve overflow".to_string()))
     }
 

@@ -100,6 +100,7 @@ mod tests {
 
     #[test]
     fn lexical_observation_cbor_shape_fits_fixed_page_reserve() {
+        use crate::query_dispatcher::response_budget::LEXICAL_STAGE_RESERVE_BYTES;
         use quanta_index_contract::QueryStageTimingV1;
         let stages = [
             QueryStageKindV1::LexicalPrepare,
@@ -115,8 +116,9 @@ mod tests {
         });
         let bytes =
             quanta_index_ipc::cbor_payload_len(&Some(stages)).expect("bounded stage shape encodes");
+        assert_eq!(LEXICAL_STAGE_RESERVE_BYTES, 1024);
         assert!(
-            bytes < 1024,
+            bytes < LEXICAL_STAGE_RESERVE_BYTES,
             "lexical stage bytes exceed fixed reserve: {bytes}"
         );
     }

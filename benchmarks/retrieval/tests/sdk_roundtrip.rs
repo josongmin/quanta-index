@@ -100,12 +100,16 @@ fn write_repo(root: &Path, files: &[(&str, &str)]) {
 }
 
 fn boot_session(state_root: &Path, identity: &BatchIdentity) -> DaemonSession {
+    boot_session_with_policy(state_root, identity, QueryStageObservationPolicy::Enabled)
+}
+
+fn boot_session_with_policy(state_root: &Path, identity: &BatchIdentity, policy: QueryStageObservationPolicy) -> DaemonSession {
     let config = DaemonConfig {
         state_root,
         searchd_binary: None,
         embedder: EMBEDDER,
         model_dir: None,
-        query_stage_observation: QueryStageObservationPolicy::Enabled,
+        query_stage_observation: policy,
         repo_id: &identity.repo_id,
         revision_id: &identity.revision_id,
         ready_timeout: Duration::from_secs(60),
@@ -450,6 +454,25 @@ fn real_daemon_roundtrip_publishes_and_queries() {
 
     let (receipt, ack, observation) =
         publish_and_activate(&session, &batch, &identity, None).expect("publish+activate");
+    assert_eq!(observation.repo_id, identity.repo_id);
+    assert_eq!(observation.revision_id, identity.revision_id);
+    assert_eq!(observation.generation, receipt.generation);
+    assert_eq!(observation.batch_digest, receipt.batch_digest);
+    assert!(observation.request_id > 0);
+    assert_eq!(observation.status, quanta_index_contract::IngestObservationStatus::Executed);
+    assert!(observation.semantic.as_ref().expect("semantic measured").durations.seal.is_some());
+    assert!(observation.lexical_build_ns.is_some());
+    assert!(observation.finalize_ns.is_some());
+    assert!(observation.activation_ns.is_none(), "separate activation is not a server ingest stage");
+    let replay = session.client().producer().publish_search_corpus_observed(&batch).expect("observed replay");
+    assert_eq!(replay.receipt, receipt.replayed());
+    let replayed = replay.observation.expect("explicit replay observation");
+    assert_ne!(replayed.request_id, observation.request_id);
+    assert_eq!(replayed.status, quanta_index_contract::IngestObservationStatus::Replayed);
+    assert!(replayed.semantic.is_none());
+    assert!(replayed.lexical_build_ns.is_none());
+    assert!(replayed.finalize_ns.is_none());
+    assert!(replayed.activation_ns.is_none());
 
     // A stale generation pin never reads another generation's rows.
     let stale_result = query_route(&RouteQuery {

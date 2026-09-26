@@ -65,6 +65,7 @@ def test_retrieval_diagnostic_v5_binds_actual_server_observation_policy(tmp_path
     diagnostic = json.loads(path.read_text())
     diagnostic["schema_version"] = 5
     diagnostic["server_observation"] = pairrun.server_observation_configuration("enabled")
+    diagnostic["ingest"] = _diagnostic_ingest_fixture(record)
     record_sha = ev.digest(record_path.read_bytes())
     pairrun.validate_retrieval_diagnostic(diagnostic, record, record_sha, pack)
     disabled = json.loads(json.dumps(diagnostic))
@@ -87,6 +88,73 @@ def test_retrieval_diagnostic_v5_binds_actual_server_observation_policy(tmp_path
     contradictory["server_observation"] = diagnostic["server_observation"]
     with pytest.raises(pairrun.RunError, match="stage timings"):
         pairrun.validate_retrieval_diagnostic(contradictory, record, record_sha, pack)
+
+
+def _diagnostic_ingest_fixture(record):
+    roots = {"row_root_digest": "sha256:" + "a" * 64, "membership_root_digest": "sha256:" + "b" * 64}
+    receipt = {
+        "generation": 7, "manifest_digest": "manifest:fixture", "batch_digest": "c" * 64,
+        "accepted_replace_scopes": 1, "accepted_tombstone_scopes": 0,
+        "accepted_semantic_replace_scopes": 1, "accepted_semantic_tombstone_scopes": 0,
+        "accepted_clear_surfaces": 0, "sealed": True, "applied": True,
+        "durable_sequence": 1, "semantic_content": roots,
+    }
+    scope = {"repo_id": "bench-repo", "revision_id": "bench-rev", "manifest_generation": 7, "manifest_digest": receipt["manifest_digest"]}
+    ack = {"active": {"generation": {
+        "lexical": {**scope, "track": "lexical"}, "semantic": {**scope, "track": "semantic"},
+        "semantic_content": roots,
+    }, "activation_token": {"root_incarnation": [1] * 16, "activation_sequence": 1}}, "previous_sealed_active": None}
+    report = {key: 0 for key in (
+        "owner_scopes", "windows", "semantic_delete_calls", "semantic_delete_commits",
+        "membership_delete_calls", "membership_delete_commits", "semantic_append_calls", "membership_append_calls",
+    )}
+    report["durations"] = {key: 0 for key in (
+        "total", "prepare", "promotion", "clear_surfaces", "stream", "semantic_delete",
+        "membership_delete", "semantic_append", "membership_append", "tombstones", "seal",
+    )}
+    report["durations"]["embedding"] = None
+    observation = {"request_id": 9, "repo_id": "bench-repo", "revision_id": "bench-rev", "generation": 7,
+        "batch_digest": receipt["batch_digest"], "status": "executed", "semantic": report,
+        "lexical_build_ns": 0, "finalize_ns": 0, "activation_ns": None}
+    for capture in record["captures"].values():
+        capture.update(generation=7, receipt_digest=pairrun.digest(pairrun.canonical_bytes(receipt)),
+                       activation_digest=pairrun.digest(pairrun.canonical_bytes(ack["active"])))
+    return {"receipt": receipt, "activation_ack": ack, "observation": observation}
+
+
+def test_retrieval_diagnostic_v5_ingest_rejects_unbound_partial_replayed_or_forged_measurements():
+    record = {"captures": {"capture": {}}}
+    raw = _diagnostic_ingest_fixture(record)
+    assert pairrun._validate_ingest_diagnostic(raw, record) == pairrun.ingest_request_identity({})
+    for mutate in (
+        lambda x: x.pop("observation"),
+        lambda x: x["observation"].pop("activation_ns"),
+        lambda x: x["observation"].update(request_id=0),
+        lambda x: x["observation"].update(request_id=True),
+        lambda x: x["observation"].update(repo_id="other"),
+        lambda x: x["observation"].update(revision_id="other"),
+        lambda x: x["observation"].update(generation=8),
+        lambda x: x["observation"].update(batch_digest="f" * 64),
+        lambda x: x["observation"].update(status="replayed"),
+        lambda x: x["observation"].update(status="partial_recovery"),
+        lambda x: x["observation"].update(semantic=None),
+        lambda x: x["observation"].update(lexical_build_ns=None),
+        lambda x: x["observation"].update(finalize_ns=None),
+        lambda x: x["observation"].update(activation_ns=0),
+        lambda x: x["observation"]["semantic"]["durations"].update(seal=None),
+        lambda x: x["observation"]["semantic"]["durations"].update(prepare=1),
+        lambda x: x["observation"]["semantic"]["durations"].update(embedding=1),
+        lambda x: x["observation"]["semantic"]["durations"].update(semantic_delete=1),
+        lambda x: x["observation"]["semantic"]["durations"].update(stream=-1),
+        lambda x: x["observation"]["semantic"]["durations"].update(stream=float("nan")),
+        lambda x: x["observation"]["semantic"].update(windows=2**64),
+        lambda x: x["receipt"].update(applied=False),
+        lambda x: x["activation_ack"]["active"]["generation"]["semantic"].update(manifest_generation=8),
+    ):
+        forged = json.loads(json.dumps(raw))
+        mutate(forged)
+        with pytest.raises(pairrun.RunError):
+            pairrun._validate_ingest_diagnostic(forged, record)
 
 
 def test_query_plan_oracle_uses_nfc_and_rejects_unindexable_runs():
