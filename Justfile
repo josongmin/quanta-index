@@ -727,10 +727,10 @@ rust-ignored-test-policy:
 # Asset-dependent owner proof. Both tests are ignored in the ordinary suite;
 # this recipe generates the independent Python reference and selects them.
 # The model loader and Rust parity test bind the three model file digests.
-proof-potion-code-parity model_dir reference:
-    uv run --no-project --python 3.13 --with 'model2vec==0.9.0' python tools/benchmark/retrieval/parity_reference.py --model-dir "{{model_dir}}" --out "{{reference}}"
-    QUANTA_INDEX_TEST_POTION_CODE_MODEL_DIR="{{model_dir}}" QUANTA_INDEX_PARITY_REFERENCE="{{reference}}" {{cargo}} --lane test-integration-lane nextest run --locked -p quanta-index-embed --lib --run-ignored all --no-tests fail -E 'test(=model2vec::tests::full_vector_parity_against_pinned_reference)'
-    QUANTA_INDEX_TEST_POTION_CODE_MODEL_DIR="{{model_dir}}" {{cargo}} --lane test-integration-lane nextest run --locked -p quanta-index-searchd --lib --run-ignored all --no-tests fail -E 'test(=app::runtime::tests::potion_code_profile_uses_one_model_for_query_and_corpus)'
+proof-potion-code-parity $model_dir $reference:
+    uv run --no-project --python 3.13 --with 'model2vec==0.9.0' python tools/benchmark/retrieval/parity_reference.py --model-dir "$model_dir" --out "$reference"
+    QUANTA_INDEX_TEST_POTION_CODE_MODEL_DIR="$model_dir" QUANTA_INDEX_PARITY_REFERENCE="$reference" {{cargo}} --lane test-integration-lane nextest run --locked -p quanta-index-embed --lib --run-ignored all --no-tests fail -E 'test(=model2vec::tests::full_vector_parity_against_pinned_reference)'
+    QUANTA_INDEX_TEST_POTION_CODE_MODEL_DIR="$model_dir" {{cargo}} --lane test-integration-lane nextest run --locked -p quanta-index-searchd --lib --run-ignored all --no-tests fail -E 'test(=app::runtime::tests::potion_code_profile_uses_one_model_for_query_and_corpus)'
 
 # Consumer / wire inventory (plan §11): every IPC opcode and on-disk format
 # version must be listed in tools/ci/inventory/wire-surface.toml.

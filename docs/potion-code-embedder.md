@@ -61,6 +61,8 @@ just proof-potion-code-parity \
 This rail generates the Python 3.13 / `model2vec==0.9.0` reference for all nine fixed
 inputs, then runs both ignored Rust tests. The weekly and manually dispatched
 `potion-code-parity` workflow fetches the exact upstream revision, verifies all
-three model file digests, and uploads the reference, command log, and SHA-256
-manifest. A scheduled workflow definition alone is not evidence that a run
+three model file digests, and uploads the reference, command log, source state,
+tool versions, and SHA-256 manifest. Evidence collection also runs on failure;
+missing files are recorded as `MISSING`, and the parity step outcome is explicit.
+A scheduled workflow definition alone is not evidence that a run
 passed for a given source revision.

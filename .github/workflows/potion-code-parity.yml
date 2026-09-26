@@ -49,6 +49,7 @@ jobs:
             | sha256sum --check
 
       - name: Run independent full-vector and query/corpus parity tests
+        id: parity
         shell: bash
         run: |
           set -euo pipefail
@@ -57,12 +58,43 @@ jobs:
             "$PWD/artifacts/potion-code/model" \
             "$PWD/artifacts/potion-code/reference.json" \
             2>&1 | tee artifacts/potion-code/test.log
-          sha256sum \
-            artifacts/potion-code/reference.json \
-            artifacts/potion-code/model/tokenizer.json \
-            artifacts/potion-code/model/model.safetensors \
-            artifacts/potion-code/model/config.json \
-            > artifacts/potion-code/sha256.txt
+
+      - name: Record evidence even when parity fails
+        if: always()
+        shell: bash
+        env:
+          PARITY_OUTCOME: ${{ steps.parity.outcome }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/potion-code
+          git rev-parse HEAD > artifacts/potion-code/source-head.txt
+          git status --porcelain=v1 > artifacts/potion-code/source-dirty.txt
+          record_tool() {
+            "$@" || printf 'UNAVAILABLE exit=%s command=%s\n' "$?" "$*"
+          }
+          {
+            printf 'parity_outcome=%s\n' "$PARITY_OUTCOME"
+            uname -a
+            record_tool rustc -Vv
+            record_tool cargo -V
+            record_tool cargo nextest --version
+            record_tool python --version
+            record_tool uv --version
+            record_tool just --version
+          } > artifacts/potion-code/environment.txt 2>&1
+          {
+            for file in Cargo.lock rust-toolchain.toml .cargo/config.toml .config/nextest.toml \
+              Justfile scripts/cargow scripts/quanta-index-env.sh \
+              artifacts/potion-code/reference.json artifacts/potion-code/test.log \
+              artifacts/potion-code/model/tokenizer.json \
+              artifacts/potion-code/model/model.safetensors artifacts/potion-code/model/config.json; do
+              if [[ -f "$file" ]]; then
+                sha256sum "$file"
+              else
+                printf 'MISSING  %s\n' "$file"
+              fi
+            done
+          } > artifacts/potion-code/sha256.txt
 
       - name: Upload parity evidence
         if: always()
@@ -71,6 +103,8 @@ jobs:
           name: potion-code-parity-${{ github.sha }}-${{ github.run_id }}
           path: |
             artifacts/potion-code/source-head.txt
+            artifacts/potion-code/source-dirty.txt
+            artifacts/potion-code/environment.txt
             artifacts/potion-code/reference.json
             artifacts/potion-code/test.log
             artifacts/potion-code/sha256.txt
