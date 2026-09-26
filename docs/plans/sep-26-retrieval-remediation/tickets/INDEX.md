@@ -91,3 +91,16 @@ RBR-04~10, RBR-12의 최종 자격 판정은 `NOT_RUN`. 현재 RBR-03 실핀 캡
 - 실제 T16 receipt: `/private/tmp/qi-rbr-supplement-proof/exact-t16-owner-receipt.json`, SHA-256 `a238ee5fdd2bafb67c229054b32ab885d713b2f8f650ff26da3a51f3b6b14c38`. 실행 중 test fixture 한 줄 변경은 executable source 범위에서 명시적으로 제외했다. 이후 해당 fixture의 test·Clippy를 다시 실행한 결과가 위 owner receipt다.
 - `NOT_RUN` — 마지막 manual-serde source의 installed SDK 17건 재캡처. 최초 JSON 실행은 nextest 환경 설정 누락으로 시작 전 거부됐고, 재시도는 후속 hybrid floor 변경 중 compile 실패로 실행에 도달하지 않았다. 이전 SDK 17/17 관측을 새 source proof로 승격하지 않는다.
 - `NOT_RUN` — repository/workspace qualification·서명된 build/OS attestation·clean-source integration·qualified final pair. 원본과 receipt의 local custody 검증이 이들을 대신하지 않는다.
+
+### 2026-09-26 conditional consumer 재감사 — 격리 owner rail
+
+| 티켓 / 범위 | 구현·소유 rail | 미발급 게이트 |
+| --- | --- | --- |
+| RBR-07·12 / T15 | `VERIFIED` — semantic/hybrid route가 실제 참조하는 capture의 모델 집합이 pinned Quanta/Semble 두 identity와 정확히 일치해야 한다. 다른 모델 혼입·누락 provenance/capture·잘못된 capture ID를 거부한다. 저장된 실제 256D 원본의 current-consumer 재생 9/9 | `NOT_RUN` — 최종 suite 전체의 fresh owner 실행·clean-source qualification |
+| RBR-12 / T16 | `VERIFIED` — typed 7-field model contract, full vector 차원·유한 f32·nonzero/L2Unit norm, row가 있는 실행의 window/append 카운터를 검증한다. resident source가 생략하는 빈 scope와 분할 가능한 owner 그룹의 tally 범위를 사용한다. dimension99·불가능한 zero 실행을 거부하고 정상 원본 5/5와 빈 scope의 독립 golden을 유지한다 | `NOT_RUN` — 새 binary에서 빈 scope를 포함한 실제 owner 실행·daemon/embedding/holdout qualification |
+
+- `VERIFIED` — 고정 base `9e443489e06167bfbed3b4503af558495e27206d`의 별도 worktree에 consumer와 기존 conditional 테스트 hunk만 적용했다. `PYTHONPATH=. uv run --frozen --extra dev python -m pytest tools/ci/tests/test_retrieval_benchmark.py -q --basetemp=/private/tmp/qi-rbr-reaudit/pytest-isolated-final`: **283 passed, 32 subtests passed**, exit 0, 1455.42s. 모든 선택 Python 입력 bytes 전후 동일; 실제 `collect_pytest()` 283 identity와 해당 base의 authority exact-match. 테스트 identity 추가/삭제는 없다.
+- `VERIFIED` — 공유 main의 fresh conditional selector **3 passed, 285 deselected**, 43.19s; Ruff와 diff 검사 exit 0. main의 전체 rail은 source drift로 중단했고 격리 owner 결과로 대체했다. 타 writer의 floor/ANN/CI 변경은 이 owner commit 범위에 포함하지 않는다.
+- receipt: `/private/tmp/qi-rbr-reaudit/final-owner-receipt.json`, SHA-256 `af5b795151554456673752d9372d12d67f875fc2ce850ba7a73f5fef57e58799`; 전체 raw log `/private/tmp/qi-rbr-reaudit/isolated-full.log`, SHA-256 `11abea584cb1f5d8760be63b83e91086e687472222ae2604e6b2d2c0328aa32e`.
+- `NOT_RUN` — 추가 빈 scope 실제 실행은 기존 binary의 SHA 변경을 감지해 실행 전에 거부했다. prerequisite identity 검사 `FAILED`이며 stale binary를 현재 owner proof로 사용하지 않는다. 저장된 과거 owner 원본의 재생은 새 Rust 실행을 대신하지 않는다.
+- `NOT_RUN` — 최신 공유 main 전체 qualification·clean-source proof·quiet-host 성능·최종 frozen holdout pair. local owner 결과를 이들로 승격하지 않는다.

@@ -8574,6 +8574,27 @@ def test_conditional_vector_replay_checks_full_vector_and_batch_permutation():
 
     bundle = _conditional_vector_context_unit_bundle(observed, baseline)
     assert cp.validate_results(bundle, "model_vectors") == bundle
+    for mutate in (
+        lambda records: records.append({"route_provenance": {"semantic": {"capture_id": "wrong"}},
+            "captures": {"wrong": {"system": "quanta", "model": "wrong-model", "model_revision": "wrong"}}}),
+        lambda records: records[0]["route_provenance"].update(semantic={"capture_id": "missing"}),
+        lambda records: records[0].pop("route_provenance"),
+        lambda records: records[0]["route_provenance"].update(semantic={"capture_id": True}),
+        lambda records: records[0]["route_provenance"].clear(),
+        lambda records: records[0]["route_provenance"].update(semantic={"capture_id": "quanta", "extra": True}),
+    ):
+        mutant = json.loads(json.dumps(bundle))
+        context = mutant["execution_context"]
+        records = cp.load(cp.decode(context["records"]))
+        mutate(records)
+        context["records"] = cp.artifact(cp.canonical(records))
+        identities = sorted(set((capture["system"], capture["model"], capture["model_revision"])
+            for record in records for capture in record["captures"].values()))
+        mutant["identity"]["model_sha256"] = cp.sha(cp.canonical(identities))
+        mutant["execution_receipt"].update(model_sha256=mutant["identity"]["model_sha256"],
+            context_sha256=cp.sha(cp.canonical(context)))
+        with pytest.raises(ValueError):
+            cp.validate_results(mutant, "model_vectors")
     mutant = json.loads(json.dumps(bundle))
     mutant["raw_proof"]["rows"][0]["observed_vector"][0] = True
     with pytest.raises(ValueError, match="summary"):
@@ -8629,7 +8650,9 @@ def _conditional_incremental_unit_oracle():
             "cluster_record_id": "record-target", "authority_digest": "fixed", "members": members}]}
     def batch(generation, scopes, mode="ReplaceGeneration"):
         return {"generation": generation, "batch_digest": str(generation), "manifest_digest": str(generation),
-            "repo_id": "repo", "revision_id": "rev", "model_contract": {"model_id": "fixed", "model_version": "1"},
+            "repo_id": "repo", "revision_id": "rev", "model_contract": {"model_id": "fixed", "model_version": "1",
+                "dimension": 2, "normalization": "L2Unit", "distance_metric": "Cosine",
+                "policy_digest": "fixed-policy", "view_policy_digest": None},
             "seal": True, "mode": mode, "base_generation": 1 if mode == "Delta" else None,
             "replace_scopes": scopes, "tombstone_scopes": [], "clear_surfaces": []}
     def golden_state(item):
@@ -8683,6 +8706,10 @@ def _conditional_incremental_unit_oracle():
                         "membership_delete_commits", "semantic_append_calls", "membership_append_calls"], 0),
                     "durations": {**dict.fromkeys(["total", "prepare", "promotion", "clear_surfaces", "stream", "semantic_delete",
                         "membership_delete", "semantic_append", "membership_append", "tombstones", "seal"], 0), "embedding": None}})
+            receipts[key]["stages"]["semantic_append_calls"] = sum(bool(scope["embeddings"]) for scope in item["replace_scopes"])
+            receipts[key]["stages"]["membership_append_calls"] = sum(
+                any(membership["members"] for membership in scope["cluster_memberships"])
+                for scope in item["replace_scopes"])
         outputs.append({"case_id": kind, "fresh": golden_state(fresh), "before": golden_state(before),
             "incremental": golden_state(fresh), "receipts": receipts})
     return {"schema_version": 1, "cases": cases}, {"schema_version": 1, "cases": outputs}
@@ -8743,8 +8770,9 @@ def _conditional_vector_context_unit_bundle(observed, baseline):
         "tasks": [{"query": "frozen query"}]}))
     models = [("quanta", actual["model_id"], actual["model_revision"]),
         ("semble", parity_reference.MODEL_ID, parity_reference.MODEL_REVISION)]
-    records = [{"captures": {system: {"system": system, "model": model, "model_revision": revision}
-        for system, model, revision in models}}]
+    records = [{"route_provenance": {"semantic": {"capture_id": system}},
+        "captures": {system: {"system": system, "model": model, "model_revision": revision}}}
+        for system, model, revision in models]
     context["records"] = cp.artifact(cp.canonical(records))
     bundle["identity"]["model_sha256"] = cp.sha(cp.canonical(models))
     context["inputs"], context["observed"], context["reference"] = [cp.artifact(cp.canonical(value))
@@ -8780,6 +8808,35 @@ def test_conditional_incremental_replay_compares_payload_membership_and_empty_st
     assert [case["before"]["semantic"]["count"] for case in output["cases"]] == [2, 2, 2, 2, 2]
     assert [case["fresh"]["semantic"]["count"] for case in output["cases"]] == [3, 1, 2, 2, 1]
     assert cp.incremental_rows(output, plan)[1] == 5
+    with_empty_scopes = json.loads(json.dumps(plan))
+    for case in with_empty_scopes["cases"]:
+        for batch in ("before", "fresh", "delta"):
+            case[batch]["replace_scopes"].append({"embeddings": [], "cluster_memberships": []})
+    # ResidentScopeSource issues owner groups only; an empty input scope is
+    # absent from the execution tally and leaves every full logical row intact.
+    assert cp.incremental_rows(output, with_empty_scopes)[1] == 5
+    for field, value in (("dimension", 99), ("dimension", True), ("dimension", 2.0),
+                         ("dimension", 0), ("normalization", "unknown"), ("distance_metric", "Dot"),
+                         ("policy_digest", ""), ("model_version", 1)):
+        bad_plan = json.loads(json.dumps(plan))
+        for case in bad_plan["cases"]:
+            for batch in ("before", "fresh", "delta"):
+                case[batch]["model_contract"][field] = value
+        with pytest.raises(ValueError, match="model|dimension"):
+            cp.incremental_rows(output, bad_plan)
+    for vector in ([True, 0.], [1e39, 0.], [0., 0.], [2., 0.], [1.]):
+        bad_plan = json.loads(json.dumps(plan))
+        bad_plan["cases"][0]["before"]["replace_scopes"][0]["embeddings"][0]["vector"] = vector
+        with pytest.raises(ValueError, match="vector"):
+            cp.incremental_rows(output, bad_plan)
+    unconstrained = json.loads(json.dumps(plan["cases"][0]["before"]))
+    unconstrained["model_contract"]["normalization"] = "None"
+    unconstrained["replace_scopes"][0]["embeddings"][0]["vector"] = [2., 0.]
+    assert cp.input_state(unconstrained)["semantic"]["count"] == 2
+    wrong_dimension = json.loads(json.dumps(output))
+    wrong_dimension["cases"][0]["incremental"]["semantic"]["rows"][0]["vector"] = [1.]
+    with pytest.raises(ValueError, match="dimension"):
+        cp.incremental_rows(wrong_dimension, plan)
     bundle = _conditional_context_unit_bundle(plan, output)
     assert cp.validate_results(bundle, "incremental_rows") == bundle
     for field, value in (("schema_version", 2.0), ("exit_code", False), ("exit_code", 0.0)):
@@ -8855,6 +8912,15 @@ def test_conditional_incremental_replay_compares_payload_membership_and_empty_st
             with pytest.raises(ValueError):
                 cp.incremental_rows(output, bad_plan)
     receipt = output["cases"][0]["receipts"]["before"]
+    for field, value in (("windows", 0), ("windows", 2), ("semantic_append_calls", 0),
+                         ("semantic_append_calls", 2), ("membership_append_calls", 1)):
+        mutant = json.loads(json.dumps(output))
+        changed = mutant["cases"][0]["receipts"]["before"]
+        changed["stages"][field] = value
+        if field == "windows":
+            changed[field] = value
+        with pytest.raises(ValueError, match="execution counts"):
+            cp.incremental_rows(mutant, plan)
     for path in (("windows",), ("replace_scopes",), ("rows",),
                  *(("stages", key) for key in receipt["stages"] if key != "durations"),
                  *(("stages", "durations", key) for key in receipt["stages"]["durations"] if key != "embedding")):

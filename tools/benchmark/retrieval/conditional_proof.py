@@ -181,11 +181,38 @@ def table(value: object, name: str) -> dict:
     return value
 
 
+def model_contract(value: object) -> dict:
+    contract = exact(value, {"model_id", "model_version", "dimension", "normalization", "distance_metric",
+        "policy_digest", "view_policy_digest"}, "incremental model contract")
+    if type(contract["dimension"]) is not int or not 0 < contract["dimension"] < 2**32 \
+        or any(not isinstance(contract[key], str) or not contract[key] for key in ("model_id", "policy_digest")) \
+        or any(contract[key] is not None and not isinstance(contract[key], str)
+               for key in ("model_version", "view_policy_digest")) \
+        or not isinstance(contract["normalization"], str) or contract["normalization"] not in {"None", "L2Unit"} \
+        or contract["distance_metric"] != "Cosine":
+        raise ValueError("incremental model contract differs from the typed semantic owner contract")
+    return contract
+
+
+def contract_vector(vector: object, contract: dict) -> list[float]:
+    if not isinstance(vector, list) or len(vector) != contract["dimension"] or any(
+            type(value) not in (int, float) or not math.isfinite(value) or abs(value) > 3.4028234663852886e38
+            for value in vector
+        ):
+        raise ValueError("incremental vector differs from model dimension or finite f32 encoding")
+    converted = [struct.unpack("<f", struct.pack("<f", value))[0] for value in vector]
+    norm = math.sqrt(sum(value * value for value in converted))
+    if norm == 0 or not math.isfinite(norm) or contract["normalization"] == "L2Unit" and abs(norm - 1) > 0.001:
+        raise ValueError("incremental vector violates nonzero/unit model normalization")
+    return converted
+
+
 def input_state(batch: dict) -> dict:
+    contract = model_contract(batch["model_contract"])
     records = [record for scope in batch["replace_scopes"] for record in scope["embeddings"]]
     semantic = [{key: record[key] for key in SEMANTIC_COLUMNS} for record in records]
     for row in semantic:
-        row["vector"] = [struct.unpack("<f", struct.pack("<f", value))[0] for value in row["vector"]]
+        row["vector"] = contract_vector(row["vector"], contract)
     membership = []
     for scope in batch["replace_scopes"]:
         for replacement in scope["cluster_memberships"]:
@@ -296,15 +323,19 @@ def incremental_rows(observed: object, plan: object) -> tuple[list[dict], int]:
             state = exact(raw[key], {"semantic", "membership"}, "logical state")
             for name in state:
                 table(state[name], name)
+            for row in state["semantic"]["rows"]:
+                contract_vector(row["vector"], fresh["model_contract"])
         if raw["before"] != expected_before or raw["fresh"] != expected_fresh:
             raise ValueError("before/fresh full state differs from independent input/operation oracle")
         receipts = exact(raw["receipts"], {"fresh", "before", "delta"}, "build receipts")
         for key, batch in (("fresh", case["fresh"]), ("before", case["before"]), ("delta", delta)):
+            nonempty_scopes = sum(bool(scope["embeddings"]) for scope in batch["replace_scopes"])
+            owner_groups = sum(len({owner(row) for row in scope["embeddings"]}) for scope in batch["replace_scopes"])
             receipt = exact(receipts[key], {"generation", "batch_digest", "manifest_digest", "windows", "replace_scopes", "rows", "stages"}, "owner execution receipt")
             if type(receipt["generation"]) is not int or not 0 <= receipt["generation"] < 2**64 \
                 or any(type(receipt[field]) is not int or not 0 <= receipt[field] < 2**64 for field in ("windows", "replace_scopes", "rows")) \
                 or any(receipt[field] != batch[field] for field in ("generation", "batch_digest", "manifest_digest")) \
-                or receipt["replace_scopes"] != len(batch["replace_scopes"]) \
+                or not nonempty_scopes <= receipt["replace_scopes"] <= owner_groups \
                 or receipt["rows"] != sum(len(scope["embeddings"]) for scope in batch["replace_scopes"]):
                 raise ValueError("incremental build receipt does not bind input batch")
             stages = exact(receipt["stages"], {"owner_scopes", "windows", "semantic_delete_calls",
@@ -313,6 +344,17 @@ def incremental_rows(observed: object, plan: object) -> tuple[list[dict], int]:
             if any(type(value) is not int or not 0 <= value < 2**64 for key, value in stages.items() if key != "durations") \
                 or stages["owner_scopes"] != receipt["replace_scopes"] or stages["windows"] != receipt["windows"]:
                 raise ValueError("ingest stage report differs from actual batch tally")
+            scopes, windows = receipt["replace_scopes"], receipt["windows"]
+            membership_scopes = sum(any(item["members"] for item in scope["cluster_memberships"])
+                                    for scope in batch["replace_scopes"])
+            membership_groups = sum(len({owner(row) for row in scope["embeddings"] if any(
+                item["cluster_record_id"] == row["record_id"] and item["members"]
+                for item in scope["cluster_memberships"]
+            )}) for scope in batch["replace_scopes"])
+            if (windows == 0) != (scopes == 0) or windows > scopes \
+                or stages["semantic_append_calls"] != windows \
+                or not membership_scopes <= stages["membership_append_calls"] <= membership_groups:
+                raise ValueError("ingest stage execution counts cannot produce the bound batch")
             durations = exact(stages["durations"], {"total", "prepare", "promotion", "clear_surfaces", "stream", "semantic_delete",
                 "membership_delete", "semantic_append", "membership_append", "tombstones", "seal", "embedding"}, "ingest stage durations")
             if durations["embedding"] is not None or any(type(value) is not int or not 0 <= value < 2**64
@@ -419,7 +461,21 @@ def validate_results(value: object, kind: str, *, verify_source: bool = False) -
             ("quanta", "model2vec:minishlab/potion-code-16M-v2", "e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b:model2vec-rs-0.3.0:fancy-regex:full-length-v1"),
             ("semble", "minishlab/potion-code-16M-v2", "e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b"),
         }
-        if not expected_models <= set(model_identities):
+        witnessed_models = set()
+        for record in records:
+            provenance = record.get("route_provenance")
+            if not isinstance(provenance, dict) or not provenance:
+                raise ValueError("conditional model proof lacks frozen route provenance")
+            for route, route_capture in provenance.items():
+                if route not in {"semantic", "hybrid"}:
+                    continue
+                route_capture = exact(route_capture, {"capture_id"}, "model route provenance")
+                capture_id = route_capture["capture_id"]
+                if not isinstance(capture_id, str) or capture_id not in record["captures"]:
+                    raise ValueError("model route references a missing capture")
+                capture = record["captures"][capture_id]
+                witnessed_models.add((capture["system"], capture["model"], capture["model_revision"]))
+        if witnessed_models != expected_models:
             raise ValueError("frozen pair does not use the proven model/encoder identities")
         expected_inputs = reference.INPUTS + [task["query"] for task in suite["tasks"]]
         if load(decode(context["inputs"])) != expected_inputs:
