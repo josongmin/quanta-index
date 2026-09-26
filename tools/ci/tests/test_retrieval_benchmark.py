@@ -5617,7 +5617,7 @@ def test_protocol_phase_metrics_bind_raw_warm_counts_and_cold_separately():
             pairrun._validate_phase_metrics(corrupted, "phase")
     incomplete = json.loads(json.dumps(current))
     incomplete["symbol_unsupported_files"] = 1
-    with pytest.raises(pairrun.RunError, match="incomplete symbol coverage"):
+    with pytest.raises(pairrun.RunError, match="details differ from count"):
         pairrun._validate_phase_metrics(incomplete, "phase")
     del current["symbol_count"]
     with pytest.raises(pairrun.RunError, match="must hold exactly"):

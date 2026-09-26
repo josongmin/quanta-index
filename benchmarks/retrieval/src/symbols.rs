@@ -238,14 +238,22 @@ impl SymbolLanguage {
             let mut balanced = false;
             for (index, byte) in text.bytes().enumerate().skip(open) {
                 match byte {
-                    b'<' => depth += 1,
+                    b'<' => {
+                        let Some(next_depth) = depth.checked_add(1) else {
+                            return Ok(text.to_string());
+                        };
+                        depth = next_depth;
+                    }
                     b'>' => {
                         if depth == 0 {
                             break;
                         }
-                        depth -= 1;
+                        let Some(next_depth) = depth.checked_sub(1) else {
+                            return Ok(text.to_string());
+                        };
+                        depth = next_depth;
                         if depth == 0 {
-                            balanced = index == text.len() - 1;
+                            balanced = index == text.len().saturating_sub(1);
                             break;
                         }
                     }
@@ -514,18 +522,19 @@ fn query_definitions(
             containers.push(receiver_type);
         }
         containers.reverse();
-        let mut kind = language.kind_for(def_node.kind(), nearest_type_container);
-        if language == SymbolLanguage::Go && def_node.kind() == "type_spec" {
+        let kind = if language == SymbolLanguage::Go && def_node.kind() == "type_spec" {
             // `type X ...` is classified by its type child: struct_type,
             // interface_type, or a plain definition (type_alias).
-            kind = Some(
+            Some(
                 match required_child(def_node, "type", "Go type specification")?.kind() {
                     "interface_type" => "interface",
                     "struct_type" => "struct",
                     _ => "type_alias",
                 },
-            );
-        }
+            )
+        } else {
+            language.kind_for(def_node.kind(), nearest_type_container)
+        };
         let kind = kind.ok_or_else(|| SymbolExtractError::ProducerDefect {
             detail: format!(
                 "definition query emitted unclassified node kind `{}`",
@@ -715,7 +724,9 @@ pub fn extract_corpus_symbols(
                 "symbol producer defect for {path}: {detail}; source_sha256={}",
                 file.sha256
             )),
-            _ => crate::BenchError::Chunk {
+            SymbolExtractError::Unsupported { .. }
+            | SymbolExtractError::ParseFailure { .. }
+            | SymbolExtractError::IdCollision { .. } => crate::BenchError::Chunk {
                 path: path.clone(),
                 message: format!(
                     "symbol extraction coverage failure: {error}; source_sha256={}",
@@ -907,13 +918,33 @@ mod tests {
             line_starts: vec![0],
             sha256: digest.clone(),
         };
-        let files = std::collections::BTreeMap::from([(file.path.clone(), file)]);
+        let other_text = "notes".to_string();
+        let other_digest = sha256_hex(other_text.as_bytes());
+        let other = crate::corpus::SourceFile {
+            path: "docs/znotes.toml".to_string(),
+            bytes: other_text.as_bytes().to_vec(),
+            text: other_text,
+            line_starts: vec![0],
+            sha256: other_digest.clone(),
+        };
+        let files = std::collections::BTreeMap::from([
+            (file.path.clone(), file),
+            (other.path.clone(), other),
+        ]);
         let extraction = extract_corpus_symbols(&files).expect("coverage is reported");
         assert!(extraction.symbols.is_empty());
-        let unsupported = extraction.unsupported_files.first().expect("unsupported file");
+        assert_eq!(extraction.unsupported_files.len(), 2);
+        let unsupported = extraction
+            .unsupported_files
+            .first()
+            .expect("unsupported file");
         assert_eq!(unsupported.path, "docs/readme.md");
         assert_eq!(unsupported.file_sha256, digest);
         assert_eq!(unsupported.reason, "unsupported_language");
+        let other = extraction.unsupported_files.get(1).expect("second file");
+        assert_eq!(other.path, "docs/znotes.toml");
+        assert_eq!(other.file_sha256, other_digest);
+        assert_eq!(other.reason, "unsupported_language");
 
         let malformed = "fn incomplete( {".to_string();
         let malformed_sha = sha256_hex(malformed.as_bytes());
