@@ -291,6 +291,21 @@ fn binary_daemon_exposes_one_correlated_query_without_payload() -> TestResult {
                     && event.request_id.get() == semantic_id
             })
             .collect();
+        for stage in [
+            ProcessRequestEventStageV1::QueueAdmitted,
+            ProcessRequestEventStageV1::BackendStarted,
+            ProcessRequestEventStageV1::BackendOutcome,
+            ProcessRequestEventStageV1::BackendReturned,
+            ProcessRequestEventStageV1::ResponseWritten,
+        ] {
+            if !correlated.iter().any(|event| {
+                event.stage == stage
+                    && (stage != ProcessRequestEventStageV1::BackendOutcome
+                        || event.route.as_deref() == Some("query.semantic"))
+            }) {
+                return Err(format!("binary semantic query {semantic_id} lacks {stage:?}").into());
+            }
+        }
         let started = correlated
             .iter()
             .find(|event| event.stage == ProcessRequestEventStageV1::ProviderStarted)

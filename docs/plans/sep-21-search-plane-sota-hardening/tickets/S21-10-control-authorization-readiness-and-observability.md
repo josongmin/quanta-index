@@ -12,12 +12,17 @@ drop before/after and omission are explicit. The SDK binds response plane and
 limit to its request; `searchctl events --plane query|control|ingest --limit N`
 is the operator entrypoint. Focused contract, dispatcher, SDK, CLI parser and
 in-process correlation checks ran on a dirty overlay. A Cargo-built local
-daemon-process test also observed the same request ID across queue admission,
-backend start/outcome/return and response completion over the real sockets.
-The listed DoD still requires provider-stage correlation, ring wrap/drop and
-restart checks on their final source, observer zero-disclosure at the socket,
-child and maintenance loss, plus frozen-source Linux release qualification.
-Do not mark P09 closed from this paragraph.
+daemon-process test used explicit lexical and semantic wire request IDs and
+observed the same IDs across queue admission, backend start/outcome/return,
+provider ticket start/return (semantic), and response completion on the real
+sockets. Runtime projection unit tests covered ring wrap/drop and process
+instance restart. The `quanta-index-ipc --tests --no-run` compilation caught
+one forgotten exhaustive test-stub request arm; `6a56488f` closed it and the
+same compile rail passed. The 5-second fuzz smoke was interrupted after over
+five minutes of cold compilation of its first target; treat it as `NOT_RUN`,
+not a pass. Remaining DoD: socket-level observer zero-disclosure, supervised
+child and maintenance loss, final-source frozen qualification, and Linux
+release-daemon evidence. Do not mark P09 closed from this paragraph.
 
 2026-09-24 adversarial plan correction: the current exhaustive dispatcher
 capability enum is only `Observe`/`Admin`; `Admin` is restricted to the owner
